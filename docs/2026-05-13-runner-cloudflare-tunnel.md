@@ -21,7 +21,7 @@ Three pieces of state, three separate files, each owned by one component:
 | `~/.rt/tunnels/runtime-<board>.yml` | TunnelManager | regenerated on every change | Generated cloudflared ingress; never user-edited |
 
 **Why three files instead of one:**
-- Global config is shared across every runner board (`rt runner --runner=assured`, `--runner=foo`, etc.) — putting it inside one board's runner file would force duplication or coupling.
+- Global config is shared across every runner board (`rt runner --runner=acme`, `--runner=foo`, etc.) — putting it inside one board's runner file would force duplication or coupling.
 - Per-lane toggle co-locates with the lane it owns (just like `mode`, `canonicalPort`). Round-trips through the existing compact format.
 - Generated YAML is a runtime artifact — colocating it with the user-editable config invites confusion. Name prefix `runtime-` makes it obviously machine-owned.
 

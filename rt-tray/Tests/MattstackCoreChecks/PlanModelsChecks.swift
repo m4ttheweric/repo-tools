@@ -3,7 +3,7 @@ import MattstackCore
 
 let samplePlanJSON = """
 { "contract": 1, "at": "2026-08-21T04:00:00Z",
-  "team": { "slug": "assured", "name": "Assured", "mode": "join" },
+  "team": { "slug": "acme", "name": "Acme", "mode": "join" },
   "groups": [
     { "id": "mac", "title": "Your Mac", "rows": [
       { "id": "perm.fda", "kind": "permission", "title": "Full Disk Access",
@@ -14,7 +14,7 @@ let samplePlanJSON = """
       { "id": "tool.clt", "kind": "tool", "title": "Apple command line tools", "why": "git and python3.",
         "required": true, "optionalNote": null, "status": "ready", "detail": "git 2.50.1", "action": null, "recheck": "on-change" } ] },
     { "id": "accounts", "title": "Accounts", "rows": [
-      { "id": "account.gitlab", "kind": "account", "title": "GitLab", "why": "MRs live on gitlab.assured.com.",
+      { "id": "account.gitlab", "kind": "account", "title": "GitLab", "why": "MRs live on gitlab.example.com.",
         "required": true, "optionalNote": null, "status": "missing", "detail": null,
         "action": { "type": "connect", "label": "Connect", "integration": "gitlab",
                     "fields": [ { "name": "token", "label": "Personal access token", "secret": true, "hint": "scopes: read_api, read_user" } ],

@@ -6,8 +6,34 @@ const CLAUDE_SKILL_DIR_TOKEN = "${CLAUDE_SKILL_DIR}";
 export const HEADER_COMMENT =
   "<!-- compiled by rt skills compile from the sources below; slots pre-resolved; edits here are working-tree drift (rt skills promote) -->";
 
-const REGISTERED_NAME_RE = /\b(mattstack|claimview|assured):[a-z][a-z0-9-]*\b/g;
 const SKILL_DIR_PATH_RE = /\$\{CLAUDE_SKILL_DIR\}\/[^\s"'`)]+/g;
+
+/** rt's own namespace, always linted even when no pack is installed. */
+const OWN_NAMESPACE = "mattstack";
+
+/**
+ * Namespaces are the ones this compilation knows about — rt's own, whatever the
+ * roster names, and the packs supplying the fills — rather than a fixed list.
+ * The fills matter: a body referencing its own pack's binding must still warn
+ * when that binding is missing from the roster, and the pack is not in the
+ * roster to be discovered from.
+ *
+ * A hard-coded alternation only ever linted the teams someone thought to add,
+ * so any other pack went unchecked, and it put specific team names in the
+ * source of a general-purpose tool.
+ */
+function registeredNameRe(...sources: Iterable<string>[]): RegExp {
+  const namespaces = new Set<string>([OWN_NAMESPACE]);
+  for (const source of sources) {
+    for (const token of source) {
+      const ns = token.split(":")[0];
+      if (ns && /^[a-z][a-z0-9-]*$/.test(ns)) namespaces.add(ns);
+    }
+  }
+  // Longest first so `acme-dev:` cannot be shadowed by a shorter `acme:`.
+  const alternation = [...namespaces].sort((a, b) => b.length - a.length).join("|");
+  return new RegExp(`\\b(?:${alternation}):[a-z][a-z0-9-]*\\b`, "g");
+}
 
 type BoundSlot = { slotName: string; fill: AttachmentSource };
 
@@ -163,12 +189,12 @@ function stripCompilerComments(body: string): string {
     .join("\n");
 }
 
-function lintReferences(body: string, roster: Set<string>, files: CompiledFile[]): string[] {
+function lintReferences(body: string, roster: Set<string>, files: CompiledFile[], known: Iterable<string>): string[] {
   const warnings: string[] = [];
   const lintableBody = stripCompilerComments(body);
 
   const seenNames = new Set<string>();
-  for (const match of lintableBody.matchAll(REGISTERED_NAME_RE)) {
+  for (const match of lintableBody.matchAll(registeredNameRe(roster, known))) {
     const token = match[0];
     if (seenNames.has(token)) continue;
     seenNames.add(token);
@@ -197,7 +223,7 @@ function lintInternalRoster(text: string, internalRoster: Set<string>, where: st
   const lintableText = stripCompilerComments(text);
 
   const seenNames = new Set<string>();
-  for (const match of lintableText.matchAll(REGISTERED_NAME_RE)) {
+  for (const match of lintableText.matchAll(registeredNameRe(internalRoster))) {
     const token = match[0];
     if (seenNames.has(token)) continue;
     seenNames.add(token);
@@ -233,7 +259,8 @@ export function compileSkill(
 
   const files: CompiledFile[] = [{ path: "SKILL.md", content }, ...buildVendoredFiles(step, boundSlots)];
 
-  const warnings = [...lintReferences(body, roster, files), ...notes];
+  const fillBindings = boundSlots.map(({ fill }) => fill.binding);
+  const warnings = [...lintReferences(body, roster, files, fillBindings), ...notes];
   const errors = [
     ...lintInternalRoster(body, internalRoster, "body"),
     ...lintInternalRoster(verb.description, internalRoster, "description"),

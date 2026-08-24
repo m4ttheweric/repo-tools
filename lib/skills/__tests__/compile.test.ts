@@ -25,10 +25,10 @@ const step: StepSource = {
 };
 
 const domainFill: AttachmentSource = {
-  binding: "claimview:watch-ci-domain",
-  plugin: "claimview",
+  binding: "acme:watch-ci-domain",
+  plugin: "acme",
   version: "0.3.0",
-  dir: "/plugins/claimview/attachments/watch-ci-domain",
+  dir: "/plugins/acme/attachments/watch-ci-domain",
   srcPath: "attachments/watch-ci-domain/SKILL.md",
   bodyStartLine: 8,
   body: "Domain rules live at ${CLAUDE_SKILL_DIR}/ci-config.json for details.",
@@ -66,7 +66,7 @@ const registeredForgeFill: AttachmentSource = {
   registered: true,
 };
 
-const roster = new Set(["mattstack:watch-ci", "claimview:watch-ci-domain", "mattstack:gitlab-forge"]);
+const roster = new Set(["mattstack:watch-ci", "acme:watch-ci-domain", "mattstack:gitlab-forge"]);
 
 function skillFileContent(files: CompiledFile[]): string {
   const skillFile = files[0];
@@ -97,7 +97,7 @@ describe("compileSkill", () => {
     expect(content).toContain('name: "watch-ci"');
     expect(content).toContain('description: "Watch CI until it goes green"');
     expect(content).toContain(
-      'metadata:\n  compiled: "mattstack@1.2.0 + claimview:watch-ci-domain@0.3.0 + mattstack:gitlab-forge@1.2.0"',
+      'metadata:\n  compiled: "mattstack@1.2.0 + acme:watch-ci-domain@0.3.0 + mattstack:gitlab-forge@1.2.0"',
     );
 
     expect(toolLinesBetween(content)).toEqual([
@@ -114,7 +114,7 @@ describe("compileSkill", () => {
       "<!-- part: step source=mattstack:watch-ci version=1.2.0 path=skills/pipeline/watch-ci/SKILL.md lines=8-8 -->",
     );
     expect(content).toContain(
-      "<!-- part: slot:domain binding=claimview:watch-ci-domain version=0.3.0 path=attachments/watch-ci-domain/SKILL.md lines=8-8 -->",
+      "<!-- part: slot:domain binding=acme:watch-ci-domain version=0.3.0 path=attachments/watch-ci-domain/SKILL.md lines=8-8 -->",
     );
     expect(content).toContain(
       "<!-- part: slot:forge binding=mattstack:gitlab-forge version=1.2.0 path=skills/gitlab-forge/SKILL.md lines=8-8 -->",
@@ -177,7 +177,7 @@ describe("compileSkill", () => {
     expect(error?.message).toContain("domain");
     expect(error?.message).toContain("watch-ci-domain@1");
     expect(error?.message).toContain("watch-ci-domain@2");
-    expect(error?.message).toContain("claimview:watch-ci-domain");
+    expect(error?.message).toContain("acme:watch-ci-domain");
   });
 
   test("vendoring: stepFiles and extraFiles map to exact copyFrom paths", () => {
@@ -193,7 +193,7 @@ describe("compileSkill", () => {
     });
     expect(result.files).toContainEqual({
       path: "parts/domain/ci-config.json",
-      copyFrom: "/plugins/claimview/attachments/watch-ci-domain/ci-config.json",
+      copyFrom: "/plugins/acme/attachments/watch-ci-domain/ci-config.json",
     });
     expect(result.files.some((f) => f.path.startsWith("parts/forge/"))).toBe(false);
   });
@@ -230,7 +230,7 @@ describe("compileSkill", () => {
     ]);
 
     expect(content).toContain(
-      'metadata:\n  compiled: "mattstack@1.2.0 + claimview:watch-ci-domain@0.3.0 + mattstack:gitlab-forge@1.2.0"',
+      'metadata:\n  compiled: "mattstack@1.2.0 + acme:watch-ci-domain@0.3.0 + mattstack:gitlab-forge@1.2.0"',
     );
   });
 
@@ -242,17 +242,17 @@ describe("compileSkill", () => {
       dir: "/plugins/mattstack/skills/pipeline/watch-ci",
       srcPath: "skills/pipeline/watch-ci/SKILL.md",
       bodyStartLine: 8,
-      body: "This step defers domain judgment to claimview:watch-ci-domain and never invokes claimview:nonexistent.",
+      body: "This step defers domain judgment to acme:watch-ci-domain and never invokes acme:nonexistent.",
       slots: {},
       allowedTools: [],
       stepFiles: [],
     };
-    const lintRoster = new Set(["mattstack:watch-ci", "claimview:watch-ci-domain"]);
+    const lintRoster = new Set(["mattstack:watch-ci", "acme:watch-ci-domain"]);
 
     const result = compileSkill(verb, lintStep, {}, lintRoster);
 
     expect(result.warnings).toEqual([
-      "body references claimview:nonexistent which is not invocable",
+      "body references acme:nonexistent which is not invocable",
     ]);
   });
 
@@ -268,7 +268,7 @@ describe("compileSkill", () => {
     const rosterWithoutDomain = new Set(["mattstack:watch-ci", "mattstack:gitlab-forge"]);
     const stepMentioningBinding: StepSource = {
       ...step,
-      body: `${step.body} This step composes with claimview:watch-ci-domain for domain rules.`,
+      body: `${step.body} This step composes with acme:watch-ci-domain for domain rules.`,
     };
 
     const result = compileSkill(
@@ -279,7 +279,7 @@ describe("compileSkill", () => {
     );
 
     expect(result.warnings).toEqual([
-      "body references claimview:watch-ci-domain which is not invocable",
+      "body references acme:watch-ci-domain which is not invocable",
     ]);
   });
 
@@ -353,7 +353,7 @@ describe("compileSkill", () => {
     const main = result.files.find((f) => f.path.endsWith("SKILL.md"))!;
     const content = (main as { content: string }).content;
     expect(content).toMatch(/<!-- part: step source=mattstack:watch-ci version=1\.2\.0 path=\S+ lines=\d+-\d+ -->/);
-    expect(content).toMatch(/<!-- part: slot:domain binding=claimview:watch-ci-domain version=0\.3\.0 path=\S+ lines=\d+-\d+ -->/);
+    expect(content).toMatch(/<!-- part: slot:domain binding=acme:watch-ci-domain version=0\.3\.0 path=\S+ lines=\d+-\d+ -->/);
     // Relative, never absolute: an absolute path would bake this machine's tmpdir
     // into a committed artifact.
     expect(content).not.toMatch(/path=\//);

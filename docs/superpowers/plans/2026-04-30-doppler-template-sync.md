@@ -648,7 +648,7 @@ describe("captureFromActualConfig", () => {
           "enclave.config":  "dev",
         },
         "/repo/primary/packages/sidekick": {
-          "enclave.project": "adjuster",
+          "enclave.project": "portal",
           "enclave.config":  "dev",
         },
         // Entry from a different worktree — must not be captured
@@ -662,7 +662,7 @@ describe("captureFromActualConfig", () => {
     expect(captured).toEqual([
       { path: "apps/backend",       project: "backend",  config: "dev" },
       { path: "apps/frontend",      project: "frontend", config: "dev" },
-      { path: "packages/sidekick",  project: "adjuster", config: "dev" },
+      { path: "packages/sidekick",  project: "portal", config: "dev" },
     ]);
   });
 
@@ -1544,21 +1544,21 @@ git commit -m "feat(doppler): wire rt doppler subcommands into cli.ts tree"
 Run: `bun test lib/daemon/__tests__ lib/__tests__/doppler-template.test.ts lib/__tests__/doppler-config.test.ts`
 Expected: PASS, no regressions.
 
-- [ ] **Step 2: Smoke-test `rt doppler init` against the assured repo**
+- [ ] **Step 2: Smoke-test `rt doppler init` against the acme repo**
 
-In the assured-primary worktree:
+In the acme-primary worktree:
 ```bash
-cd /Users/matt/Documents/GitHub/assured/assured-primary
+cd /Users/matt/Documents/GitHub/acme/acme-primary
 bun /Users/matt/Documents/GitHub/repo-tools/cli.ts doppler init
 ```
 
 Expected output:
-- "captured N entries into ~/.rt/assured/doppler-template.yaml"
-- A list of 10 entries (apps/adjuster, apps/backend, … packages/sidekick).
+- "captured N entries into ~/.rt/acme/doppler-template.yaml"
+- A list of 10 entries (apps/portal, apps/backend, … packages/sidekick).
 
 Verify the file:
 ```bash
-cat ~/.rt/assured/doppler-template.yaml
+cat ~/.rt/acme/doppler-template.yaml
 ```
 
 Expected: a YAML list of 10 entries matching the spec example.
@@ -1591,10 +1591,10 @@ Run `rt doppler sync` again. Expected: still 0 wrote, all unchanged.
 
 If the daemon is running, run:
 ```bash
-curl --unix-socket ~/.rt/rt.sock http://localhost/doppler:sync -X POST -H "Content-Type: application/json" -d '{"repoName":"assured"}'
+curl --unix-socket ~/.rt/rt.sock http://localhost/doppler:sync -X POST -H "Content-Type: application/json" -d '{"repoName":"acme"}'
 ```
 
-Expected: `{"ok":true,"data":{"results":{"assured":{"wrote":0,"overridden":0,"unchanged":N}}}}`
+Expected: `{"ok":true,"data":{"results":{"acme":{"wrote":0,"overridden":0,"unchanged":N}}}}`
 
 - [ ] **Step 7: Final empty commit signaling completion**
 

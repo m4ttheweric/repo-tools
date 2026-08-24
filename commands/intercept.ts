@@ -153,7 +153,7 @@ export function resolveRealBinary(command: string): string | null {
 }
 
 /**
- * Ported from @assured/dev-ports doppler.ts passthrough: inherit-stdio spawn,
+ * Ported from @acme/dev-ports doppler.ts passthrough: inherit-stdio spawn,
  * forward SIGINT/SIGTERM/SIGHUP to the child, and mirror its exit code.
  */
 async function execReal(bin: string, args: string[], env: Record<string, string>): Promise<never> {

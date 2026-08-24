@@ -11,7 +11,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 describe("parseCronConfig", () => {
   test("parses a resolved object and validates triggers", () => {
     const cfg = parseCronConfig({
-      triggers: [{ name: "t", event: "project-mrs", repoName: "assured-dev", run: ["echo", "hi"] }],
+      triggers: [{ name: "t", event: "project-mrs", repoName: "acme-dev", run: ["echo", "hi"] }],
     });
     expect(cfg.triggers).toHaveLength(1);
     expect(cfg.triggers[0]!.debounceMs).toBeUndefined();
@@ -85,13 +85,13 @@ describe("startCron", () => {
   test("matching events run the command once per debounce window", async () => {
     const runs: string[][] = [];
     const cron = startCron(
-      { triggers: [{ name: "t", event: "project-mrs", repoName: "assured-dev", run: ["echo", "hi"], debounceMs: 20 }] },
+      { triggers: [{ name: "t", event: "project-mrs", repoName: "acme-dev", run: ["echo", "hi"], debounceMs: 20 }] },
       { log, runCommand: (argv) => runs.push(argv) },
     );
-    cron.onBroadcast("project-mrs", { repoName: "assured-dev" });
-    cron.onBroadcast("project-mrs", { repoName: "assured-dev" }); // burst: coalesced
+    cron.onBroadcast("project-mrs", { repoName: "acme-dev" });
+    cron.onBroadcast("project-mrs", { repoName: "acme-dev" }); // burst: coalesced
     cron.onBroadcast("project-mrs", { repoName: "other-repo" });  // wrong repo: ignored
-    cron.onBroadcast("discussions:update", { repoName: "assured-dev" }); // wrong event: ignored
+    cron.onBroadcast("discussions:update", { repoName: "acme-dev" }); // wrong event: ignored
     expect(runs).toHaveLength(0); // trailing edge: nothing yet
     await sleep(40);
     expect(runs).toEqual([["echo", "hi"]]);

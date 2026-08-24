@@ -24,13 +24,13 @@ describe("runs store", () => {
     expect(d.run.status).toBe("running");
     expect(d.stages).toHaveLength(1);
     expect(d.fields.length).toBeGreaterThan(0);
-    expect(d.fields[0]!).toMatchObject({ key: "ticket", value: "CV-1" });
+    expect(d.fields[0]!).toMatchObject({ key: "ticket", value: "ACME-1" });
     expect(d.decisions.length).toBeGreaterThan(0);
     expect(d.decisions[0]!.contract).toBe("execution-strategy@1");
     expect(d.schemaAhead).toBe(false);
     expect(readRun("alpha", "nope")).toBeNull();
 
-    expect(d.run.ticket).toBe("CV-1");
+    expect(d.run.ticket).toBe("ACME-1");
     expect(d.run.branch).toBe("goodwin/mat-1");
     expect(d.run.last_event_at).toBe(1000 + 5000); // the branch field, seeded latest
   });
@@ -39,7 +39,7 @@ describe("runs store", () => {
     const dir = root();
     seedRun(dir, "alpha", "20260821-010101-aaaa", 1000);
     const [row] = listRuns("alpha");
-    expect(row!.ticket).toBe("CV-1");
+    expect(row!.ticket).toBe("ACME-1");
     expect(row!.branch).toBe("goodwin/mat-1");
     expect(row!.last_event_at).toBe(1000 + 5000);
   });

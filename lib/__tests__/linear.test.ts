@@ -190,10 +190,10 @@ const node = (identifier: string, stateName: string | null = "Todo") => ({
 });
 
 describe("pickStartedState", () => {
-  // Reproduces the ClaimView (Derpy) team: many `started`-type states, where the
+  // Reproduces the Acme (Derpy) team: many `started`-type states, where the
   // API returns "Ready for Merge" first but "In Progress" (position 0) is the
   // real entry point into the started group.
-  const claimViewStates = [
+  const acmeStates = [
     { id: "merge", type: "started", position: 4000 },
     { id: "stale", type: "canceled", position: 0 },
     { id: "ready-testing", type: "started", position: 2000 },
@@ -204,7 +204,7 @@ describe("pickStartedState", () => {
   ];
 
   test("picks the lowest-position started state, not the first in the array", () => {
-    expect(pickStartedState(claimViewStates)?.id).toBe("in-progress");
+    expect(pickStartedState(acmeStates)?.id).toBe("in-progress");
   });
 
   test("returns null when there is no started state", () => {
@@ -229,10 +229,10 @@ describe("pickStartedState", () => {
 describe("fetchMyTodoTickets", () => {
   // Regression: the branch picker once fetched the whole team's active backlog
   // capped at 50 (no assignee filter), so a user's own older ticket (e.g.
-  // CV-2256, last touched a day ago) fell off behind the team's churn. The
+  // ACME-2256, last touched a day ago) fell off behind the team's churn. The
   // query must scope to the viewer's own assigned tickets.
   test("scopes to the viewer's own assigned tickets, not the whole team backlog", async () => {
-    const m = mockGraphql({ team: { issues: { nodes: [node("CV-2256")] } } });
+    const m = mockGraphql({ team: { issues: { nodes: [node("ACME-2256")] } } });
 
     const tickets = await fetchMyTodoTickets("key", "team-123");
 
@@ -241,7 +241,7 @@ describe("fetchMyTodoTickets", () => {
     expect(sent.query).toContain("isMe");
     expect(sent.variables.teamId).toBe("team-123");
     expect(tickets).toHaveLength(1);
-    expect(tickets[0]!.identifier).toBe("CV-2256");
+    expect(tickets[0]!.identifier).toBe("ACME-2256");
   });
 
   test("returns [] when the API errors", async () => {
@@ -252,12 +252,12 @@ describe("fetchMyTodoTickets", () => {
 
 describe("searchTickets", () => {
   test("maps searchIssues results, preserving order", async () => {
-    const m = mockGraphql({ searchIssues: { nodes: [node("CV-2256"), node("EM-2256", null)] } });
+    const m = mockGraphql({ searchIssues: { nodes: [node("ACME-2256"), node("EM-2256", null)] } });
 
     const tickets = await searchTickets("key", "2256");
 
     expect(m.body().variables.term).toBe("2256");
-    expect(tickets.map((t) => t.identifier)).toEqual(["CV-2256", "EM-2256"]);
+    expect(tickets.map((t) => t.identifier)).toEqual(["ACME-2256", "EM-2256"]);
     expect(tickets[1]!.stateName).toBeNull();
   });
 

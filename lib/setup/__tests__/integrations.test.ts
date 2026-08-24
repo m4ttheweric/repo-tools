@@ -3,7 +3,7 @@ import { fakeProbes } from "./fakes.ts";
 import { INTEGRATIONS, integrationDef, type ValidateCtx } from "../integrations.ts";
 import { UserActionableError } from "../errors.ts";
 
-const noHost: ValidateCtx = { host: null, team: { slug: "claimview", remote: null } };
+const noHost: ValidateCtx = { host: null, team: { slug: "acme", remote: null } };
 
 describe("integrationDef", () => {
   test("resolves a known id", () => {
@@ -40,7 +40,7 @@ describe("gitlab validate", () => {
       },
     });
 
-    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "claimview", remote: "https://gitlab.example.com/mattstack/claimview.git" } });
+    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "acme", remote: "https://gitlab.example.com/mattstack/acme.git" } });
 
     expect(result.status).toBe("invalid");
     expect(result.detail).toContain("can't see");
@@ -57,7 +57,7 @@ describe("gitlab validate", () => {
       },
     });
 
-    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "claimview", remote: "https://gitlab.example.com/mattstack/claimview.git" } });
+    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "acme", remote: "https://gitlab.example.com/mattstack/acme.git" } });
     expect(result.status).toBe("ready");
   });
 
@@ -71,14 +71,14 @@ describe("gitlab validate", () => {
       },
     });
 
-    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "claimview", remote: "https://gitlab.example.com/mattstack/claimview.git" } });
+    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "acme", remote: "https://gitlab.example.com/mattstack/acme.git" } });
     expect(result.status).toBe("error");
     expect(result.detail).toContain("500");
   });
 
   test("/user status 0 (network down) → error, never invalid", async () => {
     const p = fakeProbes({ fetch: async () => ({ status: 0, body: "", headers: {} }) });
-    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "claimview", remote: null } });
+    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "acme", remote: null } });
     expect(result.status).toBe("error");
     expect(result.detail).toContain("gitlab.example.com");
     expect(result.detail.toLowerCase()).not.toContain("invalid");
@@ -86,7 +86,7 @@ describe("gitlab validate", () => {
 
   test("/user non-200, non-401/403 (e.g. 502) → error, not invalid", async () => {
     const p = fakeProbes({ fetch: async () => ({ status: 502, body: "", headers: {} }) });
-    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "claimview", remote: null } });
+    const result = await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com", team: { slug: "acme", remote: null } });
     expect(result.status).toBe("error");
     expect(result.detail).toContain("502");
   });
@@ -99,7 +99,7 @@ describe("gitlab validate", () => {
         return { status: 200, body: "{}", headers: {} };
       },
     });
-    await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com/", team: { slug: "claimview", remote: null } });
+    await INTEGRATIONS.gitlab.validate(p, "glpat-token", { host: "gitlab.example.com/", team: { slug: "acme", remote: null } });
     expect(calledUrls.every((u) => !u.includes("//api"))).toBe(true);
   });
 });
@@ -109,12 +109,12 @@ describe("github validate", () => {
     const p = fakeProbes({
       fetch: async (url) => {
         if (url === "https://api.github.com/user") return { status: 200, body: "{}", headers: { "x-oauth-scopes": "repo, read:org" } as Record<string, string> };
-        if (url === "https://api.github.com/repos/mattstack/claimview") return { status: 200, body: "{}", headers: {} as Record<string, string> };
+        if (url === "https://api.github.com/repos/mattstack/acme") return { status: 200, body: "{}", headers: {} as Record<string, string> };
         return { status: 0, body: "", headers: {} as Record<string, string> };
       },
     });
 
-    const result = await INTEGRATIONS.github.validate(p, "ghp-token", { host: null, team: { slug: "claimview", remote: "https://github.com/mattstack/claimview.git" } });
+    const result = await INTEGRATIONS.github.validate(p, "ghp-token", { host: null, team: { slug: "acme", remote: "https://github.com/mattstack/acme.git" } });
 
     expect(result.status).toBe("ready");
     expect(result.scopesSeen).toEqual(["repo", "read:org"]);
@@ -124,12 +124,12 @@ describe("github validate", () => {
     const p = fakeProbes({
       fetch: async (url) => {
         if (url === "https://api.github.com/user") return { status: 200, body: "{}", headers: {} };
-        if (url === "https://api.github.com/repos/mattstack/claimview") return { status: 404, body: "", headers: {} };
+        if (url === "https://api.github.com/repos/mattstack/acme") return { status: 404, body: "", headers: {} };
         return { status: 0, body: "", headers: {} };
       },
     });
 
-    const result = await INTEGRATIONS.github.validate(p, "ghp-token", { host: null, team: { slug: "claimview", remote: "https://github.com/mattstack/claimview.git" } });
+    const result = await INTEGRATIONS.github.validate(p, "ghp-token", { host: null, team: { slug: "acme", remote: "https://github.com/mattstack/acme.git" } });
     expect(result.status).toBe("invalid");
     expect(result.detail).toContain("can't see");
   });
@@ -174,7 +174,7 @@ describe("linear validate", () => {
       fetch: async () => ({ status: 200, body: JSON.stringify({ data: { viewer: { id: "u1" }, teams: { nodes: [{ key: "ENG" }] } } }), headers: {} }),
     });
 
-    const result = await INTEGRATIONS.linear.validate(p, "lin_api_x", { host: null, team: { slug: "claimview", remote: null }, linearTeamKey: "CV" });
+    const result = await INTEGRATIONS.linear.validate(p, "lin_api_x", { host: null, team: { slug: "acme", remote: null }, linearTeamKey: "CV" });
     expect(result.status).toBe("invalid");
   });
 
@@ -183,7 +183,7 @@ describe("linear validate", () => {
       fetch: async () => ({ status: 200, body: JSON.stringify({ data: { viewer: { id: "u1" }, teams: { nodes: [{ key: "ENG" }] } } }), headers: {} }),
     });
 
-    const result = await INTEGRATIONS.linear.validate(p, "lin_api_x", { host: null, team: { slug: "claimview", remote: null } });
+    const result = await INTEGRATIONS.linear.validate(p, "lin_api_x", { host: null, team: { slug: "acme", remote: null } });
     expect(result.status).toBe("ready");
     expect(result.detail).toBe("viewer ok");
   });
@@ -193,7 +193,7 @@ describe("linear validate", () => {
       fetch: async () => ({ status: 200, body: JSON.stringify({ data: { viewer: { id: "u1" }, teams: { nodes: [{ key: "CV" }] } } }), headers: {} }),
     });
 
-    const result = await INTEGRATIONS.linear.validate(p, "lin_api_x", { host: null, team: { slug: "claimview", remote: null }, linearTeamKey: "CV" });
+    const result = await INTEGRATIONS.linear.validate(p, "lin_api_x", { host: null, team: { slug: "acme", remote: null }, linearTeamKey: "CV" });
     expect(result.status).toBe("ready");
   });
 
@@ -304,7 +304,7 @@ describe("switchboard validate", () => {
 
   test("/health 200 → ready", async () => {
     const p = fakeProbes({ fetch: async () => ({ status: 200, body: "", headers: {} }) });
-    const result = await INTEGRATIONS.switchboard.validate(p, "token", { host: "https://switchboard.example.com", team: { slug: "claimview", remote: null } });
+    const result = await INTEGRATIONS.switchboard.validate(p, "token", { host: "https://switchboard.example.com", team: { slug: "acme", remote: null } });
     expect(result.status).toBe("ready");
   });
 
@@ -316,13 +316,13 @@ describe("switchboard validate", () => {
         return { status: 200, body: "", headers: {} };
       },
     });
-    await INTEGRATIONS.switchboard.validate(p, "token", { host: "https://switchboard.example.com/", team: { slug: "claimview", remote: null } });
+    await INTEGRATIONS.switchboard.validate(p, "token", { host: "https://switchboard.example.com/", team: { slug: "acme", remote: null } });
     expect(calledUrls).toEqual(["https://switchboard.example.com/health"]);
   });
 
   test("status 0 (network down) → error, never invalid", async () => {
     const p = fakeProbes({ fetch: async () => ({ status: 0, body: "", headers: {} }) });
-    const result = await INTEGRATIONS.switchboard.validate(p, "token", { host: "https://switchboard.example.com", team: { slug: "claimview", remote: null } });
+    const result = await INTEGRATIONS.switchboard.validate(p, "token", { host: "https://switchboard.example.com", team: { slug: "acme", remote: null } });
     expect(result.status).toBe("error");
     expect(result.detail.toLowerCase()).not.toContain("invalid");
   });
@@ -333,10 +333,10 @@ describe("secrets never leak into results or argv", () => {
 
   const cases: { id: keyof typeof INTEGRATIONS; ctx: ValidateCtx; opts: Parameters<typeof fakeProbes>[0] }[] = [
     { id: "github", ctx: noHost, opts: { fetch: async () => ({ status: 200, body: "{}", headers: {} }) } },
-    { id: "gitlab", ctx: { host: "gitlab.example.com", team: { slug: "claimview", remote: null } }, opts: { fetch: async () => ({ status: 200, body: "{}", headers: {} }) } },
+    { id: "gitlab", ctx: { host: "gitlab.example.com", team: { slug: "acme", remote: null } }, opts: { fetch: async () => ({ status: 200, body: "{}", headers: {} }) } },
     { id: "linear", ctx: noHost, opts: { fetch: async () => ({ status: 200, body: JSON.stringify({ data: { viewer: { id: "u1" }, teams: { nodes: [] } } }), headers: {} }) } },
     { id: "slack", ctx: noHost, opts: { fetch: async () => ({ status: 200, body: JSON.stringify({ ok: true, team: "Mattstack" }), headers: {} }) } },
-    { id: "switchboard", ctx: { host: "https://switchboard.example.com", team: { slug: "claimview", remote: null } }, opts: { fetch: async () => ({ status: 200, body: "", headers: {} }) } },
+    { id: "switchboard", ctx: { host: "https://switchboard.example.com", team: { slug: "acme", remote: null } }, opts: { fetch: async () => ({ status: 200, body: "", headers: {} }) } },
   ];
 
   for (const { id, ctx, opts } of cases) {

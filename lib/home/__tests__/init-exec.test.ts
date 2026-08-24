@@ -357,7 +357,7 @@ describe("createRealExecSeam", () => {
       const userDir = join(home, "user");
       mkdirSync(userDir, { recursive: true });
       const existingGitignore = "# hand-curated, from the clone's own history\n";
-      const existingOwners = '{ "claimview": "matt" }\n';
+      const existingOwners = '{ "acme": "matt" }\n';
       writeFileSync(join(userDir, ".gitignore"), existingGitignore);
       writeFileSync(join(userDir, "snapshot-owners.jsonc"), existingOwners);
 

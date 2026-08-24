@@ -40,7 +40,7 @@ test("team join --dry-run reads the code from stdin; no-access is exit 0 {access
   const happy = await run("join-happy", ["team", "join", "--dry-run", "--json"], JSON.stringify({ code: "ABCD-EFGH" }));
   expect(happy.code).toBe(0);
   expect(happy.lines[0].access).toBe("ok");
-  expect(happy.lines[0].team.name).toBe("Assured");
+  expect(happy.lines[0].team.name).toBe("Acme");
   const denied = await run("join-no-access", ["team", "join", "--dry-run", "--json"], JSON.stringify({ code: "ABCD-EFGH" }));
   expect(denied.code).toBe(0);
   expect(denied.lines[0].access).toBe("denied");
@@ -80,11 +80,11 @@ test("uninstall --dry-run lists L1's action ids; --delete-data needs --yes; vers
 
 test("team status and setup github status answer the contract shapes", async () => {
   const ts = await run("join-happy", ["team", "status", "--json"]);
-  expect(ts.lines[0].slug).toBe("assured");
+  expect(ts.lines[0].slug).toBe("acme");
   expect(ts.lines[0].members[0].username).toBe("matt");
   const gh = await run("join-happy", ["setup", "github", "status", "--json"]);
   expect(gh.lines[0].handle).toBe("matt");
-  expect(gh.lines[0].owners).toContain("assured");
+  expect(gh.lines[0].owners).toContain("acme");
 });
 
 test("team create answers the contract's flat shape, not nested under team", async () => {

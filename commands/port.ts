@@ -42,7 +42,7 @@ async function getPortData(): Promise<{ entries: PortEntry[]; source: "daemon" |
 
 /**
  * Build a human-readable path starting from the worktree/repo folder name.
- * e.g. "my-repo-wktree-2/apps/adjuster" or "my-repo/."
+ * e.g. "my-repo-wktree-2/apps/portal" or "my-repo/."
  */
 function folderPath(entry: PortEntry): string {
   const { basename } = require("path") as typeof import("path");

@@ -212,22 +212,22 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   describe("4. pool grandchildren", () => {
     test("a .git-less parent whose children carry .git yields <pool>/<slot> candidates", () => {
       const root = mkdtempSync(join(tmpdir(), "rt-pool-root-"));
-      const poolDir = join(root, "assured-dev");
+      const poolDir = join(root, "acme-dev");
       mkdirSync(poolDir, { recursive: true });
       const slot1 = markerRepo(poolDir, "on-deck-1");
       const slot2 = markerRepo(poolDir, "on-deck-2");
       setRepoRoots([root]);
 
       const repos = getKnownRepos();
-      const c1 = byName(repos, "assured-dev/on-deck-1");
-      const c2 = byName(repos, "assured-dev/on-deck-2");
+      const c1 = byName(repos, "acme-dev/on-deck-1");
+      const c2 = byName(repos, "acme-dev/on-deck-2");
 
       expect(c1?.worktrees[0]?.path).toBe(slot1);
       expect(c1?.registered).toBe(false);
       expect(c2?.worktrees[0]?.path).toBe(slot2);
       expect(c2?.registered).toBe(false);
       // The plain pool folder itself must never appear as its own candidate.
-      expect(byName(repos, "assured-dev")).toBeUndefined();
+      expect(byName(repos, "acme-dev")).toBeUndefined();
 
       rmSync(root, { recursive: true, force: true });
     });
@@ -358,19 +358,19 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
 
     test("a pool grandchild that is a linked worktree of an indexed repo is not duplicated", () => {
       const root = mkdtempSync(join(tmpdir(), "rt-dedupe-pool-root-"));
-      const poolDir = join(root, "assured-dev");
+      const poolDir = join(root, "acme-dev");
       const mainSlot = join(poolDir, "main");
       realRepo(mainSlot);
       // Simulate a linked worktree: register it as one of the known repo's
       // worktree paths directly (bypassing real `git worktree add`, which
       // this fixture doesn't need — only the dedupe-set membership matters).
-      indexRepo("assured-dev", mainSlot);
+      indexRepo("acme-dev", mainSlot);
       const independentSlot = markerRepo(poolDir, "on-deck-1");
       setRepoRoots([root]);
 
       const repos = getKnownRepos();
-      expect(repos.filter((r) => r.repoName === "assured-dev/main").length).toBe(0);
-      const indep = byName(repos, "assured-dev/on-deck-1");
+      expect(repos.filter((r) => r.repoName === "acme-dev/main").length).toBe(0);
+      const indep = byName(repos, "acme-dev/on-deck-1");
       expect(indep?.worktrees[0]?.path).toBe(independentSlot);
 
       rmSync(root, { recursive: true, force: true });
@@ -453,15 +453,15 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   describe("12. determinism", () => {
     test("a pool folder that is both a configured root's child and an inferred root emits its independent slot exactly once", () => {
       const root = mkdtempSync(join(tmpdir(), "rt-determinism-root-"));
-      const poolDir = join(root, "assured-dev");
+      const poolDir = join(root, "acme-dev");
       const mainSlot = join(poolDir, "main");
       realRepo(mainSlot);
-      indexRepo("assured-dev", mainSlot); // pool folder is also an inferred root (dirname of this worktree)
+      indexRepo("acme-dev", mainSlot); // pool folder is also an inferred root (dirname of this worktree)
       const independentSlot = markerRepo(poolDir, "on-deck-1");
       setRepoRoots([root]);
 
       const repos = getKnownRepos();
-      const composite = repos.filter((r) => r.repoName === "assured-dev/on-deck-1");
+      const composite = repos.filter((r) => r.repoName === "acme-dev/on-deck-1");
       const flat = repos.filter((r) => r.repoName === "on-deck-1");
 
       expect(composite.length).toBe(1);
@@ -692,13 +692,13 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
       const poolDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-inferred-pool-")));
       const mainSlot = join(poolDir, "main");
       realRepo(mainSlot);
-      indexRepo("assured-dev", mainSlot); // pool folder becomes an inferred root
+      indexRepo("acme-dev", mainSlot); // pool folder becomes an inferred root
       const slot2 = markerRepo(poolDir, "on-deck-1");
       // No rt.repoRoots configured — pool detection must NOT trigger.
 
       const repos = getKnownRepos();
       expect(byName(repos, "on-deck-1")?.worktrees[0]?.path).toBe(slot2);
-      expect(byName(repos, "assured-dev/on-deck-1")).toBeUndefined();
+      expect(byName(repos, "acme-dev/on-deck-1")).toBeUndefined();
 
       rmSync(poolDir, { recursive: true, force: true });
     });
@@ -709,21 +709,21 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   describe("16. dataDir isolation", () => {
     test("a pool candidate's dataDir is a sanitized single segment, never nested inside the pool's own data dir", () => {
       const root = mkdtempSync(join(tmpdir(), "rt-datadir-root-"));
-      const poolDir = join(root, "assured-dev");
+      const poolDir = join(root, "acme-dev");
       mkdirSync(poolDir, { recursive: true });
       markerRepo(poolDir, "on-deck-1");
       setRepoRoots([root]);
 
       const repos = getKnownRepos();
-      const candidate = byName(repos, "assured-dev/on-deck-1");
+      const candidate = byName(repos, "acme-dev/on-deck-1");
       expect(candidate).toBeDefined();
-      expect(candidate?.dataDir).toBe(repoDataDir("assured-dev__on-deck-1"));
-      expect(candidate?.dataDir.startsWith(repoDataDir("assured-dev") + "/")).toBe(false);
+      expect(candidate?.dataDir).toBe(repoDataDir("acme-dev__on-deck-1"));
+      expect(candidate?.dataDir.startsWith(repoDataDir("acme-dev") + "/")).toBe(false);
 
       // A preset-save-style mkdirSync against it must create nothing under
       // the pool repo's own data dir.
       mkdirSync(candidate!.dataDir, { recursive: true });
-      expect(existsSync(join(repoDataDir("assured-dev"), "on-deck-1"))).toBe(false);
+      expect(existsSync(join(repoDataDir("acme-dev"), "on-deck-1"))).toBe(false);
 
       rmSync(root, { recursive: true, force: true });
     });
@@ -737,7 +737,7 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
       const realChild = markerRepo(join(tmpdir(), "rt-symskip-real-child-" + Date.now()), "realchild");
       symlinkSync(realChild, join(root, "linked-child"));
 
-      const poolDir = join(root, "assured-dev");
+      const poolDir = join(root, "acme-dev");
       mkdirSync(poolDir, { recursive: true });
       const realGrandchild = markerRepo(join(tmpdir(), "rt-symskip-real-grand-" + Date.now()), "realgrand");
       symlinkSync(realGrandchild, join(poolDir, "linked-slot"));
@@ -749,8 +749,8 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
 
       const repos = getKnownRepos();
       expect(byName(repos, "linked-child")).toBeUndefined();
-      expect(byName(repos, "assured-dev/linked-slot")).toBeUndefined();
-      expect(byName(repos, "assured-dev/real-slot")).toBeDefined();
+      expect(byName(repos, "acme-dev/linked-slot")).toBeUndefined();
+      expect(byName(repos, "acme-dev/real-slot")).toBeDefined();
 
       rmSync(join(root, "linked-child"), { force: true });
       rmSync(join(poolDir, "linked-slot"), { force: true });

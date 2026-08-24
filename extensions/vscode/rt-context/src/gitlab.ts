@@ -3,7 +3,7 @@ import { parseRemoteUrl } from './branchParser';
 
 /**
  * Regex to find a Linear-style identifier (TEAM-NNN) in a string.
- * Used for parsing MR titles like "[CV-1287] Add damage photos".
+ * Used for parsing MR titles like "[ACME-1287] Add damage photos".
  */
 const LINEAR_ID_IN_TEXT = /\b([A-Za-z]+-\d+)\b/;
 

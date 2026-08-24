@@ -203,7 +203,7 @@ export async function settingsSet(args: string[]): Promise<void> {
   // `--team` is the CLI surface for `setSetting`'s team selection (see
   // write.ts's "Team selection"). It only means anything at team scope; taking
   // it silently at user/machine scope would let `rt settings set … --scope
-  // user --team claimview` look like it targeted a team store while writing
+  // user --team acme` look like it targeted a team store while writing
   // the user one.
   const team = flagValue(args, "--team");
   if (args.includes("--team")) {

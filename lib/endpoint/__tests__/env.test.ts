@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { applyArgInject, collectPreservedKeys, renderEnvTemplates, runRoleHook } from "../env.ts";
 
-const alloc = { role: "adjuster", port: 5001, refs: { backend: { port: 10400, url: "http://localhost:10400", running: true } } };
+const alloc = { role: "portal", port: 5001, refs: { backend: { port: 10400, url: "http://localhost:10400", running: true } } };
 
 describe("renderEnvTemplates", () => {
   test("renders ${port} and ${roles.X.port}; unknown refs render empty and warn-free", () => {
@@ -30,7 +30,7 @@ describe("applyArgInject", () => {
 describe("runRoleHook", () => {
   test("round-trips JSON and fails open on a broken hook", async () => {
     const echo = await runRoleHook(`bun -e 'const i=await new Response(Bun.stdin.stream()).json(); console.log(JSON.stringify({env:{HOOKED: String(i.port)}}))'`,
-      { worktree: "/wt/a", role: "adjuster", port: 5001, refs: {}, env: {} });
+      { worktree: "/wt/a", role: "portal", port: 5001, refs: {}, env: {} });
     expect(echo).toEqual({ env: { HOOKED: "5001" } });
     expect(await runRoleHook("false", { worktree: "/w", role: "r", port: 1, refs: {}, env: {} })).toBeNull();
     expect(await runRoleHook("sleep 30", { worktree: "/w", role: "r", port: 1, refs: {}, env: {} }, 200)).toBeNull();

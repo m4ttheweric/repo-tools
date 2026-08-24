@@ -18,7 +18,7 @@ const CONN: SdmConnection = {
   tier: "staging",
   production: false,
   reasonSuggestion: "investigating staging data",
-  db: { database: "assured", schema: "public" },
+  db: { database: "acme", schema: "public" },
   standingAccess: false,
 };
 
@@ -43,7 +43,7 @@ describe("buildConnectionsJson", () => {
         connected: true,
         address: "127.0.0.1:15432",
         defaultReason: "investigating staging data",
-        db: { database: "assured", schema: "public" },
+        db: { database: "acme", schema: "public" },
       },
     ]);
   });
@@ -81,7 +81,7 @@ const TARGET: GuidedTarget = {
   key: "sdm:stg-rw",
   label: "staging read-write",
   sdmResource: "stg-rw",
-  db: { database: "assured", schema: "public" },
+  db: { database: "acme", schema: "public" },
 };
 
 describe("buildConnectJson", () => {
@@ -95,8 +95,8 @@ describe("buildConnectJson", () => {
     expect(json).toEqual({
       ok: true,
       address: "127.0.0.1:15432",
-      url: "postgres://postgres@127.0.0.1:15432/assured",
-      database: "assured",
+      url: "postgres://postgres@127.0.0.1:15432/acme",
+      database: "acme",
       schema: "public",
       verified: true,
       latencyMs: 812,

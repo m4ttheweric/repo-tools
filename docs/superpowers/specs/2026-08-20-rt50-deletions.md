@@ -27,7 +27,7 @@ brew in MAT-383 phase 2, not before).
   code, agent, workspace, hooks, plugin. `park` 11 hits (ruled removed anyway),
   `doppler` 13 (verb-only removal stands). The 352 `validate` hits are the top-level
   `rt validate` command, not `rt plugin validate`.
-- No installed Claude plugin pack (assured, claimview, mattstack, official) references
+- No installed Claude plugin pack (acme, acme, mattstack, official) references
   `rt hooks` or `rt plugin`.
 - **RULED (Matt, 2026-08-20 mid-session): `rt hooks` and `rt plugin` are hard keeps.**
   Their commands, daemon verbs (hooks:status/repair/watch), hooks-guard, and the

@@ -13,7 +13,7 @@ function writeStore(file: string, obj: unknown): void {
 
 describe("enrichmentSkeleton", () => {
   test("contains every resource name as a JSON key", () => {
-    const names = ["assured-alpha-staging", "assured-beta-qa-prod"];
+    const names = ["acme-alpha-staging", "acme-beta-qa-prod"];
     const skeleton = enrichmentSkeleton(names);
     for (const name of names) {
       expect(skeleton).toContain(JSON.stringify(name));
@@ -21,7 +21,7 @@ describe("enrichmentSkeleton", () => {
   });
 
   test("parses as valid JSON after stripping JSONC comments", () => {
-    const names = ["assured-alpha-staging", "assured-beta-qa-prod"];
+    const names = ["acme-alpha-staging", "acme-beta-qa-prod"];
     const parsed = JSON.parse(stripJsonc(enrichmentSkeleton(names)));
     expect(Object.keys(parsed)).toEqual(names);
     for (const name of names) {

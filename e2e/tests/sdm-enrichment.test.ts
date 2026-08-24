@@ -21,8 +21,8 @@ if [ "$1" = "status" ]; then
   exit 0
 fi
 if [ "$1" = "access" ] && [ "$2" = "catalog" ]; then
-  echo "rs-abc123def0  assured-alpha-staging  cluster-x  postgres  env=staging"
-  echo "rs-def456abc1  assured-beta-qa-prod  cluster-y  postgres  env=prod"
+  echo "rs-abc123def0  acme-alpha-staging  cluster-x  postgres  env=staging"
+  echo "rs-def456abc1  acme-beta-qa-prod  cluster-y  postgres  env=prod"
   exit 0
 fi
 exit 0
@@ -50,7 +50,7 @@ describe("sdm enrichment", () => {
     expect(res.exitCode).toBe(0);
     expect(existsSync(enrichmentPath)).toBe(true);
     const contents = readFileSync(enrichmentPath, "utf8");
-    expect(contents).toContain('"assured-alpha-staging"');
-    expect(contents).toContain('"assured-beta-qa-prod"');
+    expect(contents).toContain('"acme-alpha-staging"');
+    expect(contents).toContain('"acme-beta-qa-prod"');
   });
 });

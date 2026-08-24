@@ -64,7 +64,7 @@ const runsSubcommands: Record<string, CommandNode> = {
     fn: "runsAbandon",
     args: [
       { name: "Run id", type: "text", placeholder: "20260822-134012-x4x2", hint: "Run to reconcile" },
-      { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo the run belongs to; omit to scan" },
+      { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo the run belongs to; omit to scan" },
       { name: "Reason", flag: "--reason", type: "text", placeholder: "no owning process", hint: "Recorded against the run" },
     ],
   },
@@ -634,7 +634,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "manageTracking",
         aliases: ["events"],
         args: [
-          { name: "Repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json (omit to list; repo alone opens the interactive editor)" },
+          { name: "Repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json (omit to list; repo alone opens the interactive editor)" },
           { name: "Level", type: "text", placeholder: "live|poll|off", hint: "live (events + poll), poll (5-min only), off (on-demand only); omit to pick interactively" },
           { name: "Caches", type: "text", placeholder: "branches project-mrs", hint: "Cache kinds, space-separated: branches, project-mrs, discussions (default: branches)" },
         ],
@@ -726,7 +726,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "settingsGet",
         args: [
           { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (see rt settings list)" },
-          { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs and ${repoRoot}" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs and ${repoRoot}" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable output" },
         ],
       },
@@ -738,8 +738,8 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (must be migrated:true)" },
           { name: "Value", type: "text", placeholder: "{\"onDeck\":3}", hint: "JSON(C) value" },
           { name: "Scope", flag: "--scope", type: "select", hint: "Which store to write into", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.user.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.team.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/user/local/<machine-key>/settings.local.jsonc" }] },
-          { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
-          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "Which team's local store to write, for --scope team (only needed when several are cloned)" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which team's local store to write, for --scope team (only needed when several are cloned)" },
         ],
       },
       list: {
@@ -747,7 +747,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/settings-keys.ts",
         fn: "settingsList",
         args: [
-          { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable output" },
         ],
       },
@@ -757,7 +757,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "settingsExplain",
         args: [
           { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (see rt settings list)" },
-          { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs" },
         ],
       },
       linear: {
@@ -939,7 +939,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
           { name: "Key", type: "text", placeholder: "linearApiKey", hint: "Key name within the domain" },
-          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "Write to this team's N-recipient store instead of your personal one" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Write to this team's N-recipient store instead of your personal one" },
           { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the value from stdin instead of a no-echo prompt (scripting)" },
         ],
       },
@@ -949,7 +949,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "secretsList",
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
-          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "List from this team's store instead of your personal one" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "List from this team's store instead of your personal one" },
         ],
       },
       rotate: {
@@ -959,7 +959,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board) — omit with --team to re-encrypt every domain file instead" },
           { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain — omit with --team to re-encrypt every domain file instead" },
-          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "Rotate in this team's N-recipient store instead of your personal one" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Rotate in this team's N-recipient store instead of your personal one" },
           { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting) — ignored by --team with no domain/key, which re-encrypts instead of taking a value" },
         ],
       },
@@ -1009,7 +1009,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/skills.ts",
         fn: "skillsCompile",
         args: [
-          { name: "Pack", flag: "--pack", type: "text", placeholder: "claimview", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Verb", flag: "--verb", type: "text", placeholder: "watch-ci", hint: "Compile only this verb (repeatable); omit for every verb in the roster" },
           { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would be written without touching disk" },
@@ -1021,7 +1021,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/skills.ts",
         fn: "skillsCheck",
         args: [
-          { name: "Pack", flag: "--pack", type: "text", placeholder: "claimview", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Verb", flag: "--verb", type: "text", placeholder: "watch-ci", hint: "Check only this verb (repeatable); omit for every compiled verb" },
           { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
         ],
@@ -1032,7 +1032,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "skillsSurface",
         args: [
           { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name> --public|--internal | apply; omit for the fzf palette" },
-          { name: "Pack", flag: "--pack", type: "text", placeholder: "claimview", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
         ],
       },
@@ -1105,7 +1105,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/setup.ts",
         fn: "setupPlan",
         args: [
-          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "Which cloned team to plan for" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to plan for" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" },
         ],
       },

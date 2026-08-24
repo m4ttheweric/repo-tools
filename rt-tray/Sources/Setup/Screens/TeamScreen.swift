@@ -45,7 +45,7 @@ struct TeamScreen: View {
 
     private var createFields: some View {
         Form {
-            TextField("Team name", text: $model.teamName, prompt: Text("Assured")).accessibilityIdentifier(AXID.teamCreateName)
+            TextField("Team name", text: $model.teamName, prompt: Text("Acme")).accessibilityIdentifier(AXID.teamCreateName)
             LabeledContent("Slug") { Text(model.slugPreview.isEmpty ? "—" : model.slugPreview).foregroundStyle(.secondary) }
             Toggle("Others will join later", isOn: $model.othersWillJoin).accessibilityIdentifier(AXID.teamCreateOthers)
             if model.ghHandle != nil {

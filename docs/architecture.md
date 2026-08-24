@@ -5,7 +5,7 @@ the governing documents do **not** live in any one of them. They live in Linear,
 in the `mattstack` workspace.
 
 Read these before proposing anything about rt's scope, mr-board's shape, glance,
-gitq, or the assured skills:
+gitq, or the acme skills:
 
 - **[distribution roadmap: status for agents](https://linear.app/mattstack/document/distribution-roadmap-status-for-agents-017c24a92fcf)**
   The live status snapshot: phases with per-phase state, the settled rulings

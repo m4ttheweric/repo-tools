@@ -3,7 +3,7 @@
  *
  * Enrichment strategy:
  *  1. Extract Linear ID from branch name (exact segment match → prefix match)
- *  2. If no ID found, fall back to GitLab MR title (e.g. "[CV-1287] Add photos")
+ *  2. If no ID found, fall back to GitLab MR title (e.g. "[ACME-1287] Add photos")
  *  3. Fetch ticket title + status from Linear GraphQL API
  *  4. Cache results in memory (5-minute TTL)
  *
@@ -103,8 +103,8 @@ const PREFIX_RE = /^([A-Za-z]+-\d+)[-_]/;
 
 /**
  * Extract a Linear ticket identifier from a git branch name.
- * Pass 1: exact segment match (e.g. "feature/cv-1287" → "CV-1287")
- * Pass 2: prefix match (e.g. "feature/cv-1287-add-photos" → "CV-1287")
+ * Pass 1: exact segment match (e.g. "feature/acme-1287" → "ACME-1287")
+ * Pass 2: prefix match (e.g. "feature/acme-1287-add-photos" → "ACME-1287")
  */
 export function extractLinearId(branch: string): string | null {
   const segments = branch.split("/");
@@ -183,8 +183,8 @@ export async function fetchTicketsBatch(
 
   // Build a single query with aliased fields:
   //   query Batch {
-  //     i0: issue(id: "CV-1403") { id identifier title description url branchName state { name color } }
-  //     i1: issue(id: "CV-1386") { id identifier title description url branchName state { name color } }
+  //     i0: issue(id: "ACME-1403") { id identifier title description url branchName state { name color } }
+  //     i1: issue(id: "ACME-1386") { id identifier title description url branchName state { name color } }
   //     ...
   //   }
   const fields = identifiers.map(
@@ -315,7 +315,7 @@ const SEARCH_ISSUES_FOR_BRANCH_QUERY = `
  * assignee, any state. Powers the branch picker's live-search fallback so you
  * can branch off a ticket that isn't in your own active list (a teammate's
  * ticket, an unassigned one, or one in another team). Matches identifiers
- * ("CV-2256"), bare numbers ("2256"), and title/description text.
+ * ("ACME-2256"), bare numbers ("2256"), and title/description text.
  */
 export async function searchTickets(apiKey: string, term: string): Promise<LinearTicket[]> {
   const trimmed = term.trim();
@@ -341,7 +341,7 @@ interface WorkflowState {
 /**
  * Pick the workflow state to move a ticket into when it's claimed ("In Progress").
  *
- * Linear lets many workflow states share `type: "started"` (e.g. ClaimView has
+ * Linear lets many workflow states share `type: "started"` (e.g. Acme has
  * "In Progress", "Code Review", "Ready for Merge", … all typed `started`). The
  * raw API order is arbitrary, so picking the *first* started state can land a
  * freshly-claimed ticket in "Ready for Merge". The entry point into the started

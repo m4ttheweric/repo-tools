@@ -1026,7 +1026,7 @@ function formatFlatHint(t: TaggedEntry): string {
   const { entry, repoName } = t;
   const age = formatAge(entry.ts);
   const worktreeName = entry.worktree ? basename(entry.worktree) : "";
-  // Prefer worktree name over repo name when they differ (e.g. "assured-wktree-2").
+  // Prefer worktree name over repo name when they differ (e.g. "acme-wktree-2").
   const where = worktreeName || repoName;
   const sub =
     entry.pkg && entry.pkg !== "." && entry.pkg !== "root"

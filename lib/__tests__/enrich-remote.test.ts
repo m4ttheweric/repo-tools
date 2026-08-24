@@ -9,8 +9,8 @@ import { isGitLabRemote, parseRemoteUrl } from "../enrich.ts";
 
 describe("isGitLabRemote", () => {
   test("true for gitlab.com remotes (ssh + https)", () => {
-    expect(isGitLabRemote("git@gitlab.com:assured/assured-dev.git")).toBe(true);
-    expect(isGitLabRemote("https://gitlab.com/assured/assured-dev.git")).toBe(true);
+    expect(isGitLabRemote("git@gitlab.com:acme/acme-dev.git")).toBe(true);
+    expect(isGitLabRemote("https://gitlab.com/acme/acme-dev.git")).toBe(true);
   });
 
   test("true for self-hosted gitlab.* hosts", () => {

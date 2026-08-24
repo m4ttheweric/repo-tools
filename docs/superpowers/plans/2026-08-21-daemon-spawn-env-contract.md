@@ -4,7 +4,7 @@
 
 **Goal:** Make daemon-spawned subprocesses inherit the PATH the daemon resolves, so worktree ready steps stop failing with `env: node: No such file or directory` under launchd, and clean up the host config and observability gaps the failure exposed.
 
-**Architecture:** Four repo changes and two host-config changes. In the repo: `runCapture` passes the live `process.env` to `Bun.spawn` (the actual fix), the output-tail helper moves into `lib/subprocess.ts` so freshen can log *why* a ready step failed, `resolveUserPath` probes for `node`, and provision's `create-failed` refusal names any on-deck trees held by retry backoff. On the host: `~/.zshenv`'s fnm bootstrap stops depending on inherited PATH, and the 147k-entry fnm multishell leak gets pruned. Tasks 1–4 are independent of each other; 5–6 are host-only; 7 unwedges the pool and resumes the parked CV-2899 work.
+**Architecture:** Four repo changes and two host-config changes. In the repo: `runCapture` passes the live `process.env` to `Bun.spawn` (the actual fix), the output-tail helper moves into `lib/subprocess.ts` so freshen can log *why* a ready step failed, `resolveUserPath` probes for `node`, and provision's `create-failed` refusal names any on-deck trees held by retry backoff. On the host: `~/.zshenv`'s fnm bootstrap stops depending on inherited PATH, and the 147k-entry fnm multishell leak gets pruned. Tasks 1–4 are independent of each other; 5–6 are host-only; 7 unwedges the pool and resumes the parked ACME-2899 work.
 
 **Tech Stack:** Bun (runtime + `bun test`), TypeScript, zsh dotfiles, launchd/SMAppService.
 
@@ -576,7 +576,7 @@ git commit -m "RT: spec + plan for the daemon spawn-env contract"
 - [ ] **Step 1: Record the failure this fixes**
 
 ```bash
-cd /Users/matt/Documents/GitHub/assured/hogwarts
+cd /Users/matt/Documents/GitHub/acme/web
 env -i HOME="$HOME" SHELL=/bin/zsh PATH=/usr/bin:/bin:/usr/sbin:/sbin \
   /bin/zsh -lc 'command -v node || echo "NODE-MISSING"'
 ```
@@ -625,10 +625,10 @@ fi
 
 - [ ] **Step 4: Verify the minimal-PATH case now resolves the pinned version**
 
-`/Users/matt/Documents/GitHub/assured/hogwarts/.nvmrc` pins `22.22.0`, while fnm's `default` alias is `v24.19.0` — so this also proves the per-repo version file wins over the default.
+`/Users/matt/Documents/GitHub/acme/web/.nvmrc` pins `22.22.0`, while fnm's `default` alias is `v24.19.0` — so this also proves the per-repo version file wins over the default.
 
 ```bash
-cd /Users/matt/Documents/GitHub/assured/hogwarts
+cd /Users/matt/Documents/GitHub/acme/web
 env -i HOME="$HOME" SHELL=/bin/zsh PATH=/usr/bin:/bin:/usr/sbin:/sbin \
   /bin/zsh -lc 'node --version'
 ```
@@ -648,7 +648,7 @@ Expected: `v24.19.0` (the `default` alias, via the fallback).
 - [ ] **Step 6: Verify interactive shells are unchanged**
 
 ```bash
-cd /Users/matt/Documents/GitHub/assured/hogwarts && zsh -ic 'node --version'
+cd /Users/matt/Documents/GitHub/acme/web && zsh -ic 'node --version'
 ```
 
 Expected: `v24.19.0` — the `default` alias, *not* the repo's pinned 22.22.0. That is pre-existing and correct to leave alone: `.zshrc` runs `fnm env` at startup but only calls `fnm use` from its `chpwd` hook, so an interactive shell started inside a repo keeps the default until the first `cd`. Both the old and new `.zshenv` blocks gate on `[[ ! -o interactive ]]`, so this path is untouched by the change — the assertion here is "unchanged", not a particular version.
@@ -710,21 +710,21 @@ The `[[ $pid == <-> ]]` test (zsh numeric-glob) skips any name that is not `<pid
 
 ```bash
 ls -1 ~/.local/state/fnm_multishells/ | wc -l
-cd /Users/matt/Documents/GitHub/assured/hogwarts && zsh -ic 'node --version'
+cd /Users/matt/Documents/GitHub/acme/web && zsh -ic 'node --version'
 ```
 
 Expected: a much smaller count, and `v22.22.0` — the interactive shell re-creates its own entry on demand, so pruning cannot break it.
 
 ---
 
-### Task 7: unwedge the pool and resume CV-2899
+### Task 7: unwedge the pool and resume ACME-2899
 
 **Files:**
 - No file changes. Runtime operations plus one edit to the parked unit-of-work record.
 
 **Interfaces:**
 - Consumes: Tasks 1–6. Task 1 is what actually fixes the spawn; Tasks 5–6 harden the host.
-- Produces: a provisioned worktree and branch for CV-2899, and `stages.provision = "done"` with `branch` and `worktree` written into `~/.mattstack/work/cv-2899/uow.json`.
+- Produces: a provisioned worktree and branch for ACME-2899, and `stages.provision = "done"` with `branch` and `worktree` written into `~/.mattstack/work/acme-2899/uow.json`.
 
 - [ ] **Step 1: Restart the daemon onto the fixed source**
 
@@ -750,9 +750,9 @@ Expected: a line including `"hasNode":true` alongside `"hasPnpm":true` — the f
 Naming a tree bypasses its backoff (`worktree-reconciler.ts:795` skips the `nextRetryAt` check when a specific tree is requested). The tree is a positional argument, not a flag.
 
 ```bash
-rt worktree freshen --repo assured-dev cho
-rt worktree freshen --repo assured-dev dean
-rt worktree freshen --repo assured-dev dudley
+rt worktree freshen --repo acme-dev cho
+rt worktree freshen --repo acme-dev dean
+rt worktree freshen --repo acme-dev dudley
 ```
 
 Expected: `✓ <name> freshened` for each. A `pnpm install` failure here means Task 1 did not take effect — check the daemon restarted onto the new source before going further.
@@ -761,33 +761,33 @@ Expected: `✓ <name> freshened` for each. A `pnpm install` failure here means T
 
 ```bash
 jq -r '.trees[] | select(.state=="on-deck") | "\(.name) nextRetryAt=\(.nextRetryAt // "none")"' \
-  ~/.mattstack/rt/repos/assured-dev/worktrees.json
+  ~/.mattstack/rt/repos/acme-dev/worktrees.json
 ```
 
 Expected: `nextRetryAt=none` for all three — `freshenOne` deletes it on success (`worktree-reconciler.ts:762`).
 
-- [ ] **Step 5: Provision CV-2899**
+- [ ] **Step 5: Provision ACME-2899**
 
 ```bash
-rt worktree provision --repo assured-dev --ticket cv-2899 \
+rt worktree provision --repo acme-dev --ticket acme-2899 \
   --title "Keep Emma Chat in URL when Navigating to Other Vehicles" --json
 ```
 
-Expected: `{"ok":true, ... "data":{"path":"...","branch":"cv-2899-...","wasOnDeck":true}}`. `wasOnDeck:true` confirms it claimed a pool tree rather than cold-creating.
+Expected: `{"ok":true, ... "data":{"path":"...","branch":"acme-2899-...","wasOnDeck":true}}`. `wasOnDeck:true` confirms it claimed a pool tree rather than cold-creating.
 
 - [ ] **Step 6: Write the provision result into the unit-of-work record**
 
 The record is parked at `stages.provision = "failed"`. Substitute the `branch` and `worktree` values the previous step returned:
 
 ```bash
-cd ~/.mattstack/work/cv-2899
+cd ~/.mattstack/work/acme-2899
 jq --arg branch '<branch from step 5>' --arg worktree '<data.path from step 5>' \
   '.branch = $branch | .worktree = $worktree | .stages.provision = "done"' uow.json > t \
   && mv t uow.json
 cat uow.json
 ```
 
-Expected: `branch` and `worktree` populated, `stages.provision` = `"done"`. The `claimview:work` pipeline resumes at the `plan` stage from there.
+Expected: `branch` and `worktree` populated, `stages.provision` = `"done"`. The `acme:work` pipeline resumes at the `plan` stage from there.
 
 ---
 

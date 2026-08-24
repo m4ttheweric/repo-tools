@@ -13,7 +13,7 @@ lane.
 
 - `rt home init`: provision a private GitHub repo (`gh`), make `~/.mattstack` the
   clone. Adoption: today `~/.mattstack` is NOT a repo; `user/` is the
-  mattstack-prefs clone and `teams/claimview` a team clone. Ruling needed→taken:
+  mattstack-prefs clone and `teams/acme` a team clone. Ruling needed→taken:
   mattstack-prefs' history and content fold INTO the home repo as `user/` (its
   standalone remote retires); team clones stay independent nested clones,
   gitignored by the home repo.
@@ -120,8 +120,8 @@ mr-board, gitq. Key facts cited inline.
 | `rt.repoTracking` (repo-tracking.json) | migrate | machine | ruled; keys are repo names not identities; per-tick reads → live |
 | `rt.runaway` (runaway-config.json) | migrate | machine | thresholds; boot-only-ish, keep restart hint |
 | `rt.workspacePrefs` (workspace-prefs.json) | migrate | machine | absolute dirs; rt nav reader |
-| `rt.sync` (repos/assured-dev/sync.json) | migrate | team.repo | autoResolve rules are repo conventions |
-| `rt.variations` (variations.json) | migrate | team.repo | pgr-qa variation is team knowledge |
+| `rt.sync` (repos/acme-dev/sync.json) | migrate | team.repo | autoResolve rules are repo conventions |
+| `rt.variations` (variations.json) | migrate | team.repo | acme-db-qa variation is team knowledge |
 | `rt.presets` (presets/*.json) | migrate | user.repo | personal run presets; SHAPE CHANGE: dir-of-files → `{ "<name>": {entries} }` |
 | `rt.dopplerTemplate` (doppler-template.yaml) | migrate | team.repo | YAML→JSONC conversion; reconciler reads via resolver afterward |
 | `rt.branchNaming` (branch-naming.json) | migrate value, KEEP file | team.repo | rt has zero readers; file stays for the VS Code ext until it follows (ext reads by repo NAME, not identity — its port is a separate change) |

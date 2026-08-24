@@ -99,7 +99,7 @@ const MY_TODO_ISSUES_QUERY = `
 `;
 
 /**
- * Fetch a Linear issue by its identifier (e.g. "CV-1287").
+ * Fetch a Linear issue by its identifier (e.g. "ACME-1287").
  * Falls back to search if direct lookup fails.
  */
 export async function fetchTicket(apiKey: string, identifier: string): Promise<LinearTicket | null> {
@@ -160,8 +160,8 @@ export async function fetchTicketsBatch(
 
   // Build a single query with aliased fields:
   //   query Batch {
-  //     i0: issue(id: "CV-1403") { id identifier title url branchName state { name } }
-  //     i1: issue(id: "CV-1386") { id identifier title url branchName state { name } }
+  //     i0: issue(id: "ACME-1403") { id identifier title url branchName state { name } }
+  //     i1: issue(id: "ACME-1386") { id identifier title url branchName state { name } }
   //     ...
   //   }
   const fields = identifiers.map(

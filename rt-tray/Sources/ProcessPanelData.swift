@@ -37,7 +37,7 @@ struct SystemProcess: Codable, Identifiable {
         command.components(separatedBy: " › ").last ?? command
     }
 
-    // Worktree directory name ("/Users/x/gh/assured/ron" → "ron")
+    // Worktree directory name ("/Users/x/gh/acme/worker" → "ron")
     var worktreeName: String {
         guard let worktree else { return "" }
         return worktree.components(separatedBy: "/").last ?? worktree

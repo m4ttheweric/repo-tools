@@ -32,8 +32,8 @@ Four authored stores, one resolver, no materialized artifacts for our own tools:
 {
   "rt.llm": { "provider": "ollama", "model": "qwen3" },        // global key
   "repos": {
-    "gitlab.com/assured/assured-dev": {                         // repo IDENTITY, never a path
-      "rt.roles": { "backend": { "pool": [{ "from": 10400, "to": 10463 }], "preserveEnv": ["POSTGRES_URL", "FEATURE_FLAG_*"], "env": { "PORT": "${port}" }, "hook": "bun ${team:claimview}/packs/claimview/scripts/rt-dev-hook.ts" } },
+    "gitlab.com/acme/acme-dev": {                         // repo IDENTITY, never a path
+      "rt.roles": { "backend": { "pool": [{ "from": 10400, "to": 10463 }], "preserveEnv": ["POSTGRES_URL", "FEATURE_FLAG_*"], "env": { "PORT": "${port}" }, "hook": "bun ${team:acme}/packs/acme/scripts/rt-dev-hook.ts" } },
       "rt.intercepts": [ /* same shape as lib/endpoint/config.ts today */ ]
     }
   }
@@ -48,7 +48,7 @@ Expansion replaces ONLY the closed set `${repoRoot}`, `${worktree}`, `${home}`, 
 
 ## Repo identity
 
-Identity = normalized remote: `host/path` lowercase-host form (`gitlab.com/assured/assured-dev`); strip protocol, credentials, trailing `.git`; unify `ssh://` and `git@host:` forms. **Only recognized host forms normalize; a local-path remote (they exist in the wild: repos.json has two) yields identity null**, meaning repo sections are unreachable and only global scopes + legacy apply — honest degrade. Verified: all worktrees of a repo share `remote.origin.url`, so identity is checkout-location-independent (the requirement that started this).
+Identity = normalized remote: `host/path` lowercase-host form (`gitlab.com/acme/acme-dev`); strip protocol, credentials, trailing `.git`; unify `ssh://` and `git@host:` forms. **Only recognized host forms normalize; a local-path remote (they exist in the wild: repos.json has two) yields identity null**, meaning repo sections are unreachable and only global scopes + legacy apply — honest degrade. Verified: all worktrees of a repo share `remote.origin.url`, so identity is checkout-location-independent (the requirement that started this).
 
 **Derivation is never a sync spawn.** `deriveRepoIdentity` is async (Bun.spawn capture), memoized per repo path in-process. `getSetting` itself takes only a pre-derived `repoIdentity` string — callers supply it from data in hand: `buildInterceptRules` already captures each repo's remote (zero extra spawns), `run.ts` has `rule.repoRemote`, daemon endpoint handlers derive once per claim via the async helper (repoName → path via the repo index → memoized remote capture). The intercept shim's match path keeps using the local rules cache and never derives anything.
 
@@ -96,10 +96,10 @@ Readers keep exported signatures where possible; internals swap.
 
 ## Data migration + machine hygiene (orchestrator steps, not implementer code)
 
-1. Team store seeded in the claimview zone: assured-dev section with `rt.roles` (hook via `${team:claimview}`), `rt.intercepts`, worktree defaults COPYING THE LIVE VALUES (`onDeck: 3`, the two ready steps) — a partial seed would shadow the legacy fields it omits under deep merge; committed + pushed.
-2. User store seeded in mattstack-prefs: assured-dev `rt.worktrees` override (`namePool`); committed + pushed.
+1. Team store seeded in the acme zone: acme-dev section with `rt.roles` (hook via `${team:acme}`), `rt.intercepts`, worktree defaults COPYING THE LIVE VALUES (`onDeck: 3`, the two ready steps) — a partial seed would shadow the legacy fields it omits under deep merge; committed + pushed.
+2. User store seeded in mattstack-prefs: acme-dev `rt.worktrees` override (`namePool`); committed + pushed.
 3. Machine store scaffolded with a header comment.
-4. After the resolver proves green end to end: REMOVE the migrated keys (`roles`, `intercepts`, `worktrees`, plus the dead `ports`) from `~/.mattstack/rt/repos/assured-dev/config.json` — under deep merge a stale legacy FIELD keeps applying invisibly, so key removal is part of the migration, not optional hygiene. Before deleting, DIFF the resolved output against the legacy file field-by-field and port any legacy-only field into the appropriate store (empty set expected for assured-dev today, but verify, never assume). Then run `rt intercept install` (fresh rules from the stores) and restart the daemon (new handlers + readers).
+4. After the resolver proves green end to end: REMOVE the migrated keys (`roles`, `intercepts`, `worktrees`, plus the dead `ports`) from `~/.mattstack/rt/repos/acme-dev/config.json` — under deep merge a stale legacy FIELD keeps applying invisibly, so key removal is part of the migration, not optional hygiene. Before deleting, DIFF the resolved output against the legacy file field-by-field and port any legacy-only field into the appropriate store (empty set expected for acme-dev today, but verify, never assume). Then run `rt intercept install` (fresh rules from the stores) and restart the daemon (new handlers + readers).
 5. The attic step: archive the trace's DEAD/LEGACY-SUSPECT files to a dated tarball, then delete (list in the trace report; switchboard token keys in secrets.json are KEPT — foreign-owned).
 
 ## Out of scope (wave 1)

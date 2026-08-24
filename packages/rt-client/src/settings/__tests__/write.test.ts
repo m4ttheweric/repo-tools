@@ -14,8 +14,8 @@ import { dirname, join } from "path";
 import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../paths.ts";
 import { setSetting } from "../write.ts";
 
-const IDENTITY = "gitlab.com/assured/assured-dev";
-const TEAM = "claimview";
+const IDENTITY = "gitlab.com/acme/acme-dev";
+const TEAM = "acme";
 const OTHER_TEAM = "otherteam";
 
 describe("settings/write", () => {

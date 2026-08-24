@@ -42,7 +42,7 @@ describe("rt runs formatting", () => {
     const text = formatRunDetail({
       run: run as any,
       stages: [{ name: "plan", status: "done", attempt: 1, started_at: 1, ended_at: 2 }],
-      fields: [{ key: "ticket", value: "CV-1", produced_by: "plan", at: 1 }],
+      fields: [{ key: "ticket", value: "ACME-1", produced_by: "plan", at: 1 }],
       decisions: [{ contract: "execution-strategy@1", scope: "run", selection: '{"tier":"direct-tdd"}', decided_by: "stage-plan", decided_at: 1 }],
       schemaAhead: false,
     } as any);
@@ -54,12 +54,12 @@ describe("rt runs formatting", () => {
   test("formatRunDetail shows a failed stage's reason and detail_path", () => {
     const text = formatRunDetail({
       run: run as any,
-      stages: [{ name: "gates", status: "failed", attempt: 1, started_at: 1, ended_at: 2, reason: "cvi-islands assertion failed", detail_path: "/tmp/gates.log" }],
+      stages: [{ name: "gates", status: "failed", attempt: 1, started_at: 1, ended_at: 2, reason: "qa-islands assertion failed", detail_path: "/tmp/gates.log" }],
       fields: [],
       decisions: [],
       schemaAhead: false,
     } as any);
-    expect(text).toContain("cvi-islands assertion failed");
+    expect(text).toContain("qa-islands assertion failed");
     expect(text).toContain("/tmp/gates.log");
   });
 });

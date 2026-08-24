@@ -128,14 +128,14 @@ describe("connectResourceWith", () => {
       { ok: false, output: "error loading datasources" },
       { ok: true, output: "connected" },
     ]);
-    const r = await connectResourceWith(run, "assured-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
+    const r = await connectResourceWith(run, "acme-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
     expect(r.ok).toBe(true);
     expect(calls()).toBe(2);
   });
 
   test("gives up after exhausting retries on a persistent transient failure", async () => {
     const { run, calls } = mkRun([{ ok: false, output: "error loading datasources" }]);
-    const r = await connectResourceWith(run, "assured-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
+    const r = await connectResourceWith(run, "acme-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
     expect(r.ok).toBe(false);
     expect(r.error).toContain("error loading datasources");
     expect(calls()).toBe(3); // initial attempt + two retries
@@ -143,7 +143,7 @@ describe("connectResourceWith", () => {
 
   test("does not retry a non-transient failure", async () => {
     const { run, calls } = mkRun([{ ok: false, output: "access denied" }]);
-    const r = await connectResourceWith(run, "assured-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
+    const r = await connectResourceWith(run, "acme-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
     expect(r.ok).toBe(false);
     expect(r.code).toBe("no-access");
     expect(calls()).toBe(1);
@@ -151,7 +151,7 @@ describe("connectResourceWith", () => {
 
   test("treats 'already connected' output as success without retrying", async () => {
     const { run, calls } = mkRun([{ ok: false, output: "already connected" }]);
-    const r = await connectResourceWith(run, "assured-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
+    const r = await connectResourceWith(run, "acme-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
     expect(r.ok).toBe(true);
     expect(calls()).toBe(1);
   });

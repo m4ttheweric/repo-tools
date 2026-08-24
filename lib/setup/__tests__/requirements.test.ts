@@ -5,11 +5,11 @@ import { parseRequirements, readPackRequirements } from "../requirements.ts";
 describe("parseRequirements", () => {
   test("parses tools, keeps known integrations, and reports an unknown one", () => {
     const result = parseRequirements(
-      "claimview",
+      "acme",
       '{ "tools":[{"name":"doppler","floor":"3.0.0","why":"secrets","install":{"brew":"dopplerhq/cli/doppler"},"connect":{"integration":"doppler"}}], "integrations":["gitlab","linear","bogus"] }',
     );
 
-    expect(result.pack).toBe("claimview");
+    expect(result.pack).toBe("acme");
     expect(result.tools).toEqual([
       { name: "doppler", floor: "3.0.0", why: "secrets", install: { brew: "dopplerhq/cli/doppler" }, connect: { integration: "doppler" } },
     ]);
@@ -24,7 +24,7 @@ describe("parseRequirements", () => {
 
   test("strips // and /* */ comments and trailing commas before parsing", () => {
     const result = parseRequirements(
-      "claimview",
+      "acme",
       `{
         // a pack-side note
         "tools": [],
@@ -36,7 +36,7 @@ describe("parseRequirements", () => {
   });
 
   test("a tool declaring an unknown connect.integration is kept but the drop is reported, naming the tool", () => {
-    const result = parseRequirements("claimview", '{ "tools":[{"name":"widget","why":"builds things","connect":{"integration":"bogus"}}], "integrations":[] }');
+    const result = parseRequirements("acme", '{ "tools":[{"name":"widget","why":"builds things","connect":{"integration":"bogus"}}], "integrations":[] }');
 
     expect(result.tools).toEqual([{ name: "widget", why: "builds things" }]);
     expect(result.error).toContain("widget");
@@ -44,93 +44,93 @@ describe("parseRequirements", () => {
   });
 
   test("a malformed tool entry is skipped and the error names the pack and the tool's index", () => {
-    const result = parseRequirements("claimview", '{ "tools":[{"name":"ok","why":"fine"}, {"name":"missing-why"}], "integrations":[] }');
+    const result = parseRequirements("acme", '{ "tools":[{"name":"ok","why":"fine"}, {"name":"missing-why"}], "integrations":[] }');
 
     expect(result.tools).toEqual([{ name: "ok", why: "fine" }]);
-    expect(result.error).toContain("claimview");
+    expect(result.error).toContain("acme");
     expect(result.error).toContain("tools[1]");
   });
 
   test("connect.verb rejects non-string elements rather than passing them through", () => {
-    const result = parseRequirements("claimview", '{ "tools":[{"name":"widget","why":"x","connect":{"verb":[1,2],"label":"Run it"}}], "integrations":[] }');
+    const result = parseRequirements("acme", '{ "tools":[{"name":"widget","why":"x","connect":{"verb":[1,2],"label":"Run it"}}], "integrations":[] }');
     expect(result.tools).toEqual([{ name: "widget", why: "x" }]);
   });
 
   test("connect.verb with all-string elements is kept", () => {
-    const result = parseRequirements("claimview", '{ "tools":[{"name":"widget","why":"x","connect":{"verb":["run","it"],"label":"Run it"}}], "integrations":[] }');
+    const result = parseRequirements("acme", '{ "tools":[{"name":"widget","why":"x","connect":{"verb":["run","it"],"label":"Run it"}}], "integrations":[] }');
     expect(result.tools).toEqual([{ name: "widget", why: "x", connect: { verb: ["run", "it"], label: "Run it" } }]);
   });
 });
 
 describe("readPackRequirements", () => {
   test("discovers requirements.jsonc under teams/<slug>/**", () => {
-    const root = "/fake-home/.mattstack/teams/claimview";
+    const root = "/fake-home/.mattstack/teams/acme";
     const p = fakeProbes({
       home: "/fake-home",
       dirs: {
         [root]: ["mattstack"],
         [`${root}/mattstack`]: ["packs"],
-        [`${root}/mattstack/packs`]: ["claimview"],
-        [`${root}/mattstack/packs/claimview`]: ["requirements.jsonc"],
+        [`${root}/mattstack/packs`]: ["acme"],
+        [`${root}/mattstack/packs/acme`]: ["requirements.jsonc"],
       },
       files: {
-        [`${root}/mattstack/packs/claimview/requirements.jsonc`]: '{ "tools":[], "integrations":["github"] }',
+        [`${root}/mattstack/packs/acme/requirements.jsonc`]: '{ "tools":[], "integrations":["github"] }',
       },
     });
 
-    const result = readPackRequirements(p, "claimview");
+    const result = readPackRequirements(p, "acme");
     expect(result).toHaveLength(1);
-    expect(result[0]!.pack).toBe("claimview");
+    expect(result[0]!.pack).toBe("acme");
     expect(result[0]!.integrations).toEqual(["github"]);
   });
 
   test("returns [] when the team has no packs", () => {
     const p = fakeProbes({ home: "/fake-home" });
-    expect(readPackRequirements(p, "claimview")).toEqual([]);
+    expect(readPackRequirements(p, "acme")).toEqual([]);
   });
 
   test("an unreadable file yields one error entry naming the file, not a silent skip", () => {
-    const root = "/fake-home/.mattstack/teams/claimview";
+    const root = "/fake-home/.mattstack/teams/acme";
     const p = fakeProbes({
       home: "/fake-home",
       dirs: {
         [root]: ["mattstack"],
         [`${root}/mattstack`]: ["packs"],
-        [`${root}/mattstack/packs`]: ["claimview"],
-        [`${root}/mattstack/packs/claimview`]: ["requirements.jsonc"],
+        [`${root}/mattstack/packs`]: ["acme"],
+        [`${root}/mattstack/packs/acme`]: ["requirements.jsonc"],
       },
       // No matching entry in `files` — readFile(path) returns null, simulating a permission error or a broken symlink.
     });
 
-    const result = readPackRequirements(p, "claimview");
+    const result = readPackRequirements(p, "acme");
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({ pack: "claimview", tools: [], integrations: [], error: expect.stringContaining("requirements.jsonc") });
+    expect(result[0]).toEqual({ pack: "acme", tools: [], integrations: [], error: expect.stringContaining("requirements.jsonc") });
   });
 
   test("skips .git and node_modules rather than descending into them", () => {
-    const root = "/fake-home/.mattstack/teams/claimview";
+    const root = "/fake-home/.mattstack/teams/acme";
     const p = fakeProbes({
       home: "/fake-home",
       dirs: {
         [root]: ["mattstack", ".git", "node_modules"],
         [`${root}/mattstack`]: ["packs"],
-        [`${root}/mattstack/packs`]: ["claimview"],
-        [`${root}/mattstack/packs/claimview`]: ["requirements.jsonc"],
+        [`${root}/mattstack/packs`]: ["acme"],
+        [`${root}/mattstack/packs/acme`]: ["requirements.jsonc"],
       },
       files: {
-        [`${root}/mattstack/packs/claimview/requirements.jsonc`]: '{ "tools":[], "integrations":[] }',
+        [`${root}/mattstack/packs/acme/requirements.jsonc`]: '{ "tools":[], "integrations":[] }',
         [`${root}/.git/config`]: "[core]",
         [`${root}/node_modules/pkg/requirements.jsonc`]: '{ "tools":[], "integrations":["github"] }',
       },
     });
 
-    const result = readPackRequirements(p, "claimview");
+    const result = readPackRequirements(p, "acme");
     expect(result).toHaveLength(1);
-    expect(result[0]!.pack).toBe("claimview");
+    expect(result[0]!.pack).toBe("acme");
   });
 
   test("sorts and dedupes discovered packs by name", () => {
-    const root = "/fake-home/.mattstack/teams/claimview";
+    const root = "/fake-home/.mattstack/teams/acme";
     const p = fakeProbes({
       home: "/fake-home",
       dirs: {
@@ -149,7 +149,7 @@ describe("readPackRequirements", () => {
       },
     });
 
-    const result = readPackRequirements(p, "claimview");
+    const result = readPackRequirements(p, "acme");
     expect(result.map((r) => r.pack)).toEqual(["alpha", "zeta"]);
     // First discovery wins on a name collision — packs/alpha, not packs2/alpha.
     expect(result[0]!.integrations).toEqual(["github"]);

@@ -32,8 +32,8 @@ describe("loadEnrichment", () => {
   const write = (s: string) => { const p = join(mkdtempSync(join(tmpdir(), "enr-")), "e.jsonc"); writeFileSync(p, s); return p; };
 
   test("store unowned: reads a JSONC map from the file", () => {
-    const p = write(`{ "assured-pgr-qa": { "label": "progressive qa", "db": { "schema": "assured" } } }`);
-    expect(loadEnrichment(p)).toEqual({ "assured-pgr-qa": { label: "progressive qa", db: { schema: "assured" } } });
+    const p = write(`{ "acme-db-qa": { "label": "acme qa", "db": { "schema": "acme" } } }`);
+    expect(loadEnrichment(p)).toEqual({ "acme-db-qa": { label: "acme qa", db: { schema: "acme" } } });
   });
   test("store unowned, missing file -> {}", () => { expect(loadEnrichment(join(tmpdir(), "nope-x.jsonc"))).toEqual({}); });
   test("store unowned, corrupt file -> {} (never throws)", () => { expect(loadEnrichment(write("{ not json"))).toEqual({}); });
@@ -41,16 +41,16 @@ describe("loadEnrichment", () => {
   test("store-owned: store wins wholesale, the file is never consulted", () => {
     const p = write(`{ "file-only": { "label": "from file" } }`);
     writeStore(teamSettingsPath("acme"), {
-      "rt.sdmEnrichment": { "assured-pgr-qa": { label: "from store", tier: "gold" } },
+      "rt.sdmEnrichment": { "acme-db-qa": { label: "from store", tier: "gold" } },
     });
 
-    expect(loadEnrichment(p)).toEqual({ "assured-pgr-qa": { label: "from store", tier: "gold" } });
+    expect(loadEnrichment(p)).toEqual({ "acme-db-qa": { label: "from store", tier: "gold" } });
   });
 
   test("store shape validation: a non-object store value is refused, falling back to the file", () => {
-    const p = write(`{ "assured-pgr-qa": { "label": "from file" } }`);
+    const p = write(`{ "acme-db-qa": { "label": "from file" } }`);
     writeStore(teamSettingsPath("acme"), { "rt.sdmEnrichment": ["nope"] });
 
-    expect(loadEnrichment(p)).toEqual({ "assured-pgr-qa": { label: "from file" } });
+    expect(loadEnrichment(p)).toEqual({ "acme-db-qa": { label: "from file" } });
   });
 });

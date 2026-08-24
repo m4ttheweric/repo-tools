@@ -6,7 +6,7 @@ Personal developer CLI built with Bun. Compiled to a standalone binary via `bun 
 
 rt is one piece of a plan spanning five repos, so the governing design docs are
 not in any single repo. Before proposing anything about rt's scope, mr-board,
-glance, gitq, or the assured skills, read `docs/architecture.md` for the links.
+glance, gitq, or the acme skills, read `docs/architecture.md` for the links.
 
 ## Settings architecture
 

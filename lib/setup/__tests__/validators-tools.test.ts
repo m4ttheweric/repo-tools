@@ -480,9 +480,9 @@ describe("toolRows — team-declared tool.team.<name>", () => {
 
 describe("toolRows — pack.<pack>", () => {
   test("plugin list contains pack@... -> ready, installed", async () => {
-    const reqs: PackRequirements[] = [{ pack: "claimview", integrations: [], tools: [] }];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("claimview@assured\nother@team\n") : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.claimview");
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("acme@acme\nother@team\n") : ok());
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.acme");
     expect(r.status).toBe("ready");
     expect(r.detail).toBe("installed");
     expect(r.required).toBe(false);
@@ -490,31 +490,31 @@ describe("toolRows — pack.<pack>", () => {
   });
 
   test("plugin list missing the pack -> missing, installed-by-Install detail", async () => {
-    const reqs: PackRequirements[] = [{ pack: "claimview", integrations: [], tools: [] }];
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
     const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("other@team\n") : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.claimview");
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.acme");
     expect(r.status).toBe("missing");
     expect(r.detail).toBe("installed by Install (plugins.install)");
   });
 
   test("a shorter pack name never matches as a substring of a longer one (L11)", async () => {
     const reqs: PackRequirements[] = [{ pack: "view", integrations: [], tools: [] }];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("claimview@assured\n") : ok());
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("acme@acme\n") : ok());
     const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.view");
     expect(r.status).toBe("missing");
   });
 
   test("claude missing (127) -> skipped", async () => {
-    const reqs: PackRequirements[] = [{ pack: "claimview", integrations: [], tools: [] }];
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
     const exec: ExecScript = (argv) => (argv[0] === "claude" ? missing("claude") : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.claimview");
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.acme");
     expect(r.status).toBe("skipped");
   });
 
   test("claude plugin list times out -> error, not skipped", async () => {
-    const reqs: PackRequirements[] = [{ pack: "claimview", integrations: [], tools: [] }];
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
     const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" ? { code: 124, stdout: "", stderr: "" } : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.claimview");
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.acme");
     expect(r.status).toBe("error");
   });
 
@@ -528,10 +528,10 @@ describe("toolRows — pack.<pack>", () => {
 
   test("one row per requirement entry", async () => {
     const reqs: PackRequirements[] = [
-      { pack: "claimview", integrations: [], tools: [] },
+      { pack: "acme", integrations: [], tools: [] },
       { pack: "other-pack", integrations: [], tools: [] },
     ];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" ? ok("claimview@assured\n") : ok());
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" ? ok("acme@acme\n") : ok());
     const rows = await toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS);
     expect(rows.filter((row) => row.id.startsWith("pack."))).toHaveLength(2);
   });

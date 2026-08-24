@@ -16,7 +16,7 @@ import { execSync, execFileSync } from "child_process";
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface BackupBranch {
-  /** Full ref name (e.g. "rt-backup/rebase/cv-1403/2026-04-09T00-27-40") */
+  /** Full ref name (e.g. "rt-backup/rebase/acme-1403/2026-04-09T00-27-40") */
   ref: string;
   /** Operation that created the backup (rebase, reset, manual) */
   operation: string;
@@ -137,7 +137,7 @@ function getCurrentBranchOrThrow(cwd: string): string {
 }
 
 /**
- * Parse a backup ref like "rt-backup/rebase/cv-1403/2026-04-09T00-27-40"
+ * Parse a backup ref like "rt-backup/rebase/acme-1403/2026-04-09T00-27-40"
  * into its components.
  */
 function parseBackupRef(

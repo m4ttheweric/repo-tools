@@ -8,7 +8,7 @@ import { runInterception } from "../run.ts";
 
 /** Merges `identity`'s roles into the shared team store rather than clobbering earlier entries — every test in this describe shares one per-test HOME. */
 function writeRepoRoles(identity: string, roles: unknown): void {
-  const path = teamSettingsPath("claimview");
+  const path = teamSettingsPath("acme");
   mkdirSync(join(path, ".."), { recursive: true });
   let existing: { repos?: Record<string, unknown> } = {};
   try {

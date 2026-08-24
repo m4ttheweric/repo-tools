@@ -16,7 +16,7 @@ import { closeStateDb, setKvValue } from "../../state/index.ts";
 import { loadEndpointConfig } from "../config.ts";
 
 const IDENTITY = "gitlab.com/fake/endpoint-repo";
-const TEAM = "claimview";
+const TEAM = "acme";
 
 describe("loadEndpointConfig", () => {
   const origHome = process.env.HOME;
@@ -138,7 +138,7 @@ describe("loadEndpointConfig", () => {
             backend: {
               pool: [{ from: 10400, to: 10401 }],
               env: { PORT: "${port}" },
-              hook: "bun ${team:claimview}/packs/claimview/scripts/rt-dev-hook.ts",
+              hook: "bun ${team:acme}/packs/acme/scripts/rt-dev-hook.ts",
             },
           },
           "rt.intercepts": [
@@ -152,7 +152,7 @@ describe("loadEndpointConfig", () => {
     expect(cfg.roles.backend!.pool).toEqual([10400, 10401]);
     expect(cfg.roles.backend!.env).toEqual({ PORT: "${port}" }); // domain template survives
     expect(cfg.roles.backend!.hook).toBe(
-      `bun ${join(teamsDir(), TEAM)}/packs/claimview/scripts/rt-dev-hook.ts`,
+      `bun ${join(teamsDir(), TEAM)}/packs/acme/scripts/rt-dev-hook.ts`,
     );
     expect(cfg.intercepts).toEqual([
       { command: "doppler", matches: [{ cwdGlob: "apps/backend{,/**}", role: "backend" }] },
