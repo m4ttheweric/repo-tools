@@ -1194,9 +1194,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ### Task 9: The skill and the Stop hook
 
 **Files:**
-- Create: `skills/rt-chat/SKILL.md`
-- Modify: `skills/rt-chat/SKILL.md` — document installing it into `~/.claude/settings.json`
-- Test: `commands/__tests__/chat.test.ts` — one test for the shim's exit-code branching
+- Create: `skills/rt-chat/SKILL.md` — the only file this task produces
 
 **Interfaces:**
 - Consumes: the CLI from Tasks 7–8.
