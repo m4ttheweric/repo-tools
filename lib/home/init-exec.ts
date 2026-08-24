@@ -82,7 +82,14 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog): Promise<vo
     case "commitInitialUserRepo": {
       log("committing the initial user/ tree");
       await run(exec, ["git", "-C", "user", "add", "-A"]);
-      await run(exec, ["git", "-C", "user", "commit", "-m", "initial home repo"]);
+      // `-c commit.gpgsign=false`: a global signing config with an unusable
+      // key fails this commit outright (exit 128), taking down an init that
+      // needs no signature. An empty tree is not a failure either — a
+      // resumed init can reach here with everything already committed.
+      const result = await exec.run(["git", "-c", "commit.gpgsign=false", "-C", "user", "commit", "-m", "initial home repo"]);
+      if (result.code !== 0 && !/nothing to commit/i.test(`${result.stdout}\n${result.stderr}`)) {
+        throw new StepFailed(result.stderr);
+      }
       return;
     }
     case "writeGitignore": {

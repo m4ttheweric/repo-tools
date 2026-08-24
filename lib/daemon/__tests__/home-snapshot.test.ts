@@ -1562,6 +1562,9 @@ describe("startHomeSnapshot — local-only remote state", () => {
       async attachRemote(): Promise<void> {
         execFileSync("git", ["remote", "add", "origin", originDir], { cwd: repoDir });
       },
+      async attachNonOriginRemote(): Promise<void> {
+        execFileSync("git", ["remote", "add", "upstream", originDir], { cwd: repoDir });
+      },
       execCalls: () => calls,
       commits: () => broadcastLog.filter((b) => b.type === "home:snapshot"),
       broadcasts: (type: string) => broadcastLog.filter((b) => b.type === type).map((b) => b.data),
@@ -1577,6 +1580,34 @@ describe("startHomeSnapshot — local-only remote state", () => {
       expect(h.commits().length).toBeGreaterThan(0);
       expect(h.execCalls().filter((c) => c[1] === "push")).toEqual([]);
       expect(h.broadcasts("home:push-failed")).toEqual([]);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("a non-origin remote never arms a push: the push itself is origin-only", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    try {
+      await h.writeFile("user/a", "1");
+      await h.runCycles(1);
+      await h.attachNonOriginRemote();
+      await h.janitorTick();
+      expect(h.execCalls().filter((c) => c[1] === "push")).toEqual([]);
+      expect(h.broadcasts("home:push-failed")).toEqual([]);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("a watch cycle that commits nothing spawns no hand-attached-remote probes", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    try {
+      await h.attachRemote();
+      await h.janitorTick(); // pushes the seed commit, clearing the unpushed state
+      const before = h.execCalls().length;
+      await h.runCycles(1); // nothing changed on disk
+      const during = h.execCalls().slice(before);
+      expect(during.filter((c) => c[1] === "remote" || c[1] === "symbolic-ref" || c[1] === "rev-list")).toEqual([]);
     } finally {
       h.stop();
     }

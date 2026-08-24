@@ -61,7 +61,18 @@ async function homeInitRun(ctx: ApplyContext): Promise<StepOutcome> {
   }
 
   const stderrHead = result.stderr.trim().split("\n")[0] ?? "";
-  return { state: "failed", detail: stderrHead, remedy: "Run `gh auth login`, then Retry" };
+  return { state: "failed", detail: stderrHead, remedy: homeInitRemedy(result.stderr) };
+}
+
+/**
+ * `rt home init` reaches a remote only when a url was resolved; the local-only
+ * path (`git init`/`add`/`commit`) contacts no host at all, so `gh auth login`
+ * is reserved for stderr that actually names an auth/clone failure.
+ */
+function homeInitRemedy(stderr: string): string {
+  return /authenticat|could not read username|permission denied|access denied|repository not found|403 forbidden|invalid username or (?:password|token)|gh auth login/i.test(stderr)
+    ? "Run `gh auth login`, then Retry"
+    : "Check the error above, then Retry";
 }
 
 async function homeRestoreRun(ctx: ApplyContext): Promise<StepOutcome> {

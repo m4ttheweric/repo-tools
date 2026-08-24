@@ -18,10 +18,16 @@ export async function isGitRepo(exec: Probes["exec"], cwd: string): Promise<bool
   return result.code === 0 && result.stdout.trim() === "true";
 }
 
-/** True only when `git remote` succeeds and lists at least one name. An exec failure (missing git, timeout) also reads as "no remote" — same end result as a healthy repo with none configured. */
+/** `origin` specifically, not any remote: every push and every ref comparison downstream is origin-only, so an `upstream`-only repo has nothing to push to. An exec failure (missing git, timeout) also reads as "no remote" — same end result as a healthy repo with none configured. */
 export async function hasRemote(exec: Probes["exec"], cwd: string): Promise<boolean> {
   const result = await exec(["git", "remote"], { cwd, timeoutMs: GIT_TIMEOUT_MS });
-  return result.code === 0 && result.stdout.trim().length > 0;
+  return result.code === 0 && result.stdout.split("\n").some((name) => name.trim() === "origin");
+}
+
+/** True only when HEAD resolves — false on an unborn branch, where nothing is versioned at all. */
+export async function hasCommits(exec: Probes["exec"], cwd: string): Promise<boolean> {
+  const result = await exec(["git", "rev-parse", "--verify", "-q", "HEAD"], { cwd, timeoutMs: GIT_TIMEOUT_MS });
+  return result.code === 0;
 }
 
 export type OriginPushState = { kind: "no-ref" } | { kind: "ahead"; count: number } | { kind: "up-to-date"; committedAt: Date | null } | { kind: "unknown" };
@@ -34,10 +40,8 @@ export type OriginPushState = { kind: "no-ref" } | { kind: "ahead"; count: numbe
  * unpushed (an absent ref is FATAL to `rev-list`, not empty), so its
  * existence is checked before it is ever compared against.
  *
- * An unborn branch (no commit has ever landed — e.g. `git commit` failing
- * outright with no `user.name`/`user.email` configured) still prints its
- * branch name via `symbolic-ref`, exit 0 — folded into "no-ref" here rather
- * than a distinct case, since either way nothing has been confirmed pushed.
+ * An unborn branch still prints a branch name via `symbolic-ref`, exit 0, so
+ * HEAD is verified separately; it folds into "no-ref".
  */
 export async function originPushState(exec: Probes["exec"], cwd: string): Promise<OriginPushState> {
   const branchResult = await exec(["git", "symbolic-ref", "--short", "HEAD"], { cwd, timeoutMs: GIT_TIMEOUT_MS });
