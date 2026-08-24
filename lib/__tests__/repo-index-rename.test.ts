@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "os";
 import { join } from "path";
 import { repoDataDir, rtDir } from "../rt-paths.ts";
-import { closeStateDb, getStateDb, setKvValue } from "../state/index.ts";
+import { closeStateDb, getStateDb, listKvValues, setKvValue } from "../state/index.ts";
 import {
   getKnownRepos,
   loadRepoIndexEntries,
@@ -183,7 +183,7 @@ describe("repo-index — rename drift (RT-60)", () => {
           reason: "duplicate",
           keptAs: "deck",
           // This retired name never had a data dir, so there was nothing to carry.
-          data: { moved: [], merged: [], refused: [], removedDir: false },
+          data: { moved: [], merged: [], refused: [], removedDir: false, registry: "none" },
         },
       ]);
       expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["deck"]);
@@ -313,7 +313,7 @@ describe("repo-index — rename drift (RT-60)", () => {
 
     test("a retired name with no data dir is a no-op", () => {
       const result = migrateRepoData("repo-tools", "rt");
-      expect(result).toEqual({ moved: [], merged: [], refused: [], removedDir: false });
+      expect(result).toEqual({ moved: [], merged: [], refused: [], removedDir: false, registry: "none" });
     });
   });
 
@@ -359,6 +359,88 @@ describe("repo-index — rename drift (RT-60)", () => {
 
       expect(existsSync(join(repoDataDir("local-apps"), "run-history.jsonl"))).toBe(true);
       expect(existsSync(join(repoDataDir("deck"), "run-history.jsonl"))).toBe(false);
+    });
+  });
+  // ─── the worktree registry travels with the name (RT-60) ───────────────────
+
+  describe("worktree registry migration", () => {
+    const WT_NS = "worktree-registry";
+    const tree = (path: string) => [{ path, branch: "main", kind: "main" }];
+
+    test("moves the retired name's registry onto the live name", () => {
+      setKvValue(WT_NS, "repo-tools", tree("/x/repo-tools"));
+
+      const result = migrateRepoData("repo-tools", "rt");
+
+      expect(result.registry).toBe("moved");
+      expect(listKvValues(WT_NS)["rt"]).toEqual(tree("/x/repo-tools"));
+      expect(Object.keys(listKvValues(WT_NS))).toEqual(["rt"]);
+    });
+
+    test("refuses when the live name already has one — both hold real claim state", () => {
+      setKvValue(WT_NS, "repo-tools", tree("/x/retired"));
+      setKvValue(WT_NS, "rt", tree("/x/live"));
+
+      const result = migrateRepoData("repo-tools", "rt");
+
+      expect(result.registry).toBe("refused");
+      expect(listKvValues(WT_NS)["rt"]).toEqual(tree("/x/live"));
+      expect(listKvValues(WT_NS)["repo-tools"]).toEqual(tree("/x/retired"));
+    });
+
+    test("no registry under the retired name is 'none', not a failure", () => {
+      expect(migrateRepoData("repo-tools", "rt").registry).toBe("none");
+    });
+
+    test("--dry-run reports the move without performing it", () => {
+      setKvValue(WT_NS, "repo-tools", tree("/x/repo-tools"));
+
+      expect(migrateRepoData("repo-tools", "rt", { dryRun: true }).registry).toBe("moved");
+
+      expect(Object.keys(listKvValues(WT_NS))).toEqual(["repo-tools"]);
+    });
+
+    test("prune carries the registry before evicting the row — the reconciler keeps finding it", () => {
+      const dir = realRepo("repo-tools");
+      indexRepoAt("repo-tools", dir, 1_000);
+      indexRepoAt("rt", dir, 2_000);
+      setKvValue(WT_NS, "repo-tools", tree(dir));
+
+      const removed = pruneRepoIndex();
+
+      expect(removed.find((r) => r.repoName === "repo-tools")?.data?.registry).toBe("moved");
+      expect(listKvValues(WT_NS)["rt"]).toEqual(tree(dir));
+      expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["rt"]);
+    });
+
+    test("a refused registry KEEPS the index row — eviction is what makes a leftover unreachable", () => {
+      const dir = realRepo("repo-tools");
+      indexRepoAt("repo-tools", dir, 1_000);
+      indexRepoAt("rt", dir, 2_000);
+      setKvValue(WT_NS, "repo-tools", tree("/x/retired"));
+      setKvValue(WT_NS, "rt", tree("/x/live"));
+
+      const removed = pruneRepoIndex();
+      const dup = removed.find((r) => r.repoName === "repo-tools");
+
+      expect(dup?.retained).toBe(true);
+      expect(loadRepoIndexEntries().map((e) => e.repoName).sort()).toEqual(["repo-tools", "rt"]);
+      expect(listKvValues(WT_NS)["repo-tools"]).toEqual(tree("/x/retired"));
+    });
+
+    test("a refused FILE also keeps the row", () => {
+      const dir = realRepo("repo-tools");
+      indexRepoAt("repo-tools", dir, 1_000);
+      indexRepoAt("rt", dir, 2_000);
+      for (const name of ["repo-tools", "rt"]) {
+        mkdirSync(repoDataDir(name), { recursive: true });
+        writeFileSync(join(repoDataDir(name), "presets.json"), name);
+      }
+
+      const removed = pruneRepoIndex();
+
+      expect(removed.find((r) => r.repoName === "repo-tools")?.retained).toBe(true);
+      expect(loadRepoIndexEntries().map((e) => e.repoName).sort()).toEqual(["repo-tools", "rt"]);
     });
   });
 });
