@@ -14,6 +14,12 @@ and notarizes **mattstack.app**, creates the GitHub release from the committed
 CI owns the release object. Your job is docs, notes, the tag, verifying CI, and
 deploying rt.cool.
 
+A release also republishes the Claude Code plugin catalog: the workflow's first
+step runs `scripts/release/marketplace.sh`, pushing `marketplace/` to
+`m4ttstack/mattstack-marketplace`, which `plugins.install` adds on every machine
+rt sets up. It needs the `MARKETPLACE_TOKEN` secret, but only on a release where
+that catalog actually changed — an unchanged one is a no-op that pushes nothing.
+
 > **rt no longer ships as standalone tarballs.** The `rt-darwin-arm64-*.tar.gz`
 > / `rt-darwin-x64-*.tar.gz` artifacts this skill was written around are gone —
 > `rt` is now the binary embedded at `Contents/MacOS/rt` inside the app bundle,
@@ -85,7 +91,10 @@ left as-is or reduced to a pointer here.
 
    To exercise the pipeline without publishing, run it via `workflow_dispatch`:
    it builds, notarizes, and clean-rooms exactly as a tag does, but stamps
-   `v0.0.0-ci<run>`, skips the release, and uploads `out/` as an artifact.
+   `v0.0.0-ci<run>`, skips the release, validates the marketplace catalog
+   without pushing it, and uploads `out/` as an artifact. Use this before every
+   real tag — the pipeline's defects have consistently only been visible once
+   the step before them started working.
 
 9. **Deploy rt.cool.** Run `bash scripts/deploy-docs.sh` (builds the site, deploys
    to Cloudflare Pages via wrangler). Needs wrangler auth (`wrangler login` or

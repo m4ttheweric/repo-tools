@@ -9,7 +9,7 @@ Every run's deliverable is `artifacts/<run-id>/` (screenshots, logs,
 
 | Layer | Verifies | Cannot verify / not automated |
 |---|---|---|
-| (a) `scripts/e2e-cleanroom.sh` (same recipe as the release workflow's "Clean-room install + verify" step) | artifact extracts; `rt --post-install` installs `~/.local/bin/rt`, the app, the daemon config; `rt verify --ci` exit 0 | anything needing a GUI session or approval (daemon boot is a warn under CI), Gatekeeper (no quarantine on CI downloads) |
+| (a) `scripts/e2e-cleanroom.sh` (same recipe as the release workflow's "Clean-room install + verify" step) | artifact extracts; Gatekeeper accepts the app with `com.apple.quarantine` stamped on the way a browser download would; `rt --post-install` installs `~/.local/bin/rt`, the app, the daemon config; `rt verify --ci` exit 0; every bundled helper runs from inside the signed bundle | anything needing a GUI session or approval (daemon boot is a warn under CI) |
 | (b) `run/walkthrough.sh` (Tart clone of a golden image) | real DMG → /Applications → first launch under Gatekeeper; five setup screens; FDA + Login Items + Notifications dances; `rt verify --json` green; tray.sock `/version`; Sparkle vN→vN+1 and daemon restart; screenshots per screen | the **"Background Items Added" notification** (a banner, not a dialog — it is neither clicked nor asserted; the Login Items row is asserted through `GET /services` / `rt setup status` instead); the **FDA relaunch** is driven (the app's own "Relaunch" button) but the OS applying FDA is asserted only via the app's probe row; notarisation/stapling of Matt's signing (a locally built DMG is unnotarised → run with `--no-quarantine`, reported in the ledger) |
 | (c) `run/second-user.sh` | layer (a) under a second real macOS user on Matt's Mac, with a live GUI session so SMAppService registration is real | nothing about the five screens; the user must be created and logged in once by Matt |
 
@@ -48,21 +48,19 @@ guest — not the DMG the `install` phase copies into `/Applications`; driving
 the *installed* bundle from XCUITest is future L3-side work.
 
 A few other things worth knowing before running this layer:
-- **fzf**: confirmed not provisioned into any golden or clean-room guest, and
-  no closer exists yet (no `Contents/Helpers`, no `fzf`, no `scripts/release/`
-  bundling step). `rt verify` fails the fzf check at critical severity on a
-  Homebrew-less guest, so **`--scenario headless` currently fails at the
-  `screens` and `assert` phases** — it is not an end-to-end-green path today.
-  The intended closer is L4 bundling fzf under `Contents/Helpers/` with a
-  `deps.lock`; until it lands, every clean-room run and golden-image
-  provisioning trips this.
-- **`scripts/e2e-cleanroom.sh --allow-existing-install`**: pre-L1, `rt
-  --post-install` launches the app unconditionally and discards post-install
-  args, so this flag is only safe on a disposable target (inside the VM, or
-  the smoke user `second-user.sh` drives) — never on a real, already-used
-  account. The guard is merge order: L1's post-install rewrite (team-of-one,
-  `--no-launch` under CI) must land before `--allow-existing-install` is used
-  outside the VM/smoke-user paths.
+- **Homebrew-only tools no longer block a brew-less guest.** Every tool `rt
+  verify` needs now ships inside the bundle under `Contents/Helpers/` per
+  `deps.lock` — fzf, jq, bun, node, gh, glab, gitq, age-keygen, sops, and
+  fast-browser — and `check-bundle.sh` asserts each one actually *runs* from
+  inside the signed bundle. `--scenario headless` is no longer gated on fzf.
+  It has still never been run end to end against a golden image; that is the
+  outstanding verification, not a known failure.
+- **`scripts/e2e-cleanroom.sh --allow-existing-install`** is still only safe
+  on a disposable target (inside the VM, or the smoke user `second-user.sh`
+  drives) — never on a real, already-used account, where it would install
+  over a live setup. `rt --post-install` does now parse `--non-interactive`,
+  `--team-of-one`, and `--no-launch`, so the flags the clean room passes are
+  no longer inert.
 - These vm scripts are not wired into any repo CI gate yet. `bash
   check-vm-scripts.sh` (below) is the whole offline check today; run it by
   hand.
