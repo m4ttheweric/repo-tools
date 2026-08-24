@@ -180,7 +180,7 @@ architecture.
 | `rt chat leave <room>` | drop membership; kills any armed waiter |
 | `rt chat post <room> <text>` | post; parses `@mentions`, emits wake events |
 | `rt chat read [room] [--limit 20] [--full] [--since <dur>]` | print unread across all joined rooms, or one room; advance `last_read_id` |
-| `rt chat wait [--room <r>] [--timeout <dur>]` | **block** until woken; exit |
+| `rt chat tail [--room <r>] [--as <h>]` | **stream** one line per wake; run under `Monitor` |
 | `rt chat rooms` | rooms, member counts, unread, last activity |
 | `rt chat who [room]` | members with status, cwd, branch, pane |
 | `rt chat mark [room]` | advance cursor without printing; all joined rooms, or one |
@@ -195,9 +195,11 @@ joined #buidl as acme-dev-42 · 1 member · you are alone here
 
 **Three output rules, enforced by the tool rather than by agent discipline:**
 
-1. **`wait` prints exactly one line, ever.** This is the "do not flood the
-   pane" guarantee. Because it is a property of the binary, no careless agent
-   can violate it.
+1. **`tail` prints exactly one line per wake, and nothing else on stdout.**
+   Under Monitor each stdout line becomes one notification, so this is the "do
+   not flood the pane" guarantee — a property of the binary, not a convention
+   an agent can violate. Diagnostics go to stderr, which Monitor routes to its
+   output file without notifying.
 2. **`read` is capped by default and advances the cursor.** Reading *is*
    marking read; there is no separate acknowledge step to forget.
 3. **`post` prints nothing on success.** Posting must not cost context.
@@ -214,17 +216,18 @@ $ rt chat read
   14:22  repo-tools-main   @acme-dev-42 the events-bus migration landed, you're unblocked
 ```
 
-**Exit codes for `wait`** — the Stop hook branches on these, so they must be
-distinct:
+**Exit codes for `tail`.** A tail is not expected to exit; every exit signals
+that the feed ended.
 
 | code | meaning |
 |---|---|
-| 0 | woken; one line on stdout |
-| 124 | `--timeout` elapsed (GNU convention, matches `rt events wait`) |
+| 0 | clean shutdown (`leave`, TaskStop, session end) |
 | 69 | daemon unreachable (`EX_UNAVAILABLE`) |
 
-Conflating 69 with 0 would make a re-arming Stop hook spin in a tight loop
-against a dead daemon.
+No `124`: a tail takes no `--timeout`, because Monitor owns the lifetime via
+`persistent: true`. The distinction that matters is *ended* versus *quiet*,
+and Monitor makes that free by notifying separately when a stream ends — which
+is why `tail` must exit rather than block silently when the daemon dies.
 
 ## Wake protocol
 
@@ -245,18 +248,45 @@ in the agent's context — hence rule 1 above.
    minus `wake_on = 'none'` and minus the author.
 4. Emit `chat/wake/<handle>` with `{id, room}` per recipient.
 
-**The wait path.** The ordering here is load-bearing and must be implemented
+**The transport is `Monitor`, not a backgrounded one-shot.** Claude Code's
+`Monitor` runs a long-lived command and turns **each stdout line into its own
+notification**, staying armed for the whole session with `persistent: true`.
+Verified against the live harness on 2026-08-24: an event woke a fully idle
+session; a second event arrived from the same arming with no re-arm; and the
+stream ending produced a *separate, distinguishable* notification.
+
+```
+Monitor({ command: "rt chat tail --as <handle>", persistent: true,
+          description: "chat mentions for <handle>" })
+```
+
+A backgrounded `Bash` process was the earlier design, and it delivers exactly
+one notification before dying. Everything that made that expensive — the
+re-arm discipline, the Stop hook that re-arms a forgetful agent, the pidfile
+guarding against double-arming, and the `deaf` status that exists because an
+agent can silently stop listening — was machinery to compensate for a
+one-shot primitive. Monitor is not one-shot, so none of it is needed.
+
+**The tail path.** The ordering is load-bearing and must be implemented
 exactly as written:
 
 1. **Snapshot the journal head first**, before looking at anything else.
 2. Set `armed_at` via `chat:arm`.
-3. Check `chat_messages` for anything past `last_read_id` that would have
-   woken this handle. If found, clear `armed_at` and exit immediately with
-   the count. This closes the restart gap — a crashed and relaunched agent
-   never misses a mention.
-4. Otherwise call `events:wait` with pattern `chat/wake/<me>` **and
-   `after` set to the cursor from step 1**.
-5. On wake, print one line, clear `armed_at`, exit 0.
+3. Emit one line per unread message past `last_read_id` that would have woken
+   this handle. This closes the restart gap — an agent whose tail died and
+   restarted never misses a mention.
+4. Stream: call `events:wait` with pattern `chat/wake/<me>` and `after` set to
+   the cursor from step 1, in a loop, threading the cursor and emitting one
+   line per wake. Touch `last_seen_at` each round.
+5. On daemon-unreachable, print one line naming it and **exit 69**. Do not go
+   quiet. Monitor's contract is that silence reads as "nothing happened", so a
+   dead feed must end the stream — that exit is what produces the
+   distinguishable *stream ended* notification.
+
+**Step 1 still comes first for exactly the reason it did before**, and the
+analysis below carries over unchanged: the gap being closed is between the
+`chat_messages` read in step 3 and waiter registration in step 4, which
+`Monitor` does not alter.
 
 **How to take the step-1 snapshot — and the trap.** The snapshot must be
 `maxId()`, the journal head. `events:list` returns the head as its cursor only
@@ -277,8 +307,8 @@ days survive regardless of count (the parameter is named `retentionFloor`).
 Journal size is `max(50k, everything from the last 7 days)` — the same
 pane-event volume this design cites elsewhere as its reason for keeping chat
 history out of the journal. And it would run synchronously **on the daemon
-thread**, once per arm, with the Stop hook re-arming after every turn across
-every agent — directly violating this spec's own no-sync-exec bullet.
+thread**, once per tail start across every agent — directly violating this
+spec's own no-sync-exec bullet.
 
 **The implementation is `events:head`**, a one-line addition to the bus. It is
 a handler over `maxIdStmt` (`SELECT COALESCE(MAX(id), 0) FROM events`), which
@@ -303,7 +333,13 @@ events` CLI.** `eventsWait` in `commands/events.ts` owns its own
 `while (true)` poll loop and never returns to a caller between polls, prints
 events-shaped JSON, and its `fail()` exits **1** rather than 69. Chat drives
 the handler directly, one round at a time, and owns its own loop, exit codes,
-and single-line output.
+and per-line output.
+
+**One line per wake, and nothing else on stdout.** Under Monitor every stdout
+line becomes a notification in the agent's context, so the "don't flood the
+pane" guarantee is now enforced per line rather than per invocation. Anything
+diagnostic goes to stderr, which Monitor routes to the output file without
+notifying.
 
 **Presence is touched by that loop, not inherited from it.** Because chat owns
 the poll loop, each ~240s round calls `chat:touch` to update `last_seen_at`
@@ -320,11 +356,13 @@ step 3 forgetting to exclude the agent's own posts — an agent's own message
 makes its next `wait` exit immediately, every time, forever. One shared
 function, called by both paths.
 
-**Double-arm is refused.** A pidfile keyed on **handle alone** under the rt
-dir; a second `wait` refuses with a clear message. Not `(room, handle)`: a
-room-less `wait` has no room component to key on, and because the wake topic
-is per-handle, two `--room`-scoped waiters for one handle are both woken by a
-message to either room — exactly the double-wake the lock exists to prevent.
+**Double-tail is refused.** A pidfile keyed on **handle alone** under the rt
+dir; a second `tail` refuses with a clear message. Not `(room, handle)`: a
+room-less tail has no room component to key on, and because the wake topic is
+per-handle, two `--room`-scoped tails for one handle both emit on a message to
+either room. Lower stakes than under the one-shot design — the cost is
+duplicate notifications rather than a corrupted wake state — but still worth
+the lock.
 
 ## Daemon architecture
 
@@ -345,11 +383,11 @@ message to either room — exactly the double-wake the lock exists to prevent.
   `events-bus.close()` settles every waiter and closes the db — so any
   `armed_at` still set at boot is stale by definition. The agents cannot clear
   it themselves: `chat:disarm` is a daemon handler, and the daemon is the thing
-  that just died, so each `rt chat wait` exits 69 with its row untouched. Skip
+  that just died, so each `rt chat tail` exits 69 with its row untouched. Skip
   this and the status rule (`armed_at` set **and** `last_seen_at` fresh)
   reports **the entire fleet as live — will hear you** for up to ten minutes
   after every restart while every agent is disarmed, with nothing recovering it
-  because the Stop hook must never re-arm after 69. **Before serving** matters
+  because nothing re-arms a tail that exited 69. **Before serving** matters
   as much as the clear itself, and for the same reason RT-48 does open+migrate
   during startup and never mid-serve: run it after the socket is listening and
   an agent that arms in the gap has its fresh `armed_at` wiped, producing the
@@ -448,10 +486,10 @@ deferred:
    back because it puts agents in rooms they did not ask for; revisit once
    1 and 2 are proven.
 
-**A `Stop` hook ships in v1.** When an agent finishes a turn, if it is a room
-member with no live waiter, relaunch one. This is the only real fix for the
-one failure mode the CLI cannot prevent, and it is small. It must branch on
-`wait`'s exit codes: never re-arm after 69.
+**No `Stop` hook.** An earlier draft shipped one to re-arm agents that forgot,
+because a backgrounded one-shot dies after a single notification. Monitor stays
+armed for the session, so there is nothing to re-arm and the hook has no job.
+The skill instead teaches arming **once**, with `persistent: true`.
 
 **Slash commands for the human.** `/chat` alone (rooms, members, unread
 counts) ships. `/chat join` and `/chat say` are omitted — they duplicate the
@@ -570,10 +608,16 @@ above):
 |---|---|
 | live | `armed_at` set **and** `last_seen_at` within 10 minutes — will hear you |
 | idle | no `armed_at`, `last_seen_at` within 1 hour |
-| **deaf** | anything else — *forgot to re-arm* |
+| **deaf** | anything else — *its tail died and nothing restarted it* |
 
 The 10-minute threshold allows two missed long-poll cycles (~4 minutes each)
 before a live agent is misreported as deaf.
+
+`deaf` is rarer under Monitor than it was under the one-shot design, where it
+mostly meant an agent forgot to re-arm. It now means the tail process actually
+died — the daemon went away, the session ended, or `leave` was called — so it
+is a genuine signal rather than a discipline failure. It stays because a dead
+tail is still invisible to the agent that owned it.
 
 `deaf` is the status that earns the viewer its keep: it surfaces the one
 failure mode the CLI cannot prevent, so a stuck agent is visible before a
@@ -601,9 +645,9 @@ nothing is sent anywhere unless Matt configures it.
 
 | failure | answer |
 |---|---|
-| Daemon unreachable | `wait` exits **69**, distinct from 0 and 124. A Stop hook that cannot distinguish "woken" from "daemon dead" re-arms in a tight loop forever. |
-| Agent forgets to re-arm | Four layers: skill discipline → self-documenting `wait` exit line → Stop hook → `deaf` in the viewer. |
-| Two waiters armed | Pidfile keyed on handle alone; the second refuses. Otherwise every message double-wakes. |
+| Daemon unreachable | `tail` prints one line and exits **69**. Monitor reports the stream ending as its own notification, so the agent learns the feed died rather than mistaking it for silence. |
+| Agent forgets to re-arm | **Cannot happen.** Monitor stays armed for the session; there is no re-arm step to forget. This was the most-guarded failure mode in the design, and the transport removes it. |
+| Two tails armed | Pidfile keyed on handle alone; the second refuses. Otherwise every message notifies twice. |
 | Agent dies holding a waiter | Inherited from `events-bus`: AbortSignal on connection close, with the 240s daemon cap as backstop. The viewer shows `deaf` within ~10 minutes — not immediately; the threshold exists to absorb two missed poll cycles. |
 | `last_read_id` > `max(id)` | Clamp down. Same class and cause as the events bus's ahead-cursor clamp (db recreated); without it, a permanent-looking hang. |
 | Handle collision | Numeric suffix at join; resolved handle persisted, stable thereafter. |
@@ -615,32 +659,38 @@ nothing is sent anywhere unless Matt configures it.
 
 Store tests use an explicit-path seam (`openChatStore(path)`), per RT-48, so
 no test opens the real `state.db`. Beyond unit coverage of the store and
-handlers, eight integration tests carry the product:
+handlers, nine integration tests carry the product:
 
-1. **Post → wake.** One process armed on `wait`, another posts a mention;
+1. **Post → wake.** One tail running, another process posts a mention;
    assert the first exits 0 promptly with exactly one line on stdout. This is
    the test that proves the feature works at all.
-2. **Restart gap.** Post while nobody is armed, then arm; assert immediate
+2. **Restart gap.** Post while no tail is running, then start one; assert immediate
    exit with the unread count rather than a block.
-3. **Wake policy.** An agent in `mention` mode stays blocked through an
-   unmentioned post and wakes on `@handle`. An agent in `all` mode wakes on
-   both. An agent in `none` mode wakes on neither.
-4. **Exit codes.** 124 on `--timeout` expiry; 69 with the daemon stopped.
-   The Stop hook branches on these.
-5. **A stopped daemon renders as a stopped daemon.** Stop the daemon, then
+3. **Wake policy.** A tail in `mention` mode emits nothing for an unmentioned
+   post and one line on `@handle`. `all` emits for both. `none` emits for
+   neither.
+4. **A tail survives many messages on one arming.** Post three mentions in a
+   row and assert three lines on one tail's stdout, with the process still
+   running. This is the property the whole transport rests on — under the
+   previous design a second message reached nobody.
+5. **Daemon-down ends the stream.** Stop the daemon and assert the tail prints
+   one line and exits **69** rather than blocking silently. Monitor treats
+   silence as "nothing happened", so a tail that hangs on a dead daemon is
+   indistinguishable from a quiet room.
+6. **A stopped daemon renders as a stopped daemon.** Stop the daemon, then
    assert the viewer shows its *daemon down* banner rather than a member list
    of idle agents. This is the test that protects the round-4 finding: because
    `rtCommand` never throws and `subscribe()` reconnects silently, the failure
    is indistinguishable from a quiet fleet unless the probe is working.
 
-6. **The arm race.** Inject a post **after step 3's unread check and before
+7. **The arm race.** Inject a post **after step 3's unread check and before
    the `events:wait` call** — not anywhere in the step-1-to-step-4 window,
    because the earlier part of that window is covered by step 3 even with the
    cursor deleted, and a test injecting there passes against the exact
    regression it exists to catch. This implies a deliberate test seam at that
    point. Assert the agent still wakes; the test must fail when step 1's
    cursor is removed, which is its entire value.
-7. **The read-only handlers mutate nothing.** Call `chat:rooms`, `chat:who`,
+8. **The read-only handlers mutate nothing.** Call `chat:rooms`, `chat:who`,
    and `chat:messages` and assert a whole-table snapshot of `chat_members` and
    `chat_messages` is byte-identical afterward — not just `last_read_id`. The
    realistic drift is a future `chat:who` that stamps `last_seen_at` while
@@ -648,7 +698,7 @@ handlers, eight integration tests carry the product:
    past. This holds the line at the handler, so it stays true if these are ever
    exposed over REST, where a mutating "read" becomes a live vulnerability.
 
-8. **Daemon restart disarms everyone.** Arm a waiter, restart the daemon,
+9. **Daemon restart disarms everyone.** Start a tail, restart the daemon,
    assert the member's `armed_at` is clear **and** that it is not reported
    live. The `armed_at` assertion is the load-bearing one and must not be
    dropped in any later simplification: the status assertion only fails
