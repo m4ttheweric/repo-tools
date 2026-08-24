@@ -231,8 +231,12 @@ describe("teamInvite", () => {
     expect(typeof parsed.code).toBe("string");
     expect(parsed.contract).toBe(1);
     expect(parsed.expiresAt).toBe("2026-01-08T00:00:00.000Z");
-    expect(parsed.forgeAccess).toBe("granted");
-    expect(parsed.manualSteps).toEqual([]);
+    // "skipped" is the default shape since MAT-387: rt does not administer
+    // membership on a team repo unless explicitly permitted. The value is one
+    // the contract and the app already accept ("granted"|"manual"|"skipped").
+    expect(parsed.forgeAccess).toBe("skipped");
+    expect(parsed.manualSteps).toHaveLength(1);
+    expect((parsed.manualSteps as string[])[0]).toContain("Ask whoever administers");
     expect(parsed.pasteBlock).toBe(pasteBlock(parsed.code));
   });
 
@@ -254,13 +258,14 @@ describe("teamInvite", () => {
     expect(deps.lines[0]).toContain("usage:");
   });
 
-  test("human output prints the manual steps when forge access isn't granted", async () => {
+  test("human output names who to ask, since rt does not manage membership", async () => {
     const deps = inviteDeps({ exec: ghExec({ code: 127, stdout: "", stderr: "ENOENT: gh" }) });
     await teamInvite(["--handle", "zaphod"], {}, deps);
 
     expect(deps.lines[0]).toContain("mattstack://join/");
     const rest = deps.lines.slice(1).join("\n");
-    expect(rest).toContain("forge access is manual");
-    expect(rest).toContain("Open https://github.com/acme/widgets/settings/access");
+    expect(rest).toContain("forge access is skipped");
+    expect(rest).toContain("Ask whoever administers");
+    expect(rest).toContain("zaphod");
   });
 });

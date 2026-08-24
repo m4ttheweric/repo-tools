@@ -13,6 +13,7 @@ import { dirname, join } from "path";
 import { parseRemoteUrl } from "../enrich.ts";
 import { type AgeKeySeam, createRealAgeKeySeam, ensureAgeKey, renderSopsYamlFor } from "../home/age-key.ts";
 import { TEAM_PATH_REGEX } from "../secrets/team-store.ts";
+import { updateTeamLocal } from "./team-local.ts";
 import { UserActionableError } from "../setup/errors.ts";
 import { readIntent, writeIntent } from "../setup/intent.ts";
 import type { ExecResult, Probes } from "../setup/probes.ts";
@@ -131,6 +132,13 @@ async function resolveRemote(p: Probes, slug: string, opts: CreateTeamOpts): Pro
   if (!url) {
     throw new UserActionableError("create-repo-failed", `gh repo create ${repoPath} printed no URL to use as the remote`);
   }
+
+  // Provenance, recorded at the one moment it is knowable: rt just created
+  // this remote. It confers no rights — it only lets the membership permission
+  // be OFFERED later, so rt never asks whether it should administer a repo it
+  // was merely pointed at (MAT-387). The permission itself stays off until a
+  // human grants it.
+  updateTeamLocal(p, slug, { createdByRt: true });
 
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "create", team: { slug, name: opts.name, remote: url, others: opts.others } });
   return url;
