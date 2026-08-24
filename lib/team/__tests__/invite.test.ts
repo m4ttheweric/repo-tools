@@ -106,6 +106,9 @@ function baseSeams(overrides: Partial<MintInviteSeams> = {}): { seams: MintInvit
     readTeamStore: () => ({ "board.members": [] }),
     writeSetting: spy,
     grantRead: async () => ({ access: "granted", manualSteps: [] }),
+    // Default ON so the existing suite keeps exercising the grant path it was
+    // written for; the tests below cover the default-off behaviour explicitly.
+    readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
     forgeLogin: async () => "octocat",
     warn: (m) => warnings.push(m),
     ...overrides,
@@ -388,5 +391,69 @@ describe("mintInvite", () => {
     const relay = fakeRelayClient({ createId: () => "f".repeat(32) });
 
     await expect(mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams)).rejects.toThrow(UserActionableError);
+  });
+});
+
+// ─── membership permission (MAT-387) ─────────────────────────────────────────
+
+describe("mintInvite: forge membership is not rt's to grant", () => {
+  test("default (permission absent): never calls the forge, and says who to ask", async () => {
+    const grantCalls: string[] = [];
+    const { seams } = baseSeams({
+      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: false }),
+      grantRead: async (_p, _remote, handle) => {
+        grantCalls.push(handle);
+        return { access: "granted", manualSteps: [] };
+      },
+    });
+    const relay = fakeRelayClient();
+
+    const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "alice", now: NOW }, seams);
+
+    expect(grantCalls).toEqual([]);
+    expect(result.forgeAccess).toBe("skipped");
+    expect(result.manualSteps.join(" ")).toContain("Ask whoever administers");
+    expect(result.manualSteps.join(" ")).toContain("alice");
+  });
+
+  // createdByRt alone must not be enough: provenance decides whether the
+  // permission can be OFFERED, never whether it is held.
+  test("createdByRt without the permission still does not touch the forge", async () => {
+    const grantCalls: string[] = [];
+    const { seams } = baseSeams({
+      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: false }),
+      grantRead: async () => {
+        grantCalls.push("called");
+        return { access: "granted", manualSteps: [] };
+      },
+    });
+    const relay = fakeRelayClient();
+    await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "alice", now: NOW }, seams);
+    expect(grantCalls).toEqual([]);
+  });
+
+  test("permission granted: the forge call happens, as before", async () => {
+    const grantCalls: string[] = [];
+    const { seams } = baseSeams({
+      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+      grantRead: async (_p, _remote, handle) => {
+        grantCalls.push(handle);
+        return { access: "granted", manualSteps: [] };
+      },
+    });
+    const relay = fakeRelayClient();
+    const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "alice", now: NOW }, seams);
+    expect(grantCalls).toEqual(["alice"]);
+    expect(result.forgeAccess).toBe("granted");
+  });
+
+  // The invite must still be usable — declining to administer someone's repo
+  // is not a failure to mint.
+  test("the invite is still minted and returned when rt cannot grant", async () => {
+    const { seams } = baseSeams({ readTeamLocal: () => ({ createdByRt: false, rtMayManageMembership: false }) });
+    const relay = fakeRelayClient();
+    const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "alice", now: NOW }, seams);
+    expect(relay.createCalls.length).toBe(1);
+    expect(result.code.length).toBeGreaterThan(0);
   });
 });

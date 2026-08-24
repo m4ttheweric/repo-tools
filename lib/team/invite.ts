@@ -2,8 +2,12 @@
  * `rt team invite` — mints an opaque relay invite for a handle: pointer
  * (team/name/remote/owner/forge) sealed under a fresh key and a
  * client-generated id, stored on the relay as ciphertext only, and handed
- * back as a short paste-able code. Also grants forge read access at mint
- * time so the invitee can clone the moment they redeem.
+ * back as a short paste-able code.
+ *
+ * It does NOT grant the invitee access to the team's repo. Membership is a
+ * precondition administered by whoever owns that repo (MAT-387); rt touches it
+ * only when the operator has explicitly granted `rtMayManageMembership` for
+ * this team, which defaults to off.
  */
 
 import { teamSettingsPath } from "../rt-paths.ts";
@@ -15,6 +19,7 @@ import { forgeFromRemote, readTeamSnapshot, type SettingsReader } from "../setup
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
 import { forgeLogin, grantRead, type ForgeAccess } from "./forge.ts";
+import { readTeamLocal } from "./team-local.ts";
 import { encodeCode, generateId, generateKey, seal } from "./invite-crypto.ts";
 import { readInviteRecords, upsertInviteRecord } from "./invite-records.ts";
 import type { RelayClient } from "./relay-client.ts";
@@ -48,6 +53,8 @@ export interface MintInviteSeams {
   readTeamStore: (slug: string) => Record<string, unknown>;
   writeSetting: typeof setSetting;
   grantRead: typeof grantRead;
+  /** Local, per-machine team record — carries the membership permission. Seamed so a test can grant it without writing to a real home. */
+  readTeamLocal: typeof readTeamLocal;
   forgeLogin: typeof forgeLogin;
   warn: (message: string) => void;
 }
@@ -73,7 +80,7 @@ function defaultWarn(message: string): void {
 }
 
 export function realMintInviteSeams(): MintInviteSeams {
-  return { read: defaultRead(), readTeamStore: defaultReadTeamStore, writeSetting: setSetting, grantRead, forgeLogin, warn: defaultWarn };
+  return { read: defaultRead(), readTeamStore: defaultReadTeamStore, writeSetting: setSetting, grantRead, readTeamLocal, forgeLogin, warn: defaultWarn };
 }
 
 interface BoardMember {
@@ -148,7 +155,15 @@ export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInvite
     );
   }
 
-  const { access: forgeAccess, manualSteps } = await seams.grantRead(p, remote, opts.handle);
+  // Repo membership is a precondition, not something rt provisions (MAT-387):
+  // you are added to a repo by whoever administers it, before mattstack is in
+  // the picture. rt only reaches for the forge when the operator has explicitly
+  // asked it to manage membership on THIS team — a permission that defaults to
+  // off and is never derivable from the remote URL, which cannot distinguish a
+  // repo rt created from an employer's.
+  const { access: forgeAccess, manualSteps } = seams.readTeamLocal(p, opts.slug).rtMayManageMembership
+    ? await seams.grantRead(p, remote, opts.handle)
+    : { access: "skipped" as ForgeAccess, manualSteps: [`Ask whoever administers ${remote} to give ${opts.handle} read access — mattstack does not manage membership on this repo`] };
 
   addToRoster(seams, opts.slug, opts.handle);
 

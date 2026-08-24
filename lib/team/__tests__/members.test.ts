@@ -170,6 +170,7 @@ function fakeMembersSeams(overrides: Partial<MembersSeams> = {}): { seams: Membe
       if (key === "board.members") store = { ...store, "board.members": value };
     }) as MembersSeams["writeSetting"],
     revokeRead: async () => ({ access: "revoked", manualSteps: [] }),
+    readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
     warn: () => {},
     ...overrides,
   };
@@ -499,6 +500,38 @@ describe("membersRemove", () => {
     return `[remote "origin"]\n\turl = ${remote}\n`;
   }
 
+  // MAT-387: removal FAILS OPEN — the person keeps repo access when rt is not
+  // permitted to revoke it. Silence there would read as "removed" while they
+  // could still clone, so the warning is the point of these two tests.
+  test("without the membership permission: never calls the forge, and says they still have access", async () => {
+    const remote = "git@github.com:acme/widgets.git";
+    const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });
+    const { execSeam, secrets } = seamsWithClone();
+    writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+    execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
+
+    const revokeCalls: unknown[] = [];
+    const { seams } = fakeMembersSeams({
+      readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
+      readTeamLocal: () => ({ createdByRt: false, rtMayManageMembership: false }),
+      revokeRead: async (...args) => {
+        revokeCalls.push(args);
+        return { access: "revoked", manualSteps: [] };
+      },
+    });
+
+    const result = await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
+
+    expect(revokeCalls).toEqual([]);
+    expect(result.forgeAccess).toBe("skipped");
+    expect(result.manualSteps.join(" ")).toContain("still has access");
+    expect(result.manualSteps.join(" ")).toContain(remote);
+    // The rest of the removal still happens — declining to administer someone
+    // else's repo must not leave the member half-removed locally.
+    expect(result.rosterRemoved).toBe(true);
+    expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
+  });
+
   test("revokes forge access, writes the roster without the handle, re-encrypts, and returns a non-empty residue note", async () => {
     const remote = "git@github.com:acme/widgets.git";
     const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });
@@ -510,6 +543,7 @@ describe("membersRemove", () => {
     const revokeCalls: { remote: string; handle: string }[] = [];
     const { seams, writes } = fakeMembersSeams({
       readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
+      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
       revokeRead: async (_p, r, h) => {
         revokeCalls.push({ remote: r, handle: h });
         return { access: "revoked", manualSteps: [] };
@@ -618,6 +652,7 @@ describe("membersRemove", () => {
       const { seams, writes } = fakeMembersSeams({
         // Simulates the roster having already recorded the owner's key under "alice" — the exact end state the echo attack (defense i) exists to prevent, tested here in isolation so defense ii is proven to hold even if defense i were bypassed.
         readTeamStore: () => ({ "board.members": [{ username: "alice", agePublicKey: OWNER_PUBLIC_KEY }] }),
+        readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
         revokeRead: async (...args) => {
           revokeCalls.push(args);
           return { access: "revoked", manualSteps: [] };
