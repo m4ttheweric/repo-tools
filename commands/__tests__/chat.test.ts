@@ -407,3 +407,19 @@ describe("chat handle derivation — worktree fixtures", () => {
     expect(__test__.slugify("   ")).toMatch(/^[a-z0-9._-]+$/);
   });
 });
+
+describe("pidfile identity — only a real rt chat tail reads as live", () => {
+  test("matches rt and dev cli.ts invocations of `chat tail`", () => {
+    expect(__test__.looksLikeRtChatTail("/Users/m/.mattstack/rt/bin/rt chat tail --as listener")).toBe(true);
+    expect(__test__.looksLikeRtChatTail("bun run /repo/cli.ts chat tail")).toBe(true);
+  });
+
+  test("does not match a recycled PID whose unrelated args merely mention both words", () => {
+    // The failure this guards: a false-positive here refuses an agent's re-arm
+    // with "already armed" and leaves it permanently deaf.
+    expect(__test__.looksLikeRtChatTail("/usr/bin/some-tool --mode chat --action tail")).toBe(false);
+    expect(__test__.looksLikeRtChatTail("/opt/chat-tail-daemon --serve")).toBe(false);
+    expect(__test__.looksLikeRtChatTail("rt chat read")).toBe(false);
+    expect(__test__.looksLikeRtChatTail("vim tail-of-a-chat.log")).toBe(false);
+  });
+});

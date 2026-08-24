@@ -570,6 +570,18 @@ function readTailPid(pidPath: string): number | null {
  * refuse a re-arm. Recovery IS *stream ends → agent notified → agent re-arms*,
  * and a false "already armed" leaves the agent permanently deaf.
  */
+/**
+ * Whether a process's `ps args` line is an rt (or dev cli.ts) invocation
+ * running `chat tail`, in that order. Stricter than "contains chat and tail
+ * somewhere": the binary/script is anchored to a path boundary and the two
+ * verbs must be adjacent, so a recycled PID whose unrelated args merely
+ * mention both words does not read as a live tail and spuriously refuse an
+ * agent's re-arm.
+ */
+function looksLikeRtChatTail(args: string): boolean {
+  return /(?:^|\/)(?:rt|cli\.ts)\b[\s\S]*\bchat\s+tail\b/.test(args);
+}
+
 function isLiveChatTail(pid: number): boolean {
   try {
     process.kill(pid, 0); // signal 0 = existence check
@@ -578,7 +590,7 @@ function isLiveChatTail(pid: number): boolean {
   }
   try {
     const args = execSync(`ps -p ${pid} -o args=`, { encoding: "utf8", stdio: "pipe" });
-    return /(?:^|\s)chat(?:\s|$)/.test(args) && /(?:^|\s)tail(?:\s|$)/.test(args);
+    return looksLikeRtChatTail(args);
   } catch {
     return false;
   }
@@ -777,4 +789,5 @@ export const __test__ = {
   deriveRepoDirHandle,
   cwdRelativeHandle,
   userHostHandle,
+  looksLikeRtChatTail,
 };
