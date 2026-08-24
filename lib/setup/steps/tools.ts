@@ -24,12 +24,29 @@ function realSleep(ms: number): Promise<void> {
 
 // ─── fastbrowser.setup ───────────────────────────────────────────────────────
 
+/**
+ * fast-browser's own words when it finds no host to integrate with. Matched
+ * rather than parsed: it is a message, not a contract, so a wording change
+ * degrades this to the loud failure it replaced rather than to a silent pass.
+ */
+const NO_HOST_STDERR = /Detected hosts: none/i;
+
 async function fastbrowserSetupRun(ctx: ApplyContext): Promise<StepOutcome> {
   const resolved = resolveTool(ctx.p, "fast-browser");
   if (!resolved.exec) return { state: "skipped", detail: "fast-browser not bundled" };
 
   const result = await setupTool(ctx.p, "fast-browser", { configDirs: [] });
   if (result.ok) return { state: "done", detail: result.detail };
+
+  // fast-browser integrates INTO a host (Claude Code / Codex) and refuses to
+  // guess when none is present, which is correct of it. But a clean Mac with
+  // neither installed is a normal machine, not a broken one — and failing here
+  // dead-ends the whole run, so services.start, snapshot.push and verify never
+  // execute. Same shape and same reasoning as plugins.install's claude branch:
+  // skip where nobody can act on a Retry, stay loud where a human is watching.
+  if (NO_HOST_STDERR.test(result.detail) && ctx.nonInteractive) {
+    return { state: "skipped", detail: "no Claude Code or Codex host detected — nothing to integrate with" };
+  }
   return { state: "failed", detail: result.detail, remedy: "Run `fast-browser setup` in a terminal for details" };
 }
 
