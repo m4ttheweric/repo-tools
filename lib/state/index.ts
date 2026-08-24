@@ -52,6 +52,7 @@ export {
   LEGACY_IMPORTS,
   openStateDb,
   getStateDb,
+  stateDbPath,
   closeStateDb,
   type DbFlavor,
   type LegacyImport,

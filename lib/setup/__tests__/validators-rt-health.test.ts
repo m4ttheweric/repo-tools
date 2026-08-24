@@ -516,6 +516,9 @@ describe("rtHealthRows — tool.daemon", () => {
  * here is built by hand (`git init` -> commit -> attach remote -> push).
  */
 describe("rtHealthRows — home.backup (real git)", () => {
+  /** The daemon's push record is diagnostic only — every state below is asserted against no record first, since that is what a machine whose daemon has never run reports. */
+  const NO_RECORD = () => null;
+  const REAL_EXEC: Probes["exec"] = createRealProbes().exec;
   const createdRoots: string[] = [];
   afterAll(() => {
     for (const root of createdRoots) {
@@ -583,16 +586,50 @@ describe("rtHealthRows — home.backup (real git)", () => {
   test("commits ahead of the ref: needs-you", async () => {
     const repo = await pushedRepo();
     await commit(repo, "later");
-    const row = await homeBackupRow(repo);
+    const row = await homeBackupRow(repo, REAL_EXEC, NO_RECORD);
     expect(row.status).toBe("needs-you");
     expect(row.detail).toBe("1 commit(s) not pushed");
   });
 
-  test("pushed and nothing ahead: ready", async () => {
-    const row = await homeBackupRow(await pushedRepo());
+  test("pushed and nothing ahead, no daemon record: ready, and names the COMMIT — the ref tip's committer date is not a push time", async () => {
+    const row = await homeBackupRow(await pushedRepo(), REAL_EXEC, NO_RECORD);
     expect(row.status).toBe("ready");
-    expect(row.detail).toStartWith("last pushed ");
+    expect(row.detail).toStartWith("in sync — last commit ");
+    expect(row.detail).not.toContain("pushed");
     expect(row.action).toBeNull();
+  });
+
+  test("pushed and nothing ahead, with a recorded successful push: says pushed, off the record's real timestamp", async () => {
+    const row = await homeBackupRow(await pushedRepo(), REAL_EXEC, () => ({ at: Date.now() - 5 * 60_000, ok: true }));
+    expect(row.status).toBe("ready");
+    expect(row.detail).toBe("in sync — last pushed 5m ago");
+  });
+
+  test("a record claiming a successful push never turns a needs-you row green — the tracking ref stays the only evidence", async () => {
+    const repo = await pushedRepo();
+    await commit(repo, "later");
+    const row = await homeBackupRow(repo, REAL_EXEC, () => ({ at: Date.now(), ok: true }));
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("1 commit(s) not pushed");
+  });
+
+  test("commits ahead with a recorded push failure: names why, which nothing else on the machine surfaces", async () => {
+    const repo = await pushedRepo();
+    await commit(repo, "later");
+    const row = await homeBackupRow(repo, REAL_EXEC, () => ({
+      at: Date.now(),
+      ok: false,
+      error: "remote: Permission to acme/home.git denied to matt.\nfatal: unable to access\n",
+    }));
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("1 commit(s) not pushed — the last push failed: remote: Permission to acme/home.git denied to matt.");
+  });
+
+  test("a repo with no remote never consults the record — local-only is a state, not a push failure", async () => {
+    const row = await homeBackupRow(await localOnlyRepo(), REAL_EXEC, () => {
+      throw new Error("readLastPush must not be reached on the local-only path");
+    });
+    expect(row.detail).toBe("local only — your settings are versioned on this machine but are not backed up anywhere");
   });
 
   test("unborn branch (remote attached before any commit ever landed): needs-you, never crashes on a missing ref", async () => {

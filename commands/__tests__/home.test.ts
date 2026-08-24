@@ -239,6 +239,7 @@ async function runHomeInit(
   materializeEnv: () => Promise<MaterializeEnv> = async () => NOOP_MATERIALIZE_ENV,
   materializeExec: MaterializeExecSeam = new FakeMaterializeExecSeam(),
   env: Record<string, string | undefined> = {},
+  readIntent: (() => SetupIntent | null) | "real-disk-read" = () => null,
 ): Promise<{ exitCode: number | undefined; logs: string[]; errors: string[] }> {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => {
     throw new Error("process.exit");
@@ -252,7 +253,12 @@ async function runHomeInit(
     errors.push(parts.map(String).join(" "));
   });
   try {
-    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive, materializeEnv, materializeExec, env });
+    // Omitting `readIntent` entirely is what makes homeInit fall through to
+    // its real ~/.mattstack/rt/setup-intent.json read; the default above
+    // keeps every other case off disk, so nothing a preload or a later test
+    // writes there can move an assertion.
+    const intentSeam = readIntent === "real-disk-read" ? {} : { readIntent };
+    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive, materializeEnv, materializeExec, env, ...intentSeam });
     return { exitCode: undefined, logs, errors };
   } catch {
     const code = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
@@ -1457,6 +1463,7 @@ describe("homeInit — the real intent read", () => {
         async () => NOOP_MATERIALIZE_ENV,
         new FakeMaterializeExecSeam(),
         { RT_HOME_URL: "https://x/from-env.git" },
+        "real-disk-read",
       );
 
       expect(logs.join("\n")).toContain("clone https://x/from-intent.git into user/");
