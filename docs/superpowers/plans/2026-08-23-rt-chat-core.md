@@ -915,7 +915,7 @@ Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/br
 
 | cwd | a directory-derived rule gives | correct |
 |---|---|---|
-| `acme/ginny` | `gamma-ginny` | `acme-dev-ginny` |
+| `acme/beta` | `gamma-beta` | `acme-dev-beta` |
 | `acme/gamma` | `gamma` | `acme-dev-gamma` |
 | `workforest-fixture/main` | `main` | `workforest-fixture-main` |
 | `workforest-fixture/feature` | *git errors* | falls to position 5 |
@@ -933,7 +933,7 @@ Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/br
 `rooms` output:
 
 ```
-#dev-42   3 members   2 unread (1 mention)   last 4m ago
+#demo-42   3 members   2 unread (1 mention)   last 4m ago
 #build     6 members   —                      last 2h ago
 ```
 

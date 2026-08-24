@@ -124,10 +124,10 @@ process does not change directory.
 worktree-pool layouts are in use. The *sibling* form puts slots beside the
 repo (`repo-tools`, `repo-tools-chatspec-wt`), where a basename is fine. The
 *parent-folder* form, documented in `~/.claude/CLAUDE.md`, puts them inside
-one directory — `acme/{fred,ginny,gamma,voldemort}`,
+one directory — `acme/{alpha,beta,gamma,delta}`,
 `workforest-fixture/{feature,hotfix,main,playground,review}` — where the
-basename drops the repository entirely. An agent in `acme/ginny` would
-answer to `ginny`, failing this design's own requirement that identifying
+basename drops the repository entirely. An agent in `acme/beta` would
+answer to `beta`, failing this design's own requirement that identifying
 which agent is speaking matters more here than in human chat. Worse,
 `workforest-fixture/main` yields `main`, which **collides across unrelated
 repositories**: the pidfile is keyed on handle alone under the per-machine rt
@@ -145,7 +145,7 @@ with a different slot as main silently renames every agent on the machine.
 
 rt already holds the right answer. `~/.mattstack/rt/repos.json` records
 `"acme-dev": ".../acme/gamma"`, so the repository containing
-`acme/ginny` is `acme-dev` and the handle is `acme-dev-ginny`. Read
+`acme/beta` is `acme-dev` and the handle is `acme-dev-beta`. Read
 it through `loadRepoIndex()` (`lib/repo-index.ts`), keyed by the main
 worktree path, which a linked worktree finds from its own `.git` file's
 `gitdir:` pointer. That is a **file read, not a subprocess** — load-bearing,
@@ -301,7 +301,7 @@ Representative output:
 
 ```
 $ rt chat rooms
-#dev-42   3 members   2 unread (1 mention)   last 4m ago
+#demo-42   3 members   2 unread (1 mention)   last 4m ago
 #build     6 members   —                      last 2h ago
 
 $ rt chat read
