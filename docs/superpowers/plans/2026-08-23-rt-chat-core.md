@@ -1298,12 +1298,30 @@ rather than needing a try/catch around an outbound call on the request path.
 It also keeps a network call off `chat:post` entirely.
 
 When `chat.push.provider` is set (`ntfy` or `pushover`) with a
-`chat.push.target`, POST the drained event there as well as to the tray.
+`chat.push.target`, POST the drained event there as well as to the tray —
+**but only when `event.category === "chat"`.**
+
+That filter is not optional, and it exists because of where push now lives.
+`lib/notifier.ts` drains one queue carrying *every* notification type:
+`notify()` takes `category: string = "general"` and its call site enqueues and
+pushes each event regardless. Without the check, the moment
+`chat.push.provider` is set Matt's phone receives MR updates, pipeline alerts,
+runaway-process warnings — everything that ever calls `notify()` — rather than
+`@matt` mentions. The settings are named `chat.push.*` and the spec frames
+push as the `@matt` path, so the intended scope is unambiguous; Step 3's
+`category: "chat"` is the discriminator.
+
 **Absent by default:** with no provider configured nothing is sent anywhere
 and no third-party dependency is required for the feature to work. A failed
 push logs and is not retried.
 
 - [ ] **Step 5: Test the two push guarantees**
+
+`deliver(event)` is the drain-and-dispatch path this step modifies — the
+function in `lib/notifier.ts` that takes one drained `NotificationEvent` and
+sends it onward. `chatEvent()` and `otherEvent()` are local factories
+returning a `NotificationEvent` with `category: "chat"` and
+`category: "general"` respectively; define both at the top of the test file.
 
 ```ts
 test("no provider configured sends nothing anywhere", async () => {
@@ -1318,11 +1336,20 @@ test("a failing push does not fail delivery", async () => {
   spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
   await expect(deliver(chatEvent())).resolves.not.toThrow();
 });
+
+test("a non-chat notification is never pushed", async () => {
+  setSetting("chat.push.provider", "ntfy");
+  setSetting("chat.push.target", "https://ntfy.sh/x");
+  const fetchSpy = spyOn(globalThis, "fetch");
+  await deliver(otherEvent());
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
 ```
 
-The first is the default-off guarantee; the second is the one that would
+The first is the default-off guarantee. The second is the one that would
 otherwise discard successful work if push were written as an unguarded
-`await`.
+`await`. The third locks the category filter — without it the first two still
+pass, because both use a chat event.
 
 - [ ] **Step 6: Run the suite**
 
