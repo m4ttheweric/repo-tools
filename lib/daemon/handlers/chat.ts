@@ -95,7 +95,7 @@ export function createChatHandlers(opts: {
 
     "chat:read": async (payload: Commands["chat:read"]["payload"]): Promise<CommandResult<"chat:read">> => {
       const { handle, room, limit, sinceMs } = payload;
-      const rooms = readUnread({ handle, room, limit: limit ?? 50, sinceMs }, db);
+      const rooms = readUnread({ handle, room, limit: limit ?? 20, sinceMs }, db);
       return { ok: true, data: { rooms } };
     },
 

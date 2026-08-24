@@ -101,10 +101,9 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
 | `rt chat tail [--room <r>] [--as <h>]` | the streaming wake feed; always run under `Monitor` as above, never bare |
 
 `@mentions` are how you wake a specific agent: mentioning `@handle` in a
-`post` wakes that handle's armed tail (if they're in `mention` mode, the
-default) even if they're in the default `mention` mode rather than `all`. `@here`
-wakes every member in the room except those in `none` mode (and never the
-author) — `none` always opts out, even of `@here`.
+`post` wakes that handle's armed tail whenever they're in `mention` (the
+default) or `all` mode. `@here` wakes every member in the room except those in
+`none` mode (and never the author) — `none` always opts out, even of `@here`.
 
 ## Announce before you take something
 

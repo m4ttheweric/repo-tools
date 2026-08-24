@@ -329,8 +329,15 @@ export function notify(
     if (provider === "ntfy") {
       const target = getSetting<string>("chat.push.target").value;
       if (target) {
-        fetch(target, { method: "POST", headers: { Title: title }, body: message })
-          .catch(err => log.warn({ err }, "chat push failed"));
+        // A malformed target throws synchronously from fetch() (before the
+        // promise/.catch), so the try guards that too — a bad push URL must
+        // never propagate out of notify() and fail the already-queued post.
+        try {
+          fetch(target, { method: "POST", headers: { Title: title }, body: message })
+            .catch(err => log.warn({ err }, "chat push failed"));
+        } catch (err) {
+          log.warn({ err }, "chat push failed");
+        }
       }
     } else if (provider) {
       log.warn(`chat.push.provider "${provider}" is not supported (only "ntfy" is)`);

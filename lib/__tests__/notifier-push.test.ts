@@ -26,10 +26,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // The fetch spy is global; the last test would otherwise leave it installed
-  // and leak the mock into whichever test file bun runs next in this process
-  // (e.g. probes.test.ts's real-fetch assertions). Restore it after every test.
+  // Both halves of this cleanup leak into the NEXT test file in the same bun
+  // process (bun runs all files in one process, sorted by path, so this file
+  // runs before lib/daemon/__tests__/chat-handlers.test.ts). The fetch spy,
+  // left installed, would break probes.test.ts's real-fetch assertions. And
+  // the push settings, left set, would make chat-handlers.test.ts's @matt
+  // tests — which install no fetch spy — fire a REAL POST to ntfy.sh.
   (globalThis.fetch as unknown as { mockRestore?: () => void }).mockRestore?.();
+  setSetting("chat.push.provider", "", "user");
+  setSetting("chat.push.target", "", "user");
 });
 
 // Every spy carries a mock implementation. A bare spyOn(globalThis, "fetch")
