@@ -31,6 +31,7 @@
  * safe for concurrent/multi-process writers.
  */
 
+import { resolveBundledTool } from "../bundled-tool.ts";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from "fs";
 import { dirname, join } from "path";
 import { mattstackHome, rtDir } from "../rt-paths.ts";
@@ -468,7 +469,13 @@ export function createRealSecretsExecSeam(cwd?: string): SecretsExecSeam {
   return {
     async run(cmd, opts) {
       debugLog(cmd, opts?.sensitive);
-      const proc = Bun.spawn(cmd, buildSecretsSpawnOptions({ env: opts?.env, cwd }));
+      // argv[0] resolves to the sops inside mattstack.app before PATH — see
+      // the same treatment in age-key.ts's raw seam. Resolved at the spawn,
+      // not where the argv is built, so the pure callers and their fake seams
+      // stay unaware of the bundle.
+      const [bin, ...args] = cmd;
+      const resolved = bin === undefined ? cmd : [resolveBundledTool(bin), ...args];
+      const proc = Bun.spawn(resolved, buildSecretsSpawnOptions({ env: opts?.env, cwd }));
       const [stdout, stderr, code] = await Promise.all([
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),
