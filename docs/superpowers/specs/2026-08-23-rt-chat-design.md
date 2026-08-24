@@ -245,7 +245,7 @@ in the agent's context — hence rule 1 above.
 **The wait path.** The ordering here is load-bearing and must be implemented
 exactly as written:
 
-1. **Snapshot the journal cursor first**, before looking at anything else.
+1. **Snapshot the journal head first**, before looking at anything else.
 2. Set `armed_at` via `chat:arm`.
 3. Check `chat_messages` for anything past `last_read_id` that would have
    woken this handle. If found, clear `armed_at` and exit immediately with
@@ -254,6 +254,19 @@ exactly as written:
 4. Otherwise call `events:wait` with pattern `chat/wake/<me>` **and
    `after` set to the cursor from step 1**.
 5. On wake, print one line, clear `armed_at`, exit 0.
+
+**How to take the step-1 snapshot — and the trap.** The snapshot must be
+`maxId()`, the journal head. `events:list` returns the head as its cursor only
+for an untruncated or empty result; when `events.length === limit` it returns
+the **last delivered event's** id instead (`events-bus.ts`). So the natural
+optimization — `events:list({pattern, limit: 1})`, "just give me the cursor,
+not the backlog" — returns the id of the *oldest* matching wake event. Fed
+into step 4's `after`, that replays every historical wake for the handle, and
+the agent wakes instantly and permanently on stale events. Two acceptable
+implementations: add a one-line `events:head` verb to the bus (preferred, and
+what the plan should do — it avoids fetching a pattern-scoped backlog that is
+unbounded in principle), or call `events:list` with **no** `limit`. A
+`limit`-bearing call is wrong here and the plan must not use one.
 
 **Why step 1 comes first.** `events:wait` with no `after` snapshots
 `head = maxId()` at registration and delivers only ids greater than it
@@ -511,7 +524,7 @@ nothing is sent anywhere unless Matt configures it.
 |---|---|
 | Daemon unreachable | `wait` exits **69**, distinct from 0 and 124. A Stop hook that cannot distinguish "woken" from "daemon dead" re-arms in a tight loop forever. |
 | Agent forgets to re-arm | Four layers: skill discipline → self-documenting `wait` exit line → Stop hook → `deaf` in the viewer. |
-| Two waiters armed | Pidfile per `(room, handle)`; the second refuses. Otherwise every message double-wakes. |
+| Two waiters armed | Pidfile keyed on handle alone; the second refuses. Otherwise every message double-wakes. |
 | Agent dies holding a waiter | Inherited from `events-bus`: AbortSignal on connection close, with the 240s daemon cap as backstop. `armed_at` goes stale and the viewer shows `deaf`. |
 | `last_read_id` > `max(id)` | Clamp down. Same class and cause as the events bus's ahead-cursor clamp (db recreated); without it, a permanent-looking hang. |
 | Handle collision | Numeric suffix at join; resolved handle persisted, stable thereafter. |
@@ -539,14 +552,19 @@ handlers, seven integration tests carry the product:
    in nothing the app server serves to a client. Cheap, and it is the one
    security property a later refactor could quietly break.
 
-6. **The arm race.** Post in the window between the wait path's cursor
-   snapshot and its waiter registration; assert the agent still wakes. Without
-   the step-1 cursor this test fails, which is the point — the race is
-   invisible in normal use and will be reintroduced by anyone who "simplifies"
-   the ordering.
-7. **`GET /api/chat/messages` mutates nothing.** Call it, then assert every
-   member's `last_read_id` is unchanged. This is what keeps a mutating
-   operation from drifting back onto an un-gated GET.
+6. **The arm race.** Inject a post **after step 3's unread check and before
+   the `events:wait` call** — not anywhere in the step-1-to-step-4 window,
+   because the earlier part of that window is covered by step 3 even with the
+   cursor deleted, and a test injecting there passes against the exact
+   regression it exists to catch. This implies a deliberate test seam at that
+   point. Assert the agent still wakes; the test must fail when step 1's
+   cursor is removed, which is its entire value.
+7. **Every un-gated GET mutates nothing.** Call all three (`rooms`, `who`,
+   `messages`) and assert a whole-table snapshot of `chat_members` and
+   `chat_messages` is byte-identical afterward — not just `last_read_id`. The
+   realistic drift is a future `chat:who` that stamps `last_seen_at` while
+   rendering presence, which a messages-only, column-specific assertion would
+   sail straight past.
 
 Plus a source-guard check that `wait`'s success path writes exactly one line,
 since output rule 1 is a guarantee rather than a convention.
@@ -575,7 +593,10 @@ Deliberately excluded, with the condition under which each returns:
    `lib/module-registry.ts`** (as `commands/events.ts` is) or the compiled
    binary's dynamic import fails at runtime. Add the four settings keys
    (`chat.handle`, `chat.humanHandle`, `chat.push.provider`,
-   `chat.push.target`) to `lib/settings/registry.ts`.
+   `chat.push.target`) to
+   `packages/rt-client/src/settings/registry-defs.ts` — RT-50 moved the def
+   table out of `lib/settings/registry.ts`, which is now only a re-export
+   barrel.
 4. Integration tests 1–4 (these gate everything downstream).
 5. `skills/rt-chat/SKILL.md` and the `Stop` hook.
 6. `API_ROUTES` rows and `needsToken()` entries; integration test 5.
