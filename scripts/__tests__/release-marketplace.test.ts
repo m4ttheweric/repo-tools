@@ -128,6 +128,26 @@ describe("marketplace.sh validation", () => {
     expect(r.out).toContain("dangling pointers");
   });
 
+  // Both of these resolve against the authoring machine, so they can validate
+  // here and still be missing for every client.
+  test("rejects an absolute relative-source path", () => {
+    const r = run(["--dry-run", sourceDir([{ name: "escapee", source: "/etc" }])]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("points outside the published tree");
+  });
+
+  test("rejects a relative source that escapes the tree with ..", () => {
+    const r = run(["--dry-run", sourceDir([{ name: "escapee", source: "../../etc" }])]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("points outside the published tree");
+  });
+
+  test("rejects a url source with no url", () => {
+    const r = run(["--dry-run", sourceDir([{ name: "x", source: { source: "url", sha: PINNED_SHA } }])]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("has no url");
+  });
+
   test("rejects a catalog with no plugins", () => {
     const r = run(["--dry-run", sourceDir([])]);
     expect(r.code).not.toBe(0);
@@ -220,6 +240,26 @@ describe("marketplace.sh --refresh", () => {
     const r = run(["--refresh", src]);
     expect(r.out).toContain("unchanged");
     expect(r.out).toContain("every pin already current");
+  });
+
+  // A catalog holding some plugins' new pins and others' old ones reads as a
+  // deliberate partial bump, which is worse than not having moved at all.
+  test("writes no pin at all when a later plugin's ref is missing", () => {
+    const upstream = scratch("upstream");
+    execFileSync("git", ["init", "-q", "-b", "main", upstream]);
+    writeFileSync(join(upstream, "f"), "one");
+    git(upstream, "add", "-A");
+    git(upstream, "-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qm", "one");
+
+    const src = sourceDir([
+      urlPlugin("resolves-fine", upstream),
+      { name: "broken", source: { source: "url", url: upstream, ref: "nope", sha: PINNED_SHA } },
+    ]);
+    const r = run(["--refresh", src]);
+    expect(r.code).not.toBe(0);
+
+    const doc = JSON.parse(readFileSync(join(src, "marketplace.json"), "utf8"));
+    expect(doc.plugins[0].source.sha).toBe(PINNED_SHA);
   });
 
   test("fails loudly when a ref does not exist upstream", () => {

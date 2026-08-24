@@ -2,7 +2,7 @@
 
 The Claude Code plugin catalog `rt` adds on every machine it sets up:
 
-```
+```bash
 claude plugin marketplace add https://github.com/m4ttstack/mattstack-marketplace
 claude plugin install fast-browser@mattstack
 ```

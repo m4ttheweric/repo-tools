@@ -32,27 +32,22 @@ TARGET_REPO="${RT_MARKETPLACE_REPO:-m4ttstack/mattstack-marketplace}"
 [ -f "$CATALOG" ] || { echo "✗ $CATALOG missing" >&2; exit 1; }
 
 if [ "$REFRESH" -eq 1 ]; then
+    # Every ref is resolved before any is written: a catalog left holding some
+    # plugins' new pins and others' old ones is worse than one that did not
+    # move, because the diff looks like a deliberate partial bump.
+    RESOLVED="$(mktemp "${TMPDIR:-/tmp}/mattstack-marketplace-pins.XXXXXX")"
+    trap 'rm -f "$RESOLVED"' EXIT
     changed=0
     while IFS=$'\t' read -r name url ref old; do
         new="$(git ls-remote "$url" "$ref" | awk 'NR==1{print $1}')"
         [ -n "$new" ] || { echo "✗ $name: $ref not found in $url" >&2; exit 1; }
+        printf '%s\t%s\n' "$name" "$new" >> "$RESOLVED"
         if [ "$new" = "$old" ]; then
             echo "  $name: unchanged ($ref @ ${old:0:12})"
         else
             echo "  $name: ${old:0:12} → ${new:0:12} ($ref)"
             changed=1
         fi
-        python3 - "$CATALOG" "$name" "$new" <<'PY'
-import json, sys
-path, name, sha = sys.argv[1:4]
-doc = json.load(open(path))
-for plugin in doc["plugins"]:
-    if plugin["name"] == name:
-        plugin["source"]["sha"] = sha
-with open(path, "w") as fh:
-    json.dump(doc, fh, indent=2)
-    fh.write("\n")
-PY
     done < <(python3 - "$CATALOG" <<'PY'
 import json, sys
 for plugin in json.load(open(sys.argv[1]))["plugins"]:
@@ -61,7 +56,23 @@ for plugin in json.load(open(sys.argv[1]))["plugins"]:
         print("\t".join([plugin["name"], src["url"], src["ref"], src.get("sha", "")]))
 PY
     )
-    [ "$changed" -eq 1 ] && echo "→ marketplace/marketplace.json updated; commit it" || echo "→ every pin already current"
+    if [ "$changed" -eq 1 ]; then
+        python3 - "$CATALOG" "$RESOLVED" <<'PY'
+import json, sys
+path, resolved = sys.argv[1:3]
+pins = dict(line.rstrip("\n").split("\t", 1) for line in open(resolved) if line.strip())
+doc = json.load(open(path))
+for plugin in doc["plugins"]:
+    if plugin["name"] in pins:
+        plugin["source"]["sha"] = pins[plugin["name"]]
+with open(path, "w") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+PY
+        echo "→ $CATALOG updated; commit it"
+    else
+        echo "→ every pin already current"
+    fi
     exit 0
 fi
 
@@ -74,6 +85,16 @@ cp "$CATALOG" "$STAGE/.claude-plugin/marketplace.json"
 if [ -f "$SRC/README.md" ]; then cp "$SRC/README.md" "$STAGE/README.md"; fi
 # Plugins with no repo of their own ship inline; everything else is a pinned URL.
 if [ -d "$SRC/plugins" ]; then cp -R "$SRC/plugins" "$STAGE/plugins"; fi
+
+# Before the catalog checks, so a symlinked plugin is named as one: git stores
+# a symlink as a link, so a clone of the published repo would get a dangling
+# pointer instead of the plugin. The local dev marketplace uses them
+# deliberately; the published one must never.
+if find "$STAGE" -path "$STAGE/.git" -prune -o -type l -print | grep -q .; then
+    echo "✗ staged tree contains symlinks — a clone would get dangling pointers" >&2
+    find "$STAGE" -path "$STAGE/.git" -prune -o -type l -print >&2
+    exit 1
+fi
 
 # A malformed catalog is only discoverable at `claude plugin marketplace add`
 # time, which is a fresh machine's very first step — assert here instead.
@@ -95,11 +116,20 @@ for plugin in doc.get("plugins") or []:
     names.add(name)
     src = plugin.get("source")
     if isinstance(src, str):
-        if not os.path.isdir(os.path.join(stage, src)):
+        # An absolute or ../-escaping source resolves against the *authoring*
+        # machine, so it can validate here and still be missing for every
+        # client — the published tree is all a clone gets.
+        root = os.path.realpath(stage)
+        target = os.path.realpath(os.path.join(stage, src))
+        if target != root and not target.startswith(root + os.sep):
+            problems.append(f"{name}: source {src} points outside the published tree")
+        elif not os.path.isdir(target):
             problems.append(f"{name}: source {src} is not in the published tree")
-        elif not os.path.isfile(os.path.join(stage, src, ".claude-plugin", "plugin.json")):
+        elif not os.path.isfile(os.path.join(target, ".claude-plugin", "plugin.json")):
             problems.append(f"{name}: source {src} has no .claude-plugin/plugin.json")
     elif isinstance(src, dict) and src.get("source") == "url":
+        if not (src.get("url") or "").strip():
+            problems.append(f"{name}: url source has no url")
         if not re.fullmatch(r"[0-9a-f]{40}", src.get("sha") or ""):
             problems.append(f"{name}: url source needs a full 40-char sha, got {src.get('sha')!r}")
     else:
@@ -110,15 +140,6 @@ for p in problems:
     print(f"✗ {p}", file=sys.stderr)
 sys.exit(1 if problems else 0)
 PY
-
-# A symlink is stored as a link, so a clone of the published repo would get a
-# dangling pointer instead of the plugin. The local dev marketplace uses them
-# deliberately; the published one must never.
-if find "$STAGE" -path "$STAGE/.git" -prune -o -type l -print | grep -q .; then
-    echo "✗ staged tree contains symlinks — a clone would get dangling pointers" >&2
-    find "$STAGE" -path "$STAGE/.git" -prune -o -type l -print >&2
-    exit 1
-fi
 
 # The real parser, when it is on PATH: structural checks above cannot know what
 # claude actually accepts. Runs against a throwaway HOME so it cannot touch the
@@ -146,7 +167,7 @@ fi
 # RT_MARKETPLACE_REPO takes "owner/name" or any git URL/path; the latter is how
 # the tests publish into a throwaway bare repo instead of GitHub.
 case "$TARGET_REPO" in
-    */*://* | *://* | /*) PUSH_URL="$TARGET_REPO" ;;
+    *://* | /* | ./* | ../*) PUSH_URL="$TARGET_REPO" ;;
     *)
         # Token in the URL, never echoed: `set -x` is off and no command below
         # prints PUSH_URL. Without one, the local credential helper answers.
