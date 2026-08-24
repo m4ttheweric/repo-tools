@@ -287,11 +287,17 @@ export function readUnread(
       ) as MessageRow[];
       if (rows.length === 0) continue;
 
-      // The cursor advances only to what this call actually returned, not
-      // to MAX(id): a capped or --since-filtered read must leave the rest
-      // unread for the next call, not silently mark it seen.
-      const highestReturned = rows[rows.length - 1]!.id;
-      db.query(UPDATE_LAST_READ_SQL).run(highestReturned, member.room, handle);
+      // The limit-only read is contiguous from the cursor, so advancing to
+      // the highest id returned is safe and marks exactly what was shown as
+      // read. A sinceMs read is NOT contiguous: it can skip a lower-id,
+      // older-time message while returning a higher-id, newer one, and a
+      // single id-watermark can't represent "consumed the recent, kept the
+      // old" — so it must not advance the cursor at all, or that older
+      // unread message becomes permanently unreachable.
+      if (sinceMs === undefined) {
+        const highestReturned = rows[rows.length - 1]!.id;
+        db.query(UPDATE_LAST_READ_SQL).run(highestReturned, member.room, handle);
+      }
       results.push({ room: member.room, messages: rows.map(rowToMessage) });
     }
 

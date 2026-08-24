@@ -128,6 +128,22 @@ test("read returns unread, advances the cursor, and is empty on a second call", 
   expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
 });
 
+test("a sinceMs read is a non-advancing peek: it can skip an older unread message without losing it", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  const oldMsg = postMessage({ room: "r", handle: "a", body: "old" }, db);
+  const newMsg = postMessage({ room: "r", handle: "a", body: "new" }, db);
+  db.query("UPDATE chat_messages SET posted_at = 1000 WHERE id = ?;").run(oldMsg!.id);
+  db.query("UPDATE chat_messages SET posted_at = 2000 WHERE id = ?;").run(newMsg!.id);
+
+  const peek = readUnread({ handle: "b", room: "r", limit: 20, sinceMs: 2000 }, db);
+  expect(peek[0]!.messages.map(m => m.body)).toEqual(["new"]);
+
+  const full = readUnread({ handle: "b", limit: 20 }, db);
+  expect(full[0]!.messages.map(m => m.body)).toEqual(["old", "new"]);
+});
+
 test("listMessages does not advance any cursor", () => {
   const db = freshDb();
   joinRoom({ room: "r", handle: "a" }, db);
