@@ -319,6 +319,23 @@ export function notify(
   });
   // (No .catch needed: pushToTray's body is fully wrapped in try/catch and
   // resolves false on failure — it can never reject.)
+
+  // 3. Optional push to a phone for chat mentions (off by default; v1 is
+  // ntfy-only — Pushover needs token/user credentials chat.push.target has
+  // nowhere to hold). Fire-and-forget: the desk notification above already
+  // queued successfully, so a rejected fetch here must not undo that.
+  if (category === CHAT_NOTIFICATION_CATEGORY) {
+    const provider = getSetting<string>("chat.push.provider").value;
+    if (provider === "ntfy") {
+      const target = getSetting<string>("chat.push.target").value;
+      if (target) {
+        fetch(target, { method: "POST", headers: { Title: title }, body: message })
+          .catch(err => log.warn({ err }, "chat push failed"));
+      }
+    } else if (provider) {
+      log.warn(`chat.push.provider "${provider}" is not supported (only "ntfy" is)`);
+    }
+  }
 }
 
 // ─── Branch transition detection ─────────────────────────────────────────────
