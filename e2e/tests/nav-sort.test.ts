@@ -5,6 +5,34 @@ import { join } from "path";
 import { createTestHome } from "../harness.ts";
 import { startInteractive, type TermwrightSession } from "../interactive.ts";
 
+/**
+ * Polls the screen until `earlier` appears strictly above `later`, then returns
+ * that screen. The sort's border label repaints before the relisted rows do, so
+ * a single screen() taken right after the label appears can catch a frame where
+ * the rows have not moved yet, or are absent entirely -- that read as
+ * `indexOf(...) === -1` compared against another -1, the nonsense `Expected: < -1`
+ * the CI failure showed. Waiting for the order itself is the only read that
+ * cannot race the redraw; on timeout it returns the last screen so the caller's
+ * expect() reports the real order it settled on.
+ */
+async function screenWithOrder(
+  session: TermwrightSession,
+  earlier: string,
+  later: string,
+  timeoutMs = 15_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let screen = await session.screen();
+  for (;;) {
+    const a = screen.indexOf(earlier);
+    const b = screen.indexOf(later);
+    if (a !== -1 && b !== -1 && a < b) return screen;
+    if (Date.now() >= deadline) return screen;
+    await session.waitForIdle(150, 2_000).catch(() => {});
+    screen = await session.screen();
+  }
+}
+
 describe("nav sort menu", () => {
   let home: string;
   let cleanup: () => void;
@@ -54,8 +82,9 @@ describe("nav sort menu", () => {
     await session.press("enter");
 
     await session.waitForText("largest first", 15_000);
-    const bySize = await session.screen();
-    // Larger file now above the alphabetically-earlier one.
+    // Poll for the actual order rather than trusting an idle window: the larger
+    // file must now sort above the alphabetically-earlier one.
+    const bySize = await screenWithOrder(session, "zzz-large.txt", "aaa-small.txt");
     expect(bySize.indexOf("zzz-large.txt")).toBeLessThan(bySize.indexOf("aaa-small.txt"));
     expect(bySize).toContain("Size, largest first");
   });
@@ -89,7 +118,8 @@ describe("nav sort menu", () => {
     await session.press("enter");
 
     await session.waitForText("smallest first", 15_000);
-    const reversed = await session.screen();
+    // Reversed: the alphabetically-earlier file is now above the larger one.
+    const reversed = await screenWithOrder(session, "aaa-small.txt", "zzz-large.txt");
     expect(reversed.indexOf("aaa-small.txt")).toBeLessThan(reversed.indexOf("zzz-large.txt"));
   });
 });
