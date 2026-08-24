@@ -109,6 +109,12 @@ silently normalized.
 4. `<repo>-<branch>`, slugified (`acme-dev-42`)
 5. `<user>-<host>`, slugified
 
+**Resolution happens client-side, and the handle travels in the payload.**
+`HERDR_PANE_ID` and the cwd's repo/branch exist only in the calling process,
+never in the daemon, so every handler that needs a handle takes one as an
+argument. The web viewer supplies one too (`chat.humanHandle`). Both
+implementation plans depend on this and must agree on it.
+
 On collision inside a room, a numeric suffix is appended at join
 (`acme-dev-42-2`). The **resolved** handle is written to `chat_members`
 and reused on subsequent joins from the same context, so an agent's identity
@@ -161,7 +167,9 @@ at this data scale and avoids a join table that only the viewer would read.
 
 ## Command surface
 
-Seven verbs under `rt chat`, plain English, all accepting `--json`.
+Seven verbs under `rt chat`, plain English, all accepting `--json`. Note
+that `read` mutates (it advances the cursor) and therefore has no REST route;
+see Daemon architecture.
 
 | Verb | Shape |
 |---|---|
@@ -234,27 +242,59 @@ in the agent's context — hence rule 1 above.
    minus `wake_on = 'none'` and minus the author.
 4. Emit `chat/wake/<handle>` with `{id, room}` per recipient.
 
-**The wait path:**
+**The wait path.** The ordering here is load-bearing and must be implemented
+exactly as written:
 
-1. Check `chat_messages` for anything past `last_read_id` that would have
-   woken this handle. If found, exit immediately with the count. This closes
-   the restart gap — a crashed and relaunched agent never misses a mention —
-   and means no event cursor is persisted anywhere. `last_read_id` is the
-   single source of truth for what has been seen.
-2. Otherwise arm `rt events wait "chat/wake/<me>"`, setting `armed_at`.
-3. On wake, print one line, clear `armed_at`, exit 0.
+1. **Snapshot the journal cursor first**, before looking at anything else.
+2. Set `armed_at` via `chat:arm`.
+3. Check `chat_messages` for anything past `last_read_id` that would have
+   woken this handle. If found, clear `armed_at` and exit immediately with
+   the count. This closes the restart gap — a crashed and relaunched agent
+   never misses a mention.
+4. Otherwise call `events:wait` with pattern `chat/wake/<me>` **and
+   `after` set to the cursor from step 1**.
+5. On wake, print one line, clear `armed_at`, exit 0.
+
+**Why step 1 comes first.** `events:wait` with no `after` snapshots
+`head = maxId()` at registration and delivers only ids greater than it
+(`events-bus.ts`). Checking the database and *then* arming without a cursor
+leaves a window — process spawn plus IPC — in which a post commits and emits
+below the new waiter's head: seen by neither the check nor the wait. The
+agent then blocks holding an unread mention until some later message happens
+to wake it. That window falls exactly when an agent finishes a turn and
+re-arms, which is precisely when a peer is most likely replying to it. Arming
+with a cursor taken before the check makes the two steps overlap rather than
+leaving a gap, and replay covers anything landing in between. This is the
+exact failure RT-44's cursor threading exists to prevent; chat must not opt
+out of it.
+
+**Chat calls the `events:wait` handler programmatically, never the `rt
+events` CLI.** `eventsWait` in `commands/events.ts` owns its own
+`while (true)` poll loop and never returns to a caller between polls, prints
+events-shaped JSON, and its `fail()` exits **1** rather than 69. Chat drives
+the handler directly, one round at a time, and owns its own loop, exit codes,
+and single-line output.
+
+**Presence is touched by that loop, not inherited from it.** Because chat owns
+the poll loop, each ~240s round calls `chat:touch` to update `last_seen_at`
+before re-issuing. No separate heartbeat is invented — but this is chat's own
+work, not something `rt events` provides for free.
 
 `--room` filters on the wake payload's `room` field and silently re-arms on a
 non-matching wake, since the wake topic is per-handle rather than per-room.
 Without `--room`, a wake from any joined room exits.
 
-**Presence rides the long-poll for free.** The daemon caps a wait at 240s, so
-the CLI re-issues roughly every four minutes regardless. Each re-issue touches
-`last_seen_at`. No heartbeat mechanism is invented.
+**The step-3 predicate must be the same code as the post path's recipient
+computation, author-exclusion included.** If the two diverge — most easily by
+step 3 forgetting to exclude the agent's own posts — an agent's own message
+makes its next `wait` exit immediately, every time, forever. One shared
+function, called by both paths.
 
-**Double-arm is refused.** A pidfile per `(room, handle)` under the rt dir; a
-second `wait` refuses with a clear message. Two live waiters double-wake on
-every message.
+**Double-arm is refused.** A pidfile keyed on **handle alone** under the rt
+dir; a second `wait` refuses with a clear message. Not `(room, handle)`: a
+room-less `wait` has no room component to key on, and because the wake topic
+is per-handle, two `--room`-scoped waiters for one handle are both woken by a
+message to either room — exactly the double-wake the lock exists to prevent.
 
 ## Daemon architecture
 
@@ -264,10 +304,25 @@ every message.
   seam so tests never touch the real `state.db`.
 - **`lib/daemon/handlers/chat.ts`** — thin typed handlers `chat:join`,
   `chat:leave`, `chat:post`, `chat:read`, `chat:rooms`, `chat:who`,
-  `chat:mark`, delegating to the store. Cataloged in
+  `chat:mark`, `chat:messages`, plus the three presence handlers
+  `chat:arm` / `chat:touch` / `chat:disarm` that own `armed_at` and
+  `last_seen_at`. Without those three nothing writes those columns and the
+  viewer's live/idle/deaf model has no data to render. All delegate to the
+  store. Cataloged in
   `packages/rt-client/src/commands.ts` so payload/response drift is a tsc
   error (MAT-31 pattern).
 - **`commands/chat.ts`** — the CLI.
+- **`chat_messages` INSERT takes the notify_queue busy policy, not the cache
+  one.** RT-48 splits daemon-flavor writes in two: `persistOrWarn`
+  (`lib/state/busy.ts`) warns and swallows `SQLITE_BUSY` for caches that
+  converge on the next cycle, while `runQueueWrite`
+  (`lib/state/notifier-store.ts`) retries with bounded backoff and errors
+  loudly for writes whose loss is permanent. A chat post is unambiguously the
+  second class: the daemon's `busy_timeout` is 250ms, a dropped INSERT loses
+  the message forever, and because `post` prints nothing on success the loss
+  is invisible to the author, every recipient, and the viewer at once. An
+  implementer reaching for the house-default `persistOrWarn` would ship silent
+  message loss.
 - **No sync-exec on the daemon thread** (MAT-222 lesson). The store's
   synchronous SQLite calls are short single-statement operations; nothing in
   the chat path blocks the loop.
@@ -279,11 +334,16 @@ existing dashboard seam and is what the viewer consumes. New rows in
 | method | path | cmd |
 |---|---|---|
 | GET | `/api/chat/rooms` | `chat:rooms` |
-| GET | `/api/chat/read` | `chat:read` |
+| GET | `/api/chat/messages` | `chat:messages` |
 | GET | `/api/chat/who` | `chat:who` |
 | POST | `/api/chat/post` | `chat:post` |
 | POST | `/api/chat/join` | `chat:join` |
 | POST | `/api/chat/mark` | `chat:mark` |
+
+`GET /api/chat/messages` takes `room`, `before`, and `limit` and is the
+viewer's transcript source, including its scroll-back. It is **non-mutating**:
+it never advances a cursor. `chat:read` is deliberately absent from this
+table — see below.
 
 **Every mutating chat route is added to `needsToken()`**, alongside
 `/api/events/emit`. The server binds `127.0.0.1` but sets CORS `*`; the
@@ -291,16 +351,35 @@ existing dashboard seam and is what the viewer consumes. New rows in
 satisfy. Omitting chat from that list would let any page a browser visits
 post into rooms that steer agents.
 
-`GET /api/chat/read` is deliberately **not** token-gated, consistent with the
-server's "reads are free" policy for local metadata. This is a conscious
-acceptance: a local page could read transcripts. The public surface is
-protected by deck's gates, and the transcript is not credential material.
+**`chat:read` gets no REST route at all, because it mutates.** `read`
+advances `last_read_id`, so exposing it as a `GET` would put a state-changing
+operation behind the server's "reads are free" policy. That is not a
+theoretical concern: `api-server.ts` sets `Access-Control-Allow-Origin: *`
+with `Access-Control-Allow-Headers: Content-Type`, so a plain cross-origin
+`GET` needs no preflight and **any page the browser visits could silently
+advance agents' read cursors**. The damage is not disclosure — it is
+destruction of wake state: an agent whose cursor is advanced by a hostile page
+never wakes for the mention it skipped past, and the wait path's restart-gap
+check is defeated at the same time.
+
+The split is therefore: **`GET /api/chat/messages` reads and mutates nothing;
+`POST /api/chat/mark` advances the cursor and is token-gated** like every
+other chat mutation. `rt chat read` keeps its combined read-and-advance
+behavior on the CLI, which reaches the daemon over the socket rather than
+HTTP and is not exposed to a browser.
+
+The remaining un-gated chat reads (`rooms`, `who`, `messages`) are genuinely
+read-only. Accepting that a local page could read transcripts is a conscious
+call: the public surface is protected by deck's gates, and a transcript is not
+credential material.
 
 ## The skill
 
-**One skill, `rt:chat`**, shipped in `skills/` alongside the existing `herdr`
-skill and following its shape: a single skill covering an entire CLI surface,
-behind a gate.
+**One skill at `skills/rt-chat/SKILL.md`**, frontmatter `name: rt:chat`,
+matching the local convention (`skills/` currently holds `rt-create-plugin`,
+`rt-docs`, `rt-release`, `rt-sdm-connect`). Its shape follows the herdr skill
+— which lives in the **herdr** repo, not this one — a single skill covering an
+entire CLI surface behind a gate.
 
 A skill per verb is rejected — the agent already has Bash, and
 `rt chat post <room> <text>` needs no skill to be runnable. A skill earns its
@@ -324,7 +403,7 @@ Content that is not reproducible from `--help`:
   question, use `--timeout 15m`; on exit 124, proceed under a stated
   assumption and say so in the room. One sleeping human must not wedge a
   fleet.
-- **A gate**, mirroring the herdr skill: verify the daemon is reachable and
+- **A gate**, mirroring the herdr skill's pane check: verify the daemon is reachable and
   you are a member before issuing control commands.
 
 **Entry points**, in increasing automation. The first two ship; the third is
@@ -444,7 +523,7 @@ nothing is sent anywhere unless Matt configures it.
 
 Store tests use an explicit-path seam (`openChatStore(path)`), per RT-48, so
 no test opens the real `state.db`. Beyond unit coverage of the store and
-handlers, five integration tests carry the product:
+handlers, seven integration tests carry the product:
 
 1. **Post → wake.** One process armed on `wait`, another posts a mention;
    assert the first exits 0 promptly with exactly one line on stdout. This is
@@ -459,6 +538,15 @@ handlers, five integration tests carry the product:
 5. **Token never reaches the browser.** Assert the `X-RT-Token` value appears
    in nothing the app server serves to a client. Cheap, and it is the one
    security property a later refactor could quietly break.
+
+6. **The arm race.** Post in the window between the wait path's cursor
+   snapshot and its waiter registration; assert the agent still wakes. Without
+   the step-1 cursor this test fails, which is the point — the race is
+   invisible in normal use and will be reintroduced by anyone who "simplifies"
+   the ordering.
+7. **`GET /api/chat/messages` mutates nothing.** Call it, then assert every
+   member's `last_read_id` is unchanged. This is what keeps a mutating
+   operation from drifting back onto an un-gated GET.
 
 Plus a source-guard check that `wait`'s success path writes exactly one line,
 since output rule 1 is a guarantee rather than a convention.
@@ -483,9 +571,13 @@ Deliberately excluded, with the condition under which each returns:
 
 1. Store + migration in `state.db`, with the explicit-path seam.
 2. Daemon handlers and `rt-client` command catalog entries.
-3. `commands/chat.ts` — the seven verbs, with exit codes.
+3. `commands/chat.ts` — the verbs, with exit codes. **Register it in
+   `lib/module-registry.ts`** (as `commands/events.ts` is) or the compiled
+   binary's dynamic import fails at runtime. Add the four settings keys
+   (`chat.handle`, `chat.humanHandle`, `chat.push.provider`,
+   `chat.push.target`) to `lib/settings/registry.ts`.
 4. Integration tests 1–4 (these gate everything downstream).
-5. `skills/chat` and the `Stop` hook.
+5. `skills/rt-chat/SKILL.md` and the `Stop` hook.
 6. `API_ROUTES` rows and `needsToken()` entries; integration test 5.
 7. Web viewer repo; `deck add`.
 8. Notifier producer for `@matt`; optional push provider.
