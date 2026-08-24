@@ -262,11 +262,25 @@ the **last delivered event's** id instead (`events-bus.ts`). So the natural
 optimization — `events:list({pattern, limit: 1})`, "just give me the cursor,
 not the backlog" — returns the id of the *oldest* matching wake event. Fed
 into step 4's `after`, that replays every historical wake for the handle, and
-the agent wakes instantly and permanently on stale events. Two acceptable
-implementations: add a one-line `events:head` verb to the bus (preferred, and
-what the plan should do — it avoids fetching a pattern-scoped backlog that is
-unbounded in principle), or call `events:list` with **no** `limit`. A
-`limit`-bearing call is wrong here and the plan must not use one.
+the agent wakes instantly and permanently on stale events. **Both `events:list` shapes are wrong here.** The `limit`-bearing call
+returns the oldest matching id, as above. The no-`limit` call is worse than it
+looks: `eventsAfter` runs `SELECT ... WHERE id > ?` and applies the glob **in
+JS after the fetch**, so snapshotting the head means `after = 0` and the query
+materializes *the entire journal* — every row, payloads included, all global
+bus traffic from pane events to cron — only to filter it down to one handle's
+wakes and discard the rest. Nor is that bounded by 50k: the sweep deletes
+`WHERE emittedAt < cutoff AND id NOT IN (newest 50k)`, so rows younger than 7
+days survive regardless of count (the parameter is named `retentionFloor`).
+Journal size is `max(50k, everything from the last 7 days)` — the same
+pane-event volume this design cites elsewhere as its reason for keeping chat
+history out of the journal. And it would run synchronously **on the daemon
+thread**, once per arm, with the Stop hook re-arming after every turn across
+every agent — directly violating this spec's own no-sync-exec bullet.
+
+**The implementation is `events:head`**, a one-line addition to the bus. It is
+a handler over `maxIdStmt` (`SELECT COALESCE(MAX(id), 0) FROM events`), which
+already exists there and is already used by `list`, `wait`, and `close`: no
+new state, no waiter interaction, no new semantics.
 
 **Why step 1 comes first.** `events:wait` with no `after` snapshots
 `head = maxId()` at registration and delivers only ids greater than it
@@ -317,7 +331,8 @@ message to either room — exactly the double-wake the lock exists to prevent.
   seam so tests never touch the real `state.db`.
 - **`lib/daemon/handlers/chat.ts`** — thin typed handlers `chat:join`,
   `chat:leave`, `chat:post`, `chat:read`, `chat:rooms`, `chat:who`,
-  `chat:mark`, `chat:messages`, plus the three presence handlers
+  `chat:mark`, `chat:messages`, plus `events:head` on the events bus (see
+  Wake protocol) and the three presence handlers
   `chat:arm` / `chat:touch` / `chat:disarm` that own `armed_at` and
   `last_seen_at`. Without those three nothing writes those columns and the
   viewer's live/idle/deaf model has no data to render. All delegate to the
@@ -588,7 +603,11 @@ Deliberately excluded, with the condition under which each returns:
 ## Rollout
 
 1. Store + migration in `state.db`, with the explicit-path seam.
-2. Daemon handlers and `rt-client` command catalog entries.
+2. Daemon handlers and `rt-client` command catalog entries. **Includes
+   `events:head`** — a one-line addition to `lib/daemon/events-bus.ts` and its
+   handler, outside the chat feature's own files. Called out explicitly here
+   because it is the one cross-cutting item, and cross-cutting items are what
+   get dropped when tasks go to independent agents.
 3. `commands/chat.ts` — the verbs, with exit codes. **Register it in
    `lib/module-registry.ts`** (as `commands/events.ts` is) or the compiled
    binary's dynamic import fails at runtime. Add the four settings keys
