@@ -106,9 +106,20 @@ silently normalized.
 
 1. `--as <handle>`
 2. `chat.handle` in rt settings (user scope)
-3. herdr pane title, resolved from `HERDR_PANE_ID`
-4. `<repo>-<branch>`, slugified (`acme-dev-42`)
-5. `<user>-<host>`, slugified
+3. **An existing `chat_members` row for this cwd** — see below
+4. herdr pane title, resolved from `HERDR_PANE_ID`
+5. `<repo>-<branch>`, slugified (`acme-dev-42`)
+6. `<user>-<host>`, slugified
+
+**Step 3 keeps a long-lived tail and the other verbs in agreement.** A tail
+resolves its handle once at process start and holds it for the whole session,
+while `post`, `read` and `join` re-resolve on every invocation. A mid-session
+branch switch changes `<repo>-<branch>`, so without the cwd lookup the agent
+would post and join as `repo-feature-b` while its tail listens on
+`chat/wake/repo-feature-a` — silently deaf to mentions of its current identity
+and showing up in `who` as two members. This could not bite under the one-shot
+design, where `wait` re-resolved at every re-arm; it is another guarantee that
+termination used to provide.
 
 **Resolution happens client-side, and the handle travels in the payload.**
 `HERDR_PANE_ID` and the cwd's repo/branch exist only in the calling process,
@@ -168,7 +179,7 @@ at this data scale and avoids a join table that only the viewer would read.
 
 ## Command surface
 
-Eight verbs under `rt chat`, plain English, all accepting `--json`. **No chat
+Eight verbs under `rt chat`, plain English, all accepting `--json` — which for the streaming `tail` means **NDJSON**, one object per line, matching its one-line-per-notification contract. **No chat
 verb is exposed over HTTP in v1** — the viewer reaches the daemon through
 rt-client over the unix socket. `read` is the one that must never be exposed
 even if that changes, because it mutates; see the hazard note in Daemon
@@ -177,7 +188,7 @@ architecture.
 | Verb | Shape |
 |---|---|
 | `rt chat join <room> [--as <h>] [--wake-on mention\|all\|none]` | join; creates the room if absent |
-| `rt chat leave <room>` | drop membership; kills any armed waiter |
+| `rt chat leave <room>` | drop membership; kills the tail **only if this was the handle's last room** |
 | `rt chat post <room> <text>` | post; parses `@mentions`, emits wake events |
 | `rt chat read [room] [--limit 20] [--full] [--since <dur>]` | print unread across all joined rooms, or one room; advance `last_read_id` |
 | `rt chat tail [--room <r>] [--as <h>]` | **stream** one line per wake; run under `Monitor` |

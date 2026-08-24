@@ -827,7 +827,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 | command | behavior |
 |---|---|
 | `rt chat join <room> [--as <h>] [--wake-on mention\|all\|none]` | join, creating the room if absent |
-| `rt chat leave <room>` | drop membership **only** — the waiter kill lands in Task 8 with the pidfile |
+| `rt chat leave <room>` | drop membership **only** — the tail kill lands in Task 8, and only when it was the handle's last room |
 | `rt chat post <room> <text>` | post; **prints nothing on success** |
 | `rt chat read [room] [--limit 20] [--full] [--since <dur>]` | print unread across joined rooms or one; advance the cursor |
 | `rt chat rooms` | rooms, member counts, unread, last activity |
@@ -875,7 +875,9 @@ test file.
 
 Follow `commands/events.ts` for argument parsing (`positional`, `flagValue`, `parseDuration`) and for the `--json` convention.
 
-Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/branch exist only in this process, never in the daemon — so the resolved handle travels in every payload. Order: `--as` → `chat.handle` (user scope) → herdr pane title via `HERDR_PANE_ID` → `<repo>-<branch>` slugified → `<user>-<host>` slugified.
+Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/branch exist only in this process, never in the daemon — so the resolved handle travels in every payload. Order: `--as` → `chat.handle` (user scope) → **an existing `chat_members` row for this cwd** → herdr pane title via `HERDR_PANE_ID` → `<repo>-<branch>` slugified → `<user>-<host>` slugified.
+
+**The cwd lookup is third for a reason, and it is not just a `join` optimisation.** A tail resolves its handle once at process start and holds it for the session; `post`, `read` and `join` re-resolve on every invocation. Without the lookup, a mid-session branch switch changes `<repo>-<branch>` — so the agent would post and join as `repo-feature-b` while its tail listens on `chat/wake/repo-feature-a`, silently deaf to mentions of its current identity and appearing in `who` as two members. Resolving through the persisted row makes every verb agree with the running tail, and is the same mechanism the spec already relies on for "stable across restarts". Under the one-shot design this could not bite: `wait` re-resolved at each re-arm, so a branch switch took effect within a turn.
 
 `rooms` output:
 
@@ -1014,15 +1016,28 @@ Expected: FAIL — no `tail` verb.
 needs is introduced below. Extend `leave` to remove the pidfile and signal the
 process once this task's lock exists.
 
-**A tail for a non-member exits 0 with a line saying so, and the skill must
-not re-arm after a deliberate shutdown.** Same class as the three findings
-above — another guarantee termination used to provide. `leave` kills the tail,
-which ends the stream, which notifies the agent, whose standing instruction is
-to re-arm when a stream ends. That re-arm would start a tail for a room it
-just left, which exits, which notifies, which re-arms: a spin driven by the
-recovery rule itself. Two guards, both needed: `tail` exits **0** (not 69) for
-a non-member so the backoff does not mask it, and the skill's rule is
-"re-arm when a stream ends **unless you ended it**".
+**`leave` kills the tail only when it was the handle's LAST room.** The
+pidfile and the wake topic are both keyed on handle alone — one tail serves
+every room the handle is in — while `leave` is per-room. Killing
+unconditionally means an agent in rooms A, B and C that leaves A goes deaf for
+**all three** while still a member of B and C. Under the one-shot design that
+self-healed within a turn, because the Stop hook re-armed unconditionally;
+with the hook gone and the "unless you ended it" rule below, the agent
+correctly declines to re-arm and stays deaf indefinitely, believing it acted
+deliberately. Worse, `leave A` drops only A's row, so `armed_at` for B and C
+stays set with no tail behind it and the viewer reports **live — will hear
+you** for ten minutes before decaying.
+
+**A tail whose handle is a member of ZERO rooms exits 0 with a line saying so,
+and the skill must not re-arm after a deliberate shutdown.** The membership
+question is per-handle because the tail is; "not a member of the room it just
+left" is the wrong test. `leave` on the last room kills the tail, which ends
+the stream, which notifies the agent, whose standing instruction is to re-arm.
+That re-arm would start a tail for a handle in no rooms, which exits, which
+notifies, which re-arms: a spin driven by the recovery rule itself. Two
+guards, both needed: `tail` exits **0** (not 69) so the backoff cannot mask
+it, and the skill's rule is "re-arm when a stream ends **unless you ended
+it**".
 
 **Two test seams, both marker files, never commands.** Each creates its file
 at its point and blocks until the file is removed, giving up after 2 seconds.
@@ -1155,6 +1170,31 @@ test("THREE mentions arrive on ONE arming", async () => {
   }
   expect(tail.killed).toBe(false);
   tail.kill();
+});
+
+test("leaving one of several rooms keeps the tail running", async () => {
+  // The pidfile and wake topic are per-handle; leave is per-room. Killing
+  // unconditionally would deafen the agent for rooms it is still in, and the
+  // "unless you ended it" rule would correctly stop it re-arming -- so it
+  // would stay deaf believing it acted deliberately.
+  await finished(runRt(["chat", "join", "a", "--as", "listener"], home));
+  await finished(runRt(["chat", "join", "b", "--as", "listener"], home));
+  await finished(runRt(["chat", "join", "b", "--as", "poster"], home));
+  const tail = runRt(["chat", "tail", "--as", "listener"], home);
+  await waitUntilArmed(home, "b", "listener");
+  await finished(runRt(["chat", "leave", "a", "--as", "listener"], home));
+  await finished(runRt(["chat", "post", "b", "@listener still here?", "--as", "poster"], home));
+  expect(await nextLine(tail, 5_000)).toContain("#b");
+  tail.kill();
+});
+
+test("leaving the last room ends the tail with exit 0, not 69", async () => {
+  // Exit 0 so the daemon-down backoff cannot mask a deliberate shutdown.
+  await finished(runRt(["chat", "join", "a", "--as", "listener"], home));
+  const tail = runRt(["chat", "tail", "--as", "listener"], home);
+  await waitUntilArmed(home, "a", "listener");
+  await finished(runRt(["chat", "leave", "a", "--as", "listener"], home));
+  expect((await finished(tail)).exitCode).toBe(0);
 });
 
 test("a post in the arm window is delivered ONCE, not twice", async () => {
