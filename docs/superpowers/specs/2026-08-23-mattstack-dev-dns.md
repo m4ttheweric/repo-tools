@@ -14,13 +14,24 @@ None of them resolve today, which is why an invite cannot be minted or redeemed.
 rt's `DEFAULT_INVITE_RELAY_URL` (`lib/team/relay-client.ts:12`). Without it,
 every `rt team invite` and every join fails at DNS.
 
-| | |
-|---|---|
-| Type | `CNAME` |
-| Name | `switchboard` |
-| Target | `switchboard-production-cda9.up.railway.app` |
-| Proxy | **DNS only (grey cloud)** |
-| TTL | Auto |
+Railway issues the exact records when the custom domain is registered — **do
+not guess them**. Registering `switchboard.mattstack.dev` on the service
+returned:
+
+| Type | Name | Value | Proxy |
+|---|---|---|---|
+| `CNAME` | `switchboard` | `uhckapqq.up.railway.app` | **DNS only (grey cloud)** |
+| `TXT` | `_railway-verify.switchboard` | `railway-verify=5b11ea3e…` (ownership) | n/a |
+
+Two corrections to an earlier draft of this file, both found by actually
+registering the domain rather than reasoning about it:
+
+- The CNAME target is a Railway-internal routing host (`uhckapqq…`), **not**
+  the service's public `switchboard-production-cda9.up.railway.app`. Pointing
+  at the public domain is a plausible-looking mistake that does not work.
+- There is a **second, TXT record** for ownership verification. An earlier
+  draft named only the CNAME, so following it would have left the certificate
+  stuck at `VALIDATING_OWNERSHIP` with no obvious cause.
 
 **Grey cloud, not orange.** Proxying gives Cloudflare the TLS session, which
 means Cloudflare terminates and can see request bodies. The relay's whole
@@ -30,9 +41,28 @@ who sees traffic metadata weakens the claim we make to a user pointing a work
 account at this. It also means Railway's own certificate is what clients
 validate, one less moving part.
 
-Railway also needs the custom domain registered on its side (service settings →
-Networking → Custom Domain) or it will not serve a certificate for the name.
-Add it there first, then create the CNAME it prints.
+Railway must have the custom domain registered before it will serve a
+certificate. That can be done through the API rather than the dashboard, which
+also prints the records to create:
+
+```
+generate_domain(project, service, environment, domain="switchboard.mattstack.dev", port=7940)
+```
+
+Registered 2026-08-23. **Both records are live and the certificate issued
+~3.5 minutes after they resolved:**
+
+```
+$ curl https://switchboard.mattstack.dev/healthz
+ok
+$ openssl s_client -connect switchboard.mattstack.dev:443 …
+subject=CN=switchboard.mattstack.dev
+issuer=C=US, O=Let's Encrypt, CN=YR1
+```
+
+The Let's Encrypt issuer (rather than a Cloudflare one) is the check that the
+grey cloud actually took effect — a proxied record would show Cloudflare
+terminating TLS, which is the thing this setup exists to avoid.
 
 **After it resolves**, one check that catches the common mistake:
 
