@@ -211,6 +211,34 @@ test("a colliding handle from a different cwd is refused, not suffixed", () => {
   expect(listMembers("build", db).map(m => m.handle)).toEqual(["a"]);
 });
 
+test("handle derivation covers all three worktree shapes on this machine", () => {
+  // This derivation has looked right and computed wrong twice. Fixtures, not
+  // the live filesystem: build three trees in a temp dir and assert the
+  // handles are distinct AND name their repository.
+  //
+  //   pool/  main/ (.git dir)   slot/ (.git file -> ../main/.git/worktrees/slot)
+  //   standalone/ (.git dir) inside a container dir
+  //   sibling: repo/ (.git dir) and repo-wt/ (.git file -> ../repo/.git/...)
+  //
+  // with a repo index mapping the two main worktrees to real names.
+  const { poolSlot, standalone, siblingWt, index } = makeWorktreeFixtures();
+  expect(deriveHandle(poolSlot, index)).toBe("pool-repo-slot");
+  expect(deriveHandle(standalone, index)).toBe("standalone-repo-standalone");
+  expect(deriveHandle(siblingWt, index)).toBe("sibling-repo-repo-wt");
+  // The failure this guards: a bare slot name. "slot" and "main" collide
+  // across unrelated pools, and the pidfile is machine-wide.
+  expect(deriveHandle(poolSlot, index)).not.toBe("slot");
+});
+
+test("an unresolvable repo falls to the cwd-relative form, not <user>-<host>", () => {
+  // workforest-fixture/feature has a stale gitdir pointer naming a foreign
+  // home. Every broken directory must not collapse to one shared handle.
+  const broken = makeBrokenWorktreeFixture();
+  const h = deriveHandle(broken, {});
+  expect(h).toContain("broken");
+  expect(h).not.toBe(`${userInfo().username}-${hostname()}`);
+});
+
 test("rejoining from the same cwd keeps the handle rather than refusing", () => {
   const db = freshDb();
   joinRoom({ room: "build", handle: "a", cwd: "/one" }, db);
@@ -879,13 +907,26 @@ test file.
 
 Follow `commands/events.ts` for argument parsing (`positional`, `flagValue`, `parseDuration`) and for the `--json` convention.
 
-Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/branch exist only in this process, never in the daemon — so the resolved handle travels in every payload. Order: `--as` → `chat.handle` (user scope) → herdr pane title via `HERDR_PANE_ID` → **`<repo>-<worktree-dir>`** slugified → `<user>-<host>` slugified.
+Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/branch exist only in this process, never in the daemon — so the resolved handle travels in every payload. Order: `--as` → `chat.handle` (user scope) → herdr pane title via `HERDR_PANE_ID` → **`<rt-repo-name>-<cwd-basename>`** slugified → **cwd relative to `$HOME`** slugified → `<user>-<host>` slugified.
 
 **No branch component, because of the tail's lifetime.** A tail resolves its handle once at process start and holds it for the whole session, while `post`, `read` and `join` re-resolve on every invocation. A branch-bearing handle drifts: a mid-session branch switch leaves the agent posting as `repo-feature-b` while its tail listens on `chat/wake/repo-feature-a` — silently deaf to its own current identity, and two members in `who`. A directory cannot drift, since the process does not change directory. Under the one-shot design this could not bite: `wait` re-resolved at each re-arm, so a branch switch took effect within a turn.
 
-**Repo AND directory, not the directory alone — this machine has two worktree layouts.** The sibling form (`repo-tools`, `repo-tools-chatspec-wt`) makes a basename fine. The parent-folder form documented in `~/.claude/CLAUDE.md` does not: `acme/{fred,ginny,gamma,voldemort}` and `workforest-fixture/{feature,hotfix,main,playground,review}` are live right now, and a basename there drops the repository entirely — an agent in `acme/ginny` would answer to `ginny`. `workforest-fixture/main` would yield `main`, which **collides across unrelated repositories**, and since the pidfile is keyed on handle alone under the per-machine rt dir, the second agent's `tail` would be refused "already armed" by a process it has nothing to do with, while both shared the wake topic `chat/wake/main`.
+**Get the repo name from rt's index, not from a directory name.** Two earlier drafts derived it from paths and both computed wrong on the real pools — verified by running them:
 
-So: `acme-ginny`, `workforest-fixture-main`, and `repo-tools-chatspec-wt` — collapsing the prefix when the basename already starts with the repo name. Get the repo name from `git rev-parse --git-common-dir`, which resolves to the main worktree even from a linked one.
+| cwd | a directory-derived rule gives | correct |
+|---|---|---|
+| `acme/ginny` | `gamma-ginny` | `acme-dev-ginny` |
+| `acme/gamma` | `gamma` | `acme-dev-gamma` |
+| `workforest-fixture/main` | `main` | `workforest-fixture-main` |
+| `workforest-fixture/feature` | *git errors* | falls to position 5 |
+
+`acme/gamma` **is** the main worktree, so "the main worktree's directory name" makes every sibling slot's repo `gamma` — wrong, and unstable, since rebuilding the pool with a different slot as main renames every agent on the machine. And `workforest-fixture/main` reducing to bare `main` is the machine-wide pidfile collision this was written to eliminate.
+
+`~/.mattstack/rt/repos.json` already records `"acme-dev": ".../acme/gamma"`. Read it with **`loadRepoIndex()`** (`lib/repo-index.ts`), keyed by the main worktree path, which a linked worktree finds from its own `.git` file's `gitdir:` pointer. **A file read, not a subprocess** — `deriveRepoIdentity` is deliberately async and both `commands/settings-keys.ts` and `lib/daemon/handlers/endpoint.ts` document the rule as "async — never a sync spawn", while `post` must stay cheap and silent.
+
+**No collapse rule**, even though it yields the occasional redundant handle like `repo-tools-repo-tools-chatspec-wt`. Collapsing is what let `workforest-fixture/main` fall back to bare `main`. Ugly and unique beats pretty and colliding.
+
+**Position 5 exists because git can fail.** `workforest-fixture/feature` currently errors with `fatal: not a git repository: /Users/matthew/...` — a foreign home path in a stale gitdir pointer. Dropping straight to `<user>-<host>` would give one shared handle to every broken directory on the machine, so slugify the cwd relative to `$HOME` first.
 
 **Do not resolve through an existing `chat_members` row for this cwd.** It looks natural — `joinRoom` already matches on cwd to detect a rejoin — but promoting that match to general resolution gives it three jobs its original use never had: it would be the only daemon-dependent step in an otherwise local order and would fail during exactly the outage the tail's backoff exists to survive; it would outlive its task, so a recycled worktree slot would inherit the previous occupant's identity, memberships and `last_read_id`, and emit someone else's unread at tail start; and two rows for one cwd (one `--as`, one derived) have no defined tie-break.
 

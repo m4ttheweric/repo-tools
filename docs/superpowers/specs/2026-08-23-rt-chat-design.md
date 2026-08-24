@@ -107,8 +107,9 @@ silently normalized.
 1. `--as <handle>`
 2. `chat.handle` in rt settings (user scope)
 3. herdr pane title, resolved from `HERDR_PANE_ID`
-4. **`<repo>-<worktree-dir>`**, slugified — the main repository's name plus the working directory's basename, collapsing the prefix when the basename already starts with it
-5. `<user>-<host>`, slugified
+4. **`<rt-repo-name>-<cwd-basename>`**, slugified — the repository's name **as rt already records it**, plus the working directory's basename. No collapsing.
+5. **the cwd path relative to `$HOME`**, slugified — the last resort that still identifies a directory
+6. `<user>-<host>`, slugified
 
 **Position 4 carries no branch, and the reason is the tail's lifetime.** A
 tail resolves its handle once at process start and holds it for the whole
@@ -134,15 +135,45 @@ dir, so a second agent's `tail` would be refused "already armed" by a process
 it has nothing to do with, and the two would share the wake topic
 `chat/wake/main` and receive each other's mentions.
 
-Hence `<repo>-<worktree-dir>`: `acme-ginny`, `workforest-fixture-main`,
-and — since the basename already starts with the repo name —
-`repo-tools-chatspec-wt` rather than the redundant
-`repo-tools-repo-tools-chatspec-wt`. The repository name comes from
-`git rev-parse --git-common-dir`, which resolves to the main worktree even
-from a linked one. Position 3 masks this whenever agents run in herdr panes,
-but that is a mitigation, not a guarantee: anything launched outside herdr
-falls through, including the `.claude/worktrees/agent-<hash>` directories,
-whose basenames are unique but unreadable.
+**The repository name comes from rt's index, not from a directory name.**
+This is the part two earlier drafts got wrong, both times by reasoning about
+paths instead of running the rule against the real pools. A directory-derived
+name fails on the parent-folder layout: `acme/gamma` *is* the main
+worktree, so deriving "the main worktree's directory name" gives every sibling
+slot the repo name `gamma` — wrong, and unstable, since rebuilding the pool
+with a different slot as main silently renames every agent on the machine.
+
+rt already holds the right answer. `~/.mattstack/rt/repos.json` records
+`"acme-dev": ".../acme/gamma"`, so the repository containing
+`acme/ginny` is `acme-dev` and the handle is `acme-dev-ginny`. Read
+it through `loadRepoIndex()` (`lib/repo-index.ts`), keyed by the main
+worktree path, which a linked worktree finds from its own `.git` file's
+`gitdir:` pointer. That is a **file read, not a subprocess** — load-bearing,
+because `deriveRepoIdentity` is deliberately async and two modules document
+the rule as "async — never a sync spawn", while `post` must stay cheap and
+silent.
+
+**No collapse rule.** An earlier draft shortened `<repo>-<dir>` when the
+directory already began with the repo name, which is what let
+`workforest-fixture/main` reduce back to bare `main` — the exact machine-wide
+pidfile collision the change was written to eliminate. Always joining both
+parts yields the occasional redundant handle
+(`repo-tools-repo-tools-chatspec-wt`), and that is the correct trade: an ugly
+handle is legible and unique, a collapsed one is pretty and collides.
+
+**Position 5 exists because git can fail.** `workforest-fixture/feature`
+currently errors with `fatal: not a git repository:
+/Users/matthew/Documents/GitHub/...` — a foreign home path in a stale gitdir
+pointer. When neither the index nor git can name the repository, falling
+straight to `<user>-<host>` would give one shared handle to every such
+directory on the machine, so position 5 slugifies the cwd relative to `$HOME`
+first: unique by construction, ugly, and reached only when something is
+already broken.
+
+Position 3 masks all of this whenever agents run in herdr panes, but that is a
+mitigation, not a guarantee: anything launched outside herdr falls through,
+including the `.claude/worktrees/agent-<hash>` directories, whose basenames
+are unique but unreadable.
 
 This could not bite under the one-shot design, where `wait` re-resolved at
 every re-arm and a branch switch simply took effect on the next turn. It is
