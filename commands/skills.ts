@@ -341,23 +341,13 @@ function resolvePluginRootsFromDir(dir: string): PluginRoots {
   return { byName };
 }
 
-function selectVerbs(roster: VerbDef[], names: string[] | null): VerbDef[] {
-  if (!names) return roster;
-  const byName = new Map(roster.map((v) => [v.name, v]));
-  return names.map((name) => {
-    const verb = byName.get(name);
-    if (!verb) throw new SkillsUsageError(`verb "${name}" not found in roster`);
-    return verb;
-  });
-}
-
 type Resolved = {
   packDir: string;
   team: string;
-  roster: VerbDef[];
-  // The unfiltered roster: `roster` above is selectVerbs(fullRoster, --verb),
-  // so composition (which must never truncate its binding universe on a
-  // stray --verb) reads this instead.
+  // Unfiltered by --verb: the roster/stage universe is scoped by --verb once
+  // inside compileTargets (across both name spaces together), not here --
+  // composition (which must never truncate its binding universe on a stray
+  // --verb) also reads this directly, unfiltered.
   fullRoster: VerbDef[];
   bindings: Record<string, Record<string, string>>;
   pluginRoots: PluginRoots;
@@ -419,7 +409,12 @@ function buildStageEntries(input: Pick<Resolved, "pipelines" | "pluginRoots">): 
   for (const [type, names] of Object.entries(input.pipelines)) {
     out[type] = names.map((qualified) => {
       const name = qualified.slice(qualified.indexOf(":") + 1);
-      const step = loadStepSource(name, input.pluginRoots);
+      let step: StepSource;
+      try {
+        step = loadStepSource(name, input.pluginRoots);
+      } catch (err) {
+        throw new SkillsUsageError(`pipeline "${type}": "${name}": ${(err as Error).message}`);
+      }
       if (!step.stageMeta) {
         throw new SkillsUsageError(`pipeline "${type}": "${name}" has no metadata.stage; it cannot appear in a pipeline`);
       }
@@ -459,7 +454,6 @@ async function resolve(flags: Flags): Promise<Resolved> {
   const { team, packDir } = await resolvePack(flags);
 
   const fullRoster = readVerbRoster(packDir);
-  const roster = selectVerbs(fullRoster, flags.verbs);
   // A pack with no verb roster needs no manifest: bindings only feed compile targets.
   const manifestPath = fullRoster.length === 0 ? null : (flags.manifest ?? findDefaultManifest(mattstackRoot, team));
   const bindings = manifestPath ? readManifestBindings(manifestPath) : {};
@@ -485,7 +479,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
   const stageEntries = buildStageEntries({ pipelines, pluginRoots });
 
   return {
-    packDir, team, roster, fullRoster, bindings, pluginRoots, invocable, surface, internalRoster, manifestPath,
+    packDir, team, fullRoster, bindings, pluginRoots, invocable, surface, internalRoster, manifestPath,
     pipelines, stages, stageEntries, repoKey, mattstackSha, mattstackDirty,
   };
 }
@@ -621,12 +615,35 @@ function tryCompileVerb(verb: VerbDef, resolved: Resolved, isStage: boolean): Co
 
 type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
 
-/** A roster verb keeps today's default-public rule; a stage is internal unless surface.jsonc names it explicitly. */
-function compileTargets(resolved: Resolved, publicSet: Set<string> | null): CompileTarget[] {
-  return [
-    ...resolved.roster.map((verb) => ({ verb, isPublic: !publicSet || publicSet.has(verb.name), isStage: false })),
+/**
+ * A roster verb keeps today's default-public rule; a stage is internal
+ * unless surface.jsonc names it explicitly. `verbFilter` (--verb) scopes
+ * both name spaces together, in the order named: `--verb stage-plan`
+ * targets exactly that stage, `--verb work` targets exactly that roster
+ * verb -- neither pulls in every stage a pipeline declares, which is what
+ * `resolved.stages` being unfiltered would otherwise do to --preview's
+ * one-body contract and to a scoped compile/check.
+ */
+function compileTargets(resolved: Resolved, publicSet: Set<string> | null, verbFilter: string[] | null): CompileTarget[] {
+  const rosterNames = new Set(resolved.fullRoster.map((v) => v.name));
+  for (const stage of resolved.stages) {
+    if (rosterNames.has(stage.name)) {
+      throw new SkillsUsageError(`"${stage.name}" is both a roster verb and a pipeline stage; a name may be one or the other`);
+    }
+  }
+
+  const all: CompileTarget[] = [
+    ...resolved.fullRoster.map((verb) => ({ verb, isPublic: !publicSet || publicSet.has(verb.name), isStage: false })),
     ...resolved.stages.map((verb) => ({ verb, isPublic: publicSet?.has(verb.name) ?? false, isStage: true })),
   ];
+  if (!verbFilter) return all;
+
+  const byName = new Map(all.map((t) => [t.verb.name, t]));
+  return verbFilter.map((name) => {
+    const target = byName.get(name);
+    if (!target) throw new SkillsUsageError(`verb "${name}" not found in roster or pipeline stages`);
+    return target;
+  });
 }
 
 export async function skillsCompile(args: string[]): Promise<void> {
@@ -646,7 +663,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
 
     const rows: CompileVerbRow[] = [];
 
-    for (const { verb, isPublic, isStage } of compileTargets(resolved, publicSet)) {
+    for (const { verb, isPublic, isStage } of compileTargets(resolved, publicSet, flags.verbs)) {
       const outDir = outDirFor(resolved.packDir, verb.name, isPublic);
       const stale = otherSideDir(resolved.packDir, verb.name, isPublic);
       const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
@@ -748,7 +765,7 @@ export async function skillsCheck(args: string[]): Promise<void> {
     let anyStale = false;
     const rows: CheckVerbRow[] = [];
 
-    for (const { verb, isPublic, isStage } of compileTargets(resolved, publicSet)) {
+    for (const { verb, isPublic, isStage } of compileTargets(resolved, publicSet, flags.verbs)) {
       const outDir = outDirFor(resolved.packDir, verb.name, isPublic);
       const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
 
