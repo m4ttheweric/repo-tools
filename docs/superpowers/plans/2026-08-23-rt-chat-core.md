@@ -1209,11 +1209,11 @@ plan's task list — it is rt-side work, so it lands here.
 
 **Files:**
 - Modify: `lib/daemon/handlers/chat.ts`
-- Modify: `lib/notifier.ts` — `notify()` gains an optional `id`, and the push producer lands beside `pushToTray` inside it
+- Modify: `lib/notifier.ts` — a `chat_mention` entry in `NOTIFICATION_TYPES`; `notify()` and `notifyEnabled()` gain an optional trailing `id`; the push producer lands beside `pushToTray` inside `notify()`
 - Test: `lib/daemon/__tests__/chat-handlers.test.ts`
 
 **Interfaces:**
-- Consumes: `notify` from `lib/notifier.ts`; `peekNotificationQueue` from `lib/state/index.ts`; `getSetting` for `chat.humanHandle`, `chat.push.provider`, `chat.push.target`; `setSetting(key, value, scope)` in tests.
+- Consumes: `notifyEnabled` from `lib/notifier.ts`; `peekNotificationQueue` from `lib/state/index.ts`; `getSetting` for `chat.humanHandle`, `chat.push.provider`, `chat.push.target`; `setSetting(key, value, scope)` in tests.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1270,25 +1270,36 @@ membership and `wake_on`. This adds a producer to
 `notify_queue`, which the daemon's notifier already drains to the tray — no
 new delivery machinery is built.
 
-**Call `notify()` from `lib/notifier.ts` — not the store's
-`enqueueNotification`.** This matters more than it looks. `notify()` is the
-*only* path to `pushToTray`: it enqueues, fires the WebSocket broadcast hook,
-and pushes to the tray in one call. Writing straight to `notify_queue` through
-the store bypasses all three, so a chat mention would never reach the tray, WS
-clients, or the push producer Step 4 adds beside `pushToTray` — the one thing
-push exists for would be the one thing it never sends.
+**Call `notifyEnabled()` from `lib/notifier.ts` — not `notify()`, and
+certainly not the store's `enqueueNotification`.** Three layers, and picking
+the wrong one breaks something different each time:
+
+- The **store's `enqueueNotification`** writes straight to `notify_queue`,
+  bypassing the tray push, the WebSocket broadcast hook, and the push producer
+  Step 4 adds — `notify()` is the only path to `pushToTray`, so the one thing
+  push exists for would be the one thing it never sends.
+- **`notify()`** does all of that but respects no user preference. Every other
+  notification in rt is switchable; chat would be the only kind Matt cannot
+  turn off, and it would not appear in the prefs UI at all.
+- **`notifyEnabled(category, title, message, url?, pids?)`** checks
+  `isEnabled(loadNotificationPrefs(), category)` and then calls `notify()`.
+  That is the correct entry point.
 
 ```ts
-notify(`#${room}`, `${authorHandle}: ${body}`, undefined, "chat", undefined, `chat:${messageId}`);
+notifyEnabled("chat_mention", `#${room}`, `${authorHandle}: ${body}`,
+              undefined, undefined, `chat:${messageId}`);
 ```
 
-**`notify()` gains a trailing optional `id` parameter** — its current
-signature is `notify(title, message, url?, category?, pids?)` and it generates
-`crypto.randomUUID()` internally. Chat needs a *stable* id: `chat:<messageId>`
-is unique per message and repeatable, so a redelivery cannot double-notify,
-which is what the already-exported `isNotificationQueued` exists to check. Add
-the parameter as optional and defaulted to the existing UUID so every current
-caller is unaffected.
+Two additive changes to `lib/notifier.ts` make that call work:
+
+1. **A `chat_mention` entry in `NOTIFICATION_TYPES`** — `{ key: "chat_mention", label: "Chat mention", description: "When an agent mentions you in a chat room" }`. That array is the user-facing on/off list; without an entry the preference is invisible even though `isEnabled` would honor it. Non-breaking: `isEnabled` returns true for an unset key, so the default is on.
+2. **A trailing optional `id` on both `notify()` and `notifyEnabled()`.**
+   `notify` is `notify(title, message, url?, category?, pids?)` today and
+   generates `crypto.randomUUID()` internally; `notifyEnabled` does not forward
+   an id at all. Chat needs a *stable* one: `chat:<messageId>` is unique per
+   message and repeatable, so a redelivery cannot double-notify, which is what
+   the already-exported `isNotificationQueued` exists to check. Optional and
+   defaulted to the existing UUID, so every current caller is unaffected.
 
 - [ ] **Step 4: Implement optional push on the drain side**
 
@@ -1352,6 +1363,13 @@ test("a non-chat notification is never pushed", async () => {
   notify("MR ready", "something else", undefined, "general");
   await Bun.sleep(0);
   expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+test("chat_mention disabled in prefs suppresses the notification entirely", async () => {
+  saveNotificationPrefs({ chat_mention: false });
+  notifyEnabled("chat_mention", "#r", "agent: @matt hi", undefined, undefined, "chat:1");
+  await Bun.sleep(0);
+  expect(peekNotifications()).toHaveLength(0);
 });
 ```
 
