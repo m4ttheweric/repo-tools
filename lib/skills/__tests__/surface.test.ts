@@ -69,6 +69,8 @@ describe("compileSkill with internalRoster", () => {
       slots: {},
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const internalRoster = new Set(["acme:qa-gates"]);
 
@@ -96,6 +98,8 @@ describe("compileSkill with internalRoster", () => {
       slots: {},
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const internalRoster = new Set(["acme:qa-gates"]);
 
@@ -118,6 +122,8 @@ describe("compileSkill with internalRoster", () => {
       slots: {},
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
 
     const result = compileSkill(verb, step, {}, roster);
@@ -137,6 +143,8 @@ describe("compileSkill with internalRoster", () => {
       slots: { domain: { contract: "watch-ci-domain@1", required: true } },
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const registeredInternalFill: AttachmentSource = {
       binding: "acme:qa-gates",
@@ -177,6 +185,8 @@ describe("compileSkill with internalRoster", () => {
       slots: { domain: { contract: "watch-ci-domain@1", required: true } },
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const registeredPublicFill: AttachmentSource = {
       binding: "acme:qa-gates",

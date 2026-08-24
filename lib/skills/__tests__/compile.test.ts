@@ -22,6 +22,8 @@ const step: StepSource = {
   },
   allowedTools: ["Bash(gh:*)", "Read"],
   stepFiles: ["references/polling-notes.md", "scripts/ci-watch.sh"],
+  stageMeta: null,
+  description: "",
 };
 
 const domainFill: AttachmentSource = {
@@ -135,6 +137,8 @@ describe("compileSkill", () => {
         ...step.slots,
         notify: { contract: "notify@1", required: false },
       },
+      stageMeta: step.stageMeta,
+      description: step.description,
     };
 
     const result = compileSkill(
@@ -246,6 +250,8 @@ describe("compileSkill", () => {
       slots: {},
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const lintRoster = new Set(["mattstack:watch-ci", "acme:watch-ci-domain"]);
 
@@ -269,6 +275,8 @@ describe("compileSkill", () => {
     const stepMentioningBinding: StepSource = {
       ...step,
       body: `${step.body} This step composes with acme:watch-ci-domain for domain rules.`,
+      stageMeta: step.stageMeta,
+      description: step.description,
     };
 
     const result = compileSkill(
@@ -287,6 +295,8 @@ describe("compileSkill", () => {
     const stepWithMissingRef: StepSource = {
       ...step,
       body: `${step.body} Also see \${CLAUDE_SKILL_DIR}/parts/domain/missing.json for details.`,
+      stageMeta: step.stageMeta,
+      description: step.description,
     };
 
     const result = compileSkill(
@@ -313,6 +323,8 @@ describe("compileSkill", () => {
       slots: {},
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const bareVerb: VerbDef = {
       name: "self-review",

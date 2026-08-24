@@ -205,6 +205,29 @@ describe("loadStepSource", () => {
     expect(step.dir.endsWith(join("attachments", "pipeline", "ship"))).toBe(true);
     expect(step.body).toBe("Ship it.");
   });
+
+  test("loadStepSource reads stage metadata into stageMeta", () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-step-"));
+    const dir = join(root, "attachments", "stage-plan");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), [
+      "---", "name: stage-plan", "description: plan", "type: pipeline-step",
+      "slots:", "  domain: { contract: plan-domain@1, required: false }",
+      "metadata:", "  stage: plan", "  stage-consumes: ticket", "  stage-produces: approach evidence-plan",
+      "---", "", "body {{slot:domain}}",
+    ].join("\n"));
+    const step = loadStepSource("stage-plan", { byName: { mattstack: { dir: root, version: "1.0.0" } } });
+    expect(step.stageMeta).toEqual({ stage: "plan", consumes: ["ticket"], produces: ["approach", "evidence-plan"] });
+  });
+
+  test("loadStepSource leaves stageMeta null for a non-stage engine", () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-step-"));
+    const dir = join(root, "attachments", "work");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), "---\nname: work\ndescription: w\ntype: pipeline-step\n---\n\nbody");
+    const step = loadStepSource("work", { byName: { mattstack: { dir: root, version: "1.0.0" } } });
+    expect(step.stageMeta).toBeNull();
+  });
 });
 
 describe("loadAttachment", () => {

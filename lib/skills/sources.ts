@@ -148,6 +148,18 @@ function listDirs(dir: string): string[] {
   }
 }
 
+function tokens(raw: unknown): string[] {
+  return typeof raw === "string" ? raw.split(/\s+/).filter((t) => t && t !== "-") : [];
+}
+
+function readStageMeta(frontmatter: Record<string, unknown>): StepSource["stageMeta"] {
+  const meta = frontmatter.metadata && typeof frontmatter.metadata === "object"
+    ? (frontmatter.metadata as Record<string, unknown>)
+    : {};
+  if (typeof meta.stage !== "string") return null;
+  return { stage: meta.stage, consumes: tokens(meta["stage-consumes"]), produces: tokens(meta["stage-produces"]) };
+}
+
 export function loadStepSource(engineName: string, roots: PluginRoots): StepSource {
   const mattstack = roots.byName.mattstack;
   if (!mattstack) {
@@ -215,6 +227,8 @@ export function loadStepSource(engineName: string, roots: PluginRoots): StepSour
     slots: parseSlots(frontmatter.slots),
     allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
     stepFiles: listFilesUnder(foundDir, new Set(["SKILL.md"])),
+    stageMeta: readStageMeta(frontmatter),
+    description: typeof frontmatter.description === "string" ? frontmatter.description : "",
   };
 }
 
