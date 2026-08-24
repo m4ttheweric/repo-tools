@@ -6,6 +6,7 @@ import { computeRows, otherSideDir, outDirFor, skillsCompile } from "../../../co
 import { compileSkill } from "../compile.ts";
 import { readSurface } from "../sources.ts";
 import type { AttachmentSource, StepSource, VerbDef } from "../types.ts";
+import { runExpectingCleanExit } from "./helpers.ts";
 
 test("outDirFor places public under skills/ and internal under attachments/", () => {
   expect(outDirFor("/pack", "work", true)).toBe("/pack/skills/work");
@@ -458,28 +459,6 @@ function makeManifestAt(bindingsJson: string): string {
   const path = join(dir, "skills.jsonc");
   writeFile(path, `// GENERATED -- provenance: acme@acme\n{ "bindings": ${bindingsJson} }\n`);
   return path;
-}
-
-async function runExpectingCleanExit(
-  fn: () => Promise<void>,
-): Promise<{ exitCode: number | undefined; errors: string[] }> {
-  const errors: string[] = [];
-  const exitSpy = spyOn(process, "exit").mockImplementation(() => {
-    throw new Error("process.exit sentinel");
-  });
-  const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-    errors.push(args.map(String).join(" "));
-  });
-  try {
-    await fn();
-    return { exitCode: undefined, errors };
-  } catch {
-    const exitCode = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
-    return { exitCode, errors };
-  } finally {
-    exitSpy.mockRestore();
-    errorSpy.mockRestore();
-  }
 }
 
 describe("computeInternalRoster integration (pack dir doubles as plugin root)", () => {
