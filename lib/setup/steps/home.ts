@@ -37,6 +37,31 @@ async function checkLocalKey(ctx: ApplyContext): Promise<KeyStatus> {
   }
 }
 
+
+/**
+ * The most informative line of a subprocess's stderr, for a step whose only
+ * report to the app is one `detail` string.
+ *
+ * Taking line 0 is wrong when the child CRASHES rather than failing cleanly:
+ * bun prints the offending source line and a stack first, so the "error" the
+ * app showed was `79828 |     console.error(...)` — a frame from the compiled
+ * binary, with the actual exception discarded. Prefer a line that names an
+ * error, fall back to the first non-frame line, and only then to line 0.
+ */
+export function failureDetail(stderr: string): string {
+  const lines = stderr
+    .trim()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return "";
+
+  // `79828 |  code`, `      ^`, `    at fn (file:1:2)` — bun's crash frames.
+  const isFrame = (l: string) => /^\d+\s*\|/.test(l) || /^\^+$/.test(l) || /^at\s/.test(l);
+  const named = lines.find((l) => /\b(error|Error|EACCES|ENOENT|denied|failed|fatal)\b/.test(l) && !isFrame(l));
+  return named ?? lines.find((l) => !isFrame(l)) ?? lines[0]!;
+}
+
 async function homeInitRun(ctx: ApplyContext): Promise<StepOutcome> {
   const { p } = ctx;
   const alreadyCloned = p.exists(homeGitDir(p.home));
@@ -60,8 +85,7 @@ async function homeInitRun(ctx: ApplyContext): Promise<StepOutcome> {
     return { state: "done", detail: lastLine };
   }
 
-  const stderrHead = result.stderr.trim().split("\n")[0] ?? "";
-  return { state: "failed", detail: stderrHead, remedy: homeInitRemedy(result.stderr) };
+  return { state: "failed", detail: failureDetail(result.stderr), remedy: homeInitRemedy(result.stderr) };
 }
 
 /** Stderr that names a remote/auth failure on its own terms, with no ambiguity about which end of the wire failed. */
