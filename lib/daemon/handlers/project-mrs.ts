@@ -9,6 +9,11 @@
  * Store-first (any stored state), forge-fallthrough on a miss with a
  * write-back upsert so the next call for that branch is a store hit. A
  * per-branch forge failure resolves to null rather than failing the batch.
+ *
+ * `payload.repoName` is opaque here — the store, grants, and sync it drives
+ * all key on whatever string arrives. It becomes the serialized repo identity
+ * once every caller sends one; the value simply flows through to project_mrs
+ * rows unchanged.
  */
 
 import type { PullRequest } from "@mattstack/glance";

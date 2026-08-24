@@ -11,6 +11,11 @@
  * All handlers take `{ repoName, iid }` and look up the cache entry whose
  * `mr.iid` matches. Writes go through `refreshDiscussions` in
  * `discussions-store.ts`, which also emits new-comment notifications.
+ *
+ * `repoName` is opaque here — it flows straight into `grants()`, the
+ * discussions table, and `getRepoContext`. It becomes the serialized repo
+ * identity once every caller sends one; this module makes no assumption
+ * about its shape.
  */
 
 import { NoteMutator } from "@mattstack/glance";

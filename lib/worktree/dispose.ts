@@ -113,6 +113,7 @@ export async function classifyDirtyAsync(
 // ─── Dispose ─────────────────────────────────────────────────────────────────
 
 export interface DisposeDeps {
+  /** The caller's serialized repo identity — branch_cache.repo now stores this same identity, so `joinedMr`'s join is identity-to-identity, not a display-name match. */
   repoName: string;
   repoPath: string;
   /** Branch-keyed MR cache (daemon `ctx.cache.entries`). */
@@ -140,7 +141,9 @@ function joinedMr(
   const entry = deps.cacheEntries[rec.branch];
   if (!entry || !entry.mr) return null;
   // Entries carry repoName once freshness has attributed them; an unattributed
-  // entry is accepted (single-repo caches predate the field).
+  // entry is accepted (single-repo caches predate the field). A row written
+  // under a pre-rekey legacy name never matches deps.repoName (an identity)
+  // until the boot-time rekeyBranchCacheTable() migration runs.
   if (entry.repoName && entry.repoName !== deps.repoName) return null;
   return entry.mr as { iid?: number; sha?: string | null; state?: string | null };
 }

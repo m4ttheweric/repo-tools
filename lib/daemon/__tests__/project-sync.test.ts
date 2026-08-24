@@ -239,6 +239,22 @@ describe("project-mrs:read handler", async () => {
     expect(synced).toBe(0);
   });
 
+  test("reads under a serialized repo identity — grants, store, and sync all key on the same value", async () => {
+    const identity = "remote:gitlab.com%2Facme%2Fr";
+    const store = tmpStore();
+    store.fullSync(identity, "g/p", [pr(1)], Date.now());
+    const idCtx = { repoIndex: () => ({ [identity]: "/tmp/repo" }), log: { warn: () => {} } } as any;
+    const idTracking = () => ({ [identity]: { mode: "live" as const, caches: ["branches", "project-mrs"] as any } });
+    let synced = 0;
+    const h = createProjectMRsHandlers(idCtx, () => {}, {
+      store, sync: async () => { synced++; }, tracking: idTracking,
+    });
+    const res = await h["project-mrs:read"]!({ repoName: identity });
+    expect(res.ok).toBe(true);
+    expect(Object.keys(dataOf(res).mrs)).toEqual(["1"]);
+    expect(synced).toBe(0); // fresh store, no maxAgeMs → no forced sync
+  });
+
   test("sync failure surfaces as an error, not a crash", async () => {
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store: tmpStore(), sync: async () => { throw new Error("boom"); }, tracking: grantedTracking,

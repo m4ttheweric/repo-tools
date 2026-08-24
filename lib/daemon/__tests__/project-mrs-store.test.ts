@@ -5,13 +5,16 @@
  * test isolation. HOME isolation is handled by the repo-wide bun test
  * preload (test-setup.ts) — never removed here.
  */
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createProjectMRs, freshnessOf } from "../project-mrs-store.ts";
-import { openStateDb, SCHEMA_VERSION } from "../../state/index.ts";
+import {
+  createProjectMRs, freshnessOf,
+  rekeyProjectMrDemandsTable, rekeyProjectMrsMetaTable, rekeyProjectMrsTable,
+} from "../project-mrs-store.ts";
+import { closeStateDb, getStateDb, openStateDb, SCHEMA_VERSION } from "../../state/index.ts";
 import type { PullRequest } from "@mattstack/glance";
 
 function tmpDb(): Database {
@@ -437,5 +440,49 @@ describe("legacy import (project-mrs.json)", () => {
     expect(rec.demands!["mr-board"]!.authors).toEqual(["matt"]);
 
     db.close();
+  });
+});
+
+describe("rekeyProjectMrsTable / rekeyProjectMrsMetaTable / rekeyProjectMrDemandsTable", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let warnSpy: ReturnType<typeof spyOn<Console, "warn">>;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-pmrs-rekey-"));
+    process.env.HOME = home;
+    closeStateDb();
+    warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    process.env.HOME = origHome;
+    closeStateDb();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("project_mrs and project_mrs_meta rows already keyed by a serialized identity are left untouched", async () => {
+    const identity = "remote:gitlab.com%2Fg%2Fr";
+    const store = createProjectMRs(getStateDb());
+    store.fullSync(identity, "g/p", [pr(1)], Date.now());
+
+    const mrReport = await rekeyProjectMrsTable();
+    const metaReport = await rekeyProjectMrsMetaTable();
+    expect(mrReport.migrated).toEqual([]);
+    expect(metaReport.migrated).toEqual([]);
+    // Read under the SAME identity — a re-key that silently moved the row
+    // would make this read empty even though nothing was reported migrated.
+    expect(store.read(identity)!.mrs[1]!.pr.iid).toBe(1);
+  });
+
+  test("a legacy-named project_mr_demands row with no repo-index entry is retained, never dropped", async () => {
+    const store = createProjectMRs(getStateDb());
+    store.registerDemand("ghost-repo", "board:1", ["alice"], Date.now());
+
+    const report = await rekeyProjectMrDemandsTable();
+    expect(report.retained).toEqual(["ghost-repo"]);
+    expect(store.read("ghost-repo")!.demands!["board:1"]!.authors).toEqual(["alice"]);
+    expect(warnSpy).toHaveBeenCalled();
   });
 });
