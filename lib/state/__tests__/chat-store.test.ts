@@ -14,7 +14,20 @@ import { expect, test } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
-import { isValidChatName, joinRoom, leaveRoom, listMembers, listRooms } from "../chat-store.ts";
+import {
+  isValidChatName,
+  joinRoom,
+  leaveRoom,
+  listMembers,
+  listMessages,
+  listRooms,
+  markRead,
+  parseMentions,
+  postMessage,
+  readUnread,
+  recipientsFor,
+  unreadWakingCount,
+} from "../chat-store.ts";
 
 let n = 0;
 function freshDb() {
@@ -69,4 +82,76 @@ test("leave drops membership", () => {
   joinRoom({ room: "build", handle: "a" }, db);
   leaveRoom("build", "a", db);
   expect(listMembers("build", db)).toHaveLength(0);
+});
+
+test("parses mentions and ignores an email-shaped token", () => {
+  expect(parseMentions("hi @alice and @bob-2")).toEqual(["alice", "bob-2"]);
+  expect(parseMentions("mail me at a@b.com")).toEqual([]);
+  expect(parseMentions("@here everyone")).toEqual(["here"]);
+});
+
+test("recipients: mention mode wakes only on being named, and never the author", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  expect(recipientsFor("r", "a", [], db)).toEqual([]);
+  expect(recipientsFor("r", "a", ["b"], db)).toEqual(["b"]);
+  expect(recipientsFor("r", "a", ["a"], db)).toEqual([]);
+});
+
+test("recipients: wakeOn all wakes without a mention; none never wakes", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b", wakeOn: "all" }, db);
+  joinRoom({ room: "r", handle: "c", wakeOn: "none" }, db);
+  expect(recipientsFor("r", "a", [], db)).toEqual(["b"]);
+  expect(recipientsFor("r", "a", ["c"], db)).toEqual([]);
+});
+
+test("@here wakes every member except the author and the none-mode members", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  joinRoom({ room: "r", handle: "c", wakeOn: "none" }, db);
+  expect(recipientsFor("r", "a", ["here"], db).sort()).toEqual(["b"]);
+});
+
+test("read returns unread, advances the cursor, and is empty on a second call", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  const first = readUnread({ handle: "b", limit: 20 }, db);
+  expect(first[0]!.messages.map(m => m.body)).toEqual(["one"]);
+  expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
+});
+
+test("listMessages does not advance any cursor", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  const before = listMembers("r", db).map(m => m.lastReadId);
+  listMessages({ room: "r", limit: 20 }, db);
+  expect(listMembers("r", db).map(m => m.lastReadId)).toEqual(before);
+});
+
+test("a last_read_id ahead of MAX(id) is clamped rather than hanging", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "@b one" }, db);
+  db.run("UPDATE chat_members SET last_read_id = 999999 WHERE handle = 'b';");
+  expect(unreadWakingCount("b", db)).toEqual([]);
+  postMessage({ room: "r", handle: "a", body: "@b two" }, db);
+  expect(unreadWakingCount("b", db)[0]!.count).toBe(1);
+});
+
+test("mark advances without returning messages", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  markRead("b", "r", db);
+  expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
 });

@@ -9,6 +9,7 @@
 
 import { Database } from "bun:sqlite";
 import { getStateDb } from "./db.ts";
+import { runCriticalWrite } from "./busy.ts";
 
 export type WakeMode = "mention" | "all" | "none";
 
@@ -30,6 +31,16 @@ export interface RoomSummary {
   unread: number;
   mentions: number;
   lastPostedAt?: number;
+}
+
+export interface ChatMessage {
+  id: number;
+  room: string;
+  handle: string;
+  body: string;
+  mentions: string[];
+  replyTo?: number;
+  postedAt: number;
 }
 
 interface MemberRow {
@@ -59,6 +70,29 @@ function rowToMember(row: MemberRow): ChatMember {
   return member;
 }
 
+interface MessageRow {
+  id: number;
+  room: string;
+  handle: string;
+  body: string;
+  mentions: string | null;
+  reply_to: number | null;
+  posted_at: number;
+}
+
+function rowToMessage(row: MessageRow): ChatMessage {
+  const message: ChatMessage = {
+    id: row.id,
+    room: row.room,
+    handle: row.handle,
+    body: row.body,
+    mentions: row.mentions ? (JSON.parse(row.mentions) as string[]) : [],
+    postedAt: row.posted_at,
+  };
+  if (row.reply_to !== null) message.replyTo = row.reply_to;
+  return message;
+}
+
 /** Escapes SQLite LIKE wildcards so a handle containing `_` or `%` can't match beyond itself. */
 function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, "\\$&");
@@ -76,6 +110,15 @@ const SELECT_ROOM_UNREAD_MENTIONS_SQL = `SELECT COUNT(*) AS n FROM chat_messages
 const UPSERT_ROOM_SQL = `INSERT INTO chat_rooms (name, created_at) VALUES (?, ?) ON CONFLICT(name) DO NOTHING;`;
 const INSERT_MEMBER_SQL = `INSERT INTO chat_members (room, handle, joined_at, last_read_id, wake_on, cwd, pane) VALUES (?, ?, ?, ?, ?, ?, ?);`;
 const DELETE_MEMBER_SQL = `DELETE FROM chat_members WHERE room = ? AND handle = ?;`;
+const UPDATE_LAST_READ_SQL = `UPDATE chat_members SET last_read_id = ? WHERE room = ? AND handle = ?;`;
+
+const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at";
+const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at) VALUES (?, ?, ?, ?, ?, ?);`;
+const SELECT_UNREAD_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? ORDER BY id ASC LIMIT ?;`;
+const SELECT_UNREAD_SINCE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? AND posted_at >= ? ORDER BY id ASC LIMIT ?;`;
+const SELECT_UNREAD_ALL_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? ORDER BY id ASC;`;
+const SELECT_MESSAGES_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? ORDER BY id DESC LIMIT ?;`;
+const SELECT_MESSAGES_BEFORE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id < ? ORDER BY id DESC LIMIT ?;`;
 
 // `@` is strictly the mention sigil and `/` would reshape chat/wake/<handle>
 // into a nested topic glob, so both are excluded even though the rest of
@@ -148,4 +191,164 @@ export function listRooms(handle: string, db: Database = getStateDb()): RoomSumm
 export function listMembers(room: string, db: Database = getStateDb()): ChatMember[] {
   const rows = db.query(SELECT_ROOM_MEMBERS_SQL).all(room) as MemberRow[];
   return rows.map(rowToMember);
+}
+
+function getRoomMaxId(room: string, db: Database): number {
+  return (db.query(SELECT_ROOM_MAX_ID_SQL).get(room) as { maxId: number }).maxId;
+}
+
+/**
+ * A `last_read_id` above the room's current max can only mean a recreated
+ * `state.db` (ids only grow within one generation); left unclamped it makes
+ * every future read return nothing forever, indistinguishable from a hung
+ * agent that never wakes.
+ */
+function clampCursor(member: MemberRow, maxId: number, db: Database): number {
+  if (member.last_read_id <= maxId) return member.last_read_id;
+  db.query(UPDATE_LAST_READ_SQL).run(maxId, member.room, member.handle);
+  return maxId;
+}
+
+function membershipsFor(handle: string, room: string | undefined, db: Database): MemberRow[] {
+  if (room) {
+    const row = db.query(SELECT_ROOM_MEMBER_SQL).get(room, handle) as MemberRow | null;
+    return row ? [row] : [];
+  }
+  return db.query(SELECT_HANDLE_MEMBERSHIPS_SQL).all(handle) as MemberRow[];
+}
+
+// The lookbehind is what keeps `a@b.com` from reading as a mention of
+// `b.com`: without it, any `@` preceded by an identifier char would match.
+const MENTION_RE = /(?<![A-Za-z0-9._-])@([a-z0-9._-]+)/g;
+
+export function parseMentions(body: string): string[] {
+  const found = new Set<string>();
+  for (const match of body.matchAll(MENTION_RE)) {
+    found.add(match[1]!);
+  }
+  return [...found];
+}
+
+export function recipientsFor(
+  room: string,
+  authorHandle: string,
+  mentions: string[],
+  db: Database = getStateDb(),
+): string[] {
+  const members = db.query(SELECT_ROOM_MEMBERS_SQL).all(room) as MemberRow[];
+  const mentionSet = new Set(mentions);
+  const hasHere = mentionSet.has("here");
+
+  const recipients = members
+    .filter((m) => m.handle !== authorHandle && m.wake_on !== "none")
+    .filter((m) => (mentionSet.size === 0 ? m.wake_on === "all" : hasHere || mentionSet.has(m.handle)))
+    .map((m) => m.handle);
+
+  return recipients.sort();
+}
+
+export function postMessage(
+  args: { room: string; handle: string; body: string },
+  db: Database = getStateDb(),
+): { id: number; recipients: string[] } | undefined {
+  const { room, handle, body } = args;
+  const mentions = parseMentions(body);
+
+  const run = db.transaction((): { id: number; recipients: string[] } => {
+    const now = Date.now();
+    const result = db.query(INSERT_MESSAGE_SQL).run(room, handle, body, JSON.stringify(mentions), null, now);
+    const recipients = recipientsFor(room, handle, mentions, db);
+    return { id: Number(result.lastInsertRowid), recipients };
+  });
+
+  return runCriticalWrite("postMessage", () => run(), { room, handle });
+}
+
+export function readUnread(
+  args: { handle: string; room?: string; limit: number; sinceMs?: number },
+  db: Database = getStateDb(),
+): { room: string; messages: ChatMessage[] }[] {
+  const { handle, room, limit, sinceMs } = args;
+
+  const run = db.transaction((): { room: string; messages: ChatMessage[] }[] => {
+    const members = membershipsFor(handle, room, db);
+    const results: { room: string; messages: ChatMessage[] }[] = [];
+
+    for (const member of members) {
+      const maxId = getRoomMaxId(member.room, db);
+      const cursor = clampCursor(member, maxId, db);
+      const rows = (
+        sinceMs !== undefined
+          ? db.query(SELECT_UNREAD_SINCE_SQL).all(member.room, cursor, sinceMs, limit)
+          : db.query(SELECT_UNREAD_SQL).all(member.room, cursor, limit)
+      ) as MessageRow[];
+      if (rows.length === 0) continue;
+
+      // The cursor advances only to what this call actually returned, not
+      // to MAX(id): a capped or --since-filtered read must leave the rest
+      // unread for the next call, not silently mark it seen.
+      const highestReturned = rows[rows.length - 1]!.id;
+      db.query(UPDATE_LAST_READ_SQL).run(highestReturned, member.room, handle);
+      results.push({ room: member.room, messages: rows.map(rowToMessage) });
+    }
+
+    return results;
+  });
+
+  return run();
+}
+
+export function listMessages(
+  args: { room: string; before?: number; limit: number },
+  db: Database = getStateDb(),
+): ChatMessage[] {
+  const { room, before, limit } = args;
+  const rows = (
+    before !== undefined
+      ? db.query(SELECT_MESSAGES_BEFORE_SQL).all(room, before, limit)
+      : db.query(SELECT_MESSAGES_SQL).all(room, limit)
+  ) as MessageRow[];
+  return rows.reverse().map(rowToMessage);
+}
+
+export function markRead(handle: string, room?: string, db: Database = getStateDb()): void {
+  const members = membershipsFor(handle, room, db);
+  for (const member of members) {
+    const maxId = getRoomMaxId(member.room, db);
+    db.query(UPDATE_LAST_READ_SQL).run(maxId, member.room, handle);
+  }
+}
+
+export function unreadWakingCount(
+  handle: string,
+  db: Database = getStateDb(),
+): { room: string; count: number; mentions: number; maxId: number }[] {
+  const members = db.query(SELECT_HANDLE_MEMBERSHIPS_SQL).all(handle) as MemberRow[];
+  const results: { room: string; count: number; mentions: number; maxId: number }[] = [];
+
+  for (const member of members) {
+    if (member.wake_on === "none") continue;
+
+    const maxId = getRoomMaxId(member.room, db);
+    const cursor = clampCursor(member, maxId, db);
+    if (cursor >= maxId) continue;
+
+    const rows = db.query(SELECT_UNREAD_ALL_SQL).all(member.room, cursor) as MessageRow[];
+    // recipientsFor is the same rule the post path used to decide who to
+    // wake at post time; recomputing it here (rather than a parallel
+    // wake_on/mentions check) is what keeps the two from ever diverging.
+    let count = 0;
+    for (const row of rows) {
+      const rowMentions: string[] = row.mentions ? (JSON.parse(row.mentions) as string[]) : [];
+      if (recipientsFor(row.room, row.handle, rowMentions, db).includes(handle)) count++;
+    }
+    if (count === 0) continue;
+
+    const mentionsCount = (
+      db.query(SELECT_ROOM_UNREAD_MENTIONS_SQL).get(member.room, cursor, `%"${escapeLike(handle)}"%`) as { n: number }
+    ).n;
+    results.push({ room: member.room, count, mentions: mentionsCount, maxId });
+  }
+
+  return results;
 }
