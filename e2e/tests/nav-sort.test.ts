@@ -53,9 +53,16 @@ describe("nav sort menu", () => {
     await session.waitForIdle(300, 10_000);
     await session.press("enter");
 
+    // The border label repaints before the relisted rows do, so waiting on the
+    // label alone can screenshot a frame with no file rows at all — that read
+    // as `indexOf(...) === -1` and failed against a -1 it was compared to.
+    // Wait for a row, then for the redraw to settle, before reading order.
     await session.waitForText("largest first", 15_000);
+    await session.waitForText("zzz-large.txt", 15_000);
+    await session.waitForIdle(300, 10_000);
     const bySize = await session.screen();
     // Larger file now above the alphabetically-earlier one.
+    expect(bySize).toContain("aaa-small.txt");
     expect(bySize.indexOf("zzz-large.txt")).toBeLessThan(bySize.indexOf("aaa-small.txt"));
     expect(bySize).toContain("Size, largest first");
   });
@@ -89,7 +96,10 @@ describe("nav sort menu", () => {
     await session.press("enter");
 
     await session.waitForText("smallest first", 15_000);
+    await session.waitForText("aaa-small.txt", 15_000);
+    await session.waitForIdle(300, 10_000);
     const reversed = await session.screen();
+    expect(reversed).toContain("zzz-large.txt");
     expect(reversed.indexOf("aaa-small.txt")).toBeLessThan(reversed.indexOf("zzz-large.txt"));
   });
 });
