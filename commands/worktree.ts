@@ -241,18 +241,67 @@ async function fetchTreeRows(json: boolean, repoName?: string): Promise<TreeRow[
   return (ok.data?.trees ?? []) as TreeRow[];
 }
 
+/**
+ * MR/pipeline/ticket metadata for each tree, reusing the same `enrich`
+ * pipeline `rt cd` renders — one daemon `cache:read` per repo, same source as
+ * `worktree:list`. Returns the `enrich` trailing (`✓ ● TICKET`) keyed by path.
+ *
+ * The linearId is appended when `enrich` would otherwise omit it: for a ticket
+ * branch it parks the ticket title in the label's leading half, which these
+ * pickers don't render (their label is the tree name), so the id must ride in
+ * the trailing to stay visible.
+ */
+async function enrichTrailingByPath(rows: TreeRow[]): Promise<Map<string, string>> {
+  const byPath = new Map<string, string>();
+  const withBranch = rows.filter((r): r is TreeRow & { branch: string } => Boolean(r.branch));
+  if (withBranch.length === 0) return byPath;
+
+  const { enrichBranches, formatBranchLabelParts } = await import("../lib/enrich.ts");
+  const { getRemoteUrl } = await import("../lib/pickers.ts");
+  const repoIndex = loadRepoIndex();
+
+  const byRepo = new Map<string, Array<TreeRow & { branch: string }>>();
+  for (const r of withBranch) {
+    const group = byRepo.get(r.repoName) ?? [];
+    group.push(r);
+    byRepo.set(r.repoName, group);
+  }
+
+  await Promise.all(
+    [...byRepo].map(async ([repoName, group]) => {
+      const repoPath = repoIndex[repoName];
+      const remoteUrl = repoPath ? await getRemoteUrl(repoPath) : undefined;
+      const enriched = await enrichBranches(
+        group.map((r) => ({ path: r.path, branch: r.branch })),
+        remoteUrl,
+      );
+      for (const eb of enriched) {
+        let trailing = formatBranchLabelParts(eb).trailing;
+        if (eb.linearId && !trailing.includes(eb.linearId)) {
+          trailing = trailing ? `${trailing} ${eb.linearId}` : eb.linearId;
+        }
+        if (trailing) byPath.set(eb.path, trailing);
+      }
+    }),
+  );
+  return byPath;
+}
+
 async function pickOneTree(rows: TreeRow[], message: string): Promise<TreeRow | null> {
   if (rows.length === 0) return null;
   const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const trailingByPath = await enrichTrailingByPath(rows);
   const nameWidth = Math.max(...rows.map((r) => r.name.length));
   const options = rows.map((r) => {
     const state = r.state ?? r.kind;
-    const hint =
+    const base =
       state === "disposable"
         ? r.disposableReason
           ? `disposable — ${r.disposableReason}`
           : "disposable"
         : `${state}${r.branch ? `  ${r.branch}` : ""}${r.owner ? `  ${r.owner}` : ""}`;
+    const trailing = trailingByPath.get(r.path);
+    const hint = trailing ? `${base}  ${trailing}` : base;
     return { value: r.path, label: r.name.padEnd(nameWidth), hint };
   });
   const picked = await filterableSelect({ message, options, stderr: true });
@@ -379,9 +428,15 @@ export async function worktreeList(args: string[], _ctx: unknown): Promise<void>
 
   if (rows.length === 0) { console.log(`\n  ${dim}no worktrees${reset}\n`); return; }
 
+  const trailingByPath = await enrichTrailingByPath(rows);
   console.log("");
   for (const r of rows) {
-    const mrPart = r.mr ? `  ${dim}!${r.mr.iid} ${r.mr.state}${reset}` : "";
+    const trailing = trailingByPath.get(r.path);
+    const mrPart = trailing
+      ? `  ${trailing}`
+      : r.mr
+        ? `  ${dim}!${r.mr.iid} ${r.mr.state}${reset}`
+        : "";
     const dupPart = r.duplicateBranch ? `  ${yellow}duplicate branch${reset}` : "";
     const ownerPart = r.owner ? `  ${dim}${r.owner}${reset}` : "";
     console.log(
