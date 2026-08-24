@@ -105,7 +105,9 @@ test("recipients: wakeOn all wakes without a mention; none never wakes", () => {
   joinRoom({ room: "r", handle: "b", wakeOn: "all" }, db);
   joinRoom({ room: "r", handle: "c", wakeOn: "none" }, db);
   expect(recipientsFor("r", "a", [], db)).toEqual(["b"]);
-  expect(recipientsFor("r", "a", ["c"], db)).toEqual([]);
+  // c (none) is excluded even when directly mentioned; b (all) still wakes,
+  // because all-mode is unconditional and does not go deaf on a directed message.
+  expect(recipientsFor("r", "a", ["c"], db)).toEqual(["b"]);
 });
 
 test("@here wakes every member except the author and the none-mode members", () => {

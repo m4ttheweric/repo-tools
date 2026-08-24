@@ -241,7 +241,10 @@ export function recipientsFor(
 
   const recipients = members
     .filter((m) => m.handle !== authorHandle && m.wake_on !== "none")
-    .filter((m) => (mentionSet.size === 0 ? m.wake_on === "all" : hasHere || mentionSet.has(m.handle)))
+    // 'all' is an unconditional leg: an all-mode member wakes on every message,
+    // including one that @-mentions someone else. It is not gated on an empty
+    // mention set — that gate silences an agent that opted into all room traffic.
+    .filter((m) => m.wake_on === "all" || hasHere || mentionSet.has(m.handle))
     .map((m) => m.handle);
 
   return recipients.sort();
