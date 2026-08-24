@@ -62,6 +62,20 @@ function positional(args: string[]): string | undefined {
   return undefined;
 }
 
+/** Every positional token, in order, skipping flags and their value slots. */
+function positionals(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith("--")) {
+      if (FLAGS_WITH_VALUES.has(a)) i++; // skip the flag's value slot
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
 function flagValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
@@ -398,10 +412,14 @@ async function runLeave(args: string[]): Promise<void> {
 }
 
 async function runPost(args: string[]): Promise<void> {
-  const room = args[0];
+  // Body is the positional tokens after the room, flag-aware: `--as <handle>`
+  // (and every other recognized flag) is resolved separately by resolveHandle,
+  // so a bare args.slice(1).join(" ") would splice the flag back into the post.
+  const rest = positionals(args);
+  const room = rest[0];
   if (!room) fail("usage: rt chat post <room> <text>");
   requireValidName("room", room);
-  const body = args.slice(1).join(" ");
+  const body = rest.slice(1).join(" ");
   if (!body) fail("usage: rt chat post <room> <text>");
 
   const handle = resolveHandle(args);

@@ -166,6 +166,17 @@ describe("rt chat CLI — additional verb behavior", () => {
     expect(read.rooms[0].messages[0].body).toBe("hello world");
   });
 
+  test("post with --as consumes the flag as the handle, not into the body", async () => {
+    // resolveHandle reads --as from anywhere in args; the body must strip it
+    // the same way, or the flag is spliced into the posted message text.
+    await runChat(["join", "r", "--as", "poster"]);
+    await runChat(["join", "r", "--as", "listener"]);
+    expect(await runChat(["post", "r", "@listener", "ping", "--as", "poster"])).toBe("");
+    const read = JSON.parse(await runChat(["read", "r", "--as", "listener", "--json"]));
+    expect(read.rooms[0].messages[0].body).toBe("@listener ping");
+    expect(read.rooms[0].messages[0].handle).toBe("poster");
+  });
+
   test("who lists members of the given room", async () => {
     await runChat(["join", "r", "--as", "a"]);
     await runChat(["join", "r", "--as", "b"]);
@@ -236,6 +247,19 @@ describe("chat handle derivation — worktree fixtures", () => {
     expect(slotHandle).not.toBe("beta");
     expect(mainHandle!.startsWith("acme-dev-")).toBe(true);
     expect(slotHandle!.startsWith("acme-dev-")).toBe(true);
+  });
+
+  test("no collapse rule: an alias that prefixes the worktree dir is not deduplicated", () => {
+    // The historical failure this guards: a "collapse" step that stripped the
+    // <repo>- prefix from <dir> when dir already began with repo. That is what
+    // let a slot reduce to a bare, machine-wide-colliding name. Ugly-and-unique
+    // beats pretty-and-colliding, so acme + acme-web stays acme-acme-web.
+    const mainPath = join(root, "acme", "acme-web");
+    makeMainWorktree(mainPath);
+    const index = { acme: mainPath };
+    const handle = __test__.deriveRepoDirHandle(mainPath, index);
+    expect(handle).toBe("acme-acme-web");
+    expect(handle).not.toBe("acme-web");
   });
 
   test("an unresolvable worktree (stale/foreign gitdir pointer) falls through to null, not a bare directory name", () => {
