@@ -306,6 +306,50 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(p.calls.exec).toEqual([]);
     });
 
+    // The clean-room dead-ended here: a bare runner has neither Claude Code
+    // nor Codex, fast-browser correctly refused to guess, and the whole run
+    // stopped at step 15 of 20 — so services.start, snapshot.push and verify
+    // never ran. Mirrors plugins.install's claude branch.
+    const NO_HOST = "fast-browser: Detected hosts: none. Non-interactive setup requires an explicit host.";
+
+    test("no host + non-interactive -> skipped, so the rest of the run still executes", async () => {
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/fast-browser": "bin" },
+        exec: async () => ({ code: 2, stdout: "", stderr: NO_HOST }),
+      });
+      const { ctx } = makeCtx(p, { nonInteractive: true });
+      const outcome = await fastbrowserSetupStep.run(ctx);
+      expect(outcome.state).toBe("skipped");
+      expect(detailOf(outcome)).toContain("no Claude Code or Codex host detected");
+    });
+
+    // A human IS watching, so the failure stays loud — same split plugins.install makes.
+    test("no host + interactive -> still fails", async () => {
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/fast-browser": "bin" },
+        exec: async () => ({ code: 2, stdout: "", stderr: NO_HOST }),
+      });
+      const { ctx } = makeCtx(p, { nonInteractive: false });
+      expect((await fastbrowserSetupStep.run(ctx)).state).toBe("failed");
+    });
+
+    // Only the no-host case is forgiven: a real fast-browser fault must not be
+    // swallowed just because nobody is watching.
+    test("a different failure is still failed even non-interactively", async () => {
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/fast-browser": "bin" },
+        exec: async () => ({ code: 1, stdout: "", stderr: "segfault" }),
+      });
+      const { ctx } = makeCtx(p, { nonInteractive: true });
+      expect((await fastbrowserSetupStep.run(ctx)).state).toBe("failed");
+    });
+
     test("setup exits non-zero -> failed with the terminal-guidance remedy", async () => {
       const p = fakeProbes({
         home,
