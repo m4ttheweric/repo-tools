@@ -28,8 +28,11 @@ A6=$(printf '%s%s' 'am' 'fam')
 A7=$(printf '%s%s' 'adjus' 'ter')
 A8=$(printf "%s%s" "hog" "warts")
 A9=$(printf "%s%s" "CV" "I")
+# The carrier name reached HEAD hyphenated ("progressive-qa") after the first
+# scrub only caught the spaced form — a word list is only as good as its variants.
+A10=$(printf "%s%s" "progres" "sive")
 
-PATTERN="$A1|$A2|$A3|$A4|$A5|$A6|$A7|$A8|$A9"
+PATTERN="$A1|$A2|$A3|$A4|$A5|$A6|$A7|$A8|$A9|$A10"
 
 # Lockfiles are excluded: their base64 integrity hashes collide with the short
 # patterns often enough to be pure noise, and nothing is authored in them.
