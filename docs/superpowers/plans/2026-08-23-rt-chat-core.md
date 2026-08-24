@@ -201,15 +201,17 @@ test("join creates the room and reports being alone", () => {
   expect(listRooms("a", db).map(x => x.room)).toEqual(["build"]);
 });
 
-test("a colliding handle gets a numeric suffix and the resolved handle is persisted", () => {
+test("a colliding handle from a different cwd is refused, not suffixed", () => {
+  // Suffixing is unreachable from local resolution: every other verb would
+  // still produce the unsuffixed base, so the agent would join as "a-2" while
+  // its tail armed on chat/wake/a.
   const db = freshDb();
   joinRoom({ room: "build", handle: "a", cwd: "/one" }, db);
-  const second = joinRoom({ room: "build", handle: "a", cwd: "/two" }, db);
-  expect(second.handle).toBe("a-2");
-  expect(listMembers("build", db).map(m => m.handle).sort()).toEqual(["a", "a-2"]);
+  expect(() => joinRoom({ room: "build", handle: "a", cwd: "/two" }, db)).toThrow(/--as/);
+  expect(listMembers("build", db).map(m => m.handle)).toEqual(["a"]);
 });
 
-test("rejoining from the same context keeps the handle rather than suffixing again", () => {
+test("rejoining from the same cwd keeps the handle rather than refusing", () => {
   const db = freshDb();
   joinRoom({ room: "build", handle: "a", cwd: "/one" }, db);
   const again = joinRoom({ room: "build", handle: "a", cwd: "/one" }, db);
@@ -280,7 +282,9 @@ Module doc should state the one non-obvious constraint: this is the only module 
 
 `isValidChatName` is `/^[a-z0-9._-]+$/.test(name)`. Both exclusions are load-bearing and the comment should say so — `@` is the mention sigil, `/` would reshape the wake topic glob.
 
-`joinRoom` in one `db.transaction`: upsert `chat_rooms`; look for an existing member row whose `cwd` matches (that is a rejoin — keep its handle); otherwise find a free handle by appending `-2`, `-3`… ; insert the member with `last_read_id` seeded to the room's current `MAX(id)` so a joiner is not woken by history; return the resolved handle, member count, and unread count.
+`joinRoom` in one `db.transaction`: upsert `chat_rooms`; look for an existing member row whose `cwd` matches (that is a rejoin — keep its handle); **if the handle is taken by a row with a different `cwd`, refuse the join**, naming the colliding handle and telling the caller to pass `--as`; otherwise insert the member with `last_read_id` seeded to the room's current `MAX(id)` so a joiner is not woken by history; return the resolved handle, member count, and unread count.
+
+**Refuse rather than suffix.** An earlier draft appended `-2`/`-3`, which cannot work once resolution is fully local: the suffix is reachable only from inside `joinRoom`, while every other verb resolves independently and can only produce the unsuffixed base — so the agent would join as `main-2` while its tail armed on `chat/wake/main` and its posts travelled as `main`, a permanent desync between `join` and everything else. Refusing is also honest now that a colliding handle means a contended pidfile: two agents resolving alike is a real problem, and with `<repo>-<worktree-dir>` it means two agents in the same directory.
 
 Follow `lib/state/endpoint-claims-store.ts` for shape: hoisted SQL string constants, a `RowType` interface, a `rowToX` mapper, `db: Database = getStateDb()` as the last parameter.
 
@@ -875,9 +879,13 @@ test file.
 
 Follow `commands/events.ts` for argument parsing (`positional`, `flagValue`, `parseDuration`) and for the `--json` convention.
 
-Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/branch exist only in this process, never in the daemon — so the resolved handle travels in every payload. Order: `--as` → `chat.handle` (user scope) → herdr pane title via `HERDR_PANE_ID` → **the working directory's basename**, slugified → `<user>-<host>` slugified.
+Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/branch exist only in this process, never in the daemon — so the resolved handle travels in every payload. Order: `--as` → `chat.handle` (user scope) → herdr pane title via `HERDR_PANE_ID` → **`<repo>-<worktree-dir>`** slugified → `<user>-<host>` slugified.
 
-**The basename, not `<repo>-<branch>`, and the reason is the tail's lifetime.** A tail resolves its handle once at process start and holds it for the whole session, while `post`, `read` and `join` re-resolve on every invocation. A branch-bearing handle drifts: a mid-session branch switch leaves the agent posting as `repo-feature-b` while its tail listens on `chat/wake/repo-feature-a` — silently deaf to its own current identity, and two members in `who`. A basename cannot drift, since the process does not change directory, and it is more unique than `<repo>` alone under this machine's worktree-pool convention, where `repo-tools` and `repo-tools-chatspec-wt` are distinct slots for one repository. Under the one-shot design this could not bite: `wait` re-resolved at each re-arm, so a branch switch took effect within a turn.
+**No branch component, because of the tail's lifetime.** A tail resolves its handle once at process start and holds it for the whole session, while `post`, `read` and `join` re-resolve on every invocation. A branch-bearing handle drifts: a mid-session branch switch leaves the agent posting as `repo-feature-b` while its tail listens on `chat/wake/repo-feature-a` — silently deaf to its own current identity, and two members in `who`. A directory cannot drift, since the process does not change directory. Under the one-shot design this could not bite: `wait` re-resolved at each re-arm, so a branch switch took effect within a turn.
+
+**Repo AND directory, not the directory alone — this machine has two worktree layouts.** The sibling form (`repo-tools`, `repo-tools-chatspec-wt`) makes a basename fine. The parent-folder form documented in `~/.claude/CLAUDE.md` does not: `acme/{fred,ginny,gamma,voldemort}` and `workforest-fixture/{feature,hotfix,main,playground,review}` are live right now, and a basename there drops the repository entirely — an agent in `acme/ginny` would answer to `ginny`. `workforest-fixture/main` would yield `main`, which **collides across unrelated repositories**, and since the pidfile is keyed on handle alone under the per-machine rt dir, the second agent's `tail` would be refused "already armed" by a process it has nothing to do with, while both shared the wake topic `chat/wake/main`.
+
+So: `acme-ginny`, `workforest-fixture-main`, and `repo-tools-chatspec-wt` — collapsing the prefix when the basename already starts with the repo name. Get the repo name from `git rev-parse --git-common-dir`, which resolves to the main worktree even from a linked one.
 
 **Do not resolve through an existing `chat_members` row for this cwd.** It looks natural — `joinRoom` already matches on cwd to detect a rejoin — but promoting that match to general resolution gives it three jobs its original use never had: it would be the only daemon-dependent step in an otherwise local order and would fail during exactly the outage the tail's backoff exists to survive; it would outlive its task, so a recycled worktree slot would inherit the previous occupant's identity, memberships and `last_read_id`, and emit someone else's unread at tail start; and two rows for one cwd (one `--as`, one derived) have no defined tie-break.
 

@@ -107,20 +107,42 @@ silently normalized.
 1. `--as <handle>`
 2. `chat.handle` in rt settings (user scope)
 3. herdr pane title, resolved from `HERDR_PANE_ID`
-4. **the working directory's basename**, slugified (`repo-tools-chatspec-wt`)
+4. **`<repo>-<worktree-dir>`**, slugified — the main repository's name plus the working directory's basename, collapsing the prefix when the basename already starts with it
 5. `<user>-<host>`, slugified
 
-**Position 4 is the directory basename, not `<repo>-<branch>`, and the reason
-is the tail's lifetime.** A tail resolves its handle once at process start and
-holds it for the whole session, while `post`, `read` and `join` re-resolve on
-every invocation. A branch-bearing handle therefore drifts: a mid-session
-branch switch would leave the agent posting as `repo-feature-b` while its tail
-listens on `chat/wake/repo-feature-a` — silently deaf to mentions of its own
-current identity, and two members in `who`. A directory basename cannot drift,
-because the process does not change directory, and it is *more* unique than
-`<repo>` alone under this machine's worktree-pool convention, where
-`repo-tools` and `repo-tools-chatspec-wt` are distinct slots for the same
-repository.
+**Position 4 carries no branch, and the reason is the tail's lifetime.** A
+tail resolves its handle once at process start and holds it for the whole
+session, while `post`, `read` and `join` re-resolve on every invocation. A
+branch-bearing handle therefore drifts: a mid-session branch switch would
+leave the agent posting as `repo-feature-b` while its tail listens on
+`chat/wake/repo-feature-a` — silently deaf to mentions of its own current
+identity, and two members in `who`. A directory cannot drift, because the
+process does not change directory.
+
+**But the basename alone is not enough, and this machine is why.** Two
+worktree-pool layouts are in use. The *sibling* form puts slots beside the
+repo (`repo-tools`, `repo-tools-chatspec-wt`), where a basename is fine. The
+*parent-folder* form, documented in `~/.claude/CLAUDE.md`, puts them inside
+one directory — `acme/{fred,ginny,gamma,voldemort}`,
+`workforest-fixture/{feature,hotfix,main,playground,review}` — where the
+basename drops the repository entirely. An agent in `acme/ginny` would
+answer to `ginny`, failing this design's own requirement that identifying
+which agent is speaking matters more here than in human chat. Worse,
+`workforest-fixture/main` yields `main`, which **collides across unrelated
+repositories**: the pidfile is keyed on handle alone under the per-machine rt
+dir, so a second agent's `tail` would be refused "already armed" by a process
+it has nothing to do with, and the two would share the wake topic
+`chat/wake/main` and receive each other's mentions.
+
+Hence `<repo>-<worktree-dir>`: `acme-ginny`, `workforest-fixture-main`,
+and — since the basename already starts with the repo name —
+`repo-tools-chatspec-wt` rather than the redundant
+`repo-tools-repo-tools-chatspec-wt`. The repository name comes from
+`git rev-parse --git-common-dir`, which resolves to the main worktree even
+from a linked one. Position 3 masks this whenever agents run in herdr panes,
+but that is a mitigation, not a guarantee: anything launched outside herdr
+falls through, including the `.claude/worktrees/agent-<hash>` directories,
+whose basenames are unique but unreadable.
 
 This could not bite under the one-shot design, where `wait` re-resolved at
 every re-arm and a branch switch simply took effect on the next turn. It is
@@ -145,10 +167,19 @@ never in the daemon, so every handler that needs a handle takes one as an
 argument. The web viewer supplies one too (`chat.humanHandle`). Both
 implementation plans depend on this and must agree on it.
 
-On collision inside a room, a numeric suffix is appended at join
-(`acme-dev-42-2`). The **resolved** handle is written to `chat_members`
-and reused on subsequent joins from the same context, so an agent's identity
-is stable across restarts.
+**A collision refuses the join rather than silently suffixing it.** An earlier
+draft appended `-2`/`-3` and persisted the result, which cannot work once
+resolution is fully local: the suffix is only reachable from inside
+`joinRoom`, while every other verb resolves independently and can only ever
+produce the unsuffixed base. The agent would join as `main-2` while its tail
+armed on `chat/wake/main` and its posts travelled as `main` — a permanent
+desync between `join` and everything else.
+
+Refusing is also the honest answer now that a colliding handle means a
+contended pidfile: two agents resolving alike is a real problem to fix, not
+one to paper over. `join` fails with the colliding handle named and tells the
+agent to pass `--as`. With `<repo>-<worktree-dir>` a collision means two
+agents in the same working directory, which is rare and worth knowing about.
 
 ## Data model
 
@@ -761,7 +792,7 @@ nothing is sent anywhere unless Matt configures it.
 | Two tails armed | Pidfile keyed on handle alone; the second refuses. Otherwise every message notifies twice. |
 | Agent dies holding a waiter | Inherited from `events-bus`: AbortSignal on connection close, with the 240s daemon cap as backstop. The viewer shows `deaf` within ~10 minutes — not immediately; the threshold exists to absorb two missed poll cycles. |
 | `last_read_id` > `max(id)` | Clamp down. Same class and cause as the events bus's ahead-cursor clamp (db recreated); without it, a permanent-looking hang. |
-| Handle collision | Numeric suffix at join; resolved handle persisted, stable thereafter. |
+| Handle collision | `join` **refuses**, naming the handle and telling the caller to pass `--as`. Suffixing is unreachable from a fully local resolution order, and a collision now also means a contended pidfile. |
 | Room name typo | `join` prints the member count; `1 member · you are alone here` makes it obvious. Indistinguishable-from-success is the thing being avoided. |
 | Agent blocks on `@matt` overnight | **Cannot happen.** A tail does not block, so an agent asks, states its assumption, and keeps working; the reply arrives whenever it comes. A sleeping human cannot wedge a fleet. |
 | Invalid handle or room name | Rejected at `join` with the reason. Never silently normalized — a silently-renamed handle breaks mention wake in a way nobody can see. |
