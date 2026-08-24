@@ -1202,22 +1202,34 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 10: The `@matt` notifier producer and optional push
+### Task 10: Notify Matt on mention (the desk path)
 
 Spec **Notifications**. This appeared in the spec's Rollout but in neither
-plan's task list — it is rt-side work, so it lands here.
+plan's task list — it is rt-side work, so it lands here. Optional push is
+**Task 11**: independent deliverable, different module, different failure
+modes, and shippable separately.
 
 **Files:**
 - Modify: `lib/daemon/handlers/chat.ts`
-- Modify: `lib/notifier.ts` — a `chat_mention` entry in `NOTIFICATION_TYPES`; `notify()` and `notifyEnabled()` gain an optional trailing `id`; the push producer lands beside `pushToTray` inside `notify()`
+- Modify: `lib/notifier.ts` — a `chat_mention` entry in `NOTIFICATION_TYPES`; an optional trailing `id` on `notify()` and `notifyEnabled()`
 - Test: `lib/daemon/__tests__/chat-handlers.test.ts`
 
 **Interfaces:**
-- Consumes: `notifyEnabled` and `peekNotifications` / `saveNotificationPrefs` from `lib/notifier.ts`; `peekNotificationQueue` from `lib/state/index.ts`; `getSetting` for `chat.humanHandle`, `chat.push.provider`, `chat.push.target`; `setSetting(key, value, scope)` in tests.
+- Consumes: `notifyEnabled` from `lib/notifier.ts`; `peekNotifications` / `drainNotifications` from `lib/notifier.ts`; `getSetting` for `chat.humanHandle`.
+- Produces: no new exports; `notify` and `notifyEnabled` gain an optional trailing `id`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
+
+**These read the default db, not `h.db`, and that is not a slip.** `notify()`
+calls `enqueueNotification(event)` with no db argument, so it writes to the
+process-wide `getStateDb()` singleton — the handler's injected db never reaches
+the notifier. Asserting `peekNotificationQueue(h.db)` would read an empty queue
+forever while the feature works correctly. The bunfig preload repoints `HOME`
+per test process, so the default db is already throwaway.
 
 ```ts
+beforeEach(() => { drainNotifications(); });
+
 test("notifies on a mention even when the human has never joined the room", async () => {
   // The common case, not an edge: agents create rooms via join-creates and
   // Matt is not a member until he posts. Gating this on recipientsFor -- which
@@ -1226,7 +1238,7 @@ test("notifies on a mention even when the human has never joined the room", asyn
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "agent" });
   await h["chat:post"]({ room: "r", handle: "agent", body: "@matt ok to force-release?" });
-  expect(peekNotificationQueue(h.db)).toHaveLength(1);
+  expect(peekNotifications()).toHaveLength(1);
 });
 
 test("notifies even when the human is a member with wake_on none", async () => {
@@ -1236,26 +1248,44 @@ test("notifies even when the human is a member with wake_on none", async () => {
   await h["chat:join"]({ room: "r", handle: "agent" });
   await h["chat:join"]({ room: "r", handle: "matt", wakeOn: "none" });
   await h["chat:post"]({ room: "r", handle: "agent", body: "@matt still there?" });
-  expect(peekNotificationQueue(h.db)).toHaveLength(1);
+  expect(peekNotifications()).toHaveLength(1);
 });
 
 test("does not notify on a mention of anyone else", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "agent" });
   await h["chat:post"]({ room: "r", handle: "agent", body: "@nobody hello" });
-  expect(peekNotificationQueue(h.db)).toHaveLength(0);
+  expect(peekNotifications()).toHaveLength(0);
+});
+
+test("chat_mention disabled in prefs suppresses the notification entirely", async () => {
+  const saved = loadNotificationPrefs();
+  try {
+    saveNotificationPrefs({ ...saved, chat_mention: false });
+    const h = freshHandlers();
+    await h["chat:join"]({ room: "r", handle: "agent" });
+    await h["chat:post"]({ room: "r", handle: "agent", body: "@matt hi" });
+    expect(peekNotifications()).toHaveLength(0);
+  } finally {
+    saveNotificationPrefs(saved);
+  }
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+The spread-and-restore in the last test is required: `saveNotificationPrefs`
+does `setSetting("rt.notifications", prefs, "user")`, replacing the **whole
+blob**, so a bare `{ chat_mention: false }` would wipe every other preference
+for anything running afterward.
+
+- [ ] **Step 2: Run them to verify they fail**
 
 Run: `bun test lib/daemon/__tests__/chat-handlers.test.ts`
 Expected: FAIL — nothing is enqueued.
 
-- [ ] **Step 3: Implement the desk path**
+- [ ] **Step 3: Implement**
 
-In `chat:post`, enqueue one notification when **`parseMentions(body)`**
-contains the `chat.humanHandle` setting (default `matt`).
+Enqueue one notification when **`parseMentions(body)`** contains the
+`chat.humanHandle` setting (default `matt`).
 
 **Deliberately `parseMentions`, not the recipient set.** `recipientsFor` reads
 `chat_members`, so it can only ever return members of the room — and Matt is
@@ -1266,100 +1296,117 @@ simultaneously telling agents to `@matt` a blocking question and wait 15
 minutes. It would also let a member with `wake_on = 'none'` silently disable
 his own desk alerts. The spec's wording is unqualified — mentioning the human
 handle adds one producer to the queue — and this is that, independent of
-membership and `wake_on`. This adds a producer to
-`notify_queue`, which the daemon's notifier already drains to the tray — no
-new delivery machinery is built.
+membership and `wake_on`.
 
-**Call `notifyEnabled()` from `lib/notifier.ts` — not `notify()`, and
-certainly not the store's `enqueueNotification`.** Three layers, and picking
-the wrong one breaks something different each time:
+**Call `notifyEnabled()` — not `notify()`, and certainly not the store's
+`enqueueNotification`.** Three layers, and picking the wrong one breaks
+something different each time:
 
 - The **store's `enqueueNotification`** writes straight to `notify_queue`,
-  bypassing the tray push, the WebSocket broadcast hook, and the push producer
-  Step 4 adds — `notify()` is the only path to `pushToTray`, so the one thing
-  push exists for would be the one thing it never sends.
-- **`notify()`** does all of that but respects no user preference. Every other
+  bypassing the tray push and the WebSocket broadcast hook. `notify()` is the
+  only path to `pushToTray`.
+- **`notify()`** does both but respects no user preference. Every other
   notification in rt is switchable; chat would be the only kind Matt cannot
   turn off, and it would not appear in the prefs UI at all.
 - **`notifyEnabled(category, title, message, url?, pids?)`** checks
   `isEnabled(loadNotificationPrefs(), category)` and then calls `notify()`.
   That is the correct entry point.
 
-**`notifyEnabled` currently has zero call sites — that is not a reason to avoid
-it.** Its doc says it exists "for emitters outside the transition loop (which
-loads prefs once per cycle)", and `chat:post` is exactly such an emitter: a
-one-off notification, not a per-cycle sweep. The in-module callers all use
-`if (isEnabled(prefs, key)) notify(...)` because they already hold `prefs` for
-the whole cycle. Chat is `notifyEnabled`'s intended first caller, so do not
-read its unused state as dead code and reach for `notify()` instead.
-
 ```ts
 notifyEnabled("chat_mention", `#${room}`, `${authorHandle}: ${body}`,
               undefined, undefined, `chat:${messageId}`);
 ```
 
-Two additive changes to `lib/notifier.ts` make that call work:
+`notifyEnabled` is the right layer and there is precedent:
+`lib/daemon/discussions-store.ts` uses it as `(overrides.notify ?? notifyEnabled)("new_comment", ...)`
+for exactly this shape of one-off emitter. (Grepping `notifyEnabled(` will not
+find that call — the identifier is not followed by a paren.) The in-module
+emitters instead use `if (isEnabled(prefs, key)) notify(...)` because they
+already hold `prefs` for a whole cycle; `chat:post` does not.
 
-1. **A `chat_mention` entry in `NOTIFICATION_TYPES`** — `{ key: "chat_mention", label: "Chat mention", description: "When an agent mentions you in a chat room" }`. That array is the user-facing on/off list; without an entry the preference is invisible even though `isEnabled` would honor it. Non-breaking: `isEnabled` returns true for an unset key, so the default is on.
+Two additive changes to `lib/notifier.ts` make the call work:
+
+1. **A `chat_mention` entry in `NOTIFICATION_TYPES`** —
+   `{ key: "chat_mention", label: "Chat mention", description: "When an agent mentions you in a chat room" }`.
+   That array is the user-facing on/off list; without an entry the preference
+   is invisible even though `isEnabled` would honor it. Non-breaking:
+   `isEnabled` is `prefs[key] !== false`, so an unset key defaults to on.
 2. **A trailing optional `id` on both `notify()` and `notifyEnabled()`.**
    `notify` is `notify(title, message, url?, category?, pids?)` today and
-   generates `crypto.randomUUID()` internally; `notifyEnabled` does not forward
-   an id at all. Chat needs a *stable* one: `chat:<messageId>` is unique per
-   message and repeatable, so a redelivery cannot double-notify, which is what
-   the already-exported `isNotificationQueued` exists to check. Optional and
-   defaulted to the existing UUID, so every current caller is unaffected.
+   generates `crypto.randomUUID()` internally; `notifyEnabled` forwards no id
+   at all, so without threading it through both, chat's id would be silently
+   replaced by a UUID. Chat needs a *stable* one: `chat:<messageId>` is unique
+   per message and repeatable, so a redelivery cannot double-notify, which is
+   what the already-exported `isNotificationQueued` exists to check. Optional
+   and defaulted, so every current caller is unaffected — including
+   `discussions-store`'s, which passes four arguments against a
+   `(category, title, message, url?) => void` type that a function with extra
+   optional parameters stays assignable to.
 
-- [ ] **Step 4: Implement optional push inside `notify()`**
+- [ ] **Step 4: Run the suite**
 
-Push lives in **`lib/notifier.ts`**, beside the existing `pushToTray(event)`
-call inside `notify()`. That is `notify()`'s fire-and-forget dispatch point,
-**not** the drain and not the request path — an earlier draft of this plan said
-"drain side", which was wrong: `drainNotifications()` serves the tray's polling
-and chat's event never passes through it.
+Run: `bun test lib commands packages scripts`
+Expected: PASS.
 
-The placement is still the design, for the same reason: `pushToTray` is already
-fire-and-forget there, so the post has returned and stored its message before
-any outbound call happens. "A failed push must not fail the post" therefore
-costs nothing, rather than needing a try/catch around a network call in
-`chat:post` — and no network call touches the handler at all.
+- [ ] **Step 5: Commit**
 
-When `chat.push.provider` is set (`ntfy` or `pushover`) with a
-`chat.push.target`, POST the drained event there as well as to the tray —
-**but only when `event.category === "chat"`.**
+```bash
+git add lib/daemon/handlers/chat.ts lib/notifier.ts lib/daemon/__tests__/chat-handlers.test.ts
+git commit -m "chat: notify Matt on mention
 
-That filter is not optional, and it exists because of where push now lives.
-`lib/notifier.ts` drains one queue carrying *every* notification type:
-`notify()` takes `category: string = "general"` and its call site enqueues and
-pushes each event regardless. Without the check, the moment
-`chat.push.provider` is set Matt's phone receives MR updates, pipeline alerts,
-runaway-process warnings — everything that ever calls `notify()` — rather than
-`@matt` mentions. The settings are named `chat.push.*` and the spec frames
-push as the `@matt` path, so the intended scope is unambiguous; Step 3's
-`category: "chat"` is the discriminator.
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
 
-**Absent by default:** with no provider configured nothing is sent anywhere
-and no third-party dependency is required for the feature to work. A failed
-push logs and is not retried.
+---
 
-- [ ] **Step 5: Test the push guarantees and the preference gate**
+### Task 11: Optional push to a phone
 
-Test through `notify()` itself. **There is no `deliver()` function** — the
-dispatch logic is inline inside `notify()`, and this step does not extract it.
-`setSetting`'s real signature is `setSetting(key, value, scope, opts?)` with
-`scope` positional and required.
+Off by default. The desk path (Task 10) is complete without this, so it is
+independently droppable.
 
-`notify()` is synchronous and pushes fire-and-forget, so each test awaits a
-microtask turn before asserting.
+**v1 supports ntfy only.** Pushover needs a fixed endpoint plus `token` and
+`user` credentials in the form body, which `chat.push.target` has nowhere to
+hold — adding it means a third setting and a credential path, and that is not
+worth it before the feature has been used once. `chat.push.provider` is
+validated against `"ntfy"` and rejects anything else with a message saying so,
+which keeps the setting name honest about its future without shipping a
+half-specified provider.
+
+**Files:**
+- Modify: `lib/notifier.ts` — the push producer, beside `pushToTray` inside `notify()`
+- Modify: `packages/rt-client/src/settings/registry-defs.ts` — if `chat.push.*` was not added in Task 7
+- Test: `lib/__tests__/notifier-push.test.ts`
+
+**Interfaces:**
+- Consumes: `getSetting` for `chat.push.provider` / `chat.push.target`; `notify`, `notifyEnabled`, `peekNotifications`, `drainNotifications`, `loadNotificationPrefs`, `saveNotificationPrefs` from `lib/notifier.ts`; `setSetting(key, value, scope)` in tests.
+
+- [ ] **Step 1: Write the failing tests**
+
+All four go through the default db and the default prefs blob, so both need
+resetting between tests — without the `beforeEach` drain, test 2 sees test 1's
+event and every count assertion is off by the number of tests that ran first.
 
 ```ts
-const push = () => setSetting("chat.push.provider", "ntfy", "user")
-  && setSetting("chat.push.target", "https://ntfy.sh/x", "user");
+const push = () => {
+  setSetting("chat.push.provider", "ntfy", "user");
+  setSetting("chat.push.target", "https://ntfy.sh/x", "user");
+};
+
+beforeEach(() => { drainNotifications(); });
 
 test("no provider configured sends nothing anywhere", async () => {
   const fetchSpy = spyOn(globalThis, "fetch");
   notify("#r", "agent: @matt hi", undefined, "chat");
   await Bun.sleep(0);
   expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+test("a chat notification is pushed when a provider is configured", async () => {
+  push();
+  const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
+  notify("#r", "agent: @matt hi", undefined, "chat");
+  await Bun.sleep(0);
+  expect(fetchSpy).toHaveBeenCalledWith("https://ntfy.sh/x", expect.objectContaining({ method: "POST" }));
 });
 
 test("a failing push does not fail the notification", async () => {
@@ -1377,30 +1424,56 @@ test("a non-chat notification is never pushed", async () => {
   await Bun.sleep(0);
   expect(fetchSpy).not.toHaveBeenCalled();
 });
-
-test("chat_mention disabled in prefs suppresses the notification entirely", async () => {
-  saveNotificationPrefs({ chat_mention: false });
-  notifyEnabled("chat_mention", "#r", "agent: @matt hi", undefined, undefined, "chat:1");
-  await Bun.sleep(0);
-  expect(peekNotifications()).toHaveLength(0);
-});
 ```
 
-The first is the default-off guarantee. The second is the one that would
-otherwise discard successful work if push were written as an unguarded
-`await`. The third locks the category filter — without it the first two still
-pass, because both use a chat event.
+`notify()` is synchronous and pushes fire-and-forget, so each test awaits a
+microtask turn before asserting. There is no `deliver()` function — dispatch is
+inline in `notify()` and this task does not extract one.
 
-- [ ] **Step 6: Run the suite**
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `bun test lib/__tests__/notifier-push.test.ts`
+Expected: FAIL — no fetch is ever made.
+
+- [ ] **Step 3: Implement**
+
+Beside the existing `pushToTray(event)` call inside `notify()`. That is
+`notify()`'s fire-and-forget dispatch point, **not** the request path — the
+post has already returned and stored its message before any outbound call
+happens, so "a failed push must not fail the post" costs nothing rather than
+needing a try/catch around a network call in `chat:post`.
+
+The ntfy request is `POST <chat.push.target>` with the message as the body and
+a `Title` header:
+
+```ts
+fetch(target, { method: "POST", headers: { Title: event.title }, body: event.message })
+  .catch(err => log.warn({ err }, "chat push failed"));
+```
+
+**Push only when `event.category === "chat"`.** That filter is not optional.
+`notify()` handles *every* notification type — its `category` parameter
+defaults to `"general"` and every emitter in the module routes through it — so
+without the check, setting `chat.push.provider` would send Matt's phone MR
+updates, pipeline alerts, and runaway-process warnings rather than `@matt`
+mentions. The settings are named `chat.push.*` and the spec frames push as the
+`@matt` path, so the intended scope is unambiguous.
+
+**Absent by default:** with no provider configured nothing is sent anywhere and
+no third-party dependency is required. A failed push logs at `warn` and is not
+retried — the message is already stored and the desk notification already
+queued, so failing here would discard work that succeeded.
+
+- [ ] **Step 4: Run the suite**
 
 Run: `bun test lib commands packages scripts`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add lib/daemon/handlers/chat.ts lib/notifier.ts lib/daemon/__tests__/chat-handlers.test.ts
-git commit -m "chat: notify Matt on mention, with optional push
+git add lib/notifier.ts lib/__tests__/notifier-push.test.ts packages/rt-client/src/settings/registry-defs.ts
+git commit -m "chat: optional ntfy push for @matt mentions
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```

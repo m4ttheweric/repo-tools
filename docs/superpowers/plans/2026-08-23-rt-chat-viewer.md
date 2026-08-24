@@ -639,5 +639,5 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ## What this plan does not build
 
 The `@matt` notifier producer and the optional ntfy/Pushover push provider —
-both rt-side work, and both now scheduled as **plan 1, Task 10** rather than
-left homeless. Neither is needed for the viewer to be useful.
+both rt-side work, and now scheduled as **plan 1, Tasks 10 and 11** rather
+than left homeless. Neither is needed for the viewer to be useful.
