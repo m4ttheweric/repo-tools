@@ -741,6 +741,14 @@ type CompositionFill = { binding: string; provides: string; sourcePath: string; 
 type CompositionPayload = {
   pack: string;
   packDir: string;
+  /**
+   * The manifest that supplies these bindings, absolute -- the file to edit to
+   * rebind a slot. NOT `<packDir>/skills.jsonc`: it lives in a registered repo
+   * under `~/.mattstack/repos/<repoName>/`, whose dir name is the repo, not the
+   * pack, so it cannot be reconstructed from `pack`. Null when the pack has no
+   * roster (nothing to bind).
+   */
+  manifestPath: string | null;
   verbs: CompositionVerb[];
   fills: CompositionFill[];
   binders: CompositionBinder[];
@@ -936,6 +944,7 @@ export async function skillsComposition(args: string[]): Promise<void> {
     const payload: CompositionPayload = {
       pack: resolved.team,
       packDir: resolved.packDir,
+      manifestPath: resolved.manifestPath,
       verbs,
       fills,
       binders,

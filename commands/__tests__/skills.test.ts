@@ -992,7 +992,24 @@ describe("skillsComposition --json", () => {
     await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed).toEqual({ pack: "claimview", packDir, verbs: [], fills: [], binders: [], pipelines: {} });
+    expect(parsed).toEqual({ pack: "claimview", packDir, manifestPath: null, verbs: [], fills: [], binders: [], pipelines: {} });
+  });
+
+  test("manifestPath is the absolute manifest the bindings came from, not <packDir>/skills.jsonc", async () => {
+    // The console names this path as the file to edit to rebind a slot. It is
+    // NOT reconstructable from the pack name -- it lives in a registered repo
+    // dir -- so the payload has to carry the real one or the console guesses.
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-path-")));
+    const manifestPath = join(manifestDir, "skills.jsonc");
+    writeFile(manifestPath, `{ "bindings": { "mattstack:watch-ci": { "domain": "claimview:watch-ci-domain" } } }`);
+
+    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.manifestPath).toBe(manifestPath);
+    expect(parsed.manifestPath).not.toBe(join(packDir, "skills.jsonc"));
   });
 
   test("pipelines carries each work type's stage order, not a set", async () => {
