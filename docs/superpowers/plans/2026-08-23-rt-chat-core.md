@@ -924,7 +924,7 @@ Identity resolution is **client-side** — `HERDR_PANE_ID` and the cwd's repo/br
 
 `~/.mattstack/rt/repos.json` already records `"acme-dev": ".../acme/gamma"`. Read it with **`loadRepoIndex()`** (`lib/repo-index.ts`), keyed by the main worktree path, which a linked worktree finds from its own `.git` file's `gitdir:` pointer. **A file read, not a subprocess** — `deriveRepoIdentity` is deliberately async and both `commands/settings-keys.ts` and `lib/daemon/handlers/endpoint.ts` document the rule as "async — never a sync spawn", while `post` must stay cheap and silent.
 
-**No collapse rule**, even though it yields the occasional redundant handle like `repo-tools-repo-tools-chatspec-wt`. Collapsing is what let `workforest-fixture/main` fall back to bare `main`. Ugly and unique beats pretty and colliding.
+**No collapse rule.** Collapsing is what let `workforest-fixture/main` fall back to bare `main`. Redundancy is accepted in principle — ugly and unique beats pretty and colliding — but rarely arises: rt's index holds short aliases, not directory names. `repo-tools` is recorded as **`rt`**, so the handle is `rt-repo-tools-chatspec-wt`, and `acme/gamma` is `acme-dev`, giving `acme-dev-gamma`.
 
 **Position 5 exists because git can fail.** `workforest-fixture/feature` currently errors with `fatal: not a git repository: /Users/matthew/...` — a foreign home path in a stale gitdir pointer. Dropping straight to `<user>-<host>` would give one shared handle to every broken directory on the machine, so slugify the cwd relative to `$HOME` first.
 

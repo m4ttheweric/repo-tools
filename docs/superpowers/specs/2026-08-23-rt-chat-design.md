@@ -156,10 +156,12 @@ silent.
 **No collapse rule.** An earlier draft shortened `<repo>-<dir>` when the
 directory already began with the repo name, which is what let
 `workforest-fixture/main` reduce back to bare `main` — the exact machine-wide
-pidfile collision the change was written to eliminate. Always joining both
-parts yields the occasional redundant handle
-(`repo-tools-repo-tools-chatspec-wt`), and that is the correct trade: an ugly
-handle is legible and unique, a collapsed one is pretty and collides.
+pidfile collision the change was written to eliminate. Redundancy is accepted
+in principle — an ugly handle is legible and unique, a collapsed one is pretty
+and collides — but in practice it rarely arises, because rt's names are short
+aliases rather than directory names: `repo-tools` is recorded as `rt`, so the
+handle is `rt-repo-tools-chatspec-wt`, and `acme/gamma` is `acme-dev`,
+giving `acme-dev-gamma`.
 
 **Position 5 exists because git can fail.** `workforest-fixture/feature`
 currently errors with `fatal: not a git repository:
