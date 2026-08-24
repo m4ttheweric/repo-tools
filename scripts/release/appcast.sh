@@ -103,6 +103,32 @@ if [ "$HAVE_PREV" -eq 1 ]; then
     done
 fi
 
+# Sparkle refuses a directory holding two archives of the same bundle version
+# ("Duplicate updates are not supported"), and out/ has both by design: the zip
+# is what Sparkle updates from — this script already asserts exactly one and
+# verifies its enclosure below — while the dmg is the human download. So the
+# dmg steps aside for the generation and comes straight back.
+#
+# Restored via trap, not just on the happy path: Checksums, the release-asset
+# assertion and Create Release all read the dmg out of this directory, so
+# leaving it parked on a failure would turn one red step into three.
+DMG_PARK=""
+restore_dmg() {
+    [ -n "$DMG_PARK" ] || return 0
+    for parked in "$DMG_PARK"/*.dmg; do
+        [ -e "$parked" ] && mv "$parked" "$ARCHIVES/"
+    done
+    rmdir "$DMG_PARK" 2>/dev/null || true
+    DMG_PARK=""
+}
+trap 'restore_dmg; cleanup_old_files' EXIT
+
+if ls "$ARCHIVES"/*.dmg >/dev/null 2>&1; then
+    DMG_PARK="$(mktemp -d "${TMPDIR:-/tmp}/mattstack-appcast-dmg.XXXXXX")"
+    mv "$ARCHIVES"/*.dmg "$DMG_PARK/"
+    echo "  → dmg set aside for appcast generation (Sparkle updates from the zip)"
+fi
+
 GEN_OUTPUT="$(printf '%s' "$SPARKLE_ED_KEY" | env -u SPARKLE_ED_KEY "$GEN" --ed-key-file - \
     --download-url-prefix "$PREFIX" \
     --maximum-versions 3 \
@@ -125,6 +151,8 @@ while [ "$i" -lt "${#OLD_FILES[@]}" ]; do
     literal_replace_in_file "$ARCHIVES/appcast.xml" "$newurl" "$origurl"
     i=$((i + 1))
 done
+
+restore_dmg
 
 rm -rf "$ARCHIVES/old_updates"
 
