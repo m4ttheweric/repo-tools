@@ -106,11 +106,11 @@ silently normalized.
 1. `--as <handle>`
 2. `chat.handle` in rt settings (user scope)
 3. herdr pane title, resolved from `HERDR_PANE_ID`
-4. `<repo>-<branch>`, slugified (`acme-acme-2299`)
+4. `<repo>-<branch>`, slugified (`acme-dev-42`)
 5. `<user>-<host>`, slugified
 
 On collision inside a room, a numeric suffix is appended at join
-(`acme-acme-2299-2`). The **resolved** handle is written to `chat_members`
+(`acme-dev-42-2`). The **resolved** handle is written to `chat_members`
 and reused on subsequent joins from the same context, so an agent's identity
 is stable across restarts.
 
@@ -179,7 +179,7 @@ an agent can typo a room name and sit alone in `#buidl` believing it is
 connected. `join` prints the member count so a typo is immediately visible:
 
 ```
-joined #buidl as acme-acme-2299 · 1 member · you are alone here
+joined #buidl as acme-dev-42 · 1 member · you are alone here
 ```
 
 **Three output rules, enforced by the tool rather than by agent discipline:**
@@ -195,12 +195,12 @@ Representative output:
 
 ```
 $ rt chat rooms
-#acme-2299   3 members   2 unread (1 mention)   last 4m ago
+#dev-42   3 members   2 unread (1 mention)   last 4m ago
 #build     6 members   —                      last 2h ago
 
 $ rt chat read
 #build
-  14:22  repo-tools-main   @acme-acme-2299 the events-bus migration landed, you're unblocked
+  14:22  repo-tools-main   @acme-dev-42 the events-bus migration landed, you're unblocked
 ```
 
 **Exit codes for `wait`** — the Stop hook branches on these, so they must be
