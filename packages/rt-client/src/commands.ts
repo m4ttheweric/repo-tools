@@ -145,6 +145,7 @@ export interface Commands {
   "events:emit": { payload: { topic: string; payload?: unknown }; data: { id: number } };
   "events:wait": { payload: { pattern: string; after?: number; waitMs?: number }; data: { events: EventsBusEvent[]; cursor: number } };
   "events:list": { payload: { pattern: string; after?: number; limit?: number }; data: { events: EventsBusEvent[]; cursor: number } };
+  "events:head": { payload: Record<string, never>; data: { cursor: number } };
   "runs:list": { payload: { repo?: string }; data: { runs: RunSummary[] } };
   "runs:get": { payload: { runId: string; repo?: string }; data: RunDetail };
   "runs:abandon": { payload: { runId: string; repo?: string; reason?: string }; data: { ok: boolean } };
@@ -161,6 +162,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "events:emit",
   "events:wait",
   "events:list",
+  "events:head",
   "runs:list",
   "runs:get",
   "runs:abandon",
