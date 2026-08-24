@@ -970,6 +970,15 @@ export const TREE: Record<string, CommandNode> = {
           SETUP_JSON_ARG,
         ],
       },
+      prune: {
+        description: "Drop index entries whose path is gone, and duplicate names left behind by a repo rename",
+        module: "./commands/repos.ts",
+        fn: "reposPrune",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would be removed without writing" },
+          SETUP_JSON_ARG,
+        ],
+      },
     },
   },
 
