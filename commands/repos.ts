@@ -153,15 +153,30 @@ function describeReason(r: PrunedEntry): string {
 }
 
 /**
+ * What the retired name's data dir did, as a trailing clause. Refusals are
+ * named individually — they are the only outcome that leaves the operator
+ * something to do.
+ */
+function describeDataMove(r: PrunedEntry, dryRun: boolean): string {
+  const d = r.data;
+  if (!d) return "";
+  const carried = d.moved.length + d.merged.length;
+  const parts: string[] = [];
+  if (carried > 0) parts.push(`${dryRun ? "would carry" : "carried"} ${carried} file${carried === 1 ? "" : "s"} to ${r.keptAs}`);
+  if (d.merged.length > 0) parts.push(`merged ${d.merged.join(", ")}`);
+  if (d.refused.length > 0) parts.push(`kept both copies of ${d.refused.join(", ")} — ${r.repoName}'s data dir stays`);
+  return parts.length > 0 ? `; ${parts.join("; ")}` : "";
+}
+
+/**
  * rt repos prune — drop index rows that no longer name anything: a path that
  * has stopped existing, and the losing half of every realpath collision left
  * behind by a repo rename.
  *
  * `getKnownRepos` already hides both from the picker; this is the deliberate
- * eviction, kept a separate explicit verb because a name lookup elsewhere
- * (`loadRepoIndex()[name]`, per-repo data dirs, per-repo settings scopes)
- * still resolves through the row this removes. RT-60 is the migration that
- * would carry those forward instead of stranding them.
+ * eviction, kept an explicit verb because it also carries the retired name's
+ * data dir onto the surviving name — moving one repo's data onto another is
+ * not something to infer from a derived-name change nobody asked about.
  */
 export async function reposPrune(args: string[], _ctx: CommandContext = {}, deps: RegisterDeps = realRegisterDeps()): Promise<void> {
   const json = args.includes("--json");
@@ -185,6 +200,8 @@ export async function reposPrune(args: string[], _ctx: CommandContext = {}, deps
   }
   const verb = dryRun ? "would remove" : "removed";
   for (const r of removed) {
-    deps.print(`${verb} ${r.repoName} (${r.path.replace(homedir(), "~")}) — ${describeReason(r)}`);
+    deps.print(
+      `${verb} ${r.repoName} (${r.path.replace(homedir(), "~")}) — ${describeReason(r)}${describeDataMove(r, dryRun)}`,
+    );
   }
 }

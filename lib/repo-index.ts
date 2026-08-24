@@ -19,7 +19,7 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, type Dirent } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
@@ -209,10 +209,9 @@ export interface IndexPartition {
  * same millisecond) is at least deterministic.
  *
  * Losers are only hidden, never dropped, by the caller in `getKnownRepos`.
- * Lookups by name elsewhere (`loadRepoIndex()[name]`, and every per-repo data
- * dir and settings scope keyed off it) must keep resolving until the rename
- * is genuinely migrated — `rt repos prune` is the deliberate eviction, RT-60
- * is the migration.
+ * Lookups by name elsewhere (`loadRepoIndex()[name]`, and the per-repo data
+ * dir keyed off it) keep resolving until `rt repos prune` both migrates the
+ * data and evicts the row.
  */
 export function partitionByRealpath(entries: RepoIndexEntry[]): IndexPartition {
   const groups = new Map<string, RepoIndexEntry[]>();
@@ -244,6 +243,102 @@ export interface PrunedEntry {
   reason: PruneReason;
   /** Set only for `duplicate`: the name that kept the directory. */
   keptAs?: string;
+  /** Set only for `duplicate`: what became of the retired name's data dir. */
+  data?: DataMigration;
+}
+
+/** Per-file outcome of carrying a retired name's data dir onto the live name. */
+export interface DataMigration {
+  /** Entries moved wholesale — the live name held nothing by that name. */
+  moved: string[];
+  /** Entries merged line-wise. Only ever `run-history.jsonl`. */
+  merged: string[];
+  /** Entries left in place because both names hold one and merging would guess. */
+  refused: string[];
+  /** True once the retired data dir is gone, which only happens if nothing was refused. */
+  removedDir: boolean;
+}
+
+/**
+ * The one filename whose collisions resolve without guessing: an append-only
+ * JSONL whose every line carries its own `ts`, so the union sorted by `ts` is
+ * the history either name would have recorded alone. Every other collision is
+ * a genuine ambiguity and gets refused.
+ */
+const MERGEABLE_BY_TIMESTAMP = "run-history.jsonl";
+
+/** `ts` of a run-history line. Unparseable lines sort last, keeping their order. */
+function lineTimestamp(line: string): number {
+  try {
+    const parsed = Date.parse((JSON.parse(line) as { ts?: string }).ts ?? "");
+    return Number.isNaN(parsed) ? Infinity : parsed;
+  } catch {
+    return Infinity;
+  }
+}
+
+function mergeRunHistory(fromFile: string, toFile: string): void {
+  const lines = [readFileSync(toFile, "utf8"), readFileSync(fromFile, "utf8")]
+    .flatMap((body) => body.split("\n"))
+    .filter((line) => line.trim() !== "")
+    .map((line, i) => ({ line, ts: lineTimestamp(line), i }))
+    .sort((a, b) => a.ts - b.ts || a.i - b.i);
+  writeFileSync(toFile, `${lines.map((entry) => entry.line).join("\n")}\n`);
+}
+
+/**
+ * Carries `~/.mattstack/rt/repos/<from>/` onto `<to>/` so a rename stops
+ * stranding the retired name's data.
+ *
+ * Runs from `rt repos prune` rather than from rename detection at runtime:
+ * moving one repo's data onto another off a derived-name change nobody asked
+ * about is a guess, and this is the verb where the operator asked.
+ *
+ * Never destructive. A name present on both sides is merged only when its own
+ * contents say how; anything else is left standing in BOTH places and
+ * reported. A refusal keeps the retired directory as well — it is removed only
+ * once everything in it has moved.
+ */
+export function migrateRepoData(from: string, to: string, opts: { dryRun?: boolean } = {}): DataMigration {
+  const result: DataMigration = { moved: [], merged: [], refused: [], removedDir: false };
+  const fromDir = repoDataDir(from);
+  const toDir = repoDataDir(to);
+  if (from === to || !existsSync(fromDir)) return result;
+
+  let names: string[];
+  try {
+    names = readdirSync(fromDir);
+  } catch (err) {
+    console.warn(`rt: could not read ${from}'s data dir (${(err as Error).message})`);
+    return result;
+  }
+
+  for (const name of names) {
+    if (!existsSync(join(toDir, name))) result.moved.push(name);
+    else if (name === MERGEABLE_BY_TIMESTAMP) result.merged.push(name);
+    else result.refused.push(name);
+  }
+
+  if (opts.dryRun) {
+    result.removedDir = result.refused.length === 0;
+    return result;
+  }
+
+  try {
+    mkdirSync(toDir, { recursive: true });
+    for (const name of result.moved) renameSync(join(fromDir, name), join(toDir, name));
+    for (const name of result.merged) {
+      mergeRunHistory(join(fromDir, name), join(toDir, name));
+      rmSync(join(fromDir, name));
+    }
+    if (result.refused.length === 0) {
+      rmSync(fromDir, { recursive: true });
+      result.removedDir = true;
+    }
+  } catch (err) {
+    console.warn(`rt: could not migrate ${from}'s data to ${to} (${(err as Error).message})`);
+  }
+  return result;
 }
 
 /**
@@ -253,6 +348,11 @@ export interface PrunedEntry {
  * Missing paths are removed BEFORE the duplicate pass, so a rename whose new
  * name points at a directory that has since been deleted leaves the old name
  * standing rather than evicting the only row that still resolves.
+ *
+ * A `duplicate` carries its data dir onto the surviving name first, so the row
+ * is only dropped once nothing is keyed off it. A `missing` row is left
+ * un-migrated on purpose: its path is gone, so there is no surviving name to
+ * carry it to, and its data dir stays untouched rather than being deleted.
  */
 export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
   const entries = loadRepoIndexEntries();
@@ -270,6 +370,7 @@ export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
       path: dup.entry.path,
       reason: "duplicate",
       keptAs: dup.keptAs,
+      data: migrateRepoData(dup.entry.repoName, dup.keptAs, opts),
     });
   }
 
