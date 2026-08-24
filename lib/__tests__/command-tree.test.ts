@@ -1,4 +1,8 @@
 import { describe, test, expect, afterEach, mock } from "bun:test";
+import { spawnSync } from "child_process";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { dispatch, walkTree, type CommandContext, type CommandNode } from "../command-tree.ts";
 import type { KnownRepo, RepoIdentity } from "../repo.ts";
 
@@ -152,4 +156,36 @@ describe("dispatch --repo flag scoping", () => {
 
     expect(capturedArgs).toEqual(["--repo", "foo", "--ticket", "bar"]);
   });
+});
+
+// ─── ANSI never reaches a pipe ───────────────────────────────────────────────
+
+describe("screen control is terminal-only", () => {
+  /**
+   * Driven as a real subprocess with piped stdio, because the property under
+   * test IS "what a non-TTY sees" — asserting it against an in-process stub
+   * would prove nothing about the thing that broke: a CI clean-room run whose
+   * error message was erased by a clear-screen sequence, leaving a remedy that
+   * said "check the error above" pointing at output no longer there.
+   */
+  test("a leaf command emits no clear-screen or breadcrumb when stderr is a pipe", () => {
+    const home = mkdtempSync(join(tmpdir(), "rt-ansi-test-"));
+    try {
+      const result = spawnSync("bun", ["run", "cli.ts", "version"], {
+        cwd: join(import.meta.dir, "..", ".."),
+        env: { ...process.env, HOME: home },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 60_000,
+      });
+      const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      // The dispatcher's own chrome, which is what erased the error message.
+      // A command colouring its OWN output is its business and not asserted here.
+      expect(combined).not.toContain("\x1b[2J"); // clear screen
+      expect(combined).not.toContain("\x1b[H"); // cursor home
+      expect(combined).not.toContain("\u203a"); // the "rt › version" breadcrumb
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 90_000);
 });
