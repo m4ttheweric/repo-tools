@@ -106,20 +106,38 @@ silently normalized.
 
 1. `--as <handle>`
 2. `chat.handle` in rt settings (user scope)
-3. **An existing `chat_members` row for this cwd** — see below
-4. herdr pane title, resolved from `HERDR_PANE_ID`
-5. `<repo>-<branch>`, slugified (`acme-dev-42`)
-6. `<user>-<host>`, slugified
+3. herdr pane title, resolved from `HERDR_PANE_ID`
+4. **the working directory's basename**, slugified (`repo-tools-chatspec-wt`)
+5. `<user>-<host>`, slugified
 
-**Step 3 keeps a long-lived tail and the other verbs in agreement.** A tail
-resolves its handle once at process start and holds it for the whole session,
-while `post`, `read` and `join` re-resolve on every invocation. A mid-session
-branch switch changes `<repo>-<branch>`, so without the cwd lookup the agent
-would post and join as `repo-feature-b` while its tail listens on
-`chat/wake/repo-feature-a` — silently deaf to mentions of its current identity
-and showing up in `who` as two members. This could not bite under the one-shot
-design, where `wait` re-resolved at every re-arm; it is another guarantee that
-termination used to provide.
+**Position 4 is the directory basename, not `<repo>-<branch>`, and the reason
+is the tail's lifetime.** A tail resolves its handle once at process start and
+holds it for the whole session, while `post`, `read` and `join` re-resolve on
+every invocation. A branch-bearing handle therefore drifts: a mid-session
+branch switch would leave the agent posting as `repo-feature-b` while its tail
+listens on `chat/wake/repo-feature-a` — silently deaf to mentions of its own
+current identity, and two members in `who`. A directory basename cannot drift,
+because the process does not change directory, and it is *more* unique than
+`<repo>` alone under this machine's worktree-pool convention, where
+`repo-tools` and `repo-tools-chatspec-wt` are distinct slots for the same
+repository.
+
+This could not bite under the one-shot design, where `wait` re-resolved at
+every re-arm and a branch switch simply took effect on the next turn. It is
+another guarantee that termination used to provide.
+
+**Rejected: resolving through an existing `chat_members` row for this cwd.**
+It looks like the natural fix — the row already exists, and `joinRoom` already
+matches on cwd to detect a rejoin — but promoting that match to general
+resolution gives it three responsibilities its original use never had. It
+would be the only daemon-dependent step in an otherwise local order, and would
+fail during the daemon outage the tail's backoff exists to survive, arming as
+a different handle than the persisted one. It would outlive the task that
+created it: worktree-pool slots are reused, so the next agent in a slot would
+inherit the previous occupant's identity, room memberships and `last_read_id`,
+and its catch-up would emit someone else's unread mentions. And an agent that
+joined one room with `--as` and another by derivation would leave two rows for
+one cwd with no defined tie-break.
 
 **Resolution happens client-side, and the handle travels in the payload.**
 `HERDR_PANE_ID` and the cwd's repo/branch exist only in the calling process,
