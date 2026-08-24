@@ -15,6 +15,8 @@
  * logged in the clear — see withArgvRedaction.
  */
 
+import { resolveBundledTool } from "../bundled-tool.ts";
+
 export interface AgeExecResult {
   code: number;
   stdout: string;
@@ -279,7 +281,14 @@ function debugLog(cmd: string[]): void {
 function createRawAgeKeySeam(): AgeKeySeam {
   return {
     async run(cmd, opts) {
-      const proc = Bun.spawn(cmd, {
+      // argv[0] resolves to the copy inside mattstack.app before PATH, so an
+      // installed machine does not need age-keygen installed separately.
+      // Resolved HERE rather than where the argv is built: the callers are
+      // pure and their tests pass fake seams, so the real spawn is the only
+      // place that should know about the bundle.
+      const [bin, ...args] = cmd;
+      const resolved = bin === undefined ? cmd : [resolveBundledTool(bin), ...args];
+      const proc = Bun.spawn(resolved, {
         env: process.env,
         stdin: "pipe",
         stdout: "pipe",
