@@ -336,6 +336,24 @@ describe("repo-index — rename drift (RT-60)", () => {
       expect(existsSync(repoDataDir("local-apps"))).toBe(false);
     });
 
+    test("a winner that is a serialized identity is still one valid directory — literal colon, encoded slash", () => {
+      const dir = realRepo("canonical");
+      const identity = "remote:gitlab.com%2Fgroup%2Fcanonical";
+      mkdirSync(repoDataDir("canonical-legacy"), { recursive: true });
+      writeFileSync(join(repoDataDir("canonical-legacy"), "run-history.jsonl"), '{"ts":"2026-07-25T00:00:00.000Z"}\n');
+
+      indexRepoAt(identity, dir, 2_000);
+      indexRepoAt("canonical-legacy", dir, 1_000);
+
+      const removed = pruneRepoIndex();
+      const dup = removed.find((r) => r.repoName === "canonical-legacy");
+
+      expect(dup?.keptAs).toBe(identity);
+      expect(dup?.data?.moved).toEqual(["run-history.jsonl"]);
+      expect(existsSync(join(repoDataDir(identity), "run-history.jsonl"))).toBe(true);
+      expect(existsSync(repoDataDir("canonical-legacy"))).toBe(false);
+    });
+
     test("a missing row's data dir is left alone — there is no surviving name to carry it to", () => {
       mkdirSync(repoDataDir("gone"), { recursive: true });
       writeFileSync(join(repoDataDir("gone"), "run-history.jsonl"), "{}\n");

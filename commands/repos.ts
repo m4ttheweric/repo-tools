@@ -18,6 +18,7 @@ import { homedir } from "os";
 import { basename } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { pruneRepoIndex, updateRepoIndex, type PrunedEntry } from "../lib/repo-index.ts";
+import { deriveRepoIdentity, serializeIdentity } from "../lib/settings/identity.ts";
 import { CACHE_KINDS, loadMachineRepoTrackingRaw, parseCachesArg, saveRepoTrackingRaw, type CacheKind, type TrackingMode } from "../lib/repo-tracking.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
@@ -98,7 +99,7 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
   // Validation pass FIRST, no writes yet: a bad path later in the list must
   // never leave an earlier one indexed without the tracking grant this same
   // call asked for.
-  const resolved: { name: string; real: string }[] = [];
+  const resolved: { name: string; real: string; identity: string }[] = [];
   for (const inputPath of paths) {
     const real = resolveRealpath(inputPath);
     if (real === null) {
@@ -107,7 +108,10 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
     if (!isGitRepo(real)) {
       exitUserError(new UserActionableError("not-a-git-repo", `"${inputPath}" is not a git repository`), json, "repos register", deps.print);
     }
-    resolved.push({ name: basename(real), real });
+    // deriveRepoIdentity only shells out to git for the remote — read-only,
+    // so it belongs in the validation pass alongside the other checks.
+    const identity = serializeIdentity(await deriveRepoIdentity(real));
+    resolved.push({ name: basename(real), real, identity });
   }
 
   type Registered = { name: string; path: string; tracking: { mode: TrackingMode; caches: CacheKind[] } | null };
@@ -118,13 +122,13 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
   // call never meant to touch.
   const rawTracking = track ? loadMachineRepoTrackingRaw() : null;
 
-  for (const { name, real } of resolved) {
-    updateRepoIndex(name, real);
+  for (const { name, real, identity } of resolved) {
+    updateRepoIndex(identity, real);
 
     let tracking: Registered["tracking"] = null;
     if (track && caches && rawTracking) {
       tracking = { mode: track, caches };
-      rawTracking[name] = tracking;
+      rawTracking[identity] = tracking;
     }
     registered.push({ name, path: real, tracking });
   }
