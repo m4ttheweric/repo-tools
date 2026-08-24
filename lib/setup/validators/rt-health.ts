@@ -17,9 +17,11 @@ import { localBinDir, shimReport, staleIntercepts } from "../../endpoint/shim.ts
 import { resolveFzf } from "../../fzf.ts";
 import { legacyDirsPresent, legacyTrayAppPaths, RT_DIR_LABEL } from "../../rt-paths.ts";
 import { detectShellFrom, shellRcPathFor } from "../../shell-integration.ts";
+import { readHomePushRecord, type HomePushRecord } from "../../home/push-record.ts";
 import { row, type Action, type Row } from "../contract.ts";
+import { hasCommits, hasRemote, isGitRepo, originPushState } from "../home-git.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
-import type { Probes } from "../probes.ts";
+import { execWithTimeout, type Probes } from "../probes.ts";
 
 // ─── rt-context extension check (moved from commands/verify.ts) ──────────────
 
@@ -71,6 +73,9 @@ export interface RtHealthSeams {
 }
 
 const REAL_SEAMS: RtHealthSeams = { resolveFzf };
+// The bare exec, not `createRealProbes().exec`: a full Probes captures $HOME at
+// construction, and this is module-load time.
+const REAL_EXEC: Probes["exec"] = execWithTimeout;
 
 // ─── row builders ──────────────────────────────────────────────────────────
 
@@ -78,6 +83,14 @@ const LINK_BUNDLED_RT: Action = { type: "link-bundled", label: "Use mattstack's"
 const LINK_BUNDLED_FZF: Action = { type: "link-bundled", label: "Use mattstack's", tool: "fzf" };
 const REINSTALL_SHIMS_ACTION: Action = { type: "run", label: "Re-install shims", verb: ["intercept", "install"] };
 const INSTALL_EXTENSION_ACTION: Action = { type: "run", label: "Install extension", verb: ["tools", "setup", "extension"] };
+/** No `rt home remote set` verb exists yet (installer-lane scope), so the remedy names the raw git commands instead of a `run` action. */
+const HOME_BACKUP_PUSH_STEP = "git -C ~/.mattstack/user push origin HEAD (or wait — the daemon pushes on its next cycle, up to 30 minutes)";
+const HOME_BACKUP_ADD_REMOTE_ACTION: Action = {
+  type: "steps",
+  label: "Show steps…",
+  steps: ["git -C ~/.mattstack/user remote add origin <url>", HOME_BACKUP_PUSH_STEP],
+};
+const HOME_BACKUP_PUSH_ACTION: Action = { type: "steps", label: "Show steps…", steps: [HOME_BACKUP_PUSH_STEP] };
 const MERGE_LEGACY_STATE_ACTION: Action = {
   type: "steps",
   label: "Merge legacy state",
@@ -336,6 +349,86 @@ async function daemonRow(p: Probes, opts: { ci: boolean }): Promise<Row> {
   return row({ ...base, status: "ready", detail: parts.join(", ") });
 }
 
+/** Wall-clock, not an injected `now()` — this row takes a bare `exec`, not a full Probes, so there is no seam to inject. */
+function relativeWhen(at: Date | null): string {
+  if (!at) return "recently";
+  const mins = Math.floor((Date.now() - at.getTime()) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+/** One line, bounded: a push failure's stderr can run to a paragraph, and this shares a row's `detail` with the count it explains. */
+function pushFailureSummary(record: HomePushRecord): string | null {
+  if (record.ok) return null;
+  const firstLine = (record.error ?? "").split("\n").map((l) => l.trim()).find((l) => l !== "");
+  if (!firstLine) return null;
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}…` : firstLine;
+}
+
+/**
+ * Green means a push actually happened, never merely that a remote is
+ * configured — read from git's own remote-tracking ref, so this is right on
+ * a machine where the daemon has never run and right when the user pushed
+ * by hand. Takes a bare `repoDir` + `exec` (not the full `Probes`) so it can
+ * be pointed at a real git repo directly, independent of the OS `$HOME` a
+ * full `Probes` carries.
+ *
+ * `readLastPush` supplies only diagnostic detail — the daemon's own record of
+ * its last push attempt. It never gates `ready`: a record saying "pushed fine"
+ * on a repo whose tracking ref disagrees is exactly the shape-not-outcome
+ * reading this row exists to refuse.
+ */
+export async function homeBackupRow(
+  repoDir: string,
+  exec: Probes["exec"] = REAL_EXEC,
+  readLastPush: () => HomePushRecord | null = () => readHomePushRecord(),
+): Promise<Row> {
+  const base = {
+    id: "home.backup",
+    kind: "tool" as const,
+    title: "Home repo backup",
+    why: "Local-only is fully supported — this only confirms whether your settings are actually backed up anywhere, not just committed on this machine.",
+    required: false,
+    optionalNote: "Works without this; local-only just means this machine is the only copy of your settings.",
+    recheck: "on-activate" as const,
+  };
+
+  if (!(await isGitRepo(exec, repoDir))) {
+    return row({ ...base, status: "needs-you", detail: "no home repo found yet — nothing to back up" });
+  }
+
+  // Ahead of the remote check: an unborn repo is not "versioned on this
+  // machine" either way, so a local-only one must not claim it is.
+  if (!(await hasCommits(exec, repoDir))) {
+    return row({ ...base, status: "needs-you", detail: "no commits yet — nothing is versioned or backed up" });
+  }
+
+  if (!(await hasRemote(exec, repoDir))) {
+    return row({ ...base, status: "needs-you", detail: "local only — your settings are versioned on this machine but are not backed up anywhere", action: HOME_BACKUP_ADD_REMOTE_ACTION });
+  }
+
+  const state = await originPushState(exec, repoDir);
+  if (state.kind === "no-ref") return row({ ...base, status: "needs-you", detail: "remote configured, nothing pushed yet", action: HOME_BACKUP_PUSH_ACTION });
+  if (state.kind === "unknown") return row({ ...base, status: "needs-you", detail: "could not determine push status — the rev-list check failed" });
+
+  const lastPush = readLastPush();
+  if (state.kind === "ahead") {
+    const why = lastPush ? pushFailureSummary(lastPush) : null;
+    const detail = `${state.count} commit(s) not pushed${why ? ` — the last push failed: ${why}` : ""}`;
+    return row({ ...base, status: "needs-you", detail });
+  }
+
+  // `state.committedAt` is the tracking ref tip's COMMITTER date, not a push
+  // time — a week-old commit pushed five minutes ago would read "last pushed
+  // 7d ago". Only the daemon's record carries a real push timestamp, so the
+  // wording changes with the evidence rather than overstating it.
+  if (lastPush?.ok) return row({ ...base, status: "ready", detail: `in sync — last pushed ${relativeWhen(new Date(lastPush.at))}` });
+  return row({ ...base, status: "ready", detail: `in sync — last commit ${relativeWhen(state.committedAt)}` });
+}
+
 // ─── entry point ────────────────────────────────────────────────────────────
 
 export async function rtHealthRows(p: Probes, opts: { ci: boolean }, seams: RtHealthSeams = REAL_SEAMS): Promise<Row[]> {
@@ -350,5 +443,6 @@ export async function rtHealthRows(p: Probes, opts: { ci: boolean }, seams: RtHe
     extensionRow(p),
     shellRow(p),
     await daemonRow(p, opts),
+    await homeBackupRow(join(p.home, ".mattstack", "user"), p.exec),
   ];
 }

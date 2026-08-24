@@ -825,7 +825,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "The git-backed ~/.mattstack/user personal repo",
     subcommands: {
       init: {
-        description: "Provision this machine: print, then run, the plan (which clones the user repo as one of its steps)",
+        description: "Provision this machine: print, then run, the plan (which clones or git-inits the user repo as one of its steps)",
         module: "./commands/home.ts",
         fn: "homeInit",
         args: [
@@ -834,7 +834,7 @@ export const TREE: Record<string, CommandNode> = {
             name: "Clone URL",
             flag: "--url",
             type: "text",
-            hint: "The user repo to clone (default: https://github.com/m4ttheweric/mattstack-home)",
+            hint: "The user repo to clone — falls back to the setup intent's homeRepo, then RT_HOME_URL, then a local-only git init with no remote",
           },
           {
             name: "Profile",

@@ -23,13 +23,16 @@ export interface HomeState {
 }
 
 export interface InitPlanConfig {
-  url: string;
+  /** null means no rung resolved a repo — the permanent, fully supported local-only state, not an error. */
+  url: string | null;
   machineKey: string;
 }
 
 export type InitStep =
   | { kind: "ensureStateDirs"; dirs: string[] }
   | { kind: "cloneUserRepo"; url: string }
+  | { kind: "initUserRepo" }
+  | { kind: "commitInitialUserRepo" }
   | { kind: "writeGitignore"; content: string }
   | { kind: "writeOwners"; content: string }
   | { kind: "writeMachineKey"; key: string }
@@ -188,13 +191,18 @@ export function buildInitPlan(state: HomeState, config: InitPlanConfig): InitPla
     steps.push({ kind: "ensureStateDirs", dirs: state.stateDirsMissing });
   }
 
-  // writeGitignore/writeOwners ride along with the clone: an already-present
-  // user/ repo already carries these from its own history, so re-running
-  // init against it is provisioning-only and must not touch them.
+  // writeGitignore/writeOwners ride along with the clone/init: an
+  // already-present user/ repo already carries these from its own history,
+  // so re-running init against it is provisioning-only and must not touch
+  // them. commitInitialUserRepo only rides the local-only branch — a clone
+  // already has history, so there's nothing to commit.
   if (!state.userRepoPresent) {
-    steps.push({ kind: "cloneUserRepo", url: config.url });
+    steps.push(config.url === null ? { kind: "initUserRepo" } : { kind: "cloneUserRepo", url: config.url });
     steps.push({ kind: "writeGitignore", content: renderHomeGitignore() });
     steps.push({ kind: "writeOwners", content: renderOwnersFile() });
+    if (config.url === null) {
+      steps.push({ kind: "commitInitialUserRepo" });
+    }
   }
 
   if (!state.machineKeyFilePresent) {

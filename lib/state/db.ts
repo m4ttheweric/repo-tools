@@ -363,6 +363,11 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
 let singleton: Database | null = null;
 let singletonPath: string | null = null;
 
+/** Resolved at call time, never cached: the suite swaps `process.env.HOME` between cases, and a memoized path would outlive the HOME it was derived from. */
+export function stateDbPath(): string {
+  return join(rtDir(), "state.db");
+}
+
 /**
  * The lazy production singleton: one connection per process, held for the
  * process lifetime (spec "The database") — true in production, where
@@ -374,7 +379,7 @@ let singletonPath: string | null = null;
  * since deleted (SQLITE_IOERR_VNODE). Never call this at module scope.
  */
 export function getStateDb(flavor: DbFlavor = "cli"): Database {
-  const path = join(rtDir(), "state.db");
+  const path = stateDbPath();
   if (!singleton || singletonPath !== path) {
     singleton?.close();
     singleton = openStateDb(path, flavor);

@@ -13,7 +13,8 @@ import {
   type InitPlanConfig,
 } from "../init-plan.ts";
 
-const CONFIG: InitPlanConfig = { url: "https://github.com/m4ttheweric/mattstack-home", machineKey: "mbp-14" };
+const TEST_URL = "https://github.com/m4ttheweric/mattstack-home";
+const CONFIG: InitPlanConfig = { url: TEST_URL, machineKey: "mbp-14" };
 
 const FRESH_STATE: HomeState = {
   userRepoPresent: false,
@@ -33,6 +34,10 @@ const FULLY_PROVISIONED_STATE: HomeState = {
   stateDirsMissing: [],
 };
 
+function freshState(): HomeState {
+  return { ...FRESH_STATE };
+}
+
 describe("buildInitPlan", () => {
   test("fresh HOME: emits every step in order", () => {
     const plan = buildInitPlan(FRESH_STATE, CONFIG);
@@ -48,7 +53,7 @@ describe("buildInitPlan", () => {
       "writeSkillsSymlink",
     ]);
     expect(plan.steps[0]).toEqual({ kind: "ensureStateDirs", dirs: STATE_DIR_NAMES });
-    expect(plan.steps[1]).toEqual({ kind: "cloneUserRepo", url: CONFIG.url });
+    expect(plan.steps[1]).toEqual({ kind: "cloneUserRepo", url: TEST_URL });
     expect(plan.steps.find((s) => s.kind === "writeMachineKey")).toEqual({
       kind: "writeMachineKey",
       key: "mbp-14",
@@ -149,6 +154,46 @@ describe("buildInitPlan", () => {
 
   test("STATE_DIR_NAMES includes ci-attendants (per the spec's state-zone tree)", () => {
     expect(STATE_DIR_NAMES).toContain("ci-attendants");
+  });
+
+  describe("local-only init (config.url === null)", () => {
+    test("no url plans initUserRepo instead of cloneUserRepo", () => {
+      const plan = buildInitPlan(freshState(), { url: null, machineKey: "m" });
+      expect(plan.steps.some((s) => s.kind === "initUserRepo")).toBe(true);
+      expect(plan.steps.some((s) => s.kind === "cloneUserRepo")).toBe(false);
+    });
+
+    test("a url still plans cloneUserRepo", () => {
+      const plan = buildInitPlan(freshState(), { url: "https://x/a.git", machineKey: "m" });
+      expect(plan.steps.some((s) => s.kind === "cloneUserRepo")).toBe(true);
+    });
+
+    test("gitignore and owners ride along with initUserRepo, same as clone", () => {
+      const plan = buildInitPlan(freshState(), { url: null, machineKey: "m" });
+      expect(plan.steps.some((s) => s.kind === "writeGitignore")).toBe(true);
+      expect(plan.steps.some((s) => s.kind === "writeOwners")).toBe(true);
+    });
+
+    test("an existing repo is never re-initialised, with or without a url", () => {
+      const present = { ...freshState(), userRepoPresent: true };
+      for (const url of [null, "https://x/a.git"]) {
+        const plan = buildInitPlan(present, { url, machineKey: "m" });
+        expect(plan.steps.some((s) => s.kind === "initUserRepo" || s.kind === "cloneUserRepo")).toBe(false);
+      }
+    });
+
+    test("commitInitialUserRepo is planned only on the local-only path, after writeGitignore/writeOwners", () => {
+      const plan = buildInitPlan(freshState(), { url: null, machineKey: "m" });
+      const kinds = plan.steps.map((s) => s.kind);
+      expect(kinds).toContain("commitInitialUserRepo");
+      expect(kinds.indexOf("commitInitialUserRepo")).toBeGreaterThan(kinds.indexOf("writeGitignore"));
+      expect(kinds.indexOf("commitInitialUserRepo")).toBeGreaterThan(kinds.indexOf("writeOwners"));
+    });
+
+    test("a url plans no commitInitialUserRepo step — a clone already has history", () => {
+      const plan = buildInitPlan(freshState(), { url: "https://x/a.git", machineKey: "m" });
+      expect(plan.steps.some((s) => s.kind === "commitInitialUserRepo")).toBe(false);
+    });
   });
 
   describe("machine-key guard — refuses before ever emitting writeMachineKey/ensureProfileDir", () => {

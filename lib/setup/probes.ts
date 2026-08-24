@@ -53,7 +53,7 @@ const DEFAULT_FETCH_TIMEOUT_MS = 5000;
 /** Grace between SIGTERM and SIGKILL once timeoutMs elapses — long enough for a well-behaved child to exit on TERM, short enough to keep the 124 path bounded. */
 const KILL_GRACE_MS = 200;
 
-async function execWithTimeout(argv: string[], opts?: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; input?: string; inherit?: boolean }): Promise<ExecResult> {
+export async function execWithTimeout(argv: string[], opts?: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; input?: string; inherit?: boolean }): Promise<ExecResult> {
   const hasInput = opts?.input !== undefined && !opts?.inherit;
 
   // A local no-arg closure (rather than `Bun.spawn(argv, {...})` inline

@@ -1,13 +1,15 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { afterEach, afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { DAEMON_CONFIG_PATH } from "../../daemon-config.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
 import { setSetting } from "../../settings/write.ts";
-import { rtHealthRows } from "../validators/rt-health.ts";
+import { homeBackupRow, rtHealthRows } from "../validators/rt-health.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
 import type { ExecScript } from "./fakes.ts";
+import { createRealProbes } from "../probes.ts";
 import type { Probes } from "../probes.ts";
 
 // Every test that isn't specifically exercising tool.fzf uses this: a real
@@ -34,6 +36,7 @@ const ROW_ORDER = [
   "tool.extension",
   "tool.shell",
   "tool.daemon",
+  "home.backup",
 ];
 
 async function pickRow(rowsP: ReturnType<typeof rtHealthRows>, id: string) {
@@ -503,5 +506,201 @@ describe("rtHealthRows — tool.daemon", () => {
     expect(r.status).toBe("error");
     expect(r.detail).toContain("launchctl check failed");
     expect(r.detail).not.toContain("not registered with launchd");
+  });
+});
+
+/**
+ * Real git, never a fake exec script — this is exactly the `@{u}` trap
+ * home-snapshot.test.ts guards against: a clone configures upstream and
+ * would pass even against a broken `@{u}` implementation, so every repo
+ * here is built by hand (`git init` -> commit -> attach remote -> push).
+ */
+describe("rtHealthRows — home.backup (real git)", () => {
+  /** The daemon's push record is diagnostic only — every state below is asserted against no record first, since that is what a machine whose daemon has never run reports. */
+  const NO_RECORD = () => null;
+  const REAL_EXEC: Probes["exec"] = createRealProbes().exec;
+  const createdRoots: string[] = [];
+  afterAll(() => {
+    for (const root of createdRoots) {
+      try { rmSync(root, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    }
+  });
+
+  function initRepo(repoDir: string): void {
+    mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main", repoDir]);
+    execFileSync("git", ["config", "user.email", "rt@example.test"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.name", "rt test"], { cwd: repoDir });
+  }
+
+  function freshRepoDir(prefix: string): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+    createdRoots.push(root);
+    const repoDir = join(root, "user");
+    initRepo(repoDir);
+    return repoDir;
+  }
+
+  async function commit(repoDir: string, message: string): Promise<void> {
+    writeFileSync(join(repoDir, `${message}.txt`), message);
+    execFileSync("git", ["add", "-A"], { cwd: repoDir });
+    execFileSync("git", ["commit", "-q", "-m", message], { cwd: repoDir });
+  }
+
+  async function localOnlyRepo(): Promise<string> {
+    const repoDir = freshRepoDir("rt-health-backup-localonly-");
+    await commit(repoDir, "seed");
+    return repoDir;
+  }
+
+  async function attachRemote(repoDir: string): Promise<void> {
+    const originDir = join(dirname(repoDir), "origin.git");
+    execFileSync("git", ["init", "--bare", "-q", originDir]);
+    execFileSync("git", ["remote", "add", "origin", originDir], { cwd: repoDir });
+  }
+
+  /** `git init` -> commit -> `git remote add` -> `git push origin HEAD` — never a clone (a clone arrives with upstream configured and would mask a broken `@{u}` implementation). */
+  async function pushedRepo(): Promise<string> {
+    const repoDir = await localOnlyRepo();
+    await attachRemote(repoDir);
+    execFileSync("git", ["push", "-q", "origin", "HEAD"], { cwd: repoDir });
+    return repoDir;
+  }
+
+  test("no remote: needs-you, not skipped — skipped renders as info and shows no warning", async () => {
+    const row = await homeBackupRow(await localOnlyRepo());
+    expect(row.status).toBe("needs-you");
+    expect(row.required).toBe(false);
+    expect(row.detail).toBe("local only — your settings are versioned on this machine but are not backed up anywhere");
+    expect(row.action).not.toBeNull();
+  });
+
+  test("remote attached but never pushed: needs-you, not ready", async () => {
+    const repo = await localOnlyRepo();
+    await attachRemote(repo);
+    const row = await homeBackupRow(repo);
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("remote configured, nothing pushed yet");
+  });
+
+  test("commits ahead of the ref: needs-you", async () => {
+    const repo = await pushedRepo();
+    await commit(repo, "later");
+    const row = await homeBackupRow(repo, REAL_EXEC, NO_RECORD);
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("1 commit(s) not pushed");
+  });
+
+  test("pushed and nothing ahead, no daemon record: ready, and names the COMMIT — the ref tip's committer date is not a push time", async () => {
+    const row = await homeBackupRow(await pushedRepo(), REAL_EXEC, NO_RECORD);
+    expect(row.status).toBe("ready");
+    expect(row.detail).toStartWith("in sync — last commit ");
+    expect(row.detail).not.toContain("pushed");
+    expect(row.action).toBeNull();
+  });
+
+  test("pushed and nothing ahead, with a recorded successful push: says pushed, off the record's real timestamp", async () => {
+    const row = await homeBackupRow(await pushedRepo(), REAL_EXEC, () => ({ at: Date.now() - 5 * 60_000, ok: true }));
+    expect(row.status).toBe("ready");
+    expect(row.detail).toBe("in sync — last pushed 5m ago");
+  });
+
+  test("a record claiming a successful push never turns a needs-you row green — the tracking ref stays the only evidence", async () => {
+    const repo = await pushedRepo();
+    await commit(repo, "later");
+    const row = await homeBackupRow(repo, REAL_EXEC, () => ({ at: Date.now(), ok: true }));
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("1 commit(s) not pushed");
+  });
+
+  test("commits ahead with a recorded push failure: names why, which nothing else on the machine surfaces", async () => {
+    const repo = await pushedRepo();
+    await commit(repo, "later");
+    const row = await homeBackupRow(repo, REAL_EXEC, () => ({
+      at: Date.now(),
+      ok: false,
+      error: "remote: Permission to acme/home.git denied to matt.\nfatal: unable to access\n",
+    }));
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("1 commit(s) not pushed — the last push failed: remote: Permission to acme/home.git denied to matt.");
+  });
+
+  test("a repo with no remote never consults the record — local-only is a state, not a push failure", async () => {
+    const row = await homeBackupRow(await localOnlyRepo(), REAL_EXEC, () => {
+      throw new Error("readLastPush must not be reached on the local-only path");
+    });
+    expect(row.detail).toBe("local only — your settings are versioned on this machine but are not backed up anywhere");
+  });
+
+  test("unborn branch (remote attached before any commit ever landed): needs-you, never crashes on a missing ref", async () => {
+    const repoDir = freshRepoDir("rt-health-backup-unborn-");
+    await attachRemote(repoDir);
+    const row = await homeBackupRow(repoDir);
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("no commits yet — nothing is versioned or backed up");
+  });
+
+  test("unborn branch, no remote: never claims settings are versioned on this machine when nothing is committed", async () => {
+    const repoDir = freshRepoDir("rt-health-backup-unborn-local-");
+    const row = await homeBackupRow(repoDir);
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("no commits yet — nothing is versioned or backed up");
+  });
+
+  test("a non-origin remote reads as local-only: every push and ref comparison downstream is origin-only", async () => {
+    const repoDir = freshRepoDir("rt-health-backup-upstream-only-");
+    await commit(repoDir, "seed");
+    const otherDir = join(dirname(repoDir), "upstream.git");
+    execFileSync("git", ["init", "--bare", "-q", otherDir]);
+    execFileSync("git", ["remote", "add", "upstream", otherDir], { cwd: repoDir });
+
+    const row = await homeBackupRow(repoDir);
+    expect(row.detail).toBe("local only — your settings are versioned on this machine but are not backed up anywhere");
+  });
+
+  test("remote configured, nothing pushed: the remedy names the push, not just the remote add", async () => {
+    const repo = await localOnlyRepo();
+    await attachRemote(repo);
+    const row = await homeBackupRow(repo);
+    expect((row.action as { steps: string[] } | null)?.steps.join("\n")).toContain("push origin HEAD");
+  });
+
+  test("no home repo at this path yet: needs-you, never claims settings are versioned when there's nothing there", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-health-backup-norepo-")));
+    createdRoots.push(dir);
+    const row = await homeBackupRow(dir);
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("no home repo found yet — nothing to back up");
+  });
+
+  test("rev-list check fails (timeout/corrupt store): needs-you, could-not-determine — never falls through to ready on evidence that never arrived", async () => {
+    const repo = await pushedRepo();
+    const realExec = createRealProbes().exec;
+    const flakyExec: Probes["exec"] = async (argv, opts) => {
+      if (argv[0] === "git" && argv[1] === "rev-list") return { code: 128, stdout: "", stderr: "fatal: bad object" };
+      return realExec(argv, opts);
+    };
+    const row = await homeBackupRow(repo, flakyExec);
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("could not determine push status — the rev-list check failed");
+  });
+
+  test("rtHealthRows wires home.backup off p.home/.mattstack/user, not p.home/user — catches a dropped .mattstack segment", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-health-backup-wiring-")));
+    createdRoots.push(root);
+    const repoDir = join(root, ".mattstack", "user");
+    initRepo(repoDir);
+    await commit(repoDir, "seed");
+    await attachRemote(repoDir);
+    execFileSync("git", ["push", "-q", "origin", "HEAD"], { cwd: repoDir });
+
+    const rows = await rtHealthRows(fakeProbes({ home: root, exec: createRealProbes().exec }), { ci: false }, NOOP_FZF);
+    const r = rows.find((x) => x.id === "home.backup");
+    expect(r).toBeDefined();
+    // A path join that drops ".mattstack" (or joins nothing at all) points
+    // at a directory that never exists, which reads as "needs-you" — only
+    // the correct join lands on the real, pushed repo built above.
+    expect(r?.status).toBe("ready");
+    expect(r?.required).toBe(false);
   });
 });
