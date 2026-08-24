@@ -1209,11 +1209,11 @@ plan's task list — it is rt-side work, so it lands here.
 
 **Files:**
 - Modify: `lib/daemon/handlers/chat.ts`
-- Modify: `lib/notifier.ts` — the drain side (`drainNotificationQueue`, `pushToTray`)
+- Modify: `lib/notifier.ts` — `notify()` gains an optional `id`, and the push producer lands beside `pushToTray` inside it
 - Test: `lib/daemon/__tests__/chat-handlers.test.ts`
 
 **Interfaces:**
-- Consumes: `enqueueNotification` / `peekNotificationQueue` from `lib/state/index.ts`; `getSetting` for `chat.humanHandle`, `chat.push.provider`, `chat.push.target`.
+- Consumes: `notify` from `lib/notifier.ts`; `peekNotificationQueue` from `lib/state/index.ts`; `getSetting` for `chat.humanHandle`, `chat.push.provider`, `chat.push.target`; `setSetting(key, value, scope)` in tests.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1270,32 +1270,34 @@ membership and `wake_on`. This adds a producer to
 `notify_queue`, which the daemon's notifier already drains to the tray — no
 new delivery machinery is built.
 
-`NotificationEvent` (`lib/state/notifier-store.ts`) is
-`{ id, title, message, category, timestamp, url?, pids? }`, all five of the
-first fields required:
+**Call `notify()` from `lib/notifier.ts` — not the store's
+`enqueueNotification`.** This matters more than it looks. `notify()` is the
+*only* path to `pushToTray`: it enqueues, fires the WebSocket broadcast hook,
+and pushes to the tray in one call. Writing straight to `notify_queue` through
+the store bypasses all three, so a chat mention would never reach the tray, WS
+clients, or the push producer Step 4 adds beside `pushToTray` — the one thing
+push exists for would be the one thing it never sends.
 
 ```ts
-enqueueNotification({
-  id: `chat:${messageId}`,
-  title: `#${room}`,
-  message: `${authorHandle}: ${body}`,
-  category: "chat",
-  timestamp: Date.now(),
-}, db);
+notify(`#${room}`, `${authorHandle}: ${body}`, undefined, "chat", undefined, `chat:${messageId}`);
 ```
 
-**`id` is `chat:<messageId>` deliberately.** It is unique per message and
-stable, so a redelivery cannot double-notify — `isNotificationQueued` is
-already exported for exactly that check. Do not use a random id.
+**`notify()` gains a trailing optional `id` parameter** — its current
+signature is `notify(title, message, url?, category?, pids?)` and it generates
+`crypto.randomUUID()` internally. Chat needs a *stable* id: `chat:<messageId>`
+is unique per message and repeatable, so a redelivery cannot double-notify,
+which is what the already-exported `isNotificationQueued` exists to check. Add
+the parameter as optional and defaulted to the existing UUID so every current
+caller is unaffected.
 
 - [ ] **Step 4: Implement optional push on the drain side**
 
-Push lives in **`lib/notifier.ts`**, beside `pushToTray`, not in `chat:post`.
-That placement is the design: on the drain side a failed push is
-*inherently* decoupled from the post, which has already returned and already
-stored the message — so "a failed push must not fail the post" costs nothing
-rather than needing a try/catch around an outbound call on the request path.
-It also keeps a network call off `chat:post` entirely.
+Push lives in **`lib/notifier.ts`**, beside the existing `pushToTray(event)`
+call inside `notify()` — the same fire-and-forget dispatch point, not the
+request path. That placement is the design: the post has already returned and
+already stored the message, so "a failed push must not fail the post" costs
+nothing rather than needing a try/catch around an outbound call in
+`chat:post`, and no network call touches the handler.
 
 When `chat.push.provider` is set (`ntfy` or `pushover`) with a
 `chat.push.target`, POST the drained event there as well as to the tray —
@@ -1317,31 +1319,38 @@ push logs and is not retried.
 
 - [ ] **Step 5: Test the two push guarantees**
 
-`deliver(event)` is the drain-and-dispatch path this step modifies — the
-function in `lib/notifier.ts` that takes one drained `NotificationEvent` and
-sends it onward. `chatEvent()` and `otherEvent()` are local factories
-returning a `NotificationEvent` with `category: "chat"` and
-`category: "general"` respectively; define both at the top of the test file.
+Test through `notify()` itself. **There is no `deliver()` function** — the
+dispatch logic is inline inside `notify()`, and this step does not extract it.
+`setSetting`'s real signature is `setSetting(key, value, scope, opts?)` with
+`scope` positional and required.
+
+`notify()` is synchronous and pushes fire-and-forget, so each test awaits a
+microtask turn before asserting.
 
 ```ts
+const push = () => setSetting("chat.push.provider", "ntfy", "user")
+  && setSetting("chat.push.target", "https://ntfy.sh/x", "user");
+
 test("no provider configured sends nothing anywhere", async () => {
   const fetchSpy = spyOn(globalThis, "fetch");
-  await deliver(chatEvent());
+  notify("#r", "agent: @matt hi", undefined, "chat");
+  await Bun.sleep(0);
   expect(fetchSpy).not.toHaveBeenCalled();
 });
 
-test("a failing push does not fail delivery", async () => {
-  setSetting("chat.push.provider", "ntfy");
-  setSetting("chat.push.target", "https://ntfy.sh/x");
+test("a failing push does not fail the notification", async () => {
+  push();
   spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
-  await expect(deliver(chatEvent())).resolves.not.toThrow();
+  expect(() => notify("#r", "agent: @matt hi", undefined, "chat")).not.toThrow();
+  await Bun.sleep(0);
+  expect(peekNotifications()).toHaveLength(1);
 });
 
 test("a non-chat notification is never pushed", async () => {
-  setSetting("chat.push.provider", "ntfy");
-  setSetting("chat.push.target", "https://ntfy.sh/x");
+  push();
   const fetchSpy = spyOn(globalThis, "fetch");
-  await deliver(otherEvent());
+  notify("MR ready", "something else", undefined, "general");
+  await Bun.sleep(0);
   expect(fetchSpy).not.toHaveBeenCalled();
 });
 ```
