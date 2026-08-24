@@ -53,4 +53,8 @@ export { REGISTRY } from "./settings/registry-defs.ts";
 export { readStore, listTeams } from "./settings/stores.ts";
 export type { StoreFile } from "./settings/stores.ts";
 
-export { normalizeRemote, identityFromRemote, deriveRepoIdentity, clearIdentityMemo } from "./settings/identity.ts";
+export {
+  normalizeRemote, identityFromRemote, deriveRepoIdentity, clearIdentityMemo,
+  serializeIdentity, parseIdentity, resolveNameToIdentity,
+  type RepoIdentity,
+} from "./settings/identity.ts";
