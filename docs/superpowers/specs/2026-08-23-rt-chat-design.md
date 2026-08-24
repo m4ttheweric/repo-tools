@@ -168,9 +168,11 @@ at this data scale and avoids a join table that only the viewer would read.
 
 ## Command surface
 
-Seven verbs under `rt chat`, plain English, all accepting `--json`. Note
-that `read` mutates (it advances the cursor) and therefore has no REST route;
-see Daemon architecture.
+Eight verbs under `rt chat`, plain English, all accepting `--json`. **No chat
+verb is exposed over HTTP in v1** — the viewer reaches the daemon through
+rt-client over the unix socket. `read` is the one that must never be exposed
+even if that changes, because it mutates; see the hazard note in Daemon
+architecture.
 
 | Verb | Shape |
 |---|---|
@@ -533,6 +535,20 @@ open tab refetch.
   Posting into a room not yet joined auto-joins, consistent with
   join-creates.
 
+**`armed_at` must be cleared at daemon startup.** No waiter can outlive the
+daemon — `events-bus.close()` settles every waiter and closes the db — so
+every `armed_at` still set when the daemon boots is stale by definition. It
+has to be cleared there, because the disarming agents cannot do it themselves:
+`chat:disarm` is a daemon handler, and the daemon is the thing that just died.
+Without this, each `rt chat wait` exits 69, nothing clears its row, and on
+restart the status rule (`armed_at` set **and** `last_seen_at` fresh) reports
+**the entire fleet as live — will hear you** for up to ten minutes while every
+agent is in fact disarmed. Since the Stop hook must never re-arm after 69,
+nothing recovers until each agent happens to take a turn. That is the exact
+failure `deaf` exists to prevent, at fleet scale, in the window an operator is
+most likely to be looking. Same shape as RT-48's `fired`-ledger hygiene, and
+one statement to implement.
+
 **A daemon health probe is required, and it is not optional polish.**
 `subscribe()` reconnects silently forever, so a stopped daemon does not error
 — the live pane simply goes quiet. Without a probe, "the daemon is dead" and
@@ -584,7 +600,7 @@ nothing is sent anywhere unless Matt configures it.
 | Daemon unreachable | `wait` exits **69**, distinct from 0 and 124. A Stop hook that cannot distinguish "woken" from "daemon dead" re-arms in a tight loop forever. |
 | Agent forgets to re-arm | Four layers: skill discipline → self-documenting `wait` exit line → Stop hook → `deaf` in the viewer. |
 | Two waiters armed | Pidfile keyed on handle alone; the second refuses. Otherwise every message double-wakes. |
-| Agent dies holding a waiter | Inherited from `events-bus`: AbortSignal on connection close, with the 240s daemon cap as backstop. `armed_at` goes stale and the viewer shows `deaf`. |
+| Agent dies holding a waiter | Inherited from `events-bus`: AbortSignal on connection close, with the 240s daemon cap as backstop. The viewer shows `deaf` within ~10 minutes — not immediately; the threshold exists to absorb two missed poll cycles. |
 | `last_read_id` > `max(id)` | Clamp down. Same class and cause as the events bus's ahead-cursor clamp (db recreated); without it, a permanent-looking hang. |
 | Handle collision | Numeric suffix at join; resolved handle persisted, stable thereafter. |
 | Room name typo | `join` prints the member count; `1 member · you are alone here` makes it obvious. Indistinguishable-from-success is the thing being avoided. |
@@ -595,7 +611,7 @@ nothing is sent anywhere unless Matt configures it.
 
 Store tests use an explicit-path seam (`openChatStore(path)`), per RT-48, so
 no test opens the real `state.db`. Beyond unit coverage of the store and
-handlers, seven integration tests carry the product:
+handlers, eight integration tests carry the product:
 
 1. **Post → wake.** One process armed on `wait`, another posts a mention;
    assert the first exits 0 promptly with exactly one line on stdout. This is
@@ -628,6 +644,11 @@ handlers, seven integration tests carry the product:
    past. This holds the line at the handler, so it stays true if these are ever
    exposed over REST, where a mutating "read" becomes a live vulnerability.
 
+8. **Daemon restart disarms everyone.** Arm a waiter, restart the daemon,
+   assert the member's `armed_at` is clear and the viewer reports it as not
+   live. Without the startup clear this renders the whole fleet as live for
+   ten minutes after every restart.
+
 Plus a source-guard check that `wait`'s success path writes exactly one line,
 since output rule 1 is a guarantee rather than a convention.
 
@@ -649,7 +670,9 @@ Deliberately excluded, with the condition under which each returns:
 
 ## Rollout
 
-1. Store + migration in `state.db`, with the explicit-path seam.
+1. Store + migration in `state.db`, with the explicit-path seam, **and the
+   startup clear of `armed_at`** (see Web viewer — it is store work, not
+   viewer work, and is easy to lose between the two plans).
 2. Daemon handlers, `chat:*` entries in
    `packages/rt-client/src/commands.ts`, **and the exported wrapper functions
    in `client.ts` / `index.ts`** that plan 2 consumes (the way console gets
