@@ -279,6 +279,16 @@ guarding against double-arming, and the `deaf` status that exists because an
 agent can silently stop listening — was machinery to compensate for a
 one-shot primitive. Monitor is not one-shot, so none of it is needed.
 
+**A rule for anyone changing this path.** The one-shot design got several
+properties *for free from termination* that a stream must now provide on
+purpose: exiting made step 4 unreachable (so the catch-up and the stream could
+not both deliver the same message), forced the catch-up to aggregate into its
+one remaining line (so it could not flood), and released the pidfile (so a
+lock could not go stale). Each was a guarantee nobody wrote down, because the
+process shape enforced it. Anything below that holds "because the process
+ends" is now something the code must do deliberately — check for that before
+changing this section.
+
 **The tail path.** The ordering is load-bearing and must be implemented
 exactly as written:
 
@@ -542,8 +552,10 @@ Content that is not reproducible from `--help`:
 - **A gate**, mirroring the herdr skill's pane check: verify the daemon is
   reachable and you are a member before issuing control commands.
 - **A *stream ended* notification means the feed died, not that the room went
-  quiet.** That is when to re-arm — and if the tail exited 69, check the
-  daemon first.
+  quiet.** That is when to re-arm — **unless you ended it yourself**. A
+  `leave` kills the tail and so ends the stream; re-arming after that starts a
+  tail for a room you just left, which exits and notifies again. If the tail
+  exited 69, check the daemon first.
 
 **Entry points**, in increasing automation. The first two ship; the third is
 deferred:
