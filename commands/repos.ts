@@ -14,9 +14,10 @@
 
 import { execFileSync } from "child_process";
 import { realpathSync } from "fs";
+import { homedir } from "os";
 import { basename } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { updateRepoIndex } from "../lib/repo-index.ts";
+import { pruneRepoIndex, updateRepoIndex, type PrunedEntry } from "../lib/repo-index.ts";
 import { CACHE_KINDS, loadMachineRepoTrackingRaw, parseCachesArg, saveRepoTrackingRaw, type CacheKind, type TrackingMode } from "../lib/repo-tracking.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
@@ -140,5 +141,50 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
         ? `registered ${r.name} (${r.path}) — tracking ${r.tracking.mode} [${r.tracking.caches.join(",")}]`
         : `registered ${r.name} (${r.path})`,
     );
+  }
+}
+
+// ─── prune ───────────────────────────────────────────────────────────────────
+
+const PRUNE_USAGE = "usage: rt repos prune [--dry-run] [--json]";
+
+function describeReason(r: PrunedEntry): string {
+  return r.reason === "duplicate" ? `same directory as ${r.keptAs}` : "path no longer exists";
+}
+
+/**
+ * rt repos prune — drop index rows that no longer name anything: a path that
+ * has stopped existing, and the losing half of every realpath collision left
+ * behind by a repo rename.
+ *
+ * `getKnownRepos` already hides both from the picker; this is the deliberate
+ * eviction, kept a separate explicit verb because a name lookup elsewhere
+ * (`loadRepoIndex()[name]`, per-repo data dirs, per-repo settings scopes)
+ * still resolves through the row this removes. RT-60 is the migration that
+ * would carry those forward instead of stranding them.
+ */
+export async function reposPrune(args: string[], _ctx: CommandContext = {}, deps: RegisterDeps = realRegisterDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const dryRun = args.includes("--dry-run");
+
+  for (const a of args) {
+    if (a.startsWith("--") && a !== "--json" && a !== "--dry-run") {
+      exitUserError(new UserActionableError("usage", `unknown flag "${a}" — ${PRUNE_USAGE}`), json, "repos prune", deps.print);
+    }
+  }
+
+  const removed = pruneRepoIndex({ dryRun });
+
+  if (json) {
+    deps.print(JSON.stringify(envelope({ removed, dryRun })));
+    return;
+  }
+  if (removed.length === 0) {
+    deps.print("repo index is clean — nothing to prune");
+    return;
+  }
+  const verb = dryRun ? "would remove" : "removed";
+  for (const r of removed) {
+    deps.print(`${verb} ${r.repoName} (${r.path.replace(homedir(), "~")}) — ${describeReason(r)}`);
   }
 }

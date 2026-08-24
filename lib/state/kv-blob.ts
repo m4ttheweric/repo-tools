@@ -16,6 +16,7 @@ import { persistOrWarn } from "./busy.ts";
 
 const KV_SELECT_SQL = `SELECT v FROM kv WHERE ns = ? AND k = ?;`;
 const KV_SELECT_NS_SQL = `SELECT k, v FROM kv WHERE ns = ?;`;
+const KV_SELECT_NS_META_SQL = `SELECT k, v, updated_at FROM kv WHERE ns = ?;`;
 const KV_UPSERT_SQL = `
   INSERT INTO kv (ns, k, v, updated_at) VALUES (?, ?, ?, ?)
   ON CONFLICT(ns, k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at
@@ -74,6 +75,34 @@ export function listKvValues<T>(ns: string, db: Database = getStateDb()): Record
   for (const row of rows) {
     try {
       out[row.k] = JSON.parse(row.v) as T;
+    } catch {
+      // corrupt row — skip, same as a missing one
+    }
+  }
+  return out;
+}
+
+export interface KvEntry<T> {
+  key: string;
+  value: T;
+  /** Epoch ms of the last write to this row (the `updated_at` column). */
+  updatedAt: number;
+}
+
+/**
+ * Every row in `ns` with its write timestamp, for the callers that need to
+ * order rows by recency rather than just read them. `listKvValues` drops
+ * `updated_at` on the floor, and the column is not otherwise reachable
+ * through this module.
+ *
+ * Corrupt rows are skipped, same as `listKvValues`.
+ */
+export function listKvEntries<T>(ns: string, db: Database = getStateDb()): KvEntry<T>[] {
+  const rows = db.query(KV_SELECT_NS_META_SQL).all(ns) as { k: string; v: string; updated_at: number }[];
+  const out: KvEntry<T>[] = [];
+  for (const row of rows) {
+    try {
+      out.push({ key: row.k, value: JSON.parse(row.v) as T, updatedAt: row.updated_at });
     } catch {
       // corrupt row — skip, same as a missing one
     }
