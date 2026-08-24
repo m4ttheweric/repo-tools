@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { failureDetail } from "../steps/home.ts";
+import { failureDetail, homeInitRemedy } from "../steps/home.ts";
 
 describe("failureDetail", () => {
   // The exact shape that reached CI: bun's crash frame arrived first and the
@@ -26,5 +26,33 @@ describe("failureDetail", () => {
 
   test("empty stderr yields an empty detail rather than throwing", () => {
     expect(failureDetail("   \n  \n")).toBe("");
+  });
+});
+
+// ─── remedy for a missing binary ─────────────────────────────────────────────
+
+describe("homeInitRemedy: missing executable", () => {
+  // The exact stderr that dead-ended every clean-Mac install. The old remedy
+  // was "Check the error above, then Retry" — true, and unactionable.
+  test("names the tool, and maps age-keygen to the package that provides it", () => {
+    const remedy = homeInitRemedy('error: Executable not found in $PATH: "age-keygen"');
+    expect(remedy).toContain("age-keygen");
+    expect(remedy).toContain("reinstall mattstack.app");
+    expect(remedy).toContain("brew install age"); // the formula is `age`, not `age-keygen`
+  });
+
+  test("a tool whose name matches its package is not rewritten", () => {
+    expect(homeInitRemedy('error: Executable not found in $PATH: "sops"')).toContain("brew install sops");
+  });
+
+  // The missing-binary check runs first precisely because this stderr would
+  // otherwise fall through to the auth heuristics.
+  test("takes precedence over the auth remedy", () => {
+    const remedy = homeInitRemedy('error: Executable not found in $PATH: "sops"\npermission denied');
+    expect(remedy).not.toContain("gh auth login");
+  });
+
+  test("a genuine auth failure still gets the auth remedy", () => {
+    expect(homeInitRemedy('fatal: could not read Username for \'https://github.com\'')).toContain("gh auth login");
   });
 });
