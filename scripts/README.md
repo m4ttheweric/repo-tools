@@ -32,6 +32,8 @@ swift scripts/set-app-icon.swift <app-path> <icon-path>
 
 The release workflow's `test-install` recipe: extract the zip → stamp `com.apple.quarantine` and assert Gatekeeper accepts the app the way a browser download would → `rt --post-install --non-interactive --team-of-one --no-launch` → `rt daemon install` → `rt verify --ci` → `rt-tray/check-bundle.sh --app`. Runnable locally against a release tag, a `mattstack-<ver>.zip`/`.dmg`, or an installed `mattstack.app`; `release.yml` calls it with the zip as a single positional argument.
 
+The Gatekeeper assertion is conditional: where the xattr cannot be written, the run prints `Gatekeeper path NOT exercised` and carries on rather than failing, so a green run is not by itself proof that Gatekeeper was tested — read the line.
+
 Refuses to run as a user who already has mattstack registered (without `--no-launch` the post-install would launch a second app) — use it inside the VM walkthrough (`rt-tray/vm/run/walkthrough.sh --scenario headless`), as the smoke user (`rt-tray/vm/run/second-user.sh run`), or on CI. Output lands in `rt-tray/vm/artifacts/cleanroom-<ts>/`. Under `CI=true` a daemon that is not booted is a warning, not a failure.
 
 `rt-tray/check-bundle.sh --app <bundle>` asserts an existing bundle without rebuilding (the no-arg mode rebuilds both flavors in place). Support for it is probed by grepping the script rather than by running it: a checkout old enough to lack `--app` falls through to `./build.sh release && ./build.sh dev` on *any* invocation, `--help` included, so probing by execution would itself clobber the working tree this guards.

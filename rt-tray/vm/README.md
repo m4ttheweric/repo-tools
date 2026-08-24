@@ -9,7 +9,7 @@ Every run's deliverable is `artifacts/<run-id>/` (screenshots, logs,
 
 | Layer | Verifies | Cannot verify / not automated |
 |---|---|---|
-| (a) `scripts/e2e-cleanroom.sh` (same recipe as the release workflow's "Clean-room install + verify" step) | artifact extracts; Gatekeeper accepts the app with `com.apple.quarantine` stamped on the way a browser download would; `rt --post-install` installs `~/.local/bin/rt`, the app, the daemon config; `rt verify --ci` exit 0; every bundled helper runs from inside the signed bundle | anything needing a GUI session or approval (daemon boot is a warn under CI) |
+| (a) `scripts/e2e-cleanroom.sh` (same recipe as the release workflow's "Clean-room install + verify" step) | artifact extracts; Gatekeeper accepts the app with `com.apple.quarantine` stamped on the way a browser download would; `rt --post-install` installs `~/.local/bin/rt`, the app, the daemon config; `rt verify --ci` exit 0; every bundled helper runs from inside the signed bundle | anything needing a GUI session or approval (daemon boot is a warn under CI); Gatekeeper **where the xattr cannot be written** — that prints `Gatekeeper path NOT exercised` and the run still passes, so a green run is not proof it was tested |
 | (b) `run/walkthrough.sh` (Tart clone of a golden image) | real DMG → /Applications → first launch under Gatekeeper; five setup screens; FDA + Login Items + Notifications dances; `rt verify --json` green; tray.sock `/version`; Sparkle vN→vN+1 and daemon restart; screenshots per screen | the **"Background Items Added" notification** (a banner, not a dialog — it is neither clicked nor asserted; the Login Items row is asserted through `GET /services` / `rt setup status` instead); the **FDA relaunch** is driven (the app's own "Relaunch" button) but the OS applying FDA is asserted only via the app's probe row; notarisation/stapling of Matt's signing (a locally built DMG is unnotarised → run with `--no-quarantine`, reported in the ledger) |
 | (c) `run/second-user.sh` | layer (a) under a second real macOS user on Matt's Mac, with a live GUI session so SMAppService registration is real | nothing about the five screens; the user must be created and logged in once by Matt |
 
@@ -24,8 +24,8 @@ gated on other lanes:
   `screens` phase. `--scenario create`/`join` still fails there today — not
   because the guest scripts are missing, but because it's gated on L3's
   setup screens fully wiring `AccessibilityIDs.swift`'s identifiers.
-  `--scenario headless` does not depend on this, but it fails too today —
-  see fzf below.
+  `--scenario headless` does not depend on this and is no longer blocked by
+  anything known — it has simply never been run against a golden image.
 - **`run/guest/trigger-update.sh`** (drives Sparkle, asserts vN→vN+1 +
   daemon restart) — in the tree, staged the same way, and the update phase
   runs it whenever `--update-dir` is passed; it reports `skip` ("no
@@ -122,7 +122,7 @@ run/second-user.sh run --artifact ~/Downloads/mattstack-2.9.0.zip
 ../../scripts/e2e-cleanroom.sh --tag v2.9.0   # refuses on a user that already runs mattstack
 ../../scripts/e2e-cleanroom.sh ~/Downloads/mattstack-2.9.0.zip --home "$(mktemp -d)"   # local run: --home keeps this off your real ~ (release.yml passes no --home; its runner IS the throwaway machine)
 ```
-Today, the first line's `screens` phase and both lines' `update` phase report `fail`/`skip` honestly (see Status above) — `--scenario headless` (line 2) also fails today, at its `screens` and `assert` phases, because fzf is not provisioned (see fzf above); no scenario currently runs fully green end to end. `--dry-run` exercises the whole orchestrator (phase ledger, report) against any golden name without Tart or a real DMG/app.
+Today, the first line's `screens` phase and both lines' `update` phase report `fail`/`skip` honestly (see Status above). `--scenario headless` (line 2) is no longer blocked by anything known, but no scenario has yet been run end to end against a golden image, so none is *known* green either. `--dry-run` exercises the whole orchestrator (phase ledger, report) against any golden name without Tart or a real DMG/app.
 
 Phases: preflight · clone · boot · stage · install · launch · screens · assert · update · teardown. Each is `pass|fail|skip` with a reason in `artifacts/<run>/phases.jsonl`; `report.md` is the human summary; `screenshots/` are numbered per screen (`00-first-launch`, `01-welcome`, `02-team-*`, `03-readiness-*`, `04-install-*`, `05-done`, `06-update-*`); `logs/` holds guest logs (`~/.mattstack/rt/logs`, unified log slice for mattstack/smd/backgroundtaskmanagementd, `launchctl print` grep, `rt verify --json`, tray `/version`). Exit 1 iff any phase failed; skips are reported, never counted green.
 

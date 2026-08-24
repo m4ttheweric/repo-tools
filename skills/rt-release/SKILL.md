@@ -67,7 +67,16 @@ left as-is or reduced to a pointer here.
    `website/`). Get explicit approval before committing, tagging, or deploying.
    Nothing below runs until this approval is given.
 
-7. **Commit and tag.** `RELEASE_NOTES.md` must be committed at the tagged commit,
+7. **Rehearse the pipeline.** Before the tag, not after: run `release.yml` via
+   `workflow_dispatch` on the commit you are about to tag. It builds, notarizes,
+   and clean-rooms exactly as a tag does, but stamps `v0.0.0-ci<run>`, skips the
+   release, validates the marketplace catalog without pushing it, and uploads
+   `out/` as an artifact. Watch it green before continuing. This pipeline's
+   defects have consistently been invisible until the step before them started
+   working, so a rehearsal is the only thing that finds them cheaply — a tag that
+   fails halfway has already re-signed the app and cost the user their TCC grants.
+
+8. **Commit and tag.** `RELEASE_NOTES.md` must be committed at the tagged commit,
    because CI reads it as the release body. Scoped add only, never `git add -A`:
    ```
    git add website RELEASE_NOTES.md
@@ -80,7 +89,7 @@ left as-is or reduced to a pointer here.
    builds and notarizes the app, creates the release from `RELEASE_NOTES.md`,
    attaches the artifacts, and installs from the zip in a clean room.
 
-8. **Verify the publish.** Find the run (`gh run list --workflow=release.yml`)
+9. **Verify the publish.** Find the run (`gh run list --workflow=release.yml`)
    and watch it to completion (`gh run watch <run-id> --exit-status`), then confirm with
    `gh release view <tag>`: the body is your `RELEASE_NOTES.md` (not GitHub's
    auto-generated notes), and `mattstack-<ver>.dmg`, `mattstack-<ver>.zip`,
@@ -89,14 +98,7 @@ left as-is or reduced to a pointer here.
    shipping a partial release. If CI failed or the body is wrong, report it
    rather than papering over it.
 
-   To exercise the pipeline without publishing, run it via `workflow_dispatch`:
-   it builds, notarizes, and clean-rooms exactly as a tag does, but stamps
-   `v0.0.0-ci<run>`, skips the release, validates the marketplace catalog
-   without pushing it, and uploads `out/` as an artifact. Use this before every
-   real tag — the pipeline's defects have consistently only been visible once
-   the step before them started working.
-
-9. **Deploy rt.cool.** Run `bash scripts/deploy-docs.sh` (builds the site, deploys
+10. **Deploy rt.cool.** Run `bash scripts/deploy-docs.sh` (builds the site, deploys
    to Cloudflare Pages via wrangler). Needs wrangler auth (`wrangler login` or
    `CLOUDFLARE_API_TOKEN`) and the Pages project pointed at rt.cool's DNS, both
    one-time setup in the script header. If that setup is missing, tell the user
