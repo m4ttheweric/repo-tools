@@ -69,6 +69,42 @@ describe("rowsToChecks", () => {
     expect(check.severity).toBe("critical");
   });
 
+  // The clean-room reached step 20 of 20 and then failed here on
+  // tool.herdr / tool.claude / tool.fast-browser — none of which a bare
+  // runner can satisfy.
+  test("tool.claude missing in ci -> warn (not bundled; nothing headless installs it)", () => {
+    const check = oneCheck([baseRow({ id: "tool.claude", status: "missing", required: true })], { ci: true });
+    expect(check.status).toBe("warn");
+  });
+
+  test("tool.herdr missing in ci -> warn (not bundled)", () => {
+    expect(oneCheck([baseRow({ id: "tool.herdr", status: "missing", required: true })], { ci: true }).status).toBe("warn");
+  });
+
+  test("tool.fast-browser unhealthy in ci -> warn (doctor needs a real Chrome + loaded extension)", () => {
+    expect(oneCheck([baseRow({ id: "tool.fast-browser", status: "needs-you", required: true })], { ci: true }).status).toBe("warn");
+  });
+
+  // The line that keeps this from becoming a vacuous pass: fast-browser IS
+  // bundled, so `missing` means the BUNDLE is broken — exactly what this
+  // pipeline exists to catch — and must stay critical even in CI.
+  test("tool.fast-browser MISSING in ci -> still fails, because that means the bundle is broken", () => {
+    const check = oneCheck([baseRow({ id: "tool.fast-browser", status: "missing", required: true })], { ci: true });
+    expect(check.status).toBe("fail");
+    expect(check.severity).toBe("critical");
+  });
+
+  test("these exemptions are ci-only — all three still fail interactively", () => {
+    for (const id of ["tool.claude", "tool.herdr", "tool.fast-browser"]) {
+      expect(oneCheck([baseRow({ id, status: "missing", required: true })], { ci: false }).status).toBe("fail");
+    }
+  });
+
+  // Not a blanket tool.* exemption: an unrelated bundled tool must still fail.
+  test("a bundled tool like fzf still fails in ci", () => {
+    expect(oneCheck([baseRow({ id: "tool.fzf", status: "missing", required: true })], { ci: true }).status).toBe("fail");
+  });
+
   test("perm.fda needs-you in ci -> warn, never critical", () => {
     const check = oneCheck([baseRow({ id: "perm.fda", status: "needs-you", required: true, detail: "Not granted" })], { ci: true });
     expect(check.status).toBe("warn");

@@ -23,7 +23,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, typ
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
-import { listKvValues, setKvValue } from "./state/index.ts";
+import { deleteKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -148,6 +148,136 @@ export function updateRepoIndex(repoName: string, repoRoot: string): void {
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
     writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
+}
+
+// ─── Rename drift (RT-60) ───────────────────────────────────────────────────
+
+export interface RepoIndexEntry {
+  repoName: string;
+  path: string;
+  /** Epoch ms of the last `updateRepoIndex` write under this name. Rows that
+   *  arrived through `loadRepoIndex`'s legacy import all share one stamp, and
+   *  a row whose write was dropped (SQLITE_BUSY) reads as 0. */
+  updatedAt: number;
+}
+
+/**
+ * `loadRepoIndex` with each row's write timestamp attached.
+ *
+ * Deliberately layered ON TOP of `loadRepoIndex()` rather than replacing its
+ * body: that function owns the legacy-import path, whose contract is that an
+ * entry which fails to reach state.db still comes back in the map (so the
+ * compat mirror it rewrites stays complete). Re-listing the table here would
+ * silently drop exactly those rows. They surface with `updatedAt: 0` instead,
+ * which sorts them last — correct, since a row that never landed is the
+ * least-recently-written thing there is.
+ */
+export function loadRepoIndexEntries(): RepoIndexEntry[] {
+  const index = loadRepoIndex();
+  const stamps = new Map(listKvEntries<string>(REPO_INDEX_NS).map((e) => [e.key, e.updatedAt]));
+  return Object.entries(index).map(([repoName, path]) => ({
+    repoName,
+    path,
+    updatedAt: stamps.get(repoName) ?? 0,
+  }));
+}
+
+export interface DuplicateEntry {
+  entry: RepoIndexEntry;
+  /** The name that won the realpath — what the picker shows for this tree. */
+  keptAs: string;
+}
+
+export interface IndexPartition {
+  keep: RepoIndexEntry[];
+  duplicates: DuplicateEntry[];
+}
+
+/**
+ * Splits index rows that point at the SAME directory under two names.
+ *
+ * Renaming a repo mints a second key and retires neither: the name comes from
+ * the origin remote (`deriveRepoName`), so a remote rename adds one, and a
+ * directory rename adds one whenever a compat symlink keeps the old path
+ * resolving — `existsSync` follows symlinks, so the dead row passes the
+ * liveness filter and the picker shows the tree twice.
+ *
+ * The most recently written row wins, because `updateRepoIndex` restamps a
+ * name every time rt runs inside that repo: the live identity keeps moving
+ * forward while the retired one stays frozen at whenever it was last used.
+ * Name order breaks ties so a legacy import (every row stamped within the
+ * same millisecond) is at least deterministic.
+ *
+ * Losers are only hidden, never dropped, by the caller in `getKnownRepos`.
+ * Lookups by name elsewhere (`loadRepoIndex()[name]`, and every per-repo data
+ * dir and settings scope keyed off it) must keep resolving until the rename
+ * is genuinely migrated — `rt repos prune` is the deliberate eviction, RT-60
+ * is the migration.
+ */
+export function partitionByRealpath(entries: RepoIndexEntry[]): IndexPartition {
+  const groups = new Map<string, RepoIndexEntry[]>();
+  for (const entry of entries) {
+    const real = safeRealpath(entry.path);
+    const group = groups.get(real);
+    if (group) group.push(entry);
+    else groups.set(real, [entry]);
+  }
+
+  const keep: RepoIndexEntry[] = [];
+  const duplicates: DuplicateEntry[] = [];
+  for (const group of groups.values()) {
+    const sorted = [...group].sort(
+      (a, b) => b.updatedAt - a.updatedAt || a.repoName.localeCompare(b.repoName),
+    );
+    const winner = sorted[0]!;
+    keep.push(winner);
+    for (const loser of sorted.slice(1)) duplicates.push({ entry: loser, keptAs: winner.repoName });
+  }
+  return { keep, duplicates };
+}
+
+export type PruneReason = "missing" | "duplicate";
+
+export interface PrunedEntry {
+  repoName: string;
+  path: string;
+  reason: PruneReason;
+  /** Set only for `duplicate`: the name that kept the directory. */
+  keptAs?: string;
+}
+
+/**
+ * Evicts index rows that no longer name anything: a path that has stopped
+ * existing, and the losing half of every realpath collision.
+ *
+ * Missing paths are removed BEFORE the duplicate pass, so a rename whose new
+ * name points at a directory that has since been deleted leaves the old name
+ * standing rather than evicting the only row that still resolves.
+ */
+export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
+  const entries = loadRepoIndexEntries();
+  const removed: PrunedEntry[] = [];
+  const live: RepoIndexEntry[] = [];
+
+  for (const entry of entries) {
+    if (existsSync(entry.path)) live.push(entry);
+    else removed.push({ repoName: entry.repoName, path: entry.path, reason: "missing" });
+  }
+
+  for (const dup of partitionByRealpath(live).duplicates) {
+    removed.push({
+      repoName: dup.entry.repoName,
+      path: dup.entry.path,
+      reason: "duplicate",
+      keptAs: dup.keptAs,
+    });
+  }
+
+  if (opts.dryRun || removed.length === 0) return removed;
+
+  for (const r of removed) deleteKvValue(REPO_INDEX_NS, r.repoName);
+  writeRepoIndexCompat(loadRepoIndex());
+  return removed;
 }
 
 // ─── rt.repoRoots (RT-49) ───────────────────────────────────────────────────
@@ -288,17 +418,18 @@ export function getKnownRepos(): KnownRepo[] {
   // unopenable state.db (root-owned after a `sudo rt …`) must not take down
   // the `rt cd`/`rt run` picker — it falls back to the unregistered-scan
   // results below, exactly like an empty index does.
-  let index: RepoIndex;
+  let entries: RepoIndexEntry[];
   try {
-    index = loadRepoIndex();
+    entries = loadRepoIndexEntries();
   } catch {
-    index = {};
+    entries = [];
   }
   const repos: KnownRepo[] = [];
 
-  for (const [repoName, mainPath] of Object.entries(index)) {
-    if (!existsSync(mainPath)) continue;
+  // Hidden here, not evicted — see partitionByRealpath.
+  const { keep } = partitionByRealpath(entries.filter((e) => existsSync(e.path)));
 
+  for (const { repoName, path: mainPath } of keep) {
     const worktrees: KnownRepo["worktrees"] = [];
     try {
       const output = execSync("git worktree list --porcelain", {
