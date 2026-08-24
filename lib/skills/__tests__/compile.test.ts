@@ -377,6 +377,20 @@ describe("compileSkill", () => {
     const b = compileSkill(verb, step, fills, new Set<string>());
     expect(a.files).toEqual(b.files);
   });
+
+  test("an empty-arg placeholder is a compile error, not a silent legacy compile", () => {
+    const bad = { ...step, body: "Poll status. {{slot:}}" };
+    expect(() => compileSkill(verb, bad, { domain: domainFill, forge: forgeFill }, roster)).toThrow(
+      'engine "watch-ci": malformed or unfilled placeholder near line 1',
+    );
+  });
+
+  test("a placeholder with internal whitespace is a compile error, not a silent legacy compile", () => {
+    const bad = { ...step, body: "Poll status. {{ stage.dir }}" };
+    expect(() => compileSkill(verb, bad, { domain: domainFill, forge: forgeFill }, roster)).toThrow(
+      'engine "watch-ci": malformed or unfilled placeholder near line 1',
+    );
+  });
 });
 
 const placeholderStep: StepSource = {
@@ -414,7 +428,7 @@ describe("compileSkill with placeholders", () => {
   });
 
   test("a placeholder that cannot be filled is a compile error", () => {
-    const bad = { ...placeholderStep, body: "{{slot:domain}} {{stage.dir}}" };
+    const bad = { ...placeholderStep, body: "{{slot:domain}}\n{{stage.dir}}" };
     expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), {})).toThrow("{{stage.dir}} used outside a stage");
   });
 
@@ -435,6 +449,39 @@ describe("compileSkill with placeholders", () => {
     const bad = { ...placeholderStep, body: 'run "${CLAUDE_SKILL_DIR}/scripts/resolve-args.sh"\n{{slot:domain}}' };
     expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), {}))
       .toThrow("compile-native engine calls the runtime resolver");
+  });
+
+  test("a malformed placeholder alongside a valid one is still a compile error", () => {
+    const bad = { ...placeholderStep, body: "{{stage.fields}}\n{{slot:}}" };
+    expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), { stageDir: "x" })).toThrow(
+      /engine "stage-watch-ci": malformed or unfilled placeholder near line \d+/,
+    );
+  });
+
+  test("an inline (not line-leading) slot placeholder is a compile error", () => {
+    const bad = { ...placeholderStep, body: "Prefix {{slot:domain}}" };
+    expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), { stageDir: "x" })).toThrow(
+      "must be alone on its line",
+    );
+  });
+
+  test("a slot placeholder alone on its line, surrounded by whitespace, is fine", () => {
+    const ok = { ...placeholderStep, body: "  {{slot:domain}}  \n{{stage.fields}}" };
+    expect(() => compileSkill(verb, ok, { domain: domainFill }, new Set(), { stageDir: "x" })).not.toThrow();
+  });
+
+  test("an inline include placeholder is a compile error", () => {
+    const bad = {
+      ...slotless,
+      body: "See {{include:review-core-body}} for details.",
+    };
+    expect(() =>
+      compileSkill(verb, bad, {}, new Set(), {
+        includes: {
+          "review-core-body": { ...domainFill, binding: "mattstack:review-core-body", provides: "" },
+        },
+      }),
+    ).toThrow("must be alone on its line");
   });
 
   test("stage allowed-tools union rewrites to the leading-wildcard form", () => {

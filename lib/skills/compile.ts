@@ -158,6 +158,27 @@ type BuildOpts = {
   stageDir: string | null;
 };
 
+/**
+ * PLACEHOLDER_RE only recognizes well-formed markers, so a malformed one
+ * (empty arg, internal whitespace, an uppercase kind) never shows up in
+ * findPlaceholders/assertNoPlaceholders -- it must be caught by scanning for
+ * the literal token instead, or it ships verbatim in the compiled body.
+ */
+function firstBraceLine(body: string): number | null {
+  const lines = body.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.includes("{{")) return i + 1;
+  }
+  return null;
+}
+
+function assertNoStrayBraces(body: string, engineName: string): void {
+  const line = firstBraceLine(body);
+  if (line !== null) {
+    throw new Error(`engine "${engineName}": malformed or unfilled placeholder near line ${line}`);
+  }
+}
+
 function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): { body: string; notes: string[] } {
   const notes: string[] = [];
   const sections: string[] = [HEADER_COMMENT];
@@ -176,6 +197,7 @@ function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): 
     if (!opts.ctx) throw new Error(`engine "${step.name}": placeholders present but no placeholder context`);
     const { body, used } = substitute(stepBody, opts.ctx, step.name);
     assertNoPlaceholders(body, step.name);
+    assertNoStrayBraces(body, step.name);
     for (const { slotName } of boundSlots) {
       if (!used.slots.includes(slotName)) notes.push(`slot "${slotName}" is bound but never placed in the body`);
     }
@@ -183,6 +205,7 @@ function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): 
     return { body: sections.join("\n\n"), notes };
   }
 
+  assertNoStrayBraces(stepBody, step.name);
   sections.push(stepBody);
   for (const { slotName, fill } of boundSlots) {
     if (!isInlined(fill, opts.internalRoster)) {
