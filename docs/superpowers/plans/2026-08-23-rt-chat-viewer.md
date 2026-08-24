@@ -638,6 +638,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ## What this plan does not build
 
-The `@matt` notifier producer and the optional ntfy/Pushover push provider —
-both rt-side work, and now scheduled as **plan 1, Tasks 10 and 11** rather
-than left homeless. Neither is needed for the viewer to be useful.
+The `@matt` notifier producer (**plan 1, Task 10**) and optional ntfy push
+(**Task 11**) — both rt-side work, and both scheduled rather than left
+homeless. Neither is needed for the viewer to be useful. Pushover is
+deferred, not scheduled: Task 11 cut it for v1 and rejects it at
+validation.
