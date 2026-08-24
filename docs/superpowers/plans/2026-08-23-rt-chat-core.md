@@ -1209,7 +1209,7 @@ plan's task list — it is rt-side work, so it lands here.
 
 **Files:**
 - Modify: `lib/daemon/handlers/chat.ts`
-- Modify: the notifier module that drains `notify_queue`
+- Modify: `lib/notifier.ts` — the drain side (`drainNotificationQueue`, `pushToTray`)
 - Test: `lib/daemon/__tests__/chat-handlers.test.ts`
 
 **Interfaces:**
@@ -1218,14 +1218,32 @@ plan's task list — it is rt-side work, so it lands here.
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-test("a mention of the human handle enqueues one notification; other mentions do not", async () => {
+test("notifies on a mention even when the human has never joined the room", async () => {
+  // The common case, not an edge: agents create rooms via join-creates and
+  // Matt is not a member until he posts. Gating this on recipientsFor -- which
+  // reads chat_members and can only return members -- means the desk never
+  // rings for the very question the skill tells agents to ask him.
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "agent" });
-  await h["chat:join"]({ room: "r", handle: "matt" });
   await h["chat:post"]({ room: "r", handle: "agent", body: "@matt ok to force-release?" });
   expect(peekNotificationQueue(h.db)).toHaveLength(1);
-  await h["chat:post"]({ room: "r", handle: "agent", body: "@nobody hello" });
+});
+
+test("notifies even when the human is a member with wake_on none", async () => {
+  // Plausible for a human who does not want a waiter armed; his wake setting
+  // must not silently disable his desk notifications.
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:join"]({ room: "r", handle: "matt", wakeOn: "none" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@matt still there?" });
   expect(peekNotificationQueue(h.db)).toHaveLength(1);
+});
+
+test("does not notify on a mention of anyone else", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@nobody hello" });
+  expect(peekNotificationQueue(h.db)).toHaveLength(0);
 });
 ```
 
@@ -1236,8 +1254,19 @@ Expected: FAIL — nothing is enqueued.
 
 - [ ] **Step 3: Implement the desk path**
 
-In `chat:post`, when the recipient set includes the `chat.humanHandle` setting
-(default `matt`), enqueue one notification. This adds a producer to
+In `chat:post`, enqueue one notification when **`parseMentions(body)`**
+contains the `chat.humanHandle` setting (default `matt`).
+
+**Deliberately `parseMentions`, not the recipient set.** `recipientsFor` reads
+`chat_members`, so it can only ever return members of the room — and Matt is
+typically not one: agents create rooms through join-creates, and he becomes a
+member only when he posts. Gating on it would mean `@matt` in an
+agent-created room produces no notification at all, while the skill is
+simultaneously telling agents to `@matt` a blocking question and wait 15
+minutes. It would also let a member with `wake_on = 'none'` silently disable
+his own desk alerts. The spec's wording is unqualified — mentioning the human
+handle adds one producer to the queue — and this is that, independent of
+membership and `wake_on`. This adds a producer to
 `notify_queue`, which the daemon's notifier already drains to the tray — no
 new delivery machinery is built.
 
@@ -1259,24 +1288,51 @@ enqueueNotification({
 stable, so a redelivery cannot double-notify — `isNotificationQueued` is
 already exported for exactly that check. Do not use a random id.
 
-- [ ] **Step 4: Implement optional push**
+- [ ] **Step 4: Implement optional push on the drain side**
+
+Push lives in **`lib/notifier.ts`**, beside `pushToTray`, not in `chat:post`.
+That placement is the design: on the drain side a failed push is
+*inherently* decoupled from the post, which has already returned and already
+stored the message — so "a failed push must not fail the post" costs nothing
+rather than needing a try/catch around an outbound call on the request path.
+It also keeps a network call off `chat:post` entirely.
 
 When `chat.push.provider` is set (`ntfy` or `pushover`) with a
-`chat.push.target`, POST there as well. **Absent by default:** with no
-provider configured nothing is sent anywhere, and no third-party dependency is
-required for the feature to work. A failed push logs and does **not** fail the
-post — the message is already stored and the desk notification already queued,
-so failing here would discard work that succeeded.
+`chat.push.target`, POST the drained event there as well as to the tray.
+**Absent by default:** with no provider configured nothing is sent anywhere
+and no third-party dependency is required for the feature to work. A failed
+push logs and is not retried.
 
-- [ ] **Step 5: Run the suite**
+- [ ] **Step 5: Test the two push guarantees**
+
+```ts
+test("no provider configured sends nothing anywhere", async () => {
+  const fetchSpy = spyOn(globalThis, "fetch");
+  await deliver(chatEvent());
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+test("a failing push does not fail delivery", async () => {
+  setSetting("chat.push.provider", "ntfy");
+  setSetting("chat.push.target", "https://ntfy.sh/x");
+  spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+  await expect(deliver(chatEvent())).resolves.not.toThrow();
+});
+```
+
+The first is the default-off guarantee; the second is the one that would
+otherwise discard successful work if push were written as an unguarded
+`await`.
+
+- [ ] **Step 6: Run the suite**
 
 Run: `bun test lib commands packages scripts`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add lib/daemon/handlers/chat.ts lib/daemon/__tests__/chat-handlers.test.ts
+git add lib/daemon/handlers/chat.ts lib/notifier.ts lib/daemon/__tests__/chat-handlers.test.ts
 git commit -m "chat: notify Matt on mention, with optional push
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"

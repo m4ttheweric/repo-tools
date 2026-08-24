@@ -37,7 +37,7 @@ package.json                   NEW: file: dep on ../repo-tools/packages/rt-clien
 src/server/index.ts            NEW: entry — Bun.serve, /ws route, relay start
 src/server/app.ts              NEW: Hono app, chained routes, import-safe under vitest
 src/server/chat.ts             NEW: /api/chat/* routes over rt-client wrappers
-src/server/health.ts           NEW: the daemon probe route
+src/server/health.ts           NEW (Task 4): the probe route — GET /api/daemon
 src/server/static-disk.ts      NEW: serves dist/ — mounted from index.ts (hono/bun)
 src/server/ws.ts               NEW: startRelay — one subscribe(), chat-filtered, fanned out
 src/server/*.test.ts           NEW: one beside each server module
@@ -50,7 +50,7 @@ src/app/App.tsx                NEW: layout + the banner-supersedes-status rule
 src/main.tsx                   NEW: Vite entry
 ```
 
-Server modules split by responsibility, not layer: `chat.ts` owns every route that reads or writes chat, `health.ts` owns the probe, `ws.ts` owns the relay. `ws.ts` stays free of `hono/bun` so it is unit-testable.
+Server modules split by responsibility, not layer: `chat.ts` owns every route that reads or writes chat, `health.ts` owns the daemon probe, `ws.ts` owns the relay. `ws.ts` stays free of `hono/bun` so it is unit-testable.
 
 ---
 
@@ -60,11 +60,11 @@ A walking skeleton: a real page on a real https name before any chat feature exi
 
 **Files:**
 - Create: the `create-mantine-kit` scaffold at `~/Documents/GitHub/chat`
-- Create: `src/server/index.ts`, `src/server/app.ts`, `src/server/health.ts`, `src/server/static-disk.ts`
-- Test: `src/server/health.test.ts`
+- Create: `src/server/index.ts`, `src/server/app.ts`, `src/server/static-disk.ts`
+- Test: `src/server/app.test.ts`
 
 **Interfaces:**
-- Produces: `export const health: Hono` mounting `GET /api/health`; `export const app: Hono`.
+- Produces: `export const app: Hono`, with `GET /api/health` **inline**. `health.ts` is NOT created here — it arrives in Task 4 owning `/api/daemon`, the probe. Console has no `health.ts` at all and registers `/api/health` inline in `app.ts`; this plan follows that rather than creating an empty module or a duplicate registration.
 
 - [ ] **Step 1: Scaffold from the mantine-kit checkout**
 
@@ -115,7 +115,7 @@ registry package:
 - [ ] **Step 4: Write the failing test**
 
 ```ts
-// src/server/health.test.ts
+// src/server/app.test.ts
 import { expect, test } from "vitest";
 import { app } from "./app";
 
@@ -134,13 +134,13 @@ test("app.ts is importable without the Bun global", async () => {
 
 - [ ] **Step 5: Run it to verify it fails**
 
-Run: `bunx vitest run src/server/health.test.ts`
+Run: `bunx vitest run src/server/app.test.ts`
 Expected: FAIL — no module `./app`.
 
 - [ ] **Step 6: Implement the server**
 
-`app.ts` holds a chained `new Hono().get('/api/health', ...).route('/', health)`
-and exports it. `index.ts` calls `Bun.serve` and is the **only** file importing
+`app.ts` holds a chained `new Hono().get('/api/health', ...)` — inline, as
+console does — and exports it. There is no `health` module to mount yet. `index.ts` calls `Bun.serve` and is the **only** file importing
 `hono/bun`.
 
 Add console's `notFound` and `onError` handlers to `app.ts`, both of which
@@ -356,7 +356,8 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **This task exists because of a specific failure mode, and an implementer who does not understand it will build the wrong thing.** `subscribe()` reconnects silently forever, so a stopped daemon does not error — the live pane simply goes quiet. Without a probe, "the daemon is dead" and "every agent is idle" render identically, which defeats the one thing this viewer earns its keep on: telling you which agent stopped listening.
 
 **Files:**
-- Modify: `src/server/health.ts`
+- Create: `src/server/health.ts` — the probe, `GET /api/daemon`
+- Modify: `src/server/app.ts` — mount it with `.route('/', health)`
 - Create: `src/ui/DaemonBanner.tsx`
 - Modify: `src/app/App.tsx`
 - Test: `src/server/health.test.ts`, `src/ui/DaemonBanner.test.tsx`
@@ -409,7 +410,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/server/health.ts src/ui/DaemonBanner.tsx src/app/App.tsx src/server/health.test.ts src/ui/DaemonBanner.test.tsx
+git add src/server/health.ts src/server/app.ts src/ui/DaemonBanner.tsx src/app/App.tsx src/server/health.test.ts src/ui/DaemonBanner.test.tsx
 git commit -m "chat-viewer: daemon probe and banner
 
 subscribe() reconnects silently, so a dead daemon looks identical to an
