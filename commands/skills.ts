@@ -1226,10 +1226,31 @@ function defaultPublicSet(skillsNames: Set<string>, verbNames: Set<string>): Set
   return new Set<string>([...skillsNames, ...verbNames]);
 }
 
+/**
+ * A rosterless pack (the mattstack plugin repo itself) has no manifest and
+ * `findDefaultManifest` throws for it; the surface verbs must keep working
+ * there, so no manifest means no stages rather than an error.
+ */
+function stageNamesFor(flags: SurfaceFlags, packDir: string): Set<string> {
+  if (readVerbRoster(packDir).length === 0) return new Set();
+  const mattstackRoot = flags.mattstackDir ?? mattstackHome();
+  const team = flags.team ?? packNameFor(packDir);
+  let manifest = flags.manifest;
+  if (!manifest) {
+    try {
+      manifest = findDefaultManifest(mattstackRoot, team);
+    } catch {
+      return new Set();
+    }
+  }
+  return new Set(stageRoster(readManifestPipelines(manifest)).map((v) => v.name));
+}
+
 export function computeRows(
   packDir: string,
   verbNames: Set<string>,
   surface: SurfaceConfig | null,
+  stageNames: Set<string>,
 ): { source: string; rows: SurfaceRow[] } {
   const { skillsNames, attachmentNames, allNames, skillEntries, attachmentEntries } = collectRegistry(packDir, verbNames);
   const publicSet = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
@@ -1238,17 +1259,13 @@ export function computeRows(
     ? surfacePath.slice(packDir.length + 1)
     : "(no surface.jsonc yet -- inferred from current skills/ + stubs.jsonc placement)";
 
-  // A name in surface.jsonc's public list but absent from skills/, attachments/, and
-  // stubs.jsonc would otherwise never become a row -- the palette write derives the new
-  // public list from rows alone, so omitting it here means the write silently drops it.
-  const names = new Set<string>(allNames);
-  for (const name of publicSet) names.add(name);
-
+  const names = new Set<string>([...allNames, ...publicSet, ...stageNames]);
   const rows = [...names].sort().map((name) => {
     const dir = skillEntries.get(name)?.dir ?? attachmentEntries.get(name)?.dir ?? null;
+    const isStage = stageNames.has(name);
     return {
       name,
-      kind: allNames.has(name) ? classify(name, dir, verbNames) : ("missing" as const),
+      kind: isStage ? ("compiled" as const) : allNames.has(name) ? classify(name, dir, verbNames) : ("missing" as const),
       status: (publicSet.has(name) ? "public" : "internal") as "public" | "internal",
     };
   });
@@ -1309,7 +1326,8 @@ async function runList(flags: SurfaceFlags): Promise<void> {
   const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const surface = readSurface(packDir);
-  const { source, rows } = computeRows(packDir, verbNames, surface);
+  const stageNames = stageNamesFor(flags, packDir);
+  const { source, rows } = computeRows(packDir, verbNames, surface, stageNames);
 
   if (flags.json) {
     console.log(JSON.stringify({ pack: flags.team, packDir, rows }));
@@ -1324,6 +1342,7 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
   const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const surface = readSurface(packDir);
+  const stageNames = stageNamesFor(flags, packDir);
   const { skillsNames, attachmentNames, skillEntries, attachmentEntries } = collectRegistry(packDir, verbNames);
   const publicSet = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
 
@@ -1334,6 +1353,7 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
     const currentlyUnderSkills = skillsNames.has(name);
     const entry = (currentlyUnderSkills ? skillEntries : attachmentEntries).get(name)!;
     const dir = entry.dir;
+    if (stageNames.has(name)) continue; // regenerated/removed by the compile step, never git-mv'd
     if (classify(name, dir, verbNames) === "compiled") continue; // regenerated/removed by the compile step below, never git-mv'd
 
     const wantPublic = publicSet.has(name);
@@ -1450,9 +1470,10 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
   const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const surface = readSurface(packDir);
+  const stageNames = stageNamesFor(flags, packDir);
   const { skillsNames } = collectRegistry(packDir, verbNames);
   const previousPublic = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
-  const { source, rows } = computeRows(packDir, verbNames, surface);
+  const { source, rows } = computeRows(packDir, verbNames, surface, stageNames);
 
   if (rows.length === 0) {
     console.log("(no skills registered in this pack)");

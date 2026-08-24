@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { otherSideDir, outDirFor, skillsCompile } from "../../../commands/skills.ts";
+import { computeRows, otherSideDir, outDirFor, skillsCompile } from "../../../commands/skills.ts";
 import { compileSkill } from "../compile.ts";
 import { readSurface } from "../sources.ts";
 import type { AttachmentSource, StepSource, VerbDef } from "../types.ts";
@@ -670,4 +670,14 @@ describe("skillsCompile with pipeline stages", () => {
     expect(existsSync(join(packDir, "skills", "work"))).toBe(false);
     expect(existsSync(join(packDir, "attachments", "work", "SKILL.md"))).toBe(true);
   });
+});
+
+test("a never-compiled stage is a compiled, internal row and never defaults public", () => {
+  const pack = mkdtempSync(join(tmpdir(), "rt-surf-"));
+  mkdirSync(join(pack, "skills", "work"), { recursive: true });
+  writeFileSync(join(pack, "skills", "work", "SKILL.md"), "---\nname: work\n---\n\nx");
+  const { rows } = computeRows(pack, new Set(["work"]), null, new Set(["stage-plan"]));
+  const stage = rows.find((r) => r.name === "stage-plan");
+  expect(stage).toEqual({ name: "stage-plan", kind: "compiled", status: "internal" });
+  expect(rows.find((r) => r.name === "work")?.status).toBe("public");
 });

@@ -475,7 +475,7 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     writeFile(join(packDir, "skills", "real-skill", "SKILL.md"), "---\nname: real-skill\n---\nbody\n");
 
     const surface = { public: ["ghost", "real-skill"] };
-    const { rows } = computeRows(packDir, new Set(), surface);
+    const { rows } = computeRows(packDir, new Set(), surface, new Set());
 
     const ghostRow = rows.find((r) => r.name === "ghost");
     expect(ghostRow).toEqual({ name: "ghost", kind: "missing", status: "public" });
@@ -488,7 +488,7 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     writeStubs(packDir, {});
 
     const surface = { public: ["ghost"] };
-    const { rows } = computeRows(packDir, new Set(), surface);
+    const { rows } = computeRows(packDir, new Set(), surface, new Set());
     const previousPublic = new Set(surface.public);
 
     // Simulates the palette round trip: the fzf row for "ghost" exists and stays
@@ -504,7 +504,7 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     writeStubs(packDir, {});
 
     const surface = { public: ["ghost"] };
-    const { rows } = computeRows(packDir, new Set(), surface);
+    const { rows } = computeRows(packDir, new Set(), surface, new Set());
     const previousPublic = new Set(surface.public);
 
     const resultRows = rows.map((r) => ({ name: r.name, status: "internal" as const }));
