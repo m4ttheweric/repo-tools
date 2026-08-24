@@ -1432,7 +1432,14 @@ const push = () => {
   setSetting("chat.push.target", "https://ntfy.sh/x", "user");
 };
 
-beforeEach(() => { drainNotifications(); });
+beforeEach(() => {
+  drainNotifications();
+  // Settings need the same reset the queue gets. Without clearing the
+  // provider, test 1 passes only because it happens to run before the first
+  // push() call, and reordering the file breaks it.
+  setSetting("chat.push.provider", "", "user");
+  setSetting("chat.push.target", "", "user");
+});
 
 // Every spy carries a mock implementation. A bare spyOn(globalThis, "fetch")
 // CALLS THROUGH, so the moment the category filter regresses, the last test
