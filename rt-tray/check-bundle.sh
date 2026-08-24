@@ -319,6 +319,11 @@ check_helpers() { # app
     [ -x "$app/Contents/Helpers/jq" ] && "$app/Contents/Helpers/jq" --version >/dev/null 2>&1 && pass "$exe Helpers/jq runs" || fail "$exe Helpers/jq does not run"
     [ -x "$app/Contents/Helpers/bun" ] && "$app/Contents/Helpers/bun" --version >/dev/null 2>&1 && pass "$exe Helpers/bun runs (jit entitlement sufficient)" || fail "$exe Helpers/bun does not run under its entitlements"
     [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
+    # age-keygen and sops are the secrets path. A clean Mac has neither (both
+    # are Homebrew-only), which dead-ended every install at home.init until
+    # they were bundled — so assert they RUN, not merely that they shipped.
+    [ -x "$app/Contents/Helpers/age-keygen" ] && "$app/Contents/Helpers/age-keygen" --version >/dev/null 2>&1 && pass "$exe Helpers/age-keygen runs" || fail "$exe Helpers/age-keygen does not run"
+    [ -x "$app/Contents/Helpers/sops" ] && "$app/Contents/Helpers/sops" --version >/dev/null 2>&1 && pass "$exe Helpers/sops runs" || fail "$exe Helpers/sops does not run"
     # Only asserted when bundled: gitq is a deps.lock row that can be `pending`,
     # and a missing-file check here would pass vacuously in that state.
     if [ -x "$app/Contents/Helpers/gitq" ]; then
