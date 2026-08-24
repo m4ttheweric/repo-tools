@@ -378,3 +378,85 @@ describe("compileSkill", () => {
     expect(a.files).toEqual(b.files);
   });
 });
+
+const placeholderStep: StepSource = {
+  ...step,
+  name: "stage-watch-ci",
+  body: "Run ${CLAUDE_SKILL_DIR}/scripts/ci-watch.sh.\n{{slot:domain}}\n{{stage.fields}}",
+  slots: { domain: { contract: "watch-ci-domain@1", required: true } },
+  allowedTools: ["Bash(${CLAUDE_SKILL_DIR}/scripts/ci-watch.sh:*)"],
+  stageMeta: { stage: "watch-ci", consumes: ["mr", "branch"], produces: ["ci"] },
+};
+
+const slotless: StepSource = { ...step, slots: {}, stageMeta: null };
+
+function skillMd(result: { files: CompiledFile[] }): string {
+  const f = result.files.find((x) => x.path === "SKILL.md");
+  return f && "content" in f ? f.content : "";
+}
+
+describe("compileSkill with placeholders", () => {
+  test("substitutes in place, emits a slot marker, and appends nothing", () => {
+    const md = skillMd(compileSkill(verb, placeholderStep, { domain: domainFill }, new Set(), {
+      stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci",
+    }));
+    expect(md).toContain("<!-- part: slot:domain binding=acme:watch-ci-domain version=0.3.0 path=attachments/watch-ci-domain/SKILL.md lines=8-8 -->");
+    expect(md).toContain("You consume `mr`, `branch`. You must produce `ci`.");
+    expect(md.indexOf("You consume")).toBeGreaterThan(md.indexOf("part: slot:domain"));
+    expect(md.split("part: slot:domain").length).toBe(2);
+  });
+
+  test("inside a stage, step-owned script references are rewritten to the stage dir", () => {
+    const md = skillMd(compileSkill(verb, placeholderStep, { domain: domainFill }, new Set(), {
+      stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci",
+    }));
+    expect(md).toContain("Run ${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci/scripts/ci-watch.sh.");
+  });
+
+  test("a placeholder that cannot be filled is a compile error", () => {
+    const bad = { ...placeholderStep, body: "{{slot:domain}} {{stage.dir}}" };
+    expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), {})).toThrow("{{stage.dir}} used outside a stage");
+  });
+
+  test("a fill's file references resolve under the stage's parts dir inside a stage", () => {
+    const md = skillMd(compileSkill(verb, placeholderStep, { domain: domainFill }, new Set(), {
+      stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci",
+    }));
+    expect(md).toContain("${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci/parts/domain/ci-config.json");
+  });
+
+  test("a bound slot the body never places is warned", () => {
+    const orphan = { ...placeholderStep, body: "{{stage.fields}} only" };
+    const r = compileSkill(verb, orphan, { domain: domainFill }, new Set(), { stageDir: "x" });
+    expect(r.warnings).toContain('slot "domain" is bound but never placed in the body');
+  });
+
+  test("a compile-native engine calling the runtime resolver is a compile error", () => {
+    const bad = { ...placeholderStep, body: 'run "${CLAUDE_SKILL_DIR}/scripts/resolve-args.sh"\n{{slot:domain}}' };
+    expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), {}))
+      .toThrow("compile-native engine calls the runtime resolver");
+  });
+
+  test("stage allowed-tools union rewrites to the leading-wildcard form", () => {
+    const md = skillMd(compileSkill(verb, { ...slotless, body: "{{pipeline.stages}}" }, {}, new Set(), {
+      pipelines: { feature: [] },
+      stageAllowedTools: ["Bash(${CLAUDE_SKILL_DIR}/scripts/ci-watch.sh:*)", "Bash(*/scripts/ci-forge.sh:*)", "Bash(gh:*)"],
+    }));
+    expect(md).toContain('  - "Bash(*/scripts/ci-watch.sh:*)"');
+    expect(md).toContain('  - "Bash(*/scripts/ci-forge.sh:*)"');
+    expect((md.match(/Bash\(gh:\*\)/g) ?? []).length).toBe(1);
+  });
+
+  test("emitted sibling dirs are not lint-warned as missing files", () => {
+    const r = compileSkill(verb, { ...slotless, body: "read ${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/SKILL.md" }, {}, new Set(), {
+      emittedSiblingDirs: ["${CLAUDE_SKILL_DIR}/../../attachments/stage-plan"],
+    });
+    expect(r.warnings.filter((w) => w.includes("not an emitted file"))).toEqual([]);
+  });
+
+  test("a body with no placeholders still appends fills (backward compatible)", () => {
+    const md = skillMd(compileSkill(verb, step, { domain: domainFill, forge: forgeFill }, new Set(), {}));
+    expect(md).toContain("part: slot:domain");
+    expect(md).toContain("part: slot:forge");
+  });
+});
