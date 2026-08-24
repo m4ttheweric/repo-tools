@@ -57,7 +57,8 @@ commands/chat.ts                  NEW: the CLI
 commands/__tests__/chat.test.ts   NEW
 lib/module-registry.ts            modified: register commands/chat.ts
 skills/rt-chat/SKILL.md           NEW
-e2e/chat.test.ts                  NEW: the wake-protocol integration tests
+e2e/tests/chat.test.ts            NEW: the wake-protocol integration tests
+e2e/tests/chat-presence.test.ts   NEW: the daemon-restart disarm test (Task 4)
 ```
 
 `lib/state/chat-store.ts` is one file because rooms, members, and messages are read and written together on nearly every operation (a post reads membership to compute recipients; a join reads message ids to seed a cursor). Splitting by table would put a transaction boundary in the wrong place.
@@ -505,22 +506,45 @@ existing `openBranchCacheStore()` call — which is to say **before**
 
 - [ ] **Step 5: Add the restart test**
 
+There is no `rt chat` command yet — `commands/chat.ts` arrives in Task 7 — so
+this test drives the store and the daemon directly. That is not a compromise:
+`armed_at` is the load-bearing assertion, and it fails against broken code
+regardless of timing, whereas a `status: "live"` assertion only fails while
+`last_seen_at` is inside the 10-minute window. The status-level check belongs
+with the CLI in Task 8.
+
 ```ts
-// e2e/chat-presence.test.ts
-test("a daemon restart disarms everyone", async () => {
-  await rt(["chat", "join", "r", "--as", "listener"]);
-  const waiter = Bun.spawn(["rt", "chat", "wait", "--as", "listener"]);
-  await waitUntilArmed("listener");
-  await restartDaemon();
-  // The armed_at assertion is load-bearing and must survive any later
-  // simplification. The status assertion below only fails against broken code
-  // while last_seen_at is inside the 10-minute window, so a slow or paused run
-  // would read deaf and pass anyway.
-  expect(memberRow("r", "listener").armed_at).toBeNull();
-  expect(await rtJson(["chat", "who", "r"])).not.toMatchObject({ members: [{ status: "live" }] });
-  waiter.kill();
+// e2e/tests/chat-presence.test.ts
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { join } from "path";
+import { createTestHome, RT_BINARY } from "../harness.ts";
+import { openStateDb } from "../../lib/state/db.ts";
+import { armMember, joinRoom } from "../../lib/state/chat-store.ts";
+
+test("a daemon restart clears every armed_at", async () => {
+  const { path: home, cleanup } = createTestHome();
+  const dbPath = join(home, ".mattstack", "rt", "state.db");
+  const db = openStateDb(dbPath);
+  joinRoom({ room: "r", handle: "listener" }, db);
+  armMember(undefined, "listener", db);
+  db.close();
+
+  await startDaemonForHome(home);
+  await stopDaemonForHome(home);
+  await startDaemonForHome(home);
+
+  const after = openStateDb(dbPath);
+  const row = after.query("SELECT armed_at FROM chat_members WHERE handle = 'listener';").get() as { armed_at: number | null };
+  expect(row.armed_at).toBeNull();
+  after.close();
+  cleanup();
 });
 ```
+
+`startDaemonForHome` / `stopDaemonForHome` spawn `RT_BINARY` with `HOME` set
+to the test home and wait on the socket — copy the `waitForSocket` helper and
+the `children[]`/`afterAll` reaping from `e2e/tests/events.test.ts`, which
+does exactly this.
 
 - [ ] **Step 6: Lock the ordering with a source guard**
 
@@ -534,13 +558,13 @@ this is how the repo already prevents that.
 
 - [ ] **Step 7: Run the full suite**
 
-Run: `bun test lib commands packages scripts && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/chat-presence.test.ts`
+Run: `bun test lib commands packages scripts && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/chat-presence.test.ts`
 Expected: PASS.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add lib/state/chat-store.ts lib/state/__tests__/chat-store.test.ts lib/state/__tests__/source-guards.test.ts lib/daemon.ts e2e/chat-presence.test.ts
+git add lib/state/chat-store.ts lib/state/__tests__/chat-store.test.ts lib/state/__tests__/source-guards.test.ts lib/daemon.ts e2e/tests/chat-presence.test.ts
 git commit -m "chat: presence columns and the startup clear of armed_at
 
 No waiter outlives the daemon, so every armed_at set at boot is stale.
@@ -751,6 +775,7 @@ test("the read-only handlers mutate nothing", async () => {
   await h["chat:rooms"]({ handle: "b" });
   await h["chat:who"]({ room: "r" });
   await h["chat:messages"]({ room: "r", limit: 20 });
+  await h["chat:unread-waking"]({ handle: "b" });
   expect(snapshotChatTables(h.db)).toEqual(before);
 });
 ```
@@ -839,6 +864,11 @@ test("--json emits a parseable object for every verb", async () => {
 Run: `bun test commands/__tests__/chat.test.ts`
 Expected: FAIL — no module `commands/chat.ts`.
 
+`runChat(args)` / `runChatRaw(args)` / `spawnChat(args)` are this file's local
+helpers: invoke the `chat` export against a temp HOME and return stdout, or
+`{ code, stdout, stderr }`, or the live process. Define them at the top of the
+test file.
+
 - [ ] **Step 3: Implement the dispatcher and verbs**
 
 Follow `commands/events.ts` for argument parsing (`positional`, `flagValue`, `parseDuration`) and for the `--json` convention.
@@ -883,7 +913,7 @@ The highest-risk task in the plan. Read the spec's **Wake protocol** section in 
 - Test: `commands/__tests__/chat.test.ts`, `e2e/chat.test.ts`
 
 **Interfaces:**
-- Consumes: `eventsHead`, `chatArm`, `chatTouch`, `chatDisarm`, and the `events:wait` handler via rt-client.
+- Consumes, all via rt-client: `eventsHead`, `chatUnreadWaking` (step 3's check — it reports what would wake a handle **without** advancing a cursor), `chatArm`, `chatTouch`, `chatDisarm`, and the `events:wait` handler.
 - Produces: the `wait` verb.
 
 **The wait path, in this exact order:**
@@ -958,8 +988,25 @@ Exit line format — one line, no transcript:
 
 - [ ] **Step 4: Write the integration tests**
 
+E2E tests live in **`e2e/tests/`**, not `e2e/`; `harness.ts`, `fixtures.ts`,
+and `setup.ts` sit at the `e2e/` root. **Build this file on
+`e2e/tests/events.test.ts`**, which is the precedent in every respect that
+matters here: it uses `createTestHome` and `RT_BINARY` from `../harness.ts`,
+has local `waitForSocket()` and `freePort()` helpers, and — the part chat
+cannot skip — keeps a `children[]` array so `afterAll` reaps processes
+orphaned by a mid-test assertion failure. Chat's tests spawn **blocking**
+`wait` processes; without that reaping, one failed assertion leaves a waiter
+running to its own `--timeout` and the suite hangs.
+
+Define the helpers used below in this file, following that precedent:
+`rt(args)` spawns `RT_BINARY` against the test home and resolves stdout;
+`rtRaw(args)` returns `{ code, stdout, stderr }`; `rtJson(args)` parses
+`--json` output; `waitUntilArmed(...handles)` polls `chat:who` until each
+handle's `armed_at` is set — never a fixed sleep, which makes the wake tests
+flaky under load; `until(pred)` polls a predicate to a deadline.
+
 ```ts
-// e2e/chat.test.ts
+// e2e/tests/chat.test.ts
 import { expect, test } from "bun:test";
 
 test("post wakes an armed agent, with exactly one line of output", async () => {
@@ -1025,12 +1072,11 @@ test("the arm race: a post landing between the unread check and the wait is not 
 
 ```
 
-`waitUntilArmed(...handles)` polls `chat:who` until each handle's `armed_at`
-is set; do not use a fixed sleep, which makes the wake tests flaky under load.
+
 
 - [ ] **Step 5: Run everything**
 
-Run: `bun test lib commands packages scripts && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/chat.test.ts`
+Run: `bun test lib commands packages scripts && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/chat.test.ts`
 Expected: PASS.
 
 - [ ] **Step 6: Verify the race test actually guards**
@@ -1040,7 +1086,7 @@ Temporarily delete the step-1 cursor (pass no `after` to `events:wait`), re-run 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add commands/chat.ts commands/__tests__/chat.test.ts e2e/chat.test.ts
+git add commands/chat.ts commands/__tests__/chat.test.ts e2e/tests/chat.test.ts
 git commit -m "chat: the wake protocol
 
 Head snapshot before the unread check, then arm with that cursor: a post
