@@ -14,7 +14,7 @@ describe("rt-tray/deps.lock", () => {
   });
   test("bundles fzf/jq/gh/glab/bun/node/fast-browser/gitq; remaining suite apps + proxy helper pending; sparkle is a build tool", () => {
     const by = Object.fromEntries(lock.tools.map((t) => [t.name, t]));
-    for (const n of ["fzf", "jq", "gh", "glab", "bun", "node", "fast-browser", "gitq"]) expect(by[n]?.status).toBe("bundled");
+    for (const n of ["fzf", "jq", "gh", "glab", "bun", "node", "fast-browser", "gitq", "age-keygen", "sops"]) expect(by[n]?.status).toBe("bundled");
     for (const n of ["deck", "board", "mattstack-proxy-install"]) expect(by[n]?.status).toBe("pending");
     expect(by["sparkle"]?.kind).toBe("buildtool");
   });
