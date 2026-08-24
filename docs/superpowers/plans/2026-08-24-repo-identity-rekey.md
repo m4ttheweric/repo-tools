@@ -313,7 +313,7 @@ git commit -m "feat(rt-client)!: identity derivation returns tagged RepoIdentity
 ## Task 3: The rt-core identity seam — `getRepoIdentity` gains `identity`
 
 **Files:**
-- Modify: `lib/repo.ts:29-38` (`RepoIdentity` interface), `:58-82` (`getRepoIdentity`)
+- Modify: `lib/repo.ts:29-35` (`RepoIdentity` interface), `:58-80` (`getRepoIdentity`)
 - Test: `lib/__tests__/repo.test.ts` (append; create if absent)
 
 **Interfaces:**
@@ -343,7 +343,9 @@ describe("getRepoIdentity identity field", () => {
     const { getRepoIdentityForRoot } = await import("../repo.ts");
     const id = await getRepoIdentityForRoot(repo);
     expect(id!.identity).toBe("remote:gitlab.com%2Fgroup%2Frepo");
-    expect(id!.dataDir).toContain("remote%3A"); // dataDir is keyed by the serialized identity
+    // dataDir is keyed by the serialized identity — a LITERAL colon delimiter
+    // (the codec encodes only the id, not the "<kind>:" prefix), legal on APFS.
+    expect(id!.dataDir).toContain("remote:gitlab.com%2Fgroup%2Frepo");
   });
 });
 ```
@@ -383,7 +385,9 @@ mkdirSync(dataDir, { recursive: true });
 updateRepoIndex(identity, repoRoot);
 ```
 
-Add a sync `mainWorktreeRoot(repoRoot)` helper in this file using `git rev-parse --git-common-dir` (sync, like `getRemoteUrl`), falling back to `repoRoot`. Import `identityFromRemote`, `serializeIdentity` from rt-client and `realpathSync` from `fs`.
+Add a sync `mainWorktreeRoot(repoRoot)` helper in this file: `realpathSync(join(execSync("git -C <repoRoot> rev-parse --path-format=absolute --git-common-dir").trim(), ".."))`, falling back to `realpathSync(repoRoot)`. This must produce the **same** main-worktree realpath that rt-client's async `deriveRepoIdentity` computes (Task 2), so a `path`-kind identity derived sync here and async there agree byte-for-byte. Import `identityFromRemote`, `serializeIdentity` from rt-client and `realpathSync` from `fs`.
+
+**Derivation parity, both kinds — do not skip.** `getRepoIdentity` reads the remote via `getRemoteUrl()` = `git remote get-url origin`, but rt-client's `deriveRepoIdentity` reads it via `git config --get remote.origin.url`; under an `insteadOf`/url-rewrite these two return different strings and would serialize to two different identities for one repo — the exact split this whole change removes. In this task, read the remote for identity via `git config --get remote.origin.url` (sync `execSync`, the spelling `lib/repo.ts:211,264` already uses) rather than `getRemoteUrl()`, so both derivations normalize the same input. `getRemoteUrl()` stays for the `remoteUrl`/`baseUrl` display fields only.
 
 Note the index key is now the identity, not the name — Task 5 makes `updateRepoIndex`/`repo-index.ts` consistent with that.
 
@@ -530,7 +534,7 @@ export async function rekeyTableColumn(table: string, col: string, opts: RekeyOp
       report.retained.push(k);
       continue;
     }
-    persistOrWarn(() => db.query(`UPDATE ${table} SET ${col} = ? WHERE ${col} = ?;`).run(identity, k));
+    persistOrWarn("identity-migrate", () => { db.query(`UPDATE ${table} SET ${col} = ? WHERE ${col} = ?;`).run(identity, k); }, { table, col, identity });
     const landed = db.query(`SELECT 1 FROM ${table} WHERE ${col} = ? LIMIT 1;`).get(identity);
     if (!landed) {
       console.warn(`rt: ${table}.${col} re-key to ${identity} did not persist — leaving ${k}`);
@@ -594,7 +598,7 @@ In `commands/repos.ts`'s `reposRegister`, replace `basename(real)` as the key wi
 
 - [ ] **Step 4: Reconcile `migrateRepoData`**
 
-RT-60's `migrateRepoData` moves a data dir + worktree registry from a losing **name** to a winning name during prune. With identity keys, prune's realpath dedupe now compares identity rows, and a legacy name row and its identity row are a duplicate pair pointing at one path — so prune's existing loser→winner migration carries the legacy-named data dir onto the identity-named one automatically. Verify (do not rewrite) that `migrateRepoData(loser, winner)` still holds when `winner` is a serialized identity: `repoDataDir(winner)` is `repos/remote%3A…/`, which is a valid directory name. Add a test asserting a `repos/<name>/run-history.jsonl` migrates onto `repos/<serializedIdentity>/` under prune.
+RT-60's `migrateRepoData` moves a data dir + worktree registry from a losing **name** to a winning name during prune. With identity keys, prune's realpath dedupe now compares identity rows, and a legacy name row and its identity row are a duplicate pair pointing at one path — so prune's existing loser→winner migration carries the legacy-named data dir onto the identity-named one automatically. Verify (do not rewrite) that `migrateRepoData(loser, winner)` still holds when `winner` is a serialized identity: `repoDataDir(winner)` is `repos/remote:…%2F…/` (literal colon, encoded slashes — a valid single directory name on APFS). Add a test asserting a `repos/<name>/run-history.jsonl` migrates onto `repos/<serializedIdentity>/` under prune.
 
 - [ ] **Step 5: Run tests and gates**
 
@@ -659,7 +663,7 @@ git commit -m "feat(worktree): registry keyed on identity; re-key legacy rows on
 ## Task 7: Re-key `rt.repoTracking` grants (the severe finding)
 
 **Files:**
-- Modify: `lib/repo-tracking.ts` (grants map keyed by identity), `commands/daemon.ts:448-506` (`rt daemon track` writes identity), the daemon loops that read grants (`lib/daemon/freshness.ts:655`, `cache-refresh.ts:79`, `discussions-poller.ts:99`, `project-sync.ts:147`), `lib/daemon/handlers/secrets.ts:158`
+- Modify: `lib/repo-tracking.ts` (grants map keyed by identity — **including** its `IdentityNameMap`, `primeTeamTrackingIdentityMap(repoIndex)`, and the team-merge path `mergeTeamTracking` ~`:294`), `commands/daemon.ts:448-506` (`rt daemon track` writes identity), the daemon loops that read grants (`lib/daemon/freshness.ts:655`, `cache-refresh.ts:79`, `discussions-poller.ts:99`, `project-sync.ts:147`), `lib/daemon/handlers/secrets.ts:158`
 - Modify: wire a one-shot `rekeyKvNamespace`/settings re-key at daemon first read
 - Test: `lib/daemon/__tests__/repo-tracking.test.ts`
 
@@ -688,6 +692,8 @@ Expected: FAIL — `grants()` keys by name.
 `rt.repoTracking` is a flat `Record<repoKey, {mode,caches}>` in the machine settings store (`lib/repo-tracking.ts:5,181-186,250`). Change every read/write of that map to key by the serialized identity. `rt daemon track <repo>` (`commands/daemon.ts:448`) currently validates a typed name against the index — change it to resolve the operator's argument (a name or path) to an identity via the index / `deriveRepoIdentity` and store under the identity. Each daemon loop iterates the index (identity keys now) and looks the grant up by the same identity — a one-line change from `.repoName` to the identity key at each of the four sites. `secrets:forge-token` (`handlers/secrets.ts:158`) takes the identity from the payload (gitq sends it — Task 11).
 
 One-shot migration: at the tracking store's first read, re-key legacy name entries to identities using the same resolver as Task 4 (name→path→identity), verify, and rewrite the settings value. A settings write is not kv; use the settings store's write path and re-read to verify.
+
+**Reconcile the team-tracking path — it has a second name-keyed map.** `lib/repo-tracking.ts` already carries `IdentityNameMap` and `primeTeamTrackingIdentityMap(repoIndex)`, and `mergeTeamTracking` (~`:294`) merges team grants keyed by name. Re-keying only the machine map while the team map still keys/merges by name would split a team grant from its machine override. Move the team map and its merge onto the same serialized identity, and confirm `primeTeamTrackingIdentityMap` is fed identities from the (now identity-keyed) index. Add a test that a team grant and a machine grant for one repo resolve to the same identity after merge.
 
 - [ ] **Step 4: Run tests and gates**
 
@@ -730,6 +736,8 @@ Expected: FAIL — write keys by name.
 - [ ] **Step 3: Implement**
 
 Switch every `ctx.identity.repoName` used as a **key** in these paths to `ctx.identity.identity`. `commands/run.ts:1000` reconciles recents against `getKnownRepos()` names — reconcile against identity instead (the index keys are identities now). Run `rekeyTableColumn("run_history","repo")` and `rekeyTableColumn("endpoint_claims","repo")` once at daemon first read.
+
+**One endpoint site is NOT a store key and must not be serialized.** `lib/daemon/handlers/endpoint.ts:43` `repoIdentityFor` returns an identity that flows into `loadEndpointConfig` as `repoIdentity` for `repos.<identity>` **settings** resolution — and per the spec, settings sections keep the raw `host/path` spelling, NOT the serialized wire form. So that site must yield the raw `host/path` (`id.id` for a remote-kind identity, null otherwise), exactly like the Task 2 Step 6 resolver call sites. Only the `endpoint_claims` *table* key moves to the serialized identity (from `payload.repo`, which the CLI serializes). Do not collapse the two.
 
 - [ ] **Step 4: Run tests and gates**
 
@@ -820,7 +828,7 @@ Expected: FAIL — handler still name-matches.
 
 - [ ] **Step 3: Implement**
 
-At each repo-keyed handler, `if (parseIdentity(payload.repoName) === null) return <empty result>` before touching the store. Add a daemon-boot migration runner that calls the Task 4–9 re-key functions once, over the full set: kv namespaces `worktree-registry` and `events-cursor`; the `rt.repoTracking` settings map; and table columns `run_history.repo`, `endpoint_claims.repo`, `branch_cache.repo`, `project_mrs.repo`, `project_mrs_meta.repo`, `project_mr_demands.repo`, `discussions.repo`. Guard each with "namespace/table has at least one non-identity key" so a fully-migrated db does no work. Idempotent by construction (an identity key is skipped). `events-cursor` is included for uniformity only — it is self-consistent today (daemon writes and reads it under the index key), so a missed row costs a one-time watcher cold-start, not a correctness failure.
+At each repo-keyed handler, `if (parseIdentity(payload.repoName) === null) return <empty result>` before touching the store. This covers **every** verb whose payload carries a repo key, not only the read verbs: the MR/discussion reads, `secrets:forge-token`, `mr:by-branch`, `runs:list/get/abandon`, **and** the opaque-key verbs `endpoint:claim/lookup/release/status` and the worktree `patchTree`/registry handlers — the spec's "no legacy-name acceptance path in any verb" admits no exception. Add a daemon-boot migration runner that calls the Task 4–9 re-key functions once, over the full set: kv namespaces `worktree-registry` and `events-cursor`; the `rt.repoTracking` settings map; and table columns `run_history.repo`, `endpoint_claims.repo`, `branch_cache.repo`, `project_mrs.repo`, `project_mrs_meta.repo`, `project_mr_demands.repo`, `discussions.repo`. Guard each with "namespace/table has at least one non-identity key" so a fully-migrated db does no work. Idempotent by construction (an identity key is skipped). `events-cursor` is included for uniformity only — it is self-consistent today (daemon writes and reads it under the index key), so a missed row costs a one-time watcher cold-start, not a correctness failure.
 
 - [ ] **Step 4: Run tests and gates**
 
@@ -836,33 +844,38 @@ git commit -m "feat(daemon): identity-only verbs and one-shot boot migration"
 
 ---
 
-## Task 11: gitq adopts identity (published consumer, loud break)
+## Task 11: gitq adopts identity (published consumer — silent, ordering-guarded, no logic change)
 
 **Files (in `~/Documents/GitHub/gitq`):**
-- Modify: `package.json` (`@mattstack/rt-client` → `^0.4.0`), `src/core/secrets.ts:67`, `src/server/data.ts:254-255`
+- Modify: `package.json` (`@mattstack/rt-client` → `^0.4.0`) + `bun install`
+- Verify (likely no change): `src/core/secrets.ts:67`, `src/server/data.ts:254-255`
 - Test: gitq's own suite
 
 **Interfaces:**
-- Consumes: rt-client 0.4.0 — `deriveRepoIdentity` (now returns `RepoIdentity`), `serializeIdentity`.
-- Produces: gitq sends the daemon a serialized identity for `secrets:forge-token` and `mr:by-branch`.
+- Consumes: rt-client 0.4.0. **`repoNameForPath` is unchanged by this plan** — it still returns `string | null`, looking a checkout path up in the (now identity-keyed) `repos.json` mirror and returning the row's **key**, which is now a serialized identity.
+- Produces: gitq forwards that key to `secrets:forge-token` / `mr:by-branch` unchanged — and because the key is now an identity, the daemon (identity-only) accepts it.
+
+**Why there is no loud break, and where the safety actually comes from.** gitq never assigns a derived identity into a typed local — both call sites take `repoNameForPath`'s `string | null` and *forward* it to a daemon verb (`secrets.ts:73` → `daemonForgeToken(repoName, forge)`; `data.ts` → `readMrsByBranch(rtRepo, …)`), using it in an error string only on the `null` branch. So the bump produces **no `tsc` error** — this consumer's correctness is guaranteed by *ordering*, not the compiler: the daemon's boot migration (Task 10) must have re-keyed `repos.json` to identities before gitq reads it, which the single-landing sequence (Task 14) enforces. Do **not** rewrite these sites to call `deriveRepoIdentity`; `repoNameForPath` already yields exactly the key the daemon wants, and rewriting risks a second-worktree miss `repoNameForPath` already handles.
 
 - [ ] **Step 1: Bump and reinstall**
 
-In `gitq/package.json` set `"@mattstack/rt-client": "^0.4.0"`; `bun install`. `tsc` now errors where `repoNameForPath`'s value fed a daemon call — that is the intended loud break.
+In `gitq/package.json` set `"@mattstack/rt-client": "^0.4.0"`; `bun install`.
 
 - [ ] **Step 2: Write the failing test**
 
 ```ts
-test("forge-token resolution sends a serialized identity, not a name", async () => {
-  const sent = captureDaemonPayload();
+test("the value gitq forwards to the daemon is a serialized identity, not a bare name", async () => {
+  const sent = captureDaemonPayload();       // repos.json fixture keyed by identity
   await resolveForge({ repoPath: fixtureRepoWithRemote() });
-  expect(sent.repoName).toMatch(/^remote:/);
+  expect(sent.repoName).toMatch(/^(remote|path):/);
 });
 ```
 
-- [ ] **Step 3: Implement**
+Point the test's `reposJsonPath` fixture at a mirror whose keys are serialized identities (the post-migration shape) — that is what proves gitq forwards an identity once the mirror is migrated.
 
-Replace `repoNameForPath(path)` at both sites with `serializeIdentity(await deriveRepoIdentity(path))`, and pass that as the daemon payload's repo field. `repoNameForPath` is no longer the right call — it answered path→name; the daemon now wants path→identity.
+- [ ] **Step 3: Verify, don't rewrite**
+
+Confirm both sites only forward `repoNameForPath`'s result and never display it as a human name. `secrets.ts` uses it solely in `daemonForgeToken(repoName, forge)` and a null-branch error string — no display of a non-null value, so no decode needed. If `data.ts` ever surfaces the value to a user, decode it with `parseIdentity` for display; otherwise leave it. No functional edit is expected here.
 
 - [ ] **Step 4: Run gates**
 
@@ -872,8 +885,8 @@ Expected: PASS.
 - [ ] **Step 5: Commit (in gitq)**
 
 ```bash
-git add package.json bun.lock src/core/secrets.ts src/server/data.ts
-git commit -m "feat!: send rt repo identity, not name, to daemon verbs (rt-client 0.4)"
+git add package.json bun.lock
+git commit -m "chore: rt-client 0.4 — repos.json keys are identities; forward them unchanged"
 ```
 
 ---

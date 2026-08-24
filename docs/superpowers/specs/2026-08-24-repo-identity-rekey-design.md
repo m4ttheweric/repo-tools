@@ -144,11 +144,16 @@ existing name-valued config to `host/path` once. It is deliberately **not** a
 runtime translation layer and the daemon never calls it — see the hard-cutover
 rollout below.
 
-`deriveRepoIdentity` losing its `null` is the shape change that makes **gitq**
-fail *loud* — the one consumer that assigns the result into a `string | null`
-local, so it gets a compile error rather than a wrong lookup. That is the
-desired behavior; see the estate section for why the others need different
-handling.
+`deriveRepoIdentity` losing its `null` is a genuine shape change, but **no
+consumer catches it at compile time** — a correction to an earlier draft of
+this spec. gitq does not call `deriveRepoIdentity`; it calls `repoNameForPath`
+(unchanged, still `string | null`) and forwards the result to a daemon verb. So
+every identity-touching consumer breaks *silently* or not at all, and the safety
+net is not the compiler — it is the hard-cutover **ordering**: the daemon
+re-keys its stores and the `repos.json` mirror before any consumer reads them,
+after which `repoNameForPath` returns an identity (the mirror's key) that the
+identity-only daemon accepts. The estate section carries the per-consumer
+detail.
 
 **The settings resolver is deliberately left alone.** It keeps consuming
 `identityFromRemote`, and its on-disk `repos.<identity>` section keys stay in
@@ -220,7 +225,7 @@ identity. deck and local-apps use rt-client for global settings only and are
 
 | Consumer | Dep | What it does | Break mode without care |
 |---|---|---|---|
-| gitq | published `^0.3.0` | `repoNameForPath(path)` → `secrets:forge-token` / `mr:by-branch` | **Loud** (assigns into typed local) — the safe one |
+| gitq | published `^0.3.0` | `repoNameForPath(path)` → forwarded to `secrets:forge-token` / `mr:by-branch` | **Silent, but self-correcting under ordering** — `repoNameForPath` is unchanged and returns the mirror's key, which is an identity post-migration; gitq forwards it unchanged. No code change, only a reinstall. |
 | board | published `^0.3.0` | operator-authored `config.rtRepos[path]` = a **name**, → `project-mrs:read` / `discussions:read` | **Silent** — human-written map goes stale |
 | mr-board | published `^0.3.0` | identical to board | Silent |
 | mr-board-wt-invite-onboarding | **file:** dep | board fork | Silent |
@@ -279,7 +284,8 @@ The dependency edges are strict and the whole thing lands as one sequence:
    restarted **in lockstep** with the store re-key — a re-keyed store under an
    old daemon, or the reverse, is the split this whole change removes.
 3. **The three published-pin consumers** (gitq, board, mr-board) bump to
-   `^0.4.0` and adopt — gitq recompiles against the new type, board switches its
+   `^0.4.0` and adopt — gitq only reinstalls (it forwards `repoNameForPath`'s
+   now-identity key unchanged), board switches its
    config values to `host/path` and encodes at the boundary — as part of the
    same landing, not on their own schedule. The major bump is what makes each
    bump a deliberate, tracked step rather than an ambient one; it is not a
