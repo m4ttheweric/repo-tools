@@ -1057,6 +1057,19 @@ export const TREE: Record<string, CommandNode> = {
           SETUP_JSON_ARG,
         ],
       },
+      bind: {
+        description: "Write bindings.<engineRef>.<slot> = <fill> into the manifest (jsonc-parser, comments preserved), validate the fill against the slot's contract, and recompile the verb",
+        module: "./commands/skills.ts",
+        fn: "skillsBind",
+        args: [
+          { name: "Verb", type: "text", placeholder: "watch-ci", hint: "Verb in the pack's roster" },
+          { name: "Slot", type: "text", placeholder: "domain", hint: "Slot declared on the verb's step" },
+          { name: "Fill", type: "text", placeholder: "claimview:watch-ci-domain-v2", hint: "<plugin>:<skill> binding string; must provide the slot's declared contract" },
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "claimview", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would change without writing" },
+        ],
+      },
     },
   },
 

@@ -20,6 +20,7 @@
 
 import { execFileSync, spawnSync } from "child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
+import { applyEdits, modify } from "jsonc-parser";
 import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath, sep } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
@@ -1437,5 +1438,128 @@ export async function skillsSurface(args: string[]): Promise<void> {
     const { flags, rest } = parseSurfaceFlags(args);
     if (rest.length) throw new SkillsUsageError(`unrecognized argument "${rest[0]}"`);
     await runPalette(flags);
+  });
+}
+
+// ─── rt skills bind -- write bindings.<engineRef>.<slot> = <fill>, preserving manifest comments ──
+
+type BindFlags = {
+  team: string | null;
+  manifest: string | null;
+  dryRun: boolean;
+  packDir: string | null;
+  mattstackDir: string | null;
+};
+
+function parseBindFlags(args: string[]): BindFlags {
+  let team: string | null = null;
+  let manifest: string | null = null;
+  let dryRun = false;
+  let packDir: string | null = null;
+  let mattstackDir: string | null = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    switch (a) {
+      case "--pack":
+      case "--team": team = args[++i] ?? team; break;
+      case "--manifest": manifest = args[++i] ?? null; break;
+      case "--dry-run": dryRun = true; break;
+      case "--pack-dir": packDir = args[++i] ?? null; break;
+      case "--mattstack-dir": mattstackDir = args[++i] ?? null; break;
+      default:
+        throw new SkillsUsageError(`unrecognized argument "${a}"`);
+    }
+  }
+
+  return { team, manifest, dryRun, packDir, mattstackDir };
+}
+
+export async function skillsBind(args: string[]): Promise<void> {
+  await withCleanErrors(async () => {
+    const [verbName, slotName, fill, ...rest] = args;
+    if (!verbName || !slotName || !fill) {
+      throw new SkillsUsageError("bind requires: rt skills bind <verb> <slot> <fill>");
+    }
+
+    const bindFlags = parseBindFlags(rest);
+    const resolved = await resolve({
+      team: bindFlags.team,
+      verbs: null,
+      manifest: bindFlags.manifest,
+      dryRun: bindFlags.dryRun,
+      preview: false,
+      packDir: bindFlags.packDir,
+      mattstackDir: bindFlags.mattstackDir,
+      json: false,
+    });
+
+    const verb = resolved.fullRoster.find((v) => v.name === verbName);
+    if (!verb) {
+      const known = resolved.fullRoster.map((v) => v.name).sort();
+      throw new SkillsUsageError(`verb "${verbName}" not found in roster (known: ${known.join(", ") || "none"})`);
+    }
+
+    let step;
+    try {
+      step = loadStepSource(verb.engine, resolved.pluginRoots);
+    } catch (err) {
+      throw new SkillsUsageError(`verb "${verbName}": ${(err as Error).message}`);
+    }
+
+    const slotSpec = step.slots[slotName];
+    if (!slotSpec) {
+      const known = Object.keys(step.slots).sort();
+      throw new SkillsUsageError(
+        `slot "${slotName}" not declared on verb "${verbName}"'s step (known slots: ${known.join(", ") || "none"})`,
+      );
+    }
+
+    // loadAttachment throws a plain Error on an unresolvable binding or a fill
+    // missing metadata.provides -- wrap it so it exits clean like every other
+    // validation failure here, instead of surfacing as an uncaught crash.
+    let attachment;
+    try {
+      attachment = loadAttachment(fill, slotName, resolved.pluginRoots);
+    } catch (err) {
+      throw new SkillsUsageError((err as Error).message);
+    }
+
+    if (attachment.provides !== slotSpec.contract) {
+      throw new SkillsUsageError(
+        `fill "${fill}" provides "${attachment.provides}", but slot "${slotName}" demands "${slotSpec.contract}"`,
+      );
+    }
+
+    if (!resolved.manifestPath) {
+      throw new SkillsUsageError(`pack "${resolved.team}" has no manifest to bind into`);
+    }
+
+    const engineRef = `${step.plugin}:${verb.engine}`;
+    const oldValue = resolved.bindings[engineRef]?.[slotName] ?? "(unbound)";
+    const summary = `${verbName}.${slotName}: ${oldValue} -> ${fill}`;
+
+    if (bindFlags.dryRun) {
+      console.log(summary);
+      return;
+    }
+
+    const text = readFileSync(resolved.manifestPath, "utf8");
+    const edits = modify(text, ["bindings", engineRef, slotName], fill, {
+      formattingOptions: { insertSpaces: true, tabSize: 2 },
+    });
+    writeFileSync(resolved.manifestPath, applyEdits(text, edits));
+
+    console.log(summary);
+
+    const surfaceFlags: SurfaceFlags = {
+      team: resolved.team,
+      dryRun: false,
+      packDir: resolved.packDir,
+      mattstackDir: bindFlags.mattstackDir,
+      manifest: resolved.manifestPath,
+      json: false,
+    };
+    await skillsCompile([...compileArgs(surfaceFlags, resolved.packDir), "--verb", verbName]);
   });
 }
