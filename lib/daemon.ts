@@ -272,18 +272,10 @@ const handlerCtx: HandlerContext = {
 /** Env bundle for the live-freshness subsystem. */
 const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast: emit };
 
-const routedHandlers = buildRoutedHandlers({
-  ctx: handlerCtx,
-  broadcast: emit,
-  systemProcessScanner,
-  worktree: {
-    emit,
-    kick: worktreeReconciler.kick,
-    creationInFlight: worktreeReconciler.creationInFlight,
-  },
-  eventsBus,
-  homeSnapshot,
-});
+// Assigned in startDaemon(), after openBranchCacheStore() — chat handlers
+// need state.db open, and module scope must not touch it (same rule as the
+// branch-cache facade above).
+let routedHandlers: ReturnType<typeof buildRoutedHandlers> | undefined;
 
 async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
   const t0 = Date.now();
@@ -302,7 +294,7 @@ async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): P
 }
 
 async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
-  const routed = routedHandlers[cmd];
+  const routed = routedHandlers?.[cmd];
   if (routed) return routed(payload, signal);
 
   switch (cmd) {
@@ -379,6 +371,20 @@ export function startDaemon(): void {
   // CLI process is mid-import right now, we block here, in startup.
   openBranchCacheStore();
   log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
+
+  routedHandlers = buildRoutedHandlers({
+    ctx: handlerCtx,
+    broadcast: emit,
+    systemProcessScanner,
+    worktree: {
+      emit,
+      kick: worktreeReconciler.kick,
+      creationInFlight: worktreeReconciler.creationInFlight,
+    },
+    eventsBus,
+    homeSnapshot,
+    chatDb: getStateDb("daemon"),
+  });
 
   // No waiter outlives the daemon, so every armed_at set at boot is stale;
   // clearing must finish before the socket listens, or an agent that arms

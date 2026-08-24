@@ -14,6 +14,7 @@ import { createEventsBus } from "../events-bus.ts";
 import { COMMAND_NAMES } from "../../../packages/rt-client/src/commands.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 import { fakeStore } from "./fake-cache-store.ts";
+import { openStateDb } from "../../state/index.ts";
 
 // Handlers are only assembled here (never invoked), so the stub ctx/scanner
 // just need to satisfy the types -- no factory reaches into them eagerly.
@@ -39,6 +40,7 @@ describe("rt-client command coverage", () => {
       worktree: { emit: () => {}, kick: () => {}, creationInFlight: () => null },
       eventsBus: createEventsBus({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
       homeSnapshot: { stop: () => {}, runNow: async () => ({}) as any, status: () => ({}) as any, ready: Promise.resolve() },
+      chatDb: openStateDb(":memory:"),
     });
     for (const name of COMMAND_NAMES) {
       expect(handlers[name]).toBeDefined();
