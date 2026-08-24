@@ -1209,13 +1209,20 @@ plan's task list — it is rt-side work, so it lands here. Optional push is
 **Task 11**: independent deliverable, different module, different failure
 modes, and shippable separately.
 
+**The integration point with Task 11 — do not change this string in one task
+only.** `notifyEnabled(category, ...)` passes `category` straight into
+`notify(title, message, url, category, pids)`, so it becomes `event.category`.
+This task emits **`"chat_mention"`** (it must: that same string is the
+`NOTIFICATION_TYPES` prefs key), and Task 11 filters on exactly that value. The
+category string is the only contract between them, and nothing type-checks it.
+
 **Files:**
 - Modify: `lib/daemon/handlers/chat.ts`
 - Modify: `lib/notifier.ts` — a `chat_mention` entry in `NOTIFICATION_TYPES`; an optional trailing `id` on `notify()` and `notifyEnabled()`
 - Test: `lib/daemon/__tests__/chat-handlers.test.ts`
 
 **Interfaces:**
-- Consumes: `notifyEnabled` from `lib/notifier.ts`; `peekNotifications` / `drainNotifications` from `lib/notifier.ts`; `getSetting` for `chat.humanHandle`.
+- Consumes, all from `lib/notifier.ts`: `notifyEnabled`, `peekNotifications`, `drainNotifications`, `loadNotificationPrefs`, `saveNotificationPrefs`; plus `getSetting` for `chat.humanHandle`.
 - Produces: no new exports; `notify` and `notifyEnabled` gain an optional trailing `id`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1280,7 +1287,10 @@ for anything running afterward.
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `bun test lib/daemon/__tests__/chat-handlers.test.ts`
-Expected: FAIL — nothing is enqueued.
+Expected: tests 1 and 2 **FAIL** (nothing is enqueued). Tests 3 and 4 assert
+`toHaveLength(0)` and therefore **pass before any implementation exists** —
+that is expected, not a sign you are done. They are guards against
+over-notifying, and they only become meaningful once tests 1 and 2 are green.
 
 - [ ] **Step 3: Implement**
 
@@ -1372,13 +1382,25 @@ validated against `"ntfy"` and rejects anything else with a message saying so,
 which keeps the setting name honest about its future without shipping a
 half-specified provider.
 
+**The integration point with Task 10 — read this before writing the filter.**
+Task 10 emits its notification through `notifyEnabled("chat_mention", ...)`,
+and `notifyEnabled` passes its category straight into
+`notify(title, message, url, category, pids)`, so every real chat notification
+arrives here with **`event.category === "chat_mention"`**. That is the string
+this task filters on. It is `"chat_mention"` and not `"chat"` because the same
+value is Task 10's `NOTIFICATION_TYPES` prefs key and cannot differ. Nothing
+type-checks this contract: filter on the wrong string and every test below
+still passes while no `@matt` mention is ever pushed.
+
 **Files:**
 - Modify: `lib/notifier.ts` — the push producer, beside `pushToTray` inside `notify()`
-- Modify: `packages/rt-client/src/settings/registry-defs.ts` — if `chat.push.*` was not added in Task 7
 - Test: `lib/__tests__/notifier-push.test.ts`
 
+`chat.push.provider` and `chat.push.target` are **already registered by Task 7
+Step 4** — this task only reads them and adds no settings defs.
+
 **Interfaces:**
-- Consumes: `getSetting` for `chat.push.provider` / `chat.push.target`; `notify`, `notifyEnabled`, `peekNotifications`, `drainNotifications`, `loadNotificationPrefs`, `saveNotificationPrefs` from `lib/notifier.ts`; `setSetting(key, value, scope)` in tests.
+- Consumes: `getSetting` for `chat.push.provider` / `chat.push.target` (registered in Task 7); `notify`, `peekNotifications`, `drainNotifications` from `lib/notifier.ts`; `setSetting(key, value, scope)` in tests.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1394,17 +1416,22 @@ const push = () => {
 
 beforeEach(() => { drainNotifications(); });
 
+// Every spy carries a mock implementation. A bare spyOn(globalThis, "fetch")
+// CALLS THROUGH, so the moment the category filter regresses, the last test
+// makes a real network POST to ntfy.sh from the suite.
+const inert = () => spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
+
 test("no provider configured sends nothing anywhere", async () => {
-  const fetchSpy = spyOn(globalThis, "fetch");
-  notify("#r", "agent: @matt hi", undefined, "chat");
+  const fetchSpy = inert();
+  notify("#r", "agent: @matt hi", undefined, "chat_mention");
   await Bun.sleep(0);
   expect(fetchSpy).not.toHaveBeenCalled();
 });
 
-test("a chat notification is pushed when a provider is configured", async () => {
+test("a chat_mention notification is pushed when a provider is configured", async () => {
   push();
-  const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
-  notify("#r", "agent: @matt hi", undefined, "chat");
+  const fetchSpy = inert();
+  notify("#r", "agent: @matt hi", undefined, "chat_mention");
   await Bun.sleep(0);
   expect(fetchSpy).toHaveBeenCalledWith("https://ntfy.sh/x", expect.objectContaining({ method: "POST" }));
 });
@@ -1412,19 +1439,23 @@ test("a chat notification is pushed when a provider is configured", async () => 
 test("a failing push does not fail the notification", async () => {
   push();
   spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
-  expect(() => notify("#r", "agent: @matt hi", undefined, "chat")).not.toThrow();
+  expect(() => notify("#r", "agent: @matt hi", undefined, "chat_mention")).not.toThrow();
   await Bun.sleep(0);
   expect(peekNotifications()).toHaveLength(1);
 });
 
 test("a non-chat notification is never pushed", async () => {
   push();
-  const fetchSpy = spyOn(globalThis, "fetch");
+  const fetchSpy = inert();
   notify("MR ready", "something else", undefined, "general");
   await Bun.sleep(0);
   expect(fetchSpy).not.toHaveBeenCalled();
 });
 ```
+
+**The positive test is load-bearing.** Three negatives and no positive would
+let a no-op push implementation — or a filter on the wrong category string —
+pass the whole file.
 
 `notify()` is synchronous and pushes fire-and-forget, so each test awaits a
 microtask turn before asserting. There is no `deliver()` function — dispatch is
@@ -1448,15 +1479,31 @@ a `Title` header:
 
 ```ts
 fetch(target, { method: "POST", headers: { Title: event.title }, body: event.message })
-  .catch(err => log.warn({ err }, "chat push failed"));
+  .catch(err => warnPushFailed(err));
 ```
 
-**Push only when `event.category === "chat"`.** That filter is not optional.
+**There is no logger in scope in `lib/notifier.ts`** — it imports no logging
+module. Do **not** add a top-level `daemon-logger` import: `lib/state/busy.ts`
+carries a comment explaining that doing so leaks `daemon-logger`'s
+`~/Library` pino-roll side effect into every consumer, and `lib/notifier.ts`
+is reachable from CLI paths with the same exposure. Follow `busy.ts`'s lazy
+dynamic import on the warn path only:
+
+```ts
+let logHandle: Promise<...> | undefined;
+function warnPushFailed(err: unknown): void {
+  logHandle ??= import("./daemon-logger.ts").then(m => m.getDaemonLogger());
+  void logHandle.then(h => h.childLogger("chat-push").warn({ err }, "chat push failed"));
+}
+```
+
+**Push only when `event.category === "chat_mention"`.** That filter is not optional.
 `notify()` handles *every* notification type — its `category` parameter
 defaults to `"general"` and every emitter in the module routes through it — so
 without the check, setting `chat.push.provider` would send Matt's phone MR
 updates, pipeline alerts, and runaway-process warnings rather than `@matt`
-mentions. The settings are named `chat.push.*` and the spec frames push as the
+mentions. And filtering on the *wrong* string — `"chat"` rather than
+`"chat_mention"` — pushes nothing at all while every test still passes. The settings are named `chat.push.*` and the spec frames push as the
 `@matt` path, so the intended scope is unambiguous.
 
 **Absent by default:** with no provider configured nothing is sent anywhere and
@@ -1472,7 +1519,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/notifier.ts lib/__tests__/notifier-push.test.ts packages/rt-client/src/settings/registry-defs.ts
+git add lib/notifier.ts lib/__tests__/notifier-push.test.ts
 git commit -m "chat: optional ntfy push for @matt mentions
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
