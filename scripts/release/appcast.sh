@@ -47,16 +47,31 @@ literal_replace_in_file() {
     mv "$file.tmp" "$file"
 }
 
-# 0 = fetched; 22 = HTTP error (curl -f), treated as "not found"; anything
-# else aborts the whole run rather than silently treating e.g. a DNS blip
-# as a clean 404.
+# Branches on the HTTP STATUS, not curl's exit code.
+#
+# The exit code is not a reliable proxy: fetching a missing asset from
+# `releases/latest/download/...` redirects, and curl reported
+# "The requested URL returned error: 404" while exiting 56 (recv failure)
+# rather than the 22 that `-f` documents. That aborted the first release with
+# a message flatly contradicting the line above it — a genuine 404 reported as
+# "not a 404".
+#
+# Intent is unchanged: a real 4xx means "no previous appcast, first release",
+# while a network-level failure still aborts rather than silently degrading a
+# DNS blip into a fresh appcast that drops every existing delta.
 fetch_or_abort() {
-    local url="$1" dest="$2" ctx="$3" rc=0
-    curl -fsSL -o "$dest" "$url" || rc=$?
-    [ "$rc" -eq 0 ] && return 0
+    local url="$1" dest="$2" ctx="$3" rc=0 status
+    status="$(curl -sSL -o "$dest" -w '%{http_code}' "$url")" || rc=$?
+
+    if [ "$rc" -eq 0 ] && [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
+        return 0
+    fi
+
     rm -f "$dest"
-    [ "$rc" -eq 22 ] && return 22
-    echo "✗ failed to fetch $ctx (curl exit $rc — not a 404, aborting rather than degrading silently)" >&2
+    if [ "$status" -ge 400 ] && [ "$status" -lt 500 ]; then
+        return 22
+    fi
+    echo "✗ failed to fetch $ctx (curl exit $rc, HTTP ${status:-none} — not a 4xx, aborting rather than degrading silently)" >&2
     exit 1
 }
 
