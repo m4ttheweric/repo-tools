@@ -251,9 +251,21 @@ hence rule 1 above.
 **The transport is `Monitor`, not a backgrounded one-shot.** Claude Code's
 `Monitor` runs a long-lived command and turns **each stdout line into its own
 notification**, staying armed for the whole session with `persistent: true`.
-Verified against the live harness on 2026-08-24: an event woke a fully idle
-session; a second event arrived from the same arming with no re-arm; and the
-stream ending produced a *separate, distinguishable* notification.
+Verified against the live harness on 2026-08-24, in two spikes:
+
+1. An event woke a **fully idle** session; a second event arrived from the
+   same arming with **no re-arm**; and the stream ending produced a separate,
+   distinguishable notification.
+2. A monitor that produced **no stdout at all** and simply exited still woke an
+   idle session, and the summary named its **exit code**.
+
+The second spike exists because the first did not actually prove it: its final
+event and its stream-end arrived together, so either could have been the wake.
+Recovery — *stream ends → agent notified → agent re-arms* — depends on the
+stream-end **alone** reaching an idle agent. If it only landed on the agent's
+next turn, deleting the Stop hook would have removed a guard without replacing
+it. It does reach an idle agent, and the exit code comes with it, which is what
+lets the agent distinguish a clean shutdown from a `69`.
 
 ```
 Monitor({ command: "rt chat tail --as <handle>", persistent: true,
