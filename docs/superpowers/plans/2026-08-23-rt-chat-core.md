@@ -1222,7 +1222,17 @@ export const CHAT_NOTIFICATION_CATEGORY = "chat_mention";
 ```
 
 in `lib/notifier.ts`, used by all three sites — the `NOTIFICATION_TYPES`
-entry's `key`, this task's `notifyEnabled` call, and Task 11's filter. Written
+entry's `key`, this task's `notifyEnabled` call, and Task 11's filter.
+
+**The identifier may be refactored freely; the string value may not.** It is
+persisted: `isEnabled` reads `prefs[key]` out of the `rt.notifications`
+setting on disk, which is a fourth copy no constant can reach. Change the value
+and every code site updates atomically and every test still passes — but a user
+who had switched chat notifications off has `{"chat_mention": false}` stored,
+the lookup becomes `prefs["<new>"]` → `undefined` → `undefined !== false` →
+**enabled**, and their preference silently reverts. All fourteen existing
+`NOTIFICATION_TYPES` keys share this property: the value is a persistence
+contract, not an implementation detail. Written
 as three separate literals, a divergence between producer and consumer is
 silent: no type error, no failing test, and push simply never fires. Through
 the constant it cannot diverge at all. This is not style — an earlier draft of
@@ -1397,10 +1407,12 @@ which keeps the setting name honest about its future without shipping a
 half-specified provider.
 
 **The integration point with Task 10 — read this before writing the filter.**
-Task 10 emits its notification through `notifyEnabled("chat_mention", ...)`,
+Task 10 emits its notification through
+`notifyEnabled(CHAT_NOTIFICATION_CATEGORY, ...)`,
 and `notifyEnabled` passes its category straight into
 `notify(title, message, url, category, pids)`, so every real chat notification
-arrives here with **`event.category === "chat_mention"`**.
+arrives here with **`event.category === CHAT_NOTIFICATION_CATEGORY`** (whose
+value is `"chat_mention"`).
 
 **Import `CHAT_NOTIFICATION_CATEGORY` from `lib/notifier.ts` and filter on it.
 Do not write the literal.** Task 10 declares it, and it is also the
@@ -1490,13 +1502,24 @@ contract is actually exercised.
 test("a real @matt mention through chat:post reaches the push provider", async () => {
   push();
   const fetchSpy = inert();
-  const h = freshHandlers();
+  const h = createChatHandlers({
+    db: openStateDb(join(tmpdir(), `chat-push-${process.pid}.db`)),
+    emitEvent: () => 0,
+  });
   await h["chat:join"]({ room: "r", handle: "agent" });
   await h["chat:post"]({ room: "r", handle: "agent", body: "@matt ok to force-release?" });
   await Bun.sleep(0);
   expect(fetchSpy).toHaveBeenCalledWith("https://ntfy.sh/x", expect.objectContaining({ method: "POST" }));
 });
 ```
+
+**Construct the handlers inline; do not reach for `freshHandlers()`.** That
+helper is file-local to Task 6's `lib/daemon/__tests__/chat-handlers.test.ts`
+and is not exported — this task writes `lib/__tests__/notifier-push.test.ts`,
+a different file, and is the first task to need handlers from outside it. The
+handler's db does not matter to this assertion: it asserts on `fetchSpy`, and
+`notify()` writes to `getStateDb()` regardless of what db the handler was
+given, so a minimal construction is enough.
 
 **This is the load-bearing test in the task.** The four above are all
 satisfiable by a wrong-but-self-consistent implementation; this one is not. If
