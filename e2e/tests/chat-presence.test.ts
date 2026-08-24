@@ -2,8 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync } from "fs";
 import { join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
-import { openStateDb } from "../../lib/state/db.ts";
-import { armMember, joinRoom } from "../../lib/state/chat-store.ts";
+import { armMember, joinRoom, openStateDb } from "../../lib/state/index.ts";
 
 async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
