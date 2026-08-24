@@ -54,24 +54,36 @@ async function homeInitRun(ctx: ApplyContext): Promise<StepOutcome> {
     return { state: "failed", detail: `local age key check failed: ${keyStatus.message}`, remedy: "Unlock your keychain, then Retry" };
   }
 
-  // No --url is passed unless the operator supplied one: `rt home init`'s
-  // own default (commands/home.ts's DEFAULT_USER_REPO_URL) targets the repo
-  // rt's own author uses, not this operator's — passing nothing here is
-  // honest only because we say so, not because it's silently the right repo.
-  const url = p.env.RT_HOME_URL;
-  const args = url ? ["home", "init", "--url", url] : ["home", "init"];
-  if (!url) {
-    ctx.log("home.init", "no RT_HOME_URL set — targeting rt's built-in default repo, not one owned by this operator; set RT_HOME_URL to target your own");
-  }
-
-  const result = await p.runRt(args, { timeoutMs: HOME_INIT_TIMEOUT_MS });
+  const result = await p.runRt(["home", "init"], { timeoutMs: HOME_INIT_TIMEOUT_MS });
   if (result.code === 0) {
     const lastLine = result.stdout.trim().split("\n").pop() ?? "";
     return { state: "done", detail: lastLine };
   }
 
   const stderrHead = result.stderr.trim().split("\n")[0] ?? "";
-  return { state: "failed", detail: stderrHead, remedy: "Run `gh auth login`, then Retry" };
+  return { state: "failed", detail: stderrHead, remedy: homeInitRemedy(result.stderr) };
+}
+
+/** Stderr that names a remote/auth failure on its own terms, with no ambiguity about which end of the wire failed. */
+const REMOTE_AUTH_STDERR = /authenticat|could not read username|access denied|repository not found|403 forbidden|invalid username or (?:password|token)|gh auth login|permission denied \(publickey/i;
+/** ssh writes "Permission denied (publickey)", but so does a plain local `fatal: cannot mkdir user: Permission denied` — on its own this says nothing about a remote. */
+const AMBIGUOUS_PERMISSION_STDERR = /permission denied/i;
+/** `commands/home.ts` prints `failed at step "<id>"`; only the clone step ever contacts a host. */
+const CLONE_STEP_STDERR = /failed at step "cloneUserRepo"/;
+
+/**
+ * `rt home init` reaches a remote only when a url was resolved; the local-only
+ * path (`git init`/`add`/`commit`) contacts no host at all, so `gh auth login`
+ * is reserved for stderr that actually names an auth/clone failure. A bare
+ * "permission denied" qualifies only alongside the clone step — otherwise a
+ * local filesystem permission error, the very class the local-only path
+ * introduced, would be sent to `gh auth login`.
+ */
+function homeInitRemedy(stderr: string): string {
+  const remoteShaped =
+    REMOTE_AUTH_STDERR.test(stderr) ||
+    (AMBIGUOUS_PERMISSION_STDERR.test(stderr) && CLONE_STEP_STDERR.test(stderr));
+  return remoteShaped ? "Run `gh auth login`, then Retry" : "Check the error above, then Retry";
 }
 
 async function homeRestoreRun(ctx: ApplyContext): Promise<StepOutcome> {

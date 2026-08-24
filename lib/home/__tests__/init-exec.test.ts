@@ -96,6 +96,32 @@ describe("executeInitPlan", () => {
     }
   });
 
+  describe("commitInitialUserRepo", () => {
+    test("commits with signing off — a global commit.gpgsign with an unusable key must not fail an init that needs no signature", async () => {
+      const seam = new FakeExecSeam();
+
+      const result = await executeInitPlan([{ kind: "commitInitialUserRepo" }], seam, noopLog);
+
+      expect(result).toEqual({ ok: true });
+      expect(seam.calls).toContainEqual({ kind: "run", cmd: ["git", "-c", "commit.gpgsign=false", "-C", "user", "commit", "-m", "initial home repo"], cwd: undefined });
+    });
+
+    test("nothing to commit is tolerated — a resumed init can reach here with the tree already committed", async () => {
+      const seam = new FakeExecSeam({ failRun: (cmd) => (cmd.includes("commit") ? "nothing to commit, working tree clean" : undefined) });
+
+      expect(await executeInitPlan([{ kind: "commitInitialUserRepo" }], seam, noopLog)).toEqual({ ok: true });
+    });
+
+    test("a real commit failure still aborts", async () => {
+      const seam = new FakeExecSeam({ failRun: (cmd) => (cmd.includes("commit") ? "fatal: empty ident name not allowed" : undefined) });
+
+      const result = await executeInitPlan([{ kind: "commitInitialUserRepo" }], seam, noopLog);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.failedStep).toBe("commitInitialUserRepo");
+    });
+  });
+
   describe("writeGitignore / writeOwners — write-if-absent, decided at exec time", () => {
     test("an empty (freshly created) clone: neither file exists yet, so the ruled content is written", async () => {
       const seam = new FakeExecSeam({ exists: () => false });

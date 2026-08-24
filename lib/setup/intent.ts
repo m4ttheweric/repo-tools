@@ -25,6 +25,8 @@ export interface SetupIntent {
   team?: { slug: string; name: string; remote: string; others: boolean };
   join?: { id: string; keyB64: string; pointer: InvitePointer };
   restore?: { homeRepo: string };
+  /** Orthogonal to `mode` — create and join both need one; restore keeps its own under `restore.homeRepo`. */
+  homeRepo?: string;
 }
 
 export function intentPath(home: string): string {

@@ -1,14 +1,15 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { execFileSync } from "child_process";
 import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
-import type { RunResult } from "../../subprocess.ts";
+import { runCapture, type RunResult } from "../../subprocess.ts";
 import type { Owners } from "../../home/snapshot-owners.ts";
 import { openStateDb } from "../../state/db.ts";
 import { closeStateDb, getKvValue } from "../../state/index.ts";
+import { readHomePushRecord } from "../../home/push-record.ts";
 import { startHomeSnapshot, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
 
 // ─── test doubles ────────────────────────────────────────────────────────────
@@ -24,6 +25,13 @@ function fakeLog(): Logger & { calls: { level: string; args: unknown[] }[] } {
 type ExecOpts = { cwd?: string; timeoutMs?: number; stderr?: "ignore" | "pipe" };
 type Responder = (argv: string[]) => RunResult | undefined;
 
+/** The git subcommand, past any leading `-c <config>` pairs — snapshot commits carry `-c commit.gpgsign=false`, so argv[1] is not always the verb. */
+function gitVerb(argv: string[]): string | undefined {
+  let i = 1;
+  while (argv[i] === "-c") i += 2;
+  return argv[i];
+}
+
 function defaultResponders(opts: {
   isRepo?: boolean;
   branch?: string;
@@ -34,9 +42,11 @@ function defaultResponders(opts: {
   pushExit?: number;
   pushStderr?: string;
   sha?: string;
+  hasRemote?: boolean;
 } = {}): Responder[] {
   const {
     isRepo = true, branch = "main", branchExit = 0, statusZ = "", commitExit = 0, addExit = 0, pushExit = 0, pushStderr = "", sha = "abc123",
+    hasRemote = true,
   } = opts;
   return [
     (argv) => (argv[1] === "rev-parse" && argv[2] === "--is-inside-work-tree")
@@ -50,7 +60,9 @@ function defaultResponders(opts: {
       : undefined,
     (argv) => (argv[1] === "status") ? { stdout: statusZ, stderr: "", exitCode: 0 } : undefined,
     (argv) => (argv[1] === "add") ? { stdout: "", stderr: "", exitCode: addExit } : undefined,
-    (argv) => (argv[1] === "commit") ? { stdout: "", stderr: "", exitCode: commitExit } : undefined,
+    (argv) => (gitVerb(argv) === "commit") ? { stdout: "", stderr: "", exitCode: commitExit } : undefined,
+    // `hasRemote()`'s own probe — most fixtures simulate a repo that already has origin configured, matching every pre-existing push test's assumption.
+    (argv) => (argv[1] === "remote" && argv.length === 2) ? { stdout: hasRemote ? "origin\n" : "", stderr: "", exitCode: 0 } : undefined,
     (argv) => (argv[1] === "push") ? { stdout: "", stderr: pushStderr, exitCode: pushExit } : undefined,
   ];
 }
@@ -276,7 +288,7 @@ describe("startHomeSnapshot — live enabled toggle", () => {
     const result = await handle.runNow("manual");
 
     expect(result.skipped).toBe("disabled");
-    expect(execCalls.some((c) => c[1] === "add" || c[1] === "commit")).toBe(false);
+    expect(execCalls.some((c) => c[1] === "add" || gitVerb(c) === "commit")).toBe(false);
   });
 
   test("status().enabled reflects the live setting on every call, not a value captured at startup", async () => {
@@ -415,7 +427,7 @@ describe("startHomeSnapshot — watcher", () => {
     timers.fire((t) => t.ms === DEFAULT_SETTINGS.debounceSec * 1000);
     await flushAsync();
 
-    const commitCall = execCalls.find((c) => c[1] === "commit");
+    const commitCall = execCalls.find((c) => gitVerb(c) === "commit");
     expect(commitCall).toBeDefined();
     expect(commitCall).toContain("snapshot: a.txt");
     expect(broadcasts.some((b) => b.type === "home:snapshot")).toBe(true);
@@ -434,7 +446,7 @@ describe("startHomeSnapshot — preflight", () => {
     const result = await handle.runNow("manual");
 
     expect(result.skipped).toBe("detached");
-    expect(execCalls.some((c) => c[1] === "add" || c[1] === "commit")).toBe(false);
+    expect(execCalls.some((c) => c[1] === "add" || gitVerb(c) === "commit")).toBe(false);
     expect(log.calls.some((c) => c.level === "warn")).toBe(true);
   });
 
@@ -448,7 +460,7 @@ describe("startHomeSnapshot — preflight", () => {
 
     expect(result.skipped).toBeUndefined();
     expect(result.committed).toBe(true);
-    expect(execCalls.some((c) => c[1] === "commit")).toBe(true);
+    expect(execCalls.some((c) => gitVerb(c) === "commit")).toBe(true);
   });
 
   test("a MERGE_HEAD present skips the cycle", async () => {
@@ -560,14 +572,14 @@ describe("startHomeSnapshot — commit shapes", () => {
     await handle.runNow("manual");
 
     const addIdx = execCalls.findIndex((c) => c[1] === "add");
-    const commitIdx = execCalls.findIndex((c) => c[1] === "commit");
+    const commitIdx = execCalls.findIndex((c) => gitVerb(c) === "commit");
     expect(execCalls[addIdx]).toEqual(["git", "add", "-A", "--", ".", ":(exclude)prefs/", ":(exclude)secrets/"]);
     // The commit is pathspec-restricted too, not just the add — a plain
     // `git commit` would otherwise sweep in anything staged outside this
     // add (e.g. by the user, or inside a claimed zone), regardless of what
     // THIS add excluded.
     expect(execCalls[commitIdx]).toEqual([
-      "git", "commit", "-q", "-m", "snapshot (manual): notes",
+      "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "snapshot (manual): notes",
       "--", ".", ":(exclude)prefs/", ":(exclude)secrets/",
     ]);
     expect(optsLog[addIdx]?.cwd).toBe("/fake/repo");
@@ -582,14 +594,14 @@ describe("startHomeSnapshot — commit shapes", () => {
     const manualHandle = startHomeSnapshot(manualDeps);
     await manualHandle.ready;
     await manualHandle.runNow("manual");
-    expect(manualCalls.find((c) => c[1] === "commit")).toContain("snapshot (manual): a.txt");
+    expect(manualCalls.find((c) => gitVerb(c) === "commit")).toContain("snapshot (manual): a.txt");
 
     const { fn: watchExec, calls: watchCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
     const { deps: watchDeps } = baseDeps({ exec: watchExec });
     const watchHandle = startHomeSnapshot(watchDeps);
     await watchHandle.ready;
     await watchHandle.runNow("watch");
-    expect(watchCalls.find((c) => c[1] === "commit")).toContain("snapshot: a.txt");
+    expect(watchCalls.find((c) => gitVerb(c) === "commit")).toContain("snapshot: a.txt");
   });
 
   test("nothing to auto-commit — no-op, no add/commit, skipped:'no-changes'", async () => {
@@ -602,7 +614,7 @@ describe("startHomeSnapshot — commit shapes", () => {
 
     expect(result.committed).toBe(false);
     expect(result.skipped).toBe("no-changes");
-    expect(execCalls.some((c) => c[1] === "add" || c[1] === "commit")).toBe(false);
+    expect(execCalls.some((c) => c[1] === "add" || gitVerb(c) === "commit")).toBe(false);
     expect(broadcasts.length).toBe(0);
   });
 
@@ -633,9 +645,27 @@ describe("startHomeSnapshot — commit shapes", () => {
     expect(manualResult.committed).toBe(true);
     expect(execCalls).toContainEqual(["git", "add", "-A", "--", "prefs/"]);
     expect(execCalls).toContainEqual([
-      "git", "commit", "-q", "-m", "snapshot (janitor): prefs/ dirty >2h, owner matt", "--", "prefs/",
+      "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "snapshot (janitor): prefs/ dirty >2h, owner matt", "--", "prefs/",
     ]);
     expect(broadcasts.some((b) => b.type === "home:snapshot" && (b.data as any).paths.includes("prefs/"))).toBe(true);
+  });
+
+  test("every commit site runs with commit.gpgsign=false — a global signing config with an unusable key must not fail an unattended snapshot", async () => {
+    const owners: Owners = { zones: { "prefs/": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" } } };
+    const db = freshDb();
+    db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES ('home-snapshot', 'state', ?, 0);")
+      .run(JSON.stringify({ firstSeenDirty: { "prefs/": 0 } }));
+
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? notes/a.md\0?? prefs/x.md\0" }));
+    const { deps } = baseDeps({ exec: execFn, readOwners: () => owners, db, now: () => 10_000_000 });
+
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+    await handle.runNow("manual");
+
+    const commits = execCalls.filter((c) => gitVerb(c) === "commit");
+    expect(commits.length).toBe(2); // the auto commit and the janitor zone commit
+    for (const argv of commits) expect(argv.slice(0, 3)).toEqual(["git", "-c", "commit.gpgsign=false"]);
   });
 });
 
@@ -799,7 +829,7 @@ describe("startHomeSnapshot — push", () => {
       if (argv[1] === "rev-parse" && argv[2] === "HEAD") return { stdout: "sha1\n", stderr: "", exitCode: 0 };
       if (argv[1] === "status") return { stdout: "?? a.txt\0", stderr: "", exitCode: 0 };
       if (argv[1] === "add") return { stdout: "", stderr: "", exitCode: 0 };
-      if (argv[1] === "commit") { await gate; return { stdout: "", stderr: "", exitCode: 0 }; }
+      if (gitVerb(argv) === "commit") { await gate; return { stdout: "", stderr: "", exitCode: 0 }; }
       return { stdout: "", stderr: "", exitCode: 0 };
     };
     const { deps, timers } = baseDeps({ exec });
@@ -839,6 +869,60 @@ describe("startHomeSnapshot — state persistence", () => {
     const handle2 = startHomeSnapshot(deps2);
     await handle2.ready;
     expect(handle2.status().firstSeenDirty["prefs/"]).toBe(42);
+  });
+
+  test("the last-push record survives later commit cycles — its own kv row, never a sibling field of the one persistState rewrites wholesale", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, timers } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("watch");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    expect(readHomePushRecord(deps.db)).toMatchObject({ ok: true, at: 1_000_000 });
+
+    // persistState writes `{ firstSeenDirty }` over its whole row on EVERY
+    // cycle, committing or not — a lastPush stored there would be gone here.
+    await handle.runNow("watch");
+    await handle.runNow("watch");
+    await flushAsync();
+    expect(readHomePushRecord(deps.db)).toMatchObject({ ok: true, at: 1_000_000 });
+    expect(Object.keys(getKvValue<Record<string, unknown>>("home-snapshot", "state", {}, deps.db))).toEqual(["firstSeenDirty"]);
+
+    handle.stop();
+  });
+
+  test("a failed push records why, so the home.backup row can name it", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1, pushStderr: "remote: Permission to o/r.git denied\n" }));
+    const { deps, timers } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("watch");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(readHomePushRecord(deps.db)).toMatchObject({ ok: false, error: "remote: Permission to o/r.git denied\n" });
+    handle.stop();
+  });
+
+  test("a credentialed remote URL never reaches the persisted record", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({
+      statusZ: "?? a.txt\0",
+      pushExit: 128,
+      pushStderr: "fatal: unable to access 'https://matt:ghp_secret@github.com/o/r.git/'",
+    }));
+    const { deps, timers } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("watch");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(readHomePushRecord(deps.db)?.error).not.toContain("ghp_secret");
+    handle.stop();
   });
 
   test("a malformed stored row starts from empty state instead of crashing, and warns loudly", async () => {
@@ -1134,7 +1218,7 @@ describe("startHomeSnapshot — commit observability", () => {
   test("a repeated identical commit failure warns once; a different failure message warns again", async () => {
     let stderr = "fatal: unable to write new index file";
     const execWithStderr: NonNullable<HomeSnapshotDeps["exec"]> = async (argv) => {
-      if (argv[1] === "commit") return { stdout: "", stderr, exitCode: 1 };
+      if (gitVerb(argv) === "commit") return { stdout: "", stderr, exitCode: 1 };
       for (const r of defaultResponders({ statusZ: "?? a.txt\0" })) {
         const res = r(argv);
         if (res) return res;
@@ -1170,7 +1254,7 @@ describe("startHomeSnapshot — git add failure", () => {
     const result = await handle.runNow("manual");
 
     expect(result.skipped).toBe("index-locked");
-    expect(execCalls.some((c) => c[1] === "commit")).toBe(false);
+    expect(execCalls.some((c) => gitVerb(c) === "commit")).toBe(false);
   });
 
   test("a git add failure NOT mentioning index.lock skips with 'add-failed'", async () => {
@@ -1185,7 +1269,7 @@ describe("startHomeSnapshot — git add failure", () => {
     const result = await handle.runNow("manual");
 
     expect(result.skipped).toBe("add-failed");
-    expect(execCalls.some((c) => c[1] === "commit")).toBe(false);
+    expect(execCalls.some((c) => gitVerb(c) === "commit")).toBe(false);
   });
 
   test("a repeated identical git add failure warns once", async () => {
@@ -1488,4 +1572,207 @@ describe("startHomeSnapshot — settings-read resilience", () => {
     const warnLine = "home-snapshot: failed to read settings in status(); using the last-known value";
     expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === warnLine).length).toBe(1);
   });
+});
+
+// ─── local-only remote state: real git, no clone — no remote is a state ────
+
+describe("startHomeSnapshot — local-only remote state", () => {
+  const createdRoots: string[] = [];
+  afterAll(() => {
+    for (const root of createdRoots) {
+      try { rmSync(root, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    }
+  });
+
+  const LOCAL_ONLY_SETTINGS: HomeSnapshotSettings = { ...DEFAULT_SETTINGS, pushDelaySec: 1 };
+  const PUSH_SETTLE_MS = 1500;
+
+  /** Builds the full sequence against real git — `git init` -> commit -> (later) attach remote -> push -> push again — never a clone, since a clone arrives with upstream already configured and every defect this suite guards against is invisible there. */
+  async function harnessWithLocalOnlyRepo() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-localonly-")));
+    createdRoots.push(root);
+    const repoDir = join(root, "user");
+    const originDir = join(root, "origin.git");
+    mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main", repoDir]);
+    execFileSync("git", ["config", "user.email", "rt@example.test"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.name", "rt test"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "README.md"), "seed\n");
+    execFileSync("git", ["add", "-A"], { cwd: repoDir });
+    execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: repoDir });
+    execFileSync("git", ["init", "--bare", "-q", originDir]);
+
+    const db = openStateDb(join(root, "state.db"), "cli");
+    const broadcastLog: { type: string; data: unknown }[] = [];
+    const calls: string[][] = [];
+    const exec: NonNullable<HomeSnapshotDeps["exec"]> = async (argv, opts) => {
+      calls.push([...argv]);
+      return runCapture(argv, opts);
+    };
+
+    const handle = startHomeSnapshot({
+      log: fakeLog(),
+      broadcast: (type, data) => broadcastLog.push({ type, data }),
+      repoDir,
+      db,
+      exec,
+      readSettings: () => LOCAL_ONLY_SETTINGS,
+      readOwners: () => NO_OWNERS,
+    });
+    await handle.ready;
+
+    const settle = () => new Promise((resolve) => setTimeout(resolve, PUSH_SETTLE_MS));
+
+    return {
+      async writeFile(relPath: string, content: string): Promise<void> {
+        const target = join(root, relPath);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, content);
+      },
+      async runCycles(n: number): Promise<void> {
+        for (let i = 0; i < n; i++) {
+          await handle.runNow("watch");
+          await settle();
+        }
+      },
+      async janitorTick(): Promise<void> {
+        await handle.runNow("janitor");
+        await settle();
+      },
+      async manualTick(): Promise<void> {
+        await handle.runNow("manual");
+        await settle();
+      },
+      async attachRemote(): Promise<void> {
+        execFileSync("git", ["remote", "add", "origin", originDir], { cwd: repoDir });
+      },
+      async attachNonOriginRemote(): Promise<void> {
+        execFileSync("git", ["remote", "add", "upstream", originDir], { cwd: repoDir });
+      },
+      execCalls: () => calls,
+      commits: () => broadcastLog.filter((b) => b.type === "home:snapshot"),
+      broadcasts: (type: string) => broadcastLog.filter((b) => b.type === type).map((b) => b.data),
+      stop: () => handle.stop(),
+    };
+  }
+
+  test("no remote: commits, never pushes, never broadcasts a failure", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    try {
+      await h.writeFile("user/settings.user.jsonc", "{}");
+      await h.runCycles(3);
+      expect(h.commits().length).toBeGreaterThan(0);
+      expect(h.execCalls().filter((c) => c[1] === "push")).toEqual([]);
+      expect(h.broadcasts("home:push-failed")).toEqual([]);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("a non-origin remote never arms a push: the push itself is origin-only", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    try {
+      await h.writeFile("user/a", "1");
+      await h.runCycles(1);
+      await h.attachNonOriginRemote();
+      await h.janitorTick();
+      expect(h.execCalls().filter((c) => c[1] === "push")).toEqual([]);
+      expect(h.broadcasts("home:push-failed")).toEqual([]);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("a watch cycle that commits nothing spawns no hand-attached-remote probes", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    try {
+      await h.attachRemote();
+      await h.janitorTick(); // pushes the seed commit, clearing the unpushed state
+      const before = h.execCalls().length;
+      await h.runCycles(1); // nothing changed on disk
+      const during = h.execCalls().slice(before);
+      expect(during.filter((c) => c[1] === "remote" || c[1] === "symbolic-ref" || c[1] === "rev-list")).toEqual([]);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("a freshly attached remote arms a push with no new commit", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    try {
+      await h.writeFile("user/a", "1");
+      await h.runCycles(1); // commits locally, no push
+      await h.attachRemote(); // git remote add origin <bare>
+      await h.janitorTick(); // no file change
+      expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("`rt home snapshot` (reason manual) notices a hand-attached remote too — the affordance a user reaches for right after attaching one", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    try {
+      await h.writeFile("user/a", "1");
+      await h.runCycles(1); // commits locally, no remote yet
+      await h.attachRemote();
+      await h.manualTick(); // nothing new to commit
+      expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("second push only fires when there is something ahead of the ref", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    try {
+      await h.attachRemote();
+      await h.writeFile("user/a", "1");
+      await h.runCycles(1); // first push
+      await h.janitorTick(); // nothing new
+      expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("remote attached, zero commits (unborn branch): no push armed, no push-failed", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-unborn-")));
+    createdRoots.push(root);
+    const repoDir = join(root, "user");
+    const originDir = join(root, "origin.git");
+    mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main", repoDir]);
+    execFileSync("git", ["config", "user.email", "rt@example.test"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.name", "rt test"], { cwd: repoDir });
+    execFileSync("git", ["init", "--bare", "-q", originDir]);
+    execFileSync("git", ["remote", "add", "origin", originDir], { cwd: repoDir });
+
+    const db = openStateDb(join(root, "state.db"), "cli");
+    const broadcastLog: { type: string; data: unknown }[] = [];
+    const calls: string[][] = [];
+    const exec: NonNullable<HomeSnapshotDeps["exec"]> = async (argv, opts) => {
+      calls.push([...argv]);
+      return runCapture(argv, opts);
+    };
+    const handle = startHomeSnapshot({
+      log: fakeLog(),
+      broadcast: (type, data) => broadcastLog.push({ type, data }),
+      repoDir,
+      db,
+      exec,
+      readSettings: () => LOCAL_ONLY_SETTINGS,
+      readOwners: () => NO_OWNERS,
+    });
+    try {
+      await handle.ready;
+      await handle.runNow("janitor"); // no files, nothing to auto-commit — the branch this is actually testing
+      await new Promise((resolve) => setTimeout(resolve, PUSH_SETTLE_MS));
+
+      expect(calls.filter((c) => c[1] === "push")).toEqual([]);
+      expect(broadcastLog.filter((b) => b.type === "home:push-failed")).toEqual([]);
+    } finally {
+      handle.stop();
+    }
+  }, 15_000);
 });

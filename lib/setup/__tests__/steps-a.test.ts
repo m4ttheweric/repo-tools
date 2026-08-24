@@ -169,6 +169,11 @@ describe("home.init", () => {
     expect(homeInitStep.applies(restoring)).toBe(false);
   });
 
+  test("still applies interactively with no RT_HOME_URL — home init now creates a local-only repo", () => {
+    const { ctx } = makeCtx(fakeProbes({ env: {} }), { nonInteractive: false });
+    expect(homeInitStep.applies(ctx)).toBe(true);
+  });
+
   test("already cloned + key present -> done, never re-runs `rt home init`", async () => {
     const p = fakeProbes({ home: "/fake-home", dirs: { "/fake-home/.mattstack/user": [".git"] }, files: { "/fake-home/.mattstack/user/.git": "gitdir" } });
     const { ctx } = makeCtx(p, { secrets: fakeSecrets(fakeAgeKeySeamWithKey()) });
@@ -201,6 +206,50 @@ describe("home.init", () => {
 
     const outcome = await homeInitStep.run(ctx);
     expect(outcome).toEqual({ state: "failed", detail: "gh: not authenticated", remedy: "Run `gh auth login`, then Retry" });
+  });
+
+  test("a local-only `git init` failure contacts no host — `gh auth login` is reserved for auth-shaped stderr", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      runRt: async () => ({ code: 1, stdout: "", stderr: 'rt home init: failed at step "commitInitialUserRepo":\nfatal: empty ident name not allowed' }),
+    });
+    const { ctx } = makeCtx(p, { secrets: fakeSecrets(fakeAgeKeySeamAbsent()) });
+
+    const outcome = await homeInitStep.run(ctx);
+    expect(outcome).toMatchObject({ state: "failed", remedy: "Check the error above, then Retry" });
+  });
+
+  test("a LOCAL permission failure is not an auth failure — `gh auth login` fixes nothing about a directory rt cannot write", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      runRt: async () => ({ code: 1, stdout: "", stderr: 'rt home init: failed at step "initUserRepo":\nfatal: cannot mkdir user: Permission denied' }),
+    });
+    const { ctx } = makeCtx(p, { secrets: fakeSecrets(fakeAgeKeySeamAbsent()) });
+
+    const outcome = await homeInitStep.run(ctx);
+    expect(outcome).toMatchObject({ state: "failed", remedy: "Check the error above, then Retry" });
+  });
+
+  test("ssh's `Permission denied (publickey)` is unambiguous on its own, clone step named or not", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      runRt: async () => ({ code: 1, stdout: "", stderr: "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository." }),
+    });
+    const { ctx } = makeCtx(p, { secrets: fakeSecrets(fakeAgeKeySeamAbsent()) });
+
+    const outcome = await homeInitStep.run(ctx);
+    expect(outcome).toMatchObject({ state: "failed", remedy: "Run `gh auth login`, then Retry" });
+  });
+
+  test("a bare permission denial from the clone step IS auth-shaped — only that step ever contacts a host", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      runRt: async () => ({ code: 1, stdout: "", stderr: 'rt home init: failed at step "cloneUserRepo":\nremote: Permission denied' }),
+    });
+    const { ctx } = makeCtx(p, { secrets: fakeSecrets(fakeAgeKeySeamAbsent()) });
+
+    const outcome = await homeInitStep.run(ctx);
+    expect(outcome).toMatchObject({ state: "failed", remedy: "Run `gh auth login`, then Retry" });
   });
 
   test("idempotent re-run: a repo already cloned by a prior partial run reports done again without re-running init", async () => {

@@ -1,6 +1,5 @@
 import { describe, test, expect, spyOn, beforeEach, afterEach } from "bun:test";
 import {
-  DEFAULT_USER_REPO_URL,
   claudePluginsPointerMessage,
   defaultAgeKeyInputSeam,
   defaultMaterializeEnv,
@@ -13,6 +12,7 @@ import {
   InvalidUrlArgError,
   probeDeckHealthy,
   readStdinTrimmed,
+  resolveHomeUrl,
   type AgeKeyInputSeam,
   type DeckHealthProbe,
   type HomeDaemonSeam,
@@ -20,6 +20,7 @@ import {
   type MachineProfilePickerSeam,
   type SopsYamlSeam,
 } from "../home.ts";
+import type { SetupIntent } from "../../lib/setup/intent.ts";
 import { setSetting } from "../../lib/settings/write.ts";
 import { Readable } from "stream";
 import { EventEmitter } from "events";
@@ -32,14 +33,15 @@ import { readOwners } from "../../lib/home/snapshot-owners.ts";
 import type { DaemonResponse } from "../../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../../lib/daemon/home-snapshot.ts";
 import type { MaterializeEnv, MaterializeExecResult, MaterializeExecSeam } from "../../lib/home/materialize.ts";
-import { mkdtempSync, realpathSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
 const SOPS_YAML_PATH = join(mattstackHome(), "user", ".sops.yaml");
 const KEY = "mbp-14";
+const TEST_URL = "https://github.com/example/mattstack-home.git";
 
 /** In-memory .sops.yaml — never touches the real filesystem. */
 class FakeSopsYamlSeam implements SopsYamlSeam {
@@ -236,6 +238,8 @@ async function runHomeInit(
   isInteractive: () => boolean = () => false,
   materializeEnv: () => Promise<MaterializeEnv> = async () => NOOP_MATERIALIZE_ENV,
   materializeExec: MaterializeExecSeam = new FakeMaterializeExecSeam(),
+  env: Record<string, string | undefined> = {},
+  readIntent: (() => SetupIntent | null) | "real-disk-read" = () => null,
 ): Promise<{ exitCode: number | undefined; logs: string[]; errors: string[] }> {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => {
     throw new Error("process.exit");
@@ -249,7 +253,12 @@ async function runHomeInit(
     errors.push(parts.map(String).join(" "));
   });
   try {
-    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive, materializeEnv, materializeExec });
+    // Omitting `readIntent` entirely is what makes homeInit fall through to
+    // its real ~/.mattstack/rt/setup-intent.json read; the default above
+    // keeps every other case off disk, so nothing a preload or a later test
+    // writes there can move an assertion.
+    const intentSeam = readIntent === "real-disk-read" ? {} : { readIntent };
+    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive, materializeEnv, materializeExec, env, ...intentSeam });
     return { exitCode: undefined, logs, errors };
   } catch {
     const code = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
@@ -376,15 +385,15 @@ describe("homeInit", () => {
     expect(sopsYamlSeam.writes).toEqual([]);
   });
 
-  test("a fresh, fully successful init clones with the default URL, mints the age key, and writes .sops.yaml after adoption", async () => {
+  test("a fresh, fully successful init clones the given URL, mints the age key, and writes .sops.yaml after adoption", async () => {
     const seam = new FakeSeam();
     const ageKeySeam = new FakeAgeKeySeam();
     const sopsYamlSeam = new FakeSopsYamlSeam();
-    const { exitCode, logs } = await runHomeInit(fakeProbes({}), seam, ageKeySeam, [], sopsYamlSeam);
+    const { exitCode, logs } = await runHomeInit(fakeProbes({}), seam, ageKeySeam, ["--url", TEST_URL], sopsYamlSeam);
 
     expect(exitCode).toBeUndefined();
     const cloneCall = seam.calls.find((c) => c.kind === "run") as { kind: string; arg: string[] } | undefined;
-    expect(cloneCall?.arg).toEqual(["git", "clone", DEFAULT_USER_REPO_URL, "user"]);
+    expect(cloneCall?.arg).toEqual(["git", "clone", TEST_URL, "user"]);
     expect(ageKeySeam.calls.some((c) => c[1] === "find-generic-password")).toBe(true);
     expect(ageKeySeam.calls.some((c) => c[0] === "age-keygen")).toBe(true);
     expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml(FAKE_PUBLIC_KEY));
@@ -397,13 +406,35 @@ describe("homeInit", () => {
     expect(successIdx).toBeGreaterThan(readyIdx);
   });
 
-  test("--url overrides the default clone URL", async () => {
+  test("--url is used to clone", async () => {
     const seam = new FakeSeam();
-    const customUrl = "https://github.com/example/mattstack-home.git";
-    await runHomeInit(fakeProbes({}), seam, new FakeAgeKeySeam(), ["--url", customUrl]);
+    await runHomeInit(fakeProbes({}), seam, new FakeAgeKeySeam(), ["--url", TEST_URL]);
 
     const cloneCall = seam.calls.find((c) => c.kind === "run") as { kind: string; arg: string[] } | undefined;
-    expect(cloneCall?.arg).toEqual(["git", "clone", customUrl, "user"]);
+    expect(cloneCall?.arg).toEqual(["git", "clone", TEST_URL, "user"]);
+  });
+
+  test("no url anywhere: git-inits a local-only repo and commits its initial tree, never silently substituting a built-in default repo", async () => {
+    const seam = new FakeSeam();
+    await runHomeInit(
+      fakeProbes({}),
+      seam,
+      new FakeAgeKeySeam(),
+      [],
+      new FakeSopsYamlSeam(),
+      KEY,
+      new UnreachablePickerSeam(),
+      () => false,
+      async () => NOOP_MATERIALIZE_ENV,
+      new FakeMaterializeExecSeam(),
+      {}, // no RT_HOME_URL — proves the "no url resolved" path, independent of the ambient shell's actual env
+    );
+
+    const runCalls = seam.calls.filter((c) => c.kind === "run").map((c) => c.arg as string[]);
+    expect(runCalls).toContainEqual(["git", "init", "-b", "main", "user"]);
+    expect(runCalls).toContainEqual(["git", "-C", "user", "add", "-A"]);
+    expect(runCalls).toContainEqual(["git", "-c", "commit.gpgsign=false", "-C", "user", "commit", "-m", "initial home repo"]);
+    expect(runCalls.some((arg) => arg[1] === "clone")).toBe(false);
   });
 
   test("--dry-run never touches the age key or runs any step, even on a fresh (not-yet-provisioned) home", async () => {
@@ -774,14 +805,14 @@ describe("homeInit", () => {
         probes,
         cloneAwareSeam,
         new FakeAgeKeySeam(),
-        ["--profile", "desktop"],
+        ["--url", TEST_URL, "--profile", "desktop"],
         new FakeSopsYamlSeam(),
         KEY,
       );
 
       expect(exitCode).toBeUndefined();
       const cloneCall = cloneAwareSeam.calls.find((c) => c.kind === "run") as { kind: string; arg: string[] } | undefined;
-      expect(cloneCall?.arg).toEqual(["git", "clone", DEFAULT_USER_REPO_URL, "user"]);
+      expect(cloneCall?.arg).toEqual(["git", "clone", TEST_URL, "user"]);
       expect(cloneAwareSeam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "desktop" } });
     });
 
@@ -1360,6 +1391,86 @@ describe("homeInit", () => {
         rmSync(isolatedHome, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe("resolveHomeUrl", () => {
+  test("--url wins over intent and env", () => {
+    const url = resolveHomeUrl(["--url", "https://x/a.git"], {
+      readIntent: () => ({ v: 1, at: "", mode: "create", homeRepo: "https://x/b.git" }) as SetupIntent,
+      env: { RT_HOME_URL: "https://x/c.git" },
+    });
+    expect(url).toBe("https://x/a.git");
+  });
+
+  test("intent homeRepo beats RT_HOME_URL", () => {
+    const url = resolveHomeUrl([], {
+      readIntent: () => ({ v: 1, at: "", mode: "create", homeRepo: "https://x/b.git" }) as SetupIntent,
+      env: { RT_HOME_URL: "https://x/c.git" },
+    });
+    expect(url).toBe("https://x/b.git");
+  });
+
+  test("RT_HOME_URL is used when nothing else supplies one", () => {
+    expect(resolveHomeUrl([], { readIntent: () => null, env: { RT_HOME_URL: "https://x/c.git" } })).toBe("https://x/c.git");
+  });
+
+  test("no url anywhere resolves to null — local-only, never a built-in default", () => {
+    expect(resolveHomeUrl([], { readIntent: () => null, env: {} })).toBeNull();
+  });
+
+  test("--url with no value still throws rather than falling through to local-only", () => {
+    expect(() => resolveHomeUrl(["--url"], { readIntent: () => null, env: {} })).toThrow(InvalidUrlArgError);
+  });
+
+  test("an exported-but-empty RT_HOME_URL is unset, never a clone of \"\"", () => {
+    expect(resolveHomeUrl([], { readIntent: () => null, env: { RT_HOME_URL: "" } })).toBeNull();
+  });
+
+  test("restore.homeRepo is honoured — otherwise a local-only repo squats the path home.restore needs", () => {
+    const url = resolveHomeUrl([], {
+      readIntent: () => ({ v: 1, at: "", mode: "restore", restore: { homeRepo: "https://x/restore.git" } }) as SetupIntent,
+      env: { RT_HOME_URL: "https://x/c.git" },
+    });
+    expect(url).toBe("https://x/restore.git");
+  });
+});
+
+/**
+ * Deliberately NOT seamed: the seamed tests above pass `readIntent` in
+ * directly and so cannot catch a default wired at the wrong path.
+ */
+describe("homeInit — the real intent read", () => {
+  test("reads the setup-intent.json that setup actually writes, so intent still outranks RT_HOME_URL", async () => {
+    const origHome = process.env.HOME;
+    const isolatedHome = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-intent-")));
+    process.env.HOME = isolatedHome;
+    try {
+      const intentFile = join(isolatedHome, ".mattstack", "rt", "setup-intent.json");
+      mkdirSync(dirname(intentFile), { recursive: true });
+      writeFileSync(intentFile, JSON.stringify({ v: 1, at: "", mode: "create", homeRepo: "https://x/from-intent.git" }));
+
+      const probes = fakeProbes({ exists: (path) => path.endsWith("/machine-key") });
+      const { logs } = await runHomeInit(
+        probes,
+        new FakeSeam(),
+        new FakeAgeKeySeam(),
+        ["--dry-run", "--no-materialize"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => NOOP_MATERIALIZE_ENV,
+        new FakeMaterializeExecSeam(),
+        { RT_HOME_URL: "https://x/from-env.git" },
+        "real-disk-read",
+      );
+
+      expect(logs.join("\n")).toContain("clone https://x/from-intent.git into user/");
+    } finally {
+      process.env.HOME = origHome;
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
   });
 });
 
