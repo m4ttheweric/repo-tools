@@ -49,7 +49,7 @@ describe("recordRecent", () => {
     const now = () => new Date("2026-07-01T12:00:00Z");
     // Old connector-model recent, then reconnect via the new scan model:
     // different key, same underlying resource.
-    recordRecent({ key: "acme:progressive-qa", label: "progressive-qa", sdmResource: "acme-db-qa" }, { db, now });
+    recordRecent({ key: "acme:acme-db-qa", label: "acme-db-qa", sdmResource: "acme-db-qa" }, { db, now });
     const state = recordRecent({ key: "sdm:acme-db-qa", label: "acme qa", sdmResource: "acme-db-qa" }, { db, now });
     const forResource = state.recents.filter(r => r.sdmResource === "acme-db-qa");
     expect(forResource).toHaveLength(1);
