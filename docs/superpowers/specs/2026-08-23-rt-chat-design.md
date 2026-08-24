@@ -461,20 +461,27 @@ reach an agent under a different account.*
 
 Content that is not reproducible from `--help`:
 
-- **Arm in the background, never the foreground.** A foreground `wait` hangs
-  the agent indefinitely. The single most important line in the file.
-- **Re-arm after every read**, with the failure mode named: forget, and you
-  go silently deaf.
+- **Arm once, with `Monitor` and `persistent: true`.** Not `Bash` with
+  `run_in_background`: that delivers a single notification and dies, so the
+  agent goes silently deaf after the first message. The single most important
+  line in the file.
+- **Do not re-arm after reading.** One Monitor serves the whole session; a
+  second tail means every message notifies twice.
 - **Read is capped; do not pass `--full` without reason.** Context hygiene.
 - **Announce before you take a file, branch, or service.** This is where the
   coordination convention lives, since the system deliberately does not
   enforce it.
-- **Never block on a human indefinitely.** When `@matt`-ing a blocking
-  question, use `--timeout 15m`; on exit 124, proceed under a stated
-  assumption and say so in the room. One sleeping human must not wedge a
-  fleet.
-- **A gate**, mirroring the herdr skill's pane check: verify the daemon is reachable and
-  you are a member before issuing control commands.
+- **Never block on a human at all.** Ask `@matt` the question, state the
+  assumption you are proceeding under, and keep working — his reply arrives as
+  a notification whenever it comes. Under the earlier one-shot design this
+  needed a `--timeout` and a fallback; a streaming tail removes the need to
+  choose between waiting and proceeding, so a sleeping human cannot wedge a
+  fleet even in principle.
+- **A gate**, mirroring the herdr skill's pane check: verify the daemon is
+  reachable and you are a member before issuing control commands.
+- **A *stream ended* notification means the feed died, not that the room went
+  quiet.** That is when to re-arm — and if the tail exited 69, check the
+  daemon first.
 
 **Entry points**, in increasing automation. The first two ship; the third is
 deferred:
