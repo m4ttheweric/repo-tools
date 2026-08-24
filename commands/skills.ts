@@ -1201,25 +1201,37 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
   await skillsCompile(compileArgs(flags, packDir));
 }
 
-async function runSet(name: string, want: "public" | "internal", flags: SurfaceFlags): Promise<void> {
+/**
+ * Every name lands in ONE surface.jsonc write and ONE apply. Each apply
+ * git-mv's directories and recompiles the whole pack, so calling this per name
+ * would leave a partially-moved pack behind any failure after the first --
+ * and would pay for the pack's full compile once per name.
+ */
+async function runSet(names: string[], want: "public" | "internal", flags: SurfaceFlags): Promise<void> {
   const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const { skillsNames, allNames } = collectRegistry(packDir, verbNames);
 
-  if (!allNames.has(name)) {
-    throw new SkillsUsageError(
-      `"${name}" is not a known skill or verb in this pack (checked skills/, attachments/, stubs.jsonc)`,
-    );
+  // Validated before anything is written: an unknown name in a list of ten
+  // must not leave the other nine applied.
+  for (const name of names) {
+    if (!allNames.has(name)) {
+      throw new SkillsUsageError(
+        `"${name}" is not a known skill or verb in this pack (checked skills/, attachments/, stubs.jsonc)`,
+      );
+    }
   }
 
   const surface = readSurface(packDir);
   const publicSet = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
 
-  if (want === "public") publicSet.add(name);
-  else publicSet.delete(name);
+  for (const name of names) {
+    if (want === "public") publicSet.add(name);
+    else publicSet.delete(name);
+  }
 
   writeSurfaceConfig(packDir, [...publicSet].sort());
-  console.log(`${name}: ${want}`);
+  for (const name of names) console.log(`${name}: ${want}`);
 
   await runApply(flags);
 }
@@ -1385,11 +1397,19 @@ export async function skillsSurface(args: string[]): Promise<void> {
     }
 
     if (mode === "set") {
-      const name = args[1];
-      if (!name || name.startsWith("--")) {
-        throw new SkillsUsageError("set requires a skill name: rt skills surface set <name> --public|--internal");
+      // Names run up to the first flag, so one invocation carries a whole
+      // one-direction change.
+      const names: string[] = [];
+      for (const a of args.slice(1)) {
+        if (a.startsWith("--")) break;
+        names.push(a);
       }
-      const { flags, rest } = parseSurfaceFlags(args.slice(2));
+      if (names.length === 0) {
+        throw new SkillsUsageError("set requires a skill name: rt skills surface set <name...> --public|--internal");
+      }
+      const duplicate = names.find((n, i) => names.indexOf(n) !== i);
+      if (duplicate) throw new SkillsUsageError(`"${duplicate}" named more than once`);
+      const { flags, rest } = parseSurfaceFlags(args.slice(1 + names.length));
       let want: "public" | "internal" | null = null;
       for (const a of rest) {
         if (a === "--public") want = "public";
@@ -1397,7 +1417,7 @@ export async function skillsSurface(args: string[]): Promise<void> {
         else throw new SkillsUsageError(`unrecognized argument "${a}"`);
       }
       if (!want) throw new SkillsUsageError("set requires --public or --internal");
-      await runSet(name, want, flags);
+      await runSet(names, want, flags);
       return;
     }
 
