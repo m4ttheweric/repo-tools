@@ -145,6 +145,9 @@ export const __test__ = { reportSave };
  */
 async function selectPackageAndScript(
   worktreePath: string,
+  // The serialized identity (run_history's store key), NOT the raw
+  // `repoIdentity` local below (settings-section key for presets/variations)
+  // — the two are different string forms for the same repo.
   repoName: string | undefined,
   contextLabel?: string,
   queue?: QueuedItem[],
@@ -672,7 +675,9 @@ export async function runCommand(
   let useResolved = !!ctx.identity;
   if (useResolved) {
     worktreePath = ctx.identity!.repoRoot;
-    repoName = ctx.identity!.repoName;
+    // The serialized identity, not the display name — this flows into
+    // selectPackageAndScript purely as the run_history store key.
+    repoName = ctx.identity!.identity;
 
     // ── Preset direct invoke: `rt run <preset-name>` ──────────────────────
     const presetArg = args.find((a) => !a.startsWith("-") && a !== "again");
@@ -807,6 +812,8 @@ export async function runCommand(
           worktreeBranch = wt.branch;
         }
 
+        // KnownRepo.repoName is the repo-index key, itself the serialized
+        // identity — already the correct run_history store key.
         repoName = selectedRepo.repoName;
 
         // ── Package + script ────────────────────────────────────────────
@@ -888,7 +895,7 @@ export async function runCommand(
 
   // Record to per-repo run history for rt run again / rt no-arg Recent.
   if (ctx.identity) {
-    appendRunHistory(ctx.identity.repoName, {
+    appendRunHistory(ctx.identity.identity, {
       ts: new Date().toISOString(),
       cmd,
       cwd: packagePath,
@@ -992,6 +999,7 @@ export async function runAgainCommand(
 
 interface TaggedEntry {
   entry: RunHistoryEntry;
+  /** KnownRepo.repoName — the repo-index key, i.e. the serialized identity, not a display name. */
   repoName: string;
 }
 
@@ -999,6 +1007,8 @@ function loadAllRunHistory(): { entries: TaggedEntry[]; totalRepos: number } {
   const repos = getKnownRepos();
   const all: TaggedEntry[] = [];
   for (const repo of repos) {
+    // repo.repoName IS the identity already (the repo index keys on it) —
+    // readRunHistory's argument and run_history's `repo` column agree.
     for (const entry of readRunHistory(repo.repoName)) {
       all.push({ entry, repoName: repo.repoName });
     }

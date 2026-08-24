@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import pino from "pino";
 import { rtDir, teamSettingsPath } from "../../rt-paths.ts";
-import { endpointsPath, loadClaims } from "../../endpoint/store.ts";
-import { closeStateDb } from "../../state/index.ts";
+import { endpointsPath, loadClaims, rekeyEndpointClaimsTable } from "../../endpoint/store.ts";
+import { closeStateDb, listEndpointClaims } from "../../state/index.ts";
+import { serializeIdentity } from "../../settings/identity.ts";
 import type { RepoIndex } from "../handlers/types.ts";
 import { createEndpointHandlers, releaseEndpointsForWorktree } from "../handlers/endpoint.ts";
 import type { HandlerContext } from "../handlers/types.ts";
@@ -14,7 +15,7 @@ import type { HandlerContext } from "../handlers/types.ts";
 /**
  * The daemon's repo index, as the handlers see it. Reset per test alongside
  * HOME (beforeEach): the name→path→identity hop is what makes the settings
- * stores' `repos.<identity>` sections reachable (RT-47).
+ * stores' `repos.<identity>` sections reachable.
  */
 let repoIndex: RepoIndex = {};
 let ctx: HandlerContext;
@@ -147,5 +148,37 @@ describe("endpoint handlers", () => {
       chmodSync(dbPath, 0o644);
       closeStateDb();
     }
+  });
+
+  /**
+   * endpoint_claims.repo is the serialized identity (what commands/endpoint.ts
+   * and buildInterceptRules now both send as `payload.repo`), while
+   * repoIdentityFor's return value — the `repos.<identity>` settings-section
+   * key `loadEndpointConfig` resolves roles against — stays the raw host/path
+   * form. Collapsing the two would make every settings-backed role lookup
+   * miss (settings sections are keyed by the raw form, not the wire form).
+   */
+  test("endpoint_claims tables on the serialized identity while settings resolution still keys on the raw host/path", async () => {
+    const repoPath = mkdtempSync(join(tmpdir(), "rt-endpoint-idkey-"));
+    execSync("git init -q", { cwd: repoPath });
+    execSync("git remote add origin git@rttest:acme/idkey.git", { cwd: repoPath });
+
+    const rawId = "rttest/acme/idkey";
+    const serialized = serializeIdentity({ kind: "remote", id: rawId });
+    repoIndex[serialized] = repoPath;
+
+    const store = teamSettingsPath("acme");
+    mkdirSync(dirname(store), { recursive: true });
+    writeFileSync(store, JSON.stringify({ repos: { [rawId]: { "rt.roles": DEFAULT_ROLES } } }));
+
+    const r = await handlers["endpoint:claim"]({ repo: serialized, worktree: "/wt/idkey", role: "backend", pid: 1 });
+    expect(r.ok).toBe(true); // resolved roles via the RAW host/path settings key
+
+    expect(listEndpointClaims(serialized)).toHaveLength(1); // table keys on the SERIALIZED identity
+    expect(listEndpointClaims(rawId)).toEqual([]);
+
+    const rekeyReport = await rekeyEndpointClaimsTable();
+    expect(rekeyReport.migrated).toEqual([]); // already identity-keyed — nothing to do
+    expect(listEndpointClaims(serialized)).toHaveLength(1);
   });
 });

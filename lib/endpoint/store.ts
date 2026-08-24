@@ -7,8 +7,18 @@ import {
   replaceEndpointClaims,
   type EndpointClaim,
 } from "../state/index.ts";
+import { rekeyTableColumn, type RekeyReport } from "../state/identity-migrate.ts";
 
 export type { EndpointClaim } from "../state/index.ts";
+
+/**
+ * One-shot: re-key legacy NAME-keyed `endpoint_claims` rows onto serialized
+ * identities. Exported for the daemon-boot migration runner; this module
+ * does not wire the boot call.
+ */
+export function rekeyEndpointClaimsTable(): Promise<RekeyReport> {
+  return rekeyTableColumn("endpoint_claims", "repo");
+}
 
 /** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function endpointsPath(repoName: string): string {
