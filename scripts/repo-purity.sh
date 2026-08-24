@@ -28,8 +28,10 @@ A6=$(printf '%s%s' 'am' 'fam')
 A7=$(printf '%s%s' 'adjus' 'ter')
 A8=$(printf "%s%s" "hog" "warts")
 A9=$(printf "%s%s" "CV" "I")
-# The carrier name reached HEAD hyphenated ("acme-db-qa") after the first
-# scrub only caught the spaced form — a word list is only as good as its variants.
+# A carrier name reached HEAD in a hyphenated form the first scrub missed,
+# because it had only caught the spaced form — a word list is only as good as
+# its variants. Kept fragmented, like the rest, so this file stays clean of the
+# very term it bans.
 A10=$(printf "%s%s" "progres" "sive")
 
 PATTERN="$A1|$A2|$A3|$A4|$A5|$A6|$A7|$A8|$A9|$A10"
