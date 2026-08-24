@@ -1029,11 +1029,18 @@ fixed sleep makes the wake tests flaky under load.
 trap here is subtler than the spawn one.** This helper reaches the daemon
 without spawning a child, so it is invisible to any sweep of `Bun.spawn` call
 sites — but `defaultSock()` resolves `process.env.HOME ?? homedir()`, and only
-the *children* get the test HOME. The test process keeps the developer's real
-one, so a home-less `waitUntilArmed` polls the **real** daemon at
-`~/.mattstack/rt/rt.sock`, never observes the test handle armed, and spins to
-its deadline — failing the post→wake and wake-policy tests while the feature
-works perfectly. Implement it either as
+the *children* get the test home, through `runRt`. The test process itself has
+some **other** HOME — the throwaway temp dir `test-setup.ts` repoints it to
+under the bunfig preload, or the developer's real home — and either way it is
+not the home the daemon under test is running in. A home-less
+`waitUntilArmed` therefore polls the wrong socket, never observes the test
+handle armed, and spins to its deadline, failing the post→wake and wake-policy
+tests while the feature works perfectly.
+
+`test-setup.ts`'s own module doc draws this same line — *"e2e fixtures pass
+their own explicit HOME when spawning the binary, so this never reaches
+them"* — which is why unit-test helpers (`runChat`, `freshDb`,
+`freshHandlers`) correctly take no `home` while every e2e helper does. Implement it either as
 `finished(runRt(["chat", "who", room, "--json"], home))`, or through rt-client
 with an explicit `sockPath: join(home, ".mattstack", "rt", "rt.sock")`, which
 `RtClientOptions` already accepts. **Every helper that touches the daemon takes
