@@ -6,9 +6,12 @@ import {
   buildPluginRoots,
   invocableRoster,
   loadAttachment,
+  loadInclude,
   loadStepSource,
   readManifestBindings,
+  readManifestPipelines,
   readVerbRoster,
+  stageRoster,
   stripFrontmatter,
   type PluginRoots,
 } from "../sources.ts";
@@ -448,5 +451,52 @@ describe("buildPluginRoots", () => {
     expect(roots.byName.mattstack?.version).toBe("1.2.0");
     expect(roots.byName.acme?.version).toBe("0.3.0");
     expect(callCount).toBe(0);
+  });
+});
+
+test("readManifestPipelines returns the pipelines map", () => {
+  const root = mkdtempSync(join(tmpdir(), "rt-man-"));
+  const p = join(root, "skills.jsonc");
+  writeFileSync(p, '// header\n{ "pipelines": { "feature": ["mattstack:stage-plan", "mattstack:stage-ship"] }, "bindings": {} }');
+  expect(readManifestPipelines(p)).toEqual({ feature: ["mattstack:stage-plan", "mattstack:stage-ship"] });
+});
+
+test("stageRoster is the distinct union across pipelines, bare names", () => {
+  expect(stageRoster({ feature: ["mattstack:stage-plan", "mattstack:stage-ship"], bugfix: ["mattstack:stage-plan"] }))
+    .toEqual([
+      { name: "stage-plan", engine: "stage-plan", description: "" },
+      { name: "stage-ship", engine: "stage-ship", description: "" },
+    ]);
+});
+
+describe("loadInclude", () => {
+  const roots = () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-inc-"));
+    return { root, roots: { byName: { mattstack: { dir: root, version: "1.0.0" } } } };
+  };
+  const write = (root: string, name: string, md: string) => {
+    mkdirSync(join(root, "attachments", name), { recursive: true });
+    writeFileSync(join(root, "attachments", name, "SKILL.md"), md);
+  };
+
+  test("loads a slotless attachment with empty provides", () => {
+    const { root, roots: r } = roots();
+    write(root, "review-core-body", "---\nname: review-core-body\ndescription: d\n---\n\nthe body");
+    const inc = loadInclude("review-core-body", r);
+    expect(inc.body).toBe("the body");
+    expect(inc.provides).toBe("");
+    expect(inc.srcPath).toBe("attachments/review-core-body/SKILL.md");
+  });
+
+  test("rejects a target that declares slots", () => {
+    const { root, roots: r } = roots();
+    write(root, "bad", "---\nname: bad\ndescription: d\nslots:\n  x: { contract: x@1 }\n---\n\nbody");
+    expect(() => loadInclude("bad", r)).toThrow('include "bad" declares slots; an include target must be slotless');
+  });
+
+  test("rejects a target that contains a placeholder", () => {
+    const { root, roots: r } = roots();
+    write(root, "bad2", "---\nname: bad2\ndescription: d\n---\n\nbody {{slot:x}}");
+    expect(() => loadInclude("bad2", r)).toThrow('include "bad2" contains a placeholder; an include target must be inert');
   });
 });

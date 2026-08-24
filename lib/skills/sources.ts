@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "fs";
 import { join, relative } from "path";
 import { parse as parseYaml } from "yaml";
 import { stripJsonc } from "../jsonc.ts";
+import { findPlaceholders } from "./placeholders.ts";
 import type { AttachmentSource, SlotSpec, StepSource, VerbDef } from "./types.ts";
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -311,6 +312,44 @@ export function loadAttachment(binding: string, slot: string, roots: PluginRoots
 }
 
 /**
+ * An include target is inlined verbatim wherever {{include:<name>}}
+ * appears, so it must carry nothing that depends on call-site context:
+ * no slots to fill, no placeholders left for a later substitution pass.
+ */
+export function loadInclude(name: string, roots: PluginRoots): AttachmentSource {
+  const mattstack = roots.byName.mattstack;
+  if (!mattstack) throw new Error(`loadInclude: no "mattstack" plugin root registered`);
+  const dir = join(mattstack.dir, "attachments", name);
+  const skillMdPath = join(dir, "SKILL.md");
+  if (!existsSync(skillMdPath)) throw new Error(`loadInclude: include "${name}" not found at ${skillMdPath}`);
+
+  const { body, frontmatter, bodyStartLine } = stripFrontmatter(readFileSync(skillMdPath, "utf8"));
+  const metadata = frontmatter.metadata && typeof frontmatter.metadata === "object"
+    ? (frontmatter.metadata as Record<string, unknown>)
+    : {};
+  if (frontmatter.slots || metadata.slots) {
+    throw new Error(`loadInclude: include "${name}" declares slots; an include target must be slotless`);
+  }
+  if (findPlaceholders(body).length > 0) {
+    throw new Error(`loadInclude: include "${name}" contains a placeholder; an include target must be inert`);
+  }
+
+  return {
+    binding: `mattstack:${name}`,
+    plugin: "mattstack",
+    version: mattstack.version,
+    dir,
+    srcPath: relative(mattstack.dir, skillMdPath),
+    bodyStartLine,
+    body,
+    provides: typeof metadata.provides === "string" ? metadata.provides : "",
+    allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
+    extraFiles: listFilesUnder(dir, new Set(["SKILL.md"])),
+    registered: false,
+  };
+}
+
+/**
  * Verb names flow unsanitized into join(packDir, "skills", name) at two
  * destructive call sites (writeCompiledVerb's rmSync + the internal-verb
  * skip's rmSync in commands/skills.ts) -- reject path-breakout characters
@@ -356,6 +395,24 @@ export function readManifestPipelines(manifestPath: string): Record<string, stri
     pipelines?: Record<string, string[]>;
   };
   return parsed.pipelines ?? {};
+}
+
+/**
+ * `description` is left empty here -- the caller fills it in from the
+ * loaded step's frontmatter once each stage is resolved to a StepSource.
+ */
+export function stageRoster(pipelines: Record<string, string[]>): VerbDef[] {
+  const seen = new Set<string>();
+  const out: VerbDef[] = [];
+  for (const list of Object.values(pipelines)) {
+    for (const qualified of list) {
+      const name = qualified.includes(":") ? qualified.slice(qualified.indexOf(":") + 1) : qualified;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push({ name, engine: name, description: "" });
+    }
+  }
+  return out;
 }
 
 export type SurfaceConfig = { public: string[] };
