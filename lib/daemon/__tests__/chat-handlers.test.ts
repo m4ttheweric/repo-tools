@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../../state/index.ts";
 import { createChatHandlers } from "../handlers/chat.ts";
+import { drainNotifications, loadNotificationPrefs, peekNotifications, saveNotificationPrefs } from "../../notifier.ts";
 
 let n = 0;
 function freshHandlers(emitEvent: (topic: string, payload?: unknown) => number = () => 0) {
@@ -74,4 +75,47 @@ test("the read-only handlers mutate nothing", async () => {
   await h["chat:messages"]({ room: "r", limit: 20 });
   await h["chat:unread-waking"]({ handle: "b" });
   expect(snapshotChatTables(h.db)).toEqual(before);
+});
+
+beforeEach(() => { drainNotifications(); });
+
+test("notifies on a mention even when the human has never joined the room", async () => {
+  // The common case, not an edge: agents create rooms via join-creates and
+  // Matt is not a member until he posts. Gating this on recipientsFor -- which
+  // reads chat_members and can only return members -- means the desk never
+  // rings for the very question the skill tells agents to ask him.
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@matt ok to force-release?" });
+  expect(peekNotifications()).toHaveLength(1);
+});
+
+test("notifies even when the human is a member with wake_on none", async () => {
+  // Plausible for a human who does not want a waiter armed; his wake setting
+  // must not silently disable his desk notifications.
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:join"]({ room: "r", handle: "matt", wakeOn: "none" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@matt still there?" });
+  expect(peekNotifications()).toHaveLength(1);
+});
+
+test("does not notify on a mention of anyone else", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@nobody hello" });
+  expect(peekNotifications()).toHaveLength(0);
+});
+
+test("chat_mention disabled in prefs suppresses the notification entirely", async () => {
+  const saved = loadNotificationPrefs();
+  try {
+    saveNotificationPrefs({ ...saved, chat_mention: false });
+    const h = freshHandlers();
+    await h["chat:join"]({ room: "r", handle: "agent" });
+    await h["chat:post"]({ room: "r", handle: "agent", body: "@matt hi" });
+    expect(peekNotifications()).toHaveLength(0);
+  } finally {
+    saveNotificationPrefs(saved);
+  }
 });

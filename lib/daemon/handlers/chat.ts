@@ -8,6 +8,7 @@ import {
   isValidChatName,
   joinRoom,
   leaveRoom,
+  parseMentions,
   postMessage,
   readUnread,
   listMessages,
@@ -19,6 +20,8 @@ import {
   touchMember,
   disarmMember,
 } from "../../state/index.ts";
+import { CHAT_NOTIFICATION_CATEGORY, notifyEnabled } from "../../notifier.ts";
+import { getSetting } from "../../settings/resolve.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
 
@@ -72,6 +75,20 @@ export function createChatHandlers(opts: {
       emitEvent(`chat/${room}/msg`, { id: posted.id });
       for (const recipient of posted.recipients) {
         emitEvent(`chat/wake/${recipient}`, { id: posted.id, room });
+      }
+      // Independent of chat_members / wake_on: agents create rooms via
+      // join-creates, so the human is typically not a member yet, and a
+      // member with wake_on='none' must still get a desk alert.
+      const humanHandle = getSetting<string>("chat.humanHandle").value;
+      if (humanHandle && parseMentions(body).includes(humanHandle)) {
+        notifyEnabled(
+          CHAT_NOTIFICATION_CATEGORY,
+          `#${room}`,
+          `${handle}: ${body}`,
+          undefined,
+          undefined,
+          `chat:${posted.id}`,
+        );
       }
       return { ok: true, data: posted };
     },

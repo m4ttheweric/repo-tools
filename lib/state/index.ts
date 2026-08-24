@@ -99,6 +99,7 @@ export {
   isValidChatName,
   joinRoom,
   leaveRoom,
+  parseMentions,
   postMessage,
   readUnread,
   listMessages,
