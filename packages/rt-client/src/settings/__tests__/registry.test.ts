@@ -236,8 +236,12 @@ describe("settings/registry", () => {
         "gitq.workSlots",
         "gitq.forges",
         "gitq.board",
+        "chat.handle",
+        "chat.humanHandle",
+        "chat.push.provider",
+        "chat.push.target",
       ];
-      expect(suiteKeys).toHaveLength(30);
+      expect(suiteKeys).toHaveLength(34);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),
