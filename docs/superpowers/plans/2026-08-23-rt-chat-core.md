@@ -998,54 +998,74 @@ orphaned by a mid-test assertion failure. Chat's tests spawn **blocking**
 `wait` processes; without that reaping, one failed assertion leaves a waiter
 running to its own `--timeout` and the suite hangs.
 
-Define the helpers used below in this file, following that precedent:
-`rt(args)` spawns `RT_BINARY` against the test home and resolves stdout;
-`rtRaw(args)` returns `{ code, stdout, stderr }`; `rtJson(args)` parses
-`--json` output; `waitUntilArmed(...handles)` polls `chat:who` until each
-handle's `armed_at` is set — never a fixed sleep, which makes the wake tests
-flaky under load; `until(pred)` polls a predicate to a deadline.
+**Copy `events.test.ts`'s two-function helper split verbatim — do not
+collapse it into one.** `runRt(args, home, extraEnv?)` spawns `[RT_BINARY, ...args]` with
+a **hermetic env** (`HOME`, an explicit `PATH`, `RT_SKIP_SETUP`, `CI`,
+`RT_API_PORT`; never `...process.env`), pushes the process into `children[]`,
+and **returns the process**. `finished(proc)` awaits `exited` and collects
+stdout/stderr. Every chat test that blocks a waiter needs the handle, so a
+helper that spawns *and* awaits cannot serve them.
+
+Three things go wrong the moment a test reaches for a bare
+`Bun.spawn(["rt", …])` instead:
+
+1. `"rt"` resolves from the developer's `PATH`, not the binary `e2e/setup.ts`
+   just compiled from the working tree — the test exercises whatever rt is
+   installed, or fails with ENOENT where none is.
+2. Without an explicit env the child inherits the ambient one and talks to the
+   **real** `~/.mattstack/rt/state.db` and the **real running daemon** — on a
+   developer's machine the wake tests would join real rooms, post real
+   messages, and wake real agents. `events.test.ts`'s own comment records that
+   this class of leak caused the original port-9401 collision.
+3. It never reaches `children[]`, so the blocking waiters become exactly the
+   processes `afterAll` cannot reap.
+
+Also define: `waitUntilArmed(...handles)` polling `chat:who` until each
+handle's `armed_at` is set — **never a fixed sleep**; `events.test.ts` uses
+`await Bun.sleep(500)` for this and chat deliberately does not, because a
+fixed sleep makes the wake tests flaky under load. And `until(pred)`, polling
+a predicate to a deadline.
 
 ```ts
 // e2e/tests/chat.test.ts
 import { expect, test } from "bun:test";
 
 test("post wakes an armed agent, with exactly one line of output", async () => {
-  await rt(["chat", "join", "r", "--as", "listener"]);
-  await rt(["chat", "join", "r", "--as", "poster"]);
-  const waiter = Bun.spawn(["rt", "chat", "wait", "--as", "listener"], { stdout: "pipe" });
+  await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
+  await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
+  const waiter = runRt(["chat", "wait", "--as", "listener"], home);
   await waitUntilArmed("listener");
-  await rt(["chat", "post", "r", "@listener ping", "--as", "poster"]);
-  const code = await waiter.exited;
-  const out = await new Response(waiter.stdout).text();
-  expect(code).toBe(0);
-  expect(out.trimEnd().split("\n")).toHaveLength(1);
-  expect(out).toContain("#r");
+  await finished(runRt(["chat", "post", "r", "@listener ping", "--as", "poster"], home));
+  const { exitCode, stdout } = await finished(waiter);
+  expect(exitCode).toBe(0);
+  expect(stdout.trimEnd().split("\n")).toHaveLength(1);
+  expect(stdout).toContain("#r");
 });
 
 test("restart gap: a post with nobody armed is delivered on the next arm", async () => {
-  await rt(["chat", "join", "r", "--as", "listener"]);
-  await rt(["chat", "join", "r", "--as", "poster"]);
-  await rt(["chat", "post", "r", "@listener while you were out", "--as", "poster"]);
+  await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
+  await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
+  await finished(runRt(["chat", "post", "r", "@listener while you were out", "--as", "poster"], home));
   const started = Date.now();
-  const { code, stdout } = await rtRaw(["chat", "wait", "--as", "listener", "--timeout", "30s"]);
-  expect(code).toBe(0);
+  const { exitCode, stdout } = await finished(runRt(["chat", "wait", "--as", "listener", "--timeout", "30s"], home));
+  expect(exitCode).toBe(0);
   expect(Date.now() - started).toBeLessThan(5_000);
   expect(stdout).toContain("1 new");
 });
 
 test("wake policy: mention wakes only when named; all wakes always; none never", async () => {
-  await rt(["chat", "join", "r", "--as", "poster"]);
-  await rt(["chat", "join", "r", "--as", "m"]);
-  await rt(["chat", "join", "r", "--as", "a", "--wake-on", "all"]);
-  await rt(["chat", "join", "r", "--as", "n", "--wake-on", "none"]);
-  const mention = Bun.spawn(["rt", "chat", "wait", "--as", "m", "--timeout", "3s"]);
-  const all = Bun.spawn(["rt", "chat", "wait", "--as", "a", "--timeout", "3s"]);
-  const none = Bun.spawn(["rt", "chat", "wait", "--as", "n", "--timeout", "3s"]);
+  await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
+  await finished(runRt(["chat", "join", "r", "--as", "m"], home));
+  await finished(runRt(["chat", "join", "r", "--as", "a", "--wake-on", "all"], home));
+  await finished(runRt(["chat", "join", "r", "--as", "n", "--wake-on", "none"], home));
+  const mention = runRt(["chat", "wait", "--as", "m", "--timeout", "3s"], home);
+  const all = runRt(["chat", "wait", "--as", "a", "--timeout", "3s"], home);
+  const none = runRt(["chat", "wait", "--as", "n", "--timeout", "3s"], home);
   await waitUntilArmed("m", "a", "n");
-  await rt(["chat", "post", "r", "no mention here", "--as", "poster"]);
-  expect(await mention.exited).toBe(124);
-  expect(await all.exited).toBe(0);
-  expect(await none.exited).toBe(124);
+  await finished(runRt(["chat", "post", "r", "no mention here", "--as", "poster"], home));
+  expect((await finished(mention)).exitCode).toBe(124);
+  expect((await finished(all)).exitCode).toBe(0);
+  expect((await finished(none)).exitCode).toBe(124);
 });
 
 test("the arm race: a post landing between the unread check and the wait is not lost", async () => {
@@ -1059,15 +1079,16 @@ test("the arm race: a post landing between the unread check and the wait is not 
   // string from the environment would be arbitrary code execution in a
   // shipped binary for anyone who can set env on an `rt chat wait`.
   const marker = join(tmpdir(), `chat-race-${process.pid}`);
-  await rt(["chat", "join", "r", "--as", "listener"]);
-  await rt(["chat", "join", "r", "--as", "poster"]);
-  const waiter = Bun.spawn(["rt", "chat", "wait", "--as", "listener", "--timeout", "20s"], {
-    env: { ...process.env, RT_CHAT_TEST_PRE_WAIT_MARKER: marker },
-  });
+  await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
+  await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
+  // runRt's env is hermetic by construction; the marker is threaded through
+  // its extra-env parameter rather than by spreading process.env.
+  const waiter = runRt(["chat", "wait", "--as", "listener", "--timeout", "20s"], home,
+    { RT_CHAT_TEST_PRE_WAIT_MARKER: marker });
   await until(() => existsSync(marker));
-  await rt(["chat", "post", "r", "@listener raced", "--as", "poster"]);
+  await finished(runRt(["chat", "post", "r", "@listener raced", "--as", "poster"], home));
   rmSync(marker);
-  expect(await waiter.exited).toBe(0);
+  expect((await finished(waiter)).exitCode).toBe(0);
 });
 
 ```
