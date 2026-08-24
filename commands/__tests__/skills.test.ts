@@ -69,7 +69,7 @@ const STUBS_JSONC = `{
 /**
  * A second, unrelated verb ("helper-verb") sharing watch-ci's engine, kept
  * out of surface.jsonc's public list so computeInternalRoster tags it
- * "claimview:helper-verb" -- watch-ci's own description names that token,
+ * "acme:helper-verb" -- watch-ci's own description names that token,
  * which is exactly what lintInternalRoster flags (the only producer of
  * compileVerb's returned errors[], as opposed to a thrown failure).
  */
@@ -77,7 +77,7 @@ const STUBS_WITH_INTERNAL_REF = `{
   "verbs": {
     "watch-ci": {
       "engine": "watch-ci",
-      "description": "Use when watching CI; see claimview:helper-verb for internal detail."
+      "description": "Use when watching CI; see acme:helper-verb for internal detail."
     },
     "helper-verb": {
       "engine": "watch-ci",
@@ -165,7 +165,7 @@ function makeManifestDanglingDomain(): string {
   writeFile(path, `{
   "bindings": {
     "mattstack:watch-ci": {
-      "domain": "claimview:does-not-exist",
+      "domain": "acme:does-not-exist",
       "forge": "mattstack:gitlab-forge"
     }
   }
@@ -594,12 +594,12 @@ describe("skillsCheck --json", () => {
   test("emits one row per verb (never compiled)", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
-    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+    await skillsCheck(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed.pack).toBe("claimview");
+    expect(parsed.pack).toBe("acme");
     expect(parsed.packDir).toBe(packDir);
     expect(parsed.verbs).toEqual([
       { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [] },
@@ -609,7 +609,7 @@ describe("skillsCheck --json", () => {
   test("prints ONLY json -- no human lines on stdout", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
     await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
 
@@ -619,7 +619,7 @@ describe("skillsCheck --json", () => {
   test("reports in-sync right after a compile", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
     await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
     logs = [];
@@ -635,7 +635,7 @@ describe("skillsCheck --json", () => {
   test("separates staleFiles (content drift) from orphanFiles (leftover) instead of merging them", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
     await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
     const skillMdPath = join(packDir, "skills", "watch-ci", "SKILL.md");
@@ -655,7 +655,7 @@ describe("skillsCheck --json", () => {
   test("internal verb with missing outDir: internal-unchecked, and does not count as stale", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
 
     await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
@@ -672,12 +672,12 @@ describe("skillsCompile --json", () => {
   test("compiled verb: files + warnings reported, nothing written to disk", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
-    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
+    await skillsCompile(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed.pack).toBe("claimview");
+    expect(parsed.pack).toBe("acme");
     expect(parsed.verbs).toHaveLength(1);
     const verb = parsed.verbs[0];
     expect(verb.name).toBe("watch-ci");
@@ -694,7 +694,7 @@ describe("skillsCompile --json", () => {
   test("internal (retired) verb: internal-skipped, no compile attempted, no disk write", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
 
     await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
@@ -710,16 +710,16 @@ describe("skillsCompile --json", () => {
     const packDir = makePackDir();
     writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_WITH_INTERNAL_REF);
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
-    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+    await skillsCompile(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
     const watchCi = parsed.verbs.find((v: { name: string }) => v.name === "watch-ci");
     expect(watchCi.status).toBe("errored");
     expect(watchCi.files).toEqual([]);
     expect(watchCi.errors).toHaveLength(1);
-    expect(watchCi.errors[0]).toContain("claimview:helper-verb");
+    expect(watchCi.errors[0]).toContain("acme:helper-verb");
 
     const helper = parsed.verbs.find((v: { name: string }) => v.name === "helper-verb");
     expect(helper.status).toBe("internal-skipped");
@@ -728,7 +728,7 @@ describe("skillsCompile --json", () => {
   test("unbound required slot (compileVerb throws): errored, not a crash", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview", false);
+    const manifestPath = makeManifest("acme", false);
 
     await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
 
@@ -742,7 +742,7 @@ describe("skillsCompile --json", () => {
   test("prints ONLY json -- no human lines on stdout", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
     await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
 
@@ -756,7 +756,7 @@ describe("skillsCompile --preview error handling", () => {
     const packDir = makePackDir();
     writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_WITH_INTERNAL_REF);
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
     const errors: string[] = [];
     const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
@@ -764,7 +764,7 @@ describe("skillsCompile --preview error handling", () => {
     });
     try {
       await skillsCompile([
-        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+        "--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
         "--verb", "watch-ci", "--preview",
       ]);
     } finally {
@@ -772,7 +772,7 @@ describe("skillsCompile --preview error handling", () => {
     }
 
     expect(logs).toEqual([]);
-    expect(errors.join("\n")).toContain("claimview:helper-verb");
+    expect(errors.join("\n")).toContain("acme:helper-verb");
     expect(process.exitCode).toBe(1);
   });
 
@@ -788,7 +788,7 @@ describe("skillsCompile --preview error handling", () => {
     writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_WITH_INTERNAL_REF);
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
     writeFile(join(packDir, "skills", "leftover-verb", "SKILL.md"), "---\nname: leftover-verb\n---\nstale\n");
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
     const errors: string[] = [];
     const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
@@ -796,7 +796,7 @@ describe("skillsCompile --preview error handling", () => {
     });
     try {
       await skillsCompile([
-        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+        "--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
         "--verb", "watch-ci", "--preview",
       ]);
     } finally {
@@ -804,13 +804,13 @@ describe("skillsCompile --preview error handling", () => {
     }
 
     expect(logs).toEqual([]);
-    expect(errors.join("\n")).toContain("claimview:helper-verb");
+    expect(errors.join("\n")).toContain("acme:helper-verb");
   });
 
   test("unbound required slot: message on stderr, empty stdout, exit code set but no crash", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview", false);
+    const manifestPath = makeManifest("acme", false);
 
     const errors: string[] = [];
     const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
@@ -835,12 +835,12 @@ describe("skillsComposition --json", () => {
   test("verb, slots, fills, and binders reflect the manifest", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
-    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+    await skillsComposition(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed.pack).toBe("claimview");
+    expect(parsed.pack).toBe("acme");
     expect(parsed.packDir).toBe(packDir);
     expect(parsed.verbs).toHaveLength(1);
 
@@ -857,9 +857,9 @@ describe("skillsComposition --json", () => {
     const domainSlot = verb.slots.find((s: { name: string }) => s.name === "domain");
     expect(domainSlot.contract).toBe("watch-ci-domain@1");
     expect(domainSlot.required).toBe(false);
-    expect(domainSlot.boundTo).toBe("claimview:watch-ci-domain");
+    expect(domainSlot.boundTo).toBe("acme:watch-ci-domain");
     expect(domainSlot.fillSourcePath).toBe(
-      join(mattstackDir, "plugins", "claimview", "attachments", "watch-ci-domain", "SKILL.md"),
+      join(mattstackDir, "plugins", "acme", "attachments", "watch-ci-domain", "SKILL.md"),
     );
     expect(domainSlot.fillVersion).toBe("0.3.0");
     expect(domainSlot.registered).toBe(false);
@@ -873,11 +873,11 @@ describe("skillsComposition --json", () => {
     expect(forgeSlot.inlined).toBe(false);
 
     expect(parsed.fills).toHaveLength(2);
-    const domainFill = parsed.fills.find((f: { binding: string }) => f.binding === "claimview:watch-ci-domain");
+    const domainFill = parsed.fills.find((f: { binding: string }) => f.binding === "acme:watch-ci-domain");
     expect(domainFill).toEqual({
-      binding: "claimview:watch-ci-domain",
+      binding: "acme:watch-ci-domain",
       provides: "watch-ci-domain@1",
-      sourcePath: join(mattstackDir, "plugins", "claimview", "attachments", "watch-ci-domain", "SKILL.md"),
+      sourcePath: join(mattstackDir, "plugins", "acme", "attachments", "watch-ci-domain", "SKILL.md"),
       registered: false,
     });
     const forgeFill = parsed.fills.find((f: { binding: string }) => f.binding === "mattstack:gitlab-forge");
@@ -888,7 +888,7 @@ describe("skillsComposition --json", () => {
     expect(binder.verb).toBe("watch-ci");
     expect(binder.kind).toBe("verb");
     expect(binder.slots).toEqual([
-      { name: "domain", boundTo: "claimview:watch-ci-domain" },
+      { name: "domain", boundTo: "acme:watch-ci-domain" },
       { name: "forge", boundTo: "mattstack:gitlab-forge" },
     ]);
   });
@@ -908,7 +908,7 @@ describe("skillsComposition --json", () => {
     expect(watchCi.engineRef).toBe("mattstack:watch-ci");
     expect(watchCi.engineError).toBeUndefined();
     const domainSlot = watchCi.slots.find((s: { name: string }) => s.name === "domain");
-    expect(domainSlot.boundTo).toBe("claimview:does-not-exist");
+    expect(domainSlot.boundTo).toBe("acme:does-not-exist");
     expect(domainSlot.resolveError).toContain("does-not-exist");
     expect(domainSlot.fillSourcePath).toBeNull();
     expect(domainSlot.fillVersion).toBeNull();
@@ -934,7 +934,7 @@ describe("skillsComposition --json", () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_TWO_VERBS);
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
     await skillsComposition([
       "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
@@ -956,17 +956,17 @@ describe("skillsComposition --json", () => {
   },
   "bindings": {
     "mattstack:watch-ci": {
-      "domain": "claimview:watch-ci-domain",
+      "domain": "acme:watch-ci-domain",
       "forge": "mattstack:gitlab-forge"
     },
     "mattstack:stage-provision": {
-      "domain": "claimview:watch-ci-domain"
+      "domain": "acme:watch-ci-domain"
     },
     "mattstack:review-core": {
-      "criteria": "claimview:watch-ci-domain"
+      "criteria": "acme:watch-ci-domain"
     },
     "mr-board:review": {
-      "skill": "claimview:watch-ci-domain"
+      "skill": "acme:watch-ci-domain"
     }
   }
 }
@@ -989,10 +989,10 @@ describe("skillsComposition --json", () => {
     const mattstackDir = makeMattstackDir();
     const packDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-pack-empty-")));
 
-    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--json"]);
+    await skillsComposition(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed).toEqual({ pack: "claimview", packDir, manifestPath: null, verbs: [], fills: [], binders: [], pipelines: {} });
+    expect(parsed).toEqual({ pack: "acme", packDir, manifestPath: null, verbs: [], fills: [], binders: [], pipelines: {} });
   });
 
   test("manifestPath is the absolute manifest the bindings came from, not <packDir>/skills.jsonc", async () => {
@@ -1003,7 +1003,7 @@ describe("skillsComposition --json", () => {
     const packDir = makePackDir();
     const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-path-")));
     const manifestPath = join(manifestDir, "skills.jsonc");
-    writeFile(manifestPath, `{ "bindings": { "mattstack:watch-ci": { "domain": "claimview:watch-ci-domain" } } }`);
+    writeFile(manifestPath, `{ "bindings": { "mattstack:watch-ci": { "domain": "acme:watch-ci-domain" } } }`);
 
     await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
 
@@ -1029,7 +1029,7 @@ describe("skillsComposition --json", () => {
   },
   "bindings": {
     "mattstack:watch-ci": {
-      "domain": "claimview:watch-ci-domain"
+      "domain": "acme:watch-ci-domain"
     }
   }
 }
@@ -1047,7 +1047,7 @@ describe("skillsComposition --json", () => {
   test("prints ONLY json -- no human lines on stdout", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
-    const manifestPath = makeManifest("claimview");
+    const manifestPath = makeManifest("acme");
 
     await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
 

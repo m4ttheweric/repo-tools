@@ -56,15 +56,15 @@ function manifestText(domainBinding: string | null): string {
  * providing fills (v1, initially bound; v2, the bind target) and one fill
  * whose provides deliberately mismatches the slot's contract.
  */
-function makeEngineFixture(domainBinding: string | null = "claimview:watch-ci-domain-v1"): { mattstackDir: string; manifestPath: string } {
+function makeEngineFixture(domainBinding: string | null = "acme:watch-ci-domain-v1"): { mattstackDir: string; manifestPath: string } {
   const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-bind-mattstack-")));
   writeFile(join(mattstackDir, "plugins", "mattstack", ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0" }));
   writeFile(join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"), WATCH_CI_SKILL_MD);
 
-  writeFile(join(mattstackDir, "plugins", "claimview", ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0" }));
-  writeFile(join(mattstackDir, "plugins", "claimview", "skills", "watch-ci-domain-v1", "SKILL.md"), fillSkillMd("watch-ci-domain-v1", "watch-ci-domain@1"));
-  writeFile(join(mattstackDir, "plugins", "claimview", "skills", "watch-ci-domain-v2", "SKILL.md"), fillSkillMd("watch-ci-domain-v2", "watch-ci-domain@1"));
-  writeFile(join(mattstackDir, "plugins", "claimview", "skills", "watch-ci-domain-wrong", "SKILL.md"), fillSkillMd("watch-ci-domain-wrong", "watch-ci-domain@2"));
+  writeFile(join(mattstackDir, "plugins", "acme", ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0" }));
+  writeFile(join(mattstackDir, "plugins", "acme", "skills", "watch-ci-domain-v1", "SKILL.md"), fillSkillMd("watch-ci-domain-v1", "watch-ci-domain@1"));
+  writeFile(join(mattstackDir, "plugins", "acme", "skills", "watch-ci-domain-v2", "SKILL.md"), fillSkillMd("watch-ci-domain-v2", "watch-ci-domain@1"));
+  writeFile(join(mattstackDir, "plugins", "acme", "skills", "watch-ci-domain-wrong", "SKILL.md"), fillSkillMd("watch-ci-domain-wrong", "watch-ci-domain@2"));
 
   const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-bind-manifest-")));
   const manifestPath = join(manifestDir, "skills.jsonc");
@@ -116,15 +116,15 @@ describe("skillsBind", () => {
     const { mattstackDir, manifestPath } = makeEngineFixture();
 
     await skillsBind([
-      "watch-ci", "domain", "claimview:watch-ci-domain-v2",
+      "watch-ci", "domain", "acme:watch-ci-domain-v2",
       "--pack", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
     ]);
 
     const bindings = readManifestBindings(manifestPath);
-    expect(bindings["mattstack:watch-ci"]?.domain).toBe("claimview:watch-ci-domain-v2");
+    expect(bindings["mattstack:watch-ci"]?.domain).toBe("acme:watch-ci-domain-v2");
 
     const skillMd = readFileSync(join(packDir, "skills", "watch-ci", "SKILL.md"), "utf8");
-    expect(skillMd).toContain("claimview:watch-ci-domain-v2");
+    expect(skillMd).toContain("acme:watch-ci-domain-v2");
   });
 
   test("comments in the manifest survive the write", async () => {
@@ -133,7 +133,7 @@ describe("skillsBind", () => {
     const { mattstackDir, manifestPath } = makeEngineFixture();
 
     await skillsBind([
-      "watch-ci", "domain", "claimview:watch-ci-domain-v2",
+      "watch-ci", "domain", "acme:watch-ci-domain-v2",
       "--pack", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
     ]);
 
@@ -151,7 +151,7 @@ describe("skillsBind", () => {
 
     const { exitCode, errors } = await runExpectingCleanExit(() =>
       skillsBind([
-        "no-such-verb", "domain", "claimview:watch-ci-domain-v2",
+        "no-such-verb", "domain", "acme:watch-ci-domain-v2",
         "--pack", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
       ]),
     );
@@ -170,7 +170,7 @@ describe("skillsBind", () => {
 
     const { exitCode, errors } = await runExpectingCleanExit(() =>
       skillsBind([
-        "watch-ci", "no-such-slot", "claimview:watch-ci-domain-v2",
+        "watch-ci", "no-such-slot", "acme:watch-ci-domain-v2",
         "--pack", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
       ]),
     );
@@ -190,7 +190,7 @@ describe("skillsBind", () => {
 
     const { exitCode, errors } = await runExpectingCleanExit(() =>
       skillsBind([
-        "watch-ci", "domain", "claimview:watch-ci-domain-wrong",
+        "watch-ci", "domain", "acme:watch-ci-domain-wrong",
         "--pack", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
       ]),
     );
@@ -209,13 +209,13 @@ describe("skillsBind", () => {
     const before = readFileSync(manifestPath, "utf8");
 
     await skillsBind([
-      "watch-ci", "domain", "claimview:watch-ci-domain-v2", "--dry-run",
+      "watch-ci", "domain", "acme:watch-ci-domain-v2", "--dry-run",
       "--pack", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
     ]);
 
     expect(readFileSync(manifestPath, "utf8")).toBe(before);
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
-    expect(logs.some((l) => l.includes("claimview:watch-ci-domain-v1") && l.includes("claimview:watch-ci-domain-v2"))).toBe(true);
+    expect(logs.some((l) => l.includes("acme:watch-ci-domain-v1") && l.includes("acme:watch-ci-domain-v2"))).toBe(true);
   });
 
   test("binding a previously-unbound slot (new key) works", async () => {
@@ -224,12 +224,12 @@ describe("skillsBind", () => {
     const { mattstackDir, manifestPath } = makeEngineFixture(null);
 
     await skillsBind([
-      "watch-ci", "domain", "claimview:watch-ci-domain-v2",
+      "watch-ci", "domain", "acme:watch-ci-domain-v2",
       "--pack", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
     ]);
 
     const bindings = readManifestBindings(manifestPath);
-    expect(bindings["mattstack:watch-ci"]?.domain).toBe("claimview:watch-ci-domain-v2");
+    expect(bindings["mattstack:watch-ci"]?.domain).toBe("acme:watch-ci-domain-v2");
     const written = readFileSync(manifestPath, "utf8");
     expect(written).toContain("/* block comment about watch-ci */");
   });

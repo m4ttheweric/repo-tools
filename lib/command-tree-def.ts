@@ -1052,7 +1052,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/skills.ts",
         fn: "skillsComposition",
         args: [
-          { name: "Pack", flag: "--pack", type: "text", placeholder: "claimview", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
           SETUP_JSON_ARG,
         ],
@@ -1064,8 +1064,8 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Verb", type: "text", placeholder: "watch-ci", hint: "Verb in the pack's roster" },
           { name: "Slot", type: "text", placeholder: "domain", hint: "Slot declared on the verb's step" },
-          { name: "Fill", type: "text", placeholder: "claimview:watch-ci-domain-v2", hint: "<plugin>:<skill> binding string; must provide the slot's declared contract" },
-          { name: "Pack", flag: "--pack", type: "text", placeholder: "claimview", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Fill", type: "text", placeholder: "acme:watch-ci-domain-v2", hint: "<plugin>:<skill> binding string; must provide the slot's declared contract" },
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would change without writing" },
         ],

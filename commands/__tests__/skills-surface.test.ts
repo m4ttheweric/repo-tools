@@ -117,10 +117,10 @@ describe("skillsSurface list", () => {
     writeFile(join(packDir, "skills", "hand-authored-public", "SKILL.md"), "---\nname: x\n---\nbody\n");
     writeFile(join(packDir, "attachments", "hand-authored-internal", "SKILL.md"), "---\nname: y\n---\nbody\n");
 
-    await skillsSurface(["list", "--pack-dir", packDir, "--json"]);
+    await skillsSurface(["list", "--pack", "acme", "--pack-dir", packDir, "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed.pack).toBe("claimview");
+    expect(parsed.pack).toBe("acme");
     expect(parsed.packDir).toBe(packDir);
     expect(parsed.rows.map((r: { name: string }) => r.name).sort()).toEqual([
       "hand-authored-internal",
