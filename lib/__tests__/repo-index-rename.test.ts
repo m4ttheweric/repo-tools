@@ -463,7 +463,7 @@ describe("repo-index — rename drift (RT-60)", () => {
     });
   });
 
-  // ─── worktree registry legacy rekey (RT-62) ────────────────────────────────
+  // ─── worktree registry legacy rekey ────────────────────────────────
 
   describe("ensureWorktreeRegistryRekeyed", () => {
     const WT_NS = "worktree-registry";

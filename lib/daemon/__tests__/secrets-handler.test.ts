@@ -24,30 +24,33 @@ function handler(opts: {
   return h["secrets:forge-token"];
 }
 
+// Hard cutover: grants() and the payload gate both require a
+// serialized identity, so every `repoName` fixture below is identity-shaped
+// (`remote:...`), not a bare legacy name.
 describe("secrets:forge-token", () => {
   test("tracked repo with a stored token gets it", async () => {
     const res = await handler({
-      tracking: { gitq: { mode: "live", caches: ["branches"] } },
+      tracking: { "remote:gitq": { mode: "live", caches: ["branches"] } },
       secrets: { gitlabToken: "glpat-abc" },
-    })({ repoName: "gitq", forge: "gitlab" });
+    })({ repoName: "remote:gitq", forge: "gitlab" });
     expect(res).toEqual({ ok: true, data: { token: "glpat-abc" } });
   });
 
   test("untracked repo fails closed with the track command", async () => {
     const res = await handler({ secrets: { gitlabToken: "glpat-abc" } })({
-      repoName: "gitq",
+      repoName: "remote:gitq",
       forge: "gitlab",
     });
     if (res.ok) throw new Error("expected a refusal");
     expect(res.error).toContain("not tracked by rt");
-    expect(res.error).toContain("rt daemon track gitq");
+    expect(res.error).toContain("rt daemon track remote:gitq");
   });
 
   test("tracked repo with no stored token names the missing key", async () => {
     const res = await handler({
-      tracking: { gitq: { mode: "poll", caches: [] } },
+      tracking: { "remote:gitq": { mode: "poll", caches: [] } },
       secrets: { gitlabToken: "glpat-abc" },
-    })({ repoName: "gitq", forge: "github" });
+    })({ repoName: "remote:gitq", forge: "github" });
     if (res.ok) throw new Error("expected a refusal");
     expect(res.error).toContain("githubToken");
   });
@@ -55,16 +58,32 @@ describe("secrets:forge-token", () => {
   test("missing repoName and unknown forge are rejected before any read", async () => {
     const h = handler({ secrets: { gitlabToken: "glpat-abc" } });
     expect((await h({ repoName: "", forge: "gitlab" })).ok).toBe(false);
-    expect((await h({ repoName: "gitq", forge: "bitbucket" as any })).ok).toBe(false);
+    expect((await h({ repoName: "remote:gitq", forge: "bitbucket" as any })).ok).toBe(false);
+  });
+
+  test("a bare legacy repoName is refused before any tracking or secrets read, never a fallback token", async () => {
+    let trackingCalled = false;
+    let secretsCalled = false;
+    const h = createSecretsHandlers(fakeCtx, {
+      tracking: () => { trackingCalled = true; return { gitq: { mode: "live", caches: ["branches"] } } as any; },
+      secrets: () => { secretsCalled = true; return { gitlabToken: "glpat-abc" }; },
+    })["secrets:forge-token"];
+
+    const res = await h({ repoName: "gitq", forge: "gitlab" });
+
+    if (res.ok) throw new Error("expected a refusal");
+    expect(res.error).toContain("not tracked by rt");
+    expect(trackingCalled).toBe(false);
+    expect(secretsCalled).toBe(false);
   });
 
   test("a secrets-reader throw (e.g. an unreadable encrypted store) surfaces as a rejected promise, never a fallback token", async () => {
     const h = createSecretsHandlers(fakeCtx, {
-      tracking: () => ({ gitq: { mode: "live", caches: ["branches"] } }) as any,
+      tracking: () => ({ "remote:gitq": { mode: "live", caches: ["branches"] } }) as any,
       secrets: () => { throw new Error("decryption failed"); },
     })["secrets:forge-token"];
 
-    await expect(h({ repoName: "gitq", forge: "gitlab" })).rejects.toThrow("decryption failed");
+    await expect(h({ repoName: "remote:gitq", forge: "gitlab" })).rejects.toThrow("decryption failed");
   });
 });
 
@@ -95,23 +114,23 @@ describe("secrets:forge-token default tracking reader is machine-only", () => {
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
     }, "team", { team: "acme" });
-    const identityMap = { "gitlab.com/acme/foo": "foo" };
+    const identityMap = { "gitlab.com/acme/foo": "remote:foo" };
 
-    // Positive control: the merged view really would consider "foo" tracked.
-    expect(loadRepoTracking({ identityMap }).foo).toBeDefined();
+    // Positive control: the merged view really would consider "remote:foo" tracked.
+    expect(loadRepoTracking({ identityMap })["remote:foo"]).toBeDefined();
 
     const h = createSecretsHandlers(fakeCtx, { secrets: () => ({ gitlabToken: "glpat-abc" }) });
-    const res = await h["secrets:forge-token"]({ repoName: "foo", forge: "gitlab" });
+    const res = await h["secrets:forge-token"]({ repoName: "remote:foo", forge: "gitlab" });
 
     if (res.ok) throw new Error("expected a refusal");
     expect(res.error).toContain("not tracked by rt");
   });
 
   test("a repo granted via the machine store is allowed", async () => {
-    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+    setSetting("rt.repoTracking", { "remote:foo": { mode: "live", caches: ["branches"] } }, "machine");
 
     const h = createSecretsHandlers(fakeCtx, { secrets: () => ({ gitlabToken: "glpat-abc" }) });
-    const res = await h["secrets:forge-token"]({ repoName: "foo", forge: "gitlab" });
+    const res = await h["secrets:forge-token"]({ repoName: "remote:foo", forge: "gitlab" });
 
     expect(res).toEqual({ ok: true, data: { token: "glpat-abc" } });
   });

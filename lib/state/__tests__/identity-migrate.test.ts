@@ -75,4 +75,21 @@ describe("rekeyTableColumn", () => {
     expect(listRunHistory("ghost-repo", 10, getStateDb())).toHaveLength(1);
     expect(warnSpy).toHaveBeenCalled();
   });
+
+  test("a legacy row colliding with an already-identity row migrates without throwing, leaving exactly the identity row", async () => {
+    const db = getStateDb();
+    db.exec("CREATE TABLE IF NOT EXISTS endpoint_claims (repo TEXT NOT NULL, worktree TEXT NOT NULL, role TEXT NOT NULL, port INTEGER NOT NULL, pid INTEGER, ts TEXT NOT NULL, PRIMARY KEY (repo, worktree, role))");
+    const insert = db.query("INSERT INTO endpoint_claims (repo, worktree, role, port, pid, ts) VALUES (?,?,?,?,?,?)");
+    insert.run("acme-repo", "wt1", "web", 4000, null, "2026-08-24T00:00:00Z");
+    insert.run("remote:gitlab.com%2Fg%2Facme-repo", "wt1", "web", 5000, null, "2026-08-24T01:00:00Z");
+
+    const report = await rekeyTableColumn("endpoint_claims", "repo", {
+      resolve: async (name) => (name === "acme-repo" ? "remote:gitlab.com%2Fg%2Facme-repo" : null),
+    });
+    expect(report.migrated).toEqual(["acme-repo"]);
+
+    const rows = db.query("SELECT repo, port FROM endpoint_claims WHERE worktree = 'wt1' AND role = 'web'").all() as { repo: string; port: number }[];
+    expect(rows).toEqual([{ repo: "remote:gitlab.com%2Fg%2Facme-repo", port: 5000 }]);
+    expect(warnSpy).toHaveBeenCalled();
+  });
 });

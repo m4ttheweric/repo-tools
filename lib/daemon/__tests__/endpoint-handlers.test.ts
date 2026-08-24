@@ -27,6 +27,17 @@ const DEFAULT_ROLES = {
 };
 
 /**
+ * Hard cutover: `payload.repo` (and its matching `ctx.repoIndex()` key)
+ * must be a serialized identity now, distinct from the RAW host/path form
+ * `repos.<identity>` settings sections still key on (see the last test in
+ * this file) — `declareRoles` below derives both from the same bare test
+ * name, but only the serialized form ever reaches a handler payload.
+ */
+function idOf(repoName: string): string {
+  return serializeIdentity({ kind: "remote", id: `rttest/${repoName}` });
+}
+
+/**
  * Registers a real git repo (with a fake-but-derivable remote) for `repoName`
  * and declares `roles` for it in the team store, keyed by the identity that
  * remote normalizes to — the only path a claim can reach a repo's roles
@@ -36,7 +47,7 @@ function declareRoles(repoName: string, roles: unknown = DEFAULT_ROLES): void {
   const repoPath = mkdtempSync(join(tmpdir(), `rt-endpoint-${repoName}-`));
   execSync("git init -q", { cwd: repoPath });
   execSync(`git remote add origin git@rttest:${repoName}.git`, { cwd: repoPath });
-  repoIndex[repoName] = repoPath;
+  repoIndex[idOf(repoName)] = repoPath;
 
   const identity = `rttest/${repoName}`;
   const store = teamSettingsPath("acme");
@@ -71,12 +82,12 @@ describe("endpoint handlers", () => {
 
   test("claim allocates, lookup sees it, refs pull the needed role into existence", async () => {
     declareRoles("repoA");
-    const r = await handlers["endpoint:claim"]({ repo: "repoA", worktree: "/wt/a", role: "portal", pid: 7 });
+    const r = await handlers["endpoint:claim"]({ repo: idOf("repoA"), worktree: "/wt/a", role: "portal", pid: 7 });
     expect(r.ok).toBe(true);
     expect(r.data.port).toBe(4001);
     expect(r.data.url).toBe("http://localhost:4001");
     expect(r.data.refs.backend.port).toBe(10400);
-    const lk = await handlers["endpoint:lookup"]({ repo: "repoA", worktree: "/wt/a", role: "backend" });
+    const lk = await handlers["endpoint:lookup"]({ repo: idOf("repoA"), worktree: "/wt/a", role: "backend" });
     expect(lk.data).toMatchObject({ claimed: true, port: 10400 });
   });
 
@@ -87,43 +98,55 @@ describe("endpoint handlers", () => {
   test("claim resolves roles from a settings store section (repoIndex → identity → repos.<identity>)", async () => {
     declareRoles("repoStore", { web: { pool: [{ from: 10600, to: 10602 }], env: { PORT: "${port}" } } });
 
-    const r = await handlers["endpoint:claim"]({ repo: "repoStore", worktree: "/wt/store", role: "web", pid: 11 });
+    const r = await handlers["endpoint:claim"]({ repo: idOf("repoStore"), worktree: "/wt/store", role: "web", pid: 11 });
     expect(r.ok).toBe(true);
     expect(r.data.port).toBe(10600);
 
-    const lk = await handlers["endpoint:lookup"]({ repo: "repoStore", worktree: "/wt/store", role: "web" });
+    const lk = await handlers["endpoint:lookup"]({ repo: idOf("repoStore"), worktree: "/wt/store", role: "web" });
     expect(lk.data).toMatchObject({ claimed: true, port: 10600 });
 
-    const other = await handlers["endpoint:claim"]({ repo: "repoUnindexed", worktree: "/wt/store", role: "web" });
-    expect(other).toMatchObject({ ok: false, error: 'role "web" is not declared for repo "repoUnindexed"' });
+    const other = await handlers["endpoint:claim"]({ repo: idOf("repoUnindexed"), worktree: "/wt/store", role: "web" });
+    expect(other).toMatchObject({ ok: false, error: `role "web" is not declared for repo "${idOf("repoUnindexed")}"` });
   });
 
   test("unknown role and unknown repo fail with named errors", async () => {
     declareRoles("repoA");
-    const r = await handlers["endpoint:claim"]({ repo: "repoA", worktree: "/wt/a", role: "nope" });
-    expect(r).toMatchObject({ ok: false, error: 'role "nope" is not declared for repo "repoA"' });
+    const r = await handlers["endpoint:claim"]({ repo: idOf("repoA"), worktree: "/wt/a", role: "nope" });
+    expect(r).toMatchObject({ ok: false, error: `role "nope" is not declared for repo "${idOf("repoA")}"` });
+  });
+
+  test("a bare legacy repo is refused before any role or config lookup", async () => {
+    declareRoles("repoA");
+    const r = await handlers["endpoint:claim"]({ repo: "repoA", worktree: "/wt/a", role: "backend" });
+    expect(r).toEqual({ ok: false, error: "repo-unknown" });
+    const lk = await handlers["endpoint:lookup"]({ repo: "repoA", worktree: "/wt/a", role: "backend" });
+    expect(lk).toEqual({ ok: true, data: { claimed: false, port: null, url: null, running: false } });
+    const rel = await handlers["endpoint:release"]({ repo: "repoA", worktree: "/wt/a" });
+    expect(rel).toEqual({ ok: true, data: { released: 0 } });
+    const status = await handlers["endpoint:status"]({ repo: "repoA" });
+    expect(status).toEqual({ ok: true, data: { repos: {} } });
   });
 
   test("release by worktree frees claims; releaseEndpointsForWorktree does the same (disposal path)", async () => {
     declareRoles("repoB");
-    await handlers["endpoint:claim"]({ repo: "repoB", worktree: "/wt/x", role: "backend", pid: 1 });
-    releaseEndpointsForWorktree(ctx, "repoB", "/wt/x");
-    expect(loadClaims("repoB")).toEqual([]);
+    await handlers["endpoint:claim"]({ repo: idOf("repoB"), worktree: "/wt/x", role: "backend", pid: 1 });
+    releaseEndpointsForWorktree(ctx, idOf("repoB"), "/wt/x");
+    expect(loadClaims(idOf("repoB"))).toEqual([]);
   });
 
   test("releasing a worktree with no claims writes nothing — no endpoints.json for a repo that never claimed", async () => {
     declareRoles("repoNoClaims");
-    expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
-    expect(loadClaims("repoNoClaims")).toEqual([]);
+    expect(existsSync(endpointsPath(idOf("repoNoClaims")))).toBe(false);
+    expect(loadClaims(idOf("repoNoClaims"))).toEqual([]);
 
-    releaseEndpointsForWorktree(ctx, "repoNoClaims", "/wt/never-claimed");
-    expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
-    expect(loadClaims("repoNoClaims")).toEqual([]);
+    releaseEndpointsForWorktree(ctx, idOf("repoNoClaims"), "/wt/never-claimed");
+    expect(existsSync(endpointsPath(idOf("repoNoClaims")))).toBe(false);
+    expect(loadClaims(idOf("repoNoClaims"))).toEqual([]);
 
-    const r = await handlers["endpoint:release"]({ repo: "repoNoClaims", worktree: "/wt/never-claimed" });
+    const r = await handlers["endpoint:release"]({ repo: idOf("repoNoClaims"), worktree: "/wt/never-claimed" });
     expect(r).toMatchObject({ ok: true, data: { released: 0 } });
-    expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
-    expect(loadClaims("repoNoClaims")).toEqual([]);
+    expect(existsSync(endpointsPath(idOf("repoNoClaims")))).toBe(false);
+    expect(loadClaims(idOf("repoNoClaims"))).toEqual([]);
   });
 
   test("releaseEndpointsForWorktree swallows a save failure instead of throwing", async () => {
@@ -132,7 +155,7 @@ describe("endpoint handlers", () => {
     if (process.getuid?.() === 0) return;
 
     declareRoles("repoReadonly");
-    await handlers["endpoint:claim"]({ repo: "repoReadonly", worktree: "/wt/z", role: "backend", pid: 1 });
+    await handlers["endpoint:claim"]({ repo: idOf("repoReadonly"), worktree: "/wt/z", role: "backend", pid: 1 });
 
     // An already-open fd tolerates a permission change (the OS only checks
     // at open()), so the singleton has to be forced to reopen against the
@@ -143,7 +166,7 @@ describe("endpoint handlers", () => {
     const dbPath = join(rtDir(), "state.db");
     chmodSync(dbPath, 0o444);
     try {
-      expect(() => releaseEndpointsForWorktree(ctx, "repoReadonly", "/wt/z")).not.toThrow();
+      expect(() => releaseEndpointsForWorktree(ctx, idOf("repoReadonly"), "/wt/z")).not.toThrow();
     } finally {
       chmodSync(dbPath, 0o644);
       closeStateDb();

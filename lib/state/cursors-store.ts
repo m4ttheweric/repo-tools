@@ -27,6 +27,7 @@ import { Database } from "bun:sqlite";
 import type { EventCursor } from "@mattstack/glance";
 import { getStateDb, LEGACY_IMPORTS } from "./db.ts";
 import { persistOrWarn } from "./busy.ts";
+import { rekeyKvNamespace, type RekeyReport } from "./identity-migrate.ts";
 
 export interface CursorStore {
   get(repoName: string): EventCursor | undefined;
@@ -34,6 +35,18 @@ export interface CursorStore {
 }
 
 const CURSOR_NS = "events-cursor";
+
+/**
+ * One-shot: re-key legacy NAME-keyed `events-cursor` kv rows onto serialized
+ * identities. Included for uniformity with the other stores — this cache is
+ * self-consistent even unmigrated (the daemon writes and reads it under the
+ * same key), so a row left legacy-keyed costs that repo's watcher one
+ * cold-start, not a correctness failure. Exported for the daemon-boot
+ * migration runner; this module does not wire the boot call.
+ */
+export function rekeyEventsCursorNamespace(): Promise<RekeyReport> {
+  return rekeyKvNamespace(CURSOR_NS);
+}
 
 const KV_SELECT_SQL = `SELECT v FROM kv WHERE ns = ? AND k = ?;`;
 const KV_UPSERT_SQL = `

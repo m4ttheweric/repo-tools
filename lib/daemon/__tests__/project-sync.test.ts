@@ -200,31 +200,31 @@ function errOf<T>(res: { ok: true; data: T } | { ok: false; error: string }): st
 
 describe("project-mrs:read handler", async () => {
   const { createProjectMRsHandlers } = await import("../handlers/project-mrs.ts");
-  const fakeCtx = { repoIndex: () => ({ repo: "/tmp/repo" }), log: { warn: () => {} } } as any;
-  const grantedTracking = () => ({ repo: { mode: "live" as const, caches: ["branches", "project-mrs"] as any } });
+  const fakeCtx = { repoIndex: () => ({ "remote:repo": "/tmp/repo" }), log: { warn: () => {} } } as any;
+  const grantedTracking = () => ({ "remote:repo": { mode: "live" as const, caches: ["branches", "project-mrs"] as any } });
 
   test("grant denied → instructive error, sync never runs", async () => {
     let synced = 0;
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store: tmpStore(), sync: async () => { synced++; }, tracking: () => ({}),
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo" });
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo" });
     expect(res.ok).toBe(false);
-    expect(errOf(res)).toContain("project-mrs cache not granted for repo");
-    expect(errOf(res)).toContain("rt daemon track repo live branches,project-mrs");
+    expect(errOf(res)).toContain("project-mrs cache not granted for remote:repo");
+    expect(errOf(res)).toContain("rt daemon track remote:repo live branches,project-mrs");
     expect(synced).toBe(0);
   });
 
   test("maxAgeMs 0 always forces the per-repo sync; fresh store skips it", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [pr(1)], Date.now());     // listSyncedAt ≈ now
+    store.fullSync("remote:repo", "g/p", [pr(1)], Date.now());     // listSyncedAt ≈ now
     let synced = 0;
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store, sync: async () => { synced++; }, tracking: grantedTracking,
     });
-    await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 60_000 });  // fresh → no sync
+    await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 60_000 });  // fresh → no sync
     expect(synced).toBe(0);
-    await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0 });       // 0 → forces
+    await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 0 });       // 0 → forces
     expect(synced).toBe(1);
   });
 
@@ -233,7 +233,7 @@ describe("project-mrs:read handler", async () => {
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store: tmpStore(), sync: async () => { synced++; }, tracking: grantedTracking,
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo" });
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo" });
     expect(res.ok).toBe(true);
     expect(dataOf(res)).toEqual({ mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 });
     expect(synced).toBe(0);
@@ -259,53 +259,53 @@ describe("project-mrs:read handler", async () => {
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store: tmpStore(), sync: async () => { throw new Error("boom"); }, tracking: grantedTracking,
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0 });
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 0 });
     expect(res.ok).toBe(false);
     expect(errOf(res)).toContain("project sync failed");
   });
 
   test("freshness gate honors deltaSyncedAt: old listSyncedAt but fresh deltaSyncedAt → no sync", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [pr(1)], Date.now() - 10 * 60_000); // stale as a deep sync
-    store.applyDelta("repo", "g/p", [pr(1)], Date.now());             // but delta-fresh
+    store.fullSync("remote:repo", "g/p", [pr(1)], Date.now() - 10 * 60_000); // stale as a deep sync
+    store.applyDelta("remote:repo", "g/p", [pr(1)], Date.now());             // but delta-fresh
     let synced = 0;
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store, sync: async () => { synced++; }, tracking: grantedTracking,
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 60_000 });
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 60_000 });
     expect(synced).toBe(0);
     expect(res.ok).toBe(true);
-    expect(dataOf(res).syncedAt).toBe(store.read("repo")!.deltaSyncedAt!);
+    expect(dataOf(res).syncedAt).toBe(store.read("remote:repo")!.deltaSyncedAt!);
   });
 
   test("demand registers before the freshness gate and is monotonic", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now());
+    store.fullSync("remote:repo", "g/p", [], Date.now());
     const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking });
-    await h["project-mrs:read"]!({ repoName: "repo", demand: { client: "b:1", authors: ["x"], declaredAt: 5 } });
-    await h["project-mrs:read"]!({ repoName: "repo", demand: { client: "b:1", authors: ["stale"], declaredAt: 4 } });
-    expect(store.read("repo")!.demands!["b:1"]!.authors).toEqual(["x"]);
+    await h["project-mrs:read"]!({ repoName: "remote:repo", demand: { client: "b:1", authors: ["x"], declaredAt: 5 } });
+    await h["project-mrs:read"]!({ repoName: "remote:repo", demand: { client: "b:1", authors: ["stale"], declaredAt: 4 } });
+    expect(store.read("remote:repo")!.demands!["b:1"]!.authors).toEqual(["x"]);
   });
 
   test("malformed demand is rejected without registering", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now());
+    store.fullSync("remote:repo", "g/p", [], Date.now());
     const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking });
-    const res = await h["project-mrs:read"]!({ repoName: "repo", demand: { client: "", authors: ["x"], declaredAt: 1 } });
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo", demand: { client: "", authors: ["x"], declaredAt: 1 } });
     expect(res.ok).toBe(false);
-    expect(store.read("repo")!.demands).toBeUndefined();
+    expect(store.read("remote:repo")!.demands).toBeUndefined();
   });
 
   test("uncovered demanded authors are reported and kick a backfill on unforced reads", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now());
-    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    store.fullSync("remote:repo", "g/p", [], Date.now());
+    store.setScope("remote:repo", { authors: ["alice"], windowDays: 30 });
     const backfilled: string[][] = [];
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store, sync: async () => {}, tracking: grantedTracking,
       backfill: async (_r, authors) => { backfilled.push(authors); },
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo",
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo",
       demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
     expect(res.ok).toBe(true);
     expect((dataOf(res) as any).scope).toEqual({ authors: ["alice"], windowDays: 30, uncovered: ["newbie"] });
@@ -315,32 +315,32 @@ describe("project-mrs:read handler", async () => {
 
   test("forced read with uncovered authors awaits the backfill", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now() - 60_000);
-    store.setScope("repo", { authors: [], windowDays: 30 });
+    store.fullSync("remote:repo", "g/p", [], Date.now() - 60_000);
+    store.setScope("remote:repo", { authors: [], windowDays: 30 });
     const order: string[] = [];
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store, sync: async () => { order.push("sync"); }, tracking: grantedTracking,
       backfill: async () => { order.push("backfill"); },
     });
-    await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0,
+    await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 0,
       demand: { client: "b:1", authors: ["newbie"], declaredAt: 1 } });
     expect(order).toEqual(["sync", "backfill"]);
   });
 
   test("forced read recomputes uncovered after the backfill completes", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now() - 60_000);
-    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    store.fullSync("remote:repo", "g/p", [], Date.now() - 60_000);
+    store.setScope("remote:repo", { authors: ["alice"], windowDays: 30 });
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store, sync: async () => {}, tracking: grantedTracking,
       // Mirrors what the real backfillAuthors does: extends the stored scope
       // with the authors it just fetched.
       backfill: async (_r, authors) => {
-        const existing = store.read("repo")!.scope!.authors;
-        store.setScope("repo", { authors: [...existing, ...authors].sort(), windowDays: 30 });
+        const existing = store.read("remote:repo")!.scope!.authors;
+        store.setScope("remote:repo", { authors: [...existing, ...authors].sort(), windowDays: 30 });
       },
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0,
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 0,
       demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
     expect(res.ok).toBe(true);
     expect((dataOf(res) as any).scope.uncovered).toEqual([]);
@@ -349,14 +349,14 @@ describe("project-mrs:read handler", async () => {
 
   test("duplicate demanded authors collapse to a single uncovered entry", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now());
-    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    store.fullSync("remote:repo", "g/p", [], Date.now());
+    store.setScope("remote:repo", { authors: ["alice"], windowDays: 30 });
     const backfilled: string[][] = [];
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store, sync: async () => {}, tracking: grantedTracking,
       backfill: async (_r, authors) => { backfilled.push(authors); },
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo",
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo",
       demand: { client: "b:1", authors: ["alice", "newbie", "newbie"], declaredAt: 1 } });
     expect((dataOf(res) as any).scope.uncovered).toEqual(["newbie"]);
     await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
@@ -365,62 +365,62 @@ describe("project-mrs:read handler", async () => {
 
   test("background backfill rejection is logged at warn, not silently swallowed (finding 2)", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now());
-    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    store.fullSync("remote:repo", "g/p", [], Date.now());
+    store.setScope("remote:repo", { authors: ["alice"], windowDays: 30 });
     const warns: Array<{ obj: any; msg: string }> = [];
     const ctxWithLog = { ...fakeCtx, log: { warn: (obj: any, msg: string) => warns.push({ obj, msg }) } };
     const h = createProjectMRsHandlers(ctxWithLog, () => {}, {
       store, sync: async () => {}, tracking: grantedTracking,
       backfill: async () => { throw new Error("gitlab down"); },
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo",
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo",
       demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
     expect(res.ok).toBe(true); // unforced read still succeeds -- existing behavior
     await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
     expect(warns.length).toBe(1);
-    expect(warns[0]!.obj.repo).toBe("repo");
+    expect(warns[0]!.obj.repo).toBe("remote:repo");
     expect(warns[0]!.obj.authors).toEqual(["newbie"]);
     expect(warns[0]!.obj.err).toBeInstanceOf(Error);
   });
 
   test("forced backfill rejection is logged at warn and the read still resolves ok (finding 2)", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now() - 60_000);
-    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    store.fullSync("remote:repo", "g/p", [], Date.now() - 60_000);
+    store.setScope("remote:repo", { authors: ["alice"], windowDays: 30 });
     const warns: Array<{ obj: any; msg: string }> = [];
     const ctxWithLog = { ...fakeCtx, log: { warn: (obj: any, msg: string) => warns.push({ obj, msg }) } };
     const h = createProjectMRsHandlers(ctxWithLog, () => {}, {
       store, sync: async () => {}, tracking: grantedTracking,
       backfill: async () => { throw new Error("gitlab down"); },
     });
-    const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0,
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 0,
       demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
     expect(res.ok).toBe(true);
     expect(warns.length).toBe(1);
-    expect(warns[0]!.obj.repo).toBe("repo");
+    expect(warns[0]!.obj.repo).toBe("remote:repo");
     expect(warns[0]!.obj.authors).toEqual(["newbie"]);
   });
 
   test("uncovered is computed from the stored demand, not a stale request (finding 4)", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now());
-    store.setScope("repo", { authors: [], windowDays: 30 });
+    store.fullSync("remote:repo", "g/p", [], Date.now());
+    store.setScope("remote:repo", { authors: [], windowDays: 30 });
     const backfilled: string[][] = [];
     const h = createProjectMRsHandlers(fakeCtx, () => {}, {
       store, sync: async () => {}, tracking: grantedTracking,
       backfill: async (_r, authors) => { backfilled.push(authors); },
     });
     // A newer demand declares "new" for client b:1.
-    await h["project-mrs:read"]!({ repoName: "repo",
+    await h["project-mrs:read"]!({ repoName: "remote:repo",
       demand: { client: "b:1", authors: ["new"], declaredAt: 200 } });
     backfilled.length = 0;
     // A stale in-flight read for the same client arrives after and is
     // rejected by registerDemand's monotonic guard -- the stored demand for
     // b:1 stays ["new"], and uncovered/backfill must reflect that, not the
     // stale request's ["old"].
-    const res = await h["project-mrs:read"]!({ repoName: "repo",
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo",
       demand: { client: "b:1", authors: ["old"], declaredAt: 100 } });
-    expect(store.read("repo")!.demands!["b:1"]!.authors).toEqual(["new"]); // unchanged by the stale demand
+    expect(store.read("remote:repo")!.demands!["b:1"]!.authors).toEqual(["new"]); // unchanged by the stale demand
     expect(res.ok).toBe(true);
     expect((dataOf(res) as any).scope.uncovered).toEqual(["new"]);
     await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
@@ -429,35 +429,35 @@ describe("project-mrs:read handler", async () => {
 
   test("by-branch: store hit wins with source store", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [pr(1, { sourceBranch: "feat-a" })], Date.now());
+    store.fullSync("remote:repo", "g/p", [pr(1, { sourceBranch: "feat-a" })], Date.now());
     const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
       fetchByBranch: async () => { throw new Error("must not hit forge"); } });
-    const res = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-a"] });
+    const res = await h["mr:by-branch"]!({ repoName: "remote:repo", branches: ["feat-a"] });
     expect(res.ok).toBe(true);
     expect((dataOf(res) as any).byBranch["feat-a"]).toMatchObject({ source: "store", pr: { iid: 1 } });
   });
 
   test("by-branch: miss falls through to forge, writes back, next call is a store hit", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [], Date.now());
+    store.fullSync("remote:repo", "g/p", [], Date.now());
     let forgeCalls = 0;
     const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
       fetchByBranch: async (_r, branch) => { forgeCalls++; return { pr: pr(7, { sourceBranch: branch, state: "merged" }), projectPath: "g/p" }; } });
-    const r1 = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-b"] });
+    const r1 = await h["mr:by-branch"]!({ repoName: "remote:repo", branches: ["feat-b"] });
     expect((dataOf(r1) as any).byBranch["feat-b"].source).toBe("forge");
-    const r2 = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-b"] });
+    const r2 = await h["mr:by-branch"]!({ repoName: "remote:repo", branches: ["feat-b"] });
     expect((dataOf(r2) as any).byBranch["feat-b"].source).toBe("store");
     expect(forgeCalls).toBe(1);
   });
 
   test("by-branch: no MR anywhere is null; a per-branch forge failure is null with a warn, not a batch failure", async () => {
     const store = tmpStore();
-    store.fullSync("repo", "g/p", [pr(1, { sourceBranch: "ok" })], Date.now());
+    store.fullSync("remote:repo", "g/p", [pr(1, { sourceBranch: "ok" })], Date.now());
     const warns: any[] = [];
     const ctx = { ...fakeCtx, log: { ...fakeCtx.log, warn: (o: any) => warns.push(o) } } as any;
     const h = createProjectMRsHandlers(ctx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
       fetchByBranch: async (_r, branch) => { if (branch === "boom") throw new Error("forge down"); return { pr: null, projectPath: "g/p" }; } });
-    const res = await h["mr:by-branch"]!({ repoName: "repo", branches: ["ok", "gone", "boom"] });
+    const res = await h["mr:by-branch"]!({ repoName: "remote:repo", branches: ["ok", "gone", "boom"] });
     expect(res.ok).toBe(true);
     expect((dataOf(res) as any).byBranch["ok"].source).toBe("store");
     expect((dataOf(res) as any).byBranch["gone"]).toBeNull();
@@ -467,10 +467,22 @@ describe("project-mrs:read handler", async () => {
 
   test("by-branch: malformed requests and missing grant are rejected", async () => {
     const h = createProjectMRsHandlers(fakeCtx, () => {}, { store: tmpStore(), sync: async () => {}, tracking: grantedTracking });
-    expect((await h["mr:by-branch"]!({ repoName: "repo", branches: [] })).ok).toBe(false);
-    expect((await h["mr:by-branch"]!({ repoName: "repo", branches: Array.from({length: 101}, (_, i) => `b${i}`) })).ok).toBe(false);
+    expect((await h["mr:by-branch"]!({ repoName: "remote:repo", branches: [] })).ok).toBe(false);
+    expect((await h["mr:by-branch"]!({ repoName: "remote:repo", branches: Array.from({length: 101}, (_, i) => `b${i}`) })).ok).toBe(false);
     const denied = createProjectMRsHandlers(fakeCtx, () => {}, { store: tmpStore(), sync: async () => {}, tracking: () => ({}) });
-    expect(errOf(await denied["mr:by-branch"]!({ repoName: "repo", branches: ["x"] }))).toContain("not granted");
+    expect(errOf(await denied["mr:by-branch"]!({ repoName: "remote:repo", branches: ["x"] }))).toContain("not granted");
+  });
+
+  test("Hard cutover: a bare legacy repoName resolves nothing rather than name-matching, on both verbs", async () => {
+    const store = tmpStore();
+    store.fullSync("remote:repo", "g/p", [pr(1, { sourceBranch: "feat-a" })], Date.now());
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking });
+
+    const read = await h["project-mrs:read"]!({ repoName: "repo" });
+    expect(read).toEqual({ ok: true, data: { mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 } });
+
+    const byBranch = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-a"] });
+    expect(byBranch).toEqual({ ok: true, data: { byBranch: {}, syncedAt: 0 } });
   });
 });
 

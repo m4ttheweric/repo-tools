@@ -4,6 +4,7 @@
  * which writes through reconcile.ts because only a person can decide a run
  * is dead.
  */
+import { parseIdentity } from "../../settings/identity.ts";
 import { findRun, listRuns, readRun } from "../../runs/store.ts";
 import { abandonRun } from "../../runs/reconcile.ts";
 import type { HandlerContext, HandlerMap, TypedHandlers, CommandResult } from "./types.ts";
@@ -15,6 +16,11 @@ export function createRunsHandlers(
 ): Pick<TypedHandlers, "runs:list" | "runs:get" | "runs:abandon"> & HandlerMap {
   const handlers: Pick<TypedHandlers, "runs:list" | "runs:get" | "runs:abandon"> & HandlerMap = {
     "runs:list": async (payload: Commands["runs:list"]["payload"]): Promise<CommandResult<"runs:list">> => {
+      // Hard cutover: run_history is identity-keyed now; a bare
+      // legacy repo filter resolves nothing rather than name-matching.
+      if (payload?.repo && parseIdentity(payload.repo) === null) {
+        return { ok: true as const, data: { runs: [] } };
+      }
       try {
         return { ok: true as const, data: { runs: listRuns(payload?.repo || undefined) } };
       } catch (err) {
@@ -25,6 +31,10 @@ export function createRunsHandlers(
     "runs:get": async (payload: Commands["runs:get"]["payload"]): Promise<CommandResult<"runs:get">> => {
       const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
       if (!runId) return { ok: false as const, error: "missing runId" };
+      // Hard cutover: a bare legacy repo hint resolves nothing.
+      if (payload?.repo && parseIdentity(payload.repo) === null) {
+        return { ok: false as const, error: "run not found" };
+      }
       try {
         const detail = payload?.repo ? readRun(payload.repo, runId) : findRun(runId);
         if (!detail) return { ok: false as const, error: "run not found" };
@@ -37,6 +47,9 @@ export function createRunsHandlers(
     "runs:abandon": async (payload: Commands["runs:abandon"]["payload"]): Promise<CommandResult<"runs:abandon">> => {
       const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
       if (!runId) return { ok: false as const, error: "missing runId" };
+      if (payload?.repo && parseIdentity(payload.repo) === null) {
+        return { ok: false as const, error: "run not found" };
+      }
       try {
         // Resolve the repo the same way runs:get does, so an id that works for
         // one verb works for the other.

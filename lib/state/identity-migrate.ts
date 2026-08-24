@@ -59,6 +59,16 @@ export async function rekeyKvNamespace(ns: string, opts: RekeyOpts = {}): Promis
 /**
  * `table`/`col` are internal literals supplied by callers, never user input —
  * no injection surface for the interpolated SQL.
+ *
+ * Migrates ROW BY ROW (via `rowid`), not one bulk `UPDATE ... WHERE col=k`:
+ * a legacy row and an already-identity row can share the rest of the table's
+ * PRIMARY KEY (`endpoint_claims` is `(repo, worktree, role)`; `project_mrs`,
+ * `discussions`, `project_mr_demands` are similar composite keys) — a bulk
+ * UPDATE would throw a PK-violation OUT of this function on the first such
+ * collision, which would crash the boot migration outright. Per row: a
+ * SQLITE_CONSTRAINT on the single-row UPDATE means the destination identity
+ * row already exists, so the destination wins and the stale legacy row is
+ * deleted instead (never left duplicated, never thrown).
  */
 export async function rekeyTableColumn(table: string, col: string, opts: RekeyOpts = {}): Promise<RekeyReport> {
   const resolve = opts.resolve ?? realResolveLegacyKey;
@@ -73,12 +83,28 @@ export async function rekeyTableColumn(table: string, col: string, opts: RekeyOp
       report.retained.push(k);
       continue;
     }
-    persistOrWarn("identity-migrate", () => {
-      db.query(`UPDATE ${table} SET ${col} = ? WHERE ${col} = ?;`).run(identity, k);
-    }, { table, col, identity });
-    const landed = db.query(`SELECT 1 FROM ${table} WHERE ${col} = ? LIMIT 1;`).get(identity);
-    if (!landed) {
-      console.warn(`rt: ${table}.${col} re-key to ${identity} did not persist — leaving ${k}`);
+
+    const rows = db.query(`SELECT rowid AS id FROM ${table} WHERE ${col} = ?;`).all(k) as { id: number }[];
+    for (const { id } of rows) {
+      try {
+        persistOrWarn("identity-migrate", () => {
+          db.query(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?;`).run(identity, id);
+        }, { table, col, identity, rowid: id });
+      } catch (err) {
+        if (!(err as { code?: string } | undefined)?.code?.startsWith("SQLITE_CONSTRAINT")) throw err;
+        db.query(`DELETE FROM ${table} WHERE rowid = ?;`).run(id);
+        console.warn(
+          `rt: ${table}.${col}=${k} (rowid ${id}) collided with an existing ${identity} row — dropped the stale legacy duplicate`,
+        );
+      }
+    }
+
+    // Verify-persisted: a row still under the legacy key here means either a
+    // busy write persistOrWarn swallowed, or a row deleted above whose delete
+    // itself never landed — either way the key isn't fully migrated yet.
+    const remaining = db.query(`SELECT 1 FROM ${table} WHERE ${col} = ? LIMIT 1;`).get(k);
+    if (remaining) {
+      console.warn(`rt: ${table}.${col} re-key to ${identity} did not fully persist — leaving remaining ${k} rows`);
       report.retained.push(k);
       continue;
     }

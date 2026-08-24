@@ -154,7 +154,10 @@ function seedClaimed(repo: string, repoName: string, name: string, branch: strin
   return rec;
 }
 
-const repoName = "acme";
+// Hard cutover: every worktree handler now refuses a bare legacy name
+// before it ever reaches the (identity-keyed) registry, so this fixture must
+// itself be a syntactically valid serialized identity, not a plain name.
+const repoName = "remote:acme";
 
 beforeEach(() => {
   process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtwh-home-")));
@@ -230,6 +233,15 @@ describe("worktree:provision", () => {
     const res: any = await h["worktree:provision"]!({ repoName: "nope", branch: "x" });
     expect(res.ok).toBe(false);
     expect(res.error).toBe("repo-unknown");
+  });
+
+  test("Hard cutover: a bare legacy name refuses even when it IS a registered repoIndex key", async () => {
+    const repo = makeRepo();
+    // Registered under a non-identity key on purpose — proves the rejection
+    // is the identity-shape gate, not just an unregistered-name miss.
+    const { h } = makeHandlers({ "acme-legacy": repo });
+    const res: any = await h["worktree:provision"]!({ repoName: "acme-legacy", branch: "x" });
+    expect(res).toEqual({ ok: false, error: "repo-unknown" });
   });
 
   test("cold-creates when the pool is empty (wasOnDeck false)", async () => {
@@ -414,6 +426,29 @@ describe("worktree:create", () => {
     expect(claimed.ok).toBe(true);
     expect(existsSync(claimed.data.path)).toBe(true);
     expect(loadRegistry(repoName).find((t) => t.name === claimed.data.tree)!.state).toBe("claimed");
+  });
+
+  test("Hard cutover: a bare legacy name refuses even when registered", async () => {
+    const repo = makeRepo();
+    const { h } = makeHandlers({ "acme-legacy": repo });
+    const res: any = await h["worktree:create"]!({ repoName: "acme-legacy" });
+    expect(res).toEqual({ ok: false, error: "repo-unknown" });
+  });
+});
+
+describe("Hard cutover: bare legacy names on the sweep verbs (dispose/list/freshen)", () => {
+  test("dispose/list/freshen all refuse a bare legacy repoName even when registered", async () => {
+    const repo = makeRepo();
+    const { h } = makeHandlers({ "acme-legacy": repo });
+
+    const disposed: any = await h["worktree:dispose"]!({ repoName: "acme-legacy", tree: "whatever" });
+    expect(disposed).toEqual({ ok: false, error: "repo-unknown" });
+
+    const listed: any = await h["worktree:list"]!({ repoName: "acme-legacy" });
+    expect(listed).toEqual({ ok: false, error: "repo-unknown" });
+
+    const freshened: any = await h["worktree:freshen"]!({ repoName: "acme-legacy" });
+    expect(freshened).toEqual({ ok: false, error: "repo-unknown" });
   });
 });
 

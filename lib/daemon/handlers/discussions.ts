@@ -19,6 +19,7 @@
  */
 
 import { NoteMutator } from "@mattstack/glance";
+import { parseIdentity } from "../../settings/identity.ts";
 import { getRepoContext, providerRequestHook } from "../freshness.ts";
 import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
@@ -49,6 +50,12 @@ export function createDiscussionHandlers(
       const force    = payload?.force === true;
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
+      }
+      // Hard cutover: the discussions table is identity-keyed now;
+      // a bare legacy name resolves nothing rather than reading a row that
+      // no longer exists under that key.
+      if (parseIdentity(repoName) === null) {
+        return { ok: true, data: { discussions: [], fetchedAt: 0, stale: true } };
       }
 
       const granted = grants(loadRepoTracking(), repoName).caches.has("discussions");

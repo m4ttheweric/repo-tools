@@ -16,7 +16,7 @@
 
 import type { EndpointRepoConfig, RoleConfig } from "../../endpoint/config.ts";
 import { loadEndpointConfig } from "../../endpoint/config.ts";
-import { deriveRepoIdentity } from "../../settings/identity.ts";
+import { deriveRepoIdentity, parseIdentity } from "../../settings/identity.ts";
 import type { EndpointClaim } from "../../endpoint/store.ts";
 import { loadClaims, saveClaims } from "../../endpoint/store.ts";
 import type { Probes } from "../../endpoint/allocator.ts";
@@ -117,6 +117,10 @@ export function createEndpointHandlers(
       const role = payload?.role;
       const pid: number | undefined = payload?.pid;
       if (!repo || !worktree || !role) return { ok: false, error: "missing repo, worktree, or role" };
+      // Hard cutover: endpoint_claims is identity-keyed now; a bare
+      // legacy repo resolves nothing rather than claiming under a key the
+      // store will never be read back under.
+      if (parseIdentity(repo) === null) return { ok: false, error: "repo-unknown" };
 
       const repoCfg = loadEndpointConfig({ repoIdentity: await repoIdentityFor(ctx, repo), repoName: repo });
       const roleCfg = repoCfg.roles[role];
@@ -149,6 +153,9 @@ export function createEndpointHandlers(
       const worktree = payload?.worktree;
       const role = payload?.role;
       if (!repo || !worktree || !role) return { ok: false, error: "missing repo, worktree, or role" };
+      if (parseIdentity(repo) === null) {
+        return { ok: true, data: { claimed: false, port: null, url: null, running: false } };
+      }
 
       const repoCfg = loadEndpointConfig({ repoIdentity: await repoIdentityFor(ctx, repo), repoName: repo });
       const roleCfg = repoCfg.roles[role];
@@ -175,6 +182,7 @@ export function createEndpointHandlers(
       const worktree = payload?.worktree;
       const role = payload?.role;
       if (!repo || !worktree) return { ok: false, error: "missing repo or worktree" };
+      if (parseIdentity(repo) === null) return { ok: true, data: { released: 0 } };
 
       const { claims: remaining, released } = releaseWorktree(loadClaims(repo), worktree, role);
       if (released.length > 0) saveClaims(repo, remaining);
@@ -183,6 +191,7 @@ export function createEndpointHandlers(
 
     "endpoint:status": async (payload) => {
       const repoFilter = payload?.repo;
+      if (repoFilter && parseIdentity(repoFilter) === null) return { ok: true, data: { repos: {} } };
       const probes = await probesFn();
       const repoNames = repoFilter ? [repoFilter] : Object.keys(ctx.repoIndex());
 
