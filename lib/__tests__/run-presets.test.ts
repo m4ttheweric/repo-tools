@@ -35,7 +35,7 @@ describe("run-presets over the settings resolver", () => {
       name: "full-stack",
       entries: [
         { packageRelPath: "apps/backend", packageLabel: "backend", script: "start:lite" },
-        { packageRelPath: "apps/adjuster", packageLabel: "adjuster", script: "start:lite" },
+        { packageRelPath: "apps/portal", packageLabel: "portal", script: "start:lite" },
       ],
     };
     savePreset(IDENTITY, preset);
@@ -63,8 +63,8 @@ describe("run-presets over the settings resolver", () => {
       name: "with-vars",
       entries: [
         {
-          packageRelPath: "apps/adjuster",
-          packageLabel: "adjuster",
+          packageRelPath: "apps/portal",
+          packageLabel: "portal",
           script: "start:lite",
           variationName: "dashboard",
           command: "DASHBOARD=1 doppler run -- parcel serve",
@@ -88,14 +88,14 @@ describe("run-presets over the settings resolver", () => {
     });
     savePreset(IDENTITY, {
       name: "lite",
-      entries: [{ packageRelPath: "apps/adjuster", packageLabel: "adjuster", script: "start:lite" }],
+      entries: [{ packageRelPath: "apps/portal", packageLabel: "portal", script: "start:lite" }],
     });
 
     const loaded = loadPresets(IDENTITY);
     expect(loaded).toHaveLength(2);
     const lite = findPreset(IDENTITY, "lite")!;
     expect(lite.entries).toHaveLength(1);
-    expect(lite.entries[0]!.packageRelPath).toBe("apps/adjuster");
+    expect(lite.entries[0]!.packageRelPath).toBe("apps/portal");
     expect(findPreset(IDENTITY, "full")).not.toBeNull();
   });
 

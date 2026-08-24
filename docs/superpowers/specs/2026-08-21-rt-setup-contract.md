@@ -21,7 +21,7 @@ Common envelope on every JSON result: `{ "contract": 1, "at": "<ISO-8601>", ... 
 {
   "contract": 1,
   "at": "2026-08-21T04:00:00Z",
-  "team": { "slug": "assured", "name": "Assured", "mode": "join" | "create" | "restore" | "none" },
+  "team": { "slug": "acme", "name": "Acme", "mode": "join" | "create" | "restore" | "none" },
   "groups": [
     { "id": "mac" | "accounts" | "access" | "tools",
       "title": "Your Mac",
@@ -43,7 +43,7 @@ Row:
   "required": true,
   "optionalNote": null | "Works without this; you'll see menu-bar badges instead.",
   "status": "ready" | "missing" | "invalid" | "needs-you" | "checking" | "skipped" | "error",
-  "detail": "Not granted" | "git 2.50.1" | "token can't see group assured",
+  "detail": "Not granted" | "git 2.50.1" | "token can't see group acme",
   "action": null | Action,
   "recheck": "on-activate" | "on-change" | "manual"   // how the app refreshes this row
 }

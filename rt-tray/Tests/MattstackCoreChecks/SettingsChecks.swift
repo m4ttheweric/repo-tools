@@ -12,7 +12,7 @@ private func makeTeamSettings(_ rt: RtRunning, services: FakeServices = FakeServ
 
 let settingsChecks: [Check] = [
     Check("RemoteMasker shows host + repo only, and never leaks stripped credentials on a path-less fallback") { c in
-        c.expectEqual(RemoteMasker.mask("git@gitlab.assured.com:tools/mattstack-team.git"), "gitlab.assured.com/tools/mattstack-team")
+        c.expectEqual(RemoteMasker.mask("git@gitlab.example.com:tools/mattstack-team.git"), "gitlab.example.com/tools/mattstack-team")
         c.expectEqual(RemoteMasker.mask("https://user:token@github.com/m4ttheweric/mattstack-home.git"), "github.com/m4ttheweric/mattstack-home")
         c.expectEqual(RemoteMasker.mask("ssh://git@github.com:22/o/r"), "github.com/o/r")
         c.expectEqual(RemoteMasker.mask("weird"), "weird")
@@ -22,14 +22,14 @@ let settingsChecks: [Check] = [
     },
     Check("TeamSettingsModel loads status, mints invites through rt, loads the uninstall dry-run — exact argv, no stdin") { c in
         let rt = ScriptedRt()
-        rt.answers["team status"] = (0, #"{"contract":1,"name":"Assured","slug":"assured","remote":"git@github.com:assured/mattstack-team-assured.git","lastPush":"2026-08-21T03:00:00Z","members":[{"username":"matt"},{"username":"bob"}]}"#)
+        rt.answers["team status"] = (0, #"{"contract":1,"name":"Acme","slug":"acme","remote":"git@github.com:acme/mattstack-team-acme.git","lastPush":"2026-08-21T03:00:00Z","members":[{"username":"matt"},{"username":"bob"}]}"#)
         rt.answers["team invite --handle bob"] = (0, #"{"contract":1,"code":"ABCD","expiresAt":"2026-08-28T00:00:00Z","pasteBlock":"Install mattstack…","forgeAccess":"granted","manualSteps":[]}"#)
         rt.answers["uninstall --dry-run"] = (0, #"{"contract":1,"actions":[{"id":"services.unregister","title":"Stop services"}]}"#)
         let m = await MainActor.run { makeTeamSettings(rt).0 }
         await m.load()
         await MainActor.run {
-            c.expectEqual(m.info?.name, "Assured")
-            c.expectEqual(m.maskedRemote, "github.com/assured/mattstack-team-assured")
+            c.expectEqual(m.info?.name, "Acme")
+            c.expectEqual(m.maskedRemote, "github.com/acme/mattstack-team-acme")
         }
         try c.require(rt.calls.count >= 1, "expected a team status call")
         c.expectEqual(rt.calls[0].args, ["team", "status", "--json"])
@@ -84,11 +84,11 @@ let settingsChecks: [Check] = [
             c.expectEqual(m.error, "rt team status failed (exit 1).", "a non-2 exit must surface rt's failureCopy, never fall through to a generic \"unexpected reply\"")
             c.expect(m.info == nil)
         }
-        rt.answers["team status"] = (0, #"{"contract":1,"name":"Assured"}"#)
+        rt.answers["team status"] = (0, #"{"contract":1,"name":"Acme"}"#)
         await m.load()
         await MainActor.run {
             c.expectEqual(m.error, nil, "a later success must clear the earlier failure")
-            c.expectEqual(m.info?.name, "Assured")
+            c.expectEqual(m.info?.name, "Acme")
         }
     },
     Check("the uninstall stream performs its need events on the shared NeedBroker — rt polls those outcomes and would otherwise time out") { c in

@@ -56,12 +56,12 @@ describe("statusLines", () => {
       data: {
         pid: 1, uptime: 1000, watchedRepos: 1, cacheEntries: 0,
         freshness: {
-          "assured-dev": { state: "live", lastSyncedAt: new Date(NOW - 82_000).toISOString() },
+          "acme-dev": { state: "live", lastSyncedAt: new Date(NOW - 82_000).toISOString() },
           "quiet-repo": { state: "live", lastSyncedAt: null },
         },
       },
     });
-    expect(out).toContain("assured-dev live (82s ago)");
+    expect(out).toContain("acme-dev live (82s ago)");
     // A quiet-but-healthy repo must not read as broken.
     expect(out).toContain("quiet-repo live (no events yet)");
   });

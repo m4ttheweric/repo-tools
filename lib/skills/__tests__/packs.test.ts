@@ -16,13 +16,13 @@ function tmp(prefix: string): string {
 /** A directory marketplace serving two plugins: a flat team pack and a grouped one. */
 function makeMarketplaceFixture() {
   const market = tmp("rt-packs-market-");
-  const teamPack = join(market, "plugins", "claimview");
+  const teamPack = join(market, "plugins", "acme");
   const groupedPack = join(market, "plugins", "mattstack");
   const noSurface = join(market, "plugins", "current-time");
 
   writeFile(join(teamPack, "pack", "surface.jsonc"), `// flat pack\n{ "public": ["work"] }\n`);
   writeFile(join(teamPack, "skills", "work", "SKILL.md"), "---\nname: work\n---\nbody\n");
-  writeFile(join(teamPack, "attachments", "cvi-gates", "SKILL.md"), "---\nname: cvi-gates\n---\nbody\n");
+  writeFile(join(teamPack, "attachments", "qa-gates", "SKILL.md"), "---\nname: qa-gates\n---\nbody\n");
 
   writeFile(join(groupedPack, "surface.jsonc"), `{ "public": ["subagent-review-loop"] }\n`);
   writeFile(join(groupedPack, "skills", "review", "subagent-review-loop", "SKILL.md"), "---\nname: subagent-review-loop\n---\nbody\n");
@@ -34,7 +34,7 @@ function makeMarketplaceFixture() {
     join(market, ".claude-plugin", "marketplace.json"),
     JSON.stringify({
       plugins: [
-        { name: "claimview", source: "./plugins/claimview" },
+        { name: "acme", source: "./plugins/acme" },
         { name: "mattstack", source: "./plugins/mattstack" },
         { name: "current-time", source: "./plugins/current-time" },
       ],
@@ -60,12 +60,12 @@ describe("discoverPacks", () => {
   test("finds directory-marketplace plugins that carry a surface.jsonc, with layout and surface path", () => {
     const { settingsPath, teamPack, groupedPack } = makeMarketplaceFixture();
     const packs = discoverPacks({ settingsPath });
-    expect(packs.map((p) => p.name)).toEqual(["claimview", "mattstack"]);
+    expect(packs.map((p) => p.name)).toEqual(["acme", "mattstack"]);
 
-    const claimview = packs.find((p) => p.name === "claimview")!;
-    expect(claimview.dir).toBe(teamPack);
-    expect(claimview.layout).toBe("flat");
-    expect(claimview.surfacePath).toBe(join(teamPack, "pack", "surface.jsonc"));
+    const acme = packs.find((p) => p.name === "acme")!;
+    expect(acme.dir).toBe(teamPack);
+    expect(acme.layout).toBe("flat");
+    expect(acme.surfacePath).toBe(join(teamPack, "pack", "surface.jsonc"));
 
     const mattstack = packs.find((p) => p.name === "mattstack")!;
     expect(mattstack.dir).toBe(groupedPack);

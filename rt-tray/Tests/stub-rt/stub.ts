@@ -50,13 +50,13 @@ function plan(): unknown {
     row("tool.path", "info", "~/.local/bin first on PATH", "Install adds one PATH line to your shell rc.", true, "ready", "Fixed by Install", null),
   ];
   const accounts = [
-    row("account.gitlab", "account", "GitLab", "The team's merge requests live on gitlab.assured.com.", true,
-        stateGet("gitlab-connected") ? "ready" : "missing", stateGet("gitlab-connected") ? "token can see group assured" : null,
+    row("account.gitlab", "account", "GitLab", "The team's merge requests live on gitlab.example.com.", true,
+        stateGet("gitlab-connected") ? "ready" : "missing", stateGet("gitlab-connected") ? "token can see group acme" : null,
         { type: "connect", label: "Connect", integration: "gitlab",
           fields: [{ name: "token", label: "Personal access token", secret: true, hint: "scopes: read_api, read_user" }],
           alternatives: [] }),
   ];
-  const access = [row("access.team-repo", "access", "Team repo reachable", "github.com/assured/mattstack-team-assured", true, "ready", "ls-remote ok", null)];
+  const access = [row("access.team-repo", "access", "Team repo reachable", "github.com/acme/mattstack-team-acme", true, "ready", "ls-remote ok", null)];
   const tools = [
     row("tool.herdr", "tool", "herdr", "Runs the agents that do the work.", true, "ready", "0.9.2", null),
     row("tool.fast-browser", "tool", "Fast Browser", "Browser automation for evidence.", true, "needs-you", "extension not loaded",
@@ -70,10 +70,10 @@ function plan(): unknown {
   const installableScenario = ["join-happy", "create-happy", "apply-fail-retry", "restore", "uninstall", "perm-denied-then-granted"].includes(scenario);
   // accounts[0] and tools[1] are the fixed literal elements built above — non-null
   // is safe, not a runtime guess.
-  if (installableScenario) { accounts[0]!.status = "ready"; accounts[0]!.detail = "token can see group assured"; tools[1]!.status = "ready"; tools[1]!.detail = "extension loaded"; }
+  if (installableScenario) { accounts[0]!.status = "ready"; accounts[0]!.detail = "token can see group acme"; tools[1]!.status = "ready"; tools[1]!.detail = "extension loaded"; }
   const requiredMissing = [...mac, ...accounts, ...access, ...tools].filter((r) => r.required && r.status !== "ready").map((r) => r.id);
   return {
-    team: { slug: "assured", name: "Assured", mode },
+    team: { slug: "acme", name: "Acme", mode },
     groups: [
       { id: "mac", title: "Your Mac", rows: mac },
       { id: "accounts", title: "Accounts", rows: accounts },
@@ -145,23 +145,23 @@ async function apply() {
 const [a0, a1, a2] = args;
 if (a0 === "setup" && (a1 === "plan" || a1 === "status")) emit(plan());
 else if (a0 === "setup" && a1 === "apply") await apply();
-else if (a0 === "setup" && a1 === "github" && a2 === "status") emit({ integration: "github", status: "ready", detail: "gh authenticated as matt", scopesSeen: ["repo", "read:org"], handle: "matt", owners: ["matt", "assured"] });
+else if (a0 === "setup" && a1 === "github" && a2 === "status") emit({ integration: "github", status: "ready", detail: "gh authenticated as matt", scopesSeen: ["repo", "read:org"], handle: "matt", owners: ["matt", "acme"] });
 else if (a0 === "setup" && a1 === "intent" && a2 === "restore") emit({ ok: true, intent: "restore", repo: args[3] });
 else if (a0 === "setup" && a2 === "status") emit({ integration: a1, status: stateGet(`${a1}-connected`) ? "ready" : "missing", detail: null });
 else if (a0 === "setup" && a2 === "connect") {
   const body = await readStdinJSON();
   if (!body.token && !body.useGh) fail("no-token", "Paste a token or use gh.");
   stateBump(`${a1}-connected`);
-  emit({ integration: a1, status: "ready", detail: "token can see group assured", scopesSeen: ["read_api"] });
+  emit({ integration: a1, status: "ready", detail: "token can see group acme", scopesSeen: ["read_api"] });
 }
 else if (a0 === "team" && a1 === "create") emit({ slug: "my-team", name: args[2] ?? "My team", remote: "https://github.com/matt/mattstack-team-my-team.git", created: true });
 else if (a0 === "team" && a1 === "join") {
   const body = await readStdinJSON();
   if (!body.code) fail("invite-malformed", "Paste an invite code.");
-  if (scenario === "join-no-access") emit({ team: { slug: "assured", name: "Assured", owner: "matt" }, access: "denied", peering: "idle", message: "You don't have access yet: ask matt to grant you access to Assured." });
-  else emit({ team: { slug: "assured", name: "Assured", owner: "matt" }, access: "ok", peering: "idle", message: "Joining Assured (owner matt)" });
+  if (scenario === "join-no-access") emit({ team: { slug: "acme", name: "Acme", owner: "matt" }, access: "denied", peering: "idle", message: "You don't have access yet: ask matt to grant you access to Acme." });
+  else emit({ team: { slug: "acme", name: "Acme", owner: "matt" }, access: "ok", peering: "idle", message: "Joining Acme (owner matt)" });
 }
-else if (a0 === "team" && a1 === "status") emit({ slug: "assured", name: "Assured", remote: "git@github.com:assured/mattstack-team-assured.git", lastPush: "2026-08-21T03:00:00Z", members: [{ username: "matt" }, { username: "bob" }] });
+else if (a0 === "team" && a1 === "status") emit({ slug: "acme", name: "Acme", remote: "git@github.com:acme/mattstack-team-acme.git", lastPush: "2026-08-21T03:00:00Z", members: [{ username: "matt" }, { username: "bob" }] });
 else if (a0 === "team" && a1 === "invite") emit({ code: "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567", expiresAt: "2026-08-28T00:00:00Z",
   pasteBlock: "Install mattstack from https://github.com/m4ttstack/rt/releases, then open mattstack://join/ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567 or paste the code into Setup → Join a team.",
   forgeAccess: "granted", manualSteps: [] });

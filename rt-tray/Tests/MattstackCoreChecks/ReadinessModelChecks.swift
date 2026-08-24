@@ -75,7 +75,7 @@ func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: 
                 status: chrome, recheck: .manual),
     ]
     let missing = (rows1 + rows2).filter { $0.required && $0.status != .ready }.map(\.id)
-    return Plan(at: "t", team: TeamInfo(slug: "assured", name: "Assured", mode: .join),
+    return Plan(at: "t", team: TeamInfo(slug: "acme", name: "Acme", mode: .join),
                 groups: [PlanGroup(id: "mac", title: "Your Mac", rows: rows1), PlanGroup(id: "accounts", title: "Accounts", rows: rows2)],
                 canInstall: canInstallOverride ?? missing.isEmpty, requiredMissing: missing)
 }

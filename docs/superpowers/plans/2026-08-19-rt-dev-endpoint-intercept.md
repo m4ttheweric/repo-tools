@@ -264,19 +264,19 @@ const probes = (over: Partial<{ listeners: number[]; alive: number[]; unbindable
   canBind: (p: number) => !(over.unbindable ?? []).includes(p),
 });
 const claim = (worktree: string, port: number, pid?: number): EndpointClaim =>
-  ({ worktree, role: "adjuster", port, pid, ts: "2026-08-19T00:00:00Z" });
+  ({ worktree, role: "portal", port, pid, ts: "2026-08-19T00:00:00Z" });
 
 describe("resolveClaim", () => {
   test("first worktree gets the lowest bindable pool port", () => {
-    const r = resolveClaim([], "adjuster", role, "/wt/a", 111, probes());
+    const r = resolveClaim([], "portal", role, "/wt/a", 111, probes());
     if ("error" in r) throw new Error(r.error);
     expect(r.port).toBe(4001);
-    expect(r.claims[0]).toMatchObject({ worktree: "/wt/a", role: "adjuster", port: 4001, pid: 111 });
+    expect(r.claims[0]).toMatchObject({ worktree: "/wt/a", role: "portal", port: 4001, pid: 111 });
   });
 
   test("sticky: same worktree re-asks and gets its port back, pid re-stamped", () => {
     const existing = [claim("/wt/a", 4001, 111)];
-    const r = resolveClaim(existing, "adjuster", role, "/wt/a", 222, probes({ alive: [111] }));
+    const r = resolveClaim(existing, "portal", role, "/wt/a", 222, probes({ alive: [111] }));
     if ("error" in r) throw new Error(r.error);
     expect(r.port).toBe(4001);
     expect(r.claims.find((c) => c.worktree === "/wt/a")?.pid).toBe(222);
@@ -284,41 +284,41 @@ describe("resolveClaim", () => {
 
   test("second worktree skips a port owned by a LIVE claim (boot window: pid alive, port not listening yet)", () => {
     const existing = [claim("/wt/a", 4001, 111)];
-    const r = resolveClaim(existing, "adjuster", role, "/wt/b", 222, probes({ alive: [111] }));
+    const r = resolveClaim(existing, "portal", role, "/wt/b", 222, probes({ alive: [111] }));
     if ("error" in r) throw new Error(r.error);
     expect(r.port).toBe(5001);
   });
 
   test("a dead claim's port is reusable, and the dead OTHER-worktree row is pruned", () => {
     const existing = [claim("/wt/a", 4001, 111)]; // pid dead, port silent
-    const r = resolveClaim(existing, "adjuster", role, "/wt/b", 222, probes());
+    const r = resolveClaim(existing, "portal", role, "/wt/b", 222, probes());
     if ("error" in r) throw new Error(r.error);
     expect(r.port).toBe(4001);
     expect(r.claims.some((c) => c.worktree === "/wt/a")).toBe(false);
   });
 
   test("a foreign listener (no claim) blocks a port even when bindable-looking", () => {
-    const r = resolveClaim([], "adjuster", role, "/wt/a", 1, probes({ listeners: [4001] }));
+    const r = resolveClaim([], "portal", role, "/wt/a", 1, probes({ listeners: [4001] }));
     if ("error" in r) throw new Error(r.error);
     expect(r.port).toBe(5001);
   });
 
   test("own listening port is reusable on restart (self-claim survival)", () => {
     const existing = [claim("/wt/a", 4001)]; // no pid recorded, but the port listens = ours, live
-    const r = resolveClaim(existing, "adjuster", role, "/wt/a", 9, probes({ listeners: [4001] }));
+    const r = resolveClaim(existing, "portal", role, "/wt/a", 9, probes({ listeners: [4001] }));
     if ("error" in r) throw new Error(r.error);
     expect(r.port).toBe(4001);
   });
 
   test("bind-probe veto: claimed-nothing, listening-nothing, but unbindable → skipped", () => {
-    const r = resolveClaim([], "adjuster", role, "/wt/a", 1, probes({ unbindable: [4001] }));
+    const r = resolveClaim([], "portal", role, "/wt/a", 1, probes({ unbindable: [4001] }));
     if ("error" in r) throw new Error(r.error);
     expect(r.port).toBe(5001);
   });
 
   test("pool exhaustion names the role", () => {
-    const r = resolveClaim([], "adjuster", { ...role, pool: [4001] }, "/wt/b", 2, probes({ listeners: [4001] }));
-    expect(r).toEqual({ error: 'no free port in pool for role "adjuster" (1 declared, 0 free)' });
+    const r = resolveClaim([], "portal", { ...role, pool: [4001] }, "/wt/b", 2, probes({ listeners: [4001] }));
+    expect(r).toEqual({ error: 'no free port in pool for role "portal" (1 declared, 0 free)' });
   });
 
   test("fixedPort role allocates nothing and returns the fixed port", () => {
@@ -416,7 +416,7 @@ function declareRoles(repo: string): void {
   writeFileSync(join(repoDataDir(repo), "config.json"), JSON.stringify({
     roles: {
       backend: { pool: [{ from: 10400, to: 10402 }], env: { PORT: "${port}" } },
-      adjuster: { pool: [4001, 5001], needs: ["backend"] },
+      portal: { pool: [4001, 5001], needs: ["backend"] },
     },
   }));
 }
@@ -427,7 +427,7 @@ describe("endpoint handlers", () => {
 
   test("claim allocates, lookup sees it, refs pull the needed role into existence", async () => {
     declareRoles("repoA");
-    const r = await handlers["endpoint:claim"]({ repo: "repoA", worktree: "/wt/a", role: "adjuster", pid: 7 });
+    const r = await handlers["endpoint:claim"]({ repo: "repoA", worktree: "/wt/a", role: "portal", pid: 7 });
     expect(r.ok).toBe(true);
     expect(r.data.port).toBe(4001);
     expect(r.data.url).toBe("http://localhost:4001");
@@ -516,7 +516,7 @@ export async function runRoleHook(hook: string, input: HookInput, timeoutMs?: nu
 import { describe, expect, test } from "bun:test";
 import { applyArgInject, collectPreservedKeys, renderEnvTemplates, runRoleHook } from "../env.ts";
 
-const alloc = { role: "adjuster", port: 5001, refs: { backend: { port: 10400, url: "http://localhost:10400", running: true } } };
+const alloc = { role: "portal", port: 5001, refs: { backend: { port: 10400, url: "http://localhost:10400", running: true } } };
 
 test("renders ${port} and ${roles.X.port}; unknown refs render empty and warn-free", () => {
   expect(renderEnvTemplates({ PORT: "${port}", EP: "http://localhost:${roles.backend.port}", BAD: "${roles.nope.port}" }, alloc))
@@ -538,7 +538,7 @@ test("applyArgInject inserts after the anchor arg unless the skip marker is pres
 
 test("runRoleHook round-trips JSON and fails open on a broken hook", async () => {
   const echo = await runRoleHook(`bun -e 'const i=await new Response(Bun.stdin.stream()).json(); console.log(JSON.stringify({env:{HOOKED: String(i.port)}}))'`,
-    { worktree: "/wt/a", role: "adjuster", port: 5001, refs: {}, env: {} });
+    { worktree: "/wt/a", role: "portal", port: 5001, refs: {}, env: {} });
   expect(echo).toEqual({ env: { HOOKED: "5001" } });
   expect(await runRoleHook("false", { worktree: "/w", role: "r", port: 1, refs: {}, env: {} })).toBeNull();
   expect(await runRoleHook("sleep 30", { worktree: "/w", role: "r", port: 1, refs: {}, env: {} }, 200)).toBeNull();
@@ -611,19 +611,19 @@ test("shimPath refuses the rt name and path separators", () => {
 });
 
 const rules = [{
-  command: "doppler", repo: "assured-dev", repoRemote: "git@x:assured/assured-dev.git",
+  command: "doppler", repo: "acme-dev", repoRemote: "git@x:acme/acme-dev.git",
   matches: [{ cwdGlob: "apps/backend{,/**}", argPattern: "src/app/server", role: "backend" }],
 }];
 
 describe("matchInvocation", () => {
-  const base = { command: "doppler", args: ["run", "--", "bun", "src/app/server.ts"], cwd: "/wt/a/apps/backend", toplevel: "/wt/a", remote: "git@x:assured/assured-dev.git" };
+  const base = { command: "doppler", args: ["run", "--", "bun", "src/app/server.ts"], cwd: "/wt/a/apps/backend", toplevel: "/wt/a", remote: "git@x:acme/acme-dev.git" };
   test("hits on cwdGlob + argPattern + remote", () => {
     expect(matchInvocation(rules, base)?.match.role).toBe("backend");
   });
   test("misses on wrong remote, no toplevel, wrong dir, non-matching args, unknown command", () => {
     expect(matchInvocation(rules, { ...base, remote: "git@x:other/repo.git" })).toBeNull();
     expect(matchInvocation(rules, { ...base, toplevel: null })).toBeNull();
-    expect(matchInvocation(rules, { ...base, cwd: "/wt/a/apps/adjuster" })).toBeNull();
+    expect(matchInvocation(rules, { ...base, cwd: "/wt/a/apps/portal" })).toBeNull();
     expect(matchInvocation(rules, { ...base, args: ["run", "--", "jest"] })).toBeNull();
     expect(matchInvocation(rules, { ...base, command: "pnpm" })).toBeNull();
   });
@@ -884,9 +884,9 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 ---
 
-## Explicitly out of scope (follow-up ticket in claimview-tools)
+## Explicitly out of scope (follow-up ticket in acme-tools)
 
-The assured adapter: overlay config values for assured-dev (Auth0 pool, doppler matches, REACT_APP_* env templates), the pack hook script (config.js write + token-capture NODE_OPTIONS), migration from `~/.assured/dev-ports.state.json`, retiring the old `~/.local/bin/doppler` shim, and thinning `@assured/dev-ports`. rt ships generic; the e2e synthetic repo is the proof.
+The acme adapter: overlay config values for acme-dev (Auth0 pool, doppler matches, REACT_APP_* env templates), the pack hook script (config.js write + token-capture NODE_OPTIONS), migration from `~/.acme/dev-ports.state.json`, retiring the old `~/.local/bin/doppler` shim, and thinning `@acme/dev-ports`. rt ships generic; the e2e synthetic repo is the proof.
 
 ## Self-review notes
 

@@ -340,7 +340,7 @@ async function teamToolRow(p: Probes, req: ToolRequirement, hasBrew: boolean): P
 
 // ─── pack.<pack> ────────────────────────────────────────────────────────────
 
-/** Anchored at the entry's own start (start of line, optional leading whitespace) so a pack named "view" can never match inside "claimview@assured". */
+/** Anchored at the entry's own start (start of line, optional leading whitespace) so a pack named "view" can never match inside "acme@acme". */
 function pluginListHasPack(stdout: string, pack: string): boolean {
   const needle = `${pack}@`;
   return stdout.split("\n").some((line) => line.trim().startsWith(needle));

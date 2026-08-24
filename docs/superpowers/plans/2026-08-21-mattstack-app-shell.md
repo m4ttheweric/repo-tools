@@ -250,7 +250,7 @@ import MattstackCore
 
 let samplePlanJSON = """
 { "contract": 1, "at": "2026-08-21T04:00:00Z",
-  "team": { "slug": "assured", "name": "Assured", "mode": "join" },
+  "team": { "slug": "acme", "name": "Acme", "mode": "join" },
   "groups": [
     { "id": "mac", "title": "Your Mac", "rows": [
       { "id": "perm.fda", "kind": "permission", "title": "Full Disk Access",
@@ -261,7 +261,7 @@ let samplePlanJSON = """
       { "id": "tool.clt", "kind": "tool", "title": "Apple command line tools", "why": "git and python3.",
         "required": true, "optionalNote": null, "status": "ready", "detail": "git 2.50.1", "action": null, "recheck": "on-change" } ] },
     { "id": "accounts", "title": "Accounts", "rows": [
-      { "id": "account.gitlab", "kind": "account", "title": "GitLab", "why": "MRs live on gitlab.assured.com.",
+      { "id": "account.gitlab", "kind": "account", "title": "GitLab", "why": "MRs live on gitlab.example.com.",
         "required": true, "optionalNote": null, "status": "missing", "detail": null,
         "action": { "type": "connect", "label": "Connect", "integration": "gitlab",
                     "fields": [ { "name": "token", "label": "Personal access token", "secret": true, "hint": "scopes: read_api, read_user" } ],
@@ -1293,7 +1293,7 @@ test("team join --dry-run reads the code from stdin; no-access is exit 0 {access
   const happy = await run("join-happy", ["team", "join", "--dry-run", "--json"], JSON.stringify({ code: "ABCD-EFGH" }));
   expect(happy.code).toBe(0);
   expect(happy.lines[0].access).toBe("ok");
-  expect(happy.lines[0].team.name).toBe("Assured");
+  expect(happy.lines[0].team.name).toBe("Acme");
   const denied = await run("join-no-access", ["team", "join", "--dry-run", "--json"], JSON.stringify({ code: "ABCD-EFGH" }));
   expect(denied.code).toBe(0);
   expect(denied.lines[0].access).toBe("denied");
@@ -1333,11 +1333,11 @@ test("uninstall --dry-run lists L1's action ids; --delete-data needs --yes; vers
 
 test("team status and setup github status answer the contract shapes", async () => {
   const ts = await run("join-happy", ["team", "status", "--json"]);
-  expect(ts.lines[0].slug).toBe("assured");
+  expect(ts.lines[0].slug).toBe("acme");
   expect(ts.lines[0].members[0].username).toBe("matt");
   const gh = await run("join-happy", ["setup", "github", "status", "--json"]);
   expect(gh.lines[0].handle).toBe("matt");
-  expect(gh.lines[0].owners).toContain("assured");
+  expect(gh.lines[0].owners).toContain("acme");
 });
 ```
 
@@ -1399,13 +1399,13 @@ function plan(): unknown {
     row("tool.path", "info", "~/.local/bin first on PATH", "Install adds one PATH line to your shell rc.", true, "ready", "Fixed by Install", null),
   ];
   const accounts = [
-    row("account.gitlab", "account", "GitLab", "The team's merge requests live on gitlab.assured.com.", true,
-        stateGet("gitlab-connected") ? "ready" : "missing", stateGet("gitlab-connected") ? "token can see group assured" : null,
+    row("account.gitlab", "account", "GitLab", "The team's merge requests live on gitlab.example.com.", true,
+        stateGet("gitlab-connected") ? "ready" : "missing", stateGet("gitlab-connected") ? "token can see group acme" : null,
         { type: "connect", label: "Connect", integration: "gitlab",
           fields: [{ name: "token", label: "Personal access token", secret: true, hint: "scopes: read_api, read_user" }],
           alternatives: [] }),
   ];
-  const access = [row("access.team-repo", "access", "Team repo reachable", "github.com/assured/mattstack-team-assured", true, "ready", "ls-remote ok", null)];
+  const access = [row("access.team-repo", "access", "Team repo reachable", "github.com/acme/mattstack-team-acme", true, "ready", "ls-remote ok", null)];
   const tools = [
     row("tool.herdr", "tool", "herdr", "Runs the agents that do the work.", true, "ready", "0.9.2", null),
     row("tool.fast-browser", "tool", "Fast Browser", "Browser automation for evidence.", true, "needs-you", "extension not loaded",
@@ -1417,9 +1417,9 @@ function plan(): unknown {
   // join-happy and create-happy are installable out of the box so flows can reach Install without connecting anything.
   const installableScenario = ["join-happy", "create-happy", "apply-fail-retry", "restore", "uninstall"].includes(scenario);
   const requiredMissing = installableScenario ? [] : required;
-  if (installableScenario) { accounts[0].status = "ready"; accounts[0].detail = "token can see group assured"; tools[1].status = "ready"; tools[1].detail = "extension loaded"; }
+  if (installableScenario) { accounts[0].status = "ready"; accounts[0].detail = "token can see group acme"; tools[1].status = "ready"; tools[1].detail = "extension loaded"; }
   return {
-    team: { slug: "assured", name: "Assured", mode },
+    team: { slug: "acme", name: "Acme", mode },
     groups: [
       { id: "mac", title: "Your Mac", rows: mac },
       { id: "accounts", title: "Accounts", rows: accounts },
@@ -1472,23 +1472,23 @@ async function apply() {
 const [a0, a1, a2] = args;
 if (a0 === "setup" && (a1 === "plan" || a1 === "status")) emit(plan());
 else if (a0 === "setup" && a1 === "apply") await apply();
-else if (a0 === "setup" && a1 === "github" && a2 === "status") emit({ integration: "github", status: "ready", detail: "gh authenticated as matt", scopesSeen: ["repo", "read:org"], handle: "matt", owners: ["matt", "assured"] });
+else if (a0 === "setup" && a1 === "github" && a2 === "status") emit({ integration: "github", status: "ready", detail: "gh authenticated as matt", scopesSeen: ["repo", "read:org"], handle: "matt", owners: ["matt", "acme"] });
 else if (a0 === "setup" && a1 === "intent" && a2 === "restore") emit({ ok: true, intent: "restore", repo: args[3] });
 else if (a0 === "setup" && a2 === "status") emit({ integration: a1, status: stateGet(`${a1}-connected`) ? "ready" : "missing", detail: null });
 else if (a0 === "setup" && a2 === "connect") {
   const body = await readStdinJSON();
   if (!body.token && !body.useGh) fail("no-token", "Paste a token or use gh.");
   stateBump(`${a1}-connected`);
-  emit({ integration: a1, status: "ready", detail: "token can see group assured", scopesSeen: ["read_api"] });
+  emit({ integration: a1, status: "ready", detail: "token can see group acme", scopesSeen: ["read_api"] });
 }
 else if (a0 === "team" && a1 === "create") emit({ team: { slug: "my-team", name: args[2] ?? "My team" }, remote: "ok" });
 else if (a0 === "team" && a1 === "join") {
   const body = await readStdinJSON();
   if (!body.code) fail("invite-malformed", "Paste an invite code.");
-  if (scenario === "join-no-access") emit({ team: { slug: "assured", name: "Assured", owner: "matt" }, access: "denied", peering: "idle", message: "You don't have access yet: ask matt to grant you access to Assured." });
-  else emit({ team: { slug: "assured", name: "Assured", owner: "matt" }, access: "ok", peering: "idle", message: "Joining Assured (owner matt)" });
+  if (scenario === "join-no-access") emit({ team: { slug: "acme", name: "Acme", owner: "matt" }, access: "denied", peering: "idle", message: "You don't have access yet: ask matt to grant you access to Acme." });
+  else emit({ team: { slug: "acme", name: "Acme", owner: "matt" }, access: "ok", peering: "idle", message: "Joining Acme (owner matt)" });
 }
-else if (a0 === "team" && a1 === "status") emit({ slug: "assured", name: "Assured", remote: "git@github.com:assured/mattstack-team-assured.git", lastPush: "2026-08-21T03:00:00Z", members: [{ username: "matt" }, { username: "bob" }] });
+else if (a0 === "team" && a1 === "status") emit({ slug: "acme", name: "Acme", remote: "git@github.com:acme/mattstack-team-acme.git", lastPush: "2026-08-21T03:00:00Z", members: [{ username: "matt" }, { username: "bob" }] });
 else if (a0 === "team" && a1 === "invite") emit({ code: "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567", expiresAt: "2026-08-28T00:00:00Z",
   pasteBlock: "Install mattstack from https://github.com/m4ttstack/rt/releases, then open mattstack://join/ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567 or paste the code into Setup → Join a team.",
   forgeAccess: "granted", manualSteps: [] });
@@ -1590,7 +1590,7 @@ func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: 
                 status: chrome, recheck: .manual),
     ]
     let missing = (rows1 + rows2).filter { $0.required && $0.status != .ready }.map(\.id)
-    return Plan(at: "t", team: TeamInfo(slug: "assured", name: "Assured", mode: .join),
+    return Plan(at: "t", team: TeamInfo(slug: "acme", name: "Acme", mode: .join),
                 groups: [PlanGroup(id: "mac", title: "Your Mac", rows: rows1), PlanGroup(id: "accounts", title: "Accounts", rows: rows2)],
                 canInstall: missing.isEmpty, requiredMissing: missing)
 }
@@ -4172,52 +4172,52 @@ final class ScriptedRt: RtRunning, @unchecked Sendable {
 
 let teamChoiceChecks: [Check] = [
     Check("Slug.make") { c in
-        c.expectEqual(Slug.make("Assured Claims!"), "assured-claims")
+        c.expectEqual(Slug.make("Acme Claims!"), "acme-svc")
         c.expectEqual(Slug.make("  My  Team -- 2 "), "my-team-2")
         c.expectEqual(Slug.make(""), "")
     },
     Check("create: slug preview, gh owner picker from github status, canContinue needs name + remote") { c in
         let rt = ScriptedRt()
-        rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","assured"]}"#)
+        rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","acme"]}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
         await m.loadGitHubStatus()
         await MainActor.run {
             c.expectEqual(m.ghHandle, "m4ttheweric")
-            c.expectEqual(m.ghOwners, ["m4ttheweric", "assured"])
+            c.expectEqual(m.ghOwners, ["m4ttheweric", "acme"])
             c.expectEqual(m.useGhRepo, true)
             c.expectEqual(m.ghOwner, "m4ttheweric")
             c.expectEqual(m.canContinue, false)
-            m.teamName = "Assured Claims"
-            c.expectEqual(m.slugPreview, "assured-claims")
-            c.expectEqual(m.ghRepoPreview, "m4ttheweric/mattstack-team-assured-claims")
+            m.teamName = "Acme Claims"
+            c.expectEqual(m.slugPreview, "acme-svc")
+            c.expectEqual(m.ghRepoPreview, "m4ttheweric/mattstack-team-acme-claims")
             c.expectEqual(m.canContinue, true)
             m.useGhRepo = false
             c.expectEqual(m.canContinue, false, "URL field now required")
-            m.remoteURL = "git@gitlab.assured.com:tools/mattstack-team.git"
+            m.remoteURL = "git@gitlab.example.com:tools/mattstack-team.git"
             c.expectEqual(m.canContinue, true)
         }
     },
     Check("create: validateAndPrepare calls home init --dry-run then team create, never with secrets on argv") { c in
         let rt = ScriptedRt()
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"assured-claims","name":"Assured Claims"},"remote":"ok"}"#)
+        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
-        await MainActor.run { m.choice = .create; m.teamName = "Assured Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
+        await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
         let err = await m.validateAndPrepare()
         c.expect(err == nil, "got \(err ?? "")")
         c.expectEqual(rt.calls[0].args.prefix(3), ["home", "init", "--dry-run"])
-        c.expectEqual(rt.calls[1].args, ["team", "create", "Assured Claims", "--remote", "https://example.com/t.git", "--others", "--json"])
+        c.expectEqual(rt.calls[1].args, ["team", "create", "Acme Claims", "--remote", "https://example.com/t.git", "--others", "--json"])
         let gh = ScriptedRt()
         gh.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        gh.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"assured-claims","name":"Assured Claims"},"remote":"ok"}"#)
+        gh.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
         let m2 = await MainActor.run { TeamChoiceModel(rt: gh) }
-        await MainActor.run { m2.choice = .create; m2.teamName = "Assured Claims"; m2.useGhRepo = true; m2.ghOwner = "assured"; m2.othersWillJoin = false }
+        await MainActor.run { m2.choice = .create; m2.teamName = "Acme Claims"; m2.useGhRepo = true; m2.ghOwner = "acme"; m2.othersWillJoin = false }
         c.expect(await m2.validateAndPrepare() == nil)
-        c.expectEqual(gh.calls[1].args, ["team", "create", "Assured Claims", "--create-repo", "assured", "--json"])
+        c.expectEqual(gh.calls[1].args, ["team", "create", "Acme Claims", "--create-repo", "acme", "--json"])
     },
     Check("join: code goes on stdin; success summary; failure copy is specific") { c in
         let rt = ScriptedRt()
-        rt.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"assured","name":"Assured","owner":"matt"},"access":"ok","peering":"idle","message":"Joining Assured (owner matt)"}"#)
+        rt.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"ok","peering":"idle","message":"Joining Acme (owner matt)"}"#)
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
         await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
@@ -4226,13 +4226,13 @@ let teamChoiceChecks: [Check] = [
         c.expectEqual(rt.calls[0].args, ["team", "join", "--dry-run", "--json"])
         c.expectEqual(rt.calls[0].stdin, "{\"code\":\"ABCD-EFGH\"}")
         c.expect(rt.calls.allSatisfy { !$0.args.contains("ABCD-EFGH") }, "code never on argv")
-        await MainActor.run { c.expectEqual(m.joinSummary, "Joining Assured (owner matt)") }
+        await MainActor.run { c.expectEqual(m.joinSummary, "Joining Acme (owner matt)") }
         let denied = ScriptedRt()
-        denied.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"assured","name":"Assured","owner":"matt"},"access":"denied","peering":"idle","message":"You don't have access yet: ask matt to grant you access to Assured."}"#)
+        denied.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"denied","peering":"idle","message":"You don't have access yet: ask matt to grant you access to Acme."}"#)
         let m2 = await MainActor.run { TeamChoiceModel(rt: denied) }
         await MainActor.run { m2.choice = .join; m2.inviteCode = "X" }
         let e2 = await m2.validateAndPrepare()
-        c.expectEqual(e2, "You don't have access yet: ask matt to grant you access to Assured.", "access != ok comes back as an exit-0 result, not a user error")
+        c.expectEqual(e2, "You don't have access yet: ask matt to grant you access to Acme.", "access != ok comes back as an exit-0 result, not a user error")
         let unknown = ScriptedRt()
         unknown.answers["team join --dry-run"] = (2, #"{"contract":1,"error":{"code":"invite-unknown","message":""}}"#)
         let m3 = await MainActor.run { TeamChoiceModel(rt: unknown) }
@@ -4472,7 +4472,7 @@ struct TeamScreen: View {
 
     private var createFields: some View {
         Form {
-            TextField("Team name", text: $model.teamName, prompt: Text("Assured")).accessibilityIdentifier(AXID.teamCreateName)
+            TextField("Team name", text: $model.teamName, prompt: Text("Acme")).accessibilityIdentifier(AXID.teamCreateName)
             LabeledContent("Slug") { Text(model.slugPreview.isEmpty ? "—" : model.slugPreview).foregroundStyle(.secondary) }
             Toggle("Others will join later", isOn: $model.othersWillJoin).accessibilityIdentifier(AXID.teamCreateOthers)
             if model.ghHandle != nil {
@@ -5092,7 +5092,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/Tests/MattstackCoreChecks/SettingsChecks.swift`; modify `AllChecks.swift`
 
 **Interfaces:**
-- Produces (Core): `public enum RemoteMasker { static func mask(_ remote: String) -> String }` (`git@gitlab.assured.com:tools/team.git` → `gitlab.assured.com/tools/team`; `https://github.com/o/r.git` → `github.com/o/r`; garbage → as-is); `public struct TeamSettingsInfo: Codable { name: String?; slug: String?; remote: String?; lastPush: String?; members: [Member]? }` with `Member { username: String }` (from `rt team status [--team <slug>] --json` → `{contract, slug, name, remote, lastPush, members:[{username}]}` — L1 T19 / contract); `@MainActor public final class TeamSettingsModel: ObservableObject` — `init(rt: RtRunning)`; `@Published info: TeamSettingsInfo?`, `invite: InviteResult?`, `error: String?`, `uninstallPlan: UninstallPlan?`; `func load() async`; `func mintInvite(handle: String) async`; `func loadUninstallPlan() async`; `func uninstall(keepData: Bool) -> AsyncThrowingStream<String, Error>`.
+- Produces (Core): `public enum RemoteMasker { static func mask(_ remote: String) -> String }` (`git@gitlab.example.com:tools/team.git` → `gitlab.example.com/tools/team`; `https://github.com/o/r.git` → `github.com/o/r`; garbage → as-is); `public struct TeamSettingsInfo: Codable { name: String?; slug: String?; remote: String?; lastPush: String?; members: [Member]? }` with `Member { username: String }` (from `rt team status [--team <slug>] --json` → `{contract, slug, name, remote, lastPush, members:[{username}]}` — L1 T19 / contract); `@MainActor public final class TeamSettingsModel: ObservableObject` — `init(rt: RtRunning)`; `@Published info: TeamSettingsInfo?`, `invite: InviteResult?`, `error: String?`, `uninstallPlan: UninstallPlan?`; `func load() async`; `func mintInvite(handle: String) async`; `func loadUninstallPlan() async`; `func uninstall(keepData: Bool) -> AsyncThrowingStream<String, Error>`.
 - Produces (app): `SettingsWindowController` (`show(pane:)`, remembers last pane in UserDefaults `MSSettingsPane`), `SettingsView` with `TabView` of the four panes, `enum SettingsPane: String { general, permissions, team, uninstall }`.
 
 - [ ] **Step 1: Failing checks**
@@ -5104,21 +5104,21 @@ import MattstackCore
 
 let settingsChecks: [Check] = [
     Check("RemoteMasker shows host + repo only") { c in
-        c.expectEqual(RemoteMasker.mask("git@gitlab.assured.com:tools/mattstack-team.git"), "gitlab.assured.com/tools/mattstack-team")
+        c.expectEqual(RemoteMasker.mask("git@gitlab.example.com:tools/mattstack-team.git"), "gitlab.example.com/tools/mattstack-team")
         c.expectEqual(RemoteMasker.mask("https://user:token@github.com/m4ttheweric/mattstack-home.git"), "github.com/m4ttheweric/mattstack-home")
         c.expectEqual(RemoteMasker.mask("ssh://git@github.com:22/o/r"), "github.com/o/r")
         c.expectEqual(RemoteMasker.mask("weird"), "weird")
     },
     Check("TeamSettingsModel loads status, mints invites through rt, loads the uninstall dry-run") { c in
         let rt = ScriptedRt()
-        rt.answers["team status"] = (0, #"{"contract":1,"name":"Assured","slug":"assured","remote":"git@github.com:assured/mattstack-team-assured.git","lastPush":"2026-08-21T03:00:00Z","members":[{"username":"matt"},{"username":"bob"}]}"#)
+        rt.answers["team status"] = (0, #"{"contract":1,"name":"Acme","slug":"acme","remote":"git@github.com:acme/mattstack-team-acme.git","lastPush":"2026-08-21T03:00:00Z","members":[{"username":"matt"},{"username":"bob"}]}"#)
         rt.answers["team invite --handle bob"] = (0, #"{"contract":1,"code":"ABCD","expiresAt":"2026-08-28T00:00:00Z","pasteBlock":"Install mattstack…","forgeAccess":"granted","manualSteps":[]}"#)
         rt.answers["uninstall --dry-run"] = (0, #"{"contract":1,"actions":[{"id":"services.unregister","title":"Stop services"}]}"#)
         let m = await MainActor.run { TeamSettingsModel(rt: rt) }
         await m.load()
         await MainActor.run {
-            c.expectEqual(m.info?.name, "Assured")
-            c.expectEqual(m.maskedRemote, "github.com/assured/mattstack-team-assured")
+            c.expectEqual(m.info?.name, "Acme")
+            c.expectEqual(m.maskedRemote, "github.com/acme/mattstack-team-acme")
         }
         await m.mintInvite(handle: "bob")
         await MainActor.run { c.expectEqual(m.invite?.code, "ABCD") }
@@ -5956,8 +5956,8 @@ final class SetupFlowUITests: XCTestCase {
         waitFor("setup.team.screen")
         el("setup.team.card.create").click()
         el("setup.team.create.name").click()
-        el("setup.team.create.name").typeText("Assured Claims")
-        XCTAssertTrue(app.staticTexts["assured-claims"].waitForExistence(timeout: 3))
+        el("setup.team.create.name").typeText("Acme Claims")
+        XCTAssertTrue(app.staticTexts["acme-svc"].waitForExistence(timeout: 3))
         el("setup.team.create.remote").click()
         el("setup.team.create.remote").typeText("https://example.com/empty.git")
         el("setup.team.continue").click()
@@ -5971,7 +5971,7 @@ final class SetupFlowUITests: XCTestCase {
         el("setup.team.join.code").click()
         el("setup.team.join.code").typeText("ABCD")
         el("setup.team.continue").click()
-        XCTAssertTrue(app.staticTexts["You don't have access yet: ask matt to grant you access to Assured."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["You don't have access yet: ask matt to grant you access to Acme."].waitForExistence(timeout: 10))
         XCTAssertFalse(el("setup.checklist.screen").exists)
     }
 

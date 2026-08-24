@@ -11,10 +11,10 @@ describe("readProjectMRs", () => {
       "project-mrs:read": { ok: true, data: { mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 } },
     });
     stops.push(stop);
-    await readProjectMRs("assured-dev", undefined, { sockPath: sock });
-    await readProjectMRs("assured-dev", 0, { sockPath: sock });
-    expect(seen[0]!.payload).toEqual({ repoName: "assured-dev" });
-    expect(seen[1]!.payload).toEqual({ repoName: "assured-dev", maxAgeMs: 0 });
+    await readProjectMRs("acme-dev", undefined, { sockPath: sock });
+    await readProjectMRs("acme-dev", 0, { sockPath: sock });
+    expect(seen[0]!.payload).toEqual({ repoName: "acme-dev" });
+    expect(seen[1]!.payload).toEqual({ repoName: "acme-dev", maxAgeMs: 0 });
   });
 
   test("demand rides the read payload when given", async () => {
@@ -43,9 +43,9 @@ describe("readDiscussions", () => {
       "discussions:read": { ok: true, data: { discussions: [], fetchedAt: 1, stale: false } },
     });
     stops.push(stop);
-    const res = await readDiscussions("assured-dev", 42, { sockPath: sock });
+    const res = await readDiscussions("acme-dev", 42, { sockPath: sock });
     expect(res.ok).toBe(true);
-    expect(seen[0]!.payload).toEqual({ repoName: "assured-dev", iid: 42 });
+    expect(seen[0]!.payload).toEqual({ repoName: "acme-dev", iid: 42 });
   });
 });
 
@@ -55,9 +55,9 @@ describe("readMrsByBranch", () => {
       "mr:by-branch": { ok: true, data: { byBranch: {}, syncedAt: 1 } },
     });
     stops.push(stop);
-    const res = await readMrsByBranch("assured-dev", ["feat-a", "feat-b"], { sockPath: sock });
+    const res = await readMrsByBranch("acme-dev", ["feat-a", "feat-b"], { sockPath: sock });
     expect(res.ok).toBe(true);
-    expect(seen[0]!.payload).toEqual({ repoName: "assured-dev", branches: ["feat-a", "feat-b"] });
+    expect(seen[0]!.payload).toEqual({ repoName: "acme-dev", branches: ["feat-a", "feat-b"] });
   });
 });
 

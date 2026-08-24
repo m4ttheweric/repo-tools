@@ -111,7 +111,7 @@ test("lastEventAt is the newest of stage, field, and decision timestamps", () =>
   const t = lastEventAt(
     run({ started_at: NOW - 100_000 }),
     [stage({ started_at: NOW - 90_000, ended_at: NOW - 80_000 })],
-    [field("ticket", "CV-1")], // field() stamps `at: NOW`, the newest of the three
+    [field("ticket", "ACME-1")], // field() stamps `at: NOW`, the newest of the three
     [{ contract: "c@1", scope: "run", selection: "{}", decided_by: "stage-plan", decided_at: NOW - 50_000 }],
   );
   expect(t).toBe(NOW);
@@ -123,8 +123,8 @@ test("lastEventAt falls back to started_at for a run with no recorded events", (
 });
 
 test("fieldValue returns the value for a present key, null when the field is absent", () => {
-  const fields = [field("ticket", "CV-1"), field("branch", "goodwin/mat-1")];
-  expect(fieldValue(fields, "ticket")).toBe("CV-1");
+  const fields = [field("ticket", "ACME-1"), field("branch", "goodwin/mat-1")];
+  expect(fieldValue(fields, "ticket")).toBe("ACME-1");
   expect(fieldValue(fields, "branch")).toBe("goodwin/mat-1");
   expect(fieldValue(fields, "mr")).toBeNull();
   expect(fieldValue([], "ticket")).toBeNull();

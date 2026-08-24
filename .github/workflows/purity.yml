@@ -1,0 +1,21 @@
+name: Repo purity
+
+# rt is a public, general-purpose developer tool. This gate keeps employer,
+# customer, and internal-system references out of the tracked tree on every PR
+# and every push to main. It exists because the bar was crossed once: rt was
+# public for six months carrying an internal GitLab host, real ticket ids, and
+# two named customers in test fixtures. A word list cannot certify what it was
+# never told to look for -- extend scripts/repo-purity.sh when a new term appears.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  purity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: No employer or domain references in the tracked tree
+        run: scripts/repo-purity.sh

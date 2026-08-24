@@ -49,12 +49,12 @@ describe("recordRecent", () => {
     const now = () => new Date("2026-07-01T12:00:00Z");
     // Old connector-model recent, then reconnect via the new scan model:
     // different key, same underlying resource.
-    recordRecent({ key: "assured:progressive-qa", label: "progressive-qa", sdmResource: "assured-pgr-qa" }, { db, now });
-    const state = recordRecent({ key: "sdm:assured-pgr-qa", label: "Progressive QA", sdmResource: "assured-pgr-qa" }, { db, now });
-    const forResource = state.recents.filter(r => r.sdmResource === "assured-pgr-qa");
+    recordRecent({ key: "acme:progressive-qa", label: "progressive-qa", sdmResource: "acme-db-qa" }, { db, now });
+    const state = recordRecent({ key: "sdm:acme-db-qa", label: "acme qa", sdmResource: "acme-db-qa" }, { db, now });
+    const forResource = state.recents.filter(r => r.sdmResource === "acme-db-qa");
     expect(forResource).toHaveLength(1);
-    expect(forResource[0]!.key).toBe("sdm:assured-pgr-qa");
-    expect(forResource[0]!.label).toBe("Progressive QA");
+    expect(forResource[0]!.key).toBe("sdm:acme-db-qa");
+    expect(forResource[0]!.label).toBe("acme qa");
     rmSync(dir, { recursive: true, force: true });
   });
 });

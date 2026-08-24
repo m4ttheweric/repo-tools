@@ -787,27 +787,27 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
   test("repos.clone: clones a missing identity with the expected argv, skips an existing dir", async () => {
     setSetting("rt.repoRoots", [join(home, "code")], "machine");
     mkdirSync(join(home, "code"), { recursive: true });
-    const dest = join(home, "code", "assured-dev");
+    const dest = join(home, "code", "acme-dev");
 
     const p = fakeProbes({ home, exec: async () => ok() });
-    const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/assured/assured-dev"], marketplaces: [], plugins: [], remote: null } });
+    const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
 
     const outcome = await reposCloneStep.run(ctx);
     expect(outcome).toEqual({ state: "done", detail: "cloned 1, present 0, failed 0" });
-    expect(p.calls.exec).toEqual([["git", "clone", "https://gitlab.com/assured/assured-dev.git", dest]]);
+    expect(p.calls.exec).toEqual([["git", "clone", "https://gitlab.com/acme/acme-dev.git", dest]]);
   });
 
   test("repos.clone: an already-present, genuinely-matching clone is skipped (idempotent re-run never re-clones)", async () => {
     setSetting("rt.repoRoots", [join(home, "code")], "machine");
-    const dest = join(home, "code", "assured-dev");
+    const dest = join(home, "code", "acme-dev");
 
     const p = fakeProbes({
       home,
       dirs: { [dest]: [".git"] },
-      files: { [join(dest, ".git", "config")]: '[remote "origin"]\n\turl = https://gitlab.com/assured/assured-dev.git\n' },
+      files: { [join(dest, ".git", "config")]: '[remote "origin"]\n\turl = https://gitlab.com/acme/acme-dev.git\n' },
       exec: async () => ok(),
     });
-    const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/assured/assured-dev"], marketplaces: [], plugins: [], remote: null } });
+    const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
 
     const outcome = await reposCloneStep.run(ctx);
     expect(outcome).toEqual({ state: "done", detail: "cloned 0, present 1, failed 0" });
@@ -816,10 +816,10 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
 
   test("repos.clone: a directory occupying the destination that isn't actually a clone of the identity is counted failed, not present", async () => {
     setSetting("rt.repoRoots", [join(home, "code")], "machine");
-    const dest = join(home, "code", "assured-dev");
+    const dest = join(home, "code", "acme-dev");
 
     const p = fakeProbes({ home, dirs: { [dest]: [] }, exec: async () => ok() });
-    const { ctx, logs } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/assured/assured-dev"], marketplaces: [], plugins: [], remote: null } });
+    const { ctx, logs } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
 
     const outcome = await reposCloneStep.run(ctx);
     expect(outcome).toEqual({ state: "done", detail: "cloned 0, present 0, failed 1" });
@@ -840,7 +840,7 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     // to notice: `failed` here would dead-end Install with a Retry that
     // resumes at this exact step and fails identically every time.
     const p = fakeProbes({ home });
-    const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/assured/assured-dev"], marketplaces: [], plugins: [], remote: null } });
+    const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
 
     const outcome = await reposCloneStep.run(ctx);
     expect(outcome.state).toBe("skipped");
@@ -858,9 +858,9 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     execSync("git init -q", { cwd: repoDir });
     execSync("git remote add origin git@x:acme/r-steps-a.git", { cwd: repoDir });
 
-    mkdirSync(dirname(teamSettingsPath("claimview")), { recursive: true });
+    mkdirSync(dirname(teamSettingsPath("acme")), { recursive: true });
     writeFileSync(
-      teamSettingsPath("claimview"),
+      teamSettingsPath("acme"),
       JSON.stringify({ repos: { "x/acme/r-steps-a": { "rt.intercepts": [{ command: "fakecmd-steps-a", matches: [{ cwdGlob: ".", role: "x" }] }] } } }),
     );
     mkdirSync(rtDir(), { recursive: true });

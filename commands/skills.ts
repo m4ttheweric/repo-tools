@@ -21,7 +21,7 @@
 import { execFileSync, spawnSync } from "child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { createInterface } from "node:readline";
-import { dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath, sep } from "path";
+import { basename, dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath, sep } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
 import { envelope } from "../lib/setup/contract.ts";
@@ -115,9 +115,19 @@ type PackTarget = { team: string; packDir: string };
  * -- offer a picker over what is actually installed, auto-selecting when only
  * one pack exists, and name the choices instead of guessing when there is no tty.
  */
+/**
+ * A pack directory is named for its pack in every layout that produces one
+ * (`packs/<name>/`, `plugins/<name>/`), so the directory answers "which pack"
+ * when `--pack` was omitted. Naming a specific team here instead meant a
+ * general-purpose tool carried one team's slug as its default.
+ */
+function packNameFor(packDir: string): string {
+  return basename(resolvePath(packDir)) || "pack";
+}
+
 async function resolvePack(flags: { team: string | null; packDir: string | null; mattstackDir: string | null }): Promise<PackTarget> {
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
-  if (flags.packDir) return { team: flags.team ?? "claimview", packDir: flags.packDir };
+  if (flags.packDir) return { team: flags.team ?? packNameFor(flags.packDir), packDir: flags.packDir };
 
   const packs = flags.mattstackDir ? [] : discoverPacks();
   if (flags.team) {
@@ -704,7 +714,7 @@ function writeSurfaceConfig(packDir: string, publicList: string[]): void {
 }
 
 function compileArgs(flags: SurfaceFlags, packDir: string): string[] {
-  const args = ["--pack", flags.team ?? "claimview", "--pack-dir", packDir];
+  const args = ["--pack", flags.team ?? packNameFor(packDir), "--pack-dir", packDir];
   if (flags.mattstackDir) args.push("--mattstack-dir", flags.mattstackDir);
   if (flags.manifest) args.push("--manifest", flags.manifest);
   if (flags.dryRun) args.push("--dry-run");

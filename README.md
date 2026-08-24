@@ -406,7 +406,7 @@ This opens a fuzzy picker to select which editors (Cursor, VS Code, Antigravity,
 ### Status Bar
 
 ```
-📁 main-worktree  │  🔖 CV-1287: Add damage photo uploads
+📁 main-worktree  │  🔖 ACME-1287: Add damage photo uploads
 ```
 
 Clicking the item opens the linked Linear ticket directly.

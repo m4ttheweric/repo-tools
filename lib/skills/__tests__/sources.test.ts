@@ -54,7 +54,7 @@ const CI_CONFIG_JSON = `{ "noisy": ["flaky-job"] }\n`;
  * matching the real plugin's group/engine nesting, plus
  * attachments/pipeline/ship/SKILL.md -- an engine already moved out of
  * skills/ (unregistered) that loadStepSource must still resolve.
- * claimview root: attachments/watch-ci-domain/SKILL.md (+ ci-config.json), the
+ * acme root: attachments/watch-ci-domain/SKILL.md (+ ci-config.json), the
  * unregistered fill; a registered copy also lives under skills/watch-ci-domain
  * so loadAttachment can be exercised against both search roots.
  */
@@ -83,16 +83,16 @@ function makeFixtureRoots(): { rootDir: string; roots: PluginRoots } {
   );
   writeFile(join(mattstackDir, "attachments", "pipeline", "ship", "SKILL.md"), shipSkillMd);
 
-  const claimviewDir = join(rootDir, "claimview");
-  writeFile(join(claimviewDir, "attachments", "watch-ci-domain", "SKILL.md"), WATCH_CI_DOMAIN_SKILL_MD);
-  writeFile(join(claimviewDir, "attachments", "watch-ci-domain", "ci-config.json"), CI_CONFIG_JSON);
-  writeFile(join(claimviewDir, "skills", "cvi-gates", "SKILL.md"), WATCH_CI_DOMAIN_SKILL_MD.replace("watch-ci-domain", "cvi-gates"));
-  writeFile(join(claimviewDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
+  const acmeDir = join(rootDir, "acme");
+  writeFile(join(acmeDir, "attachments", "watch-ci-domain", "SKILL.md"), WATCH_CI_DOMAIN_SKILL_MD);
+  writeFile(join(acmeDir, "attachments", "watch-ci-domain", "ci-config.json"), CI_CONFIG_JSON);
+  writeFile(join(acmeDir, "skills", "qa-gates", "SKILL.md"), WATCH_CI_DOMAIN_SKILL_MD.replace("watch-ci-domain", "qa-gates"));
+  writeFile(join(acmeDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
 
   const roots: PluginRoots = {
     byName: {
       mattstack: { dir: mattstackDir, version: "1.2.0" },
-      claimview: { dir: claimviewDir, version: "0.3.0" },
+      acme: { dir: acmeDir, version: "0.3.0" },
     },
   };
 
@@ -211,25 +211,25 @@ describe("loadAttachment", () => {
   test("finds a registered skill under skills/", () => {
     const { roots } = makeFixtureRoots();
 
-    const fill = loadAttachment("claimview:cvi-gates", "domain", roots);
+    const fill = loadAttachment("acme:qa-gates", "domain", roots);
 
     expect(fill.registered).toBe(true);
-    expect(fill.binding).toBe("claimview:cvi-gates");
-    expect(fill.plugin).toBe("claimview");
+    expect(fill.binding).toBe("acme:qa-gates");
+    expect(fill.plugin).toBe("acme");
     expect(fill.version).toBe("0.3.0");
     expect(fill.provides).toBe("watch-ci-domain@1");
-    expect(fill.dir.endsWith(join("skills", "cvi-gates"))).toBe(true);
-    expect(fill.srcPath).toBe(join("skills", "cvi-gates", "SKILL.md"));
+    expect(fill.dir.endsWith(join("skills", "qa-gates"))).toBe(true);
+    expect(fill.srcPath).toBe(join("skills", "qa-gates", "SKILL.md"));
     expect(fill.bodyStartLine).toBe(10);
   });
 
   test("finds an unregistered skill under attachments/", () => {
     const { roots } = makeFixtureRoots();
 
-    const fill = loadAttachment("claimview:watch-ci-domain", "domain", roots);
+    const fill = loadAttachment("acme:watch-ci-domain", "domain", roots);
 
     expect(fill.registered).toBe(false);
-    expect(fill.binding).toBe("claimview:watch-ci-domain");
+    expect(fill.binding).toBe("acme:watch-ci-domain");
     expect(fill.provides).toBe("watch-ci-domain@1");
     expect(fill.body).toBe("Domain rules live at ${CLAUDE_SKILL_DIR}/ci-config.json for details.");
     expect(fill.allowedTools).toEqual(["Read(${CLAUDE_SKILL_DIR}/ci-config.json)"]);
@@ -241,24 +241,24 @@ describe("loadAttachment", () => {
   test("extraFiles excludes SKILL.md and includes nested files", () => {
     const { rootDir, roots } = makeFixtureRoots();
     writeFile(
-      join(rootDir, "claimview", "attachments", "watch-ci-domain", "nested", "extra.txt"),
+      join(rootDir, "acme", "attachments", "watch-ci-domain", "nested", "extra.txt"),
       "extra\n",
     );
 
-    const fill = loadAttachment("claimview:watch-ci-domain", "domain", roots);
+    const fill = loadAttachment("acme:watch-ci-domain", "domain", roots);
 
     expect(fill.extraFiles.sort()).toEqual(["ci-config.json", "nested/extra.txt"]);
   });
 
   test("throws naming the slot and binding when neither search root has the skill", () => {
     const { roots } = makeFixtureRoots();
-    const claimviewDir = roots.byName.claimview!.dir;
-    const expectedSkillsPath = join(claimviewDir, "skills", "no-such-skill", "SKILL.md");
-    const expectedAttachmentsPath = join(claimviewDir, "attachments", "no-such-skill", "SKILL.md");
+    const acmeDir = roots.byName.acme!.dir;
+    const expectedSkillsPath = join(acmeDir, "skills", "no-such-skill", "SKILL.md");
+    const expectedAttachmentsPath = join(acmeDir, "attachments", "no-such-skill", "SKILL.md");
 
     let thrown: unknown;
     try {
-      loadAttachment("claimview:no-such-skill", "domain", roots);
+      loadAttachment("acme:no-such-skill", "domain", roots);
     } catch (err) {
       thrown = err;
     }
@@ -266,7 +266,7 @@ describe("loadAttachment", () => {
     expect(thrown).toBeInstanceOf(Error);
     const message = (thrown as Error).message;
     expect(message).toContain("domain");
-    expect(message).toContain("claimview:no-such-skill");
+    expect(message).toContain("acme:no-such-skill");
     expect(message).toContain(expectedSkillsPath);
     expect(message).toContain(expectedAttachmentsPath);
   });
@@ -328,7 +328,7 @@ describe("readManifestBindings", () => {
   "skills": { "enabled": ["mattstack:watch-ci"] },
   "bindings": {
     "mattstack:watch-ci": {
-      "domain": "claimview:watch-ci-domain",
+      "domain": "acme:watch-ci-domain",
       "forge": "mattstack:ci-forge-gitlab"
     },
     "mattstack:work": {
@@ -344,7 +344,7 @@ describe("readManifestBindings", () => {
 
     expect(bindings).toEqual({
       "mattstack:watch-ci": {
-        domain: "claimview:watch-ci-domain",
+        domain: "acme:watch-ci-domain",
         forge: "mattstack:ci-forge-gitlab",
       },
       "mattstack:work": {
@@ -362,8 +362,8 @@ describe("invocableRoster", () => {
 
     expect(roster.has("mattstack:watch-ci")).toBe(true);
     expect(roster.has("mattstack:untyped-step")).toBe(true);
-    expect(roster.has("claimview:cvi-gates")).toBe(true);
-    expect(roster.has("claimview:watch-ci-domain")).toBe(false);
+    expect(roster.has("acme:qa-gates")).toBe(true);
+    expect(roster.has("acme:watch-ci-domain")).toBe(false);
     expect(roster.has("mattstack:ship")).toBe(false);
   });
 });
@@ -375,8 +375,8 @@ describe("buildPluginRoots", () => {
     const mattstackDir = join(rootDir, "mattstack");
     writeFile(join(mattstackDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
 
-    const claimviewDir = join(rootDir, "claimview");
-    writeFile(join(claimviewDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
+    const acmeDir = join(rootDir, "acme");
+    writeFile(join(acmeDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
 
     const staleInstallPath = join(rootDir, "current-time", "0.1.0");
 
@@ -388,7 +388,7 @@ describe("buildPluginRoots", () => {
       roots = buildPluginRoots([
         { id: "mattstack@mattstack", installPath: mattstackDir },
         { id: "current-time@mattstack", installPath: staleInstallPath },
-        { id: "claimview@assured", installPath: claimviewDir },
+        { id: "acme@acme", installPath: acmeDir },
       ]);
       // mockRestore() clears .mock.calls (bun, unlike jest), so read it before restoring.
       callCount = errorSpy.mock.calls.length;
@@ -398,7 +398,7 @@ describe("buildPluginRoots", () => {
     }
 
     expect(roots.byName.mattstack).toEqual({ dir: mattstackDir, version: "1.2.0" });
-    expect(roots.byName.claimview).toEqual({ dir: claimviewDir, version: "0.3.0" });
+    expect(roots.byName.acme).toEqual({ dir: acmeDir, version: "0.3.0" });
     expect(roots.byName["current-time"]).toBeUndefined();
 
     expect(callCount).toBe(1);
@@ -415,7 +415,7 @@ describe("buildPluginRoots", () => {
     try {
       roots = buildPluginRoots([
         { id: "mattstack@mattstack", installPath: fixtureRoots.byName.mattstack!.dir },
-        { id: "claimview@assured", installPath: fixtureRoots.byName.claimview!.dir },
+        { id: "acme@acme", installPath: fixtureRoots.byName.acme!.dir },
       ]);
       callCount = errorSpy.mock.calls.length;
     } finally {
@@ -423,7 +423,7 @@ describe("buildPluginRoots", () => {
     }
 
     expect(roots.byName.mattstack?.version).toBe("1.2.0");
-    expect(roots.byName.claimview?.version).toBe("0.3.0");
+    expect(roots.byName.acme?.version).toBe("0.3.0");
     expect(callCount).toBe(0);
   });
 });

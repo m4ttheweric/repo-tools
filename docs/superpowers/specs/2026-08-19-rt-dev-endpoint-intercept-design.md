@@ -6,7 +6,7 @@
 
 ## Problem
 
-`@assured/dev-ports` solves per-worktree dev-server ports and env injection for exactly one repo, with policy and mechanism welded together in a 576-line PATH shim. rt harvests the mechanism: the daemon owns port allocation and endpoint discovery, and rt owns a generic command-interception capability so the just-works invariant survives (you type `pnpm start` where you always type it; nobody asks rt anything). The pack keeps only domain hooks.
+`@acme/dev-ports` solves per-worktree dev-server ports and env injection for exactly one repo, with policy and mechanism welded together in a 576-line PATH shim. rt harvests the mechanism: the daemon owns port allocation and endpoint discovery, and rt owns a generic command-interception capability so the just-works invariant survives (you type `pnpm start` where you always type it; nobody asks rt anything). The pack keeps only domain hooks.
 
 ## Decisions and rationale
 
@@ -20,14 +20,14 @@
       "preserveEnv": ["POSTGRES_URL", "FEATURE_FLAG_*"],
       "env": { "PORT": "${port}" }
     },
-    "adjuster": {
+    "portal": {
       "pool": [4001, 5001, 6001, 7001, 8001, 9001],     // constrained pool IS the constraint
       "needs": ["backend"],
       "env": {
         "PORT": "${port}",
         "REACT_APP_ENDPOINT": "http://localhost:${roles.backend.port}"
       },
-      "hook": "bun /path/to/pack/adjuster-hook.ts"      // domain side effects, pack-owned
+      "hook": "bun /path/to/pack/portal-hook.ts"      // domain side effects, pack-owned
     },
     "frontend": { "fixedPort": 4002, "needs": ["backend"], "env": { "REACT_APP_ENDPOINT": "http://localhost:${roles.backend.port}" } }
   },
@@ -37,7 +37,7 @@
       "matches": [
         { "cwdGlob": "apps/backend{,/**}", "argPattern": "src/app/server|process\\.env\\.PORT", "role": "backend",
           "argInject": { "afterArg": "run", "template": "--preserve-env=${envKeys}", "skipIfArgPresent": "--preserve-env" } },
-        { "cwdGlob": "apps/adjuster{,/**}", "argPattern": "parcel", "role": "adjuster",
+        { "cwdGlob": "apps/portal{,/**}", "argPattern": "parcel", "role": "portal",
           "argInject": { "afterArg": "run", "template": "--preserve-env=${envKeys}", "skipIfArgPresent": "--preserve-env" } }
       ]
     }
@@ -60,7 +60,7 @@ Domain names (`REACT_APP_ENDPOINT`, Auth0 pool values, doppler's flag) appear on
 
 5. **Honest magic:** `rt intercept status` (declared intercepts, shim installed/current, last-hit provenance), `RT_INTERCEPT_DEBUG=1` stderr trace, and an `rt verify` check (shim missing/stale for a declared intercept = warn; probe fn lives in the owning module).
 
-6. **Out of scope here (follow-up in claimview-tools):** the assured pack adapter — its hook script (config.js write, token-capture NODE_OPTIONS), the overlay config values, migration from `~/.assured/dev-ports.state.json`, and retiring the old `~/.local/bin/doppler` shim. rt ships generic and proves itself in e2e with a synthetic repo.
+6. **Out of scope here (follow-up in acme-tools):** the acme pack adapter — its hook script (config.js write, token-capture NODE_OPTIONS), the overlay config values, migration from `~/.acme/dev-ports.state.json`, and retiring the old `~/.local/bin/doppler` shim. rt ships generic and proves itself in e2e with a synthetic repo.
 
 ## Command surface
 

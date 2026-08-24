@@ -70,9 +70,9 @@ with the machine-profile namespace. Rulings (orchestrator, 2026-08-21):
   repo). The cross-agent handoff convention moves with it: new drops go to
   `work/scratch/`, and the attic tarballs are employer-adjacent so they must
   not enter the personal repo.
-- **`user/local/claimview/`** (dev-flags.json, ld-flags/ — employer-adjacent
+- **`user/local/acme/`** (dev-flags.json, ld-flags/ — employer-adjacent
   runtime, forbidden in the personal repo by ruling 1) moves to
-  `~/.mattstack/work/claimview/`. The lane greps all mattstack repos +
+  `~/.mattstack/work/acme/`. The lane greps all mattstack repos +
   `~/.claude` installed skills for readers of the old path and repoints any it
   finds; zero known readers is the expected result, but the grep is mandatory.
 - **Inner `.gitignore`**: `user/.gitignore` today is the single line `local/`.
@@ -144,8 +144,8 @@ parallel to the board lane; the settings API is unchanged.
 1. **Backup first**: `tar -czf ~/mattstack-preroot-backup-<date>.tar.gz`
    of the full `~/.mattstack` tree (kept outside the tree being mutated;
    delete after the verify passes and a quiet day).
-2. Move scratch + claimview per the collision rulings (`work/scratch/`,
-   `work/claimview/`); delete `user/.DS_Store` and the stale `local/.gitkeep`.
+2. Move scratch + acme per the collision rulings (`work/scratch/`,
+   `work/acme/`); delete `user/.DS_Store` and the stale `local/.gitkeep`.
 3. On a FRESH clone of mattstack-home (scratchpad):
    `git filter-repo --subdirectory-filter user`, move in `skills.jsonc`,
    `snapshot-owners.jsonc`; write the rewritten `.sops.yaml` + `.gitignore`;
@@ -160,7 +160,7 @@ parallel to the board lane; the settings API is unchanged.
    → `user`); only after the full verify passes, delete the aside copy, the
    root `.git/` + guard hooks, and the root `settings.local.jsonc`.
 5. Compat symlink `~/.mattstack/skills.jsonc → user/skills.jsonc`; rename the
-   team file (`teams/claimview/mattstack/`: `settings.jsonc` →
+   team file (`teams/acme/mattstack/`: `settings.jsonc` →
    `settings.team.jsonc`, committed+pushed in THEIR repo); write
    `~/.mattstack/machine-key`.
 6. Restart daemon + deck.

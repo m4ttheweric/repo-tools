@@ -14,7 +14,7 @@ import { dirname, join } from "path";
 import { machineSettingsPath, userSettingsPath } from "../../rt-paths.ts";
 import { createSettingsHandlers } from "../handlers/settings.ts";
 
-const IDENTITY = "gitlab.com/assured/assured-dev";
+const IDENTITY = "gitlab.com/acme/acme-dev";
 
 describe("settings handlers", () => {
   const origHome = process.env.HOME;

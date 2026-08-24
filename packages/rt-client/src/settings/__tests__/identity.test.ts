@@ -31,14 +31,14 @@ describe("settings/identity", () => {
 
   describe("normalizeRemote", () => {
     test("https remote", () => {
-      expect(normalizeRemote("https://gitlab.com/assured/assured-dev.git")).toBe(
-        "gitlab.com/assured/assured-dev",
+      expect(normalizeRemote("https://gitlab.com/acme/acme-dev.git")).toBe(
+        "gitlab.com/acme/acme-dev",
       );
     });
 
     test("scp-style git@ remote normalizes the same as https", () => {
-      expect(normalizeRemote("git@gitlab.com:assured/assured-dev.git")).toBe(
-        "gitlab.com/assured/assured-dev",
+      expect(normalizeRemote("git@gitlab.com:acme/acme-dev.git")).toBe(
+        "gitlab.com/acme/acme-dev",
       );
     });
 
@@ -65,8 +65,8 @@ describe("settings/identity", () => {
 
   describe("identityFromRemote", () => {
     test("falls back to normalizeRemote when no override matches", () => {
-      expect(identityFromRemote("https://gitlab.com/assured/assured-dev.git")).toBe(
-        "gitlab.com/assured/assured-dev",
+      expect(identityFromRemote("https://gitlab.com/acme/acme-dev.git")).toBe(
+        "gitlab.com/acme/acme-dev",
       );
     });
 
@@ -76,13 +76,13 @@ describe("settings/identity", () => {
         machineSettingsPath(),
         JSON.stringify({
           "rt.repoIdentityOverrides": {
-            "/private/tmp/foo": "gitlab.com/assured/assured-dev",
+            "/private/tmp/foo": "gitlab.com/acme/acme-dev",
           },
         }),
       );
 
       // Without the override this local-path remote would normalize to null.
-      expect(identityFromRemote("/private/tmp/foo")).toBe("gitlab.com/assured/assured-dev");
+      expect(identityFromRemote("/private/tmp/foo")).toBe("gitlab.com/acme/acme-dev");
     });
 
     test("override map present but remote not in it still falls through to normalizeRemote", () => {
@@ -96,8 +96,8 @@ describe("settings/identity", () => {
         }),
       );
 
-      expect(identityFromRemote("https://gitlab.com/assured/assured-dev.git")).toBe(
-        "gitlab.com/assured/assured-dev",
+      expect(identityFromRemote("https://gitlab.com/acme/acme-dev.git")).toBe(
+        "gitlab.com/acme/acme-dev",
       );
     });
   });
@@ -113,9 +113,9 @@ describe("settings/identity", () => {
     }
 
     test("derives identity from a real repo's remote.origin.url", async () => {
-      const dir = await initRepo("https://gitlab.com/assured/assured-dev.git");
+      const dir = await initRepo("https://gitlab.com/acme/acme-dev.git");
       try {
-        expect(await deriveRepoIdentity(dir)).toBe("gitlab.com/assured/assured-dev");
+        expect(await deriveRepoIdentity(dir)).toBe("gitlab.com/acme/acme-dev");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -150,10 +150,10 @@ describe("settings/identity", () => {
     });
 
     test("memoizes per path: a remote change after the first call does not change the result", async () => {
-      const dir = await initRepo("https://gitlab.com/assured/assured-dev.git");
+      const dir = await initRepo("https://gitlab.com/acme/acme-dev.git");
       try {
         const first = await deriveRepoIdentity(dir);
-        expect(first).toBe("gitlab.com/assured/assured-dev");
+        expect(first).toBe("gitlab.com/acme/acme-dev");
 
         await runCapture(["git", "remote", "set-url", "origin", "https://gitlab.com/other/repo.git"], {
           cwd: dir,
@@ -171,21 +171,21 @@ describe("settings/identity", () => {
       try {
         expect(await deriveRepoIdentity(dir)).toBeNull();
 
-        await runCapture(["git", "remote", "add", "origin", "https://gitlab.com/assured/assured-dev.git"], {
+        await runCapture(["git", "remote", "add", "origin", "https://gitlab.com/acme/acme-dev.git"], {
           cwd: dir,
         });
 
-        expect(await deriveRepoIdentity(dir)).toBe("gitlab.com/assured/assured-dev");
+        expect(await deriveRepoIdentity(dir)).toBe("gitlab.com/acme/acme-dev");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
     });
 
     test("clearIdentityMemo forces re-derivation", async () => {
-      const dir = await initRepo("https://gitlab.com/assured/assured-dev.git");
+      const dir = await initRepo("https://gitlab.com/acme/acme-dev.git");
       try {
         const first = await deriveRepoIdentity(dir);
-        expect(first).toBe("gitlab.com/assured/assured-dev");
+        expect(first).toBe("gitlab.com/acme/acme-dev");
 
         await runCapture(["git", "remote", "set-url", "origin", "https://gitlab.com/other/repo.git"], {
           cwd: dir,

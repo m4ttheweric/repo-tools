@@ -32,12 +32,12 @@ function writeStateDb(dir: string, repoIndex: Record<string, string>): void {
 
 describe("repoNameForPath", () => {
   test("returns the repo name on an exact path match", () => {
-    const path = writeReposJson({ "assured-dev": "/Users/matt/Documents/GitHub/assured/harry" });
-    expect(repoNameForPath("/Users/matt/Documents/GitHub/assured/harry", path)).toBe("assured-dev");
+    const path = writeReposJson({ "acme-dev": "/Users/matt/Documents/GitHub/acme/api" });
+    expect(repoNameForPath("/Users/matt/Documents/GitHub/acme/api", path)).toBe("acme-dev");
   });
 
   test("returns null when no entry's value matches the path", () => {
-    const path = writeReposJson({ "assured-dev": "/Users/matt/Documents/GitHub/assured/harry" });
+    const path = writeReposJson({ "acme-dev": "/Users/matt/Documents/GitHub/acme/api" });
     expect(repoNameForPath("/somewhere/else", path)).toBeNull();
   });
 
@@ -55,23 +55,23 @@ describe("repoNameForPath", () => {
   test("prefers a matching state.db entry over a stale repos.json entry for the same path", () => {
     const dir = fixtureDir();
     const path = join(dir, "repos.json");
-    writeFileSync(path, JSON.stringify({ "old-name": "/Users/matt/Documents/GitHub/assured/harry" }));
-    writeStateDb(dir, { "new-name": "/Users/matt/Documents/GitHub/assured/harry" });
+    writeFileSync(path, JSON.stringify({ "old-name": "/Users/matt/Documents/GitHub/acme/api" }));
+    writeStateDb(dir, { "new-name": "/Users/matt/Documents/GitHub/acme/api" });
 
-    expect(repoNameForPath("/Users/matt/Documents/GitHub/assured/harry", path)).toBe("new-name");
+    expect(repoNameForPath("/Users/matt/Documents/GitHub/acme/api", path)).toBe("new-name");
   });
 
   test("falls back to repos.json when state.db has no matching entry", () => {
     const dir = fixtureDir();
     const path = join(dir, "repos.json");
-    writeFileSync(path, JSON.stringify({ "assured-dev": "/Users/matt/Documents/GitHub/assured/harry" }));
+    writeFileSync(path, JSON.stringify({ "acme-dev": "/Users/matt/Documents/GitHub/acme/api" }));
     writeStateDb(dir, { "unrelated-repo": "/somewhere/else" });
 
-    expect(repoNameForPath("/Users/matt/Documents/GitHub/assured/harry", path)).toBe("assured-dev");
+    expect(repoNameForPath("/Users/matt/Documents/GitHub/acme/api", path)).toBe("acme-dev");
   });
 
   test("falls back to repos.json when state.db does not exist", () => {
-    const path = writeReposJson({ "assured-dev": "/Users/matt/Documents/GitHub/assured/harry" });
-    expect(repoNameForPath("/Users/matt/Documents/GitHub/assured/harry", path)).toBe("assured-dev");
+    const path = writeReposJson({ "acme-dev": "/Users/matt/Documents/GitHub/acme/api" });
+    expect(repoNameForPath("/Users/matt/Documents/GitHub/acme/api", path)).toBe("acme-dev");
   });
 });

@@ -14,9 +14,9 @@ describe("stripJsonc", () => {
 
   test("preserves // inside string values (origin URLs)", () => {
     const out = stripJsonc(`{
-      "origin": "https://gitlab.com/assured/assured-dev.git", // the mirror origin
+      "origin": "https://gitlab.com/acme/acme-dev.git", // the mirror origin
     }`);
-    expect(JSON.parse(out)).toEqual({ origin: "https://gitlab.com/assured/assured-dev.git" });
+    expect(JSON.parse(out)).toEqual({ origin: "https://gitlab.com/acme/acme-dev.git" });
   });
 
   test("a comma inside a string before a closer is not a trailing comma", () => {

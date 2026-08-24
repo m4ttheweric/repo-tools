@@ -31,16 +31,16 @@ Click the **Worktrees** button in the status bar to see all your worktrees at a 
 
 ### Linear ticket resolution
 
-The extension extracts Linear ticket identifiers (e.g. `CV-1287`) from branch names using two strategies:
+The extension extracts Linear ticket identifiers (e.g. `ACME-1287`) from branch names using two strategies:
 
-1. **Exact segment match** — `feature/cv-1287` matches directly
-2. **Prefix match** — `feature/cv-1287-add-photos` extracts the `CV-1287` prefix
+1. **Exact segment match** — `feature/acme-1287` matches directly
+2. **Prefix match** — `feature/acme-1287-add-photos` extracts the `ACME-1287` prefix
 
 With a Linear API key configured, it fetches the full ticket title and status.
 
 ### GitLab MR fallback
 
-For branches without a recognizable Linear ID in the name, the extension can look up the open merge request title on GitLab and extract the ticket ID from there (e.g. `[CV-1287] Add damage photos`).
+For branches without a recognizable Linear ID in the name, the extension can look up the open merge request title on GitLab and extract the ticket ID from there (e.g. `[ACME-1287] Add damage photos`).
 
 ## Install
 

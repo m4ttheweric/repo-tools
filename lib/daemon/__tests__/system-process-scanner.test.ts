@@ -160,18 +160,18 @@ describe("parseLsofCwdMap", () => {
   test("keeps processes whose cwd is inside a sibling worktree path", async () => {
     const { parseLsofCwdMap } = await import("../system-process-scanner.ts");
 
-    // assured-dev registered at .../assured/harry; ron is a sibling worktree
+    // acme-dev registered at .../acme/api; ron is a sibling worktree
     const lsofOutput = [
       "p333",
-      "n/Users/test/gh/assured/ron/apps/backend",
+      "n/Users/test/gh/acme/worker/apps/backend",
     ].join("\n");
 
     const result = parseLsofCwdMap(lsofOutput, [
-      "/Users/test/gh/assured/harry",
-      "/Users/test/gh/assured/ron",
+      "/Users/test/gh/acme/api",
+      "/Users/test/gh/acme/worker",
     ]);
 
-    expect(result.get(333)).toBe("/Users/test/gh/assured/ron/apps/backend");
+    expect(result.get(333)).toBe("/Users/test/gh/acme/worker/apps/backend");
   });
 
   test("keeps close parents of tracked paths (max 2 levels above)", async () => {
@@ -200,19 +200,19 @@ describe("worktree attribution through parseProcessList", () => {
       "12878     1  99.0 512000  06-07:54:19 node             node wrap.js src/app/server-lite",
     ].join("\n");
 
-    const repos = { "assured-dev": "/Users/test/gh/assured/harry" };
+    const repos = { "acme-dev": "/Users/test/gh/acme/api" };
     const cwdMap = new Map<number, string>([
-      [12878, "/Users/test/gh/assured/ron/apps/backend"],
+      [12878, "/Users/test/gh/acme/worker/apps/backend"],
     ]);
     const worktreeMap = new Map([
-      ["/Users/test/gh/assured/ron", { repo: "assured-dev", branch: "parking-lot/2" }],
+      ["/Users/test/gh/acme/worker", { repo: "acme-dev", branch: "parking-lot/2" }],
     ]);
 
     const result = parseProcessList(psOutput, repos, cwdMap, worktreeMap);
 
     expect(result).toHaveLength(1);
-    expect(result[0]!.repo).toBe("assured-dev");
-    expect(result[0]!.worktree).toBe("/Users/test/gh/assured/ron");
+    expect(result[0]!.repo).toBe("acme-dev");
+    expect(result[0]!.worktree).toBe("/Users/test/gh/acme/worker");
     expect(result[0]!.branch).toBe("parking-lot/2");
     expect(result[0]!.relativeDir).toBe("apps/backend");
   });

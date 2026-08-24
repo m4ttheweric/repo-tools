@@ -29,8 +29,8 @@ import {
   type Provenance,
 } from "../resolve.ts";
 
-const IDENTITY = "gitlab.com/assured/assured-dev";
-const TEAM = "claimview";
+const IDENTITY = "gitlab.com/acme/acme-dev";
+const TEAM = "acme";
 
 describe("settings/resolve", () => {
   const origHome = process.env.HOME;
@@ -168,12 +168,12 @@ describe("settings/resolve", () => {
 
       const got = getSetting<Record<string, unknown>>("rt.worktrees", {
         repoIdentity: IDENTITY,
-        expandCtx: { repoRoot: "/repos/assured-dev" },
+        expandCtx: { repoRoot: "/repos/acme-dev" },
       });
 
       expect(got.value).toEqual({
         onDeck: 5, // machine beats team beats the registry default
-        root: "/repos/assured-dev/.worktrees", // machine-only field (and expands)
+        root: "/repos/acme-dev/.worktrees", // machine-only field (and expands)
         branchFormat: "<ticket>-<slug>", // machine-only field survives
         namePool: ["alpha", "bravo"], // user-only field
         ready: [{ run: "bun install" }, { run: "bun run build" }], // team-only field
@@ -388,8 +388,8 @@ describe("settings/resolve", () => {
 
     test("expands exactly the closed set", () => {
       expect(expandVariables("${home}/bin", ctx())).toBe(`${home}/bin`);
-      expect(expandVariables("${team:claimview}/packs", ctx())).toBe(
-        `${join(teamsDir(), "claimview")}/packs`,
+      expect(expandVariables("${team:acme}/packs", ctx())).toBe(
+        `${join(teamsDir(), "acme")}/packs`,
       );
       expect(expandVariables("${repoRoot}/.worktrees", ctx())).toBe("/repos/x/.worktrees");
       expect(expandVariables("${worktree}/node_modules", ctx())).toBe("/repos/x/.wt/a/node_modules");
@@ -412,9 +412,9 @@ describe("settings/resolve", () => {
     });
 
     test("a foreign variable passes through verbatim in the SAME string as an expanded one", () => {
-      const out = expandVariables("bun ${team:claimview}/hook.ts --port ${port} --keys ${envKeys}", ctx());
+      const out = expandVariables("bun ${team:acme}/hook.ts --port ${port} --keys ${envKeys}", ctx());
 
-      expect(out).toBe(`bun ${join(teamsDir(), "claimview")}/hook.ts --port \${port} --keys \${envKeys}`);
+      expect(out).toBe(`bun ${join(teamsDir(), "acme")}/hook.ts --port \${port} --keys \${envKeys}`);
     });
 
     test("a closed-set variable with no context throws", () => {
@@ -440,12 +440,12 @@ describe("settings/resolve", () => {
     });
 
     test("getSetting expands by default and throws when the closed set is unsatisfiable", () => {
-      writeUser({ repos: { [IDENTITY]: { "rt.roles": { be: { hook: "bun ${team:claimview}/h.ts" } } } } });
+      writeUser({ repos: { [IDENTITY]: { "rt.roles": { be: { hook: "bun ${team:acme}/h.ts" } } } } });
 
       const got = getSetting<Record<string, Record<string, string>>>("rt.roles", {
         repoIdentity: IDENTITY,
       });
-      expect(got.value.be?.hook).toBe(`bun ${join(teamsDir(), "claimview")}/h.ts`);
+      expect(got.value.be?.hook).toBe(`bun ${join(teamsDir(), "acme")}/h.ts`);
 
       writeUser({ repos: { [IDENTITY]: { "rt.roles": { be: { hook: "bun ${repoRoot}/h.ts" } } } } });
       expect(() => getSetting("rt.roles", { repoIdentity: IDENTITY })).toThrow(/\$\{repoRoot\}/);

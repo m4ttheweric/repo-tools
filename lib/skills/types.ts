@@ -14,7 +14,7 @@ export type StepSource = {
 };
 
 export type AttachmentSource = {
-  binding: string; // e.g. "claimview:watch-ci-domain"
+  binding: string; // e.g. "acme:watch-ci-domain"
   plugin: string;
   version: string;
   dir: string;

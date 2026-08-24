@@ -162,7 +162,7 @@ class FakeTeamExecSeam implements SecretsExecSeam {
 }
 
 /** Registers `slug`'s clone root as present in the fake — every test below operates against an already-cloned team unless it's specifically testing the no-clone refusal. */
-function seamsWithKey(key = "AGE-TEAM-KEY", slug = "claimview"): { execSeam: FakeTeamExecSeam; seams: SecretsSeams } {
+function seamsWithKey(key = "AGE-TEAM-KEY", slug = "acme"): { execSeam: FakeTeamExecSeam; seams: SecretsSeams } {
   const execSeam = new FakeTeamExecSeam();
   execSeam.files.set(teamCloneRootFor(slug), "");
   return { execSeam, seams: { ageKeySeam: fakeAgeKeySeamWithKey(key), execSeam } };
@@ -170,12 +170,12 @@ function seamsWithKey(key = "AGE-TEAM-KEY", slug = "claimview"): { execSeam: Fak
 
 describe("teamSecretsFile / teamSopsYamlPath", () => {
   test("layout matches the contract: teams/<slug>/mattstack/secrets/<domain>.json and teams/<slug>/.sops.yaml", () => {
-    expect(teamSecretsFile("claimview", "board")).toBe(join(teamsDir(), "claimview", "mattstack", "secrets", "board.json"));
-    expect(teamSopsYamlPath("claimview")).toBe(join(teamsDir(), "claimview", ".sops.yaml"));
+    expect(teamSecretsFile("acme", "board")).toBe(join(teamsDir(), "acme", "mattstack", "secrets", "board.json"));
+    expect(teamSopsYamlPath("acme")).toBe(join(teamsDir(), "acme", ".sops.yaml"));
   });
 
   test("an invalid domain is rejected before any path is returned", () => {
-    expect(() => teamSecretsFile("claimview", "../etc")).toThrow(InvalidSecretsSegmentError);
+    expect(() => teamSecretsFile("acme", "../etc")).toThrow(InvalidSecretsSegmentError);
   });
 
   test("an invalid slug is rejected", () => {
@@ -187,9 +187,9 @@ describe("readTeamRecipients / writeTeamRecipients", () => {
   test("writeTeamRecipients renders a .sops.yaml with both keys and the team path_regex", () => {
     const { execSeam, seams } = seamsWithKey();
 
-    writeTeamRecipients("claimview", ["age1bbb", "age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1bbb", "age1aaa"], seams);
 
-    const content = execSeam.readFile(teamSopsYamlPath("claimview"));
+    const content = execSeam.readFile(teamSopsYamlPath("acme"));
     expect(content).toContain("path_regex: mattstack/secrets/.*");
     expect(content).toContain("age1aaa");
     expect(content).toContain("age1bbb");
@@ -198,9 +198,9 @@ describe("readTeamRecipients / writeTeamRecipients", () => {
   test("recipients are sorted and deduped on write", () => {
     const { execSeam, seams } = seamsWithKey();
 
-    writeTeamRecipients("claimview", ["age1zzz", "age1aaa", "age1zzz"], seams);
+    writeTeamRecipients("acme", ["age1zzz", "age1aaa", "age1zzz"], seams);
 
-    const content = execSeam.readFile(teamSopsYamlPath("claimview"));
+    const content = execSeam.readFile(teamSopsYamlPath("acme"));
     const ageLine = content.split("\n").find((l) => l.includes("age:"))!;
     expect(ageLine).toBe("    age: age1aaa,age1zzz");
   });
@@ -208,14 +208,14 @@ describe("readTeamRecipients / writeTeamRecipients", () => {
   test("round-trips through readTeamRecipients", () => {
     const { seams } = seamsWithKey();
 
-    writeTeamRecipients("claimview", ["age1bbb", "age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1bbb", "age1aaa"], seams);
 
-    expect(readTeamRecipients("claimview", seams)).toEqual(["age1aaa", "age1bbb"]);
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa", "age1bbb"]);
   });
 
   test("no .sops.yaml yet -> []", () => {
     const { seams } = seamsWithKey();
-    expect(readTeamRecipients("claimview", seams)).toEqual([]);
+    expect(readTeamRecipients("acme", seams)).toEqual([]);
   });
 
   test("a slug with no local clone -> NoTeamCloneError, never a silently-created team directory", () => {
@@ -237,28 +237,28 @@ describe("readTeamRecipients / writeTeamRecipients", () => {
       "    age: age1bbb",
       "",
     ].join("\n");
-    execSeam.writeFile(teamSopsYamlPath("claimview"), handEdited);
+    execSeam.writeFile(teamSopsYamlPath("acme"), handEdited);
 
-    expect(() => writeTeamRecipients("claimview", ["age1ccc"], seams)).toThrow(TeamSopsYamlHandEditedError);
+    expect(() => writeTeamRecipients("acme", ["age1ccc"], seams)).toThrow(TeamSopsYamlHandEditedError);
     // The hand-edited file must survive untouched.
-    expect(execSeam.readFile(teamSopsYamlPath("claimview"))).toBe(handEdited);
+    expect(execSeam.readFile(teamSopsYamlPath("acme"))).toBe(handEdited);
   });
 
   test("a single-rule .sops.yaml is still freely rewritten", () => {
     const { seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
 
-    expect(() => writeTeamRecipients("claimview", ["age1aaa", "age1bbb"], seams)).not.toThrow();
-    expect(readTeamRecipients("claimview", seams)).toEqual(["age1aaa", "age1bbb"]);
+    expect(() => writeTeamRecipients("acme", ["age1aaa", "age1bbb"], seams)).not.toThrow();
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa", "age1bbb"]);
   });
 });
 
 describe("writeTeamSecret", () => {
   test("argv pins --filename-override mattstack/secrets/board.json", async () => {
     const { execSeam, seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
 
-    await writeTeamSecret("claimview", "board", "slackClientSecret", "shh", seams);
+    await writeTeamSecret("acme", "board", "slackClientSecret", "shh", seams);
 
     const encryptCall = execSeam.calls.find((c) => c.cmd[1] === "-e")!;
     const overrideIdx = encryptCall.cmd.indexOf("--filename-override");
@@ -267,35 +267,35 @@ describe("writeTeamSecret", () => {
 
   test("the value round-trips into the team domain file", async () => {
     const { seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
 
-    await writeTeamSecret("claimview", "board", "slackClientSecret", "shh", seams);
+    await writeTeamSecret("acme", "board", "slackClientSecret", "shh", seams);
 
-    expect(await readTeamSecret("claimview", "board", "slackClientSecret", seams)).toBe("shh");
+    expect(await readTeamSecret("acme", "board", "slackClientSecret", seams)).toBe("shh");
   });
 
   test("zero recipients -> NoTeamRecipientsError, no sops call at all", async () => {
     const { execSeam, seams } = seamsWithKey();
 
-    await expect(writeTeamSecret("claimview", "board", "k", "v", seams)).rejects.toThrow(NoTeamRecipientsError);
-    await expect(writeTeamSecret("claimview", "board", "k", "v", seams)).rejects.toThrow(/rt team members sync/);
+    await expect(writeTeamSecret("acme", "board", "k", "v", seams)).rejects.toThrow(NoTeamRecipientsError);
+    await expect(writeTeamSecret("acme", "board", "k", "v", seams)).rejects.toThrow(/rt team members sync/);
     expect(execSeam.calls).toEqual([]);
   });
 
   test("no age key on this machine -> NoAgeKeyError (the interim seam's staging-fallback trigger)", async () => {
     const execSeam = new FakeTeamExecSeam();
-    execSeam.files.set(teamCloneRootFor("claimview"), "");
+    execSeam.files.set(teamCloneRootFor("acme"), "");
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamAbsent(), execSeam };
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
 
-    await expect(writeTeamSecret("claimview", "board", "k", "v", seams)).rejects.toThrow(/no age key/);
+    await expect(writeTeamSecret("acme", "board", "k", "v", seams)).rejects.toThrow(/no age key/);
   });
 });
 
 describe("buildTeamSpawnOptions", () => {
   test("cwd = this team's clone root, not <mattstackHome>/user", () => {
-    const opts = buildTeamSpawnOptions("claimview");
-    expect(opts.cwd).toBe(join(teamsDir(), "claimview"));
+    const opts = buildTeamSpawnOptions("acme");
+    expect(opts.cwd).toBe(join(teamsDir(), "acme"));
   });
 
   test("a different slug gets a different cwd", () => {
@@ -306,45 +306,45 @@ describe("buildTeamSpawnOptions", () => {
 describe("listTeamSecretNames", () => {
   test("returns keys only, never values", async () => {
     const { seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
-    await writeTeamSecret("claimview", "board", "slackClientSecret", "shh", seams);
-    await writeTeamSecret("claimview", "board", "slackSigningSecret", "shh2", seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "slackClientSecret", "shh", seams);
+    await writeTeamSecret("acme", "board", "slackSigningSecret", "shh2", seams);
 
-    expect((await listTeamSecretNames("claimview", "board", seams)).sort()).toEqual(["slackClientSecret", "slackSigningSecret"]);
+    expect((await listTeamSecretNames("acme", "board", seams)).sort()).toEqual(["slackClientSecret", "slackSigningSecret"]);
   });
 
   test("missing domain file -> []", async () => {
     const { seams } = seamsWithKey();
-    expect(await listTeamSecretNames("claimview", "board", seams)).toEqual([]);
+    expect(await listTeamSecretNames("acme", "board", seams)).toEqual([]);
   });
 });
 
 describe("addTeamRecipient", () => {
   test("adds the key and runs sops updatekeys -y once per existing domain file", async () => {
     const { execSeam, seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
-    await writeTeamSecret("claimview", "board", "slackClientSecret", "shh", seams);
-    await writeTeamSecret("claimview", "rt", "switchboardAdminToken", "tok", seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "slackClientSecret", "shh", seams);
+    await writeTeamSecret("acme", "rt", "switchboardAdminToken", "tok", seams);
     execSeam.calls.length = 0; // only care about calls made by addTeamRecipient itself
 
-    const result = await addTeamRecipient("claimview", "age1bbb", seams);
+    const result = await addTeamRecipient("acme", "age1bbb", seams);
 
     expect(result.added).toBe(true);
     expect(result.reencrypted.sort()).toEqual(
-      [teamSecretsFile("claimview", "board"), teamSecretsFile("claimview", "rt")].sort(),
+      [teamSecretsFile("acme", "board"), teamSecretsFile("acme", "rt")].sort(),
     );
     const updatekeysCalls = execSeam.calls.filter((c) => c.cmd[1] === "updatekeys");
     expect(updatekeysCalls.length).toBe(2);
     for (const call of updatekeysCalls) expect(call.cmd[0]).toBe("sops");
-    expect(readTeamRecipients("claimview", seams)).toEqual(["age1aaa", "age1bbb"]);
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa", "age1bbb"]);
   });
 
   test("already a recipient -> no-op, no updatekeys call", async () => {
     const { execSeam, seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
     execSeam.calls.length = 0;
 
-    const result = await addTeamRecipient("claimview", "age1aaa", seams);
+    const result = await addTeamRecipient("acme", "age1aaa", seams);
 
     expect(result).toEqual({ added: false, reencrypted: [] });
     expect(execSeam.calls).toEqual([]);
@@ -352,37 +352,37 @@ describe("addTeamRecipient", () => {
 
   test("a re-encryption failure rolls .sops.yaml back to the previous recipient set", async () => {
     const execSeam = new FakeTeamExecSeam({ failUpdatekeysOnCall: 1 });
-    execSeam.files.set(teamCloneRootFor("claimview"), "");
+    execSeam.files.set(teamCloneRootFor("acme"), "");
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
-    await writeTeamSecret("claimview", "board", "k", "v", seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
 
-    await expect(addTeamRecipient("claimview", "age1bbb", seams)).rejects.toThrow(/re-encryption failed/);
+    await expect(addTeamRecipient("acme", "age1bbb", seams)).rejects.toThrow(/re-encryption failed/);
 
-    expect(readTeamRecipients("claimview", seams)).toEqual(["age1aaa"]);
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa"]);
   });
 });
 
 describe("removeTeamRecipient", () => {
   test("rewrites .sops.yaml without the key and re-encrypts every domain file", async () => {
     const { execSeam, seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa", "age1bbb"], seams);
-    await writeTeamSecret("claimview", "board", "slackClientSecret", "shh", seams);
+    writeTeamRecipients("acme", ["age1aaa", "age1bbb"], seams);
+    await writeTeamSecret("acme", "board", "slackClientSecret", "shh", seams);
     execSeam.calls.length = 0;
 
-    const result = await removeTeamRecipient("claimview", "age1bbb", seams);
+    const result = await removeTeamRecipient("acme", "age1bbb", seams);
 
     expect(result.removed).toBe(true);
-    expect(result.reencrypted).toEqual([teamSecretsFile("claimview", "board")]);
-    expect(readTeamRecipients("claimview", seams)).toEqual(["age1aaa"]);
+    expect(result.reencrypted).toEqual([teamSecretsFile("acme", "board")]);
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa"]);
   });
 
   test("not currently a recipient -> no-op", async () => {
     const { execSeam, seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
     execSeam.calls.length = 0;
 
-    const result = await removeTeamRecipient("claimview", "age1zzz", seams);
+    const result = await removeTeamRecipient("acme", "age1zzz", seams);
 
     expect(result).toEqual({ removed: false, reencrypted: [] });
     expect(execSeam.calls).toEqual([]);
@@ -390,14 +390,14 @@ describe("removeTeamRecipient", () => {
 
   test("a re-encryption failure rolls .sops.yaml back — and the error says the removed member can still decrypt until rotation succeeds", async () => {
     const execSeam = new FakeTeamExecSeam({ failUpdatekeysOnCall: 1 });
-    execSeam.files.set(teamCloneRootFor("claimview"), "");
+    execSeam.files.set(teamCloneRootFor("acme"), "");
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
-    writeTeamRecipients("claimview", ["age1aaa", "age1bbb"], seams);
-    await writeTeamSecret("claimview", "board", "k", "v", seams);
+    writeTeamRecipients("acme", ["age1aaa", "age1bbb"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
 
     let thrown: unknown;
     try {
-      await removeTeamRecipient("claimview", "age1bbb", seams);
+      await removeTeamRecipient("acme", "age1bbb", seams);
     } catch (err) {
       thrown = err;
     }
@@ -407,21 +407,21 @@ describe("removeTeamRecipient", () => {
     expect((thrown as Error).message).toMatch(/can still decrypt/);
     // .sops.yaml rolled back to the pre-removal recipient set — the file on
     // disk matches what the error claims: age1bbb genuinely is still named.
-    expect(readTeamRecipients("claimview", seams)).toEqual(["age1aaa", "age1bbb"]);
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa", "age1bbb"]);
   });
 });
 
 describe("reencryptTeamSecrets", () => {
   test("re-encrypts every existing domain file and returns their paths", async () => {
     const { execSeam, seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
-    await writeTeamSecret("claimview", "board", "slackClientSecret", "shh", seams);
-    await writeTeamSecret("claimview", "rt", "switchboardAdminToken", "tok", seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "slackClientSecret", "shh", seams);
+    await writeTeamSecret("acme", "rt", "switchboardAdminToken", "tok", seams);
     execSeam.calls.length = 0;
 
-    const reencrypted = await reencryptTeamSecrets("claimview", seams);
+    const reencrypted = await reencryptTeamSecrets("acme", seams);
 
-    expect(reencrypted.sort()).toEqual([teamSecretsFile("claimview", "board"), teamSecretsFile("claimview", "rt")].sort());
+    expect(reencrypted.sort()).toEqual([teamSecretsFile("acme", "board"), teamSecretsFile("acme", "rt")].sort());
     expect(execSeam.calls.map((c) => c.cmd)).toEqual(
       reencrypted.map((f) => ["sops", "updatekeys", "-y", f]),
     );
@@ -429,30 +429,30 @@ describe("reencryptTeamSecrets", () => {
 
   test("no domain files yet -> [] , no sops call", async () => {
     const { execSeam, seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
     execSeam.calls.length = 0;
 
-    expect(await reencryptTeamSecrets("claimview", seams)).toEqual([]);
+    expect(await reencryptTeamSecrets("acme", seams)).toEqual([]);
     expect(execSeam.calls).toEqual([]);
   });
 
   test("a failing updatekeys call propagates as a real error", async () => {
     const execSeam = new FakeTeamExecSeam({ updatekeys: { code: 1, stdout: "", stderr: "sops: no matching creation rule" } });
-    execSeam.files.set(teamCloneRootFor("claimview"), "");
+    execSeam.files.set(teamCloneRootFor("acme"), "");
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
-    await writeTeamSecret("claimview", "board", "k", "v", seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
 
-    await expect(reencryptTeamSecrets("claimview", seams)).rejects.toThrow(/updatekeys/);
+    await expect(reencryptTeamSecrets("acme", seams)).rejects.toThrow(/updatekeys/);
   });
 
   test("SOPS_AGE_KEY is injected into every updatekeys call — real sops exits 128 with no env at all", async () => {
     const { execSeam, seams } = seamsWithKey("AGE-TEAM-KEY");
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
-    await writeTeamSecret("claimview", "board", "k", "v", seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
     execSeam.calls.length = 0;
 
-    await reencryptTeamSecrets("claimview", seams);
+    await reencryptTeamSecrets("acme", seams);
 
     const updatekeysCalls = execSeam.calls.filter((c) => c.cmd[1] === "updatekeys");
     expect(updatekeysCalls.length).toBeGreaterThan(0);
@@ -464,32 +464,32 @@ describe("reencryptTeamSecrets", () => {
 
   test("no age key on this machine -> NoAgeKeyError before any sops call, not a bare sops failure (same identity resolution as every other sops call)", async () => {
     const execSeam = new FakeTeamExecSeam();
-    execSeam.files.set(teamCloneRootFor("claimview"), "");
+    execSeam.files.set(teamCloneRootFor("acme"), "");
     const keyedSeams = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], keyedSeams.seams);
-    await writeTeamSecret("claimview", "board", "k", "v", keyedSeams.seams);
+    writeTeamRecipients("acme", ["age1aaa"], keyedSeams.seams);
+    await writeTeamSecret("acme", "board", "k", "v", keyedSeams.seams);
     // Same on-disk state, but this seams pair has no age key — mirrors the
     // scenario where a second machine has the domain file but never ran
     // `rt home init`, only the personal identity is missing.
     execSeam.files = keyedSeams.execSeam.files;
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamAbsent(), execSeam };
 
-    await expect(reencryptTeamSecrets("claimview", seams)).rejects.toThrow(/no age key/);
+    await expect(reencryptTeamSecrets("acme", seams)).rejects.toThrow(/no age key/);
     expect(execSeam.calls.filter((c) => c.cmd[1] === "updatekeys")).toEqual([]);
   });
 
   test("a partial failure reports completed vs. remaining files, not just the one that failed", async () => {
     const execSeam = new FakeTeamExecSeam({ failUpdatekeysOnCall: 2 });
-    execSeam.files.set(teamCloneRootFor("claimview"), "");
+    execSeam.files.set(teamCloneRootFor("acme"), "");
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
-    await writeTeamSecret("claimview", "board", "k", "v", seams);
-    await writeTeamSecret("claimview", "deck", "k", "v", seams);
-    await writeTeamSecret("claimview", "rt", "k", "v", seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
+    await writeTeamSecret("acme", "deck", "k", "v", seams);
+    await writeTeamSecret("acme", "rt", "k", "v", seams);
 
     let thrown: unknown;
     try {
-      await reencryptTeamSecrets("claimview", seams);
+      await reencryptTeamSecrets("acme", seams);
     } catch (err) {
       thrown = err;
     }
@@ -509,9 +509,9 @@ describe("reencryptTeamSecrets", () => {
 describe("team secrets never leak a value", () => {
   test("writeTeamSecret's value never appears in any subprocess argv", async () => {
     const { execSeam, seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
 
-    await writeTeamSecret("claimview", "board", "k", "super-secret-value-never-in-argv", seams);
+    await writeTeamSecret("acme", "board", "k", "super-secret-value-never-in-argv", seams);
 
     expect(execSeam.calls.flatMap((c) => c.cmd)).not.toContain("super-secret-value-never-in-argv");
   });
@@ -519,9 +519,9 @@ describe("team secrets never leak a value", () => {
   test("rt secrets list --team prints secret names but never the canary value, on stdout OR stderr", async () => {
     const CANARY = "sk_super_secret_team_canary_value_should_never_print";
     const { seams } = seamsWithKey();
-    writeTeamRecipients("claimview", ["age1aaa"], seams);
-    await writeTeamSecret("claimview", "board", "apiKey", CANARY, seams);
-    await writeTeamSecret("claimview", "board", "other", "value2", seams);
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "apiKey", CANARY, seams);
+    await writeTeamSecret("acme", "board", "other", "value2", seams);
 
     const logs: string[] = [];
     const errors: string[] = [];
@@ -533,7 +533,7 @@ describe("team secrets never leak a value", () => {
     });
 
     try {
-      await secretsList(["board", "--team", "claimview"], {}, seams);
+      await secretsList(["board", "--team", "acme"], {}, seams);
     } finally {
       logSpy.mockRestore();
       errorSpy.mockRestore();

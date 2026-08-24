@@ -537,7 +537,7 @@ describe("worktree:adopt", () => {
     const parked = join(repo, ".worktrees", "parked");
     const feature = join(repo, ".worktrees", "feature");
     sh(`git worktree add -b parking-lot/1 ${parked} origin/main`, repo);
-    sh(`git worktree add -b cv-1-feature ${feature} origin/main`, repo);
+    sh(`git worktree add -b acme-1-feature ${feature} origin/main`, repo);
 
     const repoIndexPath = join(repoDataDir(repoName), "parking-lot.json");
     const appStatePath = join(rtDir(), "parking-lot-state.json");
@@ -563,7 +563,7 @@ describe("worktree:adopt", () => {
     expect(feat.kind).toBe("ephemeral");
     expect(feat.state).toBe("claimed");
     expect(feat.disposal).toBe("merge");
-    expect(feat.branch).toBe("cv-1-feature");
+    expect(feat.branch).toBe("acme-1-feature");
 
     expect(existsSync(repoIndexPath)).toBe(false);
     expect(existsSync(appStatePath)).toBe(false);

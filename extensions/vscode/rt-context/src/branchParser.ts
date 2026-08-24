@@ -1,6 +1,6 @@
 /**
  * Matches Linear-style identifiers: 1+ letters, a hyphen, 1+ digits.
- * e.g. CV-1287, ENG-456, PLAT-12
+ * e.g. ACME-1287, ENG-456, PLAT-12
  */
 const LINEAR_ID_RE = /^[A-Za-z]+-\d+$/;
 
@@ -13,12 +13,12 @@ const LINEAR_ID_RE = /^[A-Za-z]+-\d+$/;
  * Based on the proven approach in gitq-core/src/linear.ts.
  *
  * Examples:
- *   "feature/cv-1287"           → "CV-1287"
+ *   "feature/acme-1287"           → "ACME-1287"
  *   "matt/ENG-456-some-desc"    → null  (segment isn't purely the ID)
- *   "feature/cv-1287-add-stuff" → null  (segment has trailing text)
+ *   "feature/acme-1287-add-stuff" → null  (segment has trailing text)
  *
  * For branches where the ID is embedded in a longer segment (e.g.
- * "feature/cv-1287-add-photos"), we also try a prefix-match fallback.
+ * "feature/acme-1287-add-photos"), we also try a prefix-match fallback.
  */
 export function extractLinearId(branch: string): string | null {
   const segments = branch.split('/');
@@ -32,7 +32,7 @@ export function extractLinearId(branch: string): string | null {
   }
 
   // Pass 2: prefix match — the segment starts with TEAM-NNN followed by
-  // a separator (hyphen, underscore). Handles "cv-1287-add-photos".
+  // a separator (hyphen, underscore). Handles "acme-1287-add-photos".
   const PREFIX_RE = /^([A-Za-z]+-\d+)[-_]/;
   for (let i = segments.length - 1; i >= 0; i--) {
     const match = PREFIX_RE.exec(segments[i]!);

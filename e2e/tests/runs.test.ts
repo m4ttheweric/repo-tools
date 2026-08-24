@@ -52,7 +52,7 @@ function seedRun(runsRoot: string, repo: string, id: string, startedAt: number):
     CREATE TABLE decisions (run_id TEXT, contract TEXT, scope TEXT, selection TEXT, decided_by TEXT, decided_at INTEGER, PRIMARY KEY (run_id, contract, scope));
     INSERT INTO runs VALUES ('${id}', '${repo}', 'feature', 'default', 'running', 'plan', NULL, ${startedAt}, NULL);
     INSERT INTO stages VALUES ('${id}', 'plan', 'running', 1, ${startedAt}, NULL);
-    INSERT INTO fields VALUES ('${id}', 'ticket', 'CV-1', 'plan', ${startedAt});
+    INSERT INTO fields VALUES ('${id}', 'ticket', 'ACME-1', 'plan', ${startedAt});
     INSERT INTO decisions VALUES ('${id}', 'execution-strategy@1', 'run', '{"tier":"direct-tdd"}', 'stage-plan', ${startedAt});
   `);
   db.close();
@@ -149,7 +149,7 @@ describe("rt runs (read-side e2e)", () => {
     expect(out.stages).toHaveLength(1);
     expect(out.stages[0]).toMatchObject({ name: "plan", status: "running" });
     expect(out.fields).toHaveLength(1);
-    expect(out.fields[0]).toMatchObject({ key: "ticket", value: "CV-1" });
+    expect(out.fields[0]).toMatchObject({ key: "ticket", value: "ACME-1" });
     expect(out.decisions).toHaveLength(1);
     expect(out.decisions[0]).toMatchObject({ contract: "execution-strategy@1", scope: "run" });
   }, 20_000);

@@ -100,8 +100,8 @@ final class SetupFlowUITests: XCTestCase {
         waitFor("setup.team.screen")
         el("setup.team.card.create").click()
         el("setup.team.create.name").click()
-        el("setup.team.create.name").typeText("Assured Claims")
-        XCTAssertTrue(app.staticTexts["assured-claims"].waitForExistence(timeout: 3))
+        el("setup.team.create.name").typeText("Acme Claims")
+        XCTAssertTrue(app.staticTexts["acme-svc"].waitForExistence(timeout: 3))
         // The stub always answers `setup github status` as ready, so
         // TeamChoiceModel.loadGitHubStatus() flips useGhRepo on and the
         // plain remote-URL field never renders; canContinue is already
@@ -120,7 +120,7 @@ final class SetupFlowUITests: XCTestCase {
         el("setup.team.join.code").click()
         el("setup.team.join.code").typeText("ABCD")
         el("setup.team.continue").click()
-        XCTAssertTrue(app.staticTexts["You don't have access yet: ask matt to grant you access to Assured."].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["You don't have access yet: ask matt to grant you access to Acme."].waitForExistence(timeout: 20))
         XCTAssertFalse(el("setup.checklist.screen").exists)
     }
 

@@ -27,7 +27,7 @@ function writeStore(file: string, obj: unknown): void {
 
 /** Seeds `rt.intercepts` for `identity` in the team store — the store-only path every rule now goes through. */
 function writeRepoIntercepts(identity: string, intercepts: unknown): void {
-  writeStore(teamSettingsPath("claimview"), { repos: { [identity]: { "rt.intercepts": intercepts } } });
+  writeStore(teamSettingsPath("acme"), { repos: { [identity]: { "rt.intercepts": intercepts } } });
 }
 
 function writeRepoIndex(index: Record<string, string>): void {
@@ -86,19 +86,19 @@ test("shimPath refuses empty and dot-segment names", () => {
 // ─── matchInvocation ─────────────────────────────────────────────────────────
 
 const rules: InterceptRule[] = [{
-  command: "doppler", repo: "assured-dev", repoRemote: "git@x:assured/assured-dev.git",
+  command: "doppler", repo: "acme-dev", repoRemote: "git@x:acme/acme-dev.git",
   matches: [{ cwdGlob: "apps/backend{,/**}", argPattern: "src/app/server", role: "backend" }],
 }];
 
 describe("matchInvocation", () => {
-  const base = { command: "doppler", args: ["run", "--", "bun", "src/app/server.ts"], cwd: "/wt/a/apps/backend", toplevel: "/wt/a", remote: "git@x:assured/assured-dev.git" };
+  const base = { command: "doppler", args: ["run", "--", "bun", "src/app/server.ts"], cwd: "/wt/a/apps/backend", toplevel: "/wt/a", remote: "git@x:acme/acme-dev.git" };
   test("hits on cwdGlob + argPattern + remote", () => {
     expect(matchInvocation(rules, base)?.match.role).toBe("backend");
   });
   test("misses on wrong remote, no toplevel, wrong dir, non-matching args, unknown command", () => {
     expect(matchInvocation(rules, { ...base, remote: "git@x:other/repo.git" })).toBeNull();
     expect(matchInvocation(rules, { ...base, toplevel: null })).toBeNull();
-    expect(matchInvocation(rules, { ...base, cwd: "/wt/a/apps/adjuster" })).toBeNull();
+    expect(matchInvocation(rules, { ...base, cwd: "/wt/a/apps/portal" })).toBeNull();
     expect(matchInvocation(rules, { ...base, args: ["run", "--", "jest"] })).toBeNull();
     expect(matchInvocation(rules, { ...base, command: "pnpm" })).toBeNull();
   });
@@ -214,10 +214,10 @@ describe("buildInterceptRules", () => {
   });
 
   test("flattens repo index x per-repo intercepts, skips repos with none or no derivable identity, captures repoRemote", async () => {
-    const repoWithRemote = makeGitRepo("git@x:assured/assured-dev.git");
-    const repoEmptyRemote = makeGitRepo("git@x:assured/empty-repo.git");
+    const repoWithRemote = makeGitRepo("git@x:acme/acme-dev.git");
+    const repoEmptyRemote = makeGitRepo("git@x:acme/empty-repo.git");
     const repoNoRemote = makeGitRepo(null);
-    writeRepoIntercepts("x/assured/assured-dev", [
+    writeRepoIntercepts("x/acme/acme-dev", [
       { command: "doppler", matches: [{ cwdGlob: "apps/backend{,/**}", role: "backend" }] },
     ]);
     writeRepoIndex({ "r-with": repoWithRemote, "r-without": repoEmptyRemote, "r-no-remote": repoNoRemote });
@@ -226,7 +226,7 @@ describe("buildInterceptRules", () => {
     expect(built).toHaveLength(1);
     const byRepo = Object.fromEntries(built.map((r) => [r.repo, r]));
     expect(byRepo["r-with"]!.command).toBe("doppler");
-    expect(byRepo["r-with"]!.repoRemote).toBe("git@x:assured/assured-dev.git");
+    expect(byRepo["r-with"]!.repoRemote).toBe("git@x:acme/acme-dev.git");
     expect(byRepo["r-without"]).toBeUndefined();
     // No remote → no derivable identity → repo-scoped intercepts unreachable.
     expect(byRepo["r-no-remote"]).toBeUndefined();
@@ -247,8 +247,8 @@ describe("buildInterceptRules", () => {
   });
 
   test("multiple intercept entries in one repo produce one rule each", async () => {
-    const repoPath = makeGitRepo("git@x:assured/multi-repo.git");
-    writeRepoIntercepts("x/assured/multi-repo", [
+    const repoPath = makeGitRepo("git@x:acme/multi-repo.git");
+    writeRepoIntercepts("x/acme/multi-repo", [
       { command: "doppler", matches: [{ cwdGlob: ".", role: "a" }] },
       { command: "pnpm", matches: [{ cwdGlob: ".", role: "b" }] },
     ]);
@@ -277,8 +277,8 @@ describe("installShims / uninstallShims / shimReport", () => {
   });
 
   test("installs a shim per distinct command, classifies installed vs current, uninstall removes only marker files", async () => {
-    const repoPath = makeGitRepo("git@x:assured/r-install.git");
-    writeRepoIntercepts("x/assured/r-install", [{ command: "fakecmd-a", matches: [{ cwdGlob: ".", role: "x" }] }]);
+    const repoPath = makeGitRepo("git@x:acme/r-install.git");
+    writeRepoIntercepts("x/acme/r-install", [{ command: "fakecmd-a", matches: [{ cwdGlob: ".", role: "x" }] }]);
     writeRepoIndex({ "r-install": repoPath });
 
     const first = await installShims();
@@ -305,8 +305,8 @@ describe("installShims / uninstallShims / shimReport", () => {
   });
 
   test("installShims never clobbers a pre-existing file at the shim path that isn't ours — reports it skipped instead (F8: this now runs unattended behind Install)", async () => {
-    const repoPath = makeGitRepo("git@x:assured/r-occupied.git");
-    writeRepoIntercepts("x/assured/r-occupied", [{ command: "fakecmd-occupied", matches: [{ cwdGlob: ".", role: "x" }] }]);
+    const repoPath = makeGitRepo("git@x:acme/r-occupied.git");
+    writeRepoIntercepts("x/acme/r-occupied", [{ command: "fakecmd-occupied", matches: [{ cwdGlob: ".", role: "x" }] }]);
     writeRepoIndex({ "r-occupied": repoPath });
 
     const userScript = "#!/bin/sh\necho this is MY wrapper, not rt's\n";
@@ -321,8 +321,8 @@ describe("installShims / uninstallShims / shimReport", () => {
   });
 
   test("re-install repairs a stripped exec bit even when the content is already current", async () => {
-    const repoPath = makeGitRepo("git@x:assured/r-chmod.git");
-    writeRepoIntercepts("x/assured/r-chmod", [{ command: "fakecmd-chmod", matches: [{ cwdGlob: ".", role: "x" }] }]);
+    const repoPath = makeGitRepo("git@x:acme/r-chmod.git");
+    writeRepoIntercepts("x/acme/r-chmod", [{ command: "fakecmd-chmod", matches: [{ cwdGlob: ".", role: "x" }] }]);
     writeRepoIndex({ "r-chmod": repoPath });
 
     await installShims();
@@ -343,8 +343,8 @@ describe("installShims / uninstallShims / shimReport", () => {
   });
 
   test("shimReport tracks the full installed/current transition (RT-28 verify check)", async () => {
-    const repoPath = makeGitRepo("git@x:assured/r-transition.git");
-    writeRepoIntercepts("x/assured/r-transition", [{ command: "fakecmd-transition", matches: [{ cwdGlob: ".", role: "x" }] }]);
+    const repoPath = makeGitRepo("git@x:acme/r-transition.git");
+    writeRepoIntercepts("x/acme/r-transition", [{ command: "fakecmd-transition", matches: [{ cwdGlob: ".", role: "x" }] }]);
     writeRepoIndex({ "r-transition": repoPath });
 
     const built = await buildInterceptRules();
@@ -414,7 +414,7 @@ describe("staleIntercepts", () => {
     writeCache("r");
     writeAt(userSettingsPath(), "{}", OLDER);
     writeAt(machineSettingsPath(), "{}", OLDER);
-    writeAt(teamSettingsPath("claimview"), "{}", OLDER);
+    writeAt(teamSettingsPath("acme"), "{}", OLDER);
     expect(staleIntercepts()).toEqual({ stale: false });
   });
 
@@ -428,7 +428,7 @@ describe("staleIntercepts", () => {
 
   test("a team store newer than the cache is stale", () => {
     writeCache("r");
-    writeAt(teamSettingsPath("claimview"), "{}", NEWER);
+    writeAt(teamSettingsPath("acme"), "{}", NEWER);
     expect(staleIntercepts().stale).toBe(true);
   });
 

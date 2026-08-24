@@ -348,7 +348,7 @@ apply` steps + `rt deps`; no separate verb.
 Plan JSON (abridged):
 
 ```json
-{ "team": {"name":"assured","mode":"join"},
+{ "team": {"name":"acme","mode":"join"},
   "groups": [{ "id":"mac", "title":"Your Mac", "rows":[
      { "id":"perm.fda", "kind":"permission", "title":"Full Disk Access",
        "why":"Reads your repositories' git state so the daemon can show branch and MR status.",
@@ -358,7 +358,7 @@ Plan JSON (abridged):
        "status":"ready", "detail":"git 2.50.1", "action":null } ]},
     { "id":"accounts", "title":"Accounts", "rows":[
      { "id":"account.gitlab", "kind":"account", "title":"GitLab",
-       "why":"The team's merge requests live on gitlab.assured.com.",
+       "why":"The team's merge requests live on gitlab.example.com.",
        "required":true, "status":"missing", "action":{"type":"connect","integration":"gitlab","fields":[{"name":"token","secret":true,"hint":"read_api, read_user"}]} } ]} ],
   "canInstall": false, "requiredMissing": ["perm.fda","account.gitlab"] }
 ```
@@ -508,7 +508,7 @@ platform registration moves to the app's SMAppService plist (`deck setup`
 narrows to registry/proxy; `deck uninstall` leaves the agent to the app);
 fast-browser publishes its artifact and fixes its default marketplace source;
 the mattstack marketplace becomes the MAT-360 public meta repo (pruned plugin
-tree) instead of a directory of symlinks; the claimview pack declares its
+tree) instead of a directory of symlinks; the acme pack declares its
 requirements, gets a writer for `dev-ports.state.json` (the path fix alone does
 not restore bearer capture), and `local-db-mcp` either gets a distributable
 home or leaves the pack; the rt-context extension reads secrets through the
@@ -672,7 +672,7 @@ confirmation sheet.
 | L2 team secrets | RT | **Shrunk**: RT-32 core, RT-30 snapshot (V1) and RT-31 restore are the settings lane's (S, H2, R). L2 = team-scope recipients (`teams/<slug>/mattstack/secrets/`, N-recipient `.sops.yaml`), the invite-reply key exchange, `rt secrets rotate --team`, `rt team members sync\|remove` | settings lane S (merged) |
 | L3 app | MAT | xcodegen project + schemes, Sparkle, setup window + 5 screens, Settings panes, PermissionsService, ServicesRegistrar, PrivilegedInstaller, tray.sock routes, RtClient, stub rt, XCTest/XCUITest | L1 contract (JSON shapes agreed first; stub carries it) |
 | L4 release | RT/MAT | deps.lock + helper bundling, rt-daemon→rt rename, DMG, appcast, notarization, headless install job, thin `rt update`, README/verify sweep | L3 project |
-| L5 suite artifacts | BOARD/GITQ/DECK/SKILLS/FB | board + gitq `bun --compile` binaries with published rt-client (their settings/secrets reads are the settings lane's deck/board/gitq lanes; their state.db adoption is a follow-on), skills as plugins (no `~/.claude/skills` symlinks), deck release + SMAppService-owned platform registration + private node/portless + privileged helper + our own proxy plist, fast-browser artifact + own setup + marketplace source fix, mattstack marketplace = MAT-360 meta repo, claimview pack `requirements.jsonc` + `dev-ports.state.json` writer + local-db-mcp decision | MAT-384 for TLD/managed apps; settings lane's deck/board/gitq lanes for config reads |
+| L5 suite artifacts | BOARD/GITQ/DECK/SKILLS/FB | board + gitq `bun --compile` binaries with published rt-client (their settings/secrets reads are the settings lane's deck/board/gitq lanes; their state.db adoption is a follow-on), skills as plugins (no `~/.claude/skills` symlinks), deck release + SMAppService-owned platform registration + private node/portless + privileged helper + our own proxy plist, fast-browser artifact + own setup + marketplace source fix, mattstack marketplace = MAT-360 meta repo, acme pack `requirements.jsonc` + `dev-ports.state.json` writer + local-db-mcp decision | MAT-384 for TLD/managed apps; settings lane's deck/board/gitq lanes for config reads |
 | L6 relay invites | BOARD | `/v1/invites*` opaque endpoints on the shared Railway relay; rate limiting; prune | — (matt-gated deploy) |
 | L7 clean room | MAT | `rt-tray/vm/` golden images + walkthrough, second-user smoke notes | — |
 
@@ -746,7 +746,7 @@ DNS (`mattstack.dev/join`), Railway, and Apple steps carry `matt-gated`.
   settings lane's single-recipient model; coordinate the file layout with that
   lane before L2 lands.
 - `local-db-mcp` has no distributable source; capture-evidence/query flows in
-  the claimview pack depend on it.
+  the acme pack depend on it.
 
 ## Amendment A1 (2026-08-21) — home repo re-root supersedes V5's layout
 

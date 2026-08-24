@@ -119,7 +119,7 @@ class FakeExecSeam implements SecretsExecSeam {
 }
 
 /** Team-ready seams: clone root registered, one recipient already in .sops.yaml. */
-function teamSeams(slug = "claimview"): { execSeam: FakeExecSeam; seams: SecretsSeams } {
+function teamSeams(slug = "acme"): { execSeam: FakeExecSeam; seams: SecretsSeams } {
   const execSeam = new FakeExecSeam();
   execSeam.files.set(join(teamsDir(), slug), "");
   const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
@@ -129,7 +129,7 @@ function teamSeams(slug = "claimview"): { execSeam: FakeExecSeam; seams: Secrets
 
 /** Seeds one team secret through the real store (not a direct fs write) so every invariant (recipients present, round-trip readback) is exercised the same way a real `rt secrets set --team` call would. */
 async function writeTeamSecretForTest(seams: SecretsSeams, domain: string, key: string, value: string): Promise<void> {
-  await writeTeamSecret("claimview", domain, key, value, seams);
+  await writeTeamSecret("acme", domain, key, value, seams);
 }
 
 /** Swaps process.stdin for one synthetic chunk for the duration of `fn`, then restores it — drives the --stdin value-collection path without a real pipe. */
@@ -166,7 +166,7 @@ describe("--team argv parsing (positional() skips the flag AND its value, any po
     const { seams } = teamSeams();
     await writeTeamSecretForTest(seams, "board", "apiKey", "shh");
 
-    const { logs } = await withCapturedLogs(() => secretsList(["--team", "claimview", "board"], {}, seams));
+    const { logs } = await withCapturedLogs(() => secretsList(["--team", "acme", "board"], {}, seams));
 
     expect(logs.join("\n")).toContain("apiKey");
   });
@@ -175,7 +175,7 @@ describe("--team argv parsing (positional() skips the flag AND its value, any po
     const { seams } = teamSeams();
     await writeTeamSecretForTest(seams, "board", "apiKey", "shh");
 
-    const { logs } = await withCapturedLogs(() => secretsList(["board", "--team", "claimview"], {}, seams));
+    const { logs } = await withCapturedLogs(() => secretsList(["board", "--team", "acme"], {}, seams));
 
     expect(logs.join("\n")).toContain("apiKey");
   });
@@ -185,11 +185,11 @@ describe("secretsSet --team", () => {
   test("writes to the team store, never the personal one", async () => {
     const { execSeam, seams } = teamSeams();
 
-    await withFakeStdin("shh", () => secretsSet(["board", "apiKey", "--team", "claimview", "--stdin"], {}, seams));
+    await withFakeStdin("shh", () => secretsSet(["board", "apiKey", "--team", "acme", "--stdin"], {}, seams));
 
-    expect(await readTeamSecret("claimview", "board", "apiKey", seams)).toBe("shh");
+    expect(await readTeamSecret("acme", "board", "apiKey", seams)).toBe("shh");
     expect(execSeam.fileExists(secretsFilePath("board"))).toBe(false);
-    expect(execSeam.fileExists(teamSecretsFile("claimview", "board"))).toBe(true);
+    expect(execSeam.fileExists(teamSecretsFile("acme", "board"))).toBe(true);
   });
 
   test("without --team, writes to the personal store instead", async () => {
@@ -199,7 +199,7 @@ describe("secretsSet --team", () => {
     await withFakeStdin("shh", () => secretsSet(["board", "apiKey", "--stdin"], {}, seams));
 
     expect(execSeam.fileExists(secretsFilePath("board"))).toBe(true);
-    expect(execSeam.fileExists(teamSecretsFile("claimview", "board"))).toBe(false);
+    expect(execSeam.fileExists(teamSecretsFile("acme", "board"))).toBe(false);
   });
 });
 
@@ -208,9 +208,9 @@ describe("secretsRotate --team <domain> <key> (the with-key form)", () => {
     const { seams } = teamSeams();
     await writeTeamSecretForTest(seams, "board", "apiKey", "old-value");
 
-    await withFakeStdin("new-value", () => secretsRotate(["board", "apiKey", "--team", "claimview", "--stdin"], {}, seams));
+    await withFakeStdin("new-value", () => secretsRotate(["board", "apiKey", "--team", "acme", "--stdin"], {}, seams));
 
-    expect(await readTeamSecret("claimview", "board", "apiKey", seams)).toBe("new-value");
+    expect(await readTeamSecret("acme", "board", "apiKey", seams)).toBe("new-value");
   });
 });
 
@@ -221,21 +221,21 @@ describe("secretsRotate --team <slug> (the rotate-all form, no domain/key)", () 
     await writeTeamSecretForTest(seams, "rt", "switchboardAdminToken", "b");
     execSeam.calls.length = 0;
 
-    const { logs } = await withCapturedLogs(() => secretsRotate(["--team", "claimview"], {}, seams));
+    const { logs } = await withCapturedLogs(() => secretsRotate(["--team", "acme"], {}, seams));
 
     const updatekeysCalls = execSeam.calls.filter((c) => c.cmd[1] === "updatekeys");
     expect(updatekeysCalls.length).toBe(2);
     const output = logs.join("\n");
     expect(output).toContain("re-encrypted 2 file(s)");
-    expect(output).toContain(teamSecretsFile("claimview", "board"));
-    expect(output).toContain(teamSecretsFile("claimview", "rt"));
+    expect(output).toContain(teamSecretsFile("acme", "board"));
+    expect(output).toContain(teamSecretsFile("acme", "rt"));
     expect(output).toMatch(/already decrypted before/); // the removed-member residue note
   });
 
   test("no domain files yet -> a clean 'nothing to re-encrypt' message, not an error", async () => {
     const { seams } = teamSeams();
 
-    const { logs } = await withCapturedLogs(() => secretsRotate(["--team", "claimview"], {}, seams));
+    const { logs } = await withCapturedLogs(() => secretsRotate(["--team", "acme"], {}, seams));
 
     expect(logs.join("\n")).toContain("no domain files to re-encrypt");
   });

@@ -231,7 +231,7 @@ Not a subagent task — executed inline by the orchestrator after Tasks 1–6 ar
 
 - `daemon.log`, `diag.log`, `sync.log` (July, pre-convention)
 - `.DS_Store` (top), `repos/.DS_Store`, `plugins/.DS_Store`
-- `attach-1-assured-wktree-4.sock`, `attach-2-assured-wktree-4.sock`, `attach-adjuster:start.sock`, `attach-backend:start-lite-watch.sock`
+- `attach-1-acme-wktree-4.sock`, `attach-2-acme-wktree-4.sock`, `attach-portal:start.sock`, `attach-backend:start-lite-watch.sock`
 - `.attic-2026-08-20.tar.gz`
 - the six `*.json.migrated` blobs (state.db is live; rollback window closed by Matt's ok)
 - orphaned by the code deletions: `repos/*/mr.json`, `repos/*/build-history.json`, `repos/*/parking-lot.json` (16), `repos/*/workspace-sync.json`

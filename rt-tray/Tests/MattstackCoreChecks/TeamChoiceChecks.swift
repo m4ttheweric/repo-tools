@@ -3,84 +3,84 @@ import MattstackCore
 
 let teamChoiceChecks: [Check] = [
     Check("Slug.make") { c in
-        c.expectEqual(Slug.make("Assured Claims!"), "assured-claims")
+        c.expectEqual(Slug.make("Acme Claims!"), "acme-svc")
         c.expectEqual(Slug.make("  My  Team -- 2 "), "my-team-2")
         c.expectEqual(Slug.make(""), "")
     },
     Check("create: slug preview, gh owner picker from github status, canContinue needs name + remote") { c in
         let rt = ScriptedRt()
-        rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","assured"]}"#)
+        rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","acme"]}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
         await m.loadGitHubStatus()
         await MainActor.run {
             c.expectEqual(m.ghHandle, "m4ttheweric")
-            c.expectEqual(m.ghOwners, ["m4ttheweric", "assured"])
+            c.expectEqual(m.ghOwners, ["m4ttheweric", "acme"])
             c.expectEqual(m.useGhRepo, true)
             c.expectEqual(m.ghOwner, "m4ttheweric")
             c.expectEqual(m.canContinue, false)
-            m.teamName = "Assured Claims"
-            c.expectEqual(m.slugPreview, "assured-claims")
-            c.expectEqual(m.ghRepoPreview, "m4ttheweric/mattstack-team-assured-claims")
+            m.teamName = "Acme Claims"
+            c.expectEqual(m.slugPreview, "acme-svc")
+            c.expectEqual(m.ghRepoPreview, "m4ttheweric/mattstack-team-acme-claims")
             c.expectEqual(m.canContinue, true)
             m.useGhRepo = false
             c.expectEqual(m.canContinue, false, "URL field now required")
-            m.remoteURL = "git@gitlab.assured.com:tools/mattstack-team.git"
+            m.remoteURL = "git@gitlab.example.com:tools/mattstack-team.git"
             c.expectEqual(m.canContinue, true)
         }
     },
     Check("create: validateAndPrepare calls home init --dry-run then team create, never with secrets on argv") { c in
         let rt = ScriptedRt()
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"assured-claims","name":"Assured Claims"},"remote":"ok"}"#)
+        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
-        await MainActor.run { m.choice = .create; m.teamName = "Assured Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
+        await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
         let err = await m.validateAndPrepare()
         c.expect(err == nil, "got \(err ?? "")")
         try c.require(rt.calls.count >= 2, "expected home init --dry-run then team create, got \(rt.calls.map(\.args))")
         c.expectEqual(rt.calls[0].args.prefix(3), ["home", "init", "--dry-run"])
-        c.expectEqual(rt.calls[1].args, ["team", "create", "Assured Claims", "--remote", "https://example.com/t.git", "--others", "--json"])
+        c.expectEqual(rt.calls[1].args, ["team", "create", "Acme Claims", "--remote", "https://example.com/t.git", "--others", "--json"])
         let gh = ScriptedRt()
         gh.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        gh.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"assured-claims","name":"Assured Claims"},"remote":"ok"}"#)
+        gh.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
         let m2 = await MainActor.run { TeamChoiceModel(rt: gh) }
-        await MainActor.run { m2.choice = .create; m2.teamName = "Assured Claims"; m2.useGhRepo = true; m2.ghOwner = "assured"; m2.othersWillJoin = false }
+        await MainActor.run { m2.choice = .create; m2.teamName = "Acme Claims"; m2.useGhRepo = true; m2.ghOwner = "acme"; m2.othersWillJoin = false }
         c.expect(await m2.validateAndPrepare() == nil)
         try c.require(gh.calls.count >= 2, "expected home init --dry-run then team create, got \(gh.calls.map(\.args))")
-        c.expectEqual(gh.calls[1].args, ["team", "create", "Assured Claims", "--create-repo", "assured", "--json"])
+        c.expectEqual(gh.calls[1].args, ["team", "create", "Acme Claims", "--create-repo", "acme", "--json"])
     },
     Check("create: loadGitHubStatus only queries rt once — a second call after Back doesn't clobber the user's edits") { c in
         let rt = ScriptedRt()
-        rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","assured"]}"#)
+        rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","acme"]}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
         await m.loadGitHubStatus()
         await MainActor.run {
             c.expectEqual(m.useGhRepo, true)
             m.useGhRepo = false
-            m.remoteURL = "git@gitlab.assured.com:tools/mattstack-team.git"
+            m.remoteURL = "git@gitlab.example.com:tools/mattstack-team.git"
         }
         await m.loadGitHubStatus()
         await MainActor.run {
             c.expectEqual(m.useGhRepo, false, "a second load must not re-overwrite the user's choice")
-            c.expectEqual(m.remoteURL, "git@gitlab.assured.com:tools/mattstack-team.git")
+            c.expectEqual(m.remoteURL, "git@gitlab.example.com:tools/mattstack-team.git")
         }
         c.expectEqual(rt.calls.filter { $0.args.prefix(3) == ["setup", "github", "status"] }.count, 1)
     },
     Check("create: validateAndPrepare is idempotent for unchanged inputs; a changed field re-runs it") { c in
         let rt = ScriptedRt()
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"assured-claims","name":"Assured Claims"},"remote":"ok"}"#)
+        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
-        await MainActor.run { m.choice = .create; m.teamName = "Assured Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
+        await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
         c.expect(await m.validateAndPrepare() == nil)
         c.expect(await m.validateAndPrepare() == nil, "repeat call with unchanged inputs must still report success")
         c.expectEqual(rt.calls.filter { $0.args.prefix(2) == ["team", "create"] }.count, 1, "unchanged inputs must not re-run team create")
-        await MainActor.run { m.teamName = "Assured Claims 2" }
+        await MainActor.run { m.teamName = "Acme Claims 2" }
         c.expect(await m.validateAndPrepare() == nil)
         c.expectEqual(rt.calls.filter { $0.args.prefix(2) == ["team", "create"] }.count, 2, "a changed field must re-run team create")
     },
     Check("join: code goes on stdin; success summary; failure copy is specific") { c in
         let rt = ScriptedRt()
-        rt.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"assured","name":"Assured","owner":"matt"},"access":"ok","peering":"idle","message":"Joining Assured (owner matt)"}"#)
+        rt.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"ok","peering":"idle","message":"Joining Acme (owner matt)"}"#)
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
         await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
@@ -90,13 +90,13 @@ let teamChoiceChecks: [Check] = [
         c.expectEqual(rt.calls[0].args, ["team", "join", "--dry-run", "--json"])
         c.expectEqual(rt.calls[0].stdin, "{\"code\":\"ABCD-EFGH\"}")
         c.expect(rt.calls.allSatisfy { !$0.args.contains("ABCD-EFGH") }, "code never on argv")
-        await MainActor.run { c.expectEqual(m.joinSummary, "Joining Assured (owner matt)") }
+        await MainActor.run { c.expectEqual(m.joinSummary, "Joining Acme (owner matt)") }
         let denied = ScriptedRt()
-        denied.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"assured","name":"Assured","owner":"matt"},"access":"denied","peering":"idle","message":"You don't have access yet: ask matt to grant you access to Assured."}"#)
+        denied.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"denied","peering":"idle","message":"You don't have access yet: ask matt to grant you access to Acme."}"#)
         let m2 = await MainActor.run { TeamChoiceModel(rt: denied) }
         await MainActor.run { m2.choice = .join; m2.inviteCode = "X" }
         let e2 = await m2.validateAndPrepare()
-        c.expectEqual(e2, "You don't have access yet: ask matt to grant you access to Assured.", "access != ok comes back as an exit-0 result, not a user error")
+        c.expectEqual(e2, "You don't have access yet: ask matt to grant you access to Acme.", "access != ok comes back as an exit-0 result, not a user error")
         let unknown = ScriptedRt()
         unknown.answers["team join --dry-run"] = (2, #"{"contract":1,"error":{"code":"invite-unknown","message":""}}"#)
         let m3 = await MainActor.run { TeamChoiceModel(rt: unknown) }

@@ -356,15 +356,15 @@ describe("createWorktreeReconciler", () => {
     // RT-47: the opt-in signal used to be `worktrees` in the per-repo
     // config.json. A repo migrated to the stores has no such file at all, and
     // must still be reconciled — the gate now asks the resolver.
-    const identity = "gitlab.com/assured/store-gated";
-    execSync(`git remote add origin git@gitlab.com:assured/store-gated.git`, {
+    const identity = "gitlab.com/acme/store-gated";
+    execSync(`git remote add origin git@gitlab.com:acme/store-gated.git`, {
       cwd: repo,
       shell: "/bin/zsh",
     });
     const manualPath = join(repo, ".worktrees", "manual");
     execSync(`git worktree add -b manual-branch ${manualPath}`, { cwd: repo, shell: "/bin/zsh" });
 
-    const teamStore = teamSettingsPath("claimview");
+    const teamStore = teamSettingsPath("acme");
     mkdirSync(join(teamStore, ".."), { recursive: true });
     writeFileSync(
       teamStore,

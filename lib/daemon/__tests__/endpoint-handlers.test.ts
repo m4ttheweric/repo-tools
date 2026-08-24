@@ -22,7 +22,7 @@ const fakeProbes = async () => ({ listeners: new Set<number>(), pidAlive: () => 
 
 const DEFAULT_ROLES = {
   backend: { pool: [{ from: 10400, to: 10402 }], env: { PORT: "${port}" } },
-  adjuster: { pool: [4001, 5001], needs: ["backend"] },
+  portal: { pool: [4001, 5001], needs: ["backend"] },
 };
 
 /**
@@ -38,7 +38,7 @@ function declareRoles(repoName: string, roles: unknown = DEFAULT_ROLES): void {
   repoIndex[repoName] = repoPath;
 
   const identity = `rttest/${repoName}`;
-  const store = teamSettingsPath("claimview");
+  const store = teamSettingsPath("acme");
   mkdirSync(dirname(store), { recursive: true });
   let existing: Record<string, unknown> = {};
   try {
@@ -70,7 +70,7 @@ describe("endpoint handlers", () => {
 
   test("claim allocates, lookup sees it, refs pull the needed role into existence", async () => {
     declareRoles("repoA");
-    const r = await handlers["endpoint:claim"]({ repo: "repoA", worktree: "/wt/a", role: "adjuster", pid: 7 });
+    const r = await handlers["endpoint:claim"]({ repo: "repoA", worktree: "/wt/a", role: "portal", pid: 7 });
     expect(r.ok).toBe(true);
     expect(r.data.port).toBe(4001);
     expect(r.data.url).toBe("http://localhost:4001");

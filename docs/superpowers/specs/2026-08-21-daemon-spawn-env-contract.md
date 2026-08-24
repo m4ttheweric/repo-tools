@@ -2,9 +2,9 @@
 
 **Status:** proposed
 **Date:** 2026-08-21
-**Trigger:** `rt worktree provision --repo assured-dev --ticket cv-2899` refused with
+**Trigger:** `rt worktree provision --repo acme-dev --ticket acme-2899` refused with
 `create-failed:pnpm install / env: node: No such file or directory`, with the whole
-assured-dev on-deck pool wedged behind the same failure.
+acme-dev on-deck pool wedged behind the same failure.
 
 ## What happened
 
@@ -12,7 +12,7 @@ The daemon (pid 29465, SMAppService, started 15:32:10Z) cold-created tree `luna`
 ran the `pnpm install` ready step, and the step died before pnpm printed anything:
 
 ```
-{"repo":"assured-dev","tree":"luna","failedStep":"pnpm install",
+{"repo":"acme-dev","tree":"luna","failedStep":"pnpm install",
  "output":"env: node: No such file or directory","msg":"worktree create failed"}
 ```
 
@@ -96,9 +96,9 @@ empty pool.
    `|| fnm use default` fallback.
 
 3. **Per-repo version resolution is kept; the `aliases/default` shortcut is
-   rejected.** assured-dev's `.nvmrc` pins **22.22.0** while fnm's `default` alias is
+   rejected.** acme-dev's `.nvmrc` pins **22.22.0** while fnm's `default` alias is
    **v24.19.0**. Pointing non-interactive shells at the default alias would install
-   assured-dev's dependencies under the wrong major.
+   acme-dev's dependencies under the wrong major.
 
 4. **Accepted cost of decision 2:** every non-interactive zsh now creates an fnm
    multishell symlink. `~/.local/state/fnm_multishells/` already holds **147,755**
@@ -130,7 +130,7 @@ DECK-57 ("stale interpreter path").
 `research-dependency-inventory.md:12` already decides the split: bundle a private
 pinned node for suite-internal use (fast-browser, portless), while *"team dev needs
 its own node anyway"*, with pnpm listed under Team-specific as pack-declared. So the
-bundled node will not cover `pnpm install` in an assured-dev worktree — this exact
+bundled node will not cover `pnpm install` in an acme-dev worktree — this exact
 spawn still needs the developer's toolchain after the app ships.
 
 The direction worth pursuing with the setup-verbs work: resolve a **toolchain

@@ -119,8 +119,8 @@ describe("hasFreshAttendantLease", () => {
   });
 
   test("fresh lease (real BOARD-10 shape) matches by filename suffix", () => {
-    writeLease("assured-dev-42.json", {
-      mr: "https://gitlab.com/acme/assured-dev/-/merge_requests/42",
+    writeLease("acme-dev-42.json", {
+      mr: "https://gitlab.com/acme/acme-dev/-/merge_requests/42",
       heartbeatAt: Date.now(),
       ttlSeconds: 300,
     });
@@ -130,7 +130,7 @@ describe("hasFreshAttendantLease", () => {
 
   test("lease whose filename carries no iid still matches by the mr URL's trailing iid", () => {
     writeLease("attendant.json", {
-      mr: "https://gitlab.com/acme/assured-dev/-/merge_requests/77",
+      mr: "https://gitlab.com/acme/acme-dev/-/merge_requests/77",
       heartbeatAt: Date.now(),
       ttlSeconds: 300,
     });
@@ -139,8 +139,8 @@ describe("hasFreshAttendantLease", () => {
   });
 
   test("heartbeat older than ttlSeconds → stale", () => {
-    writeLease("assured-dev-42.json", {
-      mr: "https://gitlab.com/acme/assured-dev/-/merge_requests/42",
+    writeLease("acme-dev-42.json", {
+      mr: "https://gitlab.com/acme/acme-dev/-/merge_requests/42",
       heartbeatAt: Date.now() - 400_000,
       ttlSeconds: 300,
     });
@@ -148,22 +148,22 @@ describe("hasFreshAttendantLease", () => {
   });
 
   test("missing ttlSeconds falls back to 300s", () => {
-    writeLease("assured-dev-9.json", {
-      mr: "https://gitlab.com/acme/assured-dev/-/merge_requests/9",
+    writeLease("acme-dev-9.json", {
+      mr: "https://gitlab.com/acme/acme-dev/-/merge_requests/9",
       heartbeatAt: Date.now() - 100_000,
     });
     expect(hasFreshAttendantLease(9)).toBe(true);
 
-    writeLease("assured-dev-9.json", {
-      mr: "https://gitlab.com/acme/assured-dev/-/merge_requests/9",
+    writeLease("acme-dev-9.json", {
+      mr: "https://gitlab.com/acme/acme-dev/-/merge_requests/9",
       heartbeatAt: Date.now() - 400_000,
     });
     expect(hasFreshAttendantLease(9)).toBe(false);
   });
 
   test("ISO-string heartbeatAt is tolerated", () => {
-    writeLease("assured-dev-5.json", {
-      mr: "https://gitlab.com/acme/assured-dev/-/merge_requests/5",
+    writeLease("acme-dev-5.json", {
+      mr: "https://gitlab.com/acme/acme-dev/-/merge_requests/5",
       heartbeatAt: new Date().toISOString(),
       ttlSeconds: 300,
     });
@@ -171,16 +171,16 @@ describe("hasFreshAttendantLease", () => {
   });
 
   test("garbage files never block disposal", () => {
-    writeLease("assured-dev-42.json", "{ not json at all");
-    writeLease("assured-dev-43.json", { mr: 12345, heartbeatAt: "nonsense" });
+    writeLease("acme-dev-42.json", "{ not json at all");
+    writeLease("acme-dev-43.json", { mr: 12345, heartbeatAt: "nonsense" });
     expect(hasFreshAttendantLease(42)).toBe(false);
     expect(hasFreshAttendantLease(43)).toBe(false);
   });
 
   test("`now` is injectable", () => {
     const heartbeatAt = 1_786_998_298_000;
-    writeLease("assured-dev-42.json", {
-      mr: "https://gitlab.com/acme/assured-dev/-/merge_requests/42",
+    writeLease("acme-dev-42.json", {
+      mr: "https://gitlab.com/acme/acme-dev/-/merge_requests/42",
       heartbeatAt,
       ttlSeconds: 300,
     });

@@ -70,15 +70,15 @@ describe("worktree config", () => {
   // ─── Through the resolver (RT-47) ──────────────────────────────────────────
 
   describe("loadWorktreeRepoConfig through the settings resolver", () => {
-    const IDENTITY = "gitlab.com/assured/assured-dev";
-    const REMOTE = "git@gitlab.com:assured/assured-dev.git";
+    const IDENTITY = "gitlab.com/acme/acme-dev";
+    const REMOTE = "git@gitlab.com:acme/acme-dev.git";
 
     test("a full declared block round-trips through a store", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-roundtrip-", REMOTE);
       const declared = {
         onDeck: 2,
-        namePool: ["hogwarts", "bellatrix"],
-        root: "/absolute/path/to/assured",
+        namePool: ["web", "bellatrix"],
+        root: "/absolute/path/to/acme",
         branchFormat: "<ticket>",
         ready: [
           { run: "pnpm genTypes", when: "changed:db/schema/**" },
@@ -86,7 +86,7 @@ describe("worktree config", () => {
       };
       writeStore(machineSettingsPath(), { repos: { [IDENTITY]: { "rt.worktrees": declared } } });
 
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg).toEqual(declared);
     });
 
@@ -94,7 +94,7 @@ describe("worktree config", () => {
       const repoPath = tmpRepoWithRemote("rtcfg-merge-", REMOTE);
 
       // team: the shared pool size and the shared ready ladder
-      writeStore(teamSettingsPath("claimview"), {
+      writeStore(teamSettingsPath("acme"), {
         repos: {
           [IDENTITY]: {
             "rt.worktrees": {
@@ -106,7 +106,7 @@ describe("worktree config", () => {
       });
       // user: one personal field, restating nothing else
       writeStore(userSettingsPath(), {
-        repos: { [IDENTITY]: { "rt.worktrees": { namePool: ["hogwarts", "bellatrix"] } } },
+        repos: { [IDENTITY]: { "rt.worktrees": { namePool: ["web", "bellatrix"] } } },
       });
       // machine: the strongest rung — restates onDeck, adds root/branchFormat
       writeStore(machineSettingsPath(), {
@@ -117,11 +117,11 @@ describe("worktree config", () => {
         },
       });
 
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
 
       expect(cfg).toEqual({
         onDeck: 1, // machine beats team
-        namePool: ["hogwarts", "bellatrix"], // user-only field
+        namePool: ["web", "bellatrix"], // user-only field
         root: "/machine/wt-root", // machine-only field
         branchFormat: "<ticket>", // machine-only field
         ready: [{ run: "pnpm install", when: "changed:pnpm-lock.yaml" }], // team-only field
@@ -130,11 +130,11 @@ describe("worktree config", () => {
 
     test("a store-only repo resolves with no store section at all", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-storeonly-", REMOTE);
-      writeStore(teamSettingsPath("claimview"), {
+      writeStore(teamSettingsPath("acme"), {
         repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2, namePool: ["luna"] } } },
       });
 
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg.onDeck).toBe(2);
       expect(cfg.namePool).toEqual(["luna"]);
       // computed default still lives in the reader, not the registry
@@ -144,11 +144,11 @@ describe("worktree config", () => {
 
     test("${repoRoot} in a shared-scope root expands to the repo path", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-var-", REMOTE);
-      writeStore(teamSettingsPath("claimview"), {
+      writeStore(teamSettingsPath("acme"), {
         repos: { [IDENTITY]: { "rt.worktrees": { root: "${repoRoot}/trees" } } },
       });
 
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg.root).toBe(join(repoPath, "trees"));
     });
 
@@ -161,7 +161,7 @@ describe("worktree config", () => {
         repos: { [IDENTITY]: { "rt.worktrees": { root: "~/wt" } } },
       });
 
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg.root).toBe(join(process.env.HOME!, "wt"));
     });
 
@@ -171,7 +171,7 @@ describe("worktree config", () => {
         repos: { [IDENTITY]: { "rt.worktrees": { root: "/absolute/wt-root" } } },
       });
 
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg.root).toBe("/absolute/wt-root");
     });
 
@@ -184,7 +184,7 @@ describe("worktree config", () => {
         repos: { [IDENTITY]: { "rt.worktrees": { namePool: [".trash-x", "luna"] } } },
       });
 
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg.namePool).toEqual(["luna"]);
     });
 
@@ -194,11 +194,11 @@ describe("worktree config", () => {
       // prove it can never leak in — is simply unreachable. No legacy
       // fallback exists anymore; defaults are the honest answer.
       const repoPath = tmpRepoPath("rtcfg-noident-");
-      writeStore(teamSettingsPath("claimview"), {
+      writeStore(teamSettingsPath("acme"), {
         repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 9 } } },
       });
 
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg).toEqual({
         onDeck: 0,
         root: join(repoPath, ".worktrees"),
@@ -209,8 +209,8 @@ describe("worktree config", () => {
   });
 
   describe("worktreeSettingsDeclared", () => {
-    const IDENTITY = "gitlab.com/assured/store-only";
-    const REMOTE = "git@gitlab.com:assured/store-only.git";
+    const IDENTITY = "gitlab.com/acme/store-only";
+    const REMOTE = "git@gitlab.com:acme/store-only.git";
 
     test("nothing authored anywhere -> false (the registry default does not count)", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-act-none-", REMOTE);
@@ -219,7 +219,7 @@ describe("worktree config", () => {
 
     test("a team store section -> true", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-act-store-", REMOTE);
-      writeStore(teamSettingsPath("claimview"), {
+      writeStore(teamSettingsPath("acme"), {
         repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2 } } },
       });
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(true);
@@ -227,7 +227,7 @@ describe("worktree config", () => {
 
     test("an EMPTY declared block still counts as declared", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-act-empty-", REMOTE);
-      writeStore(teamSettingsPath("claimview"), {
+      writeStore(teamSettingsPath("acme"), {
         repos: { [IDENTITY]: { "rt.worktrees": {} } },
       });
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(true);
@@ -235,7 +235,7 @@ describe("worktree config", () => {
 
     test("a repo section with other keys but no worktrees block -> false", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-act-other-", REMOTE);
-      writeStore(teamSettingsPath("claimview"), {
+      writeStore(teamSettingsPath("acme"), {
         repos: { [IDENTITY]: { "rt.roles": { web: { pool: [3000] } } } },
       });
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(false);

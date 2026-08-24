@@ -44,7 +44,7 @@ Treating `~/.doppler/.doppler.yaml` as a cache that rt manages avoids both probl
 Per-repo file at `~/.rt/<repo>/doppler-template.yaml`. List of per-app mapping entries; the worktree root is implicit (resolved per-worktree by the reconciler).
 
 ```yaml
-- { path: apps/adjuster,                 project: adjuster,      config: dev }
+- { path: apps/portal,                 project: portal,      config: dev }
 - { path: apps/backend,                  project: backend,       config: dev }
 - { path: apps/billing,                  project: billing,       config: dev }
 - { path: apps/frontend,                 project: frontend,      config: dev }
@@ -53,7 +53,7 @@ Per-repo file at `~/.rt/<repo>/doppler-template.yaml`. List of per-app mapping e
 - { path: packages/design-system,        project: design-system, config: dev }
 - { path: packages/e2e,                  project: e2e,           config: dev }
 - { path: packages/guided-photo-capture, project: frontend,      config: dev }
-- { path: packages/sidekick,             project: adjuster,      config: dev }
+- { path: packages/sidekick,             project: portal,      config: dev }
 ```
 
 Fields:

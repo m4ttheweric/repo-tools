@@ -372,7 +372,7 @@ describe("settings/registry", () => {
     test("pathGuardFields: a non-path hook value is accepted", () => {
       const rolesDef = getDef("rt.roles")!;
       const result = validateValue(rolesDef, {
-        backend: { pool: [], hook: "bun ${team:claimview}/scripts/hook.ts" },
+        backend: { pool: [], hook: "bun ${team:acme}/scripts/hook.ts" },
       });
 
       expect(result.ok).toBe(true);

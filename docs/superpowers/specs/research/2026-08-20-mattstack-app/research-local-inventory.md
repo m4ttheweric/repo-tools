@@ -36,7 +36,7 @@
 - gitq: @mattstack/gitq 0.1.1 npm (bin/gitq.mjs), board `bun run serve` from checkout PORT 11008 (com.mattstack.deck.gitq); config.json in repo; state ~/.config/gitq; skills via symlink script (also in mattstack plugin). No release artifact for the board.
 
 ## skills/plugins
-- Marketplaces: mattstack (directory ~/Documents/GitHub/mattstack-marketplace; plugins mattstack [symlink → mattstack-skills, 0.4.9], fast-browser, current-time), assured (directory ~/.mattstack/teams/claimview → packs/claimview 0.2.14). Installer must: ensure marketplace dirs (clone), `claude plugin marketplace add <dir>`, `claude plugin install <plugin>@<marketplace>` per CLAUDE_CONFIG_DIR (cswap: 4 accounts). Plugin state not declarative.
+- Marketplaces: mattstack (directory ~/Documents/GitHub/mattstack-marketplace; plugins mattstack [symlink → mattstack-skills, 0.4.9], fast-browser, current-time), acme (directory ~/.mattstack/teams/acme → packs/acme 0.2.14). Installer must: ensure marketplace dirs (clone), `claude plugin marketplace add <dir>`, `claude plugin install <plugin>@<marketplace>` per CLAUDE_CONFIG_DIR (cswap: 4 accounts). Plugin state not declarative.
 
 ## Live machine
 - macOS 26.6.1; Swift 6.3.1 via Command Line Tools ONLY (no xcodebuild); bun 1.3.13; node 24.19 (fnm).

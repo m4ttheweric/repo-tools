@@ -36,7 +36,7 @@ describe("settings/stores", () => {
           // a global key with a trailing comment
           "rt.hooks": { "provider": "ollama", "model": "qwen3" },
           "repos": {
-            "gitlab.com/assured/assured-dev": {
+            "gitlab.com/acme/acme-dev": {
               "rt.roles": { "backend": { "pool": [] } },
             },
           },
@@ -49,7 +49,7 @@ describe("settings/stores", () => {
       expect(store.exists).toBe(true);
       expect(store.global).toEqual({ "rt.hooks": { provider: "ollama", model: "qwen3" } });
       expect(store.repos).toEqual({
-        "gitlab.com/assured/assured-dev": { "rt.roles": { backend: { pool: [] } } },
+        "gitlab.com/acme/acme-dev": { "rt.roles": { backend: { pool: [] } } },
       });
     });
 
@@ -176,9 +176,9 @@ describe("settings/stores", () => {
 
   describe("listTeams", () => {
     test("finds only team dirs that contain mattstack/settings.team.jsonc", () => {
-      // claimview: has a settings file.
-      mkdirSync(join(home, ".mattstack", "teams", "claimview", "mattstack"), { recursive: true });
-      writeFileSync(teamSettingsPath("claimview"), "{}");
+      // acme: has a settings file.
+      mkdirSync(join(home, ".mattstack", "teams", "acme", "mattstack"), { recursive: true });
+      writeFileSync(teamSettingsPath("acme"), "{}");
 
       // ghost-team: dir exists but no settings file inside — not a team yet.
       mkdirSync(join(home, ".mattstack", "teams", "ghost-team"), { recursive: true });
@@ -186,7 +186,7 @@ describe("settings/stores", () => {
       // a stray file sitting directly in teamsDir() — not a directory, must be skipped.
       writeFileSync(join(teamsDir(), "not-a-team.txt"), "junk");
 
-      expect(listTeams().sort()).toEqual(["claimview"]);
+      expect(listTeams().sort()).toEqual(["acme"]);
     });
 
     test("a team dir with only the OLD-name settings.jsonc (no settings.team.jsonc) is NOT listed", () => {
@@ -210,26 +210,26 @@ describe("settings/stores", () => {
     });
 
     test("a symlinked team clone still counts as a team", () => {
-      const real = join(home, "elsewhere", "claimview");
+      const real = join(home, "elsewhere", "acme");
       mkdirSync(join(real, "mattstack"), { recursive: true });
       writeFileSync(join(real, "mattstack", "settings.team.jsonc"), "{}");
       mkdirSync(teamsDir(), { recursive: true });
-      symlinkSync(real, join(teamsDir(), "claimview"));
+      symlinkSync(real, join(teamsDir(), "acme"));
 
-      expect(listTeams()).toEqual(["claimview"]);
+      expect(listTeams()).toEqual(["acme"]);
     });
 
     test("a DANGLING symlink is skipped with a warn — healthy teams still list", () => {
       // The realistic trigger: a team clone symlinked in and later moved. The
       // follow-the-link stat throws ENOENT, and listTeams is on the path of
       // every settings resolution — so it must skip, not throw.
-      mkdirSync(join(home, ".mattstack", "teams", "claimview", "mattstack"), { recursive: true });
-      writeFileSync(teamSettingsPath("claimview"), "{}");
+      mkdirSync(join(home, ".mattstack", "teams", "acme", "mattstack"), { recursive: true });
+      writeFileSync(teamSettingsPath("acme"), "{}");
       symlinkSync(join(home, "moved-away"), join(teamsDir(), "moved-team"));
       const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
       try {
-        expect(listTeams()).toEqual(["claimview"]);
+        expect(listTeams()).toEqual(["acme"]);
         expect(warnSpy).toHaveBeenCalledTimes(1);
         expect(warnSpy.mock.calls[0]?.[0]).toContain("moved-team");
       } finally {

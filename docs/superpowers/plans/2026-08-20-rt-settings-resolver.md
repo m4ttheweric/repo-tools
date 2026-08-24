@@ -94,7 +94,7 @@ export async function deriveRepoIdentity(repoPath: string): Promise<string | nul
 export function clearIdentityMemo(): void; // tests
 ```
 
-- [ ] **Step 1: failing tests** — normalizeRemote table: `https://gitlab.com/assured/assured-dev.git` → `gitlab.com/assured/assured-dev`; `git@gitlab.com:assured/assured-dev.git` → same; `ssh://git@github.com/m4ttstack/rt` → `github.com/m4ttstack/rt`; `https://user:pass@host/x/y` → `host/x/y`; `/private/tmp/foo` → null; `HTTPS://GitLab.com/A/B` → `gitlab.com/A/B` (host lowercased, path case preserved). Overrides: exact remote match wins. deriveRepoIdentity: real `git init` + `git remote add origin <url>` in temp dir → derives; dir with no remote → null; memoization: second call after remote change still returns memoized value (documented behavior).
+- [ ] **Step 1: failing tests** — normalizeRemote table: `https://gitlab.com/acme/acme-dev.git` → `gitlab.com/acme/acme-dev`; `git@gitlab.com:acme/acme-dev.git` → same; `ssh://git@github.com/m4ttstack/rt` → `github.com/m4ttstack/rt`; `https://user:pass@host/x/y` → `host/x/y`; `/private/tmp/foo` → null; `HTTPS://GitLab.com/A/B` → `gitlab.com/A/B` (host lowercased, path case preserved). Overrides: exact remote match wins. deriveRepoIdentity: real `git init` + `git remote add origin <url>` in temp dir → derives; dir with no remote → null; memoization: second call after remote change still returns memoized value (documented behavior).
 - [ ] **Step 2: FAIL. Step 3: implement. Step 4: green + tsc. Step 5: commit** `RT-47: repo identity normalization and async derivation`.
 
 ---
@@ -120,7 +120,7 @@ export function expandVariables(value: unknown, ctx: { repoRoot?: string; worktr
   - array-inside-deep replaces atomically (ready from team fully replaces legacy's)
   - teamLocked: user+machine values present but team wins; explain marks them `shadowed: "teamLocked"`
   - unknown key get → throws; unregistered key in file → skipped + `listSettings` labels `unregistered`; type-mismatch value in one store → that scope skipped + labeled `invalid`, weaker scopes still apply
-  - variables: `${team:claimview}` and `${home}` expand; `${port}` passes through in the SAME string as an expanded var; `${repoRoot}` without ctx throws; `expand:false` returns raw
+  - variables: `${team:acme}` and `${home}` expand; `${port}` passes through in the SAME string as an expanded var; `${repoRoot}` without ctx throws; `expand:false` returns raw
   - repoScoped key with `repoIdentity: null` → repo sections skipped, global scopes apply
 - [ ] **Step 2: FAIL. Step 3: implement. Step 4: green + tsc. Step 5: commit** `RT-47: resolver — 8-scope overlay, per-key merge, teamLocked, variables, provenance`.
 
@@ -197,10 +197,10 @@ Scenario against a real compiled binary + foreground daemon (copy `e2e/tests/end
 ## Orchestrator-only steps after the branch is green (NOT implementer tasks)
 
 Per spec "Data migration + machine hygiene", IN THIS ORDER (the old binary must never run against migrated state):
-1. Seed team store (COPY LIVE VALUES) in the claimview zone + push; seed user store in mattstack-prefs + push; scaffold machine store. (Additive: harmless to the old binary, which never reads them.)
+1. Seed team store (COPY LIVE VALUES) in the acme zone + push; seed user store in mattstack-prefs + push; scaffold machine store. (Additive: harmless to the old binary, which never reads them.)
 2. Merge the worktree branch → main; full gates on main; daemon restart (dev-mode daemon runs main's source, so the restart activates the resolver) and `rt intercept install` on the NEW build.
-3. Live smoke on the new build: `rt settings explain rt.worktrees --repo assured-dev` (multi-scope provenance incl. legacy), `rt settings list`, intercepted backend start, `rt endpoint lookup`.
-4. ONLY THEN diff-then-remove the migrated keys (`roles`, `intercepts`, `worktrees`, dead `ports`) from live assured-dev config.json, re-run `rt intercept install`, re-smoke (provenance now shows stores only).
+3. Live smoke on the new build: `rt settings explain rt.worktrees --repo acme-dev` (multi-scope provenance incl. legacy), `rt settings list`, intercepted backend start, `rt endpoint lookup`.
+4. ONLY THEN diff-then-remove the migrated keys (`roles`, `intercepts`, `worktrees`, dead `ports`) from live acme-dev config.json, re-run `rt intercept install`, re-smoke (provenance now shows stores only).
 5. The attic archive of the trace's DEAD files; final verify.
 
 ## Self-review notes
