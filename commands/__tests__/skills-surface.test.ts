@@ -76,11 +76,12 @@ async function runExpectingCleanExit(fn: () => Promise<void>): Promise<{ exitCod
 describe("skillsSurface list", () => {
   test("no surface.jsonc: infers public/internal from current skills/ + attachments/ + stub verbs", async () => {
     const packDir = makePackDir();
+    const { mattstackDir, manifestPath } = makeEngineFixture();
     writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
     writeFile(join(packDir, "skills", "hand-authored-public", "SKILL.md"), "---\nname: x\n---\nbody\n");
     writeFile(join(packDir, "attachments", "hand-authored-internal", "SKILL.md"), "---\nname: y\n---\nbody\n");
 
-    await skillsSurface(["list", "--team", "t", "--pack-dir", packDir]);
+    await skillsSurface(["list", "--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
 
     const out = logs.join("\n");
     expect(out).toContain("no surface.jsonc");
@@ -113,11 +114,12 @@ describe("skillsSurface list", () => {
 
   test("--json: rows match the human listing, with pack and packDir", async () => {
     const packDir = makePackDir();
+    const { mattstackDir, manifestPath } = makeEngineFixture();
     writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
     writeFile(join(packDir, "skills", "hand-authored-public", "SKILL.md"), "---\nname: x\n---\nbody\n");
     writeFile(join(packDir, "attachments", "hand-authored-internal", "SKILL.md"), "---\nname: y\n---\nbody\n");
 
-    await skillsSurface(["list", "--pack", "acme", "--pack-dir", packDir, "--json"]);
+    await skillsSurface(["list", "--pack", "acme", "--pack-dir", packDir, "--json", "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.pack).toBe("acme");
