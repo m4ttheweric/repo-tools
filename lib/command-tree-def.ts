@@ -483,6 +483,16 @@ export const TREE: Record<string, CommandNode> = {
     ],
   },
 
+  code: {
+    description: "Open a worktree in your preferred editor",
+    module: "./commands/code.ts",
+    fn: "openInEditor",
+    requiresTTY: true,
+    args: [
+      { name: "Pick", flag: "--pick", type: "boolean", default: false, hint: "Force the worktree/repo picker instead of using the current repo (alias -p)" },
+    ],
+  },
+
   nav: {
     description: "Navigate filesystem with fzf; persistent picker, esc to quit",
     module: "./commands/nav.ts",
