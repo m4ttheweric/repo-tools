@@ -2,10 +2,20 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { skillsCompile } from "../../../commands/skills.ts";
+import { otherSideDir, outDirFor, skillsCompile } from "../../../commands/skills.ts";
 import { compileSkill } from "../compile.ts";
 import { readSurface } from "../sources.ts";
 import type { AttachmentSource, StepSource, VerbDef } from "../types.ts";
+
+test("outDirFor places public under skills/ and internal under attachments/", () => {
+  expect(outDirFor("/pack", "work", true)).toBe("/pack/skills/work");
+  expect(outDirFor("/pack", "stage-plan", false)).toBe("/pack/attachments/stage-plan");
+});
+
+test("otherSideDir names the stale location for a name that flipped sides", () => {
+  expect(otherSideDir("/pack", "work", true)).toBe("/pack/attachments/work");
+  expect(otherSideDir("/pack", "checkout", false)).toBe("/pack/skills/checkout");
+});
 
 function writeFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -305,7 +315,7 @@ afterEach(() => {
 });
 
 describe("skillsCompile with a surface config", () => {
-  test("skips a non-public verb, prints an internal line, and removes its compiled skills/ dir", async () => {
+  test("compiles a non-public verb to attachments/, replacing its stale skills/ dir", async () => {
     const mattstackDir = makeMattstackDir();
     const surfaceJsonc = `{ "public": ["watch-ci"] }\n`;
     const packDir = makePackDir(STUBS_TWO_VERBS, surfaceJsonc);
@@ -319,8 +329,9 @@ describe("skillsCompile with a surface config", () => {
       "--manifest", manifestPath,
     ]);
 
-    expect(logs).toContain("internal: old-verb (not compiled; roster entry retired)");
+    expect(logs.some((l) => l.startsWith("compiled old-verb -> attachments"))).toBe(true);
     expect(existsSync(join(packDir, "skills", "old-verb"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "old-verb", "SKILL.md"))).toBe(true);
     expect(existsSync(join(packDir, "skills", "watch-ci", "SKILL.md"))).toBe(true);
   });
 
@@ -586,5 +597,77 @@ describe("computeInternalRoster integration (pack dir doubles as plugin root)", 
     expect(errors[0]).toContain("acme:qa-gates");
     expect(errors[0]).toContain("surface-internal");
     expect(existsSync(join(acmeDir, "skills", "gate-check"))).toBe(false);
+  });
+});
+
+const PIPELINE_WORK_SKILL_MD = `---
+name: work
+description: "Run the work pipeline"
+type: pipeline-step
+---
+
+{{work-type}}
+{{pipeline.stages}}
+`;
+
+const PIPELINE_STAGE_PLAN_SKILL_MD = `---
+name: stage-plan
+description: "Plan the work"
+type: pipeline-step
+slots: {}
+metadata:
+  stage: plan
+---
+
+{{stage.fields}}
+`;
+
+function makePipelineMattstackDir(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-pipeline-mattstack-")));
+  const mattstackPluginDir = join(dir, "plugins", "mattstack");
+  writeFile(join(mattstackPluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0" }));
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "work", "SKILL.md"), PIPELINE_WORK_SKILL_MD);
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-plan", "SKILL.md"), PIPELINE_STAGE_PLAN_SKILL_MD);
+  return dir;
+}
+
+function makePipelinePackDir(publicNames: string[]): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-pipeline-pack-")));
+  writeFile(join(dir, "pack", "stubs.jsonc"), `{ "verbs": { "work": { "engine": "work", "description": "Run the pipeline." } } }\n`);
+  writeFile(join(dir, "pack", "surface.jsonc"), JSON.stringify({ public: publicNames }));
+  return dir;
+}
+
+function makePipelineManifest(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-pipeline-manifest-")));
+  const path = join(dir, "skills.jsonc");
+  writeFile(path, `{
+  "pipelines": { "feature": ["mattstack:stage-plan"] },
+  "bindings": {}
+}
+`);
+  return path;
+}
+
+describe("skillsCompile with pipeline stages", () => {
+  test("compiles the orchestrator public and its stage internal, then flips on a surface change", async () => {
+    const mattstackDir = makePipelineMattstackDir();
+    const packDir = makePipelinePackDir(["work"]);
+    const manifestPath = makePipelineManifest();
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    expect(existsSync(join(packDir, "skills", "work", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(packDir, "attachments", "stage-plan", "SKILL.md"))).toBe(true);
+    expect(readFileSync(join(packDir, "skills", "work", "SKILL.md"), "utf8")).toContain(
+      "The work type is `feature`. Continue.",
+    );
+
+    writeFileSync(join(packDir, "pack", "surface.jsonc"), JSON.stringify({ public: [] }));
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    expect(existsSync(join(packDir, "skills", "work"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "work", "SKILL.md"))).toBe(true);
   });
 });

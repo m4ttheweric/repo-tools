@@ -187,7 +187,7 @@ describe("skillsSurface set", () => {
     expect(surface.public).not.toContain("my-skill");
   });
 
-  test("--internal on a compiled stub verb: surface.jsonc updated, apply removes the compiled dir (never git-mv'd)", async () => {
+  test("--internal on a compiled stub verb: surface.jsonc updated, apply recompiles it into attachments/ (never git-mv'd)", async () => {
     const packDir = makePackDir();
     writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
     writeFile(join(packDir, "skills", "my-verb", "SKILL.md"), "---\nname: my-verb\n---\nold compiled content\n");
@@ -199,7 +199,7 @@ describe("skillsSurface set", () => {
     ]);
 
     expect(existsSync(join(packDir, "skills", "my-verb"))).toBe(false);
-    expect(existsSync(join(packDir, "attachments", "my-verb"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "my-verb", "SKILL.md"))).toBe(true);
 
     const out = logs.join("\n");
     expect(out).not.toContain("moved my-verb");

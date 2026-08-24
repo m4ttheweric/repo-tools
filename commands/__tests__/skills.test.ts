@@ -122,6 +122,20 @@ function manifestJsonc(team: string, withForge: boolean): string {
 `;
 }
 
+/** A trivial, no-slot stage step -- resolve() now builds StageEntry[] for every pipeline name a test manifest declares, so any such name needs a real SKILL.md behind it. */
+function stageSkillMd(name: string, stage: string): string {
+  return `---
+name: ${name}
+description: "${stage} stage"
+type: pipeline-step
+metadata:
+  stage: ${stage}
+---
+
+${stage}.
+`;
+}
+
 /**
  * Fixture "mattstack home" root: plugins/<name>/ mirrors resolvePluginRoots()'s
  * real shape (dir + .claude-plugin/plugin.json) so skillsCompile's test-mode
@@ -136,6 +150,9 @@ function makeMattstackDir(): string {
   writeFile(join(mattstackPluginDir, "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"), WATCH_CI_SCRIPT);
   chmodSync(join(mattstackPluginDir, "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"), 0o755);
   writeFile(join(mattstackPluginDir, "skills", "gitlab-forge", "SKILL.md"), FORGE_SKILL_MD);
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-plan", "SKILL.md"), stageSkillMd("stage-plan", "plan"));
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-provision", "SKILL.md"), stageSkillMd("stage-provision", "provision"));
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-ship", "SKILL.md"), stageSkillMd("stage-ship", "ship"));
 
   const acmePluginDir = join(dir, "plugins", "acme");
   writeFile(join(acmePluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
@@ -297,50 +314,37 @@ describe("skillsCompile", () => {
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(true);
   });
 
-  test("--preview on a retired verb writes its status line to stderr, not stdout", async () => {
+  test("--preview on a non-public verb still previews the compiled body, writing nothing to disk", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("t");
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
 
-    const errors: string[] = [];
-    const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-      errors.push(args.map(String).join(" "));
-    });
-    try {
-      await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
-        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
-    } finally {
-      errorSpy.mockRestore();
-    }
+    await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
 
-    // A caller piping --preview to a file must never see this status line:
-    // it belongs on stderr, and stdout must stay empty.
-    expect(logs.join("\n")).not.toContain("not compiled; roster entry retired");
-    expect(errors.join("\n")).toContain("not compiled; roster entry retired");
+    const out = logs.join("\n");
+    expect(out).toContain("<!-- part: step source=");
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "watch-ci"))).toBe(false);
   });
 
-  test("retired verb in a pack that ALSO has a misplaced compiled dir: still nothing on stdout", async () => {
+  test("non-public verb previewed alongside a misplaced compiled dir elsewhere: still nothing but the body on stdout", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("t");
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
     // Registered on disk, absent from the public list, and NOT the requested
-    // verb: exactly what the post-loop scan reports. A retired verb reaches
-    // that scan by `continue` where a lint-erroring one returns before it, so
-    // this is the same leak through the other doorway -- and the console reads
-    // any non-empty stdout as the compiled body.
+    // verb: exactly what the post-loop "misplaced" scan reports -- but that
+    // scan never runs under --preview, so it must not leak onto stdout here.
     writeFile(join(packDir, "skills", "stray-skill", "SKILL.md"), "# stray\n");
 
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
-        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
-    } finally {
-      errorSpy.mockRestore();
-    }
+    await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
 
-    expect(logs.join("\n")).toBe("");
+    const out = logs.join("\n");
+    expect(out).toContain("<!-- part: step source=");
+    expect(out).not.toContain("misplaced:");
   });
 
   test("real run emits SKILL.md + vendored files matching a golden compile, byte for byte", async () => {
@@ -602,7 +606,7 @@ describe("skillsCheck --json", () => {
     expect(parsed.pack).toBe("acme");
     expect(parsed.packDir).toBe(packDir);
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [] },
+      { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [], side: "skills" },
     ]);
   });
 
@@ -628,7 +632,7 @@ describe("skillsCheck --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [] },
+      { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [], side: "skills" },
     ]);
   });
 
@@ -647,12 +651,12 @@ describe("skillsCheck --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"] },
+      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"], side: "skills" },
     ]);
     expect(process.exitCode).toBe(1);
   });
 
-  test("internal verb with missing outDir: internal-unchecked, and does not count as stale", async () => {
+  test("internal verb with missing outDir: never-compiled under attachments/, and still counts as stale", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("acme");
@@ -662,9 +666,9 @@ describe("skillsCheck --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "internal-unchecked", staleFiles: [], orphanFiles: [] },
+      { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [], side: "attachments" },
     ]);
-    expect(process.exitCode).not.toBe(1);
+    expect(process.exitCode).toBe(1);
   });
 });
 
@@ -693,7 +697,7 @@ describe("skillsCompile --json", () => {
     expect(process.exitCode).not.toBe(1);
   });
 
-  test("internal (retired) verb: internal-skipped, no compile attempted, no disk write", async () => {
+  test("internal (retired) verb: compiled row with side attachments, still no disk write under --json", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("acme");
@@ -702,9 +706,18 @@ describe("skillsCompile --json", () => {
     await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "internal-skipped", files: [], warnings: [], errors: [] },
+    expect(parsed.verbs).toHaveLength(1);
+    const verb = parsed.verbs[0];
+    expect(verb.name).toBe("watch-ci");
+    expect(verb.status).toBe("compiled");
+    expect(verb.side).toBe("attachments");
+    expect(verb.errors).toEqual([]);
+    expect(verb.files.map((f: { path: string }) => f.path).sort()).toEqual([
+      "SKILL.md",
+      "parts/domain/ci-config.json",
+      "scripts/ci-watch.sh",
     ]);
+    expect(existsSync(join(packDir, "attachments", "watch-ci"))).toBe(false);
   });
 
   test("lint-erroring verb (returned errors[]): errored with the message, other verbs unaffected -- command does not die", async () => {
@@ -724,7 +737,8 @@ describe("skillsCompile --json", () => {
     expect(watchCi.errors[0]).toContain("acme:helper-verb");
 
     const helper = parsed.verbs.find((v: { name: string }) => v.name === "helper-verb");
-    expect(helper.status).toBe("internal-skipped");
+    expect(helper.status).toBe("compiled");
+    expect(helper.side).toBe("attachments");
 
     // An errored verb is a failed compile: the exit code says so, matching the
     // non-JSON throw and check --json's stale exit.
