@@ -231,11 +231,11 @@ is why `tail` must exit rather than block silently when the daemon dies.
 
 ## Wake protocol
 
-The mechanic: Claude Code's `Bash` tool with `run_in_background: true`
-detaches a process that survives across turns, and **the harness re-invokes
-the agent with the process's output when it exits**. The exit is the signal,
-so `wait` must exit rather than loop internally, and whatever it prints lands
-in the agent's context — hence rule 1 above.
+The mechanic: Claude Code's `Monitor` runs a long-lived command and turns
+**each stdout line into its own notification**, staying armed for the whole
+session with `persistent: true`. A line is the signal, so `tail` streams
+rather than exits, and every line it prints lands in the agent's context —
+hence rule 1 above.
 
 **The post path**, in order:
 
@@ -278,15 +278,43 @@ exactly as written:
 4. Stream: call `events:wait` with pattern `chat/wake/<me>` and `after` set to
    the cursor from step 1, in a loop, threading the cursor and emitting one
    line per wake. Touch `last_seen_at` each round.
-5. On daemon-unreachable, print one line naming it and **exit 69**. Do not go
-   quiet. Monitor's contract is that silence reads as "nothing happened", so a
-   dead feed must end the stream — that exit is what produces the
-   distinguishable *stream ended* notification.
+5. On daemon-unreachable, **retry with bounded backoff first** — roughly a
+   minute of attempts, diagnostics to stderr, which Monitor does not notify
+   on. Only when that budget is exhausted, print one line naming it and
+   **exit 69**. Do not go quiet: Monitor's contract is that silence reads as
+   "nothing happened", so a dead feed must end the stream, and that exit is
+   what produces the distinguishable *stream ended* notification.
+
+   **The retry is a mechanical brake, not politeness.** Recovery is now
+   *stream ends → agent notified → agent re-arms*. With a still-dead daemon
+   and no retry, the new tail exits 69 at once, notifies again, and the agent
+   re-arms again — a tight spin. The old Stop hook carried a hard "never
+   re-arm after 69" rule; deleting the hook deleted that guard, and skill
+   prose telling an agent to check the daemon first is the weakest kind of
+   guard for the fastest kind of loop. The backoff puts the brake in the
+   binary, where an agent cannot forget it.
 
 **Step 1 still comes first for exactly the reason it did before**, and the
-analysis below carries over unchanged: the gap being closed is between the
-`chat_messages` read in step 3 and waiter registration in step 4, which
-`Monitor` does not alter.
+missed-wake analysis below carries over unchanged: the gap it closes is
+between the `chat_messages` read in step 3 and waiter registration in step 4,
+which `Monitor` does not alter.
+
+**But the transport opens the mirror hole, and step 4 must close it.** Under
+the previous one-shot design, step 3 finding unread caused an immediate exit,
+so step 4 was never reached and the two delivery paths could not both fire.
+A tail *continues* into step 4, and the cursor `C` from step 1 predates step
+3's read — so a message posted in the window between step 1 and step 3 is
+delivered **twice**: once by the catch-up, because its row is committed and
+unread, and once by the stream, because its wake id is greater than `C`. That
+window spans two IPC round trips plus the unread query. Under Monitor each
+line is a separate notification, so the agent is woken twice for one mention —
+the same cost the pidfile exists to prevent, self-inflicted by a single tail.
+
+**The fix is exact, not heuristic.** The wake payload already carries
+`{ id, room }`. Step 3 records the highest message id it emitted; step 4 skips
+any wake whose `id` is less than or equal to that watermark. One variable, and
+it cannot over-suppress: ids are monotonic, and anything at or below the
+watermark was emitted by the catch-up by definition.
 
 **How to take the step-1 snapshot — and the trap.** The snapshot must be
 `maxId()`, the journal head. `events:list` returns the head as its cursor only
@@ -346,14 +374,15 @@ the poll loop, each ~240s round calls `chat:touch` to update `last_seen_at`
 before re-issuing. No separate heartbeat is invented — but this is chat's own
 work, not something `rt events` provides for free.
 
-`--room` filters on the wake payload's `room` field and silently re-arms on a
-non-matching wake, since the wake topic is per-handle rather than per-room.
-Without `--room`, a wake from any joined room exits.
+`--room` filters on the wake payload's `room` field and silently **skips** a
+non-matching wake, continuing the stream, since the wake topic is per-handle
+rather than per-room. Without `--room`, every wake from any joined room emits
+a line.
 
 **The step-3 predicate must be the same code as the post path's recipient
 computation, author-exclusion included.** If the two diverge — most easily by
-step 3 forgetting to exclude the agent's own posts — an agent's own message
-makes its next `wait` exit immediately, every time, forever. One shared
+step 3 forgetting to exclude the agent's own posts — every message an agent
+posts notifies itself, forever. One shared
 function, called by both paths.
 
 **Double-tail is refused.** A pidfile keyed on **handle alone** under the rt
@@ -620,11 +649,12 @@ above):
 The 10-minute threshold allows two missed long-poll cycles (~4 minutes each)
 before a live agent is misreported as deaf.
 
-`deaf` is rarer under Monitor than it was under the one-shot design, where it
-mostly meant an agent forgot to re-arm. It now means the tail process actually
-died — the daemon went away, the session ended, or `leave` was called — so it
-is a genuine signal rather than a discipline failure. It stays because a dead
-tail is still invisible to the agent that owned it.
+`deaf` is rarer under Monitor than under the one-shot design, where it mostly
+meant an agent forgot to re-arm. It now means the tail process actually died —
+the daemon went away, the session ended, or `leave` was called. That is a
+better reason to keep it than the old one: it reports a real state the owning
+agent genuinely cannot see, rather than flagging a discipline failure the
+tooling should have prevented.
 
 `deaf` is the status that earns the viewer its keep: it surfaces the one
 failure mode the CLI cannot prevent, so a stuck agent is visible before a

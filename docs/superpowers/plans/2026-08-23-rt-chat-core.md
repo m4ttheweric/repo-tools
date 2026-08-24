@@ -932,15 +932,29 @@ notification.
 2. `chat:arm`.
 3. Emit one line per unread message that *would have woken this handle* —
    using `recipientsFor`'s rule, author-exclusion included. This is the
-   catch-up, and it closes the restart gap.
+   catch-up, and it closes the restart gap. **Record the highest message id
+   emitted** as the watermark for step 4.
 4. Loop: call the `events:wait` handler with pattern `chat/wake/<me>` and
    `after` = the step-1 cursor, thread the returned cursor into the next call,
-   emit one line per wake, and call `chat:touch` each round.
-5. On daemon-unreachable: print one line naming it, `chat:disarm`, exit **69**.
-   Never block silently — Monitor reads silence as "nothing happened", so a
-   hung tail is indistinguishable from a quiet room.
+   emit one line per wake, and call `chat:touch` each round. **Skip any wake
+   whose message `id` is at or below the watermark step 3 recorded** — see
+   below.
+5. On daemon-unreachable: **retry with bounded backoff first** (about a
+   minute, diagnostics to stderr, which Monitor does not notify on). Only when
+   that budget is exhausted, print one line, `chat:disarm`, exit **69**. Never
+   block silently — Monitor reads silence as "nothing happened", so a hung
+   tail is indistinguishable from a quiet room.
+
+   **The backoff is a mechanical brake.** Recovery is *stream ends → agent
+   notified → agent re-arms*. With a dead daemon and no retry, the new tail
+   exits 69 immediately, notifies again, and the agent re-arms again — a tight
+   spin. The deleted Stop hook used to carry the hard "never re-arm after 69"
+   rule; skill prose is the weakest kind of guard and this is the fastest kind
+   of loop, so the brake belongs in the binary.
 
 **Why step 1 precedes step 3:** `events:wait` with no `after` snapshots `head = maxId()` at registration and delivers only ids above it. Reading the database and *then* registering without a cursor leaves a window — process spawn plus IPC — in which a post commits and emits *below* the new waiter's head, seen by neither the catch-up nor the stream. That message reaches nobody until some later one happens to arrive. The transport change does not touch this window: it is between the `chat_messages` read and waiter registration, both of which are unchanged.
+
+**Why step 4 needs the watermark — the mirror hole the transport opened.** Under the previous one-shot design, step 3 finding unread caused an immediate exit, so step 4 was never reached and the two delivery paths could not both fire. A tail continues into step 4, and the step-1 cursor predates step 3's read — so a message posted between step 1 and step 3 is delivered **twice**: by the catch-up because its row is unread, and by the stream because its wake id exceeds the cursor. Under Monitor each line is its own notification, so the agent wakes twice for one mention — the exact cost the pidfile exists to prevent, self-inflicted by a single tail. Step 3 records the highest message id it emitted; step 4 skips wakes at or below it. Ids are monotonic, so it cannot over-suppress.
 
 **Chat drives the `events:wait` handler directly, one round at a time — never `rt events wait`.** That CLI owns its own `while (true)` loop and never returns between polls, prints events-shaped JSON, and its `fail()` exits 1 rather than 69. Chat owns its loop, its exit codes, and its per-line output, and calls `chat:touch` each round so presence rides the loop.
 
@@ -989,6 +1003,15 @@ Expected: FAIL — no `tail` verb.
 **`leave` gains its tail kill here, not in Task 7**, because the pidfile it
 needs is introduced below. Extend `leave` to remove the pidfile and signal the
 process once this task's lock exists.
+
+**Two test seams, both marker files, never commands.** A seam that evaluated a
+shell string from the environment would hand arbitrary code execution to
+anyone who can set env on an `rt chat tail` invocation.
+`RT_CHAT_TEST_PRE_CATCHUP_MARKER` opens the **step-1 → step-3** window, which
+is where duplicate delivery lives; `RT_CHAT_TEST_PRE_WAIT_MARKER` opens the
+**step-3 → step-4** window, which is where the missed-wake race lives. They
+are different windows guarding opposite defects, and one seam cannot test
+both.
 
 **The test seam.** Between step 3 and step 4, if `RT_CHAT_TEST_PRE_WAIT_MARKER`
 is set, create that file and block until it is removed, giving up after 2
@@ -1108,6 +1131,25 @@ test("THREE mentions arrive on ONE arming", async () => {
   tail.kill();
 });
 
+test("a post in the arm window is delivered ONCE, not twice", async () => {
+  // The mirror hole the streaming transport opened. A message posted between
+  // the step-1 head snapshot and step-3's unread read qualifies for BOTH
+  // delivery paths: unread to the catch-up, and above the cursor to the
+  // stream. Without step 4's watermark the agent is notified twice for one
+  // mention. Neither the restart-gap nor the arm-race test covers this window.
+  const marker = join(tmpdir(), `chat-dup-${process.pid}`);
+  await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
+  await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
+  const tail = runRt(["chat", "tail", "--as", "listener"], home,
+    { RT_CHAT_TEST_PRE_CATCHUP_MARKER: marker });
+  await until(() => existsSync(marker));
+  await finished(runRt(["chat", "post", "r", "@listener once", "--as", "poster"], home));
+  rmSync(marker);
+  expect(await nextLine(tail, 5_000)).toContain("#r");
+  await expect(nextLine(tail, 2_000)).rejects.toThrow();
+  tail.kill();
+});
+
 test("restart gap: a post with no tail running is emitted by the catch-up", async () => {
   await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
   await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
@@ -1191,7 +1233,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 9: The skill and the Stop hook
+### Task 9: The `rt:chat` skill
 
 **Files:**
 - Create: `skills/rt-chat/SKILL.md` — the only file this task produces
