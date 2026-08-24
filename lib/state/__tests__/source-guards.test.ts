@@ -98,11 +98,13 @@ describe("daemon startup opens state.db before serving", () => {
     const body = src.slice(start);
     const open = body.indexOf("openBranchCacheStore()");
     const clearArmed = body.indexOf("clearAllArmed()");
+    const routed = body.indexOf("routedHandlers = buildRoutedHandlers(");
     const socket = body.indexOf("startSocketServer(");
     const api = body.indexOf("startApiServer(");
 
     expect(open).toBeGreaterThan(-1);
     expect(clearArmed).toBeGreaterThan(-1);
+    expect(routed).toBeGreaterThan(-1);
     expect(socket).toBeGreaterThan(-1);
     expect(api).toBeGreaterThan(-1);
     // Spec "Migration & contention": the legacy import is the one long
@@ -113,5 +115,12 @@ describe("daemon startup opens state.db before serving", () => {
     // before the socket listens, or an agent arming in the gap loses it.
     expect(clearArmed).toBeLessThan(socket);
     expect(clearArmed).toBeLessThan(api);
+    // routedHandlers builds the chat handlers, which call getStateDb — so it
+    // must land after the store opens; and before the binds, or a command can
+    // arrive while routedHandlers is still undefined and fall through to the
+    // switch that no longer owns it.
+    expect(routed).toBeGreaterThan(open);
+    expect(routed).toBeLessThan(socket);
+    expect(routed).toBeLessThan(api);
   });
 });
