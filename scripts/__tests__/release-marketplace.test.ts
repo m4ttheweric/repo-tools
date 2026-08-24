@@ -262,6 +262,25 @@ describe("marketplace.sh --refresh", () => {
     expect(doc.plugins[0].source.sha).toBe(PINNED_SHA);
   });
 
+  test("refuses to refresh a url source with no url", () => {
+    const src = sourceDir([{ name: "x", source: { source: "url", ref: "main", sha: PINNED_SHA } }]);
+    const r = run(["--refresh", src]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("has no url");
+  });
+
+  // A pin with no `ref` is deliberate: it never follows a branch, so there is
+  // nothing for --refresh to re-resolve it against.
+  test("leaves a url source with no ref alone", () => {
+    const src = sourceDir([
+      { name: "pinned-forever", source: { source: "url", url: "https://example.com/x.git", sha: PINNED_SHA } },
+    ]);
+    const r = run(["--refresh", src]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("every pin already current");
+    expect(JSON.parse(readFileSync(join(src, "marketplace.json"), "utf8")).plugins[0].source.sha).toBe(PINNED_SHA);
+  });
+
   // Pins are applied by name, so a duplicate would take whichever resolved
   // last — and --refresh runs on its own, before publishing would catch it.
   test("refuses to refresh a catalog listing one name twice", () => {

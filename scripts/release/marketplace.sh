@@ -52,8 +52,15 @@ for plugin in json.load(open(sys.argv[1]))["plugins"]:
         sys.exit(f"{name}: listed twice — cannot refresh pins by name")
     seen.add(name)
     src = plugin.get("source")
-    if isinstance(src, dict) and src.get("source") == "url" and src.get("ref"):
-        rows.append("\t".join([name, src["url"], src["ref"], src.get("sha", "")]))
+    if isinstance(src, dict) and src.get("source") == "url":
+        url = (src.get("url") or "").strip()
+        if not url:
+            sys.exit(f"{name}: url source has no url")
+        # A url source with no `ref` is a deliberate pin that never follows a
+        # branch; --refresh leaves it where it is rather than guessing which
+        # branch to re-resolve against.
+        if src.get("ref"):
+            rows.append("\t".join([name, url, src["ref"], src.get("sha", "")]))
 print("\n".join(rows))
 PY
     )" || { echo "✗ cannot plan a refresh of $CATALOG" >&2; exit 1; }
