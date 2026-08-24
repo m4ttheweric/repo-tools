@@ -35,7 +35,7 @@ Logging is structural, not per-feature. Outcomes are logged at central seams; fe
 
 ## Operating on this machine
 
-This repo's tooling runs as live services on the developer's own machine. Four
+This repo's tooling runs as live services on the developer's own machine. Six
 rules, each written after it cost real damage:
 
 - **A built binary is only ever run under an isolated HOME** — `env -i HOME=<temp> …`,
@@ -48,10 +48,21 @@ rules, each written after it cost real damage:
   and the failure is silent.
 - **Check `git branch --show-current` before syncing the main checkout.** It is
   shared with other sessions and is what the dev-mode `rt` wrapper executes;
-  it is not always on `main`.
+  it is not always on `main`. That second half makes it operational, not
+  hygiene: **the branch that checkout sits on is the dev daemon's deployed
+  code.** A daemon that has been up for hours is running whatever was checked
+  out when it started — another lane's branch, quite possibly — so a merge
+  changes nothing in service until the checkout syncs AND the daemon restarts.
 - **Diagnose live services without starting competing instances.** An extra
   daemon squats `rt.sock` and produces exactly the symptom — starts, binds
   nothing, logs nothing — that then gets misdiagnosed as a permissions problem.
+- **Re-read a ticket immediately before acting on it.** Tickets here are
+  written by other live sessions while you work, so the copy you read at the
+  start of a task is a snapshot, not the current state. A prune ran against a
+  ticket that had, in the meantime, grown a section explaining that the very
+  row being removed was being kept deliberately — the eviction orphaned a
+  daemon registry and silently stopped worktree reconciliation. The same
+  applies to any shared artifact a peer session can edit underneath you.
 
 A claimed recovery path (self-heal, fallback, retry) is load-bearing: trace the
 code that performs it before documenting it, or the docs will tell users to run
