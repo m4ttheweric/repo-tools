@@ -158,7 +158,7 @@ export async function dispatch(
       process.exit(0);
     }
 
-    process.stderr.write("\x1b[2J\x1b[H");
+    clearScreen();
 
     const picked = await showPicker(tree, breadcrumb);
     if (picked === BACK) {
@@ -200,7 +200,7 @@ export async function dispatch(
         process.exit(0);
       }
 
-      process.stderr.write("\x1b[2J\x1b[H");
+      clearScreen();
 
       const picked = await showPicker(node.subcommands, [...breadcrumb, resolvedName]);
       if (picked === BACK) return dispatch(tree, [], breadcrumb, baseDir, root);
@@ -211,7 +211,7 @@ export async function dispatch(
   }
 
   // Leaf node → execute
-  process.stderr.write("\x1b[2J\x1b[H");
+  clearScreen();
   if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
 
   // TTY guard — bypass when RT_BATCH=1 (called programmatically, no picker needed)
@@ -269,7 +269,7 @@ export async function dispatch(
     }
 
     if (process.cwd() !== cwdBefore) {
-      process.stderr.write("\x1b[2J\x1b[H");
+      clearScreen();
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
     }
 
@@ -283,7 +283,7 @@ export async function dispatch(
     ctx.identity = await requireRepoIdentity(commandLabel);
 
     if (process.cwd() !== cwdBefore) {
-      process.stderr.write("\x1b[2J\x1b[H");
+      clearScreen();
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
     }
   }
@@ -296,7 +296,7 @@ export async function dispatch(
     if (collected === null) process.exit(0);
     rest.push(...collected);
 
-    process.stderr.write("\x1b[2J\x1b[H");
+    clearScreen();
     if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
   }
 
@@ -333,7 +333,7 @@ export async function dispatch(
         throw err;
       }
 
-      process.stderr.write("\x1b[2J\x1b[H");
+      clearScreen();
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
 
       const { getKnownRepos, getRepoIdentity } = await import("./repo.ts");
@@ -368,7 +368,7 @@ export async function dispatch(
       ctx.autoResolved = false;
 
       // Clear and re-run handler with new context
-      process.stderr.write("\x1b[2J\x1b[H");
+      clearScreen();
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
       continue;
     }
@@ -377,7 +377,23 @@ export async function dispatch(
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
 
+/**
+ * Screen control belongs to a terminal, never a pipe. Unguarded, the
+ * clear-screen sequence lands in logs and CI output and — worse — erases
+ * whatever a failing command already wrote, so an error message and the
+ * remedy pointing at it both survive into a log that no longer contains it.
+ */
+function clearScreen(): void {
+  if (process.stderr.isTTY) process.stderr.write("\x1b[2J\x1b[H");
+}
+
+/**
+ * Decoration, same rule. It is also the first line of stderr, so a caller
+ * reading `stderr` for a failure reason gets the breadcrumb instead of the
+ * error unless this stays off a pipe.
+ */
 function renderHeader(breadcrumb: string[]): void {
+  if (!process.stderr.isTTY) return;
   const parts = breadcrumb.map((part, i) => {
     if (i === 0) {
       const base = `${bold}${cyan}${part}${reset}`;
