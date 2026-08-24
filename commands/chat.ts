@@ -19,7 +19,7 @@
  * Spec: docs/superpowers/specs/2026-08-23-rt-chat-design.md
  */
 
-import { existsSync, readFileSync, realpathSync, statSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { homedir, hostname } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
@@ -30,13 +30,19 @@ import { isValidChatName } from "../lib/state/index.ts";
 import { shellQuote } from "../lib/herdr-launch.ts";
 import { parseDuration } from "./events.ts";
 import {
+  chatArm,
+  chatDisarm,
   chatJoin,
   chatLeave,
   chatMark,
   chatPost,
   chatRead,
   chatRooms,
+  chatTouch,
+  chatUnreadWaking,
   chatWho,
+  eventsHead,
+  rtCommand,
 } from "../packages/rt-client/src/index.ts";
 import type {
   ChatMember,
@@ -48,7 +54,7 @@ import type {
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
-const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since"]);
+const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock"]);
 
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -404,6 +410,15 @@ async function runLeave(args: string[]): Promise<void> {
   const res = await chatLeave({ room, handle });
   unwrap(res, "leave");
 
+  // Kill the handle's tail ONLY when this was its last room. The pidfile and
+  // the wake topic are per-handle (one tail serves every room), while leave is
+  // per-room: killing while the handle is still in other rooms would deafen it
+  // for those, and the "unless you ended it" re-arm rule would keep it deaf.
+  const remaining = await chatRooms({ handle });
+  if (remaining.ok && remaining.data && remaining.data.rooms.length === 0) {
+    killChatTail(handle);
+  }
+
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true }));
     return;
@@ -522,6 +537,213 @@ async function runMark(args: string[]): Promise<void> {
   // else: advance the cursor without printing
 }
 
+// ─── tail: the wake protocol ─────────────────────────────────────────────────
+//
+// A long-lived stream, launched under Claude Code's Monitor (persistent: true).
+// Monitor turns each stdout line into one notification, so stdout carries
+// EXACTLY one line per wake and every diagnostic goes to stderr. The step order
+// below is the whole feature — see the spec's Wake protocol section.
+
+/** rt dir holding the sock and the per-handle tail pidfiles (mirrors transport's defaultSock dir). */
+function rtChatDir(): string {
+  return join(process.env.HOME ?? homedir(), ".mattstack", "rt");
+}
+
+/** Pidfile is keyed on HANDLE ALONE: one tail serves every room the handle is in. */
+function chatTailPidPath(handle: string): string {
+  return join(rtChatDir(), `chat-tail-${handle}.pid`);
+}
+
+function readTailPid(pidPath: string): number | null {
+  try {
+    const pid = parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+    return Number.isNaN(pid) ? null : pid;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Alive AND actually an `rt chat tail`. A tail dies abnormally (session end,
+ * sleep, SIGKILL, Monitor stopping it) without running cleanup, so a stale
+ * pidfile — or one whose pid the OS recycled to an unrelated process — must not
+ * refuse a re-arm. Recovery IS *stream ends → agent notified → agent re-arms*,
+ * and a false "already armed" leaves the agent permanently deaf.
+ */
+function isLiveChatTail(pid: number): boolean {
+  try {
+    process.kill(pid, 0); // signal 0 = existence check
+  } catch {
+    return false;
+  }
+  try {
+    const args = execSync(`ps -p ${pid} -o args=`, { encoding: "utf8", stdio: "pipe" });
+    return /(?:^|\s)chat(?:\s|$)/.test(args) && /(?:^|\s)tail(?:\s|$)/.test(args);
+  } catch {
+    return false;
+  }
+}
+
+/** SIGTERM the handle's tail if one is genuinely running, then drop the pidfile (leave's last-room path). */
+function killChatTail(handle: string): void {
+  const pidPath = chatTailPidPath(handle);
+  const pid = readTailPid(pidPath);
+  if (pid !== null && isLiveChatTail(pid)) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+  }
+  try { rmSync(pidPath); } catch { /* already gone */ }
+}
+
+/** One line per wake, count-style; identical format for the catch-up and the stream. */
+function wakeLine(room: string, count: number): string {
+  return `${count} new in #${room} — \`rt chat read\` to see it.`;
+}
+
+/**
+ * A test seam that opens a timing window: create the file the env var NAMES,
+ * block until it is removed, give up after 2s. It names a PATH, never a
+ * command — a seam that evaluated a shell string would be arbitrary code
+ * execution in a shipped binary.
+ */
+async function testMarkerPause(envKey: string): Promise<void> {
+  const path = process.env[envKey];
+  if (!path) return;
+  try { writeFileSync(path, String(process.pid)); } catch { return; }
+  const deadline = Date.now() + 2_000;
+  while (existsSync(path) && Date.now() < deadline) {
+    await Bun.sleep(20);
+  }
+}
+
+const TAIL_ROUND_MS = 15_000; // events:wait ceiling per round; also the chat:touch heartbeat cadence.
+
+export async function chatTail(args: string[]): Promise<void> {
+  // Monitor owns the lifetime (persistent: true). A tail that could time out
+  // would end its own stream and read as a dead feed.
+  if (args.includes("--timeout")) {
+    console.error("rt chat: tail takes no --timeout — Monitor owns the tail's lifetime");
+    process.exit(2);
+  }
+
+  const handle = resolveHandle(args);
+  requireValidName("handle", handle);
+
+  const roomFilter = flagValue(args, "--room");
+  if (roomFilter) requireValidName("room", roomFilter);
+
+  const sockPath = flagValue(args, "--sock");
+  const opts = sockPath ? { sockPath } : {};
+
+  // Claim the pidfile BEFORE any daemon call, so a live duplicate is refused
+  // even when the daemon is down. A stale/foreign pidfile is reclaimed.
+  const pidPath = chatTailPidPath(handle);
+  const existing = readTailPid(pidPath);
+  if (existing !== null && isLiveChatTail(existing)) {
+    console.error(`rt chat: already armed — a tail for ${handle} is already running (pid ${existing})`);
+    process.exit(3);
+  }
+  try {
+    mkdirSync(rtChatDir(), { recursive: true });
+    writeFileSync(pidPath, String(process.pid));
+  } catch (err) {
+    console.error(`rt chat: could not claim tail pidfile: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  const cleanup = (): void => { try { rmSync(pidPath); } catch { /* already gone */ } };
+
+  // A signal is a DELIBERATE stop (Monitor stopping the command, or leave on
+  // the last room). Exit 0 — never 69 — so the daemon-down backoff cannot mask
+  // it, and if the handle is now in zero rooms say so on one line.
+  let shuttingDown = false;
+  const onSignal = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      const rooms = await chatRooms({ handle }, opts);
+      if (rooms.ok && rooms.data && rooms.data.rooms.length === 0) {
+        console.log(`no longer in any room — #${handle} tail stopped. Do not re-arm.`);
+      }
+    } catch { /* daemon unreachable — still a deliberate stop */ }
+    cleanup();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => { void onSignal(); });
+  process.on("SIGINT", () => { void onSignal(); });
+
+  const budgetMs = Number(process.env.RT_CHAT_BACKOFF_MS ?? 60_000);
+
+  // Daemon-unreachable is not silence: retry with bounded backoff (a mechanical
+  // brake against a re-arm spin), diagnostics to stderr; when the budget is
+  // exhausted, one stdout line, disarm, exit 69.
+  async function callOrBackoff<T>(fn: () => Promise<{ ok: boolean; data?: T; error?: string }>): Promise<T> {
+    let res = await fn();
+    if (res.ok && res.data !== undefined) return res.data;
+    const deadline = Date.now() + budgetMs;
+    let delay = 250;
+    while (Date.now() < deadline) {
+      console.error(`rt chat: daemon unreachable, retrying in ${delay}ms…`);
+      await Bun.sleep(delay);
+      res = await fn();
+      if (res.ok && res.data !== undefined) return res.data;
+      delay = Math.min(delay * 2, 10_000);
+    }
+    console.log("chat stream ended — the rt daemon is unreachable.");
+    await chatDisarm({ handle }, opts).catch(() => undefined);
+    cleanup();
+    process.exit(69);
+  }
+
+  // Step 1: snapshot the journal head → cursor C. This precedes the unread read
+  // so a post landing before waiter registration still emits above C and is
+  // replayed by the stream (the arm-race fix).
+  const head = await callOrBackoff(() => eventsHead(opts));
+  const C = head.cursor;
+
+  // Step 2: arm (scoped to --room when given; all the handle's rooms otherwise).
+  await callOrBackoff(() => chatArm({ handle, room: roomFilter }, opts));
+
+  await testMarkerPause("RT_CHAT_TEST_PRE_CATCHUP_MARKER");
+
+  // Step 3: catch-up — one line per room with its real count, and the watermark
+  // W = highest chat_messages id already seen. W (a chat_messages rowid) and C
+  // (a journal rowid) live in different id spaces and guard opposite defects.
+  const catchup = await callOrBackoff(() => chatUnreadWaking({ handle, room: roomFilter }, opts));
+  let W = 0;
+  for (const r of catchup.rooms) {
+    if (roomFilter && r.room !== roomFilter) continue;
+    if (r.count > 0) console.log(wakeLine(r.room, r.count));
+    if (r.maxId > W) W = r.maxId;
+  }
+
+  await testMarkerPause("RT_CHAT_TEST_PRE_WAIT_MARKER");
+
+  // Step 4: stream. events:wait with pattern chat/wake/<me> and after=C, cursor
+  // threaded forward; one line per wake; chat:touch each round so presence
+  // rides the loop. Skip any wake whose message id is at or below W — that
+  // message was already delivered by the catch-up (the mirror hole the
+  // streaming transport opened).
+  const pattern = `chat/wake/${handle}`;
+  let cursor = C;
+  while (true) {
+    const round = await callOrBackoff(() =>
+      rtCommand<{ events: { id: number; topic: string; payload: { id: number; room: string } }[]; cursor: number }>(
+        "events:wait",
+        { pattern, after: cursor, waitMs: TAIL_ROUND_MS },
+        { sockPath, timeoutMs: TAIL_ROUND_MS + 10_000 },
+      ),
+    );
+    cursor = round.cursor;
+    await chatTouch({ handle }, opts).catch(() => undefined);
+    for (const e of round.events) {
+      const msgId = e.payload?.id;
+      const room = e.payload?.room;
+      if (typeof msgId === "number" && msgId <= W) continue; // dup: already in the catch-up
+      if (roomFilter && room !== roomFilter) continue; // --room: silently skip other rooms
+      console.log(wakeLine(room, 1));
+    }
+  }
+}
+
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
 const USAGE = "usage: rt chat <join|leave|post|read|rooms|who|mark|tail> ...";
@@ -534,12 +756,12 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   rooms: runRooms,
   who: runWho,
   mark: runMark,
+  tail: chatTail,
 };
 
 export async function chat(args: string[]): Promise<void> {
   const [verb, ...rest] = args;
   if (!verb) fail(USAGE);
-  if (verb === "tail") fail("rt chat tail is not implemented yet");
   const handler = VERBS[verb];
   if (!handler) fail(`unknown verb "${verb}" — ${USAGE}`);
   await handler(rest);

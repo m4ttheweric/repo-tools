@@ -14,8 +14,10 @@
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -32,12 +34,19 @@ import { getStateDb, closeStateDb } from "../../lib/state/index.ts";
 let home = "";
 let origHome: string | undefined;
 let origPaneId: string | undefined;
+let origBackoff: string | undefined;
 let server: ReturnType<typeof Bun.serve> | null = null;
+// Real child processes (spawnChat); reaped in afterEach so a stray tail can't
+// outlive its test.
+const children: Array<ReturnType<typeof Bun.spawn>> = [];
 
 beforeEach(() => {
   origHome = process.env.HOME;
   origPaneId = process.env.HERDR_PANE_ID;
+  origBackoff = process.env.RT_CHAT_BACKOFF_MS;
   delete process.env.HERDR_PANE_ID;
+  // Keep the daemon-unreachable backoff short so the exit-69 path is fast.
+  process.env.RT_CHAT_BACKOFF_MS = "150";
 
   home = realpathSync(mkdtempSync(join(tmpdir(), "rt-chat-cli-")));
   process.env.HOME = home;
@@ -50,6 +59,13 @@ beforeEach(() => {
     async fetch(req) {
       const cmd = new URL(req.url).pathname.slice(1);
       const payload = req.method === "POST" ? await req.json() : {};
+      // The tail drives the events bus directly; the CLI-verb harness has no
+      // real bus, so stub just enough for a spawned tail to arm and block.
+      if (cmd === "events:head") return Response.json({ ok: true, data: { cursor: 0 } });
+      if (cmd === "events:wait") {
+        await Bun.sleep(300); // empty long-poll round; the tail loops and stays alive
+        return Response.json({ ok: true, data: { events: [], cursor: 0 } });
+      }
       const handlers = createChatHandlers({ db: getStateDb(), emitEvent: () => 0 }) as unknown as Record<string, (p: unknown) => Promise<unknown>>;
       const handler = handlers[cmd];
       if (!handler) return Response.json({ ok: false, error: `unknown command: ${cmd}` });
@@ -58,7 +74,12 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const child of children) {
+    try { child.kill(); } catch { /* already gone */ }
+  }
+  await Promise.all(children.map((c) => c.exited));
+  children.length = 0;
   server?.stop(true);
   server = null;
   closeStateDb();
@@ -66,7 +87,41 @@ afterEach(() => {
   process.env.HOME = origHome;
   if (origPaneId === undefined) delete process.env.HERDR_PANE_ID;
   else process.env.HERDR_PANE_ID = origPaneId;
+  if (origBackoff === undefined) delete process.env.RT_CHAT_BACKOFF_MS;
+  else process.env.RT_CHAT_BACKOFF_MS = origBackoff;
 });
+
+/**
+ * A REAL `rt chat …` process against the same temp HOME, so its pidfile lands
+ * in the same rt dir and its `ps args` identify it as an rt chat tail (the
+ * liveness+identity check the double-arm guard relies on). Runs cli.ts under
+ * bun — there is no compiled binary in unit tests.
+ */
+function spawnChat(args: string[]): ReturnType<typeof Bun.spawn> {
+  const cliPath = join(import.meta.dir, "..", "..", "cli.ts");
+  const proc = Bun.spawn(["bun", "run", cliPath, "chat", ...args], {
+    env: {
+      HOME: home,
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      RT_SKIP_SETUP: "1",
+      CI: "true",
+      RT_CHAT_BACKOFF_MS: "150",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  children.push(proc);
+  return proc;
+}
+
+/** Poll a predicate to a deadline (no daemon, no env — a pure wait). */
+async function until(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error("until: predicate never became true");
+    await Bun.sleep(25);
+  }
+}
 
 /**
  * Mirrors commands/__tests__/runs.test.ts's runExpectingCleanExit: mocks
@@ -74,7 +129,8 @@ afterEach(() => {
  * test process, and reads the spies' recorded calls before mockRestore()
  * clears them.
  */
-async function runChatRaw(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+async function runChatRaw(args: string[], opts: { sock?: string } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  if (opts.sock) args = [...args, "--sock", opts.sock];
   const stdout: string[] = [];
   const stderr: string[] = [];
   const logSpy = spyOn(console, "log").mockImplementation((...a: unknown[]) => {
@@ -190,6 +246,48 @@ describe("rt chat CLI — additional verb behavior", () => {
     await runChat(["leave", "r", "--as", "solo"]);
     const rooms = JSON.parse(await runChat(["rooms", "--json", "--as", "solo"]));
     expect(rooms.rooms).toEqual([]);
+  });
+});
+
+// ─── Task 8: the tail (wake protocol) ───────────────────────────────────────
+
+describe("rt chat tail", () => {
+  const rtDir = () => join(home, ".mattstack", "rt");
+  const hasTailPidfile = () =>
+    existsSync(rtDir()) && readdirSync(rtDir()).some((f) => f.startsWith("chat-tail-"));
+
+  test("tail exits 69 when the daemon is unreachable, rather than hanging", async () => {
+    const { code } = await runChatRaw(["tail"], { sock: "/nonexistent.sock" });
+    expect(code).toBe(69);
+  });
+
+  test("tail takes no --timeout", async () => {
+    // Monitor owns the lifetime via persistent: true. A tail that could time
+    // out would end its own stream and look like a dead feed.
+    const { code, stderr } = await runChatRaw(["tail", "--timeout", "1s"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("--timeout");
+  });
+
+  test("tail refuses to double-arm", async () => {
+    await runChat(["join", "r"]);
+    const first = spawnChat(["tail"]);
+    // Wait for the spawned tail to actually claim its pidfile; without this the
+    // second invocation would race past the (not-yet-written) lock and block.
+    await until(hasTailPidfile);
+    const { code, stderr } = await runChatRaw(["tail"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("already armed");
+    first.kill();
+  }, 15_000);
+
+  test("every stdout write in the tail path is exactly one line", async () => {
+    // Under Monitor each stdout line is one notification, so a multi-line write
+    // floods the agent's context. Diagnostics must go to stderr.
+    const src = await Bun.file(join(import.meta.dir, "..", "chat.ts")).text();
+    const tailFn = src.slice(src.indexOf("async function chatTail"));
+    const logs = tailFn.match(/console\.log\([^)]*\)/g) ?? [];
+    expect(logs.every((l) => !l.includes("\\n"))).toBe(true);
   });
 });
 

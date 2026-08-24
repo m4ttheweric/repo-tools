@@ -655,6 +655,14 @@ export const TREE: Record<string, CommandNode> = {
     subcommands: eventsSubcommands,
   },
 
+  // Self-dispatching leaf: chat() routes its own verbs (join/leave/post/read/
+  // rooms/who/mark/tail), so all args flow through rather than a subcommand map.
+  chat: {
+    description: "Group chat for agents and their human, over the rt daemon",
+    module: "./commands/chat.ts",
+    fn: "chat",
+  },
+
   runs: {
     description: "Pipeline run state (read-only, from the run DB)",
     module: "./commands/runs.ts",
