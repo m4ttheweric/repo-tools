@@ -110,6 +110,38 @@ describe("skillsSurface list", () => {
     expect(errors[0]).toStartWith("rt skills: ");
     expect(errors[0]).toContain("--bogus");
   });
+
+  test("--json: rows match the human listing, with pack and packDir", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
+    writeFile(join(packDir, "skills", "hand-authored-public", "SKILL.md"), "---\nname: x\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "hand-authored-internal", "SKILL.md"), "---\nname: y\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "acme", "--pack-dir", packDir, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.pack).toBe("acme");
+    expect(parsed.packDir).toBe(packDir);
+    expect(parsed.rows.map((r: { name: string }) => r.name).sort()).toEqual([
+      "hand-authored-internal",
+      "hand-authored-public",
+      "my-verb",
+    ]);
+    expect(parsed.rows.find((r: { name: string }) => r.name === "my-verb")).toEqual({
+      name: "my-verb",
+      kind: "compiled",
+      status: "public",
+    });
+  });
+
+  test("--json prints ONLY json -- no human lines on stdout", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+
+    await skillsSurface(["list", "--pack-dir", packDir, "--json"]);
+
+    expect(() => JSON.parse(logs.join("\n"))).not.toThrow();
+  });
 });
 
 describe("skillsSurface set", () => {
@@ -246,6 +278,60 @@ describe("skillsSurface set", () => {
 
     expect(exitCode).toBe(1);
     expect(errors[0]).toStartWith("rt skills: ");
+  });
+
+  test("several names in one call: all move, and surface.jsonc is written once", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "attachments", "one", "SKILL.md"), "---\nname: one\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "two", "SKILL.md"), "---\nname: two\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "three", "SKILL.md"), "---\nname: three\n---\nbody\n");
+    const { mattstackDir, manifestPath } = makeEngineFixture();
+
+    await skillsSurface([
+      "set", "one", "two", "three", "--public",
+      "--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+    ]);
+
+    for (const name of ["one", "two", "three"]) {
+      expect(existsSync(join(packDir, "skills", name, "SKILL.md"))).toBe(true);
+      expect(existsSync(join(packDir, "attachments", name))).toBe(false);
+    }
+
+    const surface = JSON.parse(
+      readFileSync(join(packDir, "pack", "surface.jsonc"), "utf8").replace(/^\/\/.*\n/, ""),
+    );
+    expect(surface.public).toEqual(["one", "three", "two"]);
+  });
+
+  test("one unknown name in a list writes nothing at all", async () => {
+    // The reason a list is one call rather than N: a rejection must not leave
+    // the names before it already moved.
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "attachments", "one", "SKILL.md"), "---\nname: one\n---\nbody\n");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsSurface(["set", "one", "no-such-skill", "--public", "--pack-dir", packDir]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors[0]).toContain("no-such-skill");
+    expect(existsSync(join(packDir, "pack", "surface.jsonc"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "one", "SKILL.md"))).toBe(true);
+  });
+
+  test("a name repeated in one call is a usage error, not a silent no-op", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "attachments", "one", "SKILL.md"), "---\nname: one\n---\nbody\n");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsSurface(["set", "one", "one", "--public", "--pack-dir", packDir]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors[0]).toContain("more than once");
   });
 });
 
