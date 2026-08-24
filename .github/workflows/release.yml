@@ -51,6 +51,24 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # `plugins.install` adds this marketplace on every machine rt sets up, so
+      # it has to be live before the release shipping that installer is. It
+      # references plugin repos rather than anything this run builds, so it goes
+      # out first: a broken catalog then costs seconds instead of the twenty
+      # minutes it takes to reach notarization. A run that changes nothing
+      # needs no token — the script pushes only a real diff.
+      - name: Publish the marketplace catalog
+        shell: bash
+        env:
+          MARKETPLACE_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
+          PUBLISH: ${{ steps.meta.outputs.publish }}
+        run: |
+          if [ "$PUBLISH" = "true" ]; then
+            scripts/release/marketplace.sh
+          else
+            scripts/release/marketplace.sh --dry-run
+          fi
+
       # ── Developer ID (required on a tag; ad-hoc on a dry run) ────────────────
       - name: Check signing secrets
         id: signing
