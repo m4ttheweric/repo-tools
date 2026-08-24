@@ -164,7 +164,9 @@ function describeDataMove(r: PrunedEntry, dryRun: boolean): string {
   const parts: string[] = [];
   if (carried > 0) parts.push(`${dryRun ? "would carry" : "carried"} ${carried} file${carried === 1 ? "" : "s"} to ${r.keptAs}`);
   if (d.merged.length > 0) parts.push(`merged ${d.merged.join(", ")}`);
-  if (d.refused.length > 0) parts.push(`kept both copies of ${d.refused.join(", ")} — ${r.repoName}'s data dir stays`);
+  if (d.registry === "moved") parts.push(`${dryRun ? "would move" : "moved"} the worktree registry to ${r.keptAs}`);
+  if (d.registry === "refused") parts.push(`${r.keptAs} already has a worktree registry — both kept`);
+  if (d.refused.length > 0) parts.push(`kept both copies of ${d.refused.join(", ")}`);
   return parts.length > 0 ? `; ${parts.join("; ")}` : "";
 }
 
@@ -198,10 +200,11 @@ export async function reposPrune(args: string[], _ctx: CommandContext = {}, deps
     deps.print("repo index is clean — nothing to prune");
     return;
   }
-  const verb = dryRun ? "would remove" : "removed";
   for (const r of removed) {
-    deps.print(
-      `${verb} ${r.repoName} (${r.path.replace(homedir(), "~")}) — ${describeReason(r)}${describeDataMove(r, dryRun)}`,
-    );
+    const verb = r.retained ? "kept" : dryRun ? "would remove" : "removed";
+    const why = r.retained
+      ? `${describeReason(r)}, but its data could not all move${describeDataMove(r, dryRun)} — keeping the row so nothing is orphaned`
+      : `${describeReason(r)}${describeDataMove(r, dryRun)}`;
+    deps.print(`${verb} ${r.repoName} (${r.path.replace(homedir(), "~")}) — ${why}`);
   }
 }

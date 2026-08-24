@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameS
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
-import { deleteKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
+import { deleteKvValue, getKvValue, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -245,9 +245,14 @@ export interface PrunedEntry {
   keptAs?: string;
   /** Set only for `duplicate`: what became of the retired name's data dir. */
   data?: DataMigration;
+  /**
+   * Set on a `duplicate` whose migration could not finish: the row is KEPT so
+   * whatever is still keyed to the retired name stays reachable.
+   */
+  retained?: true;
 }
 
-/** Per-file outcome of carrying a retired name's data dir onto the live name. */
+/** Outcome of carrying everything keyed to a retired name onto the live name. */
 export interface DataMigration {
   /** Entries moved wholesale — the live name held nothing by that name. */
   moved: string[];
@@ -257,6 +262,22 @@ export interface DataMigration {
   refused: string[];
   /** True once the retired data dir is gone, which only happens if nothing was refused. */
   removedDir: boolean;
+  /**
+   * The retired name's worktree registry: `"moved"` onto the live name,
+   * `"refused"` because the live name already had one (both are real tree
+   * records; picking a winner would guess), or `"none"` if it had none.
+   *
+   * This lives in state.db's kv, not the data dir, so it is invisible to a
+   * directory walk — and it is the record the daemon keys by, so a retired
+   * name that keeps it while the index row goes away leaves the reconciler
+   * silently skipping the repo.
+   */
+  registry: "moved" | "refused" | "none";
+}
+
+/** True when anything is still keyed to the retired name after a migration. */
+export function migrationIncomplete(d: DataMigration): boolean {
+  return d.refused.length > 0 || d.registry === "refused";
 }
 
 /**
@@ -266,6 +287,51 @@ export interface DataMigration {
  * a genuine ambiguity and gets refused.
  */
 const MERGEABLE_BY_TIMESTAMP = "run-history.jsonl";
+
+/**
+ * Mirrors `lib/worktree/registry.ts`'s namespace rather than importing it:
+ * that module pulls in the legacy-import machinery and the whole TreeRecord
+ * surface, and this only needs to move one opaque row. The constant is a
+ * parity anchor — the two must not drift.
+ */
+const WORKTREE_REGISTRY_NS = "worktree-registry";
+
+/**
+ * Moves the retired name's worktree registry onto the live name.
+ *
+ * The daemon keys registries by the INDEX name
+ * (`lib/daemon/worktree-reconciler.ts` iterates the repo index), while the CLI
+ * looks them up by git identity (`deriveRepoName`). A rename splits those two,
+ * and evicting the retired index row then makes the registry unreachable:
+ * `repoHasWorktreeActivity` sees an empty registry under the live name and
+ * skips the repo, so the reconciler quietly stops managing its worktrees.
+ * That is why this moves with the data dir instead of being left behind.
+ *
+ * A live name that ALREADY has a registry is refused, never merged — both
+ * sides are real tree records carrying claim state and ready stamps that no
+ * git repository has another record of.
+ */
+function migrateWorktreeRegistry(from: string, to: string, opts: { dryRun?: boolean }): DataMigration["registry"] {
+  let retired: unknown;
+  try {
+    if (!hasKvValue(WORKTREE_REGISTRY_NS, from)) return "none";
+    if (hasKvValue(WORKTREE_REGISTRY_NS, to)) return "refused";
+    if (opts.dryRun) return "moved";
+    retired = getKvValue<unknown>(WORKTREE_REGISTRY_NS, from, null);
+    setKvValue(WORKTREE_REGISTRY_NS, to, retired);
+  } catch (err) {
+    console.warn(`rt: could not move ${from}'s worktree registry to ${to} (${(err as Error).message})`);
+    return "refused";
+  }
+  // Delete only after the write is readable: persistOrWarn swallows
+  // SQLITE_BUSY, so a returned write is not a landed one.
+  if (!hasKvValue(WORKTREE_REGISTRY_NS, to)) {
+    console.warn(`rt: ${from}'s worktree registry did not persist under ${to} — leaving it in place`);
+    return "refused";
+  }
+  deleteKvValue(WORKTREE_REGISTRY_NS, from);
+  return "moved";
+}
 
 /** `ts` of a run-history line. Unparseable lines sort last, keeping their order. */
 function lineTimestamp(line: string): number {
@@ -300,10 +366,14 @@ function mergeRunHistory(fromFile: string, toFile: string): void {
  * once everything in it has moved.
  */
 export function migrateRepoData(from: string, to: string, opts: { dryRun?: boolean } = {}): DataMigration {
-  const result: DataMigration = { moved: [], merged: [], refused: [], removedDir: false };
+  const result: DataMigration = { moved: [], merged: [], refused: [], removedDir: false, registry: "none" };
+  if (from === to) return result;
+
+  result.registry = migrateWorktreeRegistry(from, to, opts);
+
   const fromDir = repoDataDir(from);
   const toDir = repoDataDir(to);
-  if (from === to || !existsSync(fromDir)) return result;
+  if (!existsSync(fromDir)) return result;
 
   let names: string[];
   try {
@@ -349,10 +419,12 @@ export function migrateRepoData(from: string, to: string, opts: { dryRun?: boole
  * name points at a directory that has since been deleted leaves the old name
  * standing rather than evicting the only row that still resolves.
  *
- * A `duplicate` carries its data dir onto the surviving name first, so the row
- * is only dropped once nothing is keyed off it. A `missing` row is left
- * un-migrated on purpose: its path is gone, so there is no surviving name to
- * carry it to, and its data dir stays untouched rather than being deleted.
+ * A `duplicate` carries everything keyed to it onto the surviving name first,
+ * and the row is dropped ONLY once nothing is left behind: a migration that
+ * refused anything marks the entry `retained` and keeps the row, because
+ * eviction is exactly what makes a leftover unreachable. A `missing` row is
+ * left un-migrated on purpose: its path is gone, so there is no surviving name
+ * to carry it to, and its data dir stays untouched rather than being deleted.
  */
 export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
   const entries = loadRepoIndexEntries();
@@ -365,18 +437,23 @@ export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
   }
 
   for (const dup of partitionByRealpath(live).duplicates) {
+    const data = migrateRepoData(dup.entry.repoName, dup.keptAs, opts);
     removed.push({
       repoName: dup.entry.repoName,
       path: dup.entry.path,
       reason: "duplicate",
       keptAs: dup.keptAs,
-      data: migrateRepoData(dup.entry.repoName, dup.keptAs, opts),
+      data,
+      ...(migrationIncomplete(data) ? { retained: true as const } : {}),
     });
   }
 
   if (opts.dryRun || removed.length === 0) return removed;
 
-  for (const r of removed) deleteKvValue(REPO_INDEX_NS, r.repoName);
+  for (const r of removed) {
+    if (r.retained) continue;
+    deleteKvValue(REPO_INDEX_NS, r.repoName);
+  }
   writeRepoIndexCompat(loadRepoIndex());
   return removed;
 }
