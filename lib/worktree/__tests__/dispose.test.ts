@@ -382,7 +382,7 @@ describe("disposeTree", () => {
     expect((disposed!.data as { tree: string }).tree).toBe("tree-a");
   });
 
-  test("auto disposal anchors on the MR head sha, not the default branch", async () => {
+  test("a merged tree auto-disposes regardless of local ancestry", async () => {
     const path = addTree(repo, "tree-a", "feature-a");
     commitIn(path, "new.txt", "squash-merged upstream\n");
     const sha = execSync(`git -C ${path} rev-parse HEAD`, { encoding: "utf8" }).trim();
@@ -398,7 +398,7 @@ describe("disposeTree", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  test("a present-but-unresolvable MR sha refuses with \"mr-sha-unresolvable\"", async () => {
+  test("a merged MR disposes even when its head sha is unresolvable locally", async () => {
     const path = addTree(repo, "tree-a", "feature-a");
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a", {
       claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
@@ -410,24 +410,23 @@ describe("disposeTree", () => {
       },
     });
     const result = await disposeTree(deps, rec, { auto: true });
-    expect(result).toEqual({ disposed: false, refusal: "mr-sha-unresolvable" });
-    expect(existsSync(path)).toBe(true);
+    expect(result).toMatchObject({ disposed: true });
+    expect(existsSync(path)).toBe(false);
   });
 
-  test("an MR with NO sha falls back to the remote anchor instead of refusing", async () => {
+  test("a merged MR with no cached sha disposes", async () => {
     const path = addTree(repo, "tree-a", "feature-a");
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a", {
       claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
     }));
 
-    // sha absent entirely (the projection drops it for many merged MRs)
     const deps = makeDeps({ cacheEntries: { "feature-a": { mr: { iid: 42, state: "merged" }, repoName } } });
     const result = await disposeTree(deps, rec, { auto: true });
     expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
   });
 
-  test("an MR with a null sha still gets a real containment check", async () => {
+  test("a merged MR disposes even with local-only commits (merge state is trusted, not the sha)", async () => {
     const path = addTree(repo, "tree-a", "feature-a");
     commitIn(path, "new.txt", "local only\n");
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a", {
@@ -438,14 +437,15 @@ describe("disposeTree", () => {
       cacheEntries: { "feature-a": { mr: { iid: 42, sha: null, state: "merged" }, repoName } },
     });
     const result = await disposeTree(deps, rec, { auto: true });
-    expect(result).toEqual({ disposed: false, refusal: "unpushed" });
+    expect(result).toMatchObject({ disposed: true });
+    expect(existsSync(path)).toBe(false);
   });
 
-  test("auto disposal refuses \"unpushed\" when HEAD is ahead of the MR head sha", async () => {
+  test("a merged MR disposes even when HEAD is ahead of the recorded MR head (rebase / extra local commits)", async () => {
     const path = addTree(repo, "tree-a", "feature-a");
     commitIn(path, "new.txt", "in the MR\n");
     const sha = execSync(`git -C ${path} rev-parse HEAD`, { encoding: "utf8" }).trim();
-    commitIn(path, "later.txt", "never pushed\n");
+    commitIn(path, "later.txt", "diverged from the merged head\n");
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a", {
       claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
     }));
@@ -454,14 +454,13 @@ describe("disposeTree", () => {
       cacheEntries: { "feature-a": { mr: { iid: 42, sha, state: "merged" }, repoName } },
     });
     const result = await disposeTree(deps, rec, { auto: true });
-    expect(result).toEqual({ disposed: false, refusal: "unpushed" });
+    expect(result).toMatchObject({ disposed: true });
+    expect(existsSync(path)).toBe(false);
   });
 
-  test("MANUAL disposal of a squash-merged tree uses the MR sha anchor", async () => {
-    // The shape that broke: squash-merged upstream, source branch deleted, so
-    // the tip is an ancestor of nothing the remote still has. Before the fix a
-    // human got "unpushed" here and was pushed toward --force, which also
-    // strips the dirty guard.
+  test("a squash-merged tree with its source branch deleted disposes", async () => {
+    // Squash-merged upstream, source branch deleted: the tip is an ancestor of
+    // nothing the remote still has, so only the merge state proves containment.
     const path = addTree(repo, "tree-a", "feature-a");
     commitIn(path, "new.txt", "squash-merged upstream\n");
     const sha = execSync(`git -C ${path} rev-parse HEAD`, { encoding: "utf8" }).trim();
@@ -474,6 +473,24 @@ describe("disposeTree", () => {
     const result = await disposeTree(deps, rec, { auto: false });
     expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
+  });
+
+  test("a merged MR with a dirty tree still refuses \"dirty\"; --force disposes", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    writeFileSync(join(path, "wip.txt"), "uncommitted\n");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a", {
+      claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    }));
+
+    const deps = makeDeps({
+      cacheEntries: { "feature-a": { mr: { iid: 42, state: "merged" }, repoName } },
+    });
+    const result = await disposeTree(deps, rec, {});
+    expect(result).toEqual({ disposed: false, refusal: "dirty" });
+    expect(existsSync(path)).toBe(true);
+
+    const forced = await disposeTree(deps, rec, { force: true });
+    expect(forced).toMatchObject({ disposed: true });
   });
 
   test("manual disposal with an OPEN MR still uses the remote anchor", async () => {
