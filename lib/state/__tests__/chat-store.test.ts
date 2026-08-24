@@ -15,6 +15,9 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
 import {
+  armMember,
+  clearAllArmed,
+  disarmMember,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -26,6 +29,7 @@ import {
   postMessage,
   readUnread,
   recipientsFor,
+  touchMember,
   unreadWakingCount,
 } from "../chat-store.ts";
 
@@ -172,4 +176,25 @@ test("mark advances without returning messages", () => {
   postMessage({ room: "r", handle: "a", body: "one" }, db);
   markRead("b", "r", db);
   expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
+});
+
+test("arm sets armed_at, disarm clears it, touch updates last_seen_at", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  armMember(undefined, "a", db);
+  expect(listMembers("r", db)[0]!.armedAt).toBeGreaterThan(0);
+  touchMember("a", db);
+  expect(listMembers("r", db)[0]!.lastSeenAt).toBeGreaterThan(0);
+  disarmMember("a", db);
+  expect(listMembers("r", db)[0]!.armedAt).toBeUndefined();
+});
+
+test("clearAllArmed clears every row and reports how many it cleared", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  armMember(undefined, "a", db);
+  armMember(undefined, "b", db);
+  expect(clearAllArmed(db)).toBe(2);
+  expect(listMembers("r", db).every(m => m.armedAt === undefined)).toBe(true);
 });

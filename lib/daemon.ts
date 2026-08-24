@@ -38,7 +38,7 @@ import { resolveUserPath } from "./daemon/user-path.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { getBranchCacheStore, getStateDb, type BranchCacheStore } from "./state/index.ts";
+import { clearAllArmed, getBranchCacheStore, getStateDb, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -379,6 +379,12 @@ export function startDaemon(): void {
   // CLI process is mid-import right now, we block here, in startup.
   openBranchCacheStore();
   log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
+
+  // No waiter outlives the daemon, so every armed_at set at boot is stale;
+  // clearing must finish before the socket listens, or an agent that arms
+  // in the gap has its fresh armed_at wiped.
+  const clearedArmed = clearAllArmed();
+  if (clearedArmed > 0) log.info({ clearedArmed }, "chat: cleared stale armed_at from previous daemon run");
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
   servers.socket = startSocketServer({ handleCommand, log });
