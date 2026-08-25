@@ -52,7 +52,7 @@ interface RepoIndex {
   [repoName: string]: string; // repoName → primary repo root path
 }
 
-const REPO_INDEX_NS = "repo-index";
+export const REPO_INDEX_NS = "repo-index";
 
 /**
  * Deprecated derived-compatibility path: state.db is authoritative, but
@@ -155,6 +155,30 @@ export function updateRepoIndex(repoName: string, repoRoot: string): void {
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
     writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
+}
+
+/**
+ * Raw index-row write: no git probe, no move detection. `updateRepoIndex` is
+ * the caller-facing path that DERIVES the main path; this is the primitive for
+ * a caller that has already decided what the row must say, and it is the only
+ * index write that is safe to run inside a state.db transaction.
+ */
+export function setIndexPath(key: string, mainPath: string): void {
+  setKvValue(REPO_INDEX_NS, key, mainPath);
+}
+
+/** Drop one index row. */
+export function removeIndexRow(key: string): void {
+  deleteKvValue(REPO_INDEX_NS, key);
+}
+
+/** Rewrite ~/.mattstack/rt/repos.json from the current rows — a FILE write, so it runs after a transaction commits, never inside one. */
+export function refreshRepoIndexMirror(): void {
+  try {
+    writeRepoIndexCompat(loadRepoIndex());
+  } catch {
+    // best effort — see repoIndexCompatPath's doc comment
+  }
 }
 
 /**

@@ -1,7 +1,7 @@
 import { realpathSync } from "fs";
 import { join } from "path";
 import { repoDataDir } from "../rt-paths.ts";
-import { getKvValue, hasKvValue, importLegacyJsonFile, setKvValue } from "../state/index.ts";
+import { deleteKvValue, getKvValue, hasKvValue, importLegacyJsonFile, setKvValue } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
 export type TreeState = "creating" | "on-deck" | "claimed" | "disposable";
@@ -144,4 +144,15 @@ export function mergeRegistries(winner: TreeRecord[], loser: TreeRecord[]): Tree
     if (!heldRecordWins(held, rec)) byPath.set(key, rec);
   }
   return order.map((key) => byPath.get(key)!);
+}
+
+/** Whether this repo has a registry row at all — distinct from an empty registry. */
+export function hasRegistry(repoName: string): boolean {
+  return hasKvValue(WORKTREE_REGISTRY_NS, repoName);
+}
+
+/** Drop a whole registry row. Only ever the retired half of a pair, after its records have been merged onto the survivor. */
+export function deleteRegistry(repoName: string): void {
+  deleteKvValue(WORKTREE_REGISTRY_NS, repoName);
+  epochs.set(repoName, registryEpoch(repoName) + 1);
 }
