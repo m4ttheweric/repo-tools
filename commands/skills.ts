@@ -1474,8 +1474,10 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
   for (const name of [...stageNames].sort()) {
     if (!publicSet.has(name)) continue;
     if (existsSync(outDirFor(packDir, name, true)) || existsSync(otherSideDir(packDir, name, true))) continue;
-    console.log(`${name}: recorded; emitted to skills/ on the next compile`);
     recorded++;
+    console.log(flags.dryRun
+      ? `${name}: would record; emitted to skills/ on the next compile`
+      : `${name}: recorded; emitted to skills/ on the next compile`);
   }
 
   if (moved === 0 && recorded === 0) console.log("no moves needed");

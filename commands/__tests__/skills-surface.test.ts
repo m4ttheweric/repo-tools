@@ -529,7 +529,7 @@ describe("skillsSurface set/apply on a never-compiled pipeline stage", () => {
     expect(logs.join("\n")).toContain("stage-plan: recorded; emitted to skills/ on the next compile");
   });
 
-  test("apply --dry-run reports the same pending-emit line and writes nothing", async () => {
+  test("apply --dry-run says would record, mirroring would move, and writes nothing", async () => {
     const packDir = makePackDir();
     writeStubs(packDir, { work: { engine: "work", description: "Run the pipeline." } });
     writeFile(join(packDir, "pack", "surface.jsonc"), JSON.stringify({ public: ["work", "stage-plan"] }));
@@ -540,7 +540,7 @@ describe("skillsSurface set/apply on a never-compiled pipeline stage", () => {
       "--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
     ]);
 
-    expect(logs.join("\n")).toContain("stage-plan: recorded; emitted to skills/ on the next compile");
+    expect(logs.join("\n")).toContain("stage-plan: would record; emitted to skills/ on the next compile");
     expect(existsSync(join(packDir, "skills", "stage-plan"))).toBe(false);
     expect(existsSync(join(packDir, "attachments", "stage-plan"))).toBe(false);
   });
