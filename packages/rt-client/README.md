@@ -26,6 +26,51 @@ Bun-only: the settings exec path (`src/settings/exec.ts`) shells out via
 `@mattstack/glance` is a peer dependency: rt-client returns glance's forge types
 so merge request shapes stay identical across rt, gitq, and mr-board.
 
+## Repo identity
+
+Every per-repo key in the rt estate is a stable serialized identity, not a
+repo name. Whatever you store per-repo, send to the daemon, or put in a REST
+path is keyed by the wire form this package emits:
+
+```
+remote:gitlab.com%2Facme%2Facme-dev     path:%2FUsers%2Fdev%2Fscratch
+└─┬──┘ └──────────┬─────────────┘
+ kind    the id, encodeURIComponent'd — slash-free, fits one URL segment
+```
+
+`kind` is `remote` (the repo has an origin: id is normalized `host/path`) or
+`path` (no usable remote: id is the main worktree's realpath). The `:` is a
+literal delimiter.
+
+```ts
+import {
+  deriveRepoIdentity,   // (repoPath: string) => Promise<RepoIdentity> — never null
+  serializeIdentity,    // (id: RepoIdentity) => string — the wire form above
+  parseIdentity,        // (wire: string) => RepoIdentity | null — THE validity check
+  identityFromRemote,   // (remoteUrl: string) => RepoIdentity | null — sync
+  type RepoIdentity,    // { kind: "remote" | "path"; id: string }
+} from '@mattstack/rt-client';
+
+const identity = serializeIdentity(await deriveRepoIdentity(repoPath));
+
+await rtCommand(['worktree', 'list', '--repo', identity]);        // daemon key
+const url = `/api/runs/${encodeURIComponent(identity)}/${runId}`; // URL segment
+```
+
+| Do | Don't |
+|---|---|
+| Get identities from these functions, once, at the boundary | Re-derive with your own git calls (`git remote get-url` diverges under `insteadOf`) |
+| Key stores and daemon payloads on the serialized form | Key anything on a folder basename or a remote's last segment |
+| Key settings sections (`repos.<identity>`) on the raw `host/path` id | Put the serialized form in a settings lookup, or the raw form in a daemon payload |
+| `encodeURIComponent(identity)` in URL path segments | Ship the wire form raw in a URL — its `%` signs decode into slashes |
+| Decode for display: `parseIdentity(wire)`, then the id's last path segment (remote) or basename (path) — the returned `id` is already decoded | `decodeURIComponent` the id again, show the wire form to a human, or build a chat handle from it |
+| Treat the `repo` field from `runs:list` as an opaque key, passed back verbatim | Validate or re-derive `runs:*` repo keys — pre-cutover runs keep their original keys |
+
+Repo-keyed daemon verbs accept serialized identities only; a bare repo name
+doesn't error, it resolves empty. `parseIdentity` is strict — only strings
+`serializeIdentity` emitted parse — so validate payloads with it, and never
+hand-assemble or string-split a wire.
+
 ## License
 
 MIT
