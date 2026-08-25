@@ -501,6 +501,41 @@ describe("compileSkill with placeholders", () => {
     expect(r.warnings.filter((w) => w.includes("not an emitted file"))).toEqual([]);
   });
 
+  test("a relative read escaping the pack root is a compile error naming verb, path and line", () => {
+    const bad = { ...slotless, body: "first line\nread `../../../attachments/self-review/SKILL.md` before starting" };
+    expect(() =>
+      compileSkill(verb, bad, {}, new Set(), {
+        packRoot: "/pack",
+        compiledDir: "/pack/attachments/stage-plan",
+      }),
+    // Line 6 of the compiled body: the header comment, the step seam, and the
+    // blank line between each precede the step's own first line.
+    ).toThrow('verb "watch-ci": "../../../attachments/self-review/SKILL.md" at compiled body line 6 resolves outside the pack root');
+  });
+
+  test("an escaping ${CLAUDE_SKILL_DIR} path is the same compile error", () => {
+    const bad = { ...slotless, body: "read ${CLAUDE_SKILL_DIR}/../../../secrets.md" };
+    expect(() =>
+      compileSkill(verb, bad, {}, new Set(), { packRoot: "/pack", compiledDir: "/pack/skills/work" }),
+    ).toThrow("resolves outside the pack root");
+  });
+
+  test("a relative read that stays inside the pack warns instead of erroring", () => {
+    const r = compileSkill(verb, { ...slotless, body: "read `../../attachments/self-review/SKILL.md`" }, {}, new Set(), {
+      packRoot: "/pack",
+      compiledDir: "/pack/skills/work",
+    });
+    expect(r.warnings).toEqual(["body references ../../attachments/self-review/SKILL.md which is not an emitted file"]);
+  });
+
+  test("a shell-composed path whose ../ follows another path is not read as a body reference", () => {
+    const r = compileSkill(verb, { ...slotless, body: 'FORGE=$(dirname "$STAGE")/../forge/ci-forge.sh' }, {}, new Set(), {
+      packRoot: "/pack",
+      compiledDir: "/pack/skills/work",
+    });
+    expect(r.warnings).toEqual([]);
+  });
+
   test("the pack-root token is not lint-warned as a missing file", () => {
     const r = compileSkill(verb, { ...slotless, body: 'PACK_DIRS="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd -P)"' }, {}, new Set(), {});
     expect(r.warnings).toEqual([]);

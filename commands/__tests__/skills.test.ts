@@ -419,6 +419,34 @@ describe("skillsCompile", () => {
     expect(readFileSync(join(packDir, "skills", "watch-ci", "SKILL.md"), "utf8")).toBe("PLANTED\n");
   });
 
+  test("an engine body reading outside the pack root: clean one-line error, exit 1, nothing written", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"),
+      WATCH_CI_SKILL_MD.replace(
+        "Poll the pipeline every 30s",
+        "Read `../../../elsewhere/SKILL.md` first. Poll the pipeline every 30s",
+      ),
+    );
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--manifest", manifestPath,
+        "--verb", "watch-ci",
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("../../../elsewhere/SKILL.md");
+    expect(errors.join("\n")).toContain("resolves outside the pack root");
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+  });
+
   test("unrecognized argument: clean one-line error, exit 1", async () => {
     const { exitCode, errors } = await runExpectingCleanExit(() =>
       skillsCompile(["--bogus-flag"]),

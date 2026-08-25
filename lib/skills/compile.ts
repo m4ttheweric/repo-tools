@@ -1,3 +1,4 @@
+import { isAbsolute, relative as relativePath, resolve as resolvePath, sep } from "path";
 import { assertNoPlaceholders, findPlaceholders, substitute } from "./placeholders.ts";
 import type {
   AttachmentSource,
@@ -18,8 +19,45 @@ export const HEADER_COMMENT =
 
 const SKILL_DIR_PATH_RE = /\$\{CLAUDE_SKILL_DIR\}\/[^\s"'`)]+/g;
 
+/**
+ * A `../` path only reads as a body reference when it starts one: the same
+ * characters after a slash are the tail of a shell-composed path
+ * (`$(dirname "$X")/../forge/…`) whose base is unknown at compile time.
+ */
+const RELATIVE_PATH_RE = /(?<![^\s("'`[<,])\.\.\/[^\s"'`)]+/g;
+
 /** The compiled `work` derives the pack root from layout, so this form is a directory reference, never a file. */
 const PACK_ROOT_REL = "../..";
+
+/** Where a compiled verb lands, so a body path can be resolved the way the reading agent will resolve it. */
+type CompiledLayout = { packRoot: string; compiledDir: string };
+
+type BodyPath = { text: string; relPath: string; line: number; kind: "token" | "relative" };
+
+function bodyPaths(body: string): BodyPath[] {
+  const out: BodyPath[] = [];
+  const lines = body.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    for (const m of line.matchAll(SKILL_DIR_PATH_RE)) {
+      out.push({
+        text: m[0],
+        relPath: m[0].slice(`${CLAUDE_SKILL_DIR_TOKEN}/`.length),
+        line: i + 1,
+        kind: "token",
+      });
+    }
+    for (const m of line.matchAll(RELATIVE_PATH_RE)) {
+      out.push({ text: m[0], relPath: m[0], line: i + 1, kind: "relative" });
+    }
+  }
+  return out;
+}
+
+function escapesPackRoot(layout: CompiledLayout, relPath: string): boolean {
+  const rel = relativePath(layout.packRoot, resolvePath(layout.compiledDir, relPath));
+  return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
 
 /** rt's own namespace, always linted even when no pack is installed. */
 const OWN_NAMESPACE = "mattstack";
@@ -276,15 +314,22 @@ function stripCompilerComments(body: string): string {
     .join("\n");
 }
 
+/**
+ * Paths are judged from the compiled skill's own directory, which is where the
+ * reading agent resolves them: a path that leaves the pack root cannot be read
+ * at run time (the pack is what ships), while one that stays inside may name a
+ * sibling compiled target, so it only warns.
+ */
 function lintReferences(
   body: string,
   roster: Set<string>,
   files: CompiledFile[],
   known: Iterable<string>,
-  exemptPrefixes: string[] = [],
+  opts: { verbName: string; exemptPrefixes?: string[]; layout?: CompiledLayout | null },
 ): string[] {
   const warnings: string[] = [];
   const lintableBody = stripCompilerComments(body);
+  const exemptPrefixes = opts.exemptPrefixes ?? [];
 
   const seenNames = new Set<string>();
   for (const match of lintableBody.matchAll(registeredNameRe(roster, known))) {
@@ -298,17 +343,22 @@ function lintReferences(
 
   const emittedPaths = new Set(files.map((f) => f.path));
   const seenPaths = new Set<string>();
-  for (const match of lintableBody.matchAll(SKILL_DIR_PATH_RE)) {
-    const full = match[0];
-    if (seenPaths.has(full)) continue;
-    seenPaths.add(full);
-    if (exemptPrefixes.some((p) => full.startsWith(p))) continue;
-    const relPath = full.slice(`${CLAUDE_SKILL_DIR_TOKEN}/`.length);
+  // Paths are counted in the unstripped body so the reported line is the one the
+  // compiled artifact carries; only names are lint material in seam comments.
+  for (const { text, relPath, line, kind } of bodyPaths(body)) {
+    if (opts.layout && escapesPackRoot(opts.layout, relPath)) {
+      throw new Error(
+        `verb "${opts.verbName}": "${text}" at compiled body line ${line} resolves outside the pack root`,
+      );
+    }
+    if (seenPaths.has(text)) continue;
+    seenPaths.add(text);
+    if (kind === "token" && exemptPrefixes.some((p) => text.startsWith(p))) continue;
     // Every compiled verb sits two levels under the pack root (skills/<name>,
     // attachments/<name>), so this token names that root, not a file in it.
     if (relPath === PACK_ROOT_REL) continue;
     if (!emittedPaths.has(relPath)) {
-      warnings.push(`body references ${full} which is not an emitted file`);
+      warnings.push(`body references ${text} which is not an emitted file`);
     }
   }
 
@@ -349,6 +399,8 @@ export function compileSkill(
     stageDir?: string | null;
     stageAllowedTools?: string[];
     emittedSiblingDirs?: string[];
+    packRoot?: string;
+    compiledDir?: string;
   } = {},
 ): CompileResult {
   const internalRoster = opts.internalRoster ?? new Set<string>();
@@ -395,8 +447,15 @@ export function compileSkill(
   ];
 
   const fillBindings = boundSlots.map(({ fill }) => fill.binding);
+  const layout = opts.packRoot && opts.compiledDir
+    ? { packRoot: opts.packRoot, compiledDir: opts.compiledDir }
+    : null;
   const warnings = [
-    ...lintReferences(body, roster, files, fillBindings, opts.emittedSiblingDirs ?? []),
+    ...lintReferences(body, roster, files, fillBindings, {
+      verbName: verb.name,
+      exemptPrefixes: opts.emittedSiblingDirs ?? [],
+      layout,
+    }),
     ...notes,
   ];
   const errors = [
