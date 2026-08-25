@@ -667,11 +667,12 @@ type CompileOutcome = { ok: true; result: CompileResult } | { ok: false; message
 
 /**
  * compileVerb fails two ways: it throws (loadStepSource/loadAttachment/
- * compileSkill's resolveBoundSlots), or it returns a result whose errors[]
- * is non-empty (lintInternalRoster only). --json and --preview both need
- * both outcomes as data instead of a thrown SkillsUsageError, so this is
- * the one place that catches both -- the plain human path still calls
- * compileVerb directly and lets it throw, unchanged.
+ * compileSkill's lints and resolveBoundSlots), or it returns a result whose
+ * errors[] is non-empty (lintInternalRoster only). Every skillsCompile mode
+ * needs both outcomes as data rather than a thrown SkillsUsageError -- --json
+ * and --preview to report them, the writing mode to collect every target's
+ * verdict before touching disk -- so this is the one place that catches both.
+ * skillsCheck is the lone caller left that lets compileVerb throw.
  */
 function tryCompileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[] = []): CompileOutcome {
   const { verb, isStage } = target;
