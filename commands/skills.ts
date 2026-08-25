@@ -33,6 +33,7 @@ import { validateChain } from "../lib/skills/chain.ts";
 import { compileSkill, HEADER_COMMENT, isInlined } from "../lib/skills/compile.ts";
 import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
+import { buildStageEntries, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
 import { maskProvenance, mattstackProvenance, packPluginIdentity } from "../lib/skills/provenance.ts";
 import {
   invocableRoster,
@@ -416,52 +417,7 @@ function computeInternalRoster(
   return internal;
 }
 
-/**
- * Builds each work type's ordered StageEntry[] from its manifest pipeline
- * list: one entry per qualified name, carrying the stage's dir, consumes,
- * and produces. Stage names are validated upstream by parseStageQualifiedName
- * (shared with stageRoster) before they ever reach outDirFor's rmSync; a dir
- * here is always a sibling path relative to the orchestrator's own
- * ${CLAUDE_SKILL_DIR}, never packDir-relative.
- */
-function buildStageEntries(input: Pick<Resolved, "pipelines" | "pluginRoots">): Record<string, StageEntry[]> {
-  const out: Record<string, StageEntry[]> = {};
-  for (const [type, names] of Object.entries(input.pipelines)) {
-    out[type] = names.map((qualified) => {
-      let name: string;
-      try {
-        name = parseStageQualifiedName(qualified, `pipeline "${type}"`);
-      } catch (err) {
-        throw new SkillsUsageError((err as Error).message);
-      }
-      let step: StepSource;
-      try {
-        step = loadStepSource(name, input.pluginRoots);
-      } catch (err) {
-        throw new SkillsUsageError(`pipeline "${type}": "${name}": ${(err as Error).message}`);
-      }
-      if (!step.stageMeta) {
-        throw new SkillsUsageError(`pipeline "${type}": "${name}" has no metadata.stage; it cannot appear in a pipeline`);
-      }
-      return {
-        name,
-        stage: step.stageMeta.stage,
-        dir: `\${CLAUDE_SKILL_DIR}/../../attachments/${name}`,
-        consumes: step.stageMeta.consumes,
-        produces: step.stageMeta.produces,
-      };
-    });
-  }
-  return out;
-}
 
-/** outDirFor/otherSideDir also name the stale side of a name that flips public/internal, so compile can clean it up. */
-export function outDirFor(packDir: string, name: string, isPublic: boolean): string {
-  return join(packDir, isPublic ? "skills" : "attachments", name);
-}
-export function otherSideDir(packDir: string, name: string, isPublic: boolean): string {
-  return join(packDir, isPublic ? "attachments" : "skills", name);
-}
 
 async function resolve(flags: Flags): Promise<Resolved> {
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
@@ -500,7 +456,12 @@ async function resolve(flags: Flags): Promise<Resolved> {
   // --repo` expects -- the same key `~/.mattstack/runs/<repo>/` is named by.
   const repoKey = manifestPath ? basename(dirname(manifestPath)) : "";
   const { sha: mattstackSha, dirty: mattstackDirty } = mattstackProvenance(pipelines, pluginRoots.byName.mattstack);
-  const stageEntries = buildStageEntries({ pipelines, pluginRoots });
+  let stageEntries: Record<string, StageEntry[]>;
+  try {
+    stageEntries = buildStageEntries({ pipelines, pluginRoots });
+  } catch (err) {
+    throw new SkillsUsageError((err as Error).message);
+  }
 
   return {
     packDir, team, fullRoster, bindings, pluginRoots, invocable, surface, internalRoster, manifestPath,
@@ -655,15 +616,6 @@ function pipelineChainErrors(resolved: Resolved): string[] {
 }
 
 type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
-
-/**
- * Where this run's targets land, for the sibling-reference lint. Derived from
- * outDirFor, never from a StageEntry's `dir`: that one hardcodes
- * attachments/<name> and is wrong the moment a stage is made surface-public.
- */
-function targetOutDirs(resolved: Resolved, targets: CompileTarget[]): string[] {
-  return targets.map((t) => outDirFor(resolved.packDir, t.verb.name, t.isPublic));
-}
 
 /**
  * A roster verb keeps today's default-public rule; a stage is internal
