@@ -457,7 +457,10 @@ unaffected.
   exists for the handle — and refuses a handle it no longer maps to that
   session; the CLI then deletes the
   session file and says *your handle was reclaimed while you were away —
-  sign in again*. `post`/`read`/`join` stay handle-only, as the base design
+  sign in again* — and on the `pulse` path the hook injects that notice as
+  `additionalContext` **regardless of the waiting rule**, since a reclaimed
+  handle is otherwise exactly the state the rule stays silent in and the
+  agent would never learn. `post`/`read`/`join` stay handle-only, as the base design
   requires; an old owner posting under a reclaimed name is possible in the
   minutes before its next pulse or arm, and accepted. **The tail does not
   swallow the refusal**: shipped code discards `chat:touch` errors
@@ -465,9 +468,15 @@ unaffected.
   the tail prints one line (*handle reclaimed — sign in again*) and exits 0,
   Monitor reports the stream ended, and the skill's re-arm rule takes over
   with a fresh sign-in. That is also what keeps "two tails for one handle is
-  impossible" true: the old tail exits before the new owner's first touch
-  could collide with it, and the reclaimer's arm finds a pidfile whose
-  holder is exiting, not listening.
+  impossible" true — with one named window: the old tail learns of the
+  reclaim on its next `chat:touch`, up to one `TAIL_ROUND_MS` (15s) later,
+  and until then it holds the pidfile, so the reclaimer's **first arm may
+  bounce once** with exit 3 (*already armed*). That is self-healing — a
+  non-zero exit is a stream-ended notification and the skill's re-arm rule
+  fires — and plan 3 must not treat the bounce as a bug. A suspended old
+  tail (SIGSTOP, a sleeping laptop) can hold the pidfile indefinitely;
+  accepted, since the same suspension already defeats plan 1's liveness
+  check and resolving it means killing a process we did not start.
 - **Pruning.** Rows signed out **more than 24 hours ago**, or whose session
   heartbeat is older than 24 hours, are deleted by the daemon at startup and
   by every `sign-in` — the two moments a handle is about to be needed. Rows
@@ -494,7 +503,10 @@ unaffected.
   and not on a DM he is a participant of; `join` refuses a DM room; the
   human's DM post wakes both; `dm matt` notifies the desk; a v5 dry-run
   migration over a v4 database does not throw.
-- CLI: session file written and read first in resolution; `--session` for
+- CLI: the repository-room derivation — remote-kind → last segment
+  lowercased and slugified; path-kind → last two segments of the main
+  worktree realpath; not in a work tree → no room; `--room` overrides;
+  session file written and read first in resolution; `--session` for
   processes without the env; `pulse --json` shape and its status rule —
   waiting + `idle` injects, waiting + `deaf` (armed, tail heartbeat stale,
   session heartbeat fresh) injects, waiting + `live` does not; `pulse` never
