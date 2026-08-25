@@ -30,6 +30,8 @@ import { join } from "path";
 import { chat, __test__ } from "../chat.ts";
 import { createChatHandlers } from "../../lib/daemon/handlers/chat.ts";
 import { getStateDb, closeStateDb } from "../../lib/state/index.ts";
+import { sessionFilePath } from "../../lib/chat-session.ts";
+import { drainNotifications, peekNotifications } from "../../lib/notifier.ts";
 
 // ─── in-process CLI + fake daemon harness ───────────────────────────────────
 
@@ -193,6 +195,18 @@ async function signInInProcess(
   const handle = /signed in as (\S+)/.exec(out)?.[1] ?? opts.as;
   process.env.CLAUDE_CODE_SESSION_ID = opts.session;
   return { home, handle };
+}
+
+/**
+ * Ages `baseHandle`'s presence row past both reclaim thresholds (mirrors
+ * lib/daemon/__tests__/chat-handlers.test.ts's own `last_seen_at -
+ * 7200000` pattern) and signs a second session in under the same base — the
+ * daemon's own "the first reclaimable row, by suffix order" rule then hands
+ * the base handle straight back to the new session rather than suffixing.
+ */
+async function reclaimViaHandlers(baseHandle: string, newSessionId: string): Promise<void> {
+  getStateDb().run("UPDATE chat_presence SET last_seen_at = last_seen_at - 7200000 WHERE base_handle = ?", [baseHandle]);
+  await runChat(["sign-in", "--as", baseHandle, "--session", newSessionId, "--no-room"]);
 }
 
 // ─── Step 1 (brief) ──────────────────────────────────────────────────────────
@@ -396,6 +410,211 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     const { code, stderr } = await runChatRaw(["sign-in", "--as", "x", "--no-room"]);
     expect(code).not.toBe(0);
     expect(stderr).toContain("session id");
+  });
+
+  test("sign-out --json reports a daemonError field rather than a bare {ok:true} when the daemon leg failed", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    server?.stop(true);
+    server = null;
+
+    const out = await runChat(["sign-out", "--session", "s1", "--json"]);
+    const parsed = JSON.parse(out);
+    expect(parsed.ok).toBe(true);
+    expect(typeof parsed.daemonError).toBe("string");
+  });
+
+  test("sign-out --quiet with an invalid session id exits 0 silently, matching the missing-id case", async () => {
+    const { code, stdout, stderr } = await runChatRaw(["sign-out", "--session", "bad/id", "--quiet"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+});
+
+// ─── buddies, away/back, dm, pulse ──────────────────────────────────────────
+
+describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
+  test("buddies renders four sections in table order and names the away text", async () => {
+    // Statuses-table order (offline, deaf, live, idle in the design doc's
+    // ## Statuses table, top to bottom) — see renderBuddies's BUDDY_SECTIONS.
+    await signInInProcess({ as: "idle1", session: "sid", noRoom: true });
+    await signInInProcess({ as: "live1", session: "slv", noRoom: true });
+    await signInInProcess({ as: "deaf1", session: "sdf", noRoom: true });
+    await signInInProcess({ as: "off1", session: "soff", noRoom: true });
+
+    const now = Date.now();
+    const db = getStateDb();
+    db.run("UPDATE chat_presence SET status_text = ? WHERE handle = ?", ["rebasing #67", "idle1"]);
+    db.run("UPDATE chat_presence SET armed_at = ?, tail_seen_at = ? WHERE handle = ?", [now, now, "live1"]);
+    db.run("UPDATE chat_presence SET armed_at = ? WHERE handle = ?", [now - 20 * 60_000, "deaf1"]);
+    db.run("UPDATE chat_presence SET signed_out_at = ? WHERE handle = ?", [now, "off1"]);
+
+    const out = await runChat(["buddies"]);
+
+    const offIdx = out.indexOf("off1");
+    const deafIdx = out.indexOf("deaf1");
+    const liveIdx = out.indexOf("live1");
+    const idleIdx = out.indexOf("idle1");
+    expect(offIdx).toBeGreaterThanOrEqual(0);
+    expect(deafIdx).toBeGreaterThan(offIdx);
+    expect(liveIdx).toBeGreaterThan(deafIdx);
+    expect(idleIdx).toBeGreaterThan(liveIdx);
+
+    expect(out).toMatch(/listening/); // live1
+    expect(out).toMatch(/deaf/); // deaf1
+    expect(out).toMatch(/idle/); // idle1
+    expect(out).toContain("rebasing #67"); // the away text
+    // offline is collapsed to one line, however many offline buddies exist.
+    expect(out.split("\n").filter((l) => l.includes("off1")).length).toBe(1);
+  });
+
+  test("bare who aliases buddies", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const out = await runChat(["who"]);
+    expect(out).toContain("x");
+    expect(out).toMatch(/idle/);
+  });
+
+  test("away sets the status text (visible on buddies) and back clears it", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+
+    await runChat(["away", "brb", "lunch", "--session", "s1"]);
+    const withAway = JSON.parse(await runChat(["buddies", "--json"]));
+    expect(withAway.buddies[0]).toMatchObject({ statusText: "brb lunch" });
+
+    await runChat(["back", "--session", "s1"]);
+    const withoutAway = JSON.parse(await runChat(["buddies", "--json"]));
+    expect(withoutAway.buddies[0].statusText).toBeUndefined();
+  });
+
+  test("away/back refuse without a session id rather than acting on a guessed handle", async () => {
+    const away = await runChatRaw(["away", "brb"]);
+    expect(away.code).not.toBe(0);
+    expect(away.stderr).toContain("session id");
+
+    const back = await runChatRaw(["back"]);
+    expect(back.code).not.toBe(0);
+    expect(back.stderr).toContain("session id");
+  });
+
+  test("dm posts and the desk notifies when the recipient is the human", async () => {
+    drainNotifications();
+    await signInInProcess({ as: "agent", session: "s1", noRoom: true });
+    await runChat(["dm", "matt", "you", "there?", "--session", "s1"]);
+    expect(peekNotifications()).toHaveLength(1);
+  });
+
+  test("dm prints nothing on success (plain), and --json reports the room/recipients", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+
+    expect(await runChat(["dm", "b", "hi", "--session", "s1"])).toBe("");
+
+    const out = await runChat(["dm", "b", "again", "--json", "--session", "s1"]);
+    const parsed = JSON.parse(out);
+    expect(parsed).toMatchObject({ ok: true, recipients: ["b"] });
+
+    const rooms = JSON.parse(await runChat(["rooms", "--json", "--session", "s1"]));
+    const dmRoom = rooms.rooms.find((r: { room: string }) => r.room === parsed.room);
+    expect(dmRoom).toMatchObject({ kind: "dm" });
+  });
+
+  test("rooms renders a DM room's direct heading as a ↔ b, never the hashed room id", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["dm", "b", "hi", "--session", "s1"]);
+
+    const out = await runChat(["rooms", "--session", "s1"]);
+    expect(out).toContain("a ↔ b");
+    expect(out).not.toContain("#dm-");
+  });
+
+  test("who on a DM room lists the two participants and never the human", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["dm", "b", "hi", "--session", "s1"]);
+    const rooms = JSON.parse(await runChat(["rooms", "--json", "--session", "s1"]));
+    const dmRoom = rooms.rooms.find((r: { kind?: string }) => r.kind === "dm").room;
+
+    const out = await runChat(["who", dmRoom]);
+    expect(out).toContain("a");
+    expect(out).toContain("b");
+    expect(out).not.toContain("matt");
+  });
+
+  test("pulse --json returns the unread summary and never writes the tail heartbeat", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+
+    const before = JSON.parse(await runChat(["buddies", "--json"]));
+    expect(before.buddies[0]).toMatchObject({ status: "idle" });
+    expect(before.buddies[0].armedAt).toBeUndefined();
+
+    const out = await runChat(["pulse", "--json", "--session", "s1"]);
+    expect(JSON.parse(out)).toMatchObject({ ok: true, unread: { dms: 0, mentions: 0, rooms: 0 } });
+
+    // If pulse had called chat:touch/chat:arm, armed_at/tail_seen_at would
+    // now be set and the status would read "live" instead of "idle".
+    const after = JSON.parse(await runChat(["buddies", "--json"]));
+    expect(after.buddies[0]).toMatchObject({ status: "idle" });
+    expect(after.buddies[0].armedAt).toBeUndefined();
+  });
+
+  test("pulse on a reclaimed handle deletes the session file and reports it", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    await reclaimViaHandlers("x", "s2");
+    const out = await runChat(["pulse", "--json", "--session", "s1"]);
+    expect(JSON.parse(out)).toMatchObject({ reclaimed: true });
+    expect(existsSync(sessionFilePath("s1"))).toBe(false);
+  });
+
+  test("pulse's plain reclaim notice matches the reclaimed case, not the deliberately-signed-out case", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    await reclaimViaHandlers("x", "s2");
+    const out = await runChat(["pulse", "--session", "s1"]);
+    expect(out).toMatch(/reclaimed/);
+  });
+
+  test("pulse exits 0 with no output for a session that deliberately signed out (not a reclaim)", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    await runChat(["sign-out", "--session", "s1"]);
+    const { code, stdout, stderr } = await runChatRaw(["pulse", "--session", "s1"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+
+  test("pulse exits 0 silently when the daemon is unreachable", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    server?.stop(true);
+    server = null;
+
+    const plain = await runChatRaw(["pulse", "--session", "s1"]);
+    expect(plain.code).toBe(0);
+    expect(plain.stdout).toBe("");
+    expect(plain.stderr).toBe("");
+
+    const json = await runChatRaw(["pulse", "--json", "--session", "s1"]);
+    expect(json.code).toBe(0);
+    expect(json.stdout).toBe("");
+  });
+
+  test("pulse with no session id is a silent no-op, never a crash", async () => {
+    const { code, stdout, stderr } = await runChatRaw(["pulse"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+
+  test("a stale (first-time) branch cache still completes pulse well under the hook budget", async () => {
+    // No prior pulse means no lastBranchReadAt to gate on, so this exercises
+    // the real git-spawning path — and it must still land well inside the
+    // 800ms daemon budget plus slack for the git spawn itself.
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const start = Date.now();
+    const out = await runChat(["pulse", "--json", "--session", "s1"]);
+    const elapsed = Date.now() - start;
+    expect(JSON.parse(out)).toMatchObject({ ok: true });
+    expect(elapsed).toBeLessThan(5_000);
   });
 });
 

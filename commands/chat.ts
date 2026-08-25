@@ -11,6 +11,10 @@
  *   rt chat tail                                   Task 8
  *   rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]
  *   rt chat sign-out [--quiet] [--session <id>]
+ *   rt chat away <text> [--session <id>]           rt chat back [--session <id>]
+ *   rt chat buddies [--json]                       the roster; bare `who` aliases it
+ *   rt chat dm <handle> <text>                     prints NOTHING on success
+ *   rt chat pulse [--json] [--session <id>]        hook-facing heartbeat; never fails
  *
  * Identity resolution is CLIENT-SIDE (see resolveHandle): HERDR_PANE_ID and
  * the cwd's repo only exist in this process, never in the daemon, so the
@@ -45,11 +49,16 @@ import {
 import { parseDuration } from "./events.ts";
 import {
   chatArm,
+  chatAway,
+  chatBack,
+  chatBuddies,
   chatDisarm,
+  chatDm,
   chatJoin,
   chatLeave,
   chatMark,
   chatPost,
+  chatPulse,
   chatRead,
   chatRooms,
   chatSignIn,
@@ -61,8 +70,10 @@ import {
   rtCommand,
 } from "../packages/rt-client/src/index.ts";
 import type {
+  BuddyStatus,
   ChatMember,
   ChatMessage,
+  PresenceRow,
   RoomSummary,
   RtResponse,
   WakeMode,
@@ -434,12 +445,18 @@ function relativeAgo(ms: number): string {
   return `${Math.floor(hr / 24)}d`;
 }
 
+/** A DM room's display name — the handler's `a ↔ b` pair, never the hashed `dm-<hash>` room id (that id is a store key, not something anyone should read). */
+function roomHeading(r: RoomSummary): string {
+  if (r.kind === "dm" && r.participants) return `${r.participants.a} ↔ ${r.participants.b}`;
+  return `#${r.room}`;
+}
+
 function renderRooms(rooms: RoomSummary[]): string {
   if (rooms.length === 0) return "(not a member of any room)";
-  const nameWidth = Math.max(...rooms.map((r) => r.room.length + 1));
+  const nameWidth = Math.max(...rooms.map((r) => roomHeading(r).length + 1));
   return rooms
     .map((r) => {
-      const name = `#${r.room}`.padEnd(nameWidth + 2);
+      const name = roomHeading(r).padEnd(nameWidth + 2);
       const members = pluralize(r.memberCount, "member").padEnd(12);
       const unread = r.unread === 0
         ? "—"
@@ -466,19 +483,75 @@ function renderReadRooms(rooms: { room: string; messages: ChatMessage[] }[], ful
     .join("\n\n");
 }
 
-function memberStatus(m: ChatMember): string {
-  if (m.armedAt) return "listening";
-  if (m.lastSeenAt !== undefined) return Date.now() - m.lastSeenAt < 5 * 60_000 ? "idle" : "away";
-  return "away";
-}
+// The spec's four statuses (Statuses table), computed server-side by
+// buddyStatus and carried on every ChatMember/PresenceRow already — never
+// recomputed here. "live" reads as "listening", matching the AIM mapping.
+const STATUS_WORD: Record<BuddyStatus, string> = {
+  live: "listening",
+  idle: "idle",
+  deaf: "deaf",
+  offline: "offline",
+};
 
 function renderWhoSection(room: string, members: ChatMember[]): string {
   const lines = members.map((m) => {
     const cwd = m.cwd ? `  ${m.cwd}` : "";
     const pane = m.pane ? `  [${m.pane}]` : "";
-    return `  ${m.handle}  ${memberStatus(m)}${cwd}${pane}`;
+    const status = STATUS_WORD[m.status ?? "idle"];
+    return `  ${m.handle}  ${status}${cwd}${pane}`;
   });
   return [`#${room}`, ...(lines.length > 0 ? lines : ["  (no members)"])].join("\n");
+}
+
+// ─── the buddy list ─────────────────────────────────────────────────────────
+
+function buddyDeets(b: PresenceRow): string {
+  return [b.repo, b.branch, b.pane ? `pane ${b.pane}` : undefined].filter((s): s is string => Boolean(s)).join(" · ");
+}
+
+/** The status word plus the staleness detail the Statuses table's condition names for it — armed-but-silent is distinguished from an unarmed stale row, since they read as the same status but different causes. */
+function buddyStatusWord(b: PresenceRow & { status: BuddyStatus }): string {
+  switch (b.status) {
+    case "live":
+      return "listening";
+    case "idle":
+      return `idle ${relativeAgo(b.lastSeenAt)}`;
+    case "deaf":
+      return b.armedAt !== undefined
+        ? `deaf ${relativeAgo(b.tailSeenAt ?? b.armedAt)} — armed but silent`
+        : `deaf ${relativeAgo(b.lastSeenAt)}`;
+    case "offline":
+      return "offline";
+  }
+}
+
+// Statuses-table order (offline, deaf, live, idle) — the same most-stale-first
+// sequence buddyStatus itself is evaluated in, reused here as the section
+// order rather than inventing a second ranking of the same four names.
+const BUDDY_SECTIONS: BuddyStatus[] = ["offline", "deaf", "live", "idle"];
+
+function renderBuddies(buddies: Array<PresenceRow & { status: BuddyStatus }>): string {
+  if (buddies.length === 0) return "(nobody signed in)";
+  const lines: string[] = [];
+  for (const status of BUDDY_SECTIONS) {
+    const rows = buddies.filter((b) => b.status === status);
+    if (rows.length === 0) continue;
+    if (status === "offline") {
+      const entries = rows.map((b) => `${b.handle} (${relativeAgo(b.signedOutAt ?? b.lastSeenAt)} ago)`).join(", ");
+      lines.push(`  offline (last 24h): ${entries}`);
+      continue;
+    }
+    const bullet = status === "idle" ? "○" : "●"; // filled = a tail is armed (live, or deaf-while-armed)
+    for (const b of rows) {
+      const deets = buddyDeets(b);
+      const parts = [`${bullet} ${b.handle}`];
+      if (deets) parts.push(deets);
+      parts.push(buddyStatusWord(b));
+      if (b.statusText) parts.push(b.statusText);
+      lines.push(parts.join("   "));
+    }
+  }
+  return lines.join("\n");
 }
 
 // ─── verbs ────────────────────────────────────────────────────────────────────
@@ -603,35 +676,34 @@ async function runRooms(args: string[]): Promise<void> {
   console.log(renderRooms(data.rooms));
 }
 
+/** Bare `who` (no room) aliases `buddies` — the roster, not this handle's own room memberships (superseded by presence: "who's around" is a fleet question, not a per-room one). `who <room>` is unchanged, now presence-joined. */
 async function runWho(args: string[]): Promise<void> {
   const room = positional(args);
-  if (room) requireValidName("room", room);
-
-  let rooms: string[];
-  if (room) {
-    rooms = [room];
-  } else {
-    const handle = resolveHandle(args);
-    requireValidName("handle", handle);
-    const res = await chatRooms({ handle });
-    rooms = unwrap(res, "who").rooms.map((r) => r.room);
+  if (!room) {
+    await runBuddies(args);
+    return;
   }
+  requireValidName("room", room);
 
-  const sections: { room: string; members: ChatMember[] }[] = [];
-  for (const r of rooms) {
-    const res = await chatWho({ room: r });
-    sections.push({ room: r, members: unwrap(res, `who (#${r})`).members });
-  }
+  const res = await chatWho({ room });
+  const members = unwrap(res, `who (#${room})`).members;
 
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ ok: true, rooms: sections }));
+    console.log(JSON.stringify({ ok: true, room, members }));
     return;
   }
-  if (sections.length === 0) {
-    console.log("(not a member of any room)");
+  console.log(renderWhoSection(room, members));
+}
+
+async function runBuddies(args: string[]): Promise<void> {
+  const res = await chatBuddies();
+  const data = unwrap(res, "buddies");
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, buddies: data.buddies }));
     return;
   }
-  console.log(sections.map((s) => renderWhoSection(s.room, s.members)).join("\n\n"));
+  console.log(renderBuddies(data.buddies));
 }
 
 async function runMark(args: string[]): Promise<void> {
@@ -646,6 +718,33 @@ async function runMark(args: string[]): Promise<void> {
 
   if (args.includes("--json")) console.log(JSON.stringify({ ok: true }));
   // else: advance the cursor without printing
+}
+
+/**
+ * Find-or-create the DM room and post — the recipient travels in `mentions`
+ * (never prepended to the body), matching join+post's own body-splice guard:
+ * the transcript reads exactly as typed and the desk still notifies when the
+ * recipient is the human.
+ */
+async function runDm(args: string[]): Promise<void> {
+  const rest = positionals(args);
+  const to = rest[0];
+  if (!to) fail("usage: rt chat dm <handle> <text>");
+  requireValidName("handle", to);
+  const body = rest.slice(1).join(" ");
+  if (!body) fail("usage: rt chat dm <handle> <text>");
+
+  const from = resolveHandle(args);
+  requireValidName("handle", from);
+
+  const res = await chatDm({ from, to, body, sessionId: currentSessionId(args) });
+  const data = unwrap(res, "dm");
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, ...data }));
+    return;
+  }
+  // prints nothing on success — Global Constraint, same as post
 }
 
 // ─── sign-in / sign-out (presence) ───────────────────────────────────────────
@@ -725,15 +824,22 @@ async function runSignIn(args: string[]): Promise<void> {
  * local session (file corrupt or already gone) — a guess, but a safe one:
  * it is a no-op unless a live tail happens to hold that exact handle's
  * pidfile.
+ *
+ * A missing or malformed session id degrades to a silent no-op under
+ * --quiet, same as the daemon-failure path below: this is the SessionEnd
+ * hook's command, and it must never exit non-zero on a shutdown.
  */
 async function runSignOut(args: string[]): Promise<void> {
   const quiet = args.includes("--quiet");
   const sessionId = currentSessionId(args);
   if (!sessionId) {
-    if (quiet) return; // best-effort — the SessionEnd hook must never fail a session shutdown
+    if (quiet) return;
     fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
   }
-  requireValidSessionId(sessionId);
+  if (!isValidSessionId(sessionId)) {
+    if (quiet) return;
+    fail(`invalid session id "${sessionId}" — must match ^[A-Za-z0-9._-]+$`);
+  }
 
   const session = readChatSession(sessionId);
   const res = await chatSignOut({ sessionId });
@@ -746,9 +852,119 @@ async function runSignOut(args: string[]): Promise<void> {
   }
 
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ ok: true }));
+    if (quiet) return;
+    const payload: Record<string, unknown> = { ok: true };
+    if (!res.ok) payload.daemonError = res.error ?? "sign-out failed";
+    console.log(JSON.stringify(payload));
   } else if (!quiet) {
     console.log(session ? `✓ signed out (${session.handle})` : "✓ signed out");
+  }
+}
+
+/**
+ * away/back and pulse are session-keyed, not handle-keyed: they act on
+ * whichever presence row this exact session owns, so a reclaimed session
+ * refuses rather than silently touching a handle it no longer holds.
+ */
+async function runAway(args: string[]): Promise<void> {
+  const text = positionals(args).join(" ");
+  if (!text) fail("usage: rt chat away <text>");
+
+  const sessionId = currentSessionId(args);
+  if (!sessionId) fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
+
+  const res = await chatAway({ sessionId, text });
+  unwrap(res, "away");
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true }));
+    return;
+  }
+  console.log(`✓ away: ${text}`);
+}
+
+async function runBack(args: string[]): Promise<void> {
+  const sessionId = currentSessionId(args);
+  if (!sessionId) fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
+
+  const res = await chatBack({ sessionId });
+  unwrap(res, "back");
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true }));
+    return;
+  }
+  console.log("✓ back");
+}
+
+/** Re-derive `branch`/`repo` only when the cwd changed since the last pulse, or the last read is over a minute old — the git-spawning half of deriving deets, gated on the session file's own cache so most prompts cost one IPC round trip and nothing else. */
+const BRANCH_RECHECK_MS = 60_000;
+
+function shouldRereadBranch(session: ReturnType<typeof readChatSession>, cwd: string | undefined): boolean {
+  if (!session) return true;
+  if (session.lastCwd !== cwd) return true;
+  if (session.lastBranchReadAt === undefined) return true;
+  return Date.now() - session.lastBranchReadAt > BRANCH_RECHECK_MS;
+}
+
+/**
+ * Hook-facing (`UserPromptSubmit`) and hard-bounded: the daemon call carries
+ * `timeoutMs: 800` (the wrappers' 10s default would blow the hook's own
+ * budget), and every failure below — timeout, daemon down, a refusal other
+ * than reclaim — exits 0 with NOTHING printed. A hook that hangs or errors on
+ * every prompt is worse than no hook at all. The one exception is a
+ * reclaimed session: that notice is the whole point of pulsing, so it prints
+ * (or, under --json, reports `{ reclaimed: true }`) and deletes the now-dead
+ * session file, same as the tail's own reclaim exit.
+ */
+async function runPulse(args: string[]): Promise<void> {
+  try {
+    const json = args.includes("--json");
+    const sessionId = currentSessionId(args);
+    if (!sessionId || !isValidSessionId(sessionId)) return;
+
+    const session = readChatSession(sessionId);
+    const cwd = safeCwd();
+    const pane = process.env.HERDR_PANE_ID;
+
+    let repo: string | undefined;
+    let branch: string | undefined;
+    let branchReadNow: number | undefined;
+    if (shouldRereadBranch(session, cwd)) {
+      const root = cwd ? getRepoRoot(cwd) : null;
+      if (root) {
+        const identity = getRepoIdentityForRoot(root);
+        if (identity) repo = repoLabel(identity.identity);
+        branch = getCurrentBranch() ?? undefined;
+      }
+      branchReadNow = Date.now();
+    }
+
+    const res = await chatPulse({ sessionId, cwd, repo, branch, pane }, { timeoutMs: 800 });
+
+    if (!res.ok || res.data === undefined) {
+      if (res.error?.includes("handle reclaimed")) {
+        deleteChatSession(sessionId);
+        console.log(json ? JSON.stringify({ reclaimed: true }) : "your handle was reclaimed while you were away — sign in again");
+      }
+      return; // every other failure: silent, exit 0 — never fail the hook
+    }
+
+    if (session) {
+      writeChatSession({
+        ...session,
+        lastCwd: cwd,
+        lastBranchReadAt: branchReadNow ?? session.lastBranchReadAt,
+      });
+    }
+
+    if (json) {
+      console.log(JSON.stringify({ ok: true, unread: res.data.unread, status: res.data.status }));
+    }
+    // plain mode prints nothing — the hook, not this command, decides
+    // whether to inject context from the unread summary and status.
+  } catch {
+    // pulse must never fail the hook, for any reason
   }
 }
 
@@ -892,6 +1108,13 @@ export async function chatTail(args: string[]): Promise<void> {
   const handle = resolveHandle(args);
   requireValidName("handle", handle);
 
+  // Threaded into the touch loop's chat:touch payload only — a signed-in
+  // session id lets the daemon detect a reclaim; carrying it here as well
+  // would make a failed arm during a genuine reclaim race retry forever
+  // under callOrBackoff's generic daemon-unreachable path instead of exiting
+  // cleanly, so arm stays handle-only as shipped.
+  const sessionId = currentSessionId(args);
+
   const roomFilter = flagValue(args, "--room");
   if (roomFilter) requireValidName("room", roomFilter);
 
@@ -999,7 +1222,20 @@ export async function chatTail(args: string[]): Promise<void> {
       ),
     );
     cursor = round.cursor;
-    await chatTouch({ handle }, opts).catch(() => undefined);
+    const touched = await chatTouch({ handle, sessionId }, opts).catch(
+      (err) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }) as const,
+    );
+    // A reclaimed handle is the one touch refusal the tail must not swallow:
+    // the pidfile it holds is now stale (someone else owns this handle), so
+    // there is nothing left to listen for. Every other touch error — a
+    // daemon blip, an unsigned handle with no presence row — stays ignored,
+    // same as shipped.
+    if (!touched.ok && touched.error?.includes("handle reclaimed")) {
+      console.log("handle reclaimed — sign in again");
+      if (sessionId) deleteChatSession(sessionId);
+      cleanup();
+      process.exit(0);
+    }
     for (const e of round.events) {
       const msgId = e.payload?.id;
       const room = e.payload?.room;
@@ -1012,7 +1248,8 @@ export async function chatTail(args: string[]): Promise<void> {
 
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
-const USAGE = "usage: rt chat <join|leave|post|read|rooms|who|mark|tail|sign-in|sign-out> ...";
+const USAGE =
+  "usage: rt chat <join|leave|post|read|rooms|who|mark|tail|sign-in|sign-out|away|back|buddies|dm|pulse> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   join: runJoin,
@@ -1025,6 +1262,11 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   tail: chatTail,
   "sign-in": runSignIn,
   "sign-out": runSignOut,
+  away: runAway,
+  back: runBack,
+  buddies: runBuddies,
+  dm: runDm,
+  pulse: runPulse,
 };
 
 export async function chat(args: string[]): Promise<void> {

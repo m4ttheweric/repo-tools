@@ -19,6 +19,8 @@ export interface RtResponse<T = unknown> {
 export interface RtClientOptions {
   sockPath?: string;
   wsUrl?: string;
+  /** Per-call override of rtCommand's own default (15s); chat's pulse wrapper needs an 800ms hook budget. */
+  timeoutMs?: number;
 }
 
 // Duplicates the ~/.mattstack/rt layout: rt-client has no dependency on rt's
