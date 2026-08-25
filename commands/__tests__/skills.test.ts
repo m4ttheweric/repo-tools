@@ -443,7 +443,9 @@ describe("skillsCompile", () => {
 
     expect(exitCode).toBe(1);
     expect(errors.join("\n")).toContain("../../../elsewhere/SKILL.md");
-    expect(errors.join("\n")).toContain("resolves outside the pack root");
+    // The engine's own file and line, not a coordinate in an artifact this run
+    // refuses to write.
+    expect(errors.join("\n")).toContain("at skills/pipeline/watch-ci/SKILL.md:13 resolves outside the pack root");
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
   });
 

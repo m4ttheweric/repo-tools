@@ -73,6 +73,27 @@ function bodyPaths(body: string): BodyPath[] {
   return out;
 }
 
+const SEAM_RE = /^<!-- part: .*\bpath=(\S+) lines=(\d+)-\d+ -->$/;
+
+/**
+ * A compiled body is assembled from several files, so its own line numbers name
+ * nothing on disk -- and an erroring compile writes no artifact to count in
+ * anyway. Every section is introduced by a seam carrying its source path and
+ * the line its body starts on, so the nearest seam above a line maps it back.
+ */
+function sourceCoordinate(lines: string[], line: number): string | null {
+  for (let i = line - 2; i >= 0; i--) {
+    const seam = lines[i]!.trim().match(SEAM_RE);
+    if (!seam) continue;
+    const seamLine = i + 1;
+    // A seam pushed as its own section has a blank line under it; one substituted
+    // in place by a placeholder sits directly above its body.
+    const firstBodyLine = seamLine + (lines[seamLine]?.trim() === "" ? 2 : 1);
+    return `${seam[1]}:${Number(seam[2]) + (line - firstBodyLine)}`;
+  }
+  return null;
+}
+
 function escapesPackRoot(layout: CompiledLayout, relPath: string): boolean {
   const rel = relativePath(layout.packRoot, resolvePath(layout.compiledDir, relPath));
   return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
@@ -391,13 +412,13 @@ function lintReferences(
 
   const emittedPaths = new Set(files.map((f) => f.path));
   const seenPaths = new Set<string>();
-  // Paths are counted in the unstripped body so the reported line is the one the
-  // compiled artifact carries; only names are lint material in seam comments.
+  // Paths are scanned in the unstripped body because the seam comments are what
+  // map an offending line back to its source file; only names are lint material.
+  const bodyLines = body.split("\n");
   for (const { text, relPath, line, kind } of bodyPaths(body)) {
     if (opts.layout && escapesPackRoot(opts.layout, relPath)) {
-      throw new Error(
-        `verb "${opts.verbName}": "${text}" at compiled body line ${line} resolves outside the pack root`,
-      );
+      const at = sourceCoordinate(bodyLines, line) ?? `compiled body line ${line}`;
+      throw new Error(`verb "${opts.verbName}": "${text}" at ${at} resolves outside the pack root`);
     }
     if (seenPaths.has(text)) continue;
     seenPaths.add(text);

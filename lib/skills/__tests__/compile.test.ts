@@ -532,16 +532,26 @@ describe("compileSkill with placeholders", () => {
     expect(r.warnings.filter((w) => w.includes("not an emitted file"))).toEqual([]);
   });
 
-  test("a relative read escaping the pack root is a compile error naming verb, path and line", () => {
+  test("a relative read escaping the pack root is a compile error naming verb, path and source line", () => {
     const bad = { ...slotless, body: "first line\nread `../../../attachments/self-review/SKILL.md` before starting" };
     expect(() =>
       compileSkill(verb, bad, {}, new Set(), {
         packRoot: "/pack",
         compiledDir: "/pack/attachments/stage-plan",
       }),
-    // Line 6 of the compiled body: the header comment, the step seam, and the
-    // blank line between each precede the step's own first line.
-    ).toThrow('verb "watch-ci": "../../../attachments/self-review/SKILL.md" at compiled body line 6 resolves outside the pack root');
+    // The step body starts at line 8 of its own SKILL.md, and the offending read
+    // is its second line.
+    ).toThrow('verb "watch-ci": "../../../attachments/self-review/SKILL.md" at skills/pipeline/watch-ci/SKILL.md:9 resolves outside the pack root');
+  });
+
+  test("an escaping read inside a fill is reported against the fill's own file", () => {
+    const escapingFill: AttachmentSource = { ...domainFill, body: "read `../../../outside.md` first" };
+    expect(() =>
+      compileSkill(verb, placeholderStep, { domain: escapingFill }, new Set(), {
+        packRoot: "/pack",
+        compiledDir: "/pack/attachments/stage-watch-ci",
+      }),
+    ).toThrow('"../../../outside.md" at attachments/watch-ci-domain/SKILL.md:8 resolves outside the pack root');
   });
 
   test("an escaping ${CLAUDE_SKILL_DIR} path is the same compile error", () => {
