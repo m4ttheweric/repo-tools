@@ -48,6 +48,14 @@ function buildIntoTempDir(): string {
   );
   if (bundle.exitCode !== 0) throw new Error(`bun build failed:\n${bundle.stderr.toString()}`);
 
+  // Mirrors the package build's second entry: the browser-safe identity
+  // codec bundled separately (target browser) for the ./identity subpath.
+  const codec = Bun.spawnSync(
+    ["bun", "build", "src/settings/identity-codec.ts", "--outfile", join(outDir, "settings", "identity-codec.js"), "--target", "browser", "--format", "esm"],
+    { cwd: pkgDir, stdout: "pipe", stderr: "pipe" },
+  );
+  if (codec.exitCode !== 0) throw new Error(`bun build (identity codec) failed:\n${codec.stderr.toString()}`);
+
   const types = Bun.spawnSync(
     ["bunx", "tsc", "-p", "tsconfig.json", "--outDir", outDir],
     { cwd: pkgDir, stdout: "pipe", stderr: "pipe" },
