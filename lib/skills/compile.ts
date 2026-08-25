@@ -18,6 +18,9 @@ export const HEADER_COMMENT =
 
 const SKILL_DIR_PATH_RE = /\$\{CLAUDE_SKILL_DIR\}\/[^\s"'`)]+/g;
 
+/** The compiled `work` derives the pack root from layout, so this form is a directory reference, never a file. */
+const PACK_ROOT_REL = "../..";
+
 /** rt's own namespace, always linted even when no pack is installed. */
 const OWN_NAMESPACE = "mattstack";
 
@@ -301,6 +304,9 @@ function lintReferences(
     seenPaths.add(full);
     if (exemptPrefixes.some((p) => full.startsWith(p))) continue;
     const relPath = full.slice(`${CLAUDE_SKILL_DIR_TOKEN}/`.length);
+    // Every compiled verb sits two levels under the pack root (skills/<name>,
+    // attachments/<name>), so this token names that root, not a file in it.
+    if (relPath === PACK_ROOT_REL) continue;
     if (!emittedPaths.has(relPath)) {
       warnings.push(`body references ${full} which is not an emitted file`);
     }

@@ -501,6 +501,11 @@ describe("compileSkill with placeholders", () => {
     expect(r.warnings.filter((w) => w.includes("not an emitted file"))).toEqual([]);
   });
 
+  test("the pack-root token is not lint-warned as a missing file", () => {
+    const r = compileSkill(verb, { ...slotless, body: 'PACK_DIRS="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd -P)"' }, {}, new Set(), {});
+    expect(r.warnings).toEqual([]);
+  });
+
   test("a body with no placeholders still appends fills (backward compatible)", () => {
     const md = skillMd(compileSkill(verb, step, { domain: domainFill, forge: forgeFill }, new Set(), {}));
     expect(md).toContain("part: slot:domain");
