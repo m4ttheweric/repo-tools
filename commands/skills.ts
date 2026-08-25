@@ -475,8 +475,10 @@ export function otherSideDir(packDir: string, name: string, isPublic: boolean): 
   return join(packDir, isPublic ? "attachments" : "skills", name);
 }
 
+type GitFacts = { sha: string; dirty: 0 | 1 };
+
 /** Feeds run-start.flags' --mattstack-sha/--mattstack-dirty; a non-git or unreadable mattstack dir degrades to empty/clean rather than failing resolution. */
-function gitFacts(dir: string): { sha: string; dirty: 0 | 1 } {
+function gitFacts(dir: string): GitFacts {
   try {
     const sha = execFileSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { stdio: "pipe" }).toString().trim();
     const status = execFileSync("git", ["-C", dir, "status", "--porcelain"], { stdio: "pipe" }).toString();
@@ -484,6 +486,24 @@ function gitFacts(dir: string): { sha: string; dirty: 0 | 1 } {
   } catch {
     return { sha: "", dirty: 0 };
   }
+}
+
+/**
+ * Only {{run-start.flags}} carries these facts, and only a pipeline body places
+ * it, so a pack with no declared pipelines pays nothing for the two git
+ * subprocesses. An installed plugin cache is a plain copy with no .git; its
+ * version is the only provenance it carries, and it is what the run DB records
+ * in that case.
+ */
+export function mattstackProvenance(
+  pipelines: Record<string, string[]>,
+  plugin: { dir: string; version: string } | undefined,
+  facts: (dir: string) => GitFacts = gitFacts,
+): GitFacts {
+  if (!plugin) return { sha: "", dirty: 0 };
+  if (Object.keys(pipelines).length === 0) return { sha: plugin.version, dirty: 0 };
+  const { sha, dirty } = facts(plugin.dir);
+  return { sha: sha || plugin.version, dirty };
 }
 
 async function resolve(flags: Flags): Promise<Resolved> {
@@ -522,12 +542,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
   // The manifest's parent directory name is the registry repo key `run-start
   // --repo` expects -- the same key `~/.mattstack/runs/<repo>/` is named by.
   const repoKey = manifestPath ? basename(dirname(manifestPath)) : "";
-  const mattstackPlugin = pluginRoots.byName.mattstack;
-  const facts = mattstackPlugin ? gitFacts(mattstackPlugin.dir) : { sha: "", dirty: 0 as const };
-  // An installed plugin cache is a plain copy with no .git; its version is the only
-  // provenance it carries, and it is what the run DB records in that case.
-  const mattstackSha = facts.sha || (mattstackPlugin ? mattstackPlugin.version : "");
-  const mattstackDirty = facts.dirty;
+  const { sha: mattstackSha, dirty: mattstackDirty } = mattstackProvenance(pipelines, pluginRoots.byName.mattstack);
   const stageEntries = buildStageEntries({ pipelines, pluginRoots });
 
   return {

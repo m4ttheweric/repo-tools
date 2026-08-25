@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { skillsCheck, skillsCompile, skillsComposition, skillsPacks } from "../skills.ts";
+import { mattstackProvenance, skillsCheck, skillsCompile, skillsComposition, skillsPacks } from "../skills.ts";
 import { compileSkill } from "../../lib/skills/compile.ts";
 import { invocableRoster, loadAttachment, loadStepSource } from "../../lib/skills/sources.ts";
 import type { PluginRoots } from "../../lib/skills/sources.ts";
@@ -581,6 +581,37 @@ function makePipelineFixtures(): { mattstackDir: string; packDir: string; manife
 
   return { mattstackDir, packDir, manifestPath };
 }
+
+describe("mattstackProvenance", () => {
+  const plugin = { dir: "/plugins/mattstack", version: "1.2.0" };
+
+  test("no declared pipelines: no git subprocess, the plugin version stands in", () => {
+    let calls = 0;
+    const facts = () => {
+      calls++;
+      return { sha: "abc1234", dirty: 1 as const };
+    };
+
+    expect(mattstackProvenance({}, plugin, facts)).toEqual({ sha: "1.2.0", dirty: 0 });
+    expect(calls).toBe(0);
+  });
+
+  test("declared pipelines: the git facts are what get baked", () => {
+    let calls = 0;
+    const facts = () => {
+      calls++;
+      return { sha: "abc1234", dirty: 1 as const };
+    };
+
+    expect(mattstackProvenance({ feature: ["mattstack:stage-plan"] }, plugin, facts)).toEqual({ sha: "abc1234", dirty: 1 });
+    expect(calls).toBe(1);
+  });
+
+  test("a non-git plugin dir degrades to its version, not an empty sha", () => {
+    const facts = () => ({ sha: "", dirty: 0 as const });
+    expect(mattstackProvenance({ feature: [] }, plugin, facts)).toEqual({ sha: "1.2.0", dirty: 0 });
+  });
+});
 
 describe("skillsCompile/skillsCheck --verb scoping across roster verbs and pipeline stages", () => {
   test("--verb work --preview emits exactly the orchestrator's body, not every stage's too", async () => {
