@@ -47,6 +47,7 @@ import { loadRepoIndex } from "./daemon/repo-index.ts";
 import { primeTeamTrackingIdentityMap } from "./repo-tracking.ts";
 import { createHooksGuard } from "./daemon/hooks-guard.ts";
 import { runBootIdentityMigration } from "./daemon/boot-migrate.ts";
+import { runCapture } from "./subprocess.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, broadcast } from "./daemon/api-server.ts";
@@ -166,6 +167,23 @@ const portCacheRef = { ports: [] as PortEntry[], updatedAt: 0 };
 const refreshStatusRef = { lastRefreshAt: 0 };
 const startedAt = Date.now();
 
+// Injected at compile time via `bun build --define RT_VERSION='"v1.x.x"'` (see cli.ts) —
+// undefined when running from source, which is also how daemonFlavor() tells dev from prod.
+declare const RT_VERSION: string | undefined;
+// Only a dev daemon runs from a real checkout, so only dev can shell out for the commit
+// it's serving from; a prod binary has no working tree to ask.
+const sourceRev = daemonFlavor() === "dev"
+  ? await runCapture(["git", "rev-parse", "--short", "HEAD"], { cwd: import.meta.dir, timeoutMs: 5_000 })
+      .then((r) => r.stdout.trim() || null)
+      .catch(() => null)
+  : null;
+const identity = {
+  flavor: daemonFlavor(),
+  version: typeof RT_VERSION !== "undefined" ? RT_VERSION : "source",
+  sourceRev,
+  startedAt,
+} as const;
+
 const hooksGuard = createHooksGuard(log);
 
 // Pane-communication events bus (RT-44): SQLite journal + in-memory waiters.
@@ -278,6 +296,7 @@ const handlerCtx: HandlerContext = {
   cache, refreshCache,
   log,
   startedAt,
+  identity,
   portCacheRef,
   watchedConfigs: hooksGuard.watchedConfigs,
   repoIndex: loadRepoIndex,

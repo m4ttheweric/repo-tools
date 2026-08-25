@@ -1,8 +1,8 @@
 /**
  * Daemon-status + introspection IPC handlers.
  *
- *   ping                  — liveness + uptime + pid
- *   status                — basic counters (cache, ports, watched repos)
+ *   ping                  — liveness + uptime + pid + flavor/version identity
+ *   status                — basic counters (cache, ports, watched repos) + identity
  *   tray:status           — richer payload for the menu-bar app
  *   tcc:check             — probe read access to every registered repo
  *   repos                 — repo index + worktrees + watched-config paths
@@ -21,7 +21,7 @@ import { getFreshnessSnapshot } from "../freshness.ts";
 export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
   return {
     "ping": async () => {
-      return { ok: true, uptime: Date.now() - ctx.startedAt, pid: process.pid };
+      return { ok: true, uptime: Date.now() - ctx.startedAt, pid: process.pid, ...ctx.identity };
     },
 
     "status": async () => {
@@ -35,6 +35,7 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
           portsCached: ctx.portCacheRef.ports.length,
           portCacheAge: ctx.portCacheRef.updatedAt ? Date.now() - ctx.portCacheRef.updatedAt : null,
           freshness: getFreshnessSnapshot(),
+          identity: ctx.identity,
         },
       };
     },

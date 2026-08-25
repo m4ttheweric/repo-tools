@@ -53,6 +53,8 @@ export interface HandlerContext {
   log:            Logger;
   /** Unix-ms timestamp of daemon startup; read once by status handlers. */
   startedAt:      number;
+  /** Flavor/version/sourceRev, computed once at boot (sourceRev needs a subprocess in dev flavor) — never recomputed per call. */
+  identity:       { flavor: "dev" | "prod"; version: string; sourceRev: string | null; startedAt: number };
   /**
    * Live ref to the port scan cache. Do not destructure — handlers read
    * ctx.portCacheRef.ports / .updatedAt each call to see fresh values.
