@@ -31,6 +31,7 @@ describe("compile-native end to end", () => {
       expect(md).not.toContain("{{");
     }
     expect(work).toContain("<!-- part: step source=mattstack:work");
+    expect(work).toMatch(/--mattstack-sha \S+ --mattstack-dirty [01]/);
     for (const [name, body] of stages) {
       expect(body).toContain(`<!-- part: step source=mattstack:${name}`);
     }

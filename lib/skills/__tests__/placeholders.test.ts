@@ -132,6 +132,12 @@ describe("substitute", () => {
     expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-sha abc1234 --mattstack-dirty 0");
   });
 
+  test("run-start.flags omits --mattstack-sha when no sha is known", () => {
+    const body = substitute("{{run-start.flags}}", ctx({ mattstackSha: "" }), "work").body;
+    const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
+    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-dirty 0");
+  });
+
   test("stage.dir and stage.fields need a stage context", () => {
     const stage = ctx({ stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan",
       stageMeta: { stage: "plan", consumes: ["ticket"], produces: ["approach", "evidence-plan"] } });
