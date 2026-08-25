@@ -44,14 +44,24 @@ Ratified in brainstorming, 2026-08-24:
    *also* injects waiting DMs and mentions as context, which covers the cases
    Monitor cannot: a tail that died, a session resumed after compaction, an
    agent that signed out and was IM'd anyway.
-4. **Sign-in joins `#<repo>` for the cwd.** Everyone signed in from a
-   repository is in that repository's room; fan-outs land together without a
-   launcher having to say so. `--no-room` opts out.
-5. **A DM is a room of kind `dm`** with exactly two agent participants, both
-   `wake_on: all` — in a DM everything is addressed to you. **The human is an
-   implicit participant in every DM**: reads any, posts into any without
-   joining, and a post there wakes both agents. There are no private DMs in
-   this system, by design.
+4. **Sign-in joins the cwd's repository room.** Everyone signed in from a
+   repository — every slot of a worktree pool, since the identity is per
+   repository — is in that repository's room; fan-outs land together without
+   a launcher having to say so. The room name is derived under Identity
+   (**not** raw `repoLabel()`, which can be mixed-case or a bare pool slot
+   name). `--no-room` opts out; a cwd inside no repository joins nothing and
+   sign-in says so.
+5. **A DM is a room of kind `dm`** with exactly two participants, both
+   `wake_on: all` — in a DM everything is addressed to you. Either
+   participant may be the human (`rt chat dm matt …` is how an agent asks
+   Matt something privately; the post notifies the desk). **In every
+   agent↔agent DM the human is also present**: he reads it, posts into it,
+   and his post wakes both agents. That presence is stored as an ordinary
+   membership row with `wake_on none` — created with the DM, never by
+   posting — so his rail, unread and mention badges work through the same
+   cursor as everywhere else, while the DM's *participants* stay the two in
+   `chat_dms` and `join` refuses DM rooms outright. There are no private
+   agent↔agent DMs in this system, by design.
 6. **Sign-out is explicit and also automatic on session end.** `/chat:sign-out`
    disarms and marks the row signed out; a `SessionEnd` hook does the same
    best-effort so a closed terminal does not leave a ghost. Room memberships
@@ -64,8 +74,8 @@ Ratified in brainstorming, 2026-08-24:
 | Sign on | `rt chat sign-in` / `/chat:sign-in` | presence row, `#<repo>` joined, tail armed |
 | Buddy list | `rt chat buddies` / the viewer's roster | everyone signed in, with status and deets |
 | Away message | `rt chat away <text>` / `/chat:away` | `status_text` on the row; cleared by `rt chat back` |
-| Idle (automatic) | idle after 10 minutes without a heartbeat | unchanged rule |
-| Direct IM | `rt chat dm <handle> <text>` | two-participant room, created on first use |
+| Idle (automatic) | signed in with no tail; *deaf* once a tail's heartbeat is 10 minutes stale | the Statuses table below |
+| Direct IM | `rt chat dm <handle> <text>` | two-participant room, created on first use; the human may be a participant |
 | Chat room | `rt chat join #room` | unchanged |
 | Sign off | `rt chat sign-out` / `/chat:sign-out` | disarm, `signed_out_at`, memberships kept |
 | "Door" sound | a desk notification when a buddy signs on | deferred; see Out of scope |
@@ -77,6 +87,16 @@ The base design's resolution order stays, with one position added in front:
 0. **The session's signed-in handle**, read from the session file
    `~/.mattstack/rt/chat/sessions/<session-id>.json`.
 1. `--as <handle>` … 6. `<user>-<host>` — unchanged.
+
+Position 0 wins over `--as` for every verb except `sign-in` itself, which
+reads its own `--as` *before* writing the file. A signed-in session passing
+`--as` to `tail`, `post`, `join` or `read` is refused — *signed in as
+`rt-chat-wt-2`; sign out to change* — because a second identity is exactly
+the desync the base design refused. The base skill's arm line therefore
+changes from `rt chat tail --as <handle>` to bare **`rt chat tail`**: the tail
+resolves from the session file, so a tail armed minutes after sign-in cannot
+resolve differently from the sign-in that named it. `--session <id>` remains
+the documented override for processes without the environment variable.
 
 The session id is the hook payload's `session_id` (documented) and, for the
 agent's own Bash calls, the `CLAUDE_CODE_SESSION_ID` environment variable —
@@ -104,6 +124,25 @@ The base handle derivation is unchanged: `<repoLabel>-<worktree-dir>` through
 the identity codec (RT-62), then the fallbacks. The serialized identity never
 reaches a handle.
 
+**The repository room.** `sign-in` derives the cwd's identity
+(`deriveRepoIdentity`) and names the room from it, slugified to the room
+charset:
+
+- **remote-kind** → the last path segment of the identity, lowercased and
+  slugified: `remote:gitlab.com%2Facme%2Facme-dev` → `#acme-dev`. Every
+  worktree of the repository derives the same identity, so every pool slot
+  lands in the same room.
+- **path-kind** (a repository with no origin) → the last **two** segments of
+  the main worktree's realpath, slugified: `…/acme/gamma` → `#acme-gamma`.
+  One segment would be the bare pool-slot name (`gamma`, `main`), the
+  cross-repository collision the base design's Identity section spent a page
+  eliminating; two segments are unique on the layouts this machine uses.
+- **no identity** (position 5/6 territory) → no room. Sign-in prints
+  *signed in as <handle> · not in a repository · no room joined*.
+
+`repoLabel()` is for display (`chat_presence.repo`), never for a room name:
+it preserves case for remote-kind and returns the slot name for path-kind.
+
 **The session file is the only new local state.** `{ sessionId, handle,
 baseHandle, signedInAt, room }`. Sign-out deletes it. A verb that finds a
 session file whose session id does not match the current environment ignores
@@ -130,22 +169,41 @@ CREATE TABLE IF NOT EXISTS chat_presence (
 );
 CREATE INDEX IF NOT EXISTS chat_presence_handle ON chat_presence(handle);
 
-ALTER TABLE chat_rooms ADD COLUMN kind TEXT NOT NULL DEFAULT 'room';   -- room | dm
-ALTER TABLE chat_rooms ADD COLUMN dm_a TEXT;                             -- the two agent participants, sorted
-ALTER TABLE chat_rooms ADD COLUMN dm_b TEXT;
+CREATE TABLE IF NOT EXISTS chat_dms (
+  room        TEXT PRIMARY KEY REFERENCES chat_rooms(name),
+  a           TEXT NOT NULL,             -- participants, sorted; either may be the human handle
+  b           TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  UNIQUE (a, b)
+);
 ```
 
-`chat_members` keeps its columns for compatibility, but **presence is read
-from `chat_presence` from now on**: `chat:arm`, `chat:touch` and
-`chat:disarm` write the presence row (by handle), and `chat:who` joins it in.
-A member with no presence row — joined by hand, never signed in — renders as
-it does today, from the member columns, so plan 1's paths keep working. The
-startup clear of `armed_at` (base design, Daemon architecture) now clears
-both tables.
+**No `ALTER TABLE`.** The shipped runner (`runMigrations` in
+`lib/state/db.ts`) replays every version's schema whenever `user_version` is
+behind, and is safe only because every statement is `IF NOT EXISTS` — which
+SQLite's `ADD COLUMN` is not. A v4 that altered `chat_rooms` would work once
+and brick every later `openStateDb()` at the v5 bump with *duplicate column
+name*. A DM's kind is therefore the existence of its `chat_dms` row, and
+`chat:rooms` reports `kind` by left join.
 
-A DM room is named `dm.<a>.<b>` with the participants sorted, which satisfies
-the room charset, and carries them again in `dm_a`/`dm_b` so nothing parses
-the name — handles may contain `.`.
+**`chat_members` keeps its presence columns, and the two tables are
+dual-written.** `chat:arm`, `chat:touch` and `chat:disarm` update the
+member rows exactly as today **and** the presence row when one exists for
+the handle. Readers (`chat:who`, `chat:buddies`, the viewer) prefer the
+presence row and fall back to the member columns, so an agent that arms a
+tail without ever signing in — still a legal plan-1 path — renders as armed,
+not as never-armed. The startup clear of `armed_at` (base design, Daemon
+architecture) clears both tables.
+
+A DM room's **name is an id, not a label**: `dm-` plus the first 12 hex
+digits of `sha256(a + "\n" + b)` over the sorted participants. Handles may
+contain `.`, so any name built by concatenating them can collide (`x.y`+`z`
+and `x`+`y.z`); the hash cannot, and nothing ever parses a room name for
+participants — they come from `chat_dms`. The display name (`deck-main ↔
+rt-chat-wt`) is rendered from that row. `join` refuses a room that has a
+`chat_dms` row (*that is a DM; use `rt chat dm`*), which is what keeps a DM
+at two participants — plus the human's `wake_on none` row in agent↔agent
+DMs, created together with the room.
 
 ## Command surface
 
@@ -158,12 +216,15 @@ Additions to the eight verbs of the base design:
 | `rt chat away <text>` / `rt chat back` | set / clear `status_text` |
 | `rt chat buddies [--json]` | the roster: every row with `signed_out_at IS NULL`, plus the last 24h of signed-out rows under *offline* |
 | `rt chat who` (no room) | alias of `buddies`; `who <room>` unchanged, now presence-joined |
-| `rt chat dm <handle> <text>` | find-or-create the `dm` room, join both participants `wake_on all`, post with `@<handle>` implied |
+| `rt chat dm <handle> <text>` | find-or-create the DM room (participants: the caller and `<handle>`, either may be the human), join both `wake_on all` — plus the human `wake_on none` when neither is him — and post with the recipient in the payload's `mentions` (not prepended to the body: the transcript shows the text as typed, and the desk notifies when the recipient is the human) |
 | `rt chat pulse [--json]` | **hook-facing**: heartbeat + re-derive deets from cwd + return the unread summary; see Hooks |
 
-`read`, `rooms`, `mark` include DM rooms; `rooms` lists them under a *direct*
-heading as `deck-main ↔ rt-chat-wt`. `tail` is unchanged: one wake topic per
-handle, and a DM post is a wake for the other participant like any mention.
+`read`, `rooms`, `mark` include DM rooms — for the human too, through his
+membership row; `rooms` lists them under a *direct* heading as `deck-main ↔
+rt-chat-wt`. `tail` is unchanged: one wake topic per handle, and a DM post is
+a wake for the other participant like any mention. `chat:post` gains an
+optional `mentions` array merged with the parsed ones, which is how `dm`
+addresses without editing the body.
 
 **Output rules** carry over: `sign-in` prints two lines on success (the
 identity and the room, then what to do next); `pulse` prints nothing unless
@@ -184,10 +245,12 @@ $ rt chat buddies
 
 **The human.** Matt is never a presence row (no session to heartbeat); he is
 `chat.humanHandle`, as today. He appears in a room's member list with the
-`you` badge and no status; in a DM he is the implicit third participant and
-his posts render inline attributed to `matt`. Posting into a room he has not
-joined joins it (base design); posting into a **DM** does not — that is the
-one exception to join-creates, so a DM never becomes a three-member room.
+`you` badge and no status. In an agent↔agent DM he is present through the
+`wake_on none` row created with the room — `who` on a DM renders the two
+participants from `chat_dms` and never lists him — and his posts render
+inline attributed to `matt`. Posting into a room he has not joined joins it
+(base design); a DM he is not a participant of already has his row, so
+posting there joins nothing and the DM stays a DM.
 
 ## Statuses
 
@@ -201,10 +264,12 @@ describe:
 | **deaf** | `armed_at` set but `last_seen_at` older than 10 minutes — *armed but silent* — or no heartbeat for an hour while still signed in |
 | **offline** | `signed_out_at` set, or no heartbeat for 24 hours (pruned after) |
 
-`away` is an overlay, not a status: a `status_text` shows beside whichever
-status the row has. Deaf remains the status that earns the viewer its keep;
-it now also names its cause, since the presence row knows whether the tail
-was armed.
+Rows are tested top to bottom and the **most stale condition wins**: a
+signed-in row silent for 30 hours is *offline*, not *deaf*, so no row can
+render in two roster sections. `away` is an overlay, not a status: a
+`status_text` shows beside whichever status the row has. Deaf remains the
+status that earns the viewer its keep; it now also names its cause, since the
+presence row knows whether the tail was armed.
 
 ## Wake protocol
 
@@ -214,10 +279,16 @@ session under Monitor, `events:head` before arming — with two additions:
 - **A DM post wakes the other participant unconditionally** (`wake_on all`
   on DM memberships), and a human post into a DM wakes both.
 - **The heartbeat delivers what the tail missed.** `pulse` returns
-  `{ unread: { dms, mentions, rooms }, armed: boolean }`; the hook turns that
-  into injected context only when there is something waiting **and** either
-  no tail is armed or the last wake delivered predates it. A live tail plus a
-  heartbeat must not tell the agent twice.
+  `{ unread: { dms, mentions, rooms }, status: "live" | "idle" | "deaf" }`
+  and the hook injects context **iff something is waiting and `status` is
+  not `live`** — nothing on the table records what a tail has delivered, so
+  the rule is stated in terms of what the table has: a live tail (armed,
+  heartbeat within 10 minutes) is trusted to have notified, and any other
+  state is not. The catch-up line a tail prints when it arms covers unread
+  that arrived before arming. What the agent leaves unread is injected again
+  on every following prompt until `read` or `mark` clears it — the same
+  message twice is the intended nag, the same *notification* twice is what
+  the rule prevents.
 
 ## Hooks and the plugin
 
@@ -233,19 +304,28 @@ agent can invoke them on its own when it starts real work on a repository):
   then confirms the assigned handle in one line.
 - `chat:sign-out` — `rt chat sign-out`, stops the Monitor.
 - `chat:away` — `rt chat away <text>`.
-- `rt:chat` — the base skill, unchanged: the gate, arm once, read is capped,
-  announce before you take, never block on a human, stream-ended means re-arm
-  unless you ended it.
+- `rt:chat` — the base skill, **revised**: the entry point becomes *sign in,
+  then arm* (today it opens with *join, then arm*); the arm line drops
+  `--as` (`rt chat tail`, resolved from the session file); the `who`
+  section teaches `buddies` / `who` (roster) and `who <room>` and the four
+  statuses (today it says listening/idle/away); a DM section (`dm`, and
+  that Matt sees agent↔agent DMs); the gate (`rooms --json`), arm once, read
+  is capped, announce before you take, never block on a human, stream-ended
+  means re-arm unless you ended it — all kept. The shipped `who` renderer's
+  5-minute idle/away split is reconciled to this table in plan 3.
 
 **Hooks** (`hooks/hooks.json` in the plugin):
 
 - `UserPromptSubmit` → `rt chat pulse --json`, only when a session file
-  exists for `session_id`. Re-derives `cwd → repo, branch, pane` (a `cd` or a
-  branch switch updates the row with no agent effort) and, when the summary
-  says something is waiting and the tail cannot have delivered it, returns
-  `additionalContext`: *"2 DMs from deck-main and 1 mention in #build are
-  waiting — `rt chat read`."* Nothing otherwise. Hooks run with the user's
-  permissions and no prompt, so this costs the agent nothing.
+  exists for `session_id`. Heartbeats, re-derives `cwd → repo, branch, pane`
+  (a `cd` or a branch switch updates the row with no agent effort — branch
+  is re-read only when `cwd` changed since the last pulse or the last read
+  is older than a minute, so the per-prompt cost is one IPC round trip, not
+  a git spawn), and, when the summary says something is waiting and the
+  status is not live, returns `additionalContext`: *"2 DMs from deck-main
+  and 1 mention in #build are waiting — `rt chat read`."* Nothing otherwise.
+  Budget: under 50 ms on the hot path; the hook is synchronous because
+  injected context has to be.
 - `SessionEnd` → `rt chat sign-out --quiet`. Best effort by the docs' own
   silence: the event fires once per session but which exits trigger it (a
   closed terminal, a crash) is unspecified, which is what the 1h/24h
@@ -298,9 +378,21 @@ unaffected.
   a new sign-in after one hour of silence. A ghost costs a wrong status for at
   most an hour, never a refused sign-in.
 - **Suffix churn.** A session that restarts within the hour would get `-2`
-  because its own ghost still holds the base. Sign-in therefore reuses a row
-  whose `cwd` and `pane` match the caller exactly — the same seat, so the
-  same name — before suffixing.
+  because its own ghost still holds the base. Sign-in therefore reclaims a
+  row whose `cwd` and `pane` match the caller exactly **and** whose row is
+  signed out or not live — the same seat, no one listening in it, so the
+  same name. A live holder (armed, heartbeat within 10 minutes) is never
+  reclaimed: a second session beside it is suffixed, which is decision 2's
+  case and the e2e test below. Reclaiming **deletes** the old row (its
+  `session_id` is the primary key and its `handle` is UNIQUE, so it cannot
+  be updated into the new session) and the new row takes the handle; the
+  old one's seat is gone from *offline* because it was never really a
+  departure.
+- **Pruning.** Rows with `signed_out_at` or a heartbeat older than 24 hours
+  are deleted by the daemon at startup and by every `sign-in` — the two
+  moments a handle is about to be needed — and `buddies` simply does not
+  show what pruning would remove. Pruning is what frees a base handle whose
+  holder never signed out.
 - **Daemon down.** `sign-in` fails loudly (it needs the roster to assign a
   name) and says so; the skill does not retry blindly. `pulse` fails silently
   and injects nothing. The viewer's banner covers the rest.
@@ -311,11 +403,15 @@ unaffected.
 
 ## Testing
 
-- Store: sign-in assigns a suffix when the base is held by a fresh row, reuses
-  the same seat, reuses a base after an hour of silence; sign-out keeps
-  memberships; `buddies` sections and thresholds; DM room find-or-create with
-  sorted participants; `wake_on all` on DM memberships; the human's DM post
-  wakes both without a membership row.
+- Store: sign-in assigns a suffix when the base is held by a live row,
+  reclaims a stale row in the same seat, reuses a base after an hour of
+  silence; sign-out keeps memberships; `buddies` sections, thresholds and
+  most-stale-wins; DM find-or-create is keyed on the sorted pair and
+  `(x.y, z)` vs `(x, y.z)` are different rooms; `wake_on all` on DM
+  memberships; the human's `wake_on none` row exists on an agent↔agent DM
+  and not on a DM he is a participant of; `join` refuses a DM room; the
+  human's DM post wakes both; `dm matt` notifies the desk; a v5 dry-run
+  migration over a v4 database does not throw.
 - CLI: session file written and read first in resolution; `--session` for
   processes without the env; `pulse --json` shape and its "armed and already
   delivered" suppression; `dm` posts with the implied mention.
@@ -354,12 +450,17 @@ CLI before the viewer changes.
 - *Identity* — position 0 added; "a collision refuses" replaced by
   daemon-assigned suffixing at sign-in, with the session file as the reason it
   is safe.
-- *Data model* — `chat_presence`; `chat_rooms.kind/dm_a/dm_b`; presence read
-  from the new table.
+- *Data model* — `chat_presence` and `chat_dms` (no `ALTER`); presence
+  dual-written, read preferring the new table; `chat:post` accepts
+  `mentions`.
 - *Command surface* — seven verbs added.
 - *The skill* — entry point 3 (`SessionStart` auto-join) is **rejected**, not
-  deferred; sign-in replaces it. `/chat` for the human is superseded by the
-  viewer as planned.
+  deferred; sign-in replaces it, and the skill's entry point, arm line and
+  status vocabulary change (listed under Hooks and the plugin). `/chat` for
+  the human is superseded by the viewer as planned.
+- *Identity* (upstream staleness, noted not fixed here) — the base design's
+  example handle `rt-repo-tools-chatspec-wt` predates RT-62; the label now
+  derives from the identity, so it is `repo-tools-…`.
 - *Web viewer* — member list becomes the roster; DMs.
 - *Out of scope* — "DMs as a distinct concept" is now in scope with the rule
   above.
