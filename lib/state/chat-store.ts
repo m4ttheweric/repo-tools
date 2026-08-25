@@ -13,6 +13,10 @@ import { Database } from "bun:sqlite";
 import { getStateDb } from "./db.ts";
 import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 import { armPresenceByHandle, disarmPresenceByHandle, presenceForHandle, touchPresenceByHandle } from "./presence-store.ts";
+// Intra-lib/state exception (see presence-store.ts's note on the same
+// pattern): dm-store.ts is the only module that touches chat_dms, so
+// joinRoom asks it directly rather than duplicating a chat_dms query here.
+import { dmParticipants } from "./dm-store.ts";
 
 export type WakeMode = "mention" | "all" | "none";
 
@@ -138,6 +142,16 @@ export function isValidChatName(name: string): boolean {
 }
 
 /**
+ * The one INSERT that creates a chat_rooms row. dm-store.ts's dmRoomFor
+ * reuses this (intra-lib/state exception) so a DM's room row is created
+ * through the exact same idempotent statement a normal join uses, never a
+ * second, divergent one.
+ */
+export function ensureRoomRow(room: string, now: number, db: Database = getStateDb()): boolean {
+  return db.query(UPSERT_ROOM_SQL).run(room, now).changes > 0;
+}
+
+/**
  * Refuses a colliding handle rather than suffixing it. The suffix is only
  * reachable from inside this function, while `tail`/`post`/`read` each
  * resolve the same handle independently and can only produce the
@@ -153,9 +167,16 @@ export function joinRoom(
   const argCwd = cwd ?? null;
 
   const run = db.transaction(() => {
+    // A DM's membership is fixed at creation (dmRoomFor) and its two
+    // participants live in chat_dms, not chat_rooms/chat_members alone —
+    // joining it here would let a third handle in without a chat_dms row
+    // to match, silently turning a DM into an ordinary room.
+    if (dmParticipants(room, db)) {
+      throw new Error(`chat: "${room}" is a DM room; use \`rt chat dm <handle>\` to message it, not \`join\``);
+    }
+
     const now = Date.now();
-    const roomInsert = db.query(UPSERT_ROOM_SQL).run(room, now);
-    const creatingRoom = roomInsert.changes > 0;
+    const creatingRoom = ensureRoomRow(room, now, db);
 
     const maxId = (db.query(SELECT_ROOM_MAX_ID_SQL).get(room) as { maxId: number }).maxId;
 
@@ -356,11 +377,15 @@ export function recipientsFor(
 }
 
 export function postMessage(
-  args: { room: string; handle: string; body: string },
+  args: { room: string; handle: string; body: string; mentions?: string[] },
   db: Database = getStateDb(),
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body } = args;
-  const mentions = parseMentions(body);
+  const parsed = parseMentions(body);
+  // `dm` (Task 5) passes the recipient here rather than prepending it to the
+  // body, so the transcript shows the text as typed; the merge is what lets
+  // that recipient still wake a mention-mode member.
+  const mentions = args.mentions ? [...new Set([...parsed, ...args.mentions])] : parsed;
 
   const run = db.transaction((): { id: number; recipients: string[] } => {
     const now = Date.now();

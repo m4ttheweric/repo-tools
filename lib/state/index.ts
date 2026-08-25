@@ -117,6 +117,8 @@ export {
   type RoomSummary,
 } from "./chat-store.ts";
 
+export { dmRoomFor, dmParticipants, listDms } from "./dm-store.ts";
+
 export {
   signIn,
   signOut,
