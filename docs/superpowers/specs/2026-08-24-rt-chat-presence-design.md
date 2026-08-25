@@ -74,7 +74,7 @@ Ratified in brainstorming, 2026-08-24:
 | Sign on | `rt chat sign-in` / `/chat:sign-in` | presence row, `#<repo>` joined, tail armed |
 | Buddy list | `rt chat buddies` / the viewer's roster | everyone signed in, with status and deets |
 | Away message | `rt chat away <text>` / `/chat:away` | `status_text` on the row; cleared by `rt chat back` |
-| Idle (automatic) | signed in with no tail; *deaf* once a tail's heartbeat is 10 minutes stale | the Statuses table below |
+| Idle (automatic) | signed in with no tail; *deaf* once a tail's own heartbeat is 10 minutes stale | the Statuses table below |
 | Direct IM | `rt chat dm <handle> <text>` | two-participant room, created on first use; the human may be a participant |
 | Chat room | `rt chat join #room` | unchanged |
 | Sign off | `rt chat sign-out` / `/chat:sign-out` | disarm, `signed_out_at`, memberships kept |
@@ -116,17 +116,21 @@ heartbeating) and returns the final handle; the CLI persists it in the session
 file; every later verb resolves from that file first. Resolution stays a local
 file read — no daemon dependency during an outage, the tail's backoff still
 works — and every verb agrees, because they all read the same byte. A base
-handle whose previous holder is signed out or stale (no heartbeat for an
-hour) is reused, not suffixed, so restarting a session in a worktree gets its
-old name back.
+handle whose previous holder is signed out, or whose session heartbeat is
+more than an hour old, is reused rather than suffixed (the one reclaim
+predicate, under Failure modes), so restarting a session in a worktree gets
+its old name back.
 
 The base handle derivation is unchanged: `<repoLabel>-<worktree-dir>` through
 the identity codec (RT-62), then the fallbacks. The serialized identity never
 reaches a handle.
 
-**The repository room.** `sign-in` derives the cwd's identity
-(`deriveRepoIdentity`) and names the room from it, slugified to the room
-charset:
+**The repository room.** `sign-in` first asks whether the cwd is inside a
+git work tree at all (`findGitRoot(cwd)`, already in `commands/chat.ts`);
+`deriveRepoIdentity` never fails — a scratch directory gets a path-kind
+identity of its own realpath — so the work-tree test is what decides "no
+room", not the codec. Inside a work tree it derives the identity and names
+the room from it, slugified to the room charset:
 
 - **remote-kind** → the last path segment of the identity, lowercased and
   slugified: `remote:gitlab.com%2Facme%2Facme-dev` → `#acme-dev`. Every
@@ -137,8 +141,16 @@ charset:
   One segment would be the bare pool-slot name (`gamma`, `main`), the
   cross-repository collision the base design's Identity section spent a page
   eliminating; two segments are unique on the layouts this machine uses.
-- **no identity** (position 5/6 territory) → no room. Sign-in prints
-  *signed in as <handle> · not in a repository · no room joined*.
+- **not in a work tree** → no room. Sign-in prints *signed in as <handle>
+  · not in a repository · no room joined*. (This is a different predicate
+  from handle position 5: a real repository that was never `rt repos add`-ed
+  has no index entry — its handle falls through — but a perfectly good
+  identity, and gets its room.)
+- **remote-kind collisions across hosts or owners** (`github.com/matt/console`
+  and `gitlab.com/work/console` both → `#console`) are accepted: one segment
+  is what people call the repository, and two unrelated fleets sharing a
+  room on one machine is rare enough that `sign-in --room <name>` is the
+  escape hatch rather than a longer name for everyone.
 
 `repoLabel()` is for display (`chat_presence.repo`), never for a room name:
 it preserves case for remote-kind and returns the slot name for path-kind.
@@ -163,14 +175,15 @@ CREATE TABLE IF NOT EXISTS chat_presence (
   pane           TEXT,                   -- HERDR_PANE_ID when known
   status_text    TEXT,                   -- the away message; NULL when back
   signed_in_at   INTEGER NOT NULL,
-  last_seen_at   INTEGER NOT NULL,       -- heartbeat
+  last_seen_at   INTEGER NOT NULL,       -- SESSION heartbeat: written by pulse (and sign-in)
+  tail_seen_at   INTEGER,                -- TAIL heartbeat: written ONLY by chat:touch from the tail loop
   armed_at       INTEGER,                -- set while a tail is live, cleared on exit
   signed_out_at  INTEGER                 -- NULL while signed in
 );
 CREATE INDEX IF NOT EXISTS chat_presence_handle ON chat_presence(handle);
 
 CREATE TABLE IF NOT EXISTS chat_dms (
-  room        TEXT PRIMARY KEY REFERENCES chat_rooms(name),
+  room        TEXT PRIMARY KEY REFERENCES chat_rooms(name),   -- documentation only: foreign_keys is off in applyPragmas; deletion is explicit
   a           TEXT NOT NULL,             -- participants, sorted; either may be the human handle
   b           TEXT NOT NULL,
   created_at  INTEGER NOT NULL,
@@ -186,10 +199,32 @@ and brick every later `openStateDb()` at the v5 bump with *duplicate column
 name*. A DM's kind is therefore the existence of its `chat_dms` row, and
 `chat:rooms` reports `kind` by left join.
 
+**Two heartbeats, never one.** The session heartbeat (`last_seen_at`, from
+`pulse`) says the *agent* is active; the tail heartbeat (`tail_seen_at`,
+from `chat:touch` in the tail loop) says the *listener* is. They must be
+separate columns: a tail that dies abnormally leaves `armed_at` set and its
+only detector is a stale tail heartbeat, so if the session's per-prompt
+pulse refreshed the same column, an active agent with a dead tail would
+read *live* forever — the one lie the viewer exists to catch. `pulse` never
+touches `tail_seen_at`; `chat:touch` never touches `last_seen_at`.
+
+**The shipped `joinRoom` cwd guard is scoped to unsigned handles.** Today
+`joinRoom` throws when any membership row for the handle carries a
+different `cwd` (*already in use from a different directory — pass `--as`*),
+because cwd was the only uniqueness the base design had. Once a presence row
+exists for the handle, presence owns uniqueness: `join` (and sign-in's own
+auto-join) skips the guard for a handle that is currently signed in, and
+memberships from an earlier cwd are simply that session's history — which
+is what lets `chat.handle` or `sign-in --as x` be used from a second
+worktree without a base-design-era refusal telling the agent to pass the
+`--as` position 0 now rejects. For a handle with no presence row the guard
+stays exactly as shipped.
+
 **`chat_members` keeps its presence columns, and the two tables are
 dual-written.** `chat:arm`, `chat:touch` and `chat:disarm` update the
-member rows exactly as today **and** the presence row when one exists for
-the handle. Readers (`chat:who`, `chat:buddies`, the viewer) prefer the
+member rows exactly as today (`chat:touch` → `chat_members.last_seen_at`,
+which for a member has always meant the tail) **and** the presence row when
+one exists for the handle (`chat:touch` → `tail_seen_at`). Readers (`chat:who`, `chat:buddies`, the viewer) prefer the
 presence row and fall back to the member columns, so an agent that arms a
 tail without ever signing in — still a legal plan-1 path — renders as armed,
 not as never-armed. The startup clear of `armed_at` (base design, Daemon
@@ -259,14 +294,17 @@ describe:
 
 | status | condition |
 |---|---|
-| **live** (listening) | `armed_at` set and `last_seen_at` within 10 minutes |
-| **idle** | signed in, `last_seen_at` within 1 hour, no `armed_at` |
-| **deaf** | `armed_at` set but `last_seen_at` older than 10 minutes — *armed but silent* — or no heartbeat for an hour while still signed in |
-| **offline** | `signed_out_at` set, or no heartbeat for 24 hours (pruned after) |
+| **offline** | `signed_out_at` set, or session heartbeat (`last_seen_at`) older than 24 hours (pruned after) |
+| **deaf** | `armed_at` set and tail heartbeat (`tail_seen_at`) older than 10 minutes — *armed but silent*, the tail died — or session heartbeat older than 1 hour while still signed in |
+| **live** (listening) | `armed_at` set and `tail_seen_at` within 10 minutes |
+| **idle** | signed in, session heartbeat within 1 hour, no `armed_at` |
 
-Rows are tested top to bottom and the **most stale condition wins**: a
-signed-in row silent for 30 hours is *offline*, not *deaf*, so no row can
-render in two roster sections. `away` is an overlay, not a status: a
+For a member with no presence row, the member columns stand in
+(`chat_members.last_seen_at` is the tail heartbeat there, as in plan 1).
+
+Rows are tested in the order listed and the **first match wins** — the
+table is ordered most-stale first, so a signed-in row silent for 30 hours is
+*offline*, not *deaf*, and no row can render in two roster sections. `away` is an overlay, not a status: a
 `status_text` shows beside whichever status the row has. Deaf remains the
 status that earns the viewer its keep; it now also names its cause, since the
 presence row knows whether the tail was armed.
@@ -377,17 +415,28 @@ unaffected.
   then *deaf* if not, *offline* after 24 hours; the base handle is reusable by
   a new sign-in after one hour of silence. A ghost costs a wrong status for at
   most an hour, never a refused sign-in.
-- **Suffix churn.** A session that restarts within the hour would get `-2`
-  because its own ghost still holds the base. Sign-in therefore reclaims a
-  row whose `cwd` and `pane` match the caller exactly **and** whose row is
-  signed out or not live — the same seat, no one listening in it, so the
-  same name. A live holder (armed, heartbeat within 10 minutes) is never
-  reclaimed: a second session beside it is suffixed, which is decision 2's
-  case and the e2e test below. Reclaiming **deletes** the old row (its
-  `session_id` is the primary key and its `handle` is UNIQUE, so it cannot
-  be updated into the new session) and the new row takes the handle; the
-  old one's seat is gone from *offline* because it was never really a
-  departure.
+- **Suffix churn.** A session that restarts would get `-2` if its own
+  ghost still held the base. One predicate, used everywhere a handle is
+  reused: **the holder is signed out, or its session heartbeat is more than
+  an hour old.** An idle holder — signed in, not yet armed, heartbeating —
+  is *not* reclaimable: two sessions opened in one worktree outside herdr
+  share `cwd` and a `NULL` pane, and the second must be suffixed even when it
+  arrives before the first has armed its tail, which is the ordinary
+  sequence. The same-seat rule only picks *which* reclaimable row to prefer
+  (same `cwd` and `pane` → same name back) and never widens the predicate.
+  Reclaiming **deletes** the old row (its `session_id` is the primary key and
+  its `handle` is UNIQUE, so it cannot be updated into the new session) and
+  the new row takes the handle.
+- **A reclaimed handle's old owner wakes up.** A session silent for over an
+  hour can still hold a valid session file, and its verbs would resolve
+  position 0 to a handle another session now owns. So every
+  presence-affecting payload (`arm`, `touch`, `disarm`, `pulse`, `away`,
+  `sign-out`) carries the session id, and the daemon refuses a handle it no
+  longer maps to that session (`handle reclaimed`); the CLI then deletes the
+  session file and says *your handle was reclaimed while you were away —
+  sign in again*. `post`/`read`/`join` stay handle-only, as the base design
+  requires; an old owner posting under a reclaimed name is possible in the
+  minutes before its next pulse or arm, and accepted.
 - **Pruning.** Rows with `signed_out_at` or a heartbeat older than 24 hours
   are deleted by the daemon at startup and by every `sign-in` — the two
   moments a handle is about to be needed — and `buddies` simply does not
@@ -413,11 +462,16 @@ unaffected.
   human's DM post wakes both; `dm matt` notifies the desk; a v5 dry-run
   migration over a v4 database does not throw.
 - CLI: session file written and read first in resolution; `--session` for
-  processes without the env; `pulse --json` shape and its "armed and already
-  delivered" suppression; `dm` posts with the implied mention.
+  processes without the env; `pulse --json` shape and its status rule —
+  waiting + `idle` injects, waiting + `deaf` (armed, tail heartbeat stale,
+  session heartbeat fresh) injects, waiting + `live` does not; `pulse` never
+  writes `tail_seen_at`; `dm` posts with the recipient in `mentions`;
+  `handle reclaimed` deletes the session file.
 - e2e: two `rt chat sign-in` from one worktree under different session ids
-  yield `x` and `x-2`, both tails arm, a DM to `x-2` wakes only `x-2`; a
-  `SessionEnd` sign-out clears `armed_at` and sets `signed_out_at`.
+  yield `x` and `x-2` **whether or not the first has armed yet**, both tails
+  arm, a DM to `x-2` wakes only `x-2`; a tail killed with SIGKILL reads
+  *deaf* within 10 minutes while its session keeps pulsing; a `SessionEnd`
+  sign-out clears `armed_at` and sets `signed_out_at`.
 - Hook: `UserPromptSubmit` fixture — one waiting DM, no armed tail → context
   injected; armed tail with a fresh wake → nothing.
 - Viewer: roster sections; DM in the rail; picker offering DM for a
@@ -450,9 +504,10 @@ CLI before the viewer changes.
 - *Identity* — position 0 added; "a collision refuses" replaced by
   daemon-assigned suffixing at sign-in, with the session file as the reason it
   is safe.
-- *Data model* — `chat_presence` and `chat_dms` (no `ALTER`); presence
-  dual-written, read preferring the new table; `chat:post` accepts
-  `mentions`.
+- *Data model* — `chat_presence` (two heartbeats) and `chat_dms` (no
+  `ALTER`); presence dual-written, read preferring the new table; the
+  `joinRoom` cwd guard scoped to unsigned handles; `chat:post` accepts
+  `mentions`; presence-affecting payloads carry the session id.
 - *Command surface* — seven verbs added.
 - *The skill* — entry point 3 (`SessionStart` auto-join) is **rejected**, not
   deferred; sign-in replaces it, and the skill's entry point, arm line and
