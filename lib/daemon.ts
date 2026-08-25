@@ -443,6 +443,10 @@ export function startDaemon(): void {
     },
     eventsBus,
     homeSnapshot,
+    repos: {
+      withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
+      refreshWatchedRepos: hooksGuard.refreshWatchedRepos,
+    },
     chatDb: getStateDb("daemon"),
   });
 

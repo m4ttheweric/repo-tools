@@ -24,6 +24,7 @@ import { createChatHandlers } from "./handlers/chat.ts";
 import { createEndpointHandlers } from "./handlers/endpoint.ts";
 import { createSettingsHandlers } from "./handlers/settings.ts";
 import { createHomeHandlers } from "./handlers/home.ts";
+import { createReposHandlers } from "./handlers/repos.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
@@ -44,6 +45,11 @@ export function buildRoutedHandlers(opts: {
   eventsBus: EventsBus;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
   homeSnapshot: HomeSnapshotHandle;
+  /** Reconciler hold + hooks-guard rewire the repos:locate verb drives. */
+  repos: {
+    withReconcilerHeld: <T>(fn: () => Promise<T>) => Promise<T>;
+    refreshWatchedRepos: () => void;
+  };
   /**
    * state.db, for chat:* handlers (RT-48 Task 6). Passed in already-open
    * rather than resolved here with getStateDb(): this function is called at
@@ -79,6 +85,7 @@ export function buildRoutedHandlers(opts: {
     ...createEndpointHandlers(ctx),
     ...createSettingsHandlers(),
     ...createHomeHandlers(opts.homeSnapshot),
+    ...createReposHandlers({ ...opts.repos, emitEvent }),
 
     // Applies repo-tracking edits immediately (rt daemon track <repo>
     // live|poll|off) instead of waiting for the next refresh-tail reconcile.
