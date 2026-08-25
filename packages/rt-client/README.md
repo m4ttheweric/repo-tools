@@ -63,7 +63,7 @@ const url = `/api/runs/${encodeURIComponent(identity)}/${runId}`; // URL segment
 | Key stores and daemon payloads on the serialized form | Key anything on a folder basename or a remote's last segment |
 | Key settings sections (`repos.<identity>`) on the raw `host/path` id | Put the serialized form in a settings lookup, or the raw form in a daemon payload |
 | `encodeURIComponent(identity)` in URL path segments | Ship the wire form raw in a URL — its `%` signs decode into slashes |
-| Decode for display: `parseIdentity(wire)`, then the id's last path segment (remote) or basename (path) | Show the wire form to a human, or build a chat handle from it |
+| Decode for display: `parseIdentity(wire)`, then the id's last path segment (remote) or basename (path) — the returned `id` is already decoded | `decodeURIComponent` the id again, show the wire form to a human, or build a chat handle from it |
 | Treat the `repo` field from `runs:list` as an opaque key, passed back verbatim | Validate or re-derive `runs:*` repo keys — pre-cutover runs keep their original keys |
 
 Repo-keyed daemon verbs accept serialized identities only; a bare repo name
