@@ -22,6 +22,11 @@ function causeOf(key: string): DriftCause {
  * Parts are keyed by kind and name only, so a slot rebound to another fill is
  * a fill change rather than a structural one; a changed part list is
  * structural because the parts can no longer be paired.
+ *
+ * A part runs from its own marker to the next one, flat -- so prose a fill
+ * appends after its own inlined `{{include}}` line has no marker of its own
+ * and lands inside that include's part, attributing the fill's edit to the
+ * include instead.
  */
 export function skillMdDriftCauses(onDisk: string, expected: string): DriftCause[] {
   const before = splitParts(onDisk);
