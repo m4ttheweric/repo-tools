@@ -55,6 +55,24 @@ describe("compile-native end to end", () => {
     );
   });
 
+  test("a surface-public stage is referenced at skills/, where it is emitted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-e2e-"));
+    cpSync(FIX, root, { recursive: true });
+    const pack = join(root, "pack");
+    const ms = join(root, "mattstack-home");
+    const manifest = join(ms, "repos", "my-repo", "skills.jsonc");
+    writeFileSync(join(pack, "pack", "surface.jsonc"), JSON.stringify({ public: ["work", "stage-plan"] }));
+
+    await skillsCompile(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest]);
+
+    expect(existsSync(join(pack, "skills", "stage-plan", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(pack, "attachments", "stage-plan"))).toBe(false);
+    const work = readFileSync(join(pack, "skills", "work", "SKILL.md"), "utf8");
+    expect(work).toContain("${CLAUDE_SKILL_DIR}/../../skills/stage-plan");
+    expect(work).not.toContain("attachments/stage-plan");
+    expect(work).toContain("${CLAUDE_SKILL_DIR}/../../attachments/stage-implement");
+  });
+
   test("rt skills check is clean immediately after compile", async () => {
     const { pack, ms, manifest } = await build();
     process.exitCode = 0;

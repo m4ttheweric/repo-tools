@@ -459,7 +459,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
   const packSha = computePackSha(pipelines, self, packDir);
   let stageEntries: Record<string, StageEntry[]>;
   try {
-    stageEntries = buildStageEntries({ pipelines, pluginRoots });
+    stageEntries = buildStageEntries({ pipelines, pluginRoots, publicSet: surface ? new Set(surface.public) : null });
   } catch (err) {
     throw new SkillsUsageError((err as Error).message);
   }
