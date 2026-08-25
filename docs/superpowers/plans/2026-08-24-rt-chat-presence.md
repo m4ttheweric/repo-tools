@@ -1,6 +1,4 @@
-# rt chat presence (plan 3) Implementation Plan — DRAFT, pending Matt's review of the spec
-
-> **Status: DRAFT.** The spec (`docs/superpowers/specs/2026-08-24-rt-chat-presence-design.md`, PR #80) is reviewer-approved but not yet Matt-approved. Execute nothing from this plan until it is.
+# rt chat presence (plan 3) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
