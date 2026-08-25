@@ -536,6 +536,19 @@ describe("compileSkill with placeholders", () => {
     expect(r.warnings).toEqual([]);
   });
 
+  test("a bare asset path that this target never emits warns", () => {
+    const r = compileSkill(verb, { ...slotless, body: "run scripts/missing.sh, then read references/notes.md" }, {}, new Set(), {});
+    expect(r.warnings).toEqual([
+      "bare path scripts/missing.sh is not an emitted file",
+      "bare path references/notes.md is not an emitted file",
+    ]);
+  });
+
+  test("a bare asset path the engine vendors does not warn, sentence punctuation and all", () => {
+    const r = compileSkill(verb, { ...slotless, body: "run scripts/ci-watch.sh, as documented in references/polling-notes.md." }, {}, new Set(), {});
+    expect(r.warnings).toEqual([]);
+  });
+
   test("the pack-root token is not lint-warned as a missing file", () => {
     const r = compileSkill(verb, { ...slotless, body: 'PACK_DIRS="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd -P)"' }, {}, new Set(), {});
     expect(r.warnings).toEqual([]);

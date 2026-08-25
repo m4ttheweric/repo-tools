@@ -26,13 +26,25 @@ const SKILL_DIR_PATH_RE = /\$\{CLAUDE_SKILL_DIR\}\/[^\s"'`)]+/g;
  */
 const RELATIVE_PATH_RE = /(?<![^\s("'`[<,])\.\.\/[^\s"'`)]+/g;
 
+/** Vendored assets are addressed from the skill's own directory, so a bare one names an emitted file or nothing at all. */
+const BARE_ASSET_RE = /(?<![^\s("'`[<,])(?:scripts|references)\/[^\s"'`)]+/g;
+
 /** The compiled `work` derives the pack root from layout, so this form is a directory reference, never a file. */
 const PACK_ROOT_REL = "../..";
 
 /** Where a compiled verb lands, so a body path can be resolved the way the reading agent will resolve it. */
 type CompiledLayout = { packRoot: string; compiledDir: string };
 
-type BodyPath = { text: string; relPath: string; line: number; kind: "token" | "relative" };
+type BodyPath = { text: string; relPath: string; line: number; kind: "token" | "relative" | "asset" };
+
+/**
+ * Prose ends a sentence after a path, and that period is not part of the file
+ * name -- but the trailing dots of a `../..` directory reference are, so a run
+ * of punctuation only comes off when a name character precedes it.
+ */
+function trimSentencePunctuation(path: string): string {
+  return path.replace(/(?<=[^/.])[.,;:!?]+$/, "");
+}
 
 function bodyPaths(body: string): BodyPath[] {
   const out: BodyPath[] = [];
@@ -40,15 +52,21 @@ function bodyPaths(body: string): BodyPath[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     for (const m of line.matchAll(SKILL_DIR_PATH_RE)) {
+      const text = trimSentencePunctuation(m[0]);
       out.push({
-        text: m[0],
-        relPath: m[0].slice(`${CLAUDE_SKILL_DIR_TOKEN}/`.length),
+        text,
+        relPath: text.slice(`${CLAUDE_SKILL_DIR_TOKEN}/`.length),
         line: i + 1,
         kind: "token",
       });
     }
     for (const m of line.matchAll(RELATIVE_PATH_RE)) {
-      out.push({ text: m[0], relPath: m[0], line: i + 1, kind: "relative" });
+      const text = trimSentencePunctuation(m[0]);
+      out.push({ text, relPath: text, line: i + 1, kind: "relative" });
+    }
+    for (const m of line.matchAll(BARE_ASSET_RE)) {
+      const text = trimSentencePunctuation(m[0]);
+      out.push({ text, relPath: text, line: i + 1, kind: "asset" });
     }
   }
   return out;
@@ -358,7 +376,11 @@ function lintReferences(
     // attachments/<name>), so this token names that root, not a file in it.
     if (relPath === PACK_ROOT_REL) continue;
     if (!emittedPaths.has(relPath)) {
-      warnings.push(`body references ${text} which is not an emitted file`);
+      warnings.push(
+        kind === "asset"
+          ? `bare path ${text} is not an emitted file`
+          : `body references ${text} which is not an emitted file`,
+      );
     }
   }
 
