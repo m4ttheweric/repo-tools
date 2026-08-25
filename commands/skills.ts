@@ -499,7 +499,12 @@ function includeNames(bodies: string[]): string[] {
   return names;
 }
 
-/** Scans the step body plus every bound fill's body, so a fill's own `{{include}}` lines resolve too. */
+/**
+ * Scans the step body plus every INLINED bound fill's body, so a fill's own
+ * `{{include}}` lines resolve too -- a reference-mode fill's body never
+ * reaches the compiled output, so an `{{include}}` line inside one names
+ * nothing a compile emits.
+ */
 function loadIncludesFor(
   step: StepSource,
   fills: Record<string, AttachmentSource | null>,
@@ -507,7 +512,9 @@ function loadIncludesFor(
   where: string,
 ): Record<string, AttachmentSource> {
   const out: Record<string, AttachmentSource> = {};
-  const fillBodies = Object.values(fills).filter((f): f is AttachmentSource => f !== null).map((f) => f.body);
+  const fillBodies = Object.values(fills)
+    .filter((f): f is AttachmentSource => f !== null && isInlined(f, resolved.internalRoster))
+    .map((f) => f.body);
   for (const name of includeNames([step.body, ...fillBodies])) {
     try {
       out[name] = loadInclude(name, resolved.pluginRoots);
@@ -1025,14 +1032,17 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
     // not take down every other slot's data, let alone the whole payload.
     try {
       const fill = loadAttachment(boundTo, slotName, resolved.pluginRoots);
-      fillBodies.push(fill.body);
+      const inlined = isInlined(fill, resolved.internalRoster);
+      // A reference-mode fill's body never reaches the compiled output, so its
+      // own {{include}} lines resolve nothing a compile emits either.
+      if (inlined) fillBodies.push(fill.body);
       const fillPluginDir = resolved.pluginRoots.byName[fill.plugin]?.dir ?? null;
       return {
         ...base,
         fillSourcePath: fillPluginDir ? join(fillPluginDir, fill.srcPath) : null,
         fillVersion: fill.version,
         registered: fill.registered,
-        inlined: isInlined(fill, resolved.internalRoster),
+        inlined,
       };
     } catch (err) {
       return {

@@ -1366,6 +1366,29 @@ describe("skillsComposition --json", () => {
     expect(verb.includes).toEqual(["ci-note", "fill-note"]);
   });
 
+  test("an include reached only through a reference-mode (registered, public) fill is not scanned or vendored", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "gitlab-forge", "SKILL.md"),
+      FORGE_SKILL_MD + "\n{{include:forge-note}}\n",
+    );
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "attachments", "forge-note", "SKILL.md"),
+      "---\nname: forge-note\n---\n\nforge note body\n",
+    );
+    writeFile(join(mattstackDir, "plugins", "mattstack", "attachments", "forge-note", "note.txt"), "note\n");
+
+    await skillsComposition(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.includes).toEqual([]);
+
+    logs = [];
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+    expect(existsSync(join(packDir, "skills", "watch-ci", "parts", "include-forge-note"))).toBe(false);
+  });
+
   test("an internal verb's artifactPath is under attachments/, not a hardcoded skills/", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
