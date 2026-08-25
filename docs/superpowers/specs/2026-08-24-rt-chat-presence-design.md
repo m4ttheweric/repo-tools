@@ -116,10 +116,10 @@ heartbeating) and returns the final handle; the CLI persists it in the session
 file; every later verb resolves from that file first. Resolution stays a local
 file read — no daemon dependency during an outage, the tail's backoff still
 works — and every verb agrees, because they all read the same byte. A base
-handle whose previous holder is signed out, or whose session heartbeat is
-more than an hour old, is reused rather than suffixed (the one reclaim
-predicate, under Failure modes), so restarting a session in a worktree gets
-its old name back.
+handle whose previous holder satisfies the reclaim predicate (signed out, or
+session heartbeat over an hour old with no live tail — one predicate, under
+Failure modes) is reused rather than suffixed, so restarting a session in a
+worktree gets its old name back.
 
 The base handle derivation is unchanged: `<repoLabel>-<worktree-dir>` through
 the identity codec (RT-62), then the fallbacks. The serialized identity never
@@ -206,7 +206,10 @@ separate columns: a tail that dies abnormally leaves `armed_at` set and its
 only detector is a stale tail heartbeat, so if the session's per-prompt
 pulse refreshed the same column, an active agent with a dead tail would
 read *live* forever — the one lie the viewer exists to catch. `pulse` never
-touches `tail_seen_at`; `chat:touch` never touches `last_seen_at`.
+touches `tail_seen_at` **or `chat_members.last_seen_at`** — the member
+column is the tail heartbeat on the no-presence-row fallback path, and a
+pulse writing it would re-create the same lie there; `chat:touch` never
+touches `last_seen_at`.
 
 **The shipped `joinRoom` cwd guard is scoped to unsigned handles.** Today
 `joinRoom` throws when any membership row for the handle carries a
@@ -246,7 +249,7 @@ Additions to the eight verbs of the base design:
 
 | Verb | Shape |
 |---|---|
-| `rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--session <id>]` | presence row (suffix assigned), session file written, `#<repo>` joined unless `--no-room`; prints the assigned handle and the room, then the arm instruction |
+| `rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]` | presence row (suffix assigned), session file written, the repository room joined unless `--no-room` (`--room` overrides the derived name — the collision escape hatch); prints the assigned handle and the room, then the arm instruction |
 | `rt chat sign-out [--session <id>]` | disarm, `signed_out_at`, session file removed; memberships kept |
 | `rt chat away <text>` / `rt chat back` | set / clear `status_text` |
 | `rt chat buddies [--json]` | the roster: every row with `signed_out_at IS NULL`, plus the last 24h of signed-out rows under *offline* |
@@ -292,12 +295,24 @@ posting there joins nothing and the DM stays a DM.
 The viewer's three statuses gain a fourth, and the roster is what they now
 describe:
 
+Everywhere below, "tail heartbeat" means `COALESCE(tail_seen_at,
+armed_at)`: the shipped tail arms (step 2) up to one `events:wait` round —
+15 seconds, longer under backoff — before its first `chat:touch`, and
+arming *is* the tail's first sign of life, so a fresh `armed_at` with a
+NULL `tail_seen_at` must read as alive, not fall through the table.
+
 | status | condition |
 |---|---|
 | **offline** | `signed_out_at` set, or session heartbeat (`last_seen_at`) older than 24 hours (pruned after) |
-| **deaf** | `armed_at` set and tail heartbeat (`tail_seen_at`) older than 10 minutes — *armed but silent*, the tail died — or session heartbeat older than 1 hour while still signed in |
-| **live** (listening) | `armed_at` set and `tail_seen_at` within 10 minutes |
+| **deaf** | `armed_at` set and the tail heartbeat older than 10 minutes — *armed but silent*, the tail died — or **no `armed_at`** and the session heartbeat older than 1 hour while still signed in |
+| **live** (listening) | `armed_at` set and the tail heartbeat within 10 minutes |
 | **idle** | signed in, session heartbeat within 1 hour, no `armed_at` |
+
+For an **armed** row the tail heartbeat is the sole authority — the session
+heartbeat only advances on user prompts (`pulse` runs on
+`UserPromptSubmit`), so a long autonomous turn starves it for hours while
+the tail touches every 15 seconds; an armed, touching agent is *live* no
+matter how old its last prompt is. That is the point of the split.
 
 For a member with no presence row, the member columns stand in
 (`chat_members.last_seen_at` is the tail heartbeat there, as in plan 1).
@@ -317,7 +332,9 @@ session under Monitor, `events:head` before arming — with two additions:
 - **A DM post wakes the other participant unconditionally** (`wake_on all`
   on DM memberships), and a human post into a DM wakes both.
 - **The heartbeat delivers what the tail missed.** `pulse` returns
-  `{ unread: { dms, mentions, rooms }, status: "live" | "idle" | "deaf" }`
+  `{ unread: { dms, mentions, rooms }, status: "live" | "idle" | "deaf" }` —
+  `offline` is unreachable from inside `pulse`, which heartbeats its own row
+  before computing the status —
   and the hook injects context **iff something is waiting and `status` is
   not `live`** — nothing on the table records what a tail has delivered, so
   the rule is stated in terms of what the table has: a live tail (armed,
@@ -418,7 +435,10 @@ unaffected.
 - **Suffix churn.** A session that restarts would get `-2` if its own
   ghost still held the base. One predicate, used everywhere a handle is
   reused: **the holder is signed out, or its session heartbeat is more than
-  an hour old.** An idle holder — signed in, not yet armed, heartbeating —
+  an hour old AND its tail heartbeat (`COALESCE(tail_seen_at, armed_at)`,
+  absent counting as stale) is more than 10 minutes old.** A live tail is
+  never stale, so a working agent deep in an autonomous turn — fresh
+  touches, no prompts — cannot be reclaimed out from under its own tail. An idle holder — signed in, not yet armed, heartbeating —
   is *not* reclaimable: two sessions opened in one worktree outside herdr
   share `cwd` and a `NULL` pane, and the second must be suffixed even when it
   arrives before the first has armed its tail, which is the ordinary
@@ -431,17 +451,30 @@ unaffected.
   hour can still hold a valid session file, and its verbs would resolve
   position 0 to a handle another session now owns. So every
   presence-affecting payload (`arm`, `touch`, `disarm`, `pulse`, `away`,
-  `sign-out`) carries the session id, and the daemon refuses a handle it no
-  longer maps to that session (`handle reclaimed`); the CLI then deletes the
+  `sign-out`) carries the session id **where the caller has one** — it stays
+  optional, because `arm`/`touch`/`disarm` still serve the unsigned plan-1
+  path, and the daemon enforces `handle reclaimed` only when a presence row
+  exists for the handle — and refuses a handle it no longer maps to that
+  session; the CLI then deletes the
   session file and says *your handle was reclaimed while you were away —
   sign in again*. `post`/`read`/`join` stay handle-only, as the base design
   requires; an old owner posting under a reclaimed name is possible in the
-  minutes before its next pulse or arm, and accepted.
-- **Pruning.** Rows with `signed_out_at` or a heartbeat older than 24 hours
-  are deleted by the daemon at startup and by every `sign-in` — the two
-  moments a handle is about to be needed — and `buddies` simply does not
-  show what pruning would remove. Pruning is what frees a base handle whose
-  holder never signed out.
+  minutes before its next pulse or arm, and accepted. **The tail does not
+  swallow the refusal**: shipped code discards `chat:touch` errors
+  (`.catch(() => undefined)`), so plan 3 special-cases `handle reclaimed` —
+  the tail prints one line (*handle reclaimed — sign in again*) and exits 0,
+  Monitor reports the stream ended, and the skill's re-arm rule takes over
+  with a fresh sign-in. That is also what keeps "two tails for one handle is
+  impossible" true: the old tail exits before the new owner's first touch
+  could collide with it, and the reclaimer's arm finds a pidfile whose
+  holder is exiting, not listening.
+- **Pruning.** Rows signed out **more than 24 hours ago**, or whose session
+  heartbeat is older than 24 hours, are deleted by the daemon at startup and
+  by every `sign-in` — the two moments a handle is about to be needed. Rows
+  inside the 24-hour window survive precisely so the roster's *offline (last
+  24h)* section has something to show; `buddies` does not show what pruning
+  would remove. Pruning is what frees a base handle whose holder never
+  signed out.
 - **Daemon down.** `sign-in` fails loudly (it needs the roster to assign a
   name) and says so; the skill does not retry blindly. `pulse` fails silently
   and injects nothing. The viewer's banner covers the rest.
