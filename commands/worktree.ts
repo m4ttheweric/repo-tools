@@ -2,8 +2,7 @@
 
 /**
  * rt worktree — the worktree lifecycle CLI (spec §3): provision, create,
- * dispose, list, freshen, adopt, plus the bare `rt worktree` nav picker and
- * `each` (run a command across worktrees).
+ * dispose, list, freshen, adopt, and `each` (run a command across worktrees).
  *
  * Every mutating verb here is a thin wrapper over the daemon's `worktree:*`
  * handlers (`lib/daemon/handlers/worktree.ts`) — the daemon is the single
@@ -242,18 +241,67 @@ async function fetchTreeRows(json: boolean, repoName?: string): Promise<TreeRow[
   return (ok.data?.trees ?? []) as TreeRow[];
 }
 
+/**
+ * MR/pipeline/ticket metadata for each tree, reusing the same `enrich`
+ * pipeline `rt cd` renders — one daemon `cache:read` per repo, same source as
+ * `worktree:list`. Returns the `enrich` trailing (`✓ ● TICKET`) keyed by path.
+ *
+ * The linearId is appended when `enrich` would otherwise omit it: for a ticket
+ * branch it parks the ticket title in the label's leading half, which these
+ * pickers don't render (their label is the tree name), so the id must ride in
+ * the trailing to stay visible.
+ */
+async function enrichTrailingByPath(rows: TreeRow[]): Promise<Map<string, string>> {
+  const byPath = new Map<string, string>();
+  const withBranch = rows.filter((r): r is TreeRow & { branch: string } => Boolean(r.branch));
+  if (withBranch.length === 0) return byPath;
+
+  const { enrichBranches, formatBranchLabelParts } = await import("../lib/enrich.ts");
+  const { getRemoteUrl } = await import("../lib/pickers.ts");
+  const repoIndex = loadRepoIndex();
+
+  const byRepo = new Map<string, Array<TreeRow & { branch: string }>>();
+  for (const r of withBranch) {
+    const group = byRepo.get(r.repoName) ?? [];
+    group.push(r);
+    byRepo.set(r.repoName, group);
+  }
+
+  await Promise.all(
+    [...byRepo].map(async ([repoName, group]) => {
+      const repoPath = repoIndex[repoName];
+      const remoteUrl = repoPath ? await getRemoteUrl(repoPath) : undefined;
+      const enriched = await enrichBranches(
+        group.map((r) => ({ path: r.path, branch: r.branch })),
+        remoteUrl,
+      );
+      for (const eb of enriched) {
+        let trailing = formatBranchLabelParts(eb).trailing;
+        if (eb.linearId && !trailing.includes(eb.linearId)) {
+          trailing = trailing ? `${trailing} ${eb.linearId}` : eb.linearId;
+        }
+        if (trailing) byPath.set(eb.path, trailing);
+      }
+    }),
+  );
+  return byPath;
+}
+
 async function pickOneTree(rows: TreeRow[], message: string): Promise<TreeRow | null> {
   if (rows.length === 0) return null;
   const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const trailingByPath = await enrichTrailingByPath(rows);
   const nameWidth = Math.max(...rows.map((r) => r.name.length));
   const options = rows.map((r) => {
     const state = r.state ?? r.kind;
-    const hint =
+    const base =
       state === "disposable"
         ? r.disposableReason
           ? `disposable — ${r.disposableReason}`
           : "disposable"
         : `${state}${r.branch ? `  ${r.branch}` : ""}${r.owner ? `  ${r.owner}` : ""}`;
+    const trailing = trailingByPath.get(r.path);
+    const hint = trailing ? `${base}  ${trailing}` : base;
     return { value: r.path, label: r.name.padEnd(nameWidth), hint };
   });
   const picked = await filterableSelect({ message, options, stderr: true });
@@ -381,9 +429,15 @@ export async function worktreeList(args: string[], _ctx: unknown): Promise<void>
 
   if (rows.length === 0) { console.log(`\n  ${dim}no worktrees${reset}\n`); return; }
 
+  const trailingByPath = await enrichTrailingByPath(rows);
   console.log("");
   for (const r of rows) {
-    const mrPart = r.mr ? `  ${dim}!${r.mr.iid} ${r.mr.state}${reset}` : "";
+    const trailing = trailingByPath.get(r.path);
+    const mrPart = trailing
+      ? `  ${trailing}`
+      : r.mr
+        ? `  ${dim}!${r.mr.iid} ${r.mr.state}${reset}`
+        : "";
     const dupPart = r.duplicateBranch ? `  ${yellow}duplicate branch${reset}` : "";
     const ownerPart = r.owner ? `  ${dim}${r.owner}${reset}` : "";
     console.log(
@@ -449,51 +503,6 @@ export async function worktreeAdopt(args: string[], _ctx: unknown): Promise<void
   console.log(`  ${green}✓${reset} adopted ${d.main ? `main=${d.main}, ` : ""}${d.claimed.length} claimed, ${d.disposed.length} disposed`);
   for (const r of d.refused) console.log(`  ${yellow}⚠${reset} ${r.tree} not disposed: ${r.reason}`);
   console.log("");
-}
-
-// ─── bare `rt worktree` nav picker ────────────────────────────────────────────
-
-/**
- * Bare `rt worktree` — same contract as `rt cd`: redirect stdout while the
- * picker is up, print only the selected path to stdout on success so a shell
- * wrapper can `cd` into it.
- */
-export async function worktreeNav(_args: string[], _ctx: unknown): Promise<void> {
-  // Redirect FIRST, before any output at all — real stdout is reserved for
-  // the one line the shell wrapper reads (the selected path). Every early
-  // exit below (daemon down, refusal, empty list) goes through console.log,
-  // which now lands on stderr too, same as cd.ts's contract.
-  const realStdoutWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
-  const restore = (): void => { process.stdout.write = realStdoutWrite; };
-
-  let selected: string | null;
-  try {
-    const res = await daemonQuery("worktree:list");
-    if (res === null) { restore(); daemonUnavailable(); }
-    if (!res.ok) {
-      restore();
-      console.log(`\n  ${red}✗${reset} ${explainError(res.error ?? "unknown error")}\n`);
-      process.exit(1);
-    }
-    const rows = (res.data?.trees ?? []) as TreeRow[];
-    if (rows.length === 0) { restore(); console.log(`\n  ${dim}no worktrees${reset}\n`); return; }
-
-    const { filterableSelect } = await import("../lib/rt-render.tsx");
-    const nameWidth = Math.max(...rows.map((r) => r.name.length));
-    const stateWidth = Math.max(...rows.map((r) => (r.state ?? r.kind).length));
-    const branchWidth = Math.max(...rows.map((r) => (r.branch ?? "(detached)").length));
-    const options = rows.map((r) => ({
-      value: r.path,
-      label: `${r.name.padEnd(nameWidth)}  ${(r.state ?? r.kind).padEnd(stateWidth)}  ${(r.branch ?? "(detached)").padEnd(branchWidth)}  ${r.owner ?? ""}`,
-    }));
-    selected = await filterableSelect({ message: "Jump to worktree", options, stderr: true });
-  } finally {
-    restore();
-  }
-
-  if (!selected) process.exit(0);
-  realStdoutWrite(selected + "\n");
 }
 
 // ─── each ────────────────────────────────────────────────────────────────────

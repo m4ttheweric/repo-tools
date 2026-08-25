@@ -14,7 +14,7 @@ const SWITCH_REPO     = "__switch_repo__"     as const;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-async function getRemoteUrl(repoPath: string): Promise<string | undefined> {
+export async function getRemoteUrl(repoPath: string): Promise<string | undefined> {
   try {
     return execSync("git config --get remote.origin.url", {
       cwd: repoPath, encoding: "utf8", stdio: "pipe",

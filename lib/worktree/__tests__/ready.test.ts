@@ -116,3 +116,15 @@ describe("runReadySteps", () => {
     }
   });
 });
+
+describe("runReadySteps — command-not-found hint", () => {
+  test("a 127 failure names the zsh -lc contract so the mystery is actionable", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "rtready-127-")));
+    const result = await runReadySteps(dir, [{ run: "definitely-not-a-real-command-xyz" }]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.output).toContain("zsh -lc");
+      expect(result.output).toContain("~/.zshrc is NOT");
+    }
+  });
+});

@@ -65,7 +65,13 @@ export async function runReadySteps(
       stderr: "pipe",
     });
     if (r.exitCode !== 0) {
-      return { ok: false, failedStep: step.run, output: r.stdout + r.stderr };
+      let output = r.stdout + r.stderr;
+      // 127 under a daemon is nearly always a PATH mystery — name the shell
+      // contract so the failure is actionable instead of a silent backoff loop.
+      if (r.exitCode === 127 || /command not found/.test(output)) {
+        output += "\n(ready steps run under `zsh -lc`: ~/.zshenv and ~/.zprofile are sourced, ~/.zshrc is NOT — put PATH setup for this tool in one of the former)";
+      }
+      return { ok: false, failedStep: step.run, output };
     }
   }
   return { ok: true };
