@@ -76,10 +76,10 @@ describe("rt cd --repo --worktree with a missing repo", () => {
 
 /**
  * The plain `rt cd` picker (no --repo/--worktree flags) reaches
- * pickFromAllRepos through commands/cd.ts's own `getKnownRepos()` call —
- * before RT-63/68's carry-forward fix, that call excluded missing rows, so a
- * lost repo silently vanished from the picker instead of hitting the
- * missingRepoRefusal guard pickFromAllRepos already carries.
+ * pickFromAllRepos through commands/cd.ts's own `getKnownRepos()` call — a
+ * bare call there excludes missing rows, so a lost repo would silently vanish
+ * from the picker instead of hitting the missingRepoRefusal guard
+ * pickFromAllRepos already carries.
  */
 describe("rt cd default picker with a missing repo", () => {
   const origHome = process.env.HOME;
