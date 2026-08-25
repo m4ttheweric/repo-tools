@@ -20,7 +20,7 @@ import type { PullRequest } from "@mattstack/glance";
 import { parseIdentity } from "../../settings/identity.ts";
 import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
-import { syncProjectMRs, backfillAuthors } from "../project-sync.ts";
+import { syncProjectMRs, backfillAuthors, backfillSections } from "../project-sync.ts";
 import { getRepoContext } from "../freshness.ts";
 import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
@@ -29,17 +29,22 @@ import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 interface DemandRequest {
   client: string;
   authors: string[];
+  codeownerSections?: string[];
   declaredAt: number;
 }
 
 /** Guards store writes: a bad demand must be rejected, never partially registered. */
 function isValidDemand(d: unknown): d is DemandRequest {
   if (!d || typeof d !== "object") return false;
-  const { client, authors, declaredAt } = d as Record<string, unknown>;
+  const { client, authors, declaredAt, codeownerSections } = d as Record<string, unknown>;
   if (typeof client !== "string" || client.length === 0) return false;
   if (!Array.isArray(authors) || authors.length < 1 || authors.length > 200) return false;
   if (!authors.every((a) => typeof a === "string" && a.length > 0)) return false;
   if (typeof declaredAt !== "number" || !Number.isFinite(declaredAt)) return false;
+  if (codeownerSections !== undefined) {
+    if (!Array.isArray(codeownerSections) || codeownerSections.length < 1 || codeownerSections.length > 20) return false;
+    if (!codeownerSections.every((s) => typeof s === "string" && s.length > 0)) return false;
+  }
   return true;
 }
 
@@ -58,6 +63,7 @@ export interface ProjectMRsHandlerOverrides {
   sync?: (repoName: string) => Promise<void>;
   tracking?: () => RepoTracking;
   backfill?: (repoName: string, authors: string[]) => Promise<void>;
+  sectionBackfill?: (repoName: string, sections: string[]) => Promise<void>;
   /**
    * Returns projectPath explicitly alongside the PR so the write-back
    * upsert never depends on an implicit side channel (a prior version threaded
@@ -78,6 +84,8 @@ export function createProjectMRsHandlers(
   const tracking = overrides.tracking ?? loadRepoTracking;
   const backfill = overrides.backfill
     ?? ((repoName: string, authors: string[]) => backfillAuthors({ repoIndex: ctx.repoIndex, broadcast }, repoName, authors));
+  const sectionBackfill = overrides.sectionBackfill
+    ?? ((repoName: string, sections: string[]) => backfillSections({ repoIndex: ctx.repoIndex, broadcast }, repoName, sections));
   return {
     "project-mrs:read": async (
       payload: Commands["project-mrs:read"]["payload"],
@@ -108,7 +116,7 @@ export function createProjectMRsHandlers(
       // Registered before the freshness gate so a forced read's awaited sync
       // (below) already sees this demand's authors.
       if (demand) {
-        store().registerDemand(repoName, demand.client, demand.authors, demand.declaredAt);
+        store().registerDemand(repoName, demand.client, demand.authors, demand.declaredAt, demand.codeownerSections);
       }
 
       if (typeof maxAgeMs === "number") {
@@ -151,15 +159,40 @@ export function createProjectMRsHandlers(
         }
       }
 
+      // Sections axis mirrors the authors block above: read the STORED
+      // demand (not the raw request), dedupe, and forced reads await.
+      const demandedSections = demand ? [...new Set(record?.demands?.[demand.client]?.sections ?? [])] : [];
+      let coveredSections = new Set(record?.scope?.sections ?? []);
+      let uncoveredSections = demandedSections.filter((s) => !coveredSections.has(s));
+      if (uncoveredSections.length > 0) {
+        const attemptedSections = uncoveredSections;
+        const run = sectionBackfill(repoName, attemptedSections);
+        const logSectionBackfillFailure = (err: unknown) => {
+          ctx.log.warn({ err, repo: repoName, sections: attemptedSections }, "section backfill failed");
+        };
+        if (maxAgeMs === 0) {
+          await run.catch(logSectionBackfillFailure);
+          record = store().read(repoName);
+          coveredSections = new Set(record?.scope?.sections ?? []);
+          uncoveredSections = demandedSections.filter((s) => !coveredSections.has(s));
+        } else {
+          void run.catch(logSectionBackfillFailure);
+        }
+      }
+
       if (!record) return { ok: true, data: { mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 } };
       return {
         ok: true,
         data: {
-          mrs: record.mrs,
+          mrs: record.mrs,   // verbatim: entries serialize as-is, so codeownerSections flows unmapped
           listSyncedAt: record.listSyncedAt,
           source: record.source,
           syncedAt: freshnessOf(record),
-          scope: record.scope ? { ...record.scope, uncovered } : undefined,
+          scope: record.scope ? {
+            ...record.scope, uncovered,
+            ...(demandedSections.length > 0 || record.scope.sections
+              ? { sections: record.scope.sections ?? [], uncoveredSections } : {}),
+          } : undefined,
         },
       };
     },

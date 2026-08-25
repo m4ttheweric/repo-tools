@@ -296,6 +296,31 @@ describe("project-mrs:read handler", async () => {
     expect(store.read("remote:repo")!.demands).toBeUndefined();
   });
 
+  test("demand with malformed codeownerSections is rejected", async () => {
+    const store = tmpStore();
+    store.fullSync("remote:repo", "g/p", [], Date.now());
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking });
+    const base = { client: "b:1", authors: ["x"], declaredAt: 1 };
+
+    const notArray = await h["project-mrs:read"]!(
+      { repoName: "remote:repo", demand: { ...base, codeownerSections: "Acme" } } as any,
+    );
+    expect(notArray.ok).toBe(false);
+
+    const empty = await h["project-mrs:read"]!({ repoName: "remote:repo", demand: { ...base, codeownerSections: [] } });
+    expect(empty.ok).toBe(false); // an empty list is meaningless; omit the field instead
+
+    const emptyString = await h["project-mrs:read"]!({ repoName: "remote:repo", demand: { ...base, codeownerSections: [""] } });
+    expect(emptyString.ok).toBe(false);
+
+    const tooMany = await h["project-mrs:read"]!(
+      { repoName: "remote:repo", demand: { ...base, codeownerSections: Array.from({ length: 21 }, (_, i) => `s${i}`) } },
+    );
+    expect(tooMany.ok).toBe(false);
+
+    expect(store.read("remote:repo")!.demands).toBeUndefined();
+  });
+
   test("uncovered demanded authors are reported and kick a backfill on unforced reads", async () => {
     const store = tmpStore();
     store.fullSync("remote:repo", "g/p", [], Date.now());
@@ -399,6 +424,25 @@ describe("project-mrs:read handler", async () => {
     expect(warns.length).toBe(1);
     expect(warns[0]!.obj.repo).toBe("remote:repo");
     expect(warns[0]!.obj.authors).toEqual(["newbie"]);
+  });
+
+  test("read returns entry tags and scope sections; uncoveredSections triggers backfill", async () => {
+    const store = tmpStore();
+    store.fullSync("remote:repo", "g/p", [pr(1)], Date.now() - 60_000);
+    store.setSectionTags("remote:repo", { 1: ["Acme"] });
+    store.setScope("remote:repo", { authors: ["ada"], sections: [], windowDays: 30 });
+    const backfilled: string[][] = [];
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, {
+      store, sync: async () => {}, tracking: grantedTracking,
+      sectionBackfill: async (_r, sections) => { backfilled.push(sections); },
+    });
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 0,
+      demand: { client: "b:1", authors: ["ada"], codeownerSections: ["Acme"], declaredAt: 1 } });
+    expect(res.ok).toBe(true);
+    expect((dataOf(res) as any).mrs["1"].codeownerSections).toEqual(["Acme"]);
+    expect((dataOf(res) as any).scope.sections).toEqual([]);
+    expect((dataOf(res) as any).scope.uncoveredSections).toEqual(["Acme"]);
+    expect(backfilled).toEqual([["Acme"]]);
   });
 
   test("uncovered is computed from the stored demand, not a stale request (finding 4)", async () => {
