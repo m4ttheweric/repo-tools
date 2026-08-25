@@ -1757,7 +1757,8 @@ export async function skillsBind(args: string[]): Promise<void> {
 
     // Roster verb wins on a name collision -- resolve() lets compileTargets reject
     // that collision pack-wide, so bind's own tie-break only ever matters for --dry-run.
-    const verb = resolved.fullRoster.find((v) => v.name === verbName) ?? resolved.stages.find((v) => v.name === verbName);
+    const rosterVerb = resolved.fullRoster.find((v) => v.name === verbName);
+    const verb = rosterVerb ?? resolved.stages.find((v) => v.name === verbName);
     if (!verb) {
       const knownVerbs = resolved.fullRoster.map((v) => v.name).sort();
       const knownStages = resolved.stages.map((v) => v.name).sort();
@@ -1826,6 +1827,10 @@ export async function skillsBind(args: string[]): Promise<void> {
       manifest: resolved.manifestPath,
       json: false,
     };
-    await skillsCompile([...compileArgs(surfaceFlags, resolved.packDir), "--verb", verbName]);
+    // A stage's bound fills feed every orchestrator's compiled allowed-tools union
+    // (stageAllowedToolsFor) -- scoping to `--verb <stage>` would leave every
+    // orchestrator's SKILL.md stale, so a stage bind recompiles the whole pack.
+    const recompileArgs = rosterVerb ? [...compileArgs(surfaceFlags, resolved.packDir), "--verb", verbName] : compileArgs(surfaceFlags, resolved.packDir);
+    await skillsCompile(recompileArgs);
   });
 }
