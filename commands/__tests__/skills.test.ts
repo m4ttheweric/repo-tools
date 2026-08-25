@@ -980,6 +980,7 @@ describe("skillsCheck --json", () => {
     expect(parsed.verbs).toEqual([
       { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [], side: "skills" },
     ]);
+    expect("staleBecause" in parsed.verbs[0]).toBe(false);
   });
 
   test("separates staleFiles (content drift) from orphanFiles (leftover) instead of merging them", async () => {
@@ -997,9 +998,91 @@ describe("skillsCheck --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"], side: "skills" },
+      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"], side: "skills", staleBecause: ["fill"] },
     ]);
     expect(process.exitCode).toBe(1);
+  });
+
+  test("engine body edited: staleBecause names the source", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"),
+      WATCH_CI_SKILL_MD.replace("Poll the pipeline every 30s", "Poll the pipeline every 60s"),
+    );
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.status).toBe("stale");
+    expect(verb.staleFiles).toEqual(["SKILL.md"]);
+    expect(verb.staleBecause).toEqual(["source"]);
+  });
+
+  test("fill body edited: staleBecause names the fill", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    writeFile(
+      join(mattstackDir, "plugins", "acme", "attachments", "watch-ci-domain", "SKILL.md"),
+      DOMAIN_SKILL_MD.replace("Domain rules live at", "Domain rules now live at"),
+    );
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.status).toBe("stale");
+    expect(verb.staleBecause).toEqual(["fill"]);
+  });
+
+  test("roster description edited: staleBecause names frontmatter", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    writeFile(
+      join(packDir, "pack", "stubs.jsonc"),
+      STUBS_JSONC.replace("Use when watching or triaging CI.", "Use when watching CI."),
+    );
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.status).toBe("stale");
+    expect(verb.staleBecause).toEqual(["frontmatter"]);
+  });
+
+  test("vendored script edited: staleBecause names vendored", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"),
+      "#!/bin/sh\necho polling twice\n",
+    );
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.status).toBe("stale");
+    expect(verb.staleFiles).toEqual(["scripts/ci-watch.sh"]);
+    expect(verb.staleBecause).toEqual(["vendored"]);
   });
 
   test("internal verb with missing outDir: never-compiled under attachments/, and still counts as stale", async () => {

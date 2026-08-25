@@ -31,6 +31,7 @@ import { createRealProbes } from "../lib/setup/probes.ts";
 import { materializeSkills } from "../lib/setup/skills-materialize.ts";
 import { validateChain } from "../lib/skills/chain.ts";
 import { compileSkill, HEADER_COMMENT, isInlined } from "../lib/skills/compile.ts";
+import { skillMdDriftCauses, type DriftCause } from "../lib/skills/drift.ts";
 import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
 import { buildStageEntries, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
@@ -784,6 +785,7 @@ type CheckVerbRow = {
   staleFiles: string[];
   orphanFiles: string[];
   side: "skills" | "attachments";
+  staleBecause?: DriftCause[];
 };
 
 export async function skillsCheck(args: string[]): Promise<void> {
@@ -823,16 +825,31 @@ export async function skillsCheck(args: string[]): Promise<void> {
       const staleFiles: string[] = [];
       const orphanFiles: string[] = [];
       const expectedPaths = new Set(result.files.map((f) => f.path));
+      const causes: DriftCause[] = [];
+      const addCause = (cause: DriftCause) => {
+        if (!causes.includes(cause)) causes.push(cause);
+      };
 
       for (const file of result.files) {
         const dest = join(outDir, file.path);
         const expected = "content" in file ? Buffer.from(file.content) : readFileSync(file.copyFrom);
         // SKILL.md carries the compiler's own version/sha stamps -- a version bump or
         // a fresh checkout sha with no inlined body change is not drift worth flagging.
-        const stale = file.path.endsWith("SKILL.md")
-          ? !existsSync(dest) || maskProvenance(readFileSync(dest, "utf8")) !== maskProvenance(expected.toString("utf8"))
-          : !existsSync(dest) || !readFileSync(dest).equals(expected);
-        if (stale) staleFiles.push(file.path);
+        if (file.path.endsWith("SKILL.md")) {
+          const maskedExpected = maskProvenance(expected.toString("utf8"));
+          const maskedOnDisk = existsSync(dest) ? maskProvenance(readFileSync(dest, "utf8")) : null;
+          if (maskedOnDisk === null || maskedOnDisk !== maskedExpected) {
+            staleFiles.push(file.path);
+            if (maskedOnDisk === null) addCause("structure");
+            else for (const cause of skillMdDriftCauses(maskedOnDisk, maskedExpected)) addCause(cause);
+          }
+        } else {
+          const stale = !existsSync(dest) || !readFileSync(dest).equals(expected);
+          if (stale) {
+            staleFiles.push(file.path);
+            addCause("vendored");
+          }
+        }
       }
 
       // A file left behind by an earlier compile: writeCompiledVerb would delete it on
@@ -843,10 +860,11 @@ export async function skillsCheck(args: string[]): Promise<void> {
 
       if (staleFiles.length > 0 || orphanFiles.length > 0) {
         anyStale = true;
-        rows.push({ name: verb.name, status: "stale", staleFiles, orphanFiles, side });
+        rows.push({ name: verb.name, status: "stale", staleFiles, orphanFiles, side, staleBecause: causes });
         if (!flags.json) {
           const humanFiles = [...staleFiles, ...orphanFiles.map((f) => `${f} (orphan)`)];
-          console.log(`${verb.name}: stale (recompile or investigate drift with git diff) -- ${humanFiles.join(", ")}`);
+          const movedPrefix = causes.length > 0 ? `${causes.join(", ")} moved; ` : "";
+          console.log(`${verb.name}: stale (${movedPrefix}recompile or investigate drift with git diff) -- ${humanFiles.join(", ")}`);
         }
       } else {
         rows.push({ name: verb.name, status: "in-sync", staleFiles, orphanFiles, side });

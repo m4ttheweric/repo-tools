@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -52,6 +52,48 @@ describe("compile-native end to end", () => {
     process.exitCode = 0;
     await skillsCheck(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest]);
     expect(process.exitCode).toBe(0);
+  });
+
+  test("check --json: an edited include body reports staleBecause include on the stage that pulls it in", async () => {
+    const { pack, ms, manifest } = await build();
+    const notePath = join(ms, "plugins", "mattstack", "attachments", "gitlab-note", "SKILL.md");
+    writeFileSync(notePath, readFileSync(notePath, "utf8").replace("note body", "note body v2"));
+
+    const logs: string[] = [];
+    const logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+    try {
+      await skillsCheck(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest, "--json"]);
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(logs.join("\n"));
+    const stagePlan = parsed.verbs.find((v: { name: string }) => v.name === "stage-plan");
+    expect(stagePlan.status).toBe("stale");
+    expect(stagePlan.staleBecause).toEqual(["include"]);
+  });
+
+  test("check --json: dropping a fill's {{include}} line reports staleBecause structure", async () => {
+    const { pack, ms, manifest } = await build();
+    const policyPath = join(pack, "attachments", "plan-policy", "SKILL.md");
+    writeFileSync(policyPath, readFileSync(policyPath, "utf8").replace("\n{{include:gitlab-note}}\n", "\n"));
+
+    const logs: string[] = [];
+    const logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+    try {
+      await skillsCheck(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest, "--json"]);
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(logs.join("\n"));
+    const stagePlan = parsed.verbs.find((v: { name: string }) => v.name === "stage-plan");
+    expect(stagePlan.status).toBe("stale");
+    expect(stagePlan.staleBecause).toEqual(["structure"]);
   });
 
   test("a broken chain refuses to compile", async () => {
