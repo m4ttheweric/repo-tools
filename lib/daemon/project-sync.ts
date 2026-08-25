@@ -208,6 +208,12 @@ async function syncImpl(
         // failed author fetch rejects the whole deep (below) rather than
         // landing here as "this author has no MRs".
         const sections = effectiveSections(record);
+        // Captured BEFORE fullSync runs: fullSync's reconcile overwrites
+        // every surviving entry with a fresh { pr, fetchedAt } object, which
+        // would erase this same signal if read afterward -- a demand that
+        // drops its sections while the MR stays in scope (author-covered)
+        // would then never trigger the rollback clear below.
+        const hasStaleTags = Object.values(record?.mrs ?? {}).some((e) => e.codeownerSections?.length);
         const { projectPath, prs } = await fetchAuthors(repoName, scopeAuthors);
         const kept = withinWindow(prs, windowDays, syncStartedAt);
         const byIid = new Map(kept.map((pr) => [pr.iid, pr]));
@@ -250,13 +256,14 @@ async function syncImpl(
           );
         }
         const changed = store.fullSync(repoName, projectPath, [...byIid.values()], syncStartedAt);
-        // Containment: with sections never declared there is nothing to write
-        // and nothing to clear, so this stays a no-op call away from
-        // bit-identical behavior. It runs (replaceAll) when sections are live
-        // OR when stale tags linger from a demand that just dropped -- read
-        // AFTER fullSync so the prune above has already dropped pruned rows'
-        // tags.
-        const hasStaleTags = Object.values(store.read(repoName)?.mrs ?? {}).some((e) => e.codeownerSections?.length);
+        // Containment: with sections never declared and no stale tag from a
+        // dropped demand, there is nothing to write and nothing to clear, so
+        // this stays a no-op call away from bit-identical behavior. It runs
+        // (replaceAll) when sections are live OR when `hasStaleTags` (above)
+        // found a tag from before this cycle -- covering both a pruned row
+        // (already cleaned by fullSync's own prune) and a still-in-scope row
+        // whose match just disappeared (the rollback's one permitted extra
+        // write, spec Decision 4).
         if (sections.length > 0 || hasStaleTags) {
           store.setSectionTags(repoName, tags, { replaceAll: true });
         }
@@ -419,7 +426,14 @@ export async function backfillAuthors(
   const selfUsername = overrides.selfUsername !== undefined ? overrides.selfUsername : getSelfUsername();
   const union = new Set([...(record?.scope?.authors ?? []), ...authors]);
   if (selfUsername) union.add(selfUsername);
-  store.setScope(repoName, { authors: [...union].sort(), windowDays });
+  // setScope is a full replace -- an existing scope's sections (set by the
+  // deep sweep) must be carried forward explicitly or this call erases them
+  // until the next deep.
+  store.setScope(repoName, {
+    authors: [...union].sort(),
+    ...(record?.scope?.sections ? { sections: record.scope.sections } : {}),
+    windowDays,
+  });
 
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });

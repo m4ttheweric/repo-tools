@@ -2,7 +2,7 @@ import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { syncProjectMRs, backfillAuthors, effectiveSections, sectionsMatching, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
+import { syncProjectMRs, backfillAuthors, backfillSections, effectiveSections, sectionsMatching, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import { openStateDb } from "../../state/index.ts";
 import type { PullRequest } from "@mattstack/glance";
@@ -933,26 +933,72 @@ describe("codeowner section sweep (deep)", () => {
   test("deep sweep untags rows the sweep no longer matches (replaceAll)", async () => {
     const store = tmpStore();
     store.registerDemand("r2", "board:1", ["ada"], 1, ["Acme"]);
-    // First deep: iid 9 matches an unapproved CODE_OWNER rule and gets hydrated + tagged.
+    // First deep: iid 1 is author-covered AND matches an unapproved CODE_OWNER rule.
     await syncProjectMRs(deps("r2"), "r2", {
       store, selfUsername: "self", windowDays: 30, mode: "deep",
-      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
       fetchRules: async () => ({ projectPath: "g/p", rules: [
-        { iid: 9, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+        { iid: 1, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
       ] }),
-      fetchSingle: async (_r, _p, iid) => pr(iid, { author: { username: "stranger" } as any }),
     });
-    expect(store.read("r2")!.mrs[9]!.codeownerSections).toEqual(["Acme"]);
+    expect(store.read("r2")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
 
-    // Second deep: the rule is gone (approved/removed) -- the sweep no longer matches iid 9.
+    // Second deep: iid 1 stays author-covered (fullSync retains the row --
+    // the prune never fires), but the rule no longer matches. Only the
+    // replaceAll write can clear this tag; the prune path is not exercised.
     await syncProjectMRs(deps("r2"), "r2", {
       store, selfUsername: "self", windowDays: 30, mode: "deep",
-      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
       fetchRules: async () => ({ projectPath: "g/p", rules: [] }),
     });
     const rec = store.read("r2")!;
-    expect(rec.mrs[9]).toBeUndefined();                  // pruned: stranger, no longer matched
-    expect(Object.values(rec.mrs).some((e) => e.codeownerSections?.length)).toBe(false);
+    expect(rec.mrs[1]).toBeDefined();                    // still in scope: not pruned
+    expect(rec.mrs[1]!.codeownerSections).toBeUndefined();
+  });
+
+  test("hasStaleTags rollback: dropping a demand's sections clears a still-in-scope row's tag exactly once (finding 3)", async () => {
+    const raw = tmpStore();
+    let tagCalls = 0;
+    const store = { ...raw, setSectionTags: (repoName: string, tags: Record<number, string[]>, opts?: { replaceAll?: boolean }) => {
+      tagCalls++;
+      raw.setSectionTags(repoName, tags, opts);
+    } };
+    store.registerDemand("r6", "board:1", ["ada"], 1, ["Acme"]);
+
+    // 1st deep: iid 1 is author-covered and matches -> tagged.
+    await syncProjectMRs(deps("r6"), "r6", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 1, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+    });
+    expect(raw.read("r6")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+    expect(tagCalls).toBe(1);
+
+    // The demand drops its sections but keeps wanting the same author.
+    store.registerDemand("r6", "board:1", ["ada"], 2);
+
+    // 2nd deep: no sections demanded anymore, but iid 1 stays author-covered
+    // -- the sweep is skipped (no fetchRules call), yet the stale tag from
+    // before must still be cleared via the hasStaleTags rollback.
+    await syncProjectMRs(deps("r6"), "r6", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => { throw new Error("must not fetch rules: no sections demanded"); },
+    });
+    expect(raw.read("r6")!.mrs[1]).toBeDefined();
+    expect(raw.read("r6")!.mrs[1]!.codeownerSections).toBeUndefined();
+    expect(tagCalls).toBe(2);
+
+    // 3rd deep: nothing changed -- no stale tag left, no sections demanded
+    // -> no further tag-clear write.
+    await syncProjectMRs(deps("r6"), "r6", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => { throw new Error("must not fetch rules: no sections demanded"); },
+    });
+    expect(tagCalls).toBe(2);
   });
 
   test("containment: a demand without sections never calls fetchRules and never tags", async () => {
@@ -967,5 +1013,100 @@ describe("codeowner section sweep (deep)", () => {
     expect(rulesCalled).toBe(0);
     expect(store.read("r3")!.mrs[1]!.codeownerSections).toBeUndefined();
     expect(store.read("r3")!.scope).toEqual({ authors: ["ada", "self"], windowDays: 30 });
+  });
+
+  test("backfillAuthors preserves an existing scope's sections (finding 1)", async () => {
+    const store = tmpStore();
+    store.fullSync("r5", "g/p", [], Date.now() - 1000);
+    store.setScope("r5", { authors: ["alice"], sections: ["Acme"], windowDays: 30 });
+    await backfillAuthors(
+      deps("r5"), "r5", ["newbie"],
+      { store, windowDays: 30, fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }) },
+    );
+    expect(store.read("r5")!.scope).toEqual({ authors: ["alice", "newbie"], sections: ["Acme"], windowDays: 30 });
+  });
+
+  describe("backfillSections (finding 4)", () => {
+    test("empty section list is a no-op: no fetch, no scope mutation, no broadcast", async () => {
+      const store = tmpStore();
+      store.fullSync("bs1", "g/p", [], Date.now() - 1000);
+      store.setScope("bs1", { authors: ["alice"], sections: ["Acme"], windowDays: 30 });
+      const events: any[] = [];
+      await backfillSections(
+        { repoIndex: () => ({ bs1: "/tmp/repo" }), broadcast: (t, d) => events.push({ t, d }) },
+        "bs1", [],
+        { store, fetchRules: async () => { throw new Error("must not fetch"); } },
+      );
+      expect(store.read("bs1")!.scope!.sections).toEqual(["Acme"]);
+      expect(events.length).toBe(0);
+    });
+
+    test("hydrates only iids the store doesn't already have", async () => {
+      const store = tmpStore();
+      store.fullSync("bs2", "g/p", [pr(1, { author: { username: "alice" } as any })], Date.now() - 1000);
+      store.setScope("bs2", { authors: ["alice"], windowDays: 30 });
+      const hydrated: number[] = [];
+      await backfillSections(
+        { repoIndex: () => ({ bs2: "/tmp/repo" }), broadcast: () => {} },
+        "bs2", ["Acme"],
+        {
+          store, windowDays: 30,
+          fetchRules: async () => ({ projectPath: "g/p", rules: [
+            { iid: 1, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] }, // already stored
+            { iid: 2, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] }, // needs hydration
+          ] }),
+          fetchSingle: async (_r, _pp, iid) => { hydrated.push(iid); return pr(iid, { author: { username: "stranger" } as any }); },
+        },
+      );
+      expect(hydrated).toEqual([2]);
+      expect(store.read("bs2")!.mrs[2]).toBeDefined();
+      expect(store.read("bs2")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+      expect(store.read("bs2")!.mrs[2]!.codeownerSections).toEqual(["Acme"]);
+    });
+
+    test("tags matches without replaceAll -- existing tags on other iids survive", async () => {
+      const store = tmpStore();
+      store.fullSync("bs3", "g/p", [
+        pr(1, { author: { username: "alice" } as any }),
+        pr(2, { author: { username: "alice" } as any }),
+      ], Date.now() - 1000);
+      store.setSectionTags("bs3", { 1: ["Beta"] });
+      store.setScope("bs3", { authors: ["alice"], sections: ["Beta"], windowDays: 30 });
+      await backfillSections(
+        { repoIndex: () => ({ bs3: "/tmp/repo" }), broadcast: () => {} },
+        "bs3", ["Acme"],
+        {
+          store, windowDays: 30,
+          fetchRules: async () => ({ projectPath: "g/p", rules: [
+            { iid: 2, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+          ] }),
+        },
+      );
+      expect(store.read("bs3")!.mrs[1]!.codeownerSections).toEqual(["Beta"]);      // untouched: not replaceAll
+      expect(store.read("bs3")!.mrs[2]!.codeownerSections).toEqual(["Acme"]);
+    });
+
+    test("unions sections into an existing scope, sorted", async () => {
+      const store = tmpStore();
+      store.fullSync("bs4", "g/p", [], Date.now() - 1000);
+      store.setScope("bs4", { authors: ["alice"], sections: ["Beta"], windowDays: 30 });
+      await backfillSections(
+        { repoIndex: () => ({ bs4: "/tmp/repo" }), broadcast: () => {} },
+        "bs4", ["Acme"],
+        { store, windowDays: 30, fetchRules: async () => ({ projectPath: "g/p", rules: [] }) },
+      );
+      expect(store.read("bs4")!.scope!.sections).toEqual(["Acme", "Beta"]);
+    });
+
+    test("with no existing scope leaves scope unset (the `if (scope)` guard)", async () => {
+      const store = tmpStore();
+      store.fullSync("bs5", "g/p", [], Date.now() - 1000);
+      await backfillSections(
+        { repoIndex: () => ({ bs5: "/tmp/repo" }), broadcast: () => {} },
+        "bs5", ["Acme"],
+        { store, windowDays: 30, fetchRules: async () => ({ projectPath: "g/p", rules: [] }) },
+      );
+      expect(store.read("bs5")!.scope).toBeUndefined();
+    });
   });
 });
