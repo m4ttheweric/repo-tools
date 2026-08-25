@@ -382,9 +382,9 @@ export function postMessage(
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body } = args;
   const parsed = parseMentions(body);
-  // `dm` (Task 5) passes the recipient here rather than prepending it to the
-  // body, so the transcript shows the text as typed; the merge is what lets
-  // that recipient still wake a mention-mode member.
+  // A caller that already knows its recipient passes it here instead of
+  // typing "@handle" into the body; merging keeps either form able to wake
+  // a mention-mode member.
   const mentions = args.mentions ? [...new Set([...parsed, ...args.mentions])] : parsed;
 
   const run = db.transaction((): { id: number; recipients: string[] } => {

@@ -1,6 +1,5 @@
 /**
- * lib/state/dm-store.test.ts — DM room lookup/creation (RT-48 chat-presence,
- * Task 4). Cases from the plan's Task 4 step-1 block, verbatim.
+ * lib/state/dm-store.test.ts — DM room lookup/creation.
  */
 import { expect, test } from "bun:test";
 import { tmpdir } from "os";

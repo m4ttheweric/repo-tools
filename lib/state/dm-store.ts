@@ -1,13 +1,10 @@
 /**
- * lib/state/dm-store.ts — DM room lookup/creation for `rt chat dm` (RT-48
- * chat-presence, Task 4). The only module that touches `chat_dms`; the DM's
- * room and membership rows still live in chat_rooms/chat_members, created
- * here through chat-store.ts's `ensureRoomRow` (intra-lib/state exception —
- * see presence-store.ts's note on the same pattern) so a DM's room row is
+ * lib/state/dm-store.ts — DM room lookup/creation for `rt chat dm`. The
+ * only module that touches `chat_dms`; the DM's room and membership rows
+ * still live in chat_rooms/chat_members, created here through
+ * chat-store.ts's `ensureRoomRow` (intra-lib/state exception — see
+ * presence-store.ts's note on the same pattern) so a DM's room row is
  * never a second, divergent INSERT.
- *
- * Spec: docs/superpowers/specs/2026-08-24-rt-chat-presence-design.md
- * "Data model" (chat_dms) and "A DM room's name is an id, not a label".
  */
 
 import { Database } from "bun:sqlite";
@@ -66,9 +63,9 @@ export function dmRoomFor(
     db.query(INSERT_DM_SQL).run(room, a, b, now);
     db.query(INSERT_DM_MEMBER_SQL).run(room, a, now, "all");
     db.query(INSERT_DM_MEMBER_SQL).run(room, b, now, "all");
-    // The human is present in every DM as its silent third party (spec: "in
-    // an agent<->agent DM the human is also present"), but only once — a DM
-    // he is already a participant of already has his row.
+    // The human is a silent third party in every DM, added once as
+    // wake_on none — never duplicated when he is already one of the two
+    // named participants.
     if (a !== humanHandle && b !== humanHandle) {
       db.query(INSERT_DM_MEMBER_SQL).run(room, humanHandle, now, "none");
     }
