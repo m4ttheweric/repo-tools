@@ -33,7 +33,7 @@ describe("runs store", () => {
     expect(d.run.ticket).toBe("ACME-1");
     expect(d.run.branch).toBe("goodwin/mat-1");
     expect(d.run.last_event_at).toBe(1000 + 5000); // the branch field, seeded latest
-    expect(d.run.stages).toEqual([{ name: "plan", status: "running" }]);
+    expect(d.run.stages).toEqual([{ name: "plan", status: "running", started_at: 1000 }]);
   });
 
   test("listRuns denormalizes last_event_at/ticket/branch onto the summary row too", () => {
@@ -49,8 +49,8 @@ describe("runs store", () => {
     expect(row!.branch).toBe("goodwin/mat-1");
     expect(row!.last_event_at).toBe(1000 + 5000);
     expect(row!.stages).toEqual([
-      { name: "provision", status: "done" },
-      { name: "implement", status: "running" },
+      { name: "provision", status: "done", started_at: 1000 },
+      { name: "implement", status: "running", started_at: 1500 },
     ]);
   });
 
