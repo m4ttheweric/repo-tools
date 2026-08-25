@@ -70,6 +70,12 @@ describe("events bus journal", () => {
     expect(res.cursor).toBe(res.events[1]!.id); // truncated list: cursor = last delivered
   });
 
+  test("head returns the journal max id and does not fetch rows", () => {
+    expect(bus.head()).toBe(0);
+    const id = bus.emit("chat/wake/a");
+    expect(bus.head()).toBe(id);
+  });
+
   test("journal survives close/reopen (WAL file db)", () => {
     bus.emit("job/x/a", { keep: true });
     bus.close();

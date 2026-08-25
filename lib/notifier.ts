@@ -96,6 +96,15 @@ const STALE_PORT_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 // ─── Notification type registry ──────────────────────────────────────────────
 
+/**
+ * Persisted preference key (see NOTIFICATION_TYPES) and event.category for
+ * chat mentions. The string value, not this identifier, is the contract:
+ * users who disabled chat notifications have it stored on disk as
+ * `{"chat_mention": false}` — changing the value here silently re-enables
+ * their preference.
+ */
+export const CHAT_NOTIFICATION_CATEGORY = "chat_mention";
+
 export const NOTIFICATION_TYPES = [
   { key: "pipeline_failed",   label: "Pipeline failed",     description: "When a running pipeline fails" },
   { key: "pipeline_passed",   label: "Pipeline passed",     description: "When a running pipeline succeeds" },
@@ -111,6 +120,7 @@ export const NOTIFICATION_TYPES = [
   { key: "runaway_process",   label: "Runaway processes",   description: "When a process is pegged at high CPU for 5+ minutes" },
   { key: "evidence_batch_ready", label: "Evidence batch ready", description: "All evidence requests for a branch settled; captures await review" },
   { key: "evidence_failed",      label: "Evidence capture failed", description: "A queued evidence capture failed in the sandbox" },
+  { key: CHAT_NOTIFICATION_CATEGORY, label: "Chat mention", description: "When an agent mentions you in a chat room" },
 ] as const;
 
 export type NotificationPrefs = Record<string, boolean>;
@@ -148,9 +158,10 @@ export function notifyEnabled(
   message: string,
   url?: string,
   pids?: number[],
+  id?: string,
 ): void {
   if (!isEnabled(loadNotificationPrefs(), category)) return;
-  notify(title, message, url, category, pids);
+  notify(title, message, url, category, pids, id);
 }
 
 function isEnabled(prefs: NotificationPrefs, key: string): boolean {
@@ -273,9 +284,10 @@ export function notify(
   url?: string,
   category: string = "general",
   pids?: number[],
+  id?: string,
 ): void {
   const event: NotificationEvent = {
-    id: crypto.randomUUID(),
+    id: id ?? crypto.randomUUID(),
     title,
     message,
     url,
@@ -307,6 +319,33 @@ export function notify(
   });
   // (No .catch needed: pushToTray's body is fully wrapped in try/catch and
   // resolves false on failure — it can never reject.)
+
+  // 3. Optional push to a phone for chat mentions (off by default; v1 is
+  // ntfy-only — Pushover needs token/user credentials chat.push.target has
+  // nowhere to hold). Fire-and-forget: the desk notification above already
+  // queued successfully, so a rejected fetch here must not undo that.
+  if (category === CHAT_NOTIFICATION_CATEGORY) {
+    // Optional push is best-effort: nothing under here may sink the desk
+    // notification already queued above. The try spans the getSetting() reads
+    // (which can throw on an unexpandable stored value) and the synchronous
+    // fetch() throw a malformed target URL raises before the promise exists.
+    try {
+      const provider = getSetting<string>("chat.push.provider").value;
+      if (provider === "ntfy") {
+        const target = getSetting<string>("chat.push.target").value;
+        if (target) {
+          // Bound the request so an unresponsive ntfy can't leak a pending
+          // fetch forever (the Fetch API has no default timeout).
+          fetch(target, { method: "POST", headers: { Title: title }, body: message, signal: AbortSignal.timeout(10_000) })
+            .catch(err => log.warn({ err }, "chat push failed"));
+        }
+      } else if (provider) {
+        log.warn(`chat.push.provider "${provider}" is not supported (only "ntfy" is)`);
+      }
+    } catch (err) {
+      log.warn({ err }, "chat push failed");
+    }
+  }
 }
 
 // ─── Branch transition detection ─────────────────────────────────────────────

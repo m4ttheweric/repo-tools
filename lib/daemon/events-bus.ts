@@ -26,6 +26,7 @@ export interface EventsBus {
    */
   emitAt(topic: string, payload: unknown, emittedAt: number): number;
   list(opts: { pattern: string; after?: number; limit?: number }): WaitResult;
+  head(): number;
   wait(opts: { pattern: string; after?: number; waitMs?: number; signal?: AbortSignal }): Promise<WaitResult>;
   sweep(): number;
   waiterCount(): number;
@@ -158,6 +159,10 @@ export function createEventsBus(opts: {
         ? events[events.length - 1]!.id
         : maxId();
       return { events, cursor };
+    },
+
+    head() {
+      return maxId();
     },
 
     wait({ pattern, after, waitMs, signal }) {

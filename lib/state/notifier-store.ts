@@ -12,35 +12,26 @@
  * machinery into every barrel import — lib/notifier.ts imports the public
  * API below instead, one direction only, no cycle.
  *
- * Two independent write policies live here, deliberately not sharing code:
+ * Two independent write policies apply here, deliberately not sharing code
+ * (both live in lib/state/busy.ts — see its module doc):
  *
  *  - The `kv` state blob (ns='notifier', k='state') is a once-per-cycle
  *    read-modify-write cache snapshot. A dropped write just means the next
  *    cycle's read-modify-write starts from slightly stale state — the same
  *    "cache writes stay defer-and-move-on" policy every other daemon store
  *    uses — so it goes through the shared warn-and-defer wrapper
- *    (lib/state/busy.ts).
+ *    (`persistOrWarn`).
  *  - `notify_queue` INSERT/DELETE is the one spec-named EXCEPTION: with the
  *    in-memory `notificationQueue` array retired, a dropped write loses a
  *    notification permanently (the fallback timer finds nothing queued, and
  *    the caller's `fired` ledger is already marked — nothing re-arms it).
- *    Every queue mutation goes through `runQueueWrite`: a bounded retry
- *    (~3 attempts, short sleep — the same shape as db.ts's
- *    `execRetryingBusy`, not shared with it because that helper is
- *    `db.exec`-only and pre-migration-transaction-scoped) that logs at ERROR
- *    (not warn) and gives up only after the budget is exhausted.
- *
- * The logger handle is a lazy dynamic import, same reasoning as busy.ts: this
- * module is loaded by the barrel for every consumer, so a top-level
- * `import { getDaemonLogger }` would leak daemon-logger's ~/Library side
- * effect into every barrel import (locked by
- * lib/state/__tests__/barrel.test.ts "touches no file").
+ *    Every queue mutation goes through the shared bounded-retry wrapper
+ *    (`runCriticalWrite`).
  */
 
 import { Database } from "bun:sqlite";
-import type { DaemonLoggerHandle } from "../daemon-logger.ts";
 import { getStateDb, LEGACY_IMPORTS } from "./db.ts";
-import { isBusyError, persistOrWarn } from "./busy.ts";
+import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 
 export interface NotificationEvent {
   id: string;
@@ -93,50 +84,13 @@ export function setNotifierStateBlob<T>(value: T, db: Database = getStateDb()): 
 
 interface QueueEventRow { event: string }
 
-const QUEUE_RETRY_ATTEMPTS = 3;
-const QUEUE_RETRY_SLEEP_MS = 20;
-
-let logHandle: Promise<DaemonLoggerHandle> | null = null;
-
-function logQueueError(op: string, context: Record<string, unknown>, err: unknown): void {
-  logHandle ??= import("../daemon-logger.ts").then((m) => m.getDaemonLogger());
-  void logHandle.then((h) =>
-    h.childLogger("notifier-store").error(
-      { ...context, err },
-      `notify_queue ${op} failed after ${QUEUE_RETRY_ATTEMPTS} attempts: notification may be lost`,
-    ),
-  );
-}
-
-/**
- * The notify_queue EXCEPTION (spec "The database"): bounded retry instead of
- * warn-and-defer. `fn` may return a value (drain's SELECT+DELETE transaction
- * needs its rows back); a still-busy `fn` after the attempt budget logs at
- * ERROR and returns `undefined` rather than throwing or blocking forever.
- */
-function runQueueWrite<T>(op: string, fn: () => T, context: Record<string, unknown>): T | undefined {
-  for (let attempt = 1; attempt <= QUEUE_RETRY_ATTEMPTS; attempt++) {
-    try {
-      return fn();
-    } catch (err) {
-      if (!isBusyError(err)) throw err;
-      if (attempt === QUEUE_RETRY_ATTEMPTS) {
-        logQueueError(op, context, err);
-        return undefined;
-      }
-      Bun.sleepSync(QUEUE_RETRY_SLEEP_MS);
-    }
-  }
-  return undefined;
-}
-
 function rowToEvent(row: QueueEventRow): NotificationEvent {
   return JSON.parse(row.event) as NotificationEvent;
 }
 
 /** Enqueue = INSERT. The one mutation that would otherwise lose a notification permanently if dropped. */
 export function enqueueNotification(event: NotificationEvent, db: Database = getStateDb()): void {
-  runQueueWrite(
+  runCriticalWrite(
     "enqueue",
     () => { db.query(`INSERT INTO notify_queue (event_id, event) VALUES (?, ?);`).run(event.id, JSON.stringify(event)); },
     { event_id: event.id },
@@ -154,7 +108,7 @@ export function drainNotificationQueue(db: Database = getStateDb()): Notificatio
     db.exec(`DELETE FROM notify_queue;`);
     return rows.map(rowToEvent);
   });
-  return runQueueWrite("drain", () => run(), {}) ?? [];
+  return runCriticalWrite("drain", () => run(), {}) ?? [];
 }
 
 /** Peek reads without deleting — diagnostics, no mutation, no retry needed. */
@@ -170,7 +124,7 @@ export function isNotificationQueued(eventId: string, db: Database = getStateDb(
 
 /** Remove-by-event_id — both the pushToTray-success path and the 10s tray-fallback timer's path use this. */
 export function removeQueuedNotification(eventId: string, db: Database = getStateDb()): void {
-  runQueueWrite(
+  runCriticalWrite(
     "remove",
     () => { db.query(`DELETE FROM notify_queue WHERE event_id = ?;`).run(eventId); },
     { event_id: eventId },

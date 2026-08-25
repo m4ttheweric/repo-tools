@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2). */
-export const SCHEMA_VERSION = 2;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3). */
+export const SCHEMA_VERSION = 3;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -168,6 +168,39 @@ CREATE TABLE IF NOT EXISTS run_history (
 CREATE INDEX IF NOT EXISTS idx_run_history_repo_id ON run_history(repo, id);
 `;
 
+// Tables (v3): rooms/members/messages for `rt chat` (lib/state/chat-store.ts
+// is the only module that touches them). `reply_to` ships unused — one
+// nullable column now versus a migration later.
+const V3_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chat_rooms (
+  name        TEXT PRIMARY KEY,
+  purpose     TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  room       TEXT NOT NULL,
+  handle     TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  mentions   TEXT,
+  reply_to   INTEGER,
+  posted_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_messages_room_id ON chat_messages(room, id);
+CREATE TABLE IF NOT EXISTS chat_members (
+  room          TEXT NOT NULL,
+  handle        TEXT NOT NULL,
+  joined_at     INTEGER NOT NULL,
+  last_read_id  INTEGER NOT NULL DEFAULT 0,
+  wake_on       TEXT NOT NULL DEFAULT 'mention',
+  last_seen_at  INTEGER,
+  armed_at      INTEGER,
+  cwd           TEXT,
+  pane          TEXT,
+  PRIMARY KEY (room, handle)
+);
+`;
+
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
 function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code;
@@ -298,7 +331,7 @@ function runMigrations(db: Database, dir: string): void {
       // One exec of the full combined schema, not a per-version step: every
       // statement is IF NOT EXISTS, so replaying v1's DDL against an
       // already-v1 db is a no-op and existing rows are untouched.
-      db.exec(V1_SCHEMA + V2_SCHEMA);
+      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA);
       // Legacy-JSON import is single-shot and only correct from a true
       // v0 (never-migrated) database: branch-cache's UPSERT would silently
       // overwrite current rows with stale ones, and project-mrs-store's
