@@ -73,10 +73,13 @@ exist for out-of-process callers only.
    belongs to: team convention / this human everywhere / this machine).
 2. `cd packages/rt-client && bun run build` — dist is what consumers copy, and
    the dist-freshness test fails otherwise.
-3. Refresh every `file:` consumer: `bun install` in mr-board and local-apps
-   (their node_modules copy does not update itself), and deck additionally
-   BUNDLES rt-client into its compiled binary — rebuild + fresh-inode install
-   + `codesign -f -s -` to pick up path or registry changes.
+3. Deliver the new registry to every consumer — a node_modules copy never
+   updates itself. A `file:` consumer (today: console) re-copies on
+   `bun install`; the apps pinned to the published package (mr-board, gitq,
+   board) only see the key after an rt-client version bump + publish +
+   install; deck additionally BUNDLES rt-client into its compiled binary —
+   rebuild + fresh-inode install + `codesign -f -s -` to pick up path or
+   registry changes.
 4. Read via `getSetting`, write via `setSetting`. Never construct store paths
    by hand; never cache a path or a value at module load.
 
