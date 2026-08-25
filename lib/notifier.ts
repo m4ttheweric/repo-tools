@@ -25,6 +25,7 @@ import { parseEtimeMs, type PortEntry } from "./port-scanner.ts";
 import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
 import { lazyChildLogger } from "./daemon-logger.ts";
+import { repoLabel } from "./repo-arg.ts";
 import {
   getNotifierStateBlob,
   setNotifierStateBlob,
@@ -796,7 +797,7 @@ export function checkRunawayProcesses(
 
     notify(
       "Runaway Process",
-      `${proc.packageScript ?? proc.command} in ${proc.repo}${branchInfo} at ${Math.round(proc.cpuPercent)}% CPU for ${durationMin || "<1"} minutes`,
+      `${proc.packageScript ?? proc.command} in ${repoLabel(proc.repo)}${branchInfo} at ${Math.round(proc.cpuPercent)}% CPU for ${durationMin || "<1"} minutes`,
       undefined,
       "runaway_process",
       [proc.pid],
@@ -805,7 +806,7 @@ export function checkRunawayProcesses(
     // A burst of runaways in one tick collapses into a single summary so the
     // user gets one actionable notification instead of a pile.
     const shown = fresh.slice(0, 2).map(p =>
-      `${p.packageScript ?? p.command} (${p.repo} ${Math.round(p.cpuPercent)}%)`,
+      `${p.packageScript ?? p.command} (${repoLabel(p.repo)} ${Math.round(p.cpuPercent)}%)`,
     );
     const rest = fresh.length - shown.length;
     const summary = rest > 0 ? `${shown.join(", ")}, +${rest} more` : shown.join(", ");
