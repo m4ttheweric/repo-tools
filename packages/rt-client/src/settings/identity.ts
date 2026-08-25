@@ -58,11 +58,20 @@ export function parseIdentity(wire: string): RepoIdentity | null {
   if (colon === -1) return null;
   const kind = wire.slice(0, colon);
   if (kind !== "remote" && kind !== "path") return null;
+  const encoded = wire.slice(colon + 1);
+  let id: string;
   try {
-    return { kind, id: decodeURIComponent(wire.slice(colon + 1)) };
+    id = decodeURIComponent(encoded);
   } catch {
     return null;
   }
+  // Canonical wires only: the id segment must be byte-for-byte what
+  // serializeIdentity emits. Guard sites validate with parseIdentity and then
+  // use the WIRE as a single path component (repoDataDir et al.) — a
+  // hand-built wire with a literal "/" ("path:../..") would otherwise parse
+  // and escape the state directory.
+  if (encodeURIComponent(id) !== encoded) return null;
+  return { kind, id };
 }
 
 /**
@@ -123,7 +132,7 @@ const memo = new Map<string, Promise<RepoIdentity>>();
  * remote.origin.url`, then identityFromRemote (so overrides apply to
  * derivation too). Never a sync spawn — safe to call from daemon contexts.
  * Never returns null: no usable remote falls back to a path-kind identity
- * (the main worktree's realpath, via `--git-common-dir`, so every linked
+ * (the main worktree's realpath, via `git worktree list`, so every linked
  * worktree of one repo still shares the same identity).
  *
  * Only a `remote`-kind result is memoized, for the life of the process; a
@@ -146,11 +155,25 @@ export async function deriveRepoIdentity(repoPath: string): Promise<RepoIdentity
       const fromRemote = remote ? identityFromRemote(remote) : null;
       if (fromRemote) return fromRemote;
     }
-    const top = await runCapture(["git", "-C", repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
-    const base = top.exitCode === 0 && top.stdout.trim()
-      ? safeRealpath(join(top.stdout.trim(), ".."))
-      : safeRealpath(repoPath);
-    return { kind: "path", id: base };
+    // Main worktree via `git worktree list` (main is always listed first) —
+    // NOT `--git-common-dir/..`, which points outside the tree under
+    // `--separate-git-dir` and would derive one shared identity for every
+    // repo whose metadata lives in the same parent directory. In that layout
+    // git lists the git DIR as the main entry, so the listed path is resolved
+    // through its own `--show-toplevel`, degrading to this worktree's
+    // toplevel when the entry isn't a work tree at all.
+    const listed = await runCapture(["git", "-C", repoPath, "worktree", "list", "--porcelain"]);
+    const first = listed.exitCode === 0 ? /^worktree (.+)$/m.exec(listed.stdout)?.[1]?.trim() : undefined;
+    let base: string | undefined;
+    if (first) {
+      const top = await runCapture(["git", "-C", first, "rev-parse", "--show-toplevel"]);
+      if (top.exitCode === 0 && top.stdout.trim()) base = top.stdout.trim();
+    }
+    if (!base) {
+      const own = await runCapture(["git", "-C", repoPath, "rev-parse", "--show-toplevel"]);
+      base = own.exitCode === 0 && own.stdout.trim() ? own.stdout.trim() : repoPath;
+    }
+    return { kind: "path", id: safeRealpath(base) };
   })();
 
   if (result.kind === "remote") memo.set(repoPath, Promise.resolve(result));

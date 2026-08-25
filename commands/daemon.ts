@@ -20,6 +20,7 @@
 
 import { execSync, spawn, spawnSync } from "child_process";
 import { basename, join } from "path";
+import { reverseLookupByName } from "../lib/repo-arg.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { bold, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
@@ -328,9 +329,7 @@ async function resolveTrackingIdentity(arg: string): Promise<{ identity: string;
       return { identity: serializeIdentity(await deriveRepoIdentity(arg)), path: arg };
     }
   } catch { /* not a directory on disk — fall through to the name reverse-lookup */ }
-  const matches = Object.entries(index).filter(
-    ([id, path]) => basename(path) === arg || parseIdentity(id)?.id.split("/").pop() === arg,
-  );
+  const matches = reverseLookupByName(arg, index);
   if (matches.length === 1) return { identity: matches[0]![0], path: matches[0]![1] };
   return null;
 }

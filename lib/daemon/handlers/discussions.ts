@@ -83,6 +83,9 @@ export function createDiscussionHandlers(
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
+      if (parseIdentity(repoName) === null) {
+        return { ok: false, error: "repo must be a serialized identity" };
+      }
       try {
         const res = await refreshDiscussions(deps, repoName, iid);
         return { ok: true, data: { discussions: res.discussions, fetchedAt: res.fetchedAt } };
@@ -99,6 +102,9 @@ export function createDiscussionHandlers(
 
       if (!repoName || typeof iid !== "number" || !discussionId) {
         return { ok: false, error: "missing repoName/iid/discussionId" };
+      }
+      if (parseIdentity(repoName) === null) {
+        return { ok: false, error: "repo must be a serialized identity" };
       }
 
       const repoPath = ctx.repoIndex()[repoName];
@@ -121,6 +127,9 @@ export function createDiscussionHandlers(
       const iid      = payload?.iid      as number | undefined;
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
+      }
+      if (parseIdentity(repoName) === null) {
+        return { ok: false, error: "repo must be a serialized identity" };
       }
 
       const repoPath = ctx.repoIndex()[repoName];
@@ -150,6 +159,9 @@ export function createDiscussionHandlers(
 
       if (!repoName || typeof iid !== "number" || !discussionId || !body?.trim()) {
         return { ok: false, error: "missing repoName/iid/discussionId/body" };
+      }
+      if (parseIdentity(repoName) === null) {
+        return { ok: false, error: "repo must be a serialized identity" };
       }
 
       const repoPath = ctx.repoIndex()[repoName];

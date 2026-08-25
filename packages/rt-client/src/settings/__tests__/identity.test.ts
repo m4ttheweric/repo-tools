@@ -252,6 +252,25 @@ describe("settings/identity", () => {
         rmSync(scratch, { recursive: true, force: true });
       }
     });
+
+    test("a --separate-git-dir repo derives its own worktree, never the shared metadata parent", async () => {
+      const scratch = mkdtempSync(join(tmpdir(), "rt-id-sep-"));
+      try {
+        const meta = join(scratch, "meta");
+        const a = join(scratch, "a");
+        const b = join(scratch, "b");
+        mkdirSync(meta);
+        execSync(`git init -q -b main --separate-git-dir "${join(meta, "a.git")}" "${a}"`, { stdio: "pipe" });
+        execSync(`git init -q -b main --separate-git-dir "${join(meta, "b.git")}" "${b}"`, { stdio: "pipe" });
+        clearIdentityMemo();
+        // `--git-common-dir/..` would derive `meta` for BOTH repos, merging
+        // two unrelated repos into one identity.
+        expect(await deriveRepoIdentity(a)).toEqual({ kind: "path", id: realpathSync(a) });
+        expect(await deriveRepoIdentity(b)).toEqual({ kind: "path", id: realpathSync(b) });
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    });
   });
 });
 
@@ -282,5 +301,12 @@ describe("identity wire codec", () => {
 
   test("parse rejects a string with no kind prefix", () => {
     expect(parseIdentity("gitlab.com/g/r")).toBeNull();
+  });
+
+  test("parse rejects a non-canonical wire — a literal slash must never pass the guard sites that use the wire as one path component", () => {
+    expect(parseIdentity("path:../..")).toBeNull();
+    expect(parseIdentity("path:/etc/passwd")).toBeNull();
+    expect(parseIdentity("remote:gitlab.com/g/r")).toBeNull();
+    expect(parseIdentity("path:..%2f..")).toBeNull(); // lowercase hex: not what serializeIdentity emits
   });
 });

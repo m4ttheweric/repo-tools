@@ -88,15 +88,31 @@ function readOriginRemoteForIdentity(repoRoot: string): string | null {
 /**
  * Main-worktree realpath, computed the same way rt-client's async
  * `deriveRepoIdentity` computes it, so a `path`-kind identity derived here
- * (sync) and there (async) agree byte-for-byte.
+ * (sync) and there (async) agree byte-for-byte: first `worktree` line of
+ * `git worktree list` (main is always listed first), resolved through its own
+ * `--show-toplevel` — not `--git-common-dir/..`, which escapes the tree under
+ * `--separate-git-dir` and merges every repo sharing one metadata parent into
+ * one identity (git lists the git DIR as main there; the toplevel hop
+ * degrades that case to this worktree's own toplevel).
  */
 function mainWorktreeRoot(repoRoot: string): string {
+  const toplevelOf = (dir: string): string | null => {
+    try {
+      const out = execSync("git rev-parse --show-toplevel", {
+        cwd: dir, encoding: "utf8", stdio: "pipe",
+      }).trim();
+      return out || null;
+    } catch {
+      return null;
+    }
+  };
   let target = repoRoot;
   try {
-    const gitCommonDir = execSync("git rev-parse --path-format=absolute --git-common-dir", {
+    const listed = execSync("git worktree list --porcelain", {
       cwd: repoRoot, encoding: "utf8", stdio: "pipe",
-    }).trim();
-    if (gitCommonDir) target = join(gitCommonDir, "..");
+    });
+    const first = /^worktree (.+)$/m.exec(listed)?.[1]?.trim();
+    target = (first ? toplevelOf(first) : null) ?? toplevelOf(repoRoot) ?? repoRoot;
   } catch {
     // not a git dir / git unavailable: fall back to the repo root itself
   }

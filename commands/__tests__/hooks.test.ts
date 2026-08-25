@@ -231,7 +231,7 @@ describe("commands/hooks", () => {
 
   describe("toggleHooks status regenerates the cache before displaying", () => {
     function ctxFor(remoteUrl: string): CommandContext {
-      return { identity: { repoName: "repo", identity: "path:/repo", repoRoot, dataDir, remoteUrl, baseUrl: "" } };
+      return { identity: { repoName: "repo", identity: "path:%2Frepo", repoRoot, dataDir, remoteUrl, baseUrl: "" } };
     }
 
     test("stale cache + store-owned value -> status leaves hooks.json matching the resolved store value", async () => {
@@ -298,7 +298,7 @@ describe("commands/hooks", () => {
       }));
 
       const ctx: CommandContext = {
-        identity: { repoName: "repo", identity: "path:/repo", repoRoot, dataDir, remoteUrl: "git@example.com:org/repo.git", baseUrl: "" },
+        identity: { repoName: "repo", identity: "path:%2Frepo", repoRoot, dataDir, remoteUrl: "git@example.com:org/repo.git", baseUrl: "" },
       };
 
       await toggleHooks(["status"], ctx);
@@ -308,7 +308,7 @@ describe("commands/hooks", () => {
 
       const call = calls.find((c) => c.cmd === "hooks:watch");
       expect(call).toBeDefined();
-      expect(call!.payload!.repo).toBe("path:/repo");
+      expect(call!.payload!.repo).toBe("path:%2Frepo");
       expect(call!.payload!.repo).not.toBe("repo");
     });
   });

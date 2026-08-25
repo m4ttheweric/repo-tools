@@ -27,7 +27,7 @@ describe("hooks handlers — identity-only guard", () => {
 
   test("hooks:watch refuses a bare display name and never starts a watch", async () => {
     let watched = false;
-    const ctx = fakeCtx({ "path:/repo": "/repo" });
+    const ctx = fakeCtx({ "path:%2Frepo": "/repo" });
     ctx.startWatchingRepo = () => { watched = true; };
     const h = createHooksHandlers(ctx);
 
@@ -39,15 +39,15 @@ describe("hooks handlers — identity-only guard", () => {
 
   test("hooks:watch accepts a serialized identity and starts the watch", async () => {
     let watchedName: string | null = null;
-    const ctx = fakeCtx({ "path:/repo": "/repo" });
+    const ctx = fakeCtx({ "path:%2Frepo": "/repo" });
     ctx.startWatchingRepo = (repoName: string) => { watchedName = repoName; };
     const h = createHooksHandlers(ctx);
 
-    const res = await h["hooks:watch"]!({ repo: "path:/repo" });
+    const res = await h["hooks:watch"]!({ repo: "path:%2Frepo" });
 
     expect(res.ok).toBe(true);
     // Cast: TS narrows watchedName to null (its initializer) because the
     // mutating assignment lives in a closure it can't prove ran.
-    expect(watchedName as string | null).toBe("path:/repo");
+    expect(watchedName as string | null).toBe("path:%2Frepo");
   });
 });

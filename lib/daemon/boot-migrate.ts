@@ -30,7 +30,7 @@ import { rekeyEventsCursorNamespace } from "../state/cursors-store.ts";
 import { rekeyRepoTrackingSettings } from "../repo-tracking.ts";
 import { rekeyRunHistoryTable } from "../run-history.ts";
 import { rekeyEndpointClaimsTable } from "../endpoint/store.ts";
-import { rekeyBranchCacheTable } from "../state/branch-cache.ts";
+import { getBranchCacheStore, rekeyBranchCacheTable } from "../state/branch-cache.ts";
 import {
   rekeyProjectMrsTable,
   rekeyProjectMrsMetaTable,
@@ -50,7 +50,13 @@ const STEPS: RekeyStep[] = [
   { name: "rt.repoTracking", run: rekeyRepoTrackingSettings },
   { name: "run_history.repo", run: rekeyRunHistoryTable },
   { name: "endpoint_claims.repo", run: rekeyEndpointClaimsTable },
-  { name: "branch_cache.repo", run: rekeyBranchCacheTable },
+  { name: "branch_cache.repo", run: async () => {
+    const report = await rekeyBranchCacheTable();
+    // The daemon opened the store (and loaded its in-memory map) before this
+    // migration ran — re-keyed rows are invisible to readers until a reload.
+    if (report.migrated.length > 0) getBranchCacheStore().reload();
+    return report;
+  } },
   { name: "project_mrs.repo", run: rekeyProjectMrsTable },
   { name: "project_mrs_meta.repo", run: rekeyProjectMrsMetaTable },
   { name: "project_mr_demands.repo", run: rekeyProjectMrDemandsTable },
