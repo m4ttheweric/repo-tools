@@ -133,14 +133,29 @@ export type DisposeOutcome =
 function joinedMr(
   deps: DisposeDeps,
   rec: TreeRecord,
-): { iid?: number; state?: string | null } | null {
+): { iid?: number; state?: string | null; sha?: string | null } | null {
   if (!rec.branch) return null;
   const entry = deps.cacheEntries[rec.branch];
   if (!entry || !entry.mr) return null;
   // Entries carry repoName once freshness has attributed them; an unattributed
   // entry is accepted (single-repo caches predate the field).
   if (entry.repoName && entry.repoName !== deps.repoName) return null;
-  return entry.mr as { iid?: number; state?: string | null };
+  return entry.mr as { iid?: number; state?: string | null; sha?: string | null };
+}
+
+/**
+ * A merged MR proves containment only for the commits it actually merged: a
+ * reused branch name can resurface an older lifecycle's merged entry (the
+ * cache is branch-keyed, and a by-branch API lookup returns the old MR until
+ * a new one opens), and trusting it would dispose committed work the merge
+ * never saw. The MR's source head sha settles it — squash/rebase merges
+ * rewrite the TARGET, never the source branch, so local HEAD being an
+ * ancestor of `mr.sha` means everything here reached the MR that merged.
+ * No sha (pre-field cache rows) or an unknown sha fails safe to the anchor.
+ */
+async function mergedMrCoversHead(rec: TreeRecord, mr: { state?: string | null; sha?: string | null }): Promise<boolean> {
+  if (mr.state !== "merged" || !mr.sha) return false;
+  return isAncestorAsync(rec.path, "HEAD", mr.sha);
 }
 
 /** Guard 3, non-merged: a branch that has not merged anchors on its remote ref. */
@@ -191,13 +206,15 @@ export async function disposeTree(
     // 3. Containment. A merged MR is authoritative that the branch's work
     //    reached the target: squash-merge and rebase-before-merge both leave
     //    the local head diverged from whatever landed, so every local ancestry
-    //    or patch-id check reads "unpushed" for work that demonstrably merged —
-    //    the merge state is the only reliable signal, so trust it. The dirty
-    //    guard above still blocks uncommitted work, --force still overrides,
-    //    and a disposed tree is recoverable from the trash for the retention
-    //    window. Only a branch that has NOT merged is held to the remote anchor.
+    //    or patch-id check against the TARGET reads "unpushed" for work that
+    //    demonstrably merged. But merged-state alone is trusted only when the
+    //    MR's source sha contains this tree's HEAD (see mergedMrCoversHead) —
+    //    a reused branch's stale merged entry must fall through to the anchor.
+    //    The dirty guard above still blocks uncommitted work, --force still
+    //    overrides, and a disposed tree is recoverable from the trash for the
+    //    retention window.
     const mr = joinedMr(deps, rec);
-    if (mr?.state !== "merged") {
+    if (!mr || !(await mergedMrCoversHead(rec, mr))) {
       const anchorRefusal = await remoteAnchorRefusal(rec);
       if (anchorRefusal) return refuse(anchorRefusal);
     }
