@@ -36,6 +36,7 @@ const ROW_ORDER = [
   "tool.extension",
   "tool.shell",
   "tool.daemon",
+  "tool.flavor",
   "home.backup",
 ];
 
@@ -506,6 +507,60 @@ describe("rtHealthRows — tool.daemon", () => {
     expect(r.status).toBe("error");
     expect(r.detail).toContain("launchctl check failed");
     expect(r.detail).not.toContain("not registered with launchd");
+  });
+});
+
+/**
+ * resolveIntendedMode()/currentMode() read the real wrapper file at
+ * ~/.local/bin/rt (mirrors lib/__tests__/intended-mode.test.ts), so this row
+ * needs a real temp HOME on top of the daemon's fake `ping` seam.
+ */
+describe("rtHealthRows — tool.flavor", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-health-flavor-"));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  /** A script at ~/.local/bin/rt is the dev-mode signal currentMode() reads. */
+  function writeDevWrapper(): void {
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(join(home, ".local", "bin", "rt"), "#!/bin/sh\necho dev\n");
+  }
+
+  test("live daemon of the wrong flavor: fail, names all three legs", async () => {
+    writeDevWrapper(); // setting left unset -> intended derives from the wrapper -> dev; cli -> dev
+    const daemon = (async (cmd: string) => (cmd === "ping" ? { ok: true, flavor: "prod", pid: 9 } : null)) as Probes["daemon"];
+    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon }), { ci: false }, NOOP_FZF), "tool.flavor");
+    expect(r.status).toBe("invalid");
+    expect(r.detail).toContain("prod");
+    expect(r.detail).toContain("dev-mode");
+    expect(r.required).toBe(true);
+  });
+
+  test("daemon down: row passes with 'n/a' daemon leg (clean-room gate must survive)", async () => {
+    writeDevWrapper();
+    // Deliberately mismatched vs the dev wrapper: proves a down daemon
+    // short-circuits before the cli/intended comparison ever runs.
+    setSetting("mattstack.mode", "prod", "machine");
+    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon: async () => null }), { ci: false }, NOOP_FZF), "tool.flavor");
+    expect(r.status).toBe("ready");
+    expect(r.detail).toContain("daemon n/a");
+  });
+
+  test("all legs agree: ready", async () => {
+    writeDevWrapper();
+    const daemon = (async (cmd: string) => (cmd === "ping" ? { ok: true, flavor: "dev" } : null)) as Probes["daemon"];
+    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon }), { ci: false }, NOOP_FZF), "tool.flavor");
+    expect(r.status).toBe("ready");
+    expect(r.detail).toContain("dev everywhere");
   });
 });
 
