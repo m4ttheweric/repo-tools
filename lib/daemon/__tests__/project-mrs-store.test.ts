@@ -323,6 +323,47 @@ describe("scope", () => {
   });
 });
 
+describe("section tags", () => {
+  test("setSectionTags tags, replaces, and clears per iid", () => {
+    const store = tmpStore();
+    store.fullSync("r", "g/p", [pr(1), pr(2)], 1000);
+    store.setSectionTags("r", { 1: ["Acme"] });
+    expect(store.read("r")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+    expect(store.read("r")!.mrs[2]!.codeownerSections).toBeUndefined();
+    store.setSectionTags("r", { 1: [] });
+    expect(store.read("r")!.mrs[1]!.codeownerSections).toBeUndefined();
+  });
+
+  test("setSectionTags replaceAll clears tags the map does not mention", () => {
+    const store = tmpStore();
+    store.fullSync("r", "g/p", [pr(1), pr(2)], 1000);
+    store.setSectionTags("r", { 1: ["Acme"], 2: ["Beta"] });
+    store.setSectionTags("r", { 2: ["Beta"] }, { replaceAll: true });
+    expect(store.read("r")!.mrs[1]!.codeownerSections).toBeUndefined();
+    expect(store.read("r")!.mrs[2]!.codeownerSections).toEqual(["Beta"]);
+  });
+
+  test("fullSync prune drops the pruned row's tag row too", () => {
+    const db = tmpDb();
+    const store = createProjectMRs(db);
+    store.fullSync("r", "g/p", [pr(1)], 1000);
+    store.setSectionTags("r", { 1: ["Acme"] });
+    store.fullSync("r", "g/p", [], 2000);
+    expect(store.read("r")!.mrs[1]).toBeUndefined();
+    const rows = db.query("SELECT * FROM project_mr_sections WHERE repo = 'r';").all();
+    expect(rows).toHaveLength(0);
+  });
+
+  test("registerDemand stores sections and scope round-trips them", () => {
+    const store = tmpStore();
+    store.registerDemand("r", "board:1", ["ada"], 5, ["Acme"]);
+    expect(store.read("r")!.demands!["board:1"]!.sections).toEqual(["Acme"]);
+    store.fullSync("r", "g/p", [], 1000);
+    store.setScope("r", { authors: ["ada"], sections: ["Acme"], windowDays: 30 });
+    expect(store.read("r")!.scope).toEqual({ authors: ["ada"], sections: ["Acme"], windowDays: 30 });
+  });
+});
+
 describe("persistence — rows mirror the in-memory model", () => {
   test("fullSync writes are visible as project_mrs / project_mrs_meta rows", () => {
     const dir = mkdtempSync(join(tmpdir(), "rt-pmrs-"));

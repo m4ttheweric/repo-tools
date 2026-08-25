@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4). */
-export const SCHEMA_VERSION = 4;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6; v5 is reserved by another lane). */
+export const SCHEMA_VERSION = 6;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -237,6 +237,20 @@ CREATE TABLE IF NOT EXISTS chat_dms (
 );
 `;
 
+// Tables (v6): CODEOWNERS section tags on project-mrs rows (RT board
+// codeowner tabs). `project_mr_sections` is a separate table, not a column
+// on `project_mrs`, so `setSectionTags`'s per-iid clear (empty array) is a
+// plain DELETE rather than a NULL-vs-empty-string ambiguity on that row.
+const V6_SCHEMA = `
+CREATE TABLE IF NOT EXISTS project_mr_sections (
+  repo     TEXT NOT NULL,
+  iid      INTEGER NOT NULL,
+  sections TEXT NOT NULL,               -- JSON string[]
+  PRIMARY KEY (repo, iid)
+);
+ALTER TABLE project_mr_demands ADD COLUMN sections TEXT;
+`;
+
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
 function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code;
@@ -367,7 +381,7 @@ function runMigrations(db: Database, dir: string): void {
       // One exec of the full combined schema, not a per-version step: every
       // statement is IF NOT EXISTS, so replaying v1's DDL against an
       // already-v1 db is a no-op and existing rows are untouched.
-      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA);
+      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA);
       // Legacy-JSON import is single-shot and only correct from a true
       // v0 (never-migrated) database: branch-cache's UPSERT would silently
       // overwrite current rows with stale ones, and project-mrs-store's

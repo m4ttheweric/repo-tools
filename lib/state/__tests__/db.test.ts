@@ -65,6 +65,7 @@ const ALL_TABLE_NAMES = [
   "kv",
   "notify_queue",
   "project_mr_demands",
+  "project_mr_sections",
   "project_mrs",
   "project_mrs_meta",
   "run_history",
@@ -72,10 +73,10 @@ const ALL_TABLE_NAMES = [
 ];
 
 describe("openStateDb — fresh open", () => {
-  test("a fresh database reaches v4 directly, gaining every v1-v4 table", () => {
+  test("a fresh database reaches v6 directly, gaining every v1, v2, v3, v4, and v6 table (v5 is reserved by another lane)", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
-    expect(SCHEMA_VERSION).toBe(4);
+    expect(SCHEMA_VERSION).toBe(6);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
     db.close();
@@ -94,7 +95,7 @@ describe("openStateDb — fresh open", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms','chat_room_defaults')").all(),
     ).toHaveLength(3);
-    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 4 });
+    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 6 });
     db.close();
   });
 });
@@ -154,13 +155,13 @@ function buildV1Fixture(path: string): Database {
   return db;
 }
 
-describe("openStateDb — v1 database migrates to v4", () => {
-  test("existing v1 rows survive, and v2's, v3's, and v4's new tables appear alongside them", () => {
+describe("openStateDb — v1 database migrates to v6", () => {
+  test("existing v1 rows survive, and v2's, v3's, v4's, and v6's new tables appear alongside them", () => {
     const dbPath = join(dir, "state.db");
     buildV1Fixture(dbPath);
 
     const db = openStateDb(dbPath, "cli");
-    expect(userVersion(db)).toBe(4);
+    expect(userVersion(db)).toBe(6);
     expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
 
     const branchRow = db.query("SELECT branch, repo, linear_id, fetched_at FROM branch_cache WHERE branch = ?;").get("main");
@@ -390,7 +391,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     // unrelated exports (reading SCHEMA_VERSION, pushing to LEGACY_IMPORTS)
     // never opens or creates a db file on its own.
     const before = SCHEMA_VERSION;
-    expect(before).toBe(4);
+    expect(before).toBe(6);
     LEGACY_IMPORTS.push({ file: "x.json", import: () => {} });
     LEGACY_IMPORTS.length = 0;
     // No db.ts function that touches disk was called above; nothing to assert

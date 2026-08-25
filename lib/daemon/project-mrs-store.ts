@@ -48,8 +48,8 @@ export function rekeyProjectMrDemandsTable(): Promise<RekeyReport> {
   return rekeyTableColumn("project_mr_demands", "repo");
 }
 
-export interface ProjectMREntry { pr: PullRequest; fetchedAt: number; }
-export interface DemandEntry { authors: string[]; declaredAt: number; lastSeenAt: number; }
+export interface ProjectMREntry { pr: PullRequest; fetchedAt: number; codeownerSections?: string[]; }
+export interface DemandEntry { authors: string[]; sections?: string[]; declaredAt: number; lastSeenAt: number; }
 export interface ProjectMRStore {
   projectPath: string;
   mrs: Record<number, ProjectMREntry>;
@@ -57,7 +57,7 @@ export interface ProjectMRStore {
   deltaSyncedAt?: number;
   source: "poll" | "events" | "mutation";
   demands?: Record<string, DemandEntry>;
-  scope?: { authors: string[]; windowDays: number };
+  scope?: { authors: string[]; sections?: string[]; windowDays: number };
 }
 
 /** Read freshness = the more recent of a deep sync and a delta sync (spec §5.7). */
@@ -72,10 +72,12 @@ export interface ProjectMRs {
   fullSync(repoName: string, projectPath: string, prs: PullRequest[], syncStartedAt: number): number[];
   applyDelta(repoName: string, projectPath: string, prs: PullRequest[], deltaStartedAt: number): number[];
   findBySourceBranch(repoName: string, branch: string): PullRequest | null;
-  registerDemand(repoName: string, client: string, authors: string[], declaredAt: number): boolean;
+  registerDemand(repoName: string, client: string, authors: string[], declaredAt: number, sections?: string[]): boolean;
   expireDemands(repoName: string, maxIdleMs: number): string[];
   /** Passing null clears an existing scope (the demand that motivated it is gone). */
-  setScope(repoName: string, scope: { authors: string[]; windowDays: number } | null): void;
+  setScope(repoName: string, scope: { authors: string[]; sections?: string[]; windowDays: number } | null): void;
+  /** Per-iid replace; [] deletes the tag. replaceAll first clears every tag for the repo (deep sweep semantics). */
+  setSectionTags(repoName: string, tags: Record<number, string[]>, opts?: { replaceAll?: boolean }): void;
 }
 
 // ─── Row shapes ──────────────────────────────────────────────────────────
@@ -89,7 +91,8 @@ interface MetaRow {
   project_path: string;
   scope: string | null;
 }
-interface DemandRow { repo: string; client: string; authors: string; declared_at: number; last_seen_at: number; }
+interface DemandRow { repo: string; client: string; authors: string; sections: string | null; declared_at: number; last_seen_at: number; }
+interface SectionRow { repo: string; iid: number; sections: string; }
 
 function emptyStore(projectPath: string, source: ProjectMRStore["source"] = "poll"): ProjectMRStore {
   return { projectPath, mrs: {}, listSyncedAt: 0, source };
@@ -116,11 +119,24 @@ function loadAll(db: Database): Record<string, ProjectMRStore> {
     store.mrs[r.iid] = { pr: JSON.parse(r.pr) as PullRequest, fetchedAt: r.fetched_at };
   }
 
-  const demandRows = db.query("SELECT repo, client, authors, declared_at, last_seen_at FROM project_mr_demands;").all() as DemandRow[];
+  const demandRows = db.query("SELECT repo, client, authors, sections, declared_at, last_seen_at FROM project_mr_demands;").all() as DemandRow[];
   for (const d of demandRows) {
     const store = data[d.repo] ?? (data[d.repo] = emptyStore(""));
     store.demands ??= {};
-    store.demands[d.client] = { authors: JSON.parse(d.authors) as string[], declaredAt: d.declared_at, lastSeenAt: d.last_seen_at };
+    store.demands[d.client] = {
+      authors: JSON.parse(d.authors) as string[],
+      sections: d.sections !== null ? (JSON.parse(d.sections) as string[]) : undefined,
+      declaredAt: d.declared_at,
+      lastSeenAt: d.last_seen_at,
+    };
+  }
+
+  const sectionRows = db.query("SELECT repo, iid, sections FROM project_mr_sections;").all() as SectionRow[];
+  for (const s of sectionRows) {
+    const store = data[s.repo];
+    const entry = store?.mrs[s.iid];
+    if (!entry) continue; // MR absent (pruned/never synced): its tag row is stale, fullSync's prune cleans it up
+    entry.codeownerSections = JSON.parse(s.sections) as string[];
   }
 
   return data;
@@ -145,11 +161,17 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
       scope = excluded.scope
   `);
   const upsertDemandStmt = db.query(`
-    INSERT INTO project_mr_demands (repo, client, authors, declared_at, last_seen_at) VALUES (?, ?, ?, ?, ?)
+    INSERT INTO project_mr_demands (repo, client, authors, sections, declared_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(repo, client) DO UPDATE SET
-      authors = excluded.authors, declared_at = excluded.declared_at, last_seen_at = excluded.last_seen_at
+      authors = excluded.authors, sections = excluded.sections, declared_at = excluded.declared_at, last_seen_at = excluded.last_seen_at
   `);
   const deleteDemandStmt = db.query(`DELETE FROM project_mr_demands WHERE repo = ? AND client = ?;`);
+  const upsertSectionStmt = db.query(`
+    INSERT INTO project_mr_sections (repo, iid, sections) VALUES (?, ?, ?)
+    ON CONFLICT(repo, iid) DO UPDATE SET sections = excluded.sections
+  `);
+  const deleteSectionStmt = db.query(`DELETE FROM project_mr_sections WHERE repo = ? AND iid = ?;`);
+  const deleteAllSectionsStmt = db.query(`DELETE FROM project_mr_sections WHERE repo = ?;`);
 
   function writeMeta(repoName: string, store: ProjectMRStore): void {
     upsertMetaStmt.run(
@@ -243,7 +265,10 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     persistOrWarn("project-mrs", () => {
       const run = db.transaction(() => {
         for (const w of toWrite) upsertMrStmt.run(repoName, w.iid, JSON.stringify(w.pr), w.fetchedAt);
-        for (const iid of toDelete) deleteMrStmt.run(repoName, iid);
+        for (const iid of toDelete) {
+          deleteMrStmt.run(repoName, iid);
+          deleteSectionStmt.run(repoName, iid);
+        }
         writeMeta(repoName, store);
       });
       run();
@@ -318,19 +343,22 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     return fallback;
   }
 
-  function registerDemand(repoName: string, client: string, authors: string[], declaredAt: number): boolean {
+  function registerDemand(repoName: string, client: string, authors: string[], declaredAt: number, sections?: string[]): boolean {
     const store = data[repoName] ?? (data[repoName] = emptyStore(""));
     store.demands ??= {};
     const prev = store.demands[client];
     if (prev && declaredAt < prev.declaredAt) return false;
+    const sameSections = (a?: string[], b?: string[]) =>
+      (a ?? []).length === (b ?? []).length && (a ?? []).every((s, i) => s === (b ?? [])[i]);
     const unchanged = prev !== undefined
       && prev.authors.length === authors.length
-      && prev.authors.every((a, i) => a === authors[i]);
+      && prev.authors.every((a, i) => a === authors[i])
+      && sameSections(prev.sections, sections);
     const lastSeenAt = Date.now();
-    store.demands[client] = { authors: [...authors], declaredAt, lastSeenAt };
+    store.demands[client] = { authors: [...authors], sections: sections ? [...sections] : undefined, declaredAt, lastSeenAt };
 
     persistOrWarn("project-mrs", () => {
-      upsertDemandStmt.run(repoName, client, JSON.stringify(authors), declaredAt, lastSeenAt);
+      upsertDemandStmt.run(repoName, client, JSON.stringify(authors), sections ? JSON.stringify(sections) : null, declaredAt, lastSeenAt);
     }, { repo: repoName, op: "registerDemand" });
 
     return !unchanged;
@@ -353,15 +381,42 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     return dropped;
   }
 
-  function setScope(repoName: string, scope: { authors: string[]; windowDays: number } | null): void {
+  function setScope(repoName: string, scope: { authors: string[]; sections?: string[]; windowDays: number } | null): void {
     const store = data[repoName];
     if (!store) return;
     if (scope === null) {
       delete store.scope;
     } else {
-      store.scope = { authors: [...scope.authors], windowDays: scope.windowDays };
+      store.scope = { authors: [...scope.authors], sections: scope.sections ? [...scope.sections] : undefined, windowDays: scope.windowDays };
     }
     persistOrWarn("project-mrs", () => writeMeta(repoName, store), { repo: repoName, op: "setScope" });
+  }
+
+  function setSectionTags(repoName: string, tags: Record<number, string[]>, opts?: { replaceAll?: boolean }): void {
+    const store = data[repoName];
+    if (!store) return;
+    if (opts?.replaceAll) {
+      for (const entry of Object.values(store.mrs)) delete entry.codeownerSections;
+    }
+    for (const [iidStr, sections] of Object.entries(tags)) {
+      const entry = store.mrs[Number(iidStr)];
+      if (!entry) continue;
+      if (sections.length > 0) entry.codeownerSections = [...sections];
+      else delete entry.codeownerSections;
+    }
+
+    persistOrWarn("project-mrs", () => {
+      const run = db.transaction(() => {
+        if (opts?.replaceAll) deleteAllSectionsStmt.run(repoName);
+        for (const [iidStr, sections] of Object.entries(tags)) {
+          const iid = Number(iidStr);
+          if (!data[repoName]!.mrs[iid]) continue;
+          if (sections.length > 0) upsertSectionStmt.run(repoName, iid, JSON.stringify(sections));
+          else deleteSectionStmt.run(repoName, iid);
+        }
+      });
+      run();
+    }, { repo: repoName, op: "setSectionTags" });
   }
 
   return {
@@ -374,6 +429,7 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     registerDemand,
     expireDemands,
     setScope,
+    setSectionTags,
   };
 }
 
