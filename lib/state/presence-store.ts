@@ -1,11 +1,8 @@
 /**
- * lib/state/presence-store.ts — sign-in presence for `rt chat` (RT-48 chat-
- * presence, Task 3). The only module that touches `chat_presence`;
- * `chat_room_defaults` and `chat_dms` remain chat-store.ts's (and a later
- * dm-store's) since neither carries a heartbeat or a reclaim predicate.
- *
- * Spec: docs/superpowers/specs/2026-08-24-rt-chat-presence-design.md
- * "Data model", "Statuses", "Failure modes".
+ * lib/state/presence-store.ts — sign-in presence for `rt chat` (RT-48).
+ * The only module that touches `chat_presence`; `chat_room_defaults` and
+ * `chat_dms` remain chat-store.ts's and dm-store.ts's respectively, since
+ * neither carries a heartbeat or a reclaim predicate.
  */
 
 import { Database } from "bun:sqlite";

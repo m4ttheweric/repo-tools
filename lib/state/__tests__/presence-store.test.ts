@@ -1,11 +1,9 @@
 /**
  * lib/state/presence-store.ts — sign-in, two heartbeats, one reclaim
- * predicate (RT-48 chat-presence Task 3).
+ * predicate (RT-48).
  *
- * Verbatim from the plan's Task 3 step-1 block (design spec's Testing
- * "Store" bullet). armMember/touchMember/joinRoom/listMembers come from
- * chat-store.ts to exercise the dual-write and room-default wiring those
- * tests cover.
+ * armMember/touchMember/joinRoom/listMembers come from chat-store.ts to
+ * exercise the dual-write and room-default wiring those tests cover.
  */
 import { expect, test } from "bun:test";
 import { tmpdir } from "os";

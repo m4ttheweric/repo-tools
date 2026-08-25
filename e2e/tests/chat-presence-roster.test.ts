@@ -18,7 +18,7 @@ import { existsSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
-import { SCHEMA_VERSION } from "../../lib/state/db.ts";
+import { SCHEMA_VERSION } from "../../lib/state/index.ts";
 
 async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

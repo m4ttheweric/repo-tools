@@ -66,8 +66,8 @@ test("chat:unread-waking reports what would wake a handle without advancing its 
   if (!res1.ok) throw new Error("unreachable");
   const first = res1.data;
   expect(first).toMatchObject({ rooms: [{ room: "r", count: 1, mentions: 1 }] });
-  // maxId is the watermark Task 8's step 4 skips at or below; without it the
-  // tail cannot tell which wakes the catch-up already covered.
+  // maxId is the watermark the tail's stream loop skips at or below; without
+  // it the tail cannot tell which wakes the catch-up already covered.
   expect(first.rooms[0]!.maxId).toBeGreaterThan(0);
   const res2 = await h["chat:unread-waking"]({ handle: "b" });
   if (!res2.ok) throw new Error("unreachable");
@@ -369,4 +369,15 @@ test("chat:who falls back to member columns for an unsigned plan-1 member", asyn
   if (!who.ok) throw new Error("unreachable");
   const memberA = who.data.members.find((m) => m.handle === "a");
   expect(memberA?.status).toBe("idle");
+});
+
+test("chat:who reads an unsigned member as live right after arming, even joined well over the tail-stale window ago", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  h.db.run("UPDATE chat_members SET joined_at = joined_at - 700000 WHERE room = 'r' AND handle = 'a'");
+  await h["chat:arm"]({ room: "r", handle: "a" });
+  const who = await h["chat:who"]({ room: "r" });
+  if (!who.ok) throw new Error("unreachable");
+  const memberA = who.data.members.find((m) => m.handle === "a");
+  expect(memberA?.status).toBe("live");
 });

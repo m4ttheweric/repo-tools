@@ -117,4 +117,13 @@ describe("chat-session", () => {
   test("currentSessionId is undefined with neither source", () => {
     expect(currentSessionId(["post", "r", "hi"])).toBeUndefined();
   });
+
+  test("currentSessionId treats --session immediately followed by another flag as missing, not that flag's name", () => {
+    expect(currentSessionId(["sign-in", "--session", "--no-room"])).toBeUndefined();
+  });
+
+  test("currentSessionId falls back to the environment variable when --session's value looks like a flag", () => {
+    process.env.CLAUDE_CODE_SESSION_ID = "env-id";
+    expect(currentSessionId(["sign-in", "--session", "--no-room"])).toBe("env-id");
+  });
 });

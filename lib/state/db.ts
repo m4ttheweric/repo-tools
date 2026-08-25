@@ -202,10 +202,9 @@ CREATE TABLE IF NOT EXISTS chat_members (
 `;
 
 // Tables (v4): sign-in presence, DM participant pairs, and a room's
-// join-time wake_on default (lib/state/chat-store.ts owns these too). Copied
-// verbatim from the spec's Data model section (docs/superpowers/specs/
-// 2026-08-24-rt-chat-presence-design.md), comments included — do not
-// hand-edit without updating that spec first.
+// join-time wake_on default (lib/state/chat-store.ts owns these too). The
+// inline column comments below are the schema's only documentation — keep
+// them in sync with what the code actually does with each column.
 const V4_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_presence (
   session_id     TEXT PRIMARY KEY,

@@ -1,10 +1,10 @@
 /**
- * rt chat CLI (RT-48 Task 7).
+ * rt chat CLI (RT-48).
  *
  * runChat/runChatRaw invoke the `chat` export in-process against a temp
  * HOME, backed by a real (not stubbed) chat daemon: a Bun.serve unix socket
  * bound at the HOME's default rt.sock, dispatching to the REAL
- * createChatHandlers (Task 6) over a per-test state.db. This exercises the
+ * createChatHandlers over a per-test state.db. This exercises the
  * actual join/member-count/unread rules, not a canned reply map.
  *
  * HERDR_PANE_ID is deliberately cleared for every test: this suite may
@@ -293,12 +293,11 @@ describe("rt chat CLI — additional verb behavior", () => {
   });
 });
 
-// ─── Task 6: sign-in / sign-out (presence) ──────────────────────────────────
+// ─── sign-in / sign-out (presence) ──────────────────────────────────────────
 //
-// The brief's own flag-splice test posts through `rt chat dm`, but chatDm is
-// Task 7's wiring — not wired here. Same guard, through `post` instead: post
-// already has a body-splice test above (for `--as`); this one covers the two
-// flags this task adds to FLAGS_WITH_VALUES (`--session`, `--status`).
+// The flag-splice guard is exercised through `post`, not `dm`: post already
+// has a body-splice test above (for `--as`); this one covers the two flags
+// FLAGS_WITH_VALUES adds for presence (`--session`, `--status`).
 
 describe("rt chat CLI — sign-in / sign-out (presence)", () => {
   test("flag values never splice into a body: --session and --status are FLAGS_WITH_VALUES", async () => {
@@ -518,14 +517,23 @@ describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
     expect(dmRoom).toMatchObject({ kind: "dm" });
   });
 
-  test("rooms renders a DM room's direct heading as a ↔ b, never the hashed room id", async () => {
+  test("rooms lists a DM room in a direct section after channels, headed a ↔ b, never the hashed room id", async () => {
     await signInInProcess({ as: "a", session: "s1", noRoom: true });
     await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["join", "general", "--session", "s1"]);
     await runChat(["dm", "b", "hi", "--session", "s1"]);
 
     const out = await runChat(["rooms", "--session", "s1"]);
     expect(out).toContain("a ↔ b");
     expect(out).not.toContain("#dm-");
+
+    const lines = out.split("\n");
+    const channelIdx = lines.findIndex((l) => l.startsWith("#general"));
+    const directIdx = lines.indexOf("direct");
+    const dmIdx = lines.findIndex((l) => l.startsWith("a ↔ b"));
+    expect(channelIdx).toBeGreaterThanOrEqual(0);
+    expect(directIdx).toBeGreaterThan(channelIdx);
+    expect(dmIdx).toBeGreaterThan(directIdx);
   });
 
   test("who on a DM room lists the two participants and never the human", async () => {
@@ -539,6 +547,28 @@ describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
     expect(out).toContain("a");
     expect(out).toContain("b");
     expect(out).not.toContain("matt");
+  });
+
+  test("who on a DM room renders the a ↔ b heading, never the hashed room id", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["dm", "b", "hi", "--session", "s1"]);
+    const rooms = JSON.parse(await runChat(["rooms", "--json", "--session", "s1"]));
+    const dmRoom = rooms.rooms.find((r: { kind?: string }) => r.kind === "dm").room;
+
+    const out = await runChat(["who", dmRoom, "--session", "s1"]);
+    expect(out).toContain("a ↔ b");
+    expect(out).not.toContain(`#${dmRoom}`);
+  });
+
+  test("read renders a DM room's heading as a ↔ b, never the hashed room id", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["dm", "b", "hi", "--session", "s1"]);
+
+    const out = await runChat(["read", "--session", "s2"]);
+    expect(out).toContain("a ↔ b");
+    expect(out).not.toContain("dm-");
   });
 
   test("pulse --json returns the unread summary and never writes the tail heartbeat", async () => {
@@ -693,6 +723,18 @@ describe("rt chat tail", () => {
     first.kill();
   }, 15_000);
 
+  test("arming from a session whose handle was reclaimed exits clean, matching the touch-loop reclaim exit", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    await reclaimViaHandlers("x", "s2");
+
+    const { code, stdout, stderr } = await runChatRaw(["tail", "--session", "s1"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("handle reclaimed — sign in again");
+    expect(stderr).toBe("");
+    expect(existsSync(sessionFilePath("s1"))).toBe(false);
+    expect(hasTailPidfile()).toBe(false);
+  });
+
   test("every stdout write in the tail path is exactly one line", async () => {
     // Under Monitor each stdout line is one notification, so a multi-line write
     // floods the agent's context. Diagnostics must go to stderr.
@@ -703,16 +745,14 @@ describe("rt chat tail", () => {
   });
 });
 
-// ─── carry-forward: fixture-based derivation test (controller mandate) ─────
+// ─── fixture-based derivation coverage ──────────────────────────────────────
 //
-// Task 2's plan block orphaned a fixture-based derivation test; its coverage
-// is carried here. Builds real temp worktree structures (a `.git` FILE with
-// a hand-written `gitdir:` pointer — never a real git spawn, matching
-// commands/chat.ts's own resolution) plus a fixture repo index, and asserts
-// DISTINCT, repo-naming handles for a pool slot, the main worktree, and a
-// broken worktree. The failure this guards: a bare slot name like "main" or
-// "beta" colliding machine-wide across every repo that has a slot by that
-// name.
+// Builds real temp worktree structures (a `.git` FILE with a hand-written
+// `gitdir:` pointer — never a real git spawn, matching commands/chat.ts's
+// own resolution) plus a fixture repo index, and asserts DISTINCT,
+// repo-naming handles for a pool slot, the main worktree, and a broken
+// worktree. The failure this guards: a bare slot name like "main" or "beta"
+// colliding machine-wide across every repo that has a slot by that name.
 
 describe("chat handle derivation — worktree fixtures", () => {
   let root = "";

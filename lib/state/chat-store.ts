@@ -6,7 +6,9 @@
  * rooms, members, and messages live in one file because posting a message
  * reads membership inside the same transaction that writes it. It also
  * clears `chat_presence.armed_at` alongside `chat_members.armed_at` in
- * `clearAllArmed`, ahead of a later task giving `chat_presence` its own store.
+ * `clearAllArmed`, in the same transaction — the two flags must commit
+ * together, since presence-store.ts's dual-write functions (imported below)
+ * assume they never diverge.
  */
 
 import { Database } from "bun:sqlite";

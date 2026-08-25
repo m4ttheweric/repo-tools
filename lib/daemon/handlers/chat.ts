@@ -199,12 +199,15 @@ export function createChatHandlers(opts: {
         const presence = presenceForHandle(member.handle, db);
         // Presence takes priority: pulse only ever heartbeats the presence
         // row, so a signed-in handle with no chat:touch yet would otherwise
-        // read stale. joinedAt as the lastSeenAt floor keeps a member who
-        // joined but never touched/armed from reading as instantly offline.
+        // read stale. joinedAt floors lastSeenAt only (keeps a member who
+        // joined but never touched/armed from reading as instantly offline)
+        // — it must NOT flow into tailSeenAt too, or a member who joined long
+        // ago and only just armed reads deaf off its own join time instead of
+        // its fresh armedAt.
         const memberLastSeenAt = member.lastSeenAt ?? member.joinedAt;
         const status = presence
           ? buddyStatus(presence, now, th)
-          : buddyStatus({ lastSeenAt: memberLastSeenAt, tailSeenAt: memberLastSeenAt, armedAt: member.armedAt }, now, th);
+          : buddyStatus({ lastSeenAt: memberLastSeenAt, tailSeenAt: member.lastSeenAt, armedAt: member.armedAt }, now, th);
         return { ...member, status };
       });
       return { ok: true, data: { members } };

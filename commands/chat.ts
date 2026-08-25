@@ -23,7 +23,6 @@
  * branch component.
  *
  * Spec: docs/superpowers/specs/2026-08-23-rt-chat-design.md
- * Presence spec: docs/superpowers/specs/2026-08-24-rt-chat-presence-design.md
  */
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
@@ -451,20 +450,43 @@ function roomHeading(r: RoomSummary): string {
   return `#${r.room}`;
 }
 
+/**
+ * A room→heading lookup for `handle`'s own rooms, for verbs (`read`, `who`)
+ * whose own response carries a bare room key with no participant pair.
+ * Falls back to `#room` for any room `chat:rooms` doesn't return — the
+ * daemon is unreachable, or `handle` isn't actually a member.
+ */
+async function dmHeadingsFor(handle: string): Promise<(room: string) => string> {
+  const res = await chatRooms({ handle });
+  const byRoom = new Map<string, string>();
+  if (res.ok && res.data) {
+    for (const r of res.data.rooms) byRoom.set(r.room, roomHeading(r));
+  }
+  return (room: string) => byRoom.get(room) ?? `#${room}`;
+}
+
+const DIRECT_SECTION_LABEL = "direct";
+
 function renderRooms(rooms: RoomSummary[]): string {
   if (rooms.length === 0) return "(not a member of any room)";
+  // Shared column widths across both sections, so a wide "a ↔ b" heading in
+  // the direct section never desyncs the channel rows above it.
   const nameWidth = Math.max(...rooms.map((r) => roomHeading(r).length + 1));
-  return rooms
-    .map((r) => {
-      const name = roomHeading(r).padEnd(nameWidth + 2);
-      const members = pluralize(r.memberCount, "member").padEnd(12);
-      const unread = r.unread === 0
-        ? "—"
-        : `${r.unread} unread${r.mentions > 0 ? ` (${pluralize(r.mentions, "mention")})` : ""}`;
-      const last = r.lastPostedAt !== undefined ? `last ${relativeAgo(r.lastPostedAt)} ago` : "never posted";
-      return `${name}${members}${unread.padEnd(22)}${last}`;
-    })
-    .join("\n");
+  const renderRow = (r: RoomSummary): string => {
+    const name = roomHeading(r).padEnd(nameWidth + 2);
+    const members = pluralize(r.memberCount, "member").padEnd(12);
+    const unread = r.unread === 0
+      ? "—"
+      : `${r.unread} unread${r.mentions > 0 ? ` (${pluralize(r.mentions, "mention")})` : ""}`;
+    const last = r.lastPostedAt !== undefined ? `last ${relativeAgo(r.lastPostedAt)} ago` : "never posted";
+    return `${name}${members}${unread.padEnd(22)}${last}`;
+  };
+
+  const channels = rooms.filter((r) => r.kind !== "dm").map(renderRow);
+  const directs = rooms.filter((r) => r.kind === "dm").map(renderRow);
+  const sections = [...channels];
+  if (directs.length > 0) sections.push(DIRECT_SECTION_LABEL, ...directs);
+  return sections.join("\n");
 }
 
 function truncate(s: string, max: number): string {
@@ -476,10 +498,20 @@ function renderMessage(m: ChatMessage, full: boolean): string {
   return `  [${time}] ${m.handle}: ${full ? m.body : truncate(m.body, 200)}`;
 }
 
-function renderReadRooms(rooms: { room: string; messages: ChatMessage[] }[], full: boolean): string {
+/**
+ * `chat:read`'s own rows carry no participant pair, only the room key — so a
+ * DM heading needs `headingFor`, sourced from a `chat:rooms` call the caller
+ * makes once for every room in the response (falls back to `#room` for a
+ * room `chat:rooms` doesn't recognize, same as `roomHeading`'s own default).
+ */
+function renderReadRooms(
+  rooms: { room: string; messages: ChatMessage[] }[],
+  full: boolean,
+  headingFor: (room: string) => string = (room) => `#${room}`,
+): string {
   if (rooms.length === 0) return "(no unread)";
   return rooms
-    .map((r) => [`#${r.room}`, ...r.messages.map((m) => renderMessage(m, full))].join("\n"))
+    .map((r) => [headingFor(r.room), ...r.messages.map((m) => renderMessage(m, full))].join("\n"))
     .join("\n\n");
 }
 
@@ -493,14 +525,15 @@ const STATUS_WORD: Record<BuddyStatus, string> = {
   offline: "offline",
 };
 
-function renderWhoSection(room: string, members: ChatMember[]): string {
+/** `heading` is already formatted (`#room` or `roomHeading`'s `a ↔ b` pair) — chosen by the caller, which alone knows whether `room` resolved to a DM. */
+function renderWhoSection(heading: string, members: ChatMember[]): string {
   const lines = members.map((m) => {
     const cwd = m.cwd ? `  ${m.cwd}` : "";
     const pane = m.pane ? `  [${m.pane}]` : "";
     const status = STATUS_WORD[m.status];
     return `  ${m.handle}  ${status}${cwd}${pane}`;
   });
-  return [`#${room}`, ...(lines.length > 0 ? lines : ["  (no members)"])].join("\n");
+  return [heading, ...(lines.length > 0 ? lines : ["  (no members)"])].join("\n");
 }
 
 // ─── the buddy list ─────────────────────────────────────────────────────────
@@ -668,7 +701,8 @@ async function runRead(args: string[]): Promise<void> {
     console.log(JSON.stringify({ ok: true, rooms: data.rooms }));
     return;
   }
-  console.log(renderReadRooms(data.rooms, args.includes("--full")));
+  const headingFor = await dmHeadingsFor(handle);
+  console.log(renderReadRooms(data.rooms, args.includes("--full"), headingFor));
 }
 
 async function runRooms(args: string[]): Promise<void> {
@@ -701,7 +735,9 @@ async function runWho(args: string[]): Promise<void> {
     console.log(JSON.stringify({ ok: true, rooms: [{ room, members }] }));
     return;
   }
-  console.log(renderWhoSection(room, members));
+  const handle = resolveHandle(args);
+  const headingFor = await dmHeadingsFor(handle);
+  console.log(renderWhoSection(headingFor(room), members));
 }
 
 async function runBuddies(args: string[]): Promise<void> {
@@ -851,7 +887,9 @@ async function runSignOut(args: string[]): Promise<void> {
   }
 
   const session = readChatSession(sessionId);
-  const res = await chatSignOut({ sessionId });
+  // Bounded well under the SessionEnd hook's 5s budget, so a slow/wedged
+  // daemon can't eat the budget local cleanup (below) still needs to run.
+  const res = await chatSignOut({ sessionId }, { timeoutMs: 3000 });
 
   killChatTail(session ? session.handle : resolveBaseHandle(args));
   deleteChatSession(sessionId);
@@ -1117,11 +1155,9 @@ export async function chatTail(args: string[]): Promise<void> {
   const handle = resolveHandle(args);
   requireValidName("handle", handle);
 
-  // Threaded into the touch loop's chat:touch payload only — a signed-in
-  // session id lets the daemon detect a reclaim; carrying it here as well
-  // would make a failed arm during a genuine reclaim race retry forever
-  // under callOrBackoff's generic daemon-unreachable path instead of exiting
-  // cleanly, so arm stays handle-only as shipped.
+  // Carried on every arm/touch/disarm call: without it the daemon has no way
+  // to tell this tail's session apart from whichever session now holds the
+  // handle, so a reclaimed handle would arm (and keep touching) clean.
   const sessionId = currentSessionId(args);
 
   const roomFilter = flagValue(args, "--room");
@@ -1170,12 +1206,28 @@ export async function chatTail(args: string[]): Promise<void> {
   const budgetRaw = Number(process.env.RT_CHAT_BACKOFF_MS);
   const budgetMs = Number.isFinite(budgetRaw) && budgetRaw >= 0 ? budgetRaw : 60_000;
 
+  /**
+   * The one daemon refusal that must short-circuit both callOrBackoff and the
+   * touch loop below rather than retry/backoff/get-ignored: once the handle
+   * is reclaimed, this pidfile is stale and there is nothing left to listen
+   * for. A no-op for every other error.
+   */
+  function exitOnReclaim(error: string | undefined): void {
+    if (!error?.includes("handle reclaimed")) return;
+    console.log("handle reclaimed — sign in again");
+    if (sessionId) deleteChatSession(sessionId);
+    cleanup();
+    process.exit(0);
+  }
+
   // Daemon-unreachable is not silence: retry with bounded backoff (a mechanical
   // brake against a re-arm spin), diagnostics to stderr; when the budget is
-  // exhausted, one stdout line, disarm, exit 69.
+  // exhausted, one stdout line, disarm, exit 69. A reclaimed handle skips all
+  // of that via exitOnReclaim above.
   async function callOrBackoff<T>(fn: () => Promise<{ ok: boolean; data?: T; error?: string }>): Promise<T> {
     let res = await fn();
     if (res.ok && res.data !== undefined) return res.data;
+    exitOnReclaim(res.error);
     const deadline = Date.now() + budgetMs;
     let delay = 250;
     while (Date.now() < deadline) {
@@ -1183,10 +1235,11 @@ export async function chatTail(args: string[]): Promise<void> {
       await Bun.sleep(delay);
       res = await fn();
       if (res.ok && res.data !== undefined) return res.data;
+      exitOnReclaim(res.error);
       delay = Math.min(delay * 2, 10_000);
     }
     console.log("chat stream ended — the rt daemon is unreachable.");
-    await chatDisarm({ handle }, opts).catch(() => undefined);
+    await chatDisarm({ handle, sessionId }, opts).catch(() => undefined);
     cleanup();
     process.exit(69);
   }
@@ -1198,7 +1251,9 @@ export async function chatTail(args: string[]): Promise<void> {
   const C = head.cursor;
 
   // Step 2: arm (scoped to --room when given; all the handle's rooms otherwise).
-  await callOrBackoff(() => chatArm({ handle, room: roomFilter }, opts));
+  // sessionId travels here so a reclaimed handle is refused at arm time, not
+  // just on the touch loop below.
+  await callOrBackoff(() => chatArm({ handle, room: roomFilter, sessionId }, opts));
 
   await testMarkerPause("RT_CHAT_TEST_PRE_CATCHUP_MARKER");
 
@@ -1234,17 +1289,7 @@ export async function chatTail(args: string[]): Promise<void> {
     const touched = await chatTouch({ handle, sessionId }, opts).catch(
       (err) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }) as const,
     );
-    // A reclaimed handle is the one touch refusal the tail must not swallow:
-    // the pidfile it holds is now stale (someone else owns this handle), so
-    // there is nothing left to listen for. Every other touch error — a
-    // daemon blip, an unsigned handle with no presence row — stays ignored,
-    // same as shipped.
-    if (!touched.ok && touched.error?.includes("handle reclaimed")) {
-      console.log("handle reclaimed — sign in again");
-      if (sessionId) deleteChatSession(sessionId);
-      cleanup();
-      process.exit(0);
-    }
+    if (!touched.ok) exitOnReclaim(touched.error);
     for (const e of round.events) {
       const msgId = e.payload?.id;
       const room = e.payload?.room;

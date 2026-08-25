@@ -83,6 +83,10 @@ export function deleteChatSession(sessionId: string): void {
  */
 export function currentSessionId(args: string[]): string | undefined {
   const i = args.indexOf("--session");
-  if (i >= 0 && args[i + 1] !== undefined) return args[i + 1];
+  const value = i >= 0 ? args[i + 1] : undefined;
+  // A value slot that is itself a flag means --session was given no value
+  // (e.g. `--session --no-room`) — treat it as missing rather than signing
+  // in as the literal next flag's name.
+  if (value !== undefined && !value.startsWith("--")) return value;
   return process.env.CLAUDE_CODE_SESSION_ID || undefined;
 }
