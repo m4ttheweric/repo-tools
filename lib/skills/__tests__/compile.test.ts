@@ -138,6 +138,46 @@ describe("compileSkill", () => {
     );
   });
 
+  test("a fill's own {{include}} is expanded on the legacy (non-compile-native) engine path too", () => {
+    const ciNoteInclude: AttachmentSource = {
+      binding: "mattstack:ci-note",
+      plugin: "mattstack",
+      version: "1.0.0",
+      dir: "/plugins/mattstack/attachments/ci-note",
+      srcPath: "attachments/ci-note/SKILL.md",
+      bodyStartLine: 4,
+      body: "ci note body",
+      provides: "",
+      allowedTools: [],
+      extraFiles: [],
+      registered: false,
+    };
+    const domainWithInclude: AttachmentSource = {
+      ...domainFill,
+      body: "Domain rules live at ${CLAUDE_SKILL_DIR}/ci-config.json for details.\n{{include:ci-note}}\n",
+    };
+
+    const result = compileSkill(verb, step, { domain: domainWithInclude, forge: forgeFill }, roster, {
+      includes: { "ci-note": ciNoteInclude },
+    });
+    const content = skillFileContent(result.files);
+
+    expect(content).toContain("<!-- part: include:ci-note");
+    expect(content).toContain("ci note body");
+    expect(content).not.toContain("{{");
+  });
+
+  test("a fill carrying {{slot:...}} on the legacy engine path is a compile error naming the fill", () => {
+    const domainWithSlot: AttachmentSource = {
+      ...domainFill,
+      body: "Domain rules.\n{{slot:tiering}}\n",
+    };
+
+    expect(() => compileSkill(verb, step, { domain: domainWithSlot, forge: forgeFill }, roster)).toThrow(
+      'acme:watch-ci-domain: {{slot:tiering}} -- a fill may carry {{include}} only (line 2)',
+    );
+  });
+
   test("optional slot unbound: no seam, no part, no warning", () => {
     const stepWithOptional: StepSource = {
       ...step,

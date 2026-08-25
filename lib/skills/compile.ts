@@ -1,6 +1,6 @@
 import { existsSync } from "fs";
 import { isAbsolute, relative as relativePath, resolve as resolvePath, sep } from "path";
-import { assertNoPlaceholders, findPlaceholders, skillDirFor, substitute } from "./placeholders.ts";
+import { assertNoPlaceholders, findPlaceholders, skillDirFor, substitute, substituteIncludesOnly } from "./placeholders.ts";
 import type {
   AttachmentSource,
   CompiledFile,
@@ -341,13 +341,20 @@ function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): 
       notes.push(`note: ${fill.binding} is surface-internal; inlined`);
     }
 
+    // An inlined fill's own {{include:...}} lines need the same ctx substitute uses
+    // for a placeholder-driven slot; compileSkill always builds one.
+    if (!opts.ctx) {
+      throw new Error(`engine "${step.name}": fill "${fill.binding}" needs a placeholder context to resolve its includes`);
+    }
     sections.push(
       `<!-- part: slot:${slotName} binding=${fill.binding} version=${fill.version} ${span(fill)} -->`,
     );
-    sections.push(rewriteSkillDirRefs(fill.body, slotName));
+    sections.push(substituteIncludesOnly(rewriteSkillDirRefs(fill.body, slotName), opts.ctx, fill.binding));
   }
 
-  return { body: sections.join("\n\n"), notes };
+  const body = sections.join("\n\n");
+  assertNoStrayBraces(body, step.name);
+  return { body, notes };
 }
 
 function buildVendoredFiles(
