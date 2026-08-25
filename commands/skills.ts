@@ -581,6 +581,10 @@ export async function skillsCompile(args: string[]): Promise<void> {
     }
 
     if (flags.json) {
+      // An errored verb is a failed compile: exit non-zero so a caller reading
+      // the code (not just the payload) sees it, matching the non-JSON path's
+      // throw and check --json's stale exit.
+      if (rows.some((row) => row.status === "errored")) process.exitCode = 1;
       console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
       return;
     }
