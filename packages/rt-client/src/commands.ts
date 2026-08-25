@@ -141,7 +141,7 @@ export interface RunSummary {
       pre-mirror daemons. */
   agent?: RunAgent | null;
   /** Executed stages only, in run order — the pipeline may define more that have not started. */
-  stages?: { name: string; status: string }[];
+  stages?: { name: string; status: string; started_at: number | null }[];
 }
 export interface RunAgent {
   status: "working" | "idle" | "blocked" | "done" | "unknown";
