@@ -7,7 +7,7 @@ sidebar_label: bind
 
 `rt › skills › bind`
 
-Write bindings.&lt;engineRef&gt;.&lt;slot&gt; = &lt;fill&gt; into the manifest (jsonc-parser, comments preserved), validate the fill against the slot's contract, and recompile the verb
+Write bindings.&lt;engineRef&gt;.&lt;slot&gt; = &lt;fill&gt; into the manifest (jsonc-parser, comments preserved), validate the fill against the slot's contract, and recompile (a stage bind recompiles the whole pack)
 
 ## Usage
 
@@ -19,7 +19,7 @@ rt skills bind <verb> <slot> <fill> [flags]
 
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
-| `<verb>` | text |  | Verb in the pack's roster |
+| `<verb>` | text |  | Roster verb or pipeline stage |
 | `<slot>` | text |  | Slot declared on the verb's step |
 | `<fill>` | text |  | &lt;plugin&gt;:&lt;skill&gt; binding string; must provide the slot's declared contract |
 | `--pack` | text |  | Pack name (--team still accepted); omit to pick from the discovered packs |

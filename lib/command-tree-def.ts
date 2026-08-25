@@ -1073,11 +1073,11 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
       bind: {
-        description: "Write bindings.<engineRef>.<slot> = <fill> into the manifest (jsonc-parser, comments preserved), validate the fill against the slot's contract, and recompile the verb",
+        description: "Write bindings.<engineRef>.<slot> = <fill> into the manifest (jsonc-parser, comments preserved), validate the fill against the slot's contract, and recompile (a stage bind recompiles the whole pack)",
         module: "./commands/skills.ts",
         fn: "skillsBind",
         args: [
-          { name: "Verb", type: "text", placeholder: "watch-ci", hint: "Verb in the pack's roster" },
+          { name: "Verb", type: "text", placeholder: "watch-ci", hint: "Roster verb or pipeline stage" },
           { name: "Slot", type: "text", placeholder: "domain", hint: "Slot declared on the verb's step" },
           { name: "Fill", type: "text", placeholder: "acme:watch-ci-domain-v2", hint: "<plugin>:<skill> binding string; must provide the slot's declared contract" },
           { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
