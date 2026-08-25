@@ -36,15 +36,29 @@ const PACK_ROOT_REL = "../..";
 /** Where a compiled verb lands, so a body path can be resolved the way the reading agent will resolve it. */
 type CompiledLayout = { packRoot: string; compiledDir: string };
 
-type BodyPath = { text: string; relPath: string; line: number; kind: "token" | "relative" | "asset" };
+type BodyPath = {
+  text: string;
+  relPath: string;
+  line: number;
+  kind: "token" | "relative" | "asset";
+  namesFile: boolean;
+};
+
+const TRAILING_PUNCTUATION_RE = /[.,;:!?\])]+$/;
 
 /**
- * Prose ends a sentence after a path, and that period is not part of the file
- * name -- but the trailing dots of a `../..` directory reference are, so a run
- * of punctuation only comes off when a name character precedes it.
+ * Prose wraps a path in a sentence and in markdown, so the punctuation trailing
+ * it belongs to neither the file name nor the lint message -- except in a `..`
+ * segment, whose dots are the path. What is left may name no file at all
+ * (`scripts/`, a bare directory in prose), and only a named file can be checked
+ * against what this compile emits.
  */
-function trimSentencePunctuation(path: string): string {
-  return path.replace(/(?<=[^/.])[.,;:!?]+$/, "");
+function readPath(raw: string): { text: string; namesFile: boolean } {
+  const segments = raw.split("/");
+  const last = segments.length - 1;
+  if (segments[last] === "..") return { text: raw, namesFile: false };
+  segments[last] = segments[last]!.replace(TRAILING_PUNCTUATION_RE, "");
+  return { text: segments.join("/"), namesFile: segments[last] !== "" };
 }
 
 function bodyPaths(body: string): BodyPath[] {
@@ -53,21 +67,22 @@ function bodyPaths(body: string): BodyPath[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     for (const m of line.matchAll(SKILL_DIR_PATH_RE)) {
-      const text = trimSentencePunctuation(m[0]);
+      const { text, namesFile } = readPath(m[0]);
       out.push({
         text,
         relPath: text.slice(`${CLAUDE_SKILL_DIR_TOKEN}/`.length),
         line: i + 1,
         kind: "token",
+        namesFile,
       });
     }
     for (const m of line.matchAll(RELATIVE_PATH_RE)) {
-      const text = trimSentencePunctuation(m[0]);
-      out.push({ text, relPath: text, line: i + 1, kind: "relative" });
+      const { text, namesFile } = readPath(m[0]);
+      out.push({ text, relPath: text, line: i + 1, kind: "relative", namesFile });
     }
     for (const m of line.matchAll(BARE_ASSET_RE)) {
-      const text = trimSentencePunctuation(m[0]);
-      out.push({ text, relPath: text, line: i + 1, kind: "asset" });
+      const { text, namesFile } = readPath(m[0]);
+      out.push({ text, relPath: text, line: i + 1, kind: "asset", namesFile });
     }
   }
   return out;
@@ -415,12 +430,12 @@ function lintReferences(
   // Paths are scanned in the unstripped body because the seam comments are what
   // map an offending line back to its source file; only names are lint material.
   const bodyLines = body.split("\n");
-  for (const { text, relPath, line, kind } of bodyPaths(body)) {
+  for (const { text, relPath, line, kind, namesFile } of bodyPaths(body)) {
     if (opts.layout && escapesPackRoot(opts.layout, relPath)) {
       const at = sourceCoordinate(bodyLines, line) ?? `compiled body line ${line}`;
       throw new Error(`verb "${opts.verbName}": "${text}" at ${at} resolves outside the pack root`);
     }
-    if (seenPaths.has(text)) continue;
+    if (!namesFile || seenPaths.has(text)) continue;
     seenPaths.add(text);
     if (kind === "token" && exemptPrefixes.some((p) => text.startsWith(p))) continue;
     if (kind === "relative" && opts.layout && packSatisfies(opts.layout, relPath, emittedTargetDirs)) continue;

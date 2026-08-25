@@ -608,6 +608,16 @@ describe("compileSkill with placeholders", () => {
     ]);
   });
 
+  test("a bare directory in prose is not a path and never warns", () => {
+    const r = compileSkill(verb, { ...slotless, body: "Put it in scripts/, then run it. See references/." }, {}, new Set(), {});
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("a markdown-bracketed bare path warns under the file's real name", () => {
+    const r = compileSkill(verb, { ...slotless, body: "[scripts/x.sh]" }, {}, new Set(), {});
+    expect(r.warnings).toEqual(["bare path scripts/x.sh is not an emitted file"]);
+  });
+
   test("a bare asset path the engine vendors does not warn, sentence punctuation and all", () => {
     const r = compileSkill(verb, { ...slotless, body: "run scripts/ci-watch.sh, as documented in references/polling-notes.md." }, {}, new Set(), {});
     expect(r.warnings).toEqual([]);
