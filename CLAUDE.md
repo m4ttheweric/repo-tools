@@ -16,6 +16,13 @@ touching `~/.mattstack`, read `docs/settings-architecture.md` — it carries the
 scope model, the registry checklist, the ownership-latch pattern, and the
 footguns (call-time HOME, file:-dep copies, sops cwd triple).
 
+## Release & distribution
+
+Before touching the release workflow, the app bundle, signing, Sparkle, the
+marketplace, or the VM clean room, read `docs/release-and-distribution.md` —
+it carries the release flow, the bundle/signing rules, and the traps only
+real runs surfaced (translocation, VM Gatekeeper policy, headless CLT).
+
 ## Logging architecture
 
 Logging is structural, not per-feature. Outcomes are logged at central seams; feature code only logs domain events. When adding a feature, you almost never need to add logging — check this list before writing any.
