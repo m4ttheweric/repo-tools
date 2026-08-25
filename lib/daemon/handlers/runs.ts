@@ -5,6 +5,7 @@
  * is dead.
  */
 import { findRun, listRuns, readRun } from "../../runs/store.ts";
+import { getRunLiveness } from "../../runs/liveness.ts";
 import { abandonRun } from "../../runs/reconcile.ts";
 import type { HandlerContext, HandlerMap, TypedHandlers, CommandResult } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
@@ -21,7 +22,7 @@ export function createRunsHandlers(
       // read-only surface would 404 exactly the keys runs:list itself hands
       // out for pre-cutover runs.
       try {
-        return { ok: true as const, data: { runs: listRuns(payload?.repo || undefined) } };
+        return { ok: true as const, data: { runs: listRuns(payload?.repo || undefined, await getRunLiveness()) } };
       } catch (err) {
         ctx.log.warn({ err }, "runs:list failed");
         return { ok: false as const, error: String(err) };
@@ -31,7 +32,8 @@ export function createRunsHandlers(
       const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
       if (!runId) return { ok: false as const, error: "missing runId" };
       try {
-        const detail = payload?.repo ? readRun(payload.repo, runId) : findRun(runId);
+        const liveness = await getRunLiveness();
+        const detail = payload?.repo ? readRun(payload.repo, runId, liveness) : findRun(runId, liveness);
         if (!detail) return { ok: false as const, error: "run not found" };
         return { ok: true as const, data: detail };
       } catch (err) {

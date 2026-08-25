@@ -129,3 +129,56 @@ test("fieldValue returns the value for a present key, null when the field is abs
   expect(fieldValue(fields, "mr")).toBeNull();
   expect(fieldValue([], "ticket")).toBeNull();
 });
+
+describe("liveness evidence keeps a silent-but-driven run out of the stale band", () => {
+  const OLD = NOW - STALE_MS - 60_000;
+  const oldField = (key: string, value: string): RunFieldRow => ({ key, value, produced_by: "provision", at: OLD });
+  const WT = "/repos/acme/.worktrees/moody";
+  const liveness = (over: Partial<import("../attention.ts").RunLiveness> = {}) => ({
+    workingSessionPane: () => null,
+    workingAgentPane: () => null,
+    worktreeActiveAt: () => null,
+    ...over,
+  });
+
+  test("a working agent in the run's worktree clears stale", () => {
+    const a = computeAttention(run(), [stage({ started_at: OLD })], [oldField("worktree", WT)], [], NOW,
+      liveness({ workingAgentPane: (wt) => (wt === WT ? "w90:p1" : null) }));
+    expect(a.needs).toBe(false);
+  });
+
+  test("recent git activity in the worktree clears stale", () => {
+    const a = computeAttention(run(), [stage({ started_at: OLD })], [oldField("worktree", WT)], [], NOW,
+      liveness({ worktreeActiveAt: () => NOW - 5 * 60_000 }));
+    expect(a.needs).toBe(false);
+  });
+
+  test("git activity older than the threshold does not clear stale", () => {
+    const a = computeAttention(run(), [stage({ started_at: OLD })], [oldField("worktree", WT)], [], NOW,
+      liveness({ worktreeActiveAt: () => NOW - STALE_MS - 1 }));
+    expect(a.needs).toBe(true);
+    expect(a.reason).toBe("stale");
+    expect(a.evidence).toContain("worktree quiet");
+    expect(a.evidence).toContain("no agent working there");
+  });
+
+  test("a working agent running the run's recorded session clears stale, wherever it sits", () => {
+    const a = computeAttention(run(), [stage({ started_at: OLD })],
+      [oldField("worktree", WT), oldField("claude-session", "sess-1")], [], NOW,
+      liveness({ workingSessionPane: (id) => (id === "sess-1" ? "w8S:pF" : null) }));
+    expect(a.needs).toBe(false);
+  });
+
+  test("a session-id miss still falls through the worktree and heartbeat rungs", () => {
+    const a = computeAttention(run(), [stage({ started_at: OLD })],
+      [oldField("worktree", WT), oldField("claude-session", "sess-gone")], [], NOW,
+      liveness({ worktreeActiveAt: () => NOW - 60_000 }));
+    expect(a.needs).toBe(false);
+  });
+
+  test("liveness with no worktree field falls back to the plain silence evidence", () => {
+    const a = computeAttention(run(), [stage({ started_at: OLD })], [], [], NOW, liveness());
+    expect(a.needs).toBe(true);
+    expect(a.evidence).not.toContain("worktree");
+  });
+});

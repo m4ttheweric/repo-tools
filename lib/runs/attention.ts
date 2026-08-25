@@ -40,12 +40,26 @@ function has(fields: RunFieldRow[], key: string): boolean {
   return fields.some((f) => f.key === key);
 }
 
+/**
+ * Out-of-band evidence that a DB-silent run is still being driven. Provided
+ * by lib/runs/liveness.ts; attention stays pure by taking it as an argument.
+ */
+export interface RunLiveness {
+  /** Pane id of a `working` herdr agent running this claude session. */
+  workingSessionPane(sessionId: string): string | null;
+  /** Pane id of a `working` herdr agent whose cwd sits in this worktree. */
+  workingAgentPane(worktree: string): string | null;
+  /** Latest git-activity mtime in the worktree, or null when unstatable. */
+  worktreeActiveAt(worktree: string): number | null;
+}
+
 export function computeAttention(
   run: RunSummary,
   stages: RunStageRow[],
   fields: RunFieldRow[],
   decisions: RunDecisionRow[],
   now: number,
+  liveness?: RunLiveness,
 ): Attention {
   if (run.status === "failed") {
     const worst = stages.filter((s) => s.status === "failed").at(-1);
@@ -58,15 +72,32 @@ export function computeAttention(
     if (silentMs > STALE_MS) {
       const mins = Math.round(silentMs / 60_000);
       const stage = run.current_stage ?? "an unknown stage";
-      // The spec's condition 2 also says "no owning process". Process liveness
-      // is deliberately NOT checked in v1: a run's owning process is a Claude
-      // session this machine cannot reliably attribute, and a wrong "no process"
-      // claim is worse than a silence measurement the reader can verify. The
-      // evidence therefore says exactly what was measured and nothing more.
+      // Stage boundaries are the only guaranteed DB writes, so a long stage is
+      // silent by design. Before claiming stale, walk the liveness ladder —
+      // the run's recorded claude session working anywhere, a working agent
+      // in the worktree, recent git activity there — and stay quiet while any
+      // rung holds. A working agent suppresses stale indefinitely: attention
+      // means "nobody is driving this", not "this is taking long". The
+      // evidence string still only asserts what was actually measured.
+      const worktree = fieldValue(fields, "worktree");
+      const session = fieldValue(fields, "claude-session");
+      let checked = "";
+      if (liveness && (worktree || session)) {
+        if (session && liveness.workingSessionPane(session) != null) return NONE;
+        if (worktree) {
+          if (liveness.workingAgentPane(worktree) != null) return NONE;
+          const activeAt = liveness.worktreeActiveAt(worktree);
+          if (activeAt != null && now - activeAt <= STALE_MS) return NONE;
+          const quiet = activeAt != null ? `worktree quiet ${Math.round((now - activeAt) / 60_000)}m` : "worktree unstatable";
+          checked = `, ${quiet}, no agent working there`;
+        } else {
+          checked = ", its session's agent is not working";
+        }
+      }
       return {
         needs: true,
         reason: "stale",
-        evidence: `no event in ${mins}m while in ${stage}; threshold is ${Math.round(STALE_MS / 60_000)}m`,
+        evidence: `no event in ${mins}m while in ${stage}${checked}; threshold is ${Math.round(STALE_MS / 60_000)}m`,
       };
     }
     return NONE;
