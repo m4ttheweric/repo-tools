@@ -671,19 +671,32 @@ web viewer, which is the better interface for a human once it exists.
 
 ## Web viewer
 
-Sibling repo, following **`console`**, not `board`. Console is the closer
+Its own repo, following **`console`**, not `board`. Console is the closer
 precedent and already solves this design's two hardest viewer problems:
 Vite + React scaffolded from `create-mantine-kit`, a Hono server on Bun, and
 `@mattstack/rt-client` for daemon access. No database of its own. Registered
 with deck (`deck add chat --cmd ... --dir ...`), giving `chat.localhost`
 immediately and `chat.m4tthew.dev` when published.
 
-**Take from console:** Vite + React + Mantine via mantine-kit, Hono with
-`upgradeWebSocket` from `hono/bun`, `@mattstack/rt-client`, TanStack Query,
-zod, vitest. **Leave:** Storybook, CodeMirror, Spotlight, virtualization, and
-the `build:binary` embedded-asset path — all overkill for a chat viewer, and
-the binary path in particular buys nothing when deck already supervises the
-process.
+**Shared tokens, owned components.** `create-mantine-kit` is a starting point
+the app owns: `src/ui/*` is the viewer's to edit — its `RailShell`, its
+`PageShell`, its curated wall over Mantine — and divergence from console's
+copy is the accepted price of that ownership. What the two apps *share* is
+the suite's identity, as versioned packages (plan 2, Task 0):
+`@mattstack/mantine-tokyo` — the Tokyo theme values, ramps, colour names,
+`tokyo-theme.css` and font, extracted from console and consumed by both apps
+through the kit's brand slots — and `rt-client`'s `createRelay` (one
+`subscribe()` per process, predicate-filtered, fanned out) and `daemonHealth`
+(the probe), lifted from console's `ws.ts` so deck and board can use them
+too. Nothing is synced from console and nothing is hand-copied out of it: a
+console component worth having in chat is ported deliberately.
+
+**Take from console:** the structure — Vite + React + Mantine via mantine-kit,
+Hono with `upgradeWebSocket` from `hono/bun`, `@mattstack/rt-client` from npm,
+TanStack Query, zod, vitest. **Leave:** Storybook, CodeMirror, Spotlight,
+virtualization, and the `build:binary` embedded-asset path — all overkill for
+a chat viewer, and the binary path in particular buys nothing when deck
+already supervises the process.
 
 Two conventions to carry over verbatim, both learned the hard way in console:
 
@@ -704,10 +717,11 @@ Two conventions to carry over verbatim, both learned the hard way in console:
   `index.ts` rather than `app.ts` for exactly this reason, and keeps `ws.ts`
   clean of it too. Chat has both an app module and a relay module, and neither
   may import `hono/bun`.
-- **The dependency on rt-client is a relative file path to a sibling
-  checkout** (`"@mattstack/rt-client": "file:../repo-tools/packages/rt-client"`
-  in console). "Sibling repo" is load-bearing: the viewer does not build if
-  cloned without repo-tools beside it.
+- **Packages come from npm, never a sibling `file:` path.** Console once
+  consumed rt-client as `file:../repo-tools/packages/rt-client`; deck moved to
+  the registry and the viewer follows: `@mattstack/rt-client@^0.4` and
+  `@mattstack/mantine-tokyo`. A `file:../` dependency is a build that only
+  works on one machine.
 
 **Request path** — identical local and remote apart from the two gates:
 
@@ -746,30 +760,58 @@ ports, status, system-processes, discussions — through that one socket, so
 filtering server-side is what stops an unrelated daemon tick from making every
 open tab refetch.
 
-**Layout:**
+**Layout** (the approved mockups: https://claude.ai/code/artifact/933b24c5-9edd-4c70-9930-f5afbf14c9a9, kept in the viewer repo as `design/`):
 
+- **Shell** — the kit's `RailShell`: 68px rail (one Rooms entry, the
+  color-scheme toggle), 64px header with the `chat` wordmark, and a 64px
+  page bar holding the room name and its **status chips** — `6 members`,
+  `2 live`, `2 idle`, `1 deaf` — where a chip whose count is two or fewer
+  names its handles (`1 deaf: gitq-main`). The page answers its own question
+  first: who will hear me. The member list itself stays in join order —
+  health indicates, it never groups.
 - **Rooms rail** — unread counts, with mention badges visually distinct from
-  plain unread.
+  plain unread *without relying on colour*: a filled `@N` versus an outlined
+  `N`. Rooms the human has not joined say `not joined`.
 - **Transcript** — live-appending over WS, infinite scroll back through
-  `chat_messages`. This is where the retention decision pays off.
-- **Member list** — each member with status and *what it is*: cwd, branch,
-  herdr pane. Handles are derived and terse, so identifying which agent is
-  speaking matters more here than in human chat. Clicking a member focuses
-  its herdr pane, turning the viewer into a fleet console; this degrades to
-  nothing when viewed remotely.
-- **Composer** — posts as `matt`, `@`-autocomplete from room members.
-  Posting into a room not yet joined auto-joins, consistent with
-  join-creates.
+  `chat_messages` behind an explicit edge row. This is where the retention
+  decision pays off. Times are local. No status marker sits beside a
+  message: a dot next to a 21:58 message would be a claim about then; status
+  lives on the member row. Bodies wrap anywhere (agents paste paths) and code
+  blocks scroll inside their own block, never the page.
+- **Read cursor** — viewing never advances it. *Mark read* is an explicit
+  control (page bar on the desk, the `N new` divider on the phone), so an
+  accidental unlock cannot clear a mention.
+- **Member list** — each member with status and *what it is*: branch, herdr
+  pane, path (head-truncated, the tail is the discriminating end), and a
+  sub-line saying why (`armed · seen 12s ago`, `tail died · last seen 2h
+  ago`, `armed, silent 22m`). Branch is derived by the viewer's server per
+  member cwd — `chat_members` has no such column and a worktree path cannot
+  yield one client-side. Handles are derived and terse, so identifying which
+  agent is speaking matters more here than in human chat. Clicking a member
+  focuses its herdr pane, turning the viewer into a fleet console; this
+  degrades to nothing when viewed remotely, so the row reads completely on
+  its own.
+- **Composer** — posts as `matt`, `@`-autocomplete listing *every* room
+  member with its status (a mention still lands in an idle agent's unread),
+  the deaf entry warning *won't see this until its tail restarts* — the one
+  failure this viewer exists to catch, delivered at the moment of the
+  mistake — and `@here` last with what it costs. Posting into a room not yet
+  joined auto-joins, consistent with join-creates; the composer says so only
+  where it applies.
 
 **A daemon health probe is required, and it is not optional polish.**
 `subscribe()` reconnects silently forever, so a stopped daemon does not error
 — the live pane simply goes quiet. Without a probe, "the daemon is dead" and
 "every agent is idle" render identically, which defeats the one thing the
 viewer is said to earn its keep on: telling you *which* agent stopped
-listening. The viewer polls a cheap daemon command on an interval and, when it
-fails, renders a distinct **daemon down** banner and greys the member list
-rather than reporting anyone as idle or deaf. Agent status is only meaningful
-while the daemon is reachable.
+listening. The viewer polls `daemonHealth()` on an interval and, when it fails, renders
+a distinct **daemon down** banner — *the transcript has gone quiet because
+nothing is answering at rt.sock, not because every agent is idle*, with
+elapsed time and probe count — greys the member list with every status
+withheld (hollow dot, a dash, never a word), marks counts as last known, and
+**disables the composer with the draft kept**, since every post goes over
+`rt.sock` and would fail after being typed on a phone. Agent status is only
+meaningful while the daemon is reachable.
 
 These statuses are only trustworthy because `armed_at` is cleared at daemon
 startup (see Daemon architecture); without that, every agent reads as `live`
@@ -800,7 +842,11 @@ message is wasted on it.
 
 **Mobile is a first-class target**, not a reflow. The purpose of publishing
 through deck is answering `@matt` from a phone; the composer must be genuinely
-usable at that size.
+usable at that size: a 16px input (below that iOS zooms the viewport on
+focus and the page scrolls sideways), 44px controls including the `@` picker
+rows, return adds a line and the button sends. Rooms and members share one
+left drawer opened from the header's status counts; tapping a member there
+inserts `@handle`. No fake status bar or keyboard is ever drawn.
 
 ## Notifications
 
@@ -924,8 +970,10 @@ Deliberately excluded, with the condition under which each returns:
    barrel.
 4. Integration tests 1–4 (these gate everything downstream).
 5. `skills/rt-chat/SKILL.md` and the `Stop` hook.
-6. Web viewer repo (`create-mantine-kit` scaffold, Hono server, relay);
-   `deck add`; integration test 5.
+6. Shared packages first — `@mattstack/mantine-tokyo` (tokens) extracted from
+   console, `createRelay` + `daemonHealth` added to rt-client — then the web
+   viewer repo (`create-mantine-kit` scaffold owning its kit, consuming
+   both packages, Hono server); `deck add`; integration test 5.
 7. Notifier producer for `@matt`; optional push provider.
 8. `deck domain` gates and publish.
 
