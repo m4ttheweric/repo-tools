@@ -1,12 +1,15 @@
 /**
- * Flavor park (spec: flavor-exclusivity §2). Runs at the TOP of
- * lib/daemon.ts module scope: everything below it arms live subsystems
- * (cron, the home-snapshot auto-committer, sweeps) and startDaemon()
- * SIGTERMs the shared rt.pid — so a daemon that is not this machine's
- * intended flavor must never get past this function. Parking is a loop,
- * not an exit: KeepAlive={SuccessfulExit:false} on both flavor plists
- * means exiting would respawn-churn, and staying alive lets a toggle
- * flip convert this process into the serving daemon within one cycle.
+ * Flavor park. Runs at the TOP of lib/daemon.ts module scope: everything
+ * below it arms live subsystems (cron, the home-snapshot auto-committer,
+ * sweeps) and startDaemon() SIGTERMs the shared rt.pid — so a daemon that
+ * is not this machine's intended flavor must never get past this function.
+ * Parking is a loop, not an exit: KeepAlive={SuccessfulExit:false} on both
+ * flavor plists means exiting would respawn-churn, and staying alive lets
+ * a toggle flip convert this process into the serving daemon within one
+ * cycle. Standoff waits out only a live holder of a DIFFERENT known
+ * flavor — a same-flavor holder (restart orphan) or an unidentified one
+ * returns instead, so startDaemon()'s evictStaleDaemon still owns those
+ * cases exactly as it did before this gate existed.
  */
 import type { IntendedMode } from "../dev-mode.ts";
 import { resolveIntendedMode } from "../dev-mode.ts";
@@ -58,7 +61,10 @@ export async function parkUntilIntended(deps: ParkDeps): Promise<void> {
     }
 
     const holder = await deps.probeHolder();
-    if (holder) {
+    // Same-flavor (restart orphan) and "unknown flavor" (pre-identity daemon)
+    // holders are eviction's job, not ours — blocking on them here would make
+    // startDaemon()'s evictStaleDaemon unreachable and stall forever.
+    if (holder && holder.flavor !== deps.myFlavor && holder.flavor !== "unknown flavor") {
       if (!announcedStandoff) {
         deps.log.info(
           { holderFlavor: holder.flavor, holderPid: holder.pid },

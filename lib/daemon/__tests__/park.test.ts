@@ -53,13 +53,21 @@ describe("parkUntilIntended", () => {
       },
     });
     await parkUntilIntended(d);
+    // prod -> throw(keeps prod) -> prod -> dev: 3 mismatched passes before the
+    // match. A reset-to-match bug on the thrown read would end early at 1 sleep.
+    expect(d.sleeps.length).toBe(3);
     expect(d.logs.some((l) => l.startsWith("warn:"))).toBe(true);
   });
 
-  test("a matched holder answering on the socket also blocks (never two binders)", async () => {
-    let probes = 0;
-    const d = deps({ probeHolder: async () => (++probes < 2 ? { flavor: "dev", pid: 111 } : null) });
+  test("a same-flavor holder is the restart-orphan case: return and let eviction own it", async () => {
+    const d = deps({ probeHolder: async () => ({ flavor: "dev", pid: 111 }) });
     await parkUntilIntended(d);
-    expect(d.sleeps.length).toBe(1);
+    expect(d.sleeps).toEqual([]);
+  });
+
+  test("an unknown-flavor holder also returns immediately (pre-identity daemon, eviction's job)", async () => {
+    const d = deps({ probeHolder: async () => ({ flavor: "unknown flavor", pid: 222 }) });
+    await parkUntilIntended(d);
+    expect(d.sleeps).toEqual([]);
   });
 });
