@@ -30,9 +30,12 @@ so merge request shapes stay identical across rt, gitq, and mr-board.
 
 Every per-repo key in the rt estate is a stable serialized identity, not a
 repo name. Whatever you store per-repo, send to the daemon, or put in a REST
-path is keyed by the wire form this package emits:
+path is keyed by the wire form this package emits. The one exception:
+settings-store sections (`repos.<identity>`) key on the RAW `host/path` form
+(`RepoIdentity.id` for a remote-kind identity) — the settings resolver never
+sees the wire form, and a serialized key there misses silently.
 
-```
+```text
 remote:gitlab.com%2Facme%2Facme-dev     path:%2FUsers%2Fdev%2Fscratch
 └─┬──┘ └──────────┬─────────────┘
  kind    the id, encodeURIComponent'd — slash-free, fits one URL segment

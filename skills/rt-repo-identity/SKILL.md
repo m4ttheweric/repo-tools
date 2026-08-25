@@ -42,6 +42,6 @@ never name-match around it.
 
 | Need | Read |
 |---|---|
-| Full contract: derivation rules, verb families, legacy re-key/heal/prune, footguns | `~/Documents/GitHub/repo-tools/docs/repo-identity.md` |
-| Settings scopes, registry checklist, adding a repo-scoped key | `~/Documents/GitHub/repo-tools/docs/settings-architecture.md` |
+| Full contract: derivation rules, verb families, legacy re-key/heal/prune, footguns | `docs/repo-identity.md` in the repo-tools checkout this skill symlinks from (here: `~/Documents/GitHub/repo-tools`) |
+| Settings scopes, registry checklist, adding a repo-scoped key | `docs/settings-architecture.md`, same checkout |
 | Codec signatures + copy-paste example while standing in a consumer repo | `node_modules/@mattstack/rt-client/README.md` (from that repo's root) |
