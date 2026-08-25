@@ -320,6 +320,34 @@ async function syncImpl(
   });
 
   let { projectPath, prs } = await fetchDelta(repoName, updatedAfter);
+
+  // Sections-delta: re-sweep approval rules over the same delta window so a
+  // codeowner tag heals every cycle, not just on the once-a-day deep. A
+  // failed sweep must not fail the delta that keeps freshness flowing --
+  // it heals on the next successful cycle or via approved events.
+  let freshTags: Map<number, string[]> | null = null;
+  if (record?.scope?.sections?.length) {
+    const sweepStartedAt = Date.now();
+    try {
+      const { rules } = await fetchRules(repoName, { updatedAfter });
+      freshTags = new Map(rules.map((r) => [r.iid, sectionsMatching(r.rules, record.scope!.sections!)]));
+      log.debug(
+        { repo: repoName, mode: "sections-delta", candidates: rules.length, matched: [...freshTags.values()].filter((s) => s.length > 0).length, durationMs: Date.now() - sweepStartedAt },
+        "project sync",
+      );
+    } catch (err) {
+      log.warn({ err, repo: repoName }, "section retag failed");
+    }
+  }
+  // Fresh sweep result wins when present; otherwise fall back to the
+  // currently stored tag (covers both "no sections demanded" and "sweep
+  // failed this cycle") -- never guess a stranger untagged.
+  const taggedNow = (iid: number): boolean => {
+    const fresh = freshTags?.get(iid);
+    if (fresh !== undefined) return fresh.length > 0;
+    return (record?.mrs[iid]?.codeownerSections?.length ?? 0) > 0;
+  };
+
   // A demand-scoped repo's delta window still queries the whole project
   // (updatedAfter has no author filter), so drop anything outside scope here
   // rather than letting it back into a store the deep sync just pruned it from.
@@ -327,10 +355,30 @@ async function syncImpl(
     const authors = record.scope.authors;
     // A missing author is never guess-dropped (same rule as withinWindow and
     // the events-mapping upsertProject filter) -- there is no way to tell
-    // which side of the scope it belongs on.
-    prs = prs.filter((pr) => !pr.author?.username || authors.includes(pr.author.username));
+    // which side of the scope it belongs on. A tagged stranger is kept too:
+    // codeowner-relevant, even though no demand named this author.
+    prs = prs.filter((pr) => !pr.author?.username || authors.includes(pr.author.username) || taggedNow(pr.iid));
   }
   const changed = store.applyDelta(repoName, projectPath, prs, deltaStartedAt);
+
+  // Persist the retag, and hydrate any brand-new match the delta window
+  // didn't carry. Hydrate BEFORE tagging: setSectionTags skips iids with no
+  // stored row, so tagging first would leave a newly matched MR untagged --
+  // and it would then be filtered out as an untagged stranger every delta
+  // until the next deep.
+  if (freshTags) {
+    const current = store.read(repoName);
+    const toHydrate = [...freshTags].filter(([iid, s]) => s.length > 0 && !current?.mrs[iid]).map(([iid]) => iid);
+    for (const iid of toHydrate) {
+      try {
+        const pr = await fetchSingle(repoName, projectPath, iid);
+        if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
+      } catch (err) {
+        log.warn({ err, repo: repoName, iid }, "section hydration failed");
+      }
+    }
+    store.setSectionTags(repoName, Object.fromEntries(freshTags));
+  }
 
   // Pipeline top-up: pipeline transitions bump no MR timestamp, so they
   // miss deltas (same blind spot as the events feed). Refresh the MRs whose

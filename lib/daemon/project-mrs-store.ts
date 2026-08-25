@@ -302,7 +302,12 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
         ? ({ ...pr, divergedCommitsCount: prevDiverged } as PullRequest)
         : pr;
       const fetchedAt = Date.now();
-      store.mrs[pr.iid] = { pr: toStore, fetchedAt };
+      // The tag lives on the ENTRY, not the pr, and this replaces the entry
+      // wholesale -- carry it forward or a same-cycle retag failure erases it
+      // from memory while its project_mr_sections row survives untouched.
+      store.mrs[pr.iid] = existing?.codeownerSections
+        ? { pr: toStore, fetchedAt, codeownerSections: existing.codeownerSections }
+        : { pr: toStore, fetchedAt };
       changed.push(pr.iid);
       toWrite.push({ iid: pr.iid, pr: toStore, fetchedAt });
     }

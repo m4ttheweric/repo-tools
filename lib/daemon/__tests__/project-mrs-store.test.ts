@@ -251,6 +251,18 @@ describe("applyDelta guards (review fixes)", () => {
     expect(s.read("repo")!.mrs[1]!.pr.state).toBe("merged");
     expect(changed).toEqual([]);
   });
+
+  // Controller ruling (Task 6): applyDelta replaces entries wholesale, so a
+  // delta-updated tagged row would otherwise lose its in-memory tag while
+  // its SQL project_mr_sections row survives untouched.
+  test("delta preserves an existing codeownerSections tag on the replacement entry", () => {
+    const s = tmpStore();
+    s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
+    s.setSectionTags("repo", { 1: ["Acme"] });
+    s.applyDelta("repo", "g/p", [pr(1, { title: "updated" } as any)], Date.now());
+    expect(s.read("repo")!.mrs[1]!.pr.title).toBe("updated");
+    expect(s.read("repo")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+  });
 });
 
 describe("demand registry", () => {

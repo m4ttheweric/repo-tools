@@ -1110,3 +1110,105 @@ describe("codeowner section sweep (deep)", () => {
     });
   });
 });
+
+describe("delta retag and keep-tagged-strangers", () => {
+  /** Seeds a real scope {authors:["ada","self"], sections:["Acme"]} via one deep sync; iid 9 is not author-covered so it's hydrated and tagged. */
+  async function seededSectionStore() {
+    const store = tmpStore();
+    const deps = { repoIndex: () => ({ r: "/tmp/repo" }), broadcast: () => {} };
+    store.registerDemand("r", "board:1", ["ada"], 1, ["Acme"]);
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 9, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+      fetchSingle: async (_r, _p, iid) => pr(iid, { author: { username: "stranger" } as any }),
+    });
+    return { store, deps };
+  }
+
+  /** Seeds a real scope {authors:["ada","self"]} only -- no demand ever declared a section. */
+  async function seededAuthorOnlyStore() {
+    const store = tmpStore();
+    const deps = { repoIndex: () => ({ r: "/tmp/repo" }), broadcast: () => {} };
+    store.registerDemand("r", "board:1", ["ada"], 1);
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+    });
+    return { store, deps };
+  }
+
+  test("delta keeps a tagged stranger's update and retags from the cycle's rules", async () => {
+    const { store, deps } = await seededSectionStore(); // deep already ran: iid 9 tagged, stored
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(9, { author: { username: "stranger" } as any, title: "v2" }),
+        pr(3, { author: { username: "stranger" } as any }),
+      ] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 9, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+      fetchSingle: async () => { throw new Error("nothing to hydrate"); },
+    });
+    const rec = store.read("r")!;
+    expect(rec.mrs[9]!.pr.title).toBe("v2");                       // tagged stranger's update kept
+    expect(rec.mrs[9]!.codeownerSections).toEqual(["Acme"]);
+    expect(rec.mrs[3]).toBeUndefined();                             // untagged stranger filtered
+  });
+
+  test("delta untags an MR whose rule got approved in-window", async () => {
+    const { store, deps } = await seededSectionStore();
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 9, rules: [{ type: "CODE_OWNER", approved: true, section: "Acme" }] },
+      ] }),
+    });
+    // Tag cleared; the row itself waits for the deep prune.
+    expect(store.read("r")!.mrs[9]!.codeownerSections).toBeUndefined();
+  });
+
+  test("delta hydrates AND tags a brand-new match in the same cycle", async () => {
+    const { store, deps } = await seededSectionStore(); // iid 4 unknown to the store
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 4, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+      fetchSingle: async (_r, _p, iid) => pr(iid, { author: { username: "stranger" } as any }),
+    });
+    const rec = store.read("r")!;
+    expect(rec.mrs[4]).toBeDefined();
+    expect(rec.mrs[4]!.codeownerSections).toEqual(["Acme"]); // tag applied after hydration
+  });
+
+  test("delta with no section scope never calls fetchRules (containment)", async () => {
+    const { store, deps } = await seededAuthorOnlyStore(); // scope {authors} only
+    let rulesCalled = 0;
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => { rulesCalled++; return { projectPath: "g/p", rules: [] }; },
+    });
+    expect(rulesCalled).toBe(0);
+  });
+
+  test("a failing retag this cycle still keeps the tag (controller ruling: applyDelta preserves it)", async () => {
+    const { store, deps } = await seededSectionStore(); // iid 9 tagged, stored
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(9, { author: { username: "stranger" } as any, title: "v2" }),
+      ] }),
+      fetchRules: async () => { throw new Error("rules endpoint down"); },
+    });
+    const rec = store.read("r")!;
+    expect(rec.mrs[9]!.pr.title).toBe("v2");                        // delta update still applied
+    expect(rec.mrs[9]!.codeownerSections).toEqual(["Acme"]);   // tag survives despite the failed retag
+  });
+});
