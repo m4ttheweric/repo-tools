@@ -21,6 +21,7 @@ const DEFS: Record<string, FakeDef> = {
 };
 
 const setCalls: unknown[][] = [];
+const unsetCalls: unknown[][] = [];
 
 // Injected through opts.rt, never mock.module — bun's module mock mutates the
 // shared registry and would poison rt-client's own tests later in the run.
@@ -44,6 +45,11 @@ const RT = {
     setCalls.push(args);
     if (args[0] === "board.title" && args[1] === "explode") throw new Error("rt: store refused the write");
   },
+  unsetSetting: (...args: unknown[]) => {
+    unsetCalls.push(args);
+    if (args[0] === "board.title" && args[1] === "machine") throw new Error("rt: nothing to remove there");
+    return true;
+  },
 } as unknown as RtSettingsApi;
 
 function handle(req: Request, extra: SettingsHandlerOptions = {}): Promise<Response | null> {
@@ -64,6 +70,7 @@ function post(path: string, body: unknown, host = "console.mattstack"): Request 
 
 beforeEach(() => {
   setCalls.length = 0;
+  unsetCalls.length = 0;
 });
 
 describe("settingsHandler routing", () => {
@@ -220,5 +227,47 @@ describe("write gate", () => {
   test("a host-supplied allowWrite replaces the default entirely", async () => {
     const res = await handle(post("/api/settings/set", { key: "board.title", value: "x", scope: "user" }), { allowWrite: () => false });
     expect(res!.status).toBe(403);
+  });
+});
+
+describe("unset (0.1.2)", () => {
+  test("removes a key and returns fresh rows + effective for in-place patching", async () => {
+    const res = await handle(post("/api/settings/unset", { key: "board.title", scope: "user" }));
+    expect(res!.status).toBe(200);
+    expect(unsetCalls).toEqual([["board.title", "user", {}]]);
+    const body = (await res!.json()) as { rows: unknown[]; effective: { scope: string } };
+    expect(body.rows).toHaveLength(2);
+    expect(body.effective.scope).toBe("user");
+  });
+
+  test.each([
+    ["unknown key → 404", { key: "nope", scope: "user" }, 404],
+    ["secret → 400", { key: "rt.secretThing", scope: "user" }, 400],
+    ["composite without opt-in → 400", { key: "board.rtRepos", scope: "machine" }, 400],
+    ["scope not allowed → 400", { key: "board.title", scope: "team" }, 400],
+    ["unmigrated → 400", { key: "rt.legacyThing", scope: "user" }, 400],
+  ])("%s", async (_label, body, status) => {
+    const res = await handle(post("/api/settings/unset", body));
+    expect(res!.status).toBe(status);
+    expect(unsetCalls).toHaveLength(0);
+  });
+
+  test("the composite opt-in admits composite unsets", async () => {
+    const res = await handle(post("/api/settings/unset", { key: "board.rtRepos", scope: "machine" }), { allowComposite: true });
+    expect(res!.status).toBe(200);
+    expect(unsetCalls).toHaveLength(1);
+  });
+
+  test("an rt refusal answers 400 with rt's own message", async () => {
+    const res = await handle(post("/api/settings/unset", { key: "board.title", scope: "machine" }));
+    expect(res!.status).toBe(400);
+    const body = (await res!.json()) as { error: string };
+    expect(body.error).toContain("nothing to remove");
+  });
+
+  test("the write gate covers unset", async () => {
+    const res = await handle(post("/api/settings/unset", { key: "board.title", scope: "user" }, "board.example.com"));
+    expect(res!.status).toBe(403);
+    expect(unsetCalls).toHaveLength(0);
   });
 });

@@ -18,6 +18,7 @@ import {
   getDef,
   isMigrated,
   setSetting,
+  unsetSetting,
   validateValue,
   type ExplainRow,
   type SettingDef,
@@ -68,6 +69,7 @@ export interface RtSettingsApi {
   explainSetting: typeof explainSetting;
   validateValue: typeof validateValue;
   setSetting: typeof setSetting;
+  unsetSetting: typeof unsetSetting;
 }
 
 export interface SettingsHandlerOptions {
@@ -182,7 +184,8 @@ function json(body: unknown, status = 200): Response {
  * Answers:
  *   GET  {base}/defs[?prefix=board.]  → { defs: SettingDefWire[] }
  *   GET  {base}/explain/{key}         → { def, rows }
- *   POST {base}/set                   → { rows } | { error }
+ *   POST {base}/set                   → { rows, effective } | { error }
+ *   POST {base}/unset                 → { rows, effective } | { error }
  * Returns null for anything else so the host's routing continues.
  */
 export async function settingsHandler(
@@ -190,7 +193,7 @@ export async function settingsHandler(
   opts: SettingsHandlerOptions = {},
 ): Promise<Response | null> {
   const base = (opts.basePath ?? "/api/settings").replace(/\/+$/, "");
-  const rt: RtSettingsApi = { allDefs, getDef, isMigrated, explainSetting, validateValue, setSetting, ...opts.rt };
+  const rt: RtSettingsApi = { allDefs, getDef, isMigrated, explainSetting, validateValue, setSetting, unsetSetting, ...opts.rt };
   let url: URL;
   try {
     url = new URL(req.url);
@@ -198,7 +201,7 @@ export async function settingsHandler(
     return null;
   }
   const path = url.pathname;
-  if (path !== `${base}/defs` && !path.startsWith(`${base}/explain/`) && path !== `${base}/set`) {
+  if (path !== `${base}/defs` && !path.startsWith(`${base}/explain/`) && path !== `${base}/set` && path !== `${base}/unset`) {
     return null;
   }
 
@@ -254,6 +257,46 @@ export async function settingsHandler(
 
     try {
       rt.setSetting(key, value, scope, team ? { team } : {});
+    } catch (err) {
+      return json({ error: (err as Error).message }, 400);
+    }
+    const after = rt.explainSetting(key);
+    return json({ rows: sanitizeRows(def, after), effective: effectiveFromRows(def, after) });
+  }
+
+  if (path === `${base}/unset` && req.method === "POST") {
+    const allow = opts.allowWrite ?? defaultAllowWrite;
+    if (!allow(req)) return json({ error: "settings writes are local-only" }, 403);
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await req.json()) as Record<string, unknown>;
+    } catch {
+      return json({ error: "body must be JSON" }, 400);
+    }
+    const key = typeof body?.key === "string" ? body.key : "";
+    const scope = (typeof body?.scope === "string" ? body.scope : "") as SettingScope;
+    const team = typeof body?.team === "string" ? body.team : undefined;
+
+    // Same ladder as set, minus the value check — removal has no value. The
+    // writable/composite gates stay: a row the UI renders read-only must not
+    // be clearable through the API either.
+    const def = rt.getDef(key);
+    if (!def) return json({ error: `unknown setting "${key}"` }, 404);
+    if (def.secret === true) return json({ error: "secret keys are not writable here" }, 400);
+    if (isComposite(def) && opts.allowComposite !== true) return json({ error: COMPOSITE_COPY }, 400);
+    if (!def.scopes.includes(scope)) {
+      return json(
+        { error: `"${key}" cannot be unset in the ${scope} store (allowed: ${def.scopes.join(", ")})` },
+        400,
+      );
+    }
+    if (!isWritable(def, rt.isMigrated, opts.allowComposite === true)) {
+      return json({ error: `"${key}" is not writable through the resolver yet` }, 400);
+    }
+
+    try {
+      rt.unsetSetting(key, scope, team ? { team } : {});
     } catch (err) {
       return json({ error: (err as Error).message }, 400);
     }
