@@ -93,10 +93,10 @@ test("v4 adds chat_presence and chat_dms", () => {
   expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 4 });
 });
 
-test("a v5 dry-run over a v4 database does not throw", () => {
-  // The runner replays every version's schema when user_version is behind;
-  // only IF NOT EXISTS statements survive that. An ALTER here bricks rt at
-  // the NEXT bump, not this one — which is why this test exists now.
+test("replaying the current schemas over an older user_version does not throw", () => {
+  // The property a future v5 must keep: the runner replays EVERY version's
+  // schema over whatever is on disk, so only IF-NOT-EXISTS statements are
+  // legal. This exercises v4-over-v3; a v5 bump extends this same test.
   const db = openStateDb(freshPath());
   db.run("PRAGMA user_version = 3");
   expect(() => openStateDb(db.filename)).not.toThrow();
@@ -207,12 +207,19 @@ test("assertSessionOwnsHandle throws only on a mismatched signed handle", () => 
   expect(() => assertSessionOwnsHandle("x", undefined, db)).not.toThrow();      // no session id offered, no enforcement
 });
 
-test("prune frees a never-signed-out handle after 24h of silence, keeps the offline window", () => {
+test("prune: the ghost path — a never-signed-out row goes after 24h of silence", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);    // never signs out
+  expect(prunePresence(now + 2 * HOUR, db)).toBe(0);
+  expect(prunePresence(now + 25 * HOUR, db)).toBe(1);       // last_seen_at leg, signed_out_at NULL
+});
+
+test("prune: the signed-out path keeps the offline window", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
   signOut("s1", now, db);
-  expect(prunePresence(now + 2 * HOUR, db)).toBe(0);       // inside the offline window
-  expect(prunePresence(now + 25 * HOUR, db)).toBe(1);       // the signed-out-24h leg, exercised with a pinned clock
+  expect(prunePresence(now + 2 * HOUR, db)).toBe(0);        // offline (last 24h) still shows it
+  expect(prunePresence(now + 25 * HOUR, db)).toBe(1);       // signed_out_at leg
 });
 
 test("arm starts a new tail epoch: sets armed_at and CLEARS tail_seen_at", () => {
@@ -248,7 +255,7 @@ test("the joinRoom cwd guard is scoped to unsigned handles", () => {
 ```
 
 - [ ] **Step 2: Run to verify they fail** — `bun test lib/state/__tests__/presence-store.test.ts` → FAIL (no module).
-- [ ] **Step 3: Implement** — one `RECLAIMABLE_SQL` fragment (`signed_out_at IS NOT NULL OR (last_seen_at < :hour AND COALESCE(tail_seen_at, armed_at, 0) < :tenMin)`) used by `signIn` (suffix scan `x`, `x-2`, … over non-reclaimable rows; same-seat preference among reclaimable ones; reclaim = DELETE), `prunePresence` at sign-in and at daemon startup (the `lib/daemon.ts` call site above), nowhere else. Import direction: `chat-store` imports from `presence-store` (dual-write) and later from `dm-store` (`joinRoom` refusal), never the reverse — `dm-store` writes its membership rows with its own SQL so no cycle can land. `buddyStatus` is a pure function implementing the spec's table in order, thresholds parameterized. Dual-write lives inside `armMember`/`touchMember`/`disarmMember` (presence row updated when `presenceForHandle` hits). `joinRoom`'s collision guard first checks `presenceForHandle(handle)` and skips when signed in.
+- [ ] **Step 3: Implement** — one `RECLAIMABLE_SQL` fragment (`signed_out_at IS NOT NULL OR (last_seen_at < :hour AND COALESCE(tail_seen_at, armed_at, 0) < :tenMin)`) used by `signIn` (suffix scan `x`, `x-2`, … over non-reclaimable rows; same-seat preference among reclaimable ones; reclaim = DELETE), `prunePresence` uses its **own** `PRUNABLE_SQL` — `(signed_out_at IS NOT NULL AND signed_out_at < :dayAgo) OR last_seen_at < :dayAgo` — never `RECLAIMABLE_SQL`, whose bare `signed_out_at IS NOT NULL` leg would delete every signed-out row at daemon startup and empty the offline window. Prune runs at sign-in and at daemon startup (the `lib/daemon.ts` call site above), nowhere else. Import direction: `chat-store` imports from `presence-store` (dual-write) and later from `dm-store` (`joinRoom` refusal), never the reverse — `dm-store` writes its membership rows with its own SQL so no cycle can land. `buddyStatus` is a pure function implementing the spec's table in order, thresholds parameterized. Dual-write lives inside `armMember`/`touchMember`/`disarmMember` (presence row updated when `presenceForHandle` hits). `joinRoom`'s collision guard first checks `presenceForHandle(handle)` and skips when signed in.
 - [ ] **Step 4: Gate** — full repo gate → PASS.
 - [ ] **Step 5: Commit** — `chat-presence: presence store — sign-in, two heartbeats, one reclaim predicate`.
 
@@ -334,9 +341,9 @@ test("a dm post wakes the other participant; the human's post wakes both", () =>
   chat:away      { sessionId, text }  /  chat:back { sessionId } → {}
   chat:buddies   {} → { buddies: Array<PresenceRow & { status }> }
   chat:pulse     { sessionId, cwd?, repo?, branch?, pane? } → { unread: { dms, mentions, rooms }, status } — or refuses with an error containing handle reclaimed
-  chat:dm        { from, to, body, sessionId? } → { room, id, recipients }
+  chat:dm        { from, to, body, sessionId? } → { room, id, recipients }   // calls assertSessionOwnsHandle(from, sessionId) — a reclaimed session cannot DM as the new owner
   ```
-- Session enforcement is two functions for two payload shapes: handle-keyed (`chat:arm`/`chat:touch`/`chat:disarm`) call `assertSessionOwnsHandle(handle, sessionId?)`; session-keyed (`chat:pulse`/`chat:away`/`chat:back`/`chat:sign-out`) call `assertSessionSignedIn(sessionId)` (Task 3). The unsigned plan-1 path keeps working because the handle-keyed check fires only when a presence row exists and a session id was provided.
+- Session enforcement is two functions for two payload shapes: handle-keyed (`chat:arm`/`chat:touch`/`chat:disarm`) call `assertSessionOwnsHandle(handle, sessionId?)`; session-keyed (`chat:pulse`/`chat:away`/`chat:back`) call `assertSessionSignedIn(sessionId)` (Task 3); `chat:sign-out` checks for the row FIRST and returns success when none exists — its no-op contract runs before any enforcement, with a handler test for an already-reclaimed/pruned session. The unsigned plan-1 path keeps working because the handle-keyed check fires only when a presence row exists and a session id was provided.
 - **The three shipped catalog entries and wrappers gain `sessionId?`:** `chat:arm` `{handle, room?, sessionId?}`, `chat:touch`/`chat:disarm` `{handle, sessionId?}` in `packages/rt-client/src/commands.ts`; the wrappers stop hard-narrowing the payload (`chatTouch` currently rebuilds `{handle: a.handle}`, dropping extra fields); `chatTail` passes the session id from its session file (Task 7). Without this the daemon can never refuse a reclaimed handle.
 - `chat:post` payload gains `mentions?: string[]`, merged with `parseMentions(body)` for BOTH storage and the desk-notify check (see Task 4); `chat:dm` posts through it.
 - `chat:who` returns presence-joined statuses; `chat:rooms` marks DM rooms (`kind: "dm"`, display pair) by left-joining `chat_dms`.
@@ -429,7 +436,7 @@ test("position 0: a signed-in session resolves the assigned handle for every ver
 });
 
 test("--as while signed in is refused with the reason", async () => {
-  await signInInProcess({ as: "x" });
+  await signInInProcess({ as: "x", session: "s1" });
   const { code, stderr } = await runChatRaw(["post", "r", "hi", "--as", "y", "--session", "s1"]);
   expect(code).not.toBe(0);
   expect(stderr).toMatch(/signed in as x.*sign out/);
@@ -467,6 +474,7 @@ test("sign-out deletes the session file and disarms", async () => { /* file gone
 - `pulse` on a reclaimed refusal deletes the session file and reports it (stdout notice; `--json`: a `reclaimed: true` object) — the hook relays it as `additionalContext`.
 - `rt chat sign-out` implements `--quiet` (suppress all output — the hook flag) and is a silent no-op when no session file exists for the id.
 - `pulse` writes `lastCwd` / `lastBranchReadAt` back to the session file — that gates the git spawn (branch re-read only when cwd changed or the last read is over a minute old; `deriveRepoIdentity` is async and spawns git, which the post path's no-spawn rule forbids on hot paths).
+- **`pulse` is hard-bounded:** its daemon call passes `timeoutMs: 800` (the wrappers' 10s default would blow the hook budget), and ANY failure — timeout, daemon down, refused — exits 0 with no output except the reclaimed notice: a hook that hangs or errors on every prompt is worse than no hook. Tests: daemon-down pulse exits 0 silently; a stale branch cache with the daemon up stays under the budget.
 - `rt chat away <text>` / `rt chat back`; `rt chat dm <handle> <text>`; `rt chat pulse --json` (heartbeat + unread summary + status; exit 0 with `{ reclaimed: true }`-shaped error handling per below).
 - The tail: `chatTouch` refusals are no longer swallowed blind — a `handle reclaimed` error prints one stdout line (`handle reclaimed — sign in again`) and exits 0; every other touch error stays ignored.
 

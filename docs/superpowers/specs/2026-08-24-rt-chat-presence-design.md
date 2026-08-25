@@ -187,7 +187,7 @@ CREATE INDEX IF NOT EXISTS chat_presence_handle ON chat_presence(handle);
 CREATE TABLE IF NOT EXISTS chat_dms (
   room        TEXT PRIMARY KEY REFERENCES chat_rooms(name),   -- documentation only: foreign_keys is off in applyPragmas; deletion is explicit
   a           TEXT NOT NULL,             -- participants, sorted; either may be the human handle
-  b           TEXT NOT NULL,
+  b           TEXT NOT NULL CHECK (a <> b),
   created_at  INTEGER NOT NULL,
   UNIQUE (a, b)
 );
