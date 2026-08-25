@@ -31,17 +31,27 @@ function fenced(value: unknown): string {
 
 const SKILL_DIR_TOKEN = "${CLAUDE_SKILL_DIR}";
 
-function slotText(name: string, fill: AttachmentSource | null, mode: "inline" | "reference", partsPrefix: string): string {
+/**
+ * A parts dir is only emitted for a source that vendors files, so a source
+ * without any keeps the host skill's own directory -- rewriting to a parts dir
+ * that will never exist leaves every runtime use of the token dangling.
+ */
+function skillDirFor(source: AttachmentSource, ctx: PlaceholderContext, partsName: string): string {
+  if (source.extraFiles.length > 0) return `${ctx.partsPrefix}/${partsName}`;
+  return ctx.stageDir ?? SKILL_DIR_TOKEN;
+}
+
+function slotText(name: string, fill: AttachmentSource | null, mode: "inline" | "reference", ctx: PlaceholderContext): string {
   if (fill === null) return "";
   if (mode === "reference") {
     return `Slot ${name} is bound to \`${fill.binding}\` (${fill.binding}@${fill.version}) -- invoke that skill when this flow needs it.`;
   }
-  const body = fill.body.split(SKILL_DIR_TOKEN).join(`${partsPrefix}/${name}`);
+  const body = fill.body.split(SKILL_DIR_TOKEN).join(skillDirFor(fill, ctx, name));
   return `<!-- part: slot:${name} binding=${fill.binding} version=${fill.version} ${spanOf(fill)} -->\n${body}`;
 }
 
-function includeText(name: string, inc: AttachmentSource, partsPrefix: string): string {
-  const body = inc.body.split(SKILL_DIR_TOKEN).join(`${partsPrefix}/include-${name}`);
+function includeText(name: string, inc: AttachmentSource, ctx: PlaceholderContext): string {
+  const body = inc.body.split(SKILL_DIR_TOKEN).join(skillDirFor(inc, ctx, `include-${name}`));
   return `<!-- part: include:${name} source=${inc.plugin}:${name} version=${inc.version} ${spanOf(inc)} -->\n${body}`;
 }
 
@@ -92,14 +102,14 @@ export function substitute(
           if (!arg) throw new Error(`${where}: ${raw} needs a slot name`);
           if (!(arg in ctx.fills)) throw new Error(`${where}: slot "${arg}" is not declared by this engine`);
           used.slots.push(arg);
-          return slotText(arg, ctx.fills[arg] ?? null, ctx.slotMode[arg] ?? "inline", ctx.partsPrefix);
+          return slotText(arg, ctx.fills[arg] ?? null, ctx.slotMode[arg] ?? "inline", ctx);
         }
         case "include": {
           if (line.trim() !== raw) throw new Error(`${where}: ${raw} must be alone on its line (line ${i + 1})`);
           const inc = arg ? ctx.includes[arg] : undefined;
           if (!arg || !inc) throw new Error(`${where}: include "${arg}" is not a loaded attachment`);
           used.includes.push(arg);
-          return includeText(arg, inc, ctx.partsPrefix);
+          return includeText(arg, inc, ctx);
         }
         case "pipeline.stages": return fenced(ctx.pipelines);
         case "work-type": return workTypeText(ctx.pipelines, where);
