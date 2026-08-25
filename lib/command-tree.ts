@@ -246,13 +246,19 @@ export async function dispatch(
 
     if (repoFlag) {
       // --repo provided: resolve that repo and show worktree picker (skip repo picker + cwd detection)
-      const { getKnownRepos, pickWorktreeFromRepo, getRepoIdentity } = await import("./repo.ts");
-      const repos = getKnownRepos();
+      const { getKnownRepos, pickWorktreeFromRepo, getRepoIdentity, missingRepoRefusal } = await import("./repo.ts");
+      const repos = getKnownRepos({ includeMissing: true });
       const repo = repos.find(r => r.repoName === repoFlag);
       if (!repo) {
         const { yellow } = await import("./tui.ts");
         console.error(`\n  ${yellow}unknown repo: ${repoFlag}${reset}`);
         console.error(`  ${dim}known: ${repos.map(r => r.repoName).join(", ")}${reset}\n`);
+        process.exit(1);
+      }
+      // A missing row still resolves by name (that's the point — locate it),
+      // but its one synthetic worktree is a dead path: never chdir into it.
+      if (repo.missing) {
+        console.error(`\n  ${missingRepoRefusal(repo)}\n`);
         process.exit(1);
       }
       if (repo.worktrees.length === 1) {

@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach, mock } from "bun:test";
+import { describe, test, expect, afterEach, mock, spyOn } from "bun:test";
 import { spawnSync } from "child_process";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -156,6 +156,46 @@ describe("dispatch --repo flag scoping", () => {
     await dispatch(tree, ["cmd", "--repo", "foo", "--ticket", "bar"]);
 
     expect(capturedArgs).toEqual(["--repo", "foo", "--ticket", "bar"]);
+  });
+
+  // A `missing: true` row's single worktree is a dead path (its indexed
+  // directory no longer exists) — resolving it by name must refuse with
+  // missingRepoRefusal instead of chdir-ing into that path.
+  test('context:"worktree" node: --repo <missing repo> refuses before any chdir', async () => {
+    const real = realRepoModule;
+    const missingRepo: KnownRepo = {
+      repoName: "moved",
+      worktrees: [{ path: "/nonexistent/gone", branch: "", isBare: false }],
+      dataDir: "/fake/moved-data",
+      missing: true,
+    };
+    mock.module("../repo.ts", () => ({
+      ...real,
+      getKnownRepos: () => [missingRepo],
+      pickWorktreeFromRepo: async () => null,
+      getRepoIdentity: () => null,
+    }));
+
+    const chdirSpy = spyOn(process, "chdir").mockImplementation(() => {});
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit sentinel");
+    });
+
+    const tree: Record<string, CommandNode> = {
+      cmd: { description: "test", context: "worktree", handler: noop },
+    };
+
+    try {
+      await expect(dispatch(tree, ["cmd", "--repo", "moved"])).rejects.toThrow("process.exit sentinel");
+      expect(chdirSpy).not.toHaveBeenCalled();
+      expect(exitSpy.mock.calls.at(-1)?.[0]).toBe(1);
+      expect(errSpy.mock.calls.flat().join(" ")).toContain("rt repos locate");
+    } finally {
+      chdirSpy.mockRestore();
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
   });
 });
 

@@ -202,7 +202,7 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
   let identity = getRepoIdentity();
   if (identity) return identity;
 
-  const repos = getKnownRepos();
+  const repos = getKnownRepos({ includeMissing: true });
 
   if (repos.length === 0) {
     console.log(`\n  not in a git repo and no known repos found`);
@@ -247,7 +247,7 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
  * Auto-selects when there's only one option at either step.
  */
 export async function pickWorktree(prompt: string): Promise<string> {
-  const repos = getKnownRepos();
+  const repos = getKnownRepos({ includeMissing: true });
 
   if (repos.length === 0) {
     console.log(`\n  not in a git repo and no known repos found`);

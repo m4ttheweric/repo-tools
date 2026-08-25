@@ -689,8 +689,13 @@ function buildRootSet(known: KnownRepo[]): RootEntry[] {
 /**
  * Get all known repos from the global index, with worktree discovery.
  * Used when rt is run outside a git repo to offer a picker.
+ *
+ * `includeMissing` is opt-in: a caller that resolves a repo and then chdirs
+ * or spawns against its worktree path must ask for `missing` rows explicitly
+ * and refuse them (`missingRepoRefusal`) before acting, or leave the default
+ * off and keep today's silent-exclusion behavior.
  */
-export function getKnownRepos(): KnownRepo[] {
+export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] {
   // Same degrade-don't-crash rule as getRepoIdentity()'s index write: an
   // unopenable state.db (root-owned after a `sudo rt …`) must not take down
   // the `rt cd`/`rt run` picker — it falls back to the unregistered-scan
@@ -753,12 +758,14 @@ export function getKnownRepos(): KnownRepo[] {
 
   const known = repos.filter(r => r.worktrees.length > 0);
   // A pair of rows for one gone directory is one lost repo, not two.
-  const lost: KnownRepo[] = partitionByRealpath(lostEntries).keep.map((e) => ({
-    repoName: e.repoName,
-    worktrees: [{ path: e.path, branch: "", isBare: false }],
-    dataDir: repoDataDir(e.repoName),
-    missing: true as const,
-  }));
+  const lost: KnownRepo[] = opts?.includeMissing
+    ? partitionByRealpath(lostEntries).keep.map((e) => ({
+        repoName: e.repoName,
+        worktrees: [{ path: e.path, branch: "", isBare: false }],
+        dataDir: repoDataDir(e.repoName),
+        missing: true as const,
+      }))
+    : [];
   const knownNames = new Set([...known, ...lost].map(r => r.repoName));
   // realpath'd for set-membership ONLY — a symlinked path component (macOS
   // /tmp → /private/tmp being the canonical case) must not let the same

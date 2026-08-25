@@ -40,26 +40,32 @@ describe("missing index rows", () => {
     return dir;
   }
 
-  test("a row whose path is gone survives getKnownRepos, marked missing", () => {
+  test("getKnownRepos() default excludes a row whose path is gone", () => {
     setKvValue("repo-index", "moved", join(scratch, "gone-away"));
 
-    const row = getKnownRepos().find((r) => r.repoName === "moved");
+    expect(getKnownRepos().find((r) => r.repoName === "moved")).toBeUndefined();
+  });
+
+  test("getKnownRepos({ includeMissing: true }) surfaces that same row, marked missing", () => {
+    setKvValue("repo-index", "moved", join(scratch, "gone-away"));
+
+    const row = getKnownRepos({ includeMissing: true }).find((r) => r.repoName === "moved");
 
     expect(row?.missing).toBe(true);
     expect(row?.worktrees[0]?.path).toBe(join(scratch, "gone-away"));
   });
 
-  test("a live row is never marked missing", () => {
+  test("a live row is never marked missing, even with includeMissing: true", () => {
     setKvValue("repo-index", "alive", realRepo("alive"));
 
-    expect(getKnownRepos().find((r) => r.repoName === "alive")?.missing).toBeUndefined();
+    expect(getKnownRepos({ includeMissing: true }).find((r) => r.repoName === "alive")?.missing).toBeUndefined();
   });
 
   test("two lost rows for one directory collapse to a single missing entry", () => {
     setKvValue("repo-index", "legacy-name", join(scratch, "gone-away"));
     setKvValue("repo-index", "remote:gitlab.com%2Fg%2Fgone", join(scratch, "gone-away"));
 
-    expect(getKnownRepos().filter((r) => r.missing).length).toBe(1);
+    expect(getKnownRepos({ includeMissing: true }).filter((r) => r.missing).length).toBe(1);
   });
 
   test("the picker row says what to run", () => {

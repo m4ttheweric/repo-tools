@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOptions, type KnownRepo } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOptions, missingRepoRefusal, type KnownRepo } from "../lib/repo.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -207,14 +207,23 @@ export async function worktreePicker(args: string[]): Promise<void> {
   // ── --repo flag: always go to repo picker ────────────────────────────────────
   if (forceRepo) {
     if (wtBranch) {
-      // Pick repo first, then jump to the matching worktree (or show picker)
+      // Pick repo first, then jump to the matching worktree (or show picker).
+      // Scoped includeMissing fetch: a missing row must be pickable here so
+      // it gets the clean missingRepoRefusal below instead of resolving via
+      // branch name against a dead path — but only in this branch, not the
+      // rest of rt cd's default flows.
       const { filterableSelect } = await import("../lib/rt-render.tsx");
-      const options = repoOptions(repos);
-      const pickedRepoName = repos.length === 1
-        ? repos[0]!.repoName
+      const repoChoices = getKnownRepos({ includeMissing: true });
+      const options = repoOptions(repoChoices);
+      const pickedRepoName = repoChoices.length === 1
+        ? repoChoices[0]!.repoName
         : await filterableSelect({ message: "Pick a repo", options, stderr: true });
       if (!pickedRepoName) process.exit(0); // Esc on repo picker
-      const pickedRepo = repos.find((r) => r.repoName === pickedRepoName)!;
+      const pickedRepo = repoChoices.find((r) => r.repoName === pickedRepoName)!;
+      if (pickedRepo.missing) {
+        console.error(`\n  ${missingRepoRefusal(pickedRepo)}\n`);
+        process.exit(1);
+      }
 
       // Try to resolve the worktree in that repo; fall back to picker
       const lower = wtBranch.toLowerCase();
