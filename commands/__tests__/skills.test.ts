@@ -7,6 +7,7 @@ import { compileSkill } from "../../lib/skills/compile.ts";
 import { invocableRoster, loadAttachment, loadStepSource } from "../../lib/skills/sources.ts";
 import type { PluginRoots } from "../../lib/skills/sources.ts";
 import type { VerbDef } from "../../lib/skills/types.ts";
+import { runExpectingCleanExit } from "../../lib/skills/__tests__/helpers.ts";
 
 function writeFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -122,6 +123,20 @@ function manifestJsonc(team: string, withForge: boolean): string {
 `;
 }
 
+/** A trivial, no-slot stage step -- resolve() now builds StageEntry[] for every pipeline name a test manifest declares, so any such name needs a real SKILL.md behind it. */
+function stageSkillMd(name: string, stage: string): string {
+  return `---
+name: ${name}
+description: "${stage} stage"
+type: pipeline-step
+metadata:
+  stage: ${stage}
+---
+
+${stage}.
+`;
+}
+
 /**
  * Fixture "mattstack home" root: plugins/<name>/ mirrors resolvePluginRoots()'s
  * real shape (dir + .claude-plugin/plugin.json) so skillsCompile's test-mode
@@ -136,6 +151,9 @@ function makeMattstackDir(): string {
   writeFile(join(mattstackPluginDir, "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"), WATCH_CI_SCRIPT);
   chmodSync(join(mattstackPluginDir, "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"), 0o755);
   writeFile(join(mattstackPluginDir, "skills", "gitlab-forge", "SKILL.md"), FORGE_SKILL_MD);
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-plan", "SKILL.md"), stageSkillMd("stage-plan", "plan"));
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-provision", "SKILL.md"), stageSkillMd("stage-provision", "provision"));
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-ship", "SKILL.md"), stageSkillMd("stage-ship", "ship"));
 
   const acmePluginDir = join(dir, "plugins", "acme");
   writeFile(join(acmePluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
@@ -206,33 +224,6 @@ afterEach(() => {
   process.exitCode = 0;
 });
 
-/**
- * Expected/domain errors print a clean one-liner and process.exit(1) instead
- * of throwing a bare stack trace (matches commands/secrets.ts,
- * commands/settings-keys.ts). Mock process.exit to throw a sentinel so the
- * real test process never dies, and read the spies' recorded calls BEFORE
- * mockRestore() -- bun's mockRestore() clears .mock.calls, unlike jest's.
- */
-async function runExpectingCleanExit(fn: () => Promise<void>): Promise<{ exitCode: number | undefined; errors: string[] }> {
-  const errors: string[] = [];
-  const exitSpy = spyOn(process, "exit").mockImplementation(() => {
-    throw new Error("process.exit sentinel");
-  });
-  const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-    errors.push(args.map(String).join(" "));
-  });
-  try {
-    await fn();
-    return { exitCode: undefined, errors };
-  } catch {
-    const exitCode = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
-    return { exitCode, errors };
-  } finally {
-    exitSpy.mockRestore();
-    errorSpy.mockRestore();
-  }
-}
-
 describe("skillsCompile", () => {
   test("dry-run prints a would-write summary and writes nothing", async () => {
     const mattstackDir = makeMattstackDir();
@@ -297,50 +288,37 @@ describe("skillsCompile", () => {
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(true);
   });
 
-  test("--preview on a retired verb writes its status line to stderr, not stdout", async () => {
+  test("--preview on a non-public verb still previews the compiled body, writing nothing to disk", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("t");
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
 
-    const errors: string[] = [];
-    const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-      errors.push(args.map(String).join(" "));
-    });
-    try {
-      await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
-        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
-    } finally {
-      errorSpy.mockRestore();
-    }
+    await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
 
-    // A caller piping --preview to a file must never see this status line:
-    // it belongs on stderr, and stdout must stay empty.
-    expect(logs.join("\n")).not.toContain("not compiled; roster entry retired");
-    expect(errors.join("\n")).toContain("not compiled; roster entry retired");
+    const out = logs.join("\n");
+    expect(out).toContain("<!-- part: step source=");
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "watch-ci"))).toBe(false);
   });
 
-  test("retired verb in a pack that ALSO has a misplaced compiled dir: still nothing on stdout", async () => {
+  test("non-public verb previewed alongside a misplaced compiled dir elsewhere: still nothing but the body on stdout", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("t");
     writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
     // Registered on disk, absent from the public list, and NOT the requested
-    // verb: exactly what the post-loop scan reports. A retired verb reaches
-    // that scan by `continue` where a lint-erroring one returns before it, so
-    // this is the same leak through the other doorway -- and the console reads
-    // any non-empty stdout as the compiled body.
+    // verb: exactly what the post-loop "misplaced" scan reports -- but that
+    // scan never runs under --preview, so it must not leak onto stdout here.
     writeFile(join(packDir, "skills", "stray-skill", "SKILL.md"), "# stray\n");
 
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
-        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
-    } finally {
-      errorSpy.mockRestore();
-    }
+    await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
 
-    expect(logs.join("\n")).toBe("");
+    const out = logs.join("\n");
+    expect(out).toContain("<!-- part: step source=");
+    expect(out).not.toContain("misplaced:");
   });
 
   test("real run emits SKILL.md + vendored files matching a golden compile, byte for byte", async () => {
@@ -479,6 +457,155 @@ describe("skillsCompile", () => {
   });
 });
 
+/**
+ * A "work" orchestrator (places {{pipeline.stages}}) plus one stage
+ * (metadata.stage: plan) declared via the manifest's pipelines map -- the
+ * minimal fixture for exercising --verb scoping across the roster-verb and
+ * pipeline-stage name spaces together.
+ */
+function makePipelineFixtures(): { mattstackDir: string; packDir: string; manifestPath: string } {
+  const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-pipeline-mattstack-")));
+  const mattstackPluginDir = join(mattstackDir, "plugins", "mattstack");
+  writeFile(join(mattstackPluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0" }));
+  writeFile(
+    join(mattstackPluginDir, "attachments", "pipeline", "work", "SKILL.md"),
+    `---\nname: work\ndescription: "Run the work pipeline"\ntype: pipeline-step\n---\n\n{{work-type}}\n{{pipeline.stages}}\n`,
+  );
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-plan", "SKILL.md"), stageSkillMd("stage-plan", "plan"));
+
+  const packDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-pipeline-pack-")));
+  writeFile(join(packDir, "pack", "stubs.jsonc"), `{ "verbs": { "work": { "engine": "work", "description": "Run the pipeline." } } }\n`);
+  writeFile(join(packDir, "pack", "surface.jsonc"), JSON.stringify({ public: ["work"] }));
+
+  const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-pipeline-manifest-")));
+  const manifestPath = join(manifestDir, "skills.jsonc");
+  writeFile(manifestPath, `{\n  "pipelines": { "feature": ["mattstack:stage-plan"] },\n  "bindings": {}\n}\n`);
+
+  return { mattstackDir, packDir, manifestPath };
+}
+
+describe("skillsCompile/skillsCheck --verb scoping across roster verbs and pipeline stages", () => {
+  test("--verb work --preview emits exactly the orchestrator's body, not every stage's too", async () => {
+    const { mattstackDir, packDir, manifestPath } = makePipelineFixtures();
+
+    await skillsCompile([
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+      "--verb", "work", "--preview",
+    ]);
+
+    // Strict, not toContain: a stray second console.log (the stage's body
+    // concatenated after the orchestrator's) is exactly the N+1-bodies bug --
+    // toContain would have passed with two bodies on stdout.
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("The work type is `feature`. Continue.");
+  });
+
+  test("--verb stage-plan --preview emits exactly that stage's body, not the orchestrator's", async () => {
+    const { mattstackDir, packDir, manifestPath } = makePipelineFixtures();
+
+    await skillsCompile([
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+      "--verb", "stage-plan", "--preview",
+    ]);
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).not.toContain("The work type is");
+  });
+
+  test("--verb work (real compile) writes only the orchestrator, leaving the stage uncompiled", async () => {
+    const { mattstackDir, packDir, manifestPath } = makePipelineFixtures();
+
+    await skillsCompile([
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "work",
+    ]);
+
+    expect(existsSync(join(packDir, "skills", "work", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(packDir, "attachments", "stage-plan"))).toBe(false);
+  });
+
+  test("skillsCheck --verb stage-plan --json reports only that stage, not the orchestrator", async () => {
+    const { mattstackDir, packDir, manifestPath } = makePipelineFixtures();
+
+    await skillsCheck([
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+      "--verb", "stage-plan", "--json",
+    ]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs.map((v: { name: string }) => v.name)).toEqual(["stage-plan"]);
+  });
+
+  test("an unknown --verb naming neither a roster verb nor a pipeline stage: clean one-line error", async () => {
+    const { mattstackDir, packDir, manifestPath } = makePipelineFixtures();
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "no-such-name",
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).toContain("no-such-name");
+  });
+});
+
+describe("skillsCompile with a broken pipeline manifest", () => {
+  test("a pipeline naming a stage with no backing SKILL.md fails cleanly, not with a stack trace", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-bad-pipeline-")));
+    const manifestPath = join(manifestDir, "skills.jsonc");
+    writeFile(manifestPath, `{\n  "pipelines": { "feature": ["mattstack:no-such-stage"] },\n  "bindings": {}\n}\n`);
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--manifest", manifestPath,
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).not.toContain("\n    at ");
+    expect(errors[0]).toContain("feature");
+    expect(errors[0]).toContain("no-such-stage");
+  });
+
+  test("a name that is both a roster verb and a pipeline stage errors instead of silently deleting its own output", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(
+      join(packDir, "pack", "stubs.jsonc"),
+      `{\n  "verbs": {\n    "watch-ci": { "engine": "watch-ci", "description": "Watch CI." },\n    "stage-plan": { "engine": "stage-plan", "description": "Also a roster verb, oops." }\n  }\n}\n`,
+    );
+    const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-collision-")));
+    const manifestPath = join(manifestDir, "skills.jsonc");
+    writeFile(manifestPath, `{\n  "pipelines": { "feature": ["mattstack:stage-plan"] },\n  "bindings": {}\n}\n`);
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--manifest", manifestPath,
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).toContain("stage-plan");
+    expect(errors[0]).toContain("both a roster verb and a pipeline stage");
+    expect(existsSync(join(packDir, "skills", "stage-plan"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "stage-plan"))).toBe(false);
+  });
+});
+
 describe("skillsCheck", () => {
   test("reports current right after a compile", async () => {
     const mattstackDir = makeMattstackDir();
@@ -602,7 +729,7 @@ describe("skillsCheck --json", () => {
     expect(parsed.pack).toBe("acme");
     expect(parsed.packDir).toBe(packDir);
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [] },
+      { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [], side: "skills" },
     ]);
   });
 
@@ -628,7 +755,7 @@ describe("skillsCheck --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [] },
+      { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [], side: "skills" },
     ]);
   });
 
@@ -647,12 +774,12 @@ describe("skillsCheck --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"] },
+      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"], side: "skills" },
     ]);
     expect(process.exitCode).toBe(1);
   });
 
-  test("internal verb with missing outDir: internal-unchecked, and does not count as stale", async () => {
+  test("internal verb with missing outDir: never-compiled under attachments/, and still counts as stale", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("acme");
@@ -662,9 +789,9 @@ describe("skillsCheck --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "internal-unchecked", staleFiles: [], orphanFiles: [] },
+      { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [], side: "attachments" },
     ]);
-    expect(process.exitCode).not.toBe(1);
+    expect(process.exitCode).toBe(1);
   });
 });
 
@@ -689,9 +816,11 @@ describe("skillsCompile --json", () => {
       "scripts/ci-watch.sh",
     ]);
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+    // A clean compile leaves the exit code unset: a caller reading it sees success.
+    expect(process.exitCode).not.toBe(1);
   });
 
-  test("internal (retired) verb: internal-skipped, no compile attempted, no disk write", async () => {
+  test("internal (retired) verb: compiled row with side attachments, still no disk write under --json", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("acme");
@@ -700,9 +829,18 @@ describe("skillsCompile --json", () => {
     await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "internal-skipped", files: [], warnings: [], errors: [] },
+    expect(parsed.verbs).toHaveLength(1);
+    const verb = parsed.verbs[0];
+    expect(verb.name).toBe("watch-ci");
+    expect(verb.status).toBe("compiled");
+    expect(verb.side).toBe("attachments");
+    expect(verb.errors).toEqual([]);
+    expect(verb.files.map((f: { path: string }) => f.path).sort()).toEqual([
+      "SKILL.md",
+      "parts/domain/ci-config.json",
+      "scripts/ci-watch.sh",
     ]);
+    expect(existsSync(join(packDir, "attachments", "watch-ci"))).toBe(false);
   });
 
   test("lint-erroring verb (returned errors[]): errored with the message, other verbs unaffected -- command does not die", async () => {
@@ -722,7 +860,12 @@ describe("skillsCompile --json", () => {
     expect(watchCi.errors[0]).toContain("acme:helper-verb");
 
     const helper = parsed.verbs.find((v: { name: string }) => v.name === "helper-verb");
-    expect(helper.status).toBe("internal-skipped");
+    expect(helper.status).toBe("compiled");
+    expect(helper.side).toBe("attachments");
+
+    // An errored verb is a failed compile: the exit code says so, matching the
+    // non-JSON throw and check --json's stale exit.
+    expect(process.exitCode).toBe(1);
   });
 
   test("unbound required slot (compileVerb throws): errored, not a crash", async () => {
@@ -737,6 +880,7 @@ describe("skillsCompile --json", () => {
     expect(parsed.verbs[0].status).toBe("errored");
     expect(parsed.verbs[0].files).toEqual([]);
     expect(parsed.verbs[0].errors[0]).toContain("forge");
+    expect(process.exitCode).toBe(1);
   });
 
   test("prints ONLY json -- no human lines on stdout", async () => {
@@ -891,6 +1035,20 @@ describe("skillsComposition --json", () => {
       { name: "domain", boundTo: "acme:watch-ci-domain" },
       { name: "forge", boundTo: "mattstack:gitlab-forge" },
     ]);
+  });
+
+  test("an internal verb's artifactPath is under attachments/, not a hardcoded skills/", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    const manifestPath = makeManifest("acme");
+
+    await skillsComposition(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    const verb = parsed.verbs.find((v: { name: string }) => v.name === "watch-ci");
+    expect(verb.public).toBe(false);
+    expect(verb.artifactPath).toBe(join(packDir, "attachments", "watch-ci"));
   });
 
   test("degrades per-slot (dangling binding) and per-verb (broken engine) without blanking the payload", async () => {

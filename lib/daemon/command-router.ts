@@ -6,6 +6,7 @@
  * inline in daemon.ts.
  */
 
+import type { Database } from "bun:sqlite";
 import type { HandlerContext, HandlerMap, TypedHandlers } from "./handlers/types.ts";
 import { createCacheHandlers }     from "./handlers/cache.ts";
 import { createHooksHandlers }     from "./handlers/hooks.ts";
@@ -19,6 +20,7 @@ import { createRunsHandlers } from "./handlers/runs.ts";
 import { createSecretsHandlers } from "./handlers/secrets.ts";
 import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
+import { createChatHandlers } from "./handlers/chat.ts";
 import { createEndpointHandlers } from "./handlers/endpoint.ts";
 import { createSettingsHandlers } from "./handlers/settings.ts";
 import { createHomeHandlers } from "./handlers/home.ts";
@@ -42,6 +44,14 @@ export function buildRoutedHandlers(opts: {
   eventsBus: EventsBus;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
   homeSnapshot: HomeSnapshotHandle;
+  /**
+   * state.db, for chat:* handlers (RT-48 Task 6). Passed in already-open
+   * rather than resolved here with getStateDb(): this function is called at
+   * the daemon's module-evaluation time, and state.db must not open before
+   * startDaemon()'s explicit, ordered open (see lib/daemon.ts's branch-cache
+   * facade comment).
+   */
+  chatDb: Database;
 }): TypedHandlers & HandlerMap {
   const { ctx, broadcast, systemProcessScanner } = opts;
   const emitEvent = (topic: string, payload: unknown) => {
@@ -49,6 +59,9 @@ export function buildRoutedHandlers(opts: {
     const id = opts.eventsBus.emitAt(topic, payload, emittedAt);
     broadcast("event", { id, topic, payload, emittedAt });
   };
+  // createChatHandlers also exposes `db` (its test-isolation seam); dropped
+  // here so it never lands as a bogus "db" entry in the command map below.
+  const { db: _chatDb, ...chatHandlers } = createChatHandlers({ db: opts.chatDb, emitEvent });
   return {
     ...createCacheHandlers(ctx),
     ...createHooksHandlers(ctx),
@@ -62,6 +75,7 @@ export function buildRoutedHandlers(opts: {
     ...createSecretsHandlers(ctx),
     ...createProjectMRsHandlers(ctx, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
+    ...chatHandlers,
     ...createEndpointHandlers(ctx),
     ...createSettingsHandlers(),
     ...createHomeHandlers(opts.homeSnapshot),

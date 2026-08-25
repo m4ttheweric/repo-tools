@@ -655,6 +655,25 @@ export const TREE: Record<string, CommandNode> = {
     subcommands: eventsSubcommands,
   },
 
+  // Self-dispatching leaf: chat() routes its own verbs (join/leave/post/read/
+  // rooms/who/mark/tail), so all args flow through rather than a subcommand map.
+  chat: {
+    description: "Group chat for agents and their human, over the rt daemon",
+    module: "./commands/chat.ts",
+    fn: "chat",
+    args: [
+      { name: "Verb", type: "text", placeholder: "join | leave | post | read | rooms | who | mark | tail", hint: "The chat action to run" },
+      { name: "Room", type: "text", placeholder: "build", hint: "Room name (join/leave/post/read/who/mark); omit on read/rooms to span all your rooms" },
+      { name: "Text", type: "text", placeholder: "@handle message", hint: "For post: the message body (every word after the room)" },
+      { name: "As handle", flag: "--as", type: "text", placeholder: "repo-tools-main", hint: "Override the derived handle for this invocation" },
+      { name: "Wake on", flag: "--wake-on", type: "text", placeholder: "mention | all | none", hint: "For join: when this handle's tail wakes (default mention)" },
+      { name: "Limit", flag: "--limit", type: "text", placeholder: "20", hint: "For read: max messages (default 20)" },
+      { name: "Since", flag: "--since", type: "text", placeholder: "5m", hint: "For read: a non-advancing peek at messages newer than this duration" },
+      { name: "Full", flag: "--full", type: "boolean", default: false, hint: "For read: uncapped message bodies" },
+      { name: "Room filter", flag: "--room", type: "text", placeholder: "build", hint: "For tail: only emit wakes from this room" },
+    ],
+  },
+
   runs: {
     description: "Pipeline run state (read-only, from the run DB)",
     module: "./commands/runs.ts",
@@ -1033,7 +1052,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/skills.ts",
         fn: "skillsSurface",
         args: [
-          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name> --public|--internal | apply; omit for the fzf palette" },
+          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name>... --public|--internal | apply; omit for the fzf palette" },
           { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
           SETUP_JSON_ARG,

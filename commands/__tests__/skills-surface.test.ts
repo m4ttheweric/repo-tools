@@ -76,11 +76,12 @@ async function runExpectingCleanExit(fn: () => Promise<void>): Promise<{ exitCod
 describe("skillsSurface list", () => {
   test("no surface.jsonc: infers public/internal from current skills/ + attachments/ + stub verbs", async () => {
     const packDir = makePackDir();
+    const { mattstackDir, manifestPath } = makeEngineFixture();
     writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
     writeFile(join(packDir, "skills", "hand-authored-public", "SKILL.md"), "---\nname: x\n---\nbody\n");
     writeFile(join(packDir, "attachments", "hand-authored-internal", "SKILL.md"), "---\nname: y\n---\nbody\n");
 
-    await skillsSurface(["list", "--team", "t", "--pack-dir", packDir]);
+    await skillsSurface(["list", "--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
 
     const out = logs.join("\n");
     expect(out).toContain("no surface.jsonc");
@@ -113,11 +114,12 @@ describe("skillsSurface list", () => {
 
   test("--json: rows match the human listing, with pack and packDir", async () => {
     const packDir = makePackDir();
+    const { mattstackDir, manifestPath } = makeEngineFixture();
     writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
     writeFile(join(packDir, "skills", "hand-authored-public", "SKILL.md"), "---\nname: x\n---\nbody\n");
     writeFile(join(packDir, "attachments", "hand-authored-internal", "SKILL.md"), "---\nname: y\n---\nbody\n");
 
-    await skillsSurface(["list", "--pack", "acme", "--pack-dir", packDir, "--json"]);
+    await skillsSurface(["list", "--pack", "acme", "--pack-dir", packDir, "--json", "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.pack).toBe("acme");
@@ -141,6 +143,19 @@ describe("skillsSurface list", () => {
     await skillsSurface(["list", "--pack-dir", packDir, "--json"]);
 
     expect(() => JSON.parse(logs.join("\n"))).not.toThrow();
+  });
+
+  test("roster pack with no discoverable manifest: list still works, no stage rows", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
+    const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-empty-mattstack-")));
+
+    const { exitCode } = await runExpectingCleanExit(() =>
+      skillsSurface(["list", "--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir]),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(logs.join("\n")).toMatch(/my-verb/);
   });
 });
 
@@ -187,7 +202,7 @@ describe("skillsSurface set", () => {
     expect(surface.public).not.toContain("my-skill");
   });
 
-  test("--internal on a compiled stub verb: surface.jsonc updated, apply removes the compiled dir (never git-mv'd)", async () => {
+  test("--internal on a compiled stub verb: surface.jsonc updated, apply recompiles it into attachments/ (never git-mv'd)", async () => {
     const packDir = makePackDir();
     writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
     writeFile(join(packDir, "skills", "my-verb", "SKILL.md"), "---\nname: my-verb\n---\nold compiled content\n");
@@ -199,7 +214,7 @@ describe("skillsSurface set", () => {
     ]);
 
     expect(existsSync(join(packDir, "skills", "my-verb"))).toBe(false);
-    expect(existsSync(join(packDir, "attachments", "my-verb"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "my-verb", "SKILL.md"))).toBe(true);
 
     const out = logs.join("\n");
     expect(out).not.toContain("moved my-verb");
@@ -475,7 +490,7 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     writeFile(join(packDir, "skills", "real-skill", "SKILL.md"), "---\nname: real-skill\n---\nbody\n");
 
     const surface = { public: ["ghost", "real-skill"] };
-    const { rows } = computeRows(packDir, new Set(), surface);
+    const { rows } = computeRows(packDir, new Set(), surface, new Set());
 
     const ghostRow = rows.find((r) => r.name === "ghost");
     expect(ghostRow).toEqual({ name: "ghost", kind: "missing", status: "public" });
@@ -488,7 +503,7 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     writeStubs(packDir, {});
 
     const surface = { public: ["ghost"] };
-    const { rows } = computeRows(packDir, new Set(), surface);
+    const { rows } = computeRows(packDir, new Set(), surface, new Set());
     const previousPublic = new Set(surface.public);
 
     // Simulates the palette round trip: the fzf row for "ghost" exists and stays
@@ -504,7 +519,7 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     writeStubs(packDir, {});
 
     const surface = { public: ["ghost"] };
-    const { rows } = computeRows(packDir, new Set(), surface);
+    const { rows } = computeRows(packDir, new Set(), surface, new Set());
     const previousPublic = new Set(surface.public);
 
     const resultRows = rows.map((r) => ({ name: r.name, status: "internal" as const }));

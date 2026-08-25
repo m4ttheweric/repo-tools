@@ -160,6 +160,8 @@ describe("skillsBind", () => {
     expect(errors[0]).toStartWith("rt skills: ");
     expect(errors[0]).toContain("no-such-verb");
     expect(readFileSync(manifestPath, "utf8")).toBe(before);
+    // Rejection is before any compile: no artifact is left behind either.
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
   });
 
   test("unknown slot: clean error naming the real slots, exit 1, writes nothing", async () => {
@@ -180,6 +182,7 @@ describe("skillsBind", () => {
     expect(errors[0]).toContain("no-such-slot");
     expect(errors[0]).toContain("domain");
     expect(readFileSync(manifestPath, "utf8")).toBe(before);
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
   });
 
   test("fill whose provides does not match the slot's contract: clean error, exit 1, writes nothing", async () => {
@@ -200,6 +203,7 @@ describe("skillsBind", () => {
     expect(errors[0]).toContain("watch-ci-domain@2");
     expect(errors[0]).toContain("watch-ci-domain@1");
     expect(readFileSync(manifestPath, "utf8")).toBe(before);
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
   });
 
   test("--dry-run writes nothing", async () => {

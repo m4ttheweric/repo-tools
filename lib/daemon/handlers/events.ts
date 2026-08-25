@@ -21,7 +21,7 @@ const num = (v: unknown): number | undefined => {
 export function createEventsHandlers(
   bus: EventsBus,
   broadcast: (type: string, data: any) => void,
-): Pick<TypedHandlers, "events:emit" | "events:list"> & {
+): Pick<TypedHandlers, "events:emit" | "events:list" | "events:head"> & {
   "events:wait": (
     payload: Commands["events:wait"]["payload"],
     signal?: AbortSignal,
@@ -44,6 +44,10 @@ export function createEventsHandlers(
       if (!pattern) return { ok: false as const, error: "missing pattern" };
       const { events, cursor } = bus.list({ pattern, after: num(payload.after), limit: num(payload.limit) });
       return { ok: true as const, data: { events, cursor } };
+    },
+
+    "events:head": async () => {
+      return { ok: true as const, data: { cursor: bus.head() } };
     },
 
     // Widened-Handler shape: receives the request AbortSignal from the seam

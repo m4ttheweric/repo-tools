@@ -38,7 +38,7 @@ import { resolveUserPath } from "./daemon/user-path.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { getBranchCacheStore, getStateDb, type BranchCacheStore } from "./state/index.ts";
+import { clearAllArmed, getBranchCacheStore, getStateDb, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -273,18 +273,10 @@ const handlerCtx: HandlerContext = {
 /** Env bundle for the live-freshness subsystem. */
 const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast: emit };
 
-const routedHandlers = buildRoutedHandlers({
-  ctx: handlerCtx,
-  broadcast: emit,
-  systemProcessScanner,
-  worktree: {
-    emit,
-    kick: worktreeReconciler.kick,
-    creationInFlight: worktreeReconciler.creationInFlight,
-  },
-  eventsBus,
-  homeSnapshot,
-});
+// Assigned in startDaemon(), after openBranchCacheStore() — chat handlers
+// need state.db open, and module scope must not touch it (same rule as the
+// branch-cache facade above).
+let routedHandlers: ReturnType<typeof buildRoutedHandlers> | undefined;
 
 async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
   const t0 = Date.now();
@@ -303,7 +295,7 @@ async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): P
 }
 
 async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
-  const routed = routedHandlers[cmd];
+  const routed = routedHandlers?.[cmd];
   if (routed) return routed(payload, signal);
 
   switch (cmd) {
@@ -390,6 +382,26 @@ export function startDaemon(): void {
   runBootIdentityMigration(log).catch((err) => {
     log.warn({ err }, "boot identity migration failed");
   });
+
+  routedHandlers = buildRoutedHandlers({
+    ctx: handlerCtx,
+    broadcast: emit,
+    systemProcessScanner,
+    worktree: {
+      emit,
+      kick: worktreeReconciler.kick,
+      creationInFlight: worktreeReconciler.creationInFlight,
+    },
+    eventsBus,
+    homeSnapshot,
+    chatDb: getStateDb("daemon"),
+  });
+
+  // No waiter outlives the daemon, so every armed_at set at boot is stale;
+  // clearing must finish before the socket listens, or an agent that arms
+  // in the gap has its fresh armed_at wiped.
+  const clearedArmed = clearAllArmed();
+  if (clearedArmed > 0) log.info({ clearedArmed }, "chat: cleared stale armed_at from previous daemon run");
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
   servers.socket = startSocketServer({ handleCommand, log });

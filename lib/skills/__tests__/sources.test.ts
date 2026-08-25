@@ -6,9 +6,13 @@ import {
   buildPluginRoots,
   invocableRoster,
   loadAttachment,
+  loadInclude,
   loadStepSource,
+  parseStageQualifiedName,
   readManifestBindings,
+  readManifestPipelines,
   readVerbRoster,
+  stageRoster,
   stripFrontmatter,
   type PluginRoots,
 } from "../sources.ts";
@@ -204,6 +208,45 @@ describe("loadStepSource", () => {
     expect(step.name).toBe("ship");
     expect(step.dir.endsWith(join("attachments", "pipeline", "ship"))).toBe(true);
     expect(step.body).toBe("Ship it.");
+  });
+
+  test("loadStepSource reads stage metadata into stageMeta", () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-step-"));
+    const dir = join(root, "attachments", "stage-plan");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), [
+      "---", "name: stage-plan", "description: plan", "type: pipeline-step",
+      "slots:", "  domain: { contract: plan-domain@1, required: false }",
+      "metadata:", "  stage: plan", "  stage-consumes: ticket", "  stage-produces: approach evidence-plan",
+      "---", "", "body {{slot:domain}}",
+    ].join("\n"));
+    const step = loadStepSource("stage-plan", { byName: { mattstack: { dir: root, version: "1.0.0" } } });
+    expect(step.stageMeta).toEqual({ stage: "plan", consumes: ["ticket"], produces: ["approach", "evidence-plan"] });
+  });
+
+  test("loadStepSource reads YAML-sequence stage-consumes/stage-produces into stageMeta", () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-step-"));
+    const dir = join(root, "attachments", "stage-plan");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), [
+      "---", "name: stage-plan", "description: plan", "type: pipeline-step",
+      "slots:", "  domain: { contract: plan-domain@1, required: false }",
+      "metadata:", "  stage: plan",
+      "  stage-consumes:", "    - ticket", "    - repo",
+      "  stage-produces:", "    - approach", "    - evidence-plan",
+      "---", "", "body {{slot:domain}}",
+    ].join("\n"));
+    const step = loadStepSource("stage-plan", { byName: { mattstack: { dir: root, version: "1.0.0" } } });
+    expect(step.stageMeta).toEqual({ stage: "plan", consumes: ["ticket", "repo"], produces: ["approach", "evidence-plan"] });
+  });
+
+  test("loadStepSource leaves stageMeta null for a non-stage engine", () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-step-"));
+    const dir = join(root, "attachments", "work");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), "---\nname: work\ndescription: w\ntype: pipeline-step\n---\n\nbody");
+    const step = loadStepSource("work", { byName: { mattstack: { dir: root, version: "1.0.0" } } });
+    expect(step.stageMeta).toBeNull();
   });
 });
 
@@ -425,5 +468,100 @@ describe("buildPluginRoots", () => {
     expect(roots.byName.mattstack?.version).toBe("1.2.0");
     expect(roots.byName.acme?.version).toBe("0.3.0");
     expect(callCount).toBe(0);
+  });
+});
+
+test("readManifestPipelines returns the pipelines map", () => {
+  const root = mkdtempSync(join(tmpdir(), "rt-man-"));
+  const p = join(root, "skills.jsonc");
+  writeFileSync(p, '// header\n{ "pipelines": { "feature": ["mattstack:stage-plan", "mattstack:stage-ship"] }, "bindings": {} }');
+  expect(readManifestPipelines(p)).toEqual({ feature: ["mattstack:stage-plan", "mattstack:stage-ship"] });
+});
+
+test("stageRoster is the distinct union across pipelines, bare names", () => {
+  expect(stageRoster({ feature: ["mattstack:stage-plan", "mattstack:stage-ship"], bugfix: ["mattstack:stage-plan"] }))
+    .toEqual([
+      { name: "stage-plan", engine: "stage-plan", description: "" },
+      { name: "stage-ship", engine: "stage-ship", description: "" },
+    ]);
+});
+
+describe("stageRoster path-breakout guard", () => {
+  test("rejects a \"..\" stage name naming the offending pipeline entry", () => {
+    expect(() => stageRoster({ feature: ["mattstack:../../victim"] })).toThrow(/\.\.\/victim/);
+  });
+
+  test("rejects a \"/\" stage name", () => {
+    expect(() => stageRoster({ feature: ["mattstack:a/b"] })).toThrow(/not a safe directory name/);
+  });
+
+  test("rejects a \"\\\\\" stage name", () => {
+    expect(() => stageRoster({ feature: ["mattstack:a\\b"] })).toThrow(/not a safe directory name/);
+  });
+});
+
+describe("parseStageQualifiedName", () => {
+  test("splits on the first colon, bare names pass through unchanged", () => {
+    expect(parseStageQualifiedName("mattstack:stage-plan", "x")).toBe("stage-plan");
+    expect(parseStageQualifiedName("stage-plan", "x")).toBe("stage-plan");
+  });
+
+  test("names the qualified entry and the caller-supplied context on rejection", () => {
+    expect(() => parseStageQualifiedName("mattstack:../../victim", 'pipeline "feature"')).toThrow(
+      'pipeline "feature": stage "mattstack:../../victim" resolves to name "../../victim" which is not a safe directory name',
+    );
+  });
+
+  test("rejects a name that resolves to empty", () => {
+    expect(() => parseStageQualifiedName("mattstack:", "x")).toThrow(
+      'x: stage "mattstack:" resolves to name "" which is not a safe directory name',
+    );
+  });
+
+  test("rejects a name that resolves to the current-dir alias", () => {
+    expect(() => parseStageQualifiedName("mattstack:.", "x")).toThrow(
+      'x: stage "mattstack:." resolves to name "." which is not a safe directory name',
+    );
+  });
+});
+
+describe("loadInclude", () => {
+  const roots = () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-inc-"));
+    return { root, roots: { byName: { mattstack: { dir: root, version: "1.0.0" } } } };
+  };
+  const write = (root: string, name: string, md: string) => {
+    mkdirSync(join(root, "attachments", name), { recursive: true });
+    writeFileSync(join(root, "attachments", name, "SKILL.md"), md);
+  };
+
+  test("loads a slotless attachment with empty provides", () => {
+    const { root, roots: r } = roots();
+    write(root, "review-core-body", "---\nname: review-core-body\ndescription: d\n---\n\nthe body");
+    const inc = loadInclude("review-core-body", r);
+    expect(inc.body).toBe("the body");
+    expect(inc.provides).toBe("");
+    expect(inc.srcPath).toBe("attachments/review-core-body/SKILL.md");
+  });
+
+  test("rejects a target that declares slots", () => {
+    const { root, roots: r } = roots();
+    write(root, "bad", "---\nname: bad\ndescription: d\nslots:\n  x: { contract: x@1 }\n---\n\nbody");
+    expect(() => loadInclude("bad", r)).toThrow('include "bad" declares slots; an include target must be slotless');
+  });
+
+  test("rejects a target that contains a placeholder", () => {
+    const { root, roots: r } = roots();
+    write(root, "bad2", "---\nname: bad2\ndescription: d\n---\n\nbody {{slot:x}}");
+    expect(() => loadInclude("bad2", r)).toThrow('include "bad2" contains a placeholder; an include target must be inert');
+  });
+
+  test("rejects an include name that tries to escape attachments/, never reading the escaped file", () => {
+    const { root, roots: r } = roots();
+    mkdirSync(join(root, "escape"), { recursive: true });
+    writeFileSync(join(root, "escape", "SKILL.md"), "---\nname: escape\ndescription: d\n---\n\nvictim");
+    expect(() => loadInclude("../escape", r)).toThrow(
+      'loadInclude: include "../escape" is not a safe directory name (must not contain "/", "\\", or "..", or be empty or ".")',
+    );
   });
 });

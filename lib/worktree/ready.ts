@@ -43,6 +43,15 @@ export function stepsToRun(steps: ReadyStep[], changed: string[] | null): ReadyS
   });
 }
 
+/**
+ * A minimal seed so the (absolute-path) login shell can start; its own
+ * startup then rebuilds the full PATH for `worktreePath`. Inheriting the
+ * daemon's boot-time PATH instead would replay a snapshot resolved in the
+ * daemon's directory, whose entries shadow any directory-scoped toolchain
+ * (version managers, direnv, project-local bins) that a step needs in-tree.
+ */
+const SEED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+
 /** Run ready steps in order via zsh, stopping at the first failure. */
 export async function runReadySteps(
   worktreePath: string,
@@ -51,6 +60,7 @@ export async function runReadySteps(
   for (const step of steps) {
     const r = await runCapture(["/bin/zsh", "-lc", step.run], {
       cwd: worktreePath,
+      env: { ...process.env, PATH: SEED_PATH },
       timeoutMs: 15 * 60_000,
       stderr: "pipe",
     });

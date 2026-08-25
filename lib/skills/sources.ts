@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "fs";
 import { join, relative } from "path";
 import { parse as parseYaml } from "yaml";
 import { stripJsonc } from "../jsonc.ts";
+import { findPlaceholders } from "./placeholders.ts";
 import type { AttachmentSource, SlotSpec, StepSource, VerbDef } from "./types.ts";
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -148,6 +149,20 @@ function listDirs(dir: string): string[] {
   }
 }
 
+function tokens(raw: unknown): string[] {
+  if (typeof raw === "string") return raw.split(/\s+/).filter((t) => t && t !== "-");
+  if (Array.isArray(raw)) return raw.filter((t): t is string => typeof t === "string").map((t) => t.trim()).filter(Boolean);
+  return [];
+}
+
+function readStageMeta(frontmatter: Record<string, unknown>): StepSource["stageMeta"] {
+  const meta = frontmatter.metadata && typeof frontmatter.metadata === "object"
+    ? (frontmatter.metadata as Record<string, unknown>)
+    : {};
+  if (typeof meta.stage !== "string") return null;
+  return { stage: meta.stage, consumes: tokens(meta["stage-consumes"]), produces: tokens(meta["stage-produces"]) };
+}
+
 export function loadStepSource(engineName: string, roots: PluginRoots): StepSource {
   const mattstack = roots.byName.mattstack;
   if (!mattstack) {
@@ -215,6 +230,8 @@ export function loadStepSource(engineName: string, roots: PluginRoots): StepSour
     slots: parseSlots(frontmatter.slots),
     allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
     stepFiles: listFilesUnder(foundDir, new Set(["SKILL.md"])),
+    stageMeta: readStageMeta(frontmatter),
+    description: typeof frontmatter.description === "string" ? frontmatter.description : "",
   };
 }
 
@@ -297,17 +314,84 @@ export function loadAttachment(binding: string, slot: string, roots: PluginRoots
 }
 
 /**
- * Verb names flow unsanitized into join(packDir, "skills", name) at two
- * destructive call sites (writeCompiledVerb's rmSync + the internal-verb
- * skip's rmSync in commands/skills.ts) -- reject path-breakout characters
- * here, at the one place every verb name is read from disk.
+ * An include target is inlined verbatim wherever {{include:<name>}}
+ * appears, so it must carry nothing that depends on call-site context:
+ * no slots to fill, no placeholders left for a later substitution pass.
  */
-function assertSafeVerbName(name: string, stubsPath: string): void {
-  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+export function loadInclude(name: string, roots: PluginRoots): AttachmentSource {
+  if (!isSafeName(name)) {
     throw new Error(
-      `readVerbRoster: verb key "${name}" in ${stubsPath} is not a safe directory name (must not contain "/", "\\", or "..")`,
+      `loadInclude: include "${name}" is not a safe directory name (must not contain "/", "\\", or "..", or be empty or ".")`,
     );
   }
+  const mattstack = roots.byName.mattstack;
+  if (!mattstack) throw new Error(`loadInclude: no "mattstack" plugin root registered`);
+  const dir = join(mattstack.dir, "attachments", name);
+  const skillMdPath = join(dir, "SKILL.md");
+  if (!existsSync(skillMdPath)) throw new Error(`loadInclude: include "${name}" not found at ${skillMdPath}`);
+
+  const { body, frontmatter, bodyStartLine } = stripFrontmatter(readFileSync(skillMdPath, "utf8"));
+  const metadata = frontmatter.metadata && typeof frontmatter.metadata === "object"
+    ? (frontmatter.metadata as Record<string, unknown>)
+    : {};
+  if (frontmatter.slots || metadata.slots) {
+    throw new Error(`loadInclude: include "${name}" declares slots; an include target must be slotless`);
+  }
+  if (findPlaceholders(body).length > 0) {
+    throw new Error(`loadInclude: include "${name}" contains a placeholder; an include target must be inert`);
+  }
+
+  return {
+    binding: `mattstack:${name}`,
+    plugin: "mattstack",
+    version: mattstack.version,
+    dir,
+    srcPath: relative(mattstack.dir, skillMdPath),
+    bodyStartLine,
+    body,
+    provides: typeof metadata.provides === "string" ? metadata.provides : "",
+    allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
+    extraFiles: listFilesUnder(dir, new Set(["SKILL.md"])),
+    registered: false,
+  };
+}
+
+/**
+ * Verb AND stage names flow unsanitized into join(packDir, "skills"|"attachments", name)
+ * at two destructive call sites -- writeCompiledVerb's rmSync and the stale-side
+ * rmSync that precedes it in commands/skills.ts's compile command (outDirFor/
+ * otherSideDir) -- reject path-breakout characters at the one place each kind
+ * of name is first read from disk: assertSafeVerbName for roster verbs,
+ * parseStageQualifiedName below for pipeline stage entries, and loadInclude's
+ * own guard for include names. "" and "." both resolve join(dir, "attachments", name)
+ * back to the attachments dir itself, which those same rmSync call sites delete.
+ */
+function isSafeName(name: string): boolean {
+  return name !== "" && name !== "." && !name.includes("/") && !name.includes("\\") && !name.includes("..");
+}
+
+function assertSafeVerbName(name: string, stubsPath: string): void {
+  if (!isSafeName(name)) {
+    throw new Error(
+      `readVerbRoster: verb key "${name}" in ${stubsPath} is not a safe directory name (must not contain "/", "\\", or "..", or be empty or ".")`,
+    );
+  }
+}
+
+/**
+ * Shared by stageRoster and buildStageEntries (commands/skills.ts) so the
+ * "<plugin>:<name>" split has exactly one implementation -- a stage name
+ * reaches the same destructive rmSync call sites a roster verb name does,
+ * so it needs the same guard applied at the same place: right after the split.
+ */
+export function parseStageQualifiedName(qualified: string, where: string): string {
+  const name = qualified.includes(":") ? qualified.slice(qualified.indexOf(":") + 1) : qualified;
+  if (!isSafeName(name)) {
+    throw new Error(
+      `${where}: stage "${qualified}" resolves to name "${name}" which is not a safe directory name (must not contain "/", "\\", or "..", or be empty or ".")`,
+    );
+  }
+  return name;
 }
 
 export function readVerbRoster(packDir: string): VerbDef[] {
@@ -342,6 +426,24 @@ export function readManifestPipelines(manifestPath: string): Record<string, stri
     pipelines?: Record<string, string[]>;
   };
   return parsed.pipelines ?? {};
+}
+
+/**
+ * `description` is left empty here -- the caller fills it in from the
+ * loaded step's frontmatter once each stage is resolved to a StepSource.
+ */
+export function stageRoster(pipelines: Record<string, string[]>): VerbDef[] {
+  const seen = new Set<string>();
+  const out: VerbDef[] = [];
+  for (const [type, list] of Object.entries(pipelines)) {
+    for (const qualified of list) {
+      const name = parseStageQualifiedName(qualified, `pipeline "${type}"`);
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push({ name, engine: name, description: "" });
+    }
+  }
+  return out;
 }
 
 export type SurfaceConfig = { public: string[] };

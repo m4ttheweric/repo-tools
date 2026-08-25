@@ -58,6 +58,43 @@ export interface ForgeTokenData {
  */
 export interface EventsBusEvent { id: number; topic: string; payload: unknown; emittedAt: number }
 
+/**
+ * Duplicated shape on purpose, same reasoning as EventsBusEvent above:
+ * these mirror lib/state/chat-store.ts's types, which rt-client cannot
+ * import (it's outside lib/state/ and outside this package entirely).
+ */
+export type WakeMode = "mention" | "all" | "none";
+
+export interface ChatMember {
+  room: string;
+  handle: string;
+  joinedAt: number;
+  lastReadId: number;
+  wakeOn: WakeMode;
+  lastSeenAt?: number;
+  armedAt?: number;
+  cwd?: string;
+  pane?: string;
+}
+
+export interface ChatMessage {
+  id: number;
+  room: string;
+  handle: string;
+  body: string;
+  mentions: string[];
+  replyTo?: number;
+  postedAt: number;
+}
+
+export interface RoomSummary {
+  room: string;
+  memberCount: number;
+  unread: number;
+  mentions: number;
+  lastPostedAt?: number;
+}
+
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
 export type Attention = {
@@ -145,9 +182,22 @@ export interface Commands {
   "events:emit": { payload: { topic: string; payload?: unknown }; data: { id: number } };
   "events:wait": { payload: { pattern: string; after?: number; waitMs?: number }; data: { events: EventsBusEvent[]; cursor: number } };
   "events:list": { payload: { pattern: string; after?: number; limit?: number }; data: { events: EventsBusEvent[]; cursor: number } };
+  "events:head": { payload: Record<string, never>; data: { cursor: number } };
   "runs:list": { payload: { repo?: string }; data: { runs: RunSummary[] } };
   "runs:get": { payload: { runId: string; repo?: string }; data: RunDetail };
   "runs:abandon": { payload: { runId: string; repo?: string; reason?: string }; data: { ok: boolean } };
+  "chat:join": { payload: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string }; data: { handle: string; memberCount: number; unread: number } };
+  "chat:leave": { payload: { room: string; handle: string }; data: Record<string, never> };
+  "chat:post": { payload: { room: string; handle: string; body: string }; data: { id: number; recipients: string[] } };
+  "chat:read": { payload: { handle: string; room?: string; limit?: number; sinceMs?: number }; data: { rooms: { room: string; messages: ChatMessage[] }[] } };
+  "chat:rooms": { payload: { handle: string }; data: { rooms: RoomSummary[] } };
+  "chat:who": { payload: { room: string }; data: { members: ChatMember[] } };
+  "chat:mark": { payload: { handle: string; room?: string }; data: Record<string, never> };
+  "chat:messages": { payload: { room: string; before?: number; limit?: number }; data: { messages: ChatMessage[] } };
+  "chat:arm": { payload: { handle: string; room?: string }; data: Record<string, never> };
+  "chat:touch": { payload: { handle: string }; data: Record<string, never> };
+  "chat:disarm": { payload: { handle: string }; data: Record<string, never> };
+  "chat:unread-waking": { payload: { handle: string; room?: string }; data: { rooms: { room: string; count: number; mentions: number; maxId: number }[] } };
 }
 
 export type CommandName = keyof Commands;
@@ -161,7 +211,20 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "events:emit",
   "events:wait",
   "events:list",
+  "events:head",
   "runs:list",
   "runs:get",
   "runs:abandon",
+  "chat:join",
+  "chat:leave",
+  "chat:post",
+  "chat:read",
+  "chat:rooms",
+  "chat:who",
+  "chat:mark",
+  "chat:messages",
+  "chat:arm",
+  "chat:touch",
+  "chat:disarm",
+  "chat:unread-waking",
 ];

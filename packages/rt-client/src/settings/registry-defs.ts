@@ -442,4 +442,35 @@ export const REGISTRY: readonly SettingDef[] = [
     merge: "deep",
     description: "gitq checkout-board config: tracked repos, local port, and the herdr workspace it launches into.",
   },
+
+  // --- chat (RT-48 Task 7) -------------------------------------------------
+  {
+    key: "chat.handle",
+    type: "string",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Explicit rt chat handle for this developer on this machine; overrides the derived <repo>-<dir> handle when set.",
+  },
+  {
+    key: "chat.humanHandle",
+    type: "string",
+    scopes: ["user"],
+    default: "matt",
+    merge: "replace",
+    description: "The human's own chat handle, so agents can @-mention them by name.",
+  },
+  {
+    key: "chat.push.provider",
+    type: "string",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Push notification provider used to alert the human of chat mentions when away from a terminal.",
+  },
+  {
+    key: "chat.push.target",
+    type: "string",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Destination (topic/URL/token) the configured chat.push.provider sends to.",
+  },
 ];

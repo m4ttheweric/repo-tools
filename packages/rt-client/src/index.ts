@@ -1,7 +1,28 @@
 export { rtCommand, DEFAULT_SOCK } from "./transport.ts";
 export type { RtResponse, RtClientOptions } from "./transport.ts";
 
-export { readProjectMRs, readDiscussions, readMrsByBranch, resolveForgeToken, listRuns, getRun, abandonRun } from "./client.ts";
+export {
+  readProjectMRs,
+  readDiscussions,
+  readMrsByBranch,
+  resolveForgeToken,
+  listRuns,
+  getRun,
+  abandonRun,
+  chatJoin,
+  chatLeave,
+  chatPost,
+  chatRead,
+  chatRooms,
+  chatWho,
+  chatMark,
+  chatMessages,
+  chatArm,
+  chatTouch,
+  chatDisarm,
+  chatUnreadWaking,
+  eventsHead,
+} from "./client.ts";
 
 export { COMMAND_NAMES } from "./commands.ts";
 export type {
@@ -22,6 +43,10 @@ export type {
   RunFieldRow,
   RunDecisionRow,
   RunDetail,
+  WakeMode,
+  ChatMember,
+  ChatMessage,
+  RoomSummary,
 } from "./commands.ts";
 
 export { subscribe, DEFAULT_WS_URL } from "./relay.ts";

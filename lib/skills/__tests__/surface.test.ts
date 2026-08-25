@@ -2,10 +2,21 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { skillsCompile } from "../../../commands/skills.ts";
+import { computeRows, otherSideDir, outDirFor, skillsCompile } from "../../../commands/skills.ts";
 import { compileSkill } from "../compile.ts";
 import { readSurface } from "../sources.ts";
 import type { AttachmentSource, StepSource, VerbDef } from "../types.ts";
+import { runExpectingCleanExit } from "./helpers.ts";
+
+test("outDirFor places public under skills/ and internal under attachments/", () => {
+  expect(outDirFor("/pack", "work", true)).toBe("/pack/skills/work");
+  expect(outDirFor("/pack", "stage-plan", false)).toBe("/pack/attachments/stage-plan");
+});
+
+test("otherSideDir names the stale location for a name that flipped sides", () => {
+  expect(otherSideDir("/pack", "work", true)).toBe("/pack/attachments/work");
+  expect(otherSideDir("/pack", "checkout", false)).toBe("/pack/skills/checkout");
+});
 
 function writeFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -69,6 +80,8 @@ describe("compileSkill with internalRoster", () => {
       slots: {},
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const internalRoster = new Set(["acme:qa-gates"]);
 
@@ -96,6 +109,8 @@ describe("compileSkill with internalRoster", () => {
       slots: {},
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const internalRoster = new Set(["acme:qa-gates"]);
 
@@ -118,6 +133,8 @@ describe("compileSkill with internalRoster", () => {
       slots: {},
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
 
     const result = compileSkill(verb, step, {}, roster);
@@ -137,6 +154,8 @@ describe("compileSkill with internalRoster", () => {
       slots: { domain: { contract: "watch-ci-domain@1", required: true } },
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const registeredInternalFill: AttachmentSource = {
       binding: "acme:qa-gates",
@@ -177,6 +196,8 @@ describe("compileSkill with internalRoster", () => {
       slots: { domain: { contract: "watch-ci-domain@1", required: true } },
       allowedTools: [],
       stepFiles: [],
+      stageMeta: null,
+      description: "",
     };
     const registeredPublicFill: AttachmentSource = {
       binding: "acme:qa-gates",
@@ -295,7 +316,7 @@ afterEach(() => {
 });
 
 describe("skillsCompile with a surface config", () => {
-  test("skips a non-public verb, prints an internal line, and removes its compiled skills/ dir", async () => {
+  test("compiles a non-public verb to attachments/, replacing its stale skills/ dir", async () => {
     const mattstackDir = makeMattstackDir();
     const surfaceJsonc = `{ "public": ["watch-ci"] }\n`;
     const packDir = makePackDir(STUBS_TWO_VERBS, surfaceJsonc);
@@ -309,8 +330,9 @@ describe("skillsCompile with a surface config", () => {
       "--manifest", manifestPath,
     ]);
 
-    expect(logs).toContain("internal: old-verb (not compiled; roster entry retired)");
+    expect(logs.some((l) => l.startsWith("compiled old-verb -> attachments"))).toBe(true);
     expect(existsSync(join(packDir, "skills", "old-verb"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "old-verb", "SKILL.md"))).toBe(true);
     expect(existsSync(join(packDir, "skills", "watch-ci", "SKILL.md"))).toBe(true);
   });
 
@@ -439,28 +461,6 @@ function makeManifestAt(bindingsJson: string): string {
   return path;
 }
 
-async function runExpectingCleanExit(
-  fn: () => Promise<void>,
-): Promise<{ exitCode: number | undefined; errors: string[] }> {
-  const errors: string[] = [];
-  const exitSpy = spyOn(process, "exit").mockImplementation(() => {
-    throw new Error("process.exit sentinel");
-  });
-  const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
-    errors.push(args.map(String).join(" "));
-  });
-  try {
-    await fn();
-    return { exitCode: undefined, errors };
-  } catch {
-    const exitCode = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
-    return { exitCode, errors };
-  } finally {
-    exitSpy.mockRestore();
-    errorSpy.mockRestore();
-  }
-}
-
 describe("computeInternalRoster integration (pack dir doubles as plugin root)", () => {
   test("a registered-but-not-yet-public fill inlines end to end, notes, and is flagged misplaced", async () => {
     const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-int-")));
@@ -577,4 +577,86 @@ describe("computeInternalRoster integration (pack dir doubles as plugin root)", 
     expect(errors[0]).toContain("surface-internal");
     expect(existsSync(join(acmeDir, "skills", "gate-check"))).toBe(false);
   });
+});
+
+const PIPELINE_WORK_SKILL_MD = `---
+name: work
+description: "Run the work pipeline"
+type: pipeline-step
+---
+
+{{work-type}}
+{{pipeline.stages}}
+`;
+
+const PIPELINE_STAGE_PLAN_SKILL_MD = `---
+name: stage-plan
+description: "Plan the work"
+type: pipeline-step
+slots: {}
+metadata:
+  stage: plan
+---
+
+{{stage.fields}}
+`;
+
+function makePipelineMattstackDir(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-pipeline-mattstack-")));
+  const mattstackPluginDir = join(dir, "plugins", "mattstack");
+  writeFile(join(mattstackPluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0" }));
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "work", "SKILL.md"), PIPELINE_WORK_SKILL_MD);
+  writeFile(join(mattstackPluginDir, "attachments", "pipeline", "stage-plan", "SKILL.md"), PIPELINE_STAGE_PLAN_SKILL_MD);
+  return dir;
+}
+
+function makePipelinePackDir(publicNames: string[]): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-pipeline-pack-")));
+  writeFile(join(dir, "pack", "stubs.jsonc"), `{ "verbs": { "work": { "engine": "work", "description": "Run the pipeline." } } }\n`);
+  writeFile(join(dir, "pack", "surface.jsonc"), JSON.stringify({ public: publicNames }));
+  return dir;
+}
+
+function makePipelineManifest(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-pipeline-manifest-")));
+  const path = join(dir, "skills.jsonc");
+  writeFile(path, `{
+  "pipelines": { "feature": ["mattstack:stage-plan"] },
+  "bindings": {}
+}
+`);
+  return path;
+}
+
+describe("skillsCompile with pipeline stages", () => {
+  test("compiles the orchestrator public and its stage internal, then flips on a surface change", async () => {
+    const mattstackDir = makePipelineMattstackDir();
+    const packDir = makePipelinePackDir(["work"]);
+    const manifestPath = makePipelineManifest();
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    expect(existsSync(join(packDir, "skills", "work", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(packDir, "attachments", "stage-plan", "SKILL.md"))).toBe(true);
+    expect(readFileSync(join(packDir, "skills", "work", "SKILL.md"), "utf8")).toContain(
+      "The work type is `feature`. Continue.",
+    );
+
+    writeFileSync(join(packDir, "pack", "surface.jsonc"), JSON.stringify({ public: [] }));
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    expect(existsSync(join(packDir, "skills", "work"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "work", "SKILL.md"))).toBe(true);
+  });
+});
+
+test("a never-compiled stage is a compiled, internal row and never defaults public", () => {
+  const pack = mkdtempSync(join(tmpdir(), "rt-surf-"));
+  mkdirSync(join(pack, "skills", "work"), { recursive: true });
+  writeFileSync(join(pack, "skills", "work", "SKILL.md"), "---\nname: work\n---\n\nx");
+  const { rows } = computeRows(pack, new Set(["work"]), null, new Set(["stage-plan"]));
+  const stage = rows.find((r) => r.name === "stage-plan");
+  expect(stage).toEqual({ name: "stage-plan", kind: "compiled", status: "internal" });
+  expect(rows.find((r) => r.name === "work")?.status).toBe("public");
 });
