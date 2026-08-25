@@ -48,12 +48,15 @@ export interface MrByBranchData {
 /**
  * Trimmed, structural view of the daemon's `CacheEntry` (lib/state/branch-cache.ts) --
  * rt-client cannot import daemon/lib internals, so this names only the fields
- * console's run-view rows read. Extra fields on the wire are fine; anything
- * this shape doesn't name is simply not surfaced.
+ * console's run-view rows read, spelled exactly as they land on the wire
+ * (`mr` is `toMRInfo(pr)`, i.e. `getMRDashboardProps` -- camelCase `webUrl`,
+ * nested `pipeline.status`, no `ciStatus`). Extra wire fields (including the
+ * rest of `pipeline`) are fine; anything this shape doesn't name is simply
+ * not surfaced.
  */
 export interface BranchEnrichment {
   ticket: { identifier: string; title: string; url: string } | null;
-  mr: { iid: number; web_url: string; state: string; ciStatus: string | null } | null;
+  mr: { iid: number; webUrl: string | null; state: string; pipeline: { status: string } | null } | null;
   fetchedAt: number;
 }
 

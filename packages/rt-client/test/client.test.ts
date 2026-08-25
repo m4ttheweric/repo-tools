@@ -71,6 +71,36 @@ describe("readBranchCache", () => {
     expect(res.ok).toBe(true);
     expect(seen[0]).toEqual({ cmd: "cache:read", payload: { branches: ["feat-a", "feat-b"] } });
   });
+
+  test("maps a populated entry using the real wire field names (camelCase webUrl, nested pipeline.status)", async () => {
+    const { sock, stop } = fakeDaemon({
+      "cache:read": {
+        ok: true,
+        data: {
+          "feat-a": {
+            ticket: { identifier: "ACME-1", title: "Ship the thing", url: "https://linear.app/acme/issue/ACME-1" },
+            mr: {
+              iid: 42,
+              webUrl: "https://gitlab.example.com/acme/repo/-/merge_requests/42",
+              state: "opened",
+              pipeline: { status: "success" },
+            },
+            fetchedAt: 1700000000000,
+          },
+        },
+      },
+    });
+    stops.push(stop);
+    const res = await readBranchCache(["feat-a"], { sockPath: sock });
+    expect(res.ok).toBe(true);
+    const entry = res.data!["feat-a"]!;
+    expect(entry.ticket).toEqual({ identifier: "ACME-1", title: "Ship the thing", url: "https://linear.app/acme/issue/ACME-1" });
+    expect(entry.mr!.iid).toBe(42);
+    expect(entry.mr!.webUrl).toBe("https://gitlab.example.com/acme/repo/-/merge_requests/42");
+    expect(entry.mr!.state).toBe("opened");
+    expect(entry.mr!.pipeline).toEqual({ status: "success" });
+    expect(entry.fetchedAt).toBe(1700000000000);
+  });
 });
 
 describe("run verbs", () => {
