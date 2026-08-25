@@ -689,6 +689,8 @@ describe("skillsCompile --json", () => {
       "scripts/ci-watch.sh",
     ]);
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+    // A clean compile leaves the exit code unset: a caller reading it sees success.
+    expect(process.exitCode).not.toBe(1);
   });
 
   test("internal (retired) verb: internal-skipped, no compile attempted, no disk write", async () => {
@@ -723,6 +725,10 @@ describe("skillsCompile --json", () => {
 
     const helper = parsed.verbs.find((v: { name: string }) => v.name === "helper-verb");
     expect(helper.status).toBe("internal-skipped");
+
+    // An errored verb is a failed compile: the exit code says so, matching the
+    // non-JSON throw and check --json's stale exit.
+    expect(process.exitCode).toBe(1);
   });
 
   test("unbound required slot (compileVerb throws): errored, not a crash", async () => {
@@ -737,6 +743,7 @@ describe("skillsCompile --json", () => {
     expect(parsed.verbs[0].status).toBe("errored");
     expect(parsed.verbs[0].files).toEqual([]);
     expect(parsed.verbs[0].errors[0]).toContain("forge");
+    expect(process.exitCode).toBe(1);
   });
 
   test("prints ONLY json -- no human lines on stdout", async () => {

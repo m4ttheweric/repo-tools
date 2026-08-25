@@ -1033,7 +1033,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/skills.ts",
         fn: "skillsSurface",
         args: [
-          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name> --public|--internal | apply; omit for the fzf palette" },
+          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name>... --public|--internal | apply; omit for the fzf palette" },
           { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
           SETUP_JSON_ARG,
