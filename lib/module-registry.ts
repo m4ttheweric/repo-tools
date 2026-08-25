@@ -25,6 +25,7 @@ export const MODULE_REGISTRY: Record<string, () => Promise<any>> = {
   "./commands/settings.ts": () => import("../commands/settings.ts"),
   "./commands/settings-keys.ts": () => import("../commands/settings-keys.ts"),
   "./commands/skills.ts": () => import("../commands/skills.ts"),
+  "./commands/skills-link.ts": () => import("../commands/skills-link.ts"),
   "./commands/sync.ts": () => import("../commands/sync.ts"),
   "./commands/git/rebase.ts": () => import("../commands/git/rebase.ts"),
   "./commands/git/reset.ts": () => import("../commands/git/reset.ts"),
