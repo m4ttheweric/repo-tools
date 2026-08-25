@@ -17,7 +17,7 @@ import { realpathSync } from "fs";
 import { homedir } from "os";
 import { basename } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { getKnownRepos, pruneRepoIndex, updateRepoIndex, type PrunedEntry } from "../lib/repo-index.ts";
+import { getKnownRepos, pruneRepoIndex, updateRepoIndexAsync, type PrunedEntry } from "../lib/repo-index.ts";
 import { deriveRepoIdentity, serializeIdentity } from "../lib/settings/identity.ts";
 import { CACHE_KINDS, loadMachineRepoTrackingRaw, parseCachesArg, saveRepoTrackingRaw, type CacheKind, type TrackingMode } from "../lib/repo-tracking.ts";
 import { envelope } from "../lib/setup/contract.ts";
@@ -126,7 +126,7 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
   const rawTracking = track ? loadMachineRepoTrackingRaw() : null;
 
   for (const { name, real, identity } of resolved) {
-    updateRepoIndex(identity, real);
+    await updateRepoIndexAsync(identity, real);
 
     let tracking: Registered["tracking"] = null;
     if (track && caches && rawTracking) {

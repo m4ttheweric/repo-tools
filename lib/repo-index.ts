@@ -5,7 +5,9 @@
  * The index is a DISPOSABLE CACHE (RT-49, collapsed into state.db by RT-50):
  * it self-populates as rt visits repos (`updateRepoIndex`, called from
  * lib/repo.ts's `getRepoIdentity`). Losing it loses nothing durable — every
- * entry regenerates the next time rt runs inside that repo, and meanwhile the
+ * entry regenerates the next time rt runs inside that repo — except a row
+ * whose repo MOVED, which only `updateRepoIndexAsync` or `rt repos locate`
+ * can re-point (see `writeIndexRow`) — and meanwhile the
  * picker still surfaces every repo reachable under the `rt.repoRoots`
  * settings key (below) as an unregistered candidate. It is not part of any
  * backup/restore story and never will be.
@@ -135,26 +137,81 @@ export function loadRepoIndex(): RepoIndex {
   return Object.keys(imported).length > 0 ? imported : existing;
 }
 
-export function updateRepoIndex(repoName: string, repoRoot: string): void {
-  let mainPath: string;
+/** The repo's MAIN worktree path as git reports it, degrading to `repoRoot`. */
+function observedMainPath(repoRoot: string): string {
   try {
-    const mainWorktree = execSync("git worktree list --porcelain", {
+    const listed = execSync("git worktree list --porcelain", {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: "pipe",
     });
-    mainPath = mainWorktree.split("\n")[0]?.replace("worktree ", "").trim() || repoRoot;
+    return listed.split("\n")[0]?.replace("worktree ", "").trim() || repoRoot;
   } catch {
-    mainPath = repoRoot;
+    return repoRoot;
   }
+}
+
+/**
+ * The row's current path, read straight from the namespace rather than through
+ * `loadRepoIndex()`: that function's legacy-repos.json import is a migration
+ * side effect (it writes rows AND rewrites the mirror), and firing it from
+ * inside the write path would reorder it ahead of the write it guards.
+ */
+function storedIndexPath(repoName: string): string | undefined {
+  return getKvValue<string | undefined>(REPO_INDEX_NS, repoName, undefined);
+}
+
+/** True when the stored row names a directory that is gone and the repo is now somewhere else — a MOVE, not a second clone. */
+function storedPathMoved(stored: string | undefined, mainPath: string): stored is string {
+  return stored !== undefined && stored !== mainPath && !existsSync(stored);
+}
+
+function writeIndexRow(repoName: string, mainPath: string): void {
   try {
-    // loadRepoIndex() can throw (an unopenable state.db — e.g. root-owned
-    // after a sudo invocation) — inside the try along with the write it
-    // depends on, so getRepoIdentity() (which every in-repo command calls)
+    // The read and loadRepoIndex() can throw (an unopenable state.db — e.g.
+    // root-owned after a sudo invocation) — inside the try along with the write
+    // they bracket, so getRepoIdentity() (which every in-repo command calls)
     // degrades to skipping the index update rather than crashing the command.
+    //
+    // A moved repo is NOT written here: re-pointing the index row ahead of the
+    // worktree registry is what makes the reconciler prune every claimed tree,
+    // and the repair that ordering owes is async git — forbidden on the daemon
+    // thread, which reaches this function through resolveIndexPathForIdentity.
+    // The row stays lost (visible as `missing`) until `updateRepoIndexAsync`
+    // or `rt repos locate` moves it as one unit.
+    if (storedPathMoved(storedIndexPath(repoName), mainPath)) return;
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
     writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
+}
+
+export function updateRepoIndex(repoName: string, repoRoot: string): void {
+  writeIndexRow(repoName, observedMainPath(repoRoot));
+}
+
+/**
+ * `updateRepoIndex` for callers that can await: the same write, plus the move
+ * heal the sync seam cannot perform. The locate runs in the daemon whenever
+ * one is present — imported lazily, both to keep the daemon client off every
+ * rt command's startup path and because repo-locate.ts imports this module.
+ */
+export async function updateRepoIndexAsync(repoName: string, repoRoot: string): Promise<void> {
+  const mainPath = observedMainPath(repoRoot);
+  let stored: string | undefined;
+  try {
+    stored = storedIndexPath(repoName);
+  } catch {
+    stored = undefined;
+  }
+  if (!storedPathMoved(stored, mainPath)) {
+    writeIndexRow(repoName, mainPath);
+    return;
+  }
+  const { locateMovedRepo } = await import("./repo-locate-dispatch.ts");
+  const outcome = await locateMovedRepo({ newPath: mainPath, repo: repoName });
+  if (!outcome.ok) {
+    console.warn(`rt: ${repoName} moved to ${mainPath} but could not be located (${outcome.error})`);
+  }
 }
 
 /**
