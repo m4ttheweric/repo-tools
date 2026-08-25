@@ -208,7 +208,9 @@ export async function reposPrune(args: string[], _ctx: CommandContext = {}, deps
   for (const r of removed) {
     const verb = r.retained ? "kept" : dryRun ? "would remove" : "removed";
     const why = r.retained
-      ? `${describeReason(r)}, but its data could not all move${describeDataMove(r, dryRun)} — keeping the row so nothing is orphaned`
+      ? r.reason === "missing"
+        ? `${describeReason(r)} but it still owns a worktree registry — keeping the row; run: ${r.hint} <new-path> --repo ${r.repoName}`
+        : `${describeReason(r)}, but its data could not all move${describeDataMove(r, dryRun)} — keeping the row so nothing is orphaned`
       : `${describeReason(r)}${describeDataMove(r, dryRun)}`;
     deps.print(`${verb} ${r.repoName} (${r.path.replace(homedir(), "~")}) — ${why}`);
   }

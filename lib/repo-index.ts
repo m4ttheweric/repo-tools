@@ -283,10 +283,14 @@ export interface PrunedEntry {
   /** Set only for `duplicate`: what became of the retired name's data dir. */
   data?: DataMigration;
   /**
-   * Set on a `duplicate` whose migration could not finish: the row is KEPT so
-   * whatever is still keyed to the retired name stays reachable.
+   * Set when the row is KEPT despite qualifying for eviction: a `duplicate`
+   * whose migration could not finish, or a `missing` row that still owns a
+   * worktree registry. Eviction is exactly what makes those leftovers
+   * unreachable.
    */
   retained?: true;
+  /** Set with `retained`: the verb that resolves this row. */
+  hint?: string;
 }
 
 /** Outcome of carrying everything keyed to a retired name onto the live name. */
@@ -499,6 +503,9 @@ export function migrateRepoData(from: string, to: string, opts: { dryRun?: boole
  * eviction is exactly what makes a leftover unreachable. A `missing` row is
  * left un-migrated on purpose: its path is gone, so there is no surviving name
  * to carry it to, and its data dir stays untouched rather than being deleted.
+ * A `missing` row that still owns a worktree registry is likewise `retained`:
+ * the registry is the daemon's only handle to that repo's trees, keyed by
+ * this row's name, so evicting the row would strand it.
  */
 export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
   const entries = loadRepoIndexEntries();
@@ -506,8 +513,23 @@ export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
   const live: RepoIndexEntry[] = [];
 
   for (const entry of entries) {
-    if (existsSync(entry.path)) live.push(entry);
-    else removed.push({ repoName: entry.repoName, path: entry.path, reason: "missing" });
+    if (existsSync(entry.path)) {
+      live.push(entry);
+      continue;
+    }
+    // A gone path whose registry is still here is a MOVE, not a deletion:
+    // dropping the row orphans the pool's claim state under a key nothing
+    // iterates any more.
+    let ownsRegistry = false;
+    try {
+      ownsRegistry = hasKvValue(WORKTREE_REGISTRY_NS, entry.repoName);
+    } catch { /* unreadable db — treat as no registry and prune as before */ }
+    removed.push({
+      repoName: entry.repoName,
+      path: entry.path,
+      reason: "missing",
+      ...(ownsRegistry ? { retained: true as const, hint: "rt repos locate" } : {}),
+    });
   }
 
   for (const dup of partitionByRealpath(live).duplicates) {

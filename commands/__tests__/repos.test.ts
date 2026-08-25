@@ -250,4 +250,19 @@ describe("reposPrune", () => {
     expect(code).toBe(2);
     expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["gone"]);
   });
+
+  test("a retained missing row tells the operator to locate it", async () => {
+    const { setKvValue } = await import("../../lib/state/index.ts");
+    updateRepoIndex("moved-repo", join(home, "gone-away"));
+    setKvValue("worktree-registry", "moved-repo", [
+      { name: "t1", path: join(home, "gone-away", ".worktrees", "t1"), kind: "ephemeral", state: "on-deck", branch: "on-deck/t1", createdAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    const deps = testDeps();
+
+    await reposPrune([], {}, deps);
+
+    expect(deps.lines.join("\n")).toContain("kept moved-repo");
+    expect(deps.lines.join("\n")).toContain("rt repos locate");
+    expect(loadRepoIndex()["moved-repo"]).toBeDefined();
+  });
 });

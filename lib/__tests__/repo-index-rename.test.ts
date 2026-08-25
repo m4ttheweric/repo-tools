@@ -227,6 +227,29 @@ describe("repo-index — rename drift (RT-60)", () => {
 
       expect(Object.keys(mirror())).toEqual(["alive"]);
     });
+
+    test("a missing row that still owns a worktree registry is KEPT, not evicted", () => {
+      indexRepoAt("moved", join(scratch, "gone-away"), 1_000);
+      setKvValue("worktree-registry", "moved", [
+        { name: "t1", path: join(scratch, "gone-away", ".worktrees", "t1"), kind: "ephemeral", state: "on-deck", branch: "on-deck/t1", createdAt: "2026-01-01T00:00:00.000Z" },
+      ]);
+
+      const removed = pruneRepoIndex();
+      const row = removed.find((r) => r.repoName === "moved");
+
+      expect(row).toMatchObject({ reason: "missing", retained: true, hint: "rt repos locate" });
+      expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["moved"]);
+      expect(listKvValues("worktree-registry")["moved"]).toBeDefined();
+    });
+
+    test("a missing row with no registry is still evicted", () => {
+      indexRepoAt("gone", join(scratch, "never-existed"), 1_000);
+
+      const removed = pruneRepoIndex();
+
+      expect(removed.find((r) => r.repoName === "gone")?.retained).toBeUndefined();
+      expect(loadRepoIndexEntries()).toEqual([]);
+    });
   });
   // ─── data migration (RT-60) ────────────────────────────────────────────────
 
