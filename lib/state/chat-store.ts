@@ -4,7 +4,9 @@
  *
  * The only module that touches chat_rooms/chat_members/chat_messages:
  * rooms, members, and messages live in one file because posting a message
- * reads membership inside the same transaction that writes it.
+ * reads membership inside the same transaction that writes it. It also
+ * clears `chat_presence.armed_at` alongside `chat_members.armed_at` in
+ * `clearAllArmed`, ahead of a later task giving `chat_presence` its own store.
  */
 
 import { Database } from "bun:sqlite";
@@ -115,6 +117,7 @@ const UPDATE_ARMED_BY_ROOM_SQL = `UPDATE chat_members SET armed_at = ? WHERE roo
 const UPDATE_ARMED_BY_HANDLE_SQL = `UPDATE chat_members SET armed_at = ? WHERE handle = ?;`;
 const UPDATE_LAST_SEEN_SQL = `UPDATE chat_members SET last_seen_at = ? WHERE handle = ?;`;
 const CLEAR_ALL_ARMED_SQL = `UPDATE chat_members SET armed_at = NULL WHERE armed_at IS NOT NULL;`;
+const CLEAR_ALL_PRESENCE_ARMED_SQL = `UPDATE chat_presence SET armed_at = NULL WHERE armed_at IS NOT NULL;`;
 
 const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at";
 const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at) VALUES (?, ?, ?, ?, ?, ?);`;
@@ -238,11 +241,17 @@ export function disarmMember(handle: string, db: Database = getStateDb()): void 
 
 /**
  * No waiter outlives the daemon, so every `armed_at` still set at boot is
- * stale by definition — called once at daemon startup, before serving.
+ * stale by definition — called once at daemon startup, before serving. The
+ * return value is member rows cleared only: `chat_presence` is cleared
+ * alongside for the same reason, but a presence row shadows a member row
+ * rather than adding a distinct waiter, so counting both would double-count.
  */
 export function clearAllArmed(db: Database = getStateDb()): number {
   let cleared = 0;
-  persistOrWarn("chat-store", () => { cleared = db.query(CLEAR_ALL_ARMED_SQL).run().changes; }, {
+  persistOrWarn("chat-store", () => {
+    cleared = db.query(CLEAR_ALL_ARMED_SQL).run().changes;
+    db.query(CLEAR_ALL_PRESENCE_ARMED_SQL).run();
+  }, {
     op: "clearAllArmed",
   });
   return cleared;
