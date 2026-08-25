@@ -187,7 +187,7 @@ export async function requireIdentity(commandLabel?: string): Promise<RepoIdenti
 /** Never chdir into a repo whose indexed path is gone — locate it first. */
 function refuseIfMissing(repo: KnownRepo): void {
   if (!repo.missing) return;
-  console.log(`\n  ${missingRepoRefusal(repo)}\n`);
+  console.error(`\n  ${missingRepoRefusal(repo)}\n`);
   process.exit(1);
 }
 

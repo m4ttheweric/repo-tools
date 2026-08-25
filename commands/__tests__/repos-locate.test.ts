@@ -1,7 +1,10 @@
 /**
- * The CLI runs the local path here: under a throwaway HOME no daemon socket
- * exists, so `isDaemonRunning()` is false and the apply happens in-process —
- * which is exactly the "no daemon, nothing to race" branch.
+ * The CLI takes its local branch here. `daemonPresent()` reads
+ * `DAEMON_PID_PATH`/`DAEMON_SOCK_PATH`, which are module-load constants bound
+ * to the throwaway HOME the bunfig preload (test-setup.ts) sets before any
+ * module loads — not to the per-test HOME below. That tree holds neither a pid
+ * file nor a socket, so the apply happens in-process, which is exactly the
+ * "no daemon, nothing to race" branch.
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
@@ -127,6 +130,20 @@ describe("reposLocate", () => {
     const code = await runExpectingProcessExit(() => reposLocate(["--nope"], {}, deps));
     expect(code).toBe(2);
     expect(deps.lines.join("\n")).toContain("usage: rt repos locate");
+  });
+
+  test("--repo without a value is a usage error", async () => {
+    const deps = testDeps();
+    const code = await runExpectingProcessExit(() => reposLocate(["--repo"], {}, deps));
+    expect(code).toBe(2);
+    expect(deps.lines.join("\n")).toContain("--repo needs a value");
+  });
+
+  test("a second positional is a usage error, not a silently ignored path", async () => {
+    const deps = testDeps();
+    const code = await runExpectingProcessExit(() => reposLocate([scratch, join(scratch, "other")], {}, deps));
+    expect(code).toBe(2);
+    expect(deps.lines.join("\n")).toContain("locate takes one path");
   });
 
   test("no path and no lost rows exits 1 saying so", async () => {

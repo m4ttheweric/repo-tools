@@ -212,18 +212,15 @@ export async function worktreePicker(args: string[]): Promise<void> {
   if (forceRepo) {
     if (wtBranch) {
       // Pick repo first, then jump to the matching worktree (or show picker).
-      // Scoped includeMissing fetch: a missing row must be pickable here so
-      // it gets the clean missingRepoRefusal below instead of resolving via
-      // branch name against a dead path — but only in this branch, not the
-      // rest of rt cd's default flows.
+      // A missing row must be pickable here so it gets the clean
+      // missingRepoRefusal below instead of resolving via branch name against
+      // a dead path.
       const { filterableSelect } = await import("../lib/rt-render.tsx");
-      const repoChoices = getKnownRepos({ includeMissing: true });
-      const options = repoOptions(repoChoices);
-      const pickedRepoName = repoChoices.length === 1
-        ? repoChoices[0]!.repoName
-        : await filterableSelect({ message: "Pick a repo", options, stderr: true });
+      const pickedRepoName = repos.length === 1
+        ? repos[0]!.repoName
+        : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true });
       if (!pickedRepoName) process.exit(0); // Esc on repo picker
-      const pickedRepo = repoChoices.find((r) => r.repoName === pickedRepoName)!;
+      const pickedRepo = repos.find((r) => r.repoName === pickedRepoName)!;
       if (pickedRepo.missing) {
         console.error(`\n  ${missingRepoRefusal(pickedRepo)}\n`);
         process.exit(1);

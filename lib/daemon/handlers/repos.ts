@@ -12,7 +12,7 @@ import { applyLocate, isRefusal, planLocate } from "../../repo-locate.ts";
 import type { HandlerMap } from "./types.ts";
 
 export interface ReposHandlerOpts {
-  /** Exclusive access to the worktree registry for the duration of `fn`. */
+  /** Excludes reconciler passes — not other registry writers — for the duration of `fn`. */
   withReconcilerHeld: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Re-point the hooks guard's per-repo git-config watchers once paths have moved. */
   refreshWatchedRepos: () => void;

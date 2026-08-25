@@ -270,12 +270,25 @@ export async function reposLocate(args: string[], _ctx: CommandContext = {}, dep
   }
 
   const repoArg = flagValue(args, "--repo");
+  if (args.includes("--repo") && (repoArg === undefined || repoArg.startsWith("--"))) {
+    exitUserError(new UserActionableError("usage", `--repo needs a value — ${LOCATE_USAGE}`), json, "repos locate", deps.print);
+  }
   const repo = repoArg
     ? await resolveRepoArg(repoArg, (msg) =>
         exitUserError(new UserActionableError("repo-unknown", msg), json, "repos locate", deps.print))
     : undefined;
 
-  const newPath = locatePositionals(args)[0] ?? (await pickLocateTarget(json, deps));
+  const positionals = locatePositionals(args);
+  if (positionals.length > 1) {
+    exitUserError(
+      new UserActionableError("usage", `locate takes one path, got ${positionals.length} (${positionals.join(", ")}) — ${LOCATE_USAGE}`),
+      json,
+      "repos locate",
+      deps.print,
+    );
+  }
+
+  const newPath = positionals[0] ?? (await pickLocateTarget(json, deps));
 
   const outcome = await locateMovedRepo({ newPath, ...(repo ? { repo } : {}), dryRun });
   if (!outcome.ok) {
@@ -307,7 +320,7 @@ export async function reposLocate(args: string[], _ctx: CommandContext = {}, dep
   for (const row of r.legacyRows) {
     deps.print(row.outcome === "collapsed"
       ? `  collapsed the legacy row ${row.key}`
-      : `  kept the legacy row ${row.key} — its data dir could not all move`);
+      : `  kept the legacy row ${row.key}, still naming ${r.from} — ${row.reason || "its data dir could not all move"}`);
   }
 }
 
