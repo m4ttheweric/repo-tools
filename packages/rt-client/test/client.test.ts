@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { readProjectMRs, readDiscussions, readMrsByBranch, listRuns, abandonRun } from "../src/client.ts";
+import { readProjectMRs, readDiscussions, readMrsByBranch, listRuns, abandonRun, readBranchCache } from "../src/client.ts";
 import { fakeDaemon } from "./fake-daemon.ts";
 
 const stops: Array<() => void> = [];
@@ -58,6 +58,18 @@ describe("readMrsByBranch", () => {
     const res = await readMrsByBranch("acme-dev", ["feat-a", "feat-b"], { sockPath: sock });
     expect(res.ok).toBe(true);
     expect(seen[0]!.payload).toEqual({ repoName: "acme-dev", branches: ["feat-a", "feat-b"] });
+  });
+});
+
+describe("readBranchCache", () => {
+  test("sends the branches list on cache:read", async () => {
+    const { sock, seen, stop } = fakeDaemon({
+      "cache:read": { ok: true, data: { "feat-a": { ticket: null, mr: null, fetchedAt: 1 } } },
+    });
+    stops.push(stop);
+    const res = await readBranchCache(["feat-a", "feat-b"], { sockPath: sock });
+    expect(res.ok).toBe(true);
+    expect(seen[0]).toEqual({ cmd: "cache:read", payload: { branches: ["feat-a", "feat-b"] } });
   });
 });
 
