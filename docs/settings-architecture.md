@@ -26,7 +26,10 @@ to a store or the secrets layer.
 
 Precedence: `default < team < user < team.repo < user.repo < machine < machine.repo`
 (VS Code-style most-specific-wins; repo sections are keyed by normalized remote
-identity `host/path`). On disk — scope in the filename, identity in the path:
+identity `host/path` — the RAW form, never the serialized `remote:…` wire form
+that keys everything outside the settings stores; [repo-identity.md](repo-identity.md)
+is the contract for which form goes where). On disk — scope in the filename,
+identity in the path:
 
 | Scope   | File | Tracked in |
 |---|---|---|

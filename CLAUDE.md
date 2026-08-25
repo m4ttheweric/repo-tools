@@ -16,6 +16,15 @@ touching `~/.mattstack`, read `docs/settings-architecture.md` — it carries the
 scope model, the registry checklist, the ownership-latch pattern, and the
 footguns (call-time HOME, file:-dep copies, sops cwd triple).
 
+## Repo identity
+
+Every per-repo store, daemon payload, and REST path keys on a serialized repo
+identity from rt-client, never a derived name. Before keying anything by repo,
+calling a repo-keyed daemon verb, or displaying a repo name, read
+`docs/repo-identity.md` — it carries the two string forms and where each
+applies, the derivation rules, the identity-only verb guards, and the legacy
+re-key/heal/prune behavior.
+
 ## Release & distribution
 
 Before touching the release workflow, the app bundle, signing, Sparkle, the
