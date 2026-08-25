@@ -16,7 +16,8 @@ import {
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE,
   trayAppPath, devTrayAppPath,
 } from "../lib/rt-paths.ts";
-import { currentMode, installRtBinary } from "../lib/dev-mode.ts";
+import { installRtBinary } from "../lib/dev-mode.ts";
+import { describeTuple, tupleWarning, type FlavorTuple } from "./daemon.ts";
 import { RT_BUNDLE_PATH } from "../lib/bundle-layout.ts";
 import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
@@ -645,8 +646,15 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Prom
   const retire = await trayQuery("/flavor/retire", "POST");
   if (retire?.ok) {
     console.log(`  ${green}✓${reset} ${outgoing.name} retired its registrations`);
+  } else if (retire) {
+    console.log(`  ${yellow}⚠${reset} flavor retire: ${(retire as any).error ?? "failed"}`);
   } else {
-    console.log(`  ${yellow}⚠${reset} flavor retire: ${retire ? ((retire as any).error ?? "failed") : `${outgoing.name} not reachable`}`);
+    // Tray unreachable: it never got the chance to retire itself, so its
+    // launchd registration would otherwise survive the handoff and keep
+    // racing the incoming flavor's daemon for the socket.
+    console.log(`  ${yellow}⚠${reset} flavor retire: ${outgoing.name} not reachable`);
+    spawnSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/${outgoingLabel}`], { stdio: "pipe", env: process.env });
+    console.log(`  ${yellow}⚠${reset} ${outgoing.name} tray unreachable — booted out ${outgoingLabel} directly`);
   }
 
   // 2. Quit the outgoing tray by ITS OWN flavor's names. env forwarded
@@ -667,11 +675,51 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Prom
   console.log(`  ${green}✓${reset} launched ${incoming.appPath}`);
 }
 
-export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, exists: (path: string) => boolean = existsSync): Promise<void> {
-  const mode = currentMode();
-  const sourcePath = detectSourcePath();
+export type GuardVerdict = "noop" | "repair" | "switch";
 
-  // Show current state
+/** "already in X mode" is earned only when every leg agrees; a serving daemon of the wrong flavor makes the toggle a repair even when the CLI already matches. */
+export function devModeGuardVerdict(target: "dev" | "prod", t: FlavorTuple): GuardVerdict {
+  if (target !== t.cliFlavor) return "switch";
+  const daemonAgrees = t.daemon === null || t.daemon.flavor === target;
+  const intentAgrees = t.intended.mode === target;
+  return daemonAgrees && intentAgrees ? "noop" : "repair";
+}
+
+export function renderTupleReadout(t: FlavorTuple, json: boolean): string {
+  if (json) return JSON.stringify(t);
+  const lines = [
+    `  intended: ${t.intended.mode} (${t.intended.provenance})`,
+    `  cli:      ${t.cliFlavor}`,
+    `  daemon:   ${t.daemon ? `${t.daemon.flavor} (pid ${t.daemon.pid})` : "not running"}`,
+  ];
+  const warning = tupleWarning(t);
+  if (warning) lines.push(`  ⚠ ${warning}`);
+  return lines.join("\n");
+}
+
+export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, exists: (path: string) => boolean = existsSync): Promise<void> {
+  const tuple = await describeTuple();
+  const mode = tuple.cliFlavor;
+  const sourcePath = detectSourcePath();
+  const json = args.includes("--json");
+
+  // Resolve target from args (a literal "dev"/"prod"; "--json" and anything
+  // else fall through to undefined, same as the bare-invocation case).
+  let target = args[0] as "dev" | "prod" | undefined;
+  if (target !== "dev" && target !== "prod") target = undefined;
+
+  if (!target) {
+    // A TTY is needed only to PROMPT for a target — --json and a piped/
+    // scripted caller both get the read-only tuple instead, undecorated so
+    // --json output stays one parseable JSON line (the Swift tray parses
+    // exactly this: `rt settings dev-mode --json`).
+    if (!process.stdin.isTTY || json) {
+      console.log(renderTupleReadout(tuple, json));
+      return;
+    }
+  }
+
+  // Show current state (human-facing paths only, below this point).
   console.log("");
   const modeLabel = mode === "dev"
     ? `${green}dev${reset}  ${dim}(local source)${reset}`
@@ -682,16 +730,7 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
   }
   console.log("");
 
-  // Resolve target from args or picker
-  let target = args[0] as "dev" | "prod" | undefined;
-
-  if (target !== "dev" && target !== "prod") {
-    if (!process.stdin.isTTY) {
-      console.log(`  ${red}✗ no target given and no terminal to prompt in${reset}`);
-      console.log(`  ${dim}usage: rt settings dev-mode <dev|prod>${reset}\n`);
-      process.exitCode = 2;
-      return;
-    }
+  if (!target) {
     const { select } = await import("../lib/rt-render.tsx");
     target = await select({
       message: "Switch to",
@@ -702,12 +741,19 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
     }) as "dev" | "prod";
   }
 
-  if (target === mode) {
-    console.log(`  ${dim}already in ${mode} mode${reset}\n`);
+  const verdict = devModeGuardVerdict(target, tuple);
+  if (verdict === "noop") {
+    console.log(`  ${dim}already in ${target} mode${reset}\n`);
     return;
   }
 
   const incoming = flavorFor(target, exists);
+  // Only two flavors exist, so "the other one" is always the outgoing side —
+  // NOT necessarily `mode` (the CLI's own flavor). A repair's whole point is
+  // a half-state where the CLI already matches target but the wrong flavor's
+  // daemon/tray is what's actually serving; quitting "mode" there would
+  // pkill a name nothing is running under and leave the real offender alive.
+  const outgoing = flavorFor(target === "dev" ? "prod" : "dev", exists);
 
   // 0. Precondition — the incoming flavor's bundle must exist on disk BEFORE
   // we touch the running flavor at all, so the toggle can never leave the
@@ -753,7 +799,8 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
     console.log(`  ${dim}wrapper → ${DEV_MODE_WRAPPER}${reset}`);
     console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
 
-    await handoffToFlavor(flavorFor(mode, exists), incoming);
+    await handoffToFlavor(outgoing, incoming);
+    setSetting("mattstack.mode", target, "machine");
 
     console.log(`  ${dim}restart your terminal (or: source ${shellResult.rcPath ?? "~/.zshrc"}) to activate${reset}`);
 
@@ -761,7 +808,8 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
     disableDevMode(exists);
     console.log(`  ${green}✓${reset} CLI restored to prod mode  ${dim}(mattstack.app binary installed at ~/.local/bin/rt)${reset}`);
 
-    await handoffToFlavor(flavorFor(mode, exists), incoming);
+    await handoffToFlavor(outgoing, incoming);
+    setSetting("mattstack.mode", target, "machine");
   }
 
   console.log("");

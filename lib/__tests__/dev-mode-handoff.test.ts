@@ -36,10 +36,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { toggleDevMode } from "../../commands/settings.ts";
-import { TRAY_SOCK_PATH } from "../daemon-config.ts";
+import { DAEMON_SOCK_PATH, TRAY_SOCK_PATH } from "../daemon-config.ts";
 import { currentMode } from "../dev-mode.ts";
-import { DEV_TRAY_APP_BUNDLE, TRAY_APP_BUNDLE } from "../rt-paths.ts";
+import { DEV_TRAY_APP_BUNDLE, TRAY_APP_BUNDLE, TRAY_APP_NAME } from "../rt-paths.ts";
 import { deleteKvValue } from "../state/index.ts";
+import { getSetting } from "../settings/resolve.ts";
 
 function isolatedExists(path: string): boolean {
   return path.startsWith("/Applications/") ? false : existsSync(path);
@@ -68,6 +69,26 @@ let goneMarker = "";
 let originalPath = "";
 let originalShell: string | undefined;
 let server: ReturnType<typeof Bun.serve> | null = null;
+let daemonServer: ReturnType<typeof Bun.serve> | null = null;
+
+/** Fakes the DAEMON socket (not the tray socket) so describeTuple()'s probe reports a specific serving flavor — needed to drive a repair, not a switch. */
+function setUpFakeDaemon(flavor: string, pid: number): void {
+  try { rmSync(DAEMON_SOCK_PATH); } catch { /* absent */ }
+  daemonServer = Bun.serve({
+    unix: DAEMON_SOCK_PATH,
+    fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === "/ping") return Response.json({ flavor, pid });
+      return new Response("not found", { status: 404 });
+    },
+  });
+}
+
+function tearDownFakeDaemon(): void {
+  try { daemonServer?.stop(true); } catch { /* already stopped */ }
+  daemonServer = null;
+  try { rmSync(DAEMON_SOCK_PATH); } catch { /* absent */ }
+}
 
 function writeFake(name: string, body: string): void {
   const p = join(fakeBinDir, name);
@@ -163,6 +184,7 @@ function oneShotSteps(log: string[]): string[] {
 
 afterEach(() => {
   tearDownFakes();
+  tearDownFakeDaemon();
   for (const p of [WRAPPER_PATH, DEV_MODE_PRELOAD, DEV_MODE_CONFIG]) {
     try { rmSync(p); } catch { /* absent */ }
   }
@@ -265,5 +287,30 @@ describe("toggleDevMode — flavor handoff", () => {
 
     expect(readLog()).toEqual([]);
     expect(existsSync(WRAPPER_PATH)).toBe(true); // disableDevMode() never ran
+  }, 15_000);
+
+  test("repair: CLI already dev but a PROD daemon is serving — quits mattstack (prod), never mattstack-dev, and still writes the setting", async () => {
+    // CLI already switched to dev — a naive `target === mode` guard (or an
+    // outgoing computed from the CLI's own flavor) would treat this as a
+    // no-op and leave the wrong daemon running forever.
+    mkdirSync(join(HOME, ".local", "bin"), { recursive: true });
+    writeFileSync(WRAPPER_PATH, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    mkdirSync(FAKE_DEV_APP, { recursive: true }); // incoming (dev) bundle present
+    setUpFakes();
+    setUpFakeDaemon("prod", 4242); // the half-state: prod is what's actually serving
+
+    await toggleDevMode(["dev"], {}, isolatedExists);
+
+    const log = readLog();
+    expect(oneShotSteps(log)).toEqual(["retire", "osascript", "pkill", "open"]);
+    // Outgoing must be the flavor actually serving (prod) — "mattstack" is a
+    // PREFIX of "mattstack-dev", so these assert exact tokens, not substrings.
+    expect(log.find((l) => l.startsWith("osascript "))).toBe(`osascript -e tell application "${TRAY_APP_NAME}" to quit`);
+    expect(log.find((l) => l.startsWith("pkill "))).toBe(`pkill -x ${TRAY_APP_NAME}`);
+    expect(log.some((l) => l === "launchctl list com.mattstack.daemon")).toBe(true);
+    expect(log.some((l) => l.includes("com.mattstack.daemon.dev"))).toBe(false);
+    const openLine = log.find((l) => l.startsWith("open "))!;
+    expect(openLine).toContain(FAKE_DEV_APP); // launches the INCOMING (dev) bundle
+    expect(getSetting<string>("mattstack.mode").value).toBe("dev");
   }, 15_000);
 });
