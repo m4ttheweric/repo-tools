@@ -1,5 +1,6 @@
 import type { HandlerMap, HandlerContext } from "./types.ts";
 import type { SystemProcessScanner, SystemProcess } from "../system-process-scanner.ts";
+import { repoLabel } from "../../repo-arg.ts";
 
 function shortName(proc: SystemProcess): string {
   // Use fullCommand (complete argv) to get the real binary name,
@@ -99,7 +100,11 @@ export function createSystemProcessHandlers(
             linearTicket = `${cacheEntry.ticket.identifier}: ${cacheEntry.ticket.title}`;
           }
         }
-        return { ...proc, linearTicket };
+        // The tray renders `repo` verbatim as group headers and filter chips;
+        // post-rekey the scanner tags rows with serialized identities, so the
+        // display label goes down the wire instead. Kill actions route by
+        // pid/chainPids, never by this string.
+        return { ...proc, repo: repoLabel(proc.repo), linearTicket };
       });
 
       const tree = buildProcessTree(processes);
