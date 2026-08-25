@@ -1,3 +1,4 @@
+import { realpathSync } from "fs";
 import { join } from "path";
 import { repoDataDir } from "../rt-paths.ts";
 import { getKvValue, hasKvValue, importLegacyJsonFile, setKvValue } from "../state/index.ts";
@@ -96,4 +97,51 @@ export function findByBranch(trees: TreeRecord[], branch: string): TreeRecord[] 
 
 export function usedNames(trees: TreeRecord[]): Set<string> {
   return new Set(trees.map((t) => t.name));
+}
+
+/** Canonical path key: a tree that no longer exists compares by its own spelling rather than throwing. */
+function canonPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+const MANAGED_KINDS: ReadonlySet<TreeKind> = new Set<TreeKind>(["main", "ephemeral"]);
+
+/**
+ * Total order for two records of the same canonical path: a managed record
+ * carries claim/ready state no git repository has another copy of, so it beats
+ * `unmanaged`; within one class the later `createdAt` wins; an equal or
+ * unparseable stamp keeps the winner side.
+ */
+function heldRecordWins(held: TreeRecord, challenger: TreeRecord): boolean {
+  const heldManaged = MANAGED_KINDS.has(held.kind);
+  const challengerManaged = MANAGED_KINDS.has(challenger.kind);
+  if (heldManaged !== challengerManaged) return heldManaged;
+  return !(Date.parse(challenger.createdAt) > Date.parse(held.createdAt));
+}
+
+/**
+ * Union two registries of the SAME repo by canonical path — the collapse a
+ * name/identity index pair needs, where each side owns half of one on-deck
+ * pool. Name collisions across the two sides are left standing: the union is
+ * by path, and a record's name is only ever consulted for display and for
+ * `usedNames` disambiguation, both of which tolerate a duplicate.
+ */
+export function mergeRegistries(winner: TreeRecord[], loser: TreeRecord[]): TreeRecord[] {
+  const byPath = new Map<string, TreeRecord>();
+  const order: string[] = [];
+  for (const rec of [...winner, ...loser]) {
+    const key = canonPath(rec.path);
+    const held = byPath.get(key);
+    if (!held) {
+      byPath.set(key, rec);
+      order.push(key);
+      continue;
+    }
+    if (!heldRecordWins(held, rec)) byPath.set(key, rec);
+  }
+  return order.map((key) => byPath.get(key)!);
 }
