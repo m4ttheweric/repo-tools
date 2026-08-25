@@ -141,6 +141,7 @@ function fakeApplyDeps(overrides: { steps?: StepDef[] } = {}): ApplyDeps & { exi
       throw new Error("exit sentinel");
     },
     isTTY: () => false,
+    planForGate: async () => ({ requiredMissing: [] }),
     confirm: async () => true,
     steps: overrides.steps ?? [],
     exitCodes,

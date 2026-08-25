@@ -163,6 +163,8 @@ export interface ApplyDeps {
   secretPresence?: SecretPresence;
   /** Overrides the real 22-step registry — the seam every apply test drives instead. */
   steps?: StepDef[];
+  /** Overrides the plan `setupApply` composes for its hard-precondition gate — tests stub `{requiredMissing: []}` instead of driving all validators through fake probes. */
+  planForGate?: () => Promise<{ requiredMissing: string[] }>;
   needOpts?: CreateApplyContextDeps["needOpts"];
   print: (s: string) => void;
   exit: (code: number) => never;
@@ -217,6 +219,32 @@ function resolveFromArg(args: string[]): StepId | undefined {
   return value as StepId;
 }
 
+/**
+ * Rows whose absence makes apply's own steps fail mid-plan (home.init shells
+ * git on a Mac whose /usr/bin/git is only the CLT-install shim) rather than
+ * degrade. This is deliberately narrower than the interactive gate's full
+ * requiredMissing: a headless run tolerates a missing herdr/claude (their
+ * steps skip and report), but cannot survive a missing git or an
+ * unsupported macOS — those must refuse before the first step mutates
+ * anything.
+ */
+const HARD_PRECONDITION_IDS = new Set(["tool.macos", "tool.clt"]);
+
+const HARD_PRECONDITION_REMEDY: Record<string, string> = {
+  "tool.clt": "install Apple's Command Line Tools (rt tools install apple-clt, or xcode-select --install), then rerun",
+  "tool.macos": "rt requires macOS 14 or newer",
+};
+
+async function gateHardPreconditions(args: string[], deps: ApplyDeps): Promise<void> {
+  if (args.includes("--force")) return;
+  const plan = await (deps.planForGate?.() ??
+    composePlan({ p: deps.probes, secrets: deps.secretPresence ?? realSecretPresence(), ci: process.env.CI === "true", mode: "plan", teams: listTeams() }));
+  const hard = plan.requiredMissing.filter((id) => HARD_PRECONDITION_IDS.has(id));
+  if (hard.length === 0) return;
+  const remedies = hard.map((id) => HARD_PRECONDITION_REMEDY[id] ?? id).join("; ");
+  throw new UserActionableError("not-ready", `blocked by: ${hard.join(", ")} — ${remedies}`);
+}
+
 export async function setupApply(args: string[], _ctx: CommandContext = {}, deps: ApplyDeps = realApplyDeps()): Promise<void> {
   const json = args.includes("--json");
   const emit = json
@@ -225,6 +253,7 @@ export async function setupApply(args: string[], _ctx: CommandContext = {}, deps
 
   let result: { ok: boolean; failedStep?: StepId };
   try {
+    await gateHardPreconditions(args, deps);
     const from = resolveFromArg(args);
     const ctx: ApplyContext = await createApplyContext({
       probes: deps.probes,
