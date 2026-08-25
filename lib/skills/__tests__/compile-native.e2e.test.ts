@@ -42,6 +42,8 @@ describe("compile-native end to end", () => {
     // The fill comes from the pack under compilation, at the pack's own version --
     // never from an installed copy of a previous release.
     expect(plan).toContain("<!-- part: slot:domain binding=acme:plan-policy version=0.1.0 path=attachments/plan-policy/SKILL.md");
+    expect(plan).toContain("<!-- part: include:gitlab-note");
+    expect(plan).toContain("note body");
     expect(existsSync(join(pack, "skills", "work", "scripts", "resolve-pipeline.sh"))).toBe(false);
   });
 

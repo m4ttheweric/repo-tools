@@ -489,14 +489,23 @@ function loadFillsFor(step: StepSource, resolved: Resolved, where: string): Reco
   return fills;
 }
 
-function loadIncludesFor(step: StepSource, resolved: Resolved, where: string): Record<string, AttachmentSource> {
+/** Scans the step body plus every bound fill's body, so a fill's own `{{include}}` lines resolve too. */
+function loadIncludesFor(
+  step: StepSource,
+  fills: Record<string, AttachmentSource | null>,
+  resolved: Resolved,
+  where: string,
+): Record<string, AttachmentSource> {
   const out: Record<string, AttachmentSource> = {};
-  for (const p of findPlaceholders(step.body)) {
-    if (p.kind !== "include" || !p.arg || out[p.arg]) continue;
-    try {
-      out[p.arg] = loadInclude(p.arg, resolved.pluginRoots);
-    } catch (err) {
-      throw new SkillsUsageError(`${where}: ${(err as Error).message}`);
+  const bodies = [step.body, ...Object.values(fills).filter((f): f is AttachmentSource => f !== null).map((f) => f.body)];
+  for (const body of bodies) {
+    for (const p of findPlaceholders(body)) {
+      if (p.kind !== "include" || !p.arg || out[p.arg]) continue;
+      try {
+        out[p.arg] = loadInclude(p.arg, resolved.pluginRoots);
+      } catch (err) {
+        throw new SkillsUsageError(`${where}: ${(err as Error).message}`);
+      }
     }
   }
   return out;
@@ -538,9 +547,10 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
   const isOrchestrator = findPlaceholders(step.body).some((p) => p.kind === "pipeline.stages");
 
   try {
-    return compileSkill(verb, step, loadFillsFor(step, resolved, where), resolved.invocable, {
+    const fills = loadFillsFor(step, resolved, where);
+    return compileSkill(verb, step, fills, resolved.invocable, {
       internalRoster: resolved.internalRoster,
-      includes: loadIncludesFor(step, resolved, where),
+      includes: loadIncludesFor(step, fills, resolved, where),
       pipelines: entries,
       repoKey: resolved.repoKey,
       mattstackSha: resolved.mattstackSha,

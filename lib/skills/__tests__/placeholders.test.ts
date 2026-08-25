@@ -179,4 +179,19 @@ describe("substitute", () => {
   test("unknown kind is an error", () => {
     expect(() => substitute("{{bogus}}", ctx(), "work")).toThrow("work: unknown placeholder {{bogus}} at line 1");
   });
+
+  test("a fill may inline an include, with its own marker", () => {
+    const fillWithInclude = { ...fill, body: "policy\n{{include:review-core-body}}\ntail" };
+    const { body } = substitute("{{slot:domain}}", ctx({ fills: { domain: fillWithInclude } }), "stage-plan");
+    expect(body).toContain("<!-- part: slot:domain binding=acme:plan-policy");
+    expect(body).toContain("<!-- part: include:review-core-body source=mattstack:review-core-body");
+    expect(body).toContain("core A\ncore B");
+    expect(body).not.toContain("{{");
+  });
+
+  test("a fill may not carry a slot or any other placeholder", () => {
+    const bad = { ...fill, body: "x\n{{slot:tiering}}" };
+    expect(() => substitute("{{slot:domain}}", ctx({ fills: { domain: bad } }), "stage-plan"))
+      .toThrow("acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}} only (line 2)");
+  });
 });

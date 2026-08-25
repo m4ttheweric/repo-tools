@@ -48,13 +48,31 @@ function slotText(name: string, fill: AttachmentSource | null, mode: "inline" | 
   if (mode === "reference") {
     return `Slot ${name} is bound to \`${fill.binding}\` (${fill.binding}@${fill.version}) -- invoke that skill when this flow needs it.`;
   }
-  const body = fill.body.split(SKILL_DIR_TOKEN).join(skillDirFor(fill, ctx, name));
+  const rewritten = fill.body.split(SKILL_DIR_TOKEN).join(skillDirFor(fill, ctx, name));
+  const body = substituteIncludesOnly(rewritten, ctx, fill.binding);
   return `<!-- part: slot:${name} binding=${fill.binding} version=${fill.version} ${spanOf(fill)} -->\n${body}`;
 }
 
 function includeText(name: string, inc: AttachmentSource, ctx: PlaceholderContext): string {
   const body = inc.body.split(SKILL_DIR_TOKEN).join(skillDirFor(inc, ctx, `include-${name}`));
   return `<!-- part: include:${name} source=${inc.plugin}:${name} version=${inc.version} ${spanOf(inc)} -->\n${body}`;
+}
+
+/**
+ * loadInclude enforces that an include target is itself slotless and
+ * placeholder-free, so a fill body carrying {{include}} lines cannot recurse --
+ * `where` is the fill's own binding, matching how a step body names itself.
+ */
+export function substituteIncludesOnly(body: string, ctx: PlaceholderContext, where: string): string {
+  return body.split("\n").map((line, i) =>
+    line.replace(PLACEHOLDER_RE, (raw, kind: string, arg?: string) => {
+      if (kind !== "include") throw new Error(`${where}: ${raw} -- a fill may carry {{include}} only (line ${i + 1})`);
+      if (line.trim() !== raw) throw new Error(`${where}: ${raw} must be alone on its line (line ${i + 1})`);
+      const inc = arg ? ctx.includes[arg] : undefined;
+      if (!arg || !inc) throw new Error(`${where}: include "${arg}" is not a loaded attachment`);
+      return includeText(arg, inc, ctx);
+    }),
+  ).join("\n");
 }
 
 function workTypeText(pipelines: Record<string, StageEntry[]>, where: string): string {

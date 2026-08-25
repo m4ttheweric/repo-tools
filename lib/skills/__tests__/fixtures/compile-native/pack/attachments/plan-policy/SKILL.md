@@ -6,3 +6,5 @@ metadata:
 ---
 
 policy text
+
+{{include:gitlab-note}}
