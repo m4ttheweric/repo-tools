@@ -19,7 +19,7 @@
  * Spec: docs/superpowers/specs/2026-08-23-rt-chat-design.md
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { homedir, hostname } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
@@ -596,6 +596,43 @@ function isLiveChatTail(pid: number): boolean {
   }
 }
 
+/**
+ * Claim the per-handle tail pidfile for this process. Returns null when
+ * claimed, or the pid of a live `rt chat tail` that already holds it.
+ *
+ * Every write is an exclusive create ('wx'): only one racer wins, and O_EXCL
+ * refuses a symlink outright, so a link planted at pidPath is never written
+ * through. A stale pidfile is reclaimed by removing it and retrying the
+ * exclusive create, never by overwriting in place — and it is only removed if
+ * it is a regular file whose inode is unchanged since the staleness check, so
+ * a racer that re-claimed the path meanwhile does not get its fresh pidfile
+ * deleted from under it.
+ */
+function claimTailPidfile(pidPath: string): number | null {
+  mkdirSync(dirname(pidPath), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(pidPath, String(process.pid), { flag: "wx" });
+      return null;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    const seen = lstatSync(pidPath);
+    if (!seen.isFile()) {
+      throw new Error(`${pidPath} exists but is not a regular file — remove it to arm`);
+    }
+    const existing = readTailPid(pidPath);
+    if (existing !== null && existing !== process.pid && isLiveChatTail(existing)) return existing;
+    try {
+      const now = lstatSync(pidPath);
+      if (now.isFile() && now.ino === seen.ino && now.dev === seen.dev) rmSync(pidPath);
+    } catch { /* already gone — the retry below settles it */ }
+  }
+  const holder = readTailPid(pidPath);
+  if (holder !== null && holder !== process.pid && isLiveChatTail(holder)) return holder;
+  throw new Error(`${pidPath} could not be claimed`);
+}
+
 /** SIGTERM the handle's tail if one is genuinely running, then drop the pidfile (leave's last-room path). */
 function killChatTail(handle: string): void {
   const pidPath = chatTailPidPath(handle);
@@ -649,26 +686,16 @@ export async function chatTail(args: string[]): Promise<void> {
   // Claim the pidfile BEFORE any daemon call, so a live duplicate is refused
   // even when the daemon is down. A stale/foreign pidfile is reclaimed.
   const pidPath = chatTailPidPath(handle);
+  let livePid: number | null;
   try {
-    mkdirSync(rtChatDir(), { recursive: true });
-    try {
-      // Exclusive create ('wx'): only one racer wins the claim. A plain
-      // read-check-write lets two tails both pass the liveness check before
-      // either writes, and both then run — the double-wake the pidfile exists
-      // to prevent.
-      writeFileSync(pidPath, String(process.pid), { flag: "wx" });
-    } catch {
-      const existing = readTailPid(pidPath);
-      if (existing !== null && existing !== process.pid && isLiveChatTail(existing)) {
-        console.error(`rt chat: already armed — a tail for ${handle} is already running (pid ${existing})`);
-        process.exit(3);
-      }
-      // Stale or foreign pidfile — reclaim it.
-      writeFileSync(pidPath, String(process.pid));
-    }
+    livePid = claimTailPidfile(pidPath);
   } catch (err) {
     console.error(`rt chat: could not claim tail pidfile: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
+  }
+  if (livePid !== null) {
+    console.error(`rt chat: already armed — a tail for ${handle} is already running (pid ${livePid})`);
+    process.exit(3);
   }
   const cleanup = (): void => { try { rmSync(pidPath); } catch { /* already gone */ } };
 
@@ -802,4 +829,5 @@ export const __test__ = {
   cwdRelativeHandle,
   userHostHandle,
   looksLikeRtChatTail,
+  claimTailPidfile,
 };

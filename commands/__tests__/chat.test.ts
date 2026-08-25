@@ -18,8 +18,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -405,6 +407,47 @@ describe("chat handle derivation — worktree fixtures", () => {
   test("slugify never produces a name outside ^[a-z0-9._-]+$", () => {
     expect(__test__.slugify("Acme/Dev Gamma!!")).toMatch(/^[a-z0-9._-]+$/);
     expect(__test__.slugify("   ")).toMatch(/^[a-z0-9._-]+$/);
+  });
+});
+
+describe("pidfile claim — exclusive create, reclaim only a stale regular file", () => {
+  // A pid no process can hold (macOS caps at 99998, Linux defaults to 4194304
+  // but the claim also requires `ps args` to read as an rt chat tail).
+  const DEAD_PID = 2_147_483_646;
+  let dir = "";
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "rt-chat-pidclaim-")); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  test("claims a free path with this process's pid", () => {
+    const pidPath = join(dir, "sub", "chat-tail-x.pid");
+    expect(__test__.claimTailPidfile(pidPath)).toBeNull();
+    expect(readFileSync(pidPath, "utf8")).toBe(String(process.pid));
+  });
+
+  test("reclaims a stale pidfile", () => {
+    const pidPath = join(dir, "chat-tail-x.pid");
+    writeFileSync(pidPath, String(DEAD_PID));
+    expect(__test__.claimTailPidfile(pidPath)).toBeNull();
+    expect(readFileSync(pidPath, "utf8")).toBe(String(process.pid));
+  });
+
+  test("refuses a symlink at the pidfile path and never writes through it", () => {
+    // The reclaim must not become "overwrite whatever the path points at": a
+    // link planted here would otherwise get its target clobbered with a pid.
+    const victim = join(dir, "victim");
+    writeFileSync(victim, "keep");
+    const pidPath = join(dir, "chat-tail-x.pid");
+    symlinkSync(victim, pidPath);
+    expect(() => __test__.claimTailPidfile(pidPath)).toThrow(/not a regular file/);
+    expect(readFileSync(victim, "utf8")).toBe("keep");
+    expect(readFileSync(pidPath, "utf8")).toBe("keep");
+  });
+
+  test("refuses a directory at the pidfile path", () => {
+    const pidPath = join(dir, "chat-tail-x.pid");
+    mkdirSync(pidPath);
+    expect(() => __test__.claimTailPidfile(pidPath)).toThrow(/not a regular file/);
+    expect(existsSync(pidPath)).toBe(true);
   });
 });
 
