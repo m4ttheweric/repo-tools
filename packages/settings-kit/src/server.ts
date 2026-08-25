@@ -45,9 +45,23 @@ export type ExplainRowWire = Pick<
   "scope" | "file" | "present" | "shadowed" | "invalid"
 > & { value?: unknown };
 
+/** The slice of rt-client the handler consumes — injectable so tests fake it
+    without `mock.module`, which mutates the shared module registry and
+    poisons every later test importing rt-client in the same process. */
+export interface RtSettingsApi {
+  allDefs: typeof allDefs;
+  getDef: typeof getDef;
+  isMigrated: typeof isMigrated;
+  explainSetting: typeof explainSetting;
+  validateValue: typeof validateValue;
+  setSetting: typeof setSetting;
+}
+
 export interface SettingsHandlerOptions {
   /** Route prefix the handler answers under. Default "/api/settings". */
   basePath?: string;
+  /** Override the rt-client functions (tests, instrumentation). */
+  rt?: Partial<RtSettingsApi>;
   /**
    * Write gate. The default admits only requests whose Host is loopback or a
    * deck-local TLD (localhost, 127.0.0.1, [::1], *.localhost, *.mattstack) —
@@ -65,11 +79,11 @@ function isComposite(def: SettingDef): boolean {
   return def.type === "object" || def.type === "array";
 }
 
-function isWritable(def: SettingDef): boolean {
-  return isMigrated(def) && def.secret !== true && !isComposite(def);
+function isWritable(def: SettingDef, migrated: (def: SettingDef) => boolean = isMigrated): boolean {
+  return migrated(def) && def.secret !== true && !isComposite(def);
 }
 
-export function defToWire(def: SettingDef): SettingDefWire {
+export function defToWire(def: SettingDef, migrated?: (def: SettingDef) => boolean): SettingDefWire {
   return {
     key: def.key,
     type: def.type,
@@ -78,7 +92,7 @@ export function defToWire(def: SettingDef): SettingDefWire {
     secret: def.secret === true,
     teamLocked: def.teamLocked === true,
     repoScoped: def.repoScoped === true,
-    writable: isWritable(def),
+    writable: isWritable(def, migrated),
     description: def.description,
     hasDefault: "default" in def,
     defaultValue: def.default ?? null,
@@ -137,6 +151,7 @@ export async function settingsHandler(
   opts: SettingsHandlerOptions = {},
 ): Promise<Response | null> {
   const base = (opts.basePath ?? "/api/settings").replace(/\/+$/, "");
+  const rt: RtSettingsApi = { allDefs, getDef, isMigrated, explainSetting, validateValue, setSetting, ...opts.rt };
   let url: URL;
   try {
     url = new URL(req.url);
@@ -150,17 +165,17 @@ export async function settingsHandler(
 
   if (path === `${base}/defs` && req.method === "GET") {
     const prefix = url.searchParams.get("prefix") ?? "";
-    const defs = allDefs()
+    const defs = rt.allDefs()
       .filter((d) => d.key.startsWith(prefix))
-      .map(defToWire);
+      .map((d) => defToWire(d, rt.isMigrated));
     return json({ defs });
   }
 
   if (path.startsWith(`${base}/explain/`) && req.method === "GET") {
     const key = decodeURIComponent(path.slice(`${base}/explain/`.length));
-    const def = getDef(key);
+    const def = rt.getDef(key);
     if (!def) return json({ error: `unknown setting "${key}"` }, 404);
-    return json({ def: defToWire(def), rows: sanitizeRows(def, explainSetting(key)) });
+    return json({ def: defToWire(def, rt.isMigrated), rows: sanitizeRows(def, rt.explainSetting(key)) });
   }
 
   if (path === `${base}/set` && req.method === "POST") {
@@ -178,7 +193,7 @@ export async function settingsHandler(
     const team = typeof body?.team === "string" ? body.team : undefined;
     const value = body?.value;
 
-    const def = getDef(key);
+    const def = rt.getDef(key);
     if (!def) return json({ error: `unknown setting "${key}"` }, 404);
     if (def.secret === true) return json({ error: "secret keys are not writable here" }, 400);
     if (isComposite(def)) return json({ error: COMPOSITE_COPY }, 400);
@@ -188,18 +203,18 @@ export async function settingsHandler(
         400,
       );
     }
-    if (!isWritable(def)) {
+    if (!isWritable(def, rt.isMigrated)) {
       return json({ error: `"${key}" is not writable through the resolver yet` }, 400);
     }
-    const check = validateValue(def, value);
+    const check = rt.validateValue(def, value);
     if (!check.ok) return json({ error: check.reason }, 400);
 
     try {
-      setSetting(key, value, scope, team ? { team } : {});
+      rt.setSetting(key, value, scope, team ? { team } : {});
     } catch (err) {
       return json({ error: (err as Error).message }, 400);
     }
-    return json({ rows: sanitizeRows(def, explainSetting(key)) });
+    return json({ rows: sanitizeRows(def, rt.explainSetting(key)) });
   }
 
   return json({ error: "method not allowed" }, 405);
