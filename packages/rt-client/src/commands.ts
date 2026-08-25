@@ -75,8 +75,8 @@ export interface ChatMember {
   armedAt?: number;
   cwd?: string;
   pane?: string;
-  /** Presence-joined (chat:who) — absent nowhere it's populated, optional only because chat-store.ts's own ChatMember (structurally identical) has no such column. */
-  status?: BuddyStatus;
+  /** Presence-joined by chat:who's handler — the only place this type is ever returned, and it always attaches one. */
+  status: BuddyStatus;
 }
 
 export interface ChatMessage {

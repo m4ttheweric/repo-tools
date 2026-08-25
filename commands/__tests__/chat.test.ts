@@ -13,6 +13,7 @@
  * nondeterministic and slow. See commands/chat.ts's resolveHandle order.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { execSync } from "child_process";
 import {
   existsSync,
   mkdirSync,
@@ -434,9 +435,7 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
 // ─── buddies, away/back, dm, pulse ──────────────────────────────────────────
 
 describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
-  test("buddies renders four sections in table order and names the away text", async () => {
-    // Statuses-table order (offline, deaf, live, idle in the design doc's
-    // ## Statuses table, top to bottom) — see renderBuddies's BUDDY_SECTIONS.
+  test("buddies renders sections listening → idle → deaf → offline and names the away text", async () => {
     await signInInProcess({ as: "idle1", session: "sid", noRoom: true });
     await signInInProcess({ as: "live1", session: "slv", noRoom: true });
     await signInInProcess({ as: "deaf1", session: "sdf", noRoom: true });
@@ -451,14 +450,14 @@ describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
 
     const out = await runChat(["buddies"]);
 
-    const offIdx = out.indexOf("off1");
-    const deafIdx = out.indexOf("deaf1");
     const liveIdx = out.indexOf("live1");
     const idleIdx = out.indexOf("idle1");
-    expect(offIdx).toBeGreaterThanOrEqual(0);
-    expect(deafIdx).toBeGreaterThan(offIdx);
-    expect(liveIdx).toBeGreaterThan(deafIdx);
+    const deafIdx = out.indexOf("deaf1");
+    const offIdx = out.indexOf("off1");
+    expect(liveIdx).toBeGreaterThanOrEqual(0);
     expect(idleIdx).toBeGreaterThan(liveIdx);
+    expect(deafIdx).toBeGreaterThan(idleIdx);
+    expect(offIdx).toBeGreaterThan(deafIdx);
 
     expect(out).toMatch(/listening/); // live1
     expect(out).toMatch(/deaf/); // deaf1
@@ -614,7 +613,51 @@ describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
     const out = await runChat(["pulse", "--json", "--session", "s1"]);
     const elapsed = Date.now() - start;
     expect(JSON.parse(out)).toMatchObject({ ok: true });
-    expect(elapsed).toBeLessThan(5_000);
+    // 800ms daemon bound plus headroom for the git spawn itself — measured
+    // locally at 96-120ms, so this is a real guard, not a rubber stamp.
+    expect(elapsed).toBeLessThan(1_500);
+  });
+
+  test("pulse re-reads branch/repo only when the cwd changed or the cache is over a minute old", async () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), "rt-chat-pulse-branch-")));
+    const origCwd = process.cwd();
+    try {
+      execSync("git init -q", { cwd: fixture });
+      execSync("git config user.email test@example.com", { cwd: fixture });
+      execSync("git config user.name test", { cwd: fixture });
+      writeFileSync(join(fixture, "f.txt"), "1");
+      execSync("git add f.txt && git commit -q -m init", { cwd: fixture });
+      execSync("git checkout -q -b branch-one", { cwd: fixture });
+
+      process.chdir(fixture);
+      await signInInProcess({ as: "x", session: "s1", noRoom: true });
+
+      // First pulse: no cache yet, so it reads the real (git-spawned) branch.
+      await runChat(["pulse", "--json", "--session", "s1"]);
+      let buddies = JSON.parse(await runChat(["buddies", "--json"]));
+      expect(buddies.buddies[0].branch).toBe("branch-one");
+
+      // Same cwd, well within the minute: the checked-out branch changes on
+      // disk, but the cached value must NOT be re-read.
+      execSync("git checkout -q -b branch-two", { cwd: fixture });
+      await runChat(["pulse", "--json", "--session", "s1"]);
+      buddies = JSON.parse(await runChat(["buddies", "--json"]));
+      expect(buddies.buddies[0].branch).toBe("branch-one");
+
+      // Age the cache past a minute — the next pulse must re-read and pick
+      // up the branch that actually changed on disk in between.
+      const sessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "s1.json");
+      const session = JSON.parse(readFileSync(sessionPath, "utf8"));
+      session.lastBranchReadAt = Date.now() - 61_000;
+      writeFileSync(sessionPath, JSON.stringify(session));
+
+      await runChat(["pulse", "--json", "--session", "s1"]);
+      buddies = JSON.parse(await runChat(["buddies", "--json"]));
+      expect(buddies.buddies[0].branch).toBe("branch-two");
+    } finally {
+      process.chdir(origCwd);
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
 

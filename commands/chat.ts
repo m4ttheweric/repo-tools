@@ -497,7 +497,7 @@ function renderWhoSection(room: string, members: ChatMember[]): string {
   const lines = members.map((m) => {
     const cwd = m.cwd ? `  ${m.cwd}` : "";
     const pane = m.pane ? `  [${m.pane}]` : "";
-    const status = STATUS_WORD[m.status ?? "idle"];
+    const status = STATUS_WORD[m.status];
     return `  ${m.handle}  ${status}${cwd}${pane}`;
   });
   return [`#${room}`, ...(lines.length > 0 ? lines : ["  (no members)"])].join("\n");
@@ -525,13 +525,23 @@ function buddyStatusWord(b: PresenceRow & { status: BuddyStatus }): string {
   }
 }
 
-// Statuses-table order (offline, deaf, live, idle) — the same most-stale-first
-// sequence buddyStatus itself is evaluated in, reused here as the section
-// order rather than inventing a second ranking of the same four names.
-const BUDDY_SECTIONS: BuddyStatus[] = ["offline", "deaf", "live", "idle"];
+// Listening first, most-stale last — the order someone scanning the roster
+// wants, not buddyStatus's own most-stale-first evaluation order (used to
+// settle a single row's status, never to rank rows against each other).
+const BUDDY_SECTIONS: BuddyStatus[] = ["live", "idle", "deaf", "offline"];
 
 function renderBuddies(buddies: Array<PresenceRow & { status: BuddyStatus }>): string {
   if (buddies.length === 0) return "(nobody signed in)";
+
+  // Columns span every non-offline row (offline collapses to its own line,
+  // so it never stretches the other rows' alignment). Each column's width is
+  // the longest cell plus a fixed gap to the next column.
+  const regular = buddies.filter((b) => b.status !== "offline");
+  const handleWidth = Math.max(0, ...regular.map((b) => b.handle.length));
+  const nameColWidth = handleWidth + 2 /* "● " */ + 2 /* gap */;
+  const deetsWidth = Math.max(0, ...regular.map((b) => buddyDeets(b).length));
+  const deetsColWidth = deetsWidth > 0 ? deetsWidth + 3 : 0;
+
   const lines: string[] = [];
   for (const status of BUDDY_SECTIONS) {
     const rows = buddies.filter((b) => b.status === status);
@@ -543,12 +553,11 @@ function renderBuddies(buddies: Array<PresenceRow & { status: BuddyStatus }>): s
     }
     const bullet = status === "idle" ? "○" : "●"; // filled = a tail is armed (live, or deaf-while-armed)
     for (const b of rows) {
-      const deets = buddyDeets(b);
-      const parts = [`${bullet} ${b.handle}`];
-      if (deets) parts.push(deets);
-      parts.push(buddyStatusWord(b));
-      if (b.statusText) parts.push(b.statusText);
-      lines.push(parts.join("   "));
+      const name = `${bullet} ${b.handle}`.padEnd(nameColWidth);
+      const deets = buddyDeets(b).padEnd(deetsColWidth);
+      let line = `${name}${deets}${buddyStatusWord(b)}`;
+      if (b.statusText) line += `   ${b.statusText}`;
+      lines.push(line);
     }
   }
   return lines.join("\n");
@@ -689,7 +698,7 @@ async function runWho(args: string[]): Promise<void> {
   const members = unwrap(res, `who (#${room})`).members;
 
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ ok: true, room, members }));
+    console.log(JSON.stringify({ ok: true, rooms: [{ room, members }] }));
     return;
   }
   console.log(renderWhoSection(room, members));
