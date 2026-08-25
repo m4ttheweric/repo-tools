@@ -11,6 +11,8 @@ export type StepSource = {
   slots: Record<string, SlotSpec>;
   allowedTools: string[]; // raw entries from frontmatter allowed-tools
   stepFiles: string[]; // non-SKILL.md files relative to dir (scripts/, references/, ...), vendored path-preserving
+  stageMeta: { stage: string; consumes: string[]; produces: string[] } | null;
+  description: string;
 };
 
 export type AttachmentSource = {
@@ -32,3 +34,21 @@ export type VerbDef = { name: string; engine: string; description: string };
 export type CompiledFile = { path: string; content: string } | { path: string; copyFrom: string };
 
 export type CompileResult = { files: CompiledFile[]; warnings: string[]; errors: string[] };
+
+export type StageEntry = {
+  name: string; stage: string; dir: string; consumes: string[]; produces: string[];
+};
+
+export type PlaceholderContext = {
+  fills: Record<string, AttachmentSource | null>;
+  slotMode: Record<string, "inline" | "reference">;
+  partsPrefix: string;
+  includes: Record<string, AttachmentSource>;
+  pipelines: Record<string, StageEntry[]>;
+  repoKey: string;
+  mattstackSha: string;
+  mattstackDirty: 0 | 1;
+  stageDir: string | null;
+  stageMeta: StepSource["stageMeta"];
+  compiledFrom: string;
+};

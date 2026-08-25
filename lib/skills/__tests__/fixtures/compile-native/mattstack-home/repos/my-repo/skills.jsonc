@@ -1,0 +1,5 @@
+// acme bindings
+{
+  "pipelines": { "feature": ["mattstack:stage-plan", "mattstack:stage-implement", "mattstack:stage-ship"] },
+  "bindings": { "mattstack:stage-plan": { "domain": "acme:plan-policy" } }
+}
