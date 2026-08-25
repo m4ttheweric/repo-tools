@@ -11,9 +11,10 @@ import { expect, test } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
-import { armMember, joinRoom, listMembers, touchMember } from "../chat-store.ts";
+import { armMember, disarmMember, joinRoom, listMembers, touchMember } from "../chat-store.ts";
 import {
   assertSessionOwnsHandle,
+  assertSessionSignedIn,
   buddyStatus,
   presenceThresholds,
   prunePresence,
@@ -86,6 +87,11 @@ test("assertSessionOwnsHandle throws only on a mismatched signed handle", () => 
   expect(() => assertSessionOwnsHandle("x", undefined, db)).not.toThrow(); // no session id offered, no enforcement
 });
 
+test("assertSessionSignedIn throws when the session's row is gone", () => {
+  const db = fresh();
+  expect(() => assertSessionSignedIn("ghost", db)).toThrow(/handle reclaimed/);
+});
+
 test("prune: the ghost path — a never-signed-out row goes after 24h of silence", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db); // never signs out
@@ -115,12 +121,30 @@ test("arm/touch/disarm dual-write when a presence row exists, and still work wit
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
   joinRoom({ room: "r", handle: "x" }, db);
+
   armMember(undefined, "x", db);
-  touchMember("x", db);
-  const armedRow = db.query("SELECT armed_at, tail_seen_at FROM chat_presence WHERE handle = 'x'").get() as { armed_at: number | null };
+  const armedRow = db.query("SELECT armed_at, tail_seen_at FROM chat_presence WHERE handle = 'x'").get() as {
+    armed_at: number | null;
+    tail_seen_at: number | null;
+  };
   expect(armedRow.armed_at).toBeTruthy();
+  expect(armedRow.tail_seen_at).toBeNull(); // new tail epoch
+
+  touchMember("x", db);
+  const touchedRow = db.query("SELECT tail_seen_at FROM chat_presence WHERE handle = 'x'").get() as { tail_seen_at: number | null };
+  expect(touchedRow.tail_seen_at).toBeTruthy();
+
+  disarmMember("x", db);
+  const disarmedPresence = db.query("SELECT armed_at FROM chat_presence WHERE handle = 'x'").get() as { armed_at: number | null };
+  const disarmedMember = db.query("SELECT armed_at FROM chat_members WHERE room = 'r' AND handle = 'x'").get() as {
+    armed_at: number | null;
+  };
+  expect(disarmedPresence.armed_at).toBeNull(); // both tables, per the dual-write
+  expect(disarmedMember.armed_at).toBeNull();
+
   joinRoom({ room: "r", handle: "unsigned" }, db);
   expect(() => armMember(undefined, "unsigned", db)).not.toThrow(); // member columns as in plan 1
+  expect(() => disarmMember("unsigned", db)).not.toThrow();
 });
 
 test("a creating join with wake-on stamps the room default and later joins inherit it", () => {
@@ -133,6 +157,36 @@ test("a creating join with wake-on stamps the room default and later joins inher
   joinRoom({ room: "calm", handle: "a" }, db); // creating join WITHOUT a flag stamps nothing
   joinRoom({ room: "calm", handle: "b" }, db);
   expect(listMembers("calm", db).map((m) => m.wakeOn)).toEqual(["mention", "mention"]);
+});
+
+test("a repeat sign-in from the same session, same base, retakes its own seat", () => {
+  const db = fresh();
+  expect(signIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x");
+  // Before the fix this threw a raw UNIQUE violation on "x": the scan found
+  // s1's own (non-reclaimable, fresh) row still holding it.
+  const r = signIn({ sessionId: "s1", baseHandle: "x", now: now + MIN }, db);
+  expect(r.handle).toBe("x");
+  expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
+});
+
+test("a repeat sign-in from the same session comes back to its own higher suffix rather than filling a lower gap", () => {
+  const db = fresh();
+  signIn({ sessionId: "s0", baseHandle: "x", now }, db); // holds "x", stays live throughout
+  signIn({ sessionId: "s-mid", baseHandle: "x", now }, db); // holds "x-2"
+  expect(signIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x-3");
+  db.run("DELETE FROM chat_presence WHERE session_id = 's-mid'"); // "x-2" is now a genuine gap
+  // Without the same-seat rule this would refill the gap at "x-2" — the
+  // suffix churn the reclaim predicate exists to prevent.
+  const r = signIn({ sessionId: "s1", baseHandle: "x", now: now + MIN }, db);
+  expect(r.handle).toBe("x-3");
+});
+
+test("a repeat sign-in with a different base releases the old seat and takes a fresh one", () => {
+  const db = fresh();
+  expect(signIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x");
+  expect(signIn({ sessionId: "s1", baseHandle: "y", now: now + MIN }, db).handle).toBe("y");
+  // the old base's slot was released outright, not left behind as a ghost
+  expect(signIn({ sessionId: "s2", baseHandle: "x", now: now + 2 * MIN }, db)).toMatchObject({ handle: "x", reclaimed: false });
 });
 
 test("the joinRoom cwd guard is scoped to unsigned handles", () => {

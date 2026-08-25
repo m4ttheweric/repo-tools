@@ -93,7 +93,12 @@ const PRUNABLE_SQL = `(signed_out_at IS NOT NULL AND signed_out_at < ?) OR last_
 
 const SELECT_PRESENCE_BY_HANDLE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE handle = ?;`;
 const SELECT_PRESENCE_BY_SESSION_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE session_id = ?;`;
-const SELECT_PRESENCE_RECLAIMABLE_SQL = `SELECT ${PRESENCE_COLUMNS}, (${RECLAIMABLE_SQL}) AS reclaimable FROM chat_presence WHERE handle = ?;`;
+// Bind order: sessionStaleCutoff, tailStaleCutoff, baseHandle — the whole
+// suffix family in one query, so signIn's seat selection scans an in-memory
+// set instead of probing candidates one handle string at a time (a probe
+// loop can never look past the first free slot to a same-base row beyond
+// it).
+const SELECT_BASE_HANDLE_ROWS_SQL = `SELECT ${PRESENCE_COLUMNS}, (${RECLAIMABLE_SQL}) AS reclaimable FROM chat_presence WHERE base_handle = ?;`;
 const SELECT_NON_PRUNABLE_PRESENCE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE NOT (${PRUNABLE_SQL});`;
 const DELETE_PRUNABLE_PRESENCE_SQL = `DELETE FROM chat_presence WHERE ${PRUNABLE_SQL};`;
 const DELETE_PRESENCE_BY_SESSION_SQL = `DELETE FROM chat_presence WHERE session_id = ?;`;
@@ -147,6 +152,21 @@ export function buddyStatus(
   return now - lastSeenAt > th.sessionStaleMs ? "deaf" : "idle";
 }
 
+/**
+ * The suffix number a handle occupies within `baseHandle`'s family (`x` is
+ * 1, `x-2` is 2, …), or null when `handle` isn't one of that family's
+ * members at all — the case for a session's remembered handle after its
+ * own baseHandle has changed (a different cwd), where no suffix of the new
+ * base can mean "this exact prior handle".
+ */
+function suffixOf(handle: string, baseHandle: string): number | null {
+  if (handle === baseHandle) return 1;
+  const prefix = `${baseHandle}-`;
+  if (!handle.startsWith(prefix)) return null;
+  const n = Number(handle.slice(prefix.length));
+  return Number.isInteger(n) && n >= 2 ? n : null;
+}
+
 export function signIn(
   args: {
     sessionId: string;
@@ -174,41 +194,52 @@ export function signIn(
     // The two moments a handle is about to be needed (spec "Pruning").
     prunePresence(now, db);
 
-    let suffix = 1;
-    let candidate = baseHandle;
-    let freeSlot: string | null = null;
-    let sameSeatWinner: PresenceRawRow | null = null;
-    let firstReclaimable: PresenceRawRow | null = null;
+    // A session may always retake its own seat: drop whatever row it
+    // already held before selecting, so a repeat sign-in is idempotent
+    // rather than a raw UNIQUE violation against the very handle it's
+    // about to be granted again. Once dropped, that exact handle string
+    // can never be "occupied" by anyone else inside this same transaction.
+    const ownPriorRow = db.query(SELECT_PRESENCE_BY_SESSION_SQL).get(sessionId) as PresenceRawRow | null;
+    if (ownPriorRow) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(sessionId);
+    const ownPreviousSuffix = ownPriorRow ? suffixOf(ownPriorRow.handle, baseHandle) : null;
 
-    for (;;) {
-      const row = db.query(SELECT_PRESENCE_RECLAIMABLE_SQL).get(sessionStaleCutoff, tailStaleCutoff, candidate) as
-        | (PresenceRawRow & { reclaimable: number })
-        | null;
-      if (!row) {
-        freeSlot = candidate;
-        break;
-      }
-      if (row.reclaimable) {
-        firstReclaimable ??= row;
-        // Same-seat preference only picks WHICH reclaimable row to prefer
-        // (spec "Suffix churn") — it never widens RECLAIMABLE_SQL itself.
-        if (row.cwd === cwd && row.pane === pane) {
-          sameSeatWinner = row;
-          break;
-        }
-      }
-      suffix++;
-      candidate = `${baseHandle}-${suffix}`;
+    const rows = db.query(SELECT_BASE_HANDLE_ROWS_SQL).all(sessionStaleCutoff, tailStaleCutoff, baseHandle) as (PresenceRawRow & {
+      reclaimable: number;
+    })[];
+    const bySuffix = new Map<number, PresenceRawRow & { reclaimable: number }>();
+    for (const row of rows) {
+      const suffix = suffixOf(row.handle, baseHandle);
+      if (suffix !== null) bySuffix.set(suffix, row);
     }
 
-    const winner = sameSeatWinner ?? firstReclaimable;
-    const handle = winner ? winner.handle : freeSlot!;
+    let winnerSuffix: number;
+    let winnerRow: (PresenceRawRow & { reclaimable: number }) | null = null;
+    if (ownPreviousSuffix !== null && !bySuffix.has(ownPreviousSuffix)) {
+      // (a) the session's own previous slot — always free at this point
+      // (see the drop above), so nothing to reclaim from.
+      winnerSuffix = ownPreviousSuffix;
+    } else {
+      // (b) the first reclaimable row, by suffix order.
+      const reclaimableBySuffix = [...bySuffix.entries()].filter(([, row]) => row.reclaimable).sort((a, b) => a[0] - b[0]);
+      if (reclaimableBySuffix.length > 0) {
+        [winnerSuffix, winnerRow] = reclaimableBySuffix[0]!;
+      } else {
+        // (c) the first free gap, else (d) the next suffix past the
+        // highest occupied — the same walk finds either: it stops at the
+        // first unoccupied slot, which is a mid-chain gap if one exists
+        // and otherwise the slot right after the last occupied one.
+        winnerSuffix = 1;
+        while (bySuffix.has(winnerSuffix)) winnerSuffix++;
+      }
+    }
+
+    const handle = winnerSuffix === 1 ? baseHandle : `${baseHandle}-${winnerSuffix}`;
     // The old row's session_id is its primary key and its handle is
     // UNIQUE, so it cannot be updated into the new session — delete then insert.
-    if (winner) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(winner.session_id);
+    if (winnerRow) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(winnerRow.session_id);
     db.query(INSERT_PRESENCE_SQL).run(sessionId, handle, baseHandle, cwd, repo, branch, pane, statusText ?? null, now, now);
 
-    return { handle, reclaimed: winner !== null };
+    return { handle, reclaimed: winnerRow !== null };
   });
 
   return run();
@@ -292,5 +323,5 @@ export function touchPresenceByHandle(handle: string, now: number, db: Database 
 }
 
 export function disarmPresenceByHandle(handle: string, db: Database = getStateDb()): void {
-  db.query(UPDATE_PRESENCE_DISARMED_BY_HANDLE_SQL).run(null, handle);
+  db.query(UPDATE_PRESENCE_DISARMED_BY_HANDLE_SQL).run(handle);
 }

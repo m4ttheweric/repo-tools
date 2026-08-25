@@ -403,8 +403,8 @@ export function startDaemon(): void {
   const clearedArmed = clearAllArmed();
   if (clearedArmed > 0) log.info({ clearedArmed }, "chat: cleared stale armed_at from previous daemon run");
 
-  // The other of the two moments a handle is about to be needed (spec
-  // "Pruning") — sign-in is the other, inside presence-store's own signIn.
+  // Daemon startup is one of the two moments a handle is about to be
+  // needed (spec "Pruning"); sign-in is the other, inside signIn itself.
   const prunedPresence = prunePresence(Date.now());
   if (prunedPresence > 0) log.info({ prunedPresence }, "chat: pruned stale presence rows at daemon startup");
 
