@@ -257,14 +257,14 @@ describe("installTool — apple-clt", () => {
     const exec: ExecScript = (argv) => {
       if (argv[0] === "xcode-select") return { code: 2, stdout: "", stderr: "no developer tools" };
       if (argv[0] === "softwareupdate" && argv[1] === "-l") {
-        return ok("Software Update found:\n* Label: Command Line Tools for Xcode-15.1\n* Label: Command Line Tools for Xcode-16.4\n");
+        return ok("Software Update found:\n* Label: Command Line Tools for Xcode 26.5-26.5\n\tTitle: ...\n* Label: Command Line Tools for Xcode 26.6-26.6\n\tTitle: ...\n");
       }
       if (argv[0] === "git") return ok("git version 2.39.5 (Apple Git-154)");
       return ok();
     };
     const p = fakeProbes({ exec });
     const result = await installTool(p, "apple-clt", [], NOOP_SEAMS);
-    expect(p.calls.exec).toContainEqual(["softwareupdate", "-i", "Command Line Tools for Xcode-16.4"]);
+    expect(p.calls.exec).toContainEqual(["softwareupdate", "-i", "Command Line Tools for Xcode 26.6-26.6"]);
     expect(p.calls.exec).not.toContainEqual(["xcode-select", "--install"]);
     expect(p.calls.exec.some((argv) => argv[0] === "rm" && argv.includes("/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"))).toBe(true);
     expect(result.ok).toBe(true);
@@ -445,7 +445,12 @@ describe("claudeConfigDirs", () => {
 });
 
 describe("parseCltLabel", () => {
-  test("picks the newest label when several versions are listed", () => {
+  test("modern macOS 26 format (verbatim from a real guest): picks the newest label", () => {
+    const out = "Software Update found the following new or updated software:\n* Label: Command Line Tools for Xcode 26.5-26.5\n\tTitle: Command Line Tools for Xcode 26.5, Version: 26.5, Size: 920416KiB, Recommended: YES, \n* Label: Command Line Tools for Xcode 26.6-26.6\n\tTitle: Command Line Tools for Xcode 26.6, Version: 26.6, Size: 920431KiB, Recommended: YES, \n";
+    expect(parseCltLabel(out)).toBe("Command Line Tools for Xcode 26.6-26.6");
+  });
+
+  test("legacy hyphenated format still parses", () => {
     const out = "* Label: Command Line Tools for Xcode-15.1\n* Label: Command Line Tools for Xcode-16.4\n";
     expect(parseCltLabel(out)).toBe("Command Line Tools for Xcode-16.4");
   });
@@ -456,5 +461,13 @@ describe("parseCltLabel", () => {
 
   test("never matches a non-CLT label", () => {
     expect(parseCltLabel("* Label: macOS Tahoe 26.1 Update\n")).toBeNull();
+  });
+});
+
+  
+describe("parseCltLabel — catalog order", () => {
+  test("catalog order is not version order — the numerically newest label wins regardless", () => {
+    const out = "* Label: Command Line Tools for Xcode 26.6-26.6\n* Label: Command Line Tools for Xcode 26.5-26.5\n";
+    expect(parseCltLabel(out)).toBe("Command Line Tools for Xcode 26.6-26.6");
   });
 });
