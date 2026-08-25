@@ -514,7 +514,6 @@ tail without a session id never touches the presence path; the e2e harness
 (`runRt(args, home, extraEnv)` + the marker files) has both. Implementation:
 the tail's `chatTouch` catch special-cases a reclaimed refusal → one stdout
 line (`handle reclaimed — sign in again`), delete the session file, exit 0.
-```
 
 - [ ] **Step 2: FAIL.** **Step 3: Implement.** **Step 4: Gate.** **Step 5: Commit** — `chat-presence: buddies, away, dm, pulse; the tail exits on a reclaimed handle`.
 
