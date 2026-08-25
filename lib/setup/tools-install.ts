@@ -155,7 +155,9 @@ async function installAppleClt(p: Probes): Promise<InstallResult> {
   const res = await p.exec(["xcode-select", "--install"], { timeoutMs: PROBE_TIMEOUT_MS });
   if (res.code === 124) return { via: "apple-clt", ok: false, detail: "xcode-select --install timed out" };
   if (res.code === 0) {
-    return { via: "apple-clt", ok: true, detail: "triggered the Command Line Tools install dialog — complete it, then re-run rt setup status" };
+    // ok means "verified installed" (the headless path proves it with a git
+    // re-probe); a triggered dialog is progress, not completion.
+    return { via: "apple-clt", ok: false, detail: "triggered the Command Line Tools install dialog — complete it, then re-run rt setup status" };
   }
   const combined = `${res.stdout} ${res.stderr}`.toLowerCase();
   if (res.code === 1 && combined.includes("already installed")) {

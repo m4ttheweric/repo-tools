@@ -282,7 +282,9 @@ describe("installTool — apple-clt", () => {
     const result = await installTool(p, "apple-clt", [], NOOP_SEAMS);
     expect(p.calls.exec).toContainEqual(["xcode-select", "--install"]);
     expect(p.calls.exec.some((argv) => argv[0] === "rm" && argv.includes("/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"))).toBe(true);
-    expect(result.ok).toBe(true);
+    // A triggered dialog is progress, not completion — ok stays false until a
+    // later probe verifies git.
+    expect(result.ok).toBe(false);
     expect(result.detail).toContain("dialog");
   });
 
