@@ -99,7 +99,7 @@ export interface RoomSummary {
 // never derive two verdicts that can disagree.
 export type Attention = {
   needs: boolean;
-  reason: "failed" | "stale" | "stranded" | null;
+  reason: "failed" | "stale" | "stranded" | "blocked" | null;
   evidence: string;
 };
 
@@ -120,6 +120,15 @@ export interface RunSummary {
       the run has not produced that field yet. */
   ticket: string | null;
   branch: string | null;
+  /** The herdr agent attributed to this run (matched by recorded claude
+      session, else by worktree), mirrored live from `herdr agent list`.
+      Null when no agent matches or herdr is unavailable; absent on
+      pre-mirror daemons. */
+  agent?: RunAgent | null;
+}
+export interface RunAgent {
+  status: "working" | "idle" | "blocked" | "done" | "unknown";
+  pane: string;
 }
 export interface RunStageRow {
   name: string; status: string; attempt: number;
