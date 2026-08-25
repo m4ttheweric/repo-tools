@@ -45,6 +45,14 @@ describe("compile-native end to end", () => {
     expect(plan).toContain("<!-- part: include:gitlab-note");
     expect(plan).toContain("note body");
     expect(existsSync(join(pack, "skills", "work", "scripts", "resolve-pipeline.sh"))).toBe(false);
+
+    // The include's own extra files vendor under the compiling stage's parts
+    // dir, and the rewritten body path is what actually resolves there --
+    // not just a plausible-looking one.
+    expect(existsSync(join(pack, "attachments", "stage-plan", "parts", "include-gitlab-note", "scripts", "note.sh"))).toBe(true);
+    expect(plan).toContain(
+      "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts/include-gitlab-note/scripts/note.sh",
+    );
   });
 
   test("rt skills check is clean immediately after compile", async () => {
