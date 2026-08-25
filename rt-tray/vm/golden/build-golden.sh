@@ -39,7 +39,7 @@ TART_PID=$!
 trap 'kill $TART_PID 2>/dev/null || true' EXIT
 vm_log "waiting for ssh as admin (password)…"
 start=$(date +%s)
-until vm_ssh_pw "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" true 2>/dev/null; do
+until vm_ssh_pw_try "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" true 2>/dev/null; do
   [ $(( $(date +%s) - start )) -gt 600 ] && vm_die "ssh never came up"
   sleep 5
 done
