@@ -150,15 +150,23 @@ export function joinRoom(
     db.query(UPSERT_ROOM_SQL).run(room, now);
 
     const maxId = (db.query(SELECT_ROOM_MAX_ID_SQL).get(room) as { maxId: number }).maxId;
-    const existing = db.query(SELECT_ROOM_MEMBER_SQL).get(room, handle) as MemberRow | null;
+
+    // The wake topic (chat/wake/<handle>) and the tail pidfile are keyed on the
+    // handle ALONE, across every room — so a handle must map to one cwd
+    // everywhere, not just within this room. A row for this handle in any room
+    // from a different cwd is a collision: two directories sharing a handle
+    // would share one wake stream and one pidfile.
+    const priorRows = db.query(SELECT_HANDLE_MEMBERSHIPS_SQL).all(handle) as MemberRow[];
+    const collision = priorRows.find((r) => r.cwd !== argCwd);
+    if (collision) {
+      throw new Error(
+        `chat: handle "${handle}" is already in use from a different directory (#${collision.room}) — pass --as <handle> to join under another name`,
+      );
+    }
+    const existing = priorRows.find((r) => r.room === room) ?? null;
 
     let lastReadId: number;
     if (existing) {
-      if (existing.cwd !== argCwd) {
-        throw new Error(
-          `chat: handle "${handle}" is already in #${room} from a different directory — pass --as <handle> to join under another name`,
-        );
-      }
       lastReadId = existing.last_read_id;
     } else {
       lastReadId = maxId;

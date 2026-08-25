@@ -65,6 +65,22 @@ test("a colliding handle from a different cwd is refused, not suffixed", () => {
   expect(listMembers("build", db).map(m => m.handle)).toEqual(["a"]);
 });
 
+test("a colliding handle from a different cwd is refused across DIFFERENT rooms", () => {
+  // The wake topic and pidfile are per-handle across every room, so the
+  // collision check spans all rooms — not just the one being joined.
+  const db = freshDb();
+  joinRoom({ room: "a", handle: "agent", cwd: "/one" }, db);
+  expect(() => joinRoom({ room: "b", handle: "agent", cwd: "/two" }, db)).toThrow(/--as/);
+  expect(listMembers("b", db)).toHaveLength(0);
+});
+
+test("the same cwd may hold one handle across multiple rooms", () => {
+  const db = freshDb();
+  joinRoom({ room: "a", handle: "agent", cwd: "/one" }, db);
+  joinRoom({ room: "b", handle: "agent", cwd: "/one" }, db);
+  expect(listRooms("agent", db).map(r => r.room).sort()).toEqual(["a", "b"]);
+});
+
 test("rejoining from the same cwd keeps the handle rather than refusing", () => {
   const db = freshDb();
   joinRoom({ room: "build", handle: "a", cwd: "/one" }, db);

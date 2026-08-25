@@ -649,14 +649,23 @@ export async function chatTail(args: string[]): Promise<void> {
   // Claim the pidfile BEFORE any daemon call, so a live duplicate is refused
   // even when the daemon is down. A stale/foreign pidfile is reclaimed.
   const pidPath = chatTailPidPath(handle);
-  const existing = readTailPid(pidPath);
-  if (existing !== null && isLiveChatTail(existing)) {
-    console.error(`rt chat: already armed — a tail for ${handle} is already running (pid ${existing})`);
-    process.exit(3);
-  }
   try {
     mkdirSync(rtChatDir(), { recursive: true });
-    writeFileSync(pidPath, String(process.pid));
+    try {
+      // Exclusive create ('wx'): only one racer wins the claim. A plain
+      // read-check-write lets two tails both pass the liveness check before
+      // either writes, and both then run — the double-wake the pidfile exists
+      // to prevent.
+      writeFileSync(pidPath, String(process.pid), { flag: "wx" });
+    } catch {
+      const existing = readTailPid(pidPath);
+      if (existing !== null && existing !== process.pid && isLiveChatTail(existing)) {
+        console.error(`rt chat: already armed — a tail for ${handle} is already running (pid ${existing})`);
+        process.exit(3);
+      }
+      // Stale or foreign pidfile — reclaim it.
+      writeFileSync(pidPath, String(process.pid));
+    }
   } catch (err) {
     console.error(`rt chat: could not claim tail pidfile: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -682,7 +691,10 @@ export async function chatTail(args: string[]): Promise<void> {
   process.on("SIGTERM", () => { void onSignal(); });
   process.on("SIGINT", () => { void onSignal(); });
 
-  const budgetMs = Number(process.env.RT_CHAT_BACKOFF_MS ?? 60_000);
+  // A non-numeric override would make budgetMs NaN, so `Date.now() + NaN` is
+  // NaN, the retry loop never runs, and the tail exits 69 on the first blip.
+  const budgetRaw = Number(process.env.RT_CHAT_BACKOFF_MS);
+  const budgetMs = Number.isFinite(budgetRaw) && budgetRaw >= 0 ? budgetRaw : 60_000;
 
   // Daemon-unreachable is not silence: retry with bounded backoff (a mechanical
   // brake against a re-arm spin), diagnostics to stderr; when the budget is

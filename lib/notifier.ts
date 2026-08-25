@@ -325,22 +325,25 @@ export function notify(
   // nowhere to hold). Fire-and-forget: the desk notification above already
   // queued successfully, so a rejected fetch here must not undo that.
   if (category === CHAT_NOTIFICATION_CATEGORY) {
-    const provider = getSetting<string>("chat.push.provider").value;
-    if (provider === "ntfy") {
-      const target = getSetting<string>("chat.push.target").value;
-      if (target) {
-        // A malformed target throws synchronously from fetch() (before the
-        // promise/.catch), so the try guards that too — a bad push URL must
-        // never propagate out of notify() and fail the already-queued post.
-        try {
-          fetch(target, { method: "POST", headers: { Title: title }, body: message })
+    // Optional push is best-effort: nothing under here may sink the desk
+    // notification already queued above. The try spans the getSetting() reads
+    // (which can throw on an unexpandable stored value) and the synchronous
+    // fetch() throw a malformed target URL raises before the promise exists.
+    try {
+      const provider = getSetting<string>("chat.push.provider").value;
+      if (provider === "ntfy") {
+        const target = getSetting<string>("chat.push.target").value;
+        if (target) {
+          // Bound the request so an unresponsive ntfy can't leak a pending
+          // fetch forever (the Fetch API has no default timeout).
+          fetch(target, { method: "POST", headers: { Title: title }, body: message, signal: AbortSignal.timeout(10_000) })
             .catch(err => log.warn({ err }, "chat push failed"));
-        } catch (err) {
-          log.warn({ err }, "chat push failed");
         }
+      } else if (provider) {
+        log.warn(`chat.push.provider "${provider}" is not supported (only "ntfy" is)`);
       }
-    } else if (provider) {
-      log.warn(`chat.push.provider "${provider}" is not supported (only "ntfy" is)`);
+    } catch (err) {
+      log.warn({ err }, "chat push failed");
     }
   }
 }

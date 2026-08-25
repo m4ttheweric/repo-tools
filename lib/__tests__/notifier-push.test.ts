@@ -42,11 +42,17 @@ afterEach(() => {
 // makes a real network POST to ntfy.sh from the suite.
 const inert = () => spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
 
-test("no provider configured sends nothing anywhere", async () => {
+// Assert on the ntfy target specifically, not on fetch being uncalled: with a
+// TRAY_SOCK_PATH set, notify() also POSTs to the tray via fetch, which is
+// unrelated to the phone-push branch under test.
+const pushedToNtfy = (spy: ReturnType<typeof inert>) =>
+  spy.mock.calls.some((c) => String(c[0]).includes("ntfy.sh"));
+
+test("no provider configured sends nothing to the push target", async () => {
   const fetchSpy = inert();
   notify("#r", "agent: @matt hi", undefined, "chat_mention");
   await Bun.sleep(0);
-  expect(fetchSpy).not.toHaveBeenCalled();
+  expect(pushedToNtfy(fetchSpy)).toBe(false);
 });
 
 test("a chat_mention notification is pushed when a provider is configured", async () => {
@@ -70,7 +76,7 @@ test("a non-chat notification is never pushed", async () => {
   const fetchSpy = inert();
   notify("MR ready", "something else", undefined, "general");
   await Bun.sleep(0);
-  expect(fetchSpy).not.toHaveBeenCalled();
+  expect(pushedToNtfy(fetchSpy)).toBe(false);
 });
 
 test("a real @matt mention through chat:post reaches the push provider", async () => {

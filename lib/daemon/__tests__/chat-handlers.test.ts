@@ -5,6 +5,7 @@ import { join } from "path";
 import { openStateDb } from "../../state/index.ts";
 import { createChatHandlers } from "../handlers/chat.ts";
 import { drainNotifications, loadNotificationPrefs, peekNotifications, saveNotificationPrefs } from "../../notifier.ts";
+import { setSetting } from "../../settings/write.ts";
 
 let n = 0;
 function freshHandlers(emitEvent: (topic: string, payload?: unknown) => number = () => 0) {
@@ -77,7 +78,14 @@ test("the read-only handlers mutate nothing", async () => {
   expect(snapshotChatTables(h.db)).toEqual(before);
 });
 
-beforeEach(() => { drainNotifications(); });
+beforeEach(() => {
+  drainNotifications();
+  // Pin the mentioned human handle rather than depending on the ambient
+  // setting (default "matt"). "matt" is the default, so setting it is
+  // leak-safe: any test file bun runs next in this process sees the same
+  // value it would have resolved anyway.
+  setSetting("chat.humanHandle", "matt", "user");
+});
 
 test("notifies on a mention even when the human has never joined the room", async () => {
   // The common case, not an edge: agents create rooms via join-creates and
