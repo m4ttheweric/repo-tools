@@ -18,15 +18,27 @@ function newestMtimeMs(path: string): number {
   return newest;
 }
 
+/** Every packages/<name>/package.json, relative to REPO_ROOT — a dependency bump there can change the compiled binary too. */
+function packageManifestPaths(): string[] {
+  const packagesDir = join(REPO_ROOT, "packages");
+  if (!existsSync(packagesDir)) return [];
+  return readdirSync(packagesDir).map((name) => join("packages", name, "package.json"));
+}
+
 /**
  * A binary that exists but predates its own sources tests old code with no
  * signal at all — a leftover build turns a missing verb into a convincing
- * test failure.
+ * test failure. Manifests and the lockfile are included alongside source
+ * dirs: a dependency bump can change the compiled binary with none of the
+ * source dirs touched.
  */
 function rtBinaryIsStale(): boolean {
   if (!existsSync(RT_BINARY)) return true;
   const binaryMtime = statSync(RT_BINARY).mtimeMs;
-  const sources = ["cli.ts", "lib", "commands", "packages/rt-client/src"].map((p) => join(REPO_ROOT, p));
+  const sources = [
+    "cli.ts", "lib", "commands", "packages/rt-client/src",
+    "package.json", "bun.lock", ...packageManifestPaths(),
+  ].map((p) => join(REPO_ROOT, p));
   const newestSource = Math.max(0, ...sources.filter(existsSync).map(newestMtimeMs));
   return newestSource > binaryMtime;
 }

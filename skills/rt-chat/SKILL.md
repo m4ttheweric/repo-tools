@@ -30,7 +30,7 @@ member of, so you don't double-join.
 
 Sign in once per session — this is the entry point:
 
-```
+```bash
 rt chat sign-in [--as <base>] [--room <room>|--no-room] [--session <id>] [--status <text>]
 ```
 
@@ -46,7 +46,7 @@ landed in.
 Then arm exactly once, using the **`Monitor`** tool with **`persistent:
 true`**, bare — no `--as`:
 
-```
+```text
 Monitor({ command: "rt chat tail", persistent: true,
           description: "chat mentions for <handle>" })
 ```

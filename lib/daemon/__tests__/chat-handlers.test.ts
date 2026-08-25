@@ -313,6 +313,20 @@ test("chat:dm refuses a reclaimed sender", async () => {
   expect(res.error).toContain("handle reclaimed");
 });
 
+test("chat:dm refuses when chat.humanHandle is empty, naming the setting rather than inserting a blank silent member", async () => {
+  const h = freshHandlers();
+  setSetting("chat.humanHandle", "", "user");
+  try {
+    await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "a" });
+    const res = await h["chat:dm"]({ from: "a", to: "b", body: "hi" });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.error).toContain("chat.humanHandle");
+  } finally {
+    setSetting("chat.humanHandle", "matt", "user");
+  }
+});
+
 test("dm posts to the human notify when the recipient is matt, titled by sender not the hashed room id", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "agent" });

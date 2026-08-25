@@ -40,7 +40,7 @@ import { resolveUserPath } from "./daemon/user-path.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { clearAllArmed, getBranchCacheStore, getStateDb, prunePresence, type BranchCacheStore } from "./state/index.ts";
+import { clearAllArmed, getBranchCacheStore, getStateDb, persistOrWarn, prunePresence, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -454,7 +454,10 @@ export function startDaemon(): void {
 
   // Daemon startup is one of the two moments a handle is about to be
   // needed (spec "Pruning"); sign-in is the other, inside signIn itself.
-  const prunedPresence = prunePresence(Date.now());
+  // Pruning is best-effort cleanup, so a concurrent CLI writer's
+  // SQLITE_BUSY must not abort startup before the socket binds.
+  let prunedPresence = 0;
+  persistOrWarn("daemon", () => { prunedPresence = prunePresence(Date.now()); }, { op: "prunePresence" });
   if (prunedPresence > 0) log.info({ prunedPresence }, "chat: pruned stale presence rows at daemon startup");
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)

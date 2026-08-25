@@ -20,8 +20,8 @@ rt chat <verb> <room> <text> [flags]
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
 | `<verb>` | text |  | The chat action to run |
-| `<room>` | text |  | Room name (join/leave/post/read/who/mark); the target handle for dm; omit on read/rooms/who to span everything |
-| `<text>` | text |  | The message body (every word after the room/handle) — post, dm, away |
+| `<room>` | text |  | Room name for join/leave/post/read/who/mark; the target handle for dm; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/pulse/back/away, which take no room |
+| `<text>` | text |  | The message body (every word after the room/handle) — post, dm; away takes this directly, with no room before it |
 | `--as` | text |  | Override the derived handle for this invocation; refused while signed in (sign out first) |
 | `--wake-on` | text |  | For join: when this handle's tail wakes (default mention) |
 | `--limit` | text |  | For read: max messages (default 20) |

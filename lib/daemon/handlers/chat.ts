@@ -306,6 +306,9 @@ export function createChatHandlers(opts: {
       const err = assertionError(() => assertSessionOwnsHandle(from, sessionId, db));
       if (err) return { ok: false, error: err };
       const humanHandle = getSetting<string>("chat.humanHandle").value;
+      if (!isValidChatName(humanHandle)) {
+        return { ok: false, error: `chat: chat.humanHandle setting is empty or invalid ("${humanHandle}")` };
+      }
       let room: string;
       try {
         ({ room } = dmRoomFor(from, to, humanHandle, db));
