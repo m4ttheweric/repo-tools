@@ -1010,6 +1010,15 @@ export const TREE: Record<string, CommandNode> = {
   skills: {
     description: "Compile, check, and manage the surface of the pack's committed skills",
     subcommands: {
+      link: {
+        description: "Symlink this repo's skills/*/SKILL.md into ~/.claude/skills by frontmatter name (create, repoint, prune; conflicts reported, never touched)",
+        module: "./commands/skills-link.ts",
+        fn: "skillsLink",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would change without touching disk" },
+          SETUP_JSON_ARG,
+        ],
+      },
       materialize: {
         description: "Run merge-manifests.sh to materialize skill bindings for registered repos",
         module: "./commands/skills.ts",
