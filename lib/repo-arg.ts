@@ -70,9 +70,4 @@ export function reverseLookupByName(name: string, index: Record<string, string>)
   return [...byRealpath.values()];
 }
 
-/** Decode a daemon-returned `TreeRow.repoName` (a raw serialized identity) into its display label. Never call this on a value that will be sent back to the daemon as a payload key — it is already the identity there. */
-export function repoLabel(serialized: string): string {
-  const id = parseIdentity(serialized);
-  if (!id) return serialized;
-  return id.kind === "remote" ? (id.id.split("/").pop() ?? id.id) : basename(id.id);
-}
+export { repoLabel } from "./repo-label.ts";

@@ -14,12 +14,12 @@ import { identityFromRemote, serializeIdentity } from "./settings/identity.ts";
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
 export { getRepoRoot, getCurrentBranch, getRemoteUrl } from "./git.ts";
-export { updateRepoIndex, getKnownRepos, repoOption, type KnownRepo } from "./repo-index.ts";
+export { updateRepoIndex, getKnownRepos, repoOption, repoOptions, type KnownRepo } from "./repo-index.ts";
 
 // ─── Internal imports ────────────────────────────────────────────────────────
 
 import { getRepoRoot, getRemoteUrl } from "./git.ts";
-import { updateRepoIndex, getKnownRepos, repoOption, type KnownRepo } from "./repo-index.ts";
+import { updateRepoIndex, getKnownRepos, repoOption, repoOptions, type KnownRepo } from "./repo-index.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -214,7 +214,7 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
     const { filterableSelect } = await import("./rt-render.tsx");
     const picked = await filterableSelect({
       message: commandLabel ? `Pick a repo for ${commandLabel}` : "Pick a repo",
-      options: repos.map(repoOption),
+      options: repoOptions(repos),
     });
     if (!picked) process.exit(0);  // Esc on picker — clean exit
     const match = repos.find(r => r.repoName === picked);
@@ -263,9 +263,9 @@ export async function pickWorktree(prompt: string): Promise<string> {
     selectedRepo = repos[0]!;
   } else {
     const { filterableSelect } = await import("./rt-render.tsx");
-    const repoOptions = repos.map(repoOption);
+    const options = repoOptions(repos);
 
-    const picked = await filterableSelect({ message: "Select a repo", options: repoOptions });
+    const picked = await filterableSelect({ message: "Select a repo", options });
     if (!picked) process.exit(0);            // user escaped — clean exit, no error
     const match = repos.find(r => r.repoName === picked);
     if (!match) process.exit(0);             // shouldn't happen, but don't crash
@@ -397,9 +397,9 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
 async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
   const { filterableSelect } = await import("./rt-render.tsx");
 
-  const repoOptions = repos.map(repoOption);
+  const options = repoOptions(repos);
 
-  const pickedRepo = await filterableSelect({ message: "Pick a repo", options: repoOptions });
+  const pickedRepo = await filterableSelect({ message: "Pick a repo", options });
   if (!pickedRepo) process.exit(0);        // Esc on all-repos picker
   const repo = repos.find((r) => r.repoName === pickedRepo);
   if (!repo) process.exit(0);

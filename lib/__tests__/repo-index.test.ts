@@ -760,3 +760,34 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
     });
   });
 });
+
+describe("repoOptions labels", () => {
+  const { repoOption, repoOptions } = require("../repo-index.ts") as typeof import("../repo-index.ts");
+
+  function known(repoName: string): import("../repo-index.ts").KnownRepo {
+    return { repoName, worktrees: [{ path: "/tmp/x", branch: "main", isBare: false }] } as import("../repo-index.ts").KnownRepo;
+  }
+
+  test("a serialized identity renders as its last segment, value keeps the wire form", () => {
+    const opt = repoOption(known("remote:gitlab.com%2Facme%2Facme-dev"));
+    expect(opt.label).toBe("acme-dev");
+    expect(opt.value).toBe("remote:gitlab.com%2Facme%2Facme-dev");
+  });
+
+  test("a path-kind identity renders as its basename", () => {
+    expect(repoOption(known("path:%2FUsers%2Fmatt%2FDocuments%2FGitHub%2Ftraining-plan")).label).toBe("training-plan");
+  });
+
+  test("a legacy/unregistered name passes through unchanged", () => {
+    expect(repoOption(known("tic-tac-whoa")).label).toBe("tic-tac-whoa");
+  });
+
+  test("colliding last segments upgrade to owner/name; others stay short", () => {
+    const labels = repoOptions([
+      known("remote:github.com%2Fm4ttstack%2Fglance"),
+      known("remote:github.com%2Fm4ttheweric%2Fglance"),
+      known("remote:github.com%2Fm4ttstack%2Frt"),
+    ]).map((o) => o.label);
+    expect(labels).toEqual(["m4ttstack/glance", "m4ttheweric/glance", "rt"]);
+  });
+});

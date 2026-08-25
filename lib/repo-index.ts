@@ -26,6 +26,7 @@ import { repoDataDir, rtDir } from "./rt-paths.ts";
 import { deleteKvValue, getKvValue, getStateDb, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
 import { rekeyKvNamespace } from "./state/identity-migrate.ts";
 import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
+import { repoLabel, repoLabelQualified } from "./repo-label.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -892,20 +893,37 @@ function scanUnregisteredRepos(
 
 // ─── Picker option formatting ───────────────────────────────────────────────
 
-/** Shared repo → picker-option mapping, dimmed + labeled for unregistered repos. */
-export function repoOption(r: KnownRepo): { value: string; label: string; hint: string; color?: string } {
+/** Shared repo → picker-option mapping, dimmed + labeled for unregistered
+    repos. `value` stays the raw index key (the wire identity — dispatch needs
+    it); only `label` is decoded for humans. Prefer `repoOptions` for a full
+    list — it disambiguates repos whose identities share a last segment. */
+export function repoOption(r: KnownRepo, label: string = repoLabel(r.repoName)): { value: string; label: string; hint: string; color?: string } {
   const location = r.worktrees.length > 1
     ? `${r.worktrees.length} worktrees`
     : r.worktrees[0]?.path.replace(homedir(), "~") || "";
 
   return {
     value: r.repoName,
-    label: r.repoName,
+    label,
     hint: r.registered === false
       ? (location ? `${location} · unregistered` : "unregistered")
       : location,
     ...(r.registered === false ? { color: dim } : {}),
   };
+}
+
+/** Picker options for a repo list: short labels, upgraded to owner/name only
+    where two repos would otherwise render identically. */
+export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOption>> {
+  const counts = new Map<string, number>();
+  for (const r of repos) {
+    const label = repoLabel(r.repoName);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return repos.map((r) => {
+    const short = repoLabel(r.repoName);
+    return repoOption(r, (counts.get(short) ?? 0) > 1 ? repoLabelQualified(r.repoName) : short);
+  });
 }
 
 // ─── Test seam ───────────────────────────────────────────────────────────────
