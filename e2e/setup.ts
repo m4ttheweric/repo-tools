@@ -19,10 +19,9 @@ function newestMtimeMs(path: string): number {
 }
 
 /**
- * A binary that exists but predates its own sources tests old code without
- * any signal — this bit repo-tools-chat-wt's own Task 10 run, where a
- * leftover dist/rt from before the presence commits landed silently passed
- * "unknown verb" failures off as real RED instead of a stale artifact.
+ * A binary that exists but predates its own sources tests old code with no
+ * signal at all — a leftover build turns a missing verb into a convincing
+ * test failure.
  */
 function rtBinaryIsStale(): boolean {
   if (!existsSync(RT_BINARY)) return true;
