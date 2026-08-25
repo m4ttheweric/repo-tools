@@ -73,3 +73,60 @@ describe("rt cd --repo --worktree with a missing repo", () => {
     }
   });
 });
+
+/**
+ * The plain `rt cd` picker (no --repo/--worktree flags) reaches
+ * pickFromAllRepos through commands/cd.ts's own `getKnownRepos()` call —
+ * before RT-63/68's carry-forward fix, that call excluded missing rows, so a
+ * lost repo silently vanished from the picker instead of hitting the
+ * missingRepoRefusal guard pickFromAllRepos already carries.
+ */
+describe("rt cd default picker with a missing repo", () => {
+  const origHome = process.env.HOME;
+  const origCwd = process.cwd();
+  let home: string;
+  let scratch: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-cd-default-missing-home-")));
+    scratch = realpathSync(mkdtempSync(join(tmpdir(), "rt-cd-default-missing-repos-")));
+    process.env.HOME = home;
+    process.env.SHELL = "/bin/zsh";
+    writeFileSync(join(home, ".zshrc"), UP_TO_DATE_RC);
+    closeStateDb();
+    // Not a git repo — see the comment in the describe block above for why
+    // this matters (getRepoIdentity() must not auto-register process.cwd()).
+    process.chdir(scratch);
+  });
+
+  afterEach(() => {
+    process.chdir(origCwd);
+    process.env.HOME = origHome;
+    closeStateDb();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  test("the only known repo being missing refuses instead of silently dropping it from the picker", async () => {
+    setKvValue("repo-index", "moved", join(scratch, "gone-away"));
+
+    const originalStdoutWrite = process.stdout.write;
+    const chdirSpy = spyOn(process, "chdir").mockImplementation(() => {});
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit sentinel");
+    });
+
+    try {
+      await expect(worktreePicker([])).rejects.toThrow("process.exit sentinel");
+      expect(chdirSpy).not.toHaveBeenCalled();
+      expect(exitSpy.mock.calls.at(-1)?.[0]).toBe(1);
+      expect(errSpy.mock.calls.flat().join(" ")).toContain("rt repos locate");
+    } finally {
+      process.stdout.write = originalStdoutWrite;
+      chdirSpy.mockRestore();
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  });
+});

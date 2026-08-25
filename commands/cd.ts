@@ -196,8 +196,12 @@ export async function worktreePicker(args: string[]): Promise<void> {
   // the first time — is absent from `repos`, currentRepo resolves to null, and
   // rt cd wrongly falls through to the global all-repos picker instead of
   // recognizing where you are.
+  //
+  // includeMissing: true so a lost repo still renders (dimmed, via repoOption)
+  // in every picker built from `repos` — pickFromAllRepos's missing guard is
+  // otherwise dead code, since a bare getKnownRepos() never hands it one.
   const identity     = getRepoIdentity();
-  const repos        = getKnownRepos();
+  const repos        = getKnownRepos({ includeMissing: true });
   const currentRepo  = identity
     ? repos.find((r) => r.repoName === identity.repoName) ?? null
     : null;

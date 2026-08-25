@@ -346,7 +346,10 @@ export async function dispatch(
       const { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo }
         = await import("./pickers.ts");
 
-      const repos = getKnownRepos();
+      // includeMissing: true so pickFromAllRepos's missing guard (below, via
+      // "Switch repo") actually sees a lost row instead of a silently
+      // filtered list.
+      const repos = getKnownRepos({ includeMissing: true });
       // KnownRepo.repoName holds the index key — a serialized identity, not
       // the display name ctx.identity.repoName carries.
       const currentRepo = repos.find(r => r.repoName === ctx.identity!.identity);
