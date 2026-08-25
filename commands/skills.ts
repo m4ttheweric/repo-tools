@@ -31,8 +31,11 @@ import { createRealProbes } from "../lib/setup/probes.ts";
 import { materializeSkills } from "../lib/setup/skills-materialize.ts";
 import { validateChain } from "../lib/skills/chain.ts";
 import { compileSkill, HEADER_COMMENT, isInlined } from "../lib/skills/compile.ts";
+import { skillMdDriftCauses, type DriftCause } from "../lib/skills/drift.ts";
 import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
+import { buildStageEntries, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
+import { computePackSha, maskProvenance, mattstackProvenance, packPluginIdentity } from "../lib/skills/provenance.ts";
 import {
   invocableRoster,
   loadAttachment,
@@ -229,19 +232,6 @@ function enumerateSkillEntries(root: string, into: Map<string, SkillEntry> = new
   return into;
 }
 
-/** The pack's own plugin identity, when it is one (a pack without a manifest is not a plugin root). */
-function packPluginIdentity(packDir: string): { name: string; version: string } | null {
-  const manifestPath = join(packDir, ".claude-plugin", "plugin.json");
-  if (!existsSync(manifestPath)) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown; version?: unknown };
-    if (typeof parsed.name !== "string" || !parsed.name) return null;
-    return { name: parsed.name, version: typeof parsed.version === "string" ? parsed.version : "" };
-  } catch {
-    return null;
-  }
-}
-
 /**
  * A plugin may register more than one skills root (plugin.json `skills`, e.g.
  * ["./skills/review", "./plugin/skills"]); the registered surface is the union
@@ -392,6 +382,7 @@ type Resolved = {
   repoKey: string;
   mattstackSha: string;
   mattstackDirty: 0 | 1;
+  packSha: string;
 };
 
 /**
@@ -426,84 +417,6 @@ function computeInternalRoster(
     if (!publicSet.has(verb.name)) internal.add(`${team}:${verb.name}`);
   }
   return internal;
-}
-
-/**
- * Builds each work type's ordered StageEntry[] from its manifest pipeline
- * list: one entry per qualified name, carrying the stage's dir, consumes,
- * and produces. Stage names are validated upstream by parseStageQualifiedName
- * (shared with stageRoster) before they ever reach outDirFor's rmSync; a dir
- * here is always a sibling path relative to the orchestrator's own
- * ${CLAUDE_SKILL_DIR}, never packDir-relative.
- */
-function buildStageEntries(input: Pick<Resolved, "pipelines" | "pluginRoots">): Record<string, StageEntry[]> {
-  const out: Record<string, StageEntry[]> = {};
-  for (const [type, names] of Object.entries(input.pipelines)) {
-    out[type] = names.map((qualified) => {
-      let name: string;
-      try {
-        name = parseStageQualifiedName(qualified, `pipeline "${type}"`);
-      } catch (err) {
-        throw new SkillsUsageError((err as Error).message);
-      }
-      let step: StepSource;
-      try {
-        step = loadStepSource(name, input.pluginRoots);
-      } catch (err) {
-        throw new SkillsUsageError(`pipeline "${type}": "${name}": ${(err as Error).message}`);
-      }
-      if (!step.stageMeta) {
-        throw new SkillsUsageError(`pipeline "${type}": "${name}" has no metadata.stage; it cannot appear in a pipeline`);
-      }
-      return {
-        name,
-        stage: step.stageMeta.stage,
-        dir: `\${CLAUDE_SKILL_DIR}/../../attachments/${name}`,
-        consumes: step.stageMeta.consumes,
-        produces: step.stageMeta.produces,
-      };
-    });
-  }
-  return out;
-}
-
-/** outDirFor/otherSideDir also name the stale side of a name that flips public/internal, so compile can clean it up. */
-export function outDirFor(packDir: string, name: string, isPublic: boolean): string {
-  return join(packDir, isPublic ? "skills" : "attachments", name);
-}
-export function otherSideDir(packDir: string, name: string, isPublic: boolean): string {
-  return join(packDir, isPublic ? "attachments" : "skills", name);
-}
-
-type GitFacts = { sha: string; dirty: 0 | 1 };
-
-/** Feeds run-start.flags' --mattstack-sha/--mattstack-dirty; a non-git or unreadable mattstack dir degrades to empty/clean rather than failing resolution. */
-function gitFacts(dir: string): GitFacts {
-  try {
-    const sha = execFileSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { stdio: "pipe" }).toString().trim();
-    const status = execFileSync("git", ["-C", dir, "status", "--porcelain"], { stdio: "pipe" }).toString();
-    return { sha, dirty: status.trim() ? 1 : 0 };
-  } catch {
-    return { sha: "", dirty: 0 };
-  }
-}
-
-/**
- * Only {{run-start.flags}} carries these facts, and only a pipeline body places
- * it, so a pack with no declared pipelines pays nothing for the two git
- * subprocesses. An installed plugin cache is a plain copy with no .git; its
- * version is the only provenance it carries, and it is what the run DB records
- * in that case.
- */
-export function mattstackProvenance(
-  pipelines: Record<string, string[]>,
-  plugin: { dir: string; version: string } | undefined,
-  facts: (dir: string) => GitFacts = gitFacts,
-): GitFacts {
-  if (!plugin) return { sha: "", dirty: 0 };
-  if (Object.keys(pipelines).length === 0) return { sha: plugin.version, dirty: 0 };
-  const { sha, dirty } = facts(plugin.dir);
-  return { sha: sha || plugin.version, dirty };
 }
 
 async function resolve(flags: Flags): Promise<Resolved> {
@@ -543,11 +456,17 @@ async function resolve(flags: Flags): Promise<Resolved> {
   // --repo` expects -- the same key `~/.mattstack/runs/<repo>/` is named by.
   const repoKey = manifestPath ? basename(dirname(manifestPath)) : "";
   const { sha: mattstackSha, dirty: mattstackDirty } = mattstackProvenance(pipelines, pluginRoots.byName.mattstack);
-  const stageEntries = buildStageEntries({ pipelines, pluginRoots });
+  const packSha = computePackSha(pipelines, self, packDir);
+  let stageEntries: Record<string, StageEntry[]>;
+  try {
+    stageEntries = buildStageEntries({ pipelines, pluginRoots, publicSet: surface ? new Set(surface.public) : null });
+  } catch (err) {
+    throw new SkillsUsageError((err as Error).message);
+  }
 
   return {
     packDir, team, fullRoster, bindings, pluginRoots, invocable, surface, internalRoster, manifestPath,
-    pipelines, stages, stageEntries, repoKey, mattstackSha, mattstackDirty,
+    pipelines, stages, stageEntries, repoKey, mattstackSha, mattstackDirty, packSha,
   };
 }
 
@@ -569,12 +488,36 @@ function loadFillsFor(step: StepSource, resolved: Resolved, where: string): Reco
   return fills;
 }
 
-function loadIncludesFor(step: StepSource, resolved: Resolved, where: string): Record<string, AttachmentSource> {
+/** Composition and compile share this scan so their include lists cannot drift. */
+function includeNames(bodies: string[]): string[] {
+  const names: string[] = [];
+  for (const body of bodies) {
+    for (const p of findPlaceholders(body)) {
+      if (p.kind === "include" && p.arg && !names.includes(p.arg)) names.push(p.arg);
+    }
+  }
+  return names;
+}
+
+/**
+ * Scans the step body plus every INLINED bound fill's body, so a fill's own
+ * `{{include}}` lines resolve too -- a reference-mode fill's body never
+ * reaches the compiled output, so an `{{include}}` line inside one names
+ * nothing a compile emits.
+ */
+function loadIncludesFor(
+  step: StepSource,
+  fills: Record<string, AttachmentSource | null>,
+  resolved: Resolved,
+  where: string,
+): Record<string, AttachmentSource> {
   const out: Record<string, AttachmentSource> = {};
-  for (const p of findPlaceholders(step.body)) {
-    if (p.kind !== "include" || !p.arg || out[p.arg]) continue;
+  const fillBodies = Object.values(fills)
+    .filter((f): f is AttachmentSource => f !== null && isInlined(f, resolved.internalRoster))
+    .map((f) => f.body);
+  for (const name of includeNames([step.body, ...fillBodies])) {
     try {
-      out[p.arg] = loadInclude(p.arg, resolved.pluginRoots);
+      out[name] = loadInclude(name, resolved.pluginRoots);
     } catch (err) {
       throw new SkillsUsageError(`${where}: ${(err as Error).message}`);
     }
@@ -618,13 +561,15 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
   const isOrchestrator = findPlaceholders(step.body).some((p) => p.kind === "pipeline.stages");
 
   try {
-    return compileSkill(verb, step, loadFillsFor(step, resolved, where), resolved.invocable, {
+    const fills = loadFillsFor(step, resolved, where);
+    return compileSkill(verb, step, fills, resolved.invocable, {
       internalRoster: resolved.internalRoster,
-      includes: loadIncludesFor(step, resolved, where),
+      includes: loadIncludesFor(step, fills, resolved, where),
       pipelines: entries,
       repoKey: resolved.repoKey,
       mattstackSha: resolved.mattstackSha,
       mattstackDirty: resolved.mattstackDirty,
+      packSha: resolved.packSha,
       stageDir,
       stageAllowedTools: isOrchestrator ? stageAllowedToolsFor(resolved, entries) : [],
       emittedSiblingDirs: allStageDirs,
@@ -634,7 +579,13 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
       where,
     });
   } catch (err) {
-    throw new SkillsUsageError((err as Error).message);
+    const message = (err as Error).message;
+    // loadFillsFor/loadIncludesFor's SkillsUsageError already carries this same
+    // `where` prefix; a bare Error from compileSkill (e.g. a fill's own
+    // {{slot}} misuse) never does, and would otherwise surface with no verb
+    // or stage named at all.
+    const isPrefixed = err instanceof SkillsUsageError || message.startsWith(`${where}: `);
+    throw new SkillsUsageError(isPrefixed ? message : `${where}: ${message}`);
   }
 }
 
@@ -698,15 +649,6 @@ function pipelineChainErrors(resolved: Resolved): string[] {
 }
 
 type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
-
-/**
- * Where this run's targets land, for the sibling-reference lint. Derived from
- * outDirFor, never from a StageEntry's `dir`: that one hardcodes
- * attachments/<name> and is wrong the moment a stage is made surface-public.
- */
-function targetOutDirs(resolved: Resolved, targets: CompileTarget[]): string[] {
-  return targets.map((t) => outDirFor(resolved.packDir, t.verb.name, t.isPublic));
-}
 
 /**
  * A roster verb keeps today's default-public rule; a stage is internal
@@ -854,6 +796,7 @@ type CheckVerbRow = {
   staleFiles: string[];
   orphanFiles: string[];
   side: "skills" | "attachments";
+  staleBecause?: DriftCause[];
 };
 
 export async function skillsCheck(args: string[]): Promise<void> {
@@ -893,12 +836,30 @@ export async function skillsCheck(args: string[]): Promise<void> {
       const staleFiles: string[] = [];
       const orphanFiles: string[] = [];
       const expectedPaths = new Set(result.files.map((f) => f.path));
+      const causes: DriftCause[] = [];
+      const addCause = (cause: DriftCause) => {
+        if (!causes.includes(cause)) causes.push(cause);
+      };
 
       for (const file of result.files) {
         const dest = join(outDir, file.path);
         const expected = "content" in file ? Buffer.from(file.content) : readFileSync(file.copyFrom);
-        if (!existsSync(dest) || !readFileSync(dest).equals(expected)) {
-          staleFiles.push(file.path);
+        // SKILL.md carries the compiler's own version/sha stamps -- a version bump or
+        // a fresh checkout sha with no inlined body change is not drift worth flagging.
+        if (file.path.endsWith("SKILL.md")) {
+          const maskedExpected = maskProvenance(expected.toString("utf8"));
+          const maskedOnDisk = existsSync(dest) ? maskProvenance(readFileSync(dest, "utf8")) : null;
+          if (maskedOnDisk === null || maskedOnDisk !== maskedExpected) {
+            staleFiles.push(file.path);
+            if (maskedOnDisk === null) addCause("structure");
+            else for (const cause of skillMdDriftCauses(maskedOnDisk, maskedExpected)) addCause(cause);
+          }
+        } else {
+          const stale = !existsSync(dest) || !readFileSync(dest).equals(expected);
+          if (stale) {
+            staleFiles.push(file.path);
+            addCause("vendored");
+          }
         }
       }
 
@@ -910,10 +871,11 @@ export async function skillsCheck(args: string[]): Promise<void> {
 
       if (staleFiles.length > 0 || orphanFiles.length > 0) {
         anyStale = true;
-        rows.push({ name: verb.name, status: "stale", staleFiles, orphanFiles, side });
+        rows.push({ name: verb.name, status: "stale", staleFiles, orphanFiles, side, staleBecause: causes });
         if (!flags.json) {
           const humanFiles = [...staleFiles, ...orphanFiles.map((f) => `${f} (orphan)`)];
-          console.log(`${verb.name}: stale (recompile or investigate drift with git diff) -- ${humanFiles.join(", ")}`);
+          const movedPrefix = causes.length > 0 ? `${causes.join(", ")} moved; ` : "";
+          console.log(`${verb.name}: stale (${movedPrefix}recompile or investigate drift with git diff) -- ${humanFiles.join(", ")}`);
         }
       } else {
         rows.push({ name: verb.name, status: "in-sync", staleFiles, orphanFiles, side });
@@ -986,6 +948,7 @@ type CompositionVerb = {
   sourcePath: string | null;
   artifactPath: string;
   slots: CompositionSlot[];
+  includes: string[];
   engineError?: string;
 };
 
@@ -1049,6 +1012,7 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
       sourcePath: null,
       artifactPath,
       slots: [],
+      includes: [],
       engineError: (err as Error).message,
     };
   }
@@ -1058,6 +1022,7 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
   const stepPluginDir = resolved.pluginRoots.byName[step.plugin]?.dir ?? null;
   const sourcePath = stepPluginDir ? join(stepPluginDir, step.srcPath) : null;
 
+  const fillBodies: string[] = [];
   const slots: CompositionSlot[] = Object.entries(step.slots).map(([slotName, spec]) => {
     const boundTo = slotBindings[slotName] ?? null;
     // required is optional on SlotSpec; default it explicitly so JSON carries
@@ -1073,13 +1038,17 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
     // not take down every other slot's data, let alone the whole payload.
     try {
       const fill = loadAttachment(boundTo, slotName, resolved.pluginRoots);
+      const inlined = isInlined(fill, resolved.internalRoster);
+      // A reference-mode fill's body never reaches the compiled output, so its
+      // own {{include}} lines resolve nothing a compile emits either.
+      if (inlined) fillBodies.push(fill.body);
       const fillPluginDir = resolved.pluginRoots.byName[fill.plugin]?.dir ?? null;
       return {
         ...base,
         fillSourcePath: fillPluginDir ? join(fillPluginDir, fill.srcPath) : null,
         fillVersion: fill.version,
         registered: fill.registered,
-        inlined: isInlined(fill, resolved.internalRoster),
+        inlined,
       };
     } catch (err) {
       return {
@@ -1103,6 +1072,7 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
     sourcePath,
     artifactPath,
     slots,
+    includes: includeNames([step.body, ...fillBodies]),
   };
 }
 
@@ -1495,7 +1465,22 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
     console.log(`moved ${name}: ${from}/${where} -> ${to}/${where}${note ? ` (${note})` : ""}`);
   }
 
-  if (moved === 0) console.log("no moves needed");
+  // surface.jsonc only ever names the public side -- internal is the absence
+  // of an entry, indistinguishable from never-touched, so there is nothing to
+  // reconcile or announce for a stage the surface doesn't list. A listed
+  // stage with neither side on disk has nothing to git-mv either; the
+  // trailing compile below is what actually places it.
+  let recorded = 0;
+  for (const name of [...stageNames].sort()) {
+    if (!publicSet.has(name)) continue;
+    if (existsSync(outDirFor(packDir, name, true)) || existsSync(otherSideDir(packDir, name, true))) continue;
+    recorded++;
+    console.log(flags.dryRun
+      ? `${name}: would record; emitted to skills/ on the next compile`
+      : `${name}: recorded; emitted to skills/ on the next compile`);
+  }
+
+  if (moved === 0 && recorded === 0) console.log("no moves needed");
 
   await skillsCompile(compileArgs(flags, packDir));
 }
@@ -1510,11 +1495,13 @@ async function runSet(names: string[], want: "public" | "internal", flags: Surfa
   const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const { skillsNames, allNames } = collectRegistry(packDir, verbNames);
+  const stageNames = stageNamesFor(flags, packDir);
 
   // Validated before anything is written: an unknown name in a list of ten
-  // must not leave the other nine applied.
+  // must not leave the other nine applied. A declared-but-never-compiled
+  // stage passes here even with no directory on either side.
   for (const name of names) {
-    if (!allNames.has(name)) {
+    if (!allNames.has(name) && !stageNames.has(name)) {
       throw new SkillsUsageError(
         `"${name}" is not a known skill or verb in this pack (checked skills/, attachments/, stubs.jsonc)`,
       );
@@ -1784,10 +1771,16 @@ export async function skillsBind(args: string[]): Promise<void> {
       json: false,
     });
 
-    const verb = resolved.fullRoster.find((v) => v.name === verbName);
+    // Roster verb wins on a name collision -- resolve() lets compileTargets reject
+    // that collision pack-wide, so bind's own tie-break only ever matters for --dry-run.
+    const rosterVerb = resolved.fullRoster.find((v) => v.name === verbName);
+    const verb = rosterVerb ?? resolved.stages.find((v) => v.name === verbName);
     if (!verb) {
-      const known = resolved.fullRoster.map((v) => v.name).sort();
-      throw new SkillsUsageError(`verb "${verbName}" not found in roster (known: ${known.join(", ") || "none"})`);
+      const knownVerbs = resolved.fullRoster.map((v) => v.name).sort();
+      const knownStages = resolved.stages.map((v) => v.name).sort();
+      throw new SkillsUsageError(
+        `"${verbName}" is neither a roster verb nor a pipeline stage (verbs: ${knownVerbs.join(", ") || "none"}; stages: ${knownStages.join(", ") || "none"})`,
+      );
     }
 
     let step;
@@ -1850,6 +1843,10 @@ export async function skillsBind(args: string[]): Promise<void> {
       manifest: resolved.manifestPath,
       json: false,
     };
-    await skillsCompile([...compileArgs(surfaceFlags, resolved.packDir), "--verb", verbName]);
+    // A stage's bound fills feed every orchestrator's compiled allowed-tools union
+    // (stageAllowedToolsFor) -- scoping to `--verb <stage>` would leave every
+    // orchestrator's SKILL.md stale, so a stage bind recompiles the whole pack.
+    const recompileArgs = rosterVerb ? [...compileArgs(surfaceFlags, resolved.packDir), "--verb", verbName] : compileArgs(surfaceFlags, resolved.packDir);
+    await skillsCompile(recompileArgs);
   });
 }

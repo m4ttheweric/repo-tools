@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { mattstackProvenance, skillsCheck, skillsCompile, skillsComposition, skillsPacks } from "../skills.ts";
+import { skillsCheck, skillsCompile, skillsComposition, skillsPacks } from "../skills.ts";
 import { compileSkill } from "../../lib/skills/compile.ts";
 import { invocableRoster, loadAttachment, loadStepSource } from "../../lib/skills/sources.ts";
 import type { PluginRoots } from "../../lib/skills/sources.ts";
@@ -584,37 +584,6 @@ function makePipelineFixtures(): { mattstackDir: string; packDir: string; manife
   return { mattstackDir, packDir, manifestPath };
 }
 
-describe("mattstackProvenance", () => {
-  const plugin = { dir: "/plugins/mattstack", version: "1.2.0" };
-
-  test("no declared pipelines: no git subprocess, the plugin version stands in", () => {
-    let calls = 0;
-    const facts = () => {
-      calls++;
-      return { sha: "abc1234", dirty: 1 as const };
-    };
-
-    expect(mattstackProvenance({}, plugin, facts)).toEqual({ sha: "1.2.0", dirty: 0 });
-    expect(calls).toBe(0);
-  });
-
-  test("declared pipelines: the git facts are what get baked", () => {
-    let calls = 0;
-    const facts = () => {
-      calls++;
-      return { sha: "abc1234", dirty: 1 as const };
-    };
-
-    expect(mattstackProvenance({ feature: ["mattstack:stage-plan"] }, plugin, facts)).toEqual({ sha: "abc1234", dirty: 1 });
-    expect(calls).toBe(1);
-  });
-
-  test("a non-git plugin dir degrades to its version, not an empty sha", () => {
-    const facts = () => ({ sha: "", dirty: 0 as const });
-    expect(mattstackProvenance({ feature: [] }, plugin, facts)).toEqual({ sha: "1.2.0", dirty: 0 });
-  });
-});
-
 describe("skillsCompile/skillsCheck --verb scoping across roster verbs and pipeline stages", () => {
   test("--verb work --preview emits exactly the orchestrator's body, not every stage's too", async () => {
     const { mattstackDir, packDir, manifestPath } = makePipelineFixtures();
@@ -869,6 +838,78 @@ describe("skillsCheck", () => {
     expect(staleLine).toContain("watch-ci");
     expect(process.exitCode).toBe(1);
   });
+
+  test("provenance-only drift (marker versions, compiled recompute) is masked out: in-sync", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const skillMdPath = join(packDir, "skills", "watch-ci", "SKILL.md");
+    const bumped = readFileSync(skillMdPath, "utf8")
+      .replace(/version=\S+/g, "version=9.9.9")
+      .replace(/(compiled: )"[^"]*"/, '$1"bumped"');
+    writeFileSync(skillMdPath, bumped);
+    logs = [];
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs).toEqual([
+      { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [], side: "skills" },
+    ]);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  test("provenance-masked drift plus a real prose change still reports stale and exits 1", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const skillMdPath = join(packDir, "skills", "watch-ci", "SKILL.md");
+    const bumped = readFileSync(skillMdPath, "utf8")
+      .replace(/version=\S+/g, "version=9.9.9")
+      .replace(/(compiled: )"[^"]*"/, '$1"bumped"')
+      .replace("Poll the pipeline every 30s", "Poll the pipeline every 45s");
+    writeFileSync(skillMdPath, bumped);
+    logs = [];
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const staleLine = logs.find((l) => l.includes("stale"));
+    expect(staleLine).toBeDefined();
+    expect(staleLine).toContain("watch-ci");
+    expect(staleLine).toContain("SKILL.md");
+    expect(process.exitCode).toBe(1);
+  });
 });
 
 describe("skillsCheck --json", () => {
@@ -939,6 +980,7 @@ describe("skillsCheck --json", () => {
     expect(parsed.verbs).toEqual([
       { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [], side: "skills" },
     ]);
+    expect("staleBecause" in parsed.verbs[0]).toBe(false);
   });
 
   test("separates staleFiles (content drift) from orphanFiles (leftover) instead of merging them", async () => {
@@ -956,9 +998,91 @@ describe("skillsCheck --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.verbs).toEqual([
-      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"], side: "skills" },
+      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"], side: "skills", staleBecause: ["fill"] },
     ]);
     expect(process.exitCode).toBe(1);
+  });
+
+  test("engine body edited: staleBecause names the source", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"),
+      WATCH_CI_SKILL_MD.replace("Poll the pipeline every 30s", "Poll the pipeline every 60s"),
+    );
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.status).toBe("stale");
+    expect(verb.staleFiles).toEqual(["SKILL.md"]);
+    expect(verb.staleBecause).toEqual(["source"]);
+  });
+
+  test("fill body edited: staleBecause names the fill", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    writeFile(
+      join(mattstackDir, "plugins", "acme", "attachments", "watch-ci-domain", "SKILL.md"),
+      DOMAIN_SKILL_MD.replace("Domain rules live at", "Domain rules now live at"),
+    );
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.status).toBe("stale");
+    expect(verb.staleBecause).toEqual(["fill"]);
+  });
+
+  test("roster description edited: staleBecause names frontmatter", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    writeFile(
+      join(packDir, "pack", "stubs.jsonc"),
+      STUBS_JSONC.replace("Use when watching or triaging CI.", "Use when watching CI."),
+    );
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.status).toBe("stale");
+    expect(verb.staleBecause).toEqual(["frontmatter"]);
+  });
+
+  test("vendored script edited: staleBecause names vendored", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"),
+      "#!/bin/sh\necho polling twice\n",
+    );
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.status).toBe("stale");
+    expect(verb.staleFiles).toEqual(["scripts/ci-watch.sh"]);
+    expect(verb.staleBecause).toEqual(["vendored"]);
   });
 
   test("internal verb with missing outDir: never-compiled under attachments/, and still counts as stale", async () => {
@@ -1179,6 +1303,7 @@ describe("skillsComposition --json", () => {
     expect(verb.sourcePath).toBe(join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"));
     expect(verb.artifactPath).toBe(join(packDir, "skills", "watch-ci"));
     expect(verb.engineError).toBeUndefined();
+    expect(verb.includes).toEqual([]);
 
     const domainSlot = verb.slots.find((s: { name: string }) => s.name === "domain");
     expect(domainSlot.contract).toBe("watch-ci-domain@1");
@@ -1217,6 +1342,51 @@ describe("skillsComposition --json", () => {
       { name: "domain", boundTo: "acme:watch-ci-domain" },
       { name: "forge", boundTo: "mattstack:gitlab-forge" },
     ]);
+  });
+
+  test("includes names every {{include}} the engine and its bound fills carry, pre-compile", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"),
+      WATCH_CI_SKILL_MD.replace(
+        "Poll the pipeline every 30s and report status.",
+        "{{include:ci-note}}\n\n{{slot:domain}}\n\n{{slot:forge}}\n\n{{include:ci-note}}\n\nPoll the pipeline every 30s and report status.",
+      ),
+    );
+    writeFile(
+      join(mattstackDir, "plugins", "acme", "attachments", "watch-ci-domain", "SKILL.md"),
+      DOMAIN_SKILL_MD + "\n{{include:fill-note}}\n",
+    );
+
+    await skillsComposition(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.includes).toEqual(["ci-note", "fill-note"]);
+  });
+
+  test("an include reached only through a reference-mode (registered, public) fill is not scanned or vendored", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "gitlab-forge", "SKILL.md"),
+      FORGE_SKILL_MD + "\n{{include:forge-note}}\n",
+    );
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "attachments", "forge-note", "SKILL.md"),
+      "---\nname: forge-note\n---\n\nforge note body\n",
+    );
+    writeFile(join(mattstackDir, "plugins", "mattstack", "attachments", "forge-note", "note.txt"), "note\n");
+
+    await skillsComposition(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.includes).toEqual([]);
+
+    logs = [];
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+    expect(existsSync(join(packDir, "skills", "watch-ci", "parts", "include-forge-note"))).toBe(false);
   });
 
   test("an internal verb's artifactPath is under attachments/, not a hardcoded skills/", async () => {

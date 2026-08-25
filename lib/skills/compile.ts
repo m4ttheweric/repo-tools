@@ -1,6 +1,6 @@
 import { existsSync } from "fs";
 import { isAbsolute, relative as relativePath, resolve as resolvePath, sep } from "path";
-import { assertNoPlaceholders, findPlaceholders, skillDirFor, substitute } from "./placeholders.ts";
+import { assertNoPlaceholders, findPlaceholders, skillDirFor, substitute, substituteIncludesOnly } from "./placeholders.ts";
 import type {
   AttachmentSource,
   CompiledFile,
@@ -197,7 +197,7 @@ function span(src: { srcPath: string; bodyStartLine: number; body: string }): st
 }
 
 function resolveBoundSlots(
-  verb: VerbDef,
+  where: string,
   step: StepSource,
   fills: Record<string, AttachmentSource | null>,
 ): BoundSlot[] {
@@ -211,7 +211,7 @@ function resolveBoundSlots(
     if (fill === null) {
       if (spec.required) {
         throw new Error(
-          `verb "${verb.name}": slot "${slotName}" requires contract "${spec.contract}" but is unbound`,
+          `${where}: slot "${slotName}" requires contract "${spec.contract}" but is unbound`,
         );
       }
       continue;
@@ -219,7 +219,7 @@ function resolveBoundSlots(
 
     if (fill.provides !== spec.contract) {
       throw new Error(
-        `verb "${verb.name}": slot "${slotName}" requires contract "${spec.contract}" but binding "${fill.binding}" provides "${fill.provides}"`,
+        `${where}: slot "${slotName}" requires contract "${spec.contract}" but binding "${fill.binding}" provides "${fill.provides}"`,
       );
     }
 
@@ -341,13 +341,20 @@ function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): 
       notes.push(`note: ${fill.binding} is surface-internal; inlined`);
     }
 
+    // An inlined fill's own {{include:...}} lines need the same ctx substitute uses
+    // for a placeholder-driven slot; compileSkill always builds one.
+    if (!opts.ctx) {
+      throw new Error(`engine "${step.name}": fill "${fill.binding}" needs a placeholder context to resolve its includes`);
+    }
     sections.push(
       `<!-- part: slot:${slotName} binding=${fill.binding} version=${fill.version} ${span(fill)} -->`,
     );
-    sections.push(rewriteSkillDirRefs(fill.body, slotName));
+    sections.push(substituteIncludesOnly(rewriteSkillDirRefs(fill.body, slotName), opts.ctx, fill.binding));
   }
 
-  return { body: sections.join("\n\n"), notes };
+  const body = sections.join("\n\n");
+  assertNoStrayBraces(body, step.name);
+  return { body, notes };
 }
 
 function buildVendoredFiles(
@@ -480,6 +487,7 @@ export function compileSkill(
     repoKey?: string;
     mattstackSha?: string;
     mattstackDirty?: 0 | 1;
+    packSha?: string;
     stageDir?: string | null;
     stageAllowedTools?: string[];
     emittedSiblingDirs?: string[];
@@ -491,7 +499,8 @@ export function compileSkill(
   } = {},
 ): CompileResult {
   const internalRoster = opts.internalRoster ?? new Set<string>();
-  const boundSlots = resolveBoundSlots(verb, step, fills);
+  const where = opts.where ?? `verb "${verb.name}"`;
+  const boundSlots = resolveBoundSlots(where, step, fills);
 
   const compiledParts = [
     `${step.plugin}@${step.version}`,
@@ -514,6 +523,7 @@ export function compileSkill(
     repoKey: opts.repoKey ?? "",
     mattstackSha: opts.mattstackSha ?? "",
     mattstackDirty: opts.mattstackDirty ?? 0,
+    packSha: opts.packSha ?? "",
     stageDir: opts.stageDir ?? null,
     stageMeta: step.stageMeta,
     compiledFrom,
@@ -539,7 +549,7 @@ export function compileSkill(
     : null;
   const warnings = [
     ...lintReferences(body, roster, files, fillBindings, {
-      where: opts.where ?? `verb "${verb.name}"`,
+      where,
       exemptPrefixes: opts.emittedSiblingDirs ?? [],
       layout,
       emittedTargetDirs: opts.emittedTargetDirs ?? [],

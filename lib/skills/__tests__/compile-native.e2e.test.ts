@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -32,6 +32,8 @@ describe("compile-native end to end", () => {
     }
     expect(work).toContain("<!-- part: step source=mattstack:work");
     expect(work).toMatch(/--mattstack-sha \S+ --mattstack-dirty [01]/);
+    // build() copies the fixture to a temp dir with no git history, so the baked value is the pack's plugin.json version.
+    expect(work).toContain("--pack-sha acme=0.1.0");
     for (const [name, body] of stages) {
       expect(body).toContain(`<!-- part: step source=mattstack:${name}`);
     }
@@ -40,7 +42,35 @@ describe("compile-native end to end", () => {
     // The fill comes from the pack under compilation, at the pack's own version --
     // never from an installed copy of a previous release.
     expect(plan).toContain("<!-- part: slot:domain binding=acme:plan-policy version=0.1.0 path=attachments/plan-policy/SKILL.md");
+    expect(plan).toContain("<!-- part: include:gitlab-note");
+    expect(plan).toContain("note body");
     expect(existsSync(join(pack, "skills", "work", "scripts", "resolve-pipeline.sh"))).toBe(false);
+
+    // The include's own extra files vendor under the compiling stage's parts
+    // dir, and the rewritten body path is what actually resolves there --
+    // not just a plausible-looking one.
+    expect(existsSync(join(pack, "attachments", "stage-plan", "parts", "include-gitlab-note", "scripts", "note.sh"))).toBe(true);
+    expect(plan).toContain(
+      "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts/include-gitlab-note/scripts/note.sh",
+    );
+  });
+
+  test("a surface-public stage is referenced at skills/, where it is emitted", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-e2e-"));
+    cpSync(FIX, root, { recursive: true });
+    const pack = join(root, "pack");
+    const ms = join(root, "mattstack-home");
+    const manifest = join(ms, "repos", "my-repo", "skills.jsonc");
+    writeFileSync(join(pack, "pack", "surface.jsonc"), JSON.stringify({ public: ["work", "stage-plan"] }));
+
+    await skillsCompile(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest]);
+
+    expect(existsSync(join(pack, "skills", "stage-plan", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(pack, "attachments", "stage-plan"))).toBe(false);
+    const work = readFileSync(join(pack, "skills", "work", "SKILL.md"), "utf8");
+    expect(work).toContain("${CLAUDE_SKILL_DIR}/../../skills/stage-plan");
+    expect(work).not.toContain("attachments/stage-plan");
+    expect(work).toContain("${CLAUDE_SKILL_DIR}/../../attachments/stage-implement");
   });
 
   test("rt skills check is clean immediately after compile", async () => {
@@ -48,6 +78,48 @@ describe("compile-native end to end", () => {
     process.exitCode = 0;
     await skillsCheck(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest]);
     expect(process.exitCode).toBe(0);
+  });
+
+  test("check --json: an edited include body reports staleBecause include on the stage that pulls it in", async () => {
+    const { pack, ms, manifest } = await build();
+    const notePath = join(ms, "plugins", "mattstack", "attachments", "gitlab-note", "SKILL.md");
+    writeFileSync(notePath, readFileSync(notePath, "utf8").replace("note body", "note body v2"));
+
+    const logs: string[] = [];
+    const logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+    try {
+      await skillsCheck(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest, "--json"]);
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(logs.join("\n"));
+    const stagePlan = parsed.verbs.find((v: { name: string }) => v.name === "stage-plan");
+    expect(stagePlan.status).toBe("stale");
+    expect(stagePlan.staleBecause).toEqual(["include"]);
+  });
+
+  test("check --json: dropping a fill's {{include}} line reports staleBecause structure", async () => {
+    const { pack, ms, manifest } = await build();
+    const policyPath = join(pack, "attachments", "plan-policy", "SKILL.md");
+    writeFileSync(policyPath, readFileSync(policyPath, "utf8").replace("\n{{include:gitlab-note}}\n", "\n"));
+
+    const logs: string[] = [];
+    const logSpy = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+    try {
+      await skillsCheck(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest, "--json"]);
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const parsed = JSON.parse(logs.join("\n"));
+    const stagePlan = parsed.verbs.find((v: { name: string }) => v.name === "stage-plan");
+    expect(stagePlan.status).toBe("stale");
+    expect(stagePlan.staleBecause).toEqual(["structure"]);
   });
 
   test("a broken chain refuses to compile", async () => {
@@ -62,6 +134,24 @@ describe("compile-native end to end", () => {
     );
     expect(exitCode).toBe(1);
     expect(errors.join("\n")).toContain('stage "stage-ship" consumes "commits"');
+  });
+
+  test("a fill carrying an illegal placeholder errors with the compiling stage named", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-e2e-"));
+    cpSync(FIX, root, { recursive: true });
+    const pack = join(root, "pack");
+    const ms = join(root, "mattstack-home");
+    const manifest = join(ms, "repos", "my-repo", "skills.jsonc");
+    const policyPath = join(pack, "attachments", "plan-policy", "SKILL.md");
+    writeFileSync(policyPath, readFileSync(policyPath, "utf8").replace("policy text", "policy text\n{{slot:tiering}}"));
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest]),
+    );
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain(
+      'stage "stage-plan": acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}} only',
+    );
   });
 
   test("a path-breakout pipeline entry refuses to compile and never touches a directory outside packDir", async () => {
