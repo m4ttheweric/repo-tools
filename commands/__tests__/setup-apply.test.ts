@@ -85,6 +85,7 @@ function baseApplyDeps(
       throw new Error("exit sentinel");
     },
     isTTY: () => false,
+    planForGate: async () => ({ requiredMissing: [] }),
     confirm: async (message) => {
       confirmCalls.push(message);
       return true;
@@ -409,5 +410,42 @@ describe("setupIntent", () => {
 
   test("realIntentDeps() builds without throwing", () => {
     expect(() => realIntentDeps()).not.toThrow();
+  });
+});
+
+describe("setupApply — hard-precondition gate", () => {
+  test("refuses before any step when tool.clt is missing", async () => {
+    const deps = baseApplyDeps({ steps: [neverRunsStep("home.init")], planForGate: async () => ({ requiredMissing: ["tool.clt"] }) });
+
+    await runExpectingExit(() => setupApply(["--json"], {}, deps));
+
+    expect(deps.exitCodes).toEqual([2]);
+    const payload = JSON.parse(deps.lines[0]!) as { error: { message: string } };
+    expect(payload.error.message).toContain("blocked by: tool.clt");
+    expect(payload.error.message).toContain("xcode-select --install");
+  });
+
+  test("non-hard requiredMissing rows (herdr) do not block a headless apply", async () => {
+    const deps = baseApplyDeps({
+      steps: [fakeStep("path.link", { state: "done", detail: "ok" })],
+      planForGate: async () => ({ requiredMissing: ["tool.herdr", "tool.claude"] }),
+    });
+
+    await setupApply(["--json"], {}, deps);
+
+    expect(deps.exitCodes).toEqual([]);
+  });
+
+  test("--force bypasses the gate without composing a plan", async () => {
+    const deps = baseApplyDeps({
+      steps: [fakeStep("path.link", { state: "done", detail: "ok" })],
+      planForGate: async () => {
+        throw new Error("planForGate must not run under --force");
+      },
+    });
+
+    await setupApply(["--json", "--force"], {}, deps);
+
+    expect(deps.exitCodes).toEqual([]);
   });
 });

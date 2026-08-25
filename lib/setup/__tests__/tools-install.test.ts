@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { BREW_FORMULAE, VENDOR_INSTALLERS, claudeConfigDirs, installTool, setupTool, type ToolsInstallSeams } from "../tools-install.ts";
+import { BREW_FORMULAE, VENDOR_INSTALLERS, claudeConfigDirs, installTool, parseCltLabel, setupTool, type ToolsInstallSeams } from "../tools-install.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
 import type { ExecScript } from "./fakes.ts";
 import type { PackRequirements } from "../requirements.ts";
@@ -244,13 +244,48 @@ describe("installTool — bundled-link", () => {
 });
 
 describe("installTool — apple-clt", () => {
-  test("apple-clt -> xcode-select --install argv", async () => {
-    const exec: ExecScript = (argv) => (argv[0] === "xcode-select" && argv[1] === "--install" ? ok() : ok());
+  test("apple-clt already present (xcode-select -p + git both ok) -> ok without re-triggering anything", async () => {
+    const exec: ExecScript = () => ok();
+    const p = fakeProbes({ exec });
+    const result = await installTool(p, "apple-clt", [], NOOP_SEAMS);
+    expect(p.calls.exec).not.toContainEqual(["xcode-select", "--install"]);
+    expect(result.via).toBe("apple-clt");
+    expect(result.ok).toBe(true);
+  });
+
+  test("apple-clt headless: catalog label found -> softwareupdate -i, marker cleaned, no dialog", async () => {
+    const exec: ExecScript = (argv) => {
+      if (argv[0] === "xcode-select") return { code: 2, stdout: "", stderr: "no developer tools" };
+      if (argv[0] === "softwareupdate" && argv[1] === "-l") {
+        return ok("Software Update found:\n* Label: Command Line Tools for Xcode 26.5-26.5\n\tTitle: ...\n* Label: Command Line Tools for Xcode 26.6-26.6\n\tTitle: ...\n");
+      }
+      if (argv[0] === "git") return ok("git version 2.39.5 (Apple Git-154)");
+      return ok();
+    };
+    const p = fakeProbes({ exec });
+    const result = await installTool(p, "apple-clt", [], NOOP_SEAMS);
+    expect(p.calls.exec).toContainEqual(["softwareupdate", "-i", "Command Line Tools for Xcode 26.6-26.6"]);
+    expect(p.calls.exec).not.toContainEqual(["xcode-select", "--install"]);
+    expect(p.calls.exec.some((argv) => argv[0] === "rm" && argv.includes("/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"))).toBe(true);
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain("headlessly");
+  });
+
+  test("apple-clt headless: no catalog label -> falls back to the dialog trigger, marker still cleaned", async () => {
+    const exec: ExecScript = (argv) => {
+      if (argv[0] === "xcode-select" && argv[1] === "-p") return { code: 2, stdout: "", stderr: "" };
+      if (argv[0] === "softwareupdate") return ok("No new software available.");
+      if (argv[0] === "git") return { code: 1, stdout: "", stderr: "" };
+      return ok();
+    };
     const p = fakeProbes({ exec });
     const result = await installTool(p, "apple-clt", [], NOOP_SEAMS);
     expect(p.calls.exec).toContainEqual(["xcode-select", "--install"]);
-    expect(result.via).toBe("apple-clt");
-    expect(result.ok).toBe(true);
+    expect(p.calls.exec.some((argv) => argv[0] === "rm" && argv.includes("/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"))).toBe(true);
+    // A triggered dialog is progress, not completion — ok stays false until a
+    // later probe verifies git.
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("dialog");
   });
 
   test("apple-clt code 1 'already installed' -> ok (honest, not re-triggered)", async () => {
@@ -268,11 +303,17 @@ describe("installTool — apple-clt", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("apple-clt never claims completion — detail says the OS dialog must be completed by the user", async () => {
-    const exec: ExecScript = () => ok();
+  test("dialog fallback never claims completion — only the headless path may, and only after a green git re-probe", async () => {
+    const exec: ExecScript = (argv) => {
+      if (argv[0] === "xcode-select" && argv[1] === "-p") return { code: 2, stdout: "", stderr: "" };
+      if (argv[0] === "softwareupdate") return ok("No new software available.");
+      if (argv[0] === "git") return { code: 1, stdout: "", stderr: "" };
+      return ok();
+    };
     const p = fakeProbes({ exec });
     const result = await installTool(p, "apple-clt", [], NOOP_SEAMS);
-    expect(result.detail.toLowerCase()).not.toContain("installed");
+    expect(result.detail).toContain("complete it");
+    expect(result.detail.toLowerCase()).not.toContain("installed \"");
   });
 });
 
@@ -402,5 +443,33 @@ describe("claudeConfigDirs", () => {
   test("honors CLAUDE_CONFIG_DIR when set", () => {
     const p = { env: { CLAUDE_CONFIG_DIR: "/custom/.claude" }, home: "/fake-home" };
     expect(claudeConfigDirs(p, [])).toEqual(["/custom/.claude"]);
+  });
+});
+
+describe("parseCltLabel", () => {
+  test("modern macOS 26 format (verbatim from a real guest): picks the newest label", () => {
+    const out = "Software Update found the following new or updated software:\n* Label: Command Line Tools for Xcode 26.5-26.5\n\tTitle: Command Line Tools for Xcode 26.5, Version: 26.5, Size: 920416KiB, Recommended: YES, \n* Label: Command Line Tools for Xcode 26.6-26.6\n\tTitle: Command Line Tools for Xcode 26.6, Version: 26.6, Size: 920431KiB, Recommended: YES, \n";
+    expect(parseCltLabel(out)).toBe("Command Line Tools for Xcode 26.6-26.6");
+  });
+
+  test("legacy hyphenated format still parses", () => {
+    const out = "* Label: Command Line Tools for Xcode-15.1\n* Label: Command Line Tools for Xcode-16.4\n";
+    expect(parseCltLabel(out)).toBe("Command Line Tools for Xcode-16.4");
+  });
+
+  test("returns null when the catalog has no CLT entry", () => {
+    expect(parseCltLabel("No new software available.")).toBeNull();
+  });
+
+  test("never matches a non-CLT label", () => {
+    expect(parseCltLabel("* Label: macOS Tahoe 26.1 Update\n")).toBeNull();
+  });
+});
+
+  
+describe("parseCltLabel — catalog order", () => {
+  test("catalog order is not version order — the numerically newest label wins regardless", () => {
+    const out = "* Label: Command Line Tools for Xcode 26.6-26.6\n* Label: Command Line Tools for Xcode 26.5-26.5\n";
+    expect(parseCltLabel(out)).toBe("Command Line Tools for Xcode 26.6-26.6");
   });
 });

@@ -93,11 +93,71 @@ function firstLine(s: string): string {
   return s.trim().split("\n")[0] ?? "";
 }
 
+/** softwareupdate only lists Command Line Tools while this marker exists — the same trigger Homebrew and MDM tooling use. Best-effort removed afterwards; a stale marker only costs an extra listing. */
+const CLT_ON_DEMAND_MARKER = "/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress";
+const CLT_LIST_TIMEOUT_MS = 120_000;
+const CLT_INSTALL_TIMEOUT_MS = 45 * 60_000;
+
+/**
+ * The newest CLT label wins — softwareupdate lists one label per available
+ * version, oldest first. Verified against a real macOS 26 catalog: the
+ * modern form is "Command Line Tools for Xcode 26.6-26.6" (space before
+ * the version, then a -version suffix); older macOS used
+ * "Command Line Tools for Xcode-14.3". Match both.
+ */
+export function parseCltLabel(listOutput: string): string | null {
+  const labels = [...listOutput.matchAll(/^\s*\*?\s*Label:\s*(Command Line Tools for Xcode[ -][\d.]+(?:-[\d.]+)?)\s*$/gm)].map((m) => m[1]!);
+  if (labels.length === 0) return null;
+  // Catalog order is not version order (observed 26.6 before 26.5 on a real
+  // guest) — sort by the numeric version in the label and take the newest.
+  const version = (label: string) => label.match(/([\d.]+)$/)?.[1] ?? "0";
+  return labels.sort((a, b) => version(a).localeCompare(version(b), undefined, { numeric: true })).at(-1)!;
+}
+
+/**
+ * The slick path: install CLT entirely headlessly via softwareupdate — no
+ * Apple dialog, no Safari, no "now wait and re-run". Falls back to
+ * triggering the classic `xcode-select --install` dialog when the catalog
+ * has no CLT label or the install fails (e.g. softwareupdate refuses
+ * without root); either way the caller polls `git --version` back to green.
+ */
 async function installAppleClt(p: Probes): Promise<InstallResult> {
+  const already = await p.exec(["xcode-select", "-p"], { timeoutMs: PROBE_TIMEOUT_MS });
+  if (already.code === 0) {
+    const git = await p.exec(["git", "--version"], { timeoutMs: PROBE_TIMEOUT_MS });
+    if (git.code === 0) return { via: "apple-clt", ok: true, detail: "Command Line Tools already installed" };
+  }
+
+  // touch is best-effort: a marker left root-owned by an earlier trigger
+  // still does its job, and the failed touch must not abort the flow.
+  await p.exec(["touch", CLT_ON_DEMAND_MARKER], { timeoutMs: PROBE_TIMEOUT_MS });
+  try {
+    // A freshly-poked catalog can need one scan cycle before it exposes the
+    // CLT labels (observed on a real macOS 26 guest: first -l empty, second
+    // listed them) — retry briefly rather than concluding "no label".
+    let label: string | null = null;
+    for (let attempt = 0; attempt < 3 && !label; attempt++) {
+      if (attempt > 0) await p.exec(["sleep", "10"], { timeoutMs: 15_000 });
+      const list = await p.exec(["softwareupdate", "-l"], { timeoutMs: CLT_LIST_TIMEOUT_MS });
+      label = list.code === 0 ? parseCltLabel(list.stdout) : null;
+    }
+    if (label) {
+      const install = await p.exec(["softwareupdate", "-i", label], { timeoutMs: CLT_INSTALL_TIMEOUT_MS });
+      const git = await p.exec(["git", "--version"], { timeoutMs: PROBE_TIMEOUT_MS });
+      if (install.code === 0 && git.code === 0) {
+        return { via: "apple-clt", ok: true, detail: `installed "${label}" headlessly — ${git.stdout.trim()}` };
+      }
+    }
+  } finally {
+    await p.exec(["rm", "-f", CLT_ON_DEMAND_MARKER], { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => {});
+  }
+
   const res = await p.exec(["xcode-select", "--install"], { timeoutMs: PROBE_TIMEOUT_MS });
   if (res.code === 124) return { via: "apple-clt", ok: false, detail: "xcode-select --install timed out" };
   if (res.code === 0) {
-    return { via: "apple-clt", ok: true, detail: "triggered the Command Line Tools install dialog — complete it, then re-run rt setup status" };
+    // ok means "verified installed" (the headless path proves it with a git
+    // re-probe); a triggered dialog is progress, not completion.
+    return { via: "apple-clt", ok: false, detail: "triggered the Command Line Tools install dialog — complete it, then re-run rt setup status" };
   }
   const combined = `${res.stdout} ${res.stderr}`.toLowerCase();
   if (res.code === 1 && combined.includes("already installed")) {
