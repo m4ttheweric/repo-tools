@@ -323,6 +323,10 @@ export interface IndexPartition {
   duplicates: DuplicateEntry[];
 }
 
+function identityRank(entry: RepoIndexEntry): number {
+  return parseIdentity(entry.repoName) === null ? 0 : 1;
+}
+
 /**
  * Splits index rows that point at the SAME directory under two names.
  *
@@ -332,11 +336,15 @@ export interface IndexPartition {
  * resolving — `existsSync` follows symlinks, so the dead row passes the
  * liveness filter and the picker shows the tree twice.
  *
- * The most recently written row wins, because `updateRepoIndex` restamps a
- * name every time rt runs inside that repo: the live identity keeps moving
- * forward while the retired one stays frozen at whenever it was last used.
- * Name order breaks ties so a legacy import (every row stamped within the
- * same millisecond) is at least deterministic.
+ * An identity key beats a legacy name outright, whatever the stamps say: the
+ * loser is what prune migrates ONTO the winner, and carrying identity-keyed
+ * data back onto a name would re-mint the split the cutover ended.
+ *
+ * Among rows of the same kind the most recently written wins, because
+ * `updateRepoIndex` restamps a name every time rt runs inside that repo: the
+ * live identity keeps moving forward while the retired one stays frozen at
+ * whenever it was last used. Name order breaks ties so a legacy import (every
+ * row stamped within the same millisecond) is at least deterministic.
  *
  * Losers are only hidden, never dropped, by the caller in `getKnownRepos`.
  * Lookups by name elsewhere (`loadRepoIndex()[name]`, and the per-repo data
@@ -356,7 +364,10 @@ export function partitionByRealpath(entries: RepoIndexEntry[]): IndexPartition {
   const duplicates: DuplicateEntry[] = [];
   for (const group of groups.values()) {
     const sorted = [...group].sort(
-      (a, b) => b.updatedAt - a.updatedAt || a.repoName.localeCompare(b.repoName),
+      (a, b) =>
+        identityRank(b) - identityRank(a) ||
+        b.updatedAt - a.updatedAt ||
+        a.repoName.localeCompare(b.repoName),
     );
     const winner = sorted[0]!;
     keep.push(winner);
@@ -856,7 +867,11 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
         missing: true as const,
       }))
     : [];
-  const knownNames = new Set([...known, ...lost].map(r => r.repoName));
+  // Lost names are excluded for the same reason lost paths are (below): a lost
+  // legacy-name row is named after the directory that moved, so counting it as
+  // known would shadow that directory's NEW location out of the scan — the one
+  // candidate `rt repos locate` exists to surface.
+  const knownNames = new Set(known.map(r => r.repoName));
   // realpath'd for set-membership ONLY — a symlinked path component (macOS
   // /tmp → /private/tmp being the canonical case) must not let the same
   // directory double-emit under two spellings. `known` itself keeps its

@@ -30,6 +30,7 @@ import {
   refreshRepoIndexMirror,
   removeIndexRow,
   setIndexPath,
+  type DataMigration,
   type RepoIndexEntry,
 } from "./repo-index.ts";
 import {
@@ -40,7 +41,7 @@ import {
   saveRegistry,
   type TreeRecord,
 } from "./worktree/registry.ts";
-import { loadClaims, saveClaims } from "./endpoint/store.ts";
+import { loadClaims, saveClaims, type EndpointClaim } from "./endpoint/store.ts";
 import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
 import { getStateDb } from "./state/index.ts";
 import { listWorktreesAsync, runGit } from "./worktree/git-async.ts";
@@ -99,7 +100,8 @@ export interface LocateResult {
   repaired: string[];
   /** Re-rooted registry paths with nothing on disk — a record the reconciler will prune, never a locate failure. */
   stalePaths: string[];
-  legacyRows: { key: string; outcome: "collapsed" | "retained" }[];
+  /** `retained` carries the reason its data dir could not all move; the row is left naming `from`, never `to`. */
+  legacyRows: { key: string; outcome: "collapsed" | "retained"; reason?: string }[];
   error?: string;
 }
 
@@ -303,21 +305,42 @@ function writeRegistries(plan: LocatePlan): number {
   return moved;
 }
 
-/** Claims are re-read here for the same reason registries are: a claim taken between plan and apply must move with the repo, not be reverted to the plan's copy. */
+/**
+ * The claims half of the apply, on the same rules as `writeRegistries`: every
+ * claim is re-read HERE (a claim taken between plan and apply must move with
+ * the repo, not be reverted to the plan's copy), and the pair's claims are
+ * merged onto the IDENTITY key with the legacy keys emptied — a legacy row
+ * whose index row `collapseLegacyRows` then drops would otherwise keep claim
+ * rows under a key nothing looks up again.
+ *
+ * `endpoint_claims` is keyed `(repo, worktree, role)`, so a pair that claimed
+ * the same tree in the same role collides on the merge; the identity's own row
+ * wins, which is why it is absorbed last.
+ */
 function writeClaims(plan: LocatePlan): number {
-  let moved = 0;
-  for (const key of indexWriteKeys(plan)) {
+  const merged = new Map<string, { claim: EndpointClaim; relocated: boolean }>();
+  const absorb = (key: string): number => {
     const claims = loadClaims(key);
-    if (claims.length === 0) continue;
-    const next = claims.map((c) => {
-      const relocated = relocatePath(c.worktree, plan.oldPath, plan.newPath);
-      if (relocated === null) return c;
-      moved += 1;
-      return { ...c, worktree: relocated };
-    });
-    saveClaims(key, next);
+    for (const c of claims) {
+      const moved = relocatePath(c.worktree, plan.oldPath, plan.newPath);
+      const claim = moved === null ? c : { ...c, worktree: moved };
+      merged.set(JSON.stringify([claim.worktree, claim.role]), { claim, relocated: moved !== null });
+    }
+    return claims.length;
+  };
+
+  let touched = false;
+  for (const key of plan.legacyKeys) {
+    if (absorb(key) === 0) continue;
+    saveClaims(key, []);
+    touched = true;
   }
-  return moved;
+  if (absorb(plan.identity) > 0) touched = true;
+  if (!touched) return 0;
+
+  const entries = [...merged.values()];
+  saveClaims(plan.identity, entries.map((e) => e.claim));
+  return entries.filter((e) => e.relocated).length;
 }
 
 /**
@@ -351,17 +374,34 @@ async function verifyLocate(plan: LocatePlan): Promise<{ error: string | null; s
   return { error: null, stalePaths };
 }
 
+/** Why a legacy row outlived the collapse, in the terms the operator has to act on. */
+function retentionReason(data: DataMigration): string {
+  const parts: string[] = [];
+  if (data.refused.length > 0) parts.push(`both names hold ${data.refused.join(", ")}`);
+  if (data.registry === "refused") parts.push("its worktree registry could not be written");
+  return parts.join("; ");
+}
+
 /**
  * Collapse the legacy half of a healed pair, on prune's rules: the row is
  * dropped only once its data dir has fully moved, because eviction is what
  * makes a leftover unreachable.
+ *
+ * INVARIANT: a legacy index row must never name a LIVE path without owning a
+ * worktree registry. Its registry merged onto the identity inside the
+ * transaction, so a retained row is written back to the (now dead) `oldPath`:
+ * a reconcile pass keyed on that row then bails on the missing path, where a
+ * live path would make it derive the repo's worktree settings, adopt every
+ * tree as unmanaged under the legacy key, and replenish a second pool beside
+ * the real one.
  */
 function collapseLegacyRows(plan: LocatePlan): LocateResult["legacyRows"] {
   const out: LocateResult["legacyRows"] = [];
   for (const key of plan.legacyKeys) {
     const data = migrateRepoData(key, plan.identity);
     if (migrationIncomplete(data)) {
-      out.push({ key, outcome: "retained" });
+      setIndexPath(key, plan.oldPath);
+      out.push({ key, outcome: "retained", reason: retentionReason(data) });
       continue;
     }
     removeIndexRow(key);

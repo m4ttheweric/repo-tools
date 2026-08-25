@@ -68,6 +68,20 @@ describe("missing index rows", () => {
     expect(getKnownRepos({ includeMissing: true }).filter((r) => r.missing).length).toBe(1);
   });
 
+  test("a lost legacy-named row does not shadow a scanned directory of the same basename", () => {
+    // The live anchor is what makes `scratch` an inferred scan root; the lost
+    // row is the pre-cutover legacy name, which is the moved folder's basename.
+    setKvValue("repo-index", "remote:gitlab.com%2Fg%2Fanchor", realRepo("anchor"));
+    setKvValue("repo-index", "mu", join(scratch, "nest", "mu"));
+    const moved = realRepo("mu");
+
+    const scanned = getKnownRepos({ includeMissing: true })
+      .filter((r) => r.registered === false)
+      .map((r) => r.worktrees[0]?.path);
+
+    expect(scanned).toContain(moved);
+  });
+
   test("the picker row says what to run", () => {
     const opt = repoOption({ repoName: "moved", worktrees: [{ path: "/x/gone", branch: "", isBare: false }], dataDir: "/d", missing: true });
     expect(opt.hint).toBe("missing — rt repos locate");

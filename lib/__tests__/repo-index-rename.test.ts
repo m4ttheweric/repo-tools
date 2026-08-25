@@ -141,6 +141,16 @@ describe("repo-index — rename drift (RT-60)", () => {
       expect(duplicates).toEqual([{ entry: entry("old", scratch, 1_000), keptAs: "new" }]);
     });
 
+    test("an identity key beats a legacy name even when the name was written last", () => {
+      const identity = "remote:gitlab.com%2Fg%2Fdeck";
+      const { keep, duplicates } = partitionByRealpath([
+        entry(identity, scratch, 1_000),
+        entry("deck", scratch, 9_000),
+      ]);
+      expect(keep.map((e) => e.repoName)).toEqual([identity]);
+      expect(duplicates.map((d) => d.keptAs)).toEqual([identity]);
+    });
+
     test("an equal timestamp — every row of one legacy import — breaks by name, not insertion order", () => {
       const a = partitionByRealpath([entry("zeta", scratch, 1_000), entry("alpha", scratch, 1_000)]);
       const b = partitionByRealpath([entry("alpha", scratch, 1_000), entry("zeta", scratch, 1_000)]);

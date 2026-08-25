@@ -5,9 +5,10 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { repoDataDir } from "../rt-paths.ts";
 import { closeStateDb, listEndpointClaims, setKvValue } from "../state/index.ts";
 import { loadRepoIndex, REPO_INDEX_NS } from "../repo-index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../worktree/registry.ts";
@@ -360,12 +361,100 @@ describe("repo locate", () => {
     );
   });
 
+  test("a legacy key's claims land on the identity, re-rooted, and are left nowhere else", async () => {
+    const repo = repoWithRemote("rho");
+    const identity = serializeIdentity(await deriveRepoIdentity(repo));
+    const treePath = join(repo, ".worktrees", "t1");
+    execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
+    setKvValue(REPO_INDEX_NS, identity, repo);
+    setKvValue(REPO_INDEX_NS, "rho-legacy", repo);
+    saveRegistry(identity, [rec({ name: "main", path: repo, kind: "main", branch: "main" })]);
+    saveClaims(identity, [{ worktree: treePath, role: "web", port: 4001, ts: "2026-01-01T00:00:00.000Z" }]);
+    // The `web` row collides with the identity's on (worktree, role); `api` does not.
+    saveClaims("rho-legacy", [
+      { worktree: treePath, role: "web", port: 4999, ts: "2026-01-01T00:00:00.000Z" },
+      { worktree: treePath, role: "api", port: 4002, ts: "2026-01-01T00:00:00.000Z" },
+    ]);
+
+    const moved = join(scratch, "rho-moved");
+    renameSync(repo, moved);
+    const newTree = join(moved, ".worktrees", "t1");
+
+    const plan = await planLocate({ newPath: moved });
+    if (isRefusal(plan)) throw new Error(`unexpected refusal: ${plan.message}`);
+    const result = await applyLocate(plan);
+
+    expect(result.ok).toBe(true);
+    expect(listEndpointClaims("rho-legacy")).toEqual([]);
+    expect(listEndpointClaims(identity).map((c) => [c.worktree, c.role, c.port])).toEqual([
+      [newTree, "api", 4002],
+      [newTree, "web", 4001],
+    ]);
+  });
+
+  test("a legacy row whose data dir cannot all move keeps naming the OLD path", async () => {
+    const repo = repoWithRemote("sigma");
+    const identity = serializeIdentity(await deriveRepoIdentity(repo));
+    const treePath = join(repo, ".worktrees", "t1");
+    execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
+    setKvValue(REPO_INDEX_NS, identity, repo);
+    setKvValue(REPO_INDEX_NS, "sigma-legacy", repo);
+    saveRegistry(identity, [rec({ name: "main", path: repo, kind: "main", branch: "main" })]);
+    saveRegistry("sigma-legacy", [rec({ name: "t1", path: treePath, kind: "ephemeral", state: "on-deck", branch: "feat" })]);
+    // The one collision migrateRepoData refuses to guess at: the same filename
+    // under both names.
+    for (const key of [identity, "sigma-legacy"]) {
+      mkdirSync(repoDataDir(key), { recursive: true });
+      writeFileSync(join(repoDataDir(key), "notes.json"), "{}");
+    }
+
+    const moved = join(scratch, "sigma-moved");
+    renameSync(repo, moved);
+    const newTree = join(moved, ".worktrees", "t1");
+
+    const plan = await planLocate({ newPath: moved });
+    if (isRefusal(plan)) throw new Error(`unexpected refusal: ${plan.message}`);
+    const result = await applyLocate(plan);
+
+    expect(result.ok).toBe(true);
+    expect(result.legacyRows).toEqual([
+      { key: "sigma-legacy", outcome: "retained", reason: "both names hold notes.json" },
+    ]);
+    expect(loadRepoIndex()["sigma-legacy"]).toBe(repo);
+    expect(loadRepoIndex()[identity]).toBe(moved);
+    expect(loadRegistry(identity).map((t) => t.path).sort()).toEqual([moved, newTree].sort());
+    expect(loadRegistry("sigma-legacy")).toEqual([]);
+  });
+
   test("candidates pair a scanned directory with the lost row it derives", async () => {
     const repo = repoWithRemote("kappa");
     const identity = serializeIdentity(await deriveRepoIdentity(repo));
     setKvValue(REPO_INDEX_NS, identity, repo);
 
     const moved = join(scratch, "kappa-moved");
+    renameSync(repo, moved);
+
+    expect(await findLocateCandidates()).toEqual([{ path: moved, identity }]);
+  });
+
+  test("a lost legacy row named after the moved folder does not hide it from the candidates", async () => {
+    // The live anchor is what makes `scratch` a scan root once the pair's own
+    // parent stops naming one.
+    const anchor = repoWithRemote("anchor");
+    setKvValue(REPO_INDEX_NS, serializeIdentity(await deriveRepoIdentity(anchor)), anchor);
+
+    const nest = join(scratch, "nest");
+    mkdirSync(nest, { recursive: true });
+    const repo = join(nest, "mu");
+    mkdirSync(repo, { recursive: true });
+    execSync("git init -q -b main", { cwd: repo, stdio: "pipe" });
+    execSync("git remote add origin https://gitlab.com/g/mu.git", { cwd: repo, stdio: "pipe" });
+    execSync("git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init", { cwd: repo, stdio: "pipe" });
+    const identity = serializeIdentity(await deriveRepoIdentity(realpathSync(repo)));
+    setKvValue(REPO_INDEX_NS, identity, realpathSync(repo));
+    setKvValue(REPO_INDEX_NS, "mu", realpathSync(repo));
+
+    const moved = join(scratch, "mu");
     renameSync(repo, moved);
 
     expect(await findLocateCandidates()).toEqual([{ path: moved, identity }]);
