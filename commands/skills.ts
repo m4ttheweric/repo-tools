@@ -1724,10 +1724,15 @@ export async function skillsBind(args: string[]): Promise<void> {
       json: false,
     });
 
-    const verb = resolved.fullRoster.find((v) => v.name === verbName);
+    // Roster verb wins on a name collision -- resolve() lets compileTargets reject
+    // that collision pack-wide, so bind's own tie-break only ever matters for --dry-run.
+    const verb = resolved.fullRoster.find((v) => v.name === verbName) ?? resolved.stages.find((v) => v.name === verbName);
     if (!verb) {
-      const known = resolved.fullRoster.map((v) => v.name).sort();
-      throw new SkillsUsageError(`verb "${verbName}" not found in roster (known: ${known.join(", ") || "none"})`);
+      const knownVerbs = resolved.fullRoster.map((v) => v.name).sort();
+      const knownStages = resolved.stages.map((v) => v.name).sort();
+      throw new SkillsUsageError(
+        `"${verbName}" is neither a roster verb nor a pipeline stage (verbs: ${knownVerbs.join(", ") || "none"}; stages: ${knownStages.join(", ") || "none"})`,
+      );
     }
 
     let step;
