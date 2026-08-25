@@ -19,10 +19,18 @@ export function repoLabel(serialized: string): string {
 }
 
 /** Longer label for disambiguating collisions: last two segments for
-    remote-kind ("acme/acme-dev"), basename for path-kind. */
+    remote-kind ("acme/acme-dev"), basename for path-kind (which cannot
+    qualify further short of the full path — see repoLabelFull). */
 export function repoLabelQualified(serialized: string): string {
   const id = parseIdentity(serialized);
   if (!id) return serialized;
   if (id.kind === "path") return basename(id.id);
   return id.id.split("/").slice(-2).join("/");
+}
+
+/** Last-resort label when even qualified labels collide: the whole decoded
+    id — host/owner/name for remote-kind, the full path for path-kind. */
+export function repoLabelFull(serialized: string): string {
+  const id = parseIdentity(serialized);
+  return id ? id.id : serialized;
 }

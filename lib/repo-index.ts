@@ -26,7 +26,7 @@ import { repoDataDir, rtDir } from "./rt-paths.ts";
 import { deleteKvValue, getKvValue, getStateDb, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
 import { rekeyKvNamespace } from "./state/identity-migrate.ts";
 import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
-import { repoLabel, repoLabelQualified } from "./repo-label.ts";
+import { repoLabel, repoLabelFull, repoLabelQualified } from "./repo-label.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -912,17 +912,24 @@ export function repoOption(r: KnownRepo, label: string = repoLabel(r.repoName)):
   };
 }
 
-/** Picker options for a repo list: short labels, upgraded to owner/name only
-    where two repos would otherwise render identically. */
+/** Picker options for a repo list: short labels, upgraded to owner/name where
+    two repos would otherwise render identically, and to the full decoded id
+    when even owner/name collides (same owner/name on two hosts; two path
+    repos sharing a basename). */
 export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOption>> {
-  const counts = new Map<string, number>();
+  const shortCounts = new Map<string, number>();
+  const qualifiedCounts = new Map<string, number>();
   for (const r of repos) {
-    const label = repoLabel(r.repoName);
-    counts.set(label, (counts.get(label) ?? 0) + 1);
+    const short = repoLabel(r.repoName);
+    shortCounts.set(short, (shortCounts.get(short) ?? 0) + 1);
+    const qualified = repoLabelQualified(r.repoName);
+    qualifiedCounts.set(qualified, (qualifiedCounts.get(qualified) ?? 0) + 1);
   }
   return repos.map((r) => {
     const short = repoLabel(r.repoName);
-    return repoOption(r, (counts.get(short) ?? 0) > 1 ? repoLabelQualified(r.repoName) : short);
+    if ((shortCounts.get(short) ?? 0) <= 1) return repoOption(r, short);
+    const qualified = repoLabelQualified(r.repoName);
+    return repoOption(r, (qualifiedCounts.get(qualified) ?? 0) > 1 ? repoLabelFull(r.repoName) : qualified);
   });
 }
 

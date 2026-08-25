@@ -782,6 +782,16 @@ describe("repoOptions labels", () => {
     expect(repoOption(known("tic-tac-whoa")).label).toBe("tic-tac-whoa");
   });
 
+  test("qualified collisions escalate to the full id", () => {
+    const labels = repoOptions([
+      known("remote:github.com%2Facme%2Fapp"),
+      known("remote:gitlab.com%2Facme%2Fapp"),
+      known("path:%2Fa%2Fapp"),
+      known("path:%2Fb%2Fapp"),
+    ]).map((o) => o.label);
+    expect(labels).toEqual(["github.com/acme/app", "gitlab.com/acme/app", "/a/app", "/b/app"]);
+  });
+
   test("colliding last segments upgrade to owner/name; others stay short", () => {
     const labels = repoOptions([
       known("remote:github.com%2Fm4ttstack%2Fglance"),
