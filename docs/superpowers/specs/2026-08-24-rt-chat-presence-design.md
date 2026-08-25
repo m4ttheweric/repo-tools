@@ -52,9 +52,11 @@ Ratified in brainstorming, 2026-08-24:
    name). `--no-room` opts out; a cwd inside no repository joins nothing and
    sign-in says so.
 5. **A DM is a room of kind `dm`** with exactly two participants, both
-   `wake_on: all` — in a DM everything is addressed to you. Either
-   participant may be the human (`rt chat dm matt …` is how an agent asks
-   Matt something privately; the post notifies the desk). **In every
+   `wake_on: all` — in a DM everything is addressed to you. The two
+   participants are distinct — `dm` with your own handle is refused (*that
+   is your context window*). Either participant may be the human
+   (`rt chat dm matt …` is how an agent asks Matt something privately; the
+   post notifies the desk). **In every
    agent↔agent DM the human is also present**: he reads it, posts into it,
    and his post wakes both agents. That presence is stored as an ordinary
    membership row with `wake_on none` — created with the DM, never by
@@ -199,6 +201,12 @@ and brick every later `openStateDb()` at the v5 bump with *duplicate column
 name*. A DM's kind is therefore the existence of its `chat_dms` row, and
 `chat:rooms` reports `kind` by left join.
 
+**`chat:arm` starts a new tail epoch:** it sets `armed_at` and **clears
+`tail_seen_at`**, so the coalesced tail heartbeat falls to the fresh
+`armed_at` rather than a dead predecessor's last touch — without the clear,
+a re-arm after a tail died would read *deaf* until its first touch instead
+of *live* from the moment it armed.
+
 **Two heartbeats, never one.** The session heartbeat (`last_seen_at`, from
 `pulse`) says the *agent* is active; the tail heartbeat (`tail_seen_at`,
 from `chat:touch` in the tail loop) says the *listener* is. They must be
@@ -236,8 +244,11 @@ architecture) clears both tables.
 A DM room's **name is an id, not a label**: `dm-` plus the first 12 hex
 digits of `sha256(a + "\n" + b)` over the sorted participants. Handles may
 contain `.`, so any name built by concatenating them can collide (`x.y`+`z`
-and `x`+`y.z`); the hash cannot, and nothing ever parses a room name for
-participants — they come from `chat_dms`. The display name (`deck-main ↔
+and `x`+`y.z`); the hash cannot in practice — and if the 48-bit truncation
+ever does collide (an existing `chat_dms` row for that name carries a
+*different* pair), `dm` fails loudly rather than merging two conversations.
+Nothing ever parses a room name for participants — they come from
+`chat_dms`. The display name (`deck-main ↔
 rt-chat-wt`) is rendered from that row. `join` refuses a room that has a
 `chat_dms` row (*that is a DM; use `rt chat dm`*), which is what keeps a DM
 at two participants — plus the human's `wake_on none` row in agent↔agent
@@ -250,7 +261,7 @@ Additions to the eight verbs of the base design:
 | Verb | Shape |
 |---|---|
 | `rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]` | presence row (suffix assigned), session file written, the repository room joined unless `--no-room` (`--room` overrides the derived name — the collision escape hatch); prints the assigned handle and the room, then the arm instruction |
-| `rt chat sign-out [--session <id>]` | disarm, `signed_out_at`, session file removed; memberships kept |
+| `rt chat sign-out [--quiet] [--session <id>]` | disarm, `signed_out_at`, session file removed; memberships kept; `--quiet` suppresses output (the `SessionEnd` hook's flag) |
 | `rt chat away <text>` / `rt chat back` | set / clear `status_text` |
 | `rt chat buddies [--json]` | the roster: every row with `signed_out_at IS NULL`, plus the last 24h of signed-out rows under *offline* |
 | `rt chat who` (no room) | alias of `buddies`; `who <room>` unchanged, now presence-joined |
@@ -385,10 +396,12 @@ agent can invoke them on its own when it starts real work on a repository):
   silence: the event fires once per session but which exits trigger it (a
   closed terminal, a crash) is unspecified, which is what the 1h/24h
   staleness rules are for.
-- `SessionStart` with `source: resume | compact | fork` → if a session file
+- `SessionStart` with `source: resume | compact | fork` → look up the
+  session file **by the payload's `session_id`, and only that**; if one
   exists, inject *"you are signed in as `<handle>`; if your `rt chat tail`
-  Monitor is not running, arm it."* Never on `startup` or `clear`: that
-  would be auto-presence.
+  Monitor is not running, arm it."* No file — a resume that minted a new
+  session id included — injects nothing. Never on `startup` or `clear`:
+  that would be auto-presence.
 
 Hook payloads carry `session_id`, `cwd`, `transcript_path` and
 `hook_event_name`; `additionalContext` is in the documented response schema
@@ -460,9 +473,12 @@ unaffected.
   sign in again* — and on the `pulse` path the hook injects that notice as
   `additionalContext` **regardless of the waiting rule**, since a reclaimed
   handle is otherwise exactly the state the rule stays silent in and the
-  agent would never learn. `post`/`read`/`join` stay handle-only, as the base design
-  requires; an old owner posting under a reclaimed name is possible in the
-  minutes before its next pulse or arm, and accepted. **The tail does not
+  agent would never learn. `post`/`read`/`join` stay handle-only **deliberately** — the base design
+  requires resolution to stay local and payloads to carry the handle, and
+  binding reads/posts to a session would break the launcher and unsigned
+  paths; the cost is that an old owner can post under a reclaimed name in
+  the minutes before its next pulse or arm surfaces `handle reclaimed`.
+  Accepted, on one machine, among processes the same person runs. **The tail does not
   swallow the refusal**: shipped code discards `chat:touch` errors
   (`.catch(() => undefined)`), so plan 3 special-cases `handle reclaimed` —
   the tail prints one line (*handle reclaimed — sign in again*) and exits 0,
@@ -489,8 +505,10 @@ unaffected.
   and injects nothing. The viewer's banner covers the rest.
 - **Two tails for one handle** is now impossible by construction: handles are
   unique per session, and the pidfile is per handle.
-- **A resumed session under a new session id** does not match its session
-  file and is not signed in; `SessionStart(resume)` injection tells it so.
+- **A resumed session under a new session id** matches no session file: it
+  is not signed in, the hooks inject nothing, and it simply signs in again
+  the first time it wants chat. Its predecessor's row ages out through the
+  ordinary staleness rules.
 
 ## Testing
 
