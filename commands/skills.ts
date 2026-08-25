@@ -335,12 +335,29 @@ function findDefaultManifest(mattstackRoot: string, team: string): string {
   return newest.path;
 }
 
+/**
+ * The real plugin cache holds symlinks to working trees, and a Dirent for one
+ * is not a directory -- stat, so a linked plugin dir is a root here too.
+ */
+function listPluginDirs(pluginsDir: string): string[] {
+  if (!existsSync(pluginsDir)) return [];
+  return readdirSync(pluginsDir)
+    .filter((name) => {
+      try {
+        return statSync(join(pluginsDir, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+}
+
 /** Test-mode-only: scans <dir>/plugins/<name>/.claude-plugin/plugin.json, bypassing the real `claude plugin list --json`. */
 function resolvePluginRootsFromDir(dir: string): PluginRoots {
   const pluginsDir = join(dir, "plugins");
   const byName: PluginRoots["byName"] = {};
 
-  for (const name of listSubdirs(pluginsDir)) {
+  for (const name of listPluginDirs(pluginsDir)) {
     const pluginDir = join(pluginsDir, name);
     let version = "unknown";
     try {
@@ -458,8 +475,10 @@ export function otherSideDir(packDir: string, name: string, isPublic: boolean): 
   return join(packDir, isPublic ? "attachments" : "skills", name);
 }
 
+type GitFacts = { sha: string; dirty: 0 | 1 };
+
 /** Feeds run-start.flags' --mattstack-sha/--mattstack-dirty; a non-git or unreadable mattstack dir degrades to empty/clean rather than failing resolution. */
-function gitFacts(dir: string): { sha: string; dirty: 0 | 1 } {
+function gitFacts(dir: string): GitFacts {
   try {
     const sha = execFileSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { stdio: "pipe" }).toString().trim();
     const status = execFileSync("git", ["-C", dir, "status", "--porcelain"], { stdio: "pipe" }).toString();
@@ -467,6 +486,24 @@ function gitFacts(dir: string): { sha: string; dirty: 0 | 1 } {
   } catch {
     return { sha: "", dirty: 0 };
   }
+}
+
+/**
+ * Only {{run-start.flags}} carries these facts, and only a pipeline body places
+ * it, so a pack with no declared pipelines pays nothing for the two git
+ * subprocesses. An installed plugin cache is a plain copy with no .git; its
+ * version is the only provenance it carries, and it is what the run DB records
+ * in that case.
+ */
+export function mattstackProvenance(
+  pipelines: Record<string, string[]>,
+  plugin: { dir: string; version: string } | undefined,
+  facts: (dir: string) => GitFacts = gitFacts,
+): GitFacts {
+  if (!plugin) return { sha: "", dirty: 0 };
+  if (Object.keys(pipelines).length === 0) return { sha: plugin.version, dirty: 0 };
+  const { sha, dirty } = facts(plugin.dir);
+  return { sha: sha || plugin.version, dirty };
 }
 
 async function resolve(flags: Flags): Promise<Resolved> {
@@ -505,12 +542,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
   // The manifest's parent directory name is the registry repo key `run-start
   // --repo` expects -- the same key `~/.mattstack/runs/<repo>/` is named by.
   const repoKey = manifestPath ? basename(dirname(manifestPath)) : "";
-  const mattstackPlugin = pluginRoots.byName.mattstack;
-  const facts = mattstackPlugin ? gitFacts(mattstackPlugin.dir) : { sha: "", dirty: 0 as const };
-  // An installed plugin cache is a plain copy with no .git; its version is the only
-  // provenance it carries, and it is what the run DB records in that case.
-  const mattstackSha = facts.sha || (mattstackPlugin ? mattstackPlugin.version : "");
-  const mattstackDirty = facts.dirty;
+  const { sha: mattstackSha, dirty: mattstackDirty } = mattstackProvenance(pipelines, pluginRoots.byName.mattstack);
   const stageEntries = buildStageEntries({ pipelines, pluginRoots });
 
   return {
@@ -568,7 +600,9 @@ function stageAllowedToolsFor(resolved: Resolved, entries: Record<string, StageE
   return rules;
 }
 
-function compileVerb(verb: VerbDef, resolved: Resolved, isStage: boolean): CompileResult {
+function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[] = []): CompileResult {
+  const { isPublic, isStage } = target;
+  let verb = target.verb;
   const where = `${isStage ? "stage" : "verb"} "${verb.name}"`;
   let step: StepSource;
   try {
@@ -594,6 +628,10 @@ function compileVerb(verb: VerbDef, resolved: Resolved, isStage: boolean): Compi
       stageDir,
       stageAllowedTools: isOrchestrator ? stageAllowedToolsFor(resolved, entries) : [],
       emittedSiblingDirs: allStageDirs,
+      packRoot: resolved.packDir,
+      compiledDir: outDirFor(resolved.packDir, verb.name, isPublic),
+      emittedTargetDirs,
+      where,
     });
   } catch (err) {
     throw new SkillsUsageError((err as Error).message);
@@ -630,15 +668,17 @@ type CompileOutcome = { ok: true; result: CompileResult } | { ok: false; message
 
 /**
  * compileVerb fails two ways: it throws (loadStepSource/loadAttachment/
- * compileSkill's resolveBoundSlots), or it returns a result whose errors[]
- * is non-empty (lintInternalRoster only). --json and --preview both need
- * both outcomes as data instead of a thrown SkillsUsageError, so this is
- * the one place that catches both -- the plain human path still calls
- * compileVerb directly and lets it throw, unchanged.
+ * compileSkill's lints and resolveBoundSlots), or it returns a result whose
+ * errors[] is non-empty (lintInternalRoster only). Every skillsCompile mode
+ * needs both outcomes as data rather than a thrown SkillsUsageError -- --json
+ * and --preview to report them, the writing mode to collect every target's
+ * verdict before touching disk -- so this is the one place that catches both.
+ * skillsCheck is the lone caller left that lets compileVerb throw.
  */
-function tryCompileVerb(verb: VerbDef, resolved: Resolved, isStage: boolean): CompileOutcome {
+function tryCompileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[] = []): CompileOutcome {
+  const { verb, isStage } = target;
   try {
-    const result = compileVerb(verb, resolved, isStage);
+    const result = compileVerb(target, resolved, emittedTargetDirs);
     if (result.errors.length > 0) {
       return { ok: false, message: `${isStage ? "stage" : "verb"} "${verb.name}": ${result.errors.join("; ")}` };
     }
@@ -648,7 +688,25 @@ function tryCompileVerb(verb: VerbDef, resolved: Resolved, isStage: boolean): Co
   }
 }
 
+/** What `run-start` puts in the run record before the first stage runs; every other field has to be produced by a stage. */
+const PIPELINE_SEED = ["work-type", "ticket", "repo", "mode"];
+
+function pipelineChainErrors(resolved: Resolved): string[] {
+  return Object.entries(resolved.stageEntries).flatMap(([type, list]) =>
+    validateChain(type, list, PIPELINE_SEED),
+  );
+}
+
 type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
+
+/**
+ * Where this run's targets land, for the sibling-reference lint. Derived from
+ * outDirFor, never from a StageEntry's `dir`: that one hardcodes
+ * attachments/<name> and is wrong the moment a stage is made surface-public.
+ */
+function targetOutDirs(resolved: Resolved, targets: CompileTarget[]): string[] {
+  return targets.map((t) => outDirFor(resolved.packDir, t.verb.name, t.isPublic));
+}
 
 /**
  * A roster verb keeps today's default-public rule; a stage is internal
@@ -691,20 +749,18 @@ export async function skillsCompile(args: string[]): Promise<void> {
       throw new SkillsUsageError("--preview needs a single --verb");
     }
 
-    const chainErrors = Object.entries(resolved.stageEntries).flatMap(([type, list]) =>
-      validateChain(type, list, ["work-type", "ticket", "repo", "mode"]),
-    );
+    const chainErrors = pipelineChainErrors(resolved);
     if (chainErrors.length > 0) throw new SkillsUsageError(chainErrors.join("\n"));
 
-    const rows: CompileVerbRow[] = [];
+    const targets = compileTargets(resolved, publicSet, flags.verbs);
+    const emittedTargetDirs = targetOutDirs(resolved, targets);
 
-    for (const { verb, isPublic, isStage } of compileTargets(resolved, publicSet, flags.verbs)) {
-      const outDir = outDirFor(resolved.packDir, verb.name, isPublic);
-      const stale = otherSideDir(resolved.packDir, verb.name, isPublic);
-      const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
-
-      if (flags.json) {
-        const outcome = tryCompileVerb(verb, resolved, isStage);
+    if (flags.json) {
+      const rows: CompileVerbRow[] = [];
+      for (const target of targets) {
+        const { verb, isPublic } = target;
+        const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
+        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
         if (!outcome.ok) {
           rows.push({ name: verb.name, status: "errored", files: [], warnings: [], errors: [outcome.message], side });
         } else {
@@ -717,18 +773,22 @@ export async function skillsCompile(args: string[]): Promise<void> {
             side,
           });
         }
-        continue;
       }
+      // An errored verb is a failed compile: exit non-zero so a caller reading
+      // the code (not just the payload) sees it, matching the non-JSON path's
+      // throw and check --json's stale exit.
+      if (rows.some((row) => row.status === "errored")) process.exitCode = 1;
+      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
+      return;
+    }
 
-      if (flags.preview) {
-        const outcome = tryCompileVerb(verb, resolved, isStage);
+    if (flags.preview) {
+      for (const target of targets) {
+        const { verb } = target;
+        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
         if (!outcome.ok) {
           // A lint-erroring verb has no previewable body -- say so on stderr
           // and leave stdout empty rather than silently producing nothing.
-          // return, not continue: --preview requires exactly one verb, so the
-          // loop would end right after anyway, and continuing would fall into
-          // the post-loop "misplaced" check below -- which prints to stdout,
-          // breaking --preview's stdout-is-the-body-or-nothing contract.
           console.error(`rt skills: ${outcome.message}`);
           process.exitCode = 1;
           return;
@@ -738,13 +798,30 @@ export async function skillsCompile(args: string[]): Promise<void> {
         const main = outcome.result.files.find((f) => "content" in f && f.path.endsWith("SKILL.md"));
         if (!main || !("content" in main)) throw new SkillsUsageError(`verb "${verb.name}": produced no SKILL.md`);
         console.log(main.content);
-        continue;
       }
+      // The post-loop misplaced scan below walks the whole pack rather than the
+      // requested verb, so letting --preview reach it would put a misplaced
+      // skill anywhere on stdout, where the caller reads the compiled body.
+      return;
+    }
 
-      const result = compileVerb(verb, resolved, isStage);
-      if (result.errors.length > 0) {
-        throw new SkillsUsageError(`${isStage ? "stage" : "verb"} "${verb.name}": ${result.errors.join("; ")}`);
-      }
+    // Every target is compiled before any is written: a run that aborts midway
+    // leaves already-emitted verbs referencing stage dirs that never landed.
+    const planned: { target: CompileTarget; result: CompileResult }[] = [];
+    const failures: string[] = [];
+    for (const target of targets) {
+      const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
+      if (outcome.ok) planned.push({ target, result: outcome.result });
+      else failures.push(outcome.message);
+    }
+    if (failures.length > 0) {
+      for (const message of failures) console.error(`rt skills: ${message}`);
+      process.exit(1);
+    }
+
+    for (const { target, result } of planned) {
+      const { verb, isPublic } = target;
+      const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
 
       if (flags.dryRun) {
         console.log(`would write ${result.files.length} files for ${verb.name}`);
@@ -752,25 +829,14 @@ export async function skillsCompile(args: string[]): Promise<void> {
         continue;
       }
 
+      const stale = otherSideDir(resolved.packDir, verb.name, isPublic);
       if (existsSync(stale)) rmSync(stale, { recursive: true, force: true });
-      writeCompiledVerb(outDir, result);
+      writeCompiledVerb(outDirFor(resolved.packDir, verb.name, isPublic), result);
       console.log(`compiled ${verb.name} -> ${side} (${result.files.length} files, ${result.warnings.length} warnings)`);
       for (const warning of result.warnings) console.log(`  ${warning}`);
     }
 
-    if (flags.json) {
-      // An errored verb is a failed compile: exit non-zero so a caller reading
-      // the code (not just the payload) sees it, matching the non-JSON path's
-      // throw and check --json's stale exit.
-      if (rows.some((row) => row.status === "errored")) process.exitCode = 1;
-      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
-      return;
-    }
-
-    // Never under --preview: its contract is stdout-is-the-body-or-nothing,
-    // and this scan walks the whole pack rather than the requested verb, so a
-    // misplaced skill anywhere would be read as that verb's compiled body.
-    if (publicSet && !flags.preview) {
+    if (publicSet) {
       for (const name of enumerateRegistered(resolved.packDir).keys()) {
         if (!publicSet.has(name)) {
           console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
@@ -800,7 +866,19 @@ export async function skillsCheck(args: string[]): Promise<void> {
     let anyStale = false;
     const rows: CheckVerbRow[] = [];
 
-    for (const { verb, isPublic, isStage } of compileTargets(resolved, publicSet, flags.verbs)) {
+    // Pack-level staleness: the stage list a compiled orchestrator carries no
+    // longer folds, so recompiling would refuse. No row can express that, so
+    // --json carries it alongside them instead of leaving the exit code alone
+    // to say a payload of current rows is a failure.
+    const chainErrors = pipelineChainErrors(resolved);
+    if (chainErrors.length > 0) anyStale = true;
+    if (!flags.json) for (const chainError of chainErrors) console.log(chainError);
+
+    const targets = compileTargets(resolved, publicSet, flags.verbs);
+    const emittedTargetDirs = targetOutDirs(resolved, targets);
+
+    for (const target of targets) {
+      const { verb, isPublic } = target;
       const outDir = outDirFor(resolved.packDir, verb.name, isPublic);
       const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
 
@@ -811,7 +889,7 @@ export async function skillsCheck(args: string[]): Promise<void> {
         continue;
       }
 
-      const result = compileVerb(verb, resolved, isStage);
+      const result = compileVerb(target, resolved, emittedTargetDirs);
       const staleFiles: string[] = [];
       const orphanFiles: string[] = [];
       const expectedPaths = new Set(result.files.map((f) => f.path));
@@ -846,7 +924,7 @@ export async function skillsCheck(args: string[]): Promise<void> {
     if (anyStale) process.exitCode = 1;
 
     if (flags.json) {
-      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
+      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows, chainErrors }));
     }
   });
 }

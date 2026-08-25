@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { compileSkill } from "../compile.ts";
 import type { AttachmentSource, CompiledFile, StepSource, VerbDef } from "../types.ts";
+
+/** The sibling-reference lint reads the working tree, so its cases need a real pack root on disk. */
+function tempPackRoot(): string {
+  return mkdtempSync(join(tmpdir(), "rt-compile-pack-"));
+}
 
 const verb: VerbDef = {
   name: "watch-ci",
@@ -410,6 +418,29 @@ function skillMd(result: { files: CompiledFile[] }): string {
 }
 
 describe("compileSkill with placeholders", () => {
+  test("a fileless fill's tool rule names the same dir its body does", () => {
+    const filelessDomain: AttachmentSource = {
+      ...domainFill,
+      body: "config at ${CLAUDE_SKILL_DIR}/references/polling-notes.md",
+      allowedTools: ["Read(${CLAUDE_SKILL_DIR}/references/polling-notes.md)"],
+      extraFiles: [],
+    };
+    const result = compileSkill(verb, placeholderStep, { domain: filelessDomain }, new Set(), {});
+    const md = skillMd(result);
+
+    expect(md).toContain('- "Read(${CLAUDE_SKILL_DIR}/references/polling-notes.md)"');
+    expect(md).toContain("config at ${CLAUDE_SKILL_DIR}/references/polling-notes.md");
+    expect(md).not.toContain("parts/domain");
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("a fill that vendors files still scopes its tool rules to the parts dir, stage dir and all", () => {
+    const md = skillMd(compileSkill(verb, placeholderStep, { domain: domainFill }, new Set(), {
+      stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci",
+    }));
+    expect(md).toContain('- "Read(${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci/parts/domain/ci-config.json)"');
+  });
+
   test("substitutes in place, emits a slot marker, and appends nothing", () => {
     const md = skillMd(compileSkill(verb, placeholderStep, { domain: domainFill }, new Set(), {
       stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci",
@@ -499,6 +530,118 @@ describe("compileSkill with placeholders", () => {
       emittedSiblingDirs: ["${CLAUDE_SKILL_DIR}/../../attachments/stage-plan"],
     });
     expect(r.warnings.filter((w) => w.includes("not an emitted file"))).toEqual([]);
+  });
+
+  test("a relative read escaping the pack root is a compile error naming verb, path and source line", () => {
+    const bad = { ...slotless, body: "first line\nread `../../../attachments/self-review/SKILL.md` before starting" };
+    expect(() =>
+      compileSkill(verb, bad, {}, new Set(), {
+        packRoot: "/pack",
+        compiledDir: "/pack/attachments/stage-plan",
+      }),
+    // The step body starts at line 8 of its own SKILL.md, and the offending read
+    // is its second line.
+    ).toThrow('verb "watch-ci": "../../../attachments/self-review/SKILL.md" at skills/pipeline/watch-ci/SKILL.md:9 resolves outside the pack root');
+  });
+
+  test("a stage's escaping read is reported as a stage, not a verb", () => {
+    const bad = { ...slotless, body: "read `../../../elsewhere/SKILL.md`" };
+    expect(() =>
+      compileSkill(verb, bad, {}, new Set(), {
+        packRoot: "/pack",
+        compiledDir: "/pack/attachments/stage-plan",
+        where: 'stage "stage-plan"',
+      }),
+    ).toThrow('stage "stage-plan": "../../../elsewhere/SKILL.md"');
+  });
+
+  test("the pack-root token is exempt with a trailing slash too", () => {
+    const r = compileSkill(verb, { ...slotless, body: "cd ${CLAUDE_SKILL_DIR}/../../ && pwd" }, {}, new Set(), {});
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("an escaping read inside a fill is reported against the fill's own file", () => {
+    const escapingFill: AttachmentSource = { ...domainFill, body: "read `../../../outside.md` first" };
+    expect(() =>
+      compileSkill(verb, placeholderStep, { domain: escapingFill }, new Set(), {
+        packRoot: "/pack",
+        compiledDir: "/pack/attachments/stage-watch-ci",
+      }),
+    ).toThrow('"../../../outside.md" at attachments/watch-ci-domain/SKILL.md:8 resolves outside the pack root');
+  });
+
+  test("an escaping ${CLAUDE_SKILL_DIR} path is the same compile error", () => {
+    const bad = { ...slotless, body: "read ${CLAUDE_SKILL_DIR}/../../../secrets.md" };
+    expect(() =>
+      compileSkill(verb, bad, {}, new Set(), { packRoot: "/pack", compiledDir: "/pack/skills/work" }),
+    ).toThrow("resolves outside the pack root");
+  });
+
+  test("a relative read that resolves to nothing the pack has warns instead of erroring", () => {
+    const packRoot = tempPackRoot();
+    const r = compileSkill(verb, { ...slotless, body: "read `../../attachments/self-review/SKILL.md`" }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "work"),
+    });
+    expect(r.warnings).toEqual(["body references ../../attachments/self-review/SKILL.md which is not an emitted file"]);
+  });
+
+  test("a relative read onto a file the pack already carries is silent", () => {
+    const packRoot = tempPackRoot();
+    mkdirSync(join(packRoot, "attachments", "self-review"), { recursive: true });
+    writeFileSync(join(packRoot, "attachments", "self-review", "SKILL.md"), "hand-authored\n");
+
+    const r = compileSkill(verb, { ...slotless, body: "read `../../attachments/self-review/SKILL.md`" }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "work"),
+    });
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("a relative read onto another target's output dir is silent before that target is written", () => {
+    const packRoot = tempPackRoot();
+    const r = compileSkill(verb, { ...slotless, body: "read `../../attachments/stage-plan/SKILL.md`" }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "work"),
+      emittedTargetDirs: [join(packRoot, "attachments", "stage-plan")],
+    });
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("a shell-composed path whose ../ follows another path is not read as a body reference", () => {
+    const r = compileSkill(verb, { ...slotless, body: 'FORGE=$(dirname "$STAGE")/../forge/ci-forge.sh' }, {}, new Set(), {
+      packRoot: "/pack",
+      compiledDir: "/pack/skills/work",
+    });
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("a bare asset path that this target never emits warns", () => {
+    const r = compileSkill(verb, { ...slotless, body: "run scripts/missing.sh, then read references/notes.md" }, {}, new Set(), {});
+    expect(r.warnings).toEqual([
+      "bare path scripts/missing.sh is not an emitted file",
+      "bare path references/notes.md is not an emitted file",
+    ]);
+  });
+
+  test("a bare directory in prose is not a path and never warns", () => {
+    const r = compileSkill(verb, { ...slotless, body: "Put it in scripts/, then run it. See references/." }, {}, new Set(), {});
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("a markdown-bracketed bare path warns under the file's real name", () => {
+    const r = compileSkill(verb, { ...slotless, body: "[scripts/x.sh]" }, {}, new Set(), {});
+    expect(r.warnings).toEqual(["bare path scripts/x.sh is not an emitted file"]);
+  });
+
+  test("a bare asset path the engine vendors does not warn, sentence punctuation and all", () => {
+    const r = compileSkill(verb, { ...slotless, body: "run scripts/ci-watch.sh, as documented in references/polling-notes.md." }, {}, new Set(), {});
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("the pack-root token is not lint-warned as a missing file", () => {
+    const r = compileSkill(verb, { ...slotless, body: 'PACK_DIRS="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd -P)"' }, {}, new Set(), {});
+    expect(r.warnings).toEqual([]);
   });
 
   test("a body with no placeholders still appends fills (backward compatible)", () => {

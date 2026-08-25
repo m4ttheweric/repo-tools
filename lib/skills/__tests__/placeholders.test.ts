@@ -69,12 +69,31 @@ describe("substitute", () => {
   });
 
   test("a fill's own file references are rewritten under parts/<slot>", () => {
-    const withFile = { ...fill, body: "see ${CLAUDE_SKILL_DIR}/ci-config.json" };
+    const withFile = { ...fill, body: "see ${CLAUDE_SKILL_DIR}/ci-config.json", extraFiles: ["ci-config.json"] };
     expect(substitute("{{slot:domain}}", ctx({ fills: { domain: withFile } }), "x").body)
       .toContain("see ${CLAUDE_SKILL_DIR}/parts/domain/ci-config.json");
     const inStage = ctx({ fills: { domain: withFile }, partsPrefix: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts" });
     expect(substitute("{{slot:domain}}", inStage, "stage-plan").body)
       .toContain("see ${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts/domain/ci-config.json");
+  });
+
+  test("a fill that vendors no files keeps the host skill's own directory", () => {
+    const noFiles = { ...fill, body: "see ${CLAUDE_SKILL_DIR}/notes.md", extraFiles: [] };
+    expect(substitute("{{slot:domain}}", ctx({ fills: { domain: noFiles } }), "x").body)
+      .toContain("see ${CLAUDE_SKILL_DIR}/notes.md");
+    const inStage = ctx({
+      fills: { domain: noFiles },
+      stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan",
+      partsPrefix: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts",
+    });
+    expect(substitute("{{slot:domain}}", inStage, "stage-plan").body)
+      .toContain("see ${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/notes.md");
+  });
+
+  test("an include that vendors no files keeps the host skill's own directory", () => {
+    const noFiles = { ...inc, body: "shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md", extraFiles: [] };
+    const { body } = substitute("{{include:review-core-body}}", ctx({ includes: { "review-core-body": noFiles } }), "x");
+    expect(body).toContain("shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md");
   });
 
   test("a registered public fill is referenced, not inlined", () => {
@@ -85,7 +104,7 @@ describe("substitute", () => {
   });
 
   test("an include's own file references are rewritten under parts/include-<name>", () => {
-    const withRef = { ...inc, body: "shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md" };
+    const withRef = { ...inc, body: "shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md", extraFiles: ["references/adjudicator.md"] };
     const { body } = substitute("{{include:review-core-body}}", ctx({ includes: { "review-core-body": withRef } }), "x");
     expect(body).toContain("shape at ${CLAUDE_SKILL_DIR}/parts/include-review-core-body/references/adjudicator.md");
   });
