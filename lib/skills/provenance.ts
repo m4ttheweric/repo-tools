@@ -58,9 +58,35 @@ export function mattstackProvenance(
   return { sha: sha || plugin.version, dirty };
 }
 
+/** packProvenance never reports a dirty bit, so it only pays for the one subprocess gitFacts' second `git status` call would waste. */
+function gitShaOnly(dir: string): string {
+  try {
+    return execFileSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { stdio: "pipe" }).toString().trim();
+  } catch {
+    return "";
+  }
+}
+
 /** The pack's own provenance token: its short sha when --pack-dir is a checkout, else the version its plugin.json declares. */
-export function packProvenance(packDir: string): string {
-  const { sha } = gitFacts(packDir);
+export function packProvenance(packDir: string, shaOf: (dir: string) => string = gitShaOnly): string {
+  const sha = shaOf(packDir);
   if (sha) return sha;
   return packPluginIdentity(packDir)?.version ?? "";
+}
+
+/**
+ * Mirrors mattstackProvenance's guard and reason: {{run-start.flags}} only ever
+ * prints --pack-sha per declared pipeline, so a pack with none pays nothing for
+ * packProvenance's git subprocess. An empty provenance never bakes a bare
+ * "<name>=" -- that reads as a sha to anything parsing the flag downstream.
+ */
+export function computePackSha(
+  pipelines: Record<string, unknown>,
+  self: { name: string; version: string } | null,
+  packDir: string,
+  provenanceOf: (dir: string) => string = packProvenance,
+): string {
+  if (!self || Object.keys(pipelines).length === 0) return "";
+  const sha = provenanceOf(packDir);
+  return sha ? `${self.name}=${sha}` : "";
 }

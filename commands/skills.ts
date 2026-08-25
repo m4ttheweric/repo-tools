@@ -35,7 +35,7 @@ import { skillMdDriftCauses, type DriftCause } from "../lib/skills/drift.ts";
 import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
 import { buildStageEntries, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
-import { maskProvenance, mattstackProvenance, packPluginIdentity, packProvenance } from "../lib/skills/provenance.ts";
+import { computePackSha, maskProvenance, mattstackProvenance, packPluginIdentity } from "../lib/skills/provenance.ts";
 import {
   invocableRoster,
   loadAttachment,
@@ -419,8 +419,6 @@ function computeInternalRoster(
   return internal;
 }
 
-
-
 async function resolve(flags: Flags): Promise<Resolved> {
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
   const { team, packDir } = await resolvePack(flags);
@@ -458,7 +456,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
   // --repo` expects -- the same key `~/.mattstack/runs/<repo>/` is named by.
   const repoKey = manifestPath ? basename(dirname(manifestPath)) : "";
   const { sha: mattstackSha, dirty: mattstackDirty } = mattstackProvenance(pipelines, pluginRoots.byName.mattstack);
-  const packSha = self ? `${self.name}=${packProvenance(packDir)}` : "";
+  const packSha = computePackSha(pipelines, self, packDir);
   let stageEntries: Record<string, StageEntry[]>;
   try {
     stageEntries = buildStageEntries({ pipelines, pluginRoots });
