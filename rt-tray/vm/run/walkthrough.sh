@@ -122,7 +122,7 @@ else vm_phase_end boot fail "ssh as tester never came up"; exit 1; fi
 
 # ── stage ────────────────────────────────────────────────────────────────────
 vm_phase_begin stage
-vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "mkdir -p $GUEST_BIN && cp -R '$GUEST_RUN/in/guest/.' $GUEST_BIN/ && chmod +x $GUEST_BIN/*.sh && test -f '$GUEST_RUN/in/mattstack.dmg' && touch '$GUEST_RUN/logs/.write-probe' && rm -f '$GUEST_RUN/logs/.write-probe'" \
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "mkdir -p $GUEST_BIN && cp -R '$GUEST_RUN/in/guest/.' $GUEST_BIN/ && chmod +x $GUEST_BIN/*.sh && if [ -f $GUEST_BIN/bun ]; then mkdir -p \$HOME/.bun/bin && mv $GUEST_BIN/bun \$HOME/.bun/bin/bun && chmod +x \$HOME/.bun/bin/bun; fi && test -f '$GUEST_RUN/in/mattstack.dmg' && touch '$GUEST_RUN/logs/.write-probe' && rm -f '$GUEST_RUN/logs/.write-probe'" \
   && vm_phase_end stage pass || { vm_phase_end stage fail "virtiofs share not readable/writable by tester in guest"; exit 1; }
 
 # ── install (admin copies) + launch (tester) ─────────────────────────────────
