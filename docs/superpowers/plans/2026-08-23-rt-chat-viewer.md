@@ -21,7 +21,7 @@
 ## Global Constraints
 
 - **`@mattstack/rt-client` NEVER throws.** `rtCommand` wraps its whole fetch in try/catch and returns `{ ok: false, error: "rt daemon unreachable at <sock>: ..." }` for connection-refused exactly as for a refusal. **Console's `runs.ts` and `runs.test.ts` both state the opposite** — that a throw means unreachable and falls through to `app.onError` as a 500. That is wrong; the test passes only because it mocks a rejection the real client cannot produce. **Do not copy that comment or that test.** Daemon-down and daemon-refused are indistinguishable by shape, which is why Task 4 exists.
-- **Packages come from npm, never a sibling `file:` path.** `@mattstack/rt-client` (`^0.4`, the post-RT-62 line deck already consumes) and `@mattstack/mantine-tokyo`. A `file:../` dependency is a build that only works on one machine; deck's own move to npm is the precedent.
+- **Packages come from npm, never a sibling `file:` path.** `@mattstack/rt-client` (`^0.5` — Task 0a's release; `0.4` is the RT-62 line and has no relay or probe) and `@mattstack/mantine-tokyo`. A `file:../` dependency is a build that only works on one machine; deck's own move to npm is the precedent.
 - **Shared tokens, owned components.** `src/ui/*` is scaffolded from the `create-mantine-kit` template and is **this app's own**: edit `RailShell`, `PageShell`, wrap a Mantine component and expose the wrapper through the wall — that is what the kit is for, and divergence from console's copy is accepted as the price of ownership. What the two apps *share* is the suite's identity, as versioned packages: the Tokyo tokens via `@mattstack/mantine-tokyo` (consumed through the kit's brand slots), and the relay + daemon probe via `rt-client`. Chat never reaches into console's tree; a console component worth having here is ported deliberately, not synced.
 - **`hono/bun` reads the `Bun` global at module load.** Any module that must stay importable under vitest's Node runtime cannot import it. The `/ws` route registers in `index.ts` only — never in `app.ts`, never in `ws.ts`.
 - **Routes are chained and handlers inline.** A handler lifted into a named function loses path-param typing, and an unchained `app.get(...)` never reaches `typeof routes`. This is Hono RPC inference, not style.
@@ -30,7 +30,7 @@
 - **The page must not scroll horizontally at 375px.** The composer is the reason this app is published; a desktop layout that technically reflows is a failure.
 - **Clean-code comments only.** A comment states a constraint the code cannot show. No narration, no ticket numbers, no decision history in source.
 - **Commits:** prefix `chat-viewer:`, trailer `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
-- **Test gate:** `bun test` (or `vitest run`) and `tsc -b` pass before every commit.
+- **Test gate:** in the chat repo `bunx vitest run && bunx tsc -b` (a vitest repo: `bun test` would run the same files under bun's runner and choke on `vi.mock`); in repo-tools `bun run test && bunx tsc --noEmit`; in console `bun run lint && bunx vitest run && bunx tsc -b`. Before every commit.
 
 ---
 
@@ -46,7 +46,7 @@ packages/mantine-tokyo/                  NEW: @mattstack/mantine-tokyo — the T
 src/ui/design-system/app-{theme,colors}.ts  MODIFY: console's brand slots re-export from the package (its kit copy is otherwise untouched)
 
 # chat (Tasks 1-7)
-package.json                   NEW: rt-client ^0.4 and mantine-tokyo from npm
+package.json                   NEW: rt-client ^0.5 and mantine-tokyo from npm
 src/ui/**                      NEW: the create-mantine-kit template copy — this app's own kit, edited freely
 src/ui/design-system/app-{theme,colors}.ts  MODIFY: brand slots re-export from @mattstack/mantine-tokyo
 design/                        NEW: the approved artboards, canvas.json, README (console's design/ pattern)
@@ -157,15 +157,15 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Test: `tokyo-ramps.test.ts` and `tokyo-theme.test.ts` move with the code; console's suite unchanged and green
 
 **Interfaces:**
-- Produces: `import { tokyoTheme, tokyoRamps, tokyoColorNames } from "@mattstack/mantine-tokyo"` and `import "@mattstack/mantine-tokyo/tokyo-theme.css"`. Peer dep: `@mantine/core` (for `virtualColor` and the override type). **No components** — `RailShell`, `PageShell`, `GenericError`, the hooks stay in each app's own kit copy.
+- Produces: `import { tokyoTheme, tokyoRamps } from "@mattstack/mantine-tokyo"`, `import type { TokyoColorName } from "@mattstack/mantine-tokyo"` (a string-literal union — the slot it feeds is `export type AppCustomColors`, consumed via `import type` under `verbatimModuleSyntax`, so the re-export is `export type { TokyoColorName as AppCustomColors }`), and `import "@mattstack/mantine-tokyo/tokyo-theme.css"`. Peer dep: `@mantine/core` (for `virtualColor` and the override type). **No components** — `RailShell`, `PageShell`, `GenericError`, the hooks stay in each app's own kit copy.
 
 - [ ] **Step 1: Move the values, not the components**
 
-`git mv` the ramps, theme values, colour names, css and font into the package. Nothing React moves: the package exports data and css. The `@font-face` in the package css resolves `./fonts/jetbrains-mono.woff2` relative to the package.
+`git mv` the ramps, theme values, colour names, css and font into the package. Nothing React moves: the package exports data, a type, and css. The `@font-face` in the package css resolves `./fonts/jetbrains-mono.woff2` relative to the package — today console's is absolute (`/fonts/jetbrains-mono.woff2` from `public/fonts/`), so this step also deletes `public/fonts/jetbrains-mono.woff2` and lets Vite serve the package's copy; `tokyo-theme.test.ts`'s `toContain('/fonts/jetbrains-mono.woff2')` still passes on the relative path. The parity capture in Step 3 is what proves the font still loads.
 
 - [ ] **Step 2: Console consumes it through its brand slots**
 
-`"@mattstack/mantine-tokyo": "file:./packages/mantine-tokyo"` in console's `package.json` (in-repo path, the way repo-tools consumes its own `rt-client`). `app-theme.ts` becomes `export { tokyoTheme as appTheme } from "@mattstack/mantine-tokyo"` (and likewise `app-colors.ts`), so the kit's `theme.ts` merge and `mantine.d.ts` augmentation keep working untouched — the slots are the kit's designated extension point, and the rest of console's kit copy stays byte-identical to what it was. The package is a data import, so the `@ui/*` wall needs no exception.
+`"@mattstack/mantine-tokyo": "file:./packages/mantine-tokyo"` in console's `package.json` (in-repo path, the way repo-tools consumes its own `rt-client`). `app-theme.ts` becomes `export { tokyoTheme as appTheme } from "@mattstack/mantine-tokyo"` and `app-colors.ts` becomes `export type { TokyoColorName as AppCustomColors } from "@mattstack/mantine-tokyo"`, so the kit's `theme.ts` merge (`appTheme` depends only on the ramps, `createTheme` and `virtualColor`) and the once-per-repo `mantine.d.ts` augmentation keep working untouched — the slots are the kit's designated extension point, and the rest of console's kit copy stays byte-identical to what it was. The package is a data import, so the `@ui/*` wall needs no exception.
 
 - [ ] **Step 3: Prove nothing moved visually**
 
@@ -232,7 +232,7 @@ bun add hono @tanstack/react-query
 Then the two mattstack packages from npm — the versions Task 0 published:
 
 ```bash
-bun add @mattstack/rt-client@^0.4 @mattstack/mantine-tokyo@^0.1
+bun add @mattstack/rt-client@^0.5 @mattstack/mantine-tokyo@^0.1
 ```
 
 **Remove** — the template *does* ship these and this app needs none of them:
@@ -241,11 +241,27 @@ bun add @mattstack/rt-client@^0.4 @mattstack/mantine-tokyo@^0.1
 `.storybook/`. Also do not port console's `build:binary` /
 `generate:embedded` path — it buys nothing when deck supervises the process.
 
+Removing a dependency orphans its consumers, and `tsconfig.app.json` includes
+all of `src`, so `tsc -b`, `vite build` and vitest all fail until the source
+goes too. Delete, in the same step:
+
+- `src/ui/spotlight/` and the `@mantine/spotlight` import in `src/ui/styles/index.css`
+- `src/ui/lazy/codemirror/` and its re-export in `src/ui/lazy/index.ts`
+- `src/ui/core/virtual-table/`, `src/ui/core/virtual-list/`, and `src/ui/core/core-batch-c.test.tsx` (their exports in `src/ui/core/index.ts` go with them)
+- every `*.stories.tsx` under `src/` (34 files import `@storybook/react-vite`)
+- the whole `src/app/docs/` tree (the kit's docs site; it imports all four)
+
+Then `bunx tsc -b` must pass before anything is added. It will not yet:
+`tsconfig.app.json` types `["vite/client", "vitest/globals"]` only, so
+`Bun.serve` in `index.ts` is untyped — add `"bun"` to that array, as console's
+`tsconfig.app.json` does. The template's `"build": "tsc -b && vite build"`
+script already exists; keep it.
+
 `zod`, Vite, React, Mantine, and vitest are already in the template.
 
 **Point the brand slots at the package.** The template's `src/ui/design-system/app-theme.ts` and `app-colors.ts` become re-exports from `@mattstack/mantine-tokyo`, exactly as console's do after Task 0b, and `src/app/styles` imports the package css. Everything else under `src/ui/` is the template copy and is **this app's kit** — edit `RailShell`, `PageShell`, the icon registry, the wall, as the viewer needs; console's copies are a reference, not a source.
 
-**Add `design/`.** Copy the approved artboards (`Main`, `DaemonDown`, `Phone`, `PhoneRooms`, `Indicators` `.dc.html`), `canvas.json`, and a README in console's `design/wiring/README.md` shape naming what each value was lifted from and which departures are deliberate (44px phone controls, 8px status dots, contrast-safe mention badge). Every UI task below is checked against these.
+**Add `design/`.** Copy it from repo-tools: `~/Documents/GitHub/repo-tools/docs/superpowers/design/2026-08-24-rt-chat-viewer/` (`artboards/{Main,DaemonDown,Phone,PhoneRooms,Indicators}.dc.html`, `canvas.json`, `build.py`, `README.md`) → `design/`, keeping the README's provenance table and the list of deliberate departures (44px phone controls, 8px status dots, contrast-safe mention badge). Every UI task below is checked against these files, not the hosted canvas.
 
 - [ ] **Step 4: Write the failing test**
 
@@ -301,8 +317,7 @@ and return an `index.html` handler. Two details are load-bearing:
   200 with the SPA's `index.html`, and the RPC client then sees
   `res.ok === true` and throws parsing HTML as JSON.
 
-Add `"build": "tsc -b && vite build"` and run it, so `dist/` exists before
-deck serves the app. Deck's working directory must be the repo root, not
+Run `bun run build` so `dist/` exists before deck serves the app. Deck's working directory must be the repo root, not
 `dist` — `--dir ~/Documents/GitHub/chat` already satisfies that.
 
 - [ ] **Step 8: Register with deck**
@@ -334,7 +349,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Test: `src/server/chat.test.ts`
 
 **Interfaces:**
-- Consumes, from plan 1 Task 6: `chatRooms`, `chatWho`, `chatMessages`, and the types `ChatMember`, `ChatMessage`, `RoomSummary`, `WakeMode`.
+- Consumes, from plan 1 Task 6: `chatRooms`, `chatWho`, `chatMessages`, `chatMark`, `getSetting` (the `chat.humanHandle` default), and the types `ChatMember`, `ChatMessage`, `RoomSummary`, `WakeMode`. Every `vi.mock("@mattstack/rt-client")` factory in this repo must define **all** of these (plus `daemonHealth` once Task 4 mounts `health`), or vitest throws "No `chatMark` export is defined on the mock" at import.
 - Produces: `export const chat: Hono` mounting `GET /api/chat/rooms`, `/api/chat/who/:room`, `/api/chat/messages/:room`, `POST /api/chat/mark`.
 - `/api/chat/who/:room` adds `branch?: string` to each member: the server runs `git -C <cwd> branch --show-current` per member with a `cwd` (one spawn per member per request, `undefined` on any failure or when `cwd` is absent). `ChatMember` carries no branch and a worktree path cannot yield one client-side; only the server has the filesystem. `POST /api/chat/mark` `{ room }` calls `chatMark` for the human handle — marking read is explicit (Task 5), never a side effect of viewing.
 
@@ -348,6 +363,11 @@ vi.mock("@mattstack/rt-client", () => ({
   chatRooms: vi.fn(),
   chatWho: vi.fn(),
   chatMessages: vi.fn(),
+  chatMark: vi.fn(),
+  chatJoin: vi.fn(),
+  chatPost: vi.fn(),
+  daemonHealth: vi.fn(),
+  getSetting: vi.fn(() => ({ value: "matt" })),
 }));
 const rt = await import("@mattstack/rt-client");
 const { app } = await import("./app");
@@ -487,12 +507,13 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Create: `src/server/health.ts` — the probe, `GET /api/daemon`
 - Modify: `src/server/app.ts` — mount it with `.route('/', health)`
 - Create: `src/ui/DaemonBanner.tsx`
+- Create: `src/ui/memberStatus.ts` — the one place the live/idle/deaf rule lives (Tasks 5, 6 and 7 consume it)
 - Modify: `src/app/App.tsx`
-- Test: `src/server/health.test.ts`, `src/ui/DaemonBanner.test.tsx`
+- Test: `src/server/health.test.ts`, `src/ui/DaemonBanner.test.tsx`, `src/ui/memberStatus.test.ts`
 
 **Interfaces:**
 - Consumes: `daemonHealth` from `@mattstack/rt-client` (Task 0a).
-- Produces: `GET /api/daemon` → `{ reachable: boolean; error?: string }` (the `daemonHealth` result, verbatim); `<DaemonBanner reachable={boolean} since={number} probes={number} />`
+- Produces: `GET /api/daemon` → `{ reachable: boolean; error?: string }` (the `daemonHealth` result, verbatim); `<DaemonBanner reachable={boolean} since={number} probes={number} />`; `memberStatus(m: { armedAt?: number; lastSeenAt?: number }, now: number): "live" | "idle" | "deaf"` and `memberStatusDetail(m, now): string` (the sub-line: `armed · seen 12s ago`, `armed, silent 22m`, `tail died · last seen 2h ago`) in `src/ui/memberStatus.ts` — live = `armedAt` set AND `lastSeenAt` within 10 minutes; idle = no `armedAt`, `lastSeenAt` within 1 hour; deaf = anything else.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -509,9 +530,16 @@ test("GET /api/daemon reports unreachable rather than 500ing", async () => {
 
 ```tsx
 test("the banner supersedes agent statuses", () => {
-  render(<App initialState={{ daemonReachable: false, members: [{ handle: "a", status: "live" }] }} />);
+  render(<App initialState={{ daemonReachable: false, members: [{ handle: "a", armedAt: now, lastSeenAt: now }] }} />);
   expect(screen.getByRole("status")).toHaveTextContent(/daemon/i);
-  expect(screen.queryByText(/will hear you/i)).toBeNull();
+  expect(screen.queryByText("live")).toBeNull();
+});
+
+test("memberStatus: live requires BOTH an armed waiter and a fresh heartbeat", () => {
+  expect(memberStatus({ armedAt: now - 1000, lastSeenAt: now - 60_000 }, now)).toBe("live");
+  expect(memberStatus({ armedAt: now - 1000, lastSeenAt: now - 20 * 60_000 }, now)).toBe("deaf");
+  expect(memberStatus({ lastSeenAt: now - 60_000 }, now)).toBe("idle");
+  expect(memberStatus({ lastSeenAt: now - 5 * 60 * 60_000 }, now)).toBe("deaf");
 });
 ```
 
@@ -524,11 +552,11 @@ Expected: FAIL — `/api/daemon` 404s.
 
 The route returns rt-client's `daemonHealth()` result as-is — it wraps `eventsHead()`, the cheapest call there is, and answers **200 with `reachable: false`** rather than an error status: the probe succeeded in learning the daemon is down, which is not itself a server failure.
 
-The client polls it every 5s. When unreachable, per the `DaemonDown` artboard: the banner (Mantine `Alert` light/`bad`) says *the transcript has gone quiet because nothing is answering at rt.sock, not because every agent is idle*, carries elapsed time and probe count (`down 4m · 48 probes`) and a probe-now action; the member pane goes to opacity 0.6 with hollow dots and `—` for every status; rooms/member counts are marked *last known*; the composer is disabled with the draft kept (Task 7). **Nobody renders as live, idle or deaf.** Agent status is only meaningful while the daemon is reachable — a member list rendered from stale data during an outage is exactly the lie this task exists to prevent.
+`App` accepts an `initialState` prop (`{ daemonReachable?, members?, rooms?, messages? }`) that seeds its query cache — the test seam every UI test uses instead of a network. The client polls `/api/daemon` every 5s. When unreachable, per the `DaemonDown` artboard: the banner (Mantine `Alert` light/`bad`) says *the transcript has gone quiet because nothing is answering at rt.sock, not because every agent is idle*, carries elapsed time and probe count (`down 4m · 48 probes`) and a probe-now action; the member pane goes to opacity 0.6 with hollow dots and `—` for every status; rooms/member counts are marked *last known*; the composer is disabled with the draft kept (Task 7). **Nobody renders as live, idle or deaf.** Agent status is only meaningful while the daemon is reachable — a member list rendered from stale data during an outage is exactly the lie this task exists to prevent.
 
 - [ ] **Step 4: Integration test — a stopped daemon renders as a stopped daemon**
 
-This is spec integration test 5. Stop the daemon, load the page, assert the banner appears and no member renders as live. It is the test that would have caught the original defect.
+This is the spec's "stopped daemon renders as a stopped daemon" integration test (item 6 in its Testing list; item 5 is the tail's exit-69 test). Stop the daemon, load the page, assert the banner appears and no member renders as live. It is the test that would have caught the original defect.
 
 - [ ] **Step 5: Run the tests**
 
@@ -568,11 +596,6 @@ test("mention badges are visually distinct from plain unread", () => {
   expect(screen.getByLabelText("4 unread")).toHaveTextContent("4");
 });
 
-test("a room the human has not joined says so", () => {
-  render(<RoomRail rooms={[{ room: "release", memberCount: 2, unread: 0, mentions: 0, joined: false }]} />);
-  expect(screen.getByText("not joined")).toBeInTheDocument();
-});
-
 test("the page bar names the handles behind a small status count", () => {
   render(<PageBar room="build" members={[{ handle: "a", status: "live" }, { handle: "gitq-main", status: "deaf" }]} />);
   expect(screen.getByText("1 deaf: gitq-main")).toBeInTheDocument();
@@ -599,8 +622,14 @@ test("a frame for another room does not append here", async () => {
 
 test("wide content scrolls inside its own container, not the page", () => {
   render(<Transcript room="build" messages={[longCodeBlockMessage]} />);
-  expect(getComputedStyle(screen.getByTestId("transcript")).overflowX).toBe("auto");
+  // jsdom sees inline styles, not CSS-module rules: the code block's overflow-x is inline.
+  expect(screen.getByTestId("code-block").style.overflowX).toBe("auto");
 });
+
+// renderTranscriptWithFakeSocket, longCodeBlockMessage and fetchMock are test
+// helpers this task writes (src/ui/test-utils.tsx): a WebSocket stub whose
+// pushFrame() delivers one frame, a fixture message with a 200-column code
+// block, and a vi.fn() installed as globalThis.fetch.
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -612,8 +641,8 @@ Expected: FAIL — no `RoomRail` module.
 
 Build to the `Main` artboard and its `Indicators` legend:
 
-- **Rooms rail:** `#room` rows, active row in the accent wash; `@N` filled badge for mentions, outlined `N` for plain unread — distinguishable without colour because the glyph differs; `not joined` outline badge on rooms the human is not in (posting there joins, Task 7). No explanatory footer.
-- **Page bar** (console's second 64px bar): `#build` at 26px/700, then status chips — `6 members`, `2 live`, `2 idle`, `1 deaf` — where a chip whose count is ≤2 names its handles (`1 deaf: gitq-main`), so the stuck agent is read first, not found last. A `mark read` button with the unread count calls `POST /api/chat/mark`; nothing else ever advances the cursor. A sort control is drawn but defaults to join order.
+- **Rooms rail:** `#room` rows, active row in the accent wash; `@N` filled badge for mentions, outlined `N` for plain unread — distinguishable without colour because the glyph differs. No explanatory footer. The rail lists the rooms the human is **in**: `chat:rooms` is `listRooms(handle)` and no merged handler enumerates other rooms, so the artboards' `not joined` badge is **not built here** (see "What this plan does not build").
+- **Page bar** (console's second 64px bar): `#build` at 26px/700, then status chips — `6 members`, `2 live`, `2 idle`, `1 deaf` — computed with `memberStatus()` from Task 4, where a chip whose count is ≤2 names its handles (`1 deaf: gitq-main`), so the stuck agent is read first, not found last. A `mark read` button with the unread count calls `POST /api/chat/mark`; nothing else ever advances the cursor. A sort control is drawn but defaults to join order.
 - **Transcript:** one card, rows separated by soft borders — handle (600) and **local** time, then the body. No status dot beside a message: a dot next to a 21:58 message would be a claim about then; status lives on the member row (Task 6). A top edge row (`41 older messages · load on scroll`) is the scrollback affordance; it becomes `Loading older…` while a `before` page is in flight. The `N new` divider marks the read cursor and carries a `mark read` link on the phone. Bodies get `overflow-wrap: anywhere` (agents paste paths), inline `code` gets a rule, code blocks scroll on their own `overflow-x`.
 
 The transcript appends from WS frames and scroll-backs through `GET /api/chat/messages/:room` with `before`. **A frame carries only `{ id }` — a pointer, not prose** (chat owns the message store; the journal is the doorbell), so the client fetches the message body on arrival or refetches the tail.
@@ -641,7 +670,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Test: `src/ui/MemberList.test.tsx`
 
 **Interfaces:**
-- Consumes: `ChatMember` (`armedAt`, `lastSeenAt`, `cwd`, `pane`) plus the server-derived `branch?` from Task 2's `/api/chat/who/:room`.
+- Consumes: `ChatMember` (`armedAt`, `lastSeenAt`, `cwd`, `pane`) plus the server-derived `branch?` from Task 2's `/api/chat/who/:room`; `memberStatus` / `memberStatusDetail` from Task 4 (this component renders the rule, it does not restate it).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -701,7 +730,7 @@ The 10-minute threshold absorbs two missed long-poll cycles (~4 min each) before
 
 `deaf` is the status that earns this view its keep: it surfaces the one failure the CLI cannot prevent, so you can see which agent stopped listening before wasting a message on it.
 
-Each row, per the `Main` artboard: 8px status dot; handle (600) with the status word; `branch · pane N`; the path on its own line, **head-truncated** (`…/mr-board-wt-invite-onboarding` — the tail is the discriminating end); a sub-line saying why (`armed · seen 12s ago`, `no waiter · seen 9m ago`, `tail died · last seen 2h ago`, `armed, silent 22m`). `branch` comes from the server (Task 2) — **`ChatMember` carries no `branch`** and a worktree path cannot yield one client-side; render the row without it when absent, and likewise without `cwd`/`pane`, both optional. The human's row carries the `you` badge and `wake: none`, never a status. Members stay in **join order** — health indicates, it never groups. Handles are derived and terse, so identifying *which* agent is speaking matters more here than in human chat. Clicking a member focuses its herdr pane on the desk (inserts `@handle` on the phone, Task 7); either degrades to nothing when viewed remotely, so the row reads completely on its own.
+Each row, per the `Main` artboard: 8px status dot; handle (600) with the status word; `branch · pane N`; the path on its own line, **head-truncated** (`…/mr-board-wt-invite-onboarding` — the tail is the discriminating end); a sub-line saying why (`armed · seen 12s ago`, `no waiter · seen 9m ago`, `tail died · last seen 2h ago`, `armed, silent 22m`). `branch` comes from the server (Task 2) — **`ChatMember` carries no `branch`** and a worktree path cannot yield one client-side; render the row without it when absent, and likewise without `cwd`/`pane`, both optional. The human's row carries the `you` badge and `wake: none`, never a status. Members stay in **join order** — health indicates, it never groups. Handles are derived and terse, so identifying *which* agent is speaking matters more here than in human chat. Tapping a member inserts `@handle` into the composer (Task 7). Focusing the member's herdr pane from the row is **not built here** — no route exists and `herdr pane focus` addresses neighbours, not a pane id — so the row must read completely on its own, which it does.
 
 `now` is a prop so the thresholds are testable without faking timers.
 
@@ -743,14 +772,19 @@ test("a dropped write surfaces as an error, never a silent success", async () =>
 });
 ```
 
-```tsx
-test("posting into a room you have not joined auto-joins first", async () => {
+```ts
+// src/server/chat.test.ts — auto-join is the server's job: the browser never imports rt-client
+test("posting into a room the human has not joined joins first, then posts", async () => {
+  vi.mocked(rt.chatJoin).mockResolvedValueOnce({ ok: true, data: { handle: "matt", memberCount: 2, unread: 0 } });
   vi.mocked(rt.chatPost).mockResolvedValueOnce({ ok: true, data: { id: 1, recipients: [] } });
-  render(<Composer room="build" />);
-  await userEvent.type(screen.getByRole("textbox"), "hello{enter}");
-  expect(rt.chatJoin).toHaveBeenCalled();
+  const res = await app.request("/api/chat/post", { method: "POST", body: JSON.stringify({ room: "release", body: "hello" }) });
+  expect(res.status).toBe(200);
+  expect(rt.chatJoin).toHaveBeenCalledWith(expect.objectContaining({ room: "release", handle: "matt" }), expect.anything());
+  expect(vi.mocked(rt.chatJoin).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(rt.chatPost).mock.invocationCallOrder[0]);
 });
+```
 
+```tsx
 test("@ autocompletes from room members, all of them, with status", async () => {
   render(<Composer room="build" members={[{ handle: "acme-dev-42", status: "live" }, { handle: "gitq-main", status: "deaf" }]} />);
   await userEvent.type(screen.getByRole("textbox"), "@");
@@ -775,7 +809,7 @@ Expected: FAIL — no `Composer` module, `/api/chat/post` 404s.
 
 - [ ] **Step 3: Implement**
 
-Posts as the `chat.humanHandle` setting (default `matt`). Posting into a room not yet joined auto-joins, consistent with plan 1's join-creates — say so only where it applies (`Posting here will join #release`), not as permanent chrome.
+Posts as the `chat.humanHandle` setting (default `matt`). `POST /api/chat/post` calls `chatJoin` before `chatPost` (join is idempotent for an existing member, so the server does it unconditionally) — auto-join is server-side, consistent with plan 1's join-creates, and the browser never touches rt-client.
 
 Per the `Phone` and `PhoneRooms` artboards:
 
@@ -790,8 +824,10 @@ Load the page at **375px** wide and confirm: no horizontal page scroll, the comp
 - [ ] **Step 5: Publish**
 
 ```bash
-deck domain m4tthew.dev     # if not already configured
-# then set a gate on the chat app: a password, a Google sign-in list, or both
+deck domain m4tthew.dev          # if not already configured
+deck password chat               # gate 1: the gateway password
+deck access chat emails <list>   # gate 2: the Google sign-in allow-list (optional, additive)
+deck publish chat on             # only after a gate is confirmed — order is the security-relevant part
 ```
 
 Deck's per-app gates are the whole auth story — no auth code is written for this feature. Confirm the gate actually challenges from a logged-out browser before reporting done; **an unauthenticated page that can post into rooms is a page that can steer Matt's agents.**
@@ -813,6 +849,10 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ---
 
 ## What this plan does not build
+
+**`not joined` rooms in the rail.** The rail shows the rooms the human is a member of; listing every room needs a store/handler that plan 1 did not ship. Returns with the presence-roster work, where rooms become a view on presence.
+
+**Focusing a herdr pane from a member row.** No route or CLI addresses a pane by id today. Returns when herdr exposes one; the row is designed to read completely without it.
 
 **A shared UI kit.** Console and chat each own their `create-mantine-kit` copy and may edit it freely — the kit is a starting point the app owns, not a library, and not a synced template. Duplication between the two apps is answered by shared *tokens* (`@mattstack/mantine-tokyo`) and owned *components*; component-level divergence is accepted as the price of ownership, and a console improvement worth having in chat is ported on purpose. This is a decision, not an omission.
 

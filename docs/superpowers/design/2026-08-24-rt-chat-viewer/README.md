@@ -23,4 +23,6 @@ are 8px, not the 6px health dots, because they carry the page's main signal; the
 uses accent shade 7 in light and bg-on-accent in dark so it passes contrast at 10px.
 
 Rooms, handles and paths are the shape of this machine's worktree pool; the conversation is
-illustrative.
+illustrative. Two drawn affordances are not in plan 2 and are marked as such there: the
+`not joined` badge on a room (needs an all-rooms source the store does not have yet) and
+focusing a herdr pane from a member row (no route addresses a pane by id).
