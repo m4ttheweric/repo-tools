@@ -252,7 +252,7 @@ goes too. Delete, in the same step:
 - `src/ui/spotlight/` and the `@mantine/spotlight` import in `src/ui/styles/index.css`
 - `src/ui/lazy/codemirror/` and its re-export in `src/ui/lazy/index.ts`
 - every `*.stories.tsx` under `src/` (34 files import `@storybook/react-vite`) — but **not** `src/ui/storybook/`: `vitest.setup.ts` imports `@ui/storybook/jsdom-polyfills` (matchMedia, ResizeObserver) and every UI test depends on it
-- the whole `src/app/docs/` tree (the kit's docs site; it imports Spotlight and CodeMirror), **and** the `/docs*` routes in `src/app/routes.ts` that import `isDocsSlug`/`DocsSlug` from it (`App.tsx` is rewritten by this plan anyway)
+- the whole `src/app/docs/` tree (the kit's docs site; it imports Spotlight and CodeMirror), the `/docs*` routes in `src/app/routes.ts` that import `isDocsSlug`/`DocsSlug` from it, **and** `src/app/landing/` (the kit's marketing page; `FeaturesSection.tsx` imports `docsPath`/`DocsSlug`) — `App.tsx` is rewritten by this plan anyway
 
 Then `bunx tsc -b` must pass before anything is added. It will not yet:
 `tsconfig.app.json` types `["vite/client", "vitest/globals"]` only, so
