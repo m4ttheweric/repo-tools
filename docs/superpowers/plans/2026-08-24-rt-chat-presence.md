@@ -32,7 +32,8 @@
 
 ```
 # repo-tools
-lib/state/db.ts                          MODIFY: v4 — chat_presence, chat_dms; startup clear covers both
+lib/state/db.ts                          MODIFY: v4 — chat_presence, chat_dms
+lib/daemon.ts                            MODIFY: startup prune beside clearAllArmed (which chat-store extends to both tables)
 lib/state/presence-store.ts              NEW: sign-in/out, heartbeats, statuses, reclaim, prune, buddies
 lib/state/dm-store.ts                    NEW: dmRoomFor (hash id, chat_dms row, memberships incl. the human)
 lib/state/chat-store.ts                  MODIFY: postMessage mentions param; joinRoom guard scoped; join refuses DM rooms
@@ -111,7 +112,7 @@ test("startup clear covers presence arming", () => {
 });
 ```
 
-- [ ] **Step 2: Run them to verify they fail** — `bun test lib/state/__tests__/db-migration.test.ts` → FAIL (no tables).
+- [ ] **Step 2: Run them to verify they fail** — `bun test lib/state/__tests__/db.test.ts` → FAIL (no tables).
 - [ ] **Step 3: Implement** — append the two `CREATE TABLE IF NOT EXISTS` blocks (copy the spec's SQL verbatim, comments included) as `V4_SCHEMA`, bump `SCHEMA_VERSION`, extend `clearAllArmed` to both tables.
 - [ ] **Step 4: Gate** — `bun run test && bunx tsc --noEmit` → PASS.
 - [ ] **Step 5: Commit** — `chat-presence: schema v4 — presence and dm tables`.
@@ -142,7 +143,7 @@ test("startup clear covers presence arming", () => {
   export function presenceForSession(sessionId: string, db?): PresenceRow | null;
   export function assertSessionOwnsHandle(handle: string, sessionId: string | undefined, db?): void;  // handle-keyed payloads (arm/touch/disarm): throws only when a presence row exists for the handle and mismatches a provided sessionId
   export function assertSessionSignedIn(sessionId: string, db?): PresenceRow;                          // session-keyed payloads (pulse/away/back/sign-out): no row for this session id means the handle was reclaimed — throw
-  export function prunePresence(now: number, db?): number;   // signed out >24h ago, or last_seen_at >24h old
+  export function prunePresence(now: number, db?): number;   // signed out >24h ago, or last_seen_at >24h old; reads presenceThresholds() internally (so does listBuddies) — RT_CHAT_PRUNE_MS has no other route in
   ```
 - Consumes: nothing outside `lib/state`.
 
@@ -331,7 +332,7 @@ test("a dm post wakes the other participant; the human's post wakes both", () =>
 - Produces handlers (payload → data), all thin over the stores:
   ```
   chat:sign-in   { sessionId, baseHandle, cwd?, repo?, branch?, pane?, statusText? } → { handle, reclaimed }   // the room join happens CLIENT-side after this returns (Task 6) — no room field, nothing populates one
-  chat:sign-out  { sessionId } → {}                                     // CLI adds --quiet (hook path: suppress output)
+  chat:sign-out  { sessionId } → {}                                     // a sessionId with NO presence row is a NO-OP success, never a refusal — SessionEnd fires for every session and most never sign in
   chat:away      { sessionId, text }  /  chat:back { sessionId } → {}
   chat:buddies   {} → { buddies: Array<PresenceRow & { status }> }
   chat:pulse     { sessionId, cwd?, repo?, branch?, pane? } → { unread: { dms, mentions, rooms }, status } — or refuses with an error containing handle reclaimed
@@ -376,7 +377,7 @@ test("chat:dm creates once, posts with the recipient in mentions, and reports re
 test("chat:rooms marks a dm and chat:who carries presence statuses", async () => { /* kind: "dm" on the dm row; status fields present */ });
 ```
 
-- [ ] **Step 2: FAIL** (unknown handlers). **Step 3: Implement** — handlers thin, stores do the work; `chat:pulse` computes unread via `unreadWakingCount` + DM filter and heartbeats first. **Step 4:** registry count test updated; `bun run build` in `packages/rt-client` (dist-freshness). **Step 5: Gate → Commit** — `chat-presence: daemon handlers and rt-client wrappers`.
+- [ ] **Step 2: FAIL** (unknown handlers). **Step 3: Implement** — handlers thin, stores do the work; `chat:pulse` computes unread via `unreadWakingCount` + DM filter and heartbeats first. **Step 4:** `rt-client-commands.test.ts` green (every catalog entry routes); `bun run build` in `packages/rt-client` (dist-freshness). **Step 5: Gate → Commit** — `chat-presence: daemon handlers and rt-client wrappers`.
 
 ---
 
@@ -431,7 +432,7 @@ test("position 0: a signed-in session resolves the assigned handle for every ver
 
 test("--as while signed in is refused with the reason", async () => {
   await signInInProcess({ as: "x" });
-  const { code, stderr } = await runChatRaw(["post", "r", "hi", "--as", "y"]);
+  const { code, stderr } = await runChatRaw(["post", "r", "hi", "--as", "y", "--session", "s1"]);
   expect(code).not.toBe(0);
   expect(stderr).toMatch(/signed in as x.*sign out/);
 });
@@ -466,6 +467,7 @@ test("sign-out deletes the session file and disarms", async () => { /* file gone
 - `rt chat buddies [--json]` renders the roster (sections in Statuses-table order, `offline (last 24h)` collapsed to one line); `who` with no room aliases it. The shipped 5-minute idle/away split in `memberStatus` is replaced by the spec's four statuses via `buddyStatus` (exported through the barrel).
 - `renderRooms` gains the *direct* heading: DM rooms render as `a ↔ b` from the handler's display pair, never the hashed name; `who <dm-room>` renders the two `chat_dms` participants and never lists the human.
 - `pulse` on a reclaimed refusal deletes the session file and reports it (stdout notice; `--json`: a `reclaimed: true` object) — the hook relays it as `additionalContext`.
+- `rt chat sign-out` implements `--quiet` (suppress all output — the hook flag) and is a silent no-op when no session file exists for the id.
 - `pulse` writes `lastCwd` / `lastBranchReadAt` back to the session file — that gates the git spawn (branch re-read only when cwd changed or the last read is over a minute old; `deriveRepoIdentity` is async and spawns git, which the post path's no-spawn rule forbids on hot paths).
 - `rt chat away <text>` / `rt chat back`; `rt chat dm <handle> <text>`; `rt chat pulse --json` (heartbeat + unread summary + status; exit 0 with `{ reclaimed: true }`-shaped error handling per below).
 - The tail: `chatTouch` refusals are no longer swallowed blind — a `handle reclaimed` error prints one stdout line (`handle reclaimed — sign in again`) and exits 0; every other touch error stays ignored.
@@ -494,8 +496,6 @@ tail without a session id never touches the presence path; the e2e harness
 (`runRt(args, home, extraEnv)` + the marker files) has both. Implementation:
 the tail's `chatTouch` catch special-cases a reclaimed refusal → one stdout
 line (`handle reclaimed — sign in again`), delete the session file, exit 0.
-
-```ts
 ```
 
 - [ ] **Step 2: FAIL.** **Step 3: Implement.** **Step 4: Gate.** **Step 5: Commit** — `chat-presence: buddies, away, dm, pulse; the tail exits on a reclaimed handle`.
@@ -513,6 +513,7 @@ line (`handle reclaimed — sign in again`), delete the session file, exit 0.
 - `hooks.json`: `UserPromptSubmit` → `pulse.sh`; `SessionEnd` → `session-end.sh`; `SessionStart` (matchers `resume|compact|fork`) → `session-start.sh`.
 - `pulse.sh`: read stdin JSON → `session_id`; if no session file at `~/.mattstack/rt/chat/sessions/<id>.json`, exit 0 silently. Else `rt chat pulse --json --session <id>`; on `handle reclaimed` → emit `additionalContext` with the reclaimed notice (unconditional — the one case the waiting rule stays silent in); on waiting + status ≠ live → emit the waiting line; else exit 0 with no output. Budget 50ms: the script is jq + one rt invocation.
 - `session-start.sh`: if a session file exists for `session_id`, emit `additionalContext`: signed-in-as + re-arm-if-not-running notice.
+- `session-end.sh` first checks a session file exists for the payload's `session_id` and exits 0 silently otherwise — `SessionEnd` fires for every session and most never signed in; only then `rt chat sign-out --quiet --session <id>`.
 - The skills are thin: `sign-in` runs the verb, then instructs the Monitor arm (deferring to `rt:chat` for discipline); `sign-out` runs the verb and stops the Monitor; `away` runs the verb.
 
 - [ ] **Step 1:** Write `pulse.sh` against a **fixture** rt (a stub script on PATH echoing canned JSON) and a stdin fixture; assert the three outputs (silent, waiting line, reclaimed notice). **Step 2:** FAIL (no script). **Step 3:** Implement all three scripts + `hooks.json` + skills. **Step 4:** Manual verification in a scratch session (Task 1's harness): prompt → context injected. **Step 5: Commit** in mattstack-marketplace — `chat: presence plugin — sign-in/out/away skills, pulse and session hooks`.
@@ -523,7 +524,7 @@ line (`handle reclaimed — sign in again`), delete the session file, exit 0.
 
 **Files:**
 - Modify: `skills/rt-chat/SKILL.md`, `lib/command-tree-def.ts` (verb help), `website/docs/reference/chat.mdx` (gen-docs)
-- Test: `bun run check-docs` (drift gate)
+- Test: `bun run docs:check` (drift gate)
 
 - [ ] **Step 1:** Revise the skill per the spec's list: entry point *sign in, then arm*; bare `rt chat tail` arm line; `buddies`/`who` and the four statuses; the DM section (including that Matt sees agent↔agent DMs — no private DMs); everything kept from plan 1 (the gate, arm once, read capped, announce-before-taking, never block on a human, stream-ended → re-arm unless you ended it, exit-69 → check the daemon; **plus**: exit-0 "handle reclaimed" → sign in again; a first arm after reclaiming may bounce once with exit 3 — re-arm, it is not a bug).
 - [ ] **Step 2:** Regenerate docs (`bun run docs:gen`), update the command tree entries, run `bun run docs:check` (those are the real script names). **Step 3: Gate → Commit** — `chat-presence: skill and docs`.
