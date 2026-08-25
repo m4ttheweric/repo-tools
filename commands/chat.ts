@@ -38,6 +38,7 @@ import { shellQuote } from "../lib/herdr-launch.ts";
 import {
   currentSessionId,
   deleteChatSession,
+  isValidSessionId,
   readChatSession,
   writeChatSession,
 } from "../lib/chat-session.ts";
@@ -112,6 +113,11 @@ const NAME_RULE = "must match ^[a-z0-9._-]+$";
 /** Rejects with the reason rather than silently normalizing (Global Constraint). */
 function requireValidName(kind: string, name: string): void {
   if (!isValidChatName(name)) fail(`invalid ${kind} "${name}" — ${NAME_RULE}`);
+}
+
+/** sign-in/sign-out only — every other verb's session-id use (resolveHandle) goes through readChatSession, which degrades an invalid id to "no session" rather than failing. */
+function requireValidSessionId(id: string): void {
+  if (!isValidSessionId(id)) fail(`invalid session id "${id}" — must match ^[A-Za-z0-9._-]+$`);
 }
 
 function unwrap<T>(res: RtResponse<T>, label: string): T {
@@ -364,7 +370,15 @@ function roomForIdentity(id: RepoIdentity): string {
   return slugify(segments.slice(-2).join("-"));
 }
 
-/** Null when `cwd` isn't inside a git work tree at all — the gate is a real `git rev-parse`, not a directory walk, so a scratch dir with a stray `.git` file never derives a bogus room. */
+/**
+ * Null when `cwd` isn't inside a git work tree at all — the gate is a real
+ * `git rev-parse`, not a directory walk, so a scratch dir with a stray
+ * `.git` file never derives a bogus room. The thin cwd → identity →
+ * roomForIdentity composition, kept as its own function for the test seam;
+ * `runSignIn` inlines the same three steps itself so it can reuse the
+ * identity it already resolved for the display `repo` label rather than
+ * re-deriving it here.
+ */
 function deriveRoomForCwd(cwd: string): string | null {
   const root = getRepoRoot(cwd);
   if (!root) return null;
@@ -643,10 +657,16 @@ async function runMark(args: string[]): Promise<void> {
  * depends only on cwd + the identity codec, and is written into the session
  * file alongside the assigned handle so a later chatJoin failure still
  * leaves a session file that agrees with what was actually attempted.
+ *
+ * getRepoRoot/getRepoIdentityForRoot/parseIdentity run ONCE here — reusing
+ * the parsed identity for both the display `repo` label and the room name,
+ * rather than also calling `deriveRoomForCwd` (which repeats all three) —
+ * each of those is a real `git` spawn plus an index write.
  */
 async function runSignIn(args: string[]): Promise<void> {
   const sessionId = currentSessionId(args);
   if (!sessionId) fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
+  requireValidSessionId(sessionId);
 
   const baseHandle = resolveBaseHandle(args);
   requireValidName("handle", baseHandle);
@@ -654,6 +674,7 @@ async function runSignIn(args: string[]): Promise<void> {
   const cwd = safeCwd();
   const root = cwd ? getRepoRoot(cwd) : null;
   const identity = root ? getRepoIdentityForRoot(root) : null;
+  const parsedIdentity = identity ? parseIdentity(identity.identity) : null;
   const repo = identity ? repoLabel(identity.identity) : undefined;
   const branch = root ? getCurrentBranch() ?? undefined : undefined;
   const pane = process.env.HERDR_PANE_ID;
@@ -666,8 +687,8 @@ async function runSignIn(args: string[]): Promise<void> {
     if (explicitRoom) {
       requireValidName("room", explicitRoom);
       roomName = explicitRoom;
-    } else if (cwd) {
-      roomName = deriveRoomForCwd(cwd);
+    } else if (parsedIdentity) {
+      roomName = roomForIdentity(parsedIdentity);
     }
   }
 
@@ -691,6 +712,20 @@ async function runSignIn(args: string[]): Promise<void> {
   console.log("arm your tail now: Monitor `rt chat tail`, persistent");
 }
 
+/**
+ * Local cleanup (kill the tail, delete the session file) runs REGARDLESS of
+ * the daemon result. A daemon-down sign-out that stopped here would strand
+ * the session file: every verb would keep resolving position 0 to a handle
+ * nothing can heartbeat, `--as` would stay refused, and — since this is also
+ * the `SessionEnd` hook's command — `--quiet` would exit non-zero despite
+ * the "must never fail a session shutdown" contract. A daemon failure is
+ * still reported (non-quiet only); sign-out itself exits 0 either way.
+ *
+ * killChatTail falls back to the --as-first chain when there is no valid
+ * local session (file corrupt or already gone) — a guess, but a safe one:
+ * it is a no-op unless a live tail happens to hold that exact handle's
+ * pidfile.
+ */
 async function runSignOut(args: string[]): Promise<void> {
   const quiet = args.includes("--quiet");
   const sessionId = currentSessionId(args);
@@ -698,13 +733,17 @@ async function runSignOut(args: string[]): Promise<void> {
     if (quiet) return; // best-effort — the SessionEnd hook must never fail a session shutdown
     fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
   }
+  requireValidSessionId(sessionId);
 
   const session = readChatSession(sessionId);
   const res = await chatSignOut({ sessionId });
-  unwrap(res, "sign-out");
 
-  if (session) killChatTail(session.handle);
+  killChatTail(session ? session.handle : resolveBaseHandle(args));
   deleteChatSession(sessionId);
+
+  if (!res.ok && !quiet) {
+    console.error(`rt chat: sign-out: daemon error (${res.error ?? "sign-out failed"}) — local state cleaned up anyway`);
+  }
 
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true }));

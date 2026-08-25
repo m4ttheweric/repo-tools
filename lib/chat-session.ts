@@ -27,19 +27,39 @@ function sessionsDir(): string {
   return join(rtDir(), "chat", "sessions");
 }
 
+const VALID_SESSION_ID = /^[A-Za-z0-9._-]+$/;
+
+/** Whether `id` is safe as a session filename component — rejects `/`, `..`, and anything else path-traversal could use. */
+export function isValidSessionId(id: string): boolean {
+  return VALID_SESSION_ID.test(id);
+}
+
 export function sessionFilePath(sessionId: string): string {
+  if (!isValidSessionId(sessionId)) {
+    throw new Error(`invalid session id "${sessionId}" — must match ${VALID_SESSION_ID}`);
+  }
   return join(sessionsDir(), `${sessionId}.json`);
 }
 
 /**
- * Null on absence AND on a session-id mismatch — a copied ~/.mattstack or a
+ * Null on absence, on a session-id mismatch (a copied ~/.mattstack or a
  * session resumed under a new id must never resolve to a stale handle that
- * was never established for the id in hand.
+ * was never established for the id in hand), on an invalid id (path
+ * traversal — treated as "no session", not an error, since every read-only
+ * verb runs this on whatever `--session`/CLAUDE_CODE_SESSION_ID happens to
+ * contain), and on a non-string `handle` (a corrupt file's `undefined` must
+ * never coerce into the literal pidfile-path segment `"undefined"`).
  */
 export function readChatSession(sessionId: string | undefined): ChatSession | null {
   if (!sessionId) return null;
-  const session = readJson<ChatSession | null>(sessionFilePath(sessionId), null);
-  if (!session || session.sessionId !== sessionId) return null;
+  let path: string;
+  try {
+    path = sessionFilePath(sessionId);
+  } catch {
+    return null;
+  }
+  const session = readJson<ChatSession | null>(path, null);
+  if (!session || session.sessionId !== sessionId || typeof session.handle !== "string") return null;
   return session;
 }
 
@@ -51,7 +71,7 @@ export function deleteChatSession(sessionId: string): void {
   try {
     unlinkSync(sessionFilePath(sessionId));
   } catch {
-    // already gone
+    // already gone, or an invalid id — nothing to remove either way
   }
 }
 

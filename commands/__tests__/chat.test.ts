@@ -348,6 +348,44 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     expect(row?.signed_out_at).not.toBeNull();
   });
 
+  test("sign-out disarms: an armed tail is killed and its pidfile removed", async () => {
+    const { handle } = await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const pidPath = join(home, ".mattstack", "rt", `chat-tail-${handle}.pid`);
+    const tail = spawnChat(["tail", "--session", "s1"]);
+    await until(() => existsSync(pidPath));
+
+    await runChat(["sign-out", "--session", "s1"]);
+    expect(existsSync(pidPath)).toBe(false);
+
+    await tail.exited;
+  }, 15_000);
+
+  test("sign-out with the daemon unreachable still cleans up locally and exits 0", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const sessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "s1.json");
+    expect(existsSync(sessionPath)).toBe(true);
+
+    server?.stop(true);
+    server = null;
+
+    const { code, stderr } = await runChatRaw(["sign-out", "--session", "s1"]);
+    expect(code).toBe(0);
+    expect(existsSync(sessionPath)).toBe(false);
+    expect(stderr).toContain("daemon");
+  });
+
+  test("sign-out --quiet prints nothing even when the daemon is unreachable", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+
+    server?.stop(true);
+    server = null;
+
+    const { code, stdout, stderr } = await runChatRaw(["sign-out", "--session", "s1", "--quiet"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+
   test("sign-out with no known session id is a refused no-op, not a crash", async () => {
     const { code, stderr } = await runChatRaw(["sign-out"]);
     expect(code).not.toBe(0);

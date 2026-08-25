@@ -9,6 +9,7 @@ import { dirname, join } from "path";
 import {
   currentSessionId,
   deleteChatSession,
+  isValidSessionId,
   readChatSession,
   sessionFilePath,
   writeChatSession,
@@ -68,6 +69,28 @@ describe("chat-session", () => {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify({ sessionId: "stale-id", handle: "x", baseHandle: "x", signedInAt: 1000 }));
     expect(readChatSession("s1")).toBeNull();
+  });
+
+  test("readChatSession returns null when the file's handle field isn't a string (never coerces undefined into the pidfile-path segment \"undefined\")", () => {
+    const path = sessionFilePath("s1");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ sessionId: "s1", baseHandle: "x", signedInAt: 1000 })); // handle omitted entirely
+    expect(readChatSession("s1")).toBeNull();
+  });
+
+  test("sessionFilePath rejects an id with path-traversal characters", () => {
+    expect(() => sessionFilePath("../../etc/passwd")).toThrow(/invalid session id/);
+    expect(() => sessionFilePath("a/b")).toThrow(/invalid session id/);
+  });
+
+  test("isValidSessionId accepts the charset sessionFilePath allows and rejects everything else", () => {
+    expect(isValidSessionId("abc123_.-")).toBe(true);
+    expect(isValidSessionId("../x")).toBe(false);
+    expect(isValidSessionId("a/b")).toBe(false);
+  });
+
+  test("readChatSession degrades a path-traversal id to null rather than throwing (every read-only verb runs this on unvalidated input)", () => {
+    expect(readChatSession("../../etc/passwd")).toBeNull();
   });
 
   test("deleteChatSession removes the file", () => {
