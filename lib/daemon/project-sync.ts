@@ -29,7 +29,7 @@
  * record to delta against) and explicit `mode: "deep"` requests still reject.
  */
 
-import type { PullRequest } from "@mattstack/glance";
+import type { PullRequest, ApprovalRuleLite, MRApprovalRules } from "@mattstack/glance";
 import { getRepoContext, getSelfUsername, resolveSelfUsername } from "./freshness.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs, type ProjectMRStore } from "./project-mrs-store.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
@@ -57,6 +57,18 @@ export function effectiveAuthors(record: ProjectMRStore | undefined, selfUsernam
   if (selfUsername) authors.add(selfUsername);
   if (authors.size === 0) return null;
   return [...authors].sort();
+}
+
+/** Union of every live demand's sections, sorted (parity with effectiveAuthors); [] when none. */
+export function effectiveSections(record: ProjectMRStore | undefined): string[] {
+  const sections = new Set<string>();
+  for (const d of Object.values(record?.demands ?? {})) for (const s of d.sections ?? []) sections.add(s);
+  return [...sections].sort();
+}
+
+/** Demanded sections with an unapproved CODE_OWNER rule; [] when none. */
+export function sectionsMatching(rules: ApprovalRuleLite[], demanded: string[]): string[] {
+  return demanded.filter((s) => rules.some((r) => r.type === "CODE_OWNER" && !r.approved && r.section === s));
 }
 
 /** Drops PRs whose updatedAt is older than the window. A missing/unparseable timestamp is kept -- never guess-drop. */
@@ -88,6 +100,8 @@ export interface ProjectSyncOverrides {
   fetchSingle?: (repoName: string, projectPath: string, iid: number) => Promise<PullRequest | null>;
   /** Scoped deep's fetch: every open MR by any of these authors. */
   fetchAuthors?: (repoName: string, authors: string[]) => Promise<{ projectPath: string; prs: PullRequest[] }>;
+  /** Codeowner section sweep's fetch, shared by the deep sweep and backfillSections. */
+  fetchRules?: (repoName: string, opts: { updatedAfter?: string; iids?: number[] }) => Promise<{ projectPath: string; rules: MRApprovalRules[] }>;
   /** Overrides the grants-resolved window (test seam); production always resolves it from repo-tracking. */
   windowDays?: number;
   /**
@@ -141,6 +155,18 @@ async function syncImpl(
   const deepBackingOff = Date.now() - (deepFailedAt.get(repoName) ?? 0) < DEEP_RETRY_BACKOFF_MS;
   const isDeep = explicitDeep || (deepDue && (!record || !deepBackingOff));
 
+  // Shared by the deep section sweep below and the delta pipeline top-up
+  // further down, so each gets one declaration rather than two.
+  const fetchSingle = overrides.fetchSingle ?? (async (repo: string, pp: string, iid: number) => {
+    const { provider } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    return provider.fetchSingleMR(pp, iid, null);
+  });
+  const fetchRules = overrides.fetchRules ?? (async (repo: string, opts: { updatedAfter?: string; iids?: number[] }) => {
+    const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    const rules = await provider.fetchApprovalRules({ projectPath, ...opts });
+    return { projectPath, rules };
+  });
+
   if (isDeep) {
     // Idle demand clients (a board tab closed a week ago) must not keep
     // pinning their authors into the scope forever.
@@ -181,10 +207,60 @@ async function syncImpl(
         // now covers both out-of-scope authors and out-of-window MRs...a
         // failed author fetch rejects the whole deep (below) rather than
         // landing here as "this author has no MRs".
+        const sections = effectiveSections(record);
         const { projectPath, prs } = await fetchAuthors(repoName, scopeAuthors);
         const kept = withinWindow(prs, windowDays, syncStartedAt);
-        const changed = store.fullSync(repoName, projectPath, kept, syncStartedAt);
-        store.setScope(repoName, { authors: scopeAuthors, windowDays });
+        const byIid = new Map(kept.map((pr) => [pr.iid, pr]));
+        const tags: Record<number, string[]> = {};
+        let sweep = { candidates: 0, matched: 0, hydrated: 0 };
+        // Containment: with no demand ever declaring a section, `sections`
+        // is [] and this whole block is skipped -- no rules fetch, no tag
+        // write, byIid stays exactly `kept`. Bit-identical to pre-sections behavior.
+        if (sections.length > 0) {
+          const sweepStartedAt = Date.now();
+          const updatedAfter = new Date(syncStartedAt - windowDays * 86_400_000).toISOString();
+          const { rules } = await fetchRules(repoName, { updatedAfter });
+          sweep.candidates = rules.length;
+          const matched = rules
+            .map((r) => ({ iid: r.iid, sections: sectionsMatching(r.rules, sections) }))
+            .filter((m) => m.sections.length > 0);
+          sweep.matched = matched.length;
+          for (const m of matched) tags[m.iid] = m.sections;
+          // Hydrate tagged MRs the author fetch did not cover. Stored rows are
+          // reused (delta/events keep them fresh); only unseen iids pay a fetch.
+          const toHydrate = matched.filter((m) => !byIid.has(m.iid) && !record?.mrs[m.iid]);
+          for (let i = 0; i < toHydrate.length; i += TOPUP_CONCURRENCY) {
+            const chunk = toHydrate.slice(i, i + TOPUP_CONCURRENCY);
+            await Promise.all(chunk.map(async (m) => {
+              try {
+                const pr = await fetchSingle(repoName, projectPath, m.iid);
+                if (pr) { byIid.set(m.iid, pr); sweep.hydrated++; }
+              } catch (err) {
+                log.warn({ err, repo: repoName, iid: m.iid }, "section hydration failed");
+              }
+            }));
+          }
+          for (const m of matched) {
+            const stored = record?.mrs[m.iid]?.pr;
+            if (!byIid.has(m.iid) && stored) byIid.set(m.iid, stored);
+          }
+          log.debug(
+            { repo: repoName, mode: "sections", sections, ...sweep, durationMs: Date.now() - sweepStartedAt },
+            "project sync",
+          );
+        }
+        const changed = store.fullSync(repoName, projectPath, [...byIid.values()], syncStartedAt);
+        // Containment: with sections never declared there is nothing to write
+        // and nothing to clear, so this stays a no-op call away from
+        // bit-identical behavior. It runs (replaceAll) when sections are live
+        // OR when stale tags linger from a demand that just dropped -- read
+        // AFTER fullSync so the prune above has already dropped pruned rows'
+        // tags.
+        const hasStaleTags = Object.values(store.read(repoName)?.mrs ?? {}).some((e) => e.codeownerSections?.length);
+        if (sections.length > 0 || hasStaleTags) {
+          store.setSectionTags(repoName, tags, { replaceAll: true });
+        }
+        store.setScope(repoName, { authors: scopeAuthors, ...(sections.length > 0 ? { sections } : {}), windowDays });
         deepFailedAt.delete(repoName);
         log.debug(
           { repo: repoName, mode: "deep", scoped: true, authors: scopeAuthors.length, open: kept.length, changed: changed.length, durationMs: Date.now() - syncStartedAt },
@@ -254,11 +330,8 @@ async function syncImpl(
   // STORED pipeline is still in flight and that this delta didn't already
   // cover — the set is naturally tiny (pipelines currently running on open
   // MRs), so this restores the old ≤5-min pipeline freshness for ~0-5
-  // targeted fetches per cycle.
-  const fetchSingle = overrides.fetchSingle ?? (async (repo: string, pp: string, iid: number) => {
-    const { provider } = await getRepoContext(repo, deps.repoIndex()[repo]);
-    return provider.fetchSingleMR(pp, iid, null);
-  });
+  // targeted fetches per cycle. (fetchSingle is hoisted above the deep
+  // branch, shared with the section sweep's hydration.)
   const deltaIids = new Set(changed);
   const topup: number[] = [];
   const afterDelta = store.read(repoName);
@@ -347,6 +420,64 @@ export async function backfillAuthors(
   const union = new Set([...(record?.scope?.authors ?? []), ...authors]);
   if (selfUsername) union.add(selfUsername);
   store.setScope(repoName, { authors: [...union].sort(), windowDays });
+
+  if (changed.length > 0) {
+    deps.broadcast("project-mrs", { repoName, iids: changed });
+  }
+}
+
+/**
+ * Sections analog of backfillAuthors: on-demand top-up for sections newly
+ * declared by a demand (e.g. a board tab widening its request) without
+ * waiting for the next daily deep. Sweeps rules for the window, hydrates
+ * any matched MR the store doesn't already have, tags every match, and
+ * extends (never replaces) the existing scope's section list.
+ */
+export async function backfillSections(
+  deps: ProjectSyncDeps,
+  repoName: string,
+  sections: string[],
+  overrides: ProjectSyncOverrides = {},
+): Promise<void> {
+  if (sections.length === 0) return;
+
+  const store = overrides.store ?? getProjectMRs();
+  const record = store.read(repoName);
+  const windowDays = record?.scope?.windowDays
+    ?? overrides.windowDays
+    ?? grants(loadRepoTracking(), repoName).projectMrsWindowDays;
+  const fetchRules = overrides.fetchRules ?? (async (repo: string, opts: { updatedAfter?: string; iids?: number[] }) => {
+    const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    const rules = await provider.fetchApprovalRules({ projectPath, ...opts });
+    return { projectPath, rules };
+  });
+  const fetchSingle = overrides.fetchSingle ?? (async (repo: string, pp: string, iid: number) => {
+    const { provider } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    return provider.fetchSingleMR(pp, iid, null);
+  });
+
+  const updatedAfter = new Date(Date.now() - windowDays * 86_400_000).toISOString();
+  const { projectPath, rules } = await fetchRules(repoName, { updatedAfter });
+  const matched = rules
+    .map((r) => ({ iid: r.iid, sections: sectionsMatching(r.rules, sections) }))
+    .filter((m) => m.sections.length > 0);
+
+  const changed: number[] = [];
+  for (const m of matched) {
+    if (!store.read(repoName)?.mrs[m.iid]) {
+      try {
+        const pr = await fetchSingle(repoName, projectPath, m.iid);
+        if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
+      } catch (err) {
+        log.warn({ err, repo: repoName, iid: m.iid }, "section backfill hydration failed");
+      }
+    }
+  }
+
+  store.setSectionTags(repoName, Object.fromEntries(matched.map((m) => [m.iid, m.sections])));
+  const union = new Set([...(store.read(repoName)?.scope?.sections ?? []), ...sections]);
+  const scope = store.read(repoName)?.scope;
+  if (scope) store.setScope(repoName, { ...scope, sections: [...union].sort() });
 
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });
