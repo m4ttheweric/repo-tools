@@ -1239,15 +1239,26 @@ function defaultPublicSet(skillsNames: Set<string>, verbNames: Set<string>): Set
 }
 
 /**
- * A rosterless pack (the mattstack plugin repo itself) has no manifest and
- * `findDefaultManifest` throws for it; the surface verbs must keep working
- * there, so no manifest means no stages rather than an error.
+ * No stages, not an error, when: the pack is rosterless (no verbs to pipeline),
+ * or it has a roster but no manifest was discoverable (--manifest absent and
+ * `findDefaultManifest` can't find one) -- the surface verbs must keep working
+ * in both cases. A manifest that *is* found but fails to parse still throws.
  */
 function stageNamesFor(flags: SurfaceFlags, packDir: string): Set<string> {
   if (readVerbRoster(packDir).length === 0) return new Set();
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
   const team = flags.team ?? packNameFor(packDir);
-  const manifest = flags.manifest ?? findDefaultManifest(mattstackRoot, team);
+  let manifest: string;
+  if (flags.manifest) {
+    manifest = flags.manifest;
+  } else {
+    try {
+      manifest = findDefaultManifest(mattstackRoot, team);
+    } catch (err) {
+      if (err instanceof SkillsUsageError) return new Set();
+      throw err;
+    }
+  }
   try {
     return new Set(stageRoster(readManifestPipelines(manifest)).map((v) => v.name));
   } catch (err) {

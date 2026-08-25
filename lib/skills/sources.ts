@@ -150,7 +150,9 @@ function listDirs(dir: string): string[] {
 }
 
 function tokens(raw: unknown): string[] {
-  return typeof raw === "string" ? raw.split(/\s+/).filter((t) => t && t !== "-") : [];
+  if (typeof raw === "string") return raw.split(/\s+/).filter((t) => t && t !== "-");
+  if (Array.isArray(raw)) return raw.filter((t): t is string => typeof t === "string").map((t) => t.trim()).filter(Boolean);
+  return [];
 }
 
 function readStageMeta(frontmatter: Record<string, unknown>): StepSource["stageMeta"] {
@@ -317,6 +319,11 @@ export function loadAttachment(binding: string, slot: string, roots: PluginRoots
  * no slots to fill, no placeholders left for a later substitution pass.
  */
 export function loadInclude(name: string, roots: PluginRoots): AttachmentSource {
+  if (!isSafeName(name)) {
+    throw new Error(
+      `loadInclude: include "${name}" is not a safe directory name (must not contain "/", "\\", or "..", or be empty or ".")`,
+    );
+  }
   const mattstack = roots.byName.mattstack;
   if (!mattstack) throw new Error(`loadInclude: no "mattstack" plugin root registered`);
   const dir = join(mattstack.dir, "attachments", name);
@@ -355,16 +362,18 @@ export function loadInclude(name: string, roots: PluginRoots): AttachmentSource 
  * rmSync that precedes it in commands/skills.ts's compile command (outDirFor/
  * otherSideDir) -- reject path-breakout characters at the one place each kind
  * of name is first read from disk: assertSafeVerbName for roster verbs,
- * parseStageQualifiedName below for pipeline stage entries.
+ * parseStageQualifiedName below for pipeline stage entries, and loadInclude's
+ * own guard for include names. "" and "." both resolve join(dir, "attachments", name)
+ * back to the attachments dir itself, which those same rmSync call sites delete.
  */
 function isSafeName(name: string): boolean {
-  return !name.includes("/") && !name.includes("\\") && !name.includes("..");
+  return name !== "" && name !== "." && !name.includes("/") && !name.includes("\\") && !name.includes("..");
 }
 
 function assertSafeVerbName(name: string, stubsPath: string): void {
   if (!isSafeName(name)) {
     throw new Error(
-      `readVerbRoster: verb key "${name}" in ${stubsPath} is not a safe directory name (must not contain "/", "\\", or "..")`,
+      `readVerbRoster: verb key "${name}" in ${stubsPath} is not a safe directory name (must not contain "/", "\\", or "..", or be empty or ".")`,
     );
   }
 }
@@ -379,7 +388,7 @@ export function parseStageQualifiedName(qualified: string, where: string): strin
   const name = qualified.includes(":") ? qualified.slice(qualified.indexOf(":") + 1) : qualified;
   if (!isSafeName(name)) {
     throw new Error(
-      `${where}: stage "${qualified}" resolves to name "${name}" which is not a safe directory name (must not contain "/", "\\", or "..")`,
+      `${where}: stage "${qualified}" resolves to name "${name}" which is not a safe directory name (must not contain "/", "\\", or "..", or be empty or ".")`,
     );
   }
   return name;

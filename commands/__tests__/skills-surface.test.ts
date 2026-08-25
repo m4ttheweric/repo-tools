@@ -144,6 +144,19 @@ describe("skillsSurface list", () => {
 
     expect(() => JSON.parse(logs.join("\n"))).not.toThrow();
   });
+
+  test("roster pack with no discoverable manifest: list still works, no stage rows", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
+    const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-empty-mattstack-")));
+
+    const { exitCode } = await runExpectingCleanExit(() =>
+      skillsSurface(["list", "--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir]),
+    );
+
+    expect(exitCode).toBeUndefined();
+    expect(logs.join("\n")).toMatch(/my-verb/);
+  });
 });
 
 describe("skillsSurface set", () => {

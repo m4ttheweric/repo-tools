@@ -110,6 +110,13 @@ describe("substitute", () => {
     expect(body).toContain("Ask one structured question");
   });
 
+  test("work-type with no pipelines is an error", () => {
+    const none = ctx({ pipelines: {} });
+    expect(() => substitute("{{work-type}}", none, "work")).toThrow(
+      "work: {{work-type}} cannot be filled -- the manifest declares no pipelines",
+    );
+  });
+
   test("pipeline.stages emits a fenced JSON block keyed by work type", () => {
     const body = substitute("{{pipeline.stages}}", ctx(), "work").body;
     const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));

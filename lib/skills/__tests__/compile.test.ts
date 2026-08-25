@@ -381,14 +381,14 @@ describe("compileSkill", () => {
   test("an empty-arg placeholder is a compile error, not a silent legacy compile", () => {
     const bad = { ...step, body: "Poll status. {{slot:}}" };
     expect(() => compileSkill(verb, bad, { domain: domainFill, forge: forgeFill }, roster)).toThrow(
-      'engine "watch-ci": malformed or unfilled placeholder near line 1',
+      'engine "watch-ci": literal "{{" near line 1 -- "{{" is reserved for compiler placeholders and has no escape, so a compiled body may not contain it',
     );
   });
 
   test("a placeholder with internal whitespace is a compile error, not a silent legacy compile", () => {
     const bad = { ...step, body: "Poll status. {{ stage.dir }}" };
     expect(() => compileSkill(verb, bad, { domain: domainFill, forge: forgeFill }, roster)).toThrow(
-      'engine "watch-ci": malformed or unfilled placeholder near line 1',
+      'engine "watch-ci": literal "{{" near line 1 -- "{{" is reserved for compiler placeholders and has no escape, so a compiled body may not contain it',
     );
   });
 });
@@ -454,7 +454,7 @@ describe("compileSkill with placeholders", () => {
   test("a malformed placeholder alongside a valid one is still a compile error", () => {
     const bad = { ...placeholderStep, body: "{{stage.fields}}\n{{slot:}}" };
     expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), { stageDir: "x" })).toThrow(
-      /engine "stage-watch-ci": malformed or unfilled placeholder near line \d+/,
+      /engine "stage-watch-ci": literal "\{\{" near line \d+ -- "\{\{" is reserved for compiler placeholders and has no escape, so a compiled body may not contain it/,
     );
   });
 

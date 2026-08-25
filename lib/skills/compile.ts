@@ -175,7 +175,9 @@ function firstBraceLine(body: string): number | null {
 function assertNoStrayBraces(body: string, engineName: string): void {
   const line = firstBraceLine(body);
   if (line !== null) {
-    throw new Error(`engine "${engineName}": malformed or unfilled placeholder near line ${line}`);
+    throw new Error(
+      `engine "${engineName}": literal "{{" near line ${line} -- "{{" is reserved for compiler placeholders and has no escape, so a compiled body may not contain it`,
+    );
   }
 }
 

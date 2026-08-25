@@ -224,6 +224,22 @@ describe("loadStepSource", () => {
     expect(step.stageMeta).toEqual({ stage: "plan", consumes: ["ticket"], produces: ["approach", "evidence-plan"] });
   });
 
+  test("loadStepSource reads YAML-sequence stage-consumes/stage-produces into stageMeta", () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-step-"));
+    const dir = join(root, "attachments", "stage-plan");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), [
+      "---", "name: stage-plan", "description: plan", "type: pipeline-step",
+      "slots:", "  domain: { contract: plan-domain@1, required: false }",
+      "metadata:", "  stage: plan",
+      "  stage-consumes:", "    - ticket", "    - repo",
+      "  stage-produces:", "    - approach", "    - evidence-plan",
+      "---", "", "body {{slot:domain}}",
+    ].join("\n"));
+    const step = loadStepSource("stage-plan", { byName: { mattstack: { dir: root, version: "1.0.0" } } });
+    expect(step.stageMeta).toEqual({ stage: "plan", consumes: ["ticket", "repo"], produces: ["approach", "evidence-plan"] });
+  });
+
   test("loadStepSource leaves stageMeta null for a non-stage engine", () => {
     const root = mkdtempSync(join(tmpdir(), "rt-step-"));
     const dir = join(root, "attachments", "work");
@@ -495,6 +511,18 @@ describe("parseStageQualifiedName", () => {
       'pipeline "feature": stage "mattstack:../../victim" resolves to name "../../victim" which is not a safe directory name',
     );
   });
+
+  test("rejects a name that resolves to empty", () => {
+    expect(() => parseStageQualifiedName("mattstack:", "x")).toThrow(
+      'x: stage "mattstack:" resolves to name "" which is not a safe directory name',
+    );
+  });
+
+  test("rejects a name that resolves to the current-dir alias", () => {
+    expect(() => parseStageQualifiedName("mattstack:.", "x")).toThrow(
+      'x: stage "mattstack:." resolves to name "." which is not a safe directory name',
+    );
+  });
 });
 
 describe("loadInclude", () => {
@@ -526,5 +554,14 @@ describe("loadInclude", () => {
     const { root, roots: r } = roots();
     write(root, "bad2", "---\nname: bad2\ndescription: d\n---\n\nbody {{slot:x}}");
     expect(() => loadInclude("bad2", r)).toThrow('include "bad2" contains a placeholder; an include target must be inert');
+  });
+
+  test("rejects an include name that tries to escape attachments/, never reading the escaped file", () => {
+    const { root, roots: r } = roots();
+    mkdirSync(join(root, "escape"), { recursive: true });
+    writeFileSync(join(root, "escape", "SKILL.md"), "---\nname: escape\ndescription: d\n---\n\nvictim");
+    expect(() => loadInclude("../escape", r)).toThrow(
+      'loadInclude: include "../escape" is not a safe directory name (must not contain "/", "\\", or "..", or be empty or ".")',
+    );
   });
 });

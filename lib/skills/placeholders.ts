@@ -45,8 +45,9 @@ function includeText(name: string, inc: AttachmentSource, partsPrefix: string): 
   return `<!-- part: include:${name} source=${inc.plugin}:${name} version=${inc.version} ${spanOf(inc)} -->\n${body}`;
 }
 
-function workTypeText(pipelines: Record<string, StageEntry[]>): string {
+function workTypeText(pipelines: Record<string, StageEntry[]>, where: string): string {
   const types = Object.keys(pipelines);
+  if (types.length === 0) throw new Error(`${where}: {{work-type}} cannot be filled -- the manifest declares no pipelines`);
   if (types.length === 1) return `The work type is \`${types[0]}\`. Continue.`;
   const menu = types.map((t) => `- \`${t}\``).join("\n");
   return `This pack declares several work types:\n\n${menu}\n\nAsk one structured question to pick one, then use that key in the stage list and run-start flags below.`;
@@ -98,7 +99,7 @@ export function substitute(
           return includeText(arg, inc, ctx.partsPrefix);
         }
         case "pipeline.stages": return fenced(ctx.pipelines);
-        case "work-type": return workTypeText(ctx.pipelines);
+        case "work-type": return workTypeText(ctx.pipelines, where);
         case "run-start.flags": return runStartFlags(ctx);
         case "compiled-from": return ctx.compiledFrom;
         case "stage.dir":
