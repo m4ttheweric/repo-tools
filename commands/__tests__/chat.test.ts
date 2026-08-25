@@ -36,6 +36,7 @@ import { getStateDb, closeStateDb } from "../../lib/state/index.ts";
 let home = "";
 let origHome: string | undefined;
 let origPaneId: string | undefined;
+let origSessionId: string | undefined;
 let origBackoff: string | undefined;
 let server: ReturnType<typeof Bun.serve> | null = null;
 // Real child processes (spawnChat); reaped in afterEach so a stray tail can't
@@ -45,8 +46,13 @@ const children: Array<ReturnType<typeof Bun.spawn>> = [];
 beforeEach(() => {
   origHome = process.env.HOME;
   origPaneId = process.env.HERDR_PANE_ID;
+  origSessionId = process.env.CLAUDE_CODE_SESSION_ID;
   origBackoff = process.env.RT_CHAT_BACKOFF_MS;
   delete process.env.HERDR_PANE_ID;
+  // This suite runs inside a real Claude Code session; a leaked id would sign
+  // tests in against the developer's own session file. Every test below that
+  // needs a session id passes --session explicitly.
+  delete process.env.CLAUDE_CODE_SESSION_ID;
   // Keep the daemon-unreachable backoff short so the exit-69 path is fast.
   process.env.RT_CHAT_BACKOFF_MS = "150";
 
@@ -89,6 +95,8 @@ afterEach(async () => {
   process.env.HOME = origHome;
   if (origPaneId === undefined) delete process.env.HERDR_PANE_ID;
   else process.env.HERDR_PANE_ID = origPaneId;
+  if (origSessionId === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+  else process.env.CLAUDE_CODE_SESSION_ID = origSessionId;
   if (origBackoff === undefined) delete process.env.RT_CHAT_BACKOFF_MS;
   else process.env.RT_CHAT_BACKOFF_MS = origBackoff;
 });
@@ -166,6 +174,25 @@ async function runChat(args: string[]): Promise<string> {
   const { code, stdout, stderr } = await runChatRaw(args);
   if (code !== 0) throw new Error(`chat ${args.join(" ")} exited ${code}: ${stderr}`);
   return stdout;
+}
+
+/**
+ * `rt chat sign-in --session <id>`, then sets CLAUDE_CODE_SESSION_ID so
+ * subsequent calls in the same test resolve position 0 without repeating
+ * `--session` — exactly how a real Claude Code session's own Bash calls
+ * resolve it (env var, with `--session` as the documented override).
+ * afterEach's existing CLAUDE_CODE_SESSION_ID restore cleans this up.
+ */
+async function signInInProcess(
+  opts: { as: string; session: string; room?: string; noRoom?: boolean },
+): Promise<{ home: string; handle: string }> {
+  const args = ["sign-in", "--as", opts.as, "--session", opts.session];
+  if (opts.room) args.push("--room", opts.room);
+  if (opts.noRoom) args.push("--no-room");
+  const out = await runChat(args);
+  const handle = /signed in as (\S+)/.exec(out)?.[1] ?? opts.as;
+  process.env.CLAUDE_CODE_SESSION_ID = opts.session;
+  return { home, handle };
 }
 
 // ─── Step 1 (brief) ──────────────────────────────────────────────────────────
@@ -248,6 +275,89 @@ describe("rt chat CLI — additional verb behavior", () => {
     await runChat(["leave", "r", "--as", "solo"]);
     const rooms = JSON.parse(await runChat(["rooms", "--json", "--as", "solo"]));
     expect(rooms.rooms).toEqual([]);
+  });
+});
+
+// ─── Task 6: sign-in / sign-out (presence) ──────────────────────────────────
+//
+// The brief's own flag-splice test posts through `rt chat dm`, but chatDm is
+// Task 7's wiring — not wired here. Same guard, through `post` instead: post
+// already has a body-splice test above (for `--as`); this one covers the two
+// flags this task adds to FLAGS_WITH_VALUES (`--session`, `--status`).
+
+describe("rt chat CLI — sign-in / sign-out (presence)", () => {
+  test("flag values never splice into a body: --session and --status are FLAGS_WITH_VALUES", async () => {
+    await runChat(["join", "r", "--as", "x"]);
+    await runChat(["post", "r", "hello there", "--session", "s1", "--status", "busy", "--as", "x"]);
+    const read = JSON.parse(await runChat(["read", "r", "--as", "x", "--json"]));
+    expect(read.rooms[0].messages[0].body).toBe("hello there");
+  });
+
+  test("position 0: a signed-in session resolves the assigned handle for every verb", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    await runChat(["join", "r"]); // no --as, no --session: resolves from the session file
+    await runChat(["post", "r", "hello"]); // same — the session file, not the cwd-derived handle
+    expect(await runChat(["who", "r"])).toContain("x");
+  });
+
+  test("--as while signed in is refused with the reason", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    const { code, stderr } = await runChatRaw(["post", "r", "hi", "--as", "y", "--session", "s1"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/signed in as x.*sign out/);
+  });
+
+  test("deriveRoomForCwd: remote-kind, path-kind, not-a-worktree", () => {
+    expect(__test__.roomForIdentity({ kind: "remote", id: "gitlab.example.com/acme/Acme-Dev" })).toBe("acme-dev");
+    expect(__test__.roomForIdentity({ kind: "path", id: "/Users/m/pool/gamma" })).toBe("pool-gamma");
+
+    // findGitRoot gate: a real (non-symlinked) tmpdir outside any git work tree.
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-chat-noroom-")));
+    try {
+      expect(__test__.deriveRoomForCwd(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("sign-in prints the identity line and the arm instruction; --no-room and --room work", async () => {
+    const out = await runChat(["sign-in", "--as", "x", "--room", "warroom", "--session", "s1"]);
+    expect(out).toMatch(/signed in as x/);
+    expect(out).toMatch(/#warroom/);
+    expect(out).toMatch(/rt chat tail/); // bare — no --as in the arm line
+    expect(out).not.toMatch(/rt chat tail --as/);
+  });
+
+  test("--no-room signs in without joining any room", async () => {
+    const out = await runChat(["sign-in", "--as", "y", "--no-room", "--session", "s2"]);
+    expect(out).toMatch(/signed in as y/);
+    expect(out).not.toContain("joined #");
+  });
+
+  test("sign-out deletes the session file and disarms", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const sessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "s1.json");
+    expect(existsSync(sessionPath)).toBe(true);
+
+    await runChat(["sign-out", "--session", "s1"]);
+    expect(existsSync(sessionPath)).toBe(false);
+
+    const row = getStateDb()
+      .query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?")
+      .get("s1") as { signed_out_at: number | null } | null;
+    expect(row?.signed_out_at).not.toBeNull();
+  });
+
+  test("sign-out with no known session id is a refused no-op, not a crash", async () => {
+    const { code, stderr } = await runChatRaw(["sign-out"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("session id");
+  });
+
+  test("sign-in without a session id (no --session, no CLAUDE_CODE_SESSION_ID) refuses rather than inventing one", async () => {
+    const { code, stderr } = await runChatRaw(["sign-in", "--as", "x", "--no-room"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("session id");
   });
 });
 

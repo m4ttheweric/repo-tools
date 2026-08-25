@@ -5,12 +5,13 @@
 
 import { execSync } from "child_process";
 
-/** Get the root of the current git repo, or null if not in one. */
-export function getRepoRoot(): string | null {
+/** Get the root of the git repo at `cwd` (default: the process cwd), or null if not in one. */
+export function getRepoRoot(cwd?: string): string | null {
   try {
     return execSync("git rev-parse --show-toplevel", {
       encoding: "utf8",
       stdio: "pipe",
+      ...(cwd ? { cwd } : {}),
     }).trim();
   } catch {
     return null;

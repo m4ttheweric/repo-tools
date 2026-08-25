@@ -652,21 +652,26 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   // Self-dispatching leaf: chat() routes its own verbs (join/leave/post/read/
-  // rooms/who/mark/tail), so all args flow through rather than a subcommand map.
+  // rooms/who/mark/tail/sign-in/sign-out), so all args flow through rather
+  // than a subcommand map.
   chat: {
     description: "Group chat for agents and their human, over the rt daemon",
     module: "./commands/chat.ts",
     fn: "chat",
     args: [
-      { name: "Verb", type: "text", placeholder: "join | leave | post | read | rooms | who | mark | tail", hint: "The chat action to run" },
+      { name: "Verb", type: "text", placeholder: "join | leave | post | read | rooms | who | mark | tail | sign-in | sign-out", hint: "The chat action to run" },
       { name: "Room", type: "text", placeholder: "build", hint: "Room name (join/leave/post/read/who/mark); omit on read/rooms to span all your rooms" },
       { name: "Text", type: "text", placeholder: "@handle message", hint: "For post: the message body (every word after the room)" },
-      { name: "As handle", flag: "--as", type: "text", placeholder: "repo-tools-main", hint: "Override the derived handle for this invocation" },
+      { name: "As handle", flag: "--as", type: "text", placeholder: "repo-tools-main", hint: "Override the derived handle for this invocation; refused while signed in (sign out first)" },
       { name: "Wake on", flag: "--wake-on", type: "text", placeholder: "mention | all | none", hint: "For join: when this handle's tail wakes (default mention)" },
       { name: "Limit", flag: "--limit", type: "text", placeholder: "20", hint: "For read: max messages (default 20)" },
       { name: "Since", flag: "--since", type: "text", placeholder: "5m", hint: "For read: a non-advancing peek at messages newer than this duration" },
       { name: "Full", flag: "--full", type: "boolean", default: false, hint: "For read: uncapped message bodies" },
-      { name: "Room filter", flag: "--room", type: "text", placeholder: "build", hint: "For tail: only emit wakes from this room" },
+      { name: "Room filter", flag: "--room", type: "text", placeholder: "build", hint: "For tail: only emit wakes from this room; for sign-in: override the derived repository room" },
+      { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb" },
+      { name: "Status", flag: "--status", type: "text", placeholder: "rebasing #67", hint: "For sign-in: an away/status message to set on the presence row" },
+      { name: "No room", flag: "--no-room", type: "boolean", default: false, hint: "For sign-in: skip joining the derived repository room" },
+      { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For sign-out: suppress output (the SessionEnd hook's flag)" },
     ],
   },
 

@@ -9,6 +9,8 @@
  *   rt chat who [room]
  *   rt chat mark [room]
  *   rt chat tail                                   Task 8
+ *   rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]
+ *   rt chat sign-out [--quiet] [--session <id>]
  *
  * Identity resolution is CLIENT-SIDE (see resolveHandle): HERDR_PANE_ID and
  * the cwd's repo only exist in this process, never in the daemon, so the
@@ -17,6 +19,7 @@
  * branch component.
  *
  * Spec: docs/superpowers/specs/2026-08-23-rt-chat-design.md
+ * Presence spec: docs/superpowers/specs/2026-08-24-rt-chat-presence-design.md
  */
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
@@ -26,9 +29,18 @@ import { basename, dirname, join, resolve as resolvePath } from "path";
 
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
+import { getCurrentBranch, getRepoRoot } from "../lib/git.ts";
+import { getRepoIdentityForRoot } from "../lib/repo.ts";
+import { parseIdentity, type RepoIdentity } from "../lib/settings/identity.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { isValidChatName } from "../lib/state/index.ts";
 import { shellQuote } from "../lib/herdr-launch.ts";
+import {
+  currentSessionId,
+  deleteChatSession,
+  readChatSession,
+  writeChatSession,
+} from "../lib/chat-session.ts";
 import { parseDuration } from "./events.ts";
 import {
   chatArm,
@@ -39,6 +51,8 @@ import {
   chatPost,
   chatRead,
   chatRooms,
+  chatSignIn,
+  chatSignOut,
   chatTouch,
   chatUnreadWaking,
   chatWho,
@@ -55,7 +69,7 @@ import type {
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
-const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock"]);
+const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status"]);
 
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -107,8 +121,11 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
 
 // ─── handle derivation ────────────────────────────────────────────────────────
 //
-// Order: --as → chat.handle (user scope) → herdr pane title (HERDR_PANE_ID)
-// → <rt-repo-name>-<cwd-basename> → cwd relative to $HOME → <user>-<host>.
+// Order: the session file (signed in) → --as → chat.handle (user scope) →
+// herdr pane title (HERDR_PANE_ID) → <rt-repo-name>-<cwd-basename> → cwd
+// relative to $HOME → <user>-<host>. Position 0 wins over --as for every
+// verb but sign-in, which resolves its base handle through the --as-first
+// chain below BEFORE any session file exists — see resolveBaseHandle.
 //
 // NO BRANCH COMPONENT: a tail resolves its handle once and holds it for the
 // whole session, while post/read/join re-resolve on every call. A
@@ -271,7 +288,8 @@ function readChatHandleSetting(): string | undefined {
   }
 }
 
-function resolveHandle(args: string[]): string {
+/** The --as-first chain (positions 1-6): what sign-in assigns a baseHandle from, and what resolveHandle falls back to for an unsigned-in session. */
+function resolveBaseHandle(args: string[]): string {
   const explicit = flagValue(args, "--as");
   if (explicit) {
     requireValidName("handle", explicit);
@@ -300,12 +318,61 @@ function resolveHandle(args: string[]): string {
   return userHostHandle();
 }
 
+/**
+ * Position 0 (the session file) wins over every other position, for every
+ * verb but sign-in itself (which calls resolveBaseHandle directly, before a
+ * session file exists for this sign-in). `--as` alongside an active session
+ * is refused rather than silently overridden — a second identity is exactly
+ * the desync the base resolution order exists to prevent.
+ */
+function resolveHandle(args: string[]): string {
+  const session = readChatSession(currentSessionId(args));
+  if (session) {
+    if (flagValue(args, "--as") !== undefined) {
+      fail(`signed in as ${session.handle} — sign out to change identity (rt chat sign-out)`);
+    }
+    return session.handle;
+  }
+
+  return resolveBaseHandle(args);
+}
+
 function safeCwd(): string | undefined {
   try {
     return process.cwd();
   } catch {
     return undefined;
   }
+}
+
+// ─── the repository room (sign-in) ───────────────────────────────────────────
+//
+// Room naming is display, never a store key — unlike handle derivation, which
+// must never leak the serialized identity's `%2F`/`:`, a room name only needs
+// the chat charset. remote-kind takes the identity's LAST segment (what
+// people call the repo); path-kind takes the last TWO segments of the main
+// worktree realpath, because one segment alone is the bare pool-slot name
+// (`gamma`, `main`) — the same cross-repo collision handle derivation avoids.
+// Both go through `slugify`, so the result always satisfies the room charset.
+
+function roomForIdentity(id: RepoIdentity): string {
+  if (id.kind === "remote") {
+    const last = id.id.split("/").pop() ?? id.id;
+    return slugify(last);
+  }
+  const segments = id.id.split("/").filter(Boolean);
+  return slugify(segments.slice(-2).join("-"));
+}
+
+/** Null when `cwd` isn't inside a git work tree at all — the gate is a real `git rev-parse`, not a directory walk, so a scratch dir with a stray `.git` file never derives a bogus room. */
+function deriveRoomForCwd(cwd: string): string | null {
+  const root = getRepoRoot(cwd);
+  if (!root) return null;
+  const identity = getRepoIdentityForRoot(root);
+  if (!identity) return null;
+  const parsed = parseIdentity(identity.identity);
+  if (!parsed) return null;
+  return roomForIdentity(parsed);
 }
 
 // ─── rendering ────────────────────────────────────────────────────────────────
@@ -319,6 +386,28 @@ function renderJoin(room: string, handle: string, data: { memberCount: number; u
   if (data.memberCount === 1) parts.push("you are alone here");
   else if (data.unread > 0) parts.push(`${data.unread} unread`);
   return `✓ joined #${room} as ${handle} — ${parts.join(", ")}`;
+}
+
+function renderSignIn(
+  handle: string,
+  ctx: { repo?: string; branch?: string; pane?: string },
+  inRepo: boolean,
+  noRoomFlag: boolean,
+  room: { name: string; memberCount: number } | null,
+): string {
+  const parts = [`signed in as ${handle}`];
+  if (ctx.repo) parts.push(ctx.repo);
+  if (ctx.branch) parts.push(ctx.branch);
+  if (ctx.pane) parts.push(`pane ${ctx.pane}`);
+  if (room) {
+    parts.push(`joined #${room.name} (${pluralize(room.memberCount, "member")})`);
+  } else if (!inRepo) {
+    parts.push("not in a repository");
+    parts.push("no room joined");
+  } else {
+    parts.push(noRoomFlag ? "no room joined (--no-room)" : "no room joined");
+  }
+  return parts.join(" · ");
 }
 
 function relativeAgo(ms: number): string {
@@ -543,6 +632,85 @@ async function runMark(args: string[]): Promise<void> {
 
   if (args.includes("--json")) console.log(JSON.stringify({ ok: true }));
   // else: advance the cursor without printing
+}
+
+// ─── sign-in / sign-out (presence) ───────────────────────────────────────────
+
+/**
+ * baseHandle resolves through the --as-first chain (never the session file —
+ * this call establishes it); the daemon assigns the final (possibly
+ * suffixed) handle. The room is derived BEFORE either daemon call, since it
+ * depends only on cwd + the identity codec, and is written into the session
+ * file alongside the assigned handle so a later chatJoin failure still
+ * leaves a session file that agrees with what was actually attempted.
+ */
+async function runSignIn(args: string[]): Promise<void> {
+  const sessionId = currentSessionId(args);
+  if (!sessionId) fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
+
+  const baseHandle = resolveBaseHandle(args);
+  requireValidName("handle", baseHandle);
+
+  const cwd = safeCwd();
+  const root = cwd ? getRepoRoot(cwd) : null;
+  const identity = root ? getRepoIdentityForRoot(root) : null;
+  const repo = identity ? repoLabel(identity.identity) : undefined;
+  const branch = root ? getCurrentBranch() ?? undefined : undefined;
+  const pane = process.env.HERDR_PANE_ID;
+  const statusText = flagValue(args, "--status");
+
+  const noRoomFlag = args.includes("--no-room");
+  let roomName: string | null = null;
+  if (!noRoomFlag) {
+    const explicitRoom = flagValue(args, "--room");
+    if (explicitRoom) {
+      requireValidName("room", explicitRoom);
+      roomName = explicitRoom;
+    } else if (cwd) {
+      roomName = deriveRoomForCwd(cwd);
+    }
+  }
+
+  const signInRes = await chatSignIn({ sessionId, baseHandle, cwd, repo, branch, pane, statusText });
+  const { handle } = unwrap(signInRes, "sign-in");
+
+  writeChatSession({ sessionId, handle, baseHandle, signedInAt: Date.now(), room: roomName ?? undefined });
+
+  let joinedRoom: { name: string; memberCount: number } | null = null;
+  if (roomName) {
+    const joinRes = await chatJoin({ room: roomName, handle, cwd, pane });
+    const joinData = unwrap(joinRes, "join");
+    joinedRoom = { name: roomName, memberCount: joinData.memberCount };
+  }
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, handle, room: roomName }));
+    return;
+  }
+  console.log(renderSignIn(handle, { repo, branch, pane }, root !== null, noRoomFlag, joinedRoom));
+  console.log("arm your tail now: Monitor `rt chat tail`, persistent");
+}
+
+async function runSignOut(args: string[]): Promise<void> {
+  const quiet = args.includes("--quiet");
+  const sessionId = currentSessionId(args);
+  if (!sessionId) {
+    if (quiet) return; // best-effort — the SessionEnd hook must never fail a session shutdown
+    fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
+  }
+
+  const session = readChatSession(sessionId);
+  const res = await chatSignOut({ sessionId });
+  unwrap(res, "sign-out");
+
+  if (session) killChatTail(session.handle);
+  deleteChatSession(sessionId);
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true }));
+  } else if (!quiet) {
+    console.log(session ? `✓ signed out (${session.handle})` : "✓ signed out");
+  }
 }
 
 // ─── tail: the wake protocol ─────────────────────────────────────────────────
@@ -805,7 +973,7 @@ export async function chatTail(args: string[]): Promise<void> {
 
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
-const USAGE = "usage: rt chat <join|leave|post|read|rooms|who|mark|tail> ...";
+const USAGE = "usage: rt chat <join|leave|post|read|rooms|who|mark|tail|sign-in|sign-out> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   join: runJoin,
@@ -816,6 +984,8 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   who: runWho,
   mark: runMark,
   tail: chatTail,
+  "sign-in": runSignIn,
+  "sign-out": runSignOut,
 };
 
 export async function chat(args: string[]): Promise<void> {
@@ -838,4 +1008,6 @@ export const __test__ = {
   userHostHandle,
   looksLikeRtChatTail,
   claimTailPidfile,
+  roomForIdentity,
+  deriveRoomForCwd,
 };
