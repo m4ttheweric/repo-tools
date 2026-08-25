@@ -480,6 +480,7 @@ export function compileSkill(
     repoKey?: string;
     mattstackSha?: string;
     mattstackDirty?: 0 | 1;
+    packSha?: string;
     stageDir?: string | null;
     stageAllowedTools?: string[];
     emittedSiblingDirs?: string[];
@@ -514,6 +515,7 @@ export function compileSkill(
     repoKey: opts.repoKey ?? "",
     mattstackSha: opts.mattstackSha ?? "",
     mattstackDirty: opts.mattstackDirty ?? 0,
+    packSha: opts.packSha ?? "",
     stageDir: opts.stageDir ?? null,
     stageMeta: step.stageMeta,
     compiledFrom,

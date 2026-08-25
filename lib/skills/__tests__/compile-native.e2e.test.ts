@@ -32,6 +32,8 @@ describe("compile-native end to end", () => {
     }
     expect(work).toContain("<!-- part: step source=mattstack:work");
     expect(work).toMatch(/--mattstack-sha \S+ --mattstack-dirty [01]/);
+    // Inside repo-tools the fixture pack is itself a git checkout, so packProvenance resolves a sha, not the plugin.json version.
+    expect(work).toMatch(/--pack-sha acme=\S+/);
     for (const [name, body] of stages) {
       expect(body).toContain(`<!-- part: step source=mattstack:${name}`);
     }

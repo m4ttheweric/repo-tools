@@ -70,8 +70,9 @@ function runStartFlags(ctx: PlaceholderContext): string {
   // run-start's flag parser takes the token after a flag as its value, so an empty
   // sha must drop the flag entirely rather than leave `--mattstack-dirty` as the value.
   const sha = ctx.mattstackSha ? ` --mattstack-sha ${ctx.mattstackSha}` : "";
+  const pack = ctx.packSha ? ` --pack-sha ${ctx.packSha}` : "";
   for (const t of Object.keys(ctx.pipelines)) {
-    out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t}${sha} --mattstack-dirty ${ctx.mattstackDirty}`;
+    out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t}${sha} --mattstack-dirty ${ctx.mattstackDirty}${pack}`;
   }
   return fenced(out);
 }

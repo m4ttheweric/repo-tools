@@ -34,7 +34,7 @@ import { compileSkill, HEADER_COMMENT, isInlined } from "../lib/skills/compile.t
 import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
 import { buildStageEntries, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
-import { maskProvenance, mattstackProvenance, packPluginIdentity } from "../lib/skills/provenance.ts";
+import { maskProvenance, mattstackProvenance, packPluginIdentity, packProvenance } from "../lib/skills/provenance.ts";
 import {
   invocableRoster,
   loadAttachment,
@@ -381,6 +381,7 @@ type Resolved = {
   repoKey: string;
   mattstackSha: string;
   mattstackDirty: 0 | 1;
+  packSha: string;
 };
 
 /**
@@ -456,6 +457,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
   // --repo` expects -- the same key `~/.mattstack/runs/<repo>/` is named by.
   const repoKey = manifestPath ? basename(dirname(manifestPath)) : "";
   const { sha: mattstackSha, dirty: mattstackDirty } = mattstackProvenance(pipelines, pluginRoots.byName.mattstack);
+  const packSha = self ? `${self.name}=${packProvenance(packDir)}` : "";
   let stageEntries: Record<string, StageEntry[]>;
   try {
     stageEntries = buildStageEntries({ pipelines, pluginRoots });
@@ -465,7 +467,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
 
   return {
     packDir, team, fullRoster, bindings, pluginRoots, invocable, surface, internalRoster, manifestPath,
-    pipelines, stages, stageEntries, repoKey, mattstackSha, mattstackDirty,
+    pipelines, stages, stageEntries, repoKey, mattstackSha, mattstackDirty, packSha,
   };
 }
 
@@ -543,6 +545,7 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
       repoKey: resolved.repoKey,
       mattstackSha: resolved.mattstackSha,
       mattstackDirty: resolved.mattstackDirty,
+      packSha: resolved.packSha,
       stageDir,
       stageAllowedTools: isOrchestrator ? stageAllowedToolsFor(resolved, entries) : [],
       emittedSiblingDirs: allStageDirs,

@@ -46,7 +46,7 @@ function ctx(over: Partial<PlaceholderContext> = {}): PlaceholderContext {
       { name: "stage-provision", stage: "provision", dir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-provision", consumes: ["ticket", "repo"], produces: ["branch", "worktree"] },
       { name: "stage-plan", stage: "plan", dir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan", consumes: ["ticket"], produces: ["approach"] },
     ] },
-    repoKey: "my-repo", mattstackSha: "abc1234", mattstackDirty: 0,
+    repoKey: "my-repo", mattstackSha: "abc1234", mattstackDirty: 0, packSha: "acme=abc1234",
     stageDir: null, stageMeta: null, compiledFrom: "mattstack@1.0.0 + acme:plan-policy@0.4.0",
     ...over,
   };
@@ -145,16 +145,22 @@ describe("substitute", () => {
     });
   });
 
-  test("run-start.flags is keyed by work type and carries the baked mattstack facts", () => {
+  test("run-start.flags is keyed by work type and carries the baked mattstack and pack facts", () => {
     const body = substitute("{{run-start.flags}}", ctx(), "work").body;
     const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
-    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-sha abc1234 --mattstack-dirty 0");
+    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-sha abc1234 --mattstack-dirty 0 --pack-sha acme=abc1234");
   });
 
   test("run-start.flags omits --mattstack-sha when no sha is known", () => {
     const body = substitute("{{run-start.flags}}", ctx({ mattstackSha: "" }), "work").body;
     const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
-    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-dirty 0");
+    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-dirty 0 --pack-sha acme=abc1234");
+  });
+
+  test("run-start.flags omits --pack-sha when no pack sha is known", () => {
+    const body = substitute("{{run-start.flags}}", ctx({ packSha: "" }), "work").body;
+    const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
+    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-sha abc1234 --mattstack-dirty 0");
   });
 
   test("stage.dir and stage.fields need a stage context", () => {

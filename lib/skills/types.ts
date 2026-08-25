@@ -48,6 +48,7 @@ export type PlaceholderContext = {
   repoKey: string;
   mattstackSha: string;
   mattstackDirty: 0 | 1;
+  packSha: string;
   stageDir: string | null;
   stageMeta: StepSource["stageMeta"];
   compiledFrom: string;
