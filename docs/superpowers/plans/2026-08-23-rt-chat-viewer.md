@@ -236,10 +236,14 @@ bun add @mattstack/rt-client@^0.5 @mattstack/mantine-tokyo@^0.1
 ```
 
 **Remove** — the template *does* ship these and this app needs none of them:
-`@codemirror/*` and `codemirror`, `@mantine/spotlight`,
-`@tanstack/react-virtual`, and the Storybook devDependencies plus
-`.storybook/`. Also do not port console's `build:binary` /
-`generate:embedded` path — it buys nothing when deck supervises the process.
+`@codemirror/*` and `codemirror`, `@mantine/spotlight`, and the Storybook
+devDependencies plus `.storybook/`. **Keep `@tanstack/react-virtual`:** it is
+the kit's list primitive (`VirtualList` under `SearchableMenu` and
+`SelectableList`, `VirtualTable` under `createDynamicTable`), and
+`SearchableMenu` is the base for Task 7's `@` popover — the spec's "leave
+virtualization" means do not virtualize the transcript, not strip the kit's
+lists. Also do not port console's `build:binary` / `generate:embedded` path —
+it buys nothing when deck supervises the process.
 
 Removing a dependency orphans its consumers, and `tsconfig.app.json` includes
 all of `src`, so `tsc -b`, `vite build` and vitest all fail until the source
@@ -247,9 +251,8 @@ goes too. Delete, in the same step:
 
 - `src/ui/spotlight/` and the `@mantine/spotlight` import in `src/ui/styles/index.css`
 - `src/ui/lazy/codemirror/` and its re-export in `src/ui/lazy/index.ts`
-- `src/ui/core/virtual-table/`, `src/ui/core/virtual-list/`, and `src/ui/core/core-batch-c.test.tsx` (their exports in `src/ui/core/index.ts` go with them)
-- every `*.stories.tsx` under `src/` (34 files import `@storybook/react-vite`)
-- the whole `src/app/docs/` tree (the kit's docs site; it imports all four)
+- every `*.stories.tsx` under `src/` (34 files import `@storybook/react-vite`) — but **not** `src/ui/storybook/`: `vitest.setup.ts` imports `@ui/storybook/jsdom-polyfills` (matchMedia, ResizeObserver) and every UI test depends on it
+- the whole `src/app/docs/` tree (the kit's docs site; it imports Spotlight and CodeMirror), **and** the `/docs*` routes in `src/app/routes.ts` that import `isDocsSlug`/`DocsSlug` from it (`App.tsx` is rewritten by this plan anyway)
 
 Then `bunx tsc -b` must pass before anything is added. It will not yet:
 `tsconfig.app.json` types `["vite/client", "vitest/globals"]` only, so
@@ -261,7 +264,7 @@ script already exists; keep it.
 
 **Point the brand slots at the package.** The template's `src/ui/design-system/app-theme.ts` and `app-colors.ts` become re-exports from `@mattstack/mantine-tokyo`, exactly as console's do after Task 0b, and `src/app/styles` imports the package css. Everything else under `src/ui/` is the template copy and is **this app's kit** — edit `RailShell`, `PageShell`, the icon registry, the wall, as the viewer needs; console's copies are a reference, not a source.
 
-**Add `design/`.** Copy it from repo-tools: `~/Documents/GitHub/repo-tools/docs/superpowers/design/2026-08-24-rt-chat-viewer/` (`artboards/{Main,DaemonDown,Phone,PhoneRooms,Indicators}.dc.html`, `canvas.json`, `build.py`, `README.md`) → `design/`, keeping the README's provenance table and the list of deliberate departures (44px phone controls, 8px status dots, contrast-safe mention badge). Every UI task below is checked against these files, not the hosted canvas.
+**Add `design/`.** Copy it from the repo-tools checkout that carries this plan — the directory beside it, `docs/superpowers/design/2026-08-24-rt-chat-viewer/` (today that is the worktree `~/Documents/GitHub/repo-tools-chat-wt` on branch `docs/rt-chat-plan2-amend`; after merge, any checkout on `main` — never assume the main checkout's branch, it is switched underneath sessions). Copy `artboards/{Main,DaemonDown,Phone,PhoneRooms,Indicators}.dc.html`, `canvas.json`, `build.py`, `README.md` → `design/`, keeping the README's provenance table and the list of deliberate departures (44px phone controls, 8px status dots, contrast-safe mention badge). Every UI task below is checked against these files, not the hosted canvas.
 
 - [ ] **Step 4: Write the failing test**
 
@@ -529,11 +532,19 @@ test("GET /api/daemon reports unreachable rather than 500ing", async () => {
 ```
 
 ```tsx
+// src/ui/DaemonBanner.test.tsx
+const now = 1_700_000_000_000;
+
 test("the banner supersedes agent statuses", () => {
   render(<App initialState={{ daemonReachable: false, members: [{ handle: "a", armedAt: now, lastSeenAt: now }] }} />);
   expect(screen.getByRole("status")).toHaveTextContent(/daemon/i);
   expect(screen.queryByText("live")).toBeNull();
 });
+```
+
+```ts
+// src/ui/memberStatus.test.ts
+const now = 1_700_000_000_000;
 
 test("memberStatus: live requires BOTH an armed waiter and a fresh heartbeat", () => {
   expect(memberStatus({ armedAt: now - 1000, lastSeenAt: now - 60_000 }, now)).toBe("live");
@@ -566,7 +577,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/server/health.ts src/server/app.ts src/ui/DaemonBanner.tsx src/app/App.tsx src/server/health.test.ts src/ui/DaemonBanner.test.tsx
+git add src/server/health.ts src/server/app.ts src/ui/DaemonBanner.tsx src/ui/memberStatus.ts src/app/App.tsx src/server/health.test.ts src/ui/DaemonBanner.test.tsx src/ui/memberStatus.test.ts
 git commit -m "chat-viewer: daemon probe and banner
 
 subscribe() reconnects silently, so a dead daemon looks identical to an
@@ -585,7 +596,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Test: `src/ui/RoomRail.test.tsx`, `src/ui/PageBar.test.tsx`, `src/ui/Transcript.test.tsx`
 
 **Interfaces:**
-- Consumes: `RoomSummary`, `ChatMessage`; `GET /api/chat/rooms`, `/api/chat/messages/:room`, `POST /api/chat/mark`; the `chat` WS topic; member statuses from Task 6 (the page bar names them).
+- Consumes: `RoomSummary`, `ChatMessage`; `GET /api/chat/rooms`, `/api/chat/messages/:room`, `POST /api/chat/mark`; the `chat` WS topic; `memberStatus` from Task 4 (the page bar's chips name handles by it).
 
 - [ ] **Step 1: Write the failing tests**
 
