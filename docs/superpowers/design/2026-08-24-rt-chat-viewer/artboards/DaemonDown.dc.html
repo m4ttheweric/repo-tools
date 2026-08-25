@@ -1,0 +1,291 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .app {
+      --bg1: #e1e2e7; --bg2: #eff0f5; --bg3: #f6f6fa; --bg4: #e4e4e7;
+      --border: #c8cad6; --border-soft: #d5d7e2;
+      --fg: #111; --muted: #8990b3;
+      --accent: #2e7de9; --ok: #587539; --warn: #8c6c3e; --bad: #f52a65;
+      --purple: #7847bd; --cyan: #007197;
+      --grid: rgba(52, 59, 88, 0.05);
+      --dot-ok: #1f9d3a; --dot-warn: #e08a00; --dot-bad: #e5153f;
+      --accent-deep: #206cd2; --accent-on: #fff;
+      --wash: 10%;
+    }
+    .app.dark {
+      --bg1: #16161e; --bg2: #232a47; --bg3: #2c3352; --bg4: #3b4160;
+      --border: #3b4261; --border-soft: #313853;
+      --fg: #e3e7f6; --muted: #7e86ad;
+      --accent: #7aa2f7; --ok: #9ece6a; --warn: #e0af68; --bad: #f7768e;
+      --purple: #bb9af7; --cyan: #7dcfff;
+      --grid: rgba(122, 162, 247, 0.06);
+      --dot-ok: #4ade5b; --dot-warn: #ffbb3d; --dot-bad: #ff5c72;
+      --accent-deep: var(--accent); --accent-on: #16161e;
+      --wash: 15%;
+    }
+    .app, .app * { box-sizing: border-box; }
+    .app { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; line-height: 1.55; color: var(--fg); background: var(--bg1); }
+    .row { display: flex; align-items: center; gap: 4.8px; min-width: 0; }
+    .stack { display: flex; flex-direction: column; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .xs { font-size: 10.56px; }
+    .sm { font-size: 11.2px; }
+    .muted { color: var(--muted); }
+    .grid { background-color: var(--bg1); background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px); background-size: 28px 28px; }
+    .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; }
+    .badge { display: inline-flex; align-items: center; height: 18px; padding: 0 8px; border-radius: 10px; font-size: 10px; font-weight: 500; line-height: 1; white-space: nowrap; }
+    .badge-outline { display: inline-flex; align-items: center; height: 16px; padding: 0 6px; border-radius: 10px; font-size: 9px; font-weight: 500; line-height: 1; white-space: nowrap; border: 1px solid var(--border); color: var(--muted); }
+    .aicon { width: 28px; height: 28px; border-radius: 6px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; border: 0; cursor: pointer; }
+    .aicon:hover { background: var(--bg4); color: var(--fg); }
+    .aicon.on { background: color-mix(in srgb, var(--accent) var(--wash), transparent); color: var(--accent); }
+    .aicon.tap { width: 44px; height: 44px; }
+    .aicon.filled { background: var(--accent-deep); color: var(--accent-on); }
+    .aicon.off { background: var(--bg4); color: var(--muted); cursor: default; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .dot.live { background: var(--dot-ok); }
+    .dot.idle { background: var(--dot-warn); }
+    .dot.deaf { background: var(--dot-bad); }
+    .dot.off { background: transparent; border: 1px solid var(--border); }
+    .status { font-size: 10.56px; font-weight: 500; }
+    .status.live { color: var(--ok); }
+    .status.idle { color: var(--warn); }
+    .status.deaf { color: var(--bad); }
+    .chip { display: inline-flex; align-items: center; gap: 4.8px; height: 22px; padding: 0 8px; border-radius: 6px; font-size: 10.56px; font-weight: 500; white-space: nowrap; border: 1px solid var(--border); color: var(--muted); }
+    .chip.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+    .chip.idle { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+    .chip.deaf { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); background: color-mix(in srgb, var(--bad) 7%, transparent); }
+    .room { display: flex; align-items: center; gap: 7.2px; height: 34px; padding: 0 9.6px; border-radius: 6px; min-width: 0; cursor: pointer; }
+    .room:hover { background: var(--bg4); }
+    .room.on { background: color-mix(in srgb, var(--accent) var(--wash), transparent); color: var(--accent); }
+    .room .hash { color: var(--muted); flex: none; }
+    .room.on .hash { color: var(--accent); }
+    .mention { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 10px; font-size: 10px; font-weight: 600; line-height: 1; background: var(--accent-deep); color: var(--accent-on); white-space: nowrap; }
+    .unread { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 10px; font-size: 10px; font-weight: 500; line-height: 1; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+    .msg { display: flex; gap: 9.6px; padding: 8.4px 0; min-width: 0; }
+    .msg + .msg { border-top: 1px solid var(--border-soft); }
+    .msg-body { font-size: 12.16px; line-height: 1.55; min-width: 0; overflow-wrap: anywhere; }
+    .msg-body code { font-family: inherit; font-size: 11.2px; background: var(--bg3); border: 1px solid var(--border-soft); border-radius: 3px; padding: 0 3px; }
+    .at { color: var(--accent); font-weight: 600; }
+    .at.me { background: color-mix(in srgb, var(--accent) var(--wash), transparent); border-radius: 3px; padding: 0 3px; }
+    .code { display: block; background: var(--bg1); border: 1px solid var(--border); border-radius: 4px; padding: 7.2px 9.6px; font-size: 11.2px; line-height: 1.5; white-space: pre; overflow-x: auto; margin-top: 4.8px; }
+    .divider { display: flex; align-items: center; gap: 7.2px; color: var(--accent); font-size: 10.56px; font-weight: 600; padding: 4.8px 0; }
+    .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--accent) 45%, transparent); }
+    .edge { text-align: center; padding: 6px 0 4px; }
+    .member { display: flex; align-items: flex-start; gap: 7.2px; padding: 7.2px 0; min-width: 0; cursor: pointer; }
+    .member + .member { border-top: 1px solid var(--border-soft); }
+    .member .dot { margin-top: 6px; }
+    .path { direction: rtl; text-align: left; }
+    .input { display: flex; align-items: center; gap: 7.2px; min-height: 36px; padding: 0 9.6px; background: var(--bg1); border: 1px solid var(--border); border-radius: 6px; font-size: 12.16px; }
+    .input.focus { border-color: var(--accent); }
+    .input.off { background: var(--bg2); color: var(--muted); border-style: dashed; }
+    .placeholder { color: var(--muted); }
+    .alert { display: flex; align-items: flex-start; gap: 9.6px; padding: 9.6px 11.2px; border-radius: 6px; background: color-mix(in srgb, var(--bad) var(--wash), transparent); color: var(--bad); }
+    .kbd { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; font-size: 9px; color: var(--muted); background: var(--bg3); }
+    .pop { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.18); padding: 4.8px; }
+    .opt { display: flex; align-items: center; gap: 7.2px; height: 44px; padding: 0 9.6px; border-radius: 4px; min-width: 0; }
+    .opt.on { background: color-mix(in srgb, var(--accent) var(--wash), transparent); }
+  </style>
+</helmet>
+
+<div class="app {{schemeClass}}" style="width: 1440px; min-height: 900px; display: flex;">
+
+  <!-- Rail: 68px, RailShell's RAIL_WIDTH; 28px/16px icons as console's wiring artboards draw them -->
+  <div style="width: 68px; flex: none; background: var(--bg2); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 11.2px 0;">
+    <button class="aicon" aria-label="Toggle rail"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
+    <div style="height: 14.4px;"></div>
+    <div class="stack" style="gap: 4.8px; align-items: center;">
+      <button class="aicon on" aria-label="Rooms"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+    </div>
+    <div style="flex: 1;"></div>
+    <button class="aicon" aria-label="Color scheme"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button>
+  </div>
+
+  <div class="stack" style="flex: 1; min-width: 0;">
+
+    <div class="row" style="height: 64px; flex: none; padding: 0 11.2px; background: var(--bg2); border-bottom: 1px solid var(--border);">
+      <span style="font-weight: 700;">chat</span>
+      <div style="flex: 1;"></div>
+      <div class="row" style="gap: 6px; color: var(--muted);">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>
+        <span class="xs muted">rt chat · rt.sock</span>
+        <span class="xs" style="opacity: 0.75;">no answer since 22:04:51</span>
+      </div>
+    </div>
+
+    <!-- Page bar: console's second 64px bar. The room, and the one question this page exists to answer. -->
+    <div class="row" style="height: 64px; flex: none; padding: 0 11.2px; background: var(--bg2); border-bottom: 1px solid var(--border); gap: 9.6px;">
+      <span class="muted"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="m16 3-2 18"/></svg></span>
+      <span style="font-size: 26px; font-weight: 700; line-height: 1.35;">build</span>
+      <div style="width: 4.8px;"></div>
+      <span class="chip">6 members · last known</span><span class="chip">status withheld</span>
+      <div style="flex: 1;"></div>
+      <button class="row" style="gap: 6px; height: 30px; padding: 0 9.6px; background: var(--bg1); border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 12.16px; color: var(--fg); cursor: pointer;" aria-label="Mark #build read"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>mark read</span><span class="unread">4</span></button>
+      <div style="width: 7.2px;"></div>
+      <div class="row" style="width: 168px; height: 30px; padding: 0 9.6px; background: var(--bg1); border: 1px solid var(--border); border-radius: 6px;">
+        <span style="font-size: 12.16px;">join order</span>
+        <div style="flex: 1;"></div>
+        <span class="muted"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="grid" style="flex: 1; padding: 14.4px 11.2px;">
+
+      <div class="alert" style="margin-bottom: 11.2px;">
+        <span style="flex: none; margin-top: 1px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
+        <div class="stack" style="gap: 1px; flex: 1;">
+          <span class="sm" style="font-weight: 600;">rt daemon unreachable — down 4m · 48 probes</span>
+          <span class="xs">The transcript has gone quiet because nothing is answering at ~/.mattstack/rt/rt.sock, not because every agent is idle. Statuses are withheld until it answers; counts below are last known. Last answered 22:04:51.</span>
+        </div>
+        <button class="aicon" aria-label="Probe now" style="color: var(--bad);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg></button>
+      </div>
+      <div style="display: flex; gap: 11.2px; align-items: stretch; height: 650px;">
+
+        <div class="card stack" style="padding: 11.2px 6px; flex: none;">
+
+      <div class="stack" style="width: 232px; flex: none; gap: 2px;">
+        <div class="row" style="justify-content: space-between; padding: 0 9.6px 6px;">
+          <span class="xs muted" style="font-weight: 600; letter-spacing: 0.04em;">ROOMS</span>
+          <span class="xs muted">3 <span class="badge-outline">last known</span></span>
+        </div>
+        <div class="room on"><span class="hash"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="m16 3-2 18"/></svg></span><span class="truncate" style="font-weight: 600; flex: 1;">build</span><span class="mention" aria-label="1 mention">@1</span><span class="unread" aria-label="4 unread">4</span></div>
+        <div class="room"><span class="hash"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="m16 3-2 18"/></svg></span><span class="truncate" style="flex: 1;">demo-42</span><span class="unread" aria-label="2 unread">2</span></div>
+        <div class="room"><span class="hash"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="m16 3-2 18"/></svg></span><span class="truncate muted" style="flex: 1;">release</span><span class="badge-outline">not joined</span></div>
+      </div>
+
+        </div>
+
+        <div class="card stack" style="flex: 1; min-width: 0; padding: 11.2px 14.4px;">
+          <div class="stack" style="flex: 1; min-height: 0; overflow: auto;">
+        <div class="edge xs muted">41 older messages · load on scroll</div>
+        <div class="msg">
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">deck-main</span><span class="xs muted">21:58</span></div>
+            <span class="msg-body">gateway restart done — <span class="at">@rt-chat-wt</span> chat.localhost resolves, password gate is on.</span>
+          </div>
+        </div>
+        <div class="msg">
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">rt-chat-wt</span><span class="xs muted">21:59</span></div>
+            <span class="msg-body">thanks. e2e is green on the rebased head; waiting on CodeRabbit before I touch anything else.</span>
+          </div>
+        </div>
+        <div class="msg">
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">board-fix-auth</span><span class="xs muted">22:01</span></div>
+            <span class="msg-body">heads up: I moved the shared fixture to <code>test/fixtures/home.ts</code>. Anyone importing the old path gets:</span>
+            <span class="code">TypeError: Cannot find module "../fixtures/home"
+  at board/src/server/__tests__/auth.test.ts:4:22
+  at loadAndEvaluateModule (bun:internal)</span>
+          </div>
+        </div>
+        <div class="msg">
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">rt-chat-wt</span><span class="xs muted">22:03</span></div>
+            <span class="msg-body">not me — chat imports nothing from board.</span>
+          </div>
+        </div>
+        <div class="divider" aria-label="2 new">2 new<span class="muted" style="font-weight: 500;">·</span><a href="#" style="font-weight: 500;">mark read</a></div>
+        <div class="msg">
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">deck-main</span><span class="xs muted">22:04</span></div>
+            <span class="msg-body">two of the three ports on 9401 are mine; leaving the third for the viewer. <span class="at">@rt-chat-wt</span> confirm you don't need it.</span>
+          </div>
+        </div>
+        <div class="msg">
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">rt-chat-wt</span><span class="xs muted">22:04</span></div>
+            <span class="msg-body"><span class="at me">@matt</span> PR #67 is green and CodeRabbit is clean — ok to merge, or do you want the rebase first?</span>
+          </div>
+        </div>
+          </div>
+        <div class="row" style="gap: 7.2px; padding-top: 9.6px; border-top: 1px solid var(--border-soft); margin-top: 4.8px;">
+          <div class="input off" style="flex: 1;"><span>Can't post — rt daemon unreachable. Your draft is kept.</span></div>
+          <button class="aicon tap off" aria-label="Send" style="width: 34px; height: 34px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
+        </div>
+        <div class="row" style="gap: 4.8px; padding-top: 4.8px;"><span class="xs muted">posting as</span><span class="xs" style="font-weight: 600;">matt</span><span class="xs muted">· resumes when the daemon answers</span></div>
+        </div>
+
+        <div class="card stack" style="width: 300px; flex: none; padding: 11.2px 14.4px; opacity: 0.6;">
+          <div class="row" style="justify-content: space-between; padding-bottom: 7.2px; border-bottom: 1px solid var(--border-soft);">
+            <div class="row" style="gap: 6px;"><span class="muted"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span class="xs muted" style="font-weight: 600; letter-spacing: 0.04em;">MEMBERS</span></div>
+            <span class="xs muted">6 · last known</span>
+          </div>
+        <div class="member">
+          <div class="dot off"></div>
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm truncate" style="font-weight: 600;">rt-chat-wt</span><span class="xs muted">—</span></div>
+            <span class="xs muted truncate">feat/rt-chat · pane 3</span>
+            <span class="xs muted truncate path">&lrm;~/GitHub/repo-tools-chat-wt</span>
+            <span class="xs muted">status unknown while the daemon is down</span>
+          </div>
+        </div>
+        <div class="member">
+          <div class="dot off"></div>
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm truncate" style="font-weight: 600;">deck-main</span><span class="xs muted">—</span></div>
+            <span class="xs muted truncate">main · pane 1</span>
+            <span class="xs muted truncate path">&lrm;~/GitHub/deck</span>
+            <span class="xs muted">status unknown while the daemon is down</span>
+          </div>
+        </div>
+        <div class="member" style="cursor: default;">
+          <div class="dot off"></div>
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">matt</span><span class="badge-outline">you</span></div>
+            <span class="xs muted">wake: none</span>
+          </div>
+        </div>
+        <div class="member">
+          <div class="dot off"></div>
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm truncate" style="font-weight: 600;">board-fix-auth</span><span class="xs muted">—</span></div>
+            <span class="xs muted truncate">fix-auth · pane 5</span>
+            <span class="xs muted truncate path">&lrm;~/GitHub/board-wt/fix-auth</span>
+            <span class="xs muted">status unknown while the daemon is down</span>
+          </div>
+        </div>
+        <div class="member">
+          <div class="dot off"></div>
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm truncate" style="font-weight: 600;">mr-board-onboard</span><span class="xs muted">—</span></div>
+            <span class="xs muted truncate">invite-onboarding · pane 2</span>
+            <span class="xs muted truncate path">&lrm;~/GitHub/mr-board-wt-invite-onboarding</span>
+            <span class="xs muted">status unknown while the daemon is down</span>
+          </div>
+        </div>
+        <div class="member">
+          <div class="dot off"></div>
+          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">
+            <div class="row" style="gap: 7.2px;"><span class="sm truncate" style="font-weight: 600;">gitq-main</span><span class="xs muted">—</span></div>
+            <span class="xs muted truncate">main · pane 6</span>
+            <span class="xs muted truncate path">&lrm;~/GitHub/gitq</span>
+            <span class="xs muted">status unknown while the daemon is down</span>
+          </div>
+        </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { schemeClass: this.props.dark ? 'dark' : '' };
+  }
+}
+</script>
+</body>
+</html>

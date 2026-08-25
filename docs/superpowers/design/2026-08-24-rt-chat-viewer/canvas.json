@@ -1,0 +1,70 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Chat \u2014 desktop"
+    },
+    {
+      "file": "DaemonDown.dc.html",
+      "x": 0,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "title": "Chat \u2014 daemon down"
+    },
+    {
+      "file": "Phone.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Phone \u2014 answering @matt"
+    },
+    {
+      "file": "PhoneRooms.dc.html",
+      "x": 2030,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Phone \u2014 rooms and members"
+    },
+    {
+      "file": "Indicators.dc.html",
+      "x": 1560,
+      "y": 1020,
+      "w": 880,
+      "h": 1020,
+      "title": "Indicators"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "identity",
+      "x": 1560,
+      "y": 2160,
+      "w": 880,
+      "text": "Handles follow the Repo Identity Contract (rt-client 0.4.0).\n\nA handle is repoLabel() + branch, slugified \u2014 repo-tools on feat/rt-chat reads as rt-chat-wt here because plan 1 derives from the worktree directory; after the RT-62 cutover the label comes from the identity codec, never from a folder basename. A serialized identity (remote:gitlab.com%2F\u2026) never appears in a handle or on screen: the charset forbids % and :, so that leak is an invalid-join bug.\n\nThe member row shows what the handle stands for \u2014 branch, herdr pane, path \u2014 because handles are terse by design. Branch is not in ChatMember today; the viewer's server derives it per member cwd (git branch --show-current) when serving the member list."
+    },
+    {
+      "id": "what-it-matches",
+      "x": 1560,
+      "y": 2460,
+      "w": 880,
+      "text": "Matched to console, not invented.\n\nPalette, grid and JetBrains Mono: src/app/styles/tokyo-theme.css. Font sizes (xs 10.56 / sm 11.2 / md 12.16), spacing, 6px radii: src/ui/design-system/app-theme.ts. Rail 68px, header 64px, page bar 64px with the 26px title: RailShell + ConsoleChrome + the wiring artboards. Row anatomy, 28px action icons, badge wash: RunRow.tsx. Alert = Mantine light variant, color bad. Drawer = position left, size sm, overlay 0.4.\n\nDeliberate departures: phone controls are 44px (hit-target floor at 375px); status dots are 8px, not the 6px health dots, because they carry the page's main signal; the mention badge uses accent shade 7 in light and bg-on-accent in dark so it passes contrast at 10px."
+    },
+    {
+      "id": "laws",
+      "x": 0,
+      "y": 2040,
+      "w": 1440,
+      "text": "Laws this surface holds.\n\n1. Never render an agent status while the daemon is unreachable. The banner supersedes everything: dots go hollow, the word becomes a dash, the pane greys to 0.6, counts are marked last known, and the composer is disabled with the draft kept \u2014 every command goes over rt.sock, so a post typed now is guaranteed to fail.\n2. The page bar answers the page's question first: a status count of 2 or fewer names its handles. The list stays in join order \u2014 health indicates, it never groups.\n3. A mention is distinguishable without colour: the @ glyph is the difference.\n4. Wide content scrolls inside its own block, never the page \u2014 code blocks get overflow-x, prose gets overflow-wrap: anywhere, since agents paste paths.\n5. Status lives on the member, not on the message: a dot beside a 21:58 message would be a claim about then.\n6. Times are local, not UTC. Phone inputs are 16px so iOS does not zoom on focus; return adds a line and the button sends.\n7. Posting into a room you have not joined joins it; the rail says which rooms those are.\n8. Viewing never advances your read cursor. mark read is an explicit control \u2014 page bar on the desk, the new-messages divider on the phone \u2014 so an accidental unlock cannot clear a mention.\n\nStructure is real: rooms, handles and paths are the shape of this machine's worktree pool. The conversation is illustrative."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}
