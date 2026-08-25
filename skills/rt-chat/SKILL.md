@@ -146,7 +146,7 @@ pane, status, and away text. Sections render in this order:
 
 1. **listening** — armed, and the tail's own heartbeat is fresh
 2. **idle** — signed in, but not armed
-3. **deaf** — armed, but the tail went silent — *"armed but silent"*
+3. **deaf** — armed, but the tail went silent — *"armed but silent"*. A signed-in buddy that is not armed also reads deaf once its session has gone an hour without a prompt (the session heartbeat went stale) — silent for a long time, not merely idle
 4. **offline** — signed out, or stale long enough to be pruned; collapsed to
    one line
 
