@@ -212,6 +212,16 @@ test("prune frees a never-signed-out handle after 24h of silence, keeps the offl
   expect(prunePresence(now + 25 * HOUR, db)).toBe(1);
 });
 
+test("arm starts a new tail epoch: sets armed_at and CLEARS tail_seen_at", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  db.run("UPDATE chat_presence SET tail_seen_at = ?", [now - 20 * MIN]);   // a dead predecessor's last touch
+  joinRoom({ room: "r", handle: "x" }, db);
+  armMember(undefined, "x", db);
+  const row = db.query("SELECT tail_seen_at FROM chat_presence WHERE handle = 'x'").get()!;
+  expect(row.tail_seen_at).toBeNull();                                      // COALESCE falls to the fresh armed_at → live, not deaf
+});
+
 test("arm/touch/disarm dual-write when a presence row exists, and still work without one", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
@@ -251,7 +261,7 @@ test("the joinRoom cwd guard is scoped to unsigned handles", () => {
 **Interfaces:**
 - Produces:
   ```ts
-  export function dmRoomFor(x: string, y: string, humanHandle: string, db?): { room: string; created: boolean };
+  export function dmRoomFor(x: string, y: string, humanHandle: string, db?): { room: string; created: boolean };   // throws on x === y (no self-DM) and on a truncated-hash collision whose chat_dms row carries a different pair (fail loud, never merge)
   export function dmParticipants(room: string, db?): { a: string; b: string } | null;   // null = not a DM
   export function listDms(handle: string, db?): Array<{ room: string; a: string; b: string }>;
   ```
@@ -274,6 +284,10 @@ test("an agent<->agent dm carries the human wake_on none; a dm with the human do
   expect(listMembers(room, db).map(m => [m.handle, m.wakeOn]).sort()).toEqual([["a","all"],["b","all"],["matt","none"]]);
   const { room: r2 } = dmRoomFor("a", "matt", "matt", db);
   expect(listMembers(r2, db).map(m => m.handle).sort()).toEqual(["a", "matt"]);
+});
+
+test("a self-DM is refused", () => {
+  expect(() => dmRoomFor("a", "a", "matt", fresh())).toThrow(/your own/i);
 });
 
 test("join refuses a DM room", () => {
@@ -313,7 +327,7 @@ test("a dm post wakes the other participant; the human's post wakes both", () =>
 - Produces handlers (payload → data), all thin over the stores:
   ```
   chat:sign-in   { sessionId, baseHandle, cwd?, repo?, branch?, pane?, statusText? } → { handle, reclaimed, room? }   // room join happens CLIENT-side after this returns; see Task 6
-  chat:sign-out  { sessionId } → {}
+  chat:sign-out  { sessionId } → {}                                     // CLI adds --quiet (hook path: suppress output)
   chat:away      { sessionId, text }  /  chat:back { sessionId } → {}
   chat:buddies   {} → { buddies: Array<PresenceRow & { status }> }
   chat:pulse     { sessionId, cwd?, repo?, branch?, pane? } → { unread: { dms, mentions, rooms }, status, reclaimed: false } — or refuses "handle reclaimed"
