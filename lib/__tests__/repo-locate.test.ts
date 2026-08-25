@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb, listEndpointClaims, setKvValue } from "../state/index.ts";
-import { loadRepoIndex } from "../repo-index.ts";
+import { loadRepoIndex, REPO_INDEX_NS } from "../repo-index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../worktree/registry.ts";
 import { saveClaims } from "../endpoint/store.ts";
 import { deriveRepoIdentity, serializeIdentity } from "../settings/identity.ts";
@@ -70,7 +70,7 @@ describe("repo locate", () => {
   });
 
   test("a derived identity matching no lost row refuses and names both sides", async () => {
-    setKvValue("repo-index", "remote:gitlab.com%2Fg%2Fsomething-else", join(scratch, "gone"));
+    setKvValue(REPO_INDEX_NS, "remote:gitlab.com%2Fg%2Fsomething-else", join(scratch, "gone"));
     const repo = repoWithRemote("beta");
 
     const out = await planLocate({ newPath: repo });
@@ -81,7 +81,7 @@ describe("repo locate", () => {
   });
 
   test("a remote-less repo is refused: its identity IS its path, so a move mints a new one", async () => {
-    setKvValue("repo-index", `path:${encodeURIComponent(join(scratch, "gone"))}`, join(scratch, "gone"));
+    setKvValue(REPO_INDEX_NS, `path:${encodeURIComponent(join(scratch, "gone"))}`, join(scratch, "gone"));
     const repo = localRepo("gamma");
 
     const out = await planLocate({ newPath: repo });
@@ -95,7 +95,7 @@ describe("repo locate", () => {
     const clone = join(scratch, "delta-clone");
     execSync(`git clone -q ${original} ${clone}`, { stdio: "pipe" });
     execSync(`git remote set-url origin https://gitlab.com/g/delta.git`, { cwd: clone, stdio: "pipe" });
-    setKvValue("repo-index", serializeIdentity(await deriveRepoIdentity(original)), original);
+    setKvValue(REPO_INDEX_NS, serializeIdentity(await deriveRepoIdentity(original)), original);
 
     const out = await planLocate({ newPath: realpathSync(clone) });
 
@@ -107,8 +107,8 @@ describe("repo locate", () => {
     const identity = serializeIdentity(await deriveRepoIdentity(repo));
     const treePath = join(repo, ".worktrees", "t1");
     execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
-    setKvValue("repo-index", identity, repo);
-    setKvValue("repo-index", "epsilon-legacy", repo);
+    setKvValue(REPO_INDEX_NS, identity, repo);
+    setKvValue(REPO_INDEX_NS, "epsilon-legacy", repo);
     saveRegistry(identity, [rec({ name: "main", path: repo, kind: "main", branch: "main" })]);
     saveRegistry("epsilon-legacy", [rec({ name: "t1", path: treePath, kind: "ephemeral", state: "on-deck", branch: "feat" })]);
     saveClaims(identity, [{ worktree: treePath, role: "web", port: 4001, ts: "2026-01-01T00:00:00.000Z" }]);
@@ -135,8 +135,8 @@ describe("repo locate", () => {
     const identity = serializeIdentity(await deriveRepoIdentity(repo));
     const treePath = join(repo, ".worktrees", "t1");
     execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
-    setKvValue("repo-index", identity, repo);
-    setKvValue("repo-index", "zeta-legacy", repo);
+    setKvValue(REPO_INDEX_NS, identity, repo);
+    setKvValue(REPO_INDEX_NS, "zeta-legacy", repo);
     saveRegistry(identity, [rec({ name: "main", path: repo, kind: "main", branch: "main" })]);
     saveRegistry("zeta-legacy", [rec({ name: "t1", path: treePath, kind: "ephemeral", state: "claimed", owner: "matt", branch: "feat" })]);
     saveClaims(identity, [{ worktree: treePath, role: "web", port: 4001, ts: "2026-01-01T00:00:00.000Z" }]);
@@ -168,7 +168,7 @@ describe("repo locate", () => {
     const external = join(scratch, "iota-external");
     execSync(`git worktree add -q -b feat ${inTree}`, { cwd: repo, stdio: "pipe" });
     execSync(`git worktree add -q -b other ${external}`, { cwd: repo, stdio: "pipe" });
-    setKvValue("repo-index", identity, repo);
+    setKvValue(REPO_INDEX_NS, identity, repo);
     saveRegistry(identity, [
       rec({ name: "main", path: repo, kind: "main", branch: "main" }),
       rec({ name: "t1", path: inTree, kind: "ephemeral", state: "on-deck", branch: "feat" }),
@@ -194,7 +194,7 @@ describe("repo locate", () => {
   test("a registry record whose tree is gone is reported stale, not a failure", async () => {
     const repo = repoWithRemote("eta");
     const identity = serializeIdentity(await deriveRepoIdentity(repo));
-    setKvValue("repo-index", identity, repo);
+    setKvValue(REPO_INDEX_NS, identity, repo);
     saveRegistry(identity, [
       rec({ name: "main", path: repo, kind: "main", branch: "main" }),
       rec({ name: "ghost", path: join(repo, ".worktrees", "ghost"), kind: "ephemeral", state: "on-deck" }),
@@ -212,13 +212,14 @@ describe("repo locate", () => {
     expect(loadRepoIndex()[identity]).toBe(moved);
   });
 
-  test("a failed verification restores the pre-apply rows", async () => {
+  test("a failed verification writes nothing to state.db", async () => {
     const repo = repoWithRemote("theta");
     const identity = serializeIdentity(await deriveRepoIdentity(repo));
     const treePath = join(repo, ".worktrees", "t1");
     execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
-    setKvValue("repo-index", identity, repo);
+    setKvValue(REPO_INDEX_NS, identity, repo);
     saveRegistry(identity, [rec({ name: "main", path: repo, kind: "main", branch: "main" })]);
+    saveClaims(identity, [{ worktree: treePath, role: "web", port: 4001, ts: "2026-01-01T00:00:00.000Z" }]);
 
     const moved = join(scratch, "theta-moved");
     renameSync(repo, moved);
@@ -234,15 +235,135 @@ describe("repo locate", () => {
     const result = await applyLocate(plan);
 
     expect(result.ok).toBe(false);
-    expect(result.restored).toBe(true);
+    expect(result.error).toContain(decoy);
     expect(loadRepoIndex()[identity]).toBe(repo);
     expect(loadRegistry(identity)[0]?.path).toBe(repo);
+    expect(listEndpointClaims(identity)[0]?.worktree).toBe(treePath);
+  });
+
+  test("a linked worktree is refused as the new root", async () => {
+    const repo = repoWithRemote("lambda");
+    const identity = serializeIdentity(await deriveRepoIdentity(repo));
+    const treePath = join(repo, ".worktrees", "t1");
+    execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
+    setKvValue(REPO_INDEX_NS, identity, join(scratch, "gone"));
+
+    const out = await planLocate({ newPath: treePath });
+
+    expect(isRefusal(out) && out.refusal).toBe("not-main-worktree");
+  });
+
+  test("a registry record written between plan and apply is moved, not overwritten", async () => {
+    const repo = repoWithRemote("pi");
+    const identity = serializeIdentity(await deriveRepoIdentity(repo));
+    const treePath = join(repo, ".worktrees", "t1");
+    execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
+    setKvValue(REPO_INDEX_NS, identity, repo);
+    saveRegistry(identity, [rec({ name: "main", path: repo, kind: "main", branch: "main" })]);
+
+    const moved = join(scratch, "pi-moved");
+    renameSync(repo, moved);
+
+    const plan = await planLocate({ newPath: moved });
+    if (isRefusal(plan)) throw new Error(`unexpected refusal: ${plan.message}`);
+    // The daemon provisioning a tree while the operator confirms the move: it
+    // writes the pre-move spelling, because the index still says so.
+    saveRegistry(identity, [
+      ...loadRegistry(identity),
+      rec({ name: "t1", path: treePath, kind: "ephemeral", state: "claimed", owner: "matt", branch: "feat" }),
+    ]);
+
+    const result = await applyLocate(plan);
+
+    expect(result.ok).toBe(true);
+    expect(loadRegistry(identity).map((t) => t.path).sort()).toEqual(
+      [moved, join(moved, ".worktrees", "t1")].sort(),
+    );
+    expect(loadRegistry(identity).find((t) => t.name === "t1")).toMatchObject({ state: "claimed", owner: "matt" });
+  });
+
+  test("a failed git repair aborts before anything is written", async () => {
+    const repo = repoWithRemote("omicron");
+    const identity = serializeIdentity(await deriveRepoIdentity(repo));
+    const treePath = join(repo, ".worktrees", "t1");
+    execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
+    setKvValue(REPO_INDEX_NS, identity, repo);
+    saveRegistry(identity, [rec({ name: "main", path: repo, kind: "main", branch: "main" })]);
+
+    const moved = join(scratch, "omicron-moved");
+    renameSync(repo, moved);
+
+    const plan = await planLocate({ newPath: moved });
+    if (isRefusal(plan)) throw new Error(`unexpected refusal: ${plan.message}`);
+    // A real directory git cannot repair — `git worktree repair` exits 1 on it.
+    const decoy = join(moved, "decoy");
+    mkdirSync(decoy, { recursive: true });
+    plan.gitRepairPaths.push(decoy);
+
+    const result = await applyLocate(plan);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("git worktree repair failed");
+    expect(result.repaired).toEqual([]);
+    expect(loadRepoIndex()[identity]).toBe(repo);
+    expect(loadRegistry(identity)[0]?.path).toBe(repo);
+  });
+
+  test("verification rejects a plan rooted at a linked worktree, whatever built it", async () => {
+    const repo = repoWithRemote("xi");
+    const identity = serializeIdentity(await deriveRepoIdentity(repo));
+    const treePath = join(repo, ".worktrees", "t1");
+    execSync(`git worktree add -q -b feat ${treePath}`, { cwd: repo, stdio: "pipe" });
+    setKvValue(REPO_INDEX_NS, identity, join(scratch, "gone"));
+
+    const result = await applyLocate({
+      identity,
+      oldPath: join(scratch, "gone"),
+      newPath: treePath,
+      indexKeys: [identity],
+      legacyKeys: [],
+      registryRewrites: [],
+      claimRewrites: [],
+      gitRepairPaths: [],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("not the main worktree");
+    expect(loadRepoIndex()[identity]).toBe(join(scratch, "gone"));
+  });
+
+  test("a claim whose worktree lies outside the moved root is left untouched", async () => {
+    const repo = repoWithRemote("nu");
+    const identity = serializeIdentity(await deriveRepoIdentity(repo));
+    const inTree = join(repo, ".worktrees", "t1");
+    const external = join(scratch, "nu-external");
+    execSync(`git worktree add -q -b feat ${inTree}`, { cwd: repo, stdio: "pipe" });
+    execSync(`git worktree add -q -b other ${external}`, { cwd: repo, stdio: "pipe" });
+    setKvValue(REPO_INDEX_NS, identity, repo);
+    saveRegistry(identity, [rec({ name: "main", path: repo, kind: "main", branch: "main" })]);
+    saveClaims(identity, [
+      { worktree: inTree, role: "web", port: 4001, ts: "2026-01-01T00:00:00.000Z" },
+      { worktree: external, role: "web", port: 4002, ts: "2026-01-01T00:00:00.000Z" },
+    ]);
+
+    const moved = join(scratch, "nu-moved");
+    renameSync(repo, moved);
+
+    const plan = await planLocate({ newPath: moved });
+    if (isRefusal(plan)) throw new Error(`unexpected refusal: ${plan.message}`);
+    const result = await applyLocate(plan);
+
+    expect(result.ok).toBe(true);
+    expect(result.claimsRewritten).toBe(1);
+    expect(listEndpointClaims(identity).map((c) => c.worktree).sort()).toEqual(
+      [external, join(moved, ".worktrees", "t1")].sort(),
+    );
   });
 
   test("candidates pair a scanned directory with the lost row it derives", async () => {
     const repo = repoWithRemote("kappa");
     const identity = serializeIdentity(await deriveRepoIdentity(repo));
-    setKvValue("repo-index", identity, repo);
+    setKvValue(REPO_INDEX_NS, identity, repo);
 
     const moved = join(scratch, "kappa-moved");
     renameSync(repo, moved);

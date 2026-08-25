@@ -5,16 +5,22 @@
  * Ordering is the whole point. The reconciler prunes a registry row whose path
  * is absent from `git worktree list`, so an index row that heals ahead of the
  * registry destroys claimed/on-deck state and replenish then mints replacement
- * trees. Everything that can be written atomically goes in one state.db
- * transaction; `git worktree repair` and the verification run after it, and a
- * verification failure puts the pre-apply rows back.
+ * trees. So the apply repairs git and verifies FIRST, while the index still
+ * names the dead path (a reconciler pass that interleaves there finds a repo
+ * whose path does not exist and bails), and only then commits index rows,
+ * registries and claims in one state.db transaction. Nothing is written until
+ * the whole move is known to be sound, which is why there is no rollback path.
+ *
+ * An in-daemon caller still runs this under the reconciler's in-flight hold:
+ * the transaction is atomic against a reader, but the git repair passes are
+ * not, and a pass that starts mid-repair can see a half-linked worktree.
  *
  * Pure of the daemon and the CLI: the daemon handler and `commands/repos.ts`
  * both drive these functions, and neither the caller nor the transport is
  * visible from here.
  */
 
-import { existsSync, realpathSync } from "fs";
+import { existsSync, realpathSync, statSync } from "fs";
 import { join, resolve as resolvePath } from "path";
 import {
   getKnownRepos,
@@ -34,13 +40,14 @@ import {
   saveRegistry,
   type TreeRecord,
 } from "./worktree/registry.ts";
-import { loadClaims, saveClaims, type EndpointClaim } from "./endpoint/store.ts";
+import { loadClaims, saveClaims } from "./endpoint/store.ts";
 import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
 import { getStateDb } from "./state/index.ts";
 import { listWorktreesAsync, runGit } from "./worktree/git-async.ts";
 
 export type LocateRefusalCode =
   | "not-a-git-repo"
+  | "not-main-worktree"
   | "nothing-lost"
   | "old-path-exists"
   | "identity-mismatch"
@@ -73,7 +80,9 @@ export interface LocatePlan {
   indexKeys: string[];
   /** Every `indexKeys` entry that is not the identity — collapsed after a verified apply. */
   legacyKeys: string[];
+  /** Plan-time preview (dry-run display) and the path set verification checks — the apply re-reads and re-roots each registry itself. */
   registryRewrites: RegistryRewrite[];
+  /** Plan-time preview, same as `registryRewrites`. */
   claimRewrites: ClaimRewrite[];
   /** In-tree worktree paths (new spellings, main excluded) handed to `git worktree repair`. */
   gitRepairPaths: string[];
@@ -91,7 +100,6 @@ export interface LocateResult {
   /** Re-rooted registry paths with nothing on disk — a record the reconciler will prune, never a locate failure. */
   stalePaths: string[];
   legacyRows: { key: string; outcome: "collapsed" | "retained" }[];
-  restored?: true;
   error?: string;
 }
 
@@ -124,6 +132,48 @@ function relocatePath(path: string, oldPath: string, newPath: string): string | 
   return null;
 }
 
+/** The one re-root both the plan and the apply run, so what lands is never a plan-time snapshot of the registry. */
+function relocateTrees(
+  trees: TreeRecord[],
+  oldPath: string,
+  newPath: string,
+): { trees: TreeRecord[]; movedPaths: string[] } {
+  const movedPaths: string[] = [];
+  const next = trees.map((rec) => {
+    const moved = relocatePath(rec.path, oldPath, newPath);
+    if (moved === null) return rec;
+    movedPaths.push(moved);
+    return { ...rec, path: moved };
+  });
+  return { trees: next, movedPaths };
+}
+
+/**
+ * Whether `path` is a repo's MAIN worktree. Locating a linked worktree would
+ * re-root every stored path onto a base that is one directory of the repo, so
+ * this is a gate, not a nicety: a linked worktree derives the same identity as
+ * its main worktree and would otherwise plan cleanly.
+ *
+ * A `.git` directory is main by construction. A `.git` FILE is either a linked
+ * worktree or a `--separate-git-dir` main worktree, and only git can tell them
+ * apart: git-dir equals git-common-dir for main, and is
+ * `<common>/worktrees/<id>` for a linked tree.
+ */
+async function isMainWorktree(path: string): Promise<boolean> {
+  try {
+    if (statSync(join(path, ".git")).isDirectory()) return true;
+  } catch {
+    return false;
+  }
+  const r = await runGit(path, ["rev-parse", "--git-dir", "--git-common-dir"]);
+  if (r.exitCode !== 0) return false;
+  const [gitDir, commonDir] = r.stdout.trim().split("\n");
+  if (gitDir === undefined || commonDir === undefined) return false;
+  // git prints these relative to the worktree unless they are absolute — which
+  // is exactly what `resolve` handles and `join` would corrupt.
+  return canon(resolvePath(path, gitDir)) === canon(resolvePath(path, commonDir));
+}
+
 /**
  * Resolve which index rows a move touches, matching by IDENTITY only.
  *
@@ -135,6 +185,12 @@ export async function planLocate(opts: { newPath: string; repo?: string }): Prom
   const newPath = canon(resolvePath(opts.newPath));
   if (!existsSync(join(newPath, ".git"))) {
     return refuse("not-a-git-repo", `${newPath} is not a git repository`);
+  }
+  if (!(await isMainWorktree(newPath))) {
+    return refuse(
+      "not-main-worktree",
+      `${newPath} is a linked worktree, not the repo's main worktree — locate re-roots every stored path onto the path it is given, so it must be given the repo root`,
+    );
   }
 
   const identity = serializeIdentity(await deriveRepoIdentity(newPath));
@@ -186,14 +242,10 @@ export async function planLocate(opts: { newPath: string; repo?: string }): Prom
   const repairPaths = new Set<string>();
   for (const key of indexKeys) {
     if (!hasRegistry(key)) continue;
-    const movedPaths: string[] = [];
-    const trees = loadRegistry(key).map((rec) => {
-      const moved = relocatePath(rec.path, oldPath, newPath);
-      if (moved === null) return rec;
-      movedPaths.push(moved);
+    const { trees, movedPaths } = relocateTrees(loadRegistry(key), oldPath, newPath);
+    for (const moved of movedPaths) {
       if (moved !== newPath) repairPaths.add(moved);
-      return { ...rec, path: moved };
-    });
+    }
     registryRewrites.push({ repoKey: key, trees, movedPaths });
   }
 
@@ -218,80 +270,54 @@ export async function planLocate(opts: { newPath: string; repo?: string }): Prom
   };
 }
 
-interface LocateSnapshot {
-  index: { key: string; path: string | null }[];
-  registries: { key: string; trees: TreeRecord[]; existed: boolean }[];
-  claims: { key: string; claims: EndpointClaim[] }[];
-}
-
-/** Every row the apply can touch, read before the first write — the identity's own rows included, since the merge writes them whether or not the plan rewrote them. */
-function captureSnapshot(plan: LocatePlan): LocateSnapshot {
-  const claimKeys = [...new Set(plan.claimRewrites.map((c) => c.repoKey))];
-  const entries = loadRepoIndexEntries();
-  return {
-    index: indexWriteKeys(plan).map((key) => ({
-      key,
-      path: entries.find((e) => e.repoName === key)?.path ?? null,
-    })),
-    registries: [...new Set([...plan.registryRewrites.map((r) => r.repoKey), plan.identity])].map((key) => ({
-      key,
-      trees: loadRegistry(key),
-      existed: hasRegistry(key),
-    })),
-    claims: claimKeys.map((key) => ({ key, claims: loadClaims(key) })),
-  };
-}
-
 function indexWriteKeys(plan: LocatePlan): string[] {
   return [...new Set([...plan.indexKeys, plan.identity])];
 }
 
-function restoreSnapshot(snapshot: LocateSnapshot): void {
-  getStateDb().transaction(() => {
-    for (const row of snapshot.index) {
-      if (row.path === null) removeIndexRow(row.key);
-      else setIndexPath(row.key, row.path);
-    }
-    for (const reg of snapshot.registries) {
-      if (reg.existed) saveRegistry(reg.key, reg.trees);
-      else deleteRegistry(reg.key);
-    }
-    for (const c of snapshot.claims) saveClaims(c.key, c.claims);
-  })();
-}
-
 /**
- * The registry half of the apply: the pair's registries are merged onto the
- * IDENTITY key and every legacy registry row is dropped, so the reconciler
+ * The registry half of the apply: every registry is re-read and re-rooted
+ * HERE, not carried over from the plan, so a tree provisioned between plan and
+ * apply is moved rather than overwritten. The pair's registries are merged onto
+ * the IDENTITY key and every legacy registry row is dropped, so the reconciler
  * (which iterates identity keys) sees one pool instead of two halves.
  */
-function writeRegistries(plan: LocatePlan): void {
-  const byKey = new Map(plan.registryRewrites.map((r) => [r.repoKey, r.trees]));
-  let merged = byKey.get(plan.identity) ?? loadRegistry(plan.identity);
-  let touched = byKey.has(plan.identity);
+function writeRegistries(plan: LocatePlan): number {
+  const relocate = (key: string) => relocateTrees(loadRegistry(key), plan.oldPath, plan.newPath);
+  let moved = 0;
+  let touched = hasRegistry(plan.identity);
+  let merged: TreeRecord[] = [];
+  if (touched) {
+    const own = relocate(plan.identity);
+    merged = own.trees;
+    moved += own.movedPaths.length;
+  }
   for (const key of plan.legacyKeys) {
-    const legacy = byKey.get(key);
-    if (!legacy) continue;
-    merged = mergeRegistries(merged, legacy);
+    if (!hasRegistry(key)) continue;
+    const legacy = relocate(key);
+    merged = mergeRegistries(merged, legacy.trees);
+    moved += legacy.movedPaths.length;
     deleteRegistry(key);
     touched = true;
   }
   if (touched) saveRegistry(plan.identity, merged);
+  return moved;
 }
 
-function writeClaims(plan: LocatePlan): void {
-  for (const key of new Set(plan.claimRewrites.map((c) => c.repoKey))) {
-    const moves = new Map(
-      plan.claimRewrites.filter((c) => c.repoKey === key).map((c) => [c.worktree, c.newWorktree]),
-    );
-    saveClaims(
-      key,
-      loadClaims(key).map((c) => {
-        const moved = moves.get(c.worktree);
-        return moved === undefined ? c : { ...c, worktree: moved };
-      }),
-    );
+/** Claims are re-read here for the same reason registries are: a claim taken between plan and apply must move with the repo, not be reverted to the plan's copy. */
+function writeClaims(plan: LocatePlan): number {
+  let moved = 0;
+  for (const key of indexWriteKeys(plan)) {
+    const claims = loadClaims(key);
+    if (claims.length === 0) continue;
+    const next = claims.map((c) => {
+      const relocated = relocatePath(c.worktree, plan.oldPath, plan.newPath);
+      if (relocated === null) return c;
+      moved += 1;
+      return { ...c, worktree: relocated };
+    });
+    saveClaims(key, next);
   }
+  return moved;
 }
 
 /**
@@ -304,7 +330,9 @@ async function verifyLocate(plan: LocatePlan): Promise<{ error: string | null; s
   const listed = await listWorktreesAsync(plan.newPath);
   if (listed === null) return { error: `git worktree list failed in ${plan.newPath}`, stalePaths: [] };
   const known = new Set(listed.map((w) => canon(w.path)));
-  if (!known.has(canon(plan.newPath))) {
+  // git lists the main worktree FIRST — membership alone would accept a linked
+  // worktree of the same repo as the new root.
+  if (listed[0] === undefined || canon(listed[0].path) !== canon(plan.newPath)) {
     return { error: `${plan.newPath} is not the main worktree git reports`, stalePaths: [] };
   }
 
@@ -342,44 +370,75 @@ function collapseLegacyRows(plan: LocatePlan): LocateResult["legacyRows"] {
   return out;
 }
 
+/**
+ * Repair git's admin files for the moved trees.
+ *
+ * A path argument fixes both halves of the link for the tree it names (the
+ * main repo's `worktrees/<id>/gitdir` entry and that tree's own `.git` file);
+ * the no-arg pass then re-links the trees that did NOT move, whose `.git`
+ * files still point at the main worktree's old location. Both are needed
+ * because a folder move breaks both populations at once.
+ *
+ * `git worktree repair` exits non-zero on a path argument it cannot resolve,
+ * so the list is filtered to what exists — a re-rooted record with nothing on
+ * disk is the stale case verification reports, not a failed repair.
+ */
+async function repairGit(plan: LocatePlan): Promise<{ repaired: string[]; error: string | null }> {
+  const repaired = plan.gitRepairPaths.filter((path) => existsSync(path));
+  if (repaired.length > 0) {
+    const r = await runGit(plan.newPath, ["worktree", "repair", ...repaired]);
+    if (r.exitCode !== 0) return { repaired: [], error: `git worktree repair failed: ${r.stderr.trim() || `exit ${r.exitCode}`}` };
+  }
+  const all = await runGit(plan.newPath, ["worktree", "repair"]);
+  if (all.exitCode !== 0) return { repaired: [], error: `git worktree repair failed: ${all.stderr.trim() || `exit ${all.exitCode}`}` };
+  return { repaired, error: null };
+}
+
+/**
+ * Git first, state.db last. Until the transaction commits, the index still
+ * names the dead path, so a reconciler pass that interleaves with the repair
+ * finds a repo whose path does not exist and bails instead of pruning trees
+ * whose gitdir pointers are still being fixed. Nothing is written unless the
+ * whole move verifies, which is why no rollback exists.
+ */
 export async function applyLocate(plan: LocatePlan): Promise<LocateResult> {
-  const snapshot = captureSnapshot(plan);
   const base = {
     identity: plan.identity,
     from: plan.oldPath,
     to: plan.newPath,
     indexKeys: plan.indexKeys,
-    treesRewritten: plan.registryRewrites.reduce((n, r) => n + r.movedPaths.length, 0),
-    claimsRewritten: plan.claimRewrites.length,
   };
+  const failed = (repaired: string[], stalePaths: string[], error: string): LocateResult => ({
+    ...base,
+    ok: false,
+    treesRewritten: 0,
+    claimsRewritten: 0,
+    repaired,
+    stalePaths,
+    legacyRows: [],
+    error,
+  });
 
-  // bun:sqlite transactions are sync-only: every git call lives below this
+  const repair = await repairGit(plan);
+  if (repair.error !== null) return failed(repair.repaired, [], repair.error);
+
+  const { error, stalePaths } = await verifyLocate(plan);
+  if (error !== null) return failed(repair.repaired, stalePaths, error);
+
+  // bun:sqlite transactions are sync-only: every git call lives above this
   // block, never inside it.
+  let treesRewritten = 0;
+  let claimsRewritten = 0;
   getStateDb().transaction(() => {
     for (const key of indexWriteKeys(plan)) setIndexPath(key, plan.newPath);
-    writeRegistries(plan);
-    writeClaims(plan);
+    treesRewritten = writeRegistries(plan);
+    claimsRewritten = writeClaims(plan);
   })();
   refreshRepoIndexMirror();
 
-  // Path arguments fix each linked worktree's entry in the main repo's admin
-  // dir; the no-arg pass then fixes the `.git` file inside every linked
-  // worktree. A move breaks both directions, so both passes run.
-  if (plan.gitRepairPaths.length > 0) {
-    await runGit(plan.newPath, ["worktree", "repair", ...plan.gitRepairPaths]);
-  }
-  await runGit(plan.newPath, ["worktree", "repair"]);
-
-  const { error, stalePaths } = await verifyLocate(plan);
-  if (error !== null) {
-    restoreSnapshot(snapshot);
-    refreshRepoIndexMirror();
-    return { ...base, ok: false, repaired: plan.gitRepairPaths, stalePaths, legacyRows: [], restored: true, error };
-  }
-
   const legacyRows = collapseLegacyRows(plan);
   refreshRepoIndexMirror();
-  return { ...base, ok: true, repaired: plan.gitRepairPaths, stalePaths, legacyRows };
+  return { ...base, ok: true, treesRewritten, claimsRewritten, repaired: repair.repaired, stalePaths, legacyRows };
 }
 
 /**
