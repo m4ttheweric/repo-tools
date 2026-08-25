@@ -89,7 +89,7 @@ Write findings (values, Claude Code version, exact JSON shapes) to the report fi
 ```ts
 test("v4 adds chat_presence and chat_dms", () => {
   const db = openStateDb(freshPath());
-  expect(db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms')").all()).toHaveLength(2);
+  expect(db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms','chat_room_defaults')").all()).toHaveLength(3);
   expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 4 });
 });
 
