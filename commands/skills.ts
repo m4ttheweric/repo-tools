@@ -486,8 +486,12 @@ async function resolve(flags: Flags): Promise<Resolved> {
   // The manifest's parent directory name is the registry repo key `run-start
   // --repo` expects -- the same key `~/.mattstack/runs/<repo>/` is named by.
   const repoKey = manifestPath ? basename(dirname(manifestPath)) : "";
-  const mattstackDir = pluginRoots.byName.mattstack?.dir ?? "";
-  const { sha: mattstackSha, dirty: mattstackDirty } = mattstackDir ? gitFacts(mattstackDir) : { sha: "", dirty: 0 as const };
+  const mattstackPlugin = pluginRoots.byName.mattstack;
+  const facts = mattstackPlugin ? gitFacts(mattstackPlugin.dir) : { sha: "", dirty: 0 as const };
+  // An installed plugin cache is a plain copy with no .git; its version is the only
+  // provenance it carries, and it is what the run DB records in that case.
+  const mattstackSha = facts.sha || (mattstackPlugin ? mattstackPlugin.version : "");
+  const mattstackDirty = facts.dirty;
   const stageEntries = buildStageEntries({ pipelines, pluginRoots });
 
   return {

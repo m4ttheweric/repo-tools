@@ -55,8 +55,11 @@ function workTypeText(pipelines: Record<string, StageEntry[]>, where: string): s
 
 function runStartFlags(ctx: PlaceholderContext): string {
   const out: Record<string, string> = {};
+  // run-start's flag parser takes the token after a flag as its value, so an empty
+  // sha must drop the flag entirely rather than leave `--mattstack-dirty` as the value.
+  const sha = ctx.mattstackSha ? ` --mattstack-sha ${ctx.mattstackSha}` : "";
   for (const t of Object.keys(ctx.pipelines)) {
-    out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t} --mattstack-sha ${ctx.mattstackSha} --mattstack-dirty ${ctx.mattstackDirty}`;
+    out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t}${sha} --mattstack-dirty ${ctx.mattstackDirty}`;
   }
   return fenced(out);
 }
