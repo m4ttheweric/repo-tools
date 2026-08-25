@@ -35,8 +35,10 @@ const SKILL_DIR_TOKEN = "${CLAUDE_SKILL_DIR}";
  * A parts dir is only emitted for a source that vendors files, so a source
  * without any keeps the host skill's own directory -- rewriting to a parts dir
  * that will never exist leaves every runtime use of the token dangling.
+ * Exported because a fill's `allowed-tools` rules must land on the same
+ * directory its body does, or the frontmatter grants a path the body never names.
  */
-function skillDirFor(source: AttachmentSource, ctx: PlaceholderContext, partsName: string): string {
+export function skillDirFor(source: AttachmentSource, ctx: PlaceholderContext, partsName: string): string {
   if (source.extraFiles.length > 0) return `${ctx.partsPrefix}/${partsName}`;
   return ctx.stageDir ?? SKILL_DIR_TOKEN;
 }

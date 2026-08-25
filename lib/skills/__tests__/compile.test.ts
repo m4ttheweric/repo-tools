@@ -418,6 +418,29 @@ function skillMd(result: { files: CompiledFile[] }): string {
 }
 
 describe("compileSkill with placeholders", () => {
+  test("a fileless fill's tool rule names the same dir its body does", () => {
+    const filelessDomain: AttachmentSource = {
+      ...domainFill,
+      body: "config at ${CLAUDE_SKILL_DIR}/references/polling-notes.md",
+      allowedTools: ["Read(${CLAUDE_SKILL_DIR}/references/polling-notes.md)"],
+      extraFiles: [],
+    };
+    const result = compileSkill(verb, placeholderStep, { domain: filelessDomain }, new Set(), {});
+    const md = skillMd(result);
+
+    expect(md).toContain('- "Read(${CLAUDE_SKILL_DIR}/references/polling-notes.md)"');
+    expect(md).toContain("config at ${CLAUDE_SKILL_DIR}/references/polling-notes.md");
+    expect(md).not.toContain("parts/domain");
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("a fill that vendors files still scopes its tool rules to the parts dir, stage dir and all", () => {
+    const md = skillMd(compileSkill(verb, placeholderStep, { domain: domainFill }, new Set(), {
+      stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci",
+    }));
+    expect(md).toContain('- "Read(${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci/parts/domain/ci-config.json)"');
+  });
+
   test("substitutes in place, emits a slot marker, and appends nothing", () => {
     const md = skillMd(compileSkill(verb, placeholderStep, { domain: domainFill }, new Set(), {
       stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci",

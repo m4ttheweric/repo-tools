@@ -1,6 +1,6 @@
 import { existsSync } from "fs";
 import { isAbsolute, relative as relativePath, resolve as resolvePath, sep } from "path";
-import { assertNoPlaceholders, findPlaceholders, substitute } from "./placeholders.ts";
+import { assertNoPlaceholders, findPlaceholders, skillDirFor, substitute } from "./placeholders.ts";
 import type {
   AttachmentSource,
   CompiledFile,
@@ -203,11 +203,16 @@ function toWildcardRule(rule: string): string {
   return rule.slice(0, at) + "*/" + rule.slice(at + prefix.length);
 }
 
-function buildAllowedTools(step: StepSource, boundSlots: BoundSlot[], stageRules: string[]): string[] {
+function buildAllowedTools(
+  step: StepSource,
+  boundSlots: BoundSlot[],
+  stageRules: string[],
+  ctx: PlaceholderContext,
+): string[] {
   const entries = [
     ...step.allowedTools,
     ...boundSlots.flatMap(({ slotName, fill }) =>
-      fill.allowedTools.map((tool) => rewriteSkillDirRefs(tool, slotName)),
+      fill.allowedTools.map((tool) => tool.split(CLAUDE_SKILL_DIR_TOKEN).join(skillDirFor(fill, ctx, slotName))),
     ),
     ...stageRules.map(toWildcardRule),
   ];
@@ -481,7 +486,7 @@ export function compileSkill(
     compiledFrom,
   };
 
-  const allowedTools = buildAllowedTools(step, boundSlots, opts.stageAllowedTools ?? []);
+  const allowedTools = buildAllowedTools(step, boundSlots, opts.stageAllowedTools ?? [], ctx);
   const { body, notes } = buildBody(step, boundSlots, {
     internalRoster,
     ctx,
