@@ -69,6 +69,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             showMoveToApplicationsAlert()
             return
         }
+        // The launch event is only current while AppKit is dispatching it, so
+        // the origin is read here rather than anywhere downstream.
+        if case .standDown(let intended) = FlavorGateState.action {
+            standDown(intended: intended, origin: TrayLaunchOrigin.current())
+            return
+        }
+        startNormalOperation()
+    }
+
+    /// Everything a serving tray does at launch. Reachable a second time from
+    /// the mismatch alert: after a switch this process IS the intended flavor,
+    /// and re-`open`ing the bundle would only activate the process that is
+    /// already running.
+    @MainActor
+    private func startNormalOperation() {
         buildServices()
         installMainMenu()
         setupMenuBar()
@@ -136,6 +151,113 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             await refreshStatus()
             await drainPendingNotifications()
         }
+    }
+
+    // MARK: - Flavor stand-down
+
+    /// This Mac is set to the other flavor.
+    ///
+    /// A login-item launch is the app coming back on its own, so it retires
+    /// itself without asking. Every other launch — and every launch this
+    /// process could not identify — is the user's own doing and gets the
+    /// choice instead: unregistering the daemon agent and the login item
+    /// behind someone's back costs them a trip through System Settings to
+    /// undo.
+    @MainActor
+    private func standDown(intended: String, origin: LaunchOrigin) {
+        let myFlavor = FlavorIdentity.flavorName(isDevBuild: BundleFlavor.isDevBuild)
+        TrayLog.info("flavor stand-down", ["intended": intended, "flavor": myFlavor,
+                                           "origin": String(describing: origin)])
+        guard LaunchKind.mayStandDownSilently(origin) else {
+            showFlavorMismatchAlert(intended: intended, myFlavor: myFlavor)
+            return
+        }
+        daemonLifecycle.stopDaemon()
+        do {
+            try SMAppService.mainApp.unregister()
+        } catch {
+            // Unregistering an already-unregistered login item throws; the
+            // status logged below is the ground truth.
+            TrayLog.warn("login item unregister failed", ["err": String(describing: error)])
+        }
+        TrayLog.info("stood down", ["daemon": TrayServer.statusName(daemonLifecycle.status),
+                                    "loginItem": TrayServer.statusName(SMAppService.mainApp.status)])
+        postStandDownNotification(myFlavor: myFlavor, intended: intended)
+    }
+
+    /// The notification is the only trace a silent stand-down leaves, so the
+    /// quit waits for delivery — with a backstop for the callback that never
+    /// comes (notifications denied, centre unavailable).
+    @MainActor
+    private func postStandDownNotification(myFlavor: String, intended: String) {
+        let content = UNMutableNotificationContent()
+        content.title = FlavorStandDownCopy.notificationTitle(myFlavor: myFlavor)
+        content.body = FlavorStandDownCopy.notificationBody(intended: intended)
+        content.sound = nil
+        let request = UNNotificationRequest(identifier: "mattstack-flavor-stand-down", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                TrayLog.warn("stand-down notification failed", ["err": String(describing: error)])
+            }
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { NSApp.terminate(nil) }
+    }
+
+    @MainActor
+    private func showFlavorMismatchAlert(intended: String, myFlavor: String) {
+        let alert = NSAlert()
+        alert.messageText = FlavorStandDownCopy.alertTitle(intended: intended)
+        alert.informativeText = FlavorStandDownCopy.alertBody(myFlavor: myFlavor, intended: intended)
+        alert.addButton(withTitle: FlavorStandDownCopy.switchButton(myFlavor: myFlavor))
+        alert.addButton(withTitle: FlavorStandDownCopy.quitButton)
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            TrayLog.info("flavor mismatch: quit", ["intended": intended])
+            NSApp.terminate(nil)
+            return
+        }
+        switchIntendedFlavor(to: myFlavor)
+    }
+
+    /// Run the real toggle, which writes the intended mode AND retires, quits
+    /// and hands the CLI over from the other flavor — then take the socket and
+    /// start serving in place.
+    @MainActor
+    private func switchIntendedFlavor(to myFlavor: String) {
+        guard let rt = RtClientFactory.make() else {
+            reportSwitchFailure("mattstack could not find its rt command, so it can't switch this Mac to \(myFlavor).")
+            return
+        }
+        Task { @MainActor in
+            let verb = "settings dev-mode"
+            do {
+                let r = try await rt.run(["settings", "dev-mode", myFlavor], stdin: nil)
+                guard r.exitCode == 0 else {
+                    reportSwitchFailure(r.userError?.message ?? r.failureCopy(verb: verb))
+                    return
+                }
+            } catch {
+                reportSwitchFailure((error as? RtClientError)?.copy ?? "rt \(verb) failed to start.")
+                return
+            }
+            TrayLog.info("flavor switched; serving", ["flavor": myFlavor])
+            FlavorGateState.action = .serve
+            FlavorGateState.intentConfirmed = true
+            TrayServer.exitIfAnotherTrayOwnsSocket()
+            startNormalOperation()
+        }
+    }
+
+    @MainActor
+    private func reportSwitchFailure(_ message: String) {
+        TrayLog.error("flavor switch failed", ["err": message])
+        let alert = NSAlert()
+        alert.messageText = "The switch didn't finish"
+        alert.informativeText = message
+        alert.addButton(withTitle: FlavorStandDownCopy.quitButton)
+        alert.runModal()
+        NSApp.terminate(nil)
     }
 
     @MainActor
