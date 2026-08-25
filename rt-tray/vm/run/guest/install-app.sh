@@ -36,6 +36,21 @@ case "$cmd" in
     say "copied to $APP ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist"))"
     codesign --verify --deep --strict "$APP" 2>>"$LOG" && say "codesign verifies" || say "codesign does NOT verify (ad-hoc/dev build?)"
     spctl --assess --type execute "$APP" 2>>"$LOG" && say "spctl: accepted" || say "spctl: rejected (expect a Gatekeeper dialog if quarantined)"
+    # A quarantined app copied by ditto/cp gets App Translocation on open: it
+    # runs from a randomized read-only mount and cannot register its background
+    # services (the app's own guard then blocks). A real user's Finder drag
+    # marks the quarantine user-approved and never translocates, so stripping
+    # after the assessment above is the faithful drag simulation.
+    if [ "$Q" = 1 ]; then
+      sudo xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+      # Postcondition, not trust: a failed strip leaves the app to translocate
+      # on open, which surfaces later as a baffling "temporary location" guard.
+      if xattr -p com.apple.quarantine "$APP" >/dev/null 2>&1; then
+        say "quarantine STILL PRESENT after strip — launch would translocate; failing here instead"
+        exit 1
+      fi
+      say "quarantine stripped post-assessment (Finder-drag parity, no translocation)"
+    fi
     ;;
   launch)
     ENVS=(); ARGS=()

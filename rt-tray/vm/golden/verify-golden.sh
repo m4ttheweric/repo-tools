@@ -29,6 +29,11 @@ if [ "$FLAVOUR" = cleanroom ]; then
   t "no CLT"                             '! xcode-select -p'
   t "no brew"                            '! command -v brew && [ ! -d /opt/homebrew ]'
   t "Gatekeeper enabled"                 'spctl --status | grep -q "assessments enabled"'
+  # The cirruslabs images ship App-Store-only ("developer id disabled"), which
+  # rejects a notarized Developer ID app — stricter than a real Mac's default.
+  # The toggle is Settings-UI/MDM-only (SIP blocks every CLI route), so it is
+  # part of build-golden's manual step.
+  t "Developer ID apps allowed"          'spctl --status --verbose | grep -q "developer id enabled"'
 else
   vm_log "  – no CLT/no brew/Gatekeeper skipped (flavour=$FLAVOUR)"
 fi

@@ -39,7 +39,7 @@ TART_PID=$!
 trap 'kill $TART_PID 2>/dev/null || true' EXIT
 vm_log "waiting for ssh as admin (password)…"
 start=$(date +%s)
-until vm_ssh_pw "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" true 2>/dev/null; do
+until vm_ssh_pw_try "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" true 2>/dev/null; do
   [ $(( $(date +%s) - start )) -gt 600 ] && vm_die "ssh never came up"
   sleep 5
 done
@@ -61,12 +61,16 @@ cat <<EOF
   │  1. System Settings → Privacy & Security → Accessibility → "+" →         │
   │     ⌘⇧G, add /usr/libexec/sshd-keygen-wrapper, then /usr/bin/osascript;  │
   │     toggle both ON (authenticate with admin / admin).                    │
-  │  2. Back in this terminal press Enter; the script sends one osascript    │
+  │  2. Privacy & Security → Security → "Allow applications from" →          │
+  │     "App Store & Known Developers" (authenticate admin / admin).         │
+  │     The image ships App-Store-only, which rejects notarized             │
+  │     Developer ID apps — stricter than a real Mac's default.             │
+  │  3. Back in this terminal press Enter; the script sends one osascript    │
   │     over ssh — approve the "sshd-keygen-wrapper wants to control         │
   │     System Events" Automation prompt in the VM with OK.                  │
   └──────────────────────────────────────────────────────────────────────────┘
 EOF
-read -r -p "  Press Enter after step 1… " _
+read -r -p "  Press Enter after steps 1–2… " _
 vm_ssh_try "$VM_TESTER_USER" "$GOLDEN" 'osascript -e "tell application \"System Events\" to get name of first process whose frontmost is true"' || true
 read -r -p "  Approved the Automation prompt? Press Enter to verify… " _
 

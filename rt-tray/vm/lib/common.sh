@@ -129,8 +129,9 @@ vm_ssh_try() {
   ssh "${VM_SSH_OPTS[@]}" -i "$VM_SSH_KEY" "$user@$ip" "$@"
 }
 
-# vm_ssh/vm_scp exit the whole script on failure — preconditions only.
-# Inside a ledgered phase, use vm_ssh_try so the failure can be ledgered instead.
+# vm_ssh/vm_scp/vm_ssh_pw exit the whole script on failure — preconditions only.
+# Inside a wait loop or ledgered phase, use the _try variants: the dying variants
+# make an until-loop impossible (the first no-lease boot kills the script).
 vm_ssh() {
   vm_ssh_try "$@" || vm_die "ssh failed for $1@$2"
 }
@@ -142,9 +143,13 @@ vm_scp() {
 }
 
 vm_ssh_pw() {
-  local user="$1" pass="$2" vm="$3"; shift 3
   vm_require_cmd sshpass "brew install cirruslabs/cli/sshpass"
-  local ip; ip=$(vm_ip "$vm" 1) || vm_die "no ip for $vm"
+  vm_ssh_pw_try "$@" || vm_die "ssh failed for $1@$3"
+}
+
+vm_ssh_pw_try() {
+  local user="$1" pass="$2" vm="$3"; shift 3
+  local ip; ip=$(vm_ip "$vm" 1) || return 1
   sshpass -p "$pass" ssh "${VM_SSH_OPTS[@]}" "$user@$ip" "$@"
 }
 

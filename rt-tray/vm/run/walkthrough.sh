@@ -91,6 +91,12 @@ fi
 [ "$SCENARIO" = join ] && [ ! -f "${CODE_FILE:-/nonexistent}" ] && { vm_phase_end preflight fail "join needs --invite-code-file"; exit 1; }
 if [ "$SCENARIO" != headless ] && [ -z "${!PAT_ENV:-}" ]; then vm_warn "\$$PAT_ENV empty — the GitHub account row cannot be connected; the screens phase will fail there if the app shows it"; fi
 cp -R "$VM_ROOT/run/guest" "$VM_RUN_DIR/in/guest"; cp "$VM_ROOT/../../scripts/e2e-cleanroom.sh" "$VM_RUN_DIR/in/guest/" 2>/dev/null || true
+# The headless recipe's check-bundle step parses deps.lock with bun; CI gets
+# bun from setup-bun, but a clean-room guest has none, so the harness hands it
+# over — at $HOME/.bun/bin, the path the recipe's PATH already searches.
+if [ "$SCENARIO" = headless ]; then
+  cp "$(command -v bun)" "$VM_RUN_DIR/in/guest/bun" || vm_die "headless needs bun on the host to stage into the guest"
+fi
 printf '{"ver":"%s","scenario":"%s","dmg":"%s","appVersion":"%s","updateVersion":"%s","quarantine":%s,"graphics":%s}\n' \
   "$VER" "$SCENARIO" "$DMG" "$APP_VERSION" "$UPDV" "$QUAR" "$GRAPHICS" > "$VM_RUN_DIR/in/params.json"
 vm_phase_end preflight pass
@@ -116,7 +122,7 @@ else vm_phase_end boot fail "ssh as tester never came up"; exit 1; fi
 
 # ── stage ────────────────────────────────────────────────────────────────────
 vm_phase_begin stage
-vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "mkdir -p $GUEST_BIN && cp -R '$GUEST_RUN/in/guest/.' $GUEST_BIN/ && chmod +x $GUEST_BIN/*.sh && test -f '$GUEST_RUN/in/mattstack.dmg' && touch '$GUEST_RUN/logs/.write-probe' && rm -f '$GUEST_RUN/logs/.write-probe'" \
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "mkdir -p $GUEST_BIN && cp -R '$GUEST_RUN/in/guest/.' $GUEST_BIN/ && chmod +x $GUEST_BIN/*.sh && if [ -f $GUEST_BIN/bun ]; then mkdir -p \$HOME/.bun/bin && mv $GUEST_BIN/bun \$HOME/.bun/bin/bun && chmod +x \$HOME/.bun/bin/bun; fi && test -f '$GUEST_RUN/in/mattstack.dmg' && touch '$GUEST_RUN/logs/.write-probe' && rm -f '$GUEST_RUN/logs/.write-probe'" \
   && vm_phase_end stage pass || { vm_phase_end stage fail "virtiofs share not readable/writable by tester in guest"; exit 1; }
 
 # ── install (admin copies) + launch (tester) ─────────────────────────────────
