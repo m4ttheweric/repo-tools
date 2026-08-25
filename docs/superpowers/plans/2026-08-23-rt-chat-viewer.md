@@ -40,7 +40,6 @@
 # repo-tools (Task 0a)
 packages/rt-client/src/relay.ts          MODIFY: + createRelay — one subscribe(), predicate-filtered, fanned out
 packages/rt-client/src/health.ts         NEW: daemonHealth() — the probe every rt app needs
-commands/chat.ts                         MODIFY: handle derivation via the identity codec (repoLabel), not repos.json by path
 
 # console (Task 0b)
 packages/mantine-tokyo/                  NEW: @mattstack/mantine-tokyo — the Tokyo tokens: theme values, ramps, colour names, tokyo-theme.css + font
@@ -76,15 +75,14 @@ Server modules split by responsibility, not layer: `chat.ts` owns every route th
 
 Two PRs in two repos, both before Task 1. They carry the only two things console and the viewer genuinely share: the suite's Tokyo tokens (theme values, ramps, colour names, `tokyo-theme.css`, the font), which become a package both apps consume through the kit's brand slots; and the relay + probe every rt-consuming server needs, which move into rt-client where deck and board can use them too. The UI kit itself is **not** shared — each app scaffolds it from `create-mantine-kit` and owns its copy, by design.
 
-#### Task 0a — repo-tools: `createRelay`, `daemonHealth`, identity-based handles
+#### Task 0a — repo-tools: `createRelay` and `daemonHealth`
 
-**Depends on:** RT-62 (#73, rt-client 0.4.0 — the Repo Identity Contract) merged to `main`; branch from that.
+**Branch from:** `main` at or after `85040dcd` (RT-62 / #73 merged; rt-client 0.4.0 on npm). That merge already moved chat's handle derivation onto the identity label — `repoAliasForPath` returns `repoLabel(name)` for identity-keyed index rows, with a test — so there is nothing identity-related left for this task.
 
 **Files:**
-- Modify: `packages/rt-client/src/relay.ts`, `packages/rt-client/src/index.ts`, `packages/rt-client/package.json` (version)
+- Modify: `packages/rt-client/src/relay.ts`, `packages/rt-client/src/index.ts`, `packages/rt-client/src/transport.ts` (the `subscribeImpl` option), `packages/rt-client/package.json` (version)
 - Create: `packages/rt-client/src/health.ts`
-- Modify: `commands/chat.ts` (handle derivation)
-- Test: `packages/rt-client/test/relay.test.ts`, `packages/rt-client/test/health.test.ts`, `commands/__tests__/chat.test.ts`
+- Test: `packages/rt-client/test/relay.test.ts`, `packages/rt-client/test/health.test.ts`
 
 **Interfaces:**
 - Produces:
@@ -95,7 +93,6 @@ Two PRs in two repos, both before Task 1. They carry the only two things console
   ): () => void;                                         // relay.ts — one subscribe(), event frames only, predicate-filtered
   export function daemonHealth(opts?: RtClientOptions): Promise<{ reachable: boolean; error?: string }>;  // health.ts — wraps eventsHead
   ```
-- Chat handle: `repoLabel(serializeIdentity(await deriveRepoIdentity(cwd)))` + worktree dir, slugified — replaces `repoAliasForPath`'s `repos.json` lookup by main-worktree path, which the RT-62 re-key makes a miss.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -128,40 +125,26 @@ test("daemonHealth maps an unreachable daemon to reachable:false, never a throw"
 });
 ```
 
-```ts
-// commands/__tests__/chat.test.ts — extend the existing derivation block
-test("the repo half of a derived handle is the identity label, not the folder or the index alias", async () => {
-  // A worktree whose folder is renamed still derives the same repo label,
-  // because the label comes from the origin remote through the identity codec.
-  const { dir } = makeWorktreeFixtures({ remote: "git@gitlab.example.com:acme/acme-dev.git", worktreeDir: "renamed-slot" });
-  expect(await __test__.deriveRepoDirHandle(dir)).toBe("acme-dev-renamed-slot");
-});
-```
-
 `subscribeImpl` is a test seam on `RtClientOptions` (default: the real `subscribe`) — the alternative is a live WebSocket server in a unit test.
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `bun test packages/rt-client/test/relay.test.ts packages/rt-client/test/health.test.ts commands/__tests__/chat.test.ts`
-Expected: FAIL — `createRelay`/`daemonHealth` not exported; the derivation test gets the alias or folder name.
+Run: `bun test packages/rt-client/test/relay.test.ts packages/rt-client/test/health.test.ts`
+Expected: FAIL — `createRelay`/`daemonHealth` not exported.
 
 - [ ] **Step 3: Implement `createRelay` and `daemonHealth`**
 
 `createRelay` is console's `startRelay` with the predicate and target topic lifted to arguments: subscribe once, drop `type !== "event"`, keep frames whose `topic` satisfies `match`, `publish(topic, JSON.stringify(frame))`, return the unsubscribe. `daemonHealth` calls `eventsHead(opts)` and returns `{ reachable: res.ok, error: res.ok ? undefined : res.error }` — 200-shaped, because learning the daemon is down is a success of the probe. Export both from `index.ts`.
 
-- [ ] **Step 4: Move handle derivation onto the identity codec**
-
-In `commands/chat.ts`, `deriveRepoDirHandle` currently resolves the main worktree path and looks it up in `loadRepoIndex()` for an alias. Replace the lookup: `repoLabel(serializeIdentity(await deriveRepoIdentity(mainWorktreePath)))`. Keep the worktree-dir half and the slugify. The identity never reaches the handle (its charset forbids `%` and `:`); only the label does. Delete `repoAliasForPath` if nothing else uses it.
-
-- [ ] **Step 5: Run the gate, bump, publish**
+- [ ] **Step 4: Run the gate, bump, publish**
 
 Run: `bun run test && bunx tsc --noEmit && sh scripts/repo-purity.sh`
 Expected: PASS, `ok repo-purity`.
 
-Bump `packages/rt-client/package.json` (minor: `0.4.x` → next minor), `bun run build` in `packages/rt-client` (the dist-freshness guard), commit, PR against `main`, and publish after merge — publishing is a push-class side effect: ask first.
+Bump `packages/rt-client/package.json` (`0.4.0` → `0.5.0`, a new public surface), `bun run build` in `packages/rt-client` (the dist-freshness guard), commit, PR against `main`, and publish after merge — publishing is a push-class side effect: ask first.
 
 ```bash
-git commit -am "rt-client: createRelay and daemonHealth; chat handles from the identity label
+git commit -am "rt-client: createRelay and daemonHealth
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
