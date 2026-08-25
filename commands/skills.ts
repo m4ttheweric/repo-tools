@@ -1420,7 +1420,17 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
     console.log(`moved ${name}: ${from}/${where} -> ${to}/${where}${note ? ` (${note})` : ""}`);
   }
 
-  if (moved === 0) console.log("no moves needed");
+  // A stage with neither side on disk has nothing to git-mv -- the trailing
+  // compile below is what actually places it, on whichever side surface.jsonc names.
+  let recorded = 0;
+  for (const name of [...stageNames].sort()) {
+    if (existsSync(outDirFor(packDir, name, true)) || existsSync(otherSideDir(packDir, name, true))) continue;
+    const side = publicSet.has(name) ? "skills" : "attachments";
+    console.log(`${name}: recorded; emitted to ${side}/ on the next compile`);
+    recorded++;
+  }
+
+  if (moved === 0 && recorded === 0) console.log("no moves needed");
 
   await skillsCompile(compileArgs(flags, packDir));
 }
@@ -1435,11 +1445,13 @@ async function runSet(names: string[], want: "public" | "internal", flags: Surfa
   const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const { skillsNames, allNames } = collectRegistry(packDir, verbNames);
+  const stageNames = stageNamesFor(flags, packDir);
 
   // Validated before anything is written: an unknown name in a list of ten
-  // must not leave the other nine applied.
+  // must not leave the other nine applied. A declared-but-never-compiled
+  // stage passes here even with no directory on either side.
   for (const name of names) {
-    if (!allNames.has(name)) {
+    if (!allNames.has(name) && !stageNames.has(name)) {
       throw new SkillsUsageError(
         `"${name}" is not a known skill or verb in this pack (checked skills/, attachments/, stubs.jsonc)`,
       );
