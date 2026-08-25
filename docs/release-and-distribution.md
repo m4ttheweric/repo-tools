@@ -97,6 +97,35 @@ VM truths that only a real run surfaced (all encoded in the harness now):
   re-probe (`lib/setup/tools-install.ts`). Dialog trigger is the fallback
   and reports `ok: false` (progress, not completion).
 
+### Flavor exclusivity
+
+mattstack enforces one registered flavor pair per machine (prod
+`com.mattstack.daemon` XOR dev `com.mattstack.daemon.dev`) via
+`mattstack.mode`, a machine-scope setting; the daemon and tray self-heal to
+whichever flavor the setting (or, when unset, the CLI wrapper) declares,
+standing down on a mismatch rather than racing to bind. Full design:
+`docs/superpowers/specs/2026-08-25-flavor-exclusivity-design.md`.
+
+Two constraints hold for the migration window, both because old code does
+not carry the gate:
+
+- Until **both** bundles ship the new code, an already-installed pre-gate
+  prod tray still unlinks-and-rebinds `tray.sock` unconditionally at
+  launch — a new-code tray's socket ownership is not durable against it,
+  so don't treat ownership as settled until prod itself has moved past
+  this release.
+- Once the new prod bundle ships, a machine whose CLI wrapper is dev-mode
+  will have its prod tray stand itself down at login (alert, or a silent
+  notification + unregister, depending on launch origin) — expected
+  behavior under the gate, not a regression, and worth knowing before the
+  release tag goes out.
+
+Machines already sitting in a half-state (both flavors registered, or the
+wrong one holding `rt.sock`/`tray.sock`) need a one-time cleanup once the
+new code lands: run `rt settings dev-mode <mode>` once (its repair path
+now covers a dead tray), or manually `launchctl bootout
+gui/$UID/<wrong-label>`.
+
 ## Sparkle / updates
 
 `appcast.sh` signs the feed; the appcast URL is baked prod-side, and a

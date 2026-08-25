@@ -53,6 +53,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     /// builds the coordinator (launch-by-link). Stashed here and drained at
     /// the end of `buildServices()`.
     private var pendingJoinCode: String?
+    /// The stand-down route is decided once, by whichever of the settings
+    /// answer and its backstop gets there first.
+    @MainActor private var standDownRouted = false
 
     // MARK: - Lifecycle
 
@@ -69,6 +72,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             showMoveToApplicationsAlert()
             return
         }
+        // The launch event is only current while AppKit is dispatching it, so
+        // the origin is read here rather than anywhere downstream.
+        if case .standDown(let intended) = FlavorGateState.action {
+            standDown(intended: intended, origin: TrayLaunchOrigin.current())
+            return
+        }
+        startNormalOperation()
+    }
+
+    /// Everything a serving tray does at launch. Reachable a second time from
+    /// the mismatch alert: after a switch this process IS the intended flavor,
+    /// and re-`open`ing the bundle would only activate the process that is
+    /// already running.
+    @MainActor
+    private func startNormalOperation() {
         buildServices()
         installMainMenu()
         setupMenuBar()
@@ -135,6 +153,181 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             }
             await refreshStatus()
             await drainPendingNotifications()
+        }
+    }
+
+    // MARK: - Flavor stand-down
+
+    /// This Mac is set to the other flavor.
+    ///
+    /// A login-item launch is the app coming back on its own, so it can retire
+    /// itself without asking — but only when the user will see that it did and
+    /// the flavor taking over is actually installed. Every other launch, every
+    /// launch this process could not identify, and every case where one of
+    /// those two conditions fails, hands the decision to the user instead:
+    /// unregistering the daemon agent and the login item behind someone's back
+    /// costs them a trip through System Settings to undo.
+    @MainActor
+    private func standDown(intended: String, origin: LaunchOrigin) {
+        let myFlavor = FlavorIdentity.flavorName(isDevBuild: BundleFlavor.isDevBuild)
+        let bundle = FlavorBundle.presence(ofFlavor: intended, home: AppHome.current,
+                                           fileExists: { FileManager.default.fileExists(atPath: $0) })
+        StandDownNotice.isAuthorized { authorized in
+            Task { @MainActor in
+                self.routeStandDown(intended: intended, myFlavor: myFlavor, origin: origin,
+                                    bundle: bundle, notificationsAuthorized: authorized)
+            }
+        }
+        // A launch that stands down has no menu bar and no window: if the
+        // notification centre never answers, nothing would ever route and the
+        // app would sit invisible forever. The backstop routes it the safe
+        // way, and whichever arrives first wins.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            routeStandDown(intended: intended, myFlavor: myFlavor, origin: origin,
+                           bundle: bundle, notificationsAuthorized: false)
+        }
+    }
+
+    @MainActor
+    private func routeStandDown(intended: String, myFlavor: String, origin: LaunchOrigin,
+                                bundle: BundlePresence, notificationsAuthorized: Bool) {
+        guard !standDownRouted else { return }
+        standDownRouted = true
+        let route = StandDownPlan.route(origin: origin, notificationsAuthorized: notificationsAuthorized,
+                                        intendedBundle: bundle)
+        TrayLog.info("flavor stand-down", ["intended": intended, "flavor": myFlavor,
+                                           "origin": String(describing: origin),
+                                           "notifications": notificationsAuthorized,
+                                           "intendedBundle": String(describing: bundle),
+                                           "route": String(describing: route)])
+        switch route {
+        case .alert:
+            showFlavorMismatchAlert(intended: intended, myFlavor: myFlavor,
+                                    intendedBundle: bundle, resumeStartup: true)
+        case .silent:
+            retireSelf(intended: intended, myFlavor: myFlavor)
+        }
+    }
+
+    @MainActor
+    private func retireSelf(intended: String, myFlavor: String) {
+        daemonLifecycle.stopDaemon()
+        do {
+            try SMAppService.mainApp.unregister()
+        } catch {
+            // Unregistering an already-unregistered login item throws; the
+            // status logged below is the ground truth.
+            TrayLog.warn("login item unregister failed", ["err": String(describing: error)])
+        }
+        TrayLog.info("stood down", ["daemon": TrayServer.statusName(daemonLifecycle.status),
+                                    "loginItem": TrayServer.statusName(SMAppService.mainApp.status)])
+        // The notification is the only trace this leaves, so the quit waits
+        // for delivery — with a backstop for a callback that never comes.
+        StandDownNotice.post(title: FlavorStandDownCopy.notificationTitle(myFlavor: myFlavor),
+                             body: FlavorStandDownCopy.notificationBody(intended: intended),
+                             identifier: "mattstack-flavor-stand-down") {
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { NSApp.terminate(nil) }
+    }
+
+    /// `resumeStartup` is false for a tray that is already serving (the
+    /// failed-read re-check): a switch in its favour changes nothing about a
+    /// launch it already completed, and running the startup path twice would
+    /// double every timer, observer and registration.
+    @MainActor
+    private func showFlavorMismatchAlert(intended: String, myFlavor: String,
+                                         intendedBundle: BundlePresence, resumeStartup: Bool) {
+        let alert = NSAlert()
+        alert.messageText = FlavorStandDownCopy.alertTitle(intended: intended)
+        alert.informativeText = FlavorStandDownCopy.alertBody(myFlavor: myFlavor, intended: intended)
+            + (intendedBundle.isPresent ? "" : FlavorStandDownCopy.missingBundleNote(intended: intended))
+        alert.addButton(withTitle: FlavorStandDownCopy.switchButton(myFlavor: myFlavor))
+        alert.addButton(withTitle: FlavorStandDownCopy.quitButton)
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            TrayLog.info("flavor mismatch: quit", ["intended": intended])
+            NSApp.terminate(nil)
+            return
+        }
+        switchIntendedFlavor(to: myFlavor, resumeStartup: resumeStartup)
+    }
+
+    /// Run the real toggle, which writes the intended mode AND retires, quits
+    /// and hands the CLI over from the other flavor — then take the socket and
+    /// start serving in place.
+    @MainActor
+    private func switchIntendedFlavor(to myFlavor: String, resumeStartup: Bool) {
+        guard let rt = RtClientFactory.make() else {
+            reportSwitchFailure("mattstack could not find its rt command, so it can't switch this Mac to \(myFlavor).",
+                                fatal: resumeStartup)
+            return
+        }
+        Task { @MainActor in
+            let verb = "settings dev-mode"
+            do {
+                let r = try await rt.run(["settings", "dev-mode", myFlavor], stdin: nil)
+                guard r.exitCode == 0 else {
+                    reportSwitchFailure(r.userError?.message ?? r.failureCopy(verb: verb), fatal: resumeStartup)
+                    return
+                }
+            } catch {
+                reportSwitchFailure((error as? RtClientError)?.copy ?? "rt \(verb) failed to start.", fatal: resumeStartup)
+                return
+            }
+            TrayLog.info("flavor switched", ["flavor": myFlavor, "resumeStartup": resumeStartup])
+            FlavorGateState.action = .serve
+            FlavorGateState.intentConfirmed = true
+            FlavorGateState.readFailed = false
+            guard resumeStartup else { return }
+            switch TrayServer.claimSocket() {
+            case .claimed:
+                startNormalOperation()
+            case .heldByPeer(let flavor), .heldByStuckHolder(let flavor):
+                reportSwitchFailure(FlavorStandDownCopy.stuckHolderBody(holderFlavor: flavor, myFlavor: myFlavor),
+                                    fatal: true)
+            }
+        }
+    }
+
+    /// `fatal` distinguishes a failure during launch — nothing is running, so
+    /// quitting is the honest end — from one raised by an already-serving tray,
+    /// which keeps working with the mode it has.
+    @MainActor
+    private func reportSwitchFailure(_ message: String, fatal: Bool) {
+        TrayLog.error("flavor switch failed", ["err": message, "fatal": fatal])
+        let alert = NSAlert()
+        alert.messageText = "The switch didn't finish"
+        alert.informativeText = message
+        alert.addButton(withTitle: fatal ? FlavorStandDownCopy.quitButton : "OK")
+        alert.runModal()
+        if fatal { NSApp.terminate(nil) }
+    }
+
+    /// A launch whose mode read failed served on an assumption; ask once
+    /// more at the next activation. Login-item confidence is stale by then,
+    /// so a mismatch found here can only ever take the alert, never the
+    /// silent path.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard FlavorGateState.readFailed, !FlavorGateState.recheckStarted else { return }
+        FlavorGateState.recheckStarted = true
+        DispatchQueue.global(qos: .utility).async {
+            let read = FlavorModeReader.readTuple()
+            let action = FlavorGate.decide(myFlavorIsDev: BundleFlavor.isDevBuild, modeReadResult: read)
+            let confirmed = FlavorIntent.confirms(myFlavorIsDev: BundleFlavor.isDevBuild, modeReadResult: read)
+            Task { @MainActor in
+                FlavorGateState.readFailed = read == nil
+                FlavorGateState.intentConfirmed = confirmed
+                guard case .standDown(let intended) = action else { return }
+                let myFlavor = FlavorIdentity.flavorName(isDevBuild: BundleFlavor.isDevBuild)
+                TrayLog.warn("mode re-read says this Mac belongs to the other flavor",
+                             ["intended": intended, "flavor": myFlavor])
+                let bundle = FlavorBundle.presence(ofFlavor: intended, home: AppHome.current,
+                                                   fileExists: { FileManager.default.fileExists(atPath: $0) })
+                self.showFlavorMismatchAlert(intended: intended, myFlavor: myFlavor,
+                                             intendedBundle: bundle, resumeStartup: false)
+            }
         }
     }
 

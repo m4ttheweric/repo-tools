@@ -24,6 +24,7 @@ import { join } from "path";
 import type { Server } from "bun";
 
 import { RT_DIR, DAEMON_PID_PATH } from "./daemon-config.ts";
+import { resolveIntendedMode } from "./dev-mode.ts";
 import { getDaemonLogger, installCrashHandlers, redirectNativeStderr } from "./daemon-logger.ts";
 import { onNotification } from "./notifier.ts";
 import { appBundleRoot } from "./bundle-layout.ts";
@@ -32,6 +33,7 @@ import { createRealProbes } from "./setup/probes.ts";
 
 import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
 
+import { parkUntilIntended, probeSocketHolder, daemonFlavor } from "./daemon/park.ts";
 import { evictStaleDaemon } from "./daemon/boot-reconcile.ts";
 import { resolveUserPath } from "./daemon/user-path.ts";
 // Every state.db API is reached through the lib/state barrel, never through
@@ -45,6 +47,7 @@ import { loadRepoIndex } from "./daemon/repo-index.ts";
 import { primeTeamTrackingIdentityMap } from "./repo-tracking.ts";
 import { createHooksGuard } from "./daemon/hooks-guard.ts";
 import { runBootIdentityMigration } from "./daemon/boot-migrate.ts";
+import { runCapture } from "./subprocess.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, broadcast } from "./daemon/api-server.ts";
@@ -90,6 +93,20 @@ if (rtMigration === "migrated") {
     `${RT_DIR_LABEL}; merge the legacy ${LEGACY_RT_LABEL} directory into it by hand, then delete it`,
   );
 }
+
+// Flavor gate — MUST stay above every subsystem below: module scope arms
+// cron, the home-snapshot auto-committer, and sweep intervals, and
+// startDaemon() SIGTERMs the shared rt.pid. A wrong-flavor daemon that got
+// past this line would kill the serving daemon and double-commit the home
+// repo. Both entry paths (cli.ts `rt --daemon` and the shim's
+// `bun run lib/daemon.ts`) converge here.
+await parkUntilIntended({
+  myFlavor: daemonFlavor(),
+  resolveIntent: resolveIntendedMode,
+  probeHolder: probeSocketHolder,
+  sleep: (ms) => Bun.sleep(ms),
+  log,
+});
 
 // ─── Daemon units ────────────────────────────────────────────────────────────
 
@@ -150,6 +167,23 @@ const portCacheRef = { ports: [] as PortEntry[], updatedAt: 0 };
 // place so status handlers read a live value.
 const refreshStatusRef = { lastRefreshAt: 0 };
 const startedAt = Date.now();
+
+// Injected at compile time via `bun build --define RT_VERSION='"v1.x.x"'` (see cli.ts) —
+// undefined when running from source, which is also how daemonFlavor() tells dev from prod.
+declare const RT_VERSION: string | undefined;
+// Only a dev daemon runs from a real checkout, so only dev can shell out for the commit
+// it's serving from; a prod binary has no working tree to ask.
+const sourceRev = daemonFlavor() === "dev"
+  ? await runCapture(["git", "rev-parse", "--short", "HEAD"], { cwd: import.meta.dir, timeoutMs: 5_000 })
+      .then((r) => r.stdout.trim() || null)
+      .catch(() => null)
+  : null;
+const identity = {
+  flavor: daemonFlavor(),
+  version: typeof RT_VERSION !== "undefined" ? RT_VERSION : "source",
+  sourceRev,
+  startedAt,
+} as const;
 
 const hooksGuard = createHooksGuard(log);
 
@@ -275,6 +309,7 @@ const handlerCtx: HandlerContext = {
   cache, refreshCache,
   log,
   startedAt,
+  identity,
   portCacheRef,
   watchedConfigs: hooksGuard.watchedConfigs,
   repoIndex: loadRepoIndex,

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MattstackCore
 import Network
@@ -44,31 +45,129 @@ class TrayServer {
     ///
     /// A leaked socket file (pkill'd tray) is not a live tray: the probe is a
     /// CONNECT + request/response, never a file-existence check.
+    ///
+    /// Only ever called on the serving path — a tray the flavor gate has stood
+    /// down never binds and never evicts anyone (`main.swift`).
     static func exitIfAnotherTrayOwnsSocket() {
-        guard FileManager.default.fileExists(atPath: socketPath) else { return }
-        guard liveTrayAnswers(atPath: socketPath) else {
-            TrayLog.info("stale tray socket found, taking it over", ["socket": socketPath])
+        switch claimSocket() {
+        case .claimed:
             return
+        case .heldByPeer:
+            // Clean exit — a double-launch is not a crash, and nothing
+            // supervises the app. Nothing has been registered at this point.
+            exit(0)
+        case .heldByStuckHolder(let holderFlavor):
+            // The retire already landed, so only the intended flavor's
+            // registrations remain: the machine converges on its own at the
+            // next login, when the zombie is gone and this app launches into
+            // a free socket. Until then nothing is serving, which the user
+            // has to be told rather than left to discover.
+            StandDownNotice.postBlocking(
+                title: FlavorStandDownCopy.stuckHolderTitle(holderFlavor: holderFlavor),
+                body: FlavorStandDownCopy.stuckHolderBody(
+                    holderFlavor: holderFlavor,
+                    myFlavor: FlavorIdentity.flavorName(isDevBuild: BundleFlavor.isDevBuild)),
+                identifier: "mattstack-flavor-stuck-holder")
+            exit(0)
         }
-        TrayLog.error("another tray owns the socket", ["socket": socketPath])
-        // Clean exit — a double-launch is not a crash, and nothing supervises
-        // the app. Nothing has been registered at this point.
-        exit(0)
     }
 
-    /// CONNECT to the unix socket and require an actual HTTP answer.
-    /// Blocking + short-timeout on purpose: this runs on the main thread
-    /// before the run loop starts, and must produce a verdict, not a future.
-    private static func liveTrayAnswers(atPath path: String) -> Bool {
+    enum SocketClaim: Equatable {
+        case claimed
+        case heldByPeer(flavor: String)
+        /// A wrong-flavor holder that would not give the socket up.
+        case heldByStuckHolder(flavor: String)
+    }
+
+    /// The guard's verdict without the exit, so a caller that is already
+    /// running (the mismatch alert's switch) can report the failure instead of
+    /// vanishing mid-launch.
+    static func claimSocket() -> SocketClaim {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return .claimed }
+        let answer = probeTray(atPath: socketPath)
+        let myFlavor = FlavorIdentity.flavorName(isDevBuild: BundleFlavor.isDevBuild)
+        let holderFlavor = answer.flatMap(TrayHealth.flavor(inResponse:))
+        switch SocketOwnership.decide(myFlavor: myFlavor, holderIsLive: answer != nil, holderFlavor: holderFlavor,
+                                      intentConfirmed: FlavorGateState.intentConfirmed) {
+        case .takeOver:
+            TrayLog.info("stale tray socket found, taking it over", ["socket": socketPath])
+            return .claimed
+        case .standAside:
+            TrayLog.error("another tray owns the socket", ["socket": socketPath, "holder": holderFlavor ?? "unknown"])
+            return .heldByPeer(flavor: holderFlavor ?? "unknown")
+        case .evictThenTakeOver:
+            return evictHolder(holderFlavor: holderFlavor ?? "unknown", myFlavor: myFlavor)
+        }
+    }
+
+    /// The socket is held by the flavor this machine is no longer set to.
+    ///
+    /// `/flavor/retire` makes the holder give up its registrations but not its
+    /// listener — only quitting frees the socket — so eviction is retire, then
+    /// quit, then a bounded wait for the socket to actually go quiet. The
+    /// order is forced: retire has to reach a holder that is still alive.
+    private static func evictHolder(holderFlavor: String, myFlavor: String) -> SocketClaim {
+        TrayLog.info("wrong-flavor tray holds the socket; evicting",
+                     ["holder": holderFlavor, "flavor": myFlavor])
+        switch request("POST", "/flavor/retire", atPath: socketPath, timeoutSeconds: 5) {
+        case .none:
+            TrayLog.warn("holder did not answer /flavor/retire", ["holder": holderFlavor])
+        case .some(let reply) where HTTPReply.succeeded(reply):
+            TrayLog.info("holder retired its registrations", ["reply": HTTPReply.parse(reply)?.body ?? ""])
+        case .some(let reply):
+            // A tray without the route 404s here and keeps both of its
+            // registrations, so quitting it is all this eviction achieves.
+            TrayLog.warn("holder refused to retire",
+                         ["holder": holderFlavor, "status": HTTPReply.parse(reply)?.status ?? 0])
+        }
+        quitSiblingFlavor()
+
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.5)
+            guard probeTray(atPath: socketPath) != nil else {
+                TrayLog.info("wrong-flavor tray released the socket", ["holder": holderFlavor])
+                return .claimed
+            }
+        }
+        TrayLog.error("wrong-flavor tray still owns the socket",
+                      ["holder": holderFlavor, "socket": socketPath])
+        return .heldByStuckHolder(flavor: holderFlavor)
+    }
+
+    /// Ask the other flavor's app to quit. `terminate()` is a quit Apple Event,
+    /// so the holder runs its own `applicationWillTerminate` and takes its
+    /// socket file with it.
+    private static func quitSiblingFlavor() {
+        guard let mine = Bundle.main.bundleIdentifier else { return }
+        let sibling = FlavorIdentity.sibling(ofBundleID: mine)
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: sibling)
+        guard !running.isEmpty else {
+            TrayLog.warn("no running app to quit for the holder", ["bundleId": sibling])
+            return
+        }
+        for app in running { _ = app.terminate() }
+        TrayLog.info("asked the other flavor to quit", ["bundleId": sibling, "count": running.count])
+    }
+
+    /// CONNECT to the unix socket and require an actual HTTP answer, returned
+    /// raw so the caller can read the holder's flavor out of it.
+    private static func probeTray(atPath path: String) -> String? {
+        request("GET", "/health", atPath: path, timeoutSeconds: 1)
+    }
+
+    /// One blocking request/response on the tray socket. Blocking +
+    /// short-timeout on purpose: this runs on the main thread before the run
+    /// loop starts, and must produce a verdict, not a future.
+    private static func request(_ method: String, _ route: String, atPath path: String, timeoutSeconds: Int) -> String? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
+        guard fd >= 0 else { return nil }
         defer { close(fd) }
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
         let capacity = MemoryLayout.size(ofValue: addr.sun_path)
-        guard bytes.count < capacity else { return false }
+        guard bytes.count < capacity else { return nil }
         withUnsafeMutablePointer(to: &addr.sun_path) { raw in
             raw.withMemoryRebound(to: CChar.self, capacity: capacity) { dst in
                 for (i, b) in bytes.enumerated() { dst[i] = CChar(bitPattern: b) }
@@ -76,7 +175,7 @@ class TrayServer {
             }
         }
 
-        var tv = timeval(tv_sec: 1, tv_usec: 0)
+        var tv = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -86,17 +185,26 @@ class TrayServer {
             }
         }
         // ECONNREFUSED here = the file is a leftover with no listener.
-        guard connected else { return false }
+        guard connected else { return nil }
 
-        let request = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-        let sent = request.withCString { write(fd, $0, strlen($0)) }
-        guard sent > 0 else { return false }
+        let wire = "\(method) \(route) HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        let sent = wire.withCString { write(fd, $0, strlen($0)) }
+        guard sent > 0 else { return nil }
 
-        var buf = [UInt8](repeating: 0, count: 256)
+        // Read to the server's close (every reply sets Connection: close) so
+        // the body is never truncated mid-JSON.
+        var response = Data()
+        var buf = [UInt8](repeating: 0, count: 1024)
+        while response.count < 8192 {
+            let n = read(fd, &buf, buf.count)
+            guard n > 0 else { break }
+            response.append(contentsOf: buf[0..<n])
+        }
         // A bound tray that never answers (wedged) reads 0/-1 on timeout and
         // is treated as dead — better to take the socket than to refuse to
         // start behind a hung process.
-        return read(fd, &buf, buf.count) > 0
+        guard !response.isEmpty else { return nil }
+        return String(decoding: response, as: UTF8.self)
     }
 
     // MARK: - Start / Stop
@@ -133,6 +241,11 @@ class TrayServer {
     }
 
     func stop() {
+        // Only a tray that actually bound may unlink the path. A tray that
+        // quits without ever serving — a flavor stand-down, a translocated
+        // copy — would otherwise delete the socket file out from under the
+        // tray that IS serving, leaving it bound to a path nothing can reach.
+        guard listener != nil else { return }
         listener?.cancel()
         listener = nil
         try? FileManager.default.removeItem(atPath: socketPath)
@@ -202,7 +315,10 @@ class TrayServer {
                 self.sendResponse(connection: connection, status: 400, body: "{\"ok\":false,\"error\":\"invalid body\"}", path: path)
 
             } else if method == "GET" && path == "/health" {
-                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"app\":\"mattstack\"}")
+                // The flavor field is what lets a starting tray tell a sibling
+                // holder from a same-flavor double-launch.
+                self.sendResponse(connection: connection, status: 200,
+                                  body: TrayHealth.body(isDevBuild: BundleFlavor.isDevBuild))
 
             } else if method == "POST" && path == "/daemon/start" {
                 DispatchQueue.main.async {

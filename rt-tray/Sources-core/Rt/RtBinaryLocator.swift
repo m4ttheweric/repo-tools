@@ -1,7 +1,8 @@
 import Foundation
 
-/// Where the app's rt lives. Order: the DEBUG-only stub override, the dev
-/// flavor's source wrapper, the bundled binary. Returns nil rather than
+/// Where the app's rt lives. Order: the DEBUG-only stub override, then
+/// per flavor — dev resolves only its source wrapper (never the bundled
+/// shim), prod resolves only its bundled binary. Returns nil rather than
 /// guessing at a PATH lookup.
 public enum RtBinaryLocator {
     public static func resolve(bundlePath: String, isDevBuild: Bool, isDebugBuild: Bool,
@@ -18,6 +19,9 @@ public enum RtBinaryLocator {
             if fileExists(wrapper) {
                 return RtLocation(executable: URL(fileURLWithPath: wrapper), argumentPrefix: [], source: .devWrapper)
             }
+            // The dev bundle's Contents/MacOS/rt is the DAEMON SHIM — invoking
+            // it as a CLI starts a rogue daemon. No wrapper ⇒ no CLI.
+            return nil
         }
         let bundled = "\(bundlePath)/Contents/MacOS/rt"
         if fileExists(bundled) {
