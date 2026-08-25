@@ -18,6 +18,7 @@ import { existsSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
+import { SCHEMA_VERSION } from "../../lib/state/db.ts";
 
 async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -314,7 +315,10 @@ describe("rt chat presence + roster (e2e)", () => {
     await finished(runRt(["chat", "dm", "x-2", "ping"], home, {}));
 
     expect(await nextLine(tailX2, 5_000)).toContain("new in #dm-");
-    await expect(nextLine(tailX, 2_000)).rejects.toThrow();
+    // Matches nextLine's own timeout message — a bare toThrow() would also
+    // pass on "stream already ended" from a tail that died, making this
+    // negative vacuous.
+    await expect(nextLine(tailX, 2_000)).rejects.toThrow(/timed out/);
 
     tailX.kill();
     tailX2.kill();
@@ -379,6 +383,7 @@ describe("rt chat presence + roster (e2e)", () => {
       RT_CHAT_TEST_PRE_WAIT_MARKER: markerA,
     });
     await until(() => existsSync(markerA));
+    const t0 = Date.now();
 
     // Both thresholds are 50ms — this pushes A's row past both cutoffs
     // (session heartbeat AND tail heartbeat) while A's tail sits at the
@@ -398,6 +403,12 @@ describe("rt chat presence + roster (e2e)", () => {
     // quickly rather than sitting out its ~15s round — post it BEFORE
     // releasing the marker so the event already exists when A resumes.
     await finished(runRt(["chat", "dm", "x", "psst", "--as", "nudge"], home));
+
+    // testMarkerPause (commands/chat.ts) self-expires at 2000ms without
+    // deleting the file — an overrun here would let A resume on its own
+    // before this rmSync ever runs, silently breaking the causal chain the
+    // rest of this scenario depends on.
+    expect(Date.now() - t0).toBeLessThan(2_000);
     rmSync(markerA);
 
     const aResult = await finished(tailA);
@@ -419,6 +430,7 @@ describe("rt chat presence + roster (e2e)", () => {
     await waitForBuddyArmed(home, "roomie");
 
     const before = readPresenceRow(home, "roomie");
+    expect(before).not.toBeNull(); // readPresenceRow returns null, not undefined, for a missing row
     expect(before?.armed_at).not.toBeNull();
     expect(before?.signed_out_at).toBeNull();
 
@@ -431,6 +443,7 @@ describe("rt chat presence + roster (e2e)", () => {
     expect(tailResult.exitCode).toBe(0);
 
     const after = readPresenceRow(home, "roomie");
+    expect(after).not.toBeNull();
     expect(after?.armed_at).toBeNull();
     expect(after?.signed_out_at).not.toBeNull();
 
@@ -459,13 +472,13 @@ describe("rt chat presence + roster (e2e)", () => {
     expect(seeded.handle).toBe("before-migration");
     await stopDaemonForHome(home);
 
-    expect(readUserVersion(home)).toBe(4);
+    expect(readUserVersion(home)).toBe(SCHEMA_VERSION);
     setUserVersion(home, 3);
     expect(readUserVersion(home)).toBe(3);
 
     await startDaemonForHome(home);
 
-    expect(readUserVersion(home)).toBe(4);
+    expect(readUserVersion(home)).toBe(SCHEMA_VERSION);
     for (const table of ["chat_presence", "chat_room_defaults", "chat_dms", "chat_rooms", "chat_members", "chat_messages"]) {
       expect(tableExists(home, table)).toBe(true);
     }
