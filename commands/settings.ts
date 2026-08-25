@@ -646,15 +646,16 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo, targe
   const retire = await trayQuery("/flavor/retire", "POST");
   if (retire?.ok) {
     console.log(`  ${green}✓${reset} ${outgoing.name} retired its registrations`);
-  } else if (retire) {
-    console.log(`  ${yellow}⚠${reset} flavor retire: ${(retire as any).error ?? "failed"}`);
   } else {
-    // Tray unreachable: it never got the chance to retire itself, so its
-    // launchd registration would otherwise survive the handoff and keep
-    // racing the incoming flavor's daemon for the socket.
-    console.log(`  ${yellow}⚠${reset} flavor retire: ${outgoing.name} not reachable`);
+    // Unreachable (retire never ran) and a reachable-but-{ok:false} reply both
+    // leave the outgoing LaunchAgent registered — either way waitUntilGone
+    // would poll a launchd label that was never booted out and time out, so
+    // both share the direct bootout fallback.
+    console.log(retire
+      ? `  ${yellow}⚠${reset} flavor retire: ${(retire as any).error ?? "failed"}`
+      : `  ${yellow}⚠${reset} flavor retire: ${outgoing.name} not reachable`);
     spawnSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 501}/${outgoingLabel}`], { stdio: "pipe", env: process.env });
-    console.log(`  ${yellow}⚠${reset} ${outgoing.name} tray unreachable — booted out ${outgoingLabel} directly`);
+    console.log(`  ${yellow}⚠${reset} booted out ${outgoingLabel} directly`);
   }
 
   // 2. Quit the outgoing tray by ITS OWN flavor's names. env forwarded

@@ -146,7 +146,8 @@ function cleanupLaunchdPlist(): boolean {
 // ─── Install ─────────────────────────────────────────────────────────────────
 
 export async function install(_args: string[] = []): Promise<void> {
-  console.log(`  ${dim}registering the ${resolveIntendedMode().mode} daemon${reset}`);
+  const intended = resolveIntendedMode();
+  console.log(`  ${dim}registering the ${intended.mode} daemon${reset}`);
 
   // Persist the install marker so isDaemonInstalled() returns true and the
   // CLI will attempt to reach the daemon (rather than silently no-op).
@@ -165,7 +166,7 @@ export async function install(_args: string[] = []): Promise<void> {
     console.log(`  ${green}✓${reset} tray app is registering daemon`);
   } else {
     console.log(`  ${yellow}⚠${reset} ${TRAY_APP_NAME} not reachable — open it to finish setup`);
-    console.log(`  ${dim}  ${bold}open ${trayAppHintPath()}${reset}`);
+    console.log(`  ${dim}  ${bold}open ${flavorHintPath(intended)}${reset}`);
   }
 
   // Wait for daemon to come online
@@ -276,7 +277,10 @@ export async function stop(): Promise<void> {
     // rt.sock is shared, so a different-flavor daemon can still hold it.
     const holder = await probeSocketHolder();
     if (holder) {
-      if (holder.flavor === currentMode()) {
+      // Compare against the intended flavor (the leg this stop addressed), not
+      // the CLI wrapper's own currentMode() — a stale wrapper mid-flip would
+      // otherwise report a mismatch against a daemon that's just slow to exit.
+      if (holder.flavor === intended.mode) {
         console.log(`\n  ${yellow}⚠ ${stillShuttingDownLine(holder)}${reset}\n`);
         return;
       }

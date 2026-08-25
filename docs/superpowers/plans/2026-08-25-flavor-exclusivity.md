@@ -139,7 +139,7 @@ Expected: PASS (4 tests).
 
 - [ ] **Step 6: Registry ripple + commit**
 
-Run: `cd packages/rt-client && bun run build 2>/dev/null || true; cd ../..` (only if rt-client has a build script — check its package.json; skip silently if not).
+Run: `cd packages/rt-client && bun run build` (fail loudly — rt-client must be rebuilt after any registry change; `cd ../..` after).
 Run: `bunx tsc --noEmit` — expect clean.
 
 ```bash
