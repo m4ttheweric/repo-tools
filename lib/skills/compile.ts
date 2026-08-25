@@ -197,7 +197,7 @@ function span(src: { srcPath: string; bodyStartLine: number; body: string }): st
 }
 
 function resolveBoundSlots(
-  verb: VerbDef,
+  where: string,
   step: StepSource,
   fills: Record<string, AttachmentSource | null>,
 ): BoundSlot[] {
@@ -211,7 +211,7 @@ function resolveBoundSlots(
     if (fill === null) {
       if (spec.required) {
         throw new Error(
-          `verb "${verb.name}": slot "${slotName}" requires contract "${spec.contract}" but is unbound`,
+          `${where}: slot "${slotName}" requires contract "${spec.contract}" but is unbound`,
         );
       }
       continue;
@@ -219,7 +219,7 @@ function resolveBoundSlots(
 
     if (fill.provides !== spec.contract) {
       throw new Error(
-        `verb "${verb.name}": slot "${slotName}" requires contract "${spec.contract}" but binding "${fill.binding}" provides "${fill.provides}"`,
+        `${where}: slot "${slotName}" requires contract "${spec.contract}" but binding "${fill.binding}" provides "${fill.provides}"`,
       );
     }
 
@@ -499,7 +499,8 @@ export function compileSkill(
   } = {},
 ): CompileResult {
   const internalRoster = opts.internalRoster ?? new Set<string>();
-  const boundSlots = resolveBoundSlots(verb, step, fills);
+  const where = opts.where ?? `verb "${verb.name}"`;
+  const boundSlots = resolveBoundSlots(where, step, fills);
 
   const compiledParts = [
     `${step.plugin}@${step.version}`,
@@ -548,7 +549,7 @@ export function compileSkill(
     : null;
   const warnings = [
     ...lintReferences(body, roster, files, fillBindings, {
-      where: opts.where ?? `verb "${verb.name}"`,
+      where,
       exemptPrefixes: opts.emittedSiblingDirs ?? [],
       layout,
       emittedTargetDirs: opts.emittedTargetDirs ?? [],

@@ -215,6 +215,17 @@ describe("compileSkill", () => {
     expect(error?.message).toContain("watch-ci-domain@1");
   });
 
+  test("a stage target's slot errors name the stage, never a verb", () => {
+    let error: Error | undefined;
+    try {
+      compileSkill(verb, step, { domain: null, forge: forgeFill }, roster, { where: 'stage "watch-ci"' });
+    } catch (e) {
+      error = e as Error;
+    }
+    expect(error?.message).toMatch(/^stage "watch-ci": slot "domain"/);
+    expect(error?.message).not.toContain('verb "');
+  });
+
   test("provides mismatch throws naming expected vs actual", () => {
     const badDomainFill: AttachmentSource = { ...domainFill, provides: "watch-ci-domain@2" };
 
