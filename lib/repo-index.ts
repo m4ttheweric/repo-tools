@@ -25,6 +25,7 @@ import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
 import { deleteKvValue, getKvValue, getStateDb, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
 import { rekeyKvNamespace } from "./state/identity-migrate.ts";
+import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -149,6 +150,39 @@ export function updateRepoIndex(repoName: string, repoRoot: string): void {
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
     writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
+}
+
+/**
+ * Resolves a serialized identity to its indexed main-worktree path, tolerating
+ * an index whose rows still carry legacy repo-name keys (the state every
+ * machine is in right after the identity cutover). A miss scans the legacy
+ * rows, derives each row's identity from its path, and on a match ADDS the
+ * identity row — additive on purpose: the legacy row must stay for
+ * `rt repos prune` to collapse the pair, or its data dir would be stranded.
+ * Null when no row, legacy or identity, matches: an unregistered repo stays
+ * unregistered — this is a migration, not a registration.
+ */
+export async function resolveIndexPathForIdentity(serialized: string): Promise<string | null> {
+  let index: RepoIndex;
+  try {
+    index = loadRepoIndex();
+  } catch {
+    return null;
+  }
+  const direct = index[serialized];
+  if (direct) return direct;
+  for (const [key, path] of Object.entries(index)) {
+    if (parseIdentity(key) !== null) continue;
+    if (!existsSync(path)) continue;
+    try {
+      if (serializeIdentity(await deriveRepoIdentity(path)) !== serialized) continue;
+    } catch {
+      continue;
+    }
+    updateRepoIndex(serialized, path);
+    return path;
+  }
+  return null;
 }
 
 // ─── Rename drift (RT-60) ───────────────────────────────────────────────────

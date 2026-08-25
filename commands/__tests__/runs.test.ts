@@ -231,11 +231,12 @@ describe("rt runs --repo identity resolution", () => {
     expect(call?.payload?.repo).toBe(identity);
   });
 
-  test("an unresolvable --repo exits instead of sending a bogus key to the daemon", async () => {
+  test("an unresolvable --repo forwards the raw arg as a run-dir key (pre-cutover run dirs keep their pipeline's key)", async () => {
     const calls = installFakeDaemon({ ok: true, data: { runs: [] } });
-    const { exitCode, errors } = await runExpectingCleanExit(() => runsList(["--repo", "no-such-repo-anywhere"]));
-    expect(exitCode).toBe(1);
-    expect(errors.join("\n")).toContain("no-such-repo-anywhere");
-    expect(calls.find((c) => c.cmd === "runs:list")).toBeUndefined();
+
+    await runsList(["--repo", "legacy-run-dir-name", "--json"]);
+
+    const call = calls.find((c) => c.cmd === "runs:list");
+    expect(call?.payload?.repo).toBe("legacy-run-dir-name");
   });
 });

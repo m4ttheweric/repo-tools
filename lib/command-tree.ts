@@ -341,7 +341,9 @@ export async function dispatch(
         = await import("./pickers.ts");
 
       const repos = getKnownRepos();
-      const currentRepo = repos.find(r => r.repoName === ctx.identity!.repoName);
+      // KnownRepo.repoName holds the index key — a serialized identity, not
+      // the display name ctx.identity.repoName carries.
+      const currentRepo = repos.find(r => r.repoName === ctx.identity!.identity);
 
       if (!currentRepo || currentRepo.worktrees.length <= 1) {
         // Single worktree or unknown repo — go to all repos

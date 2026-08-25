@@ -44,6 +44,7 @@ import {
 } from "../lib/herdr-launch.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
+import { repoLabel } from "../lib/repo-arg.ts";
 import { navSeparator, type NavOption } from "../lib/navigate.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
@@ -729,10 +730,13 @@ export async function runCommand(
     }
 
     // If we fell through from a resolved context, start at the worktree
-    // picker for that repo rather than re-asking which repo.
-    const resolvedRepoName = ctx.identity?.repoName;
-    let selectedRepo: KnownRepo | undefined = resolvedRepoName
-      ? knownRepos.find((r) => r.repoName === resolvedRepoName)
+    // picker for that repo rather than re-asking which repo. The index keys
+    // KnownRepo.repoName holds are serialized identities now, so the match is
+    // against ctx.identity.identity — matching the display name here finds
+    // nothing and, with one known repo, exits instead of re-showing a picker.
+    const resolvedIdentity = ctx.identity?.identity;
+    let selectedRepo: KnownRepo | undefined = resolvedIdentity
+      ? knownRepos.find((r) => r.repoName === resolvedIdentity)
       : knownRepos.length === 1
         ? knownRepos[0]!
         : undefined;
@@ -745,7 +749,7 @@ export async function runCommand(
         const repoResult = await runNavPicker({
           options: knownRepos.map((r) => ({
             value: r.repoName,
-            label: r.repoName,
+            label: repoLabel(r.repoName),
             hint: `${r.worktrees.length} worktrees`,
           })),
           message: "Select repo",

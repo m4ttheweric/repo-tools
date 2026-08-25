@@ -63,7 +63,7 @@ describe("regenerateInterceptsCache", () => {
     expect(result).toEqual({ regenerated: true, rules: 1 });
     expect(loadInterceptRules()).toEqual([{
       command: "regencmd",
-      repo: "regen-repo",
+      repo: "remote:gitlab.com%2Ffake%2Fregen-repo",
       repoRemote: REMOTE,
       matches: [{ cwdGlob: ".", role: "web" }],
     }]);

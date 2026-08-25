@@ -17,6 +17,7 @@
 import type { EndpointRepoConfig, RoleConfig } from "../../endpoint/config.ts";
 import { loadEndpointConfig } from "../../endpoint/config.ts";
 import { deriveRepoIdentity, parseIdentity } from "../../settings/identity.ts";
+import { resolveIndexPathForIdentity } from "../../repo-index.ts";
 import type { EndpointClaim } from "../../endpoint/store.ts";
 import { loadClaims, saveClaims } from "../../endpoint/store.ts";
 import type { Probes } from "../../endpoint/allocator.ts";
@@ -42,7 +43,11 @@ const url = (port: number): string => `http://localhost:${port}`;
  */
 async function repoIdentityFor(ctx: HandlerContext, repo: string): Promise<string | null> {
   try {
-    const repoPath = ctx.repoIndex()[repo];
+    // Legacy-tolerant on purpose: right after the identity cutover the index
+    // rows still carry name keys until something re-keys them, and a claim
+    // arriving through an intercept shim may be the first rt activity in that
+    // repo — resolveIndexPathForIdentity migrates the row on this read.
+    const repoPath = ctx.repoIndex()[repo] ?? await resolveIndexPathForIdentity(repo);
     if (!repoPath) return null;
     const identity = await deriveRepoIdentity(repoPath);
     return identity.kind === "remote" ? identity.id : null;

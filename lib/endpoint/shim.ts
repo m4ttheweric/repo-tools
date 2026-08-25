@@ -36,7 +36,7 @@ import {
 } from "../rt-paths.ts";
 import { loadRepoIndex } from "../repo-index.ts";
 import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
-import { identityFromRemote } from "../settings/identity.ts";
+import { deriveRepoIdentity, identityFromRemote, serializeIdentity } from "../settings/identity.ts";
 import { listTeams } from "../settings/stores.ts";
 import { runCapture } from "../subprocess.ts";
 import { loadEndpointConfig, type InterceptMatch } from "./config.ts";
@@ -181,13 +181,24 @@ async function captureRepoRemote(repoPath: string): Promise<string | null> {
 export async function buildInterceptRules(): Promise<InterceptRule[]> {
   const index = loadRepoIndex();
   const rules: InterceptRule[] = [];
-  for (const [repo, repoPath] of Object.entries(index)) {
+  // rule.repo feeds endpoint:claim's payload verbatim (lib/endpoint/run.ts),
+  // and that verb accepts serialized identities only — so the rule carries the
+  // identity DERIVED from the row's repo, never the row's raw index key. A
+  // legacy name row and its identity row derive the same value, so the pair
+  // an in-flight migration leaves behind dedupes here instead of emitting the
+  // same rule twice.
+  const emitted = new Set<string>();
+  for (const [, repoPath] of Object.entries(index)) {
     const repoRemote = await captureRepoRemote(repoPath);
     const derivedIdentity = repoRemote === null ? null : identityFromRemote(repoRemote);
     const repoIdentity = derivedIdentity && derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
+    const repo = serializeIdentity(derivedIdentity ?? await deriveRepoIdentity(repoPath));
     const config = loadEndpointConfig({ repoIdentity, repoName: repo });
     if (config.intercepts.length === 0) continue;
     for (const intercept of config.intercepts) {
+      const key = `${intercept.command} ${repo}`;
+      if (emitted.has(key)) continue;
+      emitted.add(key);
       rules.push({ command: intercept.command, repo, repoRemote, matches: intercept.matches });
     }
   }

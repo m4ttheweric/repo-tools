@@ -513,7 +513,9 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
 
     const rules = readInterceptRulesRow(home);
     expect(rules?.rules).toHaveLength(1);
-    expect(rules?.rules[0]?.repo).toBe(REPO_NAME);
+    // rule.repo is the serialized identity the remote derives — the
+    // endpoint:claim payload key — not the raw index key.
+    expect(rules?.rules[0]?.repo).toBe("remote:github.com%2Frt-test%2Fsettings-repo");
     expect(rules?.rules[0]?.repoRemote).toBe(REMOTE_URL);
   }, 40_000);
 

@@ -224,11 +224,12 @@ describe("buildInterceptRules", () => {
 
     const built = await buildInterceptRules();
     expect(built).toHaveLength(1);
+    // rule.repo carries the identity DERIVED from the repo's remote (the
+    // endpoint:claim payload key), never the raw index key.
     const byRepo = Object.fromEntries(built.map((r) => [r.repo, r]));
-    expect(byRepo["r-with"]!.command).toBe("doppler");
-    expect(byRepo["r-with"]!.repoRemote).toBe("git@x:acme/acme-dev.git");
-    expect(byRepo["r-without"]).toBeUndefined();
-    // No remote → no derivable identity → repo-scoped intercepts unreachable.
+    expect(byRepo["remote:x%2Facme%2Facme-dev"]!.command).toBe("doppler");
+    expect(byRepo["remote:x%2Facme%2Facme-dev"]!.repoRemote).toBe("git@x:acme/acme-dev.git");
+    expect(byRepo["remote:x%2Facme%2Fempty-repo"]).toBeUndefined();
     expect(byRepo["r-no-remote"]).toBeUndefined();
   });
 
@@ -240,7 +241,7 @@ describe("buildInterceptRules", () => {
     const built = await buildInterceptRules();
     expect(built).toEqual([{
       command: "storecmd",
-      repo: "r-store",
+      repo: "remote:gitlab.com%2Ffake%2Fstore-repo",
       repoRemote: "git@gitlab.com:fake/store-repo.git",
       matches: [{ cwdGlob: ".", role: "web" }],
     }]);
@@ -296,7 +297,7 @@ describe("installShims / uninstallShims / shimReport", () => {
     writeFileSync(untouchedPath, "#!/bin/sh\necho hi\n");
 
     const report = shimReport();
-    expect(report).toEqual([{ command: "fakecmd-a", repo: "r-install", installed: true, current: true }]);
+    expect(report).toEqual([{ command: "fakecmd-a", repo: "remote:x%2Facme%2Fr-install", installed: true, current: true }]);
 
     const removed = uninstallShims();
     expect(removed.removed).toEqual(["fakecmd-a"]);
@@ -351,16 +352,16 @@ describe("installShims / uninstallShims / shimReport", () => {
     writeInterceptRules(built);
 
     // declared, nothing on disk yet
-    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "r-transition", installed: false, current: false });
+    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "remote:x%2Facme%2Fr-transition", installed: false, current: false });
 
     // installed → current
     await installShims();
-    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "r-transition", installed: true, current: true });
+    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "remote:x%2Facme%2Fr-transition", installed: true, current: true });
 
     // shim content drifts from the rendered form → installed but stale
     const path = shimPath("fakecmd-transition");
     writeFileSync(path, readFileSync(path, "utf8") + "\n");
-    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "r-transition", installed: true, current: false });
+    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "remote:x%2Facme%2Fr-transition", installed: true, current: false });
   });
 });
 

@@ -17,7 +17,7 @@
 
 import { basename } from "path";
 import { dim, green, reset, yellow } from "../lib/tui.ts";
-import { loadRepoIndex } from "../lib/repo-index.ts";
+import { resolveIndexPathForIdentity } from "../lib/repo-index.ts";
 import { runCapture } from "../lib/subprocess.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
 // deriveRepoName, not getRepoIdentity: the latter's updateRepoIndex side
@@ -70,12 +70,12 @@ export async function endpointLookup(args: string[]): Promise<void> {
   // here hit the same row. repoName above stays around for display only.
   const identity = serializeIdentity(await deriveRepoIdentity(toplevel));
 
-  // Read the repo index the same way lib/endpoint/shim.ts's
-  // buildInterceptRules does — identity is a KEY, not a path match (a
-  // secondary worktree's toplevel never equals the index's stored primary
-  // path, so equality-matching the path would false-negative every time).
-  const index = loadRepoIndex();
-  if (!(identity in index)) {
+  // Identity is a KEY, not a path match (a secondary worktree's toplevel
+  // never equals the index's stored primary path, so equality-matching the
+  // path would false-negative every time). resolveIndexPathForIdentity also
+  // accepts a legacy name-keyed row for this repo — migrating it, not
+  // registering: a repo in neither form still fails.
+  if ((await resolveIndexPathForIdentity(identity)) === null) {
     fail(`repo "${repoName}" is not registered — visit it with rt first (repos.json is a derived mirror, not the source of truth)`);
   }
 
