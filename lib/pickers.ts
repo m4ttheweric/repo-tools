@@ -7,7 +7,7 @@
 
 import { execSync } from "child_process";
 import { join } from "path";
-import { getRepoIdentity, getKnownRepos, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, type KnownRepo } from "./repo.ts";
+import { getRepoIdentity, getKnownRepos, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, missingRepoRefusal, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchLabel } from "./enrich.ts";
 
 const SWITCH_REPO     = "__switch_repo__"     as const;
@@ -88,14 +88,22 @@ export async function pickFromAllRepos(
   repos: KnownRepo[],
   opts?: { stderr?: boolean; errorMessage?: string; includePackages?: boolean },
 ): Promise<string> {
-  const { filterableSelect, BackNavigation } = await import("./rt-render.tsx");
+  const writer = opts?.stderr ? console.error : console.log;
 
   if (repos.length === 0) {
     const msg = opts?.errorMessage || "no known repos found — run rt from inside a git repo first";
-    const writer = opts?.stderr ? console.error : console.log;
     writer(`\n  ${msg}\n`);
     process.exit(1);
   }
+
+  /** Refusing before the picker loads keeps a lost-repo-only index off the ink path entirely. */
+  const refuse = (repo: KnownRepo): never => {
+    writer(`\n  ${missingRepoRefusal(repo)}\n`);
+    process.exit(1);
+  };
+  if (repos.length === 1 && repos[0]!.missing) refuse(repos[0]!);
+
+  const { filterableSelect, BackNavigation } = await import("./rt-render.tsx");
 
   // Loop: back from worktree/package picker restarts at repo picker
   while (true) {
@@ -112,6 +120,7 @@ export async function pickFromAllRepos(
       if (!picked) process.exit(1);
       selectedRepo = repos.find(r => r.repoName === picked)!;
     }
+    if (selectedRepo.missing) refuse(selectedRepo);
 
     // Resolve worktree path (or auto-select if only one)
     let worktreePath: string | null;

@@ -41,6 +41,9 @@ export interface KnownRepo {
   /** False for repos discovered by scanning sibling directories, never
    *  explicitly visited by rt. Omitted (implicitly true) for indexed repos. */
   registered?: boolean;
+  /** The indexed path no longer exists. The row is kept so `rt repos locate`
+   *  can move it as one unit with its registry; it is never a cd target. */
+  missing?: true;
 }
 
 // ─── Index CRUD ──────────────────────────────────────────────────────────────
@@ -700,8 +703,12 @@ export function getKnownRepos(): KnownRepo[] {
   }
   const repos: KnownRepo[] = [];
 
+  const liveEntries: RepoIndexEntry[] = [];
+  const lostEntries: RepoIndexEntry[] = [];
+  for (const e of entries) (existsSync(e.path) ? liveEntries : lostEntries).push(e);
+
   // Hidden here, not evicted — see partitionByRealpath.
-  const { keep } = partitionByRealpath(entries.filter((e) => existsSync(e.path)));
+  const { keep } = partitionByRealpath(liveEntries);
 
   for (const { repoName, path: mainPath } of keep) {
     const worktrees: KnownRepo["worktrees"] = [];
@@ -745,15 +752,23 @@ export function getKnownRepos(): KnownRepo[] {
   }
 
   const known = repos.filter(r => r.worktrees.length > 0);
-  const knownNames = new Set(known.map(r => r.repoName));
+  // A pair of rows for one gone directory is one lost repo, not two.
+  const lost: KnownRepo[] = partitionByRealpath(lostEntries).keep.map((e) => ({
+    repoName: e.repoName,
+    worktrees: [{ path: e.path, branch: "", isBare: false }],
+    dataDir: repoDataDir(e.repoName),
+    missing: true as const,
+  }));
+  const knownNames = new Set([...known, ...lost].map(r => r.repoName));
   // realpath'd for set-membership ONLY — a symlinked path component (macOS
   // /tmp → /private/tmp being the canonical case) must not let the same
   // directory double-emit under two spellings. `known` itself keeps its
   // original, user-visible spellings (KnownRepo.worktrees[].path, repos.json,
-  // `rt cd` targets) untouched.
+  // `rt cd` targets) untouched. Lost paths are deliberately absent: the scan
+  // must be free to surface the moved repo's NEW directory.
   const knownPaths = new Set(known.flatMap(r => r.worktrees.map(w => safeRealpath(w.path))));
 
-  return [...known, ...scanUnregisteredRepos(known, knownNames, knownPaths)];
+  return [...known, ...lost, ...scanUnregisteredRepos([...known, ...lost], knownNames, knownPaths)];
 }
 
 interface Candidate {
@@ -928,6 +943,10 @@ function scanUnregisteredRepos(
     it); only `label` is decoded for humans. Prefer `repoOptions` for a full
     list — it disambiguates repos whose identities share a last segment. */
 export function repoOption(r: KnownRepo, label: string = repoLabel(r.repoName)): { value: string; label: string; hint: string; color?: string } {
+  if (r.missing) {
+    return { value: r.repoName, label, hint: "missing — rt repos locate", color: dim };
+  }
+
   const location = r.worktrees.length > 1
     ? `${r.worktrees.length} worktrees`
     : r.worktrees[0]?.path.replace(homedir(), "~") || "";
@@ -961,6 +980,12 @@ export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOpt
     const qualified = repoLabelQualified(r.repoName);
     return repoOption(r, (qualifiedCounts.get(qualified) ?? 0) > 1 ? repoLabelFull(r.repoName) : qualified);
   });
+}
+
+/** The one-line refusal every picker prints instead of cd-ing into a repo whose indexed path is gone. */
+export function missingRepoRefusal(r: KnownRepo): string {
+  const gone = r.worktrees[0]?.path ?? "its indexed path";
+  return `${r.repoName} is no longer at ${gone} — run: rt repos locate <new-path> --repo ${r.repoName}`;
 }
 
 // ─── Test seam ───────────────────────────────────────────────────────────────

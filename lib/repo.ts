@@ -14,12 +14,12 @@ import { identityFromRemote, serializeIdentity } from "./settings/identity.ts";
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
 export { getRepoRoot, getCurrentBranch, getRemoteUrl } from "./git.ts";
-export { updateRepoIndex, getKnownRepos, repoOption, repoOptions, type KnownRepo } from "./repo-index.ts";
+export { updateRepoIndex, getKnownRepos, repoOption, repoOptions, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
 
 // ─── Internal imports ────────────────────────────────────────────────────────
 
 import { getRepoRoot, getRemoteUrl } from "./git.ts";
-import { updateRepoIndex, getKnownRepos, repoOption, repoOptions, type KnownRepo } from "./repo-index.ts";
+import { updateRepoIndex, getKnownRepos, repoOption, repoOptions, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -184,6 +184,13 @@ export async function requireIdentity(commandLabel?: string): Promise<RepoIdenti
   return identity;
 }
 
+/** Never chdir into a repo whose indexed path is gone — locate it first. */
+function refuseIfMissing(repo: KnownRepo): void {
+  if (!repo.missing) return;
+  console.log(`\n  ${missingRepoRefusal(repo)}\n`);
+  process.exit(1);
+}
+
 /**
  * Get repo identity at the repo level (no worktree picker step).
  * Falls back to a repo-only picker if not currently inside a git repo.
@@ -222,6 +229,7 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
     selectedRepo = match;
   }
 
+  refuseIfMissing(selectedRepo);
   process.chdir(selectedRepo.worktrees[0]!.path);
 
   identity = getRepoIdentity();
@@ -249,6 +257,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
 
   const totalWorktrees = repos.reduce((n, r) => n + r.worktrees.length, 0);
   if (totalWorktrees === 1) {
+    refuseIfMissing(repos[0]!);
     return repos[0]!.worktrees[0]!.path;
   }
 
@@ -271,6 +280,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
     if (!match) process.exit(0);             // shouldn't happen, but don't crash
     selectedRepo = match;
   }
+  refuseIfMissing(selectedRepo);
 
   if (selectedRepo.worktrees.length === 1) {
     return selectedRepo.worktrees[0]!.path;

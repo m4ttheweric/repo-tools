@@ -475,21 +475,22 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   // ─── 13. Disposable cache ─────────────────────────────────────────────────
 
   describe("13. disposable cache", () => {
-    test("a pre-migration repos.json entry for a path that no longer exists is imported, then filtered from the picker", () => {
+    test("a pre-migration repos.json entry for a path that no longer exists is imported, then kept visible as missing", () => {
       const root = mkdtempSync(join(tmpdir(), "rt-cache-root-"));
       const repo = markerRepo(root, "stillhere");
       setRepoRoots([root]);
 
       // A leftover pre-migration file: getKnownRepos() imports it (empty
-      // index, file present), but a registered path that no longer exists on
-      // disk is filtered out the same way it always was.
+      // index, file present); a registered path that no longer exists on
+      // disk stays visible, marked missing, rather than disappearing.
       const p = join(rtDir(), "repos.json");
       mkdirSync(dirname(p), { recursive: true });
       writeFileSync(p, JSON.stringify({ "stale-repo": "/nonexistent/path" }));
 
       const repos = getKnownRepos();
       expect(byName(repos, "stillhere")?.worktrees[0]?.path).toBe(repo);
-      expect(byName(repos, "stale-repo")).toBeUndefined();
+      expect(byName(repos, "stale-repo")?.missing).toBe(true);
+      expect(byName(repos, "stale-repo")?.worktrees[0]?.path).toBe("/nonexistent/path");
       expect(loadRepoIndex()["stale-repo"]).toBe("/nonexistent/path"); // imported into the store regardless
       // repos.json is the live out-of-process compat mirror gitq reads, NOT
       // a retired legacy file — it must never be renamed away, only kept
