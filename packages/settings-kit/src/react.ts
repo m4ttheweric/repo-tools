@@ -25,6 +25,10 @@ export interface SettingsScopeState {
   set: (key: string, scope: string, value: unknown) => Promise<string | null>;
   /** The key currently being written, else null. */
   saving: string | null;
+  /** Remove one key from one scope's store (reset-to-default) and patch the
+      def's `effective` in place. Resolves null on success, else the server's
+      refusal message verbatim. */
+  unset: (key: string, scope: string) => Promise<string | null>;
 }
 
 export interface SettingKeyState {
@@ -106,9 +110,34 @@ export function useSettingsScope(prefix: string, opts: SettingsKitOptions = {}):
     [base],
   );
 
+  const unset = useCallback(
+    async (key: string, scope: string): Promise<string | null> => {
+      setSaving(key);
+      try {
+        const res = await fetch(`${base}/unset`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ key, scope }),
+        });
+        const body = (await res.json().catch(() => null)) as
+          | { effective?: EffectiveWire; error?: string }
+          | null;
+        if (!res.ok || !body?.effective) return body?.error ?? `reset failed: ${res.status}`;
+        const effective = body.effective;
+        setDefs((prev) => prev.map((d) => (d.key === key ? { ...d, effective } : d)));
+        return null;
+      } catch (err) {
+        return (err as Error).message;
+      } finally {
+        setSaving(null);
+      }
+    },
+    [base],
+  );
+
   return useMemo(
-    () => ({ defs, loading, error, refresh, set, saving }),
-    [defs, loading, error, refresh, set, saving],
+    () => ({ defs, loading, error, refresh, set, saving, unset }),
+    [defs, loading, error, refresh, set, saving, unset],
   );
 }
 

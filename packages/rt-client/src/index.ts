@@ -68,7 +68,7 @@ export type {
   ExpandCtx,
 } from "./settings/resolve.ts";
 
-export { setSetting } from "./settings/write.ts";
+export { setSetting, unsetSetting } from "./settings/write.ts";
 export type { SetSettingOpts } from "./settings/write.ts";
 
 export { getDef, allDefs, validateValue, isMigrated } from "./settings/registry-machinery.ts";

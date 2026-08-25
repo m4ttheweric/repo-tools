@@ -160,6 +160,49 @@ export function setSetting(key: string, value: unknown, scope: SettingScope, opt
   );
 }
 
+/**
+ * Removes `key` from the given scope's store, comment-preserving. The refusal
+ * ladder is `setSetting`'s minus the value check (there is no value): unknown
+ * key, unmigrated, scope not in `def.scopes`, repoIdentity on a non-repoScoped
+ * key, and the team-selection rule when ambiguous. Divergences from set, both
+ * because removal has nothing to act on: a store FILE that does not exist is a
+ * clean no-op rather than a refusal (an explicit `opts.team` naming a team
+ * with no local store included — nothing to remove is success, not an error),
+ * and a key not present in the store is a no-op. Returns whether anything was
+ * actually removed; the local-only reminder prints only on a real removal.
+ */
+export function unsetSetting(key: string, scope: SettingScope, opts: SetSettingOpts = {}): boolean {
+  const def = getDef(key);
+  if (!def) {
+    refuse(`unknown setting "${key}" — not in the settings registry (see \`rt settings list\`)`);
+  }
+
+  if (!isMigrated(def)) {
+    refuse(migratedFalseMessage(key, def));
+  }
+
+  if (!def.scopes.includes(scope)) {
+    refuse(`"${key}" cannot be unset in the ${scope} store (allowed: ${def.scopes.join(", ")})`);
+  }
+
+  if (opts.repoIdentity !== undefined && def.repoScoped !== true) {
+    refuse(`"${key}" is not repo-scoped — omit the repo identity`);
+  }
+
+  const storePath = resolveStorePathForUnset(scope, opts);
+  if (storePath === null || !existsSync(storePath)) return false;
+
+  const jsonPath: JSONPath = opts.repoIdentity !== undefined ? ["repos", opts.repoIdentity, key] : [key];
+  const removed = removeFromStore(storePath, jsonPath);
+
+  if (removed) {
+    console.error(
+      `rt: removed "${key}" from the local ${scope} store (${storePath}) — this is local only until you commit and push it.`,
+    );
+  }
+  return removed;
+}
+
 function migratedFalseMessage(key: string, def: SettingDef): string {
   const legacyPart = def.legacyFile ? ` — it is still read from ${def.legacyFile}` : "";
   return `"${key}" is not writable through the settings resolver yet${legacyPart}`;
@@ -182,6 +225,29 @@ function resolveStorePath(scope: SettingScope, opts: SetSettingOpts): string {
   if (teams.length === 0) {
     refuse(`no local team store found — clone a team under ~/.mattstack/teams/<name> or pass opts.team`);
   }
+  if (teams.length > 1) {
+    refuse(`multiple local team stores found (${teams.join(", ")}) — pass opts.team to choose one`);
+  }
+  return teamSettingsPath(teams[0] as string);
+}
+
+/**
+ * `resolveStorePath` for removal: same selection rule, but "no store to
+ * target" answers null (nothing to remove) instead of refusing — EXCEPT the
+ * multiple-teams case, which still refuses: guessing which team's store to
+ * edit is banned on the unset side for the same reason as the set side.
+ */
+function resolveStorePathForUnset(scope: SettingScope, opts: SetSettingOpts): string | null {
+  if (scope === "user") return userSettingsPath();
+  if (scope === "machine") return machineSettingsPath();
+
+  if (opts.team !== undefined) {
+    const path = teamSettingsPath(opts.team);
+    return existsSync(path) ? path : null;
+  }
+
+  const teams = listTeams();
+  if (teams.length === 0) return null;
   if (teams.length > 1) {
     refuse(`multiple local team stores found (${teams.join(", ")}) — pass opts.team to choose one`);
   }
@@ -279,6 +345,31 @@ function writeIntoStore(storePath: string, jsonPath: JSONPath, value: unknown, c
   // a torn write would sit as a corrupt uncommitted file until a human
   // noticed. The edited TEXT is written as-is, never round-tripped through
   // JSON.stringify, so comments and formatting survive.
+  writeTempThenRename(storePath, finalText);
+}
+
+/**
+ * Removes `jsonPath` from an existing store file. A key that isn't present
+ * yields zero edits from `modify` and the file is left untouched (no write,
+ * no mtime churn). Malformed stores refuse exactly as on the set side —
+ * `modify`-by-offset against a duplicate-key document is as wrong for
+ * removal as it is for writes.
+ */
+function removeFromStore(storePath: string, jsonPath: JSONPath): boolean {
+  const content = readFileSync(storePath, "utf8");
+  if (content.trim() === "") return false;
+  assertEditableJsonc(storePath, content);
+
+  const edits = modify(content, jsonPath, undefined, { formattingOptions: FORMAT });
+  if (edits.length === 0) return false;
+
+  const next = applyEdits(content, edits);
+  const finalText = next.endsWith("\n") ? next : `${next}\n`;
+  writeTempThenRename(storePath, finalText);
+  return true;
+}
+
+function writeTempThenRename(storePath: string, finalText: string): void {
   const tmp = `${storePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   try {
     writeFileSync(tmp, finalText);
