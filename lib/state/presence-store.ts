@@ -337,10 +337,19 @@ export function assertSessionOwnsHandle(handle: string, sessionId: string | unde
   if (row.session_id !== sessionId) throw new Error(`chat: handle reclaimed — "${handle}" is now held by another session; sign in again`);
 }
 
-/** Session-keyed payloads (pulse/away/back/sign-out): no row for this session id means the handle was reclaimed. */
+/**
+ * Session-keyed payloads (pulse/away/back): no row for this session id means
+ * the handle was reclaimed; a row whose `signed_out_at` is set means this
+ * exact session chose to sign out — a deliberate state, not a reclaim, so
+ * its message must never contain "handle reclaimed" (the hook treats that
+ * substring as the reclaimed notice). pulse's own contract (`status` is
+ * never "offline") holds only because this throws before pulse ever
+ * heartbeats a signed-out row.
+ */
 export function assertSessionSignedIn(sessionId: string, db: Database = getStateDb()): PresenceRow {
   const row = presenceForSession(sessionId, db);
   if (!row) throw new Error("chat: handle reclaimed while you were away; sign in again");
+  if (row.signedOutAt !== undefined) throw new Error(`chat: session ${sessionId} is not signed in`);
   return row;
 }
 

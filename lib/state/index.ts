@@ -100,6 +100,7 @@ export {
   joinRoom,
   leaveRoom,
   parseMentions,
+  mergeMentions,
   postMessage,
   readUnread,
   listMessages,

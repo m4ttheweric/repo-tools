@@ -346,6 +346,12 @@ export function parseMentions(body: string): string[] {
   return [...found];
 }
 
+/** Unions an explicit recipient list into a body's parsed @mentions — the one merge rule storage (postMessage) and the daemon's desk-notify check both need, so the two can never diverge. */
+export function mergeMentions(body: string, explicit?: string[]): string[] {
+  const parsed = parseMentions(body);
+  return explicit ? [...new Set([...parsed, ...explicit])] : parsed;
+}
+
 /**
  * The recipient rule over an already-fetched member list. Both the post path
  * and the wake-catch-up path route through here so they can never diverge —
@@ -381,11 +387,7 @@ export function postMessage(
   db: Database = getStateDb(),
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body } = args;
-  const parsed = parseMentions(body);
-  // A caller that already knows its recipient passes it here instead of
-  // typing "@handle" into the body; merging keeps either form able to wake
-  // a mention-mode member.
-  const mentions = args.mentions ? [...new Set([...parsed, ...args.mentions])] : parsed;
+  const mentions = mergeMentions(body, args.mentions);
 
   const run = db.transaction((): { id: number; recipients: string[] } => {
     const now = Date.now();

@@ -236,7 +236,7 @@ export function chatUnreadWaking(
   return rtCommand<{ rooms: { room: string; count: number; mentions: number; maxId: number }[] }>("chat:unread-waking", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
 }
 
-// ─── Presence (RT-48 chat-presence) ──────────────────────────────────────
+// ─── Presence ──────────────────────────────────────────────────────────
 
 export function chatSignIn(
   a: { sessionId: string; baseHandle: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string },

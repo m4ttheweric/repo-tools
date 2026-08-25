@@ -227,9 +227,8 @@ export interface Commands {
   "chat:disarm": { payload: { handle: string; sessionId?: string }; data: Record<string, never> };
   "chat:unread-waking": { payload: { handle: string; room?: string }; data: { rooms: { room: string; count: number; mentions: number; maxId: number }[] } };
 
-  // Presence-backed verbs: a session id keys these to one signed-in handle,
-  // distinct from the room-membership handle string the twelve verbs above
-  // use.
+  // A session id keys these to one signed-in handle, not a room-membership
+  // handle string.
   "chat:sign-in": {
     payload: { sessionId: string; baseHandle: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string };
     data: { handle: string; reclaimed: boolean };
@@ -238,6 +237,7 @@ export interface Commands {
   "chat:away": { payload: { sessionId: string; text: string }; data: Record<string, never> };
   "chat:back": { payload: { sessionId: string }; data: Record<string, never> };
   "chat:buddies": { payload: Record<string, never>; data: { buddies: Array<PresenceRow & { status: BuddyStatus }> } };
+  /** `unread`'s three fields are disjoint and sum to the true total: `dms` is DM-room waking count; `mentions` is non-DM waking mentions; `rooms` is non-DM waking count minus those mentions (never negative). */
   "chat:pulse": {
     payload: { sessionId: string; cwd?: string; repo?: string; branch?: string; pane?: string };
     data: { unread: { dms: number; mentions: number; rooms: number }; status: BuddyStatus };

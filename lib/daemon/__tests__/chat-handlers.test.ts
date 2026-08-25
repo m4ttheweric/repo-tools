@@ -95,7 +95,9 @@ test("notifies on a mention even when the human has never joined the room", asyn
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "agent" });
   await h["chat:post"]({ room: "r", handle: "agent", body: "@matt ok to force-release?" });
-  expect(peekNotifications()).toHaveLength(1);
+  const notifications = peekNotifications();
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]).toMatchObject({ title: "#r" });
 });
 
 test("notifies even when the human is a member with wake_on none", async () => {
@@ -140,6 +142,14 @@ test("sign-in assigns and a second same-base session gets the suffix", async () 
   expect(second.data).toMatchObject({ handle: "x-2" });
 });
 
+test("sign-in rejects an invalid baseHandle with a reason rather than normalizing it", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "remote:host%2Fx" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("handle");
+});
+
 test("a reclaimed handle refuses the old session's pulse with the reason", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
@@ -149,6 +159,19 @@ test("a reclaimed handle refuses the old session's pulse with the reason", async
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toContain("handle reclaimed");
+});
+
+test("chat:pulse partitions unread into disjoint dms/mentions/rooms buckets", async () => {
+  const h = freshHandlers();
+  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "me" });
+  await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "other" });
+  await h["chat:join"]({ room: "r", handle: "me" });
+  await h["chat:post"]({ room: "r", handle: "other", body: "@me hi" }); // one non-dm mention
+  await h["chat:dm"]({ from: "other", to: "me", body: "ping" }); // one dm
+
+  const res = await h["chat:pulse"]({ sessionId: "s1" });
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.unread).toEqual({ dms: 1, mentions: 1, rooms: 0 });
 });
 
 test("chat:touch refuses a reclaimed handle's old session but succeeds for the new owner", async () => {
@@ -198,10 +221,36 @@ test("chat:away sets status_text and chat:back clears it, both refusing an unsig
   const back = await h["chat:back"]({ sessionId: "s1" });
   expect(back.ok).toBe(true);
 
-  const refused = await h["chat:away"]({ sessionId: "never-signed-in", text: "x" });
-  expect(refused.ok).toBe(false);
-  if (refused.ok) throw new Error("unreachable");
-  expect(refused.error).toContain("handle reclaimed");
+  const awayRefused = await h["chat:away"]({ sessionId: "never-signed-in", text: "x" });
+  expect(awayRefused.ok).toBe(false);
+  if (awayRefused.ok) throw new Error("unreachable");
+  expect(awayRefused.error).toContain("handle reclaimed");
+
+  const backRefused = await h["chat:back"]({ sessionId: "never-signed-in" });
+  expect(backRefused.ok).toBe(false);
+  if (backRefused.ok) throw new Error("unreachable");
+  expect(backRefused.error).toContain("handle reclaimed");
+});
+
+test("a signed-out session refuses pulse/away/back without the reclaimed wording", async () => {
+  const h = freshHandlers();
+  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
+  await h["chat:sign-out"]({ sessionId: "s1" });
+
+  const pulse = await h["chat:pulse"]({ sessionId: "s1" });
+  expect(pulse.ok).toBe(false);
+  if (pulse.ok) throw new Error("unreachable");
+  expect(pulse.error).not.toMatch(/handle reclaimed/);
+
+  const away = await h["chat:away"]({ sessionId: "s1", text: "x" });
+  expect(away.ok).toBe(false);
+  if (away.ok) throw new Error("unreachable");
+  expect(away.error).not.toMatch(/handle reclaimed/);
+
+  const back = await h["chat:back"]({ sessionId: "s1" });
+  expect(back.ok).toBe(false);
+  if (back.ok) throw new Error("unreachable");
+  expect(back.error).not.toMatch(/handle reclaimed/);
 });
 
 test("chat:buddies reports the roster with a status per row", async () => {
@@ -227,6 +276,15 @@ test("chat:dm creates once, posts with the recipient in mentions, and reports re
   expect(again.data.room).toBe(res.data.room);
 });
 
+test("chat:dm rejects an invalid recipient handle with a reason rather than normalizing it", async () => {
+  const h = freshHandlers();
+  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "a" });
+  const res = await h["chat:dm"]({ from: "a", to: "a:b", body: "hi" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("handle");
+});
+
 test("chat:dm refuses a reclaimed sender", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "a" });
@@ -238,11 +296,13 @@ test("chat:dm refuses a reclaimed sender", async () => {
   expect(res.error).toContain("handle reclaimed");
 });
 
-test("dm posts to the human notify when the recipient is matt", async () => {
+test("dm posts to the human notify when the recipient is matt, titled by sender not the hashed room id", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "agent" });
   await h["chat:dm"]({ from: "agent", to: "matt", body: "ping" });
-  expect(peekNotifications()).toHaveLength(1);
+  const notifications = peekNotifications();
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]).toMatchObject({ title: "DM from agent" });
 });
 
 test("chat:rooms marks a dm and chat:who carries presence statuses", async () => {
@@ -258,6 +318,37 @@ test("chat:rooms marks a dm and chat:who carries presence statuses", async () =>
   expect(dmRoom).toMatchObject({ kind: "dm", participants: { a: "a", b: "b" } });
 
   const who = await h["chat:who"]({ room: dm.data.room });
+  if (!who.ok) throw new Error("unreachable");
+  const memberA = who.data.members.find((m) => m.handle === "a");
+  expect(memberA?.status).toBe("idle");
+});
+
+test("chat:who on an agent-agent dm room excludes the silent human row", async () => {
+  const h = freshHandlers();
+  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "a" });
+  await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "b" });
+  const dm = await h["chat:dm"]({ from: "a", to: "b", body: "hi" });
+  if (!dm.ok) throw new Error("unreachable");
+  const who = await h["chat:who"]({ room: dm.data.room });
+  if (!who.ok) throw new Error("unreachable");
+  expect(who.data.members.map((m) => m.handle).sort()).toEqual(["a", "b"]);
+});
+
+test("chat:who on a human dm room still lists the human as a participant", async () => {
+  const h = freshHandlers();
+  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "agent" });
+  const dm = await h["chat:dm"]({ from: "agent", to: "matt", body: "hi" });
+  if (!dm.ok) throw new Error("unreachable");
+  const who = await h["chat:who"]({ room: dm.data.room });
+  if (!who.ok) throw new Error("unreachable");
+  expect(who.data.members.map((m) => m.handle).sort()).toEqual(["agent", "matt"]);
+});
+
+test("chat:who falls back to member columns for an unsigned plan-1 member", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:touch"]({ handle: "a" });
+  const who = await h["chat:who"]({ room: "r" });
   if (!who.ok) throw new Error("unreachable");
   const memberA = who.data.members.find((m) => m.handle === "a");
   expect(memberA?.status).toBe("idle");

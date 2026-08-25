@@ -92,6 +92,14 @@ test("assertSessionSignedIn throws when the session's row is gone", () => {
   expect(() => assertSessionSignedIn("ghost", db)).toThrow(/handle reclaimed/);
 });
 
+test("assertSessionSignedIn refuses a signed-out session without the reclaimed wording", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  signOut("s1", now, db);
+  expect(() => assertSessionSignedIn("s1", db)).toThrow(/not signed in/);
+  expect(() => assertSessionSignedIn("s1", db)).not.toThrow(/handle reclaimed/);
+});
+
 test("prune: the ghost path — a never-signed-out row goes after 24h of silence", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db); // never signs out

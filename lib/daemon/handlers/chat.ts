@@ -9,7 +9,7 @@ import {
   isValidChatName,
   joinRoom,
   leaveRoom,
-  parseMentions,
+  mergeMentions,
   postMessage,
   readUnread,
   listMessages,
@@ -94,11 +94,13 @@ function postAndNotify(
   // join-creates, so the human is typically not a member yet, and a
   // member with wake_on='none' must still get a desk alert.
   const humanHandle = getSetting<string>("chat.humanHandle").value;
-  const allMentions = mentions ? [...new Set([...parseMentions(body), ...mentions])] : parseMentions(body);
+  const allMentions = mergeMentions(body, mentions);
   if (humanHandle && allMentions.includes(humanHandle)) {
+    const dm = dmParticipants(room, db);
+    const title = dm ? `DM from ${handle}` : `#${room}`;
     notifyEnabled(
       CHAT_NOTIFICATION_CATEGORY,
-      `#${room}`,
+      title,
       `${handle}: ${body}`,
       undefined,
       undefined,
@@ -108,21 +110,27 @@ function postAndNotify(
   return posted;
 }
 
-/** unreadWakingCount's per-room rows, split by whether the room is one of the handle's DMs — pulse's `{ dms, mentions, rooms }` summary. */
+/**
+ * Three disjoint buckets that sum to the true unread total: `dms` is the
+ * waking count over DM rooms; `mentions` is the mention count over non-DM
+ * rooms; `rooms` is non-DM waking count minus those same mentions, floored
+ * at 0 (a self-mention can otherwise make a room's mention count exceed its
+ * waking count).
+ */
 function unreadSummaryFor(handle: string, db: Database): { dms: number; mentions: number; rooms: number } {
   const dmRooms = new Set(listDms(handle, db).map((d) => d.room));
   let dms = 0;
   let mentions = 0;
-  let rooms = 0;
+  let nonDmWaking = 0;
   for (const w of unreadWakingCount(handle, db)) {
     if (dmRooms.has(w.room)) {
       dms += w.count;
     } else {
-      rooms += w.count;
+      nonDmWaking += w.count;
       mentions += w.mentions;
     }
   }
-  return { dms, mentions, rooms };
+  return { dms, mentions, rooms: Math.max(0, nonDmWaking - mentions) };
 }
 
 export function createChatHandlers(opts: {
@@ -175,14 +183,22 @@ export function createChatHandlers(opts: {
     "chat:who": async (payload: Commands["chat:who"]["payload"]): Promise<CommandResult<"chat:who">> => {
       const now = Date.now();
       const th = presenceThresholds();
-      const members = listMembers(payload.room, db).map((member) => {
+      const dm = dmParticipants(payload.room, db);
+      let rows = listMembers(payload.room, db);
+      if (dm) {
+        const humanHandle = getSetting<string>("chat.humanHandle").value;
+        // The silent wake_on=none row dm-store adds for the human is not a
+        // DM participant — drop it, unless he's one of the two named ones.
+        if (humanHandle !== dm.a && humanHandle !== dm.b) {
+          rows = rows.filter((member) => member.handle !== humanHandle);
+        }
+      }
+      const members = rows.map((member) => {
         const presence = presenceForHandle(member.handle, db);
-        // Presence is preferred over the member columns (spec "chat_members
-        // keeps its presence columns, and the two tables are dual-written")
-        // because pulse only ever heartbeats the presence row — a signed-in
-        // handle with no chat:touch yet would otherwise read stale. Falling
-        // back to joinedAt (never joinedAt-less) keeps a member who joined
-        // but has never touched/armed from reading as instantly offline.
+        // Presence takes priority: pulse only ever heartbeats the presence
+        // row, so a signed-in handle with no chat:touch yet would otherwise
+        // read stale. joinedAt as the lastSeenAt floor keeps a member who
+        // joined but never touched/armed from reading as instantly offline.
         const memberLastSeenAt = member.lastSeenAt ?? member.joinedAt;
         const status = presence
           ? buddyStatus(presence, now, th)
@@ -233,6 +249,7 @@ export function createChatHandlers(opts: {
 
     "chat:sign-in": async (payload: Commands["chat:sign-in"]["payload"]): Promise<CommandResult<"chat:sign-in">> => {
       const { sessionId, baseHandle, cwd, repo, branch, pane, statusText } = payload;
+      if (!isValidChatName(baseHandle)) return { ok: false, error: `invalid handle "${baseHandle}"` };
       const data = signIn({ sessionId, baseHandle, cwd, repo, branch, pane, statusText }, db);
       return { ok: true, data };
     },
@@ -279,6 +296,7 @@ export function createChatHandlers(opts: {
 
     "chat:dm": async (payload: Commands["chat:dm"]["payload"]): Promise<CommandResult<"chat:dm">> => {
       const { from, to, body, sessionId } = payload;
+      if (!isValidChatName(to)) return { ok: false, error: `invalid handle "${to}"` };
       const err = assertionError(() => assertSessionOwnsHandle(from, sessionId, db));
       if (err) return { ok: false, error: err };
       const humanHandle = getSetting<string>("chat.humanHandle").value;
