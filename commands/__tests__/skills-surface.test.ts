@@ -73,6 +73,36 @@ function makeUncompiledStageFixture(): { mattstackDir: string; manifestPath: str
   return { mattstackDir, manifestPath };
 }
 
+/** Two declared, loadable stages, neither compiled into the pack yet -- for asserting apply's announcement is per-entry, not per-declared-stage. */
+function makeTwoStageFixture(): { mattstackDir: string; manifestPath: string } {
+  const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-twostage-mattstack-")));
+  writeFile(
+    join(mattstackDir, "plugins", "mattstack", ".claude-plugin", "plugin.json"),
+    JSON.stringify({ version: "1.0.0" }),
+  );
+  writeFile(
+    join(mattstackDir, "plugins", "mattstack", "attachments", "pipeline", "work", "SKILL.md"),
+    `---\nname: work\ndescription: "Run the pipeline"\ntype: pipeline-step\n---\n\nDo the work.\n`,
+  );
+  writeFile(
+    join(mattstackDir, "plugins", "mattstack", "attachments", "pipeline", "stage-plan", "SKILL.md"),
+    stageSkillMd("stage-plan", "plan"),
+  );
+  writeFile(
+    join(mattstackDir, "plugins", "mattstack", "attachments", "pipeline", "stage-ship", "SKILL.md"),
+    stageSkillMd("stage-ship", "ship"),
+  );
+
+  const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-twostage-manifest-")));
+  const manifestPath = join(manifestDir, "skills.jsonc");
+  writeFile(
+    manifestPath,
+    `{\n  "pipelines": { "feature": ["mattstack:stage-plan", "mattstack:stage-ship"] },\n  "bindings": {}\n}\n`,
+  );
+
+  return { mattstackDir, manifestPath };
+}
+
 let logSpy: ReturnType<typeof spyOn>;
 let logs: string[];
 
@@ -446,7 +476,7 @@ describe("skillsSurface set/apply on a never-compiled pipeline stage", () => {
     expect(logs.join("\n")).toContain("stage-plan: recorded; emitted to skills/ on the next compile");
   });
 
-  test("set --internal on a never-compiled stage reports the attachments/ side", async () => {
+  test("set --internal on a never-compiled stage is a no-op for reconciliation: surface.jsonc can't record internal, so nothing is announced", async () => {
     const packDir = makePackDir();
     writeStubs(packDir, { work: { engine: "work", description: "Run the pipeline." } });
     const { mattstackDir, manifestPath } = makeUncompiledStageFixture();
@@ -461,7 +491,25 @@ describe("skillsSurface set/apply on a never-compiled pipeline stage", () => {
     expect(exitCode).toBeUndefined();
     const surface = JSON.parse(readFileSync(join(packDir, "pack", "surface.jsonc"), "utf8").replace(/^\/\/.*\n/, ""));
     expect(surface.public).not.toContain("stage-plan");
-    expect(logs.join("\n")).toContain("stage-plan: recorded; emitted to attachments/ on the next compile");
+    expect(logs.join("\n")).not.toContain("stage-plan: recorded");
+  });
+
+  test("apply announces only the stage surface.jsonc's public list names, not every declared stage", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, { work: { engine: "work", description: "Run the pipeline." } });
+    writeFile(join(packDir, "pack", "surface.jsonc"), JSON.stringify({ public: ["work", "stage-plan"] }));
+    const { mattstackDir, manifestPath } = makeTwoStageFixture();
+
+    const { exitCode } = await runExpectingCleanExit(() =>
+      skillsSurface([
+        "apply",
+        "--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+      ]),
+    );
+
+    expect(exitCode).toBeUndefined();
+    const recordedLines = logs.filter((l) => l.includes(": recorded; emitted to"));
+    expect(recordedLines).toEqual(["stage-plan: recorded; emitted to skills/ on the next compile"]);
   });
 
   test("apply alone reports the same pending-emit line for a stage recorded public but never compiled", async () => {

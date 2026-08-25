@@ -1420,13 +1420,16 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
     console.log(`moved ${name}: ${from}/${where} -> ${to}/${where}${note ? ` (${note})` : ""}`);
   }
 
-  // A stage with neither side on disk has nothing to git-mv -- the trailing
-  // compile below is what actually places it, on whichever side surface.jsonc names.
+  // surface.jsonc only ever names the public side -- internal is the absence
+  // of an entry, indistinguishable from never-touched, so there is nothing to
+  // reconcile or announce for a stage the surface doesn't list. A listed
+  // stage with neither side on disk has nothing to git-mv either; the
+  // trailing compile below is what actually places it.
   let recorded = 0;
   for (const name of [...stageNames].sort()) {
+    if (!publicSet.has(name)) continue;
     if (existsSync(outDirFor(packDir, name, true)) || existsSync(otherSideDir(packDir, name, true))) continue;
-    const side = publicSet.has(name) ? "skills" : "attachments";
-    console.log(`${name}: recorded; emitted to ${side}/ on the next compile`);
+    console.log(`${name}: recorded; emitted to skills/ on the next compile`);
     recorded++;
   }
 
