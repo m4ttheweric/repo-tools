@@ -685,6 +685,15 @@ function tryCompileVerb(target: CompileTarget, resolved: Resolved): CompileOutco
   }
 }
 
+/** What `run-start` puts in the run record before the first stage runs; every other field has to be produced by a stage. */
+const PIPELINE_SEED = ["work-type", "ticket", "repo", "mode"];
+
+function pipelineChainErrors(resolved: Resolved): string[] {
+  return Object.entries(resolved.stageEntries).flatMap(([type, list]) =>
+    validateChain(type, list, PIPELINE_SEED),
+  );
+}
+
 type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
 
 /**
@@ -728,9 +737,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
       throw new SkillsUsageError("--preview needs a single --verb");
     }
 
-    const chainErrors = Object.entries(resolved.stageEntries).flatMap(([type, list]) =>
-      validateChain(type, list, ["work-type", "ticket", "repo", "mode"]),
-    );
+    const chainErrors = pipelineChainErrors(resolved);
     if (chainErrors.length > 0) throw new SkillsUsageError(chainErrors.join("\n"));
 
     const targets = compileTargets(resolved, publicSet, flags.verbs);
@@ -845,6 +852,15 @@ export async function skillsCheck(args: string[]): Promise<void> {
 
     let anyStale = false;
     const rows: CheckVerbRow[] = [];
+
+    // Pack-level staleness: the stage list a compiled orchestrator carries no
+    // longer folds, so recompiling would refuse. The row shape has no place for
+    // it, so under --json the reason goes to stderr rather than nowhere.
+    for (const chainError of pipelineChainErrors(resolved)) {
+      anyStale = true;
+      if (flags.json) console.error(chainError);
+      else console.log(chainError);
+    }
 
     for (const target of compileTargets(resolved, publicSet, flags.verbs)) {
       const { verb, isPublic } = target;

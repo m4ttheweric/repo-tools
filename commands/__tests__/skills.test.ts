@@ -763,6 +763,29 @@ describe("skillsCheck", () => {
     expect(process.exitCode).not.toBe(1);
   });
 
+  test("a pipeline whose chain no longer folds is reported and exits 1", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    // Nothing before it produces "commits", and the seed does not carry it.
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "attachments", "pipeline", "stage-ship", "SKILL.md"),
+      `---\nname: stage-ship\ndescription: "ship stage"\ntype: pipeline-step\nmetadata:\n  stage: ship\n  stage-consumes: commits\n---\n\nship.\n`,
+    );
+    const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-chain-")));
+    const manifestPath = join(manifestDir, "skills.jsonc");
+    writeFile(manifestPath, `{\n  "pipelines": { "feature": ["mattstack:stage-ship"] },\n  "bindings": {}\n}\n`);
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+    ]);
+
+    expect(logs.some((l) => l.includes('stage "stage-ship" consumes "commits"'))).toBe(true);
+    expect(process.exitCode).toBe(1);
+  });
+
   test("hand-edited SKILL.md reports stale and exits 1", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
