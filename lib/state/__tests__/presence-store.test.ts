@@ -189,6 +189,43 @@ test("a repeat sign-in with a different base releases the old seat and takes a f
   expect(signIn({ sessionId: "s2", baseHandle: "x", now: now + 2 * MIN }, db)).toMatchObject({ handle: "x", reclaimed: false });
 });
 
+test("signIn skips a candidate handle that's globally held by an unrelated base family", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
+  signIn({ sessionId: "s2", baseHandle: "x", now }, db); // "x-2" — base_handle "x", live
+  // s3's OWN derived base happens to be the literal string "x-2" (e.g. a
+  // worktree dir named "2"). Scoping seat selection to base_handle="x-2"
+  // alone would see no rows at all and hand out "x-2" — already taken.
+  const r = signIn({ sessionId: "s3", baseHandle: "x-2", now }, db);
+  expect(r.handle).toBe("x-2-2");
+});
+
+test("signIn reclaims a globally-held candidate rather than just skipping it", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
+  signIn({ sessionId: "s2", baseHandle: "x-2", now }, db); // base_handle "x-2", handle "x-2"
+  // s2 goes silent for 2h with no tail — reclaimable by the time s3 arrives.
+  const later = now + 2 * HOUR;
+  const r = signIn({ sessionId: "s3", baseHandle: "x-2", now: later }, db);
+  expect(r).toMatchObject({ handle: "x-2", reclaimed: true });
+});
+
+test("own-seat preference: a reclaimable row with matching cwd+pane wins over an earlier lower-suffix reclaimable row", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
+  signIn({ sessionId: "s2", baseHandle: "x", cwd: "/other", now }, db); // "x-2"
+  signIn({ sessionId: "s3", baseHandle: "x", cwd: "/mine", pane: "7", now }, db); // "x-3"
+  const later = now + 2 * HOUR;
+  db.run("UPDATE chat_presence SET last_seen_at = ? WHERE handle = 'x'", [later]); // "x" stays live
+  // "x-2" and "x-3" are both stale (untouched last_seen_at) and reclaimable
+  // by `later`; only "x-3"'s cwd+pane matches the incoming session.
+  const r = signIn({ sessionId: "s4", baseHandle: "x", cwd: "/mine", pane: "7", now: later }, db);
+  expect(r).toMatchObject({ handle: "x-3", reclaimed: true });
+  // "x-2" — the lower-suffix reclaimable row a plain first-by-suffix scan
+  // would have picked — is left completely untouched.
+  expect(db.query("SELECT session_id FROM chat_presence WHERE handle = 'x-2'").get()).toMatchObject({ session_id: "s2" });
+});
+
 test("the joinRoom cwd guard is scoped to unsigned handles", () => {
   const db = fresh();
   joinRoom({ room: "a", handle: "x", cwd: "/one" }, db);

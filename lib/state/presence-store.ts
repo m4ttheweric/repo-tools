@@ -99,6 +99,12 @@ const SELECT_PRESENCE_BY_SESSION_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_pre
 // loop can never look past the first free slot to a same-base row beyond
 // it).
 const SELECT_BASE_HANDLE_ROWS_SQL = `SELECT ${PRESENCE_COLUMNS}, (${RECLAIMABLE_SQL}) AS reclaimable FROM chat_presence WHERE base_handle = ?;`;
+// `handle` is globally UNIQUE across every base_handle family, so a "gap"
+// suffix absent from THIS family's rows can still be occupied by a row from
+// an unrelated one (e.g. a worktree dir literally named "2" derives the
+// base "x-2", which collides with "x"'s own second suffix). Bind order:
+// sessionStaleCutoff, tailStaleCutoff, handle.
+const SELECT_HANDLE_RECLAIMABLE_SQL = `SELECT ${PRESENCE_COLUMNS}, (${RECLAIMABLE_SQL}) AS reclaimable FROM chat_presence WHERE handle = ?;`;
 const SELECT_NON_PRUNABLE_PRESENCE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE NOT (${PRUNABLE_SQL});`;
 const DELETE_PRUNABLE_PRESENCE_SQL = `DELETE FROM chat_presence WHERE ${PRUNABLE_SQL};`;
 const DELETE_PRESENCE_BY_SESSION_SQL = `DELETE FROM chat_presence WHERE session_id = ?;`;
@@ -167,6 +173,35 @@ function suffixOf(handle: string, baseHandle: string): number | null {
   return Number.isInteger(n) && n >= 2 ? n : null;
 }
 
+function suffixToHandle(suffix: number, baseHandle: string): string {
+  return suffix === 1 ? baseHandle : `${baseHandle}-${suffix}`;
+}
+
+/**
+ * (c)/(d): walks suffixes from 1, skipping ones this family already
+ * occupies, and returns the first that's free or reclaimable GLOBALLY — a
+ * suffix absent from the family can still be held by an unrelated base's
+ * family (`handle` is globally UNIQUE, `base_handle` is not what's being
+ * matched here), so each such candidate needs its own check against the
+ * whole table rather than just this family's rows.
+ */
+function findOpenSuffix(
+  db: Database,
+  baseHandle: string,
+  bySuffix: Map<number, PresenceRawRow & { reclaimable: number }>,
+  sessionStaleCutoff: number,
+  tailStaleCutoff: number,
+): { suffix: number; row: (PresenceRawRow & { reclaimable: number }) | null } {
+  for (let candidate = 1; ; candidate++) {
+    if (bySuffix.has(candidate)) continue;
+    const globalRow = db.query(SELECT_HANDLE_RECLAIMABLE_SQL).get(sessionStaleCutoff, tailStaleCutoff, suffixToHandle(candidate, baseHandle)) as
+      | (PresenceRawRow & { reclaimable: number })
+      | null;
+    if (!globalRow) return { suffix: candidate, row: null };
+    if (globalRow.reclaimable) return { suffix: candidate, row: globalRow };
+  }
+}
+
 export function signIn(
   args: {
     sessionId: string;
@@ -201,39 +236,50 @@ export function signIn(
     // can never be "occupied" by anyone else inside this same transaction.
     const ownPriorRow = db.query(SELECT_PRESENCE_BY_SESSION_SQL).get(sessionId) as PresenceRawRow | null;
     if (ownPriorRow) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(sessionId);
-    const ownPreviousSuffix = ownPriorRow ? suffixOf(ownPriorRow.handle, baseHandle) : null;
 
-    const rows = db.query(SELECT_BASE_HANDLE_ROWS_SQL).all(sessionStaleCutoff, tailStaleCutoff, baseHandle) as (PresenceRawRow & {
+    const familyRows = db.query(SELECT_BASE_HANDLE_ROWS_SQL).all(sessionStaleCutoff, tailStaleCutoff, baseHandle) as (PresenceRawRow & {
       reclaimable: number;
     })[];
     const bySuffix = new Map<number, PresenceRawRow & { reclaimable: number }>();
-    for (const row of rows) {
+    for (const row of familyRows) {
       const suffix = suffixOf(row.handle, baseHandle);
       if (suffix !== null) bySuffix.set(suffix, row);
     }
 
-    let winnerSuffix: number;
+    // "Own seat" (a): the session's own previous row, if it named a suffix
+    // within THIS baseHandle's family (suffixOf returns null when the
+    // remembered handle belonged to a different base — nothing here to
+    // prefer) — or, failing that, a reclaimable family row whose cwd AND
+    // pane both match the incoming session (a restarted process: new
+    // session id, same seat). Every family row here is already the sole
+    // global occupant of its exact handle string (handle is UNIQUE), so
+    // neither branch needs a global check: the own-row slot is free by
+    // construction (just dropped above) and the cwd/pane match is a real
+    // row already in hand.
+    let winnerSuffix: number | null = ownPriorRow ? suffixOf(ownPriorRow.handle, baseHandle) : null;
     let winnerRow: (PresenceRawRow & { reclaimable: number }) | null = null;
-    if (ownPreviousSuffix !== null && !bySuffix.has(ownPreviousSuffix)) {
-      // (a) the session's own previous slot — always free at this point
-      // (see the drop above), so nothing to reclaim from.
-      winnerSuffix = ownPreviousSuffix;
-    } else {
-      // (b) the first reclaimable row, by suffix order.
-      const reclaimableBySuffix = [...bySuffix.entries()].filter(([, row]) => row.reclaimable).sort((a, b) => a[0] - b[0]);
-      if (reclaimableBySuffix.length > 0) {
-        [winnerSuffix, winnerRow] = reclaimableBySuffix[0]!;
-      } else {
-        // (c) the first free gap, else (d) the next suffix past the
-        // highest occupied — the same walk finds either: it stops at the
-        // first unoccupied slot, which is a mid-chain gap if one exists
-        // and otherwise the slot right after the last occupied one.
-        winnerSuffix = 1;
-        while (bySuffix.has(winnerSuffix)) winnerSuffix++;
+    if (winnerSuffix === null) {
+      const seatMatch = familyRows.find((row) => row.reclaimable && row.cwd === cwd && row.pane === pane);
+      if (seatMatch) {
+        winnerSuffix = suffixOf(seatMatch.handle, baseHandle);
+        winnerRow = seatMatch;
       }
     }
 
-    const handle = winnerSuffix === 1 ? baseHandle : `${baseHandle}-${winnerSuffix}`;
+    if (winnerSuffix === null) {
+      // (b) the first reclaimable row, by suffix order — same reasoning:
+      // a family row is already the exact global occupant.
+      const reclaimableBySuffix = [...bySuffix.entries()].filter(([, row]) => row.reclaimable).sort((a, b) => a[0] - b[0]);
+      if (reclaimableBySuffix.length > 0) [winnerSuffix, winnerRow] = reclaimableBySuffix[0]!;
+    }
+
+    if (winnerSuffix === null) {
+      const open = findOpenSuffix(db, baseHandle, bySuffix, sessionStaleCutoff, tailStaleCutoff);
+      winnerSuffix = open.suffix;
+      winnerRow = open.row;
+    }
+
+    const handle = suffixToHandle(winnerSuffix, baseHandle);
     // The old row's session_id is its primary key and its handle is
     // UNIQUE, so it cannot be updated into the new session — delete then insert.
     if (winnerRow) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(winnerRow.session_id);
