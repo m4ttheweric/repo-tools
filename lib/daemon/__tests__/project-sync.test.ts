@@ -1198,7 +1198,7 @@ describe("delta retag and keep-tagged-strangers", () => {
     expect(rulesCalled).toBe(0);
   });
 
-  test("a failing retag this cycle still keeps the tag (controller ruling: applyDelta preserves it)", async () => {
+  test("a failing retag this cycle still keeps the tag: applyDelta preserves it in memory", async () => {
     const { store, deps } = await seededSectionStore(); // iid 9 tagged, stored
     await syncProjectMRs(deps, "r", {
       store, selfUsername: "self", windowDays: 30,

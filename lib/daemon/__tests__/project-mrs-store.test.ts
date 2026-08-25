@@ -252,9 +252,9 @@ describe("applyDelta guards (review fixes)", () => {
     expect(changed).toEqual([]);
   });
 
-  // Controller ruling (Task 6): applyDelta replaces entries wholesale, so a
-  // delta-updated tagged row would otherwise lose its in-memory tag while
-  // its SQL project_mr_sections row survives untouched.
+  // applyDelta replaces entries wholesale, so a tag on the entry must be
+  // carried forward the same way divergedCommitsCount already is -- else its
+  // SQL project_mr_sections row would outlive the in-memory tag.
   test("delta preserves an existing codeownerSections tag on the replacement entry", () => {
     const s = tmpStore();
     s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
