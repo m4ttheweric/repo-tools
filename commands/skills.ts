@@ -335,12 +335,29 @@ function findDefaultManifest(mattstackRoot: string, team: string): string {
   return newest.path;
 }
 
+/**
+ * The real plugin cache holds symlinks to working trees, and a Dirent for one
+ * is not a directory -- stat, so a linked plugin dir is a root here too.
+ */
+function listPluginDirs(pluginsDir: string): string[] {
+  if (!existsSync(pluginsDir)) return [];
+  return readdirSync(pluginsDir)
+    .filter((name) => {
+      try {
+        return statSync(join(pluginsDir, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+}
+
 /** Test-mode-only: scans <dir>/plugins/<name>/.claude-plugin/plugin.json, bypassing the real `claude plugin list --json`. */
 function resolvePluginRootsFromDir(dir: string): PluginRoots {
   const pluginsDir = join(dir, "plugins");
   const byName: PluginRoots["byName"] = {};
 
-  for (const name of listSubdirs(pluginsDir)) {
+  for (const name of listPluginDirs(pluginsDir)) {
     const pluginDir = join(pluginsDir, name);
     let version = "unknown";
     try {

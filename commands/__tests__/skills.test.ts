@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { skillsCheck, skillsCompile, skillsComposition, skillsPacks } from "../skills.ts";
@@ -496,6 +496,31 @@ describe("skillsCompile", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toStartWith("rt skills: ");
     expect(errors[0]).toContain("skills.jsonc");
+  });
+
+  test("a symlinked plugin dir under --mattstack-dir resolves as a plugin root", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    const linkedAcme = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-acme-")));
+    cpSync(join(mattstackDir, "plugins", "acme"), linkedAcme, { recursive: true });
+    rmSync(join(mattstackDir, "plugins", "acme"), { recursive: true, force: true });
+    symlinkSync(linkedAcme, join(mattstackDir, "plugins", "acme"));
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--dry-run",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--manifest", manifestPath,
+        "--verb", "watch-ci",
+      ]),
+    );
+
+    expect(errors).toEqual([]);
+    expect(exitCode).toBeUndefined();
+    expect(logs.some((l) => /would write \d+ files/.test(l))).toBe(true);
   });
 
   test("default pack dir formula (--team + --mattstack-dir, no --pack-dir)", async () => {
