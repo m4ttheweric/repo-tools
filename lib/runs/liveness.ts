@@ -1,26 +1,42 @@
 /**
- * Liveness evidence for the stale predicate (attention.ts). A run whose DB is
- * silent can still be actively driven — the agent works for an hour inside
- * one stage and writes nothing until the boundary — so before calling it
- * stale we look for two out-of-band signals, each one the reader can check:
+ * Liveness evidence for the attention predicate (attention.ts), and the live
+ * agent-status mirror on run summaries. A run whose DB is silent can still be
+ * actively driven — the agent works for an hour inside one stage and writes
+ * nothing until the boundary — so before calling it stale we look for
+ * out-of-band signals, each one the reader can check:
  *
- *  - a herdr agent currently `working` whose cwd sits inside the run's
- *    worktree (`herdr agent list`), and
+ *  - the herdr agent attributed to the run (`herdr agent list`, matched by
+ *    recorded claude session, else by cwd inside the run's worktree), whose
+ *    status is mirrored verbatim: working suppresses stale, blocked IS
+ *    attention ("agent waiting for input");
  *  - recent filesystem activity in the worktree's git dir (commits, index
  *    writes, checkouts).
  *
- * Both probes degrade to "no evidence" on any failure: herdr missing, socket
- * down, worktree deleted. Absence of evidence keeps the silence measurement
- * in charge, exactly as before this module existed.
+ * herdr is OPTIONAL. Every probe failure — binary missing, socket down,
+ * timeout, garbled output — degrades to "no evidence": no agent on the
+ * payload, no blocked reason, staleness decided by the heartbeat rungs alone.
+ * `probeAgents` distinguishes that failure (null) from a successful empty
+ * answer ([]) so the status poller can hold last-known state through a herdr
+ * restart instead of flapping every run to null and back.
  */
 import { readFileSync, statSync } from "fs";
 import { homedir } from "os";
 import { isAbsolute, join, resolve } from "path";
+import type { RunAgent } from "../../packages/rt-client/src/commands.ts";
 import { runCapture } from "../subprocess.ts";
 import type { RunLiveness } from "./attention.ts";
 
 const HERDR_TIMEOUT_MS = 1500;
 const AGENT_CACHE_TTL_MS = 10_000;
+
+const STATUSES: ReadonlySet<string> = new Set(["working", "idle", "blocked", "done", "unknown"]);
+
+export interface AgentEntry {
+  status: RunAgent["status"];
+  pane: string;
+  session: string | null;
+  cwds: string[];
+}
 
 interface HerdrAgent {
   agent_status?: string;
@@ -30,42 +46,73 @@ interface HerdrAgent {
   agent_session?: { value?: string };
 }
 
-export interface WorkingAgents {
-  /** agent cwd and foreground cwd of every `working` agent → pane id. */
-  byCwd: Map<string, string>;
-  /** claude session id of every `working` agent → pane id. */
-  bySession: Map<string, string>;
-}
-
-const NO_AGENTS: WorkingAgents = { byCwd: new Map(), bySession: new Map() };
-
-export async function probeWorkingAgents(
+/** All herdr agents, every status. null = probe FAILED (herdr missing or
+    unreachable); [] = herdr answered and no agents exist. */
+export async function probeAgents(
   exec: typeof runCapture = runCapture,
-): Promise<WorkingAgents> {
+): Promise<AgentEntry[] | null> {
   // The daemon's launchd PATH may not carry ~/.local/bin, so resolve the
   // binary explicitly; a machine with no herdr at all fails the spawn and
-  // runCapture reports exitCode -1, which reads as "no evidence" below.
+  // runCapture reports exitCode -1.
   const bin = Bun.which("herdr") ?? join(homedir(), ".local", "bin", "herdr");
   const res = await exec([bin, "agent", "list"], { timeoutMs: HERDR_TIMEOUT_MS });
-  if (res.exitCode !== 0) return NO_AGENTS;
+  if (res.exitCode !== 0) return null;
   try {
     const parsed = JSON.parse(res.stdout) as { result?: { agents?: HerdrAgent[] } };
-    const out: WorkingAgents = { byCwd: new Map(), bySession: new Map() };
-    for (const a of parsed.result?.agents ?? []) {
-      if (a.agent_status !== "working" || !a.pane_id) continue;
-      for (const cwd of [a.cwd, a.foreground_cwd]) {
-        if (cwd) out.byCwd.set(cwd, a.pane_id);
-      }
-      if (a.agent_session?.value) out.bySession.set(a.agent_session.value, a.pane_id);
+    const agents = parsed.result?.agents;
+    if (!Array.isArray(agents)) return null;
+    const out: AgentEntry[] = [];
+    for (const a of agents) {
+      if (!a.pane_id) continue;
+      out.push({
+        status: (STATUSES.has(a.agent_status ?? "") ? a.agent_status : "unknown") as RunAgent["status"],
+        pane: a.pane_id,
+        session: a.agent_session?.value ?? null,
+        cwds: [a.cwd, a.foreground_cwd].filter((c): c is string => !!c),
+      });
     }
     return out;
   } catch {
-    return NO_AGENTS;
+    return null;
   }
 }
 
 function cwdInside(cwd: string, worktree: string): boolean {
   return cwd === worktree || cwd.startsWith(worktree.endsWith("/") ? worktree : worktree + "/");
+}
+
+// When several agents sit in one worktree, the most actionable status wins.
+const STATUS_PRIORITY: RunAgent["status"][] = ["blocked", "working", "idle", "done", "unknown"];
+
+/** The pure matcher behind getRunLiveness — also used by the status poller,
+    which brings its own probe result. */
+export function livenessFrom(entries: AgentEntry[]): RunLiveness {
+  const agentOf = (e: AgentEntry): RunAgent => ({ status: e.status, pane: e.pane });
+  return {
+    agentFor(session: string | null, worktree: string | null): RunAgent | null {
+      if (session) {
+        const hit = entries.find((e) => e.session === session);
+        if (hit) return agentOf(hit);
+      }
+      if (worktree) {
+        const hits = entries.filter((e) => e.cwds.some((c) => cwdInside(c, worktree)));
+        for (const status of STATUS_PRIORITY) {
+          const hit = hits.find((e) => e.status === status);
+          if (hit) return agentOf(hit);
+        }
+      }
+      return null;
+    },
+    workingSessionPane(sessionId: string): string | null {
+      return entries.find((e) => e.status === "working" && e.session === sessionId)?.pane ?? null;
+    },
+    workingAgentPane(worktree: string): string | null {
+      return (
+        entries.find((e) => e.status === "working" && e.cwds.some((c) => cwdInside(c, worktree)))?.pane ?? null
+      );
+    },
+    worktreeActiveAt: worktreeActivityAt,
+  };
 }
 
 /**
@@ -101,37 +148,31 @@ export function worktreeActivityAt(worktree: string): number | null {
   return latest;
 }
 
-let agentCache: { at: number; agents: WorkingAgents } | null = null;
+let agentCache: { at: number; entries: AgentEntry[] } | null = null;
 
 /** Test seam: forget the herdr result between cases. */
 export function resetLivenessCache(): void {
   agentCache = null;
 }
 
+/** The status poller shares its fresher probe with request-path liveness. */
+export function primeLivenessCache(entries: AgentEntry[], now: number = Date.now()): void {
+  agentCache = { at: now, entries };
+}
+
 /**
  * One liveness snapshot for a whole runs:list/runs:get request. The herdr
  * probe is cached briefly so the console's per-tab polling doesn't spawn a
  * subprocess per request; the worktree stat runs fresh per run (it's a few
- * statSync calls on local disk).
+ * statSync calls on local disk). A failed probe degrades to no evidence for
+ * this snapshot without overwriting a fresher poller-primed cache.
  */
 export async function getRunLiveness(
   exec: typeof runCapture = runCapture,
   now: number = Date.now(),
 ): Promise<RunLiveness> {
   if (!agentCache || now - agentCache.at > AGENT_CACHE_TTL_MS) {
-    agentCache = { at: now, agents: await probeWorkingAgents(exec) };
+    agentCache = { at: now, entries: (await probeAgents(exec)) ?? [] };
   }
-  const agents = agentCache.agents;
-  return {
-    workingSessionPane(sessionId: string): string | null {
-      return agents.bySession.get(sessionId) ?? null;
-    },
-    workingAgentPane(worktree: string): string | null {
-      for (const [cwd, pane] of agents.byCwd) {
-        if (cwdInside(cwd, worktree)) return pane;
-      }
-      return null;
-    },
-    worktreeActiveAt: worktreeActivityAt,
-  };
+  return livenessFrom(agentCache.entries);
 }

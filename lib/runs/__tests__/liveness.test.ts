@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { getRunLiveness, probeWorkingAgents, resetLivenessCache, worktreeActivityAt } from "../liveness.ts";
+import { getRunLiveness, livenessFrom, probeAgents, resetLivenessCache, worktreeActivityAt } from "../liveness.ts";
 import type { runCapture } from "../../subprocess.ts";
 
 const herdrPayload = JSON.stringify({
@@ -10,6 +10,8 @@ const herdrPayload = JSON.stringify({
     agents: [
       { agent_status: "working", cwd: "/repos/acme", foreground_cwd: "/repos/acme/.worktrees/moody", pane_id: "w90:p1", agent_session: { value: "sess-1" } },
       { agent_status: "idle", cwd: "/repos/other", foreground_cwd: "/repos/other", pane_id: "w1:p1", agent_session: { value: "sess-2" } },
+      { agent_status: "blocked", cwd: "/repos/acme/.worktrees/moody", pane_id: "w90:p2", agent_session: { value: "sess-3" } },
+      { agent_status: "someday-new-status", cwd: "/repos/zeta", pane_id: "w5:p1" },
     ],
   },
 });
@@ -19,34 +21,46 @@ const fakeExec = (stdout: string, exitCode = 0): typeof runCapture =>
 
 afterEach(() => resetLivenessCache());
 
-test("probeWorkingAgents keeps only working agents, keyed by cwds and session id", async () => {
-  const agents = await probeWorkingAgents(fakeExec(herdrPayload));
-  expect(agents.byCwd.get("/repos/acme")).toBe("w90:p1");
-  expect(agents.byCwd.get("/repos/acme/.worktrees/moody")).toBe("w90:p1");
-  expect(agents.byCwd.has("/repos/other")).toBe(false);
-  expect(agents.bySession.get("sess-1")).toBe("w90:p1");
-  expect(agents.bySession.has("sess-2")).toBe(false);
+test("probeAgents keeps every agent with its status, session, and cwds", async () => {
+  const agents = await probeAgents(fakeExec(herdrPayload));
+  expect(agents).toHaveLength(4);
+  expect(agents?.[0]).toEqual({ status: "working", pane: "w90:p1", session: "sess-1", cwds: ["/repos/acme", "/repos/acme/.worktrees/moody"] });
+  expect(agents?.[2]?.status).toBe("blocked");
+  // An unrecognized status normalizes rather than leaking novel strings.
+  expect(agents?.[3]?.status).toBe("unknown");
 });
 
-test("probeWorkingAgents degrades to empty on a failed or garbled probe", async () => {
-  expect((await probeWorkingAgents(fakeExec("", 1))).byCwd.size).toBe(0);
-  expect((await probeWorkingAgents(fakeExec("not json"))).byCwd.size).toBe(0);
+test("probeAgents returns null on failure — distinct from an empty answer", async () => {
+  expect(await probeAgents(fakeExec("", 1))).toBeNull();
+  expect(await probeAgents(fakeExec("not json"))).toBeNull();
+  expect(await probeAgents(fakeExec(JSON.stringify({ result: { agents: [] } })))).toEqual([]);
 });
 
-test("workingSessionPane matches only a working agent's session", async () => {
+test("agentFor prefers the recorded session over any cwd match", async () => {
+  const l = await getRunLiveness(fakeExec(herdrPayload));
+  expect(l.agentFor("sess-2", "/repos/acme/.worktrees/moody")).toEqual({ status: "idle", pane: "w1:p1" });
+});
+
+test("agentFor falls back to cwd containment, most actionable status first", async () => {
+  const l = await getRunLiveness(fakeExec(herdrPayload));
+  // Both w90 panes sit in moody; blocked outranks working.
+  expect(l.agentFor(null, "/repos/acme/.worktrees/moody")).toEqual({ status: "blocked", pane: "w90:p2" });
+  expect(l.agentFor("sess-gone", "/repos/elsewhere")).toBeNull();
+});
+
+test("working-agent rungs match only working agents", async () => {
   const l = await getRunLiveness(fakeExec(herdrPayload));
   expect(l.workingSessionPane("sess-1")).toBe("w90:p1");
   expect(l.workingSessionPane("sess-2")).toBeNull();
-  expect(l.workingSessionPane("sess-unknown")).toBeNull();
-});
-
-test("workingAgentPane matches the worktree itself and cwds inside it", async () => {
-  const l = await getRunLiveness(fakeExec(herdrPayload));
   expect(l.workingAgentPane("/repos/acme/.worktrees/moody")).toBe("w90:p1");
-  expect(l.workingAgentPane("/repos/acme")).toBe("w90:p1");
   // A sibling worktree must not inherit the agent, prefix or not.
   expect(l.workingAgentPane("/repos/acme/.worktrees/moo")).toBeNull();
-  expect(l.workingAgentPane("/repos/elsewhere")).toBeNull();
+});
+
+test("livenessFrom([]) yields a liveness with no agent evidence", () => {
+  const l = livenessFrom([]);
+  expect(l.agentFor("sess-1", "/repos/acme")).toBeNull();
+  expect(l.workingAgentPane("/repos/acme")).toBeNull();
 });
 
 test("worktreeActivityAt reads a linked worktree's gitdir through the .git file", () => {

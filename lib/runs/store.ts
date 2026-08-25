@@ -85,6 +85,13 @@ function stageRows(db: Database): RunStageRow[] {
 
 const NO_ATTENTION: Attention = { needs: false, reason: null, evidence: "" };
 
+// The herdr mirror only means something while the run is live: a finished
+// run's worktree often hosts whatever agent moved in next.
+function agentMirror(run: RunSummary, fields: RunFieldRow[], liveness?: RunLiveness): RunSummary["agent"] {
+  if (run.status !== "running" || !liveness) return null;
+  return liveness.agentFor(fieldValue(fields, "claude-session"), fieldValue(fields, "worktree"));
+}
+
 // A run whose tables are missing (interrupted run-start) is still worth
 // listing — the store's contract is skip-the-broken-row, not throw, and
 // listRuns has no catch around this call.
@@ -99,6 +106,7 @@ function withAttention(db: Database, row: RunSummary, liveness?: RunLiveness): R
       last_event_at: lastEventAt(row, stages, fields, decisions),
       ticket: fieldValue(fields, "ticket"),
       branch: fieldValue(fields, "branch"),
+      agent: agentMirror(row, fields, liveness),
     };
   } catch {
     return { ...row, attention: NO_ATTENTION };
@@ -141,6 +149,7 @@ export function readRun(repo: string, runId: string, liveness?: RunLiveness): Ru
         last_event_at: lastEventAt(run, stages, fields, decisions),
         ticket: fieldValue(fields, "ticket"),
         branch: fieldValue(fields, "branch"),
+        agent: agentMirror(run, fields, liveness),
       },
       stages, fields, decisions,
       schemaAhead,

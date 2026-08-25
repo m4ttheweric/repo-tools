@@ -5,7 +5,7 @@
  * Derived state carries the evidence that produced it: "no event in 41m" is a
  * claim the reader can check, "stale" alone is not.
  */
-import type { Attention, RunDecisionRow, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
+import type { Attention, RunAgent, RunDecisionRow, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
 
 // `Attention` is declared in rt-client (see below): mr-board and gitq consume
 // that package as a file: dependency and must never import rt internals.
@@ -45,6 +45,10 @@ function has(fields: RunFieldRow[], key: string): boolean {
  * by lib/runs/liveness.ts; attention stays pure by taking it as an argument.
  */
 export interface RunLiveness {
+  /** The herdr agent attributed to a run: recorded session first, else the
+      highest-priority agent whose cwd sits in the worktree. Null when no
+      agent matches or herdr is unavailable. */
+  agentFor(session: string | null, worktree: string | null): RunAgent | null;
   /** Pane id of a `working` herdr agent running this claude session. */
   workingSessionPane(sessionId: string): string | null;
   /** Pane id of a `working` herdr agent whose cwd sits in this worktree. */
@@ -68,6 +72,15 @@ export function computeAttention(
   }
 
   if (run.status === "running") {
+    const worktree = fieldValue(fields, "worktree");
+    const session = fieldValue(fields, "claude-session");
+    // Blocked mirrors herdr verbatim, no threshold: an agent parked on a
+    // question IS "needs attention", however recently the db moved. The
+    // mirror clears the moment herdr reports any other status.
+    const agent = liveness?.agentFor(session, worktree) ?? null;
+    if (agent?.status === "blocked") {
+      return { needs: true, reason: "blocked", evidence: `agent waiting for input in pane ${agent.pane}` };
+    }
     const silentMs = now - lastEventAt(run, stages, fields, decisions);
     if (silentMs > STALE_MS) {
       const mins = Math.round(silentMs / 60_000);
@@ -79,8 +92,6 @@ export function computeAttention(
       // rung holds. A working agent suppresses stale indefinitely: attention
       // means "nobody is driving this", not "this is taking long". The
       // evidence string still only asserts what was actually measured.
-      const worktree = fieldValue(fields, "worktree");
-      const session = fieldValue(fields, "claude-session");
       let checked = "";
       if (liveness && (worktree || session)) {
         if (session && liveness.workingSessionPane(session) != null) return NONE;

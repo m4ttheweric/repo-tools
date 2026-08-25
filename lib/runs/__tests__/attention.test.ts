@@ -135,6 +135,7 @@ describe("liveness evidence keeps a silent-but-driven run out of the stale band"
   const oldField = (key: string, value: string): RunFieldRow => ({ key, value, produced_by: "provision", at: OLD });
   const WT = "/repos/acme/.worktrees/moody";
   const liveness = (over: Partial<import("../attention.ts").RunLiveness> = {}) => ({
+    agentFor: () => null,
     workingSessionPane: () => null,
     workingAgentPane: () => null,
     worktreeActiveAt: () => null,
@@ -173,6 +174,22 @@ describe("liveness evidence keeps a silent-but-driven run out of the stale band"
     const a = computeAttention(run(), [stage({ started_at: OLD })],
       [oldField("worktree", WT), oldField("claude-session", "sess-gone")], [], NOW,
       liveness({ worktreeActiveAt: () => NOW - 60_000 }));
+    expect(a.needs).toBe(false);
+  });
+
+  test("a blocked agent puts the run in the attention band immediately, silence or not", () => {
+    const a = computeAttention(run(), [stage({ started_at: NOW - 60_000 })],
+      [oldField("worktree", WT), oldField("claude-session", "sess-1")], [], NOW,
+      liveness({ agentFor: () => ({ status: "blocked", pane: "w8S:pF" }) }));
+    expect(a.needs).toBe(true);
+    expect(a.reason).toBe("blocked");
+    expect(a.evidence).toContain("w8S:pF");
+  });
+
+  test("the blocked mirror clears as soon as the agent reports another status", () => {
+    const a = computeAttention(run(), [stage({ started_at: NOW - 60_000 })],
+      [oldField("worktree", WT), oldField("claude-session", "sess-1")], [], NOW,
+      liveness({ agentFor: () => ({ status: "working", pane: "w8S:pF" }) }));
     expect(a.needs).toBe(false);
   });
 

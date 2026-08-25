@@ -51,6 +51,7 @@ import { startApiServer, broadcast } from "./daemon/api-server.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
+import { startAgentStatusPoller } from "./daemon/agent-status-poller.ts";
 import {
   initFreshness,
   reconcileFreshness,
@@ -256,6 +257,18 @@ const homeSnapshot = startHomeSnapshot({
   broadcast: emit,
 });
 
+// Herdr agent-status transitions write no run event, so the mirror on run
+// summaries needs its own change detector. Same bus frame shape as
+// command-router's emitEvent.
+const agentStatusPoller = startAgentStatusPoller({
+  emitEvent: (topic, payload) => {
+    const emittedAt = Date.now();
+    const id = eventsBus.emitAt(topic, payload, emittedAt);
+    emit("event", { id, topic, payload, emittedAt });
+  },
+  log: loggerHandle.childLogger("agent-status"),
+});
+
 // ─── Handler context + command routing ───────────────────────────────────────
 
 const handlerCtx: HandlerContext = {
@@ -328,6 +341,7 @@ const cleanup = (): void => {
   cron.dispose();
   eventsBus.close();
   homeSnapshot.stop();
+  agentStatusPoller.stop();
   cleanupCore();
 };
 
