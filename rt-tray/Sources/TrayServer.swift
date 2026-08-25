@@ -49,7 +49,41 @@ class TrayServer {
     /// Only ever called on the serving path — a tray the flavor gate has stood
     /// down never binds and never evicts anyone (`main.swift`).
     static func exitIfAnotherTrayOwnsSocket() {
-        guard FileManager.default.fileExists(atPath: socketPath) else { return }
+        switch claimSocket() {
+        case .claimed:
+            return
+        case .heldByPeer:
+            // Clean exit — a double-launch is not a crash, and nothing
+            // supervises the app. Nothing has been registered at this point.
+            exit(0)
+        case .heldByStuckHolder(let holderFlavor):
+            // The retire already landed, so only the intended flavor's
+            // registrations remain: the machine converges on its own at the
+            // next login, when the zombie is gone and this app launches into
+            // a free socket. Until then nothing is serving, which the user
+            // has to be told rather than left to discover.
+            StandDownNotice.postBlocking(
+                title: FlavorStandDownCopy.stuckHolderTitle(holderFlavor: holderFlavor),
+                body: FlavorStandDownCopy.stuckHolderBody(
+                    holderFlavor: holderFlavor,
+                    myFlavor: FlavorIdentity.flavorName(isDevBuild: BundleFlavor.isDevBuild)),
+                identifier: "mattstack-flavor-stuck-holder")
+            exit(0)
+        }
+    }
+
+    enum SocketClaim: Equatable {
+        case claimed
+        case heldByPeer(flavor: String)
+        /// A wrong-flavor holder that would not give the socket up.
+        case heldByStuckHolder(flavor: String)
+    }
+
+    /// The guard's verdict without the exit, so a caller that is already
+    /// running (the mismatch alert's switch) can report the failure instead of
+    /// vanishing mid-launch.
+    static func claimSocket() -> SocketClaim {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return .claimed }
         let answer = probeTray(atPath: socketPath)
         let myFlavor = FlavorIdentity.flavorName(isDevBuild: BundleFlavor.isDevBuild)
         let holderFlavor = answer.flatMap(TrayHealth.flavor(inResponse:))
@@ -57,13 +91,12 @@ class TrayServer {
                                       intentConfirmed: FlavorGateState.intentConfirmed) {
         case .takeOver:
             TrayLog.info("stale tray socket found, taking it over", ["socket": socketPath])
+            return .claimed
         case .standAside:
             TrayLog.error("another tray owns the socket", ["socket": socketPath, "holder": holderFlavor ?? "unknown"])
-            // Clean exit — a double-launch is not a crash, and nothing
-            // supervises the app. Nothing has been registered at this point.
-            exit(0)
+            return .heldByPeer(flavor: holderFlavor ?? "unknown")
         case .evictThenTakeOver:
-            evictHolder(holderFlavor: holderFlavor ?? "unknown", myFlavor: myFlavor)
+            return evictHolder(holderFlavor: holderFlavor ?? "unknown", myFlavor: myFlavor)
         }
     }
 
@@ -71,10 +104,9 @@ class TrayServer {
     ///
     /// `/flavor/retire` makes the holder give up its registrations but not its
     /// listener — only quitting frees the socket — so eviction is retire, then
-    /// quit, then a bounded wait for the socket to actually go quiet. A holder
-    /// that stays up keeps the socket and this process exits, exactly as a
-    /// same-flavor double-launch would.
-    private static func evictHolder(holderFlavor: String, myFlavor: String) {
+    /// quit, then a bounded wait for the socket to actually go quiet. The
+    /// order is forced: retire has to reach a holder that is still alive.
+    private static func evictHolder(holderFlavor: String, myFlavor: String) -> SocketClaim {
         TrayLog.info("wrong-flavor tray holds the socket; evicting",
                      ["holder": holderFlavor, "flavor": myFlavor])
         switch request("POST", "/flavor/retire", atPath: socketPath, timeoutSeconds: 5) {
@@ -83,9 +115,8 @@ class TrayServer {
         case .some(let reply) where HTTPReply.succeeded(reply):
             TrayLog.info("holder retired its registrations", ["reply": HTTPReply.parse(reply)?.body ?? ""])
         case .some(let reply):
-            // A tray old enough to predate the route 404s here; its
-            // registrations outlive it and the one-time cleanup in the
-            // migration note is what clears them.
+            // A tray without the route 404s here and keeps both of its
+            // registrations, so quitting it is all this eviction achieves.
             TrayLog.warn("holder refused to retire",
                          ["holder": holderFlavor, "status": HTTPReply.parse(reply)?.status ?? 0])
         }
@@ -95,12 +126,12 @@ class TrayServer {
             Thread.sleep(forTimeInterval: 0.5)
             guard probeTray(atPath: socketPath) != nil else {
                 TrayLog.info("wrong-flavor tray released the socket", ["holder": holderFlavor])
-                return
+                return .claimed
             }
         }
-        TrayLog.error("wrong-flavor tray still owns the socket; exiting",
+        TrayLog.error("wrong-flavor tray still owns the socket",
                       ["holder": holderFlavor, "socket": socketPath])
-        exit(0)
+        return .heldByStuckHolder(flavor: holderFlavor)
     }
 
     /// Ask the other flavor's app to quit. `terminate()` is a quit Apple Event,

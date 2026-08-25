@@ -17,6 +17,7 @@ TrayLog.info("tray launched", [
 let modeRead = FlavorModeReader.readTuple()
 FlavorGateState.action = FlavorGate.decide(myFlavorIsDev: BundleFlavor.isDevBuild, modeReadResult: modeRead)
 FlavorGateState.intentConfirmed = FlavorIntent.confirms(myFlavorIsDev: BundleFlavor.isDevBuild, modeReadResult: modeRead)
+FlavorGateState.readFailed = modeRead == nil
 
 // Mutual exclusion FIRST (spec MAT-383 §3): if a live tray already answers on
 // tray.sock, this process exits here — before AppDelegate runs and therefore

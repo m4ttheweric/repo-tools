@@ -68,6 +68,59 @@ public enum SocketOwnership {
     }
 }
 
+public enum BundlePresence: Equatable, Sendable {
+    case present(path: String)
+    /// Neither install location holds it, and this flavor has no other home.
+    case notInstalled
+    /// Neither install location holds it, but this flavor's bundle can live
+    /// in whatever checkout built it — named only by a setting this process
+    /// cannot read.
+    case unlocatable
+
+    public var isPresent: Bool { if case .present = self { return true }; return false }
+}
+
+/// Where a flavor's bundle is, using only what a Swift process can prove:
+/// `/Applications` then `~/Applications`, the last two legs of the CLI's own
+/// resolution. The first leg — the `mattstack.appPath` machine setting — needs
+/// the settings resolver, so its absence is reported as unlocatable rather
+/// than guessed at.
+public enum FlavorBundle {
+    public static func bundleName(ofFlavor flavor: String) -> String {
+        flavor == "dev" ? "mattstack-dev.app" : "mattstack.app"
+    }
+
+    public static func presence(ofFlavor flavor: String, home: String, fileExists: (String) -> Bool) -> BundlePresence {
+        let bundle = bundleName(ofFlavor: flavor)
+        for candidate in ["/Applications/\(bundle)", "\(home)/Applications/\(bundle)"] where fileExists(candidate) {
+            return .present(path: candidate)
+        }
+        // Prod installs to one of those two; only the dev bundle routinely
+        // lives somewhere this process cannot name.
+        return flavor == "dev" ? .unlocatable : .notInstalled
+    }
+}
+
+public enum StandDownRoute: Equatable, Sendable {
+    case silent
+    case alert
+}
+
+public enum StandDownPlan {
+    /// Standing down silently takes three things: a launch positively
+    /// identified as the login item, somewhere for the user to find out it
+    /// happened, and a bundle to hand the machine to. Missing any of them,
+    /// the user decides instead — unregistering with no trace, or in favour
+    /// of a flavor that is not installed, leaves a Mac with no tray and no
+    /// explanation.
+    public static func route(origin: LaunchOrigin, notificationsAuthorized: Bool,
+                             intendedBundle: BundlePresence) -> StandDownRoute {
+        guard LaunchKind.mayStandDownSilently(origin), notificationsAuthorized, intendedBundle.isPresent
+        else { return .alert }
+        return .silent
+    }
+}
+
 /// The two bundles differ only by the dev suffix build.sh templates in
 /// (`com.mattstack.app` / `com.mattstack.app.dev`), which is what lets a tray
 /// name its sibling without a second hard-coded identifier to keep in sync.
@@ -107,5 +160,20 @@ public enum FlavorStandDownCopy {
 
     public static func switchButton(myFlavor: String) -> String {
         "Switch to \(myFlavor) here"
+    }
+
+    /// Shown when the mode this Mac points at has no bundle we can find:
+    /// switching here is then the only move that leaves it with a tray.
+    public static func missingBundleNote(intended: String) -> String {
+        "\n\nNo \(intended) app was found in /Applications or ~/Applications, so nothing else is running the daemon on this Mac."
+    }
+
+    public static func stuckHolderTitle(holderFlavor: String) -> String {
+        "A \(holderFlavor) mattstack is still holding the tray socket"
+    }
+
+    public static func stuckHolderBody(holderFlavor: String, myFlavor: String) -> String {
+        "The \(holderFlavor) app was asked to retire and did not quit, so the \(myFlavor) app stopped instead of fighting it for the socket. "
+            + "Quit the \(holderFlavor) app from its menu bar, or log out and back in."
     }
 }

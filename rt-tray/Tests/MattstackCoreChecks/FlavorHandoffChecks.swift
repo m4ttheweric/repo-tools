@@ -87,6 +87,39 @@ let flavorHandoffChecks: [Check] = [
             c.expect(!LaunchKind.mayStandDownSilently(origin), "\(origin) must take the alert path")
         }
     },
+    Check("bundle presence: either Applications directory counts") { c in
+        c.expectEqual(FlavorBundle.presence(ofFlavor: "prod", home: "/Users/x",
+                                            fileExists: { $0 == "/Applications/mattstack.app" }),
+                      .present(path: "/Applications/mattstack.app"))
+        c.expectEqual(FlavorBundle.presence(ofFlavor: "dev", home: "/Users/x",
+                                            fileExists: { $0 == "/Users/x/Applications/mattstack-dev.app" }),
+                      .present(path: "/Users/x/Applications/mattstack-dev.app"))
+    },
+    Check("bundle presence: a dev bundle in neither place is unlocatable, prod is not installed") { c in
+        c.expectEqual(FlavorBundle.presence(ofFlavor: "dev", home: "/Users/x", fileExists: { _ in false }), .unlocatable)
+        c.expectEqual(FlavorBundle.presence(ofFlavor: "prod", home: "/Users/x", fileExists: { _ in false }), .notInstalled)
+        // The prod bundle's own path must never satisfy a dev lookup.
+        c.expectEqual(FlavorBundle.presence(ofFlavor: "dev", home: "/Users/x",
+                                            fileExists: { $0.hasSuffix("/mattstack.app") }), .unlocatable)
+    },
+    Check("stand-down is silent only for a login item with notifications and a bundle to hand over to") { c in
+        let installed = BundlePresence.present(path: "/Applications/mattstack.app")
+        c.expectEqual(StandDownPlan.route(origin: .loginItem, notificationsAuthorized: true, intendedBundle: installed), .silent)
+        c.expectEqual(StandDownPlan.route(origin: .loginItem, notificationsAuthorized: false, intendedBundle: installed), .alert,
+                      "no notification means no trace, so the user decides")
+        c.expectEqual(StandDownPlan.route(origin: .loginItem, notificationsAuthorized: true, intendedBundle: .notInstalled), .alert,
+                      "retiring for a flavor that is not installed leaves the Mac tray-less")
+        c.expectEqual(StandDownPlan.route(origin: .loginItem, notificationsAuthorized: true, intendedBundle: .unlocatable), .alert)
+        c.expectEqual(StandDownPlan.route(origin: .userLaunch, notificationsAuthorized: true, intendedBundle: installed), .alert)
+        c.expectEqual(StandDownPlan.route(origin: .unknown, notificationsAuthorized: true, intendedBundle: installed), .alert)
+    },
+    Check("a stuck holder is named to the user with a remedy") { c in
+        let body = FlavorStandDownCopy.stuckHolderBody(holderFlavor: "dev", myFlavor: "prod")
+        c.expect(FlavorStandDownCopy.stuckHolderTitle(holderFlavor: "dev").contains("dev"))
+        c.expect(body.contains("dev") && body.contains("prod"))
+        c.expect(body.contains("log out"), "the remedy has to be in the body, not just the log")
+        c.expect(FlavorStandDownCopy.missingBundleNote(intended: "dev").contains("dev"))
+    },
     Check("stand-down copy names the intended mode and the flavor being offered") { c in
         c.expectEqual(FlavorStandDownCopy.alertTitle(intended: "dev"), "This Mac is in dev mode")
         c.expectEqual(FlavorStandDownCopy.switchButton(myFlavor: "prod"), "Switch to prod here")

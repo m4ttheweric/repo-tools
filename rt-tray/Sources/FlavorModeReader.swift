@@ -13,6 +13,11 @@ enum FlavorGateState {
     /// read is a safe default, never a mandate to evict the tray that is
     /// already working.
     static var intentConfirmed = false
+
+    /// A launch that served because it could not read the intent owes the
+    /// question one more attempt, once, when the user next activates the app.
+    static var readFailed = false
+    static var recheckStarted = false
 }
 
 // MARK: - FlavorModeReader
