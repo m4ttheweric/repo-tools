@@ -48,6 +48,15 @@ test("chat:post returns the recipients and emits one wake event per recipient", 
   expect(emitted).toEqual(["chat/r/msg", "chat/wake/b"]);
 });
 
+test("chat:post rejects an invalid mentions element with a reason rather than storing it", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "hi", mentions: ["b:c"] });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("handle");
+});
+
 test("chat:unread-waking reports what would wake a handle without advancing its cursor", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "a" });
@@ -280,6 +289,14 @@ test("chat:dm rejects an invalid recipient handle with a reason rather than norm
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "a" });
   const res = await h["chat:dm"]({ from: "a", to: "a:b", body: "hi" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("handle");
+});
+
+test("chat:dm rejects an invalid sender handle with a reason rather than routing it through unenforced", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:dm"]({ from: "a:b", to: "c", body: "hi" });
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toContain("handle");

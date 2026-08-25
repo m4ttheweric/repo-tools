@@ -161,6 +161,8 @@ export function createChatHandlers(opts: {
 
     "chat:post": async (payload: Commands["chat:post"]["payload"]): Promise<CommandResult<"chat:post">> => {
       const { room, handle, body, mentions } = payload;
+      const invalidMention = mentions?.find((m) => !isValidChatName(m));
+      if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
       const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions });
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
@@ -296,6 +298,7 @@ export function createChatHandlers(opts: {
 
     "chat:dm": async (payload: Commands["chat:dm"]["payload"]): Promise<CommandResult<"chat:dm">> => {
       const { from, to, body, sessionId } = payload;
+      if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
       if (!isValidChatName(to)) return { ok: false, error: `invalid handle "${to}"` };
       const err = assertionError(() => assertSessionOwnsHandle(from, sessionId, db));
       if (err) return { ok: false, error: err };
