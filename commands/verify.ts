@@ -154,9 +154,12 @@ function printJSON(results: CheckResult[], plan: Plan): void {
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 export async function runVerify(args: string[]): Promise<void> {
+  // One CI notion for formatting AND row sparing: --ci without the env var
+  // must spare account.*/access.* exactly like CI=true does, or a manual
+  // `rt verify --ci` reports criticals the CI contract deliberately excludes.
   const isCI = args.includes("--ci") || process.env.CI === "true";
   const isJSON = args.includes("--json");
-  const ci = process.env.CI === "true";
+  const ci = isCI;
 
   const plan = await composePlan({
     p: createRealProbes(),
