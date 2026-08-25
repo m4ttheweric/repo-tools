@@ -18,6 +18,8 @@ import type {
   ChatMember,
   ChatMessage,
   RoomSummary,
+  BuddyStatus,
+  PresenceRow,
 } from "./commands.ts";
 
 /**
@@ -145,10 +147,12 @@ export function chatLeave(
 }
 
 export function chatPost(
-  a: { room: string; handle: string; body: string },
+  a: { room: string; handle: string; body: string; mentions?: string[] },
   o: RtClientOptions = {},
 ): Promise<RtResponse<{ id: number; recipients: string[] }>> {
-  return rtCommand<{ id: number; recipients: string[] }>("chat:post", { room: a.room, handle: a.handle, body: a.body }, { sockPath: o.sockPath, timeoutMs: 10_000 });
+  const payload: Record<string, unknown> = { room: a.room, handle: a.handle, body: a.body };
+  if (a.mentions !== undefined) payload.mentions = a.mentions;
+  return rtCommand<{ id: number; recipients: string[] }>("chat:post", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
 }
 
 export function chatRead(
@@ -196,26 +200,31 @@ export function chatMessages(
 }
 
 export function chatArm(
-  a: { handle: string; room?: string },
+  a: { handle: string; room?: string; sessionId?: string },
   o: RtClientOptions = {},
 ): Promise<RtResponse<Record<string, never>>> {
   const payload: Record<string, unknown> = { handle: a.handle };
   if (a.room !== undefined) payload.room = a.room;
+  if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
   return rtCommand<Record<string, never>>("chat:arm", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
 }
 
 export function chatTouch(
-  a: { handle: string },
+  a: { handle: string; sessionId?: string },
   o: RtClientOptions = {},
 ): Promise<RtResponse<Record<string, never>>> {
-  return rtCommand<Record<string, never>>("chat:touch", { handle: a.handle }, { sockPath: o.sockPath, timeoutMs: 10_000 });
+  const payload: Record<string, unknown> = { handle: a.handle };
+  if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
+  return rtCommand<Record<string, never>>("chat:touch", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
 }
 
 export function chatDisarm(
-  a: { handle: string },
+  a: { handle: string; sessionId?: string },
   o: RtClientOptions = {},
 ): Promise<RtResponse<Record<string, never>>> {
-  return rtCommand<Record<string, never>>("chat:disarm", { handle: a.handle }, { sockPath: o.sockPath, timeoutMs: 10_000 });
+  const payload: Record<string, unknown> = { handle: a.handle };
+  if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
+  return rtCommand<Record<string, never>>("chat:disarm", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
 }
 
 export function chatUnreadWaking(
@@ -225,6 +234,73 @@ export function chatUnreadWaking(
   const payload: Record<string, unknown> = { handle: a.handle };
   if (a.room !== undefined) payload.room = a.room;
   return rtCommand<{ rooms: { room: string; count: number; mentions: number; maxId: number }[] }>("chat:unread-waking", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
+}
+
+// ─── Presence (RT-48 chat-presence) ──────────────────────────────────────
+
+export function chatSignIn(
+  a: { sessionId: string; baseHandle: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ handle: string; reclaimed: boolean }>> {
+  const payload: Record<string, unknown> = { sessionId: a.sessionId, baseHandle: a.baseHandle };
+  if (a.cwd !== undefined) payload.cwd = a.cwd;
+  if (a.repo !== undefined) payload.repo = a.repo;
+  if (a.branch !== undefined) payload.branch = a.branch;
+  if (a.pane !== undefined) payload.pane = a.pane;
+  if (a.statusText !== undefined) payload.statusText = a.statusText;
+  return rtCommand<{ handle: string; reclaimed: boolean }>("chat:sign-in", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
+}
+
+export function chatSignOut(
+  a: { sessionId: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<Record<string, never>>> {
+  return rtCommand<Record<string, never>>("chat:sign-out", { sessionId: a.sessionId }, { sockPath: o.sockPath, timeoutMs: 10_000 });
+}
+
+export function chatAway(
+  a: { sessionId: string; text: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<Record<string, never>>> {
+  return rtCommand<Record<string, never>>("chat:away", { sessionId: a.sessionId, text: a.text }, { sockPath: o.sockPath, timeoutMs: 10_000 });
+}
+
+export function chatBack(
+  a: { sessionId: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<Record<string, never>>> {
+  return rtCommand<Record<string, never>>("chat:back", { sessionId: a.sessionId }, { sockPath: o.sockPath, timeoutMs: 10_000 });
+}
+
+export function chatBuddies(
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ buddies: Array<PresenceRow & { status: BuddyStatus }> }>> {
+  return rtCommand<{ buddies: Array<PresenceRow & { status: BuddyStatus }> }>("chat:buddies", {}, { sockPath: o.sockPath, timeoutMs: 10_000 });
+}
+
+export function chatPulse(
+  a: { sessionId: string; cwd?: string; repo?: string; branch?: string; pane?: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ unread: { dms: number; mentions: number; rooms: number }; status: BuddyStatus }>> {
+  const payload: Record<string, unknown> = { sessionId: a.sessionId };
+  if (a.cwd !== undefined) payload.cwd = a.cwd;
+  if (a.repo !== undefined) payload.repo = a.repo;
+  if (a.branch !== undefined) payload.branch = a.branch;
+  if (a.pane !== undefined) payload.pane = a.pane;
+  return rtCommand<{ unread: { dms: number; mentions: number; rooms: number }; status: BuddyStatus }>(
+    "chat:pulse",
+    payload,
+    { sockPath: o.sockPath, timeoutMs: 10_000 },
+  );
+}
+
+export function chatDm(
+  a: { from: string; to: string; body: string; sessionId?: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ room: string; id: number; recipients: string[] }>> {
+  const payload: Record<string, unknown> = { from: a.from, to: a.to, body: a.body };
+  if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
+  return rtCommand<{ room: string; id: number; recipients: string[] }>("chat:dm", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
 }
 
 export function eventsHead(o: RtClientOptions = {}): Promise<RtResponse<{ cursor: number }>> {
