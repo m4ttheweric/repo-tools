@@ -88,6 +88,25 @@ const STUBS_WITH_INTERNAL_REF = `{
 }
 `;
 
+/** One compilable verb ahead of two that name engines no plugin root carries -- the ordering that used to emit watch-ci before the first throw. */
+const STUBS_ONE_GOOD_TWO_BROKEN = `{
+  "verbs": {
+    "watch-ci": {
+      "engine": "watch-ci",
+      "description": "Use when watching or triaging CI."
+    },
+    "broken-a": {
+      "engine": "no-such-engine-a",
+      "description": "Points at a retired engine."
+    },
+    "broken-b": {
+      "engine": "no-such-engine-b",
+      "description": "Points at another retired engine."
+    }
+  }
+}
+`;
+
 /** A second verb pointing at an engine that does not exist under any plugin root -- loadStepSource throws. */
 const STUBS_TWO_VERBS = `{
   "verbs": {
@@ -372,6 +391,32 @@ describe("skillsCompile", () => {
     expect(errors[0]).toContain("watch-ci");
     expect(errors[0]).toContain("forge");
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+  });
+
+  test("one errored verb aborts the whole compile: every error reported, nothing written", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_ONE_GOOD_TWO_BROKEN);
+    // A previous compile's output for the one verb that DOES compile: surviving
+    // byte for byte is what proves the failing run never reached the disk.
+    writeFile(join(packDir, "skills", "watch-ci", "SKILL.md"), "PLANTED\n");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--manifest", manifestPath,
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(2);
+    expect(errors.every((e) => e.startsWith("rt skills: "))).toBe(true);
+    expect(errors.join("\n")).toContain("no-such-engine-a");
+    expect(errors.join("\n")).toContain("no-such-engine-b");
+    expect(readFileSync(join(packDir, "skills", "watch-ci", "SKILL.md"), "utf8")).toBe("PLANTED\n");
   });
 
   test("unrecognized argument: clean one-line error, exit 1", async () => {

@@ -696,14 +696,12 @@ export async function skillsCompile(args: string[]): Promise<void> {
     );
     if (chainErrors.length > 0) throw new SkillsUsageError(chainErrors.join("\n"));
 
-    const rows: CompileVerbRow[] = [];
+    const targets = compileTargets(resolved, publicSet, flags.verbs);
 
-    for (const { verb, isPublic, isStage } of compileTargets(resolved, publicSet, flags.verbs)) {
-      const outDir = outDirFor(resolved.packDir, verb.name, isPublic);
-      const stale = otherSideDir(resolved.packDir, verb.name, isPublic);
-      const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
-
-      if (flags.json) {
+    if (flags.json) {
+      const rows: CompileVerbRow[] = [];
+      for (const { verb, isPublic, isStage } of targets) {
+        const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
         const outcome = tryCompileVerb(verb, resolved, isStage);
         if (!outcome.ok) {
           rows.push({ name: verb.name, status: "errored", files: [], warnings: [], errors: [outcome.message], side });
@@ -717,18 +715,21 @@ export async function skillsCompile(args: string[]): Promise<void> {
             side,
           });
         }
-        continue;
       }
+      // An errored verb is a failed compile: exit non-zero so a caller reading
+      // the code (not just the payload) sees it, matching the non-JSON path's
+      // throw and check --json's stale exit.
+      if (rows.some((row) => row.status === "errored")) process.exitCode = 1;
+      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
+      return;
+    }
 
-      if (flags.preview) {
+    if (flags.preview) {
+      for (const { verb, isStage } of targets) {
         const outcome = tryCompileVerb(verb, resolved, isStage);
         if (!outcome.ok) {
           // A lint-erroring verb has no previewable body -- say so on stderr
           // and leave stdout empty rather than silently producing nothing.
-          // return, not continue: --preview requires exactly one verb, so the
-          // loop would end right after anyway, and continuing would fall into
-          // the post-loop "misplaced" check below -- which prints to stdout,
-          // breaking --preview's stdout-is-the-body-or-nothing contract.
           console.error(`rt skills: ${outcome.message}`);
           process.exitCode = 1;
           return;
@@ -738,13 +739,30 @@ export async function skillsCompile(args: string[]): Promise<void> {
         const main = outcome.result.files.find((f) => "content" in f && f.path.endsWith("SKILL.md"));
         if (!main || !("content" in main)) throw new SkillsUsageError(`verb "${verb.name}": produced no SKILL.md`);
         console.log(main.content);
-        continue;
       }
+      // The post-loop misplaced scan below walks the whole pack rather than the
+      // requested verb, so letting --preview reach it would put a misplaced
+      // skill anywhere on stdout, where the caller reads the compiled body.
+      return;
+    }
 
-      const result = compileVerb(verb, resolved, isStage);
-      if (result.errors.length > 0) {
-        throw new SkillsUsageError(`${isStage ? "stage" : "verb"} "${verb.name}": ${result.errors.join("; ")}`);
-      }
+    // Every target is compiled before any is written: a run that aborts midway
+    // leaves already-emitted verbs referencing stage dirs that never landed.
+    const planned: { target: CompileTarget; result: CompileResult }[] = [];
+    const failures: string[] = [];
+    for (const target of targets) {
+      const outcome = tryCompileVerb(target.verb, resolved, target.isStage);
+      if (outcome.ok) planned.push({ target, result: outcome.result });
+      else failures.push(outcome.message);
+    }
+    if (failures.length > 0) {
+      for (const message of failures) console.error(`rt skills: ${message}`);
+      process.exit(1);
+    }
+
+    for (const { target, result } of planned) {
+      const { verb, isPublic } = target;
+      const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
 
       if (flags.dryRun) {
         console.log(`would write ${result.files.length} files for ${verb.name}`);
@@ -752,25 +770,14 @@ export async function skillsCompile(args: string[]): Promise<void> {
         continue;
       }
 
+      const stale = otherSideDir(resolved.packDir, verb.name, isPublic);
       if (existsSync(stale)) rmSync(stale, { recursive: true, force: true });
-      writeCompiledVerb(outDir, result);
+      writeCompiledVerb(outDirFor(resolved.packDir, verb.name, isPublic), result);
       console.log(`compiled ${verb.name} -> ${side} (${result.files.length} files, ${result.warnings.length} warnings)`);
       for (const warning of result.warnings) console.log(`  ${warning}`);
     }
 
-    if (flags.json) {
-      // An errored verb is a failed compile: exit non-zero so a caller reading
-      // the code (not just the payload) sees it, matching the non-JSON path's
-      // throw and check --json's stale exit.
-      if (rows.some((row) => row.status === "errored")) process.exitCode = 1;
-      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
-      return;
-    }
-
-    // Never under --preview: its contract is stdout-is-the-body-or-nothing,
-    // and this scan walks the whole pack rather than the requested verb, so a
-    // misplaced skill anywhere would be read as that verb's compiled body.
-    if (publicSet && !flags.preview) {
+    if (publicSet) {
       for (const name of enumerateRegistered(resolved.packDir).keys()) {
         if (!publicSet.has(name)) {
           console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
