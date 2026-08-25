@@ -631,6 +631,7 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
       packRoot: resolved.packDir,
       compiledDir: outDirFor(resolved.packDir, verb.name, isPublic),
       emittedTargetDirs,
+      where,
     });
   } catch (err) {
     throw new SkillsUsageError((err as Error).message);

@@ -30,9 +30,6 @@ const RELATIVE_PATH_RE = /(?<![^\s("'`[<,])\.\.\/[^\s"'`)]+/g;
 /** Vendored assets are addressed from the skill's own directory, so a bare one names an emitted file or nothing at all. */
 const BARE_ASSET_RE = /(?<![^\s("'`[<,])(?:scripts|references)\/[^\s"'`)]+/g;
 
-/** The compiled `work` derives the pack root from layout, so this form is a directory reference, never a file. */
-const PACK_ROOT_REL = "../..";
-
 /** Where a compiled verb lands, so a body path can be resolved the way the reading agent will resolve it. */
 type CompiledLayout = { packRoot: string; compiledDir: string };
 
@@ -50,8 +47,9 @@ const TRAILING_PUNCTUATION_RE = /[.,;:!?\])]+$/;
  * Prose wraps a path in a sentence and in markdown, so the punctuation trailing
  * it belongs to neither the file name nor the lint message -- except in a `..`
  * segment, whose dots are the path. What is left may name no file at all
- * (`scripts/`, a bare directory in prose), and only a named file can be checked
- * against what this compile emits.
+ * (`scripts/` in prose, or the compiled `work`'s `${CLAUDE_SKILL_DIR}/../..`
+ * pack root in any spelling), and only a named file can be checked against what
+ * this compile emits.
  */
 function readPath(raw: string): { text: string; namesFile: boolean } {
   const segments = raw.split("/");
@@ -404,7 +402,7 @@ function lintReferences(
   files: CompiledFile[],
   known: Iterable<string>,
   opts: {
-    verbName: string;
+    where: string;
     exemptPrefixes?: string[];
     layout?: CompiledLayout | null;
     emittedTargetDirs?: string[];
@@ -433,15 +431,12 @@ function lintReferences(
   for (const { text, relPath, line, kind, namesFile } of bodyPaths(body)) {
     if (opts.layout && escapesPackRoot(opts.layout, relPath)) {
       const at = sourceCoordinate(bodyLines, line) ?? `compiled body line ${line}`;
-      throw new Error(`verb "${opts.verbName}": "${text}" at ${at} resolves outside the pack root`);
+      throw new Error(`${opts.where}: "${text}" at ${at} resolves outside the pack root`);
     }
     if (!namesFile || seenPaths.has(text)) continue;
     seenPaths.add(text);
     if (kind === "token" && exemptPrefixes.some((p) => text.startsWith(p))) continue;
     if (kind === "relative" && opts.layout && packSatisfies(opts.layout, relPath, emittedTargetDirs)) continue;
-    // Every compiled verb sits two levels under the pack root (skills/<name>,
-    // attachments/<name>), so this token names that root, not a file in it.
-    if (relPath === PACK_ROOT_REL) continue;
     if (!emittedPaths.has(relPath)) {
       warnings.push(
         kind === "asset"
@@ -491,6 +486,8 @@ export function compileSkill(
     packRoot?: string;
     compiledDir?: string;
     emittedTargetDirs?: string[];
+    /** How the caller names this target in errors -- `stage "x"` for a pipeline stage. */
+    where?: string;
   } = {},
 ): CompileResult {
   const internalRoster = opts.internalRoster ?? new Set<string>();
@@ -542,7 +539,7 @@ export function compileSkill(
     : null;
   const warnings = [
     ...lintReferences(body, roster, files, fillBindings, {
-      verbName: verb.name,
+      where: opts.where ?? `verb "${verb.name}"`,
       exemptPrefixes: opts.emittedSiblingDirs ?? [],
       layout,
       emittedTargetDirs: opts.emittedTargetDirs ?? [],

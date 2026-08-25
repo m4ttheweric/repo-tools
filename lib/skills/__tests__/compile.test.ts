@@ -544,6 +544,22 @@ describe("compileSkill with placeholders", () => {
     ).toThrow('verb "watch-ci": "../../../attachments/self-review/SKILL.md" at skills/pipeline/watch-ci/SKILL.md:9 resolves outside the pack root');
   });
 
+  test("a stage's escaping read is reported as a stage, not a verb", () => {
+    const bad = { ...slotless, body: "read `../../../elsewhere/SKILL.md`" };
+    expect(() =>
+      compileSkill(verb, bad, {}, new Set(), {
+        packRoot: "/pack",
+        compiledDir: "/pack/attachments/stage-plan",
+        where: 'stage "stage-plan"',
+      }),
+    ).toThrow('stage "stage-plan": "../../../elsewhere/SKILL.md"');
+  });
+
+  test("the pack-root token is exempt with a trailing slash too", () => {
+    const r = compileSkill(verb, { ...slotless, body: "cd ${CLAUDE_SKILL_DIR}/../../ && pwd" }, {}, new Set(), {});
+    expect(r.warnings).toEqual([]);
+  });
+
   test("an escaping read inside a fill is reported against the fill's own file", () => {
     const escapingFill: AttachmentSource = { ...domainFill, body: "read `../../../outside.md` first" };
     expect(() =>
