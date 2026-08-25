@@ -2,7 +2,7 @@ import Foundation
 
 /// Decide serve-vs-stand-down from the CLI's read-only tuple. Failure means
 /// SERVE: a tray that cannot read intent must never dismantle its own
-/// registrations on a guess (spec §6).
+/// registrations on a guess.
 public enum FlavorGate {
     public enum Action: Equatable {
         case serve

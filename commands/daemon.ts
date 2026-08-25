@@ -76,6 +76,50 @@ export function flavorHintPath(intended: IntendedMode): string {
   return intended.mode === "dev" ? devTrayAppPath() : trayAppHintPath();
 }
 
+/**
+ * Shared copy for stop/start/restart's post-op flavor probe: the daemon that
+ * answered on rt.sock isn't the flavor the operation targeted. `stop` wants
+ * it gone; `start`/`restart` want their own flavor answering, so the verb
+ * differs while the remedy doesn't.
+ */
+export function flavorMismatchLines(
+  op: "stop" | "start" | "restart",
+  holder: { flavor: string; pid: number | null },
+  intendedMode: "dev" | "prod",
+): [string, string] {
+  const pidPart = holder.pid ? ` (pid ${holder.pid})` : "";
+  const verb = op === "stop" ? "still holds" : "answered on";
+  return [
+    `a ${holder.flavor} daemon ${verb} rt.sock${pidPart}, not ${intendedMode}`,
+    `Fix: rt settings dev-mode ${intendedMode}`,
+  ];
+}
+
+/** stop's holder-still-present case when the holder is its OWN flavor: not a mismatch, just a slow shutdown. */
+export function stillShuttingDownLine(holder: { pid: number | null }): string {
+  return `still shutting down — give it a moment${holder.pid ? ` (pid ${holder.pid})` : ""}`;
+}
+
+/** Prints stop/start/restart's mismatch warning in the shared two-line shape. */
+function printFlavorMismatch(op: "stop" | "start" | "restart", holder: { flavor: string; pid: number | null }, intendedMode: "dev" | "prod"): void {
+  const [headline, remedy] = flavorMismatchLines(op, holder, intendedMode);
+  console.log(`\n  ${yellow}⚠ ${headline}${reset}`);
+  console.log(`  ${dim}${remedy}${reset}\n`);
+}
+
+/**
+ * start/restart's post-liveness flavor check. Any holder flavor other than
+ * the intended one is worth a warning — including "unknown flavor", since the
+ * daemon that was just (re)started should be answering with real identity.
+ * Returns true when it printed the warning, so the caller skips the plain ✓.
+ */
+async function warnIfWrongFlavor(op: "start" | "restart", intended: IntendedMode): Promise<boolean> {
+  const holder = await probeSocketHolder();
+  if (!holder || holder.flavor === intended.mode) return false;
+  printFlavorMismatch(op, holder, intended.mode);
+  return true;
+}
+
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
@@ -194,12 +238,15 @@ export async function start(): Promise<void> {
     return;
   }
 
+  const intended = resolveIntendedMode();
+
   if (await isDaemonRunning()) {
-    console.log(`\n  ${green}daemon is already running${reset}\n`);
+    if (!(await warnIfWrongFlavor("start", intended))) {
+      console.log(`\n  ${green}daemon is already running${reset}\n`);
+    }
     return;
   }
 
-  const intended = resolveIntendedMode();
   const result = await trayQuery("/daemon/start", "POST");
   if (!result?.ok) {
     console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running${reset}`);
@@ -211,7 +258,9 @@ export async function start(): Promise<void> {
   for (let i = 0; i < 12; i++) {
     await Bun.sleep(250);
     if (await isDaemonRunning()) {
-      console.log(`\n  ${green}✓ daemon started${reset}\n`);
+      if (!(await warnIfWrongFlavor("start", intended))) {
+        console.log(`\n  ${green}✓ daemon started${reset}\n`);
+      }
       return;
     }
   }
@@ -227,8 +276,11 @@ export async function stop(): Promise<void> {
     // rt.sock is shared, so a different-flavor daemon can still hold it.
     const holder = await probeSocketHolder();
     if (holder) {
-      console.log(`\n  ${yellow}⚠ a ${holder.flavor} daemon still holds rt.sock${holder.pid ? ` (pid ${holder.pid})` : ""}${reset}`);
-      console.log(`  ${dim}this CLI runs the ${currentMode()} flavor; the holder is ${holder.flavor}. Fix: rt settings dev-mode ${intended.mode}${reset}\n`);
+      if (holder.flavor === currentMode()) {
+        console.log(`\n  ${yellow}⚠ ${stillShuttingDownLine(holder)}${reset}\n`);
+        return;
+      }
+      printFlavorMismatch("stop", holder, intended.mode);
       return;
     }
     console.log(`\n  ${green}✓ ${intended.mode} daemon stopped${reset}\n`);
@@ -249,7 +301,9 @@ export async function restart(): Promise<void> {
   for (let i = 0; i < 16; i++) {
     await Bun.sleep(500);
     if (await isDaemonRunning()) {
-      console.log(`\n  ${green}✓ daemon restarted${reset}\n`);
+      if (!(await warnIfWrongFlavor("restart", intended))) {
+        console.log(`\n  ${green}✓ daemon restarted${reset}\n`);
+      }
       return;
     }
   }

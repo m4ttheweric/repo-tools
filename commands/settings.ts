@@ -636,7 +636,7 @@ async function waitUntilGone(sockPath: string, outgoingLabel: string): Promise<b
   }
 }
 
-async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Promise<void> {
+async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo, target: "dev" | "prod"): Promise<void> {
   const { trayQuery } = await import("../lib/daemon-client.ts");
   const { TRAY_SOCK_PATH } = await import("../lib/daemon-config.ts");
   const outgoingLabel = launchdLabelFor(outgoing.mode);
@@ -669,6 +669,11 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Prom
   console.log(gone
     ? `  ${green}✓${reset} ${outgoing.name} quit`
     : `  ${yellow}⚠${reset} ${outgoing.name} did not fully quit — launching ${incoming.name} anyway`);
+
+  // Write the intended mode BEFORE launching the incoming bundle — its tray
+  // reads this on first activation, and reading it before `open` means it
+  // never sees a stale mode in the window between launch and this write.
+  setSetting("mattstack.mode", target, "machine");
 
   // 4. Launch the incoming app.
   spawnSync("open", [incoming.appPath], { stdio: "pipe", env: process.env });
@@ -799,8 +804,7 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
     console.log(`  ${dim}wrapper → ${DEV_MODE_WRAPPER}${reset}`);
     console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
 
-    await handoffToFlavor(outgoing, incoming);
-    setSetting("mattstack.mode", target, "machine");
+    await handoffToFlavor(outgoing, incoming, target);
 
     console.log(`  ${dim}restart your terminal (or: source ${shellResult.rcPath ?? "~/.zshrc"}) to activate${reset}`);
 
@@ -808,8 +812,7 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
     disableDevMode(exists);
     console.log(`  ${green}✓${reset} CLI restored to prod mode  ${dim}(mattstack.app binary installed at ~/.local/bin/rt)${reset}`);
 
-    await handoffToFlavor(outgoing, incoming);
-    setSetting("mattstack.mode", target, "machine");
+    await handoffToFlavor(outgoing, incoming, target);
   }
 
   console.log("");

@@ -305,10 +305,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         if fatal { NSApp.terminate(nil) }
     }
 
-    /// Spec §6's re-check: a launch whose mode read failed served on the
-    /// assumption it matched, so the question gets asked once more when the
-    /// user next brings the app forward. Login-item confidence is stale by
-    /// then, so a mismatch found here can only ever take the alert.
+    /// A launch whose mode read failed served on an assumption; ask once
+    /// more at the next activation. Login-item confidence is stale by then,
+    /// so a mismatch found here can only ever take the alert, never the
+    /// silent path.
     func applicationDidBecomeActive(_ notification: Notification) {
         guard FlavorGateState.readFailed, !FlavorGateState.recheckStarted else { return }
         FlavorGateState.recheckStarted = true
