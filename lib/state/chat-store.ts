@@ -247,11 +247,17 @@ export function disarmMember(handle: string, db: Database = getStateDb()): void 
  * rather than adding a distinct waiter, so counting both would double-count.
  */
 export function clearAllArmed(db: Database = getStateDb()): number {
-  let cleared = 0;
-  persistOrWarn("chat-store", () => {
-    cleared = db.query(CLEAR_ALL_ARMED_SQL).run().changes;
+  // A single db.transaction()-wrapped write, per persistOrWarn's contract:
+  // both clears commit or neither does, and `cleared` is only assigned from
+  // the transaction's return value, so a swallowed SQLITE_BUSY on the second
+  // statement leaves it at 0 rather than reporting a count that never landed.
+  const run = db.transaction((): number => {
+    const n = db.query(CLEAR_ALL_ARMED_SQL).run().changes;
     db.query(CLEAR_ALL_PRESENCE_ARMED_SQL).run();
-  }, {
+    return n;
+  });
+  let cleared = 0;
+  persistOrWarn("chat-store", () => { cleared = run(); }, {
     op: "clearAllArmed",
   });
   return cleared;
