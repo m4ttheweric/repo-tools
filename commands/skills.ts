@@ -600,7 +600,7 @@ function stageAllowedToolsFor(resolved: Resolved, entries: Record<string, StageE
   return rules;
 }
 
-function compileVerb(target: CompileTarget, resolved: Resolved): CompileResult {
+function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[] = []): CompileResult {
   const { isPublic, isStage } = target;
   let verb = target.verb;
   const where = `${isStage ? "stage" : "verb"} "${verb.name}"`;
@@ -630,6 +630,7 @@ function compileVerb(target: CompileTarget, resolved: Resolved): CompileResult {
       emittedSiblingDirs: allStageDirs,
       packRoot: resolved.packDir,
       compiledDir: outDirFor(resolved.packDir, verb.name, isPublic),
+      emittedTargetDirs,
     });
   } catch (err) {
     throw new SkillsUsageError((err as Error).message);
@@ -672,10 +673,10 @@ type CompileOutcome = { ok: true; result: CompileResult } | { ok: false; message
  * the one place that catches both -- the plain human path still calls
  * compileVerb directly and lets it throw, unchanged.
  */
-function tryCompileVerb(target: CompileTarget, resolved: Resolved): CompileOutcome {
+function tryCompileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[] = []): CompileOutcome {
   const { verb, isStage } = target;
   try {
-    const result = compileVerb(target, resolved);
+    const result = compileVerb(target, resolved, emittedTargetDirs);
     if (result.errors.length > 0) {
       return { ok: false, message: `${isStage ? "stage" : "verb"} "${verb.name}": ${result.errors.join("; ")}` };
     }
@@ -695,6 +696,15 @@ function pipelineChainErrors(resolved: Resolved): string[] {
 }
 
 type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
+
+/**
+ * Where this run's targets land, for the sibling-reference lint. Derived from
+ * outDirFor, never from a StageEntry's `dir`: that one hardcodes
+ * attachments/<name> and is wrong the moment a stage is made surface-public.
+ */
+function targetOutDirs(resolved: Resolved, targets: CompileTarget[]): string[] {
+  return targets.map((t) => outDirFor(resolved.packDir, t.verb.name, t.isPublic));
+}
 
 /**
  * A roster verb keeps today's default-public rule; a stage is internal
@@ -741,13 +751,14 @@ export async function skillsCompile(args: string[]): Promise<void> {
     if (chainErrors.length > 0) throw new SkillsUsageError(chainErrors.join("\n"));
 
     const targets = compileTargets(resolved, publicSet, flags.verbs);
+    const emittedTargetDirs = targetOutDirs(resolved, targets);
 
     if (flags.json) {
       const rows: CompileVerbRow[] = [];
       for (const target of targets) {
         const { verb, isPublic } = target;
         const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
-        const outcome = tryCompileVerb(target, resolved);
+        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
         if (!outcome.ok) {
           rows.push({ name: verb.name, status: "errored", files: [], warnings: [], errors: [outcome.message], side });
         } else {
@@ -772,7 +783,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
     if (flags.preview) {
       for (const target of targets) {
         const { verb } = target;
-        const outcome = tryCompileVerb(target, resolved);
+        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
         if (!outcome.ok) {
           // A lint-erroring verb has no previewable body -- say so on stderr
           // and leave stdout empty rather than silently producing nothing.
@@ -797,7 +808,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
     const planned: { target: CompileTarget; result: CompileResult }[] = [];
     const failures: string[] = [];
     for (const target of targets) {
-      const outcome = tryCompileVerb(target, resolved);
+      const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
       if (outcome.ok) planned.push({ target, result: outcome.result });
       else failures.push(outcome.message);
     }
@@ -862,7 +873,10 @@ export async function skillsCheck(args: string[]): Promise<void> {
       else console.log(chainError);
     }
 
-    for (const target of compileTargets(resolved, publicSet, flags.verbs)) {
+    const targets = compileTargets(resolved, publicSet, flags.verbs);
+    const emittedTargetDirs = targetOutDirs(resolved, targets);
+
+    for (const target of targets) {
       const { verb, isPublic } = target;
       const outDir = outDirFor(resolved.packDir, verb.name, isPublic);
       const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
@@ -874,7 +888,7 @@ export async function skillsCheck(args: string[]): Promise<void> {
         continue;
       }
 
-      const result = compileVerb(target, resolved);
+      const result = compileVerb(target, resolved, emittedTargetDirs);
       const staleFiles: string[] = [];
       const orphanFiles: string[] = [];
       const expectedPaths = new Set(result.files.map((f) => f.path));

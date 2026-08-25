@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { compileSkill } from "../compile.ts";
 import type { AttachmentSource, CompiledFile, StepSource, VerbDef } from "../types.ts";
+
+/** The sibling-reference lint reads the working tree, so its cases need a real pack root on disk. */
+function tempPackRoot(): string {
+  return mkdtempSync(join(tmpdir(), "rt-compile-pack-"));
+}
 
 const verb: VerbDef = {
   name: "watch-ci",
@@ -520,12 +528,35 @@ describe("compileSkill with placeholders", () => {
     ).toThrow("resolves outside the pack root");
   });
 
-  test("a relative read that stays inside the pack warns instead of erroring", () => {
+  test("a relative read that resolves to nothing the pack has warns instead of erroring", () => {
+    const packRoot = tempPackRoot();
     const r = compileSkill(verb, { ...slotless, body: "read `../../attachments/self-review/SKILL.md`" }, {}, new Set(), {
-      packRoot: "/pack",
-      compiledDir: "/pack/skills/work",
+      packRoot,
+      compiledDir: join(packRoot, "skills", "work"),
     });
     expect(r.warnings).toEqual(["body references ../../attachments/self-review/SKILL.md which is not an emitted file"]);
+  });
+
+  test("a relative read onto a file the pack already carries is silent", () => {
+    const packRoot = tempPackRoot();
+    mkdirSync(join(packRoot, "attachments", "self-review"), { recursive: true });
+    writeFileSync(join(packRoot, "attachments", "self-review", "SKILL.md"), "hand-authored\n");
+
+    const r = compileSkill(verb, { ...slotless, body: "read `../../attachments/self-review/SKILL.md`" }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "work"),
+    });
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("a relative read onto another target's output dir is silent before that target is written", () => {
+    const packRoot = tempPackRoot();
+    const r = compileSkill(verb, { ...slotless, body: "read `../../attachments/stage-plan/SKILL.md`" }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "work"),
+      emittedTargetDirs: [join(packRoot, "attachments", "stage-plan")],
+    });
+    expect(r.warnings).toEqual([]);
   });
 
   test("a shell-composed path whose ../ follows another path is not read as a body reference", () => {

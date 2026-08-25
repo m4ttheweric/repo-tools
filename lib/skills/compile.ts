@@ -1,3 +1,4 @@
+import { existsSync } from "fs";
 import { isAbsolute, relative as relativePath, resolve as resolvePath, sep } from "path";
 import { assertNoPlaceholders, findPlaceholders, substitute } from "./placeholders.ts";
 import type {
@@ -75,6 +76,24 @@ function bodyPaths(body: string): BodyPath[] {
 function escapesPackRoot(layout: CompiledLayout, relPath: string): boolean {
   const rel = relativePath(layout.packRoot, resolvePath(layout.compiledDir, relPath));
   return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+/**
+ * A `../` read the pack can actually satisfy is a sibling reference, not a
+ * dangling one: either something already in the working tree, or the output dir
+ * of another target in this compile, which may not be written yet.
+ *
+ * Reading the working tree makes this lint state-dependent -- `compile` and
+ * `check` can disagree across a file add or removal, and a scoped `--verb` run
+ * has fewer target dirs to match against than a whole-pack run.
+ */
+function packSatisfies(layout: CompiledLayout, relPath: string, emittedTargetDirs: string[]): boolean {
+  const abs = resolvePath(layout.compiledDir, relPath);
+  if (existsSync(abs)) return true;
+  return emittedTargetDirs.some((dir) => {
+    const target = resolvePath(dir);
+    return abs === target || abs.startsWith(`${target}${sep}`);
+  });
 }
 
 /** rt's own namespace, always linted even when no pack is installed. */
@@ -343,11 +362,17 @@ function lintReferences(
   roster: Set<string>,
   files: CompiledFile[],
   known: Iterable<string>,
-  opts: { verbName: string; exemptPrefixes?: string[]; layout?: CompiledLayout | null },
+  opts: {
+    verbName: string;
+    exemptPrefixes?: string[];
+    layout?: CompiledLayout | null;
+    emittedTargetDirs?: string[];
+  },
 ): string[] {
   const warnings: string[] = [];
   const lintableBody = stripCompilerComments(body);
   const exemptPrefixes = opts.exemptPrefixes ?? [];
+  const emittedTargetDirs = opts.emittedTargetDirs ?? [];
 
   const seenNames = new Set<string>();
   for (const match of lintableBody.matchAll(registeredNameRe(roster, known))) {
@@ -372,6 +397,7 @@ function lintReferences(
     if (seenPaths.has(text)) continue;
     seenPaths.add(text);
     if (kind === "token" && exemptPrefixes.some((p) => text.startsWith(p))) continue;
+    if (kind === "relative" && opts.layout && packSatisfies(opts.layout, relPath, emittedTargetDirs)) continue;
     // Every compiled verb sits two levels under the pack root (skills/<name>,
     // attachments/<name>), so this token names that root, not a file in it.
     if (relPath === PACK_ROOT_REL) continue;
@@ -423,6 +449,7 @@ export function compileSkill(
     emittedSiblingDirs?: string[];
     packRoot?: string;
     compiledDir?: string;
+    emittedTargetDirs?: string[];
   } = {},
 ): CompileResult {
   const internalRoster = opts.internalRoster ?? new Set<string>();
@@ -477,6 +504,7 @@ export function compileSkill(
       verbName: verb.name,
       exemptPrefixes: opts.emittedSiblingDirs ?? [],
       layout,
+      emittedTargetDirs: opts.emittedTargetDirs ?? [],
     }),
     ...notes,
   ];
