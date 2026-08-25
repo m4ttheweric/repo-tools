@@ -20,14 +20,19 @@ rt chat <verb> <room> <text> [flags]
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
 | `<verb>` | text |  | The chat action to run |
-| `<room>` | text |  | Room name (join/leave/post/read/who/mark); omit on read/rooms to span all your rooms |
-| `<text>` | text |  | For post: the message body (every word after the room) |
-| `--as` | text |  | Override the derived handle for this invocation |
+| `<room>` | text |  | Room name (join/leave/post/read/who/mark); the target handle for dm; omit on read/rooms/who to span everything |
+| `<text>` | text |  | The message body (every word after the room/handle) — post, dm, away |
+| `--as` | text |  | Override the derived handle for this invocation; refused while signed in (sign out first) |
 | `--wake-on` | text |  | For join: when this handle's tail wakes (default mention) |
 | `--limit` | text |  | For read: max messages (default 20) |
 | `--since` | text |  | For read: a non-advancing peek at messages newer than this duration |
 | `--full` | boolean | `false` | For read: uncapped message bodies |
-| `--room` | text |  | For tail: only emit wakes from this room |
+| `--room` | text |  | For tail: only emit wakes from this room; for sign-in: override the derived repository room |
+| `--session` | text |  | Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb, and is required by away/back/pulse |
+| `--status` | text |  | For sign-in: an away/status message to set on the presence row |
+| `--no-room` | boolean | `false` | For sign-in: skip joining the derived repository room |
+| `--quiet` | boolean | `false` | For sign-out: suppress output (the SessionEnd hook's flag) |
+| [`--json`](/guides/common-flags) | boolean | `false` | Emit machine-readable JSON instead of the plain rendering (join/leave/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out) |
 
 _See code: [commands/chat.ts › chat](https://github.com/m4ttstack/rt/blob/main/commands/chat.ts)_
 
