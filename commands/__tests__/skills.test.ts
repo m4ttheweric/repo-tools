@@ -1220,6 +1220,7 @@ describe("skillsComposition --json", () => {
     expect(verb.sourcePath).toBe(join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"));
     expect(verb.artifactPath).toBe(join(packDir, "skills", "watch-ci"));
     expect(verb.engineError).toBeUndefined();
+    expect(verb.includes).toEqual([]);
 
     const domainSlot = verb.slots.find((s: { name: string }) => s.name === "domain");
     expect(domainSlot.contract).toBe("watch-ci-domain@1");
@@ -1258,6 +1259,28 @@ describe("skillsComposition --json", () => {
       { name: "domain", boundTo: "acme:watch-ci-domain" },
       { name: "forge", boundTo: "mattstack:gitlab-forge" },
     ]);
+  });
+
+  test("includes names every {{include}} the engine and its bound fills carry, pre-compile", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("acme");
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"),
+      WATCH_CI_SKILL_MD.replace(
+        "Poll the pipeline every 30s and report status.",
+        "{{include:ci-note}}\n\n{{slot:domain}}\n\n{{slot:forge}}\n\n{{include:ci-note}}\n\nPoll the pipeline every 30s and report status.",
+      ),
+    );
+    writeFile(
+      join(mattstackDir, "plugins", "acme", "attachments", "watch-ci-domain", "SKILL.md"),
+      DOMAIN_SKILL_MD + "\n{{include:fill-note}}\n",
+    );
+
+    await skillsComposition(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const verb = JSON.parse(logs.join("\n")).verbs[0];
+    expect(verb.includes).toEqual(["ci-note", "fill-note"]);
   });
 
   test("an internal verb's artifactPath is under attachments/, not a hardcoded skills/", async () => {

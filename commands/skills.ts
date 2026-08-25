@@ -489,6 +489,17 @@ function loadFillsFor(step: StepSource, resolved: Resolved, where: string): Reco
   return fills;
 }
 
+/** Composition and compile share this scan so their include lists cannot drift. */
+function includeNames(bodies: string[]): string[] {
+  const names: string[] = [];
+  for (const body of bodies) {
+    for (const p of findPlaceholders(body)) {
+      if (p.kind === "include" && p.arg && !names.includes(p.arg)) names.push(p.arg);
+    }
+  }
+  return names;
+}
+
 /** Scans the step body plus every bound fill's body, so a fill's own `{{include}}` lines resolve too. */
 function loadIncludesFor(
   step: StepSource,
@@ -497,15 +508,12 @@ function loadIncludesFor(
   where: string,
 ): Record<string, AttachmentSource> {
   const out: Record<string, AttachmentSource> = {};
-  const bodies = [step.body, ...Object.values(fills).filter((f): f is AttachmentSource => f !== null).map((f) => f.body)];
-  for (const body of bodies) {
-    for (const p of findPlaceholders(body)) {
-      if (p.kind !== "include" || !p.arg || out[p.arg]) continue;
-      try {
-        out[p.arg] = loadInclude(p.arg, resolved.pluginRoots);
-      } catch (err) {
-        throw new SkillsUsageError(`${where}: ${(err as Error).message}`);
-      }
+  const fillBodies = Object.values(fills).filter((f): f is AttachmentSource => f !== null).map((f) => f.body);
+  for (const name of includeNames([step.body, ...fillBodies])) {
+    try {
+      out[name] = loadInclude(name, resolved.pluginRoots);
+    } catch (err) {
+      throw new SkillsUsageError(`${where}: ${(err as Error).message}`);
     }
   }
   return out;
@@ -911,6 +919,7 @@ type CompositionVerb = {
   sourcePath: string | null;
   artifactPath: string;
   slots: CompositionSlot[];
+  includes: string[];
   engineError?: string;
 };
 
@@ -974,6 +983,7 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
       sourcePath: null,
       artifactPath,
       slots: [],
+      includes: [],
       engineError: (err as Error).message,
     };
   }
@@ -983,6 +993,7 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
   const stepPluginDir = resolved.pluginRoots.byName[step.plugin]?.dir ?? null;
   const sourcePath = stepPluginDir ? join(stepPluginDir, step.srcPath) : null;
 
+  const fillBodies: string[] = [];
   const slots: CompositionSlot[] = Object.entries(step.slots).map(([slotName, spec]) => {
     const boundTo = slotBindings[slotName] ?? null;
     // required is optional on SlotSpec; default it explicitly so JSON carries
@@ -998,6 +1009,7 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
     // not take down every other slot's data, let alone the whole payload.
     try {
       const fill = loadAttachment(boundTo, slotName, resolved.pluginRoots);
+      fillBodies.push(fill.body);
       const fillPluginDir = resolved.pluginRoots.byName[fill.plugin]?.dir ?? null;
       return {
         ...base,
@@ -1028,6 +1040,7 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
     sourcePath,
     artifactPath,
     slots,
+    includes: includeNames([step.body, ...fillBodies]),
   };
 }
 
