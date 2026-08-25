@@ -867,13 +867,12 @@ export async function skillsCheck(args: string[]): Promise<void> {
     const rows: CheckVerbRow[] = [];
 
     // Pack-level staleness: the stage list a compiled orchestrator carries no
-    // longer folds, so recompiling would refuse. The row shape has no place for
-    // it, so under --json the reason goes to stderr rather than nowhere.
-    for (const chainError of pipelineChainErrors(resolved)) {
-      anyStale = true;
-      if (flags.json) console.error(chainError);
-      else console.log(chainError);
-    }
+    // longer folds, so recompiling would refuse. No row can express that, so
+    // --json carries it alongside them instead of leaving the exit code alone
+    // to say a payload of current rows is a failure.
+    const chainErrors = pipelineChainErrors(resolved);
+    if (chainErrors.length > 0) anyStale = true;
+    if (!flags.json) for (const chainError of chainErrors) console.log(chainError);
 
     const targets = compileTargets(resolved, publicSet, flags.verbs);
     const emittedTargetDirs = targetOutDirs(resolved, targets);
@@ -925,7 +924,7 @@ export async function skillsCheck(args: string[]): Promise<void> {
     if (anyStale) process.exitCode = 1;
 
     if (flags.json) {
-      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
+      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows, chainErrors }));
     }
   });
 }

@@ -885,6 +885,34 @@ describe("skillsCheck --json", () => {
     expect(parsed.verbs).toEqual([
       { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [], side: "skills" },
     ]);
+    expect(parsed.chainErrors).toEqual([]);
+  });
+
+  test("a broken chain rides the payload, not just the exit code", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(
+      join(mattstackDir, "plugins", "mattstack", "attachments", "pipeline", "stage-ship", "SKILL.md"),
+      `---\nname: stage-ship\ndescription: "ship stage"\ntype: pipeline-step\nmetadata:\n  stage: ship\n  stage-consumes: commits\n---\n\nship.\n`,
+    );
+    const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-chain-json-")));
+    const manifestPath = join(manifestDir, "skills.jsonc");
+    writeFile(manifestPath, `{\n  "pipelines": { "feature": ["mattstack:stage-ship"] },\n  "bindings": {}\n}\n`);
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.chainErrors).toHaveLength(1);
+    expect(parsed.chainErrors[0]).toContain('stage "stage-ship" consumes "commits"');
+    // Rows are untouched by a pack-level failure -- the console reads them.
+    expect(parsed.verbs.every((v: { status: string }) => typeof v.status === "string")).toBe(true);
+    expect(process.exitCode).toBe(1);
   });
 
   test("prints ONLY json -- no human lines on stdout", async () => {
