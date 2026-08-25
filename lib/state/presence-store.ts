@@ -1,0 +1,296 @@
+/**
+ * lib/state/presence-store.ts — sign-in presence for `rt chat` (RT-48 chat-
+ * presence, Task 3). The only module that touches `chat_presence`;
+ * `chat_room_defaults` and `chat_dms` remain chat-store.ts's (and a later
+ * dm-store's) since neither carries a heartbeat or a reclaim predicate.
+ *
+ * Spec: docs/superpowers/specs/2026-08-24-rt-chat-presence-design.md
+ * "Data model", "Statuses", "Failure modes".
+ */
+
+import { Database } from "bun:sqlite";
+import { getStateDb } from "./db.ts";
+
+export type BuddyStatus = "live" | "idle" | "deaf" | "offline";
+
+export interface PresenceRow {
+  sessionId: string;
+  handle: string;
+  baseHandle: string;
+  cwd?: string;
+  repo?: string;
+  branch?: string;
+  pane?: string;
+  statusText?: string;
+  signedInAt: number;
+  lastSeenAt: number;
+  tailSeenAt?: number;
+  armedAt?: number;
+  signedOutAt?: number;
+}
+
+export interface PresenceThresholds {
+  tailStaleMs: number;
+  sessionStaleMs: number;
+  pruneMs: number;
+}
+
+interface PresenceRawRow {
+  session_id: string;
+  handle: string;
+  base_handle: string;
+  cwd: string | null;
+  repo: string | null;
+  branch: string | null;
+  pane: string | null;
+  status_text: string | null;
+  signed_in_at: number;
+  last_seen_at: number;
+  tail_seen_at: number | null;
+  armed_at: number | null;
+  signed_out_at: number | null;
+}
+
+function rowToPresence(row: PresenceRawRow): PresenceRow {
+  const presence: PresenceRow = {
+    sessionId: row.session_id,
+    handle: row.handle,
+    baseHandle: row.base_handle,
+    signedInAt: row.signed_in_at,
+    lastSeenAt: row.last_seen_at,
+  };
+  if (row.cwd !== null) presence.cwd = row.cwd;
+  if (row.repo !== null) presence.repo = row.repo;
+  if (row.branch !== null) presence.branch = row.branch;
+  if (row.pane !== null) presence.pane = row.pane;
+  if (row.status_text !== null) presence.statusText = row.status_text;
+  if (row.tail_seen_at !== null) presence.tailSeenAt = row.tail_seen_at;
+  if (row.armed_at !== null) presence.armedAt = row.armed_at;
+  if (row.signed_out_at !== null) presence.signedOutAt = row.signed_out_at;
+  return presence;
+}
+
+const PRESENCE_COLUMNS =
+  "session_id, handle, base_handle, cwd, repo, branch, pane, status_text, signed_in_at, last_seen_at, tail_seen_at, armed_at, signed_out_at";
+
+/**
+ * The one reclaim predicate (spec "Failure modes" — "Suffix churn"): a
+ * handle's holder is reclaimable when signed out, OR its session heartbeat
+ * is older than the session-stale cutoff AND its tail heartbeat
+ * (COALESCE(tail_seen_at, armed_at), absent counting as 0 — maximally
+ * stale) is older than the tail-stale cutoff. Bind params in order:
+ * sessionStaleCutoff, tailStaleCutoff (absolute timestamps, `now - Ms`).
+ */
+const RECLAIMABLE_SQL = `signed_out_at IS NOT NULL OR (last_seen_at < ? AND COALESCE(tail_seen_at, armed_at, 0) < ?)`;
+
+/**
+ * Prune's own predicate, deliberately never RECLAIMABLE_SQL: that fragment's
+ * bare `signed_out_at IS NOT NULL` leg would delete every signed-out row at
+ * daemon startup and empty the offline window. Bind params in order:
+ * dayAgo, dayAgo (same cutoff, both legs).
+ */
+const PRUNABLE_SQL = `(signed_out_at IS NOT NULL AND signed_out_at < ?) OR last_seen_at < ?`;
+
+const SELECT_PRESENCE_BY_HANDLE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE handle = ?;`;
+const SELECT_PRESENCE_BY_SESSION_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE session_id = ?;`;
+const SELECT_PRESENCE_RECLAIMABLE_SQL = `SELECT ${PRESENCE_COLUMNS}, (${RECLAIMABLE_SQL}) AS reclaimable FROM chat_presence WHERE handle = ?;`;
+const SELECT_NON_PRUNABLE_PRESENCE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE NOT (${PRUNABLE_SQL});`;
+const DELETE_PRUNABLE_PRESENCE_SQL = `DELETE FROM chat_presence WHERE ${PRUNABLE_SQL};`;
+const DELETE_PRESENCE_BY_SESSION_SQL = `DELETE FROM chat_presence WHERE session_id = ?;`;
+const INSERT_PRESENCE_SQL = `INSERT INTO chat_presence (session_id, handle, base_handle, cwd, repo, branch, pane, status_text, signed_in_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`;
+const UPDATE_SIGN_OUT_SQL = `UPDATE chat_presence SET signed_out_at = ?, armed_at = NULL WHERE session_id = ?;`;
+const UPDATE_STATUS_TEXT_SQL = `UPDATE chat_presence SET status_text = ? WHERE session_id = ?;`;
+const UPDATE_PULSE_SQL = `UPDATE chat_presence SET last_seen_at = ?, cwd = COALESCE(?, cwd), repo = COALESCE(?, repo), branch = COALESCE(?, branch), pane = COALESCE(?, pane) WHERE session_id = ?;`;
+const UPDATE_PRESENCE_ARMED_BY_HANDLE_SQL = `UPDATE chat_presence SET armed_at = ?, tail_seen_at = NULL WHERE handle = ?;`;
+const UPDATE_PRESENCE_TAIL_BY_HANDLE_SQL = `UPDATE chat_presence SET tail_seen_at = ? WHERE handle = ?;`;
+const UPDATE_PRESENCE_DISARMED_BY_HANDLE_SQL = `UPDATE chat_presence SET armed_at = NULL WHERE handle = ?;`;
+
+const DEFAULT_TAIL_STALE_MS = 10 * 60_000;
+const DEFAULT_SESSION_STALE_MS = 60 * 60_000;
+const DEFAULT_PRUNE_MS = 24 * 60 * 60_000;
+
+function envMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** Read at call time (never memoized): the daemon evaluates thresholds fresh on every status computation, per env at that instant. */
+export function presenceThresholds(): PresenceThresholds {
+  return {
+    tailStaleMs: envMs("RT_CHAT_TAIL_STALE_MS", DEFAULT_TAIL_STALE_MS),
+    sessionStaleMs: envMs("RT_CHAT_SESSION_STALE_MS", DEFAULT_SESSION_STALE_MS),
+    pruneMs: envMs("RT_CHAT_PRUNE_MS", DEFAULT_PRUNE_MS),
+  };
+}
+
+/**
+ * The spec's Statuses table, rows tested most-stale-first so the first
+ * match wins (a signed-in row silent for 30 hours is offline, not deaf).
+ * For an armed row the tail heartbeat is the sole authority — the session
+ * heartbeat only advances on user prompts, so a long autonomous turn
+ * starves it for hours while the tail keeps touching.
+ */
+export function buddyStatus(
+  row: Partial<Pick<PresenceRow, "signedOutAt" | "lastSeenAt" | "tailSeenAt" | "armedAt">>,
+  now: number,
+  th: PresenceThresholds = presenceThresholds(),
+): BuddyStatus {
+  if (row.signedOutAt !== undefined) return "offline";
+  const lastSeenAt = row.lastSeenAt ?? 0;
+  if (now - lastSeenAt > th.pruneMs) return "offline";
+  if (row.armedAt !== undefined) {
+    const tailHeartbeat = row.tailSeenAt ?? row.armedAt;
+    return now - tailHeartbeat <= th.tailStaleMs ? "live" : "deaf";
+  }
+  return now - lastSeenAt > th.sessionStaleMs ? "deaf" : "idle";
+}
+
+export function signIn(
+  args: {
+    sessionId: string;
+    baseHandle: string;
+    cwd?: string;
+    repo?: string;
+    branch?: string;
+    pane?: string;
+    statusText?: string;
+    now?: number;
+  },
+  db: Database = getStateDb(),
+): { handle: string; reclaimed: boolean } {
+  const { sessionId, baseHandle, statusText } = args;
+  const cwd = args.cwd ?? null;
+  const repo = args.repo ?? null;
+  const branch = args.branch ?? null;
+  const pane = args.pane ?? null;
+  const now = args.now ?? Date.now();
+  const th = presenceThresholds();
+  const sessionStaleCutoff = now - th.sessionStaleMs;
+  const tailStaleCutoff = now - th.tailStaleMs;
+
+  const run = db.transaction((): { handle: string; reclaimed: boolean } => {
+    // The two moments a handle is about to be needed (spec "Pruning").
+    prunePresence(now, db);
+
+    let suffix = 1;
+    let candidate = baseHandle;
+    let freeSlot: string | null = null;
+    let sameSeatWinner: PresenceRawRow | null = null;
+    let firstReclaimable: PresenceRawRow | null = null;
+
+    for (;;) {
+      const row = db.query(SELECT_PRESENCE_RECLAIMABLE_SQL).get(sessionStaleCutoff, tailStaleCutoff, candidate) as
+        | (PresenceRawRow & { reclaimable: number })
+        | null;
+      if (!row) {
+        freeSlot = candidate;
+        break;
+      }
+      if (row.reclaimable) {
+        firstReclaimable ??= row;
+        // Same-seat preference only picks WHICH reclaimable row to prefer
+        // (spec "Suffix churn") — it never widens RECLAIMABLE_SQL itself.
+        if (row.cwd === cwd && row.pane === pane) {
+          sameSeatWinner = row;
+          break;
+        }
+      }
+      suffix++;
+      candidate = `${baseHandle}-${suffix}`;
+    }
+
+    const winner = sameSeatWinner ?? firstReclaimable;
+    const handle = winner ? winner.handle : freeSlot!;
+    // The old row's session_id is its primary key and its handle is
+    // UNIQUE, so it cannot be updated into the new session — delete then insert.
+    if (winner) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(winner.session_id);
+    db.query(INSERT_PRESENCE_SQL).run(sessionId, handle, baseHandle, cwd, repo, branch, pane, statusText ?? null, now, now);
+
+    return { handle, reclaimed: winner !== null };
+  });
+
+  return run();
+}
+
+export function signOut(sessionId: string, now: number = Date.now(), db: Database = getStateDb()): void {
+  db.query(UPDATE_SIGN_OUT_SQL).run(now, sessionId);
+}
+
+export function setAway(sessionId: string, text: string | null, db: Database = getStateDb()): void {
+  db.query(UPDATE_STATUS_TEXT_SQL).run(text, sessionId);
+}
+
+/** last_seen_at + deets only — NEVER tail_seen_at, which is chat:touch's alone (spec "Two heartbeats, never one"). */
+export function pulseSession(
+  args: { sessionId: string; cwd?: string; repo?: string; branch?: string; pane?: string; now?: number },
+  db: Database = getStateDb(),
+): void {
+  const { sessionId, cwd, repo, branch, pane } = args;
+  const now = args.now ?? Date.now();
+  db.query(UPDATE_PULSE_SQL).run(now, cwd ?? null, repo ?? null, branch ?? null, pane ?? null, sessionId);
+}
+
+export function listBuddies(now: number, db: Database = getStateDb()): Array<PresenceRow & { status: BuddyStatus }> {
+  const th = presenceThresholds();
+  const dayAgo = now - th.pruneMs;
+  const rows = db.query(SELECT_NON_PRUNABLE_PRESENCE_SQL).all(dayAgo, dayAgo) as PresenceRawRow[];
+  return rows.map((raw) => {
+    const presence = rowToPresence(raw);
+    return { ...presence, status: buddyStatus(presence, now, th) };
+  });
+}
+
+export function presenceForHandle(handle: string, db: Database = getStateDb()): PresenceRow | null {
+  const row = db.query(SELECT_PRESENCE_BY_HANDLE_SQL).get(handle) as PresenceRawRow | null;
+  return row ? rowToPresence(row) : null;
+}
+
+export function presenceForSession(sessionId: string, db: Database = getStateDb()): PresenceRow | null {
+  const row = db.query(SELECT_PRESENCE_BY_SESSION_SQL).get(sessionId) as PresenceRawRow | null;
+  return row ? rowToPresence(row) : null;
+}
+
+/** Handle-keyed payloads (arm/touch/disarm): enforced only when a presence row exists for the handle AND a session id was offered — the unsigned plan-1 path stays unenforced. */
+export function assertSessionOwnsHandle(handle: string, sessionId: string | undefined, db: Database = getStateDb()): void {
+  if (sessionId === undefined) return;
+  const row = db.query(SELECT_PRESENCE_BY_HANDLE_SQL).get(handle) as PresenceRawRow | null;
+  if (row === null) return;
+  if (row.session_id !== sessionId) throw new Error(`chat: handle reclaimed — "${handle}" is now held by another session; sign in again`);
+}
+
+/** Session-keyed payloads (pulse/away/back/sign-out): no row for this session id means the handle was reclaimed. */
+export function assertSessionSignedIn(sessionId: string, db: Database = getStateDb()): PresenceRow {
+  const row = presenceForSession(sessionId, db);
+  if (!row) throw new Error("chat: handle reclaimed while you were away; sign in again");
+  return row;
+}
+
+/**
+ * Signed out more than 24h ago, or a session heartbeat over 24h old — the
+ * two moments a handle is about to be needed (sign-in, daemon startup) are
+ * the only call sites; RT_CHAT_PRUNE_MS has no other route in.
+ */
+export function prunePresence(now: number, db: Database = getStateDb()): number {
+  const th = presenceThresholds();
+  const dayAgo = now - th.pruneMs;
+  return db.query(DELETE_PRUNABLE_PRESENCE_SQL).run(dayAgo, dayAgo).changes;
+}
+
+// --- Internal wiring for chat-store.ts's dual-write (arm/touch/disarm). ---
+// Not part of the barrel-exported contract: chat-store.ts imports these
+// directly, per RT-48's intra-lib/state exception, so every write against
+// chat_presence stays owned by this file.
+
+export function armPresenceByHandle(handle: string, now: number, db: Database = getStateDb()): void {
+  db.query(UPDATE_PRESENCE_ARMED_BY_HANDLE_SQL).run(now, handle);
+}
+
+export function touchPresenceByHandle(handle: string, now: number, db: Database = getStateDb()): void {
+  db.query(UPDATE_PRESENCE_TAIL_BY_HANDLE_SQL).run(now, handle);
+}
+
+export function disarmPresenceByHandle(handle: string, db: Database = getStateDb()): void {
+  db.query(UPDATE_PRESENCE_DISARMED_BY_HANDLE_SQL).run(null, handle);
+}

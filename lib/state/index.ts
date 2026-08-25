@@ -118,6 +118,24 @@ export {
 } from "./chat-store.ts";
 
 export {
+  signIn,
+  signOut,
+  setAway,
+  pulseSession,
+  buddyStatus,
+  presenceThresholds,
+  listBuddies,
+  presenceForHandle,
+  presenceForSession,
+  assertSessionOwnsHandle,
+  assertSessionSignedIn,
+  prunePresence,
+  type BuddyStatus,
+  type PresenceRow,
+  type PresenceThresholds,
+} from "./presence-store.ts";
+
+export {
   importLegacyJsonFile,
   renameLegacyOutOfTheWay,
   type LegacyImportResult,
