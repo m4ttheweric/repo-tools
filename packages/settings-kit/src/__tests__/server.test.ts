@@ -28,10 +28,16 @@ const RT = {
   allDefs: () => Object.values(DEFS),
   getDef: (key: string) => DEFS[key],
   isMigrated: (def: FakeDef) => def.key !== "rt.legacyThing",
-  explainSetting: (key: string) => [
-    { scope: "user", file: "/home/user/settings.user.jsonc", present: true, value: `${key}-user-value` },
-    { scope: "machine", file: "/home/user/local/settings.local.jsonc", present: false },
-  ],
+  explainSetting: (key: string) =>
+    key === "rt.legacyThing"
+      ? [
+          { scope: "user", file: "/home/user/settings.user.jsonc", present: false },
+          { scope: "machine", file: "/home/user/local/settings.local.jsonc", present: false },
+        ]
+      : [
+          { scope: "user", file: "/home/user/settings.user.jsonc", present: true, value: `${key}-user-value` },
+          { scope: "machine", file: "/home/user/local/settings.local.jsonc", present: false },
+        ],
   validateValue: (_def: FakeDef, value: unknown) =>
     value === "invalid" ? { ok: false, reason: "value is invalid" } : { ok: true },
   setSetting: (...args: unknown[]) => {
@@ -86,6 +92,61 @@ describe("settingsHandler routing", () => {
     const res = await handle(get("/settings-kit/defs"), { basePath: "/settings-kit" });
     expect(res).not.toBeNull();
     expect(await handle(get("/api/settings/defs"), { basePath: "/settings-kit" })).toBeNull();
+  });
+});
+
+describe("effective (0.1.1)", () => {
+  test("defs carry the winning layer precomputed", async () => {
+    const res = await handle(get("/api/settings/defs"));
+    const body = (await res!.json()) as { defs: Array<{ key: string; effective: { scope: string | null; value?: unknown } }> };
+    const byKey = Object.fromEntries(body.defs.map((d) => [d.key, d]));
+    expect(byKey["board.title"]!.effective).toMatchObject({ scope: "user", value: "board.title-user-value" });
+  });
+
+  test("registry default wins when no layer is present; no-default keys report scope null", async () => {
+    const res = await handle(get("/api/settings/defs"));
+    const body = (await res!.json()) as { defs: Array<{ key: string; effective: { scope: string | null; value?: unknown; file: string | null } }> };
+    const byKey = Object.fromEntries(body.defs.map((d) => [d.key, d]));
+    expect(byKey["rt.legacyThing"]!.effective).toEqual({ scope: null, file: null });
+  });
+
+  test("a secret's effective carries scope but never the value", async () => {
+    const res = await handle(get("/api/settings/defs"));
+    const body = (await res!.json()) as { defs: Array<{ key: string; effective: Record<string, unknown> }> };
+    const eff = Object.fromEntries(body.defs.map((d) => [d.key, d]))["rt.secretThing"]!.effective;
+    expect(eff.scope).toBe("user");
+    expect("value" in eff).toBe(false);
+  });
+
+  test("set responses include the fresh effective for in-place row patching", async () => {
+    const res = await handle(post("/api/settings/set", { key: "board.title", value: "My Board", scope: "user" }));
+    const body = (await res!.json()) as { effective: { scope: string } };
+    expect(body.effective.scope).toBe("user");
+  });
+});
+
+describe("allowComposite (0.1.1)", () => {
+  test("composite writes stay refused without the opt-in", async () => {
+    const res = await handle(post("/api/settings/set", { key: "board.rtRepos", value: [], scope: "machine" }));
+    expect(res!.status).toBe(400);
+  });
+
+  test("the opt-in admits composite writes through the same ladder and flips writable", async () => {
+    const res = await handle(post("/api/settings/set", { key: "board.rtRepos", value: [{ project: "g/p", repo: "gitlab.com/g/p" }], scope: "machine" }), { allowComposite: true });
+    expect(res!.status).toBe(200);
+    expect(setCalls).toHaveLength(1);
+
+    const defs = await handle(get("/api/settings/defs"), { allowComposite: true });
+    const body = (await defs!.json()) as { defs: Array<{ key: string; writable: boolean }> };
+    expect(Object.fromEntries(body.defs.map((d) => [d.key, d]))["board.rtRepos"]!.writable).toBe(true);
+  });
+
+  test("secrets and unmigrated keys stay unwritable even with the opt-in", async () => {
+    const defs = await handle(get("/api/settings/defs"), { allowComposite: true });
+    const body = (await defs!.json()) as { defs: Array<{ key: string; writable: boolean }> };
+    const byKey = Object.fromEntries(body.defs.map((d) => [d.key, d]));
+    expect(byKey["rt.secretThing"]!.writable).toBe(false);
+    expect(byKey["rt.legacyThing"]!.writable).toBe(false);
   });
 });
 

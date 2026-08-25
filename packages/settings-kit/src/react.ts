@@ -6,9 +6,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ExplainRowWire, SettingDefWire } from "./server.ts";
+import type { EffectiveWire, ExplainRowWire, SettingDefWire } from "./server.ts";
 
-export type { ExplainRowWire, SettingDefWire };
+export type { EffectiveWire, ExplainRowWire, SettingDefWire };
 
 export interface SettingsKitOptions {
   /** Where the host mounted settingsHandler. Default "/api/settings". */
@@ -20,6 +20,11 @@ export interface SettingsScopeState {
   loading: boolean;
   error: string | null;
   refresh: () => void;
+  /** Write one key and patch its def's `effective` in place. Resolves null
+      on success, else the server's refusal message verbatim. */
+  set: (key: string, scope: string, value: unknown) => Promise<string | null>;
+  /** The key currently being written, else null. */
+  saving: string | null;
 }
 
 export interface SettingKeyState {
@@ -74,9 +79,36 @@ export function useSettingsScope(prefix: string, opts: SettingsKitOptions = {}):
   }, [base, prefix, generation]);
 
   const refresh = useCallback(() => setGeneration((g) => g + 1), []);
+
+  const [saving, setSaving] = useState<string | null>(null);
+  const set = useCallback(
+    async (key: string, scope: string, value: unknown): Promise<string | null> => {
+      setSaving(key);
+      try {
+        const res = await fetch(`${base}/set`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ key, scope, value }),
+        });
+        const body = (await res.json().catch(() => null)) as
+          | { effective?: EffectiveWire; error?: string }
+          | null;
+        if (!res.ok || !body?.effective) return body?.error ?? `save failed: ${res.status}`;
+        const effective = body.effective;
+        setDefs((prev) => prev.map((d) => (d.key === key ? { ...d, effective } : d)));
+        return null;
+      } catch (err) {
+        return (err as Error).message;
+      } finally {
+        setSaving(null);
+      }
+    },
+    [base],
+  );
+
   return useMemo(
-    () => ({ defs, loading, error, refresh }),
-    [defs, loading, error, refresh],
+    () => ({ defs, loading, error, refresh, set, saving }),
+    [defs, loading, error, refresh, set, saving],
   );
 }
 

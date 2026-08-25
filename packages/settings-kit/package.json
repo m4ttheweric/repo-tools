@@ -1,6 +1,6 @@
 {
   "name": "@mattstack/settings-kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Embeddable mattstack settings surface: a framework-neutral server handler over @mattstack/rt-client plus headless React hooks \u2014 callers bring their own UI.",
   "type": "module",
   "exports": {

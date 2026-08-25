@@ -38,12 +38,25 @@ export interface SettingDefWire {
   description: string;
   hasDefault: boolean;
   defaultValue: unknown;
+  effective: EffectiveWire;
 }
 
 export type ExplainRowWire = Pick<
   ExplainRow,
   "scope" | "file" | "present" | "shadowed" | "invalid"
 > & { value?: unknown };
+
+/** The winning layer, precomputed server-side so a list view renders and
+    patches rows without a per-key explain round trip. `scope` is the winning
+    layer's scope, "default" when the registry default wins, null when
+    nothing is set and there is no default. `value` is omitted for secrets
+    and when scope is null. */
+export interface EffectiveWire {
+  scope: string | null;
+  value?: unknown;
+  file: string | null;
+  invalid?: string;
+}
 
 /** The slice of rt-client the handler consumes — injectable so tests fake it
     without `mock.module`, which mutates the shared module registry and
@@ -60,6 +73,11 @@ export interface RtSettingsApi {
 export interface SettingsHandlerOptions {
   /** Route prefix the handler answers under. Default "/api/settings". */
   basePath?: string;
+  /** Admit composite (object/array) keys to the write path. Off by default:
+      comment-preserving jsonc edits of nested values are the risk the guard
+      exists for — a host opting in accepts JSON-shaped replacement of the
+      whole value. */
+  allowComposite?: boolean;
   /** Override the rt-client functions (tests, instrumentation). */
   rt?: Partial<RtSettingsApi>;
   /**
@@ -79,11 +97,11 @@ function isComposite(def: SettingDef): boolean {
   return def.type === "object" || def.type === "array";
 }
 
-function isWritable(def: SettingDef, migrated: (def: SettingDef) => boolean = isMigrated): boolean {
-  return migrated(def) && def.secret !== true && !isComposite(def);
+function isWritable(def: SettingDef, migrated: (def: SettingDef) => boolean = isMigrated, composites = false): boolean {
+  return migrated(def) && def.secret !== true && (composites || !isComposite(def));
 }
 
-export function defToWire(def: SettingDef, migrated?: (def: SettingDef) => boolean): SettingDefWire {
+export function defToWire(def: SettingDef, migrated: ((def: SettingDef) => boolean) | undefined, effective: EffectiveWire, composites = false): SettingDefWire {
   return {
     key: def.key,
     type: def.type,
@@ -92,10 +110,11 @@ export function defToWire(def: SettingDef, migrated?: (def: SettingDef) => boole
     secret: def.secret === true,
     teamLocked: def.teamLocked === true,
     repoScoped: def.repoScoped === true,
-    writable: isWritable(def, migrated),
+    writable: isWritable(def, migrated, composites),
     description: def.description,
     hasDefault: "default" in def,
     defaultValue: def.default ?? null,
+    effective,
   };
 }
 
@@ -116,6 +135,26 @@ export function sanitizeRows(def: SettingDef, rows: ExplainRow[]): ExplainRowWir
     if (def.secret !== true && "value" in row) wire.value = row.value;
     return wire;
   });
+}
+
+
+/** Winning layer from the explain rows (first present, un-shadowed, valid row
+    in resolution order), else the registry default, else null. Secrets omit
+    the value — same rule as sanitizeRows. */
+export function effectiveFromRows(def: SettingDef, rows: ExplainRow[]): EffectiveWire {
+  for (const row of rows) {
+    if (!row.present || row.shadowed) continue;
+    if (row.invalid) return { scope: row.scope, file: row.file, invalid: row.invalid };
+    const wire: EffectiveWire = { scope: row.scope, file: row.file };
+    if (def.secret !== true && "value" in row) wire.value = row.value;
+    return wire;
+  }
+  if ("default" in def) {
+    const wire: EffectiveWire = { scope: "default", file: null };
+    if (def.secret !== true) wire.value = def.default;
+    return wire;
+  }
+  return { scope: null, file: null };
 }
 
 function defaultAllowWrite(req: Request): boolean {
@@ -167,7 +206,7 @@ export async function settingsHandler(
     const prefix = url.searchParams.get("prefix") ?? "";
     const defs = rt.allDefs()
       .filter((d) => d.key.startsWith(prefix))
-      .map((d) => defToWire(d, rt.isMigrated));
+      .map((d) => defToWire(d, rt.isMigrated, effectiveFromRows(d, rt.explainSetting(d.key)), opts.allowComposite === true));
     return json({ defs });
   }
 
@@ -175,7 +214,11 @@ export async function settingsHandler(
     const key = decodeURIComponent(path.slice(`${base}/explain/`.length));
     const def = rt.getDef(key);
     if (!def) return json({ error: `unknown setting "${key}"` }, 404);
-    return json({ def: defToWire(def, rt.isMigrated), rows: sanitizeRows(def, rt.explainSetting(key)) });
+    const rows = rt.explainSetting(key);
+    return json({
+      def: defToWire(def, rt.isMigrated, effectiveFromRows(def, rows), opts.allowComposite === true),
+      rows: sanitizeRows(def, rows),
+    });
   }
 
   if (path === `${base}/set` && req.method === "POST") {
@@ -196,14 +239,14 @@ export async function settingsHandler(
     const def = rt.getDef(key);
     if (!def) return json({ error: `unknown setting "${key}"` }, 404);
     if (def.secret === true) return json({ error: "secret keys are not writable here" }, 400);
-    if (isComposite(def)) return json({ error: COMPOSITE_COPY }, 400);
+    if (isComposite(def) && opts.allowComposite !== true) return json({ error: COMPOSITE_COPY }, 400);
     if (!def.scopes.includes(scope)) {
       return json(
         { error: `"${key}" cannot be set in the ${scope} store (allowed: ${def.scopes.join(", ")})` },
         400,
       );
     }
-    if (!isWritable(def, rt.isMigrated)) {
+    if (!isWritable(def, rt.isMigrated, opts.allowComposite === true)) {
       return json({ error: `"${key}" is not writable through the resolver yet` }, 400);
     }
     const check = rt.validateValue(def, value);
@@ -214,7 +257,8 @@ export async function settingsHandler(
     } catch (err) {
       return json({ error: (err as Error).message }, 400);
     }
-    return json({ rows: sanitizeRows(def, rt.explainSetting(key)) });
+    const after = rt.explainSetting(key);
+    return json({ rows: sanitizeRows(def, after), effective: effectiveFromRows(def, after) });
   }
 
   return json({ error: "method not allowed" }, 405);
