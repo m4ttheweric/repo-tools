@@ -8,7 +8,8 @@ import { HELPERS_DIR, RT_BUNDLE_PATH, __test__ as bundleLayoutTest } from "../..
 import { rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { setSetting } from "../../settings/write.ts";
-import { closeStateDb } from "../../state/index.ts";
+import { closeStateDb, setKvValue } from "../../state/index.ts";
+import { serializeIdentity } from "../../settings/identity.ts";
 import { linkPath } from "../../deps/links.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { SecretsExecResult, SecretsExecSeam, SecretsSeams } from "../../secrets/store.ts";
@@ -825,6 +826,23 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     expect(outcome).toEqual({ state: "done", detail: "cloned 0, present 0, failed 1" });
     expect(p.calls.exec).toEqual([]); // never blindly clones into an occupied path
     expect(logs.some((l) => l.line.includes("isn't a clone of"))).toBe(true);
+  });
+
+  test("repos.clone: an identity whose index row moved and cannot be located is counted failed, never cloned", async () => {
+    setSetting("rt.repoRoots", [join(home, "code")], "machine");
+    mkdirSync(join(home, "code"), { recursive: true });
+    const dest = join(home, "code", "acme-dev");
+    // The row names a directory that is gone, so indexing `dest` is a MOVE,
+    // not a write — and the clone here is faked, so there is nothing at
+    // `dest` for the locate to move onto and it refuses.
+    setKvValue("repo-index", serializeIdentity({ kind: "remote", id: "gitlab.com/acme/acme-dev" }), join(home, "gone-away"));
+
+    const p = fakeProbes({ home, exec: async () => ok() });
+    const { ctx, logs } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
+
+    const outcome = await reposCloneStep.run(ctx);
+    expect(outcome).toEqual({ state: "done", detail: "cloned 0, present 0, failed 1" });
+    expect(logs.some((l) => l.line.includes("could not be moved"))).toBe(true);
   });
 
   test("repos.clone: zero identities to clone -> skipped, never a hard failure", async () => {

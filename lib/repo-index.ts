@@ -162,7 +162,7 @@ function storedIndexPath(repoName: string): string | undefined {
 }
 
 /** True when the stored row names a directory that is gone and the repo is now somewhere else — a MOVE, not a second clone. */
-function storedPathMoved(stored: string | undefined, mainPath: string): stored is string {
+function storedPathMoved(stored: string | undefined, mainPath: string): boolean {
   return stored !== undefined && stored !== mainPath && !existsSync(stored);
 }
 
@@ -190,12 +190,23 @@ export function updateRepoIndex(repoName: string, repoRoot: string): void {
 }
 
 /**
+ * `healed` distinguishes a plain index write from a whole move; `ok: false` is
+ * ONLY ever a refused/failed locate — the plain write keeps the sync seam's
+ * best-effort contract and never reports failure.
+ */
+export type IndexHealResult = { ok: true; healed: boolean } | { ok: false; error: string };
+
+/**
  * `updateRepoIndex` for callers that can await: the same write, plus the move
  * heal the sync seam cannot perform. The locate runs in the daemon whenever
  * one is present — imported lazily, both to keep the daemon client off every
  * rt command's startup path and because repo-locate.ts imports this module.
+ *
+ * A refused move is RETURNED, never thrown and never warned about here: the
+ * row is left naming the gone path, so a caller that reports success without
+ * checking is claiming a repo is indexed when it is not.
  */
-export async function updateRepoIndexAsync(repoName: string, repoRoot: string): Promise<void> {
+export async function updateRepoIndexAsync(repoName: string, repoRoot: string): Promise<IndexHealResult> {
   const mainPath = observedMainPath(repoRoot);
   let stored: string | undefined;
   try {
@@ -205,13 +216,11 @@ export async function updateRepoIndexAsync(repoName: string, repoRoot: string): 
   }
   if (!storedPathMoved(stored, mainPath)) {
     writeIndexRow(repoName, mainPath);
-    return;
+    return { ok: true, healed: false };
   }
   const { locateMovedRepo } = await import("./repo-locate-dispatch.ts");
   const outcome = await locateMovedRepo({ newPath: mainPath, repo: repoName });
-  if (!outcome.ok) {
-    console.warn(`rt: ${repoName} moved to ${mainPath} but could not be located (${outcome.error})`);
-  }
+  return outcome.ok ? { ok: true, healed: true } : { ok: false, error: outcome.error };
 }
 
 /**

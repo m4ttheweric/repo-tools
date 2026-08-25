@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb, setKvValue } from "../state/index.ts";
@@ -92,7 +92,7 @@ describe("move-aware index heal", () => {
   test("the async seam heals the move as one unit", async () => {
     const { identity, to } = await movedRepo("gamma");
 
-    await updateRepoIndexAsync(identity, to);
+    expect(await updateRepoIndexAsync(identity, to)).toEqual({ ok: true, healed: true });
 
     expect(loadRepoIndex()[identity]).toBe(to);
     expect(loadRegistry(identity).map((t) => t.path).sort()).toEqual(
@@ -108,8 +108,40 @@ describe("move-aware index heal", () => {
     execSync("git init -q -b main", { cwd: dir, stdio: "pipe" });
     const live = realpathSync(dir);
 
-    await updateRepoIndexAsync("delta-key", live);
+    expect(await updateRepoIndexAsync("delta-key", live)).toEqual({ ok: true, healed: false });
 
     expect(loadRepoIndex()["delta-key"]).toBe(live);
+  });
+
+  test("a refused locate is returned, not swallowed, and leaves the row naming the gone path", async () => {
+    const dir = join(scratch, "zeta");
+    mkdirSync(dir, { recursive: true });
+    // No origin remote: the repo is identified BY its main worktree path, so
+    // moving it mints a new identity and locate refuses rather than re-keying.
+    execSync("git init -q -b main", { cwd: dir, stdio: "pipe" });
+    execSync("git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init", { cwd: dir, stdio: "pipe" });
+    const from = realpathSync(dir);
+    const identity = serializeIdentity(await deriveRepoIdentity(from));
+    setKvValue("repo-index", identity, from);
+    const to = join(scratch, "zeta-moved");
+    renameSync(from, to);
+
+    const outcome = await updateRepoIndexAsync(identity, to);
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.ok === false && outcome.error).toContain("identity-changed");
+    expect(loadRepoIndex()[identity]).toBe(from);
+  });
+
+  test("repo-index.ts never statically imports the locate dispatcher or the daemon client", () => {
+    // The dynamic import is what breaks the repo-locate -> repo-index cycle
+    // AND keeps daemon-client off every rt command's startup path; a static
+    // one reintroduces both at once.
+    const source = readFileSync(join(import.meta.dir, "..", "repo-index.ts"), "utf8");
+    const offenders = source
+      .split("\n")
+      .filter((line) => /\bfrom\s*["'][^"']*(repo-locate-dispatch|daemon-client)/.test(line));
+
+    expect(offenders).toEqual([]);
   });
 });

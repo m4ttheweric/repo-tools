@@ -8,7 +8,7 @@
 
 import { join } from "path";
 import { getSetting } from "../../settings/resolve.ts";
-import { updateRepoIndex } from "../../repo-index.ts";
+import { updateRepoIndexAsync } from "../../repo-index.ts";
 import { serializeIdentity } from "../../settings/identity.ts";
 import { withoutUrls } from "../../team/redact.ts";
 import type { ApplyContext } from "../apply.ts";
@@ -32,6 +32,20 @@ function skippedIdentities(env: Record<string, string | undefined>): Set<string>
       .map((s) => s.trim())
       .filter((s) => s.length > 0),
   );
+}
+
+/**
+ * Index `dest` under the tracked identity, reporting a refused move rather
+ * than counting the repo present/cloned: the row would still name the path
+ * the repo moved away from, so the tally would claim a repo rt cannot reach.
+ */
+async function indexDest(ctx: ApplyContext, identity: string, base: string, dest: string): Promise<boolean> {
+  // The index keys on the serialized identity; `identity` here is already the
+  // raw host/path the tracked-repos setting carries.
+  const indexed = await updateRepoIndexAsync(serializeIdentity({ kind: "remote", id: identity }), dest);
+  if (indexed.ok) return true;
+  ctx.log("repos.clone", `${base}: ${dest} is in place, but ${identity} is indexed at a path that no longer exists and could not be moved — ${indexed.error}; run: rt repos locate ${dest}`);
+  return false;
 }
 
 /** A real clone of `identity`, not just any directory that happens to share its basename — two tracked identities can collide on basename (`gitlab.com/a/api`, `github.com/b/api`), and an unrelated folder can already occupy the path. */
@@ -83,13 +97,13 @@ async function reposCloneRunUnsafe(ctx: ApplyContext): Promise<StepOutcome> {
     const dest = join(root, base);
 
     if (p.exists(dest)) {
-      if (isCloneOf(p, dest, identity)) {
-        present++;
-        updateRepoIndex(serializeIdentity({ kind: "remote", id: identity }), dest);
-      } else {
+      if (!isCloneOf(p, dest, identity)) {
         failed++;
         ctx.log("repos.clone", `${base}: ${dest} exists but isn't a clone of ${identity} (basename collision or unrelated folder) — resolve by hand`);
+        continue;
       }
+      if (await indexDest(ctx, identity, base, dest)) present++;
+      else failed++;
       continue;
     }
 
@@ -100,10 +114,8 @@ async function reposCloneRunUnsafe(ctx: ApplyContext): Promise<StepOutcome> {
       continue;
     }
 
-    cloned++;
-    // The index keys on the serialized identity; `identity` here is already
-    // the raw host/path the tracked-repos setting carries.
-    updateRepoIndex(serializeIdentity({ kind: "remote", id: identity }), dest);
+    if (await indexDest(ctx, identity, base, dest)) cloned++;
+    else failed++;
   }
 
   return { state: "done", detail: `cloned ${cloned}, present ${present}, failed ${failed}` };

@@ -126,7 +126,21 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
   const rawTracking = track ? loadMachineRepoTrackingRaw() : null;
 
   for (const { name, real, identity } of resolved) {
-    await updateRepoIndexAsync(identity, real);
+    // A refused move leaves the row naming the gone path, so printing
+    // "registered" (or a JSON ok envelope) here would tell a script the repo
+    // is indexed at `real` when nothing points there.
+    const indexed = await updateRepoIndexAsync(identity, real);
+    if (!indexed.ok) {
+      exitUserError(
+        new UserActionableError(
+          "locate-failed",
+          `"${name}" is indexed at a path that no longer exists, and moving it to ${real} failed — ${indexed.error}`,
+        ),
+        json,
+        "repos register",
+        deps.print,
+      );
+    }
 
     let tracking: Registered["tracking"] = null;
     if (track && caches && rawTracking) {
