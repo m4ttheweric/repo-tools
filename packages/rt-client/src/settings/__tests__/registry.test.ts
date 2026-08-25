@@ -224,6 +224,7 @@ describe("settings/registry", () => {
         "board.slack",
         "board.doctorSkill",
         "board.triage.doctorSkill",
+        "board.tabs",
         "board.staleAfterDays",
         "board.workspaces",
         "board.defaultMember",

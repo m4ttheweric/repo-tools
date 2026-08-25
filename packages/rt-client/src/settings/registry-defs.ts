@@ -352,6 +352,13 @@ export const REGISTRY: readonly SettingDef[] = [
     merge: "replace",
     description: "Doctor skill the board's own API-tier triage sweep runs on your MRs; deliberately never resolved through a repo's skills.jsonc manifest. A sibling flat key of board.triage, not a field inside it — the board reader assembles the two independently.",
   },
+  {
+    key: "board.tabs",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "Board tab definitions ({id, label, source, slackChannel?, reviewSkill?}); source.kind 'authors' is the classic roster board, 'codeowners' lists MRs blocked on an unapproved CODEOWNERS section. Absent = one implicit authors tab (fallback lives in the board reader, never here).",
+  },
 
   // --- board (user) ----------------------------------------------------------
   {

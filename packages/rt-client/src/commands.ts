@@ -12,6 +12,8 @@ export type Discussion = MRDetail["discussions"][number];
 export interface DemandDecl {
   client: string;
   authors: string[];
+  /** Codeowner sections this client needs covered (spec: second demand axis). */
+  codeownerSections?: string[];
   declaredAt: number;
 }
 
@@ -19,10 +21,14 @@ export interface ProjectMRsScope {
   authors: string[];
   windowDays: number;
   uncovered: string[];
+  /** Effective synced section union; absent from a pre-sections daemon. */
+  sections?: string[];
+  /** Demanded sections not yet swept for this client. */
+  uncoveredSections?: string[];
 }
 
 export interface ProjectMRsData {
-  mrs: Record<string, { pr: PullRequest; fetchedAt: number }>;
+  mrs: Record<string, { pr: PullRequest; fetchedAt: number; codeownerSections?: string[] }>;
   listSyncedAt: number;
   source: "poll" | "events" | "mutation";
   syncedAt: number;
