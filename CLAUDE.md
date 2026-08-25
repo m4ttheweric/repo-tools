@@ -19,7 +19,9 @@ footguns (call-time HOME, file:-dep copies, sops cwd triple).
 ## Repo identity
 
 Every per-repo store, daemon payload, and REST path keys on a serialized repo
-identity from rt-client, never a derived name. Before keying anything by repo,
+identity from rt-client, never a derived name — EXCEPT settings-store sections
+(`repos.<identity>`), which key on the raw `host/path` form the resolver
+expects; a serialized key there misses silently. Before keying anything by repo,
 calling a repo-keyed daemon verb, or displaying a repo name, read
 `docs/repo-identity.md` — it carries the two string forms and where each
 applies, the derivation rules, the identity-only verb guards, and the legacy

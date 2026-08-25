@@ -8,7 +8,7 @@ import { existsSync, readdirSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { Attention, RunDetail, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
-import { computeAttention, fieldValue, lastEventAt } from "./attention.ts";
+import { computeAttention, fieldValue, lastEventAt, type RunLiveness } from "./attention.ts";
 
 export const KNOWN_SCHEMA_VERSION = 2;
 
@@ -85,27 +85,36 @@ function stageRows(db: Database): RunStageRow[] {
 
 const NO_ATTENTION: Attention = { needs: false, reason: null, evidence: "" };
 
+// The herdr mirror only means something while the run is live: a finished
+// run's worktree often hosts whatever agent moved in next.
+function agentMirror(run: RunSummary, fields: RunFieldRow[], liveness?: RunLiveness): RunSummary["agent"] {
+  if (run.status !== "running" || !liveness) return null;
+  return liveness.agentFor(fieldValue(fields, "claude-session"), fieldValue(fields, "worktree"));
+}
+
 // A run whose tables are missing (interrupted run-start) is still worth
 // listing — the store's contract is skip-the-broken-row, not throw, and
 // listRuns has no catch around this call.
-function withAttention(db: Database, row: RunSummary): RunSummary {
+function withAttention(db: Database, row: RunSummary, liveness?: RunLiveness): RunSummary {
   try {
     const stages = stageRows(db);
     const fields = db.query("SELECT key, value, produced_by, at FROM fields").all() as RunFieldRow[];
     const decisions = db.query("SELECT contract, scope, selection, decided_by, decided_at FROM decisions").all() as RunDetail["decisions"];
     return {
       ...row,
-      attention: computeAttention(row, stages, fields, decisions, Date.now()),
+      attention: computeAttention(row, stages, fields, decisions, Date.now(), liveness),
       last_event_at: lastEventAt(row, stages, fields, decisions),
       ticket: fieldValue(fields, "ticket"),
       branch: fieldValue(fields, "branch"),
+      agent: agentMirror(row, fields, liveness),
+      stages: stages.map((s) => ({ name: s.name, status: s.status, started_at: s.started_at })),
     };
   } catch {
     return { ...row, attention: NO_ATTENTION };
   }
 }
 
-export function listRuns(repo?: string): RunSummary[] {
+export function listRuns(repo?: string, liveness?: RunLiveness): RunSummary[] {
   if (repo != null && !isPathComponent(repo)) return [];
   const repos = repo ? [repo] : dirs(runsRoot());
   const out: RunSummary[] = [];
@@ -115,7 +124,7 @@ export function listRuns(repo?: string): RunSummary[] {
       if (!opened) continue;
       try {
         const row = runRow(opened.db);
-        if (row) out.push(withAttention(opened.db, row));
+        if (row) out.push(withAttention(opened.db, row, liveness));
       } finally {
         opened.db.close();
       }
@@ -124,7 +133,7 @@ export function listRuns(repo?: string): RunSummary[] {
   return out.sort((a, b) => b.started_at - a.started_at);
 }
 
-export function readRun(repo: string, runId: string): RunDetail | null {
+export function readRun(repo: string, runId: string, liveness?: RunLiveness): RunDetail | null {
   const opened = openRun(repo, runId);
   if (!opened) return null;
   const { db, schemaAhead } = opened;
@@ -137,10 +146,12 @@ export function readRun(repo: string, runId: string): RunDetail | null {
     return {
       run: {
         ...run,
-        attention: computeAttention(run, stages, fields, decisions, Date.now()),
+        attention: computeAttention(run, stages, fields, decisions, Date.now(), liveness),
         last_event_at: lastEventAt(run, stages, fields, decisions),
         ticket: fieldValue(fields, "ticket"),
         branch: fieldValue(fields, "branch"),
+        agent: agentMirror(run, fields, liveness),
+        stages: stages.map((s) => ({ name: s.name, status: s.status, started_at: s.started_at })),
       },
       stages, fields, decisions,
       schemaAhead,
@@ -152,10 +163,10 @@ export function readRun(repo: string, runId: string): RunDetail | null {
   }
 }
 
-export function findRun(runId: string): RunDetail | null {
+export function findRun(runId: string, liveness?: RunLiveness): RunDetail | null {
   if (!isPathComponent(runId)) return null;
   for (const repo of dirs(runsRoot())) {
-    if (dirs(join(runsRoot(), repo)).includes(runId)) return readRun(repo, runId);
+    if (dirs(join(runsRoot(), repo)).includes(runId)) return readRun(repo, runId, liveness);
   }
   return null;
 }

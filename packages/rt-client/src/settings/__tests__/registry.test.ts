@@ -209,6 +209,7 @@ describe("settings/registry", () => {
         "mattstack.integrations",
         "mattstack.tracking",
         "mattstack.appPath",
+        "mattstack.mode",
         "claude.marketplaces",
         "claude.plugins",
         "deck.apps",
@@ -241,7 +242,7 @@ describe("settings/registry", () => {
         "chat.push.provider",
         "chat.push.target",
       ];
-      expect(suiteKeys).toHaveLength(34);
+      expect(suiteKeys).toHaveLength(35);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),

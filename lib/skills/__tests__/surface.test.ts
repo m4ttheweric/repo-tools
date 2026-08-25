@@ -2,21 +2,11 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { computeRows, otherSideDir, outDirFor, skillsCompile } from "../../../commands/skills.ts";
+import { computeRows, skillsCompile } from "../../../commands/skills.ts";
 import { compileSkill } from "../compile.ts";
 import { readSurface } from "../sources.ts";
 import type { AttachmentSource, StepSource, VerbDef } from "../types.ts";
 import { runExpectingCleanExit } from "./helpers.ts";
-
-test("outDirFor places public under skills/ and internal under attachments/", () => {
-  expect(outDirFor("/pack", "work", true)).toBe("/pack/skills/work");
-  expect(outDirFor("/pack", "stage-plan", false)).toBe("/pack/attachments/stage-plan");
-});
-
-test("otherSideDir names the stale location for a name that flipped sides", () => {
-  expect(otherSideDir("/pack", "work", true)).toBe("/pack/attachments/work");
-  expect(otherSideDir("/pack", "checkout", false)).toBe("/pack/skills/checkout");
-});
 
 function writeFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });

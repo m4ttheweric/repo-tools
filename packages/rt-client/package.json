@@ -9,6 +9,12 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./identity": {
+      "types": "./dist/settings/identity-codec.d.ts",
+      "bun": "./src/settings/identity-codec.ts",
+      "import": "./dist/settings/identity-codec.js",
+      "default": "./dist/settings/identity-codec.js"
+    },
     "./test/fake-daemon.ts": "./test/fake-daemon.ts"
   },
   "peerDependencies": {
@@ -39,7 +45,7 @@
     "bun": ">=1.0.0"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && tsc -p tsconfig.json",
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && bun build src/settings/identity-codec.ts --outfile dist/settings/identity-codec.js --target browser --format esm && tsc -p tsconfig.json",
     "check-types": "tsc --noEmit -p tsconfig.json",
     "prepack": "bun run build"
   },

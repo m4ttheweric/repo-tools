@@ -11,7 +11,7 @@ import { existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { RT_BUNDLE_PATH } from "../../bundle-layout.ts";
 import { activeLaunchdLabel, isDaemonInstalled } from "../../daemon-config.ts";
-import { currentMode } from "../../dev-mode.ts";
+import { currentMode, resolveIntendedMode } from "../../dev-mode.ts";
 import { appBundlePath, linkPath } from "../../deps/resolve.ts";
 import { localBinDir, shimReport, staleIntercepts } from "../../endpoint/shim.ts";
 import { resolveFzf } from "../../fzf.ts";
@@ -349,6 +349,41 @@ async function daemonRow(p: Probes, opts: { ci: boolean }): Promise<Row> {
   return row({ ...base, status: "ready", detail: parts.join(", ") });
 }
 
+/**
+ * Compares three flavor legs — the intended setting, the CLI wrapper, and
+ * a LIVE daemon's own ping — and fails only when a running daemon actually
+ * disagrees. A daemon that never answers (down, uninstalled, unreachable)
+ * is `tool.daemon`'s failure to report, not this row's: CI's clean-room gate
+ * runs verify with no daemon at all, so that leg reading "n/a" must always
+ * resolve `ready` here or a headless run could never pass.
+ */
+async function flavorRow(p: Probes): Promise<Row> {
+  const base = {
+    id: "tool.flavor",
+    kind: "tool" as const,
+    title: "Flavor coherence",
+    why: "One intended flavor serves this machine; a mismatched daemon means stale code answering fresh CLIs.",
+    required: true,
+    recheck: "on-activate" as const,
+  };
+  const intended = resolveIntendedMode();
+  const cli = currentMode();
+  const ping = await p.daemon("ping");
+  const daemonFlavor = ping && ping.ok && (ping as any).flavor ? String((ping as any).flavor) : null;
+
+  if (daemonFlavor === null) {
+    return row({ ...base, status: "ready", detail: `intended ${intended.mode} (${intended.provenance}) · cli ${cli} · daemon n/a` });
+  }
+  if (daemonFlavor === intended.mode && cli === intended.mode) {
+    return row({ ...base, status: "ready", detail: `${intended.mode} everywhere (${intended.provenance})` });
+  }
+  return row({
+    ...base,
+    status: "invalid",
+    detail: `intended ${intended.mode} (${intended.provenance}) · cli ${cli} · daemon ${daemonFlavor} — run: rt settings dev-mode ${intended.mode}`,
+  });
+}
+
 /** Wall-clock, not an injected `now()` — this row takes a bare `exec`, not a full Probes, so there is no seam to inject. */
 function relativeWhen(at: Date | null): string {
   if (!at) return "recently";
@@ -443,6 +478,7 @@ export async function rtHealthRows(p: Probes, opts: { ci: boolean }, seams: RtHe
     extensionRow(p),
     shellRow(p),
     await daemonRow(p, opts),
+    await flavorRow(p),
     await homeBackupRow(join(p.home, ".mattstack", "user"), p.exec),
   ];
 }

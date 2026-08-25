@@ -164,13 +164,15 @@ sys.exit(1 if problems else 0)
 PY
 
 # The real parser, when it is on PATH: structural checks above cannot know what
-# claude actually accepts. Runs against a throwaway HOME so it cannot touch the
-# invoking user's plugin config.
+# claude actually accepts. Runs against a throwaway config so it cannot touch the
+# invoking user's plugin config. CLAUDE_CONFIG_DIR outranks HOME for the CLI (a
+# cswap session exports it), so it is unset explicitly -- HOME alone let this
+# step register the temp stage in the real profile and delete it on exit.
 if command -v claude >/dev/null 2>&1; then
     # Outside $STAGE: anything left under it is committed and published.
     VHOME="$(mktemp -d "${TMPDIR:-/tmp}/mattstack-marketplace-home.XXXXXX")"
     trap 'rm -rf "$STAGE" "$VHOME"' EXIT
-    if VOUT="$(HOME="$VHOME" claude plugin marketplace add "$STAGE" 2>&1)"; then
+    if VOUT="$(env -u CLAUDE_CONFIG_DIR HOME="$VHOME" claude plugin marketplace add "$STAGE" 2>&1)"; then
         echo "✓ claude accepts the staged catalog"
     else
         printf '%s\n' "$VOUT" >&2

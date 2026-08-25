@@ -2,7 +2,8 @@
  * `rt settings dev-mode` — the non-interactive branches: an explicit Target
  * arg must switch straight through with no prompt (the app's Settings pane
  * calls this exact form, off a TTY), and an omitted Target with no TTY to
- * prompt in must refuse cleanly (exit 2) rather than hang on the picker.
+ * prompt in prints the read-only flavor tuple and exits 0 rather than
+ * hanging on the picker.
  *
  * The "switches" case drives the real `toggleDevMode` flavor handoff, so it
  * reuses the same fake-bin-dir + fake tray-socket rig as
@@ -120,12 +121,12 @@ describe("toggleDevMode — non-interactive Target handling", () => {
     expect(existsSync(WRAPPER_PATH)).toBe(true); // the switch actually ran
   }, 15_000);
 
-  test("non-TTY + no Target: exit 2 target-required, never reaches the picker or touches any state", async () => {
+  test("non-TTY + no Target: prints the read-only tuple, exit 0, never reaches the picker or touches any state", async () => {
     expect(existsSync(WRAPPER_PATH)).toBe(false);
 
     await toggleDevMode([], {}, isolatedExists);
 
-    expect(process.exitCode).toBe(2);
+    expect(process.exitCode ?? 0).toBe(0); // bare read, not a refusal
     expect(existsSync(WRAPPER_PATH)).toBe(false); // no switch attempted
   });
 });

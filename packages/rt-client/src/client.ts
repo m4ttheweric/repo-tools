@@ -10,6 +10,7 @@ import type {
   ProjectMRsData,
   DiscussionsData,
   MrByBranchData,
+  BranchEnrichment,
   ForgeSlug,
   ForgeTokenData,
   RunSummary,
@@ -65,6 +66,22 @@ export function readMrsByBranch(
     "mr:by-branch",
     { repoName, branches },
     { sockPath: opts.sockPath, timeoutMs: 60_000 },
+  );
+}
+
+/**
+ * Cached ticket/MR enrichment for a set of branches, keyed by branch name
+ * (the cache's own primary key -- see lib/state/branch-cache.ts). Serves
+ * whatever the daemon already has; it does not trigger a fetch.
+ */
+export function readBranchCache(
+  branches: string[],
+  opts: RtClientOptions = {},
+): Promise<RtResponse<Record<string, BranchEnrichment>>> {
+  return rtCommand<Record<string, BranchEnrichment>>(
+    "cache:read",
+    { branches },
+    { sockPath: opts.sockPath, timeoutMs: 10_000 },
   );
 }
 

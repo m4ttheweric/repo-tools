@@ -5,7 +5,7 @@
  * Derived state carries the evidence that produced it: "no event in 41m" is a
  * claim the reader can check, "stale" alone is not.
  */
-import type { Attention, RunDecisionRow, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
+import type { Attention, RunAgent, RunDecisionRow, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
 
 // `Attention` is declared in rt-client (see below): mr-board and gitq consume
 // that package as a file: dependency and must never import rt internals.
@@ -40,12 +40,30 @@ function has(fields: RunFieldRow[], key: string): boolean {
   return fields.some((f) => f.key === key);
 }
 
+/**
+ * Out-of-band evidence that a DB-silent run is still being driven. Provided
+ * by lib/runs/liveness.ts; attention stays pure by taking it as an argument.
+ */
+export interface RunLiveness {
+  /** The herdr agent attributed to a run: recorded session first, else the
+      highest-priority agent whose cwd sits in the worktree. Null when no
+      agent matches or herdr is unavailable. */
+  agentFor(session: string | null, worktree: string | null): RunAgent | null;
+  /** Pane id of a `working` herdr agent running this claude session. */
+  workingSessionPane(sessionId: string): string | null;
+  /** Pane id of a `working` herdr agent whose cwd sits in this worktree. */
+  workingAgentPane(worktree: string): string | null;
+  /** Latest git-activity mtime in the worktree, or null when unstatable. */
+  worktreeActiveAt(worktree: string): number | null;
+}
+
 export function computeAttention(
   run: RunSummary,
   stages: RunStageRow[],
   fields: RunFieldRow[],
   decisions: RunDecisionRow[],
   now: number,
+  liveness?: RunLiveness,
 ): Attention {
   if (run.status === "failed") {
     const worst = stages.filter((s) => s.status === "failed").at(-1);
@@ -54,19 +72,43 @@ export function computeAttention(
   }
 
   if (run.status === "running") {
+    const worktree = fieldValue(fields, "worktree");
+    const session = fieldValue(fields, "claude-session");
+    // Blocked mirrors herdr verbatim, no threshold: an agent parked on a
+    // question IS "needs attention", however recently the db moved. The
+    // mirror clears the moment herdr reports any other status.
+    const agent = liveness?.agentFor(session, worktree) ?? null;
+    if (agent?.status === "blocked") {
+      return { needs: true, reason: "blocked", evidence: `agent waiting for input in pane ${agent.pane}` };
+    }
     const silentMs = now - lastEventAt(run, stages, fields, decisions);
     if (silentMs > STALE_MS) {
       const mins = Math.round(silentMs / 60_000);
       const stage = run.current_stage ?? "an unknown stage";
-      // The spec's condition 2 also says "no owning process". Process liveness
-      // is deliberately NOT checked in v1: a run's owning process is a Claude
-      // session this machine cannot reliably attribute, and a wrong "no process"
-      // claim is worse than a silence measurement the reader can verify. The
-      // evidence therefore says exactly what was measured and nothing more.
+      // Stage boundaries are the only guaranteed DB writes, so a long stage is
+      // silent by design. Before claiming stale, walk the liveness ladder —
+      // the run's recorded claude session working anywhere, a working agent
+      // in the worktree, recent git activity there — and stay quiet while any
+      // rung holds. A working agent suppresses stale indefinitely: attention
+      // means "nobody is driving this", not "this is taking long". The
+      // evidence string still only asserts what was actually measured.
+      let checked = "";
+      if (liveness && (worktree || session)) {
+        if (session && liveness.workingSessionPane(session) != null) return NONE;
+        if (worktree) {
+          if (liveness.workingAgentPane(worktree) != null) return NONE;
+          const activeAt = liveness.worktreeActiveAt(worktree);
+          if (activeAt != null && now - activeAt <= STALE_MS) return NONE;
+          const quiet = activeAt != null ? `worktree quiet ${Math.round((now - activeAt) / 60_000)}m` : "worktree unstatable";
+          checked = `, ${quiet}, no agent working there`;
+        } else {
+          checked = ", its session's agent is not working";
+        }
+      }
       return {
         needs: true,
         reason: "stale",
-        evidence: `no event in ${mins}m while in ${stage}; threshold is ${Math.round(STALE_MS / 60_000)}m`,
+        evidence: `no event in ${mins}m while in ${stage}${checked}; threshold is ${Math.round(STALE_MS / 60_000)}m`,
       };
     }
     return NONE;

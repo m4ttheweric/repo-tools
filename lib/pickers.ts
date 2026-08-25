@@ -7,7 +7,7 @@
 
 import { execSync } from "child_process";
 import { join } from "path";
-import { getRepoIdentity, getKnownRepos, pickWorktreeFromRepo, getWorkspacePackages, repoOption, type KnownRepo } from "./repo.ts";
+import { getRepoIdentity, getKnownRepos, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchLabel } from "./enrich.ts";
 
 const SWITCH_REPO     = "__switch_repo__"     as const;
@@ -37,7 +37,7 @@ async function buildWorktreeOptions(
 }
 
 function repoOptionsFromList(repos: KnownRepo[]) {
-  return repos.map(repoOption);
+  return repoOptions(repos);
 }
 
 // ─── Pickers ─────────────────────────────────────────────────────────────────

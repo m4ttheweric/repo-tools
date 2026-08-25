@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../paths.ts";
-import { setSetting } from "../write.ts";
+import { setSetting, unsetSetting } from "../write.ts";
 
 const IDENTITY = "gitlab.com/acme/acme-dev";
 const TEAM = "acme";
@@ -378,5 +378,84 @@ describe("settings/write", () => {
 
   test("uses the HOME-relative teamsDir for team store discovery", () => {
     expect(teamsDir()).toContain(home);
+  });
+});
+
+describe("settings/unset", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-settings-unset-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function seedUser(content: string): void {
+    mkdirSync(dirname(userSettingsPath()), { recursive: true });
+    writeFileSync(userSettingsPath(), content);
+  }
+
+  test("removes a present key, preserving comments, and returns true", () => {
+    seedUser(`// my settings\n{\n  // keep me\n  "rt.worktrees": { "onDeck": 2 },\n  "rt.roles": { "web": { "ports": [3000] } }\n}\n`);
+    expect(unsetSetting("rt.worktrees", "user")).toBe(true);
+    const after = readFileSync(userSettingsPath(), "utf8");
+    expect(after).not.toContain("rt.worktrees");
+    expect(after).toContain("// my settings");
+    expect(after).toContain("rt.roles");
+  });
+
+  test("a key not present in the store is a no-op returning false, file untouched", () => {
+    const content = `// untouched\n{\n  "rt.roles": {}\n}\n`;
+    seedUser(content);
+    expect(unsetSetting("rt.worktrees", "user")).toBe(false);
+    expect(readFileSync(userSettingsPath(), "utf8")).toBe(content);
+  });
+
+  test("a store file that does not exist is a no-op returning false", () => {
+    expect(unsetSetting("rt.worktrees", "user")).toBe(false);
+    expect(() => readFileSync(userSettingsPath(), "utf8")).toThrow();
+  });
+
+  test("removes a repoScoped key from its repos.<identity> section only", () => {
+    seedUser(`{\n  "repos": {\n    "${IDENTITY}": { "rt.worktrees": { "onDeck": 1 }, "rt.roles": {} }\n  }\n}\n`);
+    expect(unsetSetting("rt.worktrees", "user", { repoIdentity: IDENTITY })).toBe(true);
+    const after = readFileSync(userSettingsPath(), "utf8");
+    expect(after).not.toContain("rt.worktrees");
+    expect(after).toContain("rt.roles");
+  });
+
+  test("refuses an unknown key", () => {
+    expect(() => unsetSetting("rt.doesNotExist", "user")).toThrow(/unknown setting/);
+  });
+
+  test("refuses a scope the def does not allow", () => {
+    expect(() => unsetSetting("rt.repoIdentityOverrides", "user")).toThrow(/cannot be unset in the user store/);
+  });
+
+  test("refuses repoIdentity on a non-repoScoped key", () => {
+    expect(() => unsetSetting("rt.repoIdentityOverrides", "machine", { repoIdentity: IDENTITY })).toThrow(/not repo-scoped/);
+  });
+
+  test("explicit team with no local store is a no-op, not a refusal", () => {
+    expect(unsetSetting("rt.roles", "team", { team: "ghost" })).toBe(false);
+  });
+
+  test("ambiguous team selection still refuses", () => {
+    for (const t of [TEAM, OTHER_TEAM]) {
+      const p = teamSettingsPath(t);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, `{}\n`);
+    }
+    expect(() => unsetSetting("rt.roles", "team")).toThrow(/multiple local team stores/);
+  });
+
+  test("refuses to edit a malformed store", () => {
+    seedUser(`{ "rt.roles": 1, "rt.roles": 2 }\n`);
+    expect(() => unsetSetting("rt.roles", "user")).toThrow(/malformed store/);
   });
 });

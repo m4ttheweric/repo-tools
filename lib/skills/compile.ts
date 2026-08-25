@@ -1,4 +1,6 @@
-import { assertNoPlaceholders, findPlaceholders, substitute } from "./placeholders.ts";
+import { existsSync } from "fs";
+import { isAbsolute, relative as relativePath, resolve as resolvePath, sep } from "path";
+import { assertNoPlaceholders, findPlaceholders, skillDirFor, substitute, substituteIncludesOnly } from "./placeholders.ts";
 import type {
   AttachmentSource,
   CompiledFile,
@@ -17,6 +19,116 @@ export const HEADER_COMMENT =
   "<!-- compiled by rt skills compile from the sources below; slots pre-resolved; edits here are working-tree drift (rt skills promote) -->";
 
 const SKILL_DIR_PATH_RE = /\$\{CLAUDE_SKILL_DIR\}\/[^\s"'`)]+/g;
+
+/**
+ * A `../` path only reads as a body reference when it starts one: the same
+ * characters after a slash are the tail of a shell-composed path
+ * (`$(dirname "$X")/../forge/…`) whose base is unknown at compile time.
+ */
+const RELATIVE_PATH_RE = /(?<![^\s("'`[<,])\.\.\/[^\s"'`)]+/g;
+
+/** Vendored assets are addressed from the skill's own directory, so a bare one names an emitted file or nothing at all. */
+const BARE_ASSET_RE = /(?<![^\s("'`[<,])(?:scripts|references)\/[^\s"'`)]+/g;
+
+/** Where a compiled verb lands, so a body path can be resolved the way the reading agent will resolve it. */
+type CompiledLayout = { packRoot: string; compiledDir: string };
+
+type BodyPath = {
+  text: string;
+  relPath: string;
+  line: number;
+  kind: "token" | "relative" | "asset";
+  namesFile: boolean;
+};
+
+const TRAILING_PUNCTUATION_RE = /[.,;:!?\])]+$/;
+
+/**
+ * Prose wraps a path in a sentence and in markdown, so the punctuation trailing
+ * it belongs to neither the file name nor the lint message -- except in a `..`
+ * segment, whose dots are the path. What is left may name no file at all
+ * (`scripts/` in prose, or the compiled `work`'s `${CLAUDE_SKILL_DIR}/../..`
+ * pack root in any spelling), and only a named file can be checked against what
+ * this compile emits.
+ */
+function readPath(raw: string): { text: string; namesFile: boolean } {
+  const segments = raw.split("/");
+  const last = segments.length - 1;
+  if (segments[last] === "..") return { text: raw, namesFile: false };
+  segments[last] = segments[last]!.replace(TRAILING_PUNCTUATION_RE, "");
+  return { text: segments.join("/"), namesFile: segments[last] !== "" };
+}
+
+function bodyPaths(body: string): BodyPath[] {
+  const out: BodyPath[] = [];
+  const lines = body.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    for (const m of line.matchAll(SKILL_DIR_PATH_RE)) {
+      const { text, namesFile } = readPath(m[0]);
+      out.push({
+        text,
+        relPath: text.slice(`${CLAUDE_SKILL_DIR_TOKEN}/`.length),
+        line: i + 1,
+        kind: "token",
+        namesFile,
+      });
+    }
+    for (const m of line.matchAll(RELATIVE_PATH_RE)) {
+      const { text, namesFile } = readPath(m[0]);
+      out.push({ text, relPath: text, line: i + 1, kind: "relative", namesFile });
+    }
+    for (const m of line.matchAll(BARE_ASSET_RE)) {
+      const { text, namesFile } = readPath(m[0]);
+      out.push({ text, relPath: text, line: i + 1, kind: "asset", namesFile });
+    }
+  }
+  return out;
+}
+
+const SEAM_RE = /^<!-- part: .*\bpath=(\S+) lines=(\d+)-\d+ -->$/;
+
+/**
+ * A compiled body is assembled from several files, so its own line numbers name
+ * nothing on disk -- and an erroring compile writes no artifact to count in
+ * anyway. Every section is introduced by a seam carrying its source path and
+ * the line its body starts on, so the nearest seam above a line maps it back.
+ */
+function sourceCoordinate(lines: string[], line: number): string | null {
+  for (let i = line - 2; i >= 0; i--) {
+    const seam = lines[i]!.trim().match(SEAM_RE);
+    if (!seam) continue;
+    const seamLine = i + 1;
+    // A seam pushed as its own section has a blank line under it; one substituted
+    // in place by a placeholder sits directly above its body.
+    const firstBodyLine = seamLine + (lines[seamLine]?.trim() === "" ? 2 : 1);
+    return `${seam[1]}:${Number(seam[2]) + (line - firstBodyLine)}`;
+  }
+  return null;
+}
+
+function escapesPackRoot(layout: CompiledLayout, relPath: string): boolean {
+  const rel = relativePath(layout.packRoot, resolvePath(layout.compiledDir, relPath));
+  return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+/**
+ * A `../` read the pack can actually satisfy is a sibling reference, not a
+ * dangling one: either something already in the working tree, or the output dir
+ * of another target in this compile, which may not be written yet.
+ *
+ * Reading the working tree makes this lint state-dependent -- `compile` and
+ * `check` can disagree across a file add or removal, and a scoped `--verb` run
+ * has fewer target dirs to match against than a whole-pack run.
+ */
+function packSatisfies(layout: CompiledLayout, relPath: string, emittedTargetDirs: string[]): boolean {
+  const abs = resolvePath(layout.compiledDir, relPath);
+  if (existsSync(abs)) return true;
+  return emittedTargetDirs.some((dir) => {
+    const target = resolvePath(dir);
+    return abs === target || abs.startsWith(`${target}${sep}`);
+  });
+}
 
 /** rt's own namespace, always linted even when no pack is installed. */
 const OWN_NAMESPACE = "mattstack";
@@ -85,7 +197,7 @@ function span(src: { srcPath: string; bodyStartLine: number; body: string }): st
 }
 
 function resolveBoundSlots(
-  verb: VerbDef,
+  where: string,
   step: StepSource,
   fills: Record<string, AttachmentSource | null>,
 ): BoundSlot[] {
@@ -99,7 +211,7 @@ function resolveBoundSlots(
     if (fill === null) {
       if (spec.required) {
         throw new Error(
-          `verb "${verb.name}": slot "${slotName}" requires contract "${spec.contract}" but is unbound`,
+          `${where}: slot "${slotName}" requires contract "${spec.contract}" but is unbound`,
         );
       }
       continue;
@@ -107,7 +219,7 @@ function resolveBoundSlots(
 
     if (fill.provides !== spec.contract) {
       throw new Error(
-        `verb "${verb.name}": slot "${slotName}" requires contract "${spec.contract}" but binding "${fill.binding}" provides "${fill.provides}"`,
+        `${where}: slot "${slotName}" requires contract "${spec.contract}" but binding "${fill.binding}" provides "${fill.provides}"`,
       );
     }
 
@@ -125,11 +237,16 @@ function toWildcardRule(rule: string): string {
   return rule.slice(0, at) + "*/" + rule.slice(at + prefix.length);
 }
 
-function buildAllowedTools(step: StepSource, boundSlots: BoundSlot[], stageRules: string[]): string[] {
+function buildAllowedTools(
+  step: StepSource,
+  boundSlots: BoundSlot[],
+  stageRules: string[],
+  ctx: PlaceholderContext,
+): string[] {
   const entries = [
     ...step.allowedTools,
     ...boundSlots.flatMap(({ slotName, fill }) =>
-      fill.allowedTools.map((tool) => rewriteSkillDirRefs(tool, slotName)),
+      fill.allowedTools.map((tool) => tool.split(CLAUDE_SKILL_DIR_TOKEN).join(skillDirFor(fill, ctx, slotName))),
     ),
     ...stageRules.map(toWildcardRule),
   ];
@@ -224,13 +341,20 @@ function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): 
       notes.push(`note: ${fill.binding} is surface-internal; inlined`);
     }
 
+    // An inlined fill's own {{include:...}} lines need the same ctx substitute uses
+    // for a placeholder-driven slot; compileSkill always builds one.
+    if (!opts.ctx) {
+      throw new Error(`engine "${step.name}": fill "${fill.binding}" needs a placeholder context to resolve its includes`);
+    }
     sections.push(
       `<!-- part: slot:${slotName} binding=${fill.binding} version=${fill.version} ${span(fill)} -->`,
     );
-    sections.push(rewriteSkillDirRefs(fill.body, slotName));
+    sections.push(substituteIncludesOnly(rewriteSkillDirRefs(fill.body, slotName), opts.ctx, fill.binding));
   }
 
-  return { body: sections.join("\n\n"), notes };
+  const body = sections.join("\n\n");
+  assertNoStrayBraces(body, step.name);
+  return { body, notes };
 }
 
 function buildVendoredFiles(
@@ -273,15 +397,28 @@ function stripCompilerComments(body: string): string {
     .join("\n");
 }
 
+/**
+ * Paths are judged from the compiled skill's own directory, which is where the
+ * reading agent resolves them: a path that leaves the pack root cannot be read
+ * at run time (the pack is what ships), while one that stays inside may name a
+ * sibling compiled target, so it only warns.
+ */
 function lintReferences(
   body: string,
   roster: Set<string>,
   files: CompiledFile[],
   known: Iterable<string>,
-  exemptPrefixes: string[] = [],
+  opts: {
+    where: string;
+    exemptPrefixes?: string[];
+    layout?: CompiledLayout | null;
+    emittedTargetDirs?: string[];
+  },
 ): string[] {
   const warnings: string[] = [];
   const lintableBody = stripCompilerComments(body);
+  const exemptPrefixes = opts.exemptPrefixes ?? [];
+  const emittedTargetDirs = opts.emittedTargetDirs ?? [];
 
   const seenNames = new Set<string>();
   for (const match of lintableBody.matchAll(registeredNameRe(roster, known))) {
@@ -295,14 +432,24 @@ function lintReferences(
 
   const emittedPaths = new Set(files.map((f) => f.path));
   const seenPaths = new Set<string>();
-  for (const match of lintableBody.matchAll(SKILL_DIR_PATH_RE)) {
-    const full = match[0];
-    if (seenPaths.has(full)) continue;
-    seenPaths.add(full);
-    if (exemptPrefixes.some((p) => full.startsWith(p))) continue;
-    const relPath = full.slice(`${CLAUDE_SKILL_DIR_TOKEN}/`.length);
+  // Paths are scanned in the unstripped body because the seam comments are what
+  // map an offending line back to its source file; only names are lint material.
+  const bodyLines = body.split("\n");
+  for (const { text, relPath, line, kind, namesFile } of bodyPaths(body)) {
+    if (opts.layout && escapesPackRoot(opts.layout, relPath)) {
+      const at = sourceCoordinate(bodyLines, line) ?? `compiled body line ${line}`;
+      throw new Error(`${opts.where}: "${text}" at ${at} resolves outside the pack root`);
+    }
+    if (!namesFile || seenPaths.has(text)) continue;
+    seenPaths.add(text);
+    if (kind === "token" && exemptPrefixes.some((p) => text.startsWith(p))) continue;
+    if (kind === "relative" && opts.layout && packSatisfies(opts.layout, relPath, emittedTargetDirs)) continue;
     if (!emittedPaths.has(relPath)) {
-      warnings.push(`body references ${full} which is not an emitted file`);
+      warnings.push(
+        kind === "asset"
+          ? `bare path ${text} is not an emitted file`
+          : `body references ${text} which is not an emitted file`,
+      );
     }
   }
 
@@ -340,13 +487,20 @@ export function compileSkill(
     repoKey?: string;
     mattstackSha?: string;
     mattstackDirty?: 0 | 1;
+    packSha?: string;
     stageDir?: string | null;
     stageAllowedTools?: string[];
     emittedSiblingDirs?: string[];
+    packRoot?: string;
+    compiledDir?: string;
+    emittedTargetDirs?: string[];
+    /** How the caller names this target in errors -- `stage "x"` for a pipeline stage. */
+    where?: string;
   } = {},
 ): CompileResult {
   const internalRoster = opts.internalRoster ?? new Set<string>();
-  const boundSlots = resolveBoundSlots(verb, step, fills);
+  const where = opts.where ?? `verb "${verb.name}"`;
+  const boundSlots = resolveBoundSlots(where, step, fills);
 
   const compiledParts = [
     `${step.plugin}@${step.version}`,
@@ -369,12 +523,13 @@ export function compileSkill(
     repoKey: opts.repoKey ?? "",
     mattstackSha: opts.mattstackSha ?? "",
     mattstackDirty: opts.mattstackDirty ?? 0,
+    packSha: opts.packSha ?? "",
     stageDir: opts.stageDir ?? null,
     stageMeta: step.stageMeta,
     compiledFrom,
   };
 
-  const allowedTools = buildAllowedTools(step, boundSlots, opts.stageAllowedTools ?? []);
+  const allowedTools = buildAllowedTools(step, boundSlots, opts.stageAllowedTools ?? [], ctx);
   const { body, notes } = buildBody(step, boundSlots, {
     internalRoster,
     ctx,
@@ -389,8 +544,16 @@ export function compileSkill(
   ];
 
   const fillBindings = boundSlots.map(({ fill }) => fill.binding);
+  const layout = opts.packRoot && opts.compiledDir
+    ? { packRoot: opts.packRoot, compiledDir: opts.compiledDir }
+    : null;
   const warnings = [
-    ...lintReferences(body, roster, files, fillBindings, opts.emittedSiblingDirs ?? []),
+    ...lintReferences(body, roster, files, fillBindings, {
+      where,
+      exemptPrefixes: opts.emittedSiblingDirs ?? [],
+      layout,
+      emittedTargetDirs: opts.emittedTargetDirs ?? [],
+    }),
     ...notes,
   ];
   const errors = [

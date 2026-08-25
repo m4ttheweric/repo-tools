@@ -842,9 +842,9 @@ export const TREE: Record<string, CommandNode> = {
         description: "Toggle between local dev source and the installed production binary",
         module: "./commands/settings.ts",
         fn: "toggleDevMode",
-        // Only needs a TTY to prompt for Target — the app's Settings pane
-        // (and any other non-interactive caller) always supplies it directly.
-        requiresTTY: (args) => !args.some((a) => !a.startsWith("--")),
+        // A TTY is needed only to PROMPT for a target: an explicit target,
+        // --json, and the bare read-only tuple print are all non-interactive.
+        requiresTTY: () => false,
         args: [
           { name: "Target", type: "select", hint: "Omit to be prompted interactively", options: [{ value: "dev", label: "dev", hint: "Run from local source" }, { value: "prod", label: "prod", hint: "Run the installed binary (from mattstack.app)" }] },
         ],
@@ -1016,6 +1016,15 @@ export const TREE: Record<string, CommandNode> = {
   skills: {
     description: "Compile, check, and manage the surface of the pack's committed skills",
     subcommands: {
+      link: {
+        description: "Symlink this repo's skills/*/SKILL.md into ~/.claude/skills by frontmatter name (create, repoint, prune; conflicts reported, never touched)",
+        module: "./commands/skills-link.ts",
+        fn: "skillsLink",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would change without touching disk" },
+          SETUP_JSON_ARG,
+        ],
+      },
       materialize: {
         description: "Run merge-manifests.sh to materialize skill bindings for registered repos",
         module: "./commands/skills.ts",
@@ -1079,11 +1088,11 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
       bind: {
-        description: "Write bindings.<engineRef>.<slot> = <fill> into the manifest (jsonc-parser, comments preserved), validate the fill against the slot's contract, and recompile the verb",
+        description: "Write bindings.<engineRef>.<slot> = <fill> into the manifest (jsonc-parser, comments preserved), validate the fill against the slot's contract, and recompile (a stage bind recompiles the whole pack)",
         module: "./commands/skills.ts",
         fn: "skillsBind",
         args: [
-          { name: "Verb", type: "text", placeholder: "watch-ci", hint: "Verb in the pack's roster" },
+          { name: "Verb", type: "text", placeholder: "watch-ci", hint: "Roster verb or pipeline stage" },
           { name: "Slot", type: "text", placeholder: "domain", hint: "Slot declared on the verb's step" },
           { name: "Fill", type: "text", placeholder: "acme:watch-ci-domain-v2", hint: "<plugin>:<skill> binding string; must provide the slot's declared contract" },
           { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },

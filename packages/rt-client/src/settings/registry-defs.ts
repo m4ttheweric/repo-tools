@@ -229,6 +229,13 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Absolute path to the installed mattstack.app bundle, written by the app at launch so rt stops hardcoding ~/Applications.",
   },
   {
+    key: "mattstack.mode",
+    type: "string",
+    scopes: ["machine"],
+    merge: "replace",
+    description: "The machine's intended flavor, \"dev\" or \"prod\". Normally written by `rt settings dev-mode` after a successful handoff; a manual `rt settings set` is the blessed repair escape hatch — the daemon park loop converges on whatever this says. Unset ⇒ derived from the dev wrapper's presence.",
+  },
+  {
     key: "rt.integrations",
     type: "object",
     scopes: ["user"],

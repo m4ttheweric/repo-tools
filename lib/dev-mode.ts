@@ -16,6 +16,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, rmSync, symlinkSync } from "fs";
 import { dirname, resolve } from "path";
 import { homedir } from "os";
+import { getSetting } from "./settings/resolve.ts";
 
 // Call-time HOME (mirrors lib/rt-paths.ts's home()): resolved on every call,
 // not baked in at module load, so tests can repoint HOME per-test by setting
@@ -87,4 +88,25 @@ export function currentMode(): "dev" | "prod" {
   } catch {
     return "prod";
   }
+}
+
+export interface IntendedMode {
+  mode: "dev" | "prod";
+  provenance: "setting" | "derived-from-wrapper";
+}
+
+/**
+ * The single seam every flavor decision reads. The generic settings read is
+ * NOT equivalent: it reports store values only and drops an unset value, and
+ * a consumer defaulting unset→prod would stand the dev pair down on a fresh
+ * machine — the opposite of self-heal.
+ */
+export function resolveIntendedMode(): IntendedMode {
+  try {
+    const { value } = getSetting<string>("mattstack.mode");
+    if (value === "dev" || value === "prod") return { mode: value, provenance: "setting" };
+  } catch {
+    // unreadable store: derivation below always yields a mode
+  }
+  return { mode: currentMode(), provenance: "derived-from-wrapper" };
 }

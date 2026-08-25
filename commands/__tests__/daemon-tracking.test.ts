@@ -20,6 +20,7 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { parse as parseJsonc } from "jsonc-parser";
 import { machineSettingsPath, teamSettingsPath } from "../../lib/rt-paths.ts";
 import { getSetting } from "../../lib/settings/resolve.ts";
 import { serializeIdentity } from "../../lib/settings/identity.ts";
@@ -49,6 +50,19 @@ function restore(path: string, prior: string | null): void {
   } else {
     writeFileSync(path, prior);
   }
+}
+
+/**
+ * The machine store is authored JSONC — `setSetting` seeds a `//` header
+ * comment the first time it creates the file (write.ts's `seedHeader`), and
+ * this file's `priorMachineStore` snapshot is shared ambient-HOME content
+ * that another test file's real `setSetting` call may already have written
+ * that header into. A bare `JSON.parse` throws on that; parse it the same
+ * comment-tolerant way `readStore` does.
+ */
+function parseMachineStore(raw: string): Record<string, unknown> {
+  const parsed = parseJsonc(raw, undefined, { allowTrailingComma: true }) as unknown;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
 }
 
 describe("manageTracking off-branch (CLI wiring)", () => {
@@ -87,7 +101,7 @@ describe("manageTracking off-branch (CLI wiring)", () => {
     // An existing machine grant for it, as if it had been tracked already.
     const machineStore = machineSettingsPath();
     mkdirSync(dirname(machineStore), { recursive: true });
-    const machine = priorMachineStore ? JSON.parse(priorMachineStore) : {};
+    const machine = priorMachineStore ? parseMachineStore(priorMachineStore) : {};
     machine["rt.repoTracking"] = {
       ...(machine["rt.repoTracking"] ?? {}),
       [SERIALIZED]: { mode: "live", caches: ["branches"] },

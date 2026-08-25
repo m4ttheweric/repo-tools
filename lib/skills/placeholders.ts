@@ -31,18 +31,48 @@ function fenced(value: unknown): string {
 
 const SKILL_DIR_TOKEN = "${CLAUDE_SKILL_DIR}";
 
-function slotText(name: string, fill: AttachmentSource | null, mode: "inline" | "reference", partsPrefix: string): string {
+/**
+ * A parts dir is only emitted for a source that vendors files, so a source
+ * without any keeps the host skill's own directory -- rewriting to a parts dir
+ * that will never exist leaves every runtime use of the token dangling.
+ * Exported because a fill's `allowed-tools` rules must land on the same
+ * directory its body does, or the frontmatter grants a path the body never names.
+ */
+export function skillDirFor(source: AttachmentSource, ctx: PlaceholderContext, partsName: string): string {
+  if (source.extraFiles.length > 0) return `${ctx.partsPrefix}/${partsName}`;
+  return ctx.stageDir ?? SKILL_DIR_TOKEN;
+}
+
+function slotText(name: string, fill: AttachmentSource | null, mode: "inline" | "reference", ctx: PlaceholderContext): string {
   if (fill === null) return "";
   if (mode === "reference") {
     return `Slot ${name} is bound to \`${fill.binding}\` (${fill.binding}@${fill.version}) -- invoke that skill when this flow needs it.`;
   }
-  const body = fill.body.split(SKILL_DIR_TOKEN).join(`${partsPrefix}/${name}`);
+  const rewritten = fill.body.split(SKILL_DIR_TOKEN).join(skillDirFor(fill, ctx, name));
+  const body = substituteIncludesOnly(rewritten, ctx, fill.binding);
   return `<!-- part: slot:${name} binding=${fill.binding} version=${fill.version} ${spanOf(fill)} -->\n${body}`;
 }
 
-function includeText(name: string, inc: AttachmentSource, partsPrefix: string): string {
-  const body = inc.body.split(SKILL_DIR_TOKEN).join(`${partsPrefix}/include-${name}`);
+function includeText(name: string, inc: AttachmentSource, ctx: PlaceholderContext): string {
+  const body = inc.body.split(SKILL_DIR_TOKEN).join(skillDirFor(inc, ctx, `include-${name}`));
   return `<!-- part: include:${name} source=${inc.plugin}:${name} version=${inc.version} ${spanOf(inc)} -->\n${body}`;
+}
+
+/**
+ * loadInclude enforces that an include target is itself slotless and
+ * placeholder-free, so a fill body carrying {{include}} lines cannot recurse --
+ * `where` is the fill's own binding, matching how a step body names itself.
+ */
+export function substituteIncludesOnly(body: string, ctx: PlaceholderContext, where: string): string {
+  return body.split("\n").map((line, i) =>
+    line.replace(PLACEHOLDER_RE, (raw, kind: string, arg?: string) => {
+      if (kind !== "include") throw new Error(`${where}: ${raw} -- a fill may carry {{include}} only (line ${i + 1})`);
+      if (line.trim() !== raw) throw new Error(`${where}: ${raw} must be alone on its line (line ${i + 1})`);
+      const inc = arg ? ctx.includes[arg] : undefined;
+      if (!arg || !inc) throw new Error(`${where}: include "${arg}" is not a loaded attachment`);
+      return includeText(arg, inc, ctx);
+    }),
+  ).join("\n");
 }
 
 function workTypeText(pipelines: Record<string, StageEntry[]>, where: string): string {
@@ -58,8 +88,9 @@ function runStartFlags(ctx: PlaceholderContext): string {
   // run-start's flag parser takes the token after a flag as its value, so an empty
   // sha must drop the flag entirely rather than leave `--mattstack-dirty` as the value.
   const sha = ctx.mattstackSha ? ` --mattstack-sha ${ctx.mattstackSha}` : "";
+  const pack = ctx.packSha ? ` --pack-sha ${ctx.packSha}` : "";
   for (const t of Object.keys(ctx.pipelines)) {
-    out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t}${sha} --mattstack-dirty ${ctx.mattstackDirty}`;
+    out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t}${sha} --mattstack-dirty ${ctx.mattstackDirty}${pack}`;
   }
   return fenced(out);
 }
@@ -92,14 +123,14 @@ export function substitute(
           if (!arg) throw new Error(`${where}: ${raw} needs a slot name`);
           if (!(arg in ctx.fills)) throw new Error(`${where}: slot "${arg}" is not declared by this engine`);
           used.slots.push(arg);
-          return slotText(arg, ctx.fills[arg] ?? null, ctx.slotMode[arg] ?? "inline", ctx.partsPrefix);
+          return slotText(arg, ctx.fills[arg] ?? null, ctx.slotMode[arg] ?? "inline", ctx);
         }
         case "include": {
           if (line.trim() !== raw) throw new Error(`${where}: ${raw} must be alone on its line (line ${i + 1})`);
           const inc = arg ? ctx.includes[arg] : undefined;
           if (!arg || !inc) throw new Error(`${where}: include "${arg}" is not a loaded attachment`);
           used.includes.push(arg);
-          return includeText(arg, inc, ctx.partsPrefix);
+          return includeText(arg, inc, ctx);
         }
         case "pipeline.stages": return fenced(ctx.pipelines);
         case "work-type": return workTypeText(ctx.pipelines, where);

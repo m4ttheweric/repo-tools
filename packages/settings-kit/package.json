@@ -1,0 +1,43 @@
+{
+  "name": "@mattstack/settings-kit",
+  "version": "0.1.2",
+  "description": "Embeddable mattstack settings surface: a framework-neutral server handler over @mattstack/rt-client plus headless React hooks \u2014 callers bring their own UI.",
+  "type": "module",
+  "exports": {
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/__tests__",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun build src/server.ts --outdir dist --target node --format esm --packages external && bun build src/react.ts --outdir dist --target browser --format esm --packages external && tsc -p tsconfig.json",
+    "check-types": "tsc --noEmit -p tsconfig.json",
+    "prepack": "bun run build"
+  },
+  "peerDependencies": {
+    "@mattstack/rt-client": "^0.4.1",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "react": "^18.3.0"
+  }
+}

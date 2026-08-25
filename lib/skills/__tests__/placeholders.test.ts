@@ -46,7 +46,7 @@ function ctx(over: Partial<PlaceholderContext> = {}): PlaceholderContext {
       { name: "stage-provision", stage: "provision", dir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-provision", consumes: ["ticket", "repo"], produces: ["branch", "worktree"] },
       { name: "stage-plan", stage: "plan", dir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan", consumes: ["ticket"], produces: ["approach"] },
     ] },
-    repoKey: "my-repo", mattstackSha: "abc1234", mattstackDirty: 0,
+    repoKey: "my-repo", mattstackSha: "abc1234", mattstackDirty: 0, packSha: "acme=abc1234",
     stageDir: null, stageMeta: null, compiledFrom: "mattstack@1.0.0 + acme:plan-policy@0.4.0",
     ...over,
   };
@@ -69,12 +69,31 @@ describe("substitute", () => {
   });
 
   test("a fill's own file references are rewritten under parts/<slot>", () => {
-    const withFile = { ...fill, body: "see ${CLAUDE_SKILL_DIR}/ci-config.json" };
+    const withFile = { ...fill, body: "see ${CLAUDE_SKILL_DIR}/ci-config.json", extraFiles: ["ci-config.json"] };
     expect(substitute("{{slot:domain}}", ctx({ fills: { domain: withFile } }), "x").body)
       .toContain("see ${CLAUDE_SKILL_DIR}/parts/domain/ci-config.json");
     const inStage = ctx({ fills: { domain: withFile }, partsPrefix: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts" });
     expect(substitute("{{slot:domain}}", inStage, "stage-plan").body)
       .toContain("see ${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts/domain/ci-config.json");
+  });
+
+  test("a fill that vendors no files keeps the host skill's own directory", () => {
+    const noFiles = { ...fill, body: "see ${CLAUDE_SKILL_DIR}/notes.md", extraFiles: [] };
+    expect(substitute("{{slot:domain}}", ctx({ fills: { domain: noFiles } }), "x").body)
+      .toContain("see ${CLAUDE_SKILL_DIR}/notes.md");
+    const inStage = ctx({
+      fills: { domain: noFiles },
+      stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan",
+      partsPrefix: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts",
+    });
+    expect(substitute("{{slot:domain}}", inStage, "stage-plan").body)
+      .toContain("see ${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/notes.md");
+  });
+
+  test("an include that vendors no files keeps the host skill's own directory", () => {
+    const noFiles = { ...inc, body: "shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md", extraFiles: [] };
+    const { body } = substitute("{{include:review-core-body}}", ctx({ includes: { "review-core-body": noFiles } }), "x");
+    expect(body).toContain("shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md");
   });
 
   test("a registered public fill is referenced, not inlined", () => {
@@ -85,7 +104,7 @@ describe("substitute", () => {
   });
 
   test("an include's own file references are rewritten under parts/include-<name>", () => {
-    const withRef = { ...inc, body: "shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md" };
+    const withRef = { ...inc, body: "shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md", extraFiles: ["references/adjudicator.md"] };
     const { body } = substitute("{{include:review-core-body}}", ctx({ includes: { "review-core-body": withRef } }), "x");
     expect(body).toContain("shape at ${CLAUDE_SKILL_DIR}/parts/include-review-core-body/references/adjudicator.md");
   });
@@ -126,16 +145,22 @@ describe("substitute", () => {
     });
   });
 
-  test("run-start.flags is keyed by work type and carries the baked mattstack facts", () => {
+  test("run-start.flags is keyed by work type and carries the baked mattstack and pack facts", () => {
     const body = substitute("{{run-start.flags}}", ctx(), "work").body;
     const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
-    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-sha abc1234 --mattstack-dirty 0");
+    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-sha abc1234 --mattstack-dirty 0 --pack-sha acme=abc1234");
   });
 
   test("run-start.flags omits --mattstack-sha when no sha is known", () => {
     const body = substitute("{{run-start.flags}}", ctx({ mattstackSha: "" }), "work").body;
     const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
-    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-dirty 0");
+    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-dirty 0 --pack-sha acme=abc1234");
+  });
+
+  test("run-start.flags omits --pack-sha when no pack sha is known", () => {
+    const body = substitute("{{run-start.flags}}", ctx({ packSha: "" }), "work").body;
+    const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
+    expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-sha abc1234 --mattstack-dirty 0");
   });
 
   test("stage.dir and stage.fields need a stage context", () => {
@@ -153,5 +178,20 @@ describe("substitute", () => {
 
   test("unknown kind is an error", () => {
     expect(() => substitute("{{bogus}}", ctx(), "work")).toThrow("work: unknown placeholder {{bogus}} at line 1");
+  });
+
+  test("a fill may inline an include, with its own marker", () => {
+    const fillWithInclude = { ...fill, body: "policy\n{{include:review-core-body}}\ntail" };
+    const { body } = substitute("{{slot:domain}}", ctx({ fills: { domain: fillWithInclude } }), "stage-plan");
+    expect(body).toContain("<!-- part: slot:domain binding=acme:plan-policy");
+    expect(body).toContain("<!-- part: include:review-core-body source=mattstack:review-core-body");
+    expect(body).toContain("core A\ncore B");
+    expect(body).not.toContain("{{");
+  });
+
+  test("a fill may not carry a slot or any other placeholder", () => {
+    const bad = { ...fill, body: "x\n{{slot:tiering}}" };
+    expect(() => substitute("{{slot:domain}}", ctx({ fills: { domain: bad } }), "stage-plan"))
+      .toThrow("acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}} only (line 2)");
   });
 });

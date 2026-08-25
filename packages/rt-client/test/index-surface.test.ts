@@ -35,3 +35,9 @@ describe("index.ts runs surface", () => {
     expect(typeof rtClient.abandonRun).toBe("function");
   });
 });
+
+describe("index.ts branch cache surface", () => {
+  test("exports readBranchCache", () => {
+    expect(typeof rtClient.readBranchCache).toBe("function");
+  });
+});
