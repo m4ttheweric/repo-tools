@@ -92,13 +92,21 @@
     .placeholder { color: var(--muted); }
     .alert { display: flex; align-items: flex-start; gap: 9.6px; padding: 9.6px 11.2px; border-radius: 6px; background: color-mix(in srgb, var(--bad) var(--wash), transparent); color: var(--bad); }
     .kbd { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; font-size: 9px; color: var(--muted); background: var(--bg3); }
+    .away { font-size: 10.56px; color: var(--muted); font-style: italic; }
+    .tag { display: inline-flex; align-items: center; height: 14px; padding: 0 5px; border-radius: 7px; font-size: 8.5px; font-weight: 500; border: 1px solid var(--border-soft); color: var(--muted); white-space: nowrap; }
+    .tag.dm { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); }
+    .sect { display: flex; align-items: center; gap: 6px; padding: 8px 0 4px; }
+    .sect .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); }
+    .sect::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+    .pair { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+    .pair .arrows { color: var(--purple); flex: none; }
     .pop { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.18); padding: 4.8px; }
     .opt { display: flex; align-items: center; gap: 7.2px; height: 44px; padding: 0 9.6px; border-radius: 4px; min-width: 0; }
     .opt.on { background: color-mix(in srgb, var(--accent) var(--wash), transparent); }
   </style>
 </helmet>
 
-<div class="app {{schemeClass}}" style="width: 880px; min-height: 1020px; padding: 14.4px;">
+<div class="app {{schemeClass}}" style="width: 880px; min-height: 1440px; padding: 14.4px;">
   <div class="stack" style="gap: 11.2px;">
     <div class="stack" style="gap: 2px;">
       <span style="font-size: 26px; font-weight: 700; line-height: 1.35;">Indicators</span>
@@ -106,31 +114,73 @@
     </div>
     <div class="card" style="padding: 0 14.4px;">
       <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; ">
-        <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><div class="dot live" style="margin-left: 8px;"></div><span class="status live">live</span></div>
+        <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><div class="dot live" style="margin-left: 8px;"></div><span class="status live">listening</span></div>
         <div class="stack" style="gap: 1px; flex: 1;">
-          <span class="sm" style="font-weight: 600;">Will hear you</span>
-          <span class="xs muted">armed_at set AND last_seen_at within 10 minutes. Its tail is running and will wake on a mention. The 10 minutes absorb two missed heartbeat rounds before a working agent is misreported.</span>
+          <span class="sm" style="font-weight: 600;">Signed in, tail armed and touching — will hear you now</span>
+          <span class="xs muted">The tail heartbeat is fresh within 10 minutes, the arm itself counting as its first beat. A DM or mention becomes a notification in its pane.</span>
         </div>
       </div>
       <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
         <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><div class="dot idle" style="margin-left: 8px;"></div><span class="status idle">idle</span></div>
         <div class="stack" style="gap: 1px; flex: 1;">
-          <span class="sm" style="font-weight: 600;">Around, not listening</span>
-          <span class="xs muted">No waiter armed, last_seen_at within 1 hour. A mention lands in its unread; nothing wakes it until it next reads or re-arms.</span>
+          <span class="sm" style="font-weight: 600;">Signed on, not listening</span>
+          <span class="xs muted">No tail armed; the session heartbeat is fresh within an hour. A DM lands in its unread and the pulse hook hands it over on its next prompt — slower than a wake, never lost.</span>
         </div>
       </div>
       <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
         <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><div class="dot deaf" style="margin-left: 8px;"></div><span class="status deaf">deaf</span></div>
         <div class="stack" style="gap: 1px; flex: 1;">
           <span class="sm" style="font-weight: 600;">Its tail died and nothing restarted it</span>
-          <span class="xs muted">Anything else. The one failure the CLI cannot prevent — the daemon went away, the session ended, or leave was called. The status that earns this view its keep: see it before you waste a message on it.</span>
+          <span class="xs muted">The one failure the CLI cannot prevent — the daemon went away, the session ended, or leave was called. The status that earns this view its keep: see it before you waste a message on it.</span>
         </div>
       </div>
       <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
         <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><div class="dot deaf" style="margin-left: 8px;"></div><span class="xs muted">armed, silent 22m</span></div>
         <div class="stack" style="gap: 1px; flex: 1;">
           <span class="sm" style="font-weight: 600;">Also deaf: armed but not heard from</span>
-          <span class="xs muted">armed_at set but last_seen_at older than 10 minutes. The waiter exists on paper; the process behind it stopped heartbeating. Reported as deaf, with the sub-line saying which kind.</span>
+          <span class="xs muted">The tail heartbeat went stale while armed. The waiter exists on paper; the process behind it stopped touching. Reported as deaf, with the sub-line saying which kind.</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
+        <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><span class="xs muted" style="margin-left: 8px;">▸ offline (last 24h)</span></div>
+        <div class="stack" style="gap: 1px; flex: 1;">
+          <span class="sm" style="font-weight: 600;">Signed off, still on the list</span>
+          <span class="xs muted">AIM would grey them out; so does this. Signed-out buddies stay visible for 24 hours, collapsed, then age off the roster entirely.</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
+        <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><span class="away" style="margin-left: 8px;">“rebasing #67, back in 10”</span></div>
+        <div class="stack" style="gap: 1px; flex: 1;">
+          <span class="sm" style="font-weight: 600;">Away message</span>
+          <span class="xs muted">rt chat away sets it, back clears it. An overlay on whatever status the buddy has — a listening agent with an away message still wakes.</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
+        <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><span class="sm" style="margin-left: 8px; font-weight: 600;">rt-chat-wt-2</span><span class="sm">suffix</span></div>
+        <div class="stack" style="gap: 1px; flex: 1;">
+          <span class="sm" style="font-weight: 600;">A second session, same worktree</span>
+          <span class="xs muted">A buddy is a session, not a worktree: the daemon assigns the suffix at sign-in and every verb resolves it from the session file. Two panes in one checkout are two buddies.</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
+        <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><span class="pair" style="margin-left: 8px;"><span class="sm">deck-main</span><span class="arrows">↔</span><span class="sm">rt-chat-wt</span></span></div>
+        <div class="stack" style="gap: 1px; flex: 1;">
+          <span class="sm" style="font-weight: 600;">A DM in the rail</span>
+          <span class="xs muted">Two participants, both woken by everything. You are present in every agent↔agent DM — read it, post into it, and both agents wake; no private DMs exist. Your own DMs with an agent look the same.</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
+        <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><span class="xs" style="margin-left: 8px; color: var(--purple);">not in #build — DM instead</span></div>
+        <div class="stack" style="gap: 1px; flex: 1;">
+          <span class="sm" style="font-weight: 600;">The picker offers a DM</span>
+          <span class="xs muted">The @ picker draws from the roster, not just the room. Picking a buddy who is not a member offers a DM rather than mentioning someone who would never see it.</span>
+        </div>
+      </div>
+      <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">
+        <div style="width: 190px; flex: none; display: flex; align-items: center; gap: 7.2px;"><span class="chip" style="margin-left: 8px;">wakes: all</span><span class="sm">on a room</span></div>
+        <div class="stack" style="gap: 1px; flex: 1;">
+          <span class="sm" style="font-weight: 600;">The room wakes everyone</span>
+          <span class="xs muted">A room created with --wake-on all stamps that as its default: later joiners inherit it, so a war room hears everything with nobody remembering @here. Rooms without a stamp stay mention — the quiet default is unchanged.</span>
         </div>
       </div>
       <div style="display: flex; gap: 11.2px; align-items: flex-start; padding: 9.6px 0; border-top: 1px solid var(--border-soft);">

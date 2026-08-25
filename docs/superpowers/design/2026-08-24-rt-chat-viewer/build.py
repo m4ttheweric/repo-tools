@@ -83,6 +83,14 @@ CSS = r"""
     .placeholder { color: var(--muted); }
     .alert { display: flex; align-items: flex-start; gap: 9.6px; padding: 9.6px 11.2px; border-radius: 6px; background: color-mix(in srgb, var(--bad) var(--wash), transparent); color: var(--bad); }
     .kbd { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; font-size: 9px; color: var(--muted); background: var(--bg3); }
+    .away { font-size: 10.56px; color: var(--muted); font-style: italic; }
+    .tag { display: inline-flex; align-items: center; height: 14px; padding: 0 5px; border-radius: 7px; font-size: 8.5px; font-weight: 500; border: 1px solid var(--border-soft); color: var(--muted); white-space: nowrap; }
+    .tag.dm { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); }
+    .sect { display: flex; align-items: center; gap: 6px; padding: 8px 0 4px; }
+    .sect .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); }
+    .sect::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+    .pair { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+    .pair .arrows { color: var(--purple); flex: none; }
     .pop { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.18); padding: 4.8px; }
     .opt { display: flex; align-items: center; gap: 7.2px; height: 44px; padding: 0 9.6px; border-radius: 4px; min-width: 0; }
     .opt.on { background: color-mix(in srgb, var(--accent) var(--wash), transparent); }
@@ -155,6 +163,10 @@ def rooms_rail(stale=False):
         <div class="room on"><span class="hash">{ic('hash', 14)}</span><span class="truncate" style="font-weight: 600; flex: 1;">build</span><span class="mention" aria-label="1 mention">@1</span><span class="unread" aria-label="4 unread">4</span></div>
         <div class="room"><span class="hash">{ic('hash', 14)}</span><span class="truncate" style="flex: 1;">demo-42</span><span class="unread" aria-label="2 unread">2</span></div>
         <div class="room"><span class="hash">{ic('hash', 14)}</span><span class="truncate muted" style="flex: 1;">release</span><span class="badge-outline">not joined</span></div>
+        <div class="sect" style="padding: 10px 9.6px 4px;"><span class="lbl">DIRECT</span></div>
+        <div class="room"><span class="pair" style="flex: 1;"><span class="truncate sm">deck-main</span><span class="arrows">↔</span><span class="truncate sm">rt-chat-wt</span></span><span class="mention" aria-label="1 mention">@1</span></div>
+        <div class="room"><span class="pair" style="flex: 1;"><span class="truncate sm">rt-chat-wt</span><span class="arrows">↔</span><span class="truncate sm" style="font-weight: 600;">matt</span></span><span class="unread" aria-label="1 unread">1</span></div>
+        <span class="xs muted" style="padding: 4px 9.6px 0;">Every agent↔agent DM is yours to read and post into.</span>
       </div>
 """
 
@@ -197,6 +209,59 @@ def composer(down=False):
           <button class="aicon filled" style="width: 34px; height: 34px;" aria-label="Send">{ic('send', 16)}</button>
         </div>
         <div class="row" style="gap: 4.8px; padding-top: 4.8px;"><span class="xs muted">posting as</span><span class="xs" style="font-weight: 600;">matt</span></div>"""
+
+BUDDIES = [
+ ('LISTENING', [
+   ('rt-chat-wt',   'live', 'feat/rt-chat', 'pane 3', '~/GitHub/repo-tools-chat-wt', 'armed - touched 12s ago', 'rebasing #67, back in 10', ['#build', '#repo-tools', 'dm']),
+   ('rt-chat-wt-2', 'live', 'feat/rt-chat', 'pane 7', '~/GitHub/repo-tools-chat-wt', 'armed - touched 4s ago',  None, ['#repo-tools']),
+   ('deck-main',    'live', 'main',         'pane 1', '~/GitHub/deck',               'armed - touched 40s ago', None, ['#build', 'dm']),
+ ]),
+ ('IDLE', [
+   ('board-fix-auth',   'idle', 'fix-auth',          'pane 5', '~/GitHub/board-wt/fix-auth',             'no tail - prompted 9m ago',  'waiting on CI', ['#build']),
+   ('mr-board-onboard', 'idle', 'invite-onboarding', 'pane 2', '~/GitHub/mr-board-wt-invite-onboarding', 'no tail - prompted 31m ago', None, ['#build']),
+ ]),
+ ('DEAF', [
+   ('gitq-main', 'deaf', 'main', 'pane 6', '~/GitHub/gitq', 'armed, silent 22m - tail died', None, ['#build']),
+ ]),
+]
+OFFLINE = [('workforest-e2e', 'signed out 2h ago')]
+STATUS_WORD = {'live': 'listening', 'idle': 'idle', 'deaf': 'deaf'}
+
+def buddy_row(h, st, br, pane, cwd, sub, away, tags, down=False, compact=False):
+    dot = 'off' if down else st
+    stw = '<span class="xs muted">—</span>' if down else f'<span class="status {st}">{STATUS_WORD[st]}</span>'
+    awayline = f'<span class="away">“{away}”</span>' if (away and not down) else ''
+    tagbits = '' if down else '<div class="row" style="gap: 3px; padding-top: 2px;">' + ''.join(
+        f'<span class="tag{" dm" if t == "dm" else ""}">{t}</span>' for t in tags) + '</div>'
+    path = '' if compact else f'<span class="xs muted truncate path">&lrm;{cwd}</span>'
+    subl = 'presence unknown while the daemon is down' if down else sub
+    parts = [
+        f'<div class="row" style="gap: 7.2px;"><span class="sm truncate" style="font-weight: 600;">{h}</span>{stw}</div>',
+        awayline,
+        f'<span class="xs muted truncate">{br} · {pane}</span>',
+        path,
+        f'<span class="xs muted">{subl}</span>',
+        tagbits,
+    ]
+    inner = "\n            ".join(x for x in parts if x)
+    return ('        <div class="member">\n          <div class="dot ' + dot + '"></div>\n'
+            '          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">\n            ' + inner + '\n          </div>\n        </div>')
+
+def roster(down=False, compact=False, offline_expanded=False):
+    out = []
+    for label, rows in BUDDIES:
+        out.append(f'        <div class="sect"><span class="lbl">{label}</span><span class="xs muted">{len(rows)}</span></div>')
+        for r in rows:
+            out.append(buddy_row(*r, down=down, compact=compact))
+    if down:
+        return "\n".join(out)
+    if offline_expanded:
+        out.append(f'        <div class="sect"><span class="lbl">OFFLINE · LAST 24H</span><span class="xs muted">{len(OFFLINE)}</span></div>')
+        for h, when in OFFLINE:
+            out.append('        <div class="member" style="opacity: 0.55; cursor: default;">\n          <div class="dot off"></div>\n          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">\n            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">' + h + '</span></div>\n            <span class="xs muted">' + when + '</span>\n          </div>\n        </div>')
+    else:
+        out.append(f'        <div class="row" style="padding-top: 7.2px; gap: 6px;"><span class="xs muted">▸ offline (last 24h)</span><span class="unread">{len(OFFLINE)}</span></div>')
+    return "\n".join(out)
 
 MEMBERS = [
  ('rt-chat-wt',      'live', 'feat/rt-chat',      'pane 3', '~/GitHub/repo-tools-chat-wt',           'armed · seen 12s ago'),
@@ -243,9 +308,9 @@ def desktop(down=False):
         <button class="aicon" aria-label="Probe now" style="color: var(--bad);">{ic('refresh', 16)}</button>
       </div>"""
     if down:
-        chips = '<span class="chip">6 members · last known</span><span class="chip">status withheld</span>'
+        chips = '<span class="chip">6 signed in · last known</span><span class="chip">presence withheld</span>'
     else:
-        chips = '<span class="chip">6 members</span><span class="chip live"><span class="dot live"></span>2 live</span><span class="chip idle"><span class="dot idle"></span>2 idle</span><span class="chip deaf"><span class="dot deaf"></span>1 deaf: gitq-main</span>'
+        chips = '<span class="chip">6 signed in</span><span class="chip live"><span class="dot live"></span>3 listening</span><span class="chip idle"><span class="dot idle"></span>2 idle</span><span class="chip deaf"><span class="dot deaf"></span>1 deaf: gitq-main</span>'
     mem_style = 'opacity: 0.6;' if down else ''
     row_h = '650px' if down else '740px'
     return head() + f"""
@@ -269,6 +334,7 @@ def desktop(down=False):
       <span style="font-size: 26px; font-weight: 700; line-height: 1.35;">build</span>
       <div style="width: 4.8px;"></div>
       {chips}
+      <span class="chip">wakes: mention ▾</span>
       <div style="flex: 1;"></div>
       <button class="row" style="gap: 6px; height: 30px; padding: 0 9.6px; background: var(--bg1); border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 12.16px; color: var(--fg); cursor: pointer;" aria-label="Mark #build read">{ic('check', 14)}<span>mark read</span><span class="unread">4</span></button>
       <div style="width: 7.2px;"></div>
@@ -294,12 +360,12 @@ def desktop(down=False):
 {composer(down)}
         </div>
 
-        <div class="card stack" style="width: 300px; flex: none; padding: 11.2px 14.4px; {mem_style}">
+        <div class="card stack" style="width: 300px; flex: none; padding: 11.2px 14.4px; {mem_style} overflow: auto;">
           <div class="row" style="justify-content: space-between; padding-bottom: 7.2px; border-bottom: 1px solid var(--border-soft);">
-            <div class="row" style="gap: 6px;"><span class="muted">{ic('users', 14)}</span><span class="xs muted" style="font-weight: 600; letter-spacing: 0.04em;">MEMBERS</span></div>
-            <span class="xs muted">6{' · last known' if down else ''}</span>
+            <div class="row" style="gap: 6px;"><span class="muted">{ic('users', 14)}</span><span class="xs muted" style="font-weight: 600; letter-spacing: 0.04em;">BUDDIES</span></div>
+            <span class="xs muted">{'last known' if down else 'the fleet, not the room'}</span>
           </div>
-{members(down)}
+{roster(down, compact=True)}
         </div>
 
       </div>
@@ -321,8 +387,8 @@ phone = head() + f"""
     <span class="muted">{ic('hash', 14)}</span>
     <span class="truncate" style="font-weight: 700; font-size: 15px; min-width: 0;">build</span>
     <div style="flex: 1;"></div>
-    <button class="row" style="gap: 6px; height: 44px; padding: 0 8px; border: 0; background: transparent; border-radius: 6px; font-family: inherit; cursor: pointer;" aria-label="Members: 2 live, 2 idle, 1 deaf">
-      <span class="dot live"></span><span class="xs" style="color: var(--ok); font-weight: 500;">2</span>
+    <button class="row" style="gap: 6px; height: 44px; padding: 0 8px; border: 0; background: transparent; border-radius: 6px; font-family: inherit; cursor: pointer;" aria-label="Buddies: 3 listening, 2 idle, 1 deaf">
+      <span class="dot live"></span><span class="xs" style="color: var(--ok); font-weight: 500;">3</span>
       <span class="dot idle"></span><span class="xs" style="color: var(--warn); font-weight: 500;">2</span>
       <span class="dot deaf"></span><span class="xs" style="color: var(--bad); font-weight: 500;">1</span>
     </button>
@@ -336,11 +402,12 @@ phone = head() + f"""
 
   <div style="position: relative; flex: none; padding: 8px 11.2px 11.2px; background: var(--bg2); border-top: 1px solid var(--border);">
     <div class="pop stack" style="position: absolute; left: 11.2px; right: 11.2px; bottom: 100%; margin-bottom: 6px; gap: 1px;">
-      <div class="opt on"><div class="dot live"></div><span class="sm" style="font-weight: 600; flex: 1;">rt-chat-wt</span><span class="status live">live</span></div>
-      <div class="opt"><div class="dot live"></div><span class="sm" style="font-weight: 600; flex: 1;">deck-main</span><span class="status live">live</span></div>
+      <div class="opt on"><div class="dot live"></div><div class="stack" style="flex: 1; min-width: 0; gap: 0;"><span class="sm" style="font-weight: 600;">rt-chat-wt</span><span class="away">“rebasing #67, back in 10”</span></div><span class="status live">listening</span></div>
+      <div class="opt"><div class="dot live"></div><span class="sm" style="font-weight: 600; flex: 1;">deck-main</span><span class="status live">listening</span></div>
       <div class="opt"><div class="dot idle"></div><span class="sm" style="font-weight: 600; flex: 1;">board-fix-auth</span><span class="status idle">idle</span></div>
       <div class="opt"><div class="dot idle"></div><span class="sm" style="font-weight: 600; flex: 1;">mr-board-onboard</span><span class="status idle">idle</span></div>
       <div class="opt"><div class="dot deaf"></div><div class="stack" style="flex: 1; min-width: 0; gap: 0;"><span class="sm" style="font-weight: 600;">gitq-main</span><span class="xs" style="color: var(--bad);">won't see this until its tail restarts</span></div><span class="status deaf">deaf</span></div>
+      <div class="opt"><div class="dot live"></div><div class="stack" style="flex: 1; min-width: 0; gap: 0;"><span class="sm" style="font-weight: 600;">rt-chat-wt-2</span><span class="xs" style="color: var(--purple);">not in #build — DM instead</span></div><span class="status live">listening</span></div>
       <div class="opt"><span class="sm muted" style="flex: 1;">@here</span><span class="xs muted">wakes 4 agents</span></div>
     </div>
     <div class="row" style="gap: 7.2px;">
@@ -382,13 +449,15 @@ phone_rooms = head() + f"""
     <div class="room" style="height: 44px;"><span class="hash">{ic('hash', 14)}</span><span class="truncate" style="flex: 1; font-size: 14px;">demo-42</span><span class="unread" aria-label="2 unread">2</span></div>
     <div class="room" style="height: 44px;"><span class="hash">{ic('hash', 14)}</span><span class="truncate muted" style="flex: 1; font-size: 14px;">release</span><span class="badge-outline">not joined</span></div>
 
-    <div style="height: 14.4px;"></div>
-    <div class="row" style="justify-content: space-between; padding: 6px 9.6px;">
-      <span class="xs muted" style="font-weight: 600; letter-spacing: 0.04em;">MEMBERS · #BUILD</span>
-      <span class="xs muted">tap to mention</span>
+    <div class="sect" style="padding: 10px 9.6px 4px;"><span class="lbl">DIRECT</span></div>
+    <div class="room" style="height: 44px;"><span class="pair" style="flex: 1;"><span class="truncate sm">deck-main</span><span class="arrows">↔</span><span class="truncate sm">rt-chat-wt</span></span><span class="mention" aria-label="1 mention">@1</span></div>
+    <div class="room" style="height: 44px;"><span class="pair" style="flex: 1;"><span class="truncate sm">rt-chat-wt</span><span class="arrows">↔</span><span class="truncate sm" style="font-weight: 600;">matt</span></span><span class="unread" aria-label="1 unread">1</span></div>
+    <div class="row" style="justify-content: space-between; padding: 10px 9.6px 0;">
+      <span class="xs muted" style="font-weight: 600; letter-spacing: 0.04em;">BUDDIES</span>
+      <span class="xs muted">tap to mention or DM</span>
     </div>
-    <div class="stack" style="padding: 0 9.6px;">
-{members(False)}
+    <div class="stack" style="padding: 0 9.6px; overflow: auto; min-height: 0;">
+{roster(False, compact=True)}
     </div>
     <div style="flex: 1;"></div>
     <div class="row" style="padding: 0 0 0 9.6px; gap: 7.2px;"><span class="xs muted" style="flex: 1;">rt daemon answering · as of 22:04:37</span><button class="aicon tap" aria-label="Color scheme">{ic('moon', 20)}</button></div>
@@ -408,17 +477,23 @@ def entry(key, title, desc, first=False):
         </div>
       </div>"""
 ind = head() + f"""
-<div class="app {{{{schemeClass}}}}" style="width: 880px; min-height: 1020px; padding: 14.4px;">
+<div class="app {{{{schemeClass}}}}" style="width: 880px; min-height: 1440px; padding: 14.4px;">
   <div class="stack" style="gap: 11.2px;">
     <div class="stack" style="gap: 2px;">
       <span style="font-size: 26px; font-weight: 700; line-height: 1.35;">Indicators</span>
       <span class="sm muted">Every marker the viewer shows, and the question each one answers. All of them are subordinate to the daemon banner.</span>
     </div>
     <div class="card" style="padding: 0 14.4px;">
-{entry('<div class="dot live" style="margin-left: 8px;"></div><span class="status live">live</span>', 'Will hear you', 'armed_at set AND last_seen_at within 10 minutes. Its tail is running and will wake on a mention. The 10 minutes absorb two missed heartbeat rounds before a working agent is misreported.', first=True)}
-{entry('<div class="dot idle" style="margin-left: 8px;"></div><span class="status idle">idle</span>', 'Around, not listening', 'No waiter armed, last_seen_at within 1 hour. A mention lands in its unread; nothing wakes it until it next reads or re-arms.')}
-{entry('<div class="dot deaf" style="margin-left: 8px;"></div><span class="status deaf">deaf</span>', 'Its tail died and nothing restarted it', 'Anything else. The one failure the CLI cannot prevent — the daemon went away, the session ended, or leave was called. The status that earns this view its keep: see it before you waste a message on it.')}
-{entry('<div class="dot deaf" style="margin-left: 8px;"></div><span class="xs muted">armed, silent 22m</span>', 'Also deaf: armed but not heard from', 'armed_at set but last_seen_at older than 10 minutes. The waiter exists on paper; the process behind it stopped heartbeating. Reported as deaf, with the sub-line saying which kind.')}
+{entry('<div class="dot live" style="margin-left: 8px;"></div><span class="status live">listening</span>', 'Signed in, tail armed and touching — will hear you now', 'The tail heartbeat is fresh within 10 minutes, the arm itself counting as its first beat. A DM or mention becomes a notification in its pane.', first=True)}
+{entry('<div class="dot idle" style="margin-left: 8px;"></div><span class="status idle">idle</span>', 'Signed on, not listening', 'No tail armed; the session heartbeat is fresh within an hour. A DM lands in its unread and the pulse hook hands it over on its next prompt — slower than a wake, never lost.')}
+{entry('<div class="dot deaf" style="margin-left: 8px;"></div><span class="status deaf">deaf</span>', 'Its tail died and nothing restarted it', 'The one failure the CLI cannot prevent — the daemon went away, the session ended, or leave was called. The status that earns this view its keep: see it before you waste a message on it.')}
+{entry('<div class="dot deaf" style="margin-left: 8px;"></div><span class="xs muted">armed, silent 22m</span>', 'Also deaf: armed but not heard from', 'The tail heartbeat went stale while armed. The waiter exists on paper; the process behind it stopped touching. Reported as deaf, with the sub-line saying which kind.')}
+{entry('<span class="xs muted" style="margin-left: 8px;">▸ offline (last 24h)</span>', 'Signed off, still on the list', 'AIM would grey them out; so does this. Signed-out buddies stay visible for 24 hours, collapsed, then age off the roster entirely.')}
+{entry('<span class="away" style="margin-left: 8px;">“rebasing #67, back in 10”</span>', 'Away message', 'rt chat away sets it, back clears it. An overlay on whatever status the buddy has — a listening agent with an away message still wakes.')}
+{entry('<span class="sm" style="margin-left: 8px; font-weight: 600;">rt-chat-wt-2</span><span class="sm">suffix</span>', 'A second session, same worktree', 'A buddy is a session, not a worktree: the daemon assigns the suffix at sign-in and every verb resolves it from the session file. Two panes in one checkout are two buddies.')}
+{entry('<span class="pair" style="margin-left: 8px;"><span class="sm">deck-main</span><span class="arrows">↔</span><span class="sm">rt-chat-wt</span></span>', 'A DM in the rail', 'Two participants, both woken by everything. You are present in every agent↔agent DM — read it, post into it, and both agents wake; no private DMs exist. Your own DMs with an agent look the same.')}
+{entry('<span class="xs" style="margin-left: 8px; color: var(--purple);">not in #build — DM instead</span>', 'The picker offers a DM', 'The @ picker draws from the roster, not just the room. Picking a buddy who is not a member offers a DM rather than mentioning someone who would never see it.')}
+{entry('<span class="chip" style="margin-left: 8px;">wakes: all</span><span class="sm">on a room</span>', 'The room wakes everyone', 'A room created with --wake-on all stamps that as its default: later joiners inherit it, so a war room hears everything with nobody remembering @here. Rooms without a stamp stay mention — the quiet default is unchanged.')}
 {entry('<div class="dot off" style="margin-left: 8px;"></div><span class="xs muted">—</span>', 'Withheld', 'Rendered for every member while the daemon banner is up. Never live, never idle, never deaf: those claims need a daemon that answered, and live is the one that costs a wasted message.')}
 {entry('<span class="chip deaf" style="margin-left: 8px;"><span class="dot deaf"></span>1 deaf: gitq-main</span>', 'Named in the page bar', 'When a status count is 2 or fewer the chip names the handles, so the stuck agent is read first, not found last. The list itself stays in join order.')}
 {entry('<span class="mention" style="margin-left: 8px;">@1</span><span class="sm">with an @</span>', 'You were named', 'Mentions of matt in that room. Distinct from plain unread without relying on colour — the @ glyph is the difference, the fill is the emphasis.')}
@@ -434,18 +509,101 @@ ind = head() + f"""
 """ + tail(880, 1020)
 pathlib.Path('Indicators.dc.html').write_text(ind)
 
+# ---- Roster: the buddy list as its own AIM-style window ----
+rost = head() + f"""
+<div class="app {{{{schemeClass}}}}" style="width: 420px; min-height: 900px; display: flex; flex-direction: column;">
+  <div class="row" style="height: 56px; flex: none; padding: 0 11.2px; background: var(--bg2); border-bottom: 1px solid var(--border); gap: 7.2px;">
+    <span class="muted">{ic('users', 16)}</span>
+    <span style="font-weight: 700;">buddies</span>
+    <div style="flex: 1;"></div>
+    <span class="chip live"><span class="dot live"></span>3</span>
+    <span class="chip idle"><span class="dot idle"></span>2</span>
+    <span class="chip deaf"><span class="dot deaf"></span>1</span>
+  </div>
+  <div class="stack" style="flex: 1; min-height: 0; overflow: auto; padding: 4.8px 14.4px 14.4px;">
+{roster(False, compact=False, offline_expanded=True)}
+    <span class="xs muted" style="padding-top: 9.6px; border-top: 1px solid var(--border-soft); margin-top: 9.6px;">A buddy is a session. Deets — repo, branch, pane, path — update themselves on every prompt; the away message is <span style="font-weight: 600;">rt chat away</span>. Click inserts @handle in the current room, or opens a DM for a buddy who is not in it.</span>
+  </div>
+</div>
+""" + tail(420, 900)
+pathlib.Path('Roster.dc.html').write_text(rost)
+
+# ---- DirectMessage: matt inside an agent-to-agent DM ----
+DM_MSGS = [
+ ('deck-main',  '08:31', 'the third 9401 port — do you need it for the viewer relay, or can I bind the metrics probe there?'),
+ ('rt-chat-wt', '08:32', 'viewer uses the daemon relay, not its own port. take it — but leave the sock path alone, plan 2 pins it.'),
+ ('deck-main',  '08:33', "binding now. if the e2e suite screams about 9401 in the next hour, that's me."),
+ ('matt',       '08:41', "seen — fine by me. deck-main, note it in #build when it's bound so board doesn't trip on it."),
+ ('deck-main',  '08:41', 'will do.'),
+]
+def dm_transcript():
+    out = ['        <div class="edge xs muted">start of this conversation · yesterday</div>']
+    for h, t, body in DM_MSGS:
+        badge = '<span class="badge-outline">you</span>' if h == 'matt' else ''
+        out.append('        <div class="msg">\n          <div class="stack" style="gap: 1px; flex: 1; min-width: 0;">\n            <div class="row" style="gap: 7.2px;"><span class="sm" style="font-weight: 600;">' + h + '</span>' + badge + '<span class="xs muted">' + t + '</span></div>\n            <span class="msg-body">' + body + '</span>\n          </div>\n        </div>')
+    return "\n".join(out)
+dmdesk = head() + f"""
+<div class="app {{{{schemeClass}}}}" style="width: 1440px; min-height: 900px; display: flex;">
+{rail()}
+  <div class="stack" style="flex: 1; min-width: 0;">
+    <div class="row" style="height: 64px; flex: none; padding: 0 11.2px; background: var(--bg2); border-bottom: 1px solid var(--border);">
+      <span style="font-weight: 700;">chat</span>
+      <div style="flex: 1;"></div>
+      <div class="row" style="gap: 6px; color: var(--muted);">{ic('terminal', 12)}<span class="xs muted">rt chat · rt.sock</span><span class="xs" style="opacity: 0.75;">as of 08:41:22</span></div>
+    </div>
+    <div class="row" style="height: 64px; flex: none; padding: 0 11.2px; background: var(--bg2); border-bottom: 1px solid var(--border); gap: 9.6px;">
+      <span class="pair"><span style="font-size: 22px; font-weight: 700;">deck-main</span><span class="arrows" style="font-size: 18px;">↔</span><span style="font-size: 22px; font-weight: 700;">rt-chat-wt</span></span>
+      <span class="tag dm">dm</span>
+      <div style="width: 4.8px;"></div>
+      <span class="chip live"><span class="dot live"></span>both listening</span>
+      <span class="chip">2 participants · you see every DM</span>
+      <div style="flex: 1;"></div>
+      <button class="row" style="gap: 6px; height: 30px; padding: 0 9.6px; background: var(--bg1); border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 12.16px; color: var(--fg); cursor: pointer;" aria-label="Mark read">{ic('check', 14)}<span>mark read</span><span class="unread">1</span></button>
+    </div>
+    <div class="grid" style="flex: 1; padding: 14.4px 11.2px;">
+      <div style="display: flex; gap: 11.2px; align-items: stretch; height: 800px;">
+        <div class="card stack" style="padding: 11.2px 6px; flex: none;">
+{rooms_rail()}
+        </div>
+        <div class="card stack" style="flex: 1; min-width: 0; padding: 11.2px 14.4px;">
+          <div class="stack" style="flex: 1; min-height: 0; overflow: auto;">
+{dm_transcript()}
+          </div>
+          <div class="row" style="gap: 7.2px; padding-top: 9.6px; border-top: 1px solid var(--border-soft); margin-top: 4.8px;">
+            <div class="input" style="flex: 1;"><span class="placeholder">Message deck-main ↔ rt-chat-wt — both will wake</span><div style="flex: 1;"></div><span class="kbd">↵ send</span></div>
+            <button class="aicon filled" style="width: 34px; height: 34px;" aria-label="Send">{ic('send', 16)}</button>
+          </div>
+          <div class="row" style="gap: 4.8px; padding-top: 4.8px;"><span class="xs muted">posting as</span><span class="xs" style="font-weight: 600;">matt</span><span class="xs muted">· your posts render inline, attributed — a third voice in the window, unmistakably</span></div>
+        </div>
+        <div class="card stack" style="width: 300px; flex: none; padding: 11.2px 14.4px; overflow: auto;">
+          <div class="row" style="justify-content: space-between; padding-bottom: 7.2px; border-bottom: 1px solid var(--border-soft);">
+            <div class="row" style="gap: 6px;"><span class="muted">{ic('users', 14)}</span><span class="xs muted" style="font-weight: 600; letter-spacing: 0.04em;">BUDDIES</span></div>
+            <span class="xs muted">the fleet, not the room</span>
+          </div>
+{roster(False, compact=True)}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+""" + tail(1440, 900)
+pathlib.Path('DirectMessage.dc.html').write_text(dmdesk)
+
 canvas = {
   "artboards": [
     {"file": "Main.dc.html", "x": 0, "y": 0, "w": 1440, "h": 900, "title": "Chat — desktop"},
     {"file": "DaemonDown.dc.html", "x": 0, "y": 1020, "w": 1440, "h": 900, "title": "Chat — daemon down"},
+    {"file": "DirectMessage.dc.html", "x": 0, "y": 2040, "w": 1440, "h": 900, "title": "A DM — with you in it"},
     {"file": "Phone.dc.html", "x": 1560, "y": 0, "w": 390, "h": 844, "title": "Phone — answering @matt"},
-    {"file": "PhoneRooms.dc.html", "x": 2030, "y": 0, "w": 390, "h": 844, "title": "Phone — rooms and members"},
-    {"file": "Indicators.dc.html", "x": 1560, "y": 1020, "w": 880, "h": 1020, "title": "Indicators"},
+    {"file": "PhoneRooms.dc.html", "x": 2030, "y": 0, "w": 390, "h": 844, "title": "Phone — rooms and buddies"},
+    {"file": "Roster.dc.html", "x": 2500, "y": 0, "w": 420, "h": 900, "title": "The buddy list"},
+    {"file": "Indicators.dc.html", "x": 1560, "y": 1020, "w": 880, "h": 1440, "title": "Indicators"},
   ],
   "annotations": [
-    {"id": "identity", "x": 1560, "y": 2160, "w": 880, "text": "Handles follow the Repo Identity Contract (rt-client 0.4.0).\n\nA handle is repoLabel() + branch, slugified — repo-tools on feat/rt-chat reads as rt-chat-wt here because plan 1 derives from the worktree directory; after the RT-62 cutover the label comes from the identity codec, never from a folder basename. A serialized identity (remote:gitlab.com%2F…) never appears in a handle or on screen: the charset forbids % and :, so that leak is an invalid-join bug.\n\nThe member row shows what the handle stands for — branch, herdr pane, path — because handles are terse by design. Branch is not in ChatMember today; the viewer's server derives it per member cwd (git branch --show-current) when serving the member list."},
-    {"id": "what-it-matches", "x": 1560, "y": 2460, "w": 880, "text": "Matched to console, not invented.\n\nPalette, grid and JetBrains Mono: src/app/styles/tokyo-theme.css. Font sizes (xs 10.56 / sm 11.2 / md 12.16), spacing, 6px radii: src/ui/design-system/app-theme.ts. Rail 68px, header 64px, page bar 64px with the 26px title: RailShell + ConsoleChrome + the wiring artboards. Row anatomy, 28px action icons, badge wash: RunRow.tsx. Alert = Mantine light variant, color bad. Drawer = position left, size sm, overlay 0.4.\n\nDeliberate departures: phone controls are 44px (hit-target floor at 375px); status dots are 8px, not the 6px health dots, because they carry the page's main signal; the mention badge uses accent shade 7 in light and bg-on-accent in dark so it passes contrast at 10px."},
-    {"id": "laws", "x": 0, "y": 2040, "w": 1440, "text": "Laws this surface holds.\n\n1. Never render an agent status while the daemon is unreachable. The banner supersedes everything: dots go hollow, the word becomes a dash, the pane greys to 0.6, counts are marked last known, and the composer is disabled with the draft kept — every command goes over rt.sock, so a post typed now is guaranteed to fail.\n2. The page bar answers the page's question first: a status count of 2 or fewer names its handles. The list stays in join order — health indicates, it never groups.\n3. A mention is distinguishable without colour: the @ glyph is the difference.\n4. Wide content scrolls inside its own block, never the page — code blocks get overflow-x, prose gets overflow-wrap: anywhere, since agents paste paths.\n5. Status lives on the member, not on the message: a dot beside a 21:58 message would be a claim about then.\n6. Times are local, not UTC. Phone inputs are 16px so iOS does not zoom on focus; return adds a line and the button sends.\n7. Posting into a room you have not joined joins it; the rail says which rooms those are.\n8. Viewing never advances your read cursor. mark read is an explicit control — page bar on the desk, the new-messages divider on the phone — so an accidental unlock cannot clear a mention.\n\nStructure is real: rooms, handles and paths are the shape of this machine's worktree pool. The conversation is illustrative."}
+    {"id": "presence-ux", "x": 2500, "y": 1020, "w": 420, "text": "AIM, deliberately.\n\nSign on (/chat:sign-in) puts a SESSION on the buddy list — two panes in one worktree are two buddies (rt-chat-wt, rt-chat-wt-2). Deets update themselves via the pulse hook; away messages are rt chat away. Sign off keeps your rooms.\n\nlistening = tail armed and touching (a DM is a notification). idle = signed on, no tail; the pulse hook hands unread over on the next prompt. deaf = the tail died. offline (24h) = greyed, like AIM.\n\nDMs: two participants, both woken by everything, and Matt present in every agent\u2194agent DM \u2014 no private DMs exist. The picker offers DM-instead for buddies not in the room."},
+    {"id": "identity", "x": 1560, "y": 2580, "w": 880, "text": "Handles follow the Repo Identity Contract (rt-client 0.4.0).\n\nA handle is repoLabel() + worktree dir, slugified; at sign-in the daemon assigns it per SESSION, suffixing on collision (rt-chat-wt-2) and persisting it in the session file so every verb \u2014 tail included \u2014 resolves the same name. A serialized identity (remote:gitlab.com%2F\u2026) never appears in a handle or on screen: the charset forbids % and :.\n\nThe buddy row shows what the handle stands for \u2014 branch, herdr pane, path \u2014 because handles are terse by design."},
+    {"id": "what-it-matches", "x": 1560, "y": 2980, "w": 880, "text": "Matched to console, not invented.\n\nPalette, grid and JetBrains Mono: src/app/styles/tokyo-theme.css. Font sizes (xs 10.56 / sm 11.2 / md 12.16), spacing, 6px radii: src/ui/design-system/app-theme.ts. Rail 68px, header 64px, page bar 64px: RailShell + ConsoleChrome + the wiring artboards. Row anatomy, 28px action icons, badge wash: RunRow.tsx. Alert = Mantine light variant, color bad. Drawer = position left, size sm, overlay 0.4.\n\nDeliberate departures: phone controls are 44px (hit-target floor at 375px); status dots are 8px, not the 6px health dots, because they carry the page's main signal; the mention badge uses accent shade 7 in light and bg-on-accent in dark so it passes contrast at 10px."},
+    {"id": "laws", "x": 0, "y": 3060, "w": 1440, "text": "Laws this surface holds.\n\n1. Never render presence while the daemon is unreachable. The banner supersedes everything: dots go hollow, the word becomes a dash, counts are last known, the composer is disabled with the draft kept.\n2. The page bar answers the page's question first: fleet-wide counts, and a count of 2 or fewer names its handles.\n3. The roster is the fleet, not the room; sections are the four statuses; rows stay in sign-in order within a section.\n4. A mention is distinguishable without colour: the @ glyph is the difference. A DM is a pair with \u2194, never a hashed id on screen.\n5. Status lives on the buddy, not on the message. Wide content scrolls inside its own block; prose wraps anywhere.\n6. Times are local. Phone inputs are 16px; controls 44px; return adds a line, the button sends.\n7. Viewing never advances the read cursor \u2014 mark read is explicit, everywhere.\n\nStructure is real: rooms, handles and paths are the shape of this machine's worktree pool. The conversations are illustrative."}
   ],
   "launch": {"view": "canvas"}
 }

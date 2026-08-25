@@ -92,6 +92,14 @@
     .placeholder { color: var(--muted); }
     .alert { display: flex; align-items: flex-start; gap: 9.6px; padding: 9.6px 11.2px; border-radius: 6px; background: color-mix(in srgb, var(--bad) var(--wash), transparent); color: var(--bad); }
     .kbd { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; font-size: 9px; color: var(--muted); background: var(--bg3); }
+    .away { font-size: 10.56px; color: var(--muted); font-style: italic; }
+    .tag { display: inline-flex; align-items: center; height: 14px; padding: 0 5px; border-radius: 7px; font-size: 8.5px; font-weight: 500; border: 1px solid var(--border-soft); color: var(--muted); white-space: nowrap; }
+    .tag.dm { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); }
+    .sect { display: flex; align-items: center; gap: 6px; padding: 8px 0 4px; }
+    .sect .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); }
+    .sect::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+    .pair { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+    .pair .arrows { color: var(--purple); flex: none; }
     .pop { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.18); padding: 4.8px; }
     .opt { display: flex; align-items: center; gap: 7.2px; height: 44px; padding: 0 9.6px; border-radius: 4px; min-width: 0; }
     .opt.on { background: color-mix(in srgb, var(--accent) var(--wash), transparent); }
@@ -105,8 +113,8 @@
     <span class="muted"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="m16 3-2 18"/></svg></span>
     <span class="truncate" style="font-weight: 700; font-size: 15px; min-width: 0;">build</span>
     <div style="flex: 1;"></div>
-    <button class="row" style="gap: 6px; height: 44px; padding: 0 8px; border: 0; background: transparent; border-radius: 6px; font-family: inherit; cursor: pointer;" aria-label="Members: 2 live, 2 idle, 1 deaf">
-      <span class="dot live"></span><span class="xs" style="color: var(--ok); font-weight: 500;">2</span>
+    <button class="row" style="gap: 6px; height: 44px; padding: 0 8px; border: 0; background: transparent; border-radius: 6px; font-family: inherit; cursor: pointer;" aria-label="Buddies: 3 listening, 2 idle, 1 deaf">
+      <span class="dot live"></span><span class="xs" style="color: var(--ok); font-weight: 500;">3</span>
       <span class="dot idle"></span><span class="xs" style="color: var(--warn); font-weight: 500;">2</span>
       <span class="dot deaf"></span><span class="xs" style="color: var(--bad); font-weight: 500;">1</span>
     </button>
@@ -148,11 +156,12 @@
 
   <div style="position: relative; flex: none; padding: 8px 11.2px 11.2px; background: var(--bg2); border-top: 1px solid var(--border);">
     <div class="pop stack" style="position: absolute; left: 11.2px; right: 11.2px; bottom: 100%; margin-bottom: 6px; gap: 1px;">
-      <div class="opt on"><div class="dot live"></div><span class="sm" style="font-weight: 600; flex: 1;">rt-chat-wt</span><span class="status live">live</span></div>
-      <div class="opt"><div class="dot live"></div><span class="sm" style="font-weight: 600; flex: 1;">deck-main</span><span class="status live">live</span></div>
+      <div class="opt on"><div class="dot live"></div><div class="stack" style="flex: 1; min-width: 0; gap: 0;"><span class="sm" style="font-weight: 600;">rt-chat-wt</span><span class="away">“rebasing #67, back in 10”</span></div><span class="status live">listening</span></div>
+      <div class="opt"><div class="dot live"></div><span class="sm" style="font-weight: 600; flex: 1;">deck-main</span><span class="status live">listening</span></div>
       <div class="opt"><div class="dot idle"></div><span class="sm" style="font-weight: 600; flex: 1;">board-fix-auth</span><span class="status idle">idle</span></div>
       <div class="opt"><div class="dot idle"></div><span class="sm" style="font-weight: 600; flex: 1;">mr-board-onboard</span><span class="status idle">idle</span></div>
       <div class="opt"><div class="dot deaf"></div><div class="stack" style="flex: 1; min-width: 0; gap: 0;"><span class="sm" style="font-weight: 600;">gitq-main</span><span class="xs" style="color: var(--bad);">won't see this until its tail restarts</span></div><span class="status deaf">deaf</span></div>
+      <div class="opt"><div class="dot live"></div><div class="stack" style="flex: 1; min-width: 0; gap: 0;"><span class="sm" style="font-weight: 600;">rt-chat-wt-2</span><span class="xs" style="color: var(--purple);">not in #build — DM instead</span></div><span class="status live">listening</span></div>
       <div class="opt"><span class="sm muted" style="flex: 1;">@here</span><span class="xs muted">wakes 4 agents</span></div>
     </div>
     <div class="row" style="gap: 7.2px;">
