@@ -24,6 +24,7 @@ import { join } from "path";
 import type { Server } from "bun";
 
 import { RT_DIR, DAEMON_PID_PATH } from "./daemon-config.ts";
+import { resolveIntendedMode } from "./dev-mode.ts";
 import { getDaemonLogger, installCrashHandlers, redirectNativeStderr } from "./daemon-logger.ts";
 import { onNotification } from "./notifier.ts";
 import { appBundleRoot } from "./bundle-layout.ts";
@@ -32,6 +33,7 @@ import { createRealProbes } from "./setup/probes.ts";
 
 import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
 
+import { parkUntilIntended, probeSocketHolder, daemonFlavor } from "./daemon/park.ts";
 import { evictStaleDaemon } from "./daemon/boot-reconcile.ts";
 import { resolveUserPath } from "./daemon/user-path.ts";
 // Every state.db API is reached through the lib/state barrel, never through
@@ -89,6 +91,20 @@ if (rtMigration === "migrated") {
     `${RT_DIR_LABEL}; merge the legacy ${LEGACY_RT_LABEL} directory into it by hand, then delete it`,
   );
 }
+
+// Flavor gate — MUST stay above every subsystem below: module scope arms
+// cron, the home-snapshot auto-committer, and sweep intervals, and
+// startDaemon() SIGTERMs the shared rt.pid. A wrong-flavor daemon that got
+// past this line would kill the serving daemon and double-commit the home
+// repo. Both entry paths (cli.ts `rt --daemon` and the shim's
+// `bun run lib/daemon.ts`) converge here.
+await parkUntilIntended({
+  myFlavor: daemonFlavor(),
+  resolveIntent: resolveIntendedMode,
+  probeHolder: probeSocketHolder,
+  sleep: (ms) => Bun.sleep(ms),
+  log,
+});
 
 // ─── Daemon units ────────────────────────────────────────────────────────────
 
