@@ -82,14 +82,14 @@ Write findings (values, Claude Code version, exact JSON shapes) to the report fi
 - Test: `lib/state/__tests__/db.test.ts` (the migration suite; `db-migration.test.ts` does not exist), `lib/state/__tests__/chat-store.test.ts` (the shipped `clearAllArmed` count test must keep passing — it arms two members and expects 2; the return value stays member rows cleared, with presence rows cleared alongside)
 
 **Interfaces:**
-- Produces: the two tables exactly as the spec's Data model writes them (`chat_presence` with `last_seen_at` + `tail_seen_at` + `signed_out_at`; `chat_dms(room PK, a, b, created_at, UNIQUE(a,b))`), `SCHEMA_VERSION` bumped to 4, and the daemon startup clear covering `chat_presence.armed_at`.
+- Produces: the three tables exactly as the spec's Data model writes them (`chat_room_defaults` included) (`chat_presence` with `last_seen_at` + `tail_seen_at` + `signed_out_at`; `chat_dms(room PK, a, b, created_at, UNIQUE(a,b))`), `SCHEMA_VERSION` bumped to 4, and the daemon startup clear covering `chat_presence.armed_at`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
 test("v4 adds chat_presence and chat_dms", () => {
   const db = openStateDb(freshPath());
-  expect(db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms')").all()).toHaveLength(2);
+  expect(db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms','chat_room_defaults')").all()).toHaveLength(3);
   expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 4 });
 });
 
@@ -121,7 +121,7 @@ test("startup clear covers presence arming", () => {
 
 **Files:**
 - Create: `lib/state/presence-store.ts`
-- Modify: `lib/state/index.ts`, `lib/state/chat-store.ts` (dual-write in `armMember`/`touchMember`/`disarmMember` — and `armMember` clears `tail_seen_at`, the new-epoch rule; guard scoping in `joinRoom`), `lib/daemon.ts` (call `prunePresence` beside the existing `clearAllArmed()` — the spec's startup prune; `lib/state/__tests__/source-guards.test.ts` pins that call-site ordering and must stay green)
+- Modify: `lib/state/index.ts`, `lib/state/chat-store.ts` (dual-write in `armMember`/`touchMember`/`disarmMember` — and `armMember` clears `tail_seen_at`, the new-epoch rule; guard scoping in `joinRoom`; room-default wake inheritance in `joinRoom` per the spec's `chat_room_defaults`), `lib/daemon.ts` (call `prunePresence` beside the existing `clearAllArmed()` — the spec's startup prune; `lib/state/__tests__/source-guards.test.ts` pins that call-site ordering and must stay green)
 - Test: `lib/state/__tests__/presence-store.test.ts`
 
 **Interfaces:**
@@ -241,6 +241,18 @@ test("arm/touch/disarm dual-write when a presence row exists, and still work wit
   expect(db.query("SELECT armed_at, tail_seen_at FROM chat_presence WHERE handle = 'x'").get()!.armed_at).toBeTruthy();
   joinRoom({ room: "r", handle: "unsigned" }, db);
   expect(() => armMember(undefined, "unsigned", db)).not.toThrow();            // member columns as in plan 1
+});
+
+test("a creating join with wake-on stamps the room default and later joins inherit it", () => {
+  const db = fresh();
+  joinRoom({ room: "war", handle: "a", wakeOn: "all" }, db);            // creates → stamps
+  joinRoom({ room: "war", handle: "b" }, db);                            // flagless → inherits
+  joinRoom({ room: "war", handle: "c", wakeOn: "mention" }, db);         // explicit → wins
+  const byHandle = Object.fromEntries(listMembers("war", db).map(m => [m.handle, m.wakeOn]));
+  expect(byHandle).toEqual({ a: "all", b: "all", c: "mention" });
+  joinRoom({ room: "calm", handle: "a" }, db);                           // creating join WITHOUT a flag stamps nothing
+  joinRoom({ room: "calm", handle: "b" }, db);
+  expect(listMembers("calm", db).map(m => m.wakeOn)).toEqual(["mention", "mention"]);
 });
 
 test("the joinRoom cwd guard is scoped to unsigned handles", () => {

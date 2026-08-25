@@ -64,7 +64,18 @@ Ratified in brainstorming, 2026-08-24:
    cursor as everywhere else, while the DM's *participants* stay the two in
    `chat_dms` and `join` refuses DM rooms outright. There are no private
    agent↔agent DMs in this system, by design.
-6. **Sign-out is explicit and also automatic on session end.** `/chat:sign-out`
+6. **A room can default its members to `wake_on all`.** Ratified 2026-08-25:
+   a war room of three or four coordinating agents should not depend on the
+   writer remembering `@here` or each joiner remembering a flag. The join
+   that *creates* a room with an explicit `--wake-on` stamps that mode as
+   the room's default; later joiners inherit it unless they pass their own
+   `--wake-on`. Rooms with no stamped default (everything pre-existing, and
+   any room created without the flag) keep `mention` — the quiet global
+   default is unchanged, because an `all` room notifies every member per
+   message and that is a cost to opt into, not to fall into. The viewer's
+   page bar shows the mode (`wakes: all`) so it is visible, and launchers
+   (shepherdr fan-outs) create their room with `all`.
+7. **Sign-out is explicit and also automatic on session end.** `/chat:sign-out`
    disarms and marks the row signed out; a `SessionEnd` hook does the same
    best-effort so a closed terminal does not leave a ghost. Room memberships
    persist across sign-out — sign back in and the rooms are still yours.
@@ -184,6 +195,11 @@ CREATE TABLE IF NOT EXISTS chat_presence (
 );
 CREATE INDEX IF NOT EXISTS chat_presence_handle ON chat_presence(handle);
 
+CREATE TABLE IF NOT EXISTS chat_room_defaults (
+  room     TEXT PRIMARY KEY,              -- rows exist only for rooms stamped at creation
+  wake_on  TEXT NOT NULL                  -- mention | all | none
+);
+
 CREATE TABLE IF NOT EXISTS chat_dms (
   room        TEXT PRIMARY KEY REFERENCES chat_rooms(name),   -- documentation only: foreign_keys is off in applyPragmas; deletion is explicit
   a           TEXT NOT NULL,             -- participants, sorted; either may be the human handle
@@ -267,6 +283,12 @@ Additions to the eight verbs of the base design:
 | `rt chat who` (no room) | alias of `buddies`; `who <room>` unchanged, now presence-joined |
 | `rt chat dm <handle> <text>` | find-or-create the DM room (participants: the caller and `<handle>`, either may be the human), join both `wake_on all` — plus the human `wake_on none` when neither is him — and post with the recipient in the payload's `mentions` (not prepended to the body: the transcript shows the text as typed, and the desk notifies when the recipient is the human) |
 | `rt chat pulse [--json]` | **hook-facing**: heartbeat + re-derive deets from cwd + return the unread summary; see Hooks |
+
+`join` inheritance: the creating join with an explicit `--wake-on` writes
+`chat_room_defaults`; a later join with no flag reads it (absent row →
+`mention`, as today); an explicit flag always wins for that member. The
+inheritance lives in `joinRoom`, so the CLI, the viewer's auto-join and the
+launchers all get it for free.
 
 `read`, `rooms`, `mark` include DM rooms — for the human too, through his
 membership row; `rooms` lists them under a *direct* heading as `deck-main ↔
@@ -512,6 +534,9 @@ unaffected.
 
 ## Testing
 
+- Store: a creating join with `--wake-on all` stamps the room default; a
+  later flagless join inherits `all`; an explicit flag overrides for that
+  member; a room with no row defaults `mention`.
 - Store: sign-in assigns a suffix when the base is held by a live row,
   reclaims a stale row in the same seat, reuses a base after an hour of
   silence; sign-out keeps memberships; `buddies` sections, thresholds and
