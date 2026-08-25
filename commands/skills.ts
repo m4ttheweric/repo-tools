@@ -33,6 +33,7 @@ import { validateChain } from "../lib/skills/chain.ts";
 import { compileSkill, HEADER_COMMENT, isInlined } from "../lib/skills/compile.ts";
 import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
+import { maskProvenance, mattstackProvenance, packPluginIdentity } from "../lib/skills/provenance.ts";
 import {
   invocableRoster,
   loadAttachment,
@@ -227,19 +228,6 @@ function enumerateSkillEntries(root: string, into: Map<string, SkillEntry> = new
     if (!sawLeaf) add({ name: top, group: null, dir: topDir });
   }
   return into;
-}
-
-/** The pack's own plugin identity, when it is one (a pack without a manifest is not a plugin root). */
-function packPluginIdentity(packDir: string): { name: string; version: string } | null {
-  const manifestPath = join(packDir, ".claude-plugin", "plugin.json");
-  if (!existsSync(manifestPath)) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown; version?: unknown };
-    if (typeof parsed.name !== "string" || !parsed.name) return null;
-    return { name: parsed.name, version: typeof parsed.version === "string" ? parsed.version : "" };
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -473,37 +461,6 @@ export function outDirFor(packDir: string, name: string, isPublic: boolean): str
 }
 export function otherSideDir(packDir: string, name: string, isPublic: boolean): string {
   return join(packDir, isPublic ? "attachments" : "skills", name);
-}
-
-type GitFacts = { sha: string; dirty: 0 | 1 };
-
-/** Feeds run-start.flags' --mattstack-sha/--mattstack-dirty; a non-git or unreadable mattstack dir degrades to empty/clean rather than failing resolution. */
-function gitFacts(dir: string): GitFacts {
-  try {
-    const sha = execFileSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { stdio: "pipe" }).toString().trim();
-    const status = execFileSync("git", ["-C", dir, "status", "--porcelain"], { stdio: "pipe" }).toString();
-    return { sha, dirty: status.trim() ? 1 : 0 };
-  } catch {
-    return { sha: "", dirty: 0 };
-  }
-}
-
-/**
- * Only {{run-start.flags}} carries these facts, and only a pipeline body places
- * it, so a pack with no declared pipelines pays nothing for the two git
- * subprocesses. An installed plugin cache is a plain copy with no .git; its
- * version is the only provenance it carries, and it is what the run DB records
- * in that case.
- */
-export function mattstackProvenance(
-  pipelines: Record<string, string[]>,
-  plugin: { dir: string; version: string } | undefined,
-  facts: (dir: string) => GitFacts = gitFacts,
-): GitFacts {
-  if (!plugin) return { sha: "", dirty: 0 };
-  if (Object.keys(pipelines).length === 0) return { sha: plugin.version, dirty: 0 };
-  const { sha, dirty } = facts(plugin.dir);
-  return { sha: sha || plugin.version, dirty };
 }
 
 async function resolve(flags: Flags): Promise<Resolved> {
@@ -897,9 +854,12 @@ export async function skillsCheck(args: string[]): Promise<void> {
       for (const file of result.files) {
         const dest = join(outDir, file.path);
         const expected = "content" in file ? Buffer.from(file.content) : readFileSync(file.copyFrom);
-        if (!existsSync(dest) || !readFileSync(dest).equals(expected)) {
-          staleFiles.push(file.path);
-        }
+        // SKILL.md carries the compiler's own version/sha stamps -- a version bump or
+        // a fresh checkout sha with no inlined body change is not drift worth flagging.
+        const stale = file.path.endsWith("SKILL.md")
+          ? !existsSync(dest) || maskProvenance(readFileSync(dest, "utf8")) !== maskProvenance(expected.toString("utf8"))
+          : !existsSync(dest) || !readFileSync(dest).equals(expected);
+        if (stale) staleFiles.push(file.path);
       }
 
       // A file left behind by an earlier compile: writeCompiledVerb would delete it on

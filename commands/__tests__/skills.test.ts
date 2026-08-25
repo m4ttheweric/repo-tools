@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { mattstackProvenance, skillsCheck, skillsCompile, skillsComposition, skillsPacks } from "../skills.ts";
+import { skillsCheck, skillsCompile, skillsComposition, skillsPacks } from "../skills.ts";
 import { compileSkill } from "../../lib/skills/compile.ts";
 import { invocableRoster, loadAttachment, loadStepSource } from "../../lib/skills/sources.ts";
 import type { PluginRoots } from "../../lib/skills/sources.ts";
@@ -584,37 +584,6 @@ function makePipelineFixtures(): { mattstackDir: string; packDir: string; manife
   return { mattstackDir, packDir, manifestPath };
 }
 
-describe("mattstackProvenance", () => {
-  const plugin = { dir: "/plugins/mattstack", version: "1.2.0" };
-
-  test("no declared pipelines: no git subprocess, the plugin version stands in", () => {
-    let calls = 0;
-    const facts = () => {
-      calls++;
-      return { sha: "abc1234", dirty: 1 as const };
-    };
-
-    expect(mattstackProvenance({}, plugin, facts)).toEqual({ sha: "1.2.0", dirty: 0 });
-    expect(calls).toBe(0);
-  });
-
-  test("declared pipelines: the git facts are what get baked", () => {
-    let calls = 0;
-    const facts = () => {
-      calls++;
-      return { sha: "abc1234", dirty: 1 as const };
-    };
-
-    expect(mattstackProvenance({ feature: ["mattstack:stage-plan"] }, plugin, facts)).toEqual({ sha: "abc1234", dirty: 1 });
-    expect(calls).toBe(1);
-  });
-
-  test("a non-git plugin dir degrades to its version, not an empty sha", () => {
-    const facts = () => ({ sha: "", dirty: 0 as const });
-    expect(mattstackProvenance({ feature: [] }, plugin, facts)).toEqual({ sha: "1.2.0", dirty: 0 });
-  });
-});
-
 describe("skillsCompile/skillsCheck --verb scoping across roster verbs and pipeline stages", () => {
   test("--verb work --preview emits exactly the orchestrator's body, not every stage's too", async () => {
     const { mattstackDir, packDir, manifestPath } = makePipelineFixtures();
@@ -867,6 +836,78 @@ describe("skillsCheck", () => {
     const staleLine = logs.find((l) => l.includes("stale"));
     expect(staleLine).toBeDefined();
     expect(staleLine).toContain("watch-ci");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("provenance-only drift (marker versions, compiled recompute) is masked out: in-sync", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const skillMdPath = join(packDir, "skills", "watch-ci", "SKILL.md");
+    const bumped = readFileSync(skillMdPath, "utf8")
+      .replace(/version=\S+/g, "version=9.9.9")
+      .replace(/(compiled: )"[^"]*"/, '$1"bumped"');
+    writeFileSync(skillMdPath, bumped);
+    logs = [];
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+      "--json",
+    ]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs).toEqual([
+      { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [], side: "skills" },
+    ]);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  test("provenance-masked drift plus a real prose change still reports stale and exits 1", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const skillMdPath = join(packDir, "skills", "watch-ci", "SKILL.md");
+    const bumped = readFileSync(skillMdPath, "utf8")
+      .replace(/version=\S+/g, "version=9.9.9")
+      .replace(/(compiled: )"[^"]*"/, '$1"bumped"')
+      .replace("Poll the pipeline every 30s", "Poll the pipeline every 45s");
+    writeFileSync(skillMdPath, bumped);
+    logs = [];
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const staleLine = logs.find((l) => l.includes("stale"));
+    expect(staleLine).toBeDefined();
+    expect(staleLine).toContain("watch-ci");
+    expect(staleLine).toContain("SKILL.md");
     expect(process.exitCode).toBe(1);
   });
 });
