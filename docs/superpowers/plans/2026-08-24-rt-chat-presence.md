@@ -44,10 +44,10 @@ packages/rt-client/src/client.ts,index.ts MODIFY: wrappers + types
 commands/chat.ts                         MODIFY: verbs, session file, room derivation, tail reclaim exit, statuses
 lib/chat-session.ts                      NEW: the session file (read/write/delete/resolve)
 skills/rt-chat/SKILL.md                  MODIFY: sign-in entry point, bare arm line, 4 statuses, DMs
-e2e/tests/chat-presence2.test.ts         NEW: the spec's e2e list
+e2e/tests/chat-presence-roster.test.ts   NEW: the spec's e2e list
 
 # mattstack-marketplace
-plugins/chat/plugin.json                 NEW
+plugins/chat/.claude-plugin/plugin.json  NEW (+ root .claude-plugin/marketplace.json entry)
 plugins/chat/skills/sign-in/SKILL.md     NEW   (also sign-out/, away/)
 plugins/chat/hooks/hooks.json            NEW: UserPromptSubmit → pulse; SessionEnd → sign-out; SessionStart(resume|compact|fork) → re-arm notice
 plugins/chat/hooks/pulse.sh              NEW: the thin shell hooks call (jq session_id → rt chat pulse --json → additionalContext)
@@ -79,8 +79,8 @@ Write findings (values, Claude Code version, exact JSON shapes) to the report fi
 ### Task 2: Schema v4 — `chat_presence` and `chat_dms`
 
 **Files:**
-- Modify: `lib/state/db.ts`
-- Test: `lib/state/__tests__/db-migration.test.ts` (extend)
+- Modify: `lib/state/db.ts` (schema), `lib/state/chat-store.ts` (`clearAllArmed` — it lives there, not in db.ts)
+- Test: `lib/state/__tests__/db.test.ts` (the migration suite; `db-migration.test.ts` does not exist), `lib/state/__tests__/chat-store.test.ts` (the shipped `clearAllArmed` count test must keep passing — it arms two members and expects 2; the return value stays member rows cleared, with presence rows cleared alongside)
 
 **Interfaces:**
 - Produces: the two tables exactly as the spec's Data model writes them (`chat_presence` with `last_seen_at` + `tail_seen_at` + `signed_out_at`; `chat_dms(room PK, a, b, created_at, UNIQUE(a,b))`), `SCHEMA_VERSION` bumped to 4, and the daemon startup clear covering `chat_presence.armed_at`.
@@ -122,7 +122,7 @@ test("startup clear covers presence arming", () => {
 
 **Files:**
 - Create: `lib/state/presence-store.ts`
-- Modify: `lib/state/index.ts`, `lib/state/chat-store.ts` (dual-write in `armMember`/`touchMember`/`disarmMember`; guard scoping in `joinRoom`)
+- Modify: `lib/state/index.ts`, `lib/state/chat-store.ts` (dual-write in `armMember`/`touchMember`/`disarmMember` — and `armMember` clears `tail_seen_at`, the new-epoch rule; guard scoping in `joinRoom`), `lib/daemon.ts` (call `prunePresence` beside the existing `clearAllArmed()` — the spec's startup prune; `lib/state/__tests__/source-guards.test.ts` pins that call-site ordering and must stay green)
 - Test: `lib/state/__tests__/presence-store.test.ts`
 
 **Interfaces:**
@@ -131,13 +131,17 @@ test("startup clear covers presence arming", () => {
   export type BuddyStatus = "live" | "idle" | "deaf" | "offline";
   export interface PresenceRow { sessionId: string; handle: string; baseHandle: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string; signedInAt: number; lastSeenAt: number; tailSeenAt?: number; armedAt?: number; signedOutAt?: number; }
   export function signIn(args: { sessionId: string; baseHandle: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string; now?: number }, db?): { handle: string; reclaimed: boolean };
-  export function signOut(sessionId: string, db?): void;
+  export function signOut(sessionId: string, now?: number, db?): void;
   export function setAway(sessionId: string, text: string | null, db?): void;
   export function pulseSession(args: { sessionId: string; cwd?: string; repo?: string; branch?: string; pane?: string; now?: number }, db?): void;   // last_seen_at + deets; NEVER tail_seen_at
-  export function buddyStatus(row: Pick<PresenceRow, "signedOutAt" | "lastSeenAt" | "tailSeenAt" | "armedAt">, now: number): BuddyStatus;
+  export function buddyStatus(row: Partial<Pick<PresenceRow, "signedOutAt" | "lastSeenAt" | "tailSeenAt" | "armedAt">>, now: number, th?: PresenceThresholds): BuddyStatus;
+  export interface PresenceThresholds { tailStaleMs: number; sessionStaleMs: number; pruneMs: number }
+  export function presenceThresholds(): PresenceThresholds;   // env RT_CHAT_TAIL_STALE_MS / RT_CHAT_SESSION_STALE_MS / RT_CHAT_PRUNE_MS, defaults 10m / 1h / 24h — read at call time; evaluated DAEMON-side, so the e2e daemon spawn passes them
   export function listBuddies(now: number, db?): Array<PresenceRow & { status: BuddyStatus }>;   // prunable rows excluded
   export function presenceForHandle(handle: string, db?): PresenceRow | null;
-  export function assertSessionOwnsHandle(handle: string, sessionId: string | undefined, db?): void;  // throws "handle reclaimed" ONLY when a presence row exists and mismatches a provided sessionId
+  export function presenceForSession(sessionId: string, db?): PresenceRow | null;
+  export function assertSessionOwnsHandle(handle: string, sessionId: string | undefined, db?): void;  // handle-keyed payloads (arm/touch/disarm): throws only when a presence row exists for the handle and mismatches a provided sessionId
+  export function assertSessionSignedIn(sessionId: string, db?): PresenceRow;                          // session-keyed payloads (pulse/away/back/sign-out): no row for this session id means the handle was reclaimed — throw
   export function prunePresence(now: number, db?): number;   // signed out >24h ago, or last_seen_at >24h old
   ```
 - Consumes: nothing outside `lib/state`.
@@ -207,9 +211,9 @@ test("assertSessionOwnsHandle throws only on a mismatched signed handle", () => 
 test("prune frees a never-signed-out handle after 24h of silence, keeps the offline window", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
-  signOut("s1", db);
+  signOut("s1", now, db);
   expect(prunePresence(now + 2 * HOUR, db)).toBe(0);       // inside the offline window
-  expect(prunePresence(now + 25 * HOUR, db)).toBe(1);
+  expect(prunePresence(now + 25 * HOUR, db)).toBe(1);       // the signed-out-24h leg, exercised with a pinned clock
 });
 
 test("arm starts a new tail epoch: sets armed_at and CLEARS tail_seen_at", () => {
@@ -245,7 +249,7 @@ test("the joinRoom cwd guard is scoped to unsigned handles", () => {
 ```
 
 - [ ] **Step 2: Run to verify they fail** — `bun test lib/state/__tests__/presence-store.test.ts` → FAIL (no module).
-- [ ] **Step 3: Implement** — one `RECLAIMABLE_SQL` fragment (`signed_out_at IS NOT NULL OR (last_seen_at < :hour AND COALESCE(tail_seen_at, armed_at, 0) < :tenMin)`) used by `signIn` (suffix scan `x`, `x-2`, … over non-reclaimable rows; same-seat preference among reclaimable ones; reclaim = DELETE), `prunePresence` at sign-in, and nothing else. `buddyStatus` is a pure function implementing the spec's table in order. Dual-write lives inside `armMember`/`touchMember`/`disarmMember` (presence row updated when `presenceForHandle` hits). `joinRoom`'s collision guard first checks `presenceForHandle(handle)` and skips when signed in.
+- [ ] **Step 3: Implement** — one `RECLAIMABLE_SQL` fragment (`signed_out_at IS NOT NULL OR (last_seen_at < :hour AND COALESCE(tail_seen_at, armed_at, 0) < :tenMin)`) used by `signIn` (suffix scan `x`, `x-2`, … over non-reclaimable rows; same-seat preference among reclaimable ones; reclaim = DELETE), `prunePresence` at sign-in and at daemon startup (the `lib/daemon.ts` call site above), nowhere else. Import direction: `chat-store` imports from `presence-store` (dual-write) and later from `dm-store` (`joinRoom` refusal), never the reverse — `dm-store` writes its membership rows with its own SQL so no cycle can land. `buddyStatus` is a pure function implementing the spec's table in order, thresholds parameterized. Dual-write lives inside `armMember`/`touchMember`/`disarmMember` (presence row updated when `presenceForHandle` hits). `joinRoom`'s collision guard first checks `presenceForHandle(handle)` and skips when signed in.
 - [ ] **Step 4: Gate** — full repo gate → PASS.
 - [ ] **Step 5: Commit** — `chat-presence: presence store — sign-in, two heartbeats, one reclaim predicate`.
 
@@ -312,7 +316,7 @@ test("a dm post wakes the other participant; the human's post wakes both", () =>
 ```
 
 - [ ] **Step 2: Run to verify they fail** → FAIL (no module).
-- [ ] **Step 3: Implement.** `dmRoomFor` inserts `chat_rooms` + `chat_dms` + memberships in one transaction. `joinRoom` refuses when `dmParticipants(room)` is non-null. `postMessage`'s `mentions` param is deduped-merged into the stored JSON *and* into the recipients/notifier path, so `dm matt …` from an agent notifies the desk (the plan-1 notifier keys on the human handle appearing in mentions).
+- [ ] **Step 3: Implement.** `dmRoomFor` inserts `chat_rooms` + `chat_dms` + memberships in one transaction. `joinRoom` refuses when `dmParticipants(room)` is non-null. `postMessage`'s `mentions` param is deduped-merged into the stored JSON. **The desk-notification merge is handler-side and belongs to Task 5:** shipped `chat:post` computes `parseMentions(body)` itself and notifies from that, not from the stored mentions — so Task 5 extends the `chat:post` payload with `mentions?: string[]`, merges before the notify check, and `chat:dm` posts through that path. Without the handler change, `dm matt …` is silent at the desk.
 - [ ] **Step 4: Gate** → PASS.  **Step 5: Commit** — `chat-presence: dm store — hashed ids, the human's row, mentions param`.
 
 ---
@@ -321,19 +325,21 @@ test("a dm post wakes the other participant; the human's post wakes both", () =>
 
 **Files:**
 - Modify: `lib/daemon/handlers/chat.ts`, `packages/rt-client/src/commands.ts`, `packages/rt-client/src/client.ts`, `packages/rt-client/src/index.ts`, `packages/rt-client/package.json` (minor bump)
-- Test: `lib/daemon/__tests__/chat-handlers.test.ts` (extend), `packages/rt-client/test/registry.test.ts` (count bump)
+- Test: `lib/daemon/__tests__/chat-handlers.test.ts` (extend), `lib/daemon/__tests__/rt-client-commands.test.ts` (every `COMMAND_NAMES` entry must resolve through `buildRoutedHandlers` — the real registry gate; there is no count test), `packages/rt-client/test/dist-freshness.test.ts` (run `bun run build` in the package)
 
 **Interfaces:**
 - Produces handlers (payload → data), all thin over the stores:
   ```
-  chat:sign-in   { sessionId, baseHandle, cwd?, repo?, branch?, pane?, statusText? } → { handle, reclaimed, room? }   // room join happens CLIENT-side after this returns; see Task 6
+  chat:sign-in   { sessionId, baseHandle, cwd?, repo?, branch?, pane?, statusText? } → { handle, reclaimed }   // the room join happens CLIENT-side after this returns (Task 6) — no room field, nothing populates one
   chat:sign-out  { sessionId } → {}                                     // CLI adds --quiet (hook path: suppress output)
   chat:away      { sessionId, text }  /  chat:back { sessionId } → {}
   chat:buddies   {} → { buddies: Array<PresenceRow & { status }> }
-  chat:pulse     { sessionId, cwd?, repo?, branch?, pane? } → { unread: { dms, mentions, rooms }, status, reclaimed: false } — or refuses "handle reclaimed"
+  chat:pulse     { sessionId, cwd?, repo?, branch?, pane? } → { unread: { dms, mentions, rooms }, status } — or refuses with an error containing handle reclaimed
   chat:dm        { from, to, body, sessionId? } → { room, id, recipients }
   ```
-- `chat:arm` / `chat:touch` / `chat:disarm` / `chat:away` / `chat:sign-out` / `chat:pulse` call `assertSessionOwnsHandle` (enforced only when a presence row exists AND a sessionId was provided — the unsigned plan-1 path keeps working).
+- Session enforcement is two functions for two payload shapes: handle-keyed (`chat:arm`/`chat:touch`/`chat:disarm`) call `assertSessionOwnsHandle(handle, sessionId?)`; session-keyed (`chat:pulse`/`chat:away`/`chat:back`/`chat:sign-out`) call `assertSessionSignedIn(sessionId)` (Task 3). The unsigned plan-1 path keeps working because the handle-keyed check fires only when a presence row exists and a session id was provided.
+- **The three shipped catalog entries and wrappers gain `sessionId?`:** `chat:arm` `{handle, room?, sessionId?}`, `chat:touch`/`chat:disarm` `{handle, sessionId?}` in `packages/rt-client/src/commands.ts`; the wrappers stop hard-narrowing the payload (`chatTouch` currently rebuilds `{handle: a.handle}`, dropping extra fields); `chatTail` passes the session id from its session file (Task 7). Without this the daemon can never refuse a reclaimed handle.
+- `chat:post` payload gains `mentions?: string[]`, merged with `parseMentions(body)` for BOTH storage and the desk-notify check (see Task 4); `chat:dm` posts through it.
 - `chat:who` returns presence-joined statuses; `chat:rooms` marks DM rooms (`kind: "dm"`, display pair) by left-joining `chat_dms`.
 - rt-client: wrappers `chatSignIn`, `chatSignOut`, `chatAway`, `chatBack`, `chatBuddies`, `chatPulse`, `chatDm` + types; catalog entries beside the twelve shipped ones.
 
@@ -353,6 +359,7 @@ test("a reclaimed handle refuses the old session's pulse with the reason", async
   await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "x" });
   const res = await h["chat:pulse"]({ sessionId: "s1" });
   expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");                 // CommandResult narrowing, as every shipped handler test does
   expect(res.error).toContain("handle reclaimed");
 });
 
@@ -362,6 +369,7 @@ test("chat:dm creates once, posts with the recipient in mentions, and reports re
   await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "b" });
   const res = await h["chat:dm"]({ from: "a", to: "b", body: "ping" });
   expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
   expect(res.data.recipients).toEqual(["b"]);
 });
 
@@ -393,11 +401,30 @@ test("chat:rooms marks a dm and chat:who carries presence statuses", async () =>
 - `resolveHandle` gains position 0 (the session file) and refuses `--as` when signed in, on every verb but `sign-in`.
 - Room derivation: `deriveRoomForCwd(cwd)` — `findGitRoot` gate; remote-kind → slugified last segment; path-kind → slugified last two segments of the main worktree realpath; null when not in a work tree.
 
+**Test hygiene this task adds once, in `beforeEach`:** clear
+`CLAUDE_CODE_SESSION_ID` exactly as the suite already clears
+`HERDR_PANE_ID` — the suite itself runs inside a real Claude Code session,
+and a leaked id would sign tests in against the developer's own session
+file. Every test below passes an explicit `--session s1`. And add
+`--session`, `--status`, `--room` to `FLAGS_WITH_VALUES` in
+`commands/chat.ts` — `positionals()` only skips a flag's value slot for
+members of that set, so without the entries `rt chat dm b "hi" --session
+s1` posts `"hi s1"` (the same body-splice bug the shipped `--as` test
+guards).
+
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
+test("flag values never splice into a body: --session and --status are FLAGS_WITH_VALUES", async () => {
+  await runChat(["sign-in", "--as", "x", "--session", "s1", "--no-room"]);
+  await runChat(["dm", "matt", "hello there", "--session", "s1"]);
+  const msgs = await runChat(["read", "--session", "s1", "--json"]);
+  expect(msgs).toContain("hello there");
+  expect(msgs).not.toContain("hello there s1");
+});
+
 test("position 0: a signed-in session resolves the assigned handle for every verb", async () => {
-  const { home } = await signInInProcess({ as: "x" });               // harness helper this task writes
+  const { home } = await signInInProcess({ as: "x", session: "s1" }); // harness helper this task writes; passes --session explicitly
   const out = await runChat(["post", "r", "hello"]);                  // joins + posts as x, not the cwd-derived handle
   expect((await runChat(["who", "r"]))).toContain("x");
 });
@@ -416,7 +443,7 @@ test("deriveRoomForCwd: remote-kind, path-kind, not-a-worktree", () => {
 });
 
 test("sign-in prints the identity line and the arm instruction; --no-room and --room work", async () => {
-  const out = await runChat(["sign-in", "--as", "x", "--room", "warroom"]);
+  const out = await runChat(["sign-in", "--as", "x", "--room", "warroom", "--session", "s1"]);
   expect(out).toMatch(/signed in as x/);
   expect(out).toMatch(/#warroom/);
   expect(out).toMatch(/rt chat tail/);                               // bare — no --as in the arm line
@@ -437,6 +464,9 @@ test("sign-out deletes the session file and disarms", async () => { /* file gone
 
 **Interfaces:**
 - `rt chat buddies [--json]` renders the roster (sections in Statuses-table order, `offline (last 24h)` collapsed to one line); `who` with no room aliases it. The shipped 5-minute idle/away split in `memberStatus` is replaced by the spec's four statuses via `buddyStatus` (exported through the barrel).
+- `renderRooms` gains the *direct* heading: DM rooms render as `a ↔ b` from the handler's display pair, never the hashed name; `who <dm-room>` renders the two `chat_dms` participants and never lists the human.
+- `pulse` on a reclaimed refusal deletes the session file and reports it (stdout notice; `--json`: a `reclaimed: true` object) — the hook relays it as `additionalContext`.
+- `pulse` writes `lastCwd` / `lastBranchReadAt` back to the session file — that gates the git spawn (branch re-read only when cwd changed or the last read is over a minute old; `deriveRepoIdentity` is async and spawns git, which the post path's no-spawn rule forbids on hot paths).
 - `rt chat away <text>` / `rt chat back`; `rt chat dm <handle> <text>`; `rt chat pulse --json` (heartbeat + unread summary + status; exit 0 with `{ reclaimed: true }`-shaped error handling per below).
 - The tail: `chatTouch` refusals are no longer swallowed blind — a `handle reclaimed` error prints one stdout line (`handle reclaimed — sign in again`) and exits 0; every other touch error stays ignored.
 
@@ -447,19 +477,25 @@ test("buddies renders four sections in table order and names the away text", asy
 
 test("pulse --json returns the unread summary and never writes the tail heartbeat", async () => { /* run pulse; assert tail_seen_at unchanged via who --json */ });
 
-test("the tail exits 0 with one line when its handle is reclaimed", async () => {
-  // marker-file harness as in the plan-1 race tests: pre-wait marker holds the
-  // tail before its first touch; reclaim the handle through the handlers; release.
-  const t = spawnChat(["tail"]);
-  await until(hasTailPidfile);
-  await reclaimHandleViaHandlers();
-  releaseMarker();
-  const { exitCode, stdout } = await reap(t);
-  expect(exitCode).toBe(0);
-  expect(stdout.trim()).toBe("handle reclaimed — sign in again");
+test("pulse on a reclaimed handle deletes the session file and reports it", async () => {
+  await signInInProcess({ as: "x", session: "s1" });
+  await reclaimViaHandlers("x", "s2");                     // helper: age s1's heartbeats past the thresholds, sign s2 in
+  const out = await runChat(["pulse", "--json", "--session", "s1"]);
+  expect(JSON.parse(out)).toMatchObject({ reclaimed: true });
+  expect(existsSync(sessionFilePath("s1"))).toBe(false);
 });
 
 test("dm posts and the desk notifies when the recipient is the human", async () => { /* dm matt → peekNotifications length 1 */ });
+```
+
+**The tail's reclaimed exit lands here but is TESTED in e2e (Task 10):**
+`spawnChat` builds a fixed env with no marker or session slot, and a spawned
+tail without a session id never touches the presence path; the e2e harness
+(`runRt(args, home, extraEnv)` + the marker files) has both. Implementation:
+the tail's `chatTouch` catch special-cases a reclaimed refusal → one stdout
+line (`handle reclaimed — sign in again`), delete the session file, exit 0.
+
+```ts
 ```
 
 - [ ] **Step 2: FAIL.** **Step 3: Implement.** **Step 4: Gate.** **Step 5: Commit** — `chat-presence: buddies, away, dm, pulse; the tail exits on a reclaimed handle`.
@@ -469,7 +505,8 @@ test("dm posts and the desk notifies when the recipient is the human", async () 
 ### Task 8: The `chat` plugin — skills and hooks (mattstack-marketplace)
 
 **Files (in `~/Documents/GitHub/mattstack-marketplace`):**
-- Create: `plugins/chat/plugin.json`, `plugins/chat/skills/sign-in/SKILL.md`, `plugins/chat/skills/sign-out/SKILL.md`, `plugins/chat/skills/away/SKILL.md`, `plugins/chat/hooks/hooks.json`, `plugins/chat/hooks/pulse.sh`, `plugins/chat/hooks/session-end.sh`, `plugins/chat/hooks/session-start.sh`
+- Create: `plugins/chat/.claude-plugin/plugin.json` (the manifest path both shipped plugins use — a bare `plugins/chat/plugin.json` is uninstallable), `plugins/chat/skills/sign-in/SKILL.md`, `plugins/chat/skills/sign-out/SKILL.md`, `plugins/chat/skills/away/SKILL.md`, `plugins/chat/hooks/hooks.json`, `plugins/chat/hooks/pulse.sh`, `plugins/chat/hooks/session-end.sh`, `plugins/chat/hooks/session-start.sh`
+- Modify: `.claude-plugin/marketplace.json` at the marketplace root — the new plugin must be added to its `plugins` array or nothing can install it
 - Test: `plugins/chat/hooks/pulse.test.sh` (fixture stdin → expected stdout), run by the repo's existing test runner if present, else a `bun test` shim
 
 **Interfaces:**
@@ -489,19 +526,20 @@ test("dm posts and the desk notifies when the recipient is the human", async () 
 - Test: `bun run check-docs` (drift gate)
 
 - [ ] **Step 1:** Revise the skill per the spec's list: entry point *sign in, then arm*; bare `rt chat tail` arm line; `buddies`/`who` and the four statuses; the DM section (including that Matt sees agent↔agent DMs — no private DMs); everything kept from plan 1 (the gate, arm once, read capped, announce-before-taking, never block on a human, stream-ended → re-arm unless you ended it, exit-69 → check the daemon; **plus**: exit-0 "handle reclaimed" → sign in again; a first arm after reclaiming may bounce once with exit 3 — re-arm, it is not a bug).
-- [ ] **Step 2:** Regenerate docs (`bun run gen-docs`), update the command tree entries, run `bun run check-docs`. **Step 3: Gate → Commit** — `chat-presence: skill and docs`.
+- [ ] **Step 2:** Regenerate docs (`bun run docs:gen`), update the command tree entries, run `bun run docs:check` (those are the real script names). **Step 3: Gate → Commit** — `chat-presence: skill and docs`.
 
 ---
 
 ### Task 10: e2e — the spec's list
 
 **Files:**
-- Create: `e2e/tests/chat-presence2.test.ts`
-- Test: `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/chat-presence2`
+- Create: `e2e/tests/chat-presence-roster.test.ts` (`chat-presence.test.ts` is plan 1's armed-clear suite)
+- Test: `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/chat-presence-roster`
 
 - [ ] **Step 1: Write the tests** — the spec's e2e bullets, each against the compiled binary under the isolated HOME (the plan-1 harness):
   1. two sign-ins from one worktree under different session ids yield `x` and `x-2` **whether or not the first has armed yet**; both tails arm; a DM to `x-2` wakes only `x-2`.
-  2. a tail killed with SIGKILL reads *deaf* within the (test-shortened) threshold while its session keeps pulsing — thresholds injectable via env (`RT_CHAT_TAIL_STALE_MS`, `RT_CHAT_SESSION_STALE_MS`) the same way plan 1 injected `RT_CHAT_BACKOFF_MS`.
+  2. a tail killed with SIGKILL reads *deaf* within the (test-shortened) threshold while its session keeps pulsing — thresholds injected via `RT_CHAT_TAIL_STALE_MS` / `RT_CHAT_SESSION_STALE_MS` / `RT_CHAT_PRUNE_MS`, read by `presenceThresholds()` (Task 3) **in the daemon process**, so the e2e harness passes them in the DAEMON spawn env, not just the CLI's.
+  2b. the reclaimed tail: sign in `x` (session A), age it past both thresholds via the shortened clocks, sign in `x` from session B, then release A's marker-held tail — it prints `handle reclaimed — sign in again` and exits 0; B's first arm may bounce once with exit 3 and re-arms clean.
   3. `SessionEnd`-style sign-out clears `armed_at`, sets `signed_out_at`, keeps memberships.
   4. `dm matt` produces a desk notification.
   5. the v5 dry-run migration assertion at the binary level (open, downgrade `user_version`, reopen).
