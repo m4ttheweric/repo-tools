@@ -579,7 +579,13 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
       where,
     });
   } catch (err) {
-    throw new SkillsUsageError((err as Error).message);
+    const message = (err as Error).message;
+    // loadFillsFor/loadIncludesFor's SkillsUsageError already carries this same
+    // `where` prefix; a bare Error from compileSkill (e.g. a fill's own
+    // {{slot}} misuse) never does, and would otherwise surface with no verb
+    // or stage named at all.
+    const isPrefixed = err instanceof SkillsUsageError || message.startsWith(`${where}: `);
+    throw new SkillsUsageError(isPrefixed ? message : `${where}: ${message}`);
   }
 }
 

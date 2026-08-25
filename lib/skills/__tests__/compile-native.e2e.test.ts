@@ -110,6 +110,24 @@ describe("compile-native end to end", () => {
     expect(errors.join("\n")).toContain('stage "stage-ship" consumes "commits"');
   });
 
+  test("a fill carrying an illegal placeholder errors with the compiling stage named", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-e2e-"));
+    cpSync(FIX, root, { recursive: true });
+    const pack = join(root, "pack");
+    const ms = join(root, "mattstack-home");
+    const manifest = join(ms, "repos", "my-repo", "skills.jsonc");
+    const policyPath = join(pack, "attachments", "plan-policy", "SKILL.md");
+    writeFileSync(policyPath, readFileSync(policyPath, "utf8").replace("policy text", "policy text\n{{slot:tiering}}"));
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest]),
+    );
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain(
+      'stage "stage-plan": acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}} only',
+    );
+  });
+
   test("a path-breakout pipeline entry refuses to compile and never touches a directory outside packDir", async () => {
     const root = mkdtempSync(join(tmpdir(), "rt-e2e-"));
     cpSync(FIX, root, { recursive: true });
