@@ -25,6 +25,7 @@ import { homedir, hostname } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 
 import { loadRepoIndex } from "../lib/repo-index.ts";
+import { repoLabel } from "../lib/repo-arg.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { isValidChatName } from "../lib/state/index.ts";
 import { shellQuote } from "../lib/herdr-launch.ts";
@@ -198,11 +199,18 @@ function resolveMainWorktreePath(worktreeRoot: string): string | null {
   return mainPath;
 }
 
-/** Reverse lookup: which repos.json alias names `mainWorktreePath`. Index is an explicit param so the derivation stays testable without a real HOME (carry-forward fixture test). */
+/**
+ * Reverse lookup: which repos.json alias names `mainWorktreePath`. Index is an
+ * explicit param so the derivation stays testable without a real HOME
+ * (carry-forward fixture test). Index keys are serialized identities after the
+ * RT-62 re-key (`remote:host%2Fpath`) — a wire form whose `%` and `:` the
+ * handle charset forbids — so the alias is the key's display label, never the
+ * key itself (repoLabel passes a legacy name-keyed row through unchanged).
+ */
 function repoAliasForPath(mainWorktreePath: string, index: Record<string, string>): string | null {
   const target = safeRealpath(mainWorktreePath);
   for (const [name, path] of Object.entries(index)) {
-    if (safeRealpath(path) === target) return name;
+    if (safeRealpath(path) === target) return repoLabel(name);
   }
   return null;
 }

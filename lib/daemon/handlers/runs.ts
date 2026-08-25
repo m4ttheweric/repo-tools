@@ -15,6 +15,11 @@ export function createRunsHandlers(
 ): Pick<TypedHandlers, "runs:list" | "runs:get" | "runs:abandon"> & HandlerMap {
   const handlers: Pick<TypedHandlers, "runs:list" | "runs:get" | "runs:abandon"> & HandlerMap = {
     "runs:list": async (payload: Commands["runs:list"]["payload"]): Promise<CommandResult<"runs:list">> => {
+      // `repo` here is the run DIRECTORY's name — whatever key the pipeline
+      // that wrote the run used, surfaced verbatim by runs:list. It is NOT
+      // required to parse as an identity: refusing non-identity keys on this
+      // read-only surface would 404 exactly the keys runs:list itself hands
+      // out for pre-cutover runs.
       try {
         return { ok: true as const, data: { runs: listRuns(payload?.repo || undefined) } };
       } catch (err) {

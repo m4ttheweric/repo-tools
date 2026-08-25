@@ -32,7 +32,7 @@ function writeMachineStore(obj: Record<string, unknown>): void {
 async function ensureIdentity(repoPath: string, repoName: string): Promise<string> {
   const remote = execSync("git config --get remote.origin.url", { cwd: repoPath, encoding: "utf8" }).trim();
   const direct = await deriveRepoIdentity(repoPath);
-  if (direct) return direct;
+  if (direct.kind === "remote") return direct.id;
 
   const identity = `rttest.local/${repoName}`;
   const store = readMachineStore();

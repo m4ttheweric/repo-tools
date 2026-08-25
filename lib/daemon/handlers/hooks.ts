@@ -9,6 +9,7 @@
 import { join } from "path";
 import { repoDataDir } from "../../rt-paths.ts";
 import { readJson } from "../../json-store.ts";
+import { parseIdentity } from "../../settings/identity.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
 export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
@@ -16,6 +17,8 @@ export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
     "hooks:status": async (payload) => {
       const repoName = payload?.repo;
       if (!repoName) return { ok: false, error: "missing repo" };
+      // The index is identity-keyed now — a bare legacy name resolves nothing.
+      if (parseIdentity(repoName) === null) return { ok: true, data: null };
       const hooksJson = join(repoDataDir(repoName), "hooks.json");
       return { ok: true, data: readJson<unknown>(hooksJson, null) };
     },
@@ -23,6 +26,7 @@ export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
     "hooks:repair": async (payload) => {
       const repoName = payload?.repo;
       if (!repoName) return { ok: false, error: "missing repo" };
+      if (parseIdentity(repoName) === null) return { ok: true, repaired: false };
       const repos = ctx.repoIndex();
       const repoPath = repos[repoName];
       if (!repoPath) return { ok: false, error: "unknown repo" };
@@ -33,6 +37,7 @@ export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
     "hooks:watch": async (payload) => {
       const repoName = payload?.repo;
       if (!repoName) return { ok: false, error: "missing repo" };
+      if (parseIdentity(repoName) === null) return { ok: true };
       const repos = ctx.repoIndex();
       const repoPath = repos[repoName];
       if (repoPath) ctx.startWatchingRepo(repoName, repoPath);

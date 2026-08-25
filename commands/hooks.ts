@@ -326,16 +326,18 @@ export async function toggleHooks(args: string[], ctx: CommandContext): Promise<
     process.exit(1);
   }
 
-  const repoIdentity = remoteUrl ? identityFromRemote(remoteUrl) : null;
+  const derivedIdentity = remoteUrl ? identityFromRemote(remoteUrl) : null;
+  const repoIdentity = derivedIdentity && derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   const config = loadHooksConfig(dataDir, discoveredHooks, repoIdentity);
 
   // Always regenerate shims and ensure hooksPath is set
   generateShims(dataDir, discoveredHooks);
   setHooksPath(repoRoot, dataDir);
 
-  // Notify daemon to watch this repo's .git/config (best-effort, no-op if daemon not running)
+  // Notify daemon to watch this repo's .git/config (best-effort, no-op if daemon not running).
+  // The daemon's repo index is identity-keyed — send the serialized identity, not repoName's display form.
   import("../lib/daemon-client.ts")
-    .then(({ daemonQuery }) => daemonQuery("hooks:watch", { repo: repoName }))
+    .then(({ daemonQuery }) => daemonQuery("hooks:watch", { repo: ctx.identity!.identity }))
     .catch(() => {});
 
   const sub = args[0];

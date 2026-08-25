@@ -19,7 +19,8 @@
  */
 
 import { execSync, spawn, spawnSync } from "child_process";
-import { join } from "path";
+import { basename, join } from "path";
+import { reverseLookupByName } from "../lib/repo-arg.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { bold, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
@@ -35,7 +36,7 @@ import { classifyDaemonStatus, type DaemonStatusVerdict } from "../lib/daemon-st
 import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind, RepoTrackingEntry } from "../lib/repo-tracking.ts";
 import { loadRepoTracking, loadMachineRepoTracking, loadMachineRepoTrackingRaw, saveRepoTrackingRaw, grants, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS, teamNamesIdentity } from "../lib/repo-tracking.ts";
-import { deriveRepoIdentity } from "../lib/settings/identity.ts";
+import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "../lib/settings/identity.ts";
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { createProjectMRs } from "../lib/daemon/project-mrs-store.ts";
 import { getStateDb } from "../lib/state/index.ts";
@@ -306,6 +307,33 @@ function readRepoIndex(): Record<string, string> {
   return loadRepoIndex();
 }
 
+/** A raw serialized identity → its display label (last path segment / basename). */
+function trackingLabel(serialized: string): string {
+  const id = parseIdentity(serialized);
+  if (!id) return serialized;
+  return id.kind === "remote" ? (id.id.split("/").pop() ?? id.id) : basename(id.id);
+}
+
+/**
+ * Resolve the operator's `rt daemon track <arg>` argument — an already-serialized
+ * identity, a directory path, or a bare repo name — to the serialized identity
+ * every store keys on, plus the checkout path when one is known. Null when a
+ * name matches no registered repo (or is ambiguous); `path` is null only when
+ * an identity was typed for a repo absent from the index.
+ */
+async function resolveTrackingIdentity(arg: string): Promise<{ identity: string; path: string | null } | null> {
+  const index = readRepoIndex();
+  if (parseIdentity(arg)) return { identity: arg, path: index[arg] ?? null };
+  try {
+    if (statSync(arg).isDirectory()) {
+      return { identity: serializeIdentity(await deriveRepoIdentity(arg)), path: arg };
+    }
+  } catch { /* not a directory on disk — fall through to the name reverse-lookup */ }
+  const matches = reverseLookupByName(arg, index);
+  if (matches.length === 1) return { identity: matches[0]![0], path: matches[0]![1] };
+  return null;
+}
+
 /**
  * Manage per-repo background tracking.
  *
@@ -333,38 +361,45 @@ export async function manageTracking(args: string[] = []): Promise<void> {
       Record<string, { state: string }>;
 
     console.log(`\n  ${bold}repo tracking${reset} ${dim}(opt-in · rt.repoTracking · unlisted = off)${reset}\n`);
-    for (const name of Object.keys(repos).sort()) {
-      const g = grants(tracking, name);
-      const watcher = freshness[name];
+    for (const identity of Object.keys(repos).sort()) {
+      const g = grants(tracking, identity);
+      const watcher = freshness[identity];
+      const label = trackingLabel(identity);
       const marker = g.mode === "live" ? `${green}●${reset}` : g.mode === "poll" ? `${yellow}◐${reset}` : `${dim}○${reset}`;
       const detail = g.mode === "live"
         ? `live${watcher ? ` (${watcher.state})` : " (watcher starting)"}`
         : g.mode === "poll" ? "poll" : "";
-      const suffix = g.mode === "off" ? "" : ` [${[...g.caches].join(", ")}] window ${formatWindowLabel(tracking[name]?.projectMrsWindowDays)}`;
-      console.log(`  ${marker} ${g.mode === "off" ? `${dim}${name}${reset}` : name}${detail ? ` ${dim}${detail}${reset}` : ""}${suffix ? ` ${dim}${suffix}${reset}` : ""}`);
+      const suffix = g.mode === "off" ? "" : ` [${[...g.caches].join(", ")}] window ${formatWindowLabel(tracking[identity]?.projectMrsWindowDays)}`;
+      console.log(`  ${marker} ${g.mode === "off" ? `${dim}${label}${reset}` : label}${detail ? ` ${dim}${detail}${reset}` : ""}${suffix ? ` ${dim}${suffix}${reset}` : ""}`);
     }
     // Tracking entries that no longer match a registered repo do nothing;
     // surface them so a rename or typo isn't silently inert.
-    for (const name of Object.keys(tracking).filter((n) => !repos[n])) {
-      console.log(`  ${yellow}!${reset} ${name} ${dim}(tracked but not in ~/.mattstack/rt/repos.json)${reset}`);
+    for (const identity of Object.keys(tracking).filter((n) => !repos[n])) {
+      console.log(`  ${yellow}!${reset} ${trackingLabel(identity)} ${dim}(tracked but not in ~/.mattstack/rt/repos.json)${reset}`);
     }
     console.log(`\n  ${dim}set: rt daemon track <repo> live|poll|off [caches]   caches: ${[...CACHE_KINDS].join(",")} (default branches)${reset}\n`);
     return;
   }
+
+  // Every store keys on the serialized identity now; resolve the operator's
+  // argument (name, path, or identity) to it once. Human-facing messages keep
+  // showing what they typed (`repoArg`).
+  const resolved = await resolveTrackingIdentity(repoArg);
 
   // ── rt daemon track <repo> — interactive editor (house style: fzf flow) ──
   let interactiveLevel: string | undefined;
   let interactiveCaches: CacheKind[] | undefined;
   let interactiveWindowDays: number | null | undefined; // undefined = untouched, null = clear
   if (!levelArg) {
-    if (!readRepoIndex()[repoArg]) {
+    if (!resolved) {
       console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.mattstack/rt/repos.json\n`);
       return;
     }
+    const identity = resolved.identity;
     const { filterableSelect, filterableMultiselect, textInput } = await import("../lib/rt-render.tsx");
     const displayTracking = loadRepoTracking();
-    const rawEntry = displayTracking[repoArg];
-    const current = grants(displayTracking, repoArg);
+    const rawEntry = displayTracking[identity];
+    const current = grants(displayTracking, identity);
     const modeHint = (m: string) => (current.mode === m ? "current" : undefined);
 
     console.log(`\n  ${bold}${repoArg}${reset} ${dim}window ${formatWindowLabel(rawEntry?.projectMrsWindowDays)}${reset}`);
@@ -372,7 +407,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     // registerDemand), never by the CLI. CLI-side construction (spec
     // "Store-by-store" item 2) — explicit cli-flavor db handle, since
     // createProjectMRs' own default targets the daemon-flavor connection.
-    const demands = createProjectMRs(getStateDb()).read(repoArg)?.demands;
+    const demands = createProjectMRs(getStateDb()).read(identity)?.demands;
     if (demands && Object.keys(demands).length > 0) {
       console.log(`  ${dim}demands (read-only):${reset}`);
       for (const [client, d] of Object.entries(demands)) {
@@ -444,7 +479,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   }
 
   if (levelArg2 !== "off") {
-    const repoPath = readRepoIndex()[repoArg];
+    const repoPath = resolved?.path ?? null;
     if (!repoPath) {
       console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.mattstack/rt/repos.json\n`);
       return;
@@ -477,18 +512,20 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   // if a human had granted it.
   const tracking = loadMachineRepoTracking();
   const rawTracking = loadMachineRepoTrackingRaw();
-  const previousEntry = levelArg2 !== "off" ? tracking[repoArg] : undefined;
+  // Falls back to the literal argument only when a stale-entry `off` names a
+  // repo no longer in the index (nothing to derive an identity from); every
+  // resolvable path keys by the serialized identity.
+  const writeKey = resolved?.identity ?? repoArg;
+  const previousEntry = levelArg2 !== "off" ? tracking[writeKey] : undefined;
   let offMarker = false;
   let newEntry: RepoTrackingEntry | undefined;
   if (levelArg2 === "off") {
-    delete rawTracking[repoArg];
+    delete rawTracking[writeKey];
     // A repo the team layer still declares intent for needs a raw-named
     // block, not a bare delete — otherwise the merge in loadRepoTracking
     // resurrects team intent for it on the very next read.
-    const repoPath = readRepoIndex()[repoArg];
-    const identity = repoPath ? await deriveRepoIdentity(repoPath) : null;
-    if (identity && teamNamesIdentity(identity)) {
-      rawTracking[repoArg] = { mode: "off" };
+    if (resolved && teamNamesIdentity(resolved.identity)) {
+      rawTracking[resolved.identity] = { mode: "off" };
       offMarker = true;
     }
   } else {
@@ -503,7 +540,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
       caches,
       ...(windowDays !== undefined ? { projectMrsWindowDays: windowDays } : {}),
     };
-    rawTracking[repoArg] = newEntry;
+    rawTracking[writeKey] = newEntry;
   }
   saveRepoTrackingRaw(rawTracking);
   console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${levelArg2}${levelArg2 === "off" ? "" : ` [${caches.join(", ")}] window ${formatWindowLabel(newEntry?.projectMrsWindowDays)}`}`);
@@ -527,7 +564,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   // repos show data now instead of at the next 5-minute cycle.
   const res = await daemonQuery("freshness:reconcile", undefined, 30_000);
   if (res?.ok) {
-    const watching = Object.keys((res.data ?? {}) as Record<string, unknown>).sort();
+    const watching = Object.keys((res.data ?? {}) as Record<string, unknown>).map(trackingLabel).sort();
     console.log(`    ${dim}live watchers: ${watching.length > 0 ? watching.join(", ") : "none"}${reset}`);
     if (levelArg2 !== "off") await daemonQuery("cache:refresh");
     console.log("");

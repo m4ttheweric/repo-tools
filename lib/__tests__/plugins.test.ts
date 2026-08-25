@@ -176,7 +176,7 @@ describe("toCommandNode", () => {
     chmodSync(script, 0o755);
     const node = toCommandNode("test-plugin", dir, { description: "d", exec: "./probe.sh" });
     await node.handler!(["one", "two"], {
-      identity: { repoName: "r", repoRoot: "/tmp/r", dataDir: "/tmp/d", remoteUrl: "", baseUrl: "" },
+      identity: { repoName: "r", identity: "path:/tmp/r", repoRoot: "/tmp/r", dataDir: "/tmp/d", remoteUrl: "", baseUrl: "" },
       autoResolved: true,
     });
     expect(readFileSync(join(dir, "probe.out"), "utf8").trim()).toBe("test-plugin|r|one two");

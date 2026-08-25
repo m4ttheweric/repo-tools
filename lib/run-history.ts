@@ -4,6 +4,10 @@
  *
  * Consumed by `rt run again` (the fzf picker of recents) and the `rt`
  * no-arg menu's Recent section.
+ *
+ * Every `repoName`/`repo` parameter below is actually the serialized repo
+ * identity — the table's `repo` column key, matching `repoDataDir`'s own
+ * identity-keyed layout — not a display name.
  */
 
 import { existsSync, readFileSync, renameSync } from "fs";
@@ -15,12 +19,22 @@ import {
   listRunHistory,
   type RunHistoryEntry,
 } from "./state/index.ts";
+import { rekeyTableColumn, type RekeyReport } from "./state/identity-migrate.ts";
 
 export type { RunHistoryEntry } from "./state/index.ts";
 
 /** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 function legacyHistoryPath(repoName: string): string {
   return join(repoDataDir(repoName), "run-history.jsonl");
+}
+
+/**
+ * One-shot: re-key legacy NAME-keyed `run_history` rows onto serialized
+ * identities. Exported for the daemon-boot migration runner; this module
+ * does not wire the boot call.
+ */
+export function rekeyRunHistoryTable(): Promise<RekeyReport> {
+  return rekeyTableColumn("run_history", "repo");
 }
 
 /**

@@ -144,6 +144,9 @@ let daemon: ReturnType<typeof Bun.spawn>;
 
 const REPO_NAME = "endpoint-repo";
 const REMOTE_URL = "git@github.com:rt-test/endpoint-repo.git";
+// What buildInterceptRules bakes into rule.repo — the serialized identity the
+// remote normalizes to, which endpoint:claim's payload requires verbatim.
+const REPO_RULE_KEY = "remote:github.com%2Frt-test%2Fendpoint-repo";
 
 /** Every spawned child, reaped in afterAll even if an assertion aborts mid-test. */
 const children: Array<ReturnType<typeof Bun.spawn>> = [];
@@ -347,7 +350,7 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     const rules = readInterceptRulesRow(home);
     expect(rules?.rules).toHaveLength(1);
     expect(rules?.rules[0]?.command).toBe("fakestart");
-    expect(rules?.rules[0]?.repo).toBe(REPO_NAME);
+    expect(rules?.rules[0]?.repo).toBe(REPO_RULE_KEY);
     expect(rules?.rules[0]?.repoRemote).toBe(REMOTE_URL);
   }, 30_000);
 
@@ -414,9 +417,9 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     expect(out.ok).toBe(true);
     expect(out.daemonUp).toBe(true);
     expect(out.shims).toEqual([
-      { command: "fakestart", repo: REPO_NAME, installed: true, current: true },
+      { command: "fakestart", repo: REPO_RULE_KEY, installed: true, current: true },
     ]);
-    expect(out.rulesByRepo[REPO_NAME]).toBe(1);
+    expect(out.rulesByRepo[REPO_RULE_KEY]).toBe(1);
   }, 30_000);
 
   test("rt verify reports the intercept shims check", async () => {

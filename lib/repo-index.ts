@@ -23,7 +23,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameS
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
-import { deleteKvValue, getKvValue, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
+import { deleteKvValue, getKvValue, getStateDb, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
+import { rekeyKvNamespace } from "./state/identity-migrate.ts";
+import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -148,6 +150,39 @@ export function updateRepoIndex(repoName: string, repoRoot: string): void {
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
     writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
+}
+
+/**
+ * Resolves a serialized identity to its indexed main-worktree path, tolerating
+ * an index whose rows still carry legacy repo-name keys (the state every
+ * machine is in right after the identity cutover). A miss scans the legacy
+ * rows, derives each row's identity from its path, and on a match ADDS the
+ * identity row — additive on purpose: the legacy row must stay for
+ * `rt repos prune` to collapse the pair, or its data dir would be stranded.
+ * Null when no row, legacy or identity, matches: an unregistered repo stays
+ * unregistered — this is a migration, not a registration.
+ */
+export async function resolveIndexPathForIdentity(serialized: string): Promise<string | null> {
+  let index: RepoIndex;
+  try {
+    index = loadRepoIndex();
+  } catch {
+    return null;
+  }
+  const direct = index[serialized];
+  if (direct) return direct;
+  for (const [key, path] of Object.entries(index)) {
+    if (parseIdentity(key) !== null) continue;
+    if (!existsSync(path)) continue;
+    try {
+      if (serializeIdentity(await deriveRepoIdentity(path)) !== serialized) continue;
+    } catch {
+      continue;
+    }
+    updateRepoIndex(serialized, path);
+    return path;
+  }
+  return null;
 }
 
 // ─── Rename drift (RT-60) ───────────────────────────────────────────────────
@@ -331,6 +366,36 @@ function migrateWorktreeRegistry(from: string, to: string, opts: { dryRun?: bool
   }
   deleteKvValue(WORKTREE_REGISTRY_NS, from);
   return "moved";
+}
+
+/**
+ * Guards `ensureWorktreeRegistryRekeyed` to one run per open state.db: a
+ * WeakSet keyed on the `Database` instance, not a plain module boolean, so a
+ * HOME swap (a fresh `getStateDb()` after `closeStateDb()` — every test's own
+ * isolation, and any future multi-HOME run) re-arms the check instead of
+ * skipping a namespace it has never actually looked at.
+ */
+const worktreeRegistryRekeyRuns = new WeakSet<object>();
+
+/**
+ * One-shot legacy-name -> identity re-key of the worktree registry, run from
+ * the same first-read point the prior rename migration used. Unlike the repo
+ * index itself — a disposable cache that self-heals as rt revisits each repo —
+ * a registry row left under its pre-identity name is not: the daemon's
+ * `deps.repoIndex()` only ever yields identity keys now, so a legacy-named row
+ * would silently stop being reconciled forever. `rekeyKvNamespace` is
+ * idempotent (an already-identity key is skipped), so a repeat call after a
+ * full migration costs one empty namespace scan.
+ *
+ * The guard is marked only AFTER the rekey resolves: a rejected pass must be
+ * retried on a later reconcile, not latched off for the db handle's life.
+ */
+export function ensureWorktreeRegistryRekeyed(): Promise<void> {
+  const db = getStateDb();
+  if (worktreeRegistryRekeyRuns.has(db)) return Promise.resolve();
+  return rekeyKvNamespace(WORKTREE_REGISTRY_NS).then(() => {
+    worktreeRegistryRekeyRuns.add(db);
+  });
 }
 
 /** `ts` of a run-history line. Unparseable lines sort last, keeping their order. */

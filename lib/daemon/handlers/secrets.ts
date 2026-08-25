@@ -44,6 +44,7 @@
  */
 
 import { loadSecrets } from "../../linear.ts";
+import { parseIdentity } from "../../settings/identity.ts";
 import { loadMachineRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { loadOrCreateApiToken, tokenOk } from "../api-auth.ts";
 import { readSecret, createRealSecretsExecSeam, type SecretsSeams } from "../../secrets/store.ts";
@@ -150,6 +151,11 @@ export function createSecretsHandlers(
       if (!repoName) return { ok: false as const, error: "missing repoName" };
       if (forge !== "gitlab" && forge !== "github") {
         return { ok: false as const, error: `unknown forge "${String(forge)}"; expected gitlab or github` };
+      }
+      // Hard cutover: grants() keys on identity now; a bare legacy
+      // name is refused before it can be read as "not tracked".
+      if (parseIdentity(repoName) === null) {
+        return { ok: false as const, error: `repo ${repoName} is not tracked by rt; run: rt daemon track ${repoName} live branches` };
       }
 
       // The grant gate, and the whole point of the verb: an untracked repo

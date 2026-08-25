@@ -75,6 +75,7 @@ function withinWindow(prs: PullRequest[], windowDays: number, now: number): Pull
 const deepFailedAt = new Map<string, number>();
 
 export interface ProjectSyncDeps {
+  /** Identity-keyed (repo-index.ts's `updateRepoIndex`) — every `repoName` this module passes to the project-MR store is that same serialized identity. */
   repoIndex(): Record<string, string>;
   broadcast(type: string, data: unknown): void;
 }

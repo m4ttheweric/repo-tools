@@ -49,6 +49,11 @@ let sweeping = false;
  * repos, PLUS project-store MRs whose discussions are already cached
  * (demand-following: sweep cost tracks what consumers looked at, not project
  * size). Both sources require the "discussions" grant.
+ *
+ * `repoName` throughout is the serialized repo identity: `entry.repoName`
+ * comes from branch_cache.repo, `projectStore`'s keys from project_mrs_meta.repo
+ * — both identity-keyed, so `grants(tracking, repoName)` and the `discussions`
+ * rows this writes to are addressed by the same identity.
  */
 export function collectSweepTargets(
   entries: Record<string, CacheEntry>,

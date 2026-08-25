@@ -9,9 +9,15 @@
  * Store-first (any stored state), forge-fallthrough on a miss with a
  * write-back upsert so the next call for that branch is a store hit. A
  * per-branch forge failure resolves to null rather than failing the batch.
+ *
+ * `payload.repoName` is opaque here — the store, grants, and sync it drives
+ * all key on whatever string arrives. It becomes the serialized repo identity
+ * once every caller sends one; the value simply flows through to project_mrs
+ * rows unchanged.
  */
 
 import type { PullRequest } from "@mattstack/glance";
+import { parseIdentity } from "../../settings/identity.ts";
 import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
 import { syncProjectMRs, backfillAuthors } from "../project-sync.ts";
@@ -80,6 +86,12 @@ export function createProjectMRsHandlers(
       const maxAgeMs = payload?.maxAgeMs as number | undefined;
       const rawDemand = payload?.demand;
       if (!repoName) return { ok: false, error: "missing repoName" };
+      // Hard cutover: the store is identity-keyed now, so a bare
+      // legacy name resolves nothing rather than name-matching a store row
+      // that no longer exists under that key.
+      if (parseIdentity(repoName) === null) {
+        return { ok: true, data: { mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 } };
+      }
 
       if (rawDemand !== undefined && !isValidDemand(rawDemand)) {
         return { ok: false, error: "malformed demand" };
@@ -159,6 +171,9 @@ export function createProjectMRsHandlers(
       const branches = payload?.branches;
       if (!repoName || !isValidBranches(branches)) {
         return { ok: false, error: "malformed by-branch request" };
+      }
+      if (parseIdentity(repoName) === null) {
+        return { ok: true, data: { byBranch: {}, syncedAt: 0 } };
       }
 
       if (!grants(tracking(), repoName).caches.has("project-mrs")) {

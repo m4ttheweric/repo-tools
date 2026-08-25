@@ -21,11 +21,17 @@
  * Handler outcomes are `{ok:true, data}` / `{ok:false, error}` with typed
  * refusal strings; daemon.ts's handleCommand does the outcome logging, so
  * nothing here logs request/response.
+ *
+ * Every `repoName` here (payload field, registry key, `ctx.repoIndex()`
+ * lookup) is the CLI's serialized repo identity, not a display name —
+ * `index[repoName]` and `loadRegistry(repoName)` only resolve because both
+ * sides now key on that same identity string.
  */
 
 import { realpathSync, rmSync } from "fs";
 import { join } from "path";
 
+import { parseIdentity } from "../../settings/identity.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import {
   findByBranch,
@@ -142,10 +148,17 @@ async function localBranchNames(repoPath: string): Promise<Set<string>> {
   );
 }
 
-/** Repos this payload targets: the named one, or every repo in the index. */
+/**
+ * Repos this payload targets: the named one, or every repo in the index.
+ * A named repo that isn't a serialized identity resolves to no targets
+ * (hard cutover) — the worktree registry is identity-keyed now, so a
+ * bare legacy name would otherwise start a fresh registry under a key
+ * nothing else reads, silently reintroducing legacy-keyed rows post-migration.
+ */
 function targetRepos(ctx: HandlerContext, repoName?: string): Array<[string, string]> {
   const index = ctx.repoIndex();
   if (repoName) {
+    if (parseIdentity(repoName) === null) return [];
     const path = index[repoName];
     return path ? [[repoName, path]] : [];
   }
@@ -258,7 +271,7 @@ export function createWorktreeHandlers(
     "worktree:provision": async (payload: any) => {
       const repoName: string | undefined = payload?.repoName;
       const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath) return { ok: false, error: "repo-unknown" };
+      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
 
       const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
       const trees = loadRegistry(repoName);
@@ -452,7 +465,7 @@ export function createWorktreeHandlers(
     "worktree:create": async (payload: any) => {
       const repoName: string | undefined = payload?.repoName;
       const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath) return { ok: false, error: "repo-unknown" };
+      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
 
       const created = await createTree({ repoName, repoPath, emit: opts.emit, log: ctx.log });
       if (!created.ok) {
@@ -580,7 +593,7 @@ export function createWorktreeHandlers(
     "worktree:adopt": async (payload: any) => {
       const repoName: string | undefined = payload?.repoName;
       const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath) return { ok: false, error: "repo-unknown" };
+      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
 
       // Repo-wide lock: adopt rewrites every entry, so no per-tree operation
       // may interleave with it. Synthetic key (no tree lives at this path).

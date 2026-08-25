@@ -35,6 +35,7 @@ import {
   type WorktreeEntry,
 } from "../worktree/git-async.ts";
 import { isTreeLocked, withTreeLock } from "../worktree/locks.ts";
+import { ensureWorktreeRegistryRekeyed } from "../repo-index.ts";
 import { createTree, scrapTree, type CreateDeps } from "../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree } from "../worktree/dispose.ts";
 import { changedSince, stepsToRun, runReadySteps } from "../worktree/ready.ts";
@@ -1048,6 +1049,15 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
   const creationPromises = new Map<string, Promise<void>>();
 
   async function runOnce(): Promise<void> {
+    // Legacy-named registry rows predate identity-keyed indices and must be
+    // re-keyed before this pass reads them by identity, or a pre-existing
+    // repo's claim state silently stops being reconciled.
+    try {
+      await ensureWorktreeRegistryRekeyed();
+    } catch (err) {
+      deps.log.warn({ err }, "worktree reconciler: legacy registry re-key failed");
+    }
+
     const repos = deps.repoIndex();
     // One read for the whole pass: every repo shares the same app-level file.
     const appConfig = loadWorktreeAppConfig();

@@ -44,6 +44,7 @@ import {
 } from "../lib/herdr-launch.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
+import { repoLabel } from "../lib/repo-arg.ts";
 import { navSeparator, type NavOption } from "../lib/navigate.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
@@ -145,6 +146,9 @@ export const __test__ = { reportSave };
  */
 async function selectPackageAndScript(
   worktreePath: string,
+  // The serialized identity (run_history's store key), NOT the raw
+  // `repoIdentity` local below (settings-section key for presets/variations)
+  // — the two are different string forms for the same repo.
   repoName: string | undefined,
   contextLabel?: string,
   queue?: QueuedItem[],
@@ -152,7 +156,8 @@ async function selectPackageAndScript(
   const { runNavPicker } = await import("../lib/navigate.ts");
   const packages = getWorkspacePackages(worktreePath);
   const label = contextLabel ? `${contextLabel}` : "";
-  const repoIdentity = await deriveRepoIdentity(worktreePath);
+  const derivedIdentity = await deriveRepoIdentity(worktreePath);
+  const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   let cameFromScript = false;
   const q: QueuedItem[] = queue ?? [];
 
@@ -671,12 +676,15 @@ export async function runCommand(
   let useResolved = !!ctx.identity;
   if (useResolved) {
     worktreePath = ctx.identity!.repoRoot;
-    repoName = ctx.identity!.repoName;
+    // The serialized identity, not the display name — this flows into
+    // selectPackageAndScript purely as the run_history store key.
+    repoName = ctx.identity!.identity;
 
     // ── Preset direct invoke: `rt run <preset-name>` ──────────────────────
     const presetArg = args.find((a) => !a.startsWith("-") && a !== "again");
     if (presetArg) {
-      const preset = findPreset(await deriveRepoIdentity(worktreePath), presetArg);
+      const derivedIdentity = await deriveRepoIdentity(worktreePath);
+      const preset = findPreset(derivedIdentity.kind === "remote" ? derivedIdentity.id : null, presetArg);
       if (preset) {
         await launchPreset(preset, worktreePath);
         return;
@@ -722,10 +730,13 @@ export async function runCommand(
     }
 
     // If we fell through from a resolved context, start at the worktree
-    // picker for that repo rather than re-asking which repo.
-    const resolvedRepoName = ctx.identity?.repoName;
-    let selectedRepo: KnownRepo | undefined = resolvedRepoName
-      ? knownRepos.find((r) => r.repoName === resolvedRepoName)
+    // picker for that repo rather than re-asking which repo. The index keys
+    // KnownRepo.repoName holds are serialized identities now, so the match is
+    // against ctx.identity.identity — matching the display name here finds
+    // nothing and, with one known repo, exits instead of re-showing a picker.
+    const resolvedIdentity = ctx.identity?.identity;
+    let selectedRepo: KnownRepo | undefined = resolvedIdentity
+      ? knownRepos.find((r) => r.repoName === resolvedIdentity)
       : knownRepos.length === 1
         ? knownRepos[0]!
         : undefined;
@@ -738,7 +749,7 @@ export async function runCommand(
         const repoResult = await runNavPicker({
           options: knownRepos.map((r) => ({
             value: r.repoName,
-            label: r.repoName,
+            label: repoLabel(r.repoName),
             hint: `${r.worktrees.length} worktrees`,
           })),
           message: "Select repo",
@@ -805,6 +816,8 @@ export async function runCommand(
           worktreeBranch = wt.branch;
         }
 
+        // KnownRepo.repoName is the repo-index key, itself the serialized
+        // identity — already the correct run_history store key.
         repoName = selectedRepo.repoName;
 
         // ── Package + script ────────────────────────────────────────────
@@ -886,7 +899,7 @@ export async function runCommand(
 
   // Record to per-repo run history for rt run again / rt no-arg Recent.
   if (ctx.identity) {
-    appendRunHistory(ctx.identity.repoName, {
+    appendRunHistory(ctx.identity.identity, {
       ts: new Date().toISOString(),
       cmd,
       cwd: packagePath,
@@ -990,6 +1003,7 @@ export async function runAgainCommand(
 
 interface TaggedEntry {
   entry: RunHistoryEntry;
+  /** KnownRepo.repoName — the repo-index key, i.e. the serialized identity, not a display name. */
   repoName: string;
 }
 
@@ -997,6 +1011,8 @@ function loadAllRunHistory(): { entries: TaggedEntry[]; totalRepos: number } {
   const repos = getKnownRepos();
   const all: TaggedEntry[] = [];
   for (const repo of repos) {
+    // repo.repoName IS the identity already (the repo index keys on it) —
+    // readRunHistory's argument and run_history's `repo` column agree.
     for (const entry of readRunHistory(repo.repoName)) {
       all.push({ entry, repoName: repo.repoName });
     }

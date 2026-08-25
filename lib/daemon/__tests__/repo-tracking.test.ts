@@ -6,13 +6,22 @@ import { machineSettingsPath, teamSettingsPath } from "../../rt-paths.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { setSetting } from "../../settings/write.ts";
 import { runCapture } from "../../subprocess.ts";
-import { clearIdentityMemo } from "../../settings/identity.ts";
+import { clearIdentityMemo, serializeIdentity } from "../../settings/identity.ts";
+import { updateRepoIndex } from "../../repo-index.ts";
+import { closeStateDb } from "../../state/db.ts";
 import {
   loadRepoTracking, loadMachineRepoTracking, loadMachineRepoTrackingRaw, grants, saveRepoTracking,
   saveRepoTrackingRaw, parseCachesArg, CACHE_KINDS, primeTeamTrackingIdentityMap, teamNamesIdentity,
+  rekeyRepoTrackingSettings,
   __test__ as repoTrackingTest,
   type CacheKind,
 } from "../../repo-tracking.ts";
+
+/** The serialized wire identity every store keys on, from a readable host/path. */
+const idOf = (hostPath: string): string => serializeIdentity({ kind: "remote", id: hostPath });
+const FOO = idOf("gitlab.com/acme/foo");
+const BAR = idOf("gitlab.com/acme/bar");
+const BAZ = idOf("gitlab.com/acme/baz");
 
 function writeStore(file: string, obj: unknown): void {
   mkdirSync(dirname(file), { recursive: true });
@@ -127,45 +136,45 @@ describe("loadRepoTracking merges mattstack.tracking team intent", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  test("team intent for a cloned repo folds in as {mode: live, caches}", () => {
+  test("team intent for a cloned repo folds in under its serialized identity as {mode: live, caches}", () => {
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["branches", "project-mrs"] } },
     }, "team", { team: "acme" });
 
-    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
-    expect(t.foo).toEqual({ mode: "live", caches: ["branches", "project-mrs"] });
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
+    expect(t[FOO]).toEqual({ mode: "live", caches: ["branches", "project-mrs"] });
   });
 
-  test("a machine grant for the same repo name wins the whole entry, team ignored", () => {
-    setSetting("rt.repoTracking", { foo: { mode: "poll", caches: ["branches"] } }, "machine");
+  test("a machine grant under the same serialized identity wins the whole entry, team ignored", () => {
+    setSetting("rt.repoTracking", { [FOO]: { mode: "poll", caches: ["branches"] } }, "machine");
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["discussions"] } },
     }, "team", { team: "acme" });
 
-    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
-    expect(t.foo).toEqual({ mode: "poll", caches: ["branches"] });
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
+    expect(t[FOO]).toEqual({ mode: "poll", caches: ["branches"] });
   });
 
-  test("an identity with no local resolution is silently dropped", () => {
+  test("a host/path with no local resolution is silently dropped", () => {
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/not-cloned": { caches: ["branches"] } },
     }, "team", { team: "acme" });
 
-    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
     expect(t).toEqual({});
   });
 
   test("no mattstack.tracking value authored → unchanged from machine-only behavior", () => {
-    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+    setSetting("rt.repoTracking", { [FOO]: { mode: "live", caches: ["branches"] } }, "machine");
 
     const withoutMap = loadRepoTracking();
-    const withMap = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
-    expect(withoutMap).toEqual({ foo: { mode: "live", caches: ["branches"] } });
+    const withMap = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
+    expect(withoutMap).toEqual({ [FOO]: { mode: "live", caches: ["branches"] } });
     expect(withMap).toEqual(withoutMap);
   });
 
   test("an unresolvable mattstack.tracking value degrades to machine-only, warning once", () => {
-    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+    setSetting("rt.repoTracking", { [FOO]: { mode: "live", caches: ["branches"] } }, "machine");
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/bar": { caches: ["${repoRoot}"] } },
     }, "team", { team: "acme" });
@@ -175,12 +184,12 @@ describe("loadRepoTracking merges mattstack.tracking team intent", () => {
     console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
     let t: ReturnType<typeof loadRepoTracking>;
     try {
-      t = loadRepoTracking({ identityMap: { "gitlab.com/acme/bar": "bar" } });
+      t = loadRepoTracking({ identityMap: { "gitlab.com/acme/bar": BAR } });
     } finally {
       console.warn = orig;
     }
 
-    expect(t).toEqual({ foo: { mode: "live", caches: ["branches"] } });
+    expect(t).toEqual({ [FOO]: { mode: "live", caches: ["branches"] } });
     expect(warnings.some((w) => w.includes("mattstack.tracking could not be resolved"))).toBe(true);
   });
 
@@ -193,30 +202,30 @@ describe("loadRepoTracking merges mattstack.tracking team intent", () => {
     }, "team", { team: "acme" });
 
     const t = loadRepoTracking({
-      identityMap: { "gitlab.com/acme/foo": "foo", "gitlab.com/acme/baz": "baz" },
+      identityMap: { "gitlab.com/acme/foo": FOO, "gitlab.com/acme/baz": BAZ },
     });
-    expect(t.foo).toEqual({ mode: "live", caches: ["branches"] });
-    expect(t.baz).toBeUndefined();
+    expect(t[FOO]).toEqual({ mode: "live", caches: ["branches"] });
+    expect(t[BAZ]).toBeUndefined();
   });
 
-  test("a typo'd machine entry (rejected by normalizeEntry) still blocks team intent for that name", () => {
-    setSetting("rt.repoTracking", { foo: { mode: "sideways", caches: ["branches"] } }, "machine");
+  test("a typo'd machine entry (rejected by normalizeEntry) still blocks team intent for that identity", () => {
+    setSetting("rt.repoTracking", { [FOO]: { mode: "sideways", caches: ["branches"] } }, "machine");
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
     }, "team", { team: "acme" });
 
-    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
-    expect(t.foo).toBeUndefined();
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
+    expect(t[FOO]).toBeUndefined();
   });
 
   test("an explicit {mode:\"off\"} machine entry opts a team-tracked repo out", () => {
-    setSetting("rt.repoTracking", { foo: { mode: "off" } }, "machine");
+    setSetting("rt.repoTracking", { [FOO]: { mode: "off" } }, "machine");
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
     }, "team", { team: "acme" });
 
-    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
-    expect(t.foo).toBeUndefined();
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
+    expect(t[FOO]).toBeUndefined();
   });
 });
 
@@ -235,16 +244,16 @@ describe("teamNamesIdentity", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  test("true when mattstack.tracking.repos names the identity, regardless of the value's shape", () => {
+  test("true when mattstack.tracking.repos names the serialized identity's host/path, regardless of the value's shape", () => {
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
     }, "team", { team: "acme" });
 
-    expect(teamNamesIdentity("gitlab.com/acme/foo")).toBe(true);
+    expect(teamNamesIdentity(FOO)).toBe(true);
   });
 
   test("false when no mattstack.tracking value is authored at all", () => {
-    expect(teamNamesIdentity("gitlab.com/acme/foo")).toBe(false);
+    expect(teamNamesIdentity(FOO)).toBe(false);
   });
 
   test("false for an identity the team layer never named", () => {
@@ -252,7 +261,15 @@ describe("teamNamesIdentity", () => {
       repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
     }, "team", { team: "acme" });
 
-    expect(teamNamesIdentity("gitlab.com/acme/bar")).toBe(false);
+    expect(teamNamesIdentity(BAR)).toBe(false);
+  });
+
+  test("false for a bare host/path (not a serialized identity)", () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    expect(teamNamesIdentity("gitlab.com/acme/foo")).toBe(false);
   });
 });
 
@@ -277,34 +294,35 @@ describe("loadMachineRepoTracking — the machine-only read (no team merge)", ()
     }, "team", { team: "acme" });
 
     // Sanity: the merged view WOULD show foo if this test used loadRepoTracking.
-    const merged = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
-    expect(merged.foo).toBeDefined();
+    const merged = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
+    expect(merged[FOO]).toBeDefined();
 
     expect(loadMachineRepoTracking()).toEqual({});
   });
 
   test("a read-modify-write through loadMachineRepoTracking + saveRepoTracking never bakes team intent into the machine store", () => {
-    setSetting("rt.repoTracking", { existing: { mode: "poll", caches: ["branches"] } }, "machine");
+    const EXISTING = idOf("gitlab.com/acme/existing");
+    setSetting("rt.repoTracking", { [EXISTING]: { mode: "poll", caches: ["branches"] } }, "machine");
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["branches", "project-mrs"] } },
     }, "team", { team: "acme" });
-    const identityMap = { "gitlab.com/acme/foo": "foo" };
+    const identityMap = { "gitlab.com/acme/foo": FOO };
 
-    // Prove the merged view sees "foo" (the state a track/untrack call must NOT capture).
-    expect(loadRepoTracking({ identityMap }).foo).toBeDefined();
+    // Prove the merged view sees FOO (the state a track/untrack call must NOT capture).
+    expect(loadRepoTracking({ identityMap })[FOO]).toBeDefined();
 
     // track <existing> live — a read-modify-write exactly like commands/daemon.ts's manageTracking.
     const tracking = loadMachineRepoTracking();
-    tracking.existing = { mode: "live", caches: ["branches"] };
+    tracking[EXISTING] = { mode: "live", caches: ["branches"] };
     saveRepoTracking(tracking);
 
     const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
-    expect(Object.keys(saved)).toEqual(["existing"]);
-    expect(saved.foo).toBeUndefined();
+    expect(Object.keys(saved)).toEqual([EXISTING]);
+    expect(saved[FOO]).toBeUndefined();
 
     // untrack <existing> off — same primitive, same guarantee.
     const tracking2 = loadMachineRepoTracking();
-    delete tracking2.existing;
+    delete tracking2[EXISTING];
     saveRepoTracking(tracking2);
 
     const savedAfterOff = getSetting<Record<string, unknown>>("rt.repoTracking").value;
@@ -312,38 +330,39 @@ describe("loadMachineRepoTracking — the machine-only read (no team merge)", ()
   });
 
   test("the rider: turning a team-tracked repo off writes an explicit {mode:\"off\"} marker, not a delete — and the merge stays off", () => {
-    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+    setSetting("rt.repoTracking", { [FOO]: { mode: "live", caches: ["branches"] } }, "machine");
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
     }, "team", { team: "acme" });
-    const identityMap = { "gitlab.com/acme/foo": "foo" };
+    const identityMap = { "gitlab.com/acme/foo": FOO };
 
     // Sanity: team still declares intent for foo.
-    expect(teamNamesIdentity("gitlab.com/acme/foo")).toBe(true);
+    expect(teamNamesIdentity(FOO)).toBe(true);
 
     // untrack foo off, team-named — the fix: pass it as an offMarker instead
     // of deleting outright.
     const tracking = loadMachineRepoTracking();
-    delete tracking.foo;
-    saveRepoTracking(tracking, ["foo"]);
+    delete tracking[FOO];
+    saveRepoTracking(tracking, [FOO]);
 
     const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
-    expect(saved.foo).toEqual({ mode: "off" });
+    expect(saved[FOO]).toEqual({ mode: "off" });
 
     // The merge must NOT resurrect team intent for foo now that the raw
     // machine map names it — this is the bug the rider fixes.
     const merged = loadRepoTracking({ identityMap });
-    expect(merged.foo).toBeUndefined();
-    expect(grants(merged, "foo").mode).toBe("off");
+    expect(merged[FOO]).toBeUndefined();
+    expect(grants(merged, FOO).mode).toBe("off");
   });
 
   test("turning a NON-team-tracked repo off still deletes outright (no marker planted)", () => {
-    setSetting("rt.repoTracking", { existing: { mode: "poll", caches: ["branches"] } }, "machine");
+    const EXISTING = idOf("gitlab.com/acme/existing");
+    setSetting("rt.repoTracking", { [EXISTING]: { mode: "poll", caches: ["branches"] } }, "machine");
     // No mattstack.tracking value at all — teamNamesIdentity is false for any identity.
-    expect(teamNamesIdentity("gitlab.com/acme/existing")).toBe(false);
+    expect(teamNamesIdentity(EXISTING)).toBe(false);
 
     const tracking = loadMachineRepoTracking();
-    delete tracking.existing;
+    delete tracking[EXISTING];
     saveRepoTracking(tracking, []); // no offMarkers — the untracked-by-team path
 
     const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
@@ -367,52 +386,54 @@ describe("loadMachineRepoTrackingRaw / saveRepoTrackingRaw — off-marker durabi
   });
 
   /** manageTracking's actual read-modify-write algorithm, minus the CLI/daemonQuery plumbing. */
-  function trackOff(repo: string, identity: string | null): void {
+  function trackOff(identity: string): void {
     const raw = loadMachineRepoTrackingRaw();
-    delete raw[repo];
-    if (identity && teamNamesIdentity(identity)) raw[repo] = { mode: "off" };
+    delete raw[identity];
+    if (teamNamesIdentity(identity)) raw[identity] = { mode: "off" };
     saveRepoTrackingRaw(raw);
   }
 
-  function trackLive(repo: string, caches: CacheKind[] = ["branches"]): void {
+  function trackLive(identity: string, caches: CacheKind[] = ["branches"]): void {
     const raw = loadMachineRepoTrackingRaw();
-    raw[repo] = { mode: "live", caches };
+    raw[identity] = { mode: "live", caches };
     saveRepoTrackingRaw(raw);
   }
 
   test("A's off-marker survives an unrelated B write, is replaced when A is turned live again, and a non-team A still deletes plainly", () => {
-    setSetting("rt.repoTracking", { a: { mode: "live", caches: ["branches"] } }, "machine");
+    const A = idOf("gitlab.com/acme/a");
+    const B = idOf("gitlab.com/acme/b");
+    setSetting("rt.repoTracking", { [A]: { mode: "live", caches: ["branches"] } }, "machine");
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/a": { caches: ["branches"] } },
     }, "team", { team: "acme" });
 
     // track A off — team-named, so A gets an explicit marker.
-    trackOff("a", "gitlab.com/acme/a");
-    expect(getSetting<Record<string, unknown>>("rt.repoTracking").value.a).toEqual({ mode: "off" });
+    trackOff(A);
+    expect(getSetting<Record<string, unknown>>("rt.repoTracking").value[A]).toEqual({ mode: "off" });
 
     // track B live — an UNRELATED write. Before the fix this read-modify-write
     // started from the normalized view, which drops A's marker entirely.
-    trackLive("b");
+    trackLive(B);
     const afterB = getSetting<Record<string, unknown>>("rt.repoTracking").value;
-    expect(afterB.a).toEqual({ mode: "off" }); // A's marker must still be there
-    expect(afterB.b).toEqual({ mode: "live", caches: ["branches"] });
+    expect(afterB[A]).toEqual({ mode: "off" }); // A's marker must still be there
+    expect(afterB[B]).toEqual({ mode: "live", caches: ["branches"] });
 
     // The merge must still show A as off, not resurrected by team intent.
-    const merged = loadRepoTracking({ identityMap: { "gitlab.com/acme/a": "a" } });
-    expect(grants(merged, "a").mode).toBe("off");
+    const merged = loadRepoTracking({ identityMap: { "gitlab.com/acme/a": A } });
+    expect(grants(merged, A).mode).toBe("off");
 
     // track A live again — the marker is replaced by a real grant.
-    trackLive("a", ["project-mrs"]);
+    trackLive(A, ["project-mrs"]);
     const afterALive = getSetting<Record<string, unknown>>("rt.repoTracking").value;
-    expect(afterALive.a).toEqual({ mode: "live", caches: ["project-mrs"] });
-    expect(afterALive.b).toEqual({ mode: "live", caches: ["branches"] }); // B untouched
+    expect(afterALive[A]).toEqual({ mode: "live", caches: ["project-mrs"] });
+    expect(afterALive[B]).toEqual({ mode: "live", caches: ["branches"] }); // B untouched
 
     // track A off once more, but the team no longer names it — plain delete.
     setSetting("mattstack.tracking", { repos: {} }, "team", { team: "acme" });
-    trackOff("a", "gitlab.com/acme/a");
+    trackOff(A);
     const afterFinal = getSetting<Record<string, unknown>>("rt.repoTracking").value;
-    expect(afterFinal.a).toBeUndefined();
-    expect(afterFinal.b).toEqual({ mode: "live", caches: ["branches"] }); // B still untouched
+    expect(afterFinal[A]).toBeUndefined();
+    expect(afterFinal[B]).toEqual({ mode: "live", caches: ["branches"] }); // B still untouched
   });
 });
 
@@ -444,14 +465,14 @@ describe("primeTeamTrackingIdentityMap", () => {
     repoTrackingTest.resetPrimedIdentityMap();
   });
 
-  test("primes the identity map from a repo index, and the default seam picks it up", async () => {
+  test("primes the host/path→serialized-identity map from a repo index, and the default seam picks it up", async () => {
     setSetting("mattstack.tracking", {
       repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
     }, "team", { team: "acme" });
 
     await primeTeamTrackingIdentityMap({ foo: repoDir });
 
-    expect(loadRepoTracking().foo).toEqual({ mode: "live", caches: ["branches"] });
+    expect(loadRepoTracking()[FOO]).toEqual({ mode: "live", caches: ["branches"] });
   });
 
   // A no-op prime (one that never populates the map) would make "nope" absent
@@ -467,7 +488,7 @@ describe("primeTeamTrackingIdentityMap", () => {
     await runCapture(["git", "init", "-q"], { cwd: noRemoteDir });
     try {
       await primeTeamTrackingIdentityMap({ nope: noRemoteDir, foo: repoDir });
-      expect(Object.keys(loadRepoTracking())).toEqual(["foo"]);
+      expect(Object.keys(loadRepoTracking())).toEqual([FOO]);
     } finally {
       rmSync(noRemoteDir, { recursive: true, force: true });
     }
@@ -479,10 +500,10 @@ describe("primeTeamTrackingIdentityMap", () => {
     }, "team", { team: "acme" });
 
     await primeTeamTrackingIdentityMap({ foo: repoDir });
-    expect(loadRepoTracking().foo).toEqual({ mode: "live", caches: ["branches"] });
+    expect(loadRepoTracking()[FOO]).toEqual({ mode: "live", caches: ["branches"] });
 
     await primeTeamTrackingIdentityMap({});
-    expect(loadRepoTracking().foo).toEqual({ mode: "live", caches: ["branches"] });
+    expect(loadRepoTracking()[FOO]).toEqual({ mode: "live", caches: ["branches"] });
   });
 });
 
@@ -505,6 +526,156 @@ describe("grants", () => {
     expect(grants({ r: { mode: "live", caches: ["project-mrs"] } }, "r").projectMrsWindowDays).toBe(30);
     expect(grants({ r: { mode: "live", caches: ["project-mrs"], projectMrsWindowDays: 90 } }, "r").projectMrsWindowDays).toBe(90);
     expect(grants({}, "missing").projectMrsWindowDays).toBe(30);
+  });
+});
+
+// The invariant: every daemon loop iterates repoIndex() (serialized-identity
+// keys now) and calls grants(tracking, <that key>). This closes the untested
+// mismatch — freshness's grantsFor override let tests bypass the real lookup.
+describe("the daemon-loop grant lookup keys by serialized identity", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-loop-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("grants(loadRepoTracking(), <identity>) finds a machine grant written under that identity; a bare-name lookup misses", () => {
+    setSetting("rt.repoTracking", { [FOO]: { mode: "live", caches: ["branches"] } }, "machine");
+
+    const tracking = loadRepoTracking();
+    expect(grants(tracking, FOO).mode).toBe("live");
+    // Pre-rekey, the loop passed the repo NAME and this same grant silently missed.
+    expect(grants(tracking, "foo").mode).toBe("off");
+  });
+
+  test("a team grant surfaces under the same serialized identity a machine grant would use", () => {
+    seedTeam();
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    const tracking = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
+    expect(grants(tracking, FOO).mode).toBe("live");
+  });
+
+  test("a machine {mode:off} under the serialized identity overrides a team grant for the same repo", () => {
+    seedTeam();
+    setSetting("rt.repoTracking", { [FOO]: { mode: "off" } }, "machine");
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    const tracking = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": FOO } });
+    expect(grants(tracking, FOO).mode).toBe("off");
+  });
+});
+
+describe("rt daemon track <name> live reverse-resolves the name onto the serialized identity", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let parent: string;
+  let repoDir: string;
+
+  beforeEach(async () => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-track-")));
+    process.env.HOME = home;
+    clearIdentityMemo();
+    parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-track-repo-")));
+    repoDir = join(parent, "foo");
+    mkdirSync(repoDir, { recursive: true });
+    await runCapture(["git", "init", "-q"], { cwd: repoDir });
+    await runCapture(["git", "remote", "add", "origin", "https://gitlab.com/acme/foo.git"], { cwd: repoDir });
+    // The index keys on the serialized identity now; the operator still types the name.
+    updateRepoIndex(FOO, repoDir);
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    closeStateDb();
+    clearIdentityMemo();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  test("writes the machine entry under the serialized identity, not the typed name", async () => {
+    const { manageTracking } = await import("../../../commands/daemon.ts");
+    // No daemon is running under this HOME; the store write lands before the
+    // reconcile query, which no-ops against the absent socket.
+    await manageTracking(["foo", "live", "branches"]);
+
+    const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(saved[FOO]).toEqual({ mode: "live", caches: ["branches"] });
+    expect(saved.foo).toBeUndefined();
+  });
+});
+
+describe("rekeyRepoTrackingSettings — one-shot legacy name → serialized identity", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-rekey-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("migrates a legacy NAME-keyed row onto the serialized identity, verify-persisted (re-read proves it landed and the name is gone)", async () => {
+    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+
+    const report = await rekeyRepoTrackingSettings({
+      resolve: async (name) => (name === "foo" ? FOO : null),
+    });
+
+    expect(report.migrated).toEqual(["foo"]);
+    expect(report.retained).toEqual([]);
+
+    const persisted = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(persisted[FOO]).toEqual({ mode: "live", caches: ["branches"] });
+    expect(persisted.foo).toBeUndefined();
+
+    // The daemon loop now finds the grant under the identity it iterates.
+    expect(grants(loadRepoTracking(), FOO).mode).toBe("live");
+  });
+
+  test("an unresolvable legacy row is retained under its legacy key", async () => {
+    setSetting("rt.repoTracking", {
+      foo: { mode: "live", caches: ["branches"] },
+      gone: { mode: "poll", caches: ["branches"] },
+    }, "machine");
+
+    const report = await rekeyRepoTrackingSettings({
+      resolve: async (name) => (name === "foo" ? FOO : null),
+    });
+
+    expect(report.migrated).toEqual(["foo"]);
+    expect(report.retained).toEqual(["gone"]);
+
+    const persisted = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(persisted[FOO]).toBeDefined();
+    expect(persisted.gone).toEqual({ mode: "poll", caches: ["branches"] });
+    expect(persisted.foo).toBeUndefined();
+  });
+
+  test("a fully-migrated store does no work — the resolver is never called", async () => {
+    setSetting("rt.repoTracking", { [FOO]: { mode: "live", caches: ["branches"] } }, "machine");
+
+    const report = await rekeyRepoTrackingSettings({
+      resolve: async () => { throw new Error("resolver must not be called for an already-migrated store"); },
+    });
+
+    expect(report).toEqual({ migrated: [], retained: [] });
+    expect(getSetting<Record<string, unknown>>("rt.repoTracking").value[FOO]).toBeDefined();
   });
 });
 

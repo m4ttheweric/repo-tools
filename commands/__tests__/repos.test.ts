@@ -3,8 +3,9 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { getKnownRepos, loadRepoIndexEntries, updateRepoIndex } from "../../lib/repo-index.ts";
+import { getKnownRepos, loadRepoIndex, loadRepoIndexEntries, updateRepoIndex } from "../../lib/repo-index.ts";
 import { loadRepoTracking } from "../../lib/repo-tracking.ts";
+import { deriveRepoIdentity, serializeIdentity } from "../../lib/settings/identity.ts";
 import { closeStateDb } from "../../lib/state/index.ts";
 import { reposPrune, reposRegister, type RegisterDeps } from "../repos.ts";
 
@@ -60,36 +61,49 @@ describe("reposRegister", () => {
   test("registers a repo path into the global index", async () => {
     const repoPath = makeTempRepo();
     const name = basename(repoPath);
+    const identity = serializeIdentity(await deriveRepoIdentity(repoPath));
     const deps = testDeps();
 
     await reposRegister([repoPath], {}, deps);
 
-    const entry = getKnownRepos().find((r) => r.repoName === name);
+    const entry = getKnownRepos().find((r) => r.repoName === identity);
     expect(entry).toBeDefined();
     expect(entry!.worktrees[0]!.path).toBe(repoPath);
     expect(deps.lines).toEqual([`registered ${name} (${repoPath})`]);
   });
 
+  test("register keys the index by the repo's identity, not its directory basename", async () => {
+    const repoPath = makeTempRepo();
+    execSync("git remote add origin git@gitlab.com:group/canonical.git", { cwd: repoPath, stdio: "pipe" });
+    const deps = testDeps();
+
+    await reposRegister([repoPath], {}, deps);
+
+    const keys = Object.keys(loadRepoIndex());
+    expect(keys).toContain("remote:gitlab.com%2Fgroup%2Fcanonical");
+    expect(keys).not.toContain(basename(repoPath));
+  });
+
   test("--track poll --caches branches,project-mrs grants tracking", async () => {
     const repoPath = makeTempRepo();
-    const name = basename(repoPath);
+    const identity = serializeIdentity(await deriveRepoIdentity(repoPath));
     const deps = testDeps();
 
     await reposRegister([repoPath, "--track", "poll", "--caches", "branches,project-mrs"], {}, deps);
 
     const tracking = loadRepoTracking();
-    expect(tracking[name]).toEqual({ mode: "poll", caches: ["branches", "project-mrs"] });
+    expect(tracking[identity]).toEqual({ mode: "poll", caches: ["branches", "project-mrs"] });
   });
 
   test("--track without --caches defaults to branches", async () => {
     const repoPath = makeTempRepo();
-    const name = basename(repoPath);
+    const identity = serializeIdentity(await deriveRepoIdentity(repoPath));
     const deps = testDeps();
 
     await reposRegister([repoPath, "--track", "live"], {}, deps);
 
     const tracking = loadRepoTracking();
-    expect(tracking[name]).toEqual({ mode: "live", caches: ["branches"] });
+    expect(tracking[identity]).toEqual({ mode: "live", caches: ["branches"] });
   });
 
   test("--json prints a contract envelope naming the registered repo", async () => {

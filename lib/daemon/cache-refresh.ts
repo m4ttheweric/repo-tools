@@ -76,6 +76,9 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // are never pruned on a cycle that did not refresh them.
       const succeededRepos = new Set<string>();
 
+      // `repos` keys on the serialized repo identity (repo-index.ts), so every
+      // `repoName` below — passed on into refreshAllMRs, project-sync, and the
+      // branch_cache/project_mrs rows those write — is that same identity.
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
 
@@ -204,7 +207,8 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
         if (!existsSync(repoPath)) continue;
         try {
           const worktreeRoots = listWorktreeRoots(repoPath);
-          const repoIdentity = await deriveRepoIdentity(repoPath);
+          const derivedIdentity = await deriveRepoIdentity(repoPath);
+          const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
           const summary = await reconcileForRepo({ repoIdentity, worktreeRoots });
           if (summary.skipped) {
             if (summary.skipped === "malformed-template") {

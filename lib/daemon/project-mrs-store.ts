@@ -31,6 +31,22 @@ import { Database } from "bun:sqlite";
 import type { PullRequest } from "@mattstack/glance";
 import { getStateDb, LEGACY_IMPORTS } from "../state/db.ts";
 import { persistOrWarn } from "../state/busy.ts";
+import { rekeyTableColumn, type RekeyReport } from "../state/identity-migrate.ts";
+
+/**
+ * One-shot: re-key legacy NAME-keyed rows onto serialized identities, one
+ * call per table (each has its own `repo` column). Exported for the
+ * daemon-boot migration runner; this module does not wire the boot call.
+ */
+export function rekeyProjectMrsTable(): Promise<RekeyReport> {
+  return rekeyTableColumn("project_mrs", "repo");
+}
+export function rekeyProjectMrsMetaTable(): Promise<RekeyReport> {
+  return rekeyTableColumn("project_mrs_meta", "repo");
+}
+export function rekeyProjectMrDemandsTable(): Promise<RekeyReport> {
+  return rekeyTableColumn("project_mr_demands", "repo");
+}
 
 export interface ProjectMREntry { pr: PullRequest; fetchedAt: number; }
 export interface DemandEntry { authors: string[]; declaredAt: number; lastSeenAt: number; }

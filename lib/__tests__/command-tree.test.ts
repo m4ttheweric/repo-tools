@@ -110,6 +110,7 @@ describe("dispatch --repo flag scoping", () => {
     };
     const fakeIdentity: RepoIdentity = {
       repoName: "acme",
+      identity: "path:/fake/acme",
       repoRoot: process.cwd(),
       dataDir: "/fake/acme-data",
       remoteUrl: "",

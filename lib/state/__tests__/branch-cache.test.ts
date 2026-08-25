@@ -7,13 +7,13 @@
  * (test-setup.ts) — never removed here. Stores are constructed via
  * openStateDb(tempPath) per the spec's test convention.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { openStateDb } from "../db.ts";
-import { getBranchCacheStore, type CacheEntry } from "../branch-cache.ts";
+import { closeStateDb, getStateDb, openStateDb } from "../db.ts";
+import { getBranchCacheStore, rekeyBranchCacheTable, type CacheEntry } from "../branch-cache.ts";
 
 let dir: string;
 
@@ -417,5 +417,49 @@ describe("getBranchCacheStore — singleton behavior", () => {
 
     dbA.close();
     dbB.close();
+  });
+});
+
+describe("rekeyBranchCacheTable", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let warnSpy: ReturnType<typeof spyOn<Console, "warn">>;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-branch-cache-rekey-"));
+    process.env.HOME = home;
+    closeStateDb();
+    warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    process.env.HOME = origHome;
+    closeStateDb();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("a row already keyed by a serialized identity is left untouched", async () => {
+    getBranchCacheStore().put("feature/x", makeEntry({ repoName: "remote:gitlab.com%2Fg%2Fr" }));
+    const report = await rekeyBranchCacheTable();
+    expect(report.migrated).toEqual([]);
+    const row = getStateDb().query("SELECT repo FROM branch_cache WHERE branch = ?;").get("feature/x") as { repo: string };
+    expect(row.repo).toBe("remote:gitlab.com%2Fg%2Fr");
+  });
+
+  test("an unresolvable legacy repo name is retained and warned, never dropped", async () => {
+    getBranchCacheStore().put("feature/y", makeEntry({ repoName: "ghost-repo" }));
+    const report = await rekeyBranchCacheTable();
+    expect(report.retained).toEqual(["ghost-repo"]);
+    const row = getStateDb().query("SELECT repo FROM branch_cache WHERE branch = ?;").get("feature/y") as { repo: string };
+    expect(row.repo).toBe("ghost-repo");
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  test("a NULL repo column is skipped, not treated as a legacy key", async () => {
+    getBranchCacheStore().put("feature/no-repo", makeEntry());
+    const report = await rekeyBranchCacheTable();
+    expect(report.migrated).toEqual([]);
+    expect(report.retained).toEqual([]);
   });
 });

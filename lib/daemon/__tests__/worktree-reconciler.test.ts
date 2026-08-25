@@ -5,9 +5,9 @@ import { tmpdir } from "os";
 import { basename, join } from "path";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../../json-store.ts";
-import { closeStateDb } from "../../state/index.ts";
+import { closeStateDb, listKvValues, setKvValue } from "../../state/index.ts";
 import { machineSettingsPath, rtDir, teamSettingsPath } from "../../rt-paths.ts";
-import { deriveRepoIdentity } from "../../settings/identity.ts";
+import { deriveRepoIdentity, parseIdentity } from "../../settings/identity.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
 import {
   branchExistsLocalAsync,
@@ -71,7 +71,7 @@ async function ensureIdentity(repoPath: string, repoName: string): Promise<strin
   }
 
   const direct = await deriveRepoIdentity(repoPath);
-  if (direct) return direct;
+  if (direct.kind === "remote") return direct.id;
 
   const identity = `rttest.local/${repoName}`;
   const store = readMachineStore();
@@ -99,6 +99,36 @@ function makeDeps(repoName: string, repoPath: string, events: Array<{ type: stri
     emit: (type: string, data: unknown) => events.push({ type, data }),
     log: fakeLog(),
   };
+}
+
+/**
+ * A repo whose worktree registry is still keyed by a pre-identity legacy
+ * name — the shape a machine upgrading onto identity keys carries.
+ * The origin remote is derived from `identity` itself (via a plain
+ * `host/path` URL) so `deriveRepoIdentity` resolves back to exactly that
+ * identity, matching the reconciler's own `repoIndex()` key.
+ */
+async function reconcilerHarnessWithLegacyRegistry(
+  legacyName: string,
+  identity: string,
+): Promise<{ runOnce: () => Promise<void> }> {
+  const parsed = parseIdentity(identity);
+  if (!parsed || parsed.kind !== "remote") throw new Error(`fixture identity must be remote-kind: ${identity}`);
+  const repoPath = makeRepo();
+  execSync(`git remote add origin https://${parsed.id}.git`, { cwd: repoPath, shell: "/bin/zsh" });
+
+  setKvValue("repo-index", legacyName, repoPath);
+  saveRegistry(legacyName, [
+    { name: "main", path: repoPath, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+  ]);
+
+  const reconciler = createWorktreeReconciler({
+    cache: { entries: {} },
+    repoIndex: () => ({ [identity]: repoPath }),
+    emit: () => {},
+    log: fakeLog(),
+  });
+  return { runOnce: reconciler.runOnce };
 }
 
 describe("reconcileRepoRegistry", () => {
@@ -486,6 +516,16 @@ describe("createWorktreeReconciler", () => {
     // Reap skipped: it deletes directories, so it is gated like every other
     // mutating duty.
     expect(existsSync(seededTrash)).toBe(true);
+  });
+
+  test("a legacy name-keyed registry is re-keyed onto the repo's identity on first reconcile", async () => {
+    const h = await reconcilerHarnessWithLegacyRegistry("repo-tools", "remote:gitlab.com%2Fg%2Frepo-tools");
+
+    await h.runOnce();
+
+    const keys = Object.keys(listKvValues("worktree-registry"));
+    expect(keys).toContain("remote:gitlab.com%2Fg%2Frepo-tools");
+    expect(keys).not.toContain("repo-tools");
   });
 });
 

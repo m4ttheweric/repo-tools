@@ -44,6 +44,7 @@ import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
 import { primeTeamTrackingIdentityMap } from "./repo-tracking.ts";
 import { createHooksGuard } from "./daemon/hooks-guard.ts";
+import { runBootIdentityMigration } from "./daemon/boot-migrate.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, broadcast } from "./daemon/api-server.ts";
@@ -371,6 +372,16 @@ export function startDaemon(): void {
   // CLI process is mid-import right now, we block here, in startup.
   openBranchCacheStore();
   log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
+
+  // one-shot re-key of every legacy NAME-keyed store row onto its
+  // serialized repo identity. Fire-and-forget (not awaited) like the PATH
+  // reconcile above — the ordering guarantee this depends on (running before
+  // anything prunes the repo index) only needs this to be on the boot path,
+  // not blocking the socket bind; a prune only ever arrives as a command sent
+  // to an already-running daemon.
+  runBootIdentityMigration(log).catch((err) => {
+    log.warn({ err }, "boot identity migration failed");
+  });
 
   routedHandlers = buildRoutedHandlers({
     ctx: handlerCtx,

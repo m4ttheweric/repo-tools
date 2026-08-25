@@ -6,6 +6,7 @@
  * from the CLI (single reader contract).
  */
 import { daemonQuery } from "../lib/daemon-client.ts";
+import { resolveRepoArg } from "../lib/repo-arg.ts";
 import type { RunDetail, RunSummary } from "../packages/rt-client/src/commands.ts";
 
 function fail(msg: string): never {
@@ -64,8 +65,30 @@ export function formatRunDetail(d: RunDetail): string {
   return lines.join("\n");
 }
 
+class UnresolvedRepoArg extends Error {}
+
+/**
+ * Runs are keyed by their on-disk run-dir name: a serialized identity for
+ * runs written after the cutover, but whatever key its pipeline used for a
+ * run written before it. Resolve `--repo` like every other command when the
+ * arg matches a known repo, and otherwise forward it verbatim as a dir key —
+ * failing here would make `rt runs --repo <key>` reject exactly the keys
+ * `rt runs` itself prints for pre-cutover runs.
+ */
+async function resolveRunsRepoArg(arg: string): Promise<string> {
+  try {
+    return await resolveRepoArg(arg, (msg): never => {
+      throw new UnresolvedRepoArg(msg);
+    });
+  } catch (err) {
+    if (err instanceof UnresolvedRepoArg) return arg;
+    throw err;
+  }
+}
+
 export async function runsList(args: string[]): Promise<void> {
-  const repo = flagValue(args, "--repo");
+  const repoArg = flagValue(args, "--repo");
+  const repo = repoArg ? await resolveRunsRepoArg(repoArg) : undefined;
   const res = await daemonQuery("runs:list", { repo }, 10_000);
   if (!res) fail("daemon unavailable — the run DB needs the rt daemon (rt daemon start)");
   if (!res.ok) fail(res.error ?? "list failed");
@@ -78,7 +101,8 @@ export async function runsList(args: string[]): Promise<void> {
 export async function runsShow(args: string[]): Promise<void> {
   const runId = positional(args);
   if (!runId) fail("usage: rt runs show <runId> [--repo <name>] [--json]");
-  const repo = flagValue(args, "--repo");
+  const repoArg = flagValue(args, "--repo");
+  const repo = repoArg ? await resolveRunsRepoArg(repoArg) : undefined;
   const res = await daemonQuery("runs:get", { runId, repo }, 10_000);
   if (!res) fail("daemon unavailable — the run DB needs the rt daemon (rt daemon start)");
   if (!res.ok) fail(res.error ?? "get failed");
@@ -90,7 +114,8 @@ export async function runsShow(args: string[]): Promise<void> {
 export async function runsAbandon(args: string[]): Promise<void> {
   const runId = positional(args);
   if (!runId) fail("abandon needs a run id");
-  const repo = flagValue(args, "--repo");
+  const repoArg = flagValue(args, "--repo");
+  const repo = repoArg ? await resolveRunsRepoArg(repoArg) : undefined;
   const reason = flagValue(args, "--reason") ?? "reconciled by hand";
   const res = await daemonQuery("runs:abandon", { runId, repo, reason });
   if (!res) fail("daemon unavailable — the run DB needs the rt daemon (rt daemon start)");

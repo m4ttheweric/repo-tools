@@ -11,9 +11,15 @@
  * All handlers take `{ repoName, iid }` and look up the cache entry whose
  * `mr.iid` matches. Writes go through `refreshDiscussions` in
  * `discussions-store.ts`, which also emits new-comment notifications.
+ *
+ * `repoName` is opaque here — it flows straight into `grants()`, the
+ * discussions table, and `getRepoContext`. It becomes the serialized repo
+ * identity once every caller sends one; this module makes no assumption
+ * about its shape.
  */
 
 import { NoteMutator } from "@mattstack/glance";
+import { parseIdentity } from "../../settings/identity.ts";
 import { getRepoContext, providerRequestHook } from "../freshness.ts";
 import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
@@ -45,6 +51,12 @@ export function createDiscussionHandlers(
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
+      // Hard cutover: the discussions table is identity-keyed now;
+      // a bare legacy name resolves nothing rather than reading a row that
+      // no longer exists under that key.
+      if (parseIdentity(repoName) === null) {
+        return { ok: true, data: { discussions: [], fetchedAt: 0, stale: true } };
+      }
 
       const granted = grants(loadRepoTracking(), repoName).caches.has("discussions");
       const cached = getDiscussionsFileStore().read(repoName, iid);
@@ -71,6 +83,9 @@ export function createDiscussionHandlers(
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
+      if (parseIdentity(repoName) === null) {
+        return { ok: false, error: "repo must be a serialized identity" };
+      }
       try {
         const res = await refreshDiscussions(deps, repoName, iid);
         return { ok: true, data: { discussions: res.discussions, fetchedAt: res.fetchedAt } };
@@ -87,6 +102,9 @@ export function createDiscussionHandlers(
 
       if (!repoName || typeof iid !== "number" || !discussionId) {
         return { ok: false, error: "missing repoName/iid/discussionId" };
+      }
+      if (parseIdentity(repoName) === null) {
+        return { ok: false, error: "repo must be a serialized identity" };
       }
 
       const repoPath = ctx.repoIndex()[repoName];
@@ -109,6 +127,9 @@ export function createDiscussionHandlers(
       const iid      = payload?.iid      as number | undefined;
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
+      }
+      if (parseIdentity(repoName) === null) {
+        return { ok: false, error: "repo must be a serialized identity" };
       }
 
       const repoPath = ctx.repoIndex()[repoName];
@@ -138,6 +159,9 @@ export function createDiscussionHandlers(
 
       if (!repoName || typeof iid !== "number" || !discussionId || !body?.trim()) {
         return { ok: false, error: "missing repoName/iid/discussionId/body" };
+      }
+      if (parseIdentity(repoName) === null) {
+        return { ok: false, error: "repo must be a serialized identity" };
       }
 
       const repoPath = ctx.repoIndex()[repoName];

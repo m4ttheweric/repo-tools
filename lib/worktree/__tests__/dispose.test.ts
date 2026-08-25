@@ -5,7 +5,7 @@ import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { teamSettingsPath } from "../../rt-paths.ts";
 import { setSetting } from "../../settings/write.ts";
-import { closeStateDb } from "../../state/index.ts";
+import { closeStateDb, getBranchCacheStore, type CacheEntry } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
 import { branchExistsLocalAsync, listWorktreesAsync, remoteRefExists } from "../git-async.ts";
 import { hasFreshAttendantLease } from "../lease.ts";
@@ -712,5 +712,88 @@ describe("disposeTree", () => {
     const result = await disposeTree(makeDeps(), rec, { force: true });
     expect(result).toMatchObject({ disposed: true });
     expect(loadRegistry(repoName).length).toBe(0);
+  });
+});
+
+describe("disposeTree against the real branch_cache store (identity-keyed)", () => {
+  // Post-rekey production shape: the daemon handler passes the CLI's
+  // serialized identity as DisposeDeps.repoName, and branch_cache.repo now
+  // stores that same identity (state/branch-cache.ts) — this is what
+  // rekeyBranchCacheTable() converges legacy rows onto at daemon boot.
+  const identityRepoName = "remote:gitlab.com%2Facme%2Fr";
+  let repo: string;
+  let events: Array<{ type: string; data: unknown }>;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-home-")));
+    closeStateDb();
+    repo = makeRepo();
+    seedIdentity(addBareOrigin(repo));
+    events = [];
+  });
+
+  test("dispose finds a merged tree's MR anchor when branch_cache is keyed by identity", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    commitIn(path, "new.txt", "squash-merged upstream\n");
+    const sha = execSync(`git -C ${path} rev-parse HEAD`, { encoding: "utf8" }).trim();
+    const rec = register(identityRepoName, ephemeral("tree-a", path, "feature-a", {
+      claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    }));
+
+    // Seeded exactly as cache-refresh.ts writes it: repoName is the same
+    // identity the daemon iterates the repo index under.
+    const store = getBranchCacheStore();
+    store.put("feature-a", {
+      ticket: null,
+      linearId: "",
+      fetchedAt: Date.now(),
+      mr: { iid: 42, sha, state: "merged" } as unknown as CacheEntry["mr"],
+      repoName: identityRepoName,
+    });
+
+    const deps: DisposeDeps = {
+      repoName: identityRepoName,
+      repoPath: repo,
+      cacheEntries: store.entries,
+      emit: (type, data) => events.push({ type, data }),
+      log: { info: () => {}, warn: () => {} },
+      killProcesses: false,
+    };
+
+    const result = await disposeTree(deps, rec, { auto: true });
+    expect(result).toMatchObject({ disposed: true });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("a branch_cache row still under its legacy name does not join until rekeyed", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    commitIn(path, "new.txt", "squash-merged upstream\n");
+    const sha = execSync(`git -C ${path} rev-parse HEAD`, { encoding: "utf8" }).trim();
+    const rec = register(identityRepoName, ephemeral("tree-a", path, "feature-a", {
+      claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    }));
+
+    const store = getBranchCacheStore();
+    store.put("feature-a", {
+      ticket: null,
+      linearId: "",
+      fetchedAt: Date.now(),
+      mr: { iid: 42, sha, state: "merged" } as unknown as CacheEntry["mr"],
+      repoName: "acme", // pre-rekey legacy display name
+    });
+
+    const deps: DisposeDeps = {
+      repoName: identityRepoName,
+      repoPath: repo,
+      cacheEntries: store.entries,
+      emit: (type, data) => events.push({ type, data }),
+      log: { info: () => {}, warn: () => {} },
+      killProcesses: false,
+    };
+
+    // No MR joins (repoName mismatch), so the guard falls back to the
+    // remote-branch anchor. The branch was never pushed, so it refuses.
+    const result = await disposeTree(deps, rec, { auto: true });
+    expect(result).toEqual({ disposed: false, refusal: "unpushed" });
   });
 });

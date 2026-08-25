@@ -349,6 +349,18 @@ describe("chat handle derivation — worktree fixtures", () => {
     expect(slotHandle!.startsWith("acme-dev-")).toBe(true);
   });
 
+  test("an identity-keyed index row yields the repo's display label, never the wire form (handle charset forbids % and :)", () => {
+    const mainPath = join(root, "acme", "gamma-id");
+    makeMainWorktree(mainPath);
+    const index = { "remote:gitlab.com%2Facme%2Facme-dev": mainPath };
+
+    const handle = __test__.deriveRepoDirHandle(mainPath, index);
+
+    expect(handle).toBe("acme-dev-gamma-id");
+    expect(handle).not.toContain("%");
+    expect(handle).not.toContain(":");
+  });
+
   test("no collapse rule: an alias that prefixes the worktree dir is not deduplicated", () => {
     // The historical failure this guards: a "collapse" step that stripped the
     // <repo>- prefix from <dir> when dir already began with repo. That is what

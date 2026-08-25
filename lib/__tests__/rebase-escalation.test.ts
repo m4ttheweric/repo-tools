@@ -153,13 +153,15 @@ describe("verifyRebaseCompleted", () => {
     expect(verifyRebaseCompleted(repo, "feature", "master")).toBe("dirty");
   });
 
+  // Spawns a full conflicted rebase (many git processes) — bun's default 5s
+  // per-test timeout is over the line when the whole suite runs concurrently.
   test("wrong-branch when the agent switched branches", async () => {
     const repo = makeConflictRepo();
     await pausedConflict(repo);
     sh("git rebase --abort", repo);
     sh("git checkout -q master", repo);
     expect(verifyRebaseCompleted(repo, "feature", "master")).toBe("wrong-branch");
-  });
+  }, 20_000);
 });
 
 describe("resolveEscalationMode", () => {

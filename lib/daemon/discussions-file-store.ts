@@ -25,8 +25,18 @@ import { Database } from "bun:sqlite";
 import type { Discussion } from "@mattstack/glance";
 import { getStateDb, LEGACY_IMPORTS } from "../state/db.ts";
 import { persistOrWarn } from "../state/busy.ts";
+import { rekeyTableColumn, type RekeyReport } from "../state/identity-migrate.ts";
 import type { ProjectMRs } from "./project-mrs-store.ts";
 import type { CacheEntry } from "./handlers/types.ts";
+
+/**
+ * One-shot: re-key legacy NAME-keyed `discussions` rows onto serialized
+ * identities. Exported for the daemon-boot migration runner; this module
+ * does not wire the boot call.
+ */
+export function rekeyDiscussionsTable(): Promise<RekeyReport> {
+  return rekeyTableColumn("discussions", "repo");
+}
 
 export interface DiscussionsEntry { discussions: Discussion[]; fetchedAt: number; }
 

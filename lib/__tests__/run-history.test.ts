@@ -9,7 +9,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { repoDataDir, rtDir } from "../rt-paths.ts";
 import { closeStateDb, getStateDb } from "../state/index.ts";
-import { appendRunHistory, readRunHistory, type RunHistoryEntry } from "../run-history.ts";
+import { appendRunHistory, readRunHistory, rekeyRunHistoryTable, type RunHistoryEntry } from "../run-history.ts";
 
 function entry(overrides: Partial<RunHistoryEntry> = {}): RunHistoryEntry {
   return {
@@ -57,6 +57,31 @@ describe("run history — state.db persistence", () => {
   test("history for one repo does not leak into another repo's list", () => {
     appendRunHistory("repo-a", entry());
     expect(readRunHistory("repo-b")).toEqual([]);
+  });
+
+  test("run history is written and read under the repo identity", () => {
+    const identity = "remote:gitlab.com%2Fg%2Fr";
+    appendRunHistory(identity, entry({ cmd: "bun test" }));
+    expect(readRunHistory(identity).map((e) => e.cmd)).toContain("bun test");
+  });
+
+  test("rekeyRunHistoryTable targets run_history.repo — an already-identity row is left alone, an unindexed legacy name is retained (never dropped)", async () => {
+    appendRunHistory("legacy-repo", entry({ cmd: "legacy" }));
+    appendRunHistory("remote:gitlab.com%2Fg%2Fr", entry({ cmd: "already-keyed" }));
+
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    let report: Awaited<ReturnType<typeof rekeyRunHistoryTable>>;
+    try {
+      report = await rekeyRunHistoryTable();
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    // "legacy-repo" has no repo-index entry in this test HOME, so the
+    // real resolver can't derive an identity for it — retained, not lost.
+    expect(report.retained).toEqual(["legacy-repo"]);
+    expect(readRunHistory("legacy-repo").map((e) => e.cmd)).toEqual(["legacy"]);
+    expect(readRunHistory("remote:gitlab.com%2Fg%2Fr").map((e) => e.cmd)).toEqual(["already-keyed"]);
   });
 
   test("a pre-existing run-history.jsonl is imported on first read, oldest-first so newest survives trimming", () => {

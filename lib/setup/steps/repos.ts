@@ -9,6 +9,7 @@
 import { join } from "path";
 import { getSetting } from "../../settings/resolve.ts";
 import { updateRepoIndex } from "../../repo-index.ts";
+import { serializeIdentity } from "../../settings/identity.ts";
 import { withoutUrls } from "../../team/redact.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
@@ -84,7 +85,7 @@ async function reposCloneRunUnsafe(ctx: ApplyContext): Promise<StepOutcome> {
     if (p.exists(dest)) {
       if (isCloneOf(p, dest, identity)) {
         present++;
-        updateRepoIndex(base, dest);
+        updateRepoIndex(serializeIdentity({ kind: "remote", id: identity }), dest);
       } else {
         failed++;
         ctx.log("repos.clone", `${base}: ${dest} exists but isn't a clone of ${identity} (basename collision or unrelated folder) — resolve by hand`);
@@ -100,7 +101,9 @@ async function reposCloneRunUnsafe(ctx: ApplyContext): Promise<StepOutcome> {
     }
 
     cloned++;
-    updateRepoIndex(base, dest);
+    // The index keys on the serialized identity; `identity` here is already
+    // the raw host/path the tracked-repos setting carries.
+    updateRepoIndex(serializeIdentity({ kind: "remote", id: identity }), dest);
   }
 
   return { state: "done", detail: `cloned ${cloned}, present ${present}, failed ${failed}` };

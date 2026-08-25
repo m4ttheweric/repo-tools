@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, writeFileSync } from "fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createDiscussionsFileStore } from "../discussions-file-store.ts";
+import { createDiscussionsFileStore, rekeyDiscussionsTable } from "../discussions-file-store.ts";
 import { resolveMRMeta, refreshDiscussions } from "../discussions-store.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
-import { openStateDb } from "../../state/index.ts";
+import { closeStateDb, getStateDb, openStateDb } from "../../state/index.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 import { fakeStore } from "./fake-cache-store.ts";
 
@@ -64,6 +64,16 @@ describe("discussions store — row basics", () => {
     const db = tmpDb();
     createDiscussionsFileStore(db).write("repo", 7, { discussions: [disc(1)], fetchedAt: 123 });
     expect(createDiscussionsFileStore(db).read("repo", 7)!.fetchedAt).toBe(123);
+    db.close();
+  });
+
+  test("read and write work under a serialized repo identity — the column is opaque to format", () => {
+    const identity = "remote:gitlab.com%2Facme%2Fr";
+    const db = tmpDb();
+    const s = createDiscussionsFileStore(db);
+    s.write(identity, 7, { discussions: [disc(1)], fetchedAt: 123 });
+    expect(s.read(identity, 7)!.fetchedAt).toBe(123);
+    expect(s.keys()).toEqual([{ repoName: identity, iid: 7 }]);
     db.close();
   });
 });
@@ -233,5 +243,45 @@ describe("refreshDiscussions (lifted)", () => {
   test("throws for an MR in neither store", async () => {
     const overrides = { fileStore: createDiscussionsFileStore(tmpDb()), projectStore: pmrsStore(), fetchDiscussions: async () => [] };
     await expect(refreshDiscussions({ ctx: fakeCtx({}), broadcast: () => {} }, "repo", 1, overrides)).rejects.toThrow("MR not cached");
+  });
+});
+
+describe("rekeyDiscussionsTable", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let warnSpy: ReturnType<typeof spyOn<Console, "warn">>;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-disc-rekey-"));
+    process.env.HOME = home;
+    closeStateDb();
+    warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    process.env.HOME = origHome;
+    closeStateDb();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("a row already keyed by a serialized identity is left untouched", async () => {
+    const identity = "remote:gitlab.com%2Fg%2Fr";
+    const store = createDiscussionsFileStore(getStateDb());
+    store.write(identity, 5, { discussions: [disc(1)], fetchedAt: 100 });
+
+    const report = await rekeyDiscussionsTable();
+    expect(report.migrated).toEqual([]);
+    expect(store.read(identity, 5)!.discussions.length).toBe(1);
+  });
+
+  test("an unresolvable legacy repo name is retained and warned, never dropped", async () => {
+    const store = createDiscussionsFileStore(getStateDb());
+    store.write("ghost-repo", 5, { discussions: [disc(1)], fetchedAt: 100 });
+
+    const report = await rekeyDiscussionsTable();
+    expect(report.retained).toEqual(["ghost-repo"]);
+    expect(store.read("ghost-repo", 5)!.discussions.length).toBe(1);
+    expect(warnSpy).toHaveBeenCalled();
   });
 });

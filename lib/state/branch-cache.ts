@@ -34,13 +34,24 @@ import type { LinearTicket } from "../linear.ts";
 import type { MRInfo } from "../enrich.ts";
 import { getStateDb, LEGACY_IMPORTS } from "./db.ts";
 import { persistOrWarn } from "./busy.ts";
+import { rekeyTableColumn, type RekeyReport } from "./identity-migrate.ts";
 
 export interface CacheEntry {
   ticket: LinearTicket | null;
   linearId: string;
   mr: MRInfo | null;
   fetchedAt: number;
+  /** The serialized repo identity (writers now source this from an identity-keyed repo index), not a display name. */
   repoName?: string;
+}
+
+/**
+ * One-shot: re-key legacy NAME-keyed `branch_cache` rows onto serialized
+ * identities. Exported for the daemon-boot migration runner; this module
+ * does not wire the boot call.
+ */
+export function rekeyBranchCacheTable(): Promise<RekeyReport> {
+  return rekeyTableColumn("branch_cache", "repo");
 }
 
 export interface BranchCacheStore {

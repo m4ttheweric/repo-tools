@@ -6,23 +6,26 @@
  *   rt endpoint lookup <role> [--json]   does this worktree hold a claim?
  *
  * Repo identification mirrors the pattern already used by `rt worktree each`
- * (commands/worktree.ts): derive a repo name from the cwd's git toplevel +
- * remote, then check it's a KEY in ~/.mattstack/rt/repos.json — read the same
- * way `lib/endpoint/shim.ts`'s `buildInterceptRules` reads it. An unregistered
- * repo is a clear, fail-loud error (there is nothing to fall open to for a
- * read-only lookup). The git toplevel path string IS the worktree key
- * `endpoint:lookup` expects — the same value the daemon's disposal release
- * receives as `path`.
+ * (commands/worktree.ts): derive the repo identity from the cwd's git
+ * toplevel + remote, then check its serialized form is a KEY in
+ * ~/.mattstack/rt/repos.json — read the same way `lib/endpoint/shim.ts`'s
+ * `buildInterceptRules` reads it. An unregistered repo is a clear, fail-loud
+ * error (there is nothing to fall open to for a read-only lookup). The git
+ * toplevel path string IS the worktree key `endpoint:lookup` expects — the
+ * same value the daemon's disposal release receives as `path`.
  */
 
 import { basename } from "path";
 import { dim, green, reset, yellow } from "../lib/tui.ts";
-import { loadRepoIndex } from "../lib/repo-index.ts";
+import { resolveIndexPathForIdentity } from "../lib/repo-index.ts";
 import { runCapture } from "../lib/subprocess.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
 // deriveRepoName, not getRepoIdentity: the latter's updateRepoIndex side
 // effect would write to the repo index from a read-only lookup.
 import { deriveRepoName } from "../lib/repo.ts";
+// deriveRepoIdentity (not getRepoIdentity) for the same reason — pure
+// derivation, no repo-index write.
+import { deriveRepoIdentity, serializeIdentity } from "../lib/settings/identity.ts";
 
 function fail(msg: string): never {
   console.error(`rt endpoint: ${msg}`);
@@ -61,17 +64,22 @@ export async function endpointLookup(args: string[]): Promise<void> {
 
   const remote = await gitRemote(toplevel);
   const repoName = remote ? deriveRepoName(remote) : basename(toplevel);
+  // The repo index and the endpoint_claims table both key on the serialized
+  // identity now — the same value buildInterceptRules' endpoint:claim payload
+  // sends, so a claim made through an intercepted command and a lookup made
+  // here hit the same row. repoName above stays around for display only.
+  const identity = serializeIdentity(await deriveRepoIdentity(toplevel));
 
-  // Read the repo index the same way lib/endpoint/shim.ts's
-  // buildInterceptRules does — repo name is a KEY, not a path match (a
-  // secondary worktree's toplevel never equals the index's stored primary
-  // path, so equality-matching the path would false-negative every time).
-  const index = loadRepoIndex();
-  if (!(repoName in index)) {
+  // Identity is a KEY, not a path match (a secondary worktree's toplevel
+  // never equals the index's stored primary path, so equality-matching the
+  // path would false-negative every time). resolveIndexPathForIdentity also
+  // accepts a legacy name-keyed row for this repo — migrating it, not
+  // registering: a repo in neither form still fails.
+  if ((await resolveIndexPathForIdentity(identity)) === null) {
     fail(`repo "${repoName}" is not registered — visit it with rt first (repos.json is a derived mirror, not the source of truth)`);
   }
 
-  const res = await daemonQuery("endpoint:lookup", { repo: repoName, worktree: toplevel, role }, 10_000);
+  const res = await daemonQuery("endpoint:lookup", { repo: identity, worktree: toplevel, role }, 10_000);
   if (!res) fail("daemon unavailable — rt endpoint lookup needs the rt daemon (rt daemon start)");
   if (!res.ok) fail(res.error ?? "lookup failed");
 

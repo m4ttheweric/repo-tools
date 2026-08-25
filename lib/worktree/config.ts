@@ -191,7 +191,8 @@ export async function loadWorktreeRepoConfig(
   repoName: string,
   repoPath: string,
 ): Promise<WorktreeRepoConfig> {
-  const identity = await deriveRepoIdentity(repoPath);
+  const derived = await deriveRepoIdentity(repoPath);
+  const identity = derived.kind === "remote" ? derived.id : null;
   const declared = resolveDeclared(repoName, identity, repoPath);
 
   const cfg: WorktreeRepoConfig = {
@@ -225,7 +226,8 @@ export async function loadWorktreeRepoConfig(
  * before: somebody meant to declare something.
  */
 export async function worktreeSettingsDeclared(repoName: string, repoPath: string): Promise<boolean> {
-  const identity = await deriveRepoIdentity(repoPath);
+  const derived = await deriveRepoIdentity(repoPath);
+  const identity = derived.kind === "remote" ? derived.id : null;
   try {
     return explainSetting(SETTING_KEY, resolveOpts(identity, repoPath)).some(
       (row) => row.present && row.scope !== "default",

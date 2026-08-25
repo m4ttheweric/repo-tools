@@ -19,6 +19,7 @@ import { join } from "path";
 import { repoDataDir, rtDir } from "../rt-paths.ts";
 import { closeStateDb, getStateDb, listKvValues, setKvValue } from "../state/index.ts";
 import {
+  ensureWorktreeRegistryRekeyed,
   getKnownRepos,
   loadRepoIndexEntries,
   migrateRepoData,
@@ -336,6 +337,24 @@ describe("repo-index — rename drift (RT-60)", () => {
       expect(existsSync(repoDataDir("local-apps"))).toBe(false);
     });
 
+    test("a winner that is a serialized identity is still one valid directory — literal colon, encoded slash", () => {
+      const dir = realRepo("canonical");
+      const identity = "remote:gitlab.com%2Fgroup%2Fcanonical";
+      mkdirSync(repoDataDir("canonical-legacy"), { recursive: true });
+      writeFileSync(join(repoDataDir("canonical-legacy"), "run-history.jsonl"), '{"ts":"2026-07-25T00:00:00.000Z"}\n');
+
+      indexRepoAt(identity, dir, 2_000);
+      indexRepoAt("canonical-legacy", dir, 1_000);
+
+      const removed = pruneRepoIndex();
+      const dup = removed.find((r) => r.repoName === "canonical-legacy");
+
+      expect(dup?.keptAs).toBe(identity);
+      expect(dup?.data?.moved).toEqual(["run-history.jsonl"]);
+      expect(existsSync(join(repoDataDir(identity), "run-history.jsonl"))).toBe(true);
+      expect(existsSync(repoDataDir("canonical-legacy"))).toBe(false);
+    });
+
     test("a missing row's data dir is left alone — there is no surviving name to carry it to", () => {
       mkdirSync(repoDataDir("gone"), { recursive: true });
       writeFileSync(join(repoDataDir("gone"), "run-history.jsonl"), "{}\n");
@@ -441,6 +460,37 @@ describe("repo-index — rename drift (RT-60)", () => {
 
       expect(removed.find((r) => r.repoName === "repo-tools")?.retained).toBe(true);
       expect(loadRepoIndexEntries().map((e) => e.repoName).sort()).toEqual(["repo-tools", "rt"]);
+    });
+  });
+
+  // ─── worktree registry legacy rekey ────────────────────────────────
+
+  describe("ensureWorktreeRegistryRekeyed", () => {
+    const WT_NS = "worktree-registry";
+    const tree = (path: string) => [{ path, branch: "main", kind: "main" }];
+
+    test("moves a legacy name-keyed row onto the repo's identity, and a repeat call is a no-op", async () => {
+      const dir = realRepo("repo-tools");
+      execSync("git remote add origin https://gitlab.com/g/repo-tools.git", { cwd: dir, stdio: "pipe" });
+      indexRepoAt("repo-tools", dir, 1_000);
+      setKvValue(WT_NS, "repo-tools", tree(dir));
+
+      await ensureWorktreeRegistryRekeyed();
+
+      expect(listKvValues(WT_NS)["remote:gitlab.com%2Fg%2Frepo-tools"]).toEqual(tree(dir));
+      expect(listKvValues(WT_NS)["repo-tools"]).toBeUndefined();
+
+      await ensureWorktreeRegistryRekeyed();
+      expect(Object.keys(listKvValues(WT_NS))).toEqual(["remote:gitlab.com%2Fg%2Frepo-tools"]);
+    });
+
+    test("a legacy name absent from the repo index is left in place, warned, never dropped", async () => {
+      setKvValue(WT_NS, "never-indexed", tree("/x/gone"));
+
+      await ensureWorktreeRegistryRekeyed();
+
+      expect(listKvValues(WT_NS)["never-indexed"]).toEqual(tree("/x/gone"));
+      expect(warnSpy).toHaveBeenCalled();
     });
   });
 });
