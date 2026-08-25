@@ -195,8 +195,14 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     if (!path) return []; // never synced and caller has no path: no record to attach to
     const store = existing ?? emptyStore(path, source);
     store.projectPath = path;
+    const existingEntry = store.mrs[pr.iid];
     const fetchedAt = Date.now();
-    store.mrs[pr.iid] = { pr, fetchedAt };
+    // Same wholesale-replace hole applyDelta has: the tag lives on the
+    // ENTRY, not the pr, so an events/mutation upsert of a tagged MR must
+    // carry it forward or it desyncs from the SQL project_mr_sections row.
+    store.mrs[pr.iid] = existingEntry?.codeownerSections
+      ? { pr, fetchedAt, codeownerSections: existingEntry.codeownerSections }
+      : { pr, fetchedAt };
     store.source = source;
     data[repoName] = store;
 

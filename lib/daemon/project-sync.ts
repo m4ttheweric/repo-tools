@@ -71,6 +71,11 @@ export function sectionsMatching(rules: ApprovalRuleLite[], demanded: string[]):
   return demanded.filter((s) => rules.some((r) => r.type === "CODE_OWNER" && !r.approved && r.section === s));
 }
 
+/** Order-sensitive equality on two optional tag lists; both sides come from sectionsMatching's stable demanded-order output. */
+function sameSections(a: string[] | undefined, b: string[] | undefined): boolean {
+  return (a ?? []).length === (b ?? []).length && (a ?? []).every((s, i) => s === (b ?? [])[i]);
+}
+
 /** Drops PRs whose updatedAt is older than the window. A missing/unparseable timestamp is kept -- never guess-drop. */
 function withinWindow(prs: PullRequest[], windowDays: number, now: number): PullRequest[] {
   const cutoff = now - windowDays * 86_400_000;
@@ -326,11 +331,19 @@ async function syncImpl(
   // failed sweep must not fail the delta that keeps freshness flowing --
   // it heals on the next successful cycle or via approved events.
   let freshTags: Map<number, string[]> | null = null;
+  // A tag-only change (a stranger newly tagged or untagged, pr itself
+  // untouched) never lands in applyDelta's changed set on its own -- without
+  // this, clients keep stale tab membership until an unrelated pr change or
+  // the next deep.
+  const tagChangedIids: number[] = [];
   if (record?.scope?.sections?.length) {
     const sweepStartedAt = Date.now();
     try {
       const { rules } = await fetchRules(repoName, { updatedAfter });
       freshTags = new Map(rules.map((r) => [r.iid, sectionsMatching(r.rules, record.scope!.sections!)]));
+      for (const [iid, sections] of freshTags) {
+        if (!sameSections(sections, record.mrs[iid]?.codeownerSections)) tagChangedIids.push(iid);
+      }
       log.debug(
         { repo: repoName, mode: "sections-delta", candidates: rules.length, matched: [...freshTags.values()].filter((s) => s.length > 0).length, durationMs: Date.now() - sweepStartedAt },
         "project sync",
@@ -422,6 +435,7 @@ async function syncImpl(
   for (const pr of fetched) {
     if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
   }
+  for (const iid of tagChangedIids) if (!changed.includes(iid)) changed.push(iid);
 
   log.debug({ repo: repoName, mode: "delta", changed: changed.length, topup: topup.length, durationMs: Date.now() - deltaStartedAt }, "project sync");
   if (changed.length > 0) {

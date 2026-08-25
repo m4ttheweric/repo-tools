@@ -1161,15 +1161,23 @@ describe("delta retag and keep-tagged-strangers", () => {
 
   test("delta untags an MR whose rule got approved in-window", async () => {
     const { store, deps } = await seededSectionStore();
+    // iid 9 also carries a pr update this cycle, so applyDelta's own
+    // preserve-copy runs on the same entry the fresh sweep is about to
+    // clear -- proving the sweep's clear wins over the preserve, not just
+    // that setSectionTags can clear a row applyDelta never touched.
     await syncProjectMRs(deps, "r", {
       store, selfUsername: "self", windowDays: 30,
-      fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(9, { author: { username: "self" } as any, title: "v2" }),
+      ] }),
       fetchRules: async () => ({ projectPath: "g/p", rules: [
         { iid: 9, rules: [{ type: "CODE_OWNER", approved: true, section: "Acme" }] },
       ] }),
     });
+    const rec = store.read("r")!;
+    expect(rec.mrs[9]!.pr.title).toBe("v2");         // the delta update itself still landed
     // Tag cleared; the row itself waits for the deep prune.
-    expect(store.read("r")!.mrs[9]!.codeownerSections).toBeUndefined();
+    expect(rec.mrs[9]!.codeownerSections).toBeUndefined();
   });
 
   test("delta hydrates AND tags a brand-new match in the same cycle", async () => {
@@ -1210,5 +1218,21 @@ describe("delta retag and keep-tagged-strangers", () => {
     const rec = store.read("r")!;
     expect(rec.mrs[9]!.pr.title).toBe("v2");                        // delta update still applied
     expect(rec.mrs[9]!.codeownerSections).toEqual(["Acme"]);   // tag survives despite the failed retag
+  });
+
+  test("a tag-only change (untagged this cycle, no pr change) still broadcasts", async () => {
+    const { store, deps } = await seededSectionStore(); // iid 9 tagged, stored
+    const events: Array<{ type: string; data: any }> = [];
+    await syncProjectMRs(
+      { ...deps, broadcast: (type, data) => events.push({ type, data }) },
+      "r",
+      {
+        store, selfUsername: "self", windowDays: 30,
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+        fetchRules: async () => ({ projectPath: "g/p", rules: [{ iid: 9, rules: [] }] }),
+      },
+    );
+    expect(store.read("r")!.mrs[9]!.codeownerSections).toBeUndefined();
+    expect(events).toEqual([{ type: "project-mrs", data: { repoName: "r", iids: [9] } }]);
   });
 });

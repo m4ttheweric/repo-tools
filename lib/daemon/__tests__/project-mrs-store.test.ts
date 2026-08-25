@@ -51,6 +51,18 @@ describe("upsert", () => {
     expect(s.read("repo")!.mrs[2]!.pr.state).toBe("merged");
     expect(s.read("repo")!.source).toBe("events");
   });
+
+  // upsert replaces the entry wholesale, same as applyDelta -- an
+  // events-path upsert of a tagged MR must carry the tag forward or it
+  // desyncs from the SQL project_mr_sections row.
+  test("preserves an existing codeownerSections tag on the replacement entry", () => {
+    const s = tmpStore();
+    s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
+    s.setSectionTags("repo", { 1: ["Acme"] });
+    s.upsert("repo", null, pr(1, { title: "updated" } as any), "events");
+    expect(s.read("repo")!.mrs[1]!.pr.title).toBe("updated");
+    expect(s.read("repo")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+  });
 });
 
 describe("fullSync reconcile", () => {
