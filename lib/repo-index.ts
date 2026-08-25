@@ -29,6 +29,7 @@ import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings
 import { repoLabel, repoLabelFull, repoLabelQualified } from "./repo-label.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
+import { mergeRegistries, type TreeRecord } from "./worktree/registry.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -300,15 +301,17 @@ export interface DataMigration {
   removedDir: boolean;
   /**
    * The retired name's worktree registry: `"moved"` onto the live name,
-   * `"refused"` because the live name already had one (both are real tree
-   * records; picking a winner would guess), or `"none"` if it had none.
+   * `"merged"` into the live name's own registry (the name/identity pair the
+   * identity cutover left, each side owning half of one on-deck pool),
+   * `"refused"` because the write could not be verified, or `"none"` if it
+   * had none.
    *
    * This lives in state.db's kv, not the data dir, so it is invisible to a
    * directory walk — and it is the record the daemon keys by, so a retired
    * name that keeps it while the index row goes away leaves the reconciler
    * silently skipping the repo.
    */
-  registry: "moved" | "refused" | "none";
+  registry: "moved" | "merged" | "refused" | "none";
 }
 
 /** True when anything is still keyed to the retired name after a migration. */
@@ -337,36 +340,41 @@ const WORKTREE_REGISTRY_NS = "worktree-registry";
  *
  * The daemon keys registries by the INDEX name
  * (`lib/daemon/worktree-reconciler.ts` iterates the repo index), while the CLI
- * looks them up by git identity (`deriveRepoName`). A rename splits those two,
- * and evicting the retired index row then makes the registry unreachable:
+ * looks them up by git identity. A rename splits those two, and evicting the
+ * retired index row then makes the registry unreachable:
  * `repoHasWorktreeActivity` sees an empty registry under the live name and
  * skips the repo, so the reconciler quietly stops managing its worktrees.
  * That is why this moves with the data dir instead of being left behind.
  *
- * A live name that ALREADY has a registry is refused, never merged — both
- * sides are real tree records carrying claim state and ready stamps that no
- * git repository has another record of.
+ * A live name that already has a registry is MERGED, not refused: both sides
+ * describe the same repo's trees, so the union by path (`mergeRegistries`)
+ * loses neither half of a pool that a name/identity pair split.
  */
 function migrateWorktreeRegistry(from: string, to: string, opts: { dryRun?: boolean }): DataMigration["registry"] {
-  let retired: unknown;
+  let outcome: "moved" | "merged";
   try {
     if (!hasKvValue(WORKTREE_REGISTRY_NS, from)) return "none";
-    if (hasKvValue(WORKTREE_REGISTRY_NS, to)) return "refused";
-    if (opts.dryRun) return "moved";
-    retired = getKvValue<unknown>(WORKTREE_REGISTRY_NS, from, null);
-    setKvValue(WORKTREE_REGISTRY_NS, to, retired);
+    outcome = hasKvValue(WORKTREE_REGISTRY_NS, to) ? "merged" : "moved";
+    if (opts.dryRun) return outcome;
+
+    const retired = getKvValue<TreeRecord[]>(WORKTREE_REGISTRY_NS, from, []);
+    const live = outcome === "merged" ? getKvValue<TreeRecord[]>(WORKTREE_REGISTRY_NS, to, []) : [];
+    const next = outcome === "merged" ? mergeRegistries(live, retired) : retired;
+    setKvValue(WORKTREE_REGISTRY_NS, to, next);
+
+    // persistOrWarn swallows SQLITE_BUSY, so a returned write is not a landed
+    // one — and on a merge the destination row already existed, so its mere
+    // presence proves nothing. Compare the readback.
+    if (JSON.stringify(getKvValue<TreeRecord[]>(WORKTREE_REGISTRY_NS, to, [])) !== JSON.stringify(next)) {
+      console.warn(`rt: ${from}'s worktree registry did not persist under ${to} — leaving it in place`);
+      return "refused";
+    }
   } catch (err) {
     console.warn(`rt: could not move ${from}'s worktree registry to ${to} (${(err as Error).message})`);
     return "refused";
   }
-  // Delete only after the write is readable: persistOrWarn swallows
-  // SQLITE_BUSY, so a returned write is not a landed one.
-  if (!hasKvValue(WORKTREE_REGISTRY_NS, to)) {
-    console.warn(`rt: ${from}'s worktree registry did not persist under ${to} — leaving it in place`);
-    return "refused";
-  }
   deleteKvValue(WORKTREE_REGISTRY_NS, from);
-  return "moved";
+  return outcome;
 }
 
 /**

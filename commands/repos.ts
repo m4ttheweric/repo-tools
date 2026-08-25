@@ -169,7 +169,8 @@ function describeDataMove(r: PrunedEntry, dryRun: boolean): string {
   if (carried > 0) parts.push(`${dryRun ? "would carry" : "carried"} ${carried} file${carried === 1 ? "" : "s"} to ${r.keptAs}`);
   if (d.merged.length > 0) parts.push(`merged ${d.merged.join(", ")}`);
   if (d.registry === "moved") parts.push(`${dryRun ? "would move" : "moved"} the worktree registry to ${r.keptAs}`);
-  if (d.registry === "refused") parts.push(`${r.keptAs} already has a worktree registry — both kept`);
+  if (d.registry === "merged") parts.push(`${dryRun ? "would merge" : "merged"} the worktree registry into ${r.keptAs}'s`);
+  if (d.registry === "refused") parts.push(`${r.keptAs}'s worktree registry could not be written — both kept`);
   if (d.refused.length > 0) parts.push(`kept both copies of ${d.refused.join(", ")}`);
   return parts.length > 0 ? `; ${parts.join("; ")}` : "";
 }
