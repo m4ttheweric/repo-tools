@@ -187,7 +187,7 @@ async function syncImpl(
         store.setScope(repoName, { authors: scopeAuthors, windowDays });
         deepFailedAt.delete(repoName);
         log.debug(
-          { repo: repoName, mode: "deep", scoped: true, authors: scopeAuthors.length, open: kept.length, changed: changed.length },
+          { repo: repoName, mode: "deep", scoped: true, authors: scopeAuthors.length, open: kept.length, changed: changed.length, durationMs: Date.now() - syncStartedAt },
           "project sync",
         );
         if (changed.length > 0) {
@@ -204,7 +204,7 @@ async function syncImpl(
       // this point.
       store.setScope(repoName, null);
       deepFailedAt.delete(repoName);
-      log.debug({ repo: repoName, mode: "deep", open: prs.length, changed: changed.length }, "project sync");
+      log.debug({ repo: repoName, mode: "deep", open: prs.length, changed: changed.length, durationMs: Date.now() - syncStartedAt }, "project sync");
       if (changed.length > 0) {
         deps.broadcast("project-mrs", { repoName, iids: changed });
       }
@@ -295,7 +295,7 @@ async function syncImpl(
     if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
   }
 
-  log.debug({ repo: repoName, mode: "delta", changed: changed.length, topup: topup.length }, "project sync");
+  log.debug({ repo: repoName, mode: "delta", changed: changed.length, topup: topup.length, durationMs: Date.now() - deltaStartedAt }, "project sync");
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });
   }
