@@ -72,7 +72,7 @@ state go through the daemon, never around it.
 
 ## Out of scope
 
-gitq's commonDir-hash store, claimview `uow.json`, `board.cwds`,
+gitq's commonDir-hash store, the work-pipeline `uow.json`, `board.cwds`,
 `rt.workspacePrefs.workspaces` keys — those owners react to `repo:moved`
 (follow-up tickets). The RT-65 `rt worktree list` no-heal bug itself.
 
@@ -91,5 +91,5 @@ gitq's commonDir-hash store, claimview `uow.json`, `board.cwds`,
 ## Verification
 
 `bunx tsc --noEmit`; `bun test lib commands packages`; a real-state dry run:
-`rt repos locate --dry-run ~/Documents/GitHub/assured-dev` against a copy of
+`rt repos locate --dry-run ~/Documents/GitHub/acme-dev` against a copy of
 `~/.mattstack` (isolated `HOME`) after `mv`-ing a throwaway clone.
