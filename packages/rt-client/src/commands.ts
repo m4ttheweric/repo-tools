@@ -45,6 +45,21 @@ export interface MrByBranchData {
   syncedAt: number;
 }
 
+/**
+ * Trimmed, structural view of the daemon's `CacheEntry` (lib/state/branch-cache.ts) --
+ * rt-client cannot import daemon/lib internals, so this names only the fields
+ * console's run-view rows read, spelled exactly as they land on the wire
+ * (`mr` is `toMRInfo(pr)`, i.e. `getMRDashboardProps` -- camelCase `webUrl`,
+ * nested `pipeline.status`, no `ciStatus`). Extra wire fields (including the
+ * rest of `pipeline`) are fine; anything this shape doesn't name is simply
+ * not surfaced.
+ */
+export interface BranchEnrichment {
+  ticket: { identifier: string; title: string; url: string } | null;
+  mr: { iid: number; webUrl: string | null; state: string; pipeline: { status: string } | null } | null;
+  fetchedAt: number;
+}
+
 /** Forges the daemon can hold a token for. */
 export type ForgeSlug = "gitlab" | "github";
 
@@ -125,6 +140,8 @@ export interface RunSummary {
       Null when no agent matches or herdr is unavailable; absent on
       pre-mirror daemons. */
   agent?: RunAgent | null;
+  /** Executed stages only, in run order — the pipeline may define more that have not started. */
+  stages?: { name: string; status: string }[];
 }
 export interface RunAgent {
   status: "working" | "idle" | "blocked" | "done" | "unknown";

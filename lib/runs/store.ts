@@ -107,6 +107,7 @@ function withAttention(db: Database, row: RunSummary, liveness?: RunLiveness): R
       ticket: fieldValue(fields, "ticket"),
       branch: fieldValue(fields, "branch"),
       agent: agentMirror(row, fields, liveness),
+      stages: stages.map((s) => ({ name: s.name, status: s.status })),
     };
   } catch {
     return { ...row, attention: NO_ATTENTION };
@@ -150,6 +151,7 @@ export function readRun(repo: string, runId: string, liveness?: RunLiveness): Ru
         ticket: fieldValue(fields, "ticket"),
         branch: fieldValue(fields, "branch"),
         agent: agentMirror(run, fields, liveness),
+        stages: stages.map((s) => ({ name: s.name, status: s.status })),
       },
       stages, fields, decisions,
       schemaAhead,

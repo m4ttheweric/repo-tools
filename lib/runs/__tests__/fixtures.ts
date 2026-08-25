@@ -9,12 +9,16 @@ export function root(): string {
   return dir;
 }
 
+export type StageSeed = { name: string; status: string; attempt?: number; startedAt?: number | null; endedAt?: number | null };
+
 type SeedOpts = {
   status?: string;
   packCommits?: string;
   packDirty?: number;
   stageReason?: string;
   stageDetailPath?: string;
+  /** Overrides the default single running "plan" stage row. */
+  stages?: StageSeed[];
 };
 
 export function seedRun(dir: string, repo: string, id: string, startedAt: number, userVersion = 1, o: SeedOpts = {}): void {
@@ -22,6 +26,16 @@ export function seedRun(dir: string, repo: string, id: string, startedAt: number
   mkdirSync(runDir, { recursive: true });
   const v2 = userVersion >= 2;
   const db = new Database(join(runDir, "state.db"));
+  const stageSeeds: StageSeed[] = o.stages ?? [{ name: "plan", status: "running" }];
+  const stageInserts = stageSeeds
+    .map((s) => {
+      const attempt = s.attempt ?? 1;
+      const sAt = s.startedAt ?? startedAt;
+      const eAt = s.endedAt ?? null;
+      const v2Cols = v2 ? `, ${o.stageReason ? `'${o.stageReason}'` : "NULL"}, ${o.stageDetailPath ? `'${o.stageDetailPath}'` : "NULL"}` : "";
+      return `INSERT INTO stages VALUES ('${id}', '${s.name}', '${s.status}', ${attempt}, ${sAt}, ${eAt === null ? "NULL" : eAt}${v2Cols});`;
+    })
+    .join("\n    ");
   db.exec(`
     PRAGMA user_version=${userVersion};
     CREATE TABLE runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, work_type TEXT NOT NULL,
@@ -32,7 +46,7 @@ export function seedRun(dir: string, repo: string, id: string, startedAt: number
     CREATE TABLE fields (run_id TEXT, key TEXT, value TEXT, produced_by TEXT, at INTEGER, PRIMARY KEY (run_id, key));
     CREATE TABLE decisions (run_id TEXT, contract TEXT, scope TEXT, selection TEXT, decided_by TEXT, decided_at INTEGER, PRIMARY KEY (run_id, contract, scope));
     INSERT INTO runs VALUES ('${id}', '${repo}', 'feature', 'default', '${o.status ?? "running"}', 'plan', NULL, ${startedAt}, NULL${v2 ? `, ${o.packCommits ? `'${o.packCommits}'` : "NULL"}, ${o.packDirty ?? 0}` : ""});
-    INSERT INTO stages VALUES ('${id}', 'plan', 'running', 1, ${startedAt}, NULL${v2 ? `, ${o.stageReason ? `'${o.stageReason}'` : "NULL"}, ${o.stageDetailPath ? `'${o.stageDetailPath}'` : "NULL"}` : ""});
+    ${stageInserts}
     INSERT INTO fields VALUES ('${id}', 'ticket', 'ACME-1', 'plan', ${startedAt});
     INSERT INTO fields VALUES ('${id}', 'branch', 'goodwin/mat-1', 'plan', ${startedAt + 5000});
     INSERT INTO decisions VALUES ('${id}', 'execution-strategy@1', 'run', '{"tier":"direct-tdd"}', 'stage-plan', ${startedAt});
