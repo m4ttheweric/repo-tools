@@ -37,7 +37,9 @@ describe("compile-native end to end", () => {
     }
 
     const plan = stages.find(([name]) => name === "stage-plan")![1];
-    expect(plan).toContain("<!-- part: slot:domain binding=");
+    // The fill comes from the pack under compilation, at the pack's own version --
+    // never from an installed copy of a previous release.
+    expect(plan).toContain("<!-- part: slot:domain binding=acme:plan-policy version=0.1.0 path=attachments/plan-policy/SKILL.md");
     expect(existsSync(join(pack, "skills", "work", "scripts", "resolve-pipeline.sh"))).toBe(false);
   });
 

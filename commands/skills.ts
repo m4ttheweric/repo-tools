@@ -229,6 +229,19 @@ function enumerateSkillEntries(root: string, into: Map<string, SkillEntry> = new
   return into;
 }
 
+/** The pack's own plugin identity, when it is one (a pack without a manifest is not a plugin root). */
+function packPluginIdentity(packDir: string): { name: string; version: string } | null {
+  const manifestPath = join(packDir, ".claude-plugin", "plugin.json");
+  if (!existsSync(manifestPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown; version?: unknown };
+    if (typeof parsed.name !== "string" || !parsed.name) return null;
+    return { name: parsed.name, version: typeof parsed.version === "string" ? parsed.version : "" };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * A plugin may register more than one skills root (plugin.json `skills`, e.g.
  * ["./skills/review", "./plugin/skills"]); the registered surface is the union
@@ -472,6 +485,12 @@ async function resolve(flags: Flags): Promise<Resolved> {
     : flags.mattstackDir
       ? resolvePluginRootsFromDir(mattstackRoot)
       : resolvePluginRoots();
+  // The pack being compiled is the plugin its own fills are bound as. The installed
+  // cache is the previous release of it, so reading fills from there inlines stale
+  // bodies and pins their version token one release behind -- every `check` after a
+  // release would report stale until the next bump.
+  const self = packPluginIdentity(packDir);
+  if (self && fullRoster.length > 0) pluginRoots.byName[self.name] = { dir: packDir, version: self.version };
   const invocable = fullRoster.length === 0 ? new Set<string>() : invocableRoster(pluginRoots);
   const surface = readSurface(packDir);
   const internalRoster = computeInternalRoster(team, packDir, surface, fullRoster);
