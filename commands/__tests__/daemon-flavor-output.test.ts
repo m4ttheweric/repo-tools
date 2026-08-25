@@ -16,6 +16,13 @@ describe("flavor-aware daemon output", () => {
     expect(tupleWarning({ intended: { mode: "dev", provenance: "setting" }, cliFlavor: "dev", daemon: null })).toBeNull();
   });
 
+  test("cliFlavor-only mismatch still warns, naming all three legs", () => {
+    const w = tupleWarning({ intended: { mode: "dev", provenance: "setting" }, cliFlavor: "prod", daemon: { flavor: "dev", pid: 5 } });
+    expect(w).toContain("intended dev");
+    expect(w).toContain("CLI prod");
+    expect(w).toContain("daemon dev");
+  });
+
   test("hint path follows intended mode", () => {
     expect(flavorHintPath({ mode: "dev", provenance: "setting" })).toContain("mattstack-dev.app");
     expect(flavorHintPath({ mode: "prod", provenance: "setting" })).not.toContain("mattstack-dev.app");

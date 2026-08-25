@@ -102,6 +102,8 @@ function cleanupLaunchdPlist(): boolean {
 // ─── Install ─────────────────────────────────────────────────────────────────
 
 export async function install(_args: string[] = []): Promise<void> {
+  console.log(`  ${dim}registering the ${resolveIntendedMode().mode} daemon${reset}`);
+
   // Persist the install marker so isDaemonInstalled() returns true and the
   // CLI will attempt to reach the daemon (rather than silently no-op).
   markDaemonInstalled();
@@ -197,13 +199,15 @@ export async function start(): Promise<void> {
     return;
   }
 
+  const intended = resolveIntendedMode();
   const result = await trayQuery("/daemon/start", "POST");
   if (!result?.ok) {
     console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running${reset}`);
-    console.log(`  ${dim}open it: ${bold}open ${flavorHintPath(resolveIntendedMode())}${reset}\n`);
+    console.log(`  ${dim}open it: ${bold}open ${flavorHintPath(intended)}${reset}\n`);
     return;
   }
 
+  console.log(`  ${dim}starting ${intended.mode} daemon via tray…${reset}`);
   for (let i = 0; i < 12; i++) {
     await Bun.sleep(250);
     if (await isDaemonRunning()) {
@@ -215,6 +219,7 @@ export async function start(): Promise<void> {
 }
 
 export async function stop(): Promise<void> {
+  const intended = resolveIntendedMode();
   const result = await trayQuery("/daemon/stop", "POST");
   if (result?.ok) {
     await Bun.sleep(500);
@@ -223,23 +228,24 @@ export async function stop(): Promise<void> {
     const holder = await probeSocketHolder();
     if (holder) {
       console.log(`\n  ${yellow}⚠ a ${holder.flavor} daemon still holds rt.sock${holder.pid ? ` (pid ${holder.pid})` : ""}${reset}`);
-      console.log(`  ${dim}the tray you reached manages the ${currentMode()} flavor. Fix: rt settings dev-mode ${holder.flavor}${reset}\n`);
+      console.log(`  ${dim}this CLI runs the ${currentMode()} flavor; the holder is ${holder.flavor}. Fix: rt settings dev-mode ${intended.mode}${reset}\n`);
       return;
     }
-    console.log(`\n  ${green}✓ daemon stopped${reset}\n`);
+    console.log(`\n  ${green}✓ ${intended.mode} daemon stopped${reset}\n`);
     return;
   }
   console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running — nothing to stop${reset}\n`);
 }
 
 export async function restart(): Promise<void> {
+  const intended = resolveIntendedMode();
   const result = await trayQuery("/daemon/restart", "POST");
   if (!result?.ok) {
     console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running${reset}`);
-    console.log(`  ${dim}open it: ${bold}open ${flavorHintPath(resolveIntendedMode())}${reset}\n`);
+    console.log(`  ${dim}open it: ${bold}open ${flavorHintPath(intended)}${reset}\n`);
     return;
   }
-  console.log(`  ${dim}restarting daemon via tray…${reset}`);
+  console.log(`  ${dim}restarting ${intended.mode} daemon via tray…${reset}`);
   for (let i = 0; i < 16; i++) {
     await Bun.sleep(500);
     if (await isDaemonRunning()) {
@@ -272,30 +278,40 @@ export async function showStatus(): Promise<void> {
 
   for (const line of statusLines(verdict, Date.now())) console.log(line);
 
-  // Reuse the `status` reply already fetched above rather than probing again —
-  // its `data.identity` carries the same flavor/version/sourceRev/pid a fresh
-  // probeSocketHolder() round-trip would return.
   if (verdict.state === "running") {
+    // `status`'s reply, already fetched above, carries `data.identity` — reuse
+    // it rather than a second probeSocketHolder() round-trip.
     const identity = verdict.data.identity as
       | { flavor: "dev" | "prod"; version: string; sourceRev: string | null }
       | undefined;
     if (identity) {
-      const rev = identity.flavor === "dev" && identity.sourceRev ? ` (${identity.sourceRev})` : "";
-      console.log(`    ${dim}${identity.flavor} · ${identity.version}${rev}${reset}`);
-
-      const tuple: FlavorTuple = {
-        intended: resolveIntendedMode(),
-        cliFlavor: currentMode(),
-        daemon: { flavor: identity.flavor, pid: verdict.data.pid ?? null },
-      };
-      const warning = tupleWarning(tuple);
-      if (warning) console.log(`    ${yellow}⚠${reset} ${warning}`);
+      printFlavorInfo({ flavor: identity.flavor, version: identity.version, sourceRev: identity.sourceRev, pid: verdict.data.pid ?? null });
     }
+  } else if (verdict.state === "degraded") {
+    // `status` timed out or errored, but the daemon proved it's alive — the
+    // flavor cross-check matters most right here, so it earns its own ping.
+    printFlavorInfo(await probeSocketHolder());
   }
 
   console.log(`    ${dim}config: ~/.mattstack/rt/daemon.json${reset}`);
   console.log(`    ${dim}logs: ~/.mattstack/rt/logs/ ${reset}${dim}(view with: rt daemon logs)${reset}`);
   console.log("");
+}
+
+/** Renders from whatever identity the caller has on hand — full ping/status data, or just a probeSocketHolder() flavor+pid. */
+function printFlavorInfo(daemon: { flavor: string; pid: number | null; version?: string; sourceRev?: string | null } | null): void {
+  if (!daemon) return;
+  const rev = daemon.flavor === "dev" && daemon.sourceRev ? ` (${daemon.sourceRev})` : "";
+  const versionPart = daemon.version ? ` · ${daemon.version}${rev}` : "";
+  console.log(`    ${dim}${daemon.flavor}${versionPart}${reset}`);
+
+  const tuple: FlavorTuple = {
+    intended: resolveIntendedMode(),
+    cliFlavor: currentMode(),
+    daemon: { flavor: daemon.flavor, pid: daemon.pid },
+  };
+  const warning = tupleWarning(tuple);
+  if (warning) console.log(`    ${yellow}⚠${reset} ${warning}`);
 }
 
 /**
