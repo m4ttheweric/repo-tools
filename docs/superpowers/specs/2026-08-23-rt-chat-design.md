@@ -551,11 +551,12 @@ the lock.
   `events-bus.close()` settles every waiter and closes the db — so any
   `armed_at` still set at boot is stale by definition. The agents cannot clear
   it themselves: `chat:disarm` is a daemon handler, and the daemon is the thing
-  that just died, so each `rt chat tail` exits 69 with its row untouched. Skip
-  this and the status rule (`armed_at` set **and** `last_seen_at` fresh)
-  reports **the entire fleet as live — will hear you** for up to ten minutes
-  after every restart while every agent is disarmed, with nothing recovering it
-  because nothing re-arms a tail that exited 69. **Before serving** matters
+  that just died. A tail that exhausts its retry budget exits 69 with its row
+  untouched; a tail still inside the budget when the daemon returns reconnects
+  and re-arms itself through its next `chat:touch`. Skip the clear and the
+  status rule (`armed_at` set **and** `last_seen_at` fresh) reports **the
+  entire fleet as live — will hear you** for up to ten minutes after every
+  restart while every tail that exited is gone for good. **Before serving** matters
   as much as the clear itself, and for the same reason RT-48 does open+migrate
   during startup and never mid-serve: run it after the socket is listening and
   an agent that arms in the gap has its fresh `armed_at` wiped, producing the
