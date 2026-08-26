@@ -45,6 +45,9 @@ export interface CommandArg {
   name: string;
   /** CLI flag (e.g. "--force", "--duration"). Omit for positional args. */
   flag?: string;
+  /** A positional that some verbs of this command take and others do not;
+      rendered as `[<name>]` in the reference usage line. */
+  optional?: boolean;
   /** Input type: text input, yes/no toggle, or pick from a list. */
   type: "text" | "boolean" | "select";
   /** Description shown as a hint below the prompt. */

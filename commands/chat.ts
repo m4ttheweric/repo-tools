@@ -714,11 +714,14 @@ async function runLeave(args: string[]): Promise<void> {
 async function resolveBody(words: string[], args: string[], usage: string): Promise<string> {
   const file = flagValue(args, "--file");
   if (file !== undefined) {
+    let text = "";
     try {
-      return readFileSync(file, "utf8").replace(/\n$/, "");
+      text = readFileSync(file, "utf8").replace(/\n$/, "");
     } catch {
       fail(`cannot read --file ${file}`);
     }
+    if (!text) fail(`--file ${file} is empty`);
+    return text;
   }
   const wantsStdin = (words.length === 1 && words[0] === "-") || (words.length === 0 && !process.stdin.isTTY);
   if (wantsStdin) {

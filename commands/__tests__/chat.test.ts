@@ -291,6 +291,15 @@ describe("rt chat CLI — additional verb behavior", () => {
     expect(bodies).toContain("the ask first\n\n- one point\n- another");
   });
 
+  test("post --file refuses an empty file", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    const path = join(home, "empty.md");
+    writeFileSync(path, "\n");
+    const { code, stderr } = await runChatRaw(["post", "r", "--file", path, "--as", "a"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("is empty");
+  });
+
   test("post with no text reads the body from piped stdin, as a bare heredoc does", async () => {
     await runChat(["join", "r", "--as", "a"]);
     await runChat(["join", "r", "--as", "b"]);
