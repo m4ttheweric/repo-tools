@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOptions, type KnownRepo } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "../lib/repo.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -196,8 +196,12 @@ export async function worktreePicker(args: string[]): Promise<void> {
   // the first time — is absent from `repos`, currentRepo resolves to null, and
   // rt cd wrongly falls through to the global all-repos picker instead of
   // recognizing where you are.
+  //
+  // includeMissing: true so a lost repo still renders (dimmed, via repoOption)
+  // in every picker built from `repos` — pickFromAllRepos's missing guard is
+  // otherwise dead code, since a bare getKnownRepos() never hands it one.
   const identity     = getRepoIdentity();
-  const repos        = getKnownRepos();
+  const repos        = getKnownRepos({ includeMissing: true });
   const currentRepo  = identity
     ? repos.find((r) => r.repoName === identity.repoName) ?? null
     : null;
@@ -207,14 +211,20 @@ export async function worktreePicker(args: string[]): Promise<void> {
   // ── --repo flag: always go to repo picker ────────────────────────────────────
   if (forceRepo) {
     if (wtBranch) {
-      // Pick repo first, then jump to the matching worktree (or show picker)
+      // Pick repo first, then jump to the matching worktree (or show picker).
+      // A missing row must be pickable here so it gets the clean
+      // missingRepoRefusal below instead of resolving via branch name against
+      // a dead path.
       const { filterableSelect } = await import("../lib/rt-render.tsx");
-      const options = repoOptions(repos);
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
-        : await filterableSelect({ message: "Pick a repo", options, stderr: true });
+        : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true });
       if (!pickedRepoName) process.exit(0); // Esc on repo picker
-      const pickedRepo = repos.find((r) => r.repoName === pickedRepoName)!;
+      const pickedRepo = repoFromOptionValue(repos, pickedRepoName)!;
+      if (pickedRepo.missing) {
+        console.error(`\n  ${missingRepoRefusal(pickedRepo)}\n`);
+        process.exit(1);
+      }
 
       // Try to resolve the worktree in that repo; fall back to picker
       const lower = wtBranch.toLowerCase();

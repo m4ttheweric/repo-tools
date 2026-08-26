@@ -1010,6 +1010,17 @@ export const TREE: Record<string, CommandNode> = {
           SETUP_JSON_ARG,
         ],
       },
+      locate: {
+        description: "Tell rt where a repo moved to — re-points the index, worktree registry, endpoint claims and git's worktree admin files together",
+        module: "./commands/repos.ts",
+        fn: "reposLocate",
+        args: [
+          { name: "New path", type: "text", placeholder: "/path/to/moved-repo", hint: "Where the repo lives now; omit to pick from candidates under rt.repoRoots" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Which indexed repo moved (identity, path, or name); omit to match by the new path's own identity" },
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would be re-pointed without writing" },
+          SETUP_JSON_ARG,
+        ],
+      },
     },
   },
 

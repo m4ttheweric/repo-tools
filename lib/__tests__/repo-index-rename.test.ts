@@ -141,6 +141,16 @@ describe("repo-index — rename drift (RT-60)", () => {
       expect(duplicates).toEqual([{ entry: entry("old", scratch, 1_000), keptAs: "new" }]);
     });
 
+    test("an identity key beats a legacy name even when the name was written last", () => {
+      const identity = "remote:gitlab.com%2Fg%2Fdeck";
+      const { keep, duplicates } = partitionByRealpath([
+        entry(identity, scratch, 1_000),
+        entry("deck", scratch, 9_000),
+      ]);
+      expect(keep.map((e) => e.repoName)).toEqual([identity]);
+      expect(duplicates.map((d) => d.keptAs)).toEqual([identity]);
+    });
+
     test("an equal timestamp — every row of one legacy import — breaks by name, not insertion order", () => {
       const a = partitionByRealpath([entry("zeta", scratch, 1_000), entry("alpha", scratch, 1_000)]);
       const b = partitionByRealpath([entry("alpha", scratch, 1_000), entry("zeta", scratch, 1_000)]);
@@ -226,6 +236,29 @@ describe("repo-index — rename drift (RT-60)", () => {
       pruneRepoIndex();
 
       expect(Object.keys(mirror())).toEqual(["alive"]);
+    });
+
+    test("a missing row that still owns a worktree registry is KEPT, not evicted", () => {
+      indexRepoAt("moved", join(scratch, "gone-away"), 1_000);
+      setKvValue("worktree-registry", "moved", [
+        { name: "t1", path: join(scratch, "gone-away", ".worktrees", "t1"), kind: "ephemeral", state: "on-deck", branch: "on-deck/t1", createdAt: "2026-01-01T00:00:00.000Z" },
+      ]);
+
+      const removed = pruneRepoIndex();
+      const row = removed.find((r) => r.repoName === "moved");
+
+      expect(row).toMatchObject({ reason: "missing", retained: true, hint: "rt repos locate" });
+      expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["moved"]);
+      expect(listKvValues("worktree-registry")["moved"]).toBeDefined();
+    });
+
+    test("a missing row with no registry is still evicted", () => {
+      indexRepoAt("gone", join(scratch, "never-existed"), 1_000);
+
+      const removed = pruneRepoIndex();
+
+      expect(removed.find((r) => r.repoName === "gone")?.retained).toBeUndefined();
+      expect(loadRepoIndexEntries()).toEqual([]);
     });
   });
   // ─── data migration (RT-60) ────────────────────────────────────────────────
@@ -396,15 +429,19 @@ describe("repo-index — rename drift (RT-60)", () => {
       expect(Object.keys(listKvValues(WT_NS))).toEqual(["rt"]);
     });
 
-    test("refuses when the live name already has one — both hold real claim state", () => {
-      setKvValue(WT_NS, "repo-tools", tree("/x/retired"));
-      setKvValue(WT_NS, "rt", tree("/x/live"));
+    test("merges when the live name already has one — one pool, both halves", () => {
+      setKvValue(WT_NS, "repo-tools", [
+        { name: "t1", path: "/x/t1", kind: "ephemeral", state: "on-deck", branch: "on-deck/t1", createdAt: "2026-01-01T00:00:00.000Z" },
+      ]);
+      setKvValue(WT_NS, "rt", [
+        { name: "main", path: "/x/main", kind: "main", branch: "main", createdAt: "2026-01-01T00:00:00.000Z" },
+      ]);
 
       const result = migrateRepoData("repo-tools", "rt");
 
-      expect(result.registry).toBe("refused");
-      expect(listKvValues(WT_NS)["rt"]).toEqual(tree("/x/live"));
-      expect(listKvValues(WT_NS)["repo-tools"]).toEqual(tree("/x/retired"));
+      expect(result.registry).toBe("merged");
+      expect((listKvValues(WT_NS)["rt"] as Array<{ path: string }>).map((t) => t.path)).toEqual(["/x/main", "/x/t1"]);
+      expect(listKvValues(WT_NS)["repo-tools"]).toBeUndefined();
     });
 
     test("no registry under the retired name is 'none', not a failure", () => {
@@ -432,7 +469,7 @@ describe("repo-index — rename drift (RT-60)", () => {
       expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["rt"]);
     });
 
-    test("a refused registry KEEPS the index row — eviction is what makes a leftover unreachable", () => {
+    test("a merged registry is a COMPLETE migration — the retired index row is evicted", () => {
       const dir = realRepo("repo-tools");
       indexRepoAt("repo-tools", dir, 1_000);
       indexRepoAt("rt", dir, 2_000);
@@ -440,11 +477,20 @@ describe("repo-index — rename drift (RT-60)", () => {
       setKvValue(WT_NS, "rt", tree("/x/live"));
 
       const removed = pruneRepoIndex();
-      const dup = removed.find((r) => r.repoName === "repo-tools");
 
-      expect(dup?.retained).toBe(true);
-      expect(loadRepoIndexEntries().map((e) => e.repoName).sort()).toEqual(["repo-tools", "rt"]);
+      expect(removed.find((r) => r.repoName === "repo-tools")?.data?.registry).toBe("merged");
+      expect(removed.find((r) => r.repoName === "repo-tools")?.retained).toBeUndefined();
+      expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["rt"]);
+    });
+
+    test("--dry-run reports the merge without performing it", () => {
+      setKvValue(WT_NS, "repo-tools", tree("/x/retired"));
+      setKvValue(WT_NS, "rt", tree("/x/live"));
+
+      expect(migrateRepoData("repo-tools", "rt", { dryRun: true }).registry).toBe("merged");
+
       expect(listKvValues(WT_NS)["repo-tools"]).toEqual(tree("/x/retired"));
+      expect(listKvValues(WT_NS)["rt"]).toEqual(tree("/x/live"));
     });
 
     test("a refused FILE also keeps the row", () => {

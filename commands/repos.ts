@@ -17,11 +17,14 @@ import { realpathSync } from "fs";
 import { homedir } from "os";
 import { basename } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { pruneRepoIndex, updateRepoIndex, type PrunedEntry } from "../lib/repo-index.ts";
+import { getKnownRepos, pruneRepoIndex, updateRepoIndexAsync, type PrunedEntry } from "../lib/repo-index.ts";
 import { deriveRepoIdentity, serializeIdentity } from "../lib/settings/identity.ts";
 import { CACHE_KINDS, loadMachineRepoTrackingRaw, parseCachesArg, saveRepoTrackingRaw, type CacheKind, type TrackingMode } from "../lib/repo-tracking.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
+import { findLocateCandidates } from "../lib/repo-locate.ts";
+import { locateMovedRepo } from "../lib/repo-locate-dispatch.ts";
+import { resolveRepoArg } from "../lib/repo-arg.ts";
 
 export interface RegisterDeps {
   print: (s: string) => void;
@@ -123,7 +126,21 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
   const rawTracking = track ? loadMachineRepoTrackingRaw() : null;
 
   for (const { name, real, identity } of resolved) {
-    updateRepoIndex(identity, real);
+    // A refused move leaves the row naming the gone path, so printing
+    // "registered" (or a JSON ok envelope) here would tell a script the repo
+    // is indexed at `real` when nothing points there.
+    const indexed = await updateRepoIndexAsync(identity, real);
+    if (!indexed.ok) {
+      exitUserError(
+        new UserActionableError(
+          "locate-failed",
+          `"${name}" is indexed at a path that no longer exists, and moving it to ${real} failed — ${indexed.error}`,
+        ),
+        json,
+        "repos register",
+        deps.print,
+      );
+    }
 
     let tracking: Registered["tracking"] = null;
     if (track && caches && rawTracking) {
@@ -169,7 +186,8 @@ function describeDataMove(r: PrunedEntry, dryRun: boolean): string {
   if (carried > 0) parts.push(`${dryRun ? "would carry" : "carried"} ${carried} file${carried === 1 ? "" : "s"} to ${r.keptAs}`);
   if (d.merged.length > 0) parts.push(`merged ${d.merged.join(", ")}`);
   if (d.registry === "moved") parts.push(`${dryRun ? "would move" : "moved"} the worktree registry to ${r.keptAs}`);
-  if (d.registry === "refused") parts.push(`${r.keptAs} already has a worktree registry — both kept`);
+  if (d.registry === "merged") parts.push(`${dryRun ? "would merge" : "merged"} the worktree registry into ${r.keptAs}'s`);
+  if (d.registry === "refused") parts.push(`${r.keptAs}'s worktree registry could not be written — both kept`);
   if (d.refused.length > 0) parts.push(`kept both copies of ${d.refused.join(", ")}`);
   return parts.length > 0 ? `; ${parts.join("; ")}` : "";
 }
@@ -207,8 +225,144 @@ export async function reposPrune(args: string[], _ctx: CommandContext = {}, deps
   for (const r of removed) {
     const verb = r.retained ? "kept" : dryRun ? "would remove" : "removed";
     const why = r.retained
-      ? `${describeReason(r)}, but its data could not all move${describeDataMove(r, dryRun)} — keeping the row so nothing is orphaned`
+      ? r.reason === "missing"
+        ? `${describeReason(r)} but it still owns a worktree registry — keeping the row; run: ${r.hint} <new-path> --repo ${r.repoName}`
+        : `${describeReason(r)}, but its data could not all move${describeDataMove(r, dryRun)} — keeping the row so nothing is orphaned`
       : `${describeReason(r)}${describeDataMove(r, dryRun)}`;
     deps.print(`${verb} ${r.repoName} (${r.path.replace(homedir(), "~")}) — ${why}`);
   }
+}
+
+// ─── locate ──────────────────────────────────────────────────────────────────
+
+const LOCATE_USAGE = "usage: rt repos locate [<new-path>] [--repo <id|name>] [--dry-run] [--json]";
+const LOCATE_FLAGS = ["--json", "--dry-run", "--repo"];
+
+/** Every non-flag token that is not `--repo`'s value. */
+function locatePositionals(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--repo") {
+      i++;
+      continue;
+    }
+    if (a.startsWith("--")) continue;
+    out.push(a);
+  }
+  return out;
+}
+
+/**
+ * rt repos locate — tell rt where a repo moved to.
+ *
+ * A folder move keeps the repo identity but leaves every stored path stale.
+ * The daemon owns the apply whenever it answers; a local apply only happens
+ * when nothing is up to race.
+ */
+export async function reposLocate(args: string[], _ctx: CommandContext = {}, deps: RegisterDeps = realRegisterDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const dryRun = args.includes("--dry-run");
+  for (const a of args) {
+    if (a.startsWith("--") && !LOCATE_FLAGS.includes(a)) {
+      exitUserError(new UserActionableError("usage", `unknown flag "${a}" — ${LOCATE_USAGE}`), json, "repos locate", deps.print);
+    }
+  }
+
+  const repoArg = flagValue(args, "--repo");
+  if (args.includes("--repo") && (repoArg === undefined || repoArg.startsWith("--"))) {
+    exitUserError(new UserActionableError("usage", `--repo needs a value — ${LOCATE_USAGE}`), json, "repos locate", deps.print);
+  }
+  const repo = repoArg
+    ? await resolveRepoArg(repoArg, (msg) =>
+        exitUserError(new UserActionableError("repo-unknown", msg), json, "repos locate", deps.print))
+    : undefined;
+
+  const positionals = locatePositionals(args);
+  if (positionals.length > 1) {
+    exitUserError(
+      new UserActionableError("usage", `locate takes one path, got ${positionals.length} (${positionals.join(", ")}) — ${LOCATE_USAGE}`),
+      json,
+      "repos locate",
+      deps.print,
+    );
+  }
+
+  const newPath = positionals[0] ?? (await pickLocateTarget(json, deps));
+
+  const outcome = await locateMovedRepo({ newPath, ...(repo ? { repo } : {}), dryRun });
+  if (!outcome.ok) {
+    exitUserError(new UserActionableError("refused", outcome.error), json, "repos locate", deps.print);
+  }
+
+  if (outcome.dryRun) {
+    const p = outcome.plan;
+    if (json) {
+      deps.print(JSON.stringify(envelope({ plan: p, dryRun: true })));
+      return;
+    }
+    deps.print(`would move ${p.identity} from ${p.oldPath} to ${p.newPath}`);
+    deps.print(`  index rows: ${p.indexKeys.join(", ")}`);
+    deps.print(`  worktree records: ${p.registryRewrites.reduce((n, r) => n + r.movedPaths.length, 0)}`);
+    deps.print(`  endpoint claims: ${p.claimRewrites.length}`);
+    deps.print(`  git worktree repair: ${p.gitRepairPaths.length === 0 ? "(main worktree only)" : p.gitRepairPaths.join(", ")}`);
+    return;
+  }
+
+  const r = outcome.result;
+  if (json) {
+    deps.print(JSON.stringify(envelope({ located: r, via: outcome.via })));
+    return;
+  }
+  deps.print(`located ${r.identity}: ${r.from} → ${r.to}`);
+  deps.print(`  ${r.treesRewritten} worktree record${r.treesRewritten === 1 ? "" : "s"}, ${r.claimsRewritten} endpoint claim${r.claimsRewritten === 1 ? "" : "s"}, ${r.repaired.length} tree${r.repaired.length === 1 ? "" : "s"} repaired`);
+  for (const stale of r.stalePaths) deps.print(`  stale record kept for the reconciler to prune: ${stale}`);
+  for (const row of r.legacyRows) {
+    deps.print(row.outcome === "collapsed"
+      ? `  collapsed the legacy row ${row.key}`
+      : `  kept the legacy row ${row.key}, still naming ${r.from} — ${row.reason || "its data dir could not all move"}`);
+  }
+}
+
+/**
+ * No `<new-path>`: propose, never auto-pick. One candidate still asks; several
+ * open a picker; none is a hard stop that names what is lost.
+ */
+async function pickLocateTarget(json: boolean, deps: RegisterDeps): Promise<string> {
+  const lost = getKnownRepos({ includeMissing: true }).filter((r) => r.missing);
+  if (lost.length === 0) {
+    deps.print(json ? JSON.stringify(envelope({ lost: [], candidates: [] })) : "no indexed repo is missing — nothing to locate");
+    process.exit(1);
+  }
+
+  const candidates = await findLocateCandidates();
+  if (candidates.length === 0 || !process.stdin.isTTY) {
+    if (json) {
+      deps.print(JSON.stringify(envelope({ lost: lost.map((r) => ({ repo: r.repoName, path: r.worktrees[0]?.path })), candidates })));
+    } else {
+      deps.print("missing repos:");
+      for (const r of lost) deps.print(`  ${r.repoName} — last seen at ${r.worktrees[0]?.path}`);
+      deps.print(candidates.length === 0
+        ? `pass the new path: ${LOCATE_USAGE}`
+        : "run interactively to pick a candidate, or pass the new path");
+    }
+    process.exit(1);
+  }
+
+  if (candidates.length === 1) {
+    const only = candidates[0]!;
+    const { confirm } = await import("../lib/rt-render.tsx");
+    const ok = await confirm({ message: `Locate ${only.identity} at ${only.path}?`, stderr: true });
+    if (!ok) process.exit(0);
+    return only.path;
+  }
+
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const picked = await filterableSelect({
+    message: "Which directory did it move to?",
+    options: candidates.map((c) => ({ value: c.path, label: c.path, hint: c.identity })),
+    stderr: true,
+  });
+  if (!picked) process.exit(0);
+  return picked;
 }

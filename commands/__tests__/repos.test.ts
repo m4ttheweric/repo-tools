@@ -5,8 +5,9 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { getKnownRepos, loadRepoIndex, loadRepoIndexEntries, updateRepoIndex } from "../../lib/repo-index.ts";
 import { loadRepoTracking } from "../../lib/repo-tracking.ts";
+import { saveRegistry } from "../../lib/worktree/registry.ts";
 import { deriveRepoIdentity, serializeIdentity } from "../../lib/settings/identity.ts";
-import { closeStateDb } from "../../lib/state/index.ts";
+import { closeStateDb, setKvValue } from "../../lib/state/index.ts";
 import { reposPrune, reposRegister, type RegisterDeps } from "../repos.ts";
 
 function testDeps(): RegisterDeps & { lines: string[] } {
@@ -117,6 +118,49 @@ describe("reposRegister", () => {
     const { at, ...body } = JSON.parse(deps.lines[0]!);
     expect(typeof at).toBe("string");
     expect(body).toEqual({ contract: 1, registered: [{ name, path: repoPath, tracking: null }] });
+  });
+
+  test("a repo whose move cannot be applied exits 2 instead of reporting it registered", async () => {
+    const repoPath = makeTempRepo();
+    execSync("git remote add origin git@gitlab.com:group/moved.git", { cwd: repoPath, stdio: "pipe" });
+    const identity = serializeIdentity(await deriveRepoIdentity(repoPath));
+    const gone = join(home, "gone-away");
+    setKvValue("repo-index", identity, gone);
+    // A registry record whose re-rooted spelling is occupied by something git
+    // does not list as a worktree — the apply refuses at verification, so
+    // nothing is written and the row keeps naming the gone path.
+    saveRegistry(identity, [
+      { name: "main", path: gone, kind: "main", branch: "main", createdAt: "2026-01-01T00:00:00.000Z" },
+      { name: "t1", path: join(gone, ".worktrees", "t1"), kind: "ephemeral", state: "on-deck", branch: "feat", createdAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    mkdirSync(join(repoPath, ".worktrees", "t1"), { recursive: true });
+    const deps = testDeps();
+
+    const code = await runExpectingProcessExit(() => reposRegister([repoPath], {}, deps));
+
+    expect(code).toBe(2);
+    expect(deps.lines.some((l) => l.includes("registered"))).toBe(false);
+    expect(loadRepoIndex()[identity]).toBe(gone);
+  });
+
+  test("--json reports a failed move as an error envelope, never a registered one", async () => {
+    const repoPath = makeTempRepo();
+    execSync("git remote add origin git@gitlab.com:group/moved-json.git", { cwd: repoPath, stdio: "pipe" });
+    const identity = serializeIdentity(await deriveRepoIdentity(repoPath));
+    const gone = join(home, "gone-away-json");
+    setKvValue("repo-index", identity, gone);
+    saveRegistry(identity, [
+      { name: "t1", path: join(gone, ".worktrees", "t1"), kind: "ephemeral", state: "on-deck", branch: "feat", createdAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    mkdirSync(join(repoPath, ".worktrees", "t1"), { recursive: true });
+    const deps = testDeps();
+
+    await runExpectingProcessExit(() => reposRegister([repoPath, "--json"], {}, deps));
+
+    expect(deps.lines).toHaveLength(1);
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.error?.code).toBe("locate-failed");
+    expect(body.registered).toBeUndefined();
   });
 
   test("no paths exits 2 with a usage error", async () => {
@@ -249,5 +293,20 @@ describe("reposPrune", () => {
 
     expect(code).toBe(2);
     expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["gone"]);
+  });
+
+  test("a retained missing row tells the operator to locate it", async () => {
+    const { setKvValue } = await import("../../lib/state/index.ts");
+    updateRepoIndex("moved-repo", join(home, "gone-away"));
+    setKvValue("worktree-registry", "moved-repo", [
+      { name: "t1", path: join(home, "gone-away", ".worktrees", "t1"), kind: "ephemeral", state: "on-deck", branch: "on-deck/t1", createdAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    const deps = testDeps();
+
+    await reposPrune([], {}, deps);
+
+    expect(deps.lines.join("\n")).toContain("kept moved-repo");
+    expect(deps.lines.join("\n")).toContain("rt repos locate");
+    expect(loadRepoIndex()["moved-repo"]).toBeDefined();
   });
 });

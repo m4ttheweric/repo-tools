@@ -5,7 +5,9 @@
  * The index is a DISPOSABLE CACHE (RT-49, collapsed into state.db by RT-50):
  * it self-populates as rt visits repos (`updateRepoIndex`, called from
  * lib/repo.ts's `getRepoIdentity`). Losing it loses nothing durable — every
- * entry regenerates the next time rt runs inside that repo, and meanwhile the
+ * entry regenerates the next time rt runs inside that repo — except a row
+ * whose repo MOVED, which only `updateRepoIndexAsync` or `rt repos locate`
+ * can re-point (see `writeIndexRow`) — and meanwhile the
  * picker still surfaces every repo reachable under the `rt.repoRoots`
  * settings key (below) as an unregistered candidate. It is not part of any
  * backup/restore story and never will be.
@@ -29,6 +31,7 @@ import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings
 import { repoLabel, repoLabelFull, repoLabelQualified } from "./repo-label.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
+import { mergeRegistries, type TreeRecord } from "./worktree/registry.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -40,6 +43,9 @@ export interface KnownRepo {
   /** False for repos discovered by scanning sibling directories, never
    *  explicitly visited by rt. Omitted (implicitly true) for indexed repos. */
   registered?: boolean;
+  /** The indexed path no longer exists. The row is kept so `rt repos locate`
+   *  can move it as one unit with its registry; it is never a cd target. */
+  missing?: true;
 }
 
 // ─── Index CRUD ──────────────────────────────────────────────────────────────
@@ -48,7 +54,7 @@ interface RepoIndex {
   [repoName: string]: string; // repoName → primary repo root path
 }
 
-const REPO_INDEX_NS = "repo-index";
+export const REPO_INDEX_NS = "repo-index";
 
 /**
  * Deprecated derived-compatibility path: state.db is authoritative, but
@@ -131,26 +137,114 @@ export function loadRepoIndex(): RepoIndex {
   return Object.keys(imported).length > 0 ? imported : existing;
 }
 
-export function updateRepoIndex(repoName: string, repoRoot: string): void {
-  let mainPath: string;
+/** The repo's MAIN worktree path as git reports it, degrading to `repoRoot`. */
+function observedMainPath(repoRoot: string): string {
   try {
-    const mainWorktree = execSync("git worktree list --porcelain", {
+    const listed = execSync("git worktree list --porcelain", {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: "pipe",
     });
-    mainPath = mainWorktree.split("\n")[0]?.replace("worktree ", "").trim() || repoRoot;
+    return listed.split("\n")[0]?.replace("worktree ", "").trim() || repoRoot;
   } catch {
-    mainPath = repoRoot;
+    return repoRoot;
   }
+}
+
+/**
+ * The row's current path, read straight from the namespace rather than through
+ * `loadRepoIndex()`: that function's legacy-repos.json import is a migration
+ * side effect (it writes rows AND rewrites the mirror), and firing it from
+ * inside the write path would reorder it ahead of the write it guards.
+ */
+function storedIndexPath(repoName: string): string | undefined {
+  return getKvValue<string | undefined>(REPO_INDEX_NS, repoName, undefined);
+}
+
+/** True when the stored row names a directory that is gone and the repo is now somewhere else — a MOVE, not a second clone. */
+function storedPathMoved(stored: string | undefined, mainPath: string): boolean {
+  return stored !== undefined && stored !== mainPath && !existsSync(stored);
+}
+
+function writeIndexRow(repoName: string, mainPath: string): void {
   try {
-    // loadRepoIndex() can throw (an unopenable state.db — e.g. root-owned
-    // after a sudo invocation) — inside the try along with the write it
-    // depends on, so getRepoIdentity() (which every in-repo command calls)
+    // The read and loadRepoIndex() can throw (an unopenable state.db — e.g.
+    // root-owned after a sudo invocation) — inside the try along with the write
+    // they bracket, so getRepoIdentity() (which every in-repo command calls)
     // degrades to skipping the index update rather than crashing the command.
+    //
+    // A moved repo is NOT written here: re-pointing the index row ahead of the
+    // worktree registry is what makes the reconciler prune every claimed tree,
+    // and the repair that ordering owes is async git — forbidden on the daemon
+    // thread, which reaches this function through resolveIndexPathForIdentity.
+    // The row stays lost (visible as `missing`) until `updateRepoIndexAsync`
+    // or `rt repos locate` moves it as one unit.
+    if (storedPathMoved(storedIndexPath(repoName), mainPath)) return;
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
     writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
+}
+
+export function updateRepoIndex(repoName: string, repoRoot: string): void {
+  writeIndexRow(repoName, observedMainPath(repoRoot));
+}
+
+/**
+ * `healed` distinguishes a plain index write from a whole move; `ok: false` is
+ * ONLY ever a refused/failed locate — the plain write keeps the sync seam's
+ * best-effort contract and never reports failure.
+ */
+export type IndexHealResult = { ok: true; healed: boolean } | { ok: false; error: string };
+
+/**
+ * `updateRepoIndex` for callers that can await: the same write, plus the move
+ * heal the sync seam cannot perform. The locate runs in the daemon whenever
+ * one is present — imported lazily, both to keep the daemon client off every
+ * rt command's startup path and because repo-locate.ts imports this module.
+ *
+ * A refused move is RETURNED, never thrown and never warned about here: the
+ * row is left naming the gone path, so a caller that reports success without
+ * checking is claiming a repo is indexed when it is not.
+ */
+export async function updateRepoIndexAsync(repoName: string, repoRoot: string): Promise<IndexHealResult> {
+  const mainPath = observedMainPath(repoRoot);
+  let stored: string | undefined;
+  try {
+    stored = storedIndexPath(repoName);
+  } catch {
+    stored = undefined;
+  }
+  if (!storedPathMoved(stored, mainPath)) {
+    writeIndexRow(repoName, mainPath);
+    return { ok: true, healed: false };
+  }
+  const { locateMovedRepo } = await import("./repo-locate-dispatch.ts");
+  const outcome = await locateMovedRepo({ newPath: mainPath, repo: repoName });
+  return outcome.ok ? { ok: true, healed: true } : { ok: false, error: outcome.error };
+}
+
+/**
+ * Raw index-row write: no git probe, no move detection. `updateRepoIndex` is
+ * the caller-facing path that DERIVES the main path; this is the primitive for
+ * a caller that has already decided what the row must say, and it is the only
+ * index write that is safe to run inside a state.db transaction.
+ */
+export function setIndexPath(key: string, mainPath: string): void {
+  setKvValue(REPO_INDEX_NS, key, mainPath);
+}
+
+/** Drop one index row. */
+export function removeIndexRow(key: string): void {
+  deleteKvValue(REPO_INDEX_NS, key);
+}
+
+/** Rewrite ~/.mattstack/rt/repos.json from the current rows — a FILE write, so it runs after a transaction commits, never inside one. */
+export function refreshRepoIndexMirror(): void {
+  try {
+    writeRepoIndexCompat(loadRepoIndex());
+  } catch {
+    // best effort — see repoIndexCompatPath's doc comment
+  }
 }
 
 /**
@@ -229,6 +323,10 @@ export interface IndexPartition {
   duplicates: DuplicateEntry[];
 }
 
+function identityRank(entry: RepoIndexEntry): number {
+  return parseIdentity(entry.repoName) === null ? 0 : 1;
+}
+
 /**
  * Splits index rows that point at the SAME directory under two names.
  *
@@ -238,11 +336,15 @@ export interface IndexPartition {
  * resolving — `existsSync` follows symlinks, so the dead row passes the
  * liveness filter and the picker shows the tree twice.
  *
- * The most recently written row wins, because `updateRepoIndex` restamps a
- * name every time rt runs inside that repo: the live identity keeps moving
- * forward while the retired one stays frozen at whenever it was last used.
- * Name order breaks ties so a legacy import (every row stamped within the
- * same millisecond) is at least deterministic.
+ * An identity key beats a legacy name outright, whatever the stamps say: the
+ * loser is what prune migrates ONTO the winner, and carrying identity-keyed
+ * data back onto a name would re-mint the split the cutover ended.
+ *
+ * Among rows of the same kind the most recently written wins, because
+ * `updateRepoIndex` restamps a name every time rt runs inside that repo: the
+ * live identity keeps moving forward while the retired one stays frozen at
+ * whenever it was last used. Name order breaks ties so a legacy import (every
+ * row stamped within the same millisecond) is at least deterministic.
  *
  * Losers are only hidden, never dropped, by the caller in `getKnownRepos`.
  * Lookups by name elsewhere (`loadRepoIndex()[name]`, and the per-repo data
@@ -262,7 +364,10 @@ export function partitionByRealpath(entries: RepoIndexEntry[]): IndexPartition {
   const duplicates: DuplicateEntry[] = [];
   for (const group of groups.values()) {
     const sorted = [...group].sort(
-      (a, b) => b.updatedAt - a.updatedAt || a.repoName.localeCompare(b.repoName),
+      (a, b) =>
+        identityRank(b) - identityRank(a) ||
+        b.updatedAt - a.updatedAt ||
+        a.repoName.localeCompare(b.repoName),
     );
     const winner = sorted[0]!;
     keep.push(winner);
@@ -282,10 +387,14 @@ export interface PrunedEntry {
   /** Set only for `duplicate`: what became of the retired name's data dir. */
   data?: DataMigration;
   /**
-   * Set on a `duplicate` whose migration could not finish: the row is KEPT so
-   * whatever is still keyed to the retired name stays reachable.
+   * Set when the row is KEPT despite qualifying for eviction: a `duplicate`
+   * whose migration could not finish, or a `missing` row that still owns a
+   * worktree registry. Eviction is exactly what makes those leftovers
+   * unreachable.
    */
   retained?: true;
+  /** Set with `retained`: the verb that resolves this row. */
+  hint?: string;
 }
 
 /** Outcome of carrying everything keyed to a retired name onto the live name. */
@@ -300,15 +409,17 @@ export interface DataMigration {
   removedDir: boolean;
   /**
    * The retired name's worktree registry: `"moved"` onto the live name,
-   * `"refused"` because the live name already had one (both are real tree
-   * records; picking a winner would guess), or `"none"` if it had none.
+   * `"merged"` into the live name's own registry (the name/identity pair the
+   * identity cutover left, each side owning half of one on-deck pool),
+   * `"refused"` because the write could not be verified, or `"none"` if it
+   * had none.
    *
    * This lives in state.db's kv, not the data dir, so it is invisible to a
    * directory walk — and it is the record the daemon keys by, so a retired
    * name that keeps it while the index row goes away leaves the reconciler
    * silently skipping the repo.
    */
-  registry: "moved" | "refused" | "none";
+  registry: "moved" | "merged" | "refused" | "none";
 }
 
 /** True when anything is still keyed to the retired name after a migration. */
@@ -337,36 +448,41 @@ const WORKTREE_REGISTRY_NS = "worktree-registry";
  *
  * The daemon keys registries by the INDEX name
  * (`lib/daemon/worktree-reconciler.ts` iterates the repo index), while the CLI
- * looks them up by git identity (`deriveRepoName`). A rename splits those two,
- * and evicting the retired index row then makes the registry unreachable:
+ * looks them up by git identity. A rename splits those two, and evicting the
+ * retired index row then makes the registry unreachable:
  * `repoHasWorktreeActivity` sees an empty registry under the live name and
  * skips the repo, so the reconciler quietly stops managing its worktrees.
  * That is why this moves with the data dir instead of being left behind.
  *
- * A live name that ALREADY has a registry is refused, never merged — both
- * sides are real tree records carrying claim state and ready stamps that no
- * git repository has another record of.
+ * A live name that already has a registry is MERGED, not refused: both sides
+ * describe the same repo's trees, so the union by path (`mergeRegistries`)
+ * loses neither half of a pool that a name/identity pair split.
  */
 function migrateWorktreeRegistry(from: string, to: string, opts: { dryRun?: boolean }): DataMigration["registry"] {
-  let retired: unknown;
+  let outcome: "moved" | "merged";
   try {
     if (!hasKvValue(WORKTREE_REGISTRY_NS, from)) return "none";
-    if (hasKvValue(WORKTREE_REGISTRY_NS, to)) return "refused";
-    if (opts.dryRun) return "moved";
-    retired = getKvValue<unknown>(WORKTREE_REGISTRY_NS, from, null);
-    setKvValue(WORKTREE_REGISTRY_NS, to, retired);
+    outcome = hasKvValue(WORKTREE_REGISTRY_NS, to) ? "merged" : "moved";
+    if (opts.dryRun) return outcome;
+
+    const retired = getKvValue<TreeRecord[]>(WORKTREE_REGISTRY_NS, from, []);
+    const live = outcome === "merged" ? getKvValue<TreeRecord[]>(WORKTREE_REGISTRY_NS, to, []) : [];
+    const next = outcome === "merged" ? mergeRegistries(live, retired) : retired;
+    setKvValue(WORKTREE_REGISTRY_NS, to, next);
+
+    // persistOrWarn swallows SQLITE_BUSY, so a returned write is not a landed
+    // one — and on a merge the destination row already existed, so its mere
+    // presence proves nothing. Compare the readback.
+    if (JSON.stringify(getKvValue<TreeRecord[]>(WORKTREE_REGISTRY_NS, to, [])) !== JSON.stringify(next)) {
+      console.warn(`rt: ${from}'s worktree registry did not persist under ${to} — leaving it in place`);
+      return "refused";
+    }
   } catch (err) {
     console.warn(`rt: could not move ${from}'s worktree registry to ${to} (${(err as Error).message})`);
     return "refused";
   }
-  // Delete only after the write is readable: persistOrWarn swallows
-  // SQLITE_BUSY, so a returned write is not a landed one.
-  if (!hasKvValue(WORKTREE_REGISTRY_NS, to)) {
-    console.warn(`rt: ${from}'s worktree registry did not persist under ${to} — leaving it in place`);
-    return "refused";
-  }
   deleteKvValue(WORKTREE_REGISTRY_NS, from);
-  return "moved";
+  return outcome;
 }
 
 /**
@@ -491,6 +607,9 @@ export function migrateRepoData(from: string, to: string, opts: { dryRun?: boole
  * eviction is exactly what makes a leftover unreachable. A `missing` row is
  * left un-migrated on purpose: its path is gone, so there is no surviving name
  * to carry it to, and its data dir stays untouched rather than being deleted.
+ * A `missing` row that still owns a worktree registry is likewise `retained`:
+ * the registry is the daemon's only handle to that repo's trees, keyed by
+ * this row's name, so evicting the row would strand it.
  */
 export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
   const entries = loadRepoIndexEntries();
@@ -498,8 +617,23 @@ export function pruneRepoIndex(opts: { dryRun?: boolean } = {}): PrunedEntry[] {
   const live: RepoIndexEntry[] = [];
 
   for (const entry of entries) {
-    if (existsSync(entry.path)) live.push(entry);
-    else removed.push({ repoName: entry.repoName, path: entry.path, reason: "missing" });
+    if (existsSync(entry.path)) {
+      live.push(entry);
+      continue;
+    }
+    // A gone path whose registry is still here is a MOVE, not a deletion:
+    // dropping the row orphans the pool's claim state under a key nothing
+    // iterates any more.
+    let ownsRegistry = false;
+    try {
+      ownsRegistry = hasKvValue(WORKTREE_REGISTRY_NS, entry.repoName);
+    } catch { /* unreadable db — treat as no registry and prune as before */ }
+    removed.push({
+      repoName: entry.repoName,
+      path: entry.path,
+      reason: "missing",
+      ...(ownsRegistry ? { retained: true as const, hint: "rt repos locate" } : {}),
+    });
   }
 
   for (const dup of partitionByRealpath(live).duplicates) {
@@ -656,8 +790,13 @@ function buildRootSet(known: KnownRepo[]): RootEntry[] {
 /**
  * Get all known repos from the global index, with worktree discovery.
  * Used when rt is run outside a git repo to offer a picker.
+ *
+ * `includeMissing` is opt-in: a caller that resolves a repo and then chdirs
+ * or spawns against its worktree path must ask for `missing` rows explicitly
+ * and refuse them (`missingRepoRefusal`) before acting, or leave the default
+ * off and keep today's silent-exclusion behavior.
  */
-export function getKnownRepos(): KnownRepo[] {
+export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] {
   // Same degrade-don't-crash rule as getRepoIdentity()'s index write: an
   // unopenable state.db (root-owned after a `sudo rt …`) must not take down
   // the `rt cd`/`rt run` picker — it falls back to the unregistered-scan
@@ -670,8 +809,12 @@ export function getKnownRepos(): KnownRepo[] {
   }
   const repos: KnownRepo[] = [];
 
+  const liveEntries: RepoIndexEntry[] = [];
+  const lostEntries: RepoIndexEntry[] = [];
+  for (const e of entries) (existsSync(e.path) ? liveEntries : lostEntries).push(e);
+
   // Hidden here, not evicted — see partitionByRealpath.
-  const { keep } = partitionByRealpath(entries.filter((e) => existsSync(e.path)));
+  const { keep } = partitionByRealpath(liveEntries);
 
   for (const { repoName, path: mainPath } of keep) {
     const worktrees: KnownRepo["worktrees"] = [];
@@ -715,15 +858,29 @@ export function getKnownRepos(): KnownRepo[] {
   }
 
   const known = repos.filter(r => r.worktrees.length > 0);
+  // A pair of rows for one gone directory is one lost repo, not two.
+  const lost: KnownRepo[] = opts?.includeMissing
+    ? partitionByRealpath(lostEntries).keep.map((e) => ({
+        repoName: e.repoName,
+        worktrees: [{ path: e.path, branch: "", isBare: false }],
+        dataDir: repoDataDir(e.repoName),
+        missing: true as const,
+      }))
+    : [];
+  // Lost names are excluded for the same reason lost paths are (below): a lost
+  // legacy-name row is named after the directory that moved, so counting it as
+  // known would shadow that directory's NEW location out of the scan — the one
+  // candidate `rt repos locate` exists to surface.
   const knownNames = new Set(known.map(r => r.repoName));
   // realpath'd for set-membership ONLY — a symlinked path component (macOS
   // /tmp → /private/tmp being the canonical case) must not let the same
   // directory double-emit under two spellings. `known` itself keeps its
   // original, user-visible spellings (KnownRepo.worktrees[].path, repos.json,
-  // `rt cd` targets) untouched.
+  // `rt cd` targets) untouched. Lost paths are deliberately absent: the scan
+  // must be free to surface the moved repo's NEW directory.
   const knownPaths = new Set(known.flatMap(r => r.worktrees.map(w => safeRealpath(w.path))));
 
-  return [...known, ...scanUnregisteredRepos(known, knownNames, knownPaths)];
+  return [...known, ...lost, ...scanUnregisteredRepos([...known, ...lost], knownNames, knownPaths)];
 }
 
 interface Candidate {
@@ -898,6 +1055,10 @@ function scanUnregisteredRepos(
     it); only `label` is decoded for humans. Prefer `repoOptions` for a full
     list — it disambiguates repos whose identities share a last segment. */
 export function repoOption(r: KnownRepo, label: string = repoLabel(r.repoName)): { value: string; label: string; hint: string; color?: string } {
+  if (r.missing) {
+    return { value: r.repoName, label, hint: "missing — rt repos locate", color: dim };
+  }
+
   const location = r.worktrees.length > 1
     ? `${r.worktrees.length} worktrees`
     : r.worktrees[0]?.path.replace(homedir(), "~") || "";
@@ -912,10 +1073,27 @@ export function repoOption(r: KnownRepo, label: string = repoLabel(r.repoName)):
   };
 }
 
+function duplicateRepoNames(repos: KnownRepo[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const r of repos) counts.set(r.repoName, (counts.get(r.repoName) ?? 0) + 1);
+  return new Set([...counts].filter(([, n]) => n > 1).map(([name]) => name));
+}
+
+/**
+ * One list, one value per row. A lost legacy-name row and the scanned
+ * directory that name moved to carry the SAME `repoName`, so an unqualified
+ * value resolves the live directory to the dead row. The qualifier trails the
+ * name because fzf matches on this field (`--nth=1`).
+ */
+function repoOptionValue(r: KnownRepo, i: number, duplicated: Set<string>): string {
+  return duplicated.has(r.repoName) ? `${r.repoName}#${i}` : r.repoName;
+}
+
 /** Picker options for a repo list: short labels, upgraded to owner/name where
     two repos would otherwise render identically, and to the full decoded id
     when even owner/name collides (same owner/name on two hosts; two path
-    repos sharing a basename). */
+    repos sharing a basename). Resolve what the picker returns with
+    `repoFromOptionValue` — the values are list-scoped, not bare index keys. */
 export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOption>> {
   const shortCounts = new Map<string, number>();
   const qualifiedCounts = new Map<string, number>();
@@ -925,12 +1103,28 @@ export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOpt
     const qualified = repoLabelQualified(r.repoName);
     qualifiedCounts.set(qualified, (qualifiedCounts.get(qualified) ?? 0) + 1);
   }
-  return repos.map((r) => {
+  const duplicated = duplicateRepoNames(repos);
+  return repos.map((r, i) => {
     const short = repoLabel(r.repoName);
-    if ((shortCounts.get(short) ?? 0) <= 1) return repoOption(r, short);
     const qualified = repoLabelQualified(r.repoName);
-    return repoOption(r, (qualifiedCounts.get(qualified) ?? 0) > 1 ? repoLabelFull(r.repoName) : qualified);
+    const label = (shortCounts.get(short) ?? 0) <= 1
+      ? short
+      : (qualifiedCounts.get(qualified) ?? 0) > 1 ? repoLabelFull(r.repoName) : qualified;
+    return { ...repoOption(r, label), value: repoOptionValue(r, i, duplicated) };
   });
+}
+
+/** The row a `repoOptions` value came from. The list must be the one the
+    options were built from — values are positional when names collide. */
+export function repoFromOptionValue(repos: KnownRepo[], value: string): KnownRepo | undefined {
+  const duplicated = duplicateRepoNames(repos);
+  return repos.find((r, i) => repoOptionValue(r, i, duplicated) === value);
+}
+
+/** The one-line refusal every picker prints instead of cd-ing into a repo whose indexed path is gone. */
+export function missingRepoRefusal(r: KnownRepo): string {
+  const gone = r.worktrees[0]?.path ?? "its indexed path";
+  return `${r.repoName} is no longer at ${gone} — run: rt repos locate <new-path> --repo ${r.repoName}`;
 }
 
 // ─── Test seam ───────────────────────────────────────────────────────────────

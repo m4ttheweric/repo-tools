@@ -1044,8 +1044,19 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
    *  background pass survives into a later test's HOME once its own
    *  `beforeEach` repoints that (shared, global) env var. */
   passInFlight: () => boolean;
+  /**
+   * Run `fn` with the reconciler held: any pass in flight is awaited first,
+   * and `kick()` starts no new pass until `fn` settles (one queued kick fires
+   * on release). A holder rewrites registry paths that a concurrent pass would
+   * read as "no matching worktree" and prune, taking the pool's claim state
+   * with it. Holders serialize, so `fn` must not take the hold again.
+   */
+  withReconcilerHeld: <T>(fn: () => Promise<T>) => Promise<T>;
 } {
   let inFlight: Promise<void> | null = null;
+  /** Non-null while a holder owns the reconciler. */
+  let hold: Promise<void> | null = null;
+  let kickQueued = false;
   const creationPromises = new Map<string, Promise<void>>();
 
   async function runOnce(): Promise<void> {
@@ -1108,6 +1119,10 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
   }
 
   function kick(): void {
+    if (hold) {
+      kickQueued = true;
+      return;
+    }
     if (inFlight) return;
     const p = runOnce()
       .catch((err) => {
@@ -1119,6 +1134,29 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
     inFlight = p;
   }
 
+  async function withReconcilerHeld<T>(fn: () => Promise<T>): Promise<T> {
+    // Claiming the hold must stay synchronous from the last `hold` read to the
+    // assignment below, or two woken waiters both see null and both run.
+    while (hold) await hold;
+    let release!: () => void;
+    hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      // A pass that started before the hold was taken still reads the rows the
+      // holder is about to rewrite, so it has to finish first.
+      while (inFlight) await inFlight;
+      return await fn();
+    } finally {
+      hold = null;
+      release();
+      if (kickQueued) {
+        kickQueued = false;
+        kick();
+      }
+    }
+  }
+
   function creationInFlight(repoName: string): Promise<void> | null {
     return creationPromises.get(repoName) ?? null;
   }
@@ -1127,7 +1165,7 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
     return inFlight !== null;
   }
 
-  return { kick, runOnce, creationInFlight, passInFlight };
+  return { kick, runOnce, creationInFlight, passInFlight, withReconcilerHeld };
 }
 
 export const __test__ = {

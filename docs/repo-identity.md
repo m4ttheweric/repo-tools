@@ -132,7 +132,7 @@ not a cosmetic one. Build handles from the label, slugified.
 
 ## The legacy world
 
-Machines carry pre-cutover, name-keyed state until it is healed. Three
+Machines carry pre-cutover, name-keyed state until it is healed. Four
 mechanisms, none of which callers should reimplement:
 
 - **Daemon boot migration** (`lib/daemon/boot-migrate.ts`): one-shot at every
@@ -151,7 +151,43 @@ mechanisms, none of which callers should reimplement:
   row must survive for prune to collapse the pair.
 - **`rt repos prune`**: collapses the name/identity pairs the heal leaves
   behind. Until it runs, both rows point at the same directory, and
-  name-matching code that counts rows will see doubles.
+  name-matching code that counts rows will see doubles. The identity row
+  always wins the pair, whatever the timestamps say — the retired name's data
+  dir is carried onto it, and its worktree registry too: when BOTH names own
+  a registry they are **merged** (union by path; the managed record wins a
+  collision) rather than refused, and only then is the retired row evicted. A
+  row whose data could not all move is kept and reported, because eviction is
+  what makes a leftover unreachable — and so is a `missing` row that still
+  owns a registry, reported `retained` with the hint to run `rt repos locate`
+  instead.
+- **`rt repos locate <new-path>`**: the verb for a repo whose folder MOVED.
+  The identity survives a move, so this re-points paths and never re-keys:
+  every index row of the pair, both registries (re-rooted onto the new root,
+  external worktrees keeping their own paths, then merged onto the identity)
+  and the pair's `endpoint_claims` rows (merged onto the identity too, the
+  legacy key emptied) — one `state.db` transaction, matched by identity and
+  never by name, with the `repos.json` mirror rewritten as it commits.
+  - **Repair before commit.** `git worktree repair` and the
+    `git worktree list` verification run FIRST, while the index still names
+    the dead path: a reconcile pass that interleaves there finds a repo whose
+    path does not exist and bails, where a healed index over un-rewritten
+    registry paths would prune every claimed tree and replenish a fresh pool.
+    Nothing is written unless the whole move verifies, which is why there is
+    no rollback. A legacy row retained by a data-dir conflict is written back
+    to the OLD path for the same reason — a legacy row must never name a live
+    path without owning a registry.
+  - **The daemon is never stopped for a move.** It owns the registry, so the
+    CLI hands the work to the `repos:locate` verb whenever a daemon is
+    present — presence being a live pid file OR a socket on disk, not a ping,
+    since a stalled daemon still holds the registry. Present but unanswering
+    is a hard stop, never a local apply. The handler runs the whole apply
+    inside the reconciler's in-flight hold.
+  - **The sync seam cannot do this.** `updateRepoIndex` refuses to re-point a
+    row whose stored path is gone (the repair it owes is async git, forbidden
+    on the daemon thread): the row stays `missing` until a locate moves it as
+    one unit. `updateRepoIndexAsync` — what `rt repos register` calls — routes
+    that case through the same locate and surfaces a refusal instead of
+    reporting success over an unhealed index.
 
 What this means for a caller: an empty result for a repo that exists usually
 means its row hasn't been touched since the upgrade. Resolve through
