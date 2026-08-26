@@ -560,8 +560,12 @@ test("who passes the daemon's status through and never spawns git", async () => 
     { room: "build", handle: "a", joinedAt: 1, lastReadId: 0, wakeOn: "mention", cwd: "/w/a", status: "deaf" },
   ] } });
   const res = await app.request("/api/chat/who/build");
-  expect((await res.json()).members[0]).toMatchObject({ status: "deaf" });
-  expect((await res.json()).members[0].branch).toBeUndefined();   // branch is presence's, not this server's
+  // One read per Response. A body is a stream, so a second res.json() throws
+  // "Body is unusable: Body has already been read" rather than replaying the
+  // payload. Any test asserting twice on one response reads it into a const.
+  const body = await res.json();
+  expect(body.members[0]).toMatchObject({ status: "deaf" });
+  expect(body.members[0].branch).toBeUndefined();   // branch is presence's, not this server's
 });
 
 test("buddies carries each buddy's rooms as tags, with DMs collapsed to `dm`", async () => {
