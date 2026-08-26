@@ -45,6 +45,8 @@ import {
   readChatSession,
   writeChatSession,
 } from "../lib/chat-session.ts";
+import { pickAgentName } from "../lib/chat-names.ts";
+import { planSessionRename, type RenamePlan } from "../lib/chat-rename.ts";
 import { parseDuration } from "./events.ts";
 import {
   chatArm,
@@ -142,6 +144,13 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
 // relative to $HOME → <user>-<host>. Position 0 wins over --as for every
 // verb but sign-in, which resolves its base handle through the --as-first
 // chain below BEFORE any session file exists — see resolveBaseHandle.
+//
+// Sign-in itself stops after chat.handle and draws a first name from
+// lib/chat-names.ts instead (see resolveSignInBaseHandle): the pane title
+// of every Claude pane is the same "Claude Code", and a directory handle
+// is nothing a human would call an agent by. The directory chain stays
+// for the unsigned path, where a name that changed on every call would
+// scatter one session's posts across many authors.
 //
 // NO BRANCH COMPONENT: a tail resolves its handle once and holds it for the
 // whole session, while post/read/join re-resolve on every call. A
@@ -295,6 +304,25 @@ function herdrPaneHandle(): string | null {
   }
 }
 
+/**
+ * Sign-in's chain: `--as` → chat.handle → the base this session already
+ * signed in as (a repeat sign-in keeps its name) → a free first name.
+ * `taken` is the live buddy list, so the draw avoids a name in use; the
+ * daemon's `-2` suffixing remains the backstop for a race.
+ */
+function resolveSignInBaseHandle(args: string[], sessionId: string, taken: Iterable<string>): string {
+  const explicit = flagValue(args, "--as");
+  if (explicit) {
+    requireValidName("handle", explicit);
+    return explicit;
+  }
+  const fromSetting = readChatHandleSetting();
+  if (fromSetting) return fromSetting;
+  const prior = readChatSession(sessionId);
+  if (prior && typeof prior.baseHandle === "string" && isValidChatName(prior.baseHandle)) return prior.baseHandle;
+  return pickAgentName(taken);
+}
+
 function readChatHandleSetting(): string | undefined {
   try {
     const resolved = getSetting<string>("chat.handle");
@@ -410,6 +438,19 @@ function renderJoin(room: string, handle: string, data: { memberCount: number; u
   if (data.memberCount === 1) parts.push("you are alone here");
   else if (data.unread > 0) parts.push(`${data.unread} unread`);
   return `✓ joined #${room} as ${handle} — ${parts.join(", ")}`;
+}
+
+/** Best effort and bounded: a rename that fails or hangs must never fail the sign-in that already succeeded. */
+async function runSessionRename(plan: RenamePlan): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(plan.argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const timer = setTimeout(() => proc.kill(), 20_000);
+    const code = await proc.exited;
+    clearTimeout(timer);
+    return code === 0;
+  } catch {
+    return false;
+  }
 }
 
 function renderSignIn(
@@ -795,9 +836,10 @@ async function runDm(args: string[]): Promise<void> {
 // ─── sign-in / sign-out (presence) ───────────────────────────────────────────
 
 /**
- * baseHandle resolves through the --as-first chain (never the session file —
- * this call establishes it); the daemon assigns the final (possibly
- * suffixed) handle. The room is derived BEFORE either daemon call, since it
+ * baseHandle resolves through resolveSignInBaseHandle, where the session
+ * file counts only as "the name this session already had"; the daemon
+ * assigns the final (possibly suffixed) handle. The room is derived BEFORE
+ * the sign-in call, since it
  * depends only on cwd + the identity codec, and is written into the session
  * file alongside the assigned handle so a later chatJoin failure still
  * leaves a session file that agrees with what was actually attempted.
@@ -812,7 +854,9 @@ async function runSignIn(args: string[]): Promise<void> {
   if (!sessionId) fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
   requireValidSessionId(sessionId);
 
-  const baseHandle = resolveBaseHandle(args);
+  const buddiesRes = flagValue(args, "--as") ? null : await chatBuddies().catch(() => null);
+  const taken = buddiesRes?.ok && buddiesRes.data ? buddiesRes.data.buddies.map((b) => b.handle) : [];
+  const baseHandle = resolveSignInBaseHandle(args, sessionId, taken);
   requireValidName("handle", baseHandle);
 
   const cwd = safeCwd();
@@ -848,11 +892,16 @@ async function runSignIn(args: string[]): Promise<void> {
     joinedRoom = { name: roomName, memberCount: joinData.memberCount };
   }
 
+  const renamePlan = planSessionRename({ handle, sessionId, env: process.env, disabled: args.includes("--no-rename") });
+  const renamed = renamePlan && (await runSessionRename(renamePlan)) ? renamePlan.via : null;
+
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ ok: true, handle, room: roomName }));
+    console.log(JSON.stringify({ ok: true, handle, room: roomName, renamed }));
     return;
   }
   console.log(renderSignIn(handle, { repo, branch, pane }, root !== null, noRoomFlag, joinedRoom));
+  if (renamed === "herdr") console.log(`your session is being renamed to ${handle} (lands when this turn ends)`);
+  else if (renamed === "claude") console.log(`your session is now titled ${handle}`);
   console.log("arm your tail now: Monitor `rt chat tail`, persistent");
 }
 

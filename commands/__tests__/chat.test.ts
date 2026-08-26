@@ -32,6 +32,7 @@ import { chat, __test__ } from "../chat.ts";
 import { createChatHandlers } from "../../lib/daemon/handlers/chat.ts";
 import { getStateDb, closeStateDb } from "../../lib/state/index.ts";
 import { sessionFilePath } from "../../lib/chat-session.ts";
+import { AGENT_NAMES } from "../../lib/chat-names.ts";
 import { drainNotifications, peekNotifications } from "../../lib/notifier.ts";
 
 // ─── in-process CLI + fake daemon harness ───────────────────────────────────
@@ -340,6 +341,29 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     expect(out).toMatch(/#warroom/);
     expect(out).toMatch(/rt chat tail/); // bare — no --as in the arm line
     expect(out).not.toMatch(/rt chat tail --as/);
+  });
+
+  test("sign-in without --as draws a first name from the pool and keeps it on a repeat sign-in", async () => {
+    const first = await runChat(["sign-in", "--no-room", "--session", "s7"]);
+    const handle = /signed in as (\S+)/.exec(first)?.[1] ?? "";
+    expect(AGENT_NAMES).toContain(handle);
+    const again = await runChat(["sign-in", "--no-room", "--session", "s7"]);
+    expect(again).toMatch(new RegExp(`signed in as ${handle}\\b`));
+  });
+
+  test("sign-in never draws a name another live session holds", async () => {
+    await runChat(["sign-in", "--as", "fred", "--no-room", "--session", "s8"]);
+    for (let i = 0; i < 5; i++) {
+      const out = await runChat(["sign-in", "--no-room", "--session", `s9-${i}`]);
+      const handle = /signed in as (\S+)/.exec(out)?.[1];
+      expect(handle).not.toBe("fred");
+      expect(handle).not.toMatch(/^fred-\d+$/);
+    }
+  });
+
+  test("sign-in --json reports whether the session was renamed; never from a foreign --session", async () => {
+    const out = await runChat(["sign-in", "--no-room", "--session", "s10", "--json"]);
+    expect(JSON.parse(out)).toMatchObject({ ok: true, renamed: null });
   });
 
   test("--no-room signs in without joining any room", async () => {

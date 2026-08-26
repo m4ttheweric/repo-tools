@@ -671,6 +671,7 @@ export const TREE: Record<string, CommandNode> = {
       { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb, and is required by away/back/pulse" },
       { name: "Status", flag: "--status", type: "text", placeholder: "rebasing #67", hint: "For sign-in: an away/status message to set on the presence row" },
       { name: "No room", flag: "--no-room", type: "boolean", default: false, hint: "For sign-in: skip joining the derived repository room" },
+      { name: "No rename", flag: "--no-rename", type: "boolean", default: false, hint: "For sign-in: leave the Claude Code session title alone instead of renaming it to the assigned handle" },
       { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For sign-out: suppress output (the SessionEnd hook's flag)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out)" },
     ],
