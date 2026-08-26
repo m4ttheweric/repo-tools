@@ -199,7 +199,7 @@ test("arm sets armed_at, disarm clears it, touch updates last_seen_at", () => {
   joinRoom({ room: "r", handle: "a" }, db);
   armMember(undefined, "a", db);
   expect(listMembers("r", db)[0]!.armedAt).toBeGreaterThan(0);
-  touchMember("a", db);
+  touchMember(undefined, "a", db);
   expect(listMembers("r", db)[0]!.lastSeenAt).toBeGreaterThan(0);
   disarmMember("a", db);
   expect(listMembers("r", db)[0]!.armedAt).toBeUndefined();
@@ -213,6 +213,27 @@ test("clearAllArmed clears every row and reports how many it cleared", () => {
   armMember(undefined, "b", db);
   expect(clearAllArmed(db)).toBe(2);
   expect(listMembers("r", db).every(m => m.armedAt === undefined)).toBe(true);
+});
+
+test("touch re-arms what the boot clear disarmed, scoped like arm, and never moves a live armed_at", () => {
+  const db = freshDb();
+  joinRoom({ room: "r1", handle: "a" }, db);
+  joinRoom({ room: "r2", handle: "a" }, db);
+  armMember(undefined, "a", db);
+  const armedAt = listMembers("r1", db)[0]!.armedAt!;
+
+  touchMember(undefined, "a", db);
+  expect(listMembers("r1", db)[0]!.armedAt).toBe(armedAt); // touch keeps the arm epoch
+
+  clearAllArmed(db); // the daemon restarted under a tail that is still running
+  touchMember("r1", "a", db); // a --room r1 tail touches
+  expect(listMembers("r1", db)[0]!.armedAt).toBeGreaterThan(0);
+  expect(listMembers("r2", db)[0]!.armedAt).toBeUndefined(); // arm scope respected
+
+  clearAllArmed(db);
+  touchMember(undefined, "a", db); // an unscoped tail touches
+  expect(listMembers("r1", db)[0]!.armedAt).toBeGreaterThan(0);
+  expect(listMembers("r2", db)[0]!.armedAt).toBeGreaterThan(0);
 });
 
 test("startup clear covers presence arming", () => {

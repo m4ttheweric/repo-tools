@@ -396,7 +396,7 @@ test("chat:who falls back to member columns for an unsigned plan-1 member", asyn
   const who = await h["chat:who"]({ room: "r" });
   if (!who.ok) throw new Error("unreachable");
   const memberA = who.data.members.find((m) => m.handle === "a");
-  expect(memberA?.status).toBe("idle");
+  expect(memberA?.status).toBe("live"); // a touch is an armed tail's heartbeat, so it arms
 });
 
 test("chat:who reads an unsigned member as live right after arming, even joined well over the tail-stale window ago", async () => {

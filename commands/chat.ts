@@ -1286,7 +1286,7 @@ export async function chatTail(args: string[]): Promise<void> {
       ),
     );
     cursor = round.cursor;
-    const touched = await chatTouch({ handle, sessionId }, opts).catch(
+    const touched = await chatTouch({ handle, room: roomFilter, sessionId }, opts).catch(
       (err) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }) as const,
     );
     if (!touched.ok) exitOnReclaim(touched.error);

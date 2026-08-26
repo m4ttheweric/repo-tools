@@ -125,6 +125,8 @@ const UPDATE_LAST_READ_SQL = `UPDATE chat_members SET last_read_id = ? WHERE roo
 const UPDATE_ARMED_BY_ROOM_SQL = `UPDATE chat_members SET armed_at = ? WHERE room = ? AND handle = ?;`;
 const UPDATE_ARMED_BY_HANDLE_SQL = `UPDATE chat_members SET armed_at = ? WHERE handle = ?;`;
 const UPDATE_LAST_SEEN_SQL = `UPDATE chat_members SET last_seen_at = ? WHERE handle = ?;`;
+const REARM_BY_ROOM_SQL = `UPDATE chat_members SET armed_at = COALESCE(armed_at, ?) WHERE room = ? AND handle = ?;`;
+const REARM_BY_HANDLE_SQL = `UPDATE chat_members SET armed_at = COALESCE(armed_at, ?) WHERE handle = ?;`;
 const CLEAR_ALL_ARMED_SQL = `UPDATE chat_members SET armed_at = NULL WHERE armed_at IS NOT NULL;`;
 const CLEAR_ALL_PRESENCE_ARMED_SQL = `UPDATE chat_presence SET armed_at = NULL WHERE armed_at IS NOT NULL;`;
 
@@ -277,13 +279,24 @@ export function armMember(room: string | undefined, handle: string, db: Database
   persistOrWarn("chat-store", run, { op: "armMember", room, handle });
 }
 
-export function touchMember(handle: string, db: Database = getStateDb()): void {
+/**
+ * A touch is proof of an armed tail: only `rt chat tail` sends one, and only
+ * after its own arm. So a touch re-asserts `armed_at` wherever it is NULL,
+ * with the same room scope the arm used. That is what heals a tail that
+ * outlived a daemon restart: `clearAllArmed` at boot disarms it, the tail
+ * reconnects and keeps touching, and without this it would read idle for
+ * the rest of its life. An existing `armed_at` is never moved, so the arm
+ * epoch a re-arm started stays the one that counts.
+ */
+export function touchMember(room: string | undefined, handle: string, db: Database = getStateDb()): void {
   const now = Date.now();
   const run = db.transaction(() => {
     db.query(UPDATE_LAST_SEEN_SQL).run(now, handle);
+    if (room) db.query(REARM_BY_ROOM_SQL).run(now, room, handle);
+    else db.query(REARM_BY_HANDLE_SQL).run(now, handle);
     if (presenceForHandle(handle, db)) touchPresenceByHandle(handle, now, db);
   });
-  persistOrWarn("chat-store", run, { op: "touchMember", handle });
+  persistOrWarn("chat-store", run, { op: "touchMember", room, handle });
 }
 
 export function disarmMember(handle: string, db: Database = getStateDb()): void {
@@ -296,7 +309,10 @@ export function disarmMember(handle: string, db: Database = getStateDb()): void 
 
 /**
  * No waiter outlives the daemon, so every `armed_at` still set at boot is
- * stale by definition — called once at daemon startup, before serving. The
+ * stale by definition — called once at daemon startup, before serving. A
+ * TAIL can outlive the daemon, though: it reconnects and its next touch
+ * re-arms it (see `touchMember`), so this clear only sticks for tails that
+ * really died. The
  * return value is member rows cleared only: `chat_presence` is cleared
  * alongside for the same reason, but a presence row shadows a member row
  * rather than adding a distinct waiter, so counting both would double-count.

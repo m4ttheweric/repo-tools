@@ -257,7 +257,7 @@ export interface Commands {
   "chat:mark": { payload: { handle: string; room?: string }; data: Record<string, never> };
   "chat:messages": { payload: { room: string; before?: number; limit?: number }; data: { messages: ChatMessage[] } };
   "chat:arm": { payload: { handle: string; room?: string; sessionId?: string }; data: Record<string, never> };
-  "chat:touch": { payload: { handle: string; sessionId?: string }; data: Record<string, never> };
+  "chat:touch": { payload: { handle: string; room?: string; sessionId?: string }; data: Record<string, never> };
   "chat:disarm": { payload: { handle: string; sessionId?: string }; data: Record<string, never> };
   "chat:unread-waking": { payload: { handle: string; room?: string }; data: { rooms: { room: string; count: number; mentions: number; maxId: number }[] } };
 

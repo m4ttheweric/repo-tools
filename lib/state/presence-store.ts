@@ -110,7 +110,7 @@ const UPDATE_SIGN_OUT_SQL = `UPDATE chat_presence SET signed_out_at = ?, armed_a
 const UPDATE_STATUS_TEXT_SQL = `UPDATE chat_presence SET status_text = ? WHERE session_id = ?;`;
 const UPDATE_PULSE_SQL = `UPDATE chat_presence SET last_seen_at = ?, cwd = COALESCE(?, cwd), repo = COALESCE(?, repo), branch = COALESCE(?, branch), pane = COALESCE(?, pane) WHERE session_id = ?;`;
 const UPDATE_PRESENCE_ARMED_BY_HANDLE_SQL = `UPDATE chat_presence SET armed_at = ?, tail_seen_at = NULL WHERE handle = ?;`;
-const UPDATE_PRESENCE_TAIL_BY_HANDLE_SQL = `UPDATE chat_presence SET tail_seen_at = ? WHERE handle = ?;`;
+const UPDATE_PRESENCE_TAIL_BY_HANDLE_SQL = `UPDATE chat_presence SET tail_seen_at = ?, armed_at = COALESCE(armed_at, ?) WHERE handle = ?;`;
 const UPDATE_PRESENCE_DISARMED_BY_HANDLE_SQL = `UPDATE chat_presence SET armed_at = NULL WHERE handle = ?;`;
 
 const DEFAULT_TAIL_STALE_MS = 10 * 60_000;
@@ -371,7 +371,7 @@ export function armPresenceByHandle(handle: string, now: number, db: Database = 
 }
 
 export function touchPresenceByHandle(handle: string, now: number, db: Database = getStateDb()): void {
-  db.query(UPDATE_PRESENCE_TAIL_BY_HANDLE_SQL).run(now, handle);
+  db.query(UPDATE_PRESENCE_TAIL_BY_HANDLE_SQL).run(now, now, handle);
 }
 
 export function disarmPresenceByHandle(handle: string, db: Database = getStateDb()): void {
