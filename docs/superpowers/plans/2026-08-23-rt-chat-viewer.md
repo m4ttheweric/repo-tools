@@ -76,7 +76,7 @@ Server modules split by responsibility, not layer: `chat.ts` owns every route th
 
 ### Task 0: Shared packages — tokens and daemon plumbing
 
-Two PRs in two repos, both before Task 1. They carry the only two things console and the viewer genuinely share: the suite's Tokyo tokens (theme values, ramps, colour names, `tokyo-theme.css`, the font), which become a package both apps consume through the kit's brand slots; and the relay + probe every rt-consuming server needs, which move into rt-client where deck and board can use them too. The UI kit itself is **not** shared — each app scaffolds it from `create-mantine-kit` and owns its copy, by design.
+Three PRs in three repos, all before Task 1. They carry the only two things console and the viewer genuinely share: the suite's Tokyo tokens (theme values, ramps, colour names, `tokyo-theme.css`, the font), which become a package both apps consume through the kit's brand slots; and the relay + probe every rt-consuming server needs, which move into rt-client where deck and board can use them too. The UI kit itself is **not** shared — each app scaffolds it from `create-mantine-kit` and owns its copy, by design.
 
 #### Task 0a — repo-tools: `createRelay` and `daemonHealth`
 
@@ -190,6 +190,108 @@ Publish `@mattstack/mantine-tokyo@0.1.0` after merge (ask first). Task 1 pins it
 
 ---
 
+#### Task 0c — Mantine 9.5.2, and teaching an agent to look Mantine up
+
+**The point of this task is the docs path, not the version.** 9.4.1 → 9.5.2 is a minor already inside both repos' `^9.4.1` range: a lockfile move, gated by the normal suite, with no visual-regression ceremony. What earns the task is everything after Step 1 — an implementer building this viewer should never write a Mantine prop from memory. Guessing produces code that compiles, renders, and is subtly wrong: the variant that does not exist, the prop that moved, a size off the scale. Mantine now ships the cure, and it ships it *per release*, so the docs an agent reads match the version the app installs.
+
+**mantine-kit goes first**, because `create-cli/create.ts` scaffolds from `git ls-files` and copies the template's own `package.json`, `bun.lock`, `AGENTS.md` and `CLAUDE.md` into every generated app. Whatever the template holds is what chat inherits at Task 1. Console's bump is independent of that ordering — it never re-scaffolds — but it shares the artifacts, so it follows the same shape.
+
+**Files:**
+- Modify (mantine-kit): `package.json` (the eight `@mantine/*` deps → `^9.5.2`, plus `.mcp.json` and `docs/mantine-llms.txt` added to the `files` whitelist), `bun.lock`, `AGENTS.md`
+- Create (mantine-kit): `.mcp.json`, `docs/mantine-llms.txt`
+- Modify (console): `package.json`, `bun.lock`, `AGENTS.md`
+- Create (console): `.mcp.json`, `docs/mantine-llms.txt`
+- chat: nothing of its own — Task 1 inherits from the template and verifies
+
+- [ ] **Step 1: mantine-kit — the version, scoped**
+
+Set the eight `@mantine/*` ranges (`code-highlight`, `core`, `dates`, `form`, `hooks`, `modals`, `notifications`, `spotlight`) to `^9.5.2` and `bun install`. **Do not run a bare `bun update`** — it would move vite, storybook, eslint, React and TypeScript in the same commit, and the gate would then be covering a dozen upgrades wearing one task's name.
+
+Gate (the kit's real scripts — `bun run test` alone is vitest in **watch mode** and will hang):
+
+```bash
+bun run typecheck && bun run lint && bun run test -- --run && bun run build
+```
+
+- [ ] **Step 2: the three artifacts that make an agent look things up**
+
+**a. The MCP server.** Create `.mcp.json` at the template root, pinned to the Mantine version it documents:
+
+```json
+{
+  "mcpServers": {
+    "mantine": { "command": "npx", "args": ["-y", "@mantine/mcp-server@9.5.2"] }
+  }
+}
+```
+
+`@mantine/mcp-server` is versioned in lockstep with Mantine, so pinning it to the installed version is what keeps the answers true rather than merely recent. It exposes `list_items`, `get_item_doc`, `get_item_props` and `search_docs`. Never float `latest`: this runs on every session in every scaffolded app, and the pin is bumped deliberately, alongside Mantine.
+
+**b. The offline copy.** Vendor `https://mantine.dev/llms.txt` to `docs/mantine-llms.txt` (~42 KB — an index of every component and hook page with a one-line description and a per-page `.md` URL). It is what a session without MCP, or offline, reads. Head it with a comment naming its source and the version it was fetched at.
+
+**9.5.2 ends up stated in four places** — the eight ranges, the `.mcp.json` pin, the instruction block, and this file's provenance header. They move together, in one commit, or the server starts documenting a version the app no longer installs.
+
+**Do not vendor `llms-full.txt`.** It is 4.1 MB — Mantine's own guide still calls it ~1.8 MB, so it is growing fast — and it would compete with the code for context while going stale every release.
+
+**c. The instruction, which is the part that changes behaviour.** Tooling nobody is told to use gets used by nobody. Add it to `AGENTS.md` **only** — `CLAUDE.md` in both repos is a 15-byte pointer (`See AGENTS.md.`) and stays one. Two copies of a paragraph carrying a version string drift on the next bump:
+
+> **Mantine: look it up, don't recall it.** This app pins Mantine 9.5.2. Before using a component you have not already used in this session, or any prop you are not certain of, call the `mantine` MCP server: `get_item_props` for a signature, `get_item_doc` for behaviour, `search_docs` when you know the effect but not the component name. Without MCP there is `docs/mantine-llms.txt`, but know what it is: an *index* — it names the components and links a page each, so offline it tells you what exists, never a prop signature. A guessed prop compiles and renders and is still wrong; the props table costs one call.
+
+- [ ] **Step 3: prove all three actually arrive**
+
+`.mcp.json` and `docs/mantine-llms.txt` are **new files**, and the scaffold walks `git ls-files`. An untracked file reaches no scaffold, and `git commit -am` stages only tracked modifications — so `git add` both explicitly, and add both to the `files` whitelist in `package.json` (the published-tarball scaffold path uses it and would otherwise drop them silently).
+
+Then scaffold a throwaway app **after** staging, the way the kit's own CI does it, and assert all three arrived:
+
+```bash
+rm -rf /tmp/mantine-probe                       # create.ts aborts on an existing target
+bun create-cli/create.ts /tmp/mantine-probe --name mantine-probe
+grep -q '"@mantine/core": "\^9.5.2"' /tmp/mantine-probe/package.json
+test "$(grep -c '"@mantine/[a-z-]*": "\^9.5.2"' /tmp/mantine-probe/package.json)" = 8
+grep -q '9\.5\.2' /tmp/mantine-probe/bun.lock  # the lock is what actually pins a scaffold
+test -f /tmp/mantine-probe/.mcp.json
+test -f /tmp/mantine-probe/docs/mantine-llms.txt
+grep -q "look it up" /tmp/mantine-probe/AGENTS.md
+(cd /tmp/mantine-probe && bun install && bun run build)   # generation still works, as kit CI does it
+```
+
+Every line must be a real assertion. A `grep` whose expected value sits in a trailing comment passes on the old version too — and the version is the one thing this probe exists to catch.
+
+Verify the server itself **out of band** — a project-scoped MCP server loads at session start and needs the project's servers approved, so the agent that just wrote the file has no such tool in its own session and cannot check it by calling it:
+
+```bash
+npx -y @mantine/mcp-server@9.5.2   # confirm the handshake lists the four tools
+```
+
+Run `bun run format` before committing: `format:check` is a CI gate and covers the JSON and Markdown this step hand-writes.
+
+- [ ] **Step 4: console — the same three artifacts, same scoped bump**
+
+Set console's eight `@mantine/*` ranges to `^9.5.2`, `bun install`, and gate with `bun run lint && bunx vitest run && bunx tsc -b`. Copy `.mcp.json`, `docs/mantine-llms.txt` and the AGENTS.md instruction across.
+
+**Order against Task 0b:** both tasks edit console's `package.json`. 0b lands in console first; 0c rebases onto it. Do not run them as independent parallel PRs into the same repo.
+
+**Scope the install deliberately.** Console consumes `@mattstack/rt-client` by `file:` path, and a `file:` consumer copies that package's gitignored `dist/` verbatim at install time from a checkout whose branch other sessions switch. An unscoped install can swap console's rt-client build as a side effect of a Mantine bump.
+
+- [ ] **Step 5: chat inherits, and Task 1 checks**
+
+Task 1 scaffolds from the updated template, so the viewer starts on 9.5.2 with all three artifacts present. Task 1 asserts they arrived (the greps above); the server handshake is the out-of-band check from Step 3. A server that is configured but never answers is worse than none, because it looks wired.
+
+- [ ] **Step 6: Commit**
+
+Two repos, two commits. Both belong to other lanes — announce before touching them, per the coordination rules in the root `CLAUDE.md`.
+
+```bash
+# in mantine-kit
+git add .mcp.json docs/mantine-llms.txt
+git commit -am "mantine: 9.5.2, and the docs path every scaffold inherits"
+# in console (rebased onto 0b)
+git add .mcp.json docs/mantine-llms.txt
+git commit -am "mantine: 9.5.2 and the docs path"
+```
+
+---
+
 ### Task 1: Scaffold, health route, and deck registration
 
 A walking skeleton: a real page on a real https name before any chat feature exists.
@@ -237,6 +339,9 @@ Then the two mattstack packages from npm — the versions Task 0 published:
 
 ```bash
 bun add @mattstack/rt-client@^0.6 @mattstack/mantine-tokyo@^0.1
+# then assert what the template handed over (Task 0c): package.json reads @mantine/* ^9.5.2,
+# .mcp.json and docs/mantine-llms.txt are present, and AGENTS.md carries the look-it-up rule
+# (Task 0c Step 3 has the exact assertions; run those).
 ```
 
 **Remove** — the template *does* ship these and this app needs none of them:
