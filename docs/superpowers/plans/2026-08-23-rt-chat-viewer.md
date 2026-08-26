@@ -190,6 +190,8 @@ and `headings` gains a `sizes` ladder (fontSize / lineHeight / fontWeight):
 
 Mantine's stock unsized `h2` renders about twice the largest body text in this monospace kit, and the dense ladder stops at `xl` 0.9rem, which is why bordered surfaces were rendering at 9.6px against a 20-26px design. The run views consume both ladders directly, so a dropped row is a visible regression, not a lint warning.
 
+**A formatter trap specific to this extraction.** Console was scaffolded from mantine-kit on 2026-08-22 (`89aafd7`), inside the window where the kit's own `format:check` was red, so its vendored `src/ui` arrived unformatted by the kit's standards. Console `d9c925c` ("stop reformatting vendored kit files, revert the accidental drift") is the symptom: a consumer-side formatter rewrites those files on first touch, and the diff drowns the real change. Running a formatter across the newly extracted package will do it again. Format only what this task authors, and check the diff before staging.
+
 - [ ] **Step 1: Move the values, not the components**
 
 `git mv` the ramps, theme values, colour names, css and font into the package. Nothing React moves: the package exports data, a type, and css. The `@font-face` in the package css resolves `./fonts/jetbrains-mono.woff2` relative to the package — today console's is absolute (`/fonts/jetbrains-mono.woff2` from `public/fonts/`), so this step also deletes `public/fonts/jetbrains-mono.woff2` and lets Vite serve the package's copy; `tokyo-theme.test.ts`'s `toContain('/fonts/jetbrains-mono.woff2')` still passes on the relative path. The parity capture in Step 3 is what proves the font still loads.
