@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 ```
 
+**V6 addendum (RT board codeowner tabs; v5 is reserved by another lane):** adds `project_mr_sections` (repo, iid, sections JSON string[], PK (repo, iid)) and a nullable `project_mr_demands.sections` column (JSON string[]), for CODEOWNERS section tags on project-mrs rows.
+
 **branch_cache keeps the bare-branch primary key** (review r1 findings 3+4): the bare branch IS the cache's semantic key today (`DiskCache.entries: Record<branch, CacheEntry>`); `enrichBranches`' `fetchAndCache` path has no repoName, and a `(repo, branch)` PK would mint permanent duplicate rows plus an undefined collapse tie-break that flaps `checkAndNotify`. The cross-repo branch-name collision is today's documented quirk, carried forward unchanged; `repo` stays what it is today — an optional attribute (used by `worktree:list`'s guard exactly as before).
 
 `kv` holds whole-blob states where per-key granularity buys nothing: notifier state (`ns='notifier', k='state'`, read+written once per cycle as a unit) and event cursors (`ns='events-cursor', k=<repoName>`). Payload shapes stay opaque JSON — this ticket changes persistence, never payload schemas.

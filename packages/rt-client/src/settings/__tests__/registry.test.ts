@@ -224,6 +224,7 @@ describe("settings/registry", () => {
         "board.slack",
         "board.doctorSkill",
         "board.triage.doctorSkill",
+        "board.tabs",
         "board.staleAfterDays",
         "board.workspaces",
         "board.defaultMember",
@@ -242,7 +243,7 @@ describe("settings/registry", () => {
         "chat.push.provider",
         "chat.push.target",
       ];
-      expect(suiteKeys).toHaveLength(35);
+      expect(suiteKeys).toHaveLength(36);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),

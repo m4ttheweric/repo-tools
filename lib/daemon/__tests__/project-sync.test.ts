@@ -2,7 +2,7 @@ import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { syncProjectMRs, backfillAuthors, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
+import { syncProjectMRs, backfillAuthors, backfillSections, effectiveSections, sectionsMatching, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import { openStateDb } from "../../state/index.ts";
 import type { PullRequest } from "@mattstack/glance";
@@ -296,6 +296,31 @@ describe("project-mrs:read handler", async () => {
     expect(store.read("remote:repo")!.demands).toBeUndefined();
   });
 
+  test("demand with malformed codeownerSections is rejected", async () => {
+    const store = tmpStore();
+    store.fullSync("remote:repo", "g/p", [], Date.now());
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking });
+    const base = { client: "b:1", authors: ["x"], declaredAt: 1 };
+
+    const notArray = await h["project-mrs:read"]!(
+      { repoName: "remote:repo", demand: { ...base, codeownerSections: "Acme" } } as any,
+    );
+    expect(notArray.ok).toBe(false);
+
+    const empty = await h["project-mrs:read"]!({ repoName: "remote:repo", demand: { ...base, codeownerSections: [] } });
+    expect(empty.ok).toBe(false); // an empty list is meaningless; omit the field instead
+
+    const emptyString = await h["project-mrs:read"]!({ repoName: "remote:repo", demand: { ...base, codeownerSections: [""] } });
+    expect(emptyString.ok).toBe(false);
+
+    const tooMany = await h["project-mrs:read"]!(
+      { repoName: "remote:repo", demand: { ...base, codeownerSections: Array.from({ length: 21 }, (_, i) => `s${i}`) } },
+    );
+    expect(tooMany.ok).toBe(false);
+
+    expect(store.read("remote:repo")!.demands).toBeUndefined();
+  });
+
   test("uncovered demanded authors are reported and kick a backfill on unforced reads", async () => {
     const store = tmpStore();
     store.fullSync("remote:repo", "g/p", [], Date.now());
@@ -399,6 +424,25 @@ describe("project-mrs:read handler", async () => {
     expect(warns.length).toBe(1);
     expect(warns[0]!.obj.repo).toBe("remote:repo");
     expect(warns[0]!.obj.authors).toEqual(["newbie"]);
+  });
+
+  test("read returns entry tags and scope sections; uncoveredSections triggers backfill", async () => {
+    const store = tmpStore();
+    store.fullSync("remote:repo", "g/p", [pr(1)], Date.now() - 60_000);
+    store.setSectionTags("remote:repo", { 1: ["Acme"] });
+    store.setScope("remote:repo", { authors: ["ada"], sections: [], windowDays: 30 });
+    const backfilled: string[][] = [];
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, {
+      store, sync: async () => {}, tracking: grantedTracking,
+      sectionBackfill: async (_r, sections) => { backfilled.push(sections); },
+    });
+    const res = await h["project-mrs:read"]!({ repoName: "remote:repo", maxAgeMs: 0,
+      demand: { client: "b:1", authors: ["ada"], codeownerSections: ["Acme"], declaredAt: 1 } });
+    expect(res.ok).toBe(true);
+    expect((dataOf(res) as any).mrs["1"].codeownerSections).toEqual(["Acme"]);
+    expect((dataOf(res) as any).scope.sections).toEqual([]);
+    expect((dataOf(res) as any).scope.uncoveredSections).toEqual(["Acme"]);
+    expect(backfilled).toEqual([["Acme"]]);
   });
 
   test("uncovered is computed from the stored demand, not a stale request (finding 4)", async () => {
@@ -888,5 +932,382 @@ describe("demand-scoped sync", () => {
       ] }),
     });
     expect(store.read("s7")!.mrs[8]).toBeDefined();
+  });
+});
+
+describe("codeowner section sweep (deep)", () => {
+  const deps = (repo: string) => ({ repoIndex: () => ({ [repo]: "/tmp/repo" }), broadcast: () => {} });
+
+  test("pure helpers: effectiveSections unions demands, sectionsMatching filters rules", () => {
+    expect(effectiveSections({ demands: {
+      a: { authors: ["x"], sections: ["Acme"], declaredAt: 1, lastSeenAt: 1 },
+      b: { authors: ["y"], sections: ["Acme", "Beta"], declaredAt: 1, lastSeenAt: 1 },
+    } } as any)).toEqual(["Acme", "Beta"]);
+    expect(effectiveSections(undefined)).toEqual([]);
+    expect(sectionsMatching(
+      [{ type: "CODE_OWNER", approved: false, section: "Acme" },
+       { type: "CODE_OWNER", approved: true, section: "Beta" },
+       { type: "REGULAR", approved: false, section: null }],
+      ["Acme", "Beta"],
+    )).toEqual(["Acme"]);
+  });
+
+  test("deep with a sections demand sweeps rules, hydrates matches, keeps them past fullSync", async () => {
+    const store = tmpStore();
+    store.registerDemand("r1", "board:1", ["ada"], 1, ["Acme"]);
+    const hydrated: number[] = [];
+    await syncProjectMRs(deps("r1"), "r1", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 1, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+        { iid: 9, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+        { iid: 5, rules: [{ type: "CODE_OWNER", approved: true, section: "Acme" }] },
+      ] }),
+      fetchSingle: async (_r, _p, iid) => { hydrated.push(iid); return pr(iid, { author: { username: "stranger" } as any }); },
+    });
+    const rec = store.read("r1")!;
+    expect(hydrated).toEqual([9]);                       // 1 is author-covered, 5 unmatched
+    expect(Object.keys(rec.mrs).sort()).toEqual(["1", "9"]);
+    expect(rec.mrs[9]!.codeownerSections).toEqual(["Acme"]);
+    expect(rec.mrs[1]!.codeownerSections).toEqual(["Acme"]); // tagged even when author-covered
+    expect(rec.scope).toMatchObject({ sections: ["Acme"] });
+  });
+
+  test("deep sweep untags rows the sweep no longer matches (replaceAll)", async () => {
+    const store = tmpStore();
+    store.registerDemand("r2", "board:1", ["ada"], 1, ["Acme"]);
+    // First deep: iid 1 is author-covered AND matches an unapproved CODE_OWNER rule.
+    await syncProjectMRs(deps("r2"), "r2", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 1, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+    });
+    expect(store.read("r2")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+
+    // Second deep: iid 1 stays author-covered (fullSync retains the row --
+    // the prune never fires), but the rule no longer matches. Only the
+    // replaceAll write can clear this tag; the prune path is not exercised.
+    await syncProjectMRs(deps("r2"), "r2", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [] }),
+    });
+    const rec = store.read("r2")!;
+    expect(rec.mrs[1]).toBeDefined();                    // still in scope: not pruned
+    expect(rec.mrs[1]!.codeownerSections).toBeUndefined();
+  });
+
+  test("hasStaleTags rollback: dropping a demand's sections clears a still-in-scope row's tag exactly once (finding 3)", async () => {
+    const raw = tmpStore();
+    let tagCalls = 0;
+    const store = { ...raw, setSectionTags: (repoName: string, tags: Record<number, string[]>, opts?: { replaceAll?: boolean }) => {
+      tagCalls++;
+      raw.setSectionTags(repoName, tags, opts);
+    } };
+    store.registerDemand("r6", "board:1", ["ada"], 1, ["Acme"]);
+
+    // 1st deep: iid 1 is author-covered and matches -> tagged.
+    await syncProjectMRs(deps("r6"), "r6", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 1, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+    });
+    expect(raw.read("r6")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+    expect(tagCalls).toBe(1);
+
+    // The demand drops its sections but keeps wanting the same author.
+    store.registerDemand("r6", "board:1", ["ada"], 2);
+
+    // 2nd deep: no sections demanded anymore, but iid 1 stays author-covered
+    // -- the sweep is skipped (no fetchRules call), yet the stale tag from
+    // before must still be cleared via the hasStaleTags rollback.
+    await syncProjectMRs(deps("r6"), "r6", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => { throw new Error("must not fetch rules: no sections demanded"); },
+    });
+    expect(raw.read("r6")!.mrs[1]).toBeDefined();
+    expect(raw.read("r6")!.mrs[1]!.codeownerSections).toBeUndefined();
+    expect(tagCalls).toBe(2);
+
+    // 3rd deep: nothing changed -- no stale tag left, no sections demanded
+    // -> no further tag-clear write.
+    await syncProjectMRs(deps("r6"), "r6", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => { throw new Error("must not fetch rules: no sections demanded"); },
+    });
+    expect(tagCalls).toBe(2);
+  });
+
+  test("containment: a demand without sections never calls fetchRules and never tags", async () => {
+    const store = tmpStore();
+    store.registerDemand("r3", "board:1", ["ada"], 1);
+    let rulesCalled = 0;
+    await syncProjectMRs(deps("r3"), "r3", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => { rulesCalled++; return { projectPath: "g/p", rules: [] }; },
+    });
+    expect(rulesCalled).toBe(0);
+    expect(store.read("r3")!.mrs[1]!.codeownerSections).toBeUndefined();
+    expect(store.read("r3")!.scope).toEqual({ authors: ["ada", "self"], windowDays: 30 });
+  });
+
+  test("backfillAuthors preserves an existing scope's sections (finding 1)", async () => {
+    const store = tmpStore();
+    store.fullSync("r5", "g/p", [], Date.now() - 1000);
+    store.setScope("r5", { authors: ["alice"], sections: ["Acme"], windowDays: 30 });
+    await backfillAuthors(
+      deps("r5"), "r5", ["newbie"],
+      { store, windowDays: 30, fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }) },
+    );
+    expect(store.read("r5")!.scope).toEqual({ authors: ["alice", "newbie"], sections: ["Acme"], windowDays: 30 });
+  });
+
+  describe("backfillSections (finding 4)", () => {
+    test("empty section list is a no-op: no fetch, no scope mutation, no broadcast", async () => {
+      const store = tmpStore();
+      store.fullSync("bs1", "g/p", [], Date.now() - 1000);
+      store.setScope("bs1", { authors: ["alice"], sections: ["Acme"], windowDays: 30 });
+      const events: any[] = [];
+      await backfillSections(
+        { repoIndex: () => ({ bs1: "/tmp/repo" }), broadcast: (t, d) => events.push({ t, d }) },
+        "bs1", [],
+        { store, fetchRules: async () => { throw new Error("must not fetch"); } },
+      );
+      expect(store.read("bs1")!.scope!.sections).toEqual(["Acme"]);
+      expect(events.length).toBe(0);
+    });
+
+    test("hydrates only iids the store doesn't already have", async () => {
+      const store = tmpStore();
+      store.fullSync("bs2", "g/p", [pr(1, { author: { username: "alice" } as any })], Date.now() - 1000);
+      store.setScope("bs2", { authors: ["alice"], windowDays: 30 });
+      const hydrated: number[] = [];
+      await backfillSections(
+        { repoIndex: () => ({ bs2: "/tmp/repo" }), broadcast: () => {} },
+        "bs2", ["Acme"],
+        {
+          store, windowDays: 30,
+          fetchRules: async () => ({ projectPath: "g/p", rules: [
+            { iid: 1, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] }, // already stored
+            { iid: 2, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] }, // needs hydration
+          ] }),
+          fetchSingle: async (_r, _pp, iid) => { hydrated.push(iid); return pr(iid, { author: { username: "stranger" } as any }); },
+        },
+      );
+      expect(hydrated).toEqual([2]);
+      expect(store.read("bs2")!.mrs[2]).toBeDefined();
+      expect(store.read("bs2")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+      expect(store.read("bs2")!.mrs[2]!.codeownerSections).toEqual(["Acme"]);
+    });
+
+    test("tags matches without replaceAll -- existing tags on other iids survive", async () => {
+      const store = tmpStore();
+      store.fullSync("bs3", "g/p", [
+        pr(1, { author: { username: "alice" } as any }),
+        pr(2, { author: { username: "alice" } as any }),
+      ], Date.now() - 1000);
+      store.setSectionTags("bs3", { 1: ["Beta"] });
+      store.setScope("bs3", { authors: ["alice"], sections: ["Beta"], windowDays: 30 });
+      await backfillSections(
+        { repoIndex: () => ({ bs3: "/tmp/repo" }), broadcast: () => {} },
+        "bs3", ["Acme"],
+        {
+          store, windowDays: 30,
+          fetchRules: async () => ({ projectPath: "g/p", rules: [
+            { iid: 2, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+          ] }),
+        },
+      );
+      expect(store.read("bs3")!.mrs[1]!.codeownerSections).toEqual(["Beta"]);      // untouched: not replaceAll
+      expect(store.read("bs3")!.mrs[2]!.codeownerSections).toEqual(["Acme"]);
+    });
+
+    test("unions sections into an existing scope, sorted", async () => {
+      const store = tmpStore();
+      store.fullSync("bs4", "g/p", [], Date.now() - 1000);
+      store.setScope("bs4", { authors: ["alice"], sections: ["Beta"], windowDays: 30 });
+      await backfillSections(
+        { repoIndex: () => ({ bs4: "/tmp/repo" }), broadcast: () => {} },
+        "bs4", ["Acme"],
+        { store, windowDays: 30, fetchRules: async () => ({ projectPath: "g/p", rules: [] }) },
+      );
+      expect(store.read("bs4")!.scope!.sections).toEqual(["Acme", "Beta"]);
+    });
+
+    test("with no existing scope leaves scope unset (the `if (scope)` guard)", async () => {
+      const store = tmpStore();
+      store.fullSync("bs5", "g/p", [], Date.now() - 1000);
+      await backfillSections(
+        { repoIndex: () => ({ bs5: "/tmp/repo" }), broadcast: () => {} },
+        "bs5", ["Acme"],
+        { store, windowDays: 30, fetchRules: async () => ({ projectPath: "g/p", rules: [] }) },
+      );
+      expect(store.read("bs5")!.scope).toBeUndefined();
+    });
+  });
+});
+
+describe("delta retag and keep-tagged-strangers", () => {
+  /** Seeds a real scope {authors:["ada","self"], sections:["Acme"]} via one deep sync; iid 9 is not author-covered so it's hydrated and tagged. */
+  async function seededSectionStore() {
+    const store = tmpStore();
+    const deps = { repoIndex: () => ({ r: "/tmp/repo" }), broadcast: () => {} };
+    store.registerDemand("r", "board:1", ["ada"], 1, ["Acme"]);
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 9, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+      fetchSingle: async (_r, _p, iid) => pr(iid, { author: { username: "stranger" } as any }),
+    });
+    return { store, deps };
+  }
+
+  /** Seeds a real scope {authors:["ada","self"]} only -- no demand ever declared a section. */
+  async function seededAuthorOnlyStore() {
+    const store = tmpStore();
+    const deps = { repoIndex: () => ({ r: "/tmp/repo" }), broadcast: () => {} };
+    store.registerDemand("r", "board:1", ["ada"], 1);
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+    });
+    return { store, deps };
+  }
+
+  test("delta keeps a tagged stranger's update and retags from the cycle's rules", async () => {
+    const { store, deps } = await seededSectionStore(); // deep already ran: iid 9 tagged, stored
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(9, { author: { username: "stranger" } as any, title: "v2" }),
+        pr(3, { author: { username: "stranger" } as any }),
+      ] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 9, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+      fetchSingle: async () => { throw new Error("nothing to hydrate"); },
+    });
+    const rec = store.read("r")!;
+    expect(rec.mrs[9]!.pr.title).toBe("v2");                       // tagged stranger's update kept
+    expect(rec.mrs[9]!.codeownerSections).toEqual(["Acme"]);
+    expect(rec.mrs[3]).toBeUndefined();                             // untagged stranger filtered
+  });
+
+  test("delta untags an MR whose rule got approved in-window", async () => {
+    const { store, deps } = await seededSectionStore();
+    // iid 9 also carries a pr update this cycle, so applyDelta's own
+    // preserve-copy runs on the same entry the fresh sweep is about to
+    // clear -- proving the sweep's clear wins over the preserve, not just
+    // that setSectionTags can clear a row applyDelta never touched.
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(9, { author: { username: "self" } as any, title: "v2" }),
+      ] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 9, rules: [{ type: "CODE_OWNER", approved: true, section: "Acme" }] },
+      ] }),
+    });
+    const rec = store.read("r")!;
+    expect(rec.mrs[9]!.pr.title).toBe("v2");         // the delta update itself still landed
+    // Tag cleared; the row itself waits for the deep prune.
+    expect(rec.mrs[9]!.codeownerSections).toBeUndefined();
+  });
+
+  test("delta hydrates AND tags a brand-new match in the same cycle", async () => {
+    const { store, deps } = await seededSectionStore(); // iid 4 unknown to the store
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [
+        { iid: 4, rules: [{ type: "CODE_OWNER", approved: false, section: "Acme" }] },
+      ] }),
+      fetchSingle: async (_r, _p, iid) => pr(iid, { author: { username: "stranger" } as any }),
+    });
+    const rec = store.read("r")!;
+    expect(rec.mrs[4]).toBeDefined();
+    expect(rec.mrs[4]!.codeownerSections).toEqual(["Acme"]); // tag applied after hydration
+  });
+
+  test("delta with no section scope never calls fetchRules (containment)", async () => {
+    const { store, deps } = await seededAuthorOnlyStore(); // scope {authors} only
+    let rulesCalled = 0;
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => { rulesCalled++; return { projectPath: "g/p", rules: [] }; },
+    });
+    expect(rulesCalled).toBe(0);
+  });
+
+  test("a failing retag this cycle still keeps the tag: applyDelta preserves it in memory", async () => {
+    const { store, deps } = await seededSectionStore(); // iid 9 tagged, stored
+    await syncProjectMRs(deps, "r", {
+      store, selfUsername: "self", windowDays: 30,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(9, { author: { username: "stranger" } as any, title: "v2" }),
+      ] }),
+      fetchRules: async () => { throw new Error("rules endpoint down"); },
+    });
+    const rec = store.read("r")!;
+    expect(rec.mrs[9]!.pr.title).toBe("v2");                        // delta update still applied
+    expect(rec.mrs[9]!.codeownerSections).toEqual(["Acme"]);   // tag survives despite the failed retag
+  });
+
+  test("sectionsMatching sorts its output regardless of demanded's order", () => {
+    expect(sectionsMatching(
+      [{ type: "CODE_OWNER", approved: false, section: "Beta" },
+       { type: "CODE_OWNER", approved: false, section: "Acme" }],
+      ["Beta", "Acme"],
+    )).toEqual(["Acme", "Beta"]);
+  });
+
+  test("backfillSections tags in delta's canonical order -- no post-backfill churn (CodeRabbit R1)", async () => {
+    const { store, deps } = await seededSectionStore(); // scope.sections ["Acme"], iid 9 already tagged
+    const rules = { projectPath: "g/p", rules: [
+      { iid: 9, rules: [
+        { type: "CODE_OWNER", approved: false, section: "Acme" },
+        { type: "CODE_OWNER", approved: false, section: "Beta" },
+      ] },
+    ] };
+    // backfillSections is called with the client's declared (unsorted) order,
+    // not scope.sections' sorted order -- this is the actual order mismatch
+    // CodeRabbit flagged between backfill and the delta/deep sweeps.
+    await backfillSections(deps, "r", ["Beta", "Acme"], { store, windowDays: 30, fetchRules: async () => rules });
+    expect(store.read("r")!.mrs[9]!.codeownerSections).toEqual(["Acme", "Beta"]); // sorted despite unsorted demanded order
+
+    const events: Array<{ type: string; data: any }> = [];
+    await syncProjectMRs(
+      { ...deps, broadcast: (type, data) => events.push({ type, data }) },
+      "r",
+      { store, selfUsername: "self", windowDays: 30, fetchDelta: async () => ({ projectPath: "g/p", prs: [] }), fetchRules: async () => rules },
+    );
+    expect(events).toEqual([]); // same set backfill just wrote -- no spurious tag-change broadcast
+  });
+
+  test("a tag-only change (untagged this cycle, no pr change) still broadcasts", async () => {
+    const { store, deps } = await seededSectionStore(); // iid 9 tagged, stored
+    const events: Array<{ type: string; data: any }> = [];
+    await syncProjectMRs(
+      { ...deps, broadcast: (type, data) => events.push({ type, data }) },
+      "r",
+      {
+        store, selfUsername: "self", windowDays: 30,
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+        fetchRules: async () => ({ projectPath: "g/p", rules: [{ iid: 9, rules: [] }] }),
+      },
+    );
+    expect(store.read("r")!.mrs[9]!.codeownerSections).toBeUndefined();
+    expect(events).toEqual([{ type: "project-mrs", data: { repoName: "r", iids: [9] } }]);
   });
 });

@@ -29,7 +29,7 @@
  * record to delta against) and explicit `mode: "deep"` requests still reject.
  */
 
-import type { PullRequest } from "@mattstack/glance";
+import type { PullRequest, ApprovalRuleLite, MRApprovalRules } from "@mattstack/glance";
 import { getRepoContext, getSelfUsername, resolveSelfUsername } from "./freshness.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs, type ProjectMRStore } from "./project-mrs-store.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
@@ -57,6 +57,25 @@ export function effectiveAuthors(record: ProjectMRStore | undefined, selfUsernam
   if (selfUsername) authors.add(selfUsername);
   if (authors.size === 0) return null;
   return [...authors].sort();
+}
+
+/** Union of every live demand's sections, sorted (parity with effectiveAuthors); [] when none. */
+export function effectiveSections(record: ProjectMRStore | undefined): string[] {
+  const sections = new Set<string>();
+  for (const d of Object.values(record?.demands ?? {})) for (const s of d.sections ?? []) sections.add(s);
+  return [...sections].sort();
+}
+
+/** Demanded sections with an unapproved CODE_OWNER rule, sorted; [] when none. Sorted here so every producer (deep, delta, backfill) stores the same canonical order regardless of `demanded`'s order. */
+export function sectionsMatching(rules: ApprovalRuleLite[], demanded: string[]): string[] {
+  return demanded
+    .filter((s) => rules.some((r) => r.type === "CODE_OWNER" && !r.approved && r.section === s))
+    .sort();
+}
+
+/** Order-sensitive equality on two optional tag lists; both sides come from sectionsMatching's sorted output, so order-sensitivity is safe. */
+function sameSections(a: string[] | undefined, b: string[] | undefined): boolean {
+  return (a ?? []).length === (b ?? []).length && (a ?? []).every((s, i) => s === (b ?? [])[i]);
 }
 
 /** Drops PRs whose updatedAt is older than the window. A missing/unparseable timestamp is kept -- never guess-drop. */
@@ -88,6 +107,8 @@ export interface ProjectSyncOverrides {
   fetchSingle?: (repoName: string, projectPath: string, iid: number) => Promise<PullRequest | null>;
   /** Scoped deep's fetch: every open MR by any of these authors. */
   fetchAuthors?: (repoName: string, authors: string[]) => Promise<{ projectPath: string; prs: PullRequest[] }>;
+  /** Codeowner section sweep's fetch, shared by the deep sweep and backfillSections. */
+  fetchRules?: (repoName: string, opts: { updatedAfter?: string; iids?: number[] }) => Promise<{ projectPath: string; rules: MRApprovalRules[] }>;
   /** Overrides the grants-resolved window (test seam); production always resolves it from repo-tracking. */
   windowDays?: number;
   /**
@@ -141,6 +162,18 @@ async function syncImpl(
   const deepBackingOff = Date.now() - (deepFailedAt.get(repoName) ?? 0) < DEEP_RETRY_BACKOFF_MS;
   const isDeep = explicitDeep || (deepDue && (!record || !deepBackingOff));
 
+  // Shared by the deep section sweep below and the delta pipeline top-up
+  // further down, so each gets one declaration rather than two.
+  const fetchSingle = overrides.fetchSingle ?? (async (repo: string, pp: string, iid: number) => {
+    const { provider } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    return provider.fetchSingleMR(pp, iid, null);
+  });
+  const fetchRules = overrides.fetchRules ?? (async (repo: string, opts: { updatedAfter?: string; iids?: number[] }) => {
+    const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    const rules = await provider.fetchApprovalRules({ projectPath, ...opts });
+    return { projectPath, rules };
+  });
+
   if (isDeep) {
     // Idle demand clients (a board tab closed a week ago) must not keep
     // pinning their authors into the scope forever.
@@ -181,13 +214,70 @@ async function syncImpl(
         // now covers both out-of-scope authors and out-of-window MRs...a
         // failed author fetch rejects the whole deep (below) rather than
         // landing here as "this author has no MRs".
+        const sections = effectiveSections(record);
+        // Captured BEFORE fullSync runs: fullSync's reconcile overwrites
+        // every surviving entry with a fresh { pr, fetchedAt } object, which
+        // would erase this same signal if read afterward -- a demand that
+        // drops its sections while the MR stays in scope (author-covered)
+        // would then never trigger the rollback clear below.
+        const hasStaleTags = Object.values(record?.mrs ?? {}).some((e) => e.codeownerSections?.length);
         const { projectPath, prs } = await fetchAuthors(repoName, scopeAuthors);
         const kept = withinWindow(prs, windowDays, syncStartedAt);
-        const changed = store.fullSync(repoName, projectPath, kept, syncStartedAt);
-        store.setScope(repoName, { authors: scopeAuthors, windowDays });
+        const byIid = new Map(kept.map((pr) => [pr.iid, pr]));
+        const tags: Record<number, string[]> = {};
+        let sweep = { candidates: 0, matched: 0, hydrated: 0 };
+        // Containment: with no demand ever declaring a section, `sections`
+        // is [] and this whole block is skipped -- no rules fetch, no tag
+        // write, byIid stays exactly `kept`. Bit-identical to pre-sections behavior.
+        if (sections.length > 0) {
+          const sweepStartedAt = Date.now();
+          const updatedAfter = new Date(syncStartedAt - windowDays * 86_400_000).toISOString();
+          const { rules } = await fetchRules(repoName, { updatedAfter });
+          sweep.candidates = rules.length;
+          const matched = rules
+            .map((r) => ({ iid: r.iid, sections: sectionsMatching(r.rules, sections) }))
+            .filter((m) => m.sections.length > 0);
+          sweep.matched = matched.length;
+          for (const m of matched) tags[m.iid] = m.sections;
+          // Hydrate tagged MRs the author fetch did not cover. Stored rows are
+          // reused (delta/events keep them fresh); only unseen iids pay a fetch.
+          const toHydrate = matched.filter((m) => !byIid.has(m.iid) && !record?.mrs[m.iid]);
+          for (let i = 0; i < toHydrate.length; i += TOPUP_CONCURRENCY) {
+            const chunk = toHydrate.slice(i, i + TOPUP_CONCURRENCY);
+            await Promise.all(chunk.map(async (m) => {
+              try {
+                const pr = await fetchSingle(repoName, projectPath, m.iid);
+                if (pr) { byIid.set(m.iid, pr); sweep.hydrated++; }
+              } catch (err) {
+                log.warn({ err, repo: repoName, iid: m.iid }, "section hydration failed");
+              }
+            }));
+          }
+          for (const m of matched) {
+            const stored = record?.mrs[m.iid]?.pr;
+            if (!byIid.has(m.iid) && stored) byIid.set(m.iid, stored);
+          }
+          log.debug(
+            { repo: repoName, mode: "sections", sections, ...sweep, durationMs: Date.now() - sweepStartedAt },
+            "project sync",
+          );
+        }
+        const changed = store.fullSync(repoName, projectPath, [...byIid.values()], syncStartedAt);
+        // Containment: with sections never declared and no stale tag from a
+        // dropped demand, there is nothing to write and nothing to clear, so
+        // this stays a no-op call away from bit-identical behavior. It runs
+        // (replaceAll) when sections are live OR when `hasStaleTags` (above)
+        // found a tag from before this cycle -- covering both a pruned row
+        // (already cleaned by fullSync's own prune) and a still-in-scope row
+        // whose match just disappeared (the rollback's one permitted extra
+        // write, spec Decision 4).
+        if (sections.length > 0 || hasStaleTags) {
+          store.setSectionTags(repoName, tags, { replaceAll: true });
+        }
+        store.setScope(repoName, { authors: scopeAuthors, ...(sections.length > 0 ? { sections } : {}), windowDays });
         deepFailedAt.delete(repoName);
         log.debug(
-          { repo: repoName, mode: "deep", scoped: true, authors: scopeAuthors.length, open: kept.length, changed: changed.length },
+          { repo: repoName, mode: "deep", scoped: true, authors: scopeAuthors.length, open: kept.length, changed: changed.length, durationMs: Date.now() - syncStartedAt },
           "project sync",
         );
         if (changed.length > 0) {
@@ -204,7 +294,7 @@ async function syncImpl(
       // this point.
       store.setScope(repoName, null);
       deepFailedAt.delete(repoName);
-      log.debug({ repo: repoName, mode: "deep", open: prs.length, changed: changed.length }, "project sync");
+      log.debug({ repo: repoName, mode: "deep", open: prs.length, changed: changed.length, durationMs: Date.now() - syncStartedAt }, "project sync");
       if (changed.length > 0) {
         deps.broadcast("project-mrs", { repoName, iids: changed });
       }
@@ -237,6 +327,42 @@ async function syncImpl(
   });
 
   let { projectPath, prs } = await fetchDelta(repoName, updatedAfter);
+
+  // Sections-delta: re-sweep approval rules over the same delta window so a
+  // codeowner tag heals every cycle, not just on the once-a-day deep. A
+  // failed sweep must not fail the delta that keeps freshness flowing --
+  // it heals on the next successful cycle or via approved events.
+  let freshTags: Map<number, string[]> | null = null;
+  // A tag-only change (a stranger newly tagged or untagged, pr itself
+  // untouched) never lands in applyDelta's changed set on its own -- without
+  // this, clients keep stale tab membership until an unrelated pr change or
+  // the next deep.
+  const tagChangedIids: number[] = [];
+  if (record?.scope?.sections?.length) {
+    const sweepStartedAt = Date.now();
+    try {
+      const { rules } = await fetchRules(repoName, { updatedAfter });
+      freshTags = new Map(rules.map((r) => [r.iid, sectionsMatching(r.rules, record.scope!.sections!)]));
+      for (const [iid, sections] of freshTags) {
+        if (!sameSections(sections, record.mrs[iid]?.codeownerSections)) tagChangedIids.push(iid);
+      }
+      log.debug(
+        { repo: repoName, mode: "sections-delta", candidates: rules.length, matched: [...freshTags.values()].filter((s) => s.length > 0).length, durationMs: Date.now() - sweepStartedAt },
+        "project sync",
+      );
+    } catch (err) {
+      log.warn({ err, repo: repoName }, "section retag failed");
+    }
+  }
+  // Fresh sweep result wins when present; otherwise fall back to the
+  // currently stored tag (covers both "no sections demanded" and "sweep
+  // failed this cycle") -- never guess a stranger untagged.
+  const taggedNow = (iid: number): boolean => {
+    const fresh = freshTags?.get(iid);
+    if (fresh !== undefined) return fresh.length > 0;
+    return (record?.mrs[iid]?.codeownerSections?.length ?? 0) > 0;
+  };
+
   // A demand-scoped repo's delta window still queries the whole project
   // (updatedAfter has no author filter), so drop anything outside scope here
   // rather than letting it back into a store the deep sync just pruned it from.
@@ -244,21 +370,38 @@ async function syncImpl(
     const authors = record.scope.authors;
     // A missing author is never guess-dropped (same rule as withinWindow and
     // the events-mapping upsertProject filter) -- there is no way to tell
-    // which side of the scope it belongs on.
-    prs = prs.filter((pr) => !pr.author?.username || authors.includes(pr.author.username));
+    // which side of the scope it belongs on. A tagged stranger is kept too:
+    // codeowner-relevant, even though no demand named this author.
+    prs = prs.filter((pr) => !pr.author?.username || authors.includes(pr.author.username) || taggedNow(pr.iid));
   }
   const changed = store.applyDelta(repoName, projectPath, prs, deltaStartedAt);
+
+  // Persist the retag, and hydrate any brand-new match the delta window
+  // didn't carry. Hydrate BEFORE tagging: setSectionTags skips iids with no
+  // stored row, so tagging first would leave a newly matched MR untagged --
+  // and it would then be filtered out as an untagged stranger every delta
+  // until the next deep.
+  if (freshTags) {
+    const current = store.read(repoName);
+    const toHydrate = [...freshTags].filter(([iid, s]) => s.length > 0 && !current?.mrs[iid]).map(([iid]) => iid);
+    for (const iid of toHydrate) {
+      try {
+        const pr = await fetchSingle(repoName, projectPath, iid);
+        if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
+      } catch (err) {
+        log.warn({ err, repo: repoName, iid }, "section hydration failed");
+      }
+    }
+    store.setSectionTags(repoName, Object.fromEntries(freshTags));
+  }
 
   // Pipeline top-up: pipeline transitions bump no MR timestamp, so they
   // miss deltas (same blind spot as the events feed). Refresh the MRs whose
   // STORED pipeline is still in flight and that this delta didn't already
   // cover — the set is naturally tiny (pipelines currently running on open
   // MRs), so this restores the old ≤5-min pipeline freshness for ~0-5
-  // targeted fetches per cycle.
-  const fetchSingle = overrides.fetchSingle ?? (async (repo: string, pp: string, iid: number) => {
-    const { provider } = await getRepoContext(repo, deps.repoIndex()[repo]);
-    return provider.fetchSingleMR(pp, iid, null);
-  });
+  // targeted fetches per cycle. (fetchSingle is hoisted above the deep
+  // branch, shared with the section sweep's hydration.)
   const deltaIids = new Set(changed);
   const topup: number[] = [];
   const afterDelta = store.read(repoName);
@@ -294,8 +437,9 @@ async function syncImpl(
   for (const pr of fetched) {
     if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
   }
+  for (const iid of tagChangedIids) if (!changed.includes(iid)) changed.push(iid);
 
-  log.debug({ repo: repoName, mode: "delta", changed: changed.length, topup: topup.length }, "project sync");
+  log.debug({ repo: repoName, mode: "delta", changed: changed.length, topup: topup.length, durationMs: Date.now() - deltaStartedAt }, "project sync");
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });
   }
@@ -346,7 +490,72 @@ export async function backfillAuthors(
   const selfUsername = overrides.selfUsername !== undefined ? overrides.selfUsername : getSelfUsername();
   const union = new Set([...(record?.scope?.authors ?? []), ...authors]);
   if (selfUsername) union.add(selfUsername);
-  store.setScope(repoName, { authors: [...union].sort(), windowDays });
+  // setScope is a full replace -- an existing scope's sections (set by the
+  // deep sweep) must be carried forward explicitly or this call erases them
+  // until the next deep.
+  store.setScope(repoName, {
+    authors: [...union].sort(),
+    ...(record?.scope?.sections ? { sections: record.scope.sections } : {}),
+    windowDays,
+  });
+
+  if (changed.length > 0) {
+    deps.broadcast("project-mrs", { repoName, iids: changed });
+  }
+}
+
+/**
+ * Sections analog of backfillAuthors: on-demand top-up for sections newly
+ * declared by a demand (e.g. a board tab widening its request) without
+ * waiting for the next daily deep. Sweeps rules for the window, hydrates
+ * any matched MR the store doesn't already have, tags every match, and
+ * extends (never replaces) the existing scope's section list.
+ */
+export async function backfillSections(
+  deps: ProjectSyncDeps,
+  repoName: string,
+  sections: string[],
+  overrides: ProjectSyncOverrides = {},
+): Promise<void> {
+  if (sections.length === 0) return;
+
+  const store = overrides.store ?? getProjectMRs();
+  const record = store.read(repoName);
+  const windowDays = record?.scope?.windowDays
+    ?? overrides.windowDays
+    ?? grants(loadRepoTracking(), repoName).projectMrsWindowDays;
+  const fetchRules = overrides.fetchRules ?? (async (repo: string, opts: { updatedAfter?: string; iids?: number[] }) => {
+    const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    const rules = await provider.fetchApprovalRules({ projectPath, ...opts });
+    return { projectPath, rules };
+  });
+  const fetchSingle = overrides.fetchSingle ?? (async (repo: string, pp: string, iid: number) => {
+    const { provider } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    return provider.fetchSingleMR(pp, iid, null);
+  });
+
+  const updatedAfter = new Date(Date.now() - windowDays * 86_400_000).toISOString();
+  const { projectPath, rules } = await fetchRules(repoName, { updatedAfter });
+  const matched = rules
+    .map((r) => ({ iid: r.iid, sections: sectionsMatching(r.rules, sections) }))
+    .filter((m) => m.sections.length > 0);
+
+  const changed: number[] = [];
+  for (const m of matched) {
+    if (!store.read(repoName)?.mrs[m.iid]) {
+      try {
+        const pr = await fetchSingle(repoName, projectPath, m.iid);
+        if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
+      } catch (err) {
+        log.warn({ err, repo: repoName, iid: m.iid }, "section backfill hydration failed");
+      }
+    }
+  }
+
+  store.setSectionTags(repoName, Object.fromEntries(matched.map((m) => [m.iid, m.sections])));
+  const union = new Set([...(store.read(repoName)?.scope?.sections ?? []), ...sections]);
+  const scope = store.read(repoName)?.scope;
+  if (scope) store.setScope(repoName, { ...scope, sections: [...union].sort() });
 
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });

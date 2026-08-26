@@ -27,7 +27,7 @@
  */
 
 import { execSync } from "child_process";
-import { GitLabProvider, type InvalidationKey, type PullRequest } from "@mattstack/glance";
+import { GitLabProvider, type InvalidationKey, type MRApprovalRules, type PullRequest } from "@mattstack/glance";
 import { loadRepoTracking, grants, type RepoGrants } from "../repo-tracking.ts";
 import { loadSecrets } from "../linear.ts";
 import { parseRemoteUrl, isGitLabRemote, toMRInfo } from "../enrich.ts";
@@ -344,7 +344,7 @@ export const GAP_FILL_DEBOUNCE_MS = 5000;
 /** Narrow provider surface the mapping needs — tests stub this. */
 export type TargetedFetcher = Pick<
   GitLabProvider,
-  "fetchSingleMR" | "fetchPullRequestByBranch" | "fetchPullRequestsByBranches"
+  "fetchSingleMR" | "fetchPullRequestByBranch" | "fetchPullRequestsByBranches" | "fetchApprovalRules"
 >;
 
 export interface RepoTarget {
@@ -373,6 +373,8 @@ export interface MappingOverrides {
   grantsFor?:            (repoName: string) => RepoGrants;                   // default: grants(loadRepoTracking(), repoName)
   projectStore?:         ProjectMRs;                                          // default: getProjectMRs()
   hasCachedDiscussions?: (repoName: string, iid: number) => boolean;          // default: file-store read !== undefined
+  /** Approval-heal seam: rules for just these iids. default: provider.fetchApprovalRules({projectPath, iids}) */
+  fetchRulesByIid?:      (iids: number[]) => Promise<MRApprovalRules[]>;
 }
 
 /**
@@ -438,9 +440,13 @@ async function processKeys(
   const upsertProject = (pr: PullRequest) => {
     // Demand-scoped repos only track the declared authors; an MR missing an
     // author never guess-drops, since we can't tell which side of the scope
-    // it belongs on.
-    const scope = pStore.read(repoName)?.scope;
-    if (scope && pr.author?.username && !scope.authors.includes(pr.author.username)) return;
+    // it belongs on. A tagged stranger (out-of-scope author, still section-
+    // tagged) is kept too: dropping it here would silently erase a tag that
+    // only the approval-heal path is meant to clear.
+    const rec = pStore.read(repoName);
+    const scope = rec?.scope;
+    const tagged = (rec?.mrs[pr.iid]?.codeownerSections?.length ?? 0) > 0;
+    if (scope && pr.author?.username && !scope.authors.includes(pr.author.username) && !tagged) return;
     const changed = pStore.upsert(repoName, projectPath, pr, "events");
     if (changed.length > 0) env.broadcast("project-mrs", { repoName, iids: changed });
   };
@@ -465,6 +471,24 @@ async function processKeys(
             ?? (pr && ctx.cache.entries[pr.sourceBranch]?.repoName === repoName ? pr.sourceBranch : undefined);
           if (feedBranch) mutated = updateEntry(env, repoName, feedBranch, pr) || mutated;
           if (wantProject && pr) upsertProject(pr);
+          // GitLab's approval action bumps no updatedAt, so this is the only
+          // signal that heals a tag within one events tick rather than
+          // waiting on the next deep/delta sweep.
+          if (k.cause === "approved" && wantProject) {
+            const rec = pStore.read(repoName);
+            const sections = rec?.scope?.sections ?? [];
+            if (sections.length > 0 && (rec?.mrs[iid]?.codeownerSections?.length ?? 0) > 0) {
+              const fetchRulesByIid = overrides.fetchRulesByIid
+                ?? (async (iids: number[]) => provider.fetchApprovalRules({ projectPath, iids }));
+              const rules = await fetchRulesByIid([iid]);
+              const match = rules.find((r) => r.iid === iid);
+              if (match) {
+                const { sectionsMatching } = await import("./project-sync.ts");
+                pStore.setSectionTags(repoName, { [iid]: sectionsMatching(match.rules, sections) });
+                env.broadcast("project-mrs", { repoName, iids: [iid] });
+              }
+            }
+          }
           break;
         }
         case "notes": {

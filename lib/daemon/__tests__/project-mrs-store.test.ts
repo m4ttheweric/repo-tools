@@ -51,6 +51,18 @@ describe("upsert", () => {
     expect(s.read("repo")!.mrs[2]!.pr.state).toBe("merged");
     expect(s.read("repo")!.source).toBe("events");
   });
+
+  // upsert replaces the entry wholesale, same as applyDelta -- an
+  // events-path upsert of a tagged MR must carry the tag forward or it
+  // desyncs from the SQL project_mr_sections row.
+  test("preserves an existing codeownerSections tag on the replacement entry", () => {
+    const s = tmpStore();
+    s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
+    s.setSectionTags("repo", { 1: ["Acme"] });
+    s.upsert("repo", null, pr(1, { title: "updated" } as any), "events");
+    expect(s.read("repo")!.mrs[1]!.pr.title).toBe("updated");
+    expect(s.read("repo")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+  });
 });
 
 describe("fullSync reconcile", () => {
@@ -251,6 +263,18 @@ describe("applyDelta guards (review fixes)", () => {
     expect(s.read("repo")!.mrs[1]!.pr.state).toBe("merged");
     expect(changed).toEqual([]);
   });
+
+  // applyDelta replaces entries wholesale, so a tag on the entry must be
+  // carried forward the same way divergedCommitsCount already is -- else its
+  // SQL project_mr_sections row would outlive the in-memory tag.
+  test("delta preserves an existing codeownerSections tag on the replacement entry", () => {
+    const s = tmpStore();
+    s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
+    s.setSectionTags("repo", { 1: ["Acme"] });
+    s.applyDelta("repo", "g/p", [pr(1, { title: "updated" } as any)], Date.now());
+    expect(s.read("repo")!.mrs[1]!.pr.title).toBe("updated");
+    expect(s.read("repo")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+  });
 });
 
 describe("demand registry", () => {
@@ -320,6 +344,47 @@ describe("scope", () => {
     s.setScope("ghost", { authors: ["alice"], windowDays: 30 });
     s.setScope("ghost", null);
     expect(s.read("ghost")).toBeUndefined();
+  });
+});
+
+describe("section tags", () => {
+  test("setSectionTags tags, replaces, and clears per iid", () => {
+    const store = tmpStore();
+    store.fullSync("r", "g/p", [pr(1), pr(2)], 1000);
+    store.setSectionTags("r", { 1: ["Acme"] });
+    expect(store.read("r")!.mrs[1]!.codeownerSections).toEqual(["Acme"]);
+    expect(store.read("r")!.mrs[2]!.codeownerSections).toBeUndefined();
+    store.setSectionTags("r", { 1: [] });
+    expect(store.read("r")!.mrs[1]!.codeownerSections).toBeUndefined();
+  });
+
+  test("setSectionTags replaceAll clears tags the map does not mention", () => {
+    const store = tmpStore();
+    store.fullSync("r", "g/p", [pr(1), pr(2)], 1000);
+    store.setSectionTags("r", { 1: ["Acme"], 2: ["Beta"] });
+    store.setSectionTags("r", { 2: ["Beta"] }, { replaceAll: true });
+    expect(store.read("r")!.mrs[1]!.codeownerSections).toBeUndefined();
+    expect(store.read("r")!.mrs[2]!.codeownerSections).toEqual(["Beta"]);
+  });
+
+  test("fullSync prune drops the pruned row's tag row too", () => {
+    const db = tmpDb();
+    const store = createProjectMRs(db);
+    store.fullSync("r", "g/p", [pr(1)], 1000);
+    store.setSectionTags("r", { 1: ["Acme"] });
+    store.fullSync("r", "g/p", [], 2000);
+    expect(store.read("r")!.mrs[1]).toBeUndefined();
+    const rows = db.query("SELECT * FROM project_mr_sections WHERE repo = 'r';").all();
+    expect(rows).toHaveLength(0);
+  });
+
+  test("registerDemand stores sections and scope round-trips them", () => {
+    const store = tmpStore();
+    store.registerDemand("r", "board:1", ["ada"], 5, ["Acme"]);
+    expect(store.read("r")!.demands!["board:1"]!.sections).toEqual(["Acme"]);
+    store.fullSync("r", "g/p", [], 1000);
+    store.setScope("r", { authors: ["ada"], sections: ["Acme"], windowDays: 30 });
+    expect(store.read("r")!.scope).toEqual({ authors: ["ada"], sections: ["Acme"], windowDays: 30 });
   });
 });
 
