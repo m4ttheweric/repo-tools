@@ -621,6 +621,59 @@ describe("applyInvalidationBatch", () => {
     expect(store.read("repo-x")!.mrs[42]).toBeDefined();
   });
 
+  // ─── tagged strangers + approval heal (Task 8) ────────────────────────────
+
+  test("upsertProject keeps a tagged stranger despite the author scope filter", async () => {
+    const store = pmrsStore();
+    store.fullSync("repo-x", "g/p", [fakePR(9, { sourceBranch: "branch-9", author: { id: "gid://gitlab/User/2", username: "stranger", name: "Stranger", avatarUrl: null } })], Date.now() - 1000);
+    store.setSectionTags("repo-x", { 9: ["Acme"] });
+    store.setScope("repo-x", { authors: ["ada"], windowDays: 30 });
+    const { env, broadcasts } = makeEnv({});
+    const target: RepoTarget = {
+      repoName: "repo-x", projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async (_pp: string, iid: number) =>
+          fakePR(iid, { sourceBranch: "branch-9", title: "v2", author: { id: "gid://gitlab/User/2", username: "stranger", name: "Stranger", avatarUrl: null } }),
+        fetchPullRequestByBranch: async () => { throw new Error("unexpected"); },
+        fetchPullRequestsByBranches: async () => { throw new Error("unexpected"); },
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [key("mr", "9")], {
+      ...noNotify, grantsFor: projectGrants, projectStore: store,
+    });
+    expect(store.read("repo-x")!.mrs[9]!.pr.title).toBe("v2");                 // upserted, not dropped
+    expect(store.read("repo-x")!.mrs[9]!.codeownerSections).toEqual(["Acme"]); // tag preserved through upsert
+    expect(broadcasts.some((b) => b.type === "project-mrs" && b.data.iids.includes(9))).toBe(true);
+  });
+
+  test("an approved invalidation re-checks rules and untags", async () => {
+    const store = pmrsStore();
+    store.fullSync("repo-x", "g/p", [fakePR(9, { sourceBranch: "branch-9" })], Date.now() - 1000);
+    store.setSectionTags("repo-x", { 9: ["Acme"] });
+    store.setScope("repo-x", { authors: ["ada"], sections: ["Acme"], windowDays: 30 });
+    const { env, broadcasts } = makeEnv({});
+    const rulesCalls: number[][] = [];
+    const target: RepoTarget = {
+      repoName: "repo-x", projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async (_pp: string, iid: number) => fakePR(iid, { sourceBranch: "branch-9" }),
+        fetchPullRequestByBranch: async () => { throw new Error("unexpected"); },
+        fetchPullRequestsByBranches: async () => { throw new Error("unexpected"); },
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [{ kind: "mr", ref: "9", cause: "approved" }], {
+      ...noNotify, grantsFor: projectGrants, projectStore: store,
+      fetchRulesByIid: async (iids: number[]) => {
+        rulesCalls.push(iids);
+        return [{ iid: 9, rules: [{ type: "CODE_OWNER", approved: true, section: "Acme" }] }];
+      },
+    });
+    expect(rulesCalls).toEqual([[9]]);                                        // rules re-checked for exactly this iid
+    expect(store.read("repo-x")!.mrs[9]!.codeownerSections).toBeUndefined();   // healed: rule is now approved
+    const projectBroadcasts = broadcasts.filter((b) => b.type === "project-mrs");
+    expect(projectBroadcasts.some((b) => b.data.iids.includes(9))).toBe(true);
+  });
+
   test("notes: no discussions grant → no refresh; grant without cached discussions → no refresh; both → refresh", async () => {
     const entries: Record<string, any> = {
       "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
