@@ -355,7 +355,7 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     await runChat(["sign-in", "--as", "fred", "--no-room", "--session", "s8"]);
     for (let i = 0; i < 5; i++) {
       const out = await runChat(["sign-in", "--no-room", "--session", `s9-${i}`]);
-      const handle = /signed in as (\S+)/.exec(out)?.[1];
+      const handle = /signed in as (\S+)/.exec(out)?.[1] ?? "";
       expect(handle).not.toBe("fred");
       expect(handle).not.toMatch(/^fred-\d+$/);
     }
