@@ -14,17 +14,10 @@ import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 
 import type { RebaseResult } from "../commands/git/rebase.ts";
+import { buildPaneCommand } from "./agent-argv.ts";
+import { defaultHerdrRunner, herdrAgentWait, launchInWorkspace, type HerdrRunner } from "./agent-herdr.ts";
 import { getCurrentBranch, hasUncommittedChanges } from "./git-ops.ts";
 import { syncLog } from "./sync-log.ts";
-import {
-  AGENT_WAIT_TIMEOUT_MS,
-  herdrAvailable,
-  readPane,
-  sendTask,
-  spawnAgentPane,
-  startClaude,
-  waitAgentIdle,
-} from "./herdr-agent.ts";
 import { bold, cyan, dim, green, red, reset, yellow } from "./tui.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -51,6 +44,7 @@ export type RebaseVerdict =
   | "wrong-branch";
 
 const COMMIT_CAP = 20;
+const AGENT_WAIT_TIMEOUT_MS = 10 * 60_000;
 
 // ─── Git helpers ─────────────────────────────────────────────────────────────
 
@@ -185,6 +179,11 @@ function abortRebase(cwd: string): void {
   spawnSync("git", ["rebase", "--abort"], { cwd, stdio: "pipe" });
 }
 
+async function herdrAvailable(runner: HerdrRunner): Promise<boolean> {
+  const r = await runner(["workspace", "list"]);
+  return r.exitCode === 0;
+}
+
 /**
  * Turn a paused rebase into a resolution: JSON contract for agent callers,
  * or an interactive prompt (abort / hand to a herdr Claude pane / leave
@@ -198,6 +197,7 @@ export async function runEscalationFlow(opts: {
   mode: "interactive" | "json";
   autoYes: boolean;
   push: boolean;
+  herdrRunner?: HerdrRunner;
 }): Promise<number> {
   const { cwd, result } = opts;
   const bundle = buildConflictBundle(result, cwd);
@@ -208,7 +208,8 @@ export async function runEscalationFlow(opts: {
     return 3;
   }
 
-  const agentPossible = herdrAvailable();
+  const runner: HerdrRunner = opts.herdrRunner ?? defaultHerdrRunner();
+  const agentPossible = await herdrAvailable(runner);
   let choice: string;
   if (opts.autoYes && agentPossible) {
     choice = "agent";
@@ -250,38 +251,41 @@ export async function runEscalationFlow(opts: {
   // choice === "agent"
   try {
     const taskPath = writeTaskFile(opts.dataDir, renderAgentTask(bundle, cwd));
-    const pane = spawnAgentPane({
-      cwd,
-      label: `rebase ${bundle.branch}`,
-      repoName: opts.repoName,
+    const sessionId = crypto.randomUUID();
+    const paneCommand = buildPaneCommand(cwd, {
+      session: { kind: "start", sessionId },
+      headless: false,
+      prompt: `Read ${taskPath} and complete the task it describes.`,
     });
-    startClaude(pane, cwd);
-    sendTask(pane, taskPath);
-    syncLog.phase("escalation-agent", { pane: pane.paneId, taskPath });
+    const out = await launchInWorkspace(
+      { workspaceLabel: opts.repoName, tabLabel: `rebase ${bundle.branch}`, paneCommand },
+      runner,
+    );
+    syncLog.phase("escalation-agent", { pane: out.paneId, taskPath });
 
     console.log(
-      `\n  ${cyan}agent resolving conflicts in pane ${bold}${pane.paneId}${reset}${cyan}…${reset} ${dim}(Ctrl+C to detach)${reset}`,
+      `\n  ${cyan}agent resolving conflicts in pane ${bold}${out.paneId}${reset}${cyan}…${reset} ${dim}(Ctrl+C to detach)${reset}`,
     );
 
     const onSigint = () => {
       console.log(
-        `\n  ${yellow}detached${reset} ${dim}agent still working in pane ${pane.paneId}.` +
+        `\n  ${yellow}detached${reset} ${dim}agent still working in pane ${out.paneId}.` +
           ` when it finishes: git push --force-with-lease origin ${bundle.branch}${reset}\n`,
       );
       process.exit(130);
     };
     process.on("SIGINT", onSigint);
-    let waitResult: "idle" | "timeout";
+    let settled: boolean;
     try {
-      waitResult = await waitAgentIdle(pane, AGENT_WAIT_TIMEOUT_MS);
+      settled = await herdrAgentWait(out.paneId, ["idle", "done"], AGENT_WAIT_TIMEOUT_MS, runner);
     } finally {
       process.removeListener("SIGINT", onSigint);
     }
 
-    if (waitResult === "timeout") {
+    if (!settled) {
       console.log(`\n  ${red}✗${reset} agent did not finish within 10 minutes; nothing was pushed`);
-      console.log(readPane(pane, 40));
-      console.log(`  ${dim}pane ${pane.paneId} is still open. backup: ${bundle.backupBranch}${reset}\n`);
+      console.log((await runner(["pane", "read", out.paneId, "--source", "recent"])).stdout);
+      console.log(`  ${dim}pane ${out.paneId} is still open. backup: ${bundle.backupBranch}${reset}\n`);
       syncLog.phase("escalation-verdict", { verdict: "timeout" });
       return 1;
     }
@@ -308,14 +312,14 @@ export async function runEscalationFlow(opts: {
 
     if (verdict === "agent-aborted") {
       console.log(`\n  ${yellow}agent aborted the rebase.${reset} last pane output:\n`);
-      console.log(readPane(pane, 40));
+      console.log((await runner(["pane", "read", out.paneId, "--source", "recent"])).stdout);
       console.log(`  ${dim}backup: ${bundle.backupBranch}${reset}\n`);
       return 1;
     }
 
     console.log(`\n  ${red}✗ verification failed (${verdict}); nothing was pushed${reset}`);
-    console.log(readPane(pane, 40));
-    console.log(`  ${dim}inspect pane ${pane.paneId}. backup: ${bundle.backupBranch}${reset}\n`);
+    console.log((await runner(["pane", "read", out.paneId, "--source", "recent"])).stdout);
+    console.log(`  ${dim}inspect pane ${out.paneId}. backup: ${bundle.backupBranch}${reset}\n`);
     return 1;
   } catch (err) {
     // Herdr tooling failed after the user chose escalation. Never abort their

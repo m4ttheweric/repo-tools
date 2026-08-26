@@ -10,6 +10,10 @@
  * herdr is invoked by absolute path with HERDR_SOCKET_PATH set explicitly:
  * under launchd the daemon's start PATH has neither, and Bun.spawn resolves
  * executables from the start env, not runtime process.env.
+ *
+ * The bounded-agent primitive for rt verbs (see rt-agent-boundary memory):
+ * rt gathers context deterministically, an agent does one bounded step in a
+ * visible pane, rt verifies the result from real state afterward.
  */
 
 import { homedir } from "os";
