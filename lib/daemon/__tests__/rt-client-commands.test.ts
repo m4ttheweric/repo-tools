@@ -41,7 +41,7 @@ describe("rt-client command coverage", () => {
       eventsBus: createEventsBus({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
       homeSnapshot: { stop: () => {}, runNow: async () => ({}) as any, status: () => ({}) as any, ready: Promise.resolve() },
       repos: { withReconcilerHeld: async (fn) => fn(), refreshWatchedRepos: () => {} },
-      chatDb: openStateDb(":memory:"),
+      stateDb: openStateDb(":memory:"),
     });
     for (const name of COMMAND_NAMES) {
       expect(handlers[name]).toBeDefined();

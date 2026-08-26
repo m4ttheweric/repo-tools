@@ -21,6 +21,7 @@ import { createSecretsHandlers } from "./handlers/secrets.ts";
 import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
 import { createChatHandlers } from "./handlers/chat.ts";
+import { createAgentHandlers } from "./handlers/agent.ts";
 import { createEndpointHandlers } from "./handlers/endpoint.ts";
 import { createSettingsHandlers } from "./handlers/settings.ts";
 import { createHomeHandlers } from "./handlers/home.ts";
@@ -51,13 +52,13 @@ export function buildRoutedHandlers(opts: {
     refreshWatchedRepos: () => void;
   };
   /**
-   * state.db, for chat:* handlers (RT-48 Task 6). Passed in already-open
+   * state.db, for chat:* and agent:* handlers. Passed in already-open
    * rather than resolved here with getStateDb(): this function is called at
    * the daemon's module-evaluation time, and state.db must not open before
    * startDaemon()'s explicit, ordered open (see lib/daemon.ts's branch-cache
    * facade comment).
    */
-  chatDb: Database;
+  stateDb: Database;
 }): TypedHandlers & HandlerMap {
   const { ctx, broadcast, systemProcessScanner } = opts;
   const emitEvent = (topic: string, payload: unknown) => {
@@ -67,7 +68,10 @@ export function buildRoutedHandlers(opts: {
   };
   // createChatHandlers also exposes `db` (its test-isolation seam); dropped
   // here so it never lands as a bogus "db" entry in the command map below.
-  const { db: _chatDb, ...chatHandlers } = createChatHandlers({ db: opts.chatDb, emitEvent });
+  const { db: _chatDb, ...chatHandlers } = createChatHandlers({ db: opts.stateDb, emitEvent });
+  // Same seam as chatHandlers above: createAgentHandlers exposes `db` for
+  // test isolation only.
+  const { db: _agentDb, ...agentHandlers } = createAgentHandlers({ db: opts.stateDb, emitEvent });
   return {
     ...createCacheHandlers(ctx),
     ...createHooksHandlers(ctx),
@@ -82,6 +86,7 @@ export function buildRoutedHandlers(opts: {
     ...createProjectMRsHandlers(ctx, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
     ...chatHandlers,
+    ...agentHandlers,
     ...createEndpointHandlers(ctx),
     ...createSettingsHandlers(),
     ...createHomeHandlers(opts.homeSnapshot),
