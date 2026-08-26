@@ -3,7 +3,7 @@ import MattstackCore
 
 let teamChoiceChecks: [Check] = [
     Check("Slug.make") { c in
-        c.expectEqual(Slug.make("Acme Claims!"), "acme-svc")
+        c.expectEqual(Slug.make("Acme Claims!"), "acme-claims")
         c.expectEqual(Slug.make("  My  Team -- 2 "), "my-team-2")
         c.expectEqual(Slug.make(""), "")
     },
@@ -19,7 +19,7 @@ let teamChoiceChecks: [Check] = [
             c.expectEqual(m.ghOwner, "m4ttheweric")
             c.expectEqual(m.canContinue, false)
             m.teamName = "Acme Claims"
-            c.expectEqual(m.slugPreview, "acme-svc")
+            c.expectEqual(m.slugPreview, "acme-claims")
             c.expectEqual(m.ghRepoPreview, "m4ttheweric/mattstack-team-acme-claims")
             c.expectEqual(m.canContinue, true)
             m.useGhRepo = false
@@ -31,7 +31,7 @@ let teamChoiceChecks: [Check] = [
     Check("create: validateAndPrepare calls home init --dry-run then team create, never with secrets on argv") { c in
         let rt = ScriptedRt()
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
+        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-claims","name":"Acme Claims"},"remote":"ok"}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
         await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
         let err = await m.validateAndPrepare()
@@ -41,7 +41,7 @@ let teamChoiceChecks: [Check] = [
         c.expectEqual(rt.calls[1].args, ["team", "create", "Acme Claims", "--remote", "https://example.com/t.git", "--others", "--json"])
         let gh = ScriptedRt()
         gh.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        gh.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
+        gh.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-claims","name":"Acme Claims"},"remote":"ok"}"#)
         let m2 = await MainActor.run { TeamChoiceModel(rt: gh) }
         await MainActor.run { m2.choice = .create; m2.teamName = "Acme Claims"; m2.useGhRepo = true; m2.ghOwner = "acme"; m2.othersWillJoin = false }
         c.expect(await m2.validateAndPrepare() == nil)
@@ -68,7 +68,7 @@ let teamChoiceChecks: [Check] = [
     Check("create: validateAndPrepare is idempotent for unchanged inputs; a changed field re-runs it") { c in
         let rt = ScriptedRt()
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
+        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-claims","name":"Acme Claims"},"remote":"ok"}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
         await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
         c.expect(await m.validateAndPrepare() == nil)
