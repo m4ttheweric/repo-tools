@@ -16,9 +16,9 @@ describe("AGENT_NAMES", () => {
 describe("pickAgentName", () => {
   test("skips names live sessions hold, whether bare or suffixed", () => {
     const first = () => 0; // always the first free name
-    expect(pickAgentName([], first)).toBe(AGENT_NAMES[0]);
-    expect(pickAgentName([AGENT_NAMES[0]!], first)).toBe(AGENT_NAMES[1]);
-    expect(pickAgentName([`${AGENT_NAMES[0]}-2`, AGENT_NAMES[1]!], first)).toBe(AGENT_NAMES[2]);
+    expect(pickAgentName([], first)).toBe(AGENT_NAMES[0]!);
+    expect(pickAgentName([AGENT_NAMES[0]!], first)).toBe(AGENT_NAMES[1]!);
+    expect(pickAgentName([`${AGENT_NAMES[0]}-2`, AGENT_NAMES[1]!], first)).toBe(AGENT_NAMES[2]!);
   });
 
   test("falls back to the whole pool when every name is held", () => {
