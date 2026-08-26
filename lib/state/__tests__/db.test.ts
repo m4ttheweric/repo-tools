@@ -221,6 +221,33 @@ describe("openStateDb — reopen is a no-op", () => {
     expect(importCount).toBe(1); // not re-imported
     db2.close();
   });
+
+  test("a future SCHEMA_VERSION bump replaying the full DDL string against an already-v6 db does not throw on the sections column", () => {
+    const dbPath = join(dir, "state.db");
+    const db1 = openStateDb(dbPath, "cli");
+    expect(userVersion(db1)).toBe(SCHEMA_VERSION);
+    db1.close();
+
+    // Force user_version back below SCHEMA_VERSION on a db that already has
+    // the v6 shape (sections column included) -- exactly what every existing
+    // v6 db looks like to a future SCHEMA_VERSION bump, whose migration
+    // re-execs this same combined DDL string.
+    const raw = new Database(dbPath);
+    raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1};`);
+    raw.close();
+
+    let db2: Database | undefined;
+    expect(() => {
+      db2 = openStateDb(dbPath, "cli");
+    }).not.toThrow();
+
+    expect(userVersion(db2!)).toBe(SCHEMA_VERSION);
+    const sectionsColumns = (db2!.query("PRAGMA table_info(project_mr_demands);").all() as { name: string }[]).filter(
+      (c) => c.name === "sections",
+    );
+    expect(sectionsColumns).toHaveLength(1);
+    db2!.close();
+  });
 });
 
 describe("legacy import seam", () => {

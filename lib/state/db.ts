@@ -248,8 +248,22 @@ CREATE TABLE IF NOT EXISTS project_mr_sections (
   sections TEXT NOT NULL,               -- JSON string[]
   PRIMARY KEY (repo, iid)
 );
-ALTER TABLE project_mr_demands ADD COLUMN sections TEXT;
 `;
+
+/** project_mr_demands.sections (v6): SQLite's ALTER TABLE ADD COLUMN has no
+    IF NOT EXISTS, so unlike every statement in the V*_SCHEMA strings above it
+    cannot simply replay -- a future SCHEMA_VERSION bump re-execs this whole
+    combined block against every db already at v6, and an unconditional ALTER
+    would throw "duplicate column", rolling back that migration and wedging
+    every later openStateDb call. Run it here instead, inside the same
+    migration transaction, gated on the column's actual absence. Any future
+    ALTER-added column follows this same conditional-exec pattern, never the
+    DDL strings. */
+function addSectionsColumnIfMissing(db: Database): void {
+  const columns = db.query("PRAGMA table_info(project_mr_demands);").all() as { name: string }[];
+  if (columns.some((c) => c.name === "sections")) return;
+  db.exec("ALTER TABLE project_mr_demands ADD COLUMN sections TEXT;");
+}
 
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
 function isCorruptionError(err: unknown): boolean {
@@ -367,10 +381,14 @@ function importLegacyStores(db: Database, dir: string): string[] {
 /**
  * The race-proof migration runner (spec "Schema versioning"): BEGIN
  * IMMEDIATE takes the write lock up front, user_version is RE-READ inside
- * the transaction, and all DDL is IF NOT EXISTS. Two processes racing at
- * v0: the loser blocks on IMMEDIATE (busy_timeout), then sees v1 inside its
- * own transaction and applies nothing. A throwing migration rolls back and
- * propagates — no swallow.
+ * the transaction, and every statement in the combined DDL string is IF NOT
+ * EXISTS-safe (the one exception, an ALTER TABLE ADD COLUMN, lives outside
+ * that string as its own conditional exec -- see addSectionsColumnIfMissing
+ * -- and any future ALTER-added column must follow that same pattern rather
+ * than join the DDL string). Two processes racing at v0: the loser blocks on
+ * IMMEDIATE (busy_timeout), then sees v1 inside its own transaction and
+ * applies nothing. A throwing migration rolls back and propagates, no
+ * swallow.
  */
 function runMigrations(db: Database, dir: string): void {
   db.exec("BEGIN IMMEDIATE;");
@@ -382,6 +400,7 @@ function runMigrations(db: Database, dir: string): void {
       // statement is IF NOT EXISTS, so replaying v1's DDL against an
       // already-v1 db is a no-op and existing rows are untouched.
       db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA);
+      addSectionsColumnIfMissing(db);
       // Legacy-JSON import is single-shot and only correct from a true
       // v0 (never-migrated) database: branch-cache's UPSERT would silently
       // overwrite current rows with stale ones, and project-mrs-store's
