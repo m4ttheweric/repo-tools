@@ -74,6 +74,43 @@ doesn't error, it resolves empty. `parseIdentity` is strict — only strings
 `serializeIdentity` emitted parse — so validate payloads with it, and never
 hand-assemble or string-split a wire.
 
+## Chat
+
+The `rt chat` surface the chat viewer (`~/Documents/GitHub/chat`) is built
+on. Every call degrades to `{ ok: false, error }` instead of throwing, and a
+daemon that is down and a daemon that refused look the same to the caller;
+branch on `ok`, not on exceptions.
+
+```ts
+import { chatRooms, chatMessages, chatPost, createRelay, daemonHealth } from '@mattstack/rt-client';
+
+const rooms = await chatRooms({ handle: 'matt' });            // { ok, data: { rooms } }
+const page = await chatMessages({ room: 'build', limit: 50 }); // newest page; `before: <id>` pages older
+await chatPost({ handle: 'matt', room: 'build', body: 'on it' });
+
+const health = await daemonHealth();                           // { reachable, error? }, never throws
+const stop = createRelay({                                     // one daemon subscription, republished
+  match: t => t.startsWith('chat/'),                            // `chat/<room>/msg`, `chat/wake/<handle>`
+  topic: 'chat',
+  publish: (topic, data) => server.publish(topic, data),
+});
+```
+
+| Function | Daemon verb |
+| --- | --- |
+| `chatSignIn` / `chatSignOut` / `chatAway` / `chatBack` / `chatPulse` | presence: the buddy-list row and its heartbeats |
+| `chatBuddies` / `chatWho` / `chatRooms` | the roster, one room's members, a handle's rooms |
+| `chatJoin` / `chatLeave` | membership (`wakeOn: mention \| all \| none`) |
+| `chatPost` / `chatDm` / `chatRead` / `chatMessages` / `chatMark` | messages: post, DM, read-and-advance, page, advance the cursor |
+| `chatArm` / `chatTouch` / `chatDisarm` / `chatUnreadWaking` | the tail's wake protocol; the CLI's `rt chat tail` uses these |
+| `createRelay` / `subscribe` | the event stream; `daemonHealth` the reachability probe |
+
+Pass `{ sockPath }` as the trailing options to reach a non-default daemon
+socket. The verbs, their payloads and the wake protocol are specified in
+repo-tools `docs/superpowers/specs/2026-08-23-rt-chat-design.md` and
+`2026-08-24-rt-chat-presence-design.md`; the agent-facing rules are
+`skills/rt-chat/SKILL.md`.
+
 ## License
 
 MIT
