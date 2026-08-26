@@ -46,6 +46,7 @@ import {
   writeChatSession,
 } from "../lib/chat-session.ts";
 import { pickAgentName } from "../lib/chat-names.ts";
+import { chatViewerUrl } from "../lib/chat-viewer-url.ts";
 import { planSessionRename, type RenamePlan } from "../lib/chat-rename.ts";
 import { parseDuration } from "./events.ts";
 import {
@@ -321,6 +322,15 @@ function resolveSignInBaseHandle(args: string[], sessionId: string, taken: Itera
   const prior = readChatSession(sessionId);
   if (prior && typeof prior.baseHandle === "string" && isValidChatName(prior.baseHandle)) return prior.baseHandle;
   return pickAgentName(taken);
+}
+
+function readChatViewerUrlSetting(): string | undefined {
+  try {
+    const resolved = getSetting<string>("chat.viewerUrl");
+    return typeof resolved.value === "string" && resolved.value ? resolved.value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function readChatHandleSetting(): string | undefined {
@@ -708,8 +718,16 @@ async function runPost(args: string[]): Promise<void> {
   requireValidName("handle", handle);
 
   const res = await chatPost({ room, handle, body });
-  unwrap(res, "post");
-  // prints nothing on success — Global Constraint
+  const data = unwrap(res, "post");
+  // Silent on success unless a viewer is configured: then the one line
+  // printed is the link the pane driver clicks to read the message, which
+  // is what lets the agent's own narration stay at a single line.
+  const url = chatViewerUrl(readChatViewerUrlSetting(), room, data.id);
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, id: data.id, recipients: data.recipients, url: url ?? null }));
+    return;
+  }
+  if (url) console.log(`posted → ${url}`);
 }
 
 async function runRead(args: string[]): Promise<void> {
@@ -1171,8 +1189,8 @@ function killChatTail(handle: string): void {
 }
 
 /** One line per wake, count-style; identical format for the catch-up and the stream. */
-function wakeLine(room: string, count: number): string {
-  return `${count} new in #${room} — \`rt chat read\` to see it.`;
+function wakeLine(room: string, count: number, url?: string): string {
+  return `${count} new in #${room} — \`rt chat read\` to see it.${url ? ` ${url}` : ""}`;
 }
 
 /**
@@ -1298,6 +1316,7 @@ export async function chatTail(args: string[]): Promise<void> {
   // replayed by the stream (the arm-race fix).
   const head = await callOrBackoff(() => eventsHead(opts));
   const C = head.cursor;
+  const viewerBase = readChatViewerUrlSetting();
 
   // Step 2: arm (scoped to --room when given; all the handle's rooms otherwise).
   // sessionId travels here so a reclaimed handle is refused at arm time, not
@@ -1313,7 +1332,7 @@ export async function chatTail(args: string[]): Promise<void> {
   let W = 0;
   for (const r of catchup.rooms) {
     if (roomFilter && r.room !== roomFilter) continue;
-    if (r.count > 0) console.log(wakeLine(r.room, r.count));
+    if (r.count > 0) console.log(wakeLine(r.room, r.count, chatViewerUrl(viewerBase, r.room)));
     if (r.maxId > W) W = r.maxId;
   }
 
@@ -1344,7 +1363,7 @@ export async function chatTail(args: string[]): Promise<void> {
       const room = e.payload?.room;
       if (typeof msgId === "number" && msgId <= W) continue; // dup: already in the catch-up
       if (roomFilter && room !== roomFilter) continue; // --room: silently skip other rooms
-      console.log(wakeLine(room, 1));
+      console.log(wakeLine(room, 1, chatViewerUrl(viewerBase, room, typeof msgId === "number" ? msgId : undefined)));
     }
   }
 }

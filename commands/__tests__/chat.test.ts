@@ -33,6 +33,7 @@ import { createChatHandlers } from "../../lib/daemon/handlers/chat.ts";
 import { getStateDb, closeStateDb } from "../../lib/state/index.ts";
 import { sessionFilePath } from "../../lib/chat-session.ts";
 import { AGENT_NAMES } from "../../lib/chat-names.ts";
+import { setSetting } from "../../packages/rt-client/src/settings/write.ts";
 import { drainNotifications, peekNotifications } from "../../lib/notifier.ts";
 
 // ─── in-process CLI + fake daemon harness ───────────────────────────────────
@@ -252,6 +253,16 @@ describe("rt chat CLI — additional verb behavior", () => {
     const { code, stderr } = await runChatRaw(["join", "r", "--as", "Bad Handle"]);
     expect(code).not.toBe(0);
     expect(stderr).toContain("[a-z0-9._-]");
+  });
+
+  test("post prints the viewer link when chat.viewerUrl is set, and --json carries it", async () => {
+    setSetting("chat.viewerUrl", "https://chat.example/", "user");
+    await runChat(["join", "r", "--as", "a"]);
+    const out = await runChat(["post", "r", "hello", "--as", "a"]);
+    expect(out).toMatch(/^posted → https:\/\/chat\.example\/r\/r#m-\d+$/);
+    const json = JSON.parse(await runChat(["post", "r", "again", "--as", "a", "--json"]));
+    expect(json).toMatchObject({ ok: true, recipients: expect.any(Array) });
+    expect(json.url).toBe(`https://chat.example/r/r#m-${json.id}`);
   });
 
   test("mark advances the cursor and prints nothing", async () => {
