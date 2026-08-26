@@ -129,7 +129,7 @@ Expected: FAIL — cannot resolve `../agents-store.ts`.
 
 - [ ] **Step 3: Implement schema + store**
 
-In `lib/state/db.ts`: change `export const SCHEMA_VERSION = 6;` to `7` (update its docblock, and replace the "v5 is reserved by another lane" note to state that this lane lands v7), add below `V6_SCHEMA`:
+In `lib/state/db.ts`: change `export const SCHEMA_VERSION = 6;` to `7`. Update the SCHEMA_VERSION docblock (line 24 on main): its block list becomes `(v1 + v2 + v3 + v4 + v6 + v7)` and the "v5 is reserved by another lane" clause is removed (v5 stays permanently unused; coordinated with github-27 2026-08-26). Then add below `V6_SCHEMA`:
 
 ```ts
 // Tables (v7): agent handoff records for `rt agent`
