@@ -291,6 +291,25 @@ describe("rt chat CLI — additional verb behavior", () => {
     expect(bodies).toContain("the ask first\n\n- one point\n- another");
   });
 
+  test("post with no text reads the body from piped stdin, as a bare heredoc does", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    await runChat(["join", "r", "--as", "b"]);
+    const cliPath = join(import.meta.dir, "..", "..", "cli.ts");
+    const proc = Bun.spawn(["bun", "run", cliPath, "chat", "post", "r", "--as", "a"], {
+      env: { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin", RT_SKIP_SETUP: "1", CI: "true" },
+      stdin: Buffer.from("the lede\n\n- one point\n- another\n"),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    children.push(proc);
+    const code = await proc.exited;
+    expect(code).toBe(0);
+    const out = JSON.parse(await runChat(["read", "r", "--as", "b", "--json"])) as {
+      rooms: { messages: { body: string }[] }[];
+    };
+    expect(out.rooms.flatMap((r) => r.messages.map((m) => m.body))).toContain("the lede\n\n- one point\n- another");
+  });
+
   test("post refuses a long single-line body with the heredoc hint; --as-is overrides", async () => {
     await runChat(["join", "r", "--as", "a"]);
     const wall = "x".repeat(520);

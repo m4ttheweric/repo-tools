@@ -3,7 +3,7 @@
  *
  *   rt chat join <room> [--as <h>] [--wake-on mention|all|none]
  *   rt chat leave <room>
- *   rt chat post <room> <text>                    prints NOTHING on success
+ *   rt chat post <room> <<'EOF' ... EOF          the body on stdin; <text> for a one-liner
  *   rt chat read [room] [--limit 20] [--full] [--since <dur>]
  *   rt chat rooms
  *   rt chat who [room]
@@ -13,7 +13,7 @@
  *   rt chat sign-out [--quiet] [--session <id>]
  *   rt chat away <text> [--session <id>]           rt chat back [--session <id>]
  *   rt chat buddies [--json]                       the roster; bare `who` aliases it
- *   rt chat dm <handle> <text>                     prints NOTHING on success
+ *   rt chat dm <handle> <<'EOF' ... EOF           same body rules as post
  *   rt chat pulse [--json] [--session <id>]        hook-facing heartbeat; never fails
  *
  * Identity resolution is CLIENT-SIDE (see resolveHandle): HERDR_PANE_ID and
@@ -705,10 +705,11 @@ async function runLeave(args: string[]): Promise<void> {
 
 /**
  * The body of a post or DM. Three sources, first match wins: `--file <path>`,
- * a lone `-` positional (or no text at all while stdin is not a terminal)
- * reading stdin, else the positional words joined with spaces. The first two
- * are how a multi-line body keeps its newlines: an argv body is one line by
- * construction, and one line is how a 900-character post becomes a wall.
+ * stdin (no text while stdin is not a terminal, which is what a heredoc looks
+ * like, or an explicit lone `-`), else the positional words joined with
+ * spaces. The heredoc is the canonical form: it is the one shape under which
+ * an agent writes a message the way it writes a reply, and an argv body is
+ * one line by construction.
  */
 async function resolveBody(words: string[], args: string[], usage: string): Promise<string> {
   const file = flagValue(args, "--file");
@@ -737,20 +738,18 @@ async function readStdin(): Promise<string> {
 const WALL_CHARS = 500;
 
 /**
- * A long body with no line break is a wall: nobody reads it, and the chat
- * viewer can only show it as one block. Refused with the fix in the message,
- * because a hint at post time is the one that changes the next post; the
- * skill's guidance is what it is, but a refusal is what actually lands.
- * `--as-is` is the override for the rare body that really is one line.
+ * A long body with no line break almost always means the message was
+ * flattened into a quoted argv string. Refused with the heredoc form in the
+ * message, because the hint at post time is the one that changes the next
+ * post. `--as-is` is the override for the rare body that really is one line.
  */
 function requireReadable(body: string, args: string[]): void {
   if (args.includes("--as-is")) return;
   if (body.length >= WALL_CHARS && !body.includes("\n")) {
     fail(
       `refusing a ${body.length}-character body with no line breaks.\n` +
-        "Write it for a reader: the ask first, one point per line, a blank line between points, " +
-        "and post it from a heredoc so the newlines survive:\n" +
-        "  rt chat post <room> - <<'EOF'\n  ...\n  EOF\n" +
+        "Post the message from a heredoc so its paragraphs and lists survive:\n" +
+        "  rt chat post <room> <<'EOF'\n  ...\n  EOF\n" +
         "(--as-is posts it anyway.)",
     );
   }
@@ -762,9 +761,9 @@ async function runPost(args: string[]): Promise<void> {
   // so a bare args.slice(1).join(" ") would splice the flag back into the post.
   const rest = positionals(args);
   const room = rest[0];
-  if (!room) fail("usage: rt chat post <room> <text>");
+  if (!room) fail("usage: rt chat post <room> <text | <<'EOF'> [--file <path>] [--as-is]");
   requireValidName("room", room);
-  const body = await resolveBody(rest.slice(1), args, "usage: rt chat post <room> <text | -> [--file <path>] [--as-is]");
+  const body = await resolveBody(rest.slice(1), args, "usage: rt chat post <room> <text | <<'EOF'> [--file <path>] [--as-is]");
   requireReadable(body, args);
 
   const handle = resolveHandle(args);
@@ -886,9 +885,9 @@ async function runMark(args: string[]): Promise<void> {
 async function runDm(args: string[]): Promise<void> {
   const rest = positionals(args);
   const to = rest[0];
-  if (!to) fail("usage: rt chat dm <handle> <text>");
+  if (!to) fail("usage: rt chat dm <handle> <text | <<'EOF'> [--file <path>] [--as-is]");
   requireValidName("handle", to);
-  const body = await resolveBody(rest.slice(1), args, "usage: rt chat dm <handle> <text | -> [--file <path>] [--as-is]");
+  const body = await resolveBody(rest.slice(1), args, "usage: rt chat dm <handle> <text | <<'EOF'> [--file <path>] [--as-is]");
   requireReadable(body, args);
 
   const from = resolveHandle(args);
