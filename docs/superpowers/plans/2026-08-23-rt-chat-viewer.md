@@ -163,6 +163,33 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `import { tokyoTheme, tokyoRamps } from "@mattstack/mantine-tokyo"`, `import type { TokyoColorName } from "@mattstack/mantine-tokyo"` (a string-literal union — the slot it feeds is `export type AppCustomColors`, consumed via `import type` under `verbatimModuleSyntax`, so the re-export is `export type { TokyoColorName as AppCustomColors }`), and `import "@mattstack/mantine-tokyo/tokyo-theme.css"`. Peer dep: `@mantine/core` (for `virtualColor` and the override type). **No components** — `RailShell`, `PageShell`, `GenericError`, the hooks stay in each app's own kit copy.
 
+**Blocking input: console PR #9's theme additions must survive the move.** PR #9 (open, green, awaiting Matt's review) adds two things to the very `app-theme.ts` this task extracts, and its components consume them directly (`px="xxl"`, `p="xxxl"`, the heading ladder). Extract a stale copy of that file and the run views break on tokens that no longer exist.
+
+Two orderings work, and it is Matt's call which:
+
+- **(a) preferred** ... #9 merges first, then 0b extracts a theme that already carries the tokens. No transcription step, nothing to lose.
+- **(b) fallback** ... 0b lands first and carries the additions into `src/theme.ts` **verbatim**, and #9 rebases onto it.
+
+Under (b) these are requirements, not notes. `spacing` gains:
+
+```ts
+xxl: '1.125rem',
+xxxl: '1.5rem',
+```
+
+and `headings` gains a `sizes` ladder (fontSize / lineHeight / fontWeight):
+
+| level | fontSize | lineHeight | fontWeight |
+| ----- | -------- | ---------- | ---------- |
+| h1 | 1.35rem | 1.3 | 700 |
+| h2 | 1.1rem | 1.35 | 700 |
+| h3 | 0.98rem | 1.4 | 700 |
+| h4 | 0.9rem | 1.45 | 600 |
+| h5 | 0.82rem | 1.45 | 600 |
+| h6 | 0.76rem | 1.5 | 600 |
+
+Mantine's stock unsized `h2` renders about twice the largest body text in this monospace kit, and the dense ladder stops at `xl` 0.9rem, which is why bordered surfaces were rendering at 9.6px against a 20-26px design. The run views consume both ladders directly, so a dropped row is a visible regression, not a lint warning.
+
 - [ ] **Step 1: Move the values, not the components**
 
 `git mv` the ramps, theme values, colour names, css and font into the package. Nothing React moves: the package exports data, a type, and css. The `@font-face` in the package css resolves `./fonts/jetbrains-mono.woff2` relative to the package — today console's is absolute (`/fonts/jetbrains-mono.woff2` from `public/fonts/`), so this step also deletes `public/fonts/jetbrains-mono.woff2` and lets Vite serve the package's copy; `tokyo-theme.test.ts`'s `toContain('/fonts/jetbrains-mono.woff2')` still passes on the relative path. The parity capture in Step 3 is what proves the font still loads.
@@ -174,6 +201,8 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 3: Prove nothing moved visually**
 
 Run console's design parity capture (`design/wiring/capture.sh` + `normalize-captures.mjs`) and diff against `design/wiring/reference/*.png`: zero pixel drift is the acceptance test for an extraction.
+
+**Known defect, read before you trust this gate.** The capture renders static mocks, not the running app, so it can pass while the real theme is broken. Zero drift here is necessary, not sufficient. Until the harness renders the app, back it with something that actually observes the merged theme... a test asserting the resolved `appTheme` still carries every spacing key and heading level by name is cheap and would catch the exact failure this task risks. Do not report a green capture as proof the extraction is visually clean.
 
 - [ ] **Step 4: Gate, commit, publish**
 
@@ -192,6 +221,8 @@ Publish `@mattstack/mantine-tokyo@0.1.0` after merge (ask first). Task 1 pins it
 
 #### Task 0c — Mantine 9.5.2, and teaching an agent to look Mantine up
 
+> **Landed.** mantine-kit `47014c8` on main (CI green). Console PR #10. Step 5 is Task 1's to check.
+
 **The point of this task is the docs path, not the version.** 9.4.1 → 9.5.2 is a minor already inside both repos' `^9.4.1` range: a lockfile move, gated by the normal suite, with no visual-regression ceremony. What earns the task is everything after Step 1 — an implementer building this viewer should never write a Mantine prop from memory. Guessing produces code that compiles, renders, and is subtly wrong: the variant that does not exist, the prop that moved, a size off the scale. Mantine now ships the cure, and it ships it *per release*, so the docs an agent reads match the version the app installs.
 
 **mantine-kit goes first**, because `create-cli/create.ts` scaffolds from `git ls-files` and copies the template's own `package.json`, `bun.lock`, `AGENTS.md` and `CLAUDE.md` into every generated app. Whatever the template holds is what chat inherits at Task 1. Console's bump is independent of that ordering — it never re-scaffolds — but it shares the artifacts, so it follows the same shape.
@@ -203,7 +234,7 @@ Publish `@mattstack/mantine-tokyo@0.1.0` after merge (ask first). Task 1 pins it
 - Create (console): `.mcp.json`, `docs/mantine-llms.txt`
 - chat: nothing of its own — Task 1 inherits from the template and verifies
 
-- [ ] **Step 1: mantine-kit — the version, scoped**
+- [x] **Step 1: mantine-kit — the version, scoped**
 
 Set the eight `@mantine/*` ranges (`code-highlight`, `core`, `dates`, `form`, `hooks`, `modals`, `notifications`, `spotlight`) to `^9.5.2` and `bun install`. **Do not run a bare `bun update`** — it would move vite, storybook, eslint, React and TypeScript in the same commit, and the gate would then be covering a dozen upgrades wearing one task's name.
 
@@ -213,7 +244,7 @@ Gate (the kit's real scripts — `bun run test` alone is vitest in **watch mode*
 bun run typecheck && bun run lint && bun run test -- --run && bun run build
 ```
 
-- [ ] **Step 2: the three artifacts that make an agent look things up**
+- [x] **Step 2: the three artifacts that make an agent look things up**
 
 **a. The MCP server.** Create `.mcp.json` at the template root, pinned to the Mantine version it documents:
 
@@ -237,7 +268,7 @@ bun run typecheck && bun run lint && bun run test -- --run && bun run build
 
 > **Mantine: look it up, don't recall it.** This app pins Mantine 9.5.2. Before using a component you have not already used in this session, or any prop you are not certain of, call the `mantine` MCP server: `get_item_props` for a signature, `get_item_doc` for behaviour, `search_docs` when you know the effect but not the component name. Without MCP there is `docs/mantine-llms.txt`, but know what it is: an *index* — it names the components and links a page each, so offline it tells you what exists, never a prop signature. A guessed prop compiles and renders and is still wrong; the props table costs one call.
 
-- [ ] **Step 3: prove all three actually arrive**
+- [x] **Step 3: prove all three actually arrive**
 
 `.mcp.json` and `docs/mantine-llms.txt` are **new files**, and the scaffold walks `git ls-files`. An untracked file reaches no scaffold, and `git commit -am` stages only tracked modifications — so `git add` both explicitly, and add both to the `files` whitelist in `package.json` (the published-tarball scaffold path uses it and would otherwise drop them silently).
 
@@ -265,11 +296,11 @@ npx -y @mantine/mcp-server@9.5.2   # confirm the handshake lists the four tools
 
 Run `bun run format` before committing: `format:check` is a CI gate and covers the JSON and Markdown this step hand-writes.
 
-- [ ] **Step 4: console — the same three artifacts, same scoped bump**
+- [x] **Step 4: console — the same three artifacts, same scoped bump**
 
 Set console's eight `@mantine/*` ranges to `^9.5.2`, `bun install`, and gate with `bun run lint && bunx vitest run && bunx tsc -b`. Copy `.mcp.json`, `docs/mantine-llms.txt` and the AGENTS.md instruction across.
 
-**Order against Task 0b:** both tasks edit console's `package.json`. 0b lands in console first; 0c rebases onto it. Do not run them as independent parallel PRs into the same repo.
+**Order against Task 0b (reversed, and settled):** both tasks edit console's `package.json`, so one has to be the base. It is 0c. 0b sits behind a question only Matt can answer (console PR #9, open and green, edits the very `app-theme.ts` that 0b extracts), while 0c is a small independent bump touching nothing under `src/ui/design-system`. So 0c landed first as console PR #10, and **0b rebases onto it**. Do not run them as independent parallel PRs into the same repo.
 
 **Scope the install deliberately.** Console consumes `@mattstack/rt-client` by `file:` path, and a `file:` consumer copies that package's gitignored `dist/` verbatim at install time from a checkout whose branch other sessions switch. An unscoped install can swap console's rt-client build as a side effect of a Mantine bump.
 
@@ -277,7 +308,7 @@ Set console's eight `@mantine/*` ranges to `^9.5.2`, `bun install`, and gate wit
 
 Task 1 scaffolds from the updated template, so the viewer starts on 9.5.2 with all three artifacts present. Task 1 asserts they arrived (the greps above); the server handshake is the out-of-band check from Step 3. A server that is configured but never answers is worse than none, because it looks wired.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Two repos, two commits. Both belong to other lanes — announce before touching them, per the coordination rules in the root `CLAUDE.md`.
 
