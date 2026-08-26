@@ -494,4 +494,36 @@ export const REGISTRY: readonly SettingDef[] = [
     merge: "replace",
     description: "Destination (topic/URL/token) the configured chat.push.provider sends to.",
   },
+
+  // --- agent (rt agent handoff) --------------------------------------------
+  // No defaults by design: an unset key means the flag is omitted from the
+  // claude invocation entirely (spec "Settings").
+  {
+    key: "agent.model",
+    type: "string",
+    scopes: ["user", "machine"],
+    merge: "replace",
+    description: "Default --model for rt agent launches; unset omits the flag.",
+  },
+  {
+    key: "agent.effort",
+    type: "string",
+    scopes: ["user", "machine"],
+    merge: "replace",
+    description: "Default --effort for rt agent launches; unset omits the flag.",
+  },
+  {
+    key: "agent.account",
+    type: "string",
+    scopes: ["user", "machine"],
+    merge: "replace",
+    description: "cswap account email rt agent launches under; unset uses the default claude profile.",
+  },
+  {
+    key: "agent.extraArgs",
+    type: "string",
+    scopes: ["user", "machine"],
+    merge: "replace",
+    description: "Opaque extra claude arguments appended to every rt agent launch (escape hatch).",
+  },
 ];

@@ -197,7 +197,7 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 22 migrated:true keys and the 37 suite keys", () => {
+    test("has exactly the 22 migrated:true keys and the 41 suite keys", () => {
       const migratedFalseKeys: string[] = [];
       const migratedTrueKeys = [
         "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
@@ -243,8 +243,12 @@ describe("settings/registry", () => {
         "chat.viewerUrl",
         "chat.push.provider",
         "chat.push.target",
+        "agent.model",
+        "agent.effort",
+        "agent.account",
+        "agent.extraArgs",
       ];
-      expect(suiteKeys).toHaveLength(37);
+      expect(suiteKeys).toHaveLength(41);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),

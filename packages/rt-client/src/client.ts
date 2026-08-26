@@ -21,6 +21,8 @@ import type {
   RoomSummary,
   BuddyStatus,
   PresenceRow,
+  AgentRecord,
+  Commands,
 } from "./commands.ts";
 
 /**
@@ -323,4 +325,35 @@ export function chatDm(
 
 export function eventsHead(o: RtClientOptions = {}): Promise<RtResponse<{ cursor: number }>> {
   return rtCommand<{ cursor: number }>("events:head", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+// ─── Agent handoff (rt agent) ─────────────────────────────────────────────
+
+export function agentStart(
+  a: Commands["agent:start"]["payload"], o: RtClientOptions = {},
+): Promise<RtResponse<AgentRecord>> {
+  const payload: Record<string, unknown> = { repo: a.repo, cwd: a.cwd };
+  for (const k of ["prompt", "surface", "model", "effort", "account", "label", "caller", "workspace", "tab", "extraArgs"] as const) {
+    if (a[k] !== undefined) payload[k] = a[k];
+  }
+  return rtCommand<AgentRecord>("agent:start", payload, { sockPath: o.sockPath, timeoutMs: 30_000 });
+}
+
+export function agentResume(
+  a: Commands["agent:resume"]["payload"], o: RtClientOptions = {},
+): Promise<RtResponse<AgentRecord>> {
+  const payload: Record<string, unknown> = { id: a.id };
+  if (a.prompt !== undefined) payload.prompt = a.prompt;
+  if (a.surface !== undefined) payload.surface = a.surface;
+  return rtCommand<AgentRecord>("agent:resume", payload, { sockPath: o.sockPath, timeoutMs: 30_000 });
+}
+
+export function agentGet(a: { id: string }, o: RtClientOptions = {}): Promise<RtResponse<AgentRecord>> {
+  return rtCommand<AgentRecord>("agent:get", { id: a.id }, { sockPath: o.sockPath, timeoutMs: 10_000 });
+}
+
+export function agentList(a: { repo?: string }, o: RtClientOptions = {}): Promise<RtResponse<{ agents: AgentRecord[] }>> {
+  const payload: Record<string, unknown> = {};
+  if (a.repo !== undefined) payload.repo = a.repo;
+  return rtCommand<{ agents: AgentRecord[] }>("agent:list", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
 }
