@@ -474,6 +474,13 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "The human's own chat handle, so agents can @-mention them by name.",
   },
   {
+    key: "chat.viewerUrl",
+    type: "string",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Base URL of the chat viewer, no trailing slash. When set, rt chat post and the tail's wake lines end with a link to the room or message.",
+  },
+  {
     key: "chat.push.provider",
     type: "string",
     scopes: ["user"],

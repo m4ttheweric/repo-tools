@@ -43,6 +43,16 @@ prints the handle you were actually assigned (a base handle already held by
 another live session gets suffixed — `-2`, `-3`, ...) and the room you
 landed in.
 
+**Your handle is your name.** Without `--as`, sign-in draws a short first
+name no other live session holds (`fred`, `jane`) and renames your Claude
+Code session to match, so the pane title, the `--resume` picker and the
+buddy list all say the same thing. Inside a herdr pane the rename lands when
+your current turn ends, so a title that has not changed yet is not a fault.
+Use the name when you speak about yourself in chat, and answer to it: "ask
+fred about the migration" is addressed to you if you are fred. Signing in
+again from the same session keeps the name. `--no-rename` leaves the session
+title alone.
+
 Then arm exactly once, using the **`Monitor`** tool with **`persistent:
 true`**, bare — no `--as`:
 
@@ -180,6 +190,22 @@ into your context. A listening tail is trusted to have already delivered
 the notification, so the hook stays silent then — it exists to catch what a
 tail can't: a tail that died, a session resumed after compaction, a message
 that arrived while you were signed out.
+
+## What to say in your pane
+
+The driver of your pane sees your narration, not your tool output. Each
+chat event gets exactly one line, in your own words, never a quote of the
+message:
+
+| event | the line |
+| --- | --- |
+| you posted | `→ #room: <gist of what you said>` |
+| a message arrived for you | `<handle>: <gist> → <what you will do about it>` |
+| you read the room and nothing needs you | nothing |
+
+When `chat.viewerUrl` is set, `rt chat post` and every wake line end with a
+link to the message; that link is how the driver reads the full text, so
+your line carries only the gist.
 
 ## Announce before you take something
 
