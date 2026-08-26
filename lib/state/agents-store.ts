@@ -1,7 +1,7 @@
 /**
  * lib/state/agents-store.ts... handoff records for `rt agent`.
  * The only module that touches the agents table. Launch + record + resume
- * only: no liveness columns exist by design (spec 2026-08-25).
+ * only: no liveness columns exist by design.
  */
 
 import { Database } from "bun:sqlite";
@@ -65,7 +65,7 @@ function rowToRecord(r: AgentRow): AgentRecord {
 }
 
 export function newAgentId(): string {
-  return `ag-${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  return `ag-${crypto.randomUUID().slice(0, 8)}`;
 }
 
 export function insertAgent(rec: AgentRecord, db: Database = getStateDb()): void {
@@ -78,9 +78,7 @@ export function insertAgent(rec: AgentRecord, db: Database = getStateDb()): void
       rec.extraArgs ?? null, rec.exitCode ?? null, rec.resultPath ?? null,
       rec.createdAt, rec.lastResumedAt ?? null, rec.finishedAt ?? null,
     );
-  // UNIQUE(session_id) violations must surface to the handler, not be
-  // swallowed as a busy retry outcome.
-  run();
+  runCriticalWrite("insertAgent", run, { id: rec.id });
 }
 
 export function getAgent(idOrSession: string, db: Database = getStateDb()): AgentRecord | undefined {

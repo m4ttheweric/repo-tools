@@ -120,6 +120,12 @@ export {
   type RoomSummary,
 } from "./chat-store.ts";
 
+export {
+  insertAgent, getAgent, listAgents, updateAgentPane, markAgentResumed,
+  finishAgent, newAgentId,
+  type AgentRecord, type AgentSurface,
+} from "./agents-store.ts";
+
 export { dmRoomFor, dmParticipants, listDms } from "./dm-store.ts";
 
 export {
@@ -145,9 +151,3 @@ export {
   renameLegacyOutOfTheWay,
   type LegacyImportResult,
 } from "./legacy-import.ts";
-
-export {
-  insertAgent, getAgent, listAgents, updateAgentPane, markAgentResumed,
-  finishAgent, newAgentId,
-  type AgentRecord, type AgentSurface,
-} from "./agents-store.ts";
