@@ -115,9 +115,10 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
   without a specific reason — it costs context for little gain most of the
   time.
 - `rt chat read --since <dur>` (e.g. `--since 5m`) is a **non-advancing
-  peek**: it shows recent messages filtered by time but does **not** move
-  your read cursor and does not mark anything read. Use it to glance at
-  recent traffic without consuming it.
+  time window**: it shows every message posted in that window, read or
+  not, and does **not** move your read cursor. It is also the way back to
+  a message you have already consumed (`--since 2h --full` when a tail
+  line truncated it).
 - `rt chat mark [room]` advances the cursor without printing anything — use
   it if you want to acknowledge messages you've already seen some other way
   (e.g. in the tail's wake lines) without re-reading their bodies.

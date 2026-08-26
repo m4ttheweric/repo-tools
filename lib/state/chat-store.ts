@@ -133,7 +133,7 @@ const CLEAR_ALL_PRESENCE_ARMED_SQL = `UPDATE chat_presence SET armed_at = NULL W
 const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at";
 const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at) VALUES (?, ?, ?, ?, ?, ?);`;
 const SELECT_UNREAD_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? ORDER BY id ASC LIMIT ?;`;
-const SELECT_UNREAD_SINCE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? AND posted_at >= ? ORDER BY id ASC LIMIT ?;`;
+const SELECT_SINCE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND posted_at >= ? ORDER BY id ASC LIMIT ?;`;
 const SELECT_UNREAD_ALL_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? ORDER BY id ASC;`;
 const SELECT_MESSAGES_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? ORDER BY id DESC LIMIT ?;`;
 const SELECT_MESSAGES_BEFORE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id < ? ORDER BY id DESC LIMIT ?;`;
@@ -436,20 +436,18 @@ export function readUnread(
     for (const member of members) {
       const maxId = getRoomMaxId(member.room, db);
       const cursor = clampCursor(member, maxId, db);
+      // A sinceMs read is a time window over the room, read or not: the only
+      // way back to a message once the cursor has passed it (a tail line
+      // truncates, and the viewer may be unreachable). The cursor-bound read
+      // is contiguous, so advancing to the highest id returned marks exactly
+      // what was shown; the window is not contiguous and never advances.
       const rows = (
         sinceMs !== undefined
-          ? db.query(SELECT_UNREAD_SINCE_SQL).all(member.room, cursor, sinceMs, limit)
+          ? db.query(SELECT_SINCE_SQL).all(member.room, sinceMs, limit)
           : db.query(SELECT_UNREAD_SQL).all(member.room, cursor, limit)
       ) as MessageRow[];
       if (rows.length === 0) continue;
 
-      // The limit-only read is contiguous from the cursor, so advancing to
-      // the highest id returned is safe and marks exactly what was shown as
-      // read. A sinceMs read is NOT contiguous: it can skip a lower-id,
-      // older-time message while returning a higher-id, newer one, and a
-      // single id-watermark can't represent "consumed the recent, kept the
-      // old" — so it must not advance the cursor at all, or that older
-      // unread message becomes permanently unreachable.
       if (sinceMs === undefined) {
         const highestReturned = rows[rows.length - 1]!.id;
         db.query(UPDATE_LAST_READ_SQL).run(highestReturned, member.room, handle);
