@@ -336,7 +336,7 @@ export function agentStart(
   for (const k of ["prompt", "surface", "model", "effort", "account", "label", "caller", "workspace", "tab", "extraArgs"] as const) {
     if (a[k] !== undefined) payload[k] = a[k];
   }
-  return rtCommand<AgentRecord>("agent:start", payload, { sockPath: o.sockPath, timeoutMs: 30_000 });
+  return rtCommand<AgentRecord>("agent:start", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
 
 export function agentResume(
@@ -345,15 +345,15 @@ export function agentResume(
   const payload: Record<string, unknown> = { id: a.id };
   if (a.prompt !== undefined) payload.prompt = a.prompt;
   if (a.surface !== undefined) payload.surface = a.surface;
-  return rtCommand<AgentRecord>("agent:resume", payload, { sockPath: o.sockPath, timeoutMs: 30_000 });
+  return rtCommand<AgentRecord>("agent:resume", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
 
 export function agentGet(a: { id: string }, o: RtClientOptions = {}): Promise<RtResponse<AgentRecord>> {
-  return rtCommand<AgentRecord>("agent:get", { id: a.id }, { sockPath: o.sockPath, timeoutMs: 10_000 });
+  return rtCommand<AgentRecord>("agent:get", { id: a.id }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function agentList(a: { repo?: string }, o: RtClientOptions = {}): Promise<RtResponse<{ agents: AgentRecord[] }>> {
   const payload: Record<string, unknown> = {};
   if (a.repo !== undefined) payload.repo = a.repo;
-  return rtCommand<{ agents: AgentRecord[] }>("agent:list", payload, { sockPath: o.sockPath, timeoutMs: 10_000 });
+  return rtCommand<{ agents: AgentRecord[] }>("agent:list", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }

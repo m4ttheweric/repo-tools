@@ -63,11 +63,15 @@ function claudeArgs(inv: ClaudeInvocation): string[] {
 
 export function buildClaudeArgv(inv: ClaudeInvocation, bins?: { claude?: string; cswap?: string }): string[] {
   const args = claudeArgs(inv);
+  // claude args live only after "--"; the literal word "claude" is never
+  // among them since cswap runs claude itself.
   if (inv.account) return [bins?.cswap ?? resolveCswapBin(), "run", inv.account, "--", ...args];
   return [bins?.claude ?? resolveClaudeBin(), ...args];
 }
 
 export function buildPaneCommand(cwd: string, inv: ClaudeInvocation): string {
+  // Every token is single-quoted, including flag names (no allowlist), so a
+  // prompt equal to a flag like "-p" is still treated as data.
   const quoted = claudeArgs(inv).map(shellSingleQuote);
   const head = inv.account ? `cswap run ${shellSingleQuote(inv.account)} --` : "claude";
   return `cd ${shellSingleQuote(cwd)} && ${[head, ...quoted].join(" ")}`;

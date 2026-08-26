@@ -18,13 +18,19 @@ function okRunner(calls: string[][]): HerdrRunner {
   };
 }
 
-function fresh(over: { runner?: HerdrRunner; spawn?: (argv: string[], cwd: string) => HeadlessChild; emit?: (t: string, p?: unknown) => void } = {}) {
+function fresh(over: {
+  runner?: HerdrRunner;
+  spawn?: (argv: string[], cwd: string) => HeadlessChild;
+  emit?: (t: string, p?: unknown) => void;
+  insertAgentFn?: (...args: unknown[]) => void;
+} = {}) {
   const db = openStateDb(join(tmpdir(), `agent-h-${process.pid}-${n++}.db`));
   return createAgentHandlers({
     db,
     emitEvent: over.emit ?? (() => 0),
     herdrRunner: over.runner,
     spawnHeadless: over.spawn,
+    insertAgentFn: over.insertAgentFn as typeof import("../../state/index.ts").insertAgent | undefined,
   });
 }
 
@@ -53,6 +59,27 @@ test("agent:start herdr rolls back the inserted record when launch fails", async
   const list = await h["agent:list"]({});
   if (!list.ok) throw new Error("unreachable");
   expect(list.data.agents).toHaveLength(0);
+});
+
+// Pins the guard: a no-op insert (standing in for runCriticalWrite giving up
+// after sustained SQLITE_BUSY) must block the launch, not just the record.
+test("agent:start refuses to launch when the insert did not persist", async () => {
+  const calls: string[][] = [];
+  let spawnCalled = false;
+  const h = fresh({
+    runner: okRunner(calls),
+    spawn: () => {
+      spawnCalled = true;
+      return { exited: Promise.resolve(0), stdout: async () => "{}" };
+    },
+    insertAgentFn: () => {},
+  });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toMatch(/not recorded/);
+  expect(calls).toHaveLength(0);
+  expect(spawnCalled).toBe(false);
 });
 
 test("agent:start headless refuses a missing prompt", async () => {

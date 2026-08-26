@@ -62,9 +62,11 @@ export function createAgentHandlers(opts: {
   emitEvent: (topic: string, payload?: unknown) => unknown;
   herdrRunner?: HerdrRunner;
   spawnHeadless?: (argv: string[], cwd: string) => HeadlessChild;
+  insertAgentFn?: typeof insertAgent;
 }): Pick<TypedHandlers, "agent:start" | "agent:resume" | "agent:get" | "agent:list"> & { db: Database } {
   const { db, emitEvent } = opts;
   const spawnHeadless = opts.spawnHeadless ?? defaultSpawnHeadless;
+  const insertAgentFn = opts.insertAgentFn ?? insertAgent;
 
   async function launch(
     rec: AgentRecord,
@@ -155,7 +157,13 @@ export function createAgentHandlers(opts: {
         // A launch failure below rolls this insert back so no phantom,
         // never-launched record survives it (unlike agent:resume, whose
         // record predates the call and must never be deleted on failure).
-        insertAgent(rec, db);
+        insertAgentFn(rec, db);
+        // insertAgent goes through runCriticalWrite: sustained SQLITE_BUSY
+        // logs and returns without throwing, so the insert can silently not
+        // have happened. Confirm the row exists before ever spawning.
+        if (!getAgent(rec.id, db)) {
+          return { ok: false, error: "state.db busy: agent not recorded, not launched" };
+        }
         const res = await launch(rec, { kind: "start", sessionId: rec.sessionId }, prompt, tabLabel, workspaceLabel);
         if (!res.ok) {
           deleteAgent(rec.id, db);
