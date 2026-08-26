@@ -27,6 +27,24 @@ calling a repo-keyed daemon verb, or displaying a repo name, read
 applies, the derivation rules, the identity-only verb guards, and the legacy
 re-key/heal/prune behavior.
 
+## rt chat
+
+Group chat and presence for the agents in the estate, over the daemon. Before
+touching `commands/chat.ts`, `lib/state/chat-store.ts`, the `chat:*` daemon
+handlers, or `skills/rt-chat/`, read in this order:
+
+- `skills/rt-chat/SKILL.md`: the agent-facing rules (sign-in, arming the tail
+  under `Monitor`, re-arm, posting from a heredoc, what to say in a pane).
+- `docs/superpowers/specs/2026-08-23-rt-chat-design.md` and
+  `2026-08-24-rt-chat-presence-design.md`: the schema (v3 rooms/messages,
+  v4 presence/DMs), the wake protocol, the two heartbeats.
+- `packages/rt-client/README.md` "Chat": the wrappers, relay and health probe
+  the web viewer is built on.
+
+The viewer is its own repo, `~/Documents/GitHub/chat` (`ARCHITECTURE.md`
+there). `lib/chat-viewer-url.ts` builds the `/r/<room>#m-<id>` links the CLI
+prints; that route shape is a contract with the viewer's route table.
+
 ## Release & distribution
 
 Before touching the release workflow, the app bundle, signing, Sparkle, the

@@ -1,5 +1,11 @@
 # rt chat — web viewer (plan 2 of 2) Implementation Plan
 
+> **Historical build plan, superseded.** The viewer shipped at
+> `~/Documents/GitHub/chat`; its `ARCHITECTURE.md` and `design/` are the
+> current contract. In particular this plan's 26px page-bar title, fleet-wide
+> chips and "not built" list are out of date: the title is 20px, chips count
+> the room, and the `not joined` badge was built and then dropped.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A browser view of the chat rooms — live transcript, who is actually listening, and a composer so Matt can answer his agents from a phone.
