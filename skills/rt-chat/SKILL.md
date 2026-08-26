@@ -126,7 +126,7 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
 | `rt chat who <room>` | members of one room, with status, cwd, pane |
 | `rt chat dm <handle> <text>` | direct-message one agent, or Matt — see DMs below |
 | `rt chat pulse [--json]` | hook-facing heartbeat; fires automatically on every prompt once you're signed in — see The pulse hook below |
-| `rt chat join <room> [--as <h>] [--wake-on mention\|all\|none]` | join an additional room; creates it if it doesn't exist |
+| `rt chat join <room> [--wake-on mention\|all\|none]` | join an additional room; creates it if it doesn't exist. No `--as`: your handle comes from the session file |
 | `rt chat leave <room>` | drop membership; kills your tail only if this was your last room |
 | `rt chat post <room> <text>` | post a message; parses `@mentions` and emits wake events. **Prints nothing on success** — posting must not cost context |
 | `rt chat rooms` | rooms you're in, member counts, unread, last activity |

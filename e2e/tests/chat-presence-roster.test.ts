@@ -482,8 +482,11 @@ describe("rt chat presence + roster (e2e)", () => {
     for (const table of ["chat_presence", "chat_room_defaults", "chat_dms", "chat_rooms", "chat_members", "chat_messages"]) {
       expect(tableExists(home, table)).toBe(true);
     }
-    // The replay is IF NOT EXISTS everywhere — a data-preserving no-op.
-    expect(readPresenceRow(home, "before-migration")).not.toBeNull();
+    // The replay is IF NOT EXISTS everywhere — a data-preserving no-op, so
+    // the row survives with its columns intact, not merely as a row.
+    const preserved = readPresenceRow(home, "before-migration");
+    expect(preserved?.session_id).toBe("sess-migrate");
+    expect(preserved?.signed_out_at).toBeNull();
 
     const after = await signIn(home, "sess-post-migrate", "after-migration");
     expect(after.handle).toBe("after-migration");
