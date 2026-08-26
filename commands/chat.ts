@@ -83,7 +83,7 @@ import type {
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
-const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status"]);
+const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file"]);
 
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -703,6 +703,59 @@ async function runLeave(args: string[]): Promise<void> {
   console.log(`✓ left #${room} (${handle})`);
 }
 
+/**
+ * The body of a post or DM. Three sources, first match wins: `--file <path>`,
+ * a lone `-` positional (or no text at all while stdin is not a terminal)
+ * reading stdin, else the positional words joined with spaces. The first two
+ * are how a multi-line body keeps its newlines: an argv body is one line by
+ * construction, and one line is how a 900-character post becomes a wall.
+ */
+async function resolveBody(words: string[], args: string[], usage: string): Promise<string> {
+  const file = flagValue(args, "--file");
+  if (file !== undefined) {
+    try {
+      return readFileSync(file, "utf8").replace(/\n$/, "");
+    } catch {
+      fail(`cannot read --file ${file}`);
+    }
+  }
+  const wantsStdin = (words.length === 1 && words[0] === "-") || (words.length === 0 && !process.stdin.isTTY);
+  if (wantsStdin) {
+    const text = (await readStdin()).replace(/\n$/, "");
+    if (!text) fail(usage);
+    return text;
+  }
+  const body = words.join(" ");
+  if (!body) fail(usage);
+  return body;
+}
+
+async function readStdin(): Promise<string> {
+  return await new Response(Bun.stdin.stream()).text();
+}
+
+const WALL_CHARS = 500;
+
+/**
+ * A long body with no line break is a wall: nobody reads it, and the chat
+ * viewer can only show it as one block. Refused with the fix in the message,
+ * because a hint at post time is the one that changes the next post; the
+ * skill's guidance is what it is, but a refusal is what actually lands.
+ * `--as-is` is the override for the rare body that really is one line.
+ */
+function requireReadable(body: string, args: string[]): void {
+  if (args.includes("--as-is")) return;
+  if (body.length >= WALL_CHARS && !body.includes("\n")) {
+    fail(
+      `refusing a ${body.length}-character body with no line breaks.\n` +
+        "Write it for a reader: the ask first, one point per line, a blank line between points, " +
+        "and post it from a heredoc so the newlines survive:\n" +
+        "  rt chat post <room> - <<'EOF'\n  ...\n  EOF\n" +
+        "(--as-is posts it anyway.)",
+    );
+  }
+}
+
 async function runPost(args: string[]): Promise<void> {
   // Body is the positional tokens after the room, flag-aware: `--as <handle>`
   // (and every other recognized flag) is resolved separately by resolveHandle,
@@ -711,8 +764,8 @@ async function runPost(args: string[]): Promise<void> {
   const room = rest[0];
   if (!room) fail("usage: rt chat post <room> <text>");
   requireValidName("room", room);
-  const body = rest.slice(1).join(" ");
-  if (!body) fail("usage: rt chat post <room> <text>");
+  const body = await resolveBody(rest.slice(1), args, "usage: rt chat post <room> <text | -> [--file <path>] [--as-is]");
+  requireReadable(body, args);
 
   const handle = resolveHandle(args);
   requireValidName("handle", handle);
@@ -835,8 +888,8 @@ async function runDm(args: string[]): Promise<void> {
   const to = rest[0];
   if (!to) fail("usage: rt chat dm <handle> <text>");
   requireValidName("handle", to);
-  const body = rest.slice(1).join(" ");
-  if (!body) fail("usage: rt chat dm <handle> <text>");
+  const body = await resolveBody(rest.slice(1), args, "usage: rt chat dm <handle> <text | -> [--file <path>] [--as-is]");
+  requireReadable(body, args);
 
   const from = resolveHandle(args);
   requireValidName("handle", from);

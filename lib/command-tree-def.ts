@@ -672,6 +672,8 @@ export const TREE: Record<string, CommandNode> = {
       { name: "Status", flag: "--status", type: "text", placeholder: "rebasing #67", hint: "For sign-in: an away/status message to set on the presence row" },
       { name: "No room", flag: "--no-room", type: "boolean", default: false, hint: "For sign-in: skip joining the derived repository room" },
       { name: "No rename", flag: "--no-rename", type: "boolean", default: false, hint: "For sign-in: leave the Claude Code session title alone instead of renaming it to the assigned handle" },
+      { name: "Body file", flag: "--file", type: "text", placeholder: "post.md", hint: "For post/dm: read the body from a file; a lone `-` as the text reads stdin instead, so a heredoc keeps its line breaks" },
+      { name: "As is", flag: "--as-is", type: "boolean", default: false, hint: "For post/dm: post a long single-line body anyway (500+ characters with no line break is refused by default)" },
       { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For sign-out: suppress output (the SessionEnd hook's flag)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/post/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out)" },
     ],

@@ -278,6 +278,31 @@ describe("rt chat CLI — additional verb behavior", () => {
     expect(read.rooms[0].messages[0].body).toBe("hello world");
   });
 
+  test("post --file reads the body from a file and keeps its line breaks", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    const path = join(home, "post.md");
+    writeFileSync(path, "the ask first\n\n- one point\n- another\n");
+    await runChat(["join", "r", "--as", "b"]);
+    await runChat(["post", "r", "--file", path, "--as", "a"]);
+    const out = JSON.parse(await runChat(["read", "r", "--as", "b", "--json"])) as {
+      rooms: { messages: { body: string }[] }[];
+    };
+    const bodies = out.rooms.flatMap((r) => r.messages.map((m) => m.body));
+    expect(bodies).toContain("the ask first\n\n- one point\n- another");
+  });
+
+  test("post refuses a long single-line body with the heredoc hint; --as-is overrides", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    const wall = "x".repeat(520);
+    const { code, stderr } = await runChatRaw(["post", "r", wall, "--as", "a"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("no line breaks");
+    expect(stderr).toContain("<<'EOF'");
+    expect(await runChat(["post", "r", wall, "--as", "a", "--as-is"])).toBe("");
+    const long = "y".repeat(300) + "\n" + "z".repeat(300);
+    expect(await runChat(["post", "r", long, "--as", "a"])).toBe("");
+  });
+
   test("post with --as consumes the flag as the handle, not into the body", async () => {
     // resolveHandle reads --as from anywhere in args; the body must strip it
     // the same way, or the flag is spliced into the posted message text.
