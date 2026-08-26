@@ -11,6 +11,7 @@
  */
 
 export const MODULE_REGISTRY: Record<string, () => Promise<any>> = {
+  "./commands/agent.ts": () => import("../commands/agent.ts"),
   "./commands/chat.ts": () => import("../commands/chat.ts"),
   "./commands/commit.ts": () => import("../commands/commit.ts"),
   "./commands/daemon.ts": () => import("../commands/daemon.ts"),

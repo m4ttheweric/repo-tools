@@ -651,6 +651,23 @@ export const TREE: Record<string, CommandNode> = {
     subcommands: eventsSubcommands,
   },
 
+  // Self-dispatching leaf: agent() routes its own verbs (start/resume/show/list).
+  agent: {
+    description: "Hand a prompt to a Claude Code agent (herdr pane or headless) and keep the receipt",
+    module: "./commands/agent.ts",
+    fn: "agent",
+    args: [
+      { name: "Verb", type: "text", placeholder: "start | resume | show | list", hint: "The agent action to run" },
+      { name: "Id", type: "text", placeholder: "ag-1a2b3c4d", hint: "For resume/show: the handoff id or session uuid" },
+      { name: "Repo", flag: "--repo", type: "text", placeholder: "~/Documents/GitHub/x", hint: "Repo path (default: the current repo)" },
+      { name: "Prompt", flag: "--prompt", type: "text", placeholder: "...", hint: "Initial prompt (required for headless)" },
+      { name: "Surface", flag: "--surface", type: "text", placeholder: "herdr | headless", hint: "Where the agent runs (default herdr)" },
+      { name: "Model", flag: "--model", type: "text", placeholder: "sonnet", hint: "Override agent.model" },
+      { name: "Account", flag: "--account", type: "text", placeholder: "me@example.com", hint: "cswap account (override agent.account)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the record as JSON" },
+    ],
+  },
+
   // Self-dispatching leaf: chat() routes its own verbs (join/leave/post/read/
   // rooms/who/mark/tail/sign-in/sign-out/away/back/buddies/dm/pulse), so all
   // args flow through rather than a subcommand map.
