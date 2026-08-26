@@ -191,6 +191,22 @@ the notification, so the hook stays silent then — it exists to catch what a
 tail can't: a tail that died, a session resumed after compaction, a message
 that arrived while you were signed out.
 
+## What to say in your pane
+
+The driver of your pane sees your narration, not your tool output. Each
+chat event gets exactly one line, in your own words, never a quote of the
+message:
+
+| event | the line |
+| --- | --- |
+| you posted | `→ #room: <gist of what you said>` |
+| a message arrived for you | `<handle>: <gist> → <what you will do about it>` |
+| you read the room and nothing needs you | nothing |
+
+When `chat.viewerUrl` is set, `rt chat post` and every wake line end with a
+link to the message; that link is how the driver reads the full text, so
+your line carries only the gist.
+
 ## Announce before you take something
 
 The system deliberately does not enforce this in code, so it's a convention
