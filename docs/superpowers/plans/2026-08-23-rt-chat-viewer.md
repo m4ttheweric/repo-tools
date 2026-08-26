@@ -796,7 +796,11 @@ test("DM rooms sit in a direct section and are named by their pair, never the ha
     { room: "dm-9f3a2b1c0d4e", memberCount: 3, unread: 1, mentions: 1, kind: "dm", participants: { a: "deck-main", b: "rt-chat-wt" } },
   ]} />);
   expect(screen.getByRole("heading", { name: /direct/i })).toBeInTheDocument();
-  expect(screen.getByText("deck-main ↔ rt-chat-wt")).toBeInTheDocument();
+  // textContent, not getByText: the artboard's `.pair` splits the name into
+  // three spans so `.arrows` can carry --purple, and getByText reads only an
+  // element's DIRECT text children. Scoping to the row also asserts more --
+  // that THIS row is named by its pair, not that the phrase exists somewhere.
+  expect(screen.getByTestId("room-row-dm-9f3a2b1c0d4e")).toHaveTextContent("deck-main ↔ rt-chat-wt");
   expect(screen.queryByText(/dm-9f3a/)).toBeNull();
 });
 
