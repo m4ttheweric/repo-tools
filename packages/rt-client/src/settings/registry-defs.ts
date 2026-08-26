@@ -308,7 +308,7 @@ export const REGISTRY: readonly SettingDef[] = [
     type: "array",
     scopes: ["team"],
     merge: "replace",
-    description: "The board's full member roster, including hidden-by-default entries.",
+    description: "The authors tab's roster: whose MRs the classic board lists, including hidden-by-default entries. Codeowners tabs list MRs from anyone.",
   },
   {
     key: "board.title",
@@ -329,14 +329,14 @@ export const REGISTRY: readonly SettingDef[] = [
     type: "array",
     scopes: ["team"],
     merge: "replace",
-    description: "Ticket key prefixes (e.g. RT, MAT) the board links out to Linear from an MR title.",
+    description: "Ticket key prefixes (e.g. RT, MAT) that keep the authors tab to the team's own tickets and link out to Linear from an MR title; rows on a codeowners tab pass regardless of prefix.",
   },
   {
     key: "board.slack",
     type: "object",
     scopes: ["team"],
     merge: "deep",
-    description: "The board's Slack posting config (app id, client id, channel, callback port); client secrets stay out of this store.",
+    description: "The board's Slack posting config (app id, client id, channel, callback port); channel is the default that a tab's slackChannel overrides per MR. Client secrets stay out of this store.",
   },
   {
     key: "board.doctorSkill",
@@ -357,7 +357,7 @@ export const REGISTRY: readonly SettingDef[] = [
     type: "array",
     scopes: ["team"],
     merge: "replace",
-    description: "Board tab definitions ({id, label, source, slackChannel?, reviewSkill?}); source.kind 'authors' is the classic roster board, 'codeowners' lists MRs blocked on an unapproved CODEOWNERS section. Absent = one implicit authors tab (fallback lives in the board reader, never here).",
+    description: "Board tabs ({id, label, source, slackChannel?, reviewSkill?}), editable from the board's settings modal. source.kind 'authors' is the classic roster board; 'codeowners' lists MRs from any author blocked on an unapproved CODEOWNERS section. Absent = one implicit authors tab (fallback lives in the board reader, never here).",
   },
 
   // --- board (user) ----------------------------------------------------------
@@ -387,7 +387,7 @@ export const REGISTRY: readonly SettingDef[] = [
     type: "array",
     scopes: ["user"],
     merge: "replace",
-    description: "Usernames this developer hides from the team roster's board.members list; overlays the team truth without editing it.",
+    description: "Usernames this developer hides from the authors tab's board.members roster; overlays the team truth without editing it.",
   },
   {
     key: "board.triage",
