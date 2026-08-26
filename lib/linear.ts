@@ -174,36 +174,64 @@ function toTicket(raw: Record<string, unknown>): LinearTicket {
  *
  * Returns a Map of uppercase identifier → LinearTicket.
  */
+/** Injected in tests; defaults to the real Linear GraphQL call. */
+export type GraphqlRunner = (apiKey: string, query: string, variables: Record<string, unknown>) => Promise<unknown>;
+
+/** One query per this many ids while everything resolves. Above it the query
+    text grows without buying anything; below it a single dead id costs more
+    halvings than it saves. */
+const TICKET_BATCH_SIZE = 50;
+
+function batchQuery(identifiers: string[]): string {
+  const fields = identifiers.map(
+    (id, idx) => `i${idx}: issue(id: "${id}") { id identifier title description url branchName state { name color } }`,
+  );
+  return `query Batch { ${fields.join("\n")} }`;
+}
+
+/**
+ * Resolve as many identifiers as Linear will admit to.
+ *
+ * Linear answers an aliased batch with HTTP 200, an `errors` array and an
+ * EMPTY `data` payload the moment ONE alias names an issue it cannot resolve —
+ * a deleted ticket, or one this key cannot see. The whole batch resolves to
+ * nothing, and since callers write `fetchedAt` regardless, a single dead id
+ * can hold an entire branch cache at `ticket: null` indefinitely.
+ *
+ * So a failed chunk is halved and retried rather than abandoned: live tickets
+ * still land, and a dead id costs log2(chunk) extra queries to isolate instead
+ * of taking its neighbours with it. A chunk of one that still fails IS the
+ * dead id, and is dropped.
+ */
 export async function fetchTicketsBatch(
   apiKey: string,
   identifiers: string[],
+  run: GraphqlRunner = linearGraphql,
 ): Promise<Map<string, LinearTicket>> {
   const results = new Map<string, LinearTicket>();
   if (!identifiers.length) return results;
 
-  // Build a single query with aliased fields:
-  //   query Batch {
-  //     i0: issue(id: "ACME-1403") { id identifier title description url branchName state { name color } }
-  //     i1: issue(id: "ACME-1386") { id identifier title description url branchName state { name color } }
-  //     ...
-  //   }
-  const fields = identifiers.map(
-    (id, idx) => `i${idx}: issue(id: "${id}") { id identifier title description url branchName state { name color } }`,
-  );
-  const query = `query Batch { ${fields.join("\n")} }`;
-
-  try {
-    const data = (await linearGraphql(apiKey, query, {})) as Record<string, Record<string, unknown> | null>;
-
-    for (let idx = 0; idx < identifiers.length; idx++) {
-      const raw = data[`i${idx}`];
-      if (raw && raw.id) {
-        const ticket = toTicket(raw);
-        results.set(ticket.identifier.toUpperCase(), ticket);
+  const collect = async (chunk: string[]): Promise<void> => {
+    if (chunk.length === 0) return;
+    try {
+      const data = (await run(apiKey, batchQuery(chunk), {})) as Record<string, Record<string, unknown> | null>;
+      for (let idx = 0; idx < chunk.length; idx++) {
+        const raw = data?.[`i${idx}`];
+        if (raw && raw.id) {
+          const ticket = toTicket(raw);
+          results.set(ticket.identifier.toUpperCase(), ticket);
+        }
       }
+    } catch {
+      if (chunk.length === 1) return; // this id is the unresolvable one
+      const mid = Math.ceil(chunk.length / 2);
+      await collect(chunk.slice(0, mid));
+      await collect(chunk.slice(mid));
     }
-  } catch {
-    // Batch fetch failed — caller will use cached data gracefully
+  };
+
+  for (let i = 0; i < identifiers.length; i += TICKET_BATCH_SIZE) {
+    await collect(identifiers.slice(i, i + TICKET_BATCH_SIZE));
   }
 
   return results;
