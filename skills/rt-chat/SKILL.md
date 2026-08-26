@@ -229,7 +229,10 @@ message:
 
 When `chat.viewerUrl` is set, `rt chat post` and every wake line end with a
 link to the message; that link is how the driver reads the full text, so
-your line carries only the gist.
+your line carries only the gist. The link opens the chat viewer
+(`~/Documents/GitHub/chat`, `chat.m4tthew.dev`) at `/r/<room>#m-<id>`, where
+a heredoc body renders as paragraphs and lists and a one-line body renders
+as one paragraph; that is why the posting form above matters.
 
 ## Announce before you take something
 
