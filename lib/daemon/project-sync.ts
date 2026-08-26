@@ -66,12 +66,14 @@ export function effectiveSections(record: ProjectMRStore | undefined): string[] 
   return [...sections].sort();
 }
 
-/** Demanded sections with an unapproved CODE_OWNER rule; [] when none. */
+/** Demanded sections with an unapproved CODE_OWNER rule, sorted; [] when none. Sorted here so every producer (deep, delta, backfill) stores the same canonical order regardless of `demanded`'s order. */
 export function sectionsMatching(rules: ApprovalRuleLite[], demanded: string[]): string[] {
-  return demanded.filter((s) => rules.some((r) => r.type === "CODE_OWNER" && !r.approved && r.section === s));
+  return demanded
+    .filter((s) => rules.some((r) => r.type === "CODE_OWNER" && !r.approved && r.section === s))
+    .sort();
 }
 
-/** Order-sensitive equality on two optional tag lists; both sides come from sectionsMatching's stable demanded-order output. */
+/** Order-sensitive equality on two optional tag lists; both sides come from sectionsMatching's sorted output, so order-sensitivity is safe. */
 function sameSections(a: string[] | undefined, b: string[] | undefined): boolean {
   return (a ?? []).length === (b ?? []).length && (a ?? []).every((s, i) => s === (b ?? [])[i]);
 }

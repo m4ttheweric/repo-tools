@@ -1264,6 +1264,37 @@ describe("delta retag and keep-tagged-strangers", () => {
     expect(rec.mrs[9]!.codeownerSections).toEqual(["Acme"]);   // tag survives despite the failed retag
   });
 
+  test("sectionsMatching sorts its output regardless of demanded's order", () => {
+    expect(sectionsMatching(
+      [{ type: "CODE_OWNER", approved: false, section: "Beta" },
+       { type: "CODE_OWNER", approved: false, section: "Acme" }],
+      ["Beta", "Acme"],
+    )).toEqual(["Acme", "Beta"]);
+  });
+
+  test("backfillSections tags in delta's canonical order -- no post-backfill churn (CodeRabbit R1)", async () => {
+    const { store, deps } = await seededSectionStore(); // scope.sections ["Acme"], iid 9 already tagged
+    const rules = { projectPath: "g/p", rules: [
+      { iid: 9, rules: [
+        { type: "CODE_OWNER", approved: false, section: "Acme" },
+        { type: "CODE_OWNER", approved: false, section: "Beta" },
+      ] },
+    ] };
+    // backfillSections is called with the client's declared (unsorted) order,
+    // not scope.sections' sorted order -- this is the actual order mismatch
+    // CodeRabbit flagged between backfill and the delta/deep sweeps.
+    await backfillSections(deps, "r", ["Beta", "Acme"], { store, windowDays: 30, fetchRules: async () => rules });
+    expect(store.read("r")!.mrs[9]!.codeownerSections).toEqual(["Acme", "Beta"]); // sorted despite unsorted demanded order
+
+    const events: Array<{ type: string; data: any }> = [];
+    await syncProjectMRs(
+      { ...deps, broadcast: (type, data) => events.push({ type, data }) },
+      "r",
+      { store, selfUsername: "self", windowDays: 30, fetchDelta: async () => ({ projectPath: "g/p", prs: [] }), fetchRules: async () => rules },
+    );
+    expect(events).toEqual([]); // same set backfill just wrote -- no spurious tag-change broadcast
+  });
+
   test("a tag-only change (untagged this cycle, no pr change) still broadcasts", async () => {
     const { store, deps } = await seededSectionStore(); // iid 9 tagged, stored
     const events: Array<{ type: string; data: any }> = [];
