@@ -60,8 +60,10 @@ export type {
   PresenceRow,
 } from "./commands.ts";
 
-export { subscribe, DEFAULT_WS_URL } from "./relay.ts";
+export { subscribe, createRelay, DEFAULT_WS_URL } from "./relay.ts";
 export type { RelayEventType } from "./relay.ts";
+
+export { daemonHealth } from "./health.ts";
 
 export { repoNameForPath } from "./repos.ts";
 

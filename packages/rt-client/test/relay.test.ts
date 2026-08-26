@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { subscribe } from "../src/relay.ts";
+import { subscribe, createRelay } from "../src/relay.ts";
 
 const stops: Array<() => void> = [];
 afterEach(() => { for (const stop of stops) stop(); stops.length = 0; });
@@ -63,5 +63,72 @@ describe("subscribe", () => {
     sock!.close();
     await new Promise((resolve) => setTimeout(resolve, 1600));
     expect(opens).toBe(2);
+  });
+});
+
+describe("createRelay", () => {
+  test("republishes only event frames whose topic matches, onto the configured topic", () => {
+    const published: Array<[string, string]> = [];
+    const cbs: Array<(type: string, data: unknown) => void> = [];
+    const stop = createRelay(
+      { match: (t) => t.startsWith("chat/"), topic: "chat", publish: (t, d) => published.push([t, d]) },
+      { subscribeImpl: (cb) => { cbs.push(cb); return () => {}; } },
+    );
+    cbs[0]!("event", { topic: "chat/build/msg", payload: { id: 1 } });
+    cbs[0]!("event", { topic: "run-updated", payload: {} });
+    cbs[0]!("ports", {});
+    expect(published).toEqual([["chat", JSON.stringify({ topic: "chat/build/msg", payload: { id: 1 } })]]);
+    stop();
+  });
+
+  test("stop() delegates to the underlying subscription's unsubscribe", () => {
+    let stopped = false;
+    const stop = createRelay(
+      { match: () => true, topic: "chat", publish: () => {} },
+      { subscribeImpl: () => () => { stopped = true; } },
+    );
+    stop();
+    expect(stopped).toBe(true);
+  });
+
+  test("a frame missing a string topic is dropped, not thrown on", () => {
+    const published: Array<[string, string]> = [];
+    const cbs: Array<(type: string, data: unknown) => void> = [];
+    const stop = createRelay(
+      { match: () => true, topic: "chat", publish: (t, d) => published.push([t, d]) },
+      { subscribeImpl: (cb) => { cbs.push(cb); return () => {}; } },
+    );
+    cbs[0]!("event", {});
+    cbs[0]!("event", null);
+    expect(published).toEqual([]);
+    stop();
+  });
+
+  test("defaults subscribeImpl to the real subscribe, wiring through wsUrl", async () => {
+    let sock: Bun.ServerWebSocket<unknown> | null = null;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) { return srv.upgrade(req) ? undefined : new Response("no", { status: 400 }); },
+      websocket: { open(ws) { sock = ws; }, message() {} },
+    });
+    const published: Array<[string, string]> = [];
+    const stop = createRelay(
+      { match: (t) => t === "chat/build/msg", topic: "chat", publish: (t, d) => published.push([t, d]) },
+      { wsUrl: `ws://127.0.0.1:${server.port}/ws` },
+    );
+    await new Promise<void>((resolve, reject) => {
+      const t0 = Date.now();
+      const poll = () => sock ? resolve() : Date.now() - t0 > 3000 ? reject(new Error("no ws connect")) : setTimeout(poll, 10);
+      poll();
+    });
+    sock!.send(JSON.stringify({ type: "event", data: { topic: "chat/build/msg", payload: { id: 1 } }, timestamp: 1 }));
+    await new Promise<void>((resolve, reject) => {
+      const t0 = Date.now();
+      const poll = () => published.length ? resolve() : Date.now() - t0 > 3000 ? reject(new Error("no publish")) : setTimeout(poll, 10);
+      poll();
+    });
+    expect(published).toEqual([["chat", JSON.stringify({ topic: "chat/build/msg", payload: { id: 1 } })]]);
+    stop();
+    server.stop();
   });
 });
