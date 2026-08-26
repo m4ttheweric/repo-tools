@@ -8,8 +8,9 @@ test("agent wrappers are exported functions", () => {
 });
 
 test("agent commands are cataloged", () => {
+  const names: string[] = [...COMMAND_NAMES];
   for (const name of ["agent:start", "agent:resume", "agent:get", "agent:list"]) {
-    expect(COMMAND_NAMES).toContain(name);
+    expect(names).toContain(name);
   }
 });
 

@@ -70,6 +70,25 @@ test("agent:start headless finishes the record and emits agent/done", async () =
   expect(emitted).toContain(`agent/done/${res.data.id}`);
 });
 
+// Pins the ordering invariant: insertAgent runs before spawnHeadless is ever
+// called, so an already-resolved `exited` (the tightest possible race) still
+// finds its row when finishAgent's completion callback runs.
+test("agent:start headless whose exit resolves immediately still finds its own row", async () => {
+  const child: HeadlessChild = {
+    exited: Promise.resolve(0),
+    stdout: async () => JSON.stringify({ result: "ok" }),
+  };
+  const h = fresh({ spawn: () => child });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", surface: "headless", prompt: "go" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  await new Promise((r) => setTimeout(r, 20));
+  const got = await h["agent:get"]({ id: res.data.id });
+  if (!got.ok) throw new Error("unreachable");
+  expect(got.data.exitCode).toBe(0);
+  expect(got.data.finishedAt).toBeGreaterThan(0);
+});
+
 test("agent:resume herdr uses ↺ tab label and --resume, overwrites pane ids", async () => {
   const calls: string[][] = [];
   const h = fresh({ runner: okRunner(calls) });

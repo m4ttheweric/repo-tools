@@ -19,8 +19,11 @@ import { defaultHerdrRunner, launchInWorkspace, type HerdrRunner } from "../../a
 import { repoLabel } from "../../repo-arg.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { rtDir } from "../../rt-paths.ts";
+import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
+
+const log = lazyChildLogger("agent");
 
 export interface HeadlessChild {
   exited: Promise<number>;
@@ -47,6 +50,11 @@ function fromSetting(key: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Deterministic from the id alone, so it can be known and stored before the headless process is even spawned. */
+function agentResultPath(id: string): string {
+  return join(rtDir(), "agents", `${id}.json`);
 }
 
 export function createAgentHandlers(opts: {
@@ -90,14 +98,19 @@ export function createAgentHandlers(opts: {
     }
 
     const argv = buildClaudeArgv(inv);
-    const resultPath = join(rtDir(), "agents", `${rec.id}.json`);
-    mkdirSync(dirname(resultPath), { recursive: true });
-    const child = spawnHeadless(argv, rec.cwd);
+    const resultPath = agentResultPath(rec.id);
     rec.resultPath = resultPath;
+    mkdirSync(dirname(resultPath), { recursive: true });
+    // The caller inserts rec before invoking launch() for every headless
+    // path (start and resume alike), so the row already exists here --
+    // finishAgent below can never race an insert that hasn't happened yet.
+    const child = spawnHeadless(argv, rec.cwd);
     void child.exited.then(async (exitCode) => {
       try {
         writeFileSync(resultPath, await child.stdout());
-      } catch { /* result body is best-effort; the exit code is the record */ }
+      } catch (err) {
+        log.warn({ err, id: rec.id }, "agent: failed to persist headless result body");
+      }
       finishAgent(rec.id, { exitCode, resultPath, finishedAt: Date.now() }, db);
       emitEvent(`agent/done/${rec.id}`, { exitCode });
     });
@@ -131,12 +144,19 @@ export function createAgentHandlers(opts: {
       if (extraArgs !== undefined) rec.extraArgs = extraArgs;
       if (payload.label !== undefined) rec.label = payload.label;
       if (payload.caller !== undefined) rec.caller = payload.caller;
+      if (surface === "headless") rec.resultPath = agentResultPath(rec.id);
 
       const tabLabel = payload.tab ?? rec.label ?? rec.id;
       const workspaceLabel = payload.workspace ?? repoLabel(repo);
       try {
+        // Inserted before launch() runs, not after: launch()'s headless
+        // branch arms a completion callback that calls finishAgent, and
+        // that row must already exist or the update is a silent no-op.
+        insertAgent(rec, db);
         const res = await launch(rec, { kind: "start", sessionId: rec.sessionId }, prompt, tabLabel, workspaceLabel);
-        if (res.ok) insertAgent(rec, db);
+        if (res.ok && surface === "herdr" && rec.paneId && rec.tabId && rec.workspaceId) {
+          updateAgentPane(rec.id, { paneId: rec.paneId, tabId: rec.tabId, workspaceId: rec.workspaceId }, db);
+        }
         return res;
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
