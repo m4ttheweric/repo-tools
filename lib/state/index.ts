@@ -122,7 +122,7 @@ export {
 
 export {
   insertAgent, getAgent, listAgents, updateAgentPane, markAgentResumed,
-  finishAgent, newAgentId,
+  finishAgent, deleteAgent, newAgentId,
   type AgentRecord, type AgentSurface,
 } from "./agents-store.ts";
 

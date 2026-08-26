@@ -11,7 +11,7 @@ import { mkdirSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { Database } from "bun:sqlite";
 import {
-  finishAgent, getAgent, insertAgent, listAgents, markAgentResumed,
+  deleteAgent, finishAgent, getAgent, insertAgent, listAgents, markAgentResumed,
   newAgentId, updateAgentPane, type AgentRecord, type AgentSurface,
 } from "../../state/index.ts";
 import { buildClaudeArgv, buildPaneCommand, type ClaudeInvocation } from "../../agent-argv.ts";
@@ -152,13 +152,21 @@ export function createAgentHandlers(opts: {
         // Inserted before launch() runs, not after: launch()'s headless
         // branch arms a completion callback that calls finishAgent, and
         // that row must already exist or the update is a silent no-op.
+        // A launch failure below rolls this insert back so no phantom,
+        // never-launched record survives it (unlike agent:resume, whose
+        // record predates the call and must never be deleted on failure).
         insertAgent(rec, db);
         const res = await launch(rec, { kind: "start", sessionId: rec.sessionId }, prompt, tabLabel, workspaceLabel);
-        if (res.ok && surface === "herdr" && rec.paneId && rec.tabId && rec.workspaceId) {
+        if (!res.ok) {
+          deleteAgent(rec.id, db);
+          return res;
+        }
+        if (surface === "herdr" && rec.paneId && rec.tabId && rec.workspaceId) {
           updateAgentPane(rec.id, { paneId: rec.paneId, tabId: rec.tabId, workspaceId: rec.workspaceId }, db);
         }
         return res;
       } catch (err) {
+        deleteAgent(rec.id, db);
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },

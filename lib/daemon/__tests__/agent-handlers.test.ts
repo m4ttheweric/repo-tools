@@ -41,6 +41,20 @@ test("agent:start herdr records pane ids and a minted session uuid", async () =>
   expect(paneRun?.[3]).toContain("cd '/tmp/x'");
 });
 
+// Pins the rollback: a launch failure must not leave a phantom record that
+// never launched, was never resumed, and can never finish.
+test("agent:start herdr rolls back the inserted record when launch fails", async () => {
+  const throwingRunner: HerdrRunner = async () => {
+    throw new Error("herdr unavailable");
+  };
+  const h = fresh({ runner: throwingRunner });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
+  expect(res.ok).toBe(false);
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
+});
+
 test("agent:start headless refuses a missing prompt", async () => {
   const h = fresh();
   const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", surface: "headless" });

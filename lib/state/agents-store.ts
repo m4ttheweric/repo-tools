@@ -32,6 +32,7 @@ const SELECT_REPO_SQL = `SELECT ${COLUMNS} FROM agents WHERE repo = ? ORDER BY c
 const UPDATE_PANE_SQL = `UPDATE agents SET pane_id = ?, tab_id = ?, workspace_id = ? WHERE id = ?;`;
 const UPDATE_RESUMED_SQL = `UPDATE agents SET last_resumed_at = ? WHERE id = ?;`;
 const UPDATE_FINISH_SQL = `UPDATE agents SET exit_code = ?, result_path = ?, finished_at = ? WHERE id = ?;`;
+const DELETE_SQL = `DELETE FROM agents WHERE id = ?;`;
 
 interface AgentRow {
   id: string; repo: string; cwd: string; provider: string; surface: string;
@@ -109,4 +110,8 @@ export function finishAgent(
   db: Database = getStateDb(),
 ): void {
   runCriticalWrite("finishAgent", () => db.query(UPDATE_FINISH_SQL).run(args.exitCode, args.resultPath, args.finishedAt, id), { id });
+}
+
+export function deleteAgent(id: string, db: Database = getStateDb()): void {
+  runCriticalWrite("deleteAgent", () => db.query(DELETE_SQL).run(id), { id });
 }
