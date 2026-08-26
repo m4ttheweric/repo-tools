@@ -1248,10 +1248,12 @@ export function createAgentHandlers(opts: {
 
 In `lib/daemon/command-router.ts`: rename the `chatDb` opt to `stateDb` (update its docblock to say "state.db, for chat:* and agent:* handlers"), add `import { createAgentHandlers } from "./handlers/agent.ts";`, destructure `const { db: _agentDb, ...agentHandlers } = createAgentHandlers({ db: opts.stateDb, emitEvent });` next to the chat line, and spread `...agentHandlers,` after `...chatHandlers,`. In `lib/daemon.ts` change `chatDb: getStateDb("daemon"),` to `stateDb: getStateDb("daemon"),`. Update the `rt-client-commands.test.ts` stub (`chatDb:` → `stateDb:`).
 
+**Rename hazard (from the rt #99 lane):** `buildRoutedHandlers` carries other lanes' options on the same lines the rename touches — notably `repos: { withReconcilerHeld, refreshWatchedRepos }` (lib/daemon.ts:446-448) and the `...createReposHandlers({ ...opts.repos, emitEvent })` spread (command-router.ts:88). A dropped opt there throws nothing; the verb silently deregisters. After the rename, diff the full option object at both call sites against the pre-rename version — every existing key (`ctx`, `broadcast`, `systemProcessScanner`, `worktree`, `eventsBus`, `homeSnapshot`, `repos`, `stateDb`) must survive. Do not eyeball it.
+
 - [ ] **Step 4: Run tests**
 
-Run: `bun test lib/daemon/__tests__/agent-handlers.test.ts && bun test lib/daemon`
-Expected: PASS — including `rt-client-commands.test.ts`, which now proves every `agent:*` catalog row resolves to a handler.
+Run: `bun test lib/daemon/__tests__/agent-handlers.test.ts && bun test lib/daemon/__tests__/repos-handlers.test.ts && bun test lib/daemon`
+Expected: PASS — `rt-client-commands.test.ts` proves every `agent:*` catalog row resolves to a handler, and `repos-handlers.test.ts` proves the #99 reconciler-hold wiring survived the rename.
 
 - [ ] **Step 5: Commit**
 
