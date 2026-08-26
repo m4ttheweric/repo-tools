@@ -542,7 +542,10 @@ the lock.
   `chat:arm` / `chat:touch` / `chat:disarm` that own `armed_at` and
   `last_seen_at`. Without those three nothing writes those columns and the
   viewer's live/idle/deaf model has no data to render. All delegate to the
-  store.
+  store. `chat:touch` also re-asserts `armed_at` wherever it is NULL, with
+  the room scope the arm used: only an armed tail ever touches, and a tail
+  outlives a daemon restart (it reconnects and keeps touching), so without
+  this the startup clear below would leave it reading idle for good.
 - **A fourth writer of `armed_at`: the daemon clears every row at startup,
   before it begins serving.** No waiter can outlive the daemon —
   `events-bus.close()` settles every waiter and closes the db — so any

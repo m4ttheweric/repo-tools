@@ -237,7 +237,7 @@ export function createChatHandlers(opts: {
     "chat:touch": async (payload: Commands["chat:touch"]["payload"]): Promise<CommandResult<"chat:touch">> => {
       const err = assertionError(() => assertSessionOwnsHandle(payload.handle, payload.sessionId, db));
       if (err) return { ok: false, error: err };
-      touchMember(payload.handle, db);
+      touchMember(payload.room, payload.handle, db);
       return { ok: true, data: {} };
     },
 

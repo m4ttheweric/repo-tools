@@ -9,17 +9,8 @@ import { expect, test } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
-import { armMember, disarmMember, joinRoom, listMembers, touchMember } from "../chat-store.ts";
-import {
-  assertSessionOwnsHandle,
-  assertSessionSignedIn,
-  buddyStatus,
-  presenceThresholds,
-  prunePresence,
-  signIn,
-  signOut,
-  pulseSession,
-} from "../presence-store.ts";
+import { armMember, clearAllArmed, disarmMember, joinRoom, listMembers, touchMember } from "../chat-store.ts";
+import { assertSessionOwnsHandle, assertSessionSignedIn, buddyStatus, presenceForSession, presenceThresholds, prunePresence, pulseSession, signIn, signOut } from "../presence-store.ts";
 
 let n = 0;
 function fresh() {
@@ -136,7 +127,7 @@ test("arm/touch/disarm dual-write when a presence row exists, and still work wit
   expect(armedRow.armed_at).toBeTruthy();
   expect(armedRow.tail_seen_at).toBeNull(); // new tail epoch
 
-  touchMember("x", db);
+  touchMember(undefined, "x", db);
   const touchedRow = db.query("SELECT tail_seen_at FROM chat_presence WHERE handle = 'x'").get() as { tail_seen_at: number | null };
   expect(touchedRow.tail_seen_at).toBeTruthy();
 
@@ -261,4 +252,20 @@ test("presenceThresholds returns the documented defaults with no env set", () =>
     if (saved.session !== undefined) process.env.RT_CHAT_SESSION_STALE_MS = saved.session;
     if (saved.prune !== undefined) process.env.RT_CHAT_PRUNE_MS = saved.prune;
   }
+});
+
+test("a tail that outlives a daemon restart reads live again on its next touch", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now: Date.now() }, db);
+  joinRoom({ room: "r", handle: "x" }, db);
+  armMember(undefined, "x", db);
+  expect(buddyStatus(presenceForSession("s1", db)!, Date.now())).toBe("live");
+
+  clearAllArmed(db); // daemon boot, tail still running
+  expect(buddyStatus(presenceForSession("s1", db)!, Date.now())).toBe("idle"); // the reported bug
+
+  touchMember(undefined, "x", db); // the reconnected tail's next heartbeat
+  const row = presenceForSession("s1", db)!;
+  expect(row.armedAt).toBeGreaterThan(0);
+  expect(buddyStatus(row, Date.now())).toBe("live");
 });

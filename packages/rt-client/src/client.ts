@@ -227,10 +227,11 @@ export function chatArm(
 }
 
 export function chatTouch(
-  a: { handle: string; sessionId?: string },
+  a: { handle: string; room?: string; sessionId?: string },
   o: RtClientOptions = {},
 ): Promise<RtResponse<Record<string, never>>> {
   const payload: Record<string, unknown> = { handle: a.handle };
+  if (a.room !== undefined) payload.room = a.room;
   if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
   return rtCommand<Record<string, never>>("chat:touch", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
