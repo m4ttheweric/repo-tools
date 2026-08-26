@@ -1,3 +1,5 @@
+import { getSetting } from "./settings/resolve.ts";
+
 /**
  * The link rt prints for a room or a message when `chat.viewerUrl` is set.
  * The viewer serves `/r/<room>` and scrolls to `#m-<id>`; both halves are
@@ -8,4 +10,15 @@ export function chatViewerUrl(base: string | undefined, room: string, messageId?
   const root = base.replace(/\/+$/, "");
   const anchor = messageId === undefined ? "" : `#m-${messageId}`;
   return `${root}/r/${encodeURIComponent(room)}${anchor}`;
+}
+
+/** `chat.viewerUrl`, or undefined when unset or unresolvable; the CLI's
+    "posted → link" and the daemon's desk notification both go through here. */
+export function readChatViewerUrlSetting(): string | undefined {
+  try {
+    const resolved = getSetting<string>("chat.viewerUrl");
+    return typeof resolved.value === "string" && resolved.value ? resolved.value : undefined;
+  } catch {
+    return undefined;
+  }
 }

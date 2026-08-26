@@ -63,6 +63,17 @@ test("a chat_mention notification is pushed when a provider is configured", asyn
   expect(fetchSpy).toHaveBeenCalledWith("https://ntfy.sh/x", expect.objectContaining({ method: "POST" }));
 });
 
+test("a push carries the notification url as ntfy's Click header", async () => {
+  push();
+  const fetchSpy = inert();
+  notify("#r", "agent: @matt hi", "https://chat.example/r/r#m-1", "chat_mention");
+  await Bun.sleep(0);
+  expect(fetchSpy).toHaveBeenCalledWith(
+    "https://ntfy.sh/x",
+    expect.objectContaining({ headers: expect.objectContaining({ Click: "https://chat.example/r/r#m-1" }) }),
+  );
+});
+
 test("a failing push does not fail the notification", async () => {
   push();
   spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
