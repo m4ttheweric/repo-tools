@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6; v5 is reserved by another lane). */
-export const SCHEMA_VERSION = 6;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7). */
+export const SCHEMA_VERSION = 7;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -250,6 +250,36 @@ CREATE TABLE IF NOT EXISTS project_mr_sections (
 );
 `;
 
+// Tables (v7): agent handoff records for `rt agent`
+// (lib/state/agents-store.ts is the only module that touches them).
+// Additive only: never put ALTER TABLE or non-IF-NOT-EXISTS DDL in a
+// V*_SCHEMA block... runMigrations replays the full concat on every bump.
+const V7_SCHEMA = `
+CREATE TABLE IF NOT EXISTS agents (
+  id              TEXT PRIMARY KEY,
+  repo            TEXT NOT NULL,
+  cwd             TEXT NOT NULL,
+  provider        TEXT NOT NULL,
+  surface         TEXT NOT NULL,
+  session_id      TEXT NOT NULL UNIQUE,
+  model           TEXT,
+  effort          TEXT,
+  account         TEXT,
+  label           TEXT,
+  caller          TEXT,
+  pane_id         TEXT,
+  tab_id          TEXT,
+  workspace_id    TEXT,
+  extra_args      TEXT,
+  exit_code       INTEGER,
+  result_path     TEXT,
+  created_at      INTEGER NOT NULL,
+  last_resumed_at INTEGER,
+  finished_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS agents_repo_created ON agents(repo, created_at);
+`;
+
 /** project_mr_demands.sections (v6): SQLite's ALTER TABLE ADD COLUMN has no
     IF NOT EXISTS, so unlike every statement in the V*_SCHEMA strings above it
     cannot simply replay -- a future SCHEMA_VERSION bump re-execs this whole
@@ -399,7 +429,7 @@ function runMigrations(db: Database, dir: string): void {
       // One exec of the full combined schema, not a per-version step: every
       // statement is IF NOT EXISTS, so replaying v1's DDL against an
       // already-v1 db is a no-op and existing rows are untouched.
-      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA);
+      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA + V7_SCHEMA);
       addSectionsColumnIfMissing(db);
       // Legacy-JSON import is single-shot and only correct from a true
       // v0 (never-migrated) database: branch-cache's UPSERT would silently

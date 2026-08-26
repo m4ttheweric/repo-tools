@@ -46,6 +46,7 @@ import "../daemon/project-mrs-store.ts";
 import "../daemon/discussions-file-store.ts";
 import "./notifier-store.ts";
 import "./cursors-store.ts";
+import "./agents-store.ts";
 
 export {
   SCHEMA_VERSION,
@@ -144,3 +145,9 @@ export {
   renameLegacyOutOfTheWay,
   type LegacyImportResult,
 } from "./legacy-import.ts";
+
+export {
+  insertAgent, getAgent, listAgents, updateAgentPane, markAgentResumed,
+  finishAgent, newAgentId,
+  type AgentRecord, type AgentSurface,
+} from "./agents-store.ts";
