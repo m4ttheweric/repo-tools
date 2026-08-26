@@ -79,6 +79,11 @@ export function createRelay(
     if (type !== "event") return;
     const frame = data as { topic?: unknown };
     if (typeof frame?.topic !== "string" || !cfg.match(frame.topic)) return;
-    cfg.publish(cfg.topic, JSON.stringify(data));
+    try {
+      cfg.publish(cfg.topic, JSON.stringify(data));
+    } catch {
+      // One subscriber's broken publish must not tear down the relay every
+      // other subscriber shares; the caller's transport may have no net.
+    }
   }, opts);
 }

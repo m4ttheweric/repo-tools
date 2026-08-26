@@ -131,4 +131,28 @@ describe("createRelay", () => {
     stop();
     server.stop();
   });
+
+  test("a publish that throws does not tear down the relay", () => {
+    const seen: string[] = [];
+    let cb!: (type: string, data: unknown) => void;
+    const stop = createRelay(
+      {
+        match: (t) => t.startsWith("chat/"),
+        topic: "chat",
+        publish: (_t, d) => {
+          if (seen.length === 0) {
+            seen.push("threw");
+            throw new Error("subscriber went away");
+          }
+          seen.push(d);
+        },
+      },
+      { subscribeImpl: (fn) => { cb = fn; return () => {}; } },
+    );
+    cb("event", { topic: "chat/build/msg", payload: { id: 1 } });
+    cb("event", { topic: "chat/build/msg", payload: { id: 2 } });
+    expect(seen).toEqual(["threw", JSON.stringify({ topic: "chat/build/msg", payload: { id: 2 } })]);
+    stop();
+  });
+
 });
