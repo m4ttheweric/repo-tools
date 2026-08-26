@@ -202,7 +202,11 @@ Mantine's stock unsized `h2` renders about twice the largest body text in this m
 
 Run console's design parity capture (`design/wiring/capture.sh` + `normalize-captures.mjs`) and diff against `design/wiring/reference/*.png`: zero pixel drift is the acceptance test for an extraction.
 
-**Known defect, read before you trust this gate.** The capture renders static mocks, not the running app, so it can pass while the real theme is broken. Zero drift here is necessary, not sufficient. Until the harness renders the app, back it with something that actually observes the merged theme... a test asserting the resolved `appTheme` still carries every spacing key and heading level by name is cheap and would catch the exact failure this task risks. Do not report a green capture as proof the extraction is visually clean.
+**Known defect, read before you trust this gate.** The capture renders static mocks, not the running app, so it can pass while the real theme is broken. Zero drift here is necessary, not sufficient.
+
+It is worse than a blind spot in the capture: a dropped spacing key has **no detector anywhere in the stack**. Mantine resolves an unknown spacing name to the literal string, so losing `xxxl` emits `padding: xxxl`, the browser drops the declaration, and the surface silently returns to unpadded. No throw, no type error, no failing capture, no lint. That is precisely the hand-transcription miss ordering (b) risks.
+
+The only thing that catches it is an assertion against the **resolved** theme (the `mergeThemeOverrides` output, not `app-theme.ts` read in isolation). That test already exists: `src/app/runs/theme-contract.test.ts` on console's `feat/run-views-redesign` (`211b71e`) asserts every spacing step by name with its value, radius `lg`/`xl`, all six heading levels carrying a fontSize and fontWeight, and `h2` pinned at `1.1rem`. It was verified by deleting `xxxl`, watching it fail, and restoring. Make sure it survives the extraction and points at the package's values; do not replace it with a capture. Never report a green capture as proof the extraction is visually clean.
 
 - [ ] **Step 4: Gate, commit, publish**
 
