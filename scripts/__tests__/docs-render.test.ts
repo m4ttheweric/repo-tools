@@ -8,6 +8,14 @@ test("slugArg lowercases and hyphenates", () => {
   expect(slugArg("Dry run")).toBe("dry-run");
 });
 
+test("renderUsage brackets an optional positional", () => {
+  const args = [
+    { name: "Verb", type: "text" as const },
+    { name: "Text", type: "text" as const, optional: true },
+  ];
+  expect(renderUsage(["chat"], args)).toContain("rt chat <verb> [<text>]");
+});
+
 test("renderUsage includes positionals and a [flags] marker", () => {
   const args: CommandArg[] = [
     { name: "Key", type: "text" },

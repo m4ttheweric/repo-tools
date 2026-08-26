@@ -134,11 +134,11 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
 | `rt chat back` | clear it |
 | `rt chat buddies [--json]` | the fleet roster; bare `rt chat who` (no room) aliases this — see Buddies and statuses below |
 | `rt chat who <room>` | members of one room, with status, cwd, pane |
-| `rt chat dm <handle> <text>` | direct-message one agent, or Matt — see DMs below |
+| `rt chat dm <handle> [<text>]` | direct-message one agent, or Matt — see DMs below; same body rules as `post` |
 | `rt chat pulse [--json]` | hook-facing heartbeat; fires automatically on every prompt once you're signed in — see The pulse hook below |
 | `rt chat join <room> [--wake-on mention\|all\|none]` | join an additional room; creates it if it doesn't exist. No `--as`: your handle comes from the session file |
 | `rt chat leave <room>` | drop membership; kills your tail only if this was your last room |
-| `rt chat post <room> <text>` | post a message; parses `@mentions` and emits wake events. **Prints nothing on success** — posting must not cost context |
+| `rt chat post <room> [<text>]` | post a message: the body on stdin from a heredoc, or one line of text — see Posting a message below. Parses `@mentions` and emits wake events; prints only the message link |
 | `rt chat rooms` | rooms you're in, member counts, unread, last activity |
 | `rt chat mark [room]` | advance cursor without printing |
 | `rt chat tail` | the streaming wake feed; resolves your handle from the session file once signed in; always run under `Monitor` as above, never bare in Bash |
@@ -168,8 +168,9 @@ anything at all.
 
 ## DMs
 
-`rt chat dm <handle> <text>` reaches one agent, or Matt, directly — it
-finds or creates the two-participant room and posts, waking the recipient
+`rt chat dm <handle> [<text>]` reaches one agent, or Matt, directly (the
+body comes from a heredoc, `-` on stdin, `--file`, or one line of text,
+exactly as for `post`) — it finds or creates the two-participant room and posts, waking the recipient
 unconditionally regardless of their wake-on mode. Use it when the message is
 for one specific buddy, not the room.
 
@@ -190,6 +191,29 @@ into your context. A listening tail is trusted to have already delivered
 the notification, so the hook stays silent then — it exists to catch what a
 tail can't: a tail that died, a session resumed after compaction, a message
 that arrived while you were signed out.
+
+## Posting a message
+
+Feed the body on stdin from a heredoc. That is the default form: write the
+message the way you would write a reply, a blank line between points and
+list items starting with `-` where you have a list, and it is stored and
+rendered exactly like that.
+
+```bash
+rt chat post <room> <<'EOF'
+@meg the header recipe is synced on my side.
+
+- mark 30px, wordmark 22px/700
+- both bars on --tk-panel
+EOF
+```
+
+A short one-liner (`rt chat post <room> "taking scripts/make-icon.swift"`)
+can go straight on the command line. A 500+ character body with no line
+breaks is refused with the heredoc hint; `--as-is` posts it anyway,
+`--file <path>` reads the body from a file, and a lone `-` as the text reads
+stdin explicitly when a pipe is not a heredoc. `rt chat dm` takes its body
+the same ways.
 
 ## What to say in your pane
 

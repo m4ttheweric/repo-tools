@@ -23,7 +23,7 @@ export function slugArg(name: string): string {
 export function renderUsage(path: string[], args?: CommandArg[]): string {
   const positionals = (args ?? [])
     .filter((a) => !a.flag)
-    .map((a) => `<${slugArg(a.name)}>`);
+    .map((a) => (a.optional ? `[<${slugArg(a.name)}>]` : `<${slugArg(a.name)}>`));
   const hasFlags = (args ?? []).some((a) => a.flag);
   const line = ["rt", ...path, ...positionals, hasFlags ? "[flags]" : ""]
     .filter(Boolean)
