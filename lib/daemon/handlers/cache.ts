@@ -70,11 +70,14 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
       const repoPath  = payload?.repoPath  as string;
       const remoteUrl = payload?.remoteUrl as string | undefined;
       // Test seam: the enricher, so a test never reaches Linear or the forge.
-      const inject    = payload?.enrich    as (() => Promise<void>) | undefined;
+      const inject    = payload?.enrich    as
+        | ((b: unknown, r: unknown, o: unknown) => Promise<void>)
+        | undefined;
 
       if (!branch) return { ok: false, error: "missing branch" };
 
       const cached = ctx.cache.entries[branch];
+      const healing = !!cached;
       if (cached && !isIncomplete(cached)) {
         return { ok: true, data: cached, source: "cache" };
       }
@@ -82,11 +85,16 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
       if (!repoPath) return { ok: false, error: "missing repoPath for cold enrichment" };
 
       try {
+        // `forceRefresh` is load-bearing when healing: enrichBranches has its
+        // own all-cached short-circuit keyed on mere presence, so without it
+        // a re-enrich of a branch already in the store returns the same
+        // incomplete entry and never reaches the ticket lookup.
+        const opts = { silent: true, forceRefresh: healing };
         if (inject) {
-          await inject();
+          await inject([{ path: repoPath, branch }], remoteUrl, opts);
         } else {
           const { enrichBranches } = await import("../../enrich.ts");
-          await enrichBranches([{ path: repoPath, branch }], remoteUrl, { silent: true });
+          await enrichBranches([{ path: repoPath, branch }], remoteUrl, opts);
         }
 
         // enrichBranches wrote through the same singleton store in this

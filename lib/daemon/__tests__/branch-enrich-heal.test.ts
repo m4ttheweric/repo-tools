@@ -26,6 +26,22 @@ describe("branch:enrich heals an entry whose ticket never resolved", () => {
     expect(res.source).toBe("cache");
   });
 
+  test("healing forces a refresh, since enrichBranches also short-circuits on a cached branch", async () => {
+    let opts: any = null;
+    const ctx = makeCtx({
+      b: { linearId: "ACME-1", ticket: null, mr: null, fetchedAt: Date.now() - HOUR },
+    });
+    await createCacheHandlers(ctx)["branch:enrich"]!({
+      branch: "b",
+      repoPath: "/tmp/x",
+      enrich: async (_b: unknown, _r: unknown, o: unknown) => {
+        opts = o;
+        ctx.cache.entries.b.ticket = { identifier: "ACME-1" };
+      },
+    });
+    expect(opts?.forceRefresh).toBe(true);
+  });
+
   test("an id resolved but no ticket is INCOMPLETE, and re-enriches", async () => {
     const ctx = makeCtx({
       b: { linearId: "ACME-1", ticket: null, mr: null, fetchedAt: Date.now() - HOUR },
