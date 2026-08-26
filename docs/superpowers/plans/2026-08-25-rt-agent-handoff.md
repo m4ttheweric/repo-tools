@@ -26,7 +26,7 @@
 ### Task 1: agents table + store
 
 **Files:**
-- Modify: `lib/state/db.ts` (SCHEMA_VERSION 4→5, add V5_SCHEMA, concat in runMigrations). Main owns v4 (chat presence, rt #97); this lane claims v5 — announced to the coordination lane 2026-08-25. If another lane lands v5 first, renumber to 6 and re-announce.
+- Modify: `lib/state/db.ts` (SCHEMA_VERSION 6→7, add V7_SCHEMA, concat in runMigrations). Main owns v4 (chat presence, #97) and v6 (codeowner-sections #109); v5 was reserved for this lane, but a v5 block cannot trigger a replay on a db already stamped 6, so this lane claims v7 (announced to coordination lane github-27). If another lane lands v7 first, renumber and re-announce.
 - Create: `lib/state/agents-store.ts`
 - Modify: `lib/state/index.ts` (barrel re-export)
 - Test: `lib/state/__tests__/agents-store.test.ts`
@@ -129,14 +129,14 @@ Expected: FAIL — cannot resolve `../agents-store.ts`.
 
 - [ ] **Step 3: Implement schema + store**
 
-In `lib/state/db.ts`: change `export const SCHEMA_VERSION = 4;` to `5` (update its docblock to include v5), add below `V4_SCHEMA`:
+In `lib/state/db.ts`: change `export const SCHEMA_VERSION = 6;` to `7` (update its docblock, and replace the "v5 is reserved by another lane" note to state that this lane lands v7), add below `V6_SCHEMA`:
 
 ```ts
-// Tables (v5): agent handoff records for `rt agent`
+// Tables (v7): agent handoff records for `rt agent`
 // (lib/state/agents-store.ts is the only module that touches them).
 // Additive only: never put ALTER TABLE or non-IF-NOT-EXISTS DDL in a
 // V*_SCHEMA block — runMigrations replays the full concat on every bump.
-const V5_SCHEMA = `
+const V7_SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
   id              TEXT PRIMARY KEY,
   repo            TEXT NOT NULL,
@@ -163,7 +163,7 @@ CREATE INDEX IF NOT EXISTS agents_repo_created ON agents(repo, created_at);
 `;
 ```
 
-and in `runMigrations` change the exec line to `db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V5_SCHEMA);`.
+and in `runMigrations` change the exec line to `db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA + V7_SCHEMA);` (v5 stays unused; append v7 after main's v6).
 
 Create `lib/state/agents-store.ts`:
 
@@ -297,13 +297,13 @@ export {
 - [ ] **Step 4: Run tests**
 
 Run: `bun test lib/state/__tests__/agents-store.test.ts && bun test lib/state`
-Expected: PASS (including existing chat-store and presence tests — the v5 migration must not disturb v4 dbs).
+Expected: PASS (including existing chat-store and presence tests; the v7 migration must not disturb existing v6 dbs).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add lib/state/db.ts lib/state/agents-store.ts lib/state/index.ts lib/state/__tests__/agents-store.test.ts
-git commit -m "feat(agent): agents table (schema v5) + store"
+git commit -m "feat(agent): agents table (schema v7) + store"
 ```
 
 ---
