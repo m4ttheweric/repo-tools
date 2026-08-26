@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-23-rt-chat-design.md` — read the **Web viewer** and **Notifications** sections before Task 1. On any conflict, the spec wins.
 
-**Depends on:** plan 1 (`docs/superpowers/plans/2026-08-23-rt-chat-core.md`) **Tasks 6 and 7** — Task 6 for the exported rt-client wrappers and types, and Task 7 for the `chat.humanHandle` settings def, which Tasks 2 and 7 here both read. Starting after Task 6 alone would hit an unregistered settings key. The reader is `getSetting`, already exported from `packages/rt-client/src/index.ts`. Nothing here needs plan 1's CLI, skill, or hook, and **no `/api/chat/*` REST routes exist on the daemon**; this server is the only chat HTTP surface that will ever exist.
+**Depends on:** plan 1 (`docs/superpowers/plans/2026-08-23-rt-chat-core.md`, shipped) and plan 3 (`docs/superpowers/plans/2026-08-24-rt-chat-presence.md`, shipped in rt PR #97): the exported rt-client wrappers and types (`chatRooms`/`chatWho`/`chatMessages`/`chatMark`/`chatJoin`/`chatPost` from plan 1; `chatBuddies`/`chatDm` and the presence-joined `status`, `kind`/`participants` on rooms, from plan 3), plus the `chat.humanHandle` settings def, read here through `getSetting` (already exported from `packages/rt-client/src/index.ts`). Nothing here needs the CLI, skill, hook or plugin, and **no `/api/chat/*` REST routes exist on the daemon**; this server is the only chat HTTP surface that will ever exist. The presence spec's **Web viewer** section (`docs/superpowers/specs/2026-08-24-rt-chat-presence-design.md`) is what Tasks 5–7 build; on any conflict with the base spec it wins.
 
 **Reference implementation:** `~/Documents/GitHub/console` is the precedent for every structural decision below. Read `src/server/{app,index,ws,runs}.ts` before Task 2 — to understand the shape. What is genuinely shared (the Tokyo tokens, the relay, the probe) arrives as packages in Task 0; the UI kit is scaffolded from the template and is this app's own to edit.
 
@@ -21,15 +21,17 @@
 ## Global Constraints
 
 - **`@mattstack/rt-client` NEVER throws.** `rtCommand` wraps its whole fetch in try/catch and returns `{ ok: false, error: "rt daemon unreachable at <sock>: ..." }` for connection-refused exactly as for a refusal. **Console's `runs.ts` and `runs.test.ts` both state the opposite** — that a throw means unreachable and falls through to `app.onError` as a 500. That is wrong; the test passes only because it mocks a rejection the real client cannot produce. **Do not copy that comment or that test.** Daemon-down and daemon-refused are indistinguishable by shape, which is why Task 4 exists.
-- **Packages come from npm, never a sibling `file:` path.** `@mattstack/rt-client` (`^0.5` — Task 0a's release; `0.4` is the RT-62 line and has no relay or probe) and `@mattstack/mantine-tokyo`. A `file:../` dependency is a build that only works on one machine; deck's own move to npm is the precedent.
+- **Packages come from npm, never a sibling `file:` path.** `@mattstack/rt-client` (`^0.6` — Task 0a's release, which also carries the unpublished 0.5.0 presence surface; `0.4` is the RT-62 line and has neither) and `@mattstack/mantine-tokyo`. A `file:../` dependency is a build that only works on one machine; deck's own move to npm is the precedent.
 - **Shared tokens, owned components.** `src/ui/*` is scaffolded from the `create-mantine-kit` template and is **this app's own**: edit `RailShell`, `PageShell`, wrap a Mantine component and expose the wrapper through the wall — that is what the kit is for, and divergence from console's copy is accepted as the price of ownership. What the two apps *share* is the suite's identity, as versioned packages: the Tokyo tokens via `@mattstack/mantine-tokyo` (consumed through the kit's brand slots), and the relay + daemon probe via `rt-client`. Chat never reaches into console's tree; a console component worth having here is ported deliberately, not synced.
 - **`hono/bun` reads the `Bun` global at module load.** Any module that must stay importable under vitest's Node runtime cannot import it. The `/ws` route registers in `index.ts` only — never in `app.ts`, never in `ws.ts`.
 - **Routes are chained and handlers inline.** A handler lifted into a named function loses path-param typing, and an unchained `app.get(...)` never reaches `typeof routes`. This is Hono RPC inference, not style.
 - **Never render an agent status while the daemon is unreachable.** Statuses are only meaningful when the daemon answers; see Task 4. The banner also disables the composer (every post goes over `rt.sock`) and marks counts as last known.
+- **Statuses are the daemon's.** Every member and buddy arrives with `status: BuddyStatus` computed daemon-side from the two heartbeats; the client renders it (and a sub-line explaining it) and never re-derives listening/idle/deaf/offline. `branch` is presence's too — this server spawns no git.
+- **DM rooms are never joined.** `chat:join` refuses them and the human is a member of every DM by construction; the post route reads `kind` before joining. A DM is named by its pair (`a ↔ b`) everywhere a human reads it; its hashed room id is a key.
 - **Viewing never mutates.** Opening a room does not advance the read cursor; *mark read* is an explicit control (Task 5). Status lives on the member row, never beside a message.
 - **The page must not scroll horizontally at 375px.** The composer is the reason this app is published; a desktop layout that technically reflows is a failure.
 - **Clean-code comments only.** A comment states a constraint the code cannot show. No narration, no ticket numbers, no decision history in source.
-- **Commits:** prefix `chat-viewer:`, trailer `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
+- **Commits:** prefix `chat-viewer:`, trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - **Test gate:** in the chat repo `bunx vitest run && bunx tsc -b` (a vitest repo: `bun test` would run the same files under bun's runner and choke on `vi.mock`); in repo-tools `bun run test && bunx tsc --noEmit`; in console `bun run lint && bunx vitest run && bunx tsc -b`. Before every commit.
 
 ---
@@ -46,23 +48,24 @@ packages/mantine-tokyo/                  NEW: @mattstack/mantine-tokyo — the T
 src/ui/design-system/app-{theme,colors}.ts  MODIFY: console's brand slots re-export from the package (its kit copy is otherwise untouched)
 
 # chat (Tasks 1-7)
-package.json                   NEW: rt-client ^0.5 and mantine-tokyo from npm
+package.json                   NEW: rt-client ^0.6 and mantine-tokyo from npm
 src/ui/**                      NEW: the create-mantine-kit template copy — this app's own kit, edited freely
 src/ui/design-system/app-{theme,colors}.ts  MODIFY: brand slots re-export from @mattstack/mantine-tokyo
 design/                        NEW: the approved artboards, canvas.json, README (console's design/ pattern)
 src/server/index.ts            NEW: entry — Bun.serve, /ws route, relay start
 src/server/app.ts              NEW: Hono app, chained routes, import-safe under vitest
-src/server/chat.ts             NEW: /api/chat/* routes over rt-client wrappers (+ branch per member, + mark)
+src/server/chat.ts             NEW: /api/chat/* routes over rt-client wrappers (rooms incl. DMs, who, buddies + room tags, messages, mark, post, dm)
 src/server/health.ts           NEW (Task 4): GET /api/daemon over rt-client's daemonHealth()
 src/server/static-disk.ts      NEW: serves dist/ — mounted from index.ts (hono/bun)
 src/server/ws.ts               NEW: startRelay — createRelay with the chat/ predicate
 src/server/*.test.ts           NEW: one beside each server module
-src/ui/PageBar.tsx             NEW: room title + status chips (names handles when ≤2) + mark read
+src/ui/PageBar.tsx             NEW: room or pair title + fleet chips (names handles when ≤2) + wakes chip + mark read
 src/ui/RoomRail.tsx            NEW
 src/ui/Transcript.tsx          NEW
-src/ui/MemberList.tsx          NEW
+src/ui/Roster.tsx              NEW: the fleet roster — listening/idle/deaf/offline, away text, room tags
 src/ui/Composer.tsx            NEW
 src/ui/DaemonBanner.tsx        NEW
+src/ui/statusDetail.ts         NEW (Task 4): status words + sub-lines; the status itself comes from the daemon
 src/app/App.tsx                NEW: layout in the kit's own RailShell + the banner-supersedes-status rule
 src/main.tsx                   NEW: Vite entry — the kit's theme (whose brand slots carry the Tokyo tokens)
 ```
@@ -77,7 +80,7 @@ Two PRs in two repos, both before Task 1. They carry the only two things console
 
 #### Task 0a — repo-tools: `createRelay` and `daemonHealth`
 
-**Branch from:** `main` at or after `85040dcd` (RT-62 / #73 merged; rt-client 0.4.0 on npm). That merge already moved chat's handle derivation onto the identity label — `repoAliasForPath` returns `repoLabel(name)` for identity-keyed index rows, with a test — so there is nothing identity-related left for this task.
+**Branch from:** `main` at or after rt PR #97 merged — the presence system: schema v4 with `chat_room_defaults`, the presence and DM stores, and rt-client 0.5.0's chat surface (unpublished). `defaultWake` below joins a table that exists only from that merge on. The RT-62 identity work (#73) is already in that history; nothing identity-related is left for this task.
 
 **Files:**
 - Modify: `packages/rt-client/src/relay.ts`, `packages/rt-client/src/index.ts`, `packages/rt-client/src/transport.ts` (the `subscribeImpl` option), `packages/rt-client/package.json` (version)
@@ -93,6 +96,7 @@ Two PRs in two repos, both before Task 1. They carry the only two things console
   ): () => void;                                         // relay.ts — one subscribe(), event frames only, predicate-filtered
   export function daemonHealth(opts?: RtClientOptions): Promise<{ reachable: boolean; error?: string }>;  // health.ts — wraps eventsHead
   ```
+- Also produces, in the same release: `RoomSummary.defaultWake?: WakeMode` — `chat:rooms` (`lib/daemon/handlers/chat.ts`) left-joins `chat_room_defaults` so a room's default wake mode travels with its summary (the page bar's `wakes:` chip, Task 5). Read-only: no verb sets it from the viewer. Publish as **0.6.0** — the first publish since 0.4.x, so it carries the 0.5.0 presence surface (chat wrappers, `timeoutMs`, `ChatMember.status` required) as well; ask before publishing.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -141,12 +145,12 @@ Expected: FAIL — `createRelay`/`daemonHealth` not exported.
 Run: `bun run test && bunx tsc --noEmit && sh scripts/repo-purity.sh`
 Expected: PASS, `ok repo-purity`.
 
-Bump `packages/rt-client/package.json` (`0.4.0` → `0.5.0`, a new public surface), `bun run build` in `packages/rt-client` (the dist-freshness guard), commit, PR against `main`, and publish after merge — publishing is a push-class side effect: ask first.
+Bump `packages/rt-client/package.json` (`0.5.0` → `0.6.0` — the unpublished 0.5.0 presence surface ships with it), `bun run build` in `packages/rt-client` (the dist-freshness guard), commit, PR against `main`, and publish after merge — publishing is a push-class side effect: ask first.
 
 ```bash
 git commit -am "rt-client: createRelay and daemonHealth
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 #### Task 0b — console: extract `@mattstack/mantine-tokyo` (tokens only)
@@ -179,7 +183,7 @@ Expected: PASS.
 ```bash
 git commit -am "mantine-tokyo: extract the Tokyo theme and shell into a package console consumes
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 Publish `@mattstack/mantine-tokyo@0.1.0` after merge (ask first). Task 1 pins it. Adding a token later is a package bump both apps take; adding a *component* is each app's own business.
@@ -232,7 +236,7 @@ bun add hono @tanstack/react-query
 Then the two mattstack packages from npm — the versions Task 0 published:
 
 ```bash
-bun add @mattstack/rt-client@^0.5 @mattstack/mantine-tokyo@^0.1
+bun add @mattstack/rt-client@^0.6 @mattstack/mantine-tokyo@^0.1
 ```
 
 **Remove** — the template *does* ship these and this app needs none of them:
@@ -264,7 +268,7 @@ script already exists; keep it.
 
 **Point the brand slots at the package.** The template's `src/ui/design-system/app-theme.ts` and `app-colors.ts` become re-exports from `@mattstack/mantine-tokyo`, exactly as console's do after Task 0b, and `src/app/styles` imports the package css. Everything else under `src/ui/` is the template copy and is **this app's kit** — edit `RailShell`, `PageShell`, the icon registry, the wall, as the viewer needs; console's copies are a reference, not a source.
 
-**Add `design/`.** Copy it from the repo-tools checkout that carries this plan — the directory beside it, `docs/superpowers/design/2026-08-24-rt-chat-viewer/` (today that is the worktree `~/Documents/GitHub/repo-tools-chat-wt` on branch `docs/rt-chat-plan2-amend`; after merge, any checkout on `main` — never assume the main checkout's branch, it is switched underneath sessions). Copy `artboards/{Main,DaemonDown,Phone,PhoneRooms,Indicators}.dc.html`, `canvas.json`, `build.py`, `README.md` → `design/`, keeping the README's provenance table and the list of deliberate departures (44px phone controls, 8px status dots, contrast-safe mention badge). Every UI task below is checked against these files, not the hosted canvas.
+**Add `design/`.** Copy it from the repo-tools checkout that carries this plan — the directory beside it, `docs/superpowers/design/2026-08-24-rt-chat-viewer/` (any checkout on `main` once this plan's revision has merged — never assume the main checkout's branch, it is switched underneath sessions). Copy `artboards/{Main,DaemonDown,DirectMessage,Roster,Phone,PhoneRooms,Indicators}.dc.html`, `canvas.json`, `build.py`, `README.md` → `design/`, keeping the README's provenance table and the list of deliberate departures (44px phone controls, 8px status dots, contrast-safe mention badge). Every UI task below is checked against these files, not the hosted canvas.
 
 - [ ] **Step 4: Write the failing test**
 
@@ -339,7 +343,7 @@ both into your report.
 git init && git add -A
 git commit -m "chat-viewer: scaffold, health route, deck registration
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -352,11 +356,13 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Test: `src/server/chat.test.ts`
 
 **Interfaces:**
-- Consumes, from plan 1 Task 6: `chatRooms`, `chatWho`, `chatMessages`, `chatMark`, `getSetting` (the `chat.humanHandle` default), and the types `ChatMember`, `ChatMessage`, `RoomSummary`, `WakeMode`. Every `vi.mock("@mattstack/rt-client")` factory in this repo must define **all** of these (plus `daemonHealth` once Task 4 mounts `health`), or vitest throws "No `chatMark` export is defined on the mock" at import.
-- Produces: `export const chat: Hono` mounting `GET /api/chat/rooms`, `/api/chat/who/:room`, `/api/chat/messages/:room`, `POST /api/chat/mark`.
-- `/api/chat/who/:room` adds `branch?: string` to each member: the server runs `git -C <cwd> branch --show-current` per member with a `cwd` (one spawn per member per request, `undefined` on any failure or when `cwd` is absent). `ChatMember` carries no branch and a worktree path cannot yield one client-side; only the server has the filesystem. `POST /api/chat/mark` `{ room }` calls `chatMark` for the human handle — marking read is explicit (Task 5), never a side effect of viewing.
+- Consumes, from `@mattstack/rt-client` (plan 1 Task 6 + plan 3 Task 5): `chatRooms`, `chatWho`, `chatMessages`, `chatMark`, `chatBuddies`, `getSetting` (the `chat.humanHandle` default), and the types `ChatMember` (carries `status: BuddyStatus` — the daemon attaches it), `ChatMessage`, `RoomSummary` (carries `kind?: "dm"`, `participants?`, and `defaultWake?` from Task 0a), `PresenceRow`, `BuddyStatus`, `WakeMode`. Every `vi.mock("@mattstack/rt-client")` factory in this repo must define **all** of these (plus `chatJoin`, `chatPost`, `chatDm` from Task 7 and `daemonHealth` from Task 4), or vitest throws "No `chatMark` export is defined on the mock" at import.
+- Produces: `export const chat: Hono` mounting `GET /api/chat/rooms`, `GET /api/chat/who/:room`, `GET /api/chat/buddies`, `GET /api/chat/messages/:room`, `POST /api/chat/mark`.
+- **Statuses are the daemon's.** `chat:who` and `chat:buddies` both return `status` computed by the daemon from the two heartbeats; this server passes it through and never re-derives live/idle/deaf. `branch` comes from presence (`PresenceRow.branch`, kept fresh by the agent's pulse hook) — the server spawns no git per member. `ChatMember` has no branch at all; only buddies (`PresenceRow`) carry one.
+- `GET /api/chat/buddies` → `{ buddies: Array<PresenceRow & { status: BuddyStatus; rooms: string[] }> }`: `chatBuddies()` plus, per buddy, the rooms it is in — composed here from the human's `chatRooms()` and one `chatWho()` per room, inverted by handle (DM rooms contribute the tag `dm`, never their hashed name). One request, `1 + rooms` daemon calls; fleet scale, no cache.
+- `POST /api/chat/mark` `{ room }` calls `chatMark` for the human handle — marking read is explicit (Task 5), never a side effect of viewing.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```ts
 // src/server/chat.test.ts
@@ -367,8 +373,10 @@ vi.mock("@mattstack/rt-client", () => ({
   chatWho: vi.fn(),
   chatMessages: vi.fn(),
   chatMark: vi.fn(),
+  chatBuddies: vi.fn(),
   chatJoin: vi.fn(),
   chatPost: vi.fn(),
+  chatDm: vi.fn(),
   daemonHealth: vi.fn(),
   getSetting: vi.fn(() => ({ value: "matt" })),
 }));
@@ -377,10 +385,14 @@ const { app } = await import("./app");
 
 beforeEach(() => vi.resetAllMocks());
 
-test("rooms returns the daemon's payload", async () => {
-  vi.mocked(rt.chatRooms).mockResolvedValueOnce({ ok: true, data: { rooms: [] } });
+test("rooms returns the daemon's payload, DM rows included", async () => {
+  vi.mocked(rt.chatRooms).mockResolvedValueOnce({ ok: true, data: { rooms: [
+    { room: "build", memberCount: 3, unread: 0, mentions: 0 },
+    { room: "dm-9f3a2b1c0d4e", memberCount: 3, unread: 1, mentions: 1, kind: "dm", participants: { a: "deck-main", b: "rt-chat-wt" } },
+  ] } });
   const res = await app.request("/api/chat/rooms?handle=matt");
   expect(res.status).toBe(200);
+  expect((await res.json()).rooms[1]).toMatchObject({ kind: "dm", participants: { a: "deck-main", b: "rt-chat-wt" } });
 });
 
 test("an ok:false from the daemon becomes a 502, not a crash", async () => {
@@ -400,6 +412,30 @@ test("daemon-unreachable ALSO arrives as ok:false, never a throw", async () => {
   });
   expect((await app.request("/api/chat/rooms?handle=matt")).status).toBe(502);
 });
+
+test("who passes the daemon's status through and never spawns git", async () => {
+  vi.mocked(rt.chatWho).mockResolvedValueOnce({ ok: true, data: { members: [
+    { room: "build", handle: "a", joinedAt: 1, lastReadId: 0, wakeOn: "mention", cwd: "/w/a", status: "deaf" },
+  ] } });
+  const res = await app.request("/api/chat/who/build");
+  expect((await res.json()).members[0]).toMatchObject({ status: "deaf" });
+  expect((await res.json()).members[0].branch).toBeUndefined();   // branch is presence's, not this server's
+});
+
+test("buddies carries each buddy's rooms as tags, with DMs collapsed to `dm`", async () => {
+  vi.mocked(rt.chatBuddies).mockResolvedValueOnce({ ok: true, data: { buddies: [
+    { sessionId: "s1", handle: "a", baseHandle: "a", signedInAt: 1, lastSeenAt: 1, branch: "fix-auth", status: "live" },
+  ] } });
+  vi.mocked(rt.chatRooms).mockResolvedValueOnce({ ok: true, data: { rooms: [
+    { room: "build", memberCount: 2, unread: 0, mentions: 0 },
+    { room: "dm-9f3a2b1c0d4e", memberCount: 3, unread: 0, mentions: 0, kind: "dm", participants: { a: "a", b: "b" } },
+  ] } });
+  vi.mocked(rt.chatWho)
+    .mockResolvedValueOnce({ ok: true, data: { members: [{ room: "build", handle: "a", joinedAt: 1, lastReadId: 0, wakeOn: "mention", status: "live" }] } })
+    .mockResolvedValueOnce({ ok: true, data: { members: [{ room: "dm-9f3a2b1c0d4e", handle: "a", joinedAt: 1, lastReadId: 0, wakeOn: "all", status: "live" }] } });
+  const res = await app.request("/api/chat/buddies");
+  expect((await res.json()).buddies[0]).toMatchObject({ handle: "a", status: "live", branch: "fix-auth", rooms: ["build", "dm"] });
+});
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -409,7 +445,7 @@ Expected: FAIL — route not found (404, not 200/502).
 
 - [ ] **Step 3: Implement**
 
-Follow console's `runs.ts` shape — chained routes, inline handlers, `if (!res.ok) return c.json({ error: res.error }, 502)` — but **not** its comment about throws. The handle comes from the query string, defaulting to the `chat.humanHandle` setting.
+Follow console's `runs.ts` shape — chained routes, inline handlers, `if (!res.ok) return c.json({ error: res.error }, 502)` — but **not** its comment about throws. The handle comes from the query string, defaulting to the `chat.humanHandle` setting. Every wrapper call passes an options object (`{ sockPath }` from config, as console does) — the tests assert that second argument. `who` and `buddies` return the daemon's rows as they are; the only server-side composition is the `rooms` tag list on buddies.
 
 - [ ] **Step 4: Run the tests**
 
@@ -423,9 +459,9 @@ git add src/server/chat.ts src/server/chat.test.ts src/server/app.ts
 git commit -m "chat-viewer: chat read routes over rt-client
 
 rt-client never throws; daemon-down and daemon-refused are both ok:false
-and both map to 502. Console's runs.ts says otherwise and is wrong.
+and both map to 502. Statuses and branches are the daemon's.
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -480,7 +516,7 @@ Expected: FAIL — no module `./ws`.
 
 `ws.ts` is three lines: `createRelay` from rt-client with `match: t => t.startsWith("chat/")` and `topic: "chat"`. The one-subscription-per-process, event-frames-only, server-side filtering behaviour lives in the package (Task 0a) and is tested there; this module only owns the predicate. Server-side filtering is what stops an unrelated daemon tick from making every open tab refetch.
 
-`chat/wake/<handle>` frames are republished too: the viewer uses them to flip a member to *live* without waiting for the next poll.
+`chat/wake/<handle>` frames are republished too. A wake frame means a message needs delivering to that handle, not that its tail is alive — the viewer treats one as a hint to refetch the room's tail and the roster, never as a status change; status is the daemon's.
 
 - [ ] **Step 4: Register `/ws` in `index.ts`**
 
@@ -497,7 +533,7 @@ Expected: PASS.
 git add src/server/ws.ts src/server/ws.test.ts src/server/index.ts
 git commit -m "chat-viewer: one daemon subscription, chat-filtered, fanned out
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -510,13 +546,13 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Create: `src/server/health.ts` — the probe, `GET /api/daemon`
 - Modify: `src/server/app.ts` — mount it with `.route('/', health)`
 - Create: `src/ui/DaemonBanner.tsx`
-- Create: `src/ui/memberStatus.ts` — the one place the live/idle/deaf rule lives (Tasks 5, 6 and 7 consume it)
+- Create: `src/ui/statusDetail.ts` — the status words and sub-lines (Tasks 5, 6 and 7 consume it); **the live/idle/deaf/offline rule itself lives in the daemon** and arrives as `status` on every member and buddy — nothing here re-derives it
 - Modify: `src/app/App.tsx`
-- Test: `src/server/health.test.ts`, `src/ui/DaemonBanner.test.tsx`, `src/ui/memberStatus.test.ts`
+- Test: `src/server/health.test.ts`, `src/ui/DaemonBanner.test.tsx`, `src/ui/statusDetail.test.ts`
 
 **Interfaces:**
-- Consumes: `daemonHealth` from `@mattstack/rt-client` (Task 0a).
-- Produces: `GET /api/daemon` → `{ reachable: boolean; error?: string }` (the `daemonHealth` result, verbatim); `<DaemonBanner reachable={boolean} since={number} probes={number} />`; `memberStatus(m: { armedAt?: number; lastSeenAt?: number }, now: number): "live" | "idle" | "deaf"` and `memberStatusDetail(m, now): string` (the sub-line: `armed · seen 12s ago`, `armed, silent 22m`, `tail died · last seen 2h ago`) in `src/ui/memberStatus.ts` — live = `armedAt` set AND `lastSeenAt` within 10 minutes; idle = no `armedAt`, `lastSeenAt` within 1 hour; deaf = anything else.
+- Consumes: `daemonHealth` from `@mattstack/rt-client` (Task 0a); `BuddyStatus`.
+- Produces: `GET /api/daemon` → `{ reachable: boolean; error?: string }` (the `daemonHealth` result, verbatim); `<DaemonBanner reachable={boolean} since={number} probes={number} />`; in `src/ui/statusDetail.ts`: `STATUS_WORD: Record<BuddyStatus, string>` (`live → "listening"`, `idle → "idle"`, `deaf → "deaf"`, `offline → "offline"`) and `statusDetail(row: { status: BuddyStatus; armedAt?: number; lastSeenAt?: number; tailSeenAt?: number; signedOutAt?: number }, now: number): string` — fed `PresenceRow`s only (`lastSeenAt` is the session heartbeat there; `ChatMember.lastSeenAt` is the tail's and never goes through this) — the sub-line: `armed · touched 12s ago` (live), `no tail · prompted 9m ago` (idle), `armed, silent 22m — tail died` (deaf with `armedAt`), `silent 2h` (deaf without), `signed out 2h ago` (offline).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -536,21 +572,22 @@ test("GET /api/daemon reports unreachable rather than 500ing", async () => {
 const now = 1_700_000_000_000;
 
 test("the banner supersedes agent statuses", () => {
-  render(<App initialState={{ daemonReachable: false, members: [{ handle: "a", armedAt: now, lastSeenAt: now }] }} />);
+  render(<App initialState={{ daemonReachable: false, buddies: [{ handle: "a", status: "live", armedAt: now, lastSeenAt: now }] }} />);
   expect(screen.getByRole("status")).toHaveTextContent(/daemon/i);
-  expect(screen.queryByText("live")).toBeNull();
+  expect(screen.queryByText("listening")).toBeNull();
 });
 ```
 
 ```ts
-// src/ui/memberStatus.test.ts
+// src/ui/statusDetail.test.ts
 const now = 1_700_000_000_000;
 
-test("memberStatus: live requires BOTH an armed waiter and a fresh heartbeat", () => {
-  expect(memberStatus({ armedAt: now - 1000, lastSeenAt: now - 60_000 }, now)).toBe("live");
-  expect(memberStatus({ armedAt: now - 1000, lastSeenAt: now - 20 * 60_000 }, now)).toBe("deaf");
-  expect(memberStatus({ lastSeenAt: now - 60_000 }, now)).toBe("idle");
-  expect(memberStatus({ lastSeenAt: now - 5 * 60 * 60_000 }, now)).toBe("deaf");
+test("statusDetail explains the daemon's status; it never contradicts it", () => {
+  expect(statusDetail({ status: "live", armedAt: now - 1000, tailSeenAt: now - 12_000 }, now)).toBe("armed · touched 12s ago");
+  expect(statusDetail({ status: "idle", lastSeenAt: now - 9 * 60_000 }, now)).toBe("no tail · prompted 9m ago");
+  expect(statusDetail({ status: "deaf", armedAt: now - 30 * 60_000, tailSeenAt: now - 22 * 60_000 }, now)).toBe("armed, silent 22m — tail died");
+  expect(statusDetail({ status: "offline", signedOutAt: now - 2 * 60 * 60_000 }, now)).toBe("signed out 2h ago");
+  expect(STATUS_WORD.live).toBe("listening");
 });
 ```
 
@@ -563,11 +600,11 @@ Expected: FAIL — `/api/daemon` 404s.
 
 The route returns rt-client's `daemonHealth()` result as-is — it wraps `eventsHead()`, the cheapest call there is, and answers **200 with `reachable: false`** rather than an error status: the probe succeeded in learning the daemon is down, which is not itself a server failure.
 
-`App` accepts an `initialState` prop (`{ daemonReachable?, members?, rooms?, messages? }`) that seeds its query cache — the test seam every UI test uses instead of a network. The client polls `/api/daemon` every 5s. When unreachable, per the `DaemonDown` artboard: the banner (Mantine `Alert` light/`bad`) says *the transcript has gone quiet because nothing is answering at rt.sock, not because every agent is idle*, carries elapsed time and probe count (`down 4m · 48 probes`) and a probe-now action; the member pane goes to opacity 0.6 with hollow dots and `—` for every status; rooms/member counts are marked *last known*; the composer is disabled with the draft kept (Task 7). **Nobody renders as live, idle or deaf.** Agent status is only meaningful while the daemon is reachable — a member list rendered from stale data during an outage is exactly the lie this task exists to prevent.
+`App` accepts an `initialState` prop (`{ daemonReachable?, buddies?, rooms?, members?, messages? }`) that seeds its query cache — the test seam every UI test uses instead of a network. The client polls `/api/daemon` every 5s. When unreachable, per the `DaemonDown` artboard: the banner (Mantine `Alert` light/`bad`) says *the transcript has gone quiet because nothing is answering at rt.sock, not because every agent is idle*, carries elapsed time and probe count (`down 4m · 48 probes`) and a probe-now action; the roster goes to opacity 0.6 with hollow dots and `presence unknown while the daemon is down` for every buddy; the page bar's fleet chips read `6 signed in · last known` and `presence withheld`; the composer is disabled with the draft kept (Task 7). **Nobody renders as listening, idle, deaf or offline.** Agent status is only meaningful while the daemon is reachable — a roster rendered from stale data during an outage is exactly the lie this task exists to prevent.
 
 - [ ] **Step 4: Integration test — a stopped daemon renders as a stopped daemon**
 
-This is the spec's "stopped daemon renders as a stopped daemon" integration test (item 6 in its Testing list; item 5 is the tail's exit-69 test). Stop the daemon, load the page, assert the banner appears and no member renders as live. It is the test that would have caught the original defect.
+This is the spec's "stopped daemon renders as a stopped daemon" integration test (item 6 in its Testing list; item 5 is the tail's exit-69 test). Stop the daemon, load the page, assert the banner appears and no buddy renders a status word. It is the test that would have caught the original defect.
 
 - [ ] **Step 5: Run the tests**
 
@@ -577,18 +614,18 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/server/health.ts src/server/app.ts src/ui/DaemonBanner.tsx src/ui/memberStatus.ts src/app/App.tsx src/server/health.test.ts src/ui/DaemonBanner.test.tsx src/ui/memberStatus.test.ts
+git add src/server/health.ts src/server/app.ts src/ui/DaemonBanner.tsx src/ui/statusDetail.ts src/app/App.tsx src/server/health.test.ts src/ui/DaemonBanner.test.tsx src/ui/statusDetail.test.ts
 git commit -m "chat-viewer: daemon probe and banner
 
 subscribe() reconnects silently, so a dead daemon looks identical to an
 idle fleet without an explicit probe.
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 5: Rooms rail, page bar, and live transcript
+### Task 5: Rooms rail with DMs, the fleet page bar, and the live transcript
 
 **Files:**
 - Create: `src/ui/RoomRail.tsx`, `src/ui/PageBar.tsx`, `src/ui/Transcript.tsx`
@@ -596,7 +633,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Test: `src/ui/RoomRail.test.tsx`, `src/ui/PageBar.test.tsx`, `src/ui/Transcript.test.tsx`
 
 **Interfaces:**
-- Consumes: `RoomSummary`, `ChatMessage`; `GET /api/chat/rooms`, `/api/chat/messages/:room`, `POST /api/chat/mark`; the `chat` WS topic; `memberStatus` from Task 4 (the page bar's chips name handles by it).
+- Consumes: `RoomSummary` (`kind`, `participants`, `defaultWake`), `ChatMessage`; `GET /api/chat/rooms`, `/api/chat/buddies`, `/api/chat/messages/:room`, `POST /api/chat/mark`; the `chat` WS topic; `STATUS_WORD` from Task 4. `PageBar` (and Task 7's `Composer`) type their `buddies` prop as `Array<{ handle: string; status: BuddyStatus }>` — the narrow shape their tests pass — not the full buddy row.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -607,13 +644,28 @@ test("mention badges are visually distinct from plain unread", () => {
   expect(screen.getByLabelText("4 unread")).toHaveTextContent("4");
 });
 
-test("the page bar names the handles behind a small status count", () => {
-  render(<PageBar room="build" members={[{ handle: "a", status: "live" }, { handle: "gitq-main", status: "deaf" }]} />);
+test("DM rooms sit in a direct section and are named by their pair, never the hash", () => {
+  render(<RoomRail rooms={[
+    { room: "build", memberCount: 3, unread: 0, mentions: 0 },
+    { room: "dm-9f3a2b1c0d4e", memberCount: 3, unread: 1, mentions: 1, kind: "dm", participants: { a: "deck-main", b: "rt-chat-wt" } },
+  ]} />);
+  expect(screen.getByRole("heading", { name: /direct/i })).toBeInTheDocument();
+  expect(screen.getByText("deck-main ↔ rt-chat-wt")).toBeInTheDocument();
+  expect(screen.queryByText(/dm-9f3a/)).toBeNull();
+});
+
+test("the page bar counts the fleet, names handles behind a small count, and shows the room's wake mode", () => {
+  render(<PageBar room={{ room: "build", memberCount: 3, unread: 0, mentions: 0, defaultWake: "mention" }} buddies={[
+    { handle: "a", status: "live" }, { handle: "b", status: "live" }, { handle: "c", status: "idle" }, { handle: "gitq-main", status: "deaf" },
+  ]} />);
+  expect(screen.getByText("4 signed in")).toBeInTheDocument();
+  expect(screen.getByText("2 listening: a, b")).toBeInTheDocument();
   expect(screen.getByText("1 deaf: gitq-main")).toBeInTheDocument();
+  expect(screen.getByText("wakes: mention")).toBeInTheDocument();
 });
 
 test("mark read is explicit: rendering never calls it, the control does", async () => {
-  render(<PageBar room="build" unread={4} members={[]} />);
+  render(<PageBar room={{ room: "build", memberCount: 3, unread: 4, mentions: 0 }} buddies={[]} />);
   expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/api/chat/mark"), expect.anything());
   await userEvent.click(screen.getByRole("button", { name: /mark #build read/i }));
   expect(fetchMock).toHaveBeenCalledWith("/api/chat/mark", expect.objectContaining({ method: "POST" }));
@@ -650,13 +702,13 @@ Expected: FAIL — no `RoomRail` module.
 
 - [ ] **Step 3: Implement**
 
-Build to the `Main` artboard and its `Indicators` legend:
+Build to the `Main` and `DirectMessage` artboards and the `Indicators` legend:
 
-- **Rooms rail:** `#room` rows, active row in the accent wash; `@N` filled badge for mentions, outlined `N` for plain unread — distinguishable without colour because the glyph differs. No explanatory footer. The rail lists the rooms the human is **in**: `chat:rooms` is `listRooms(handle)` and no merged handler enumerates other rooms, so the artboards' `not joined` badge is **not built here** (see "What this plan does not build").
-- **Page bar** (console's second 64px bar): `#build` at 26px/700, then status chips — `6 members`, `2 live`, `2 idle`, `1 deaf` — computed with `memberStatus()` from Task 4, where a chip whose count is ≤2 names its handles (`1 deaf: gitq-main`), so the stuck agent is read first, not found last. A `mark read` button with the unread count calls `POST /api/chat/mark`; nothing else ever advances the cursor. A sort control is drawn but defaults to join order.
-- **Transcript:** one card, rows separated by soft borders — handle (600) and **local** time, then the body. No status dot beside a message: a dot next to a 21:58 message would be a claim about then; status lives on the member row (Task 6). A top edge row (`41 older messages · load on scroll`) is the scrollback affordance; it becomes `Loading older…` while a `before` page is in flight. The `N new` divider marks the read cursor and carries a `mark read` link on the phone. Bodies get `overflow-wrap: anywhere` (agents paste paths), inline `code` gets a rule, code blocks scroll on their own `overflow-x`.
+- **Rooms rail:** `#room` rows, active row in the accent wash; `@N` filled badge for mentions, outlined `N` for plain unread — distinguishable without colour because the glyph differs. Below the rooms, a **direct** section: every `kind: "dm"` row from `/api/chat/rooms`, labelled `a ↔ b` from `participants` and carrying the same badges; the hashed room name is never shown. Opening a DM shows its transcript like any room. The rail lists what the human is **in**: channels he joined and every DM (he is a member of all of them); the artboards' `not joined` badge is **not built here** (see "What this plan does not build").
+- **Page bar** (console's second 64px bar): `#build` at 26px/700 — or `deck-main ↔ rt-chat-wt` with a `dm` tag for a DM — then the **fleet** chips from `/api/chat/buddies`: `N signed in` (buddies whose status is not `offline`), `N listening`, `N idle`, `N deaf`, where a chip whose count is ≤2 names its handles (`1 deaf: gitq-main`), so the stuck agent is read first, not found last; `offline` is not a chip. A `wakes: <mode>` chip shows the room's `defaultWake` (`mention` when unset) — read-only in v1; a DM shows `wakes: all` since its memberships are. A `mark read` button with the unread count calls `POST /api/chat/mark`; nothing else ever advances the cursor. Under daemon-down the chips read `N signed in · last known` and `presence withheld` (Task 4).
+- **Transcript:** one card, rows separated by soft borders — handle (600) and **local** time, then the body. No status dot beside a message: a dot next to a 21:58 message would be a claim about then; status lives on the roster row (Task 6). A top edge row (`41 older messages · load on scroll`) is the scrollback affordance; it becomes `Loading older…` while a `before` page is in flight. The `N new` divider marks the read cursor and carries a `mark read` link on the phone. Bodies get `overflow-wrap: anywhere` (agents paste paths), inline `code` gets a rule, code blocks scroll on their own `overflow-x`. A DM transcript opens with `start of this conversation · <day>` and the page bar says `2 participants · you see every DM`.
 
-The transcript appends from WS frames and scroll-backs through `GET /api/chat/messages/:room` with `before`. **A frame carries only `{ id }` — a pointer, not prose** (chat owns the message store; the journal is the doorbell), so the client fetches the message body on arrival or refetches the tail.
+The transcript appends from WS frames and scroll-backs through `GET /api/chat/messages/:room` with `before`. **A frame carries only `{ id }` — a pointer, not prose** (chat owns the message store; the journal is the doorbell), so the client fetches the message body on arrival or refetches the tail. DM rooms wake over the same `chat/<room>/msg` topic — the relay predicate from Task 3 already matches them.
 
 - [ ] **Step 4: Run the tests**
 
@@ -667,83 +719,91 @@ Expected: PASS.
 
 ```bash
 git add src/ui/RoomRail.tsx src/ui/PageBar.tsx src/ui/Transcript.tsx src/app/App.tsx src/ui/*.test.tsx
-git commit -m "chat-viewer: rooms rail, page bar, and live transcript
+git commit -m "chat-viewer: rooms rail with DMs, fleet page bar, live transcript
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 6: Member list — live, idle, deaf
+### Task 6: The roster — listening, idle, deaf, offline
 
 **Files:**
-- Create: `src/ui/MemberList.tsx`
-- Test: `src/ui/MemberList.test.tsx`
+- Create: `src/ui/Roster.tsx`
+- Modify: `src/app/App.tsx` — mounts the roster as the third column
+- Test: `src/ui/Roster.test.tsx`, `src/app/App.test.tsx` (the mount assertion)
 
 **Interfaces:**
-- Consumes: `ChatMember` (`armedAt`, `lastSeenAt`, `cwd`, `pane`) plus the server-derived `branch?` from Task 2's `/api/chat/who/:room`; `memberStatus` / `memberStatusDetail` from Task 4 (this component renders the rule, it does not restate it).
+- Consumes: `GET /api/chat/buddies` (Task 2) — `PresenceRow & { status, rooms }` per buddy; `STATUS_WORD` and `statusDetail` from Task 4 (this component renders the daemon's status and the sub-line, it derives neither).
+- Produces: `<Roster buddies now roomMembers daemonReachable compact? onPick(handle, { inRoom: boolean })>` — `roomMembers` is the current room's member handles from `/api/chat/who/:room` (for a DM, its two participants), so `inRoom = roomMembers.includes(handle)`; `compact` drops the path line (the phone drawer, Task 7); `onPick` is what the composer (Task 7) wires to *insert @handle* or *DM instead*.
 
 - [ ] **Step 1: Write the failing test**
 
 ```tsx
 const now = 1_700_000_000_000;
+const b = (handle: string, status: BuddyStatus, extra: Partial<PresenceRow & { rooms: string[] }> = {}) =>
+  ({ sessionId: handle, handle, baseHandle: handle, signedInAt: now - 60_000, lastSeenAt: now, rooms: [], status, ...extra });
 
-test("live requires BOTH an armed waiter and a fresh heartbeat", () => {
-  render(<MemberList now={now} members={[
-    { handle: "a", armedAt: now - 1000, lastSeenAt: now - 60_000 },
-    { handle: "b", armedAt: now - 1000, lastSeenAt: now - 20 * 60_000 },
-    { handle: "c", armedAt: undefined, lastSeenAt: now - 60_000 },
-    { handle: "d", armedAt: undefined, lastSeenAt: now - 5 * 60 * 60_000 },
+test("four sections in the spec's order, offline collapsed to one line", () => {
+  render(<Roster now={now} roomMembers={[]} buddies={[
+    b("gitq-main", "deaf", { armedAt: now - 30 * 60_000, tailSeenAt: now - 22 * 60_000 }),
+    b("rt-chat-wt", "live", { armedAt: now, tailSeenAt: now - 12_000, rooms: ["build", "repo-tools", "dm"] }),
+    b("workforest-e2e", "offline", { signedOutAt: now - 2 * 60 * 60_000 }),
+    b("board-fix-auth", "idle", { statusText: "waiting on CI", rooms: ["build"] }),
   ]} />);
-  expect(screen.getByTestId("status-a")).toHaveTextContent("live");
-  expect(screen.getByTestId("status-b")).toHaveTextContent("deaf");
-  expect(screen.getByTestId("status-c")).toHaveTextContent("idle");
-  expect(screen.getByTestId("status-d")).toHaveTextContent("deaf");
+  const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+  expect(headings).toEqual(["listening 1", "idle 1", "deaf 1", "offline · last 24h 1"]);
+  expect(screen.getByTestId("status-rt-chat-wt")).toHaveTextContent("listening");
+  expect(screen.getByTestId("sub-gitq-main")).toHaveTextContent(/armed, silent 22m — tail died/);
+  expect(screen.getByText("“waiting on CI”")).toBeInTheDocument();
+  expect(screen.getByTestId("row-workforest-e2e")).toHaveTextContent(/signed out 2h ago/);
+  expect(screen.getByTestId("row-workforest-e2e").querySelector("[data-testid=sub-workforest-e2e]")).toBeNull();   // collapsed: the signed-out line is the row itself, no sub- element
 });
 
-test("a member is identified by what it is, not just its handle", () => {
-  render(<MemberList now={now} members={[
-    { handle: "acme-dev-42", cwd: "~/GitHub/acme", branch: "fix-auth", pane: "4", armedAt: now, lastSeenAt: now },
+test("a buddy is identified by what it is: branch, pane, path, and its rooms as tags", () => {
+  render(<Roster now={now} roomMembers={[]} buddies={[
+    b("acme-dev-42", "live", { cwd: "/Users/m/GitHub/acme-wt-invite-onboarding", branch: "fix-auth", pane: "4", rooms: ["build", "dm"] }),
   ]} />);
-  expect(screen.getByText(/~\/GitHub\/acme/)).toBeInTheDocument();
+  expect(screen.getByText(/…\/acme-wt-invite-onboarding/)).toBeInTheDocument();   // head-truncated: the tail discriminates
   expect(screen.getByText(/fix-auth · pane 4/)).toBeInTheDocument();
+  expect(screen.getByText("#build")).toBeInTheDocument();
+  expect(screen.getByText("dm")).toBeInTheDocument();
 });
 
-test("deaf says which kind: a dead tail or an armed waiter nobody has heard from", () => {
-  render(<MemberList now={now} members={[
-    { handle: "a", armedAt: now - 1000, lastSeenAt: now - 22 * 60_000 },
-    { handle: "b", armedAt: undefined, lastSeenAt: now - 3 * 60 * 60_000 },
+test("picking a buddy says whether it is in this room", async () => {
+  const onPick = vi.fn();
+  render(<Roster now={now} roomMembers={["a"]} onPick={onPick} buddies={[
+    b("a", "live", { rooms: ["build"] }), b("c", "idle", { rooms: ["release"] }),
   ]} />);
-  expect(screen.getByTestId("sub-a")).toHaveTextContent(/armed, silent 22m/);
-  expect(screen.getByTestId("sub-b")).toHaveTextContent(/tail died/);
+  await userEvent.click(screen.getByTestId("row-a"));
+  await userEvent.click(screen.getByTestId("row-c"));
+  expect(onPick).toHaveBeenNthCalledWith(1, "a", { inRoom: true });
+  expect(onPick).toHaveBeenNthCalledWith(2, "c", { inRoom: false });
 });
 
 test("withheld: no status word or colour while the daemon is unreachable", () => {
-  render(<MemberList now={now} daemonReachable={false} members={[{ handle: "a", armedAt: now, lastSeenAt: now }]} />);
+  render(<Roster now={now} roomMembers={[]} daemonReachable={false} buddies={[b("a", "live", { armedAt: now })]} />);
   expect(screen.getByTestId("status-a")).toHaveTextContent("—");
+  expect(screen.getByTestId("sub-a")).toHaveTextContent(/presence unknown while the daemon is down/);
 });
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `bunx vitest run src/ui/MemberList.test.tsx`
+Run: `bunx vitest run src/ui/Roster.test.tsx`
 Expected: FAIL — no module.
 
 - [ ] **Step 3: Implement**
 
-| status | condition |
-|---|---|
-| live | `armedAt` set **and** `lastSeenAt` within **10 minutes** |
-| idle | no `armedAt`, `lastSeenAt` within **1 hour** |
-| **deaf** | anything else |
+The roster is the **fleet**, not the room — everyone signed in, per the `Roster` and `Main` artboards, under the heading `BUDDIES` with `the fleet, not the room` as its caption. Four sections in this order, each captioned with its count: **listening**, **idle**, **deaf**, **offline · last 24h**. Within a section, sign-in order (`signedInAt`) — the sections are the status the user asked to see; nothing else re-sorts.
 
-The 10-minute threshold absorbs two missed long-poll cycles (~4 min each) before a working agent is misreported as deaf — do not tighten it without changing that reasoning.
+Each row, per the artboards: 8px status dot (green/amber/red; hollow for offline); handle (600) with `STATUS_WORD[status]`; the away message as an italic quote when `statusText` is set; `branch · pane N` (either half omitted when absent); the path on its own line, **head-truncated** (`…/mr-board-wt-invite-onboarding` — the tail is the discriminating end); the sub-line from `statusDetail`; the buddy's rooms as small tags (`#build`, and `dm` for any DM membership). Offline buddies collapse to handle + `signed out 2h ago` rendered on the row itself (no `sub-` element, no deets), since they are stale by definition. `branch`, `cwd`, `pane`, `statusText` are all optional; a plan-1 member that never signed in is not a buddy and does not appear here (it still appears in `who <room>` on the phone drawer's room view).
 
-`deaf` is the status that earns this view its keep: it surfaces the one failure the CLI cannot prevent, so you can see which agent stopped listening before wasting a message on it.
+The human is never a buddy: presence is per agent session. Tapping a row calls `onPick(handle, { inRoom })` with `inRoom` from `roomMembers` — the composer decides whether that means `@handle` or *DM instead* (Task 7). `compact` renders the same rows without the path line.
 
-Each row, per the `Main` artboard: 8px status dot; handle (600) with the status word; `branch · pane N`; the path on its own line, **head-truncated** (`…/mr-board-wt-invite-onboarding` — the tail is the discriminating end); a sub-line saying why (`armed · seen 12s ago`, `no waiter · seen 9m ago`, `tail died · last seen 2h ago`, `armed, silent 22m`). `branch` comes from the server (Task 2) — **`ChatMember` carries no `branch`** and a worktree path cannot yield one client-side; render the row without it when absent, and likewise without `cwd`/`pane`, both optional. The human's row carries the `you` badge and `wake: none`, never a status. Members stay in **join order** — health indicates, it never groups. Handles are derived and terse, so identifying *which* agent is speaking matters more here than in human chat. Tapping a member inserts `@handle` into the composer (Task 7). Focusing the member's herdr pane from the row is **not built here** — no route exists and `herdr pane focus` addresses neighbours, not a pane id — so the row must read completely on its own, which it does.
+`App` mounts the roster as the third column of the kit's `RailShell` (the `Main` artboard: rail, transcript, roster), fed by `/api/chat/buddies` polled every 5s and refetched on any `chat/wake/*` frame, and by the current room's `/api/chat/who/:room` for `roomMembers`. A `Roster` that exists but is never mounted is the failure this step exists to prevent — assert in `App.test.tsx` that seeding `initialState.buddies` renders a `row-<handle>`. Focusing the buddy's herdr pane from the row is **not built here** — no route addresses a pane by id — so the row must read completely on its own, which it does.
 
-`now` is a prop so the thresholds are testable without faking timers.
+`now` is a prop so relative times are testable without faking timers; `daemonReachable={false}` withholds every status (Task 4's rule), never showing a stale word.
 
 - [ ] **Step 4: Run the tests**
 
@@ -753,39 +813,40 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/ui/MemberList.tsx src/ui/MemberList.test.tsx
-git commit -m "chat-viewer: member list with live/idle/deaf
+git add src/ui/Roster.tsx src/app/App.tsx src/ui/Roster.test.tsx src/app/App.test.tsx
+git commit -m "chat-viewer: the fleet roster — listening, idle, deaf, offline
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 7: Composer, mobile, and publishing
+### Task 7: Composer with DM-instead, mobile, and publishing
 
 **Files:**
 - Create: `src/ui/Composer.tsx`
-- Modify: `src/server/chat.ts` (the post route), `src/app/App.tsx`
+- Modify: `src/server/chat.ts` (the post and dm routes), `src/app/App.tsx`
 - Test: `src/ui/Composer.test.tsx`, `src/server/chat.test.ts`
 
 **Interfaces:**
-- Consumes: `chatPost`, `chatJoin` from plan 1 Task 6.
-- Produces: `POST /api/chat/post`.
+- Consumes: `chatPost` (with `mentions?`), `chatJoin`, `chatDm`, `chatRooms` from `@mattstack/rt-client`; the roster's `onPick` (Task 6).
+- Produces: `POST /api/chat/post` `{ room, body }` and `POST /api/chat/dm` `{ to, body }` → `{ room, id }`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
+// src/server/chat.test.ts
 test("a dropped write surfaces as an error, never a silent success", async () => {
   // plan 1 maps an exhausted retry budget to ok:false precisely so this
   // path cannot look like the normal silent success of a post.
+  vi.mocked(rt.chatRooms).mockResolvedValueOnce({ ok: true, data: { rooms: [{ room: "r", memberCount: 1, unread: 0, mentions: 0 }] } });
+  vi.mocked(rt.chatJoin).mockResolvedValueOnce({ ok: true, data: { handle: "matt", memberCount: 2, unread: 0 } });
   vi.mocked(rt.chatPost).mockResolvedValueOnce({ ok: false, error: "write dropped" });
   expect((await app.request("/api/chat/post", { method: "POST", body: JSON.stringify({ room: "r", body: "x" }) })).status).toBe(502);
 });
-```
 
-```ts
-// src/server/chat.test.ts — auto-join is the server's job: the browser never imports rt-client
 test("posting into a room the human has not joined joins first, then posts", async () => {
+  vi.mocked(rt.chatRooms).mockResolvedValueOnce({ ok: true, data: { rooms: [] } });
   vi.mocked(rt.chatJoin).mockResolvedValueOnce({ ok: true, data: { handle: "matt", memberCount: 2, unread: 0 } });
   vi.mocked(rt.chatPost).mockResolvedValueOnce({ ok: true, data: { id: 1, recipients: [] } });
   const res = await app.request("/api/chat/post", { method: "POST", body: JSON.stringify({ room: "release", body: "hello" }) });
@@ -793,21 +854,54 @@ test("posting into a room the human has not joined joins first, then posts", asy
   expect(rt.chatJoin).toHaveBeenCalledWith(expect.objectContaining({ room: "release", handle: "matt" }), expect.anything());
   expect(vi.mocked(rt.chatJoin).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(rt.chatPost).mock.invocationCallOrder[0]);
 });
+
+test("posting into a DM never joins: the human is already its silent member and join refuses DM rooms", async () => {
+  vi.mocked(rt.chatRooms).mockResolvedValueOnce({ ok: true, data: { rooms: [
+    { room: "dm-9f3a2b1c0d4e", memberCount: 3, unread: 0, mentions: 0, kind: "dm", participants: { a: "deck-main", b: "rt-chat-wt" } },
+  ] } });
+  vi.mocked(rt.chatPost).mockResolvedValueOnce({ ok: true, data: { id: 2, recipients: ["deck-main", "rt-chat-wt"] } });
+  const res = await app.request("/api/chat/post", { method: "POST", body: JSON.stringify({ room: "dm-9f3a2b1c0d4e", body: "seen — fine by me" }) });
+  expect(res.status).toBe(200);
+  expect(rt.chatJoin).not.toHaveBeenCalled();
+});
+
+test("dm opens or reuses the pair's room and posts as the human", async () => {
+  vi.mocked(rt.chatDm).mockResolvedValueOnce({ ok: true, data: { room: "dm-1a2b3c4d5e6f", id: 3, recipients: ["rt-chat-wt"] } });
+  const res = await app.request("/api/chat/dm", { method: "POST", body: JSON.stringify({ to: "rt-chat-wt", body: "ping" }) });
+  expect(await res.json()).toMatchObject({ room: "dm-1a2b3c4d5e6f", id: 3 });
+  expect(rt.chatDm).toHaveBeenCalledWith(expect.objectContaining({ from: "matt", to: "rt-chat-wt", body: "ping" }), expect.anything());
+});
 ```
 
 ```tsx
-test("@ autocompletes from room members, all of them, with status", async () => {
-  render(<Composer room="build" members={[{ handle: "acme-dev-42", status: "live" }, { handle: "gitq-main", status: "deaf" }]} />);
+// src/ui/Composer.test.tsx
+test("@ autocompletes from the roster, offers DM instead for a buddy outside the room, and warns on deaf", async () => {
+  render(<Composer room="build" roomMembers={["acme-dev-42", "gitq-main"]} buddies={[
+    { handle: "acme-dev-42", status: "live" }, { handle: "gitq-main", status: "deaf" }, { handle: "board-fix-auth", status: "idle" },
+  ]} />);
   await userEvent.type(screen.getByRole("textbox"), "@");
   expect(await screen.findByText("acme-dev-42")).toBeInTheDocument();
-  expect(screen.getByText("gitq-main")).toBeInTheDocument();          // idle and deaf are listed, not filtered
+  expect(screen.getByText("gitq-main")).toBeInTheDocument();                       // idle and deaf are listed, not filtered
   expect(screen.getByText(/won't see this until its tail restarts/)).toBeInTheDocument();
+  expect(screen.getByText(/not in #build — DM instead/)).toBeInTheDocument();      // board-fix-auth is signed in but elsewhere
+  expect(screen.getByText(/@here/)).toHaveTextContent(/wakes 2 agents/);
+});
+
+test("choosing DM instead posts through /api/chat/dm and navigates to the pair's room", async () => {
+  fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ room: "dm-1a2b3c4d5e6f", id: 3 })));
+  const onNavigate = vi.fn();
+  render(<Composer room="build" roomMembers={[]} onNavigate={onNavigate} buddies={[{ handle: "board-fix-auth", status: "idle" }]} />);
+  await userEvent.type(screen.getByRole("textbox"), "can you take the flaky one? @");
+  await userEvent.click(await screen.findByText("board-fix-auth"));
+  await userEvent.click(screen.getByRole("button", { name: /send/i }));
+  expect(fetchMock).toHaveBeenCalledWith("/api/chat/dm", expect.objectContaining({ method: "POST" }));
+  expect(onNavigate).toHaveBeenCalledWith("dm-1a2b3c4d5e6f");
 });
 
 test("the composer is disabled, draft kept, while the daemon is unreachable", async () => {
-  const { rerender } = render(<Composer room="build" daemonReachable={true} />);
+  const { rerender } = render(<Composer room="build" roomMembers={[]} buddies={[]} daemonReachable={true} />);
   await userEvent.type(screen.getByRole("textbox"), "merge it");
-  rerender(<Composer room="build" daemonReachable={false} />);
+  rerender(<Composer room="build" roomMembers={[]} buddies={[]} daemonReachable={false} />);
   expect(screen.getByRole("button", { name: /send/i })).toBeDisabled();
   expect(screen.getByRole("textbox")).toHaveValue("merge it");
 });
@@ -816,21 +910,21 @@ test("the composer is disabled, draft kept, while the daemon is unreachable", as
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `bunx vitest run`
-Expected: FAIL — no `Composer` module, `/api/chat/post` 404s.
+Expected: FAIL — no `Composer` module, `/api/chat/post` and `/api/chat/dm` 404.
 
 - [ ] **Step 3: Implement**
 
-Posts as the `chat.humanHandle` setting (default `matt`). `POST /api/chat/post` calls `chatJoin` before `chatPost` (join is idempotent for an existing member, so the server does it unconditionally) — auto-join is server-side, consistent with plan 1's join-creates, and the browser never touches rt-client.
+Posts as the `chat.humanHandle` setting (default `matt`). `POST /api/chat/post` looks the room up in `chatRooms(human)`: a `kind: "dm"` row is posted into directly (the human is a member of every DM by construction, and `chat:join` refuses DM rooms); any other room is `chatJoin`ed before `chatPost` (join is idempotent for an existing member, so the server does it unconditionally) — auto-join is server-side, consistent with plan 1's join-creates, and the browser never touches rt-client. Explicit mentions picked from the popover travel as `mentions` so a buddy picked by name wakes even if the body was edited after. `POST /api/chat/dm` calls `chatDm({ from: human, to, body })` and returns its `{ room, id }`; the client navigates to that room, which then appears in the rail's direct section.
 
-Per the `Phone` and `PhoneRooms` artboards:
+Per the `Phone`, `PhoneRooms`, `DirectMessage` artboards and the `Indicators` legend:
 
-- **Composer:** 16px input on mobile (below that iOS zooms the viewport on focus and the page scrolls sideways — the exact failure the 375px rule forbids); 44px send button and 44px header controls. On the desk `↵` sends and `⇧↵` adds a line; on the phone return adds a line and the button sends. The `@` popover lists **every** member with dot + status (a mention still lands in an idle agent's unread, so idle is not filtered out), 44px rows, the deaf row carrying *won't see this until its tail restarts*, and `@here` last with what it costs (`wakes 4 agents`). Under daemon-down the input is disabled with *Can't post — rt daemon unreachable. Your draft is kept.* and the send button loses its fill; the draft survives.
-- **Phone header:** rooms/members toggle (44px), `#room` truncating, and the status counts as one tap target (`● 2 ● 2 ● 1`, live/idle/deaf) that opens the drawer — no separate members button.
-- **Drawer** (`Drawer` position left, size sm, overlay 0.4): rooms with the same badges, then the members of the current room; tapping a member inserts `@handle` and closes. No fake status bar or keyboard is drawn.
+- **Composer:** 16px input on mobile (below that iOS zooms the viewport on focus and the page scrolls sideways — the exact failure the 375px rule forbids); 44px send button and 44px header controls. On the desk `↵` sends and `⇧↵` adds a line; on the phone return adds a line and the button sends. The `@` popover draws from the **roster** — everyone signed in, dot + status word, 44px rows, listening first, idle and deaf listed rather than filtered (a mention still lands in an idle agent's unread); a buddy not in this room is labelled `not in #room — DM instead` and choosing it turns the send into `POST /api/chat/dm`; the deaf row carries *won't see this until its tail restarts* — the one failure this viewer exists to catch, delivered at the moment of the mistake; `@here` last with what it costs (`wakes N agents`, the room's members minus the human). Inside a DM the popover offers only the other participant. Under daemon-down the input is disabled with *Can't post — rt daemon unreachable. Your draft is kept.* and the send button loses its fill; the draft survives.
+- **Phone header:** rooms/roster toggle (44px), `#room` or `a ↔ b` truncating, and the fleet counts as one tap target (`● 3 ● 2 ● 1`, listening/idle/deaf) that opens the drawer — no separate members button.
+- **Drawer** (`Drawer` position left, size sm, overlay 0.4), per `PhoneRooms`: rooms with the same badges, the direct section, then **buddies** (`tap to mention or DM`) rendered by the Task 6 roster with `compact` (no path line); tapping a buddy inserts `@handle` when it is in the room, otherwise starts a DM, and closes. No fake status bar or keyboard is drawn.
 
 - [ ] **Step 4: Verify on a phone-sized viewport**
 
-Load the page at **375px** wide and confirm: no horizontal page scroll, the composer is usable with the keyboard up (no zoom on focus), the `@` popover is tappable, and wide content — a pasted path in prose, a code block — scrolls or wraps inside its own container. Compare against `design/Phone.dc.html`. **Screenshot it and put the screenshot in your report** — this is the reason the app is published, and "it reflows" is not the same as "it is usable."
+Load the page at **375px** wide and confirm: no horizontal page scroll, the composer is usable with the keyboard up (no zoom on focus), the `@` popover is tappable including a *DM instead* row, and wide content — a pasted path in prose, a code block — scrolls or wraps inside its own container. Compare against `design/artboards/Phone.dc.html` and `PhoneRooms.dc.html`. **Screenshot it and put the screenshot in your report** — this is the reason the app is published, and "it reflows" is not the same as "it is usable."
 
 - [ ] **Step 5: Publish**
 
@@ -841,7 +935,7 @@ deck access chat emails <list>   # gate 2: the Google sign-in allow-list (option
 deck publish chat on             # only after a gate is confirmed — order is the security-relevant part
 ```
 
-Deck's per-app gates are the whole auth story — no auth code is written for this feature. Confirm the gate actually challenges from a logged-out browser before reporting done; **an unauthenticated page that can post into rooms is a page that can steer Matt's agents.**
+Deck's per-app gates are the whole auth story — no auth code is written for this feature. Confirm the gate actually challenges from a logged-out browser before reporting done; **an unauthenticated page that can post into rooms — and now DM any agent — is a page that can steer Matt's agents.**
 
 - [ ] **Step 6: Run everything**
 
@@ -852,16 +946,15 @@ Expected: PASS.
 
 ```bash
 git add src/ui/Composer.tsx src/server/chat.ts src/app/App.tsx src/ui/Composer.test.tsx src/server/chat.test.ts
-git commit -m "chat-viewer: composer, mobile layout, deck gates
+git commit -m "chat-viewer: composer with DM-instead, mobile layout, deck gates
 
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
-
 ## What this plan does not build
 
-**`not joined` rooms in the rail.** The rail shows the rooms the human is a member of; listing every room needs a store/handler that plan 1 did not ship. Returns with the presence-roster work, where rooms become a view on presence.
+**`not joined` rooms in the rail.** The rail shows the rooms the human is a member of plus every DM; listing every channel needs an all-rooms handler that neither plan 1 nor plan 3 shipped (`chat:rooms` is `listRooms(handle)`). Returns with a `chat:rooms --all` verb.
 
 **Focusing a herdr pane from a member row.** No route or CLI addresses a pane by id today. Returns when herdr exposes one; the row is designed to read completely without it.
 
@@ -872,3 +965,7 @@ The `@matt` notifier producer (**plan 1, Task 10**) and optional ntfy push
 homeless. Neither is needed for the viewer to be useful. Pushover is
 deferred, not scheduled: Task 11 cut it for v1 and rejects it at
 validation.
+
+**Setting a room's default wake mode from the viewer.** The `wakes:` chip is read-only; `rt chat join --wake-on` on the creating join sets it. Returns with a `chat:room-default` verb.
+
+**Sign-on notifications** (the AIM door sound) and **signing the human in as a buddy** — presence is per agent session and the human is never a buddy; the spec keeps both out of scope.
