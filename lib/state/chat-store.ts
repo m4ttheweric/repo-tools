@@ -245,6 +245,12 @@ export function listRooms(handle: string, db: Database = getStateDb()): RoomSumm
   });
 }
 
+/** The wake mode stamped by whichever join created `room`; undefined for a room never stamped (including every DM room — dmRoomFor never stamps one). */
+export function roomDefaultWake(room: string, db: Database = getStateDb()): WakeMode | undefined {
+  const row = db.query(SELECT_ROOM_DEFAULT_WAKE_SQL).get(room) as { wake_on: WakeMode } | null;
+  return row?.wake_on;
+}
+
 export function listMembers(room: string, db: Database = getStateDb()): ChatMember[] {
   const rows = db.query(SELECT_ROOM_MEMBERS_SQL).all(room) as MemberRow[];
   return rows.map(rowToMember);

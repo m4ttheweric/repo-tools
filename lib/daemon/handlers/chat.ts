@@ -16,6 +16,7 @@ import {
   markRead,
   unreadWakingCount,
   listRooms,
+  roomDefaultWake,
   listMembers,
   armMember,
   touchMember,
@@ -176,8 +177,10 @@ export function createChatHandlers(opts: {
 
     "chat:rooms": async (payload: Commands["chat:rooms"]["payload"]): Promise<CommandResult<"chat:rooms">> => {
       const rooms = listRooms(payload.handle, db).map((room) => {
+        const defaultWake = roomDefaultWake(room.room, db);
+        const withDefault = defaultWake ? { ...room, defaultWake } : room;
         const dm = dmParticipants(room.room, db);
-        return dm ? { ...room, kind: "dm" as const, participants: dm } : room;
+        return dm ? { ...withDefault, kind: "dm" as const, participants: dm } : withDefault;
       });
       return { ok: true, data: { rooms } };
     },

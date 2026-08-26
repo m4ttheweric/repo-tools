@@ -113,6 +113,8 @@ export interface RoomSummary {
   /** Set only by chat:rooms's left join against chat_dms. */
   kind?: "dm";
   participants?: { a: string; b: string };
+  /** Set only by chat:rooms's left join against chat_room_defaults; undefined for a room never stamped a default (every DM room included). */
+  defaultWake?: WakeMode;
 }
 
 /**

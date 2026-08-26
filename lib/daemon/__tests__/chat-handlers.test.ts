@@ -354,6 +354,20 @@ test("chat:rooms marks a dm and chat:who carries presence statuses", async () =>
   expect(memberA?.status).toBe("idle");
 });
 
+test("chat:rooms carries a room's stamped default wake mode, and leaves it undefined when never stamped", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "loud", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "quiet", handle: "b" });
+
+  const rooms = await h["chat:rooms"]({ handle: "a" });
+  if (!rooms.ok) throw new Error("unreachable");
+  expect(rooms.data.rooms.find((r) => r.room === "loud")).toMatchObject({ defaultWake: "all" });
+
+  const rooms2 = await h["chat:rooms"]({ handle: "b" });
+  if (!rooms2.ok) throw new Error("unreachable");
+  expect(rooms2.data.rooms.find((r) => r.room === "quiet")?.defaultWake).toBeUndefined();
+});
+
 test("chat:who on an agent-agent dm room excludes the silent human row", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "a" });

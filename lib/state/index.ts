@@ -107,6 +107,7 @@ export {
   markRead,
   unreadWakingCount,
   listRooms,
+  roomDefaultWake,
   listMembers,
   armMember,
   touchMember,

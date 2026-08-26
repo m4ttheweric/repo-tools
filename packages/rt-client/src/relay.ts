@@ -59,3 +59,34 @@ export function subscribe(
     try { ws?.close(); } catch { /* already closed */ }
   };
 }
+
+/**
+ * One daemon subscription for the whole process, republished onto a
+ * caller-chosen pub/sub topic. Every subscriber to that topic then shares
+ * one relay connection instead of each opening its own — filtering here
+ * (rather than at each subscriber) is what keeps an unrelated event from
+ * making every subscriber re-render.
+ *
+ * Ported from console's `startRelay` (src/server/ws.ts) with the match
+ * predicate and target topic lifted to arguments.
+ */
+export function createRelay(
+  cfg: { match: (topic: string) => boolean; topic: string; publish: (topic: string, data: string) => void },
+  opts: RtClientOptions = {},
+): () => void {
+  const doSubscribe = opts.subscribeImpl ?? subscribe;
+  return doSubscribe((type, data) => {
+    if (type !== "event") return;
+    const frame = data as { topic?: unknown };
+    if (typeof frame?.topic !== "string" || !cfg.match(frame.topic)) return;
+    // Serializing outside the catch keeps the suppression narrow: only a
+    // publish that rejects its own frame is expected here, and one
+    // subscriber's broken publish must not tear down the shared relay.
+    const payload = JSON.stringify(data);
+    try {
+      cfg.publish(cfg.topic, payload);
+    } catch {
+      /* the subscriber went away */
+    }
+  }, opts);
+}

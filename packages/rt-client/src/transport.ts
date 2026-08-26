@@ -21,6 +21,13 @@ export interface RtClientOptions {
   wsUrl?: string;
   /** Per-call override of rtCommand's own default (15s); chat's pulse wrapper needs an 800ms hook budget. */
   timeoutMs?: number;
+  /**
+   * Test seam for createRelay (relay.ts): swaps the daemon subscription for
+   * a fake without a live WebSocket server. Typed structurally against
+   * relay.ts's `subscribe` rather than importing its RelayEventType, which
+   * would make this module depend on the one that already depends on it.
+   */
+  subscribeImpl?: (onEvent: (type: string, data: unknown) => void, opts?: RtClientOptions) => () => void;
 }
 
 // Duplicates the ~/.mattstack/rt layout: rt-client has no dependency on rt's
