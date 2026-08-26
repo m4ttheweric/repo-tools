@@ -94,6 +94,41 @@ When adding a new command module referenced by `cli.ts` (any file with a `module
 
 Every registry value is a thunk — `() => import("../commands/x.ts")` with the path spelled out literally — not an eagerly-evaluated namespace import. That's what keeps `rt --version` and every other dispatch from paying for the whole command surface: the bundler still statically discovers all 30 modules, but none of them evaluate until a command actually dispatches to it. Adding a static (non-thunked) `import` of a command module to `lib/module-registry.ts`, or a static value import of `lib/rt-render.tsx`/`ink` to `lib/command-tree.ts`, is a startup regression — `scripts/bench-startup.ts` gates this in the release workflow (`.github/workflows/release.yml`), and `lib/__tests__/no-eager-tui.test.ts` gates the command-tree and command-module cases directly.
 
+### `SCHEMA_VERSION` is claimed across sessions, not chosen per branch
+
+Several agents work this repo at once, and `runMigrations` only replays when
+`user_version < SCHEMA_VERSION`. So the first branch whose daemon opens
+`~/.mattstack/rt/state.db` stamps the new number, and every *other* branch's
+schema for that same number then silently never applies — its tables are
+simply absent on that machine, with no error anywhere. This has already
+happened once: two lanes both wrote a v4, one lane's daemon migrated the
+real db minutes before the other merged, and the second lane's tables
+never appeared.
+
+Announce the version you are taking to the other sessions before you merge,
+and renumber if you are second. To repair a db stamped by a schema that is
+not the one on disk: stop the daemon, `PRAGMA user_version = <the previous
+version>`, start it, and diff `sqlite_master` before and after to confirm
+the other lane's tables survived (the replay is IF NOT EXISTS, so it is
+data-preserving).
+
+**Nothing but `IF NOT EXISTS` statements may appear in a `V*_SCHEMA` block.**
+The runner execs `V1 + … + Vn` as one statement on *every* bump, so an
+`ALTER TABLE … ADD COLUMN` that succeeded once throws `duplicate column
+name` on the next bump, rolls the migration back, and makes every later
+`openStateDb` call throw. Add a column by creating the table with it
+(`IF NOT EXISTS`), or guard the add behind a `PRAGMA table_info` check.
+
+### Publishing `@mattstack/rt-client` is release-class, from `main` only
+
+`0.5.0` reached npm with fresh `.d.ts` files over a stale `index.js`: its
+types promised verbs its runtime bundle did not contain, so consumers
+type-checked and then got `undefined` at call time. Publish only from a
+checkout on `main`, never from a branch, never with `--ignore-scripts`
+(`prepack` is what rebuilds `dist/`), and grep the built bundle for your own
+verbs before you publish. The package version is a shared resource like
+`SCHEMA_VERSION`: announce the bump, and let whoever merges second renumber.
+
 ### `packages/rt-client/dist/` goes stale without warning
 
 `dist/` is gitignored, but `file:` consumers (mr-board, gitq, the console) copy it **verbatim** at install time rather than building from source. So any change or merge that touches rt-client's source leaves every consumer installing the previous build — the source is right, the shipped artifact is not, and nothing about the working tree looks wrong. Run `bun run build` in `packages/rt-client` after touching it, and after any merge that does.
