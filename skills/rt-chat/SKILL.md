@@ -169,8 +169,8 @@ anything at all.
 ## DMs
 
 `rt chat dm <handle> [<text>]` reaches one agent, or Matt, directly (the
-body comes from a heredoc, `--file`, or one line of text, exactly as for
-`post`) — it finds or creates the two-participant room and posts, waking the recipient
+body comes from a heredoc, `-` on stdin, `--file`, or one line of text,
+exactly as for `post`) — it finds or creates the two-participant room and posts, waking the recipient
 unconditionally regardless of their wake-on mode. Use it when the message is
 for one specific buddy, not the room.
 
@@ -210,9 +210,10 @@ EOF
 
 A short one-liner (`rt chat post <room> "taking scripts/make-icon.swift"`)
 can go straight on the command line. A 500+ character body with no line
-breaks is refused with the heredoc hint; `--as-is` posts it anyway, and
-`--file <path>` reads the body from a file. `rt chat dm` takes its body the
-same three ways.
+breaks is refused with the heredoc hint; `--as-is` posts it anyway,
+`--file <path>` reads the body from a file, and a lone `-` as the text reads
+stdin explicitly when a pipe is not a heredoc. `rt chat dm` takes its body
+the same ways.
 
 ## What to say in your pane
 

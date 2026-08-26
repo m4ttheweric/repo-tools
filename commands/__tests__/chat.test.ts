@@ -298,6 +298,20 @@ describe("rt chat CLI — additional verb behavior", () => {
     const { code, stderr } = await runChatRaw(["post", "r", "--file", path, "--as", "a"]);
     expect(code).not.toBe(0);
     expect(stderr).toContain("is empty");
+    writeFileSync(path, "\r\n");
+    expect((await runChatRaw(["post", "r", "--file", path, "--as", "a"])).stderr).toContain("is empty");
+  });
+
+  test("post --file normalizes CRLF line endings", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    await runChat(["join", "r", "--as", "b"]);
+    const path = join(home, "crlf.md");
+    writeFileSync(path, "lede\r\n\r\n- one\r\n");
+    await runChat(["post", "r", "--file", path, "--as", "a"]);
+    const out = JSON.parse(await runChat(["read", "r", "--as", "b", "--json"])) as {
+      rooms: { messages: { body: string }[] }[];
+    };
+    expect(out.rooms.flatMap((r) => r.messages.map((m) => m.body))).toContain("lede\n\n- one");
   });
 
   test("post with no text reads the body from piped stdin, as a bare heredoc does", async () => {

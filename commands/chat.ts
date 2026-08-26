@@ -716,7 +716,7 @@ async function resolveBody(words: string[], args: string[], usage: string): Prom
   if (file !== undefined) {
     let text = "";
     try {
-      text = readFileSync(file, "utf8").replace(/\n$/, "");
+      text = normalizeBody(readFileSync(file, "utf8"));
     } catch {
       fail(`cannot read --file ${file}`);
     }
@@ -725,13 +725,19 @@ async function resolveBody(words: string[], args: string[], usage: string): Prom
   }
   const wantsStdin = (words.length === 1 && words[0] === "-") || (words.length === 0 && !process.stdin.isTTY);
   if (wantsStdin) {
-    const text = (await readStdin()).replace(/\n$/, "");
+    const text = normalizeBody(await readStdin());
     if (!text) fail(usage);
     return text;
   }
   const body = words.join(" ");
   if (!body) fail(usage);
   return body;
+}
+
+/** CRLF to LF, one trailing newline dropped: a heredoc always ends in one,
+    and a CRLF-only file must read as empty, not as a lone `\r`. */
+function normalizeBody(raw: string): string {
+  return raw.replace(/\r\n/g, "\n").replace(/\n$/, "");
 }
 
 async function readStdin(): Promise<string> {
