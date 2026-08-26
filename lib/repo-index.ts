@@ -1073,10 +1073,27 @@ export function repoOption(r: KnownRepo, label: string = repoLabel(r.repoName)):
   };
 }
 
+function duplicateRepoNames(repos: KnownRepo[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const r of repos) counts.set(r.repoName, (counts.get(r.repoName) ?? 0) + 1);
+  return new Set([...counts].filter(([, n]) => n > 1).map(([name]) => name));
+}
+
+/**
+ * One list, one value per row. A lost legacy-name row and the scanned
+ * directory that name moved to carry the SAME `repoName`, so an unqualified
+ * value resolves the live directory to the dead row. The qualifier trails the
+ * name because fzf matches on this field (`--nth=1`).
+ */
+function repoOptionValue(r: KnownRepo, i: number, duplicated: Set<string>): string {
+  return duplicated.has(r.repoName) ? `${r.repoName}#${i}` : r.repoName;
+}
+
 /** Picker options for a repo list: short labels, upgraded to owner/name where
     two repos would otherwise render identically, and to the full decoded id
     when even owner/name collides (same owner/name on two hosts; two path
-    repos sharing a basename). */
+    repos sharing a basename). Resolve what the picker returns with
+    `repoFromOptionValue` — the values are list-scoped, not bare index keys. */
 export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOption>> {
   const shortCounts = new Map<string, number>();
   const qualifiedCounts = new Map<string, number>();
@@ -1086,12 +1103,22 @@ export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOpt
     const qualified = repoLabelQualified(r.repoName);
     qualifiedCounts.set(qualified, (qualifiedCounts.get(qualified) ?? 0) + 1);
   }
-  return repos.map((r) => {
+  const duplicated = duplicateRepoNames(repos);
+  return repos.map((r, i) => {
     const short = repoLabel(r.repoName);
-    if ((shortCounts.get(short) ?? 0) <= 1) return repoOption(r, short);
     const qualified = repoLabelQualified(r.repoName);
-    return repoOption(r, (qualifiedCounts.get(qualified) ?? 0) > 1 ? repoLabelFull(r.repoName) : qualified);
+    const label = (shortCounts.get(short) ?? 0) <= 1
+      ? short
+      : (qualifiedCounts.get(qualified) ?? 0) > 1 ? repoLabelFull(r.repoName) : qualified;
+    return { ...repoOption(r, label), value: repoOptionValue(r, i, duplicated) };
   });
+}
+
+/** The row a `repoOptions` value came from. The list must be the one the
+    options were built from — values are positional when names collide. */
+export function repoFromOptionValue(repos: KnownRepo[], value: string): KnownRepo | undefined {
+  const duplicated = duplicateRepoNames(repos);
+  return repos.find((r, i) => repoOptionValue(r, i, duplicated) === value);
 }
 
 /** The one-line refusal every picker prints instead of cd-ing into a repo whose indexed path is gone. */

@@ -14,12 +14,12 @@ import { identityFromRemote, serializeIdentity } from "./settings/identity.ts";
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
 export { getRepoRoot, getCurrentBranch, getRemoteUrl } from "./git.ts";
-export { updateRepoIndex, getKnownRepos, repoOption, repoOptions, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
+export { updateRepoIndex, getKnownRepos, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
 
 // ─── Internal imports ────────────────────────────────────────────────────────
 
 import { getRepoRoot, getRemoteUrl } from "./git.ts";
-import { updateRepoIndex, getKnownRepos, repoOption, repoOptions, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
+import { updateRepoIndex, getKnownRepos, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -192,6 +192,16 @@ function refuseIfMissing(repo: KnownRepo): void {
 }
 
 /**
+ * A stale `missing` row must not cost a single live repo its auto-resolve —
+ * headless callers have no picker to fall through to. With no live repo the
+ * list stands as-is, so the sole missing row still reaches `refuseIfMissing`.
+ */
+function pickableRepos(repos: KnownRepo[]): KnownRepo[] {
+  const live = repos.filter(r => !r.missing);
+  return live.length === 1 ? live : repos;
+}
+
+/**
  * Get repo identity at the repo level (no worktree picker step).
  * Falls back to a repo-only picker if not currently inside a git repo.
  * Chdirs to the first worktree of the selected repo.
@@ -210,9 +220,10 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
     process.exit(1);
   }
 
-  let selectedRepo = repos[0]!;
+  const choices = pickableRepos(repos);
+  let selectedRepo = choices[0]!;
 
-  if (repos.length > 1) {
+  if (choices.length > 1) {
     if (!process.stdin.isTTY) {
       console.log(`\n  not in a git repo — run interactively to pick one\n`);
       process.exit(1);
@@ -221,10 +232,10 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
     const { filterableSelect } = await import("./rt-render.tsx");
     const picked = await filterableSelect({
       message: commandLabel ? `Pick a repo for ${commandLabel}` : "Pick a repo",
-      options: repoOptions(repos),
+      options: repoOptions(choices),
     });
     if (!picked) process.exit(0);  // Esc on picker — clean exit
-    const match = repos.find(r => r.repoName === picked);
+    const match = repoFromOptionValue(choices, picked);
     if (!match) process.exit(0);
     selectedRepo = match;
   }
@@ -255,10 +266,11 @@ export async function pickWorktree(prompt: string): Promise<string> {
     process.exit(1);
   }
 
-  const totalWorktrees = repos.reduce((n, r) => n + r.worktrees.length, 0);
+  const choices = pickableRepos(repos);
+  const totalWorktrees = choices.reduce((n, r) => n + r.worktrees.length, 0);
   if (totalWorktrees === 1) {
-    refuseIfMissing(repos[0]!);
-    return repos[0]!.worktrees[0]!.path;
+    refuseIfMissing(choices[0]!);
+    return choices[0]!.worktrees[0]!.path;
   }
 
   if (!process.stdin.isTTY) {
@@ -268,15 +280,15 @@ export async function pickWorktree(prompt: string): Promise<string> {
 
   let selectedRepo: KnownRepo;
 
-  if (repos.length === 1) {
-    selectedRepo = repos[0]!;
+  if (choices.length === 1) {
+    selectedRepo = choices[0]!;
   } else {
     const { filterableSelect } = await import("./rt-render.tsx");
-    const options = repoOptions(repos);
+    const options = repoOptions(choices);
 
     const picked = await filterableSelect({ message: "Select a repo", options });
     if (!picked) process.exit(0);            // user escaped — clean exit, no error
-    const match = repos.find(r => r.repoName === picked);
+    const match = repoFromOptionValue(choices, picked);
     if (!match) process.exit(0);             // shouldn't happen, but don't crash
     selectedRepo = match;
   }
@@ -411,7 +423,7 @@ async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
 
   const pickedRepo = await filterableSelect({ message: "Pick a repo", options });
   if (!pickedRepo) process.exit(0);        // Esc on all-repos picker
-  const repo = repos.find((r) => r.repoName === pickedRepo);
+  const repo = repoFromOptionValue(repos, pickedRepo);
   if (!repo) process.exit(0);
 
   if (repo.worktrees.length === 1) {

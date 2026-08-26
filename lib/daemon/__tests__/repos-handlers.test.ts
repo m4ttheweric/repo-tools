@@ -73,6 +73,12 @@ describe("repos:locate", () => {
     expect(order).toEqual([]);
   });
 
+  test("a non-string repo key is rejected, not dropped to an unscoped locate", async () => {
+    const res = await handlers["repos:locate"]({ newPath: scratch, repo: 42 });
+    expect(res).toEqual({ ok: false, error: "repo-unknown" });
+    expect(order).toEqual([]);
+  });
+
   test("applies inside the hold, refreshes watchers, then emits repo:moved", async () => {
     const { identity, from, to } = await movedRepo("alpha");
 

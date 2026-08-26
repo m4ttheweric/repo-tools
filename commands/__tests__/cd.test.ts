@@ -83,6 +83,7 @@ describe("rt cd --repo --worktree with a missing repo", () => {
  */
 describe("rt cd default picker with a missing repo", () => {
   const origHome = process.env.HOME;
+  const origShell = process.env.SHELL;
   const origCwd = process.cwd();
   let home: string;
   let scratch: string;
@@ -102,6 +103,7 @@ describe("rt cd default picker with a missing repo", () => {
   afterEach(() => {
     process.chdir(origCwd);
     process.env.HOME = origHome;
+    process.env.SHELL = origShell;
     closeStateDb();
     rmSync(home, { recursive: true, force: true });
     rmSync(scratch, { recursive: true, force: true });

@@ -30,8 +30,12 @@ export function createReposHandlers(
     "repos:locate": async (payload) => {
       const newPath = payload?.newPath;
       if (typeof newPath !== "string" || newPath.length === 0) return { ok: false, error: "newPath-required" };
-      const repo = typeof payload?.repo === "string" ? payload.repo : undefined;
-      if (repo !== undefined && parseIdentity(repo) === null) return { ok: false, error: "repo-unknown" };
+      // A supplied-but-unusable `repo` must not degrade to "unscoped": planLocate
+      // would then relocate whichever lost row matches newPath.
+      const repo = payload?.repo;
+      if (repo !== undefined && (typeof repo !== "string" || parseIdentity(repo) === null)) {
+        return { ok: false, error: "repo-unknown" };
+      }
 
       return opts.withReconcilerHeld(async () => {
         const plan = await planLocate({ newPath, repo });

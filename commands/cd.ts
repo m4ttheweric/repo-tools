@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOptions, missingRepoRefusal, type KnownRepo } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "../lib/repo.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -220,7 +220,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
         ? repos[0]!.repoName
         : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true });
       if (!pickedRepoName) process.exit(0); // Esc on repo picker
-      const pickedRepo = repos.find((r) => r.repoName === pickedRepoName)!;
+      const pickedRepo = repoFromOptionValue(repos, pickedRepoName)!;
       if (pickedRepo.missing) {
         console.error(`\n  ${missingRepoRefusal(pickedRepo)}\n`);
         process.exit(1);

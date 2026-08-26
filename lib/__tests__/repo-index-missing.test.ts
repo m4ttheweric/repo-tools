@@ -10,8 +10,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb, setKvValue } from "../state/index.ts";
-import { getKnownRepos, missingRepoRefusal, repoOption } from "../repo-index.ts";
+import { getKnownRepos, missingRepoRefusal, repoFromOptionValue, repoOption, repoOptions, type KnownRepo } from "../repo-index.ts";
 import { pickFromAllRepos } from "../pickers.ts";
+import { pickWorktree } from "../repo.ts";
 
 describe("missing index rows", () => {
   const origHome = process.env.HOME;
@@ -86,6 +87,49 @@ describe("missing index rows", () => {
     const opt = repoOption({ repoName: "moved", worktrees: [{ path: "/x/gone", branch: "", isBare: false }], dataDir: "/d", missing: true });
     expect(opt.hint).toBe("missing — rt repos locate");
     expect(opt.color).toBeDefined();
+  });
+
+  test("a lost row and the scanned directory sharing its name get distinct picker values", () => {
+    const lost: KnownRepo = { repoName: "mu", worktrees: [{ path: "/x/gone/mu", branch: "", isBare: false }], dataDir: "/d", missing: true };
+    const scanned: KnownRepo = { repoName: "mu", worktrees: [{ path: "/x/live/mu", branch: "", isBare: false }], dataDir: "/d", registered: false };
+    const repos = [lost, scanned];
+
+    const [lostOpt, scannedOpt] = repoOptions(repos);
+
+    expect(lostOpt!.value).not.toBe(scannedOpt!.value);
+    expect(repoFromOptionValue(repos, lostOpt!.value)).toBe(lost);
+    expect(repoFromOptionValue(repos, scannedOpt!.value)).toBe(scanned);
+  });
+
+  test("an uncontested name keeps the raw index key as its picker value", () => {
+    const row: KnownRepo = { repoName: "remote:gitlab.com%2Fg%2Fsolo", worktrees: [{ path: "/x/solo", branch: "", isBare: false }], dataDir: "/d" };
+
+    expect(repoOptions([row])[0]!.value).toBe(row.repoName);
+    expect(repoFromOptionValue([row], row.repoName)).toBe(row);
+  });
+
+  test("a stale missing row does not cost a single live repo its headless auto-resolve", async () => {
+    const live = realRepo("solo");
+    setKvValue("repo-index", "remote:gitlab.com%2Fg%2Fsolo", live);
+    setKvValue("repo-index", "gone", join(scratch, "gone-away"));
+
+    expect(await pickWorktree("Pick a repo")).toBe(live);
+  });
+
+  test("pickWorktree still refuses when the only row is a missing one", async () => {
+    setKvValue("repo-index", "gone", join(scratch, "gone-away"));
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit sentinel");
+    });
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(pickWorktree("Pick a repo")).rejects.toThrow("process.exit sentinel");
+      expect(exitSpy.mock.calls.at(-1)?.[0]).toBe(1);
+      expect(errSpy.mock.calls.flat().join(" ")).toContain("rt repos locate");
+    } finally {
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
   });
 
   test("the refusal names the repo, the gone path, and the fix", () => {
