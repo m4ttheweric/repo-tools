@@ -1,6 +1,6 @@
 import pathlib, json
 CSS = r"""
-    body { margin: 0; }
+    body { margin: 0; overflow-x: hidden; }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
     .app {
@@ -511,7 +511,7 @@ pathlib.Path('Indicators.dc.html').write_text(ind)
 
 # ---- Roster: the buddy list as its own AIM-style window ----
 rost = head() + f"""
-<div class="app {{{{schemeClass}}}}" style="width: 420px; min-height: 900px; display: flex; flex-direction: column;">
+<div class="app {{{{schemeClass}}}}" style="width: 420px; height: 900px; display: flex; flex-direction: column;">
   <div class="row" style="height: 56px; flex: none; padding: 0 11.2px; background: var(--bg2); border-bottom: 1px solid var(--border); gap: 7.2px;">
     <span class="muted">{ic('users', 16)}</span>
     <span style="font-weight: 700;">buddies</span>

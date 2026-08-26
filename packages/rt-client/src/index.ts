@@ -22,6 +22,13 @@ export {
   chatTouch,
   chatDisarm,
   chatUnreadWaking,
+  chatSignIn,
+  chatSignOut,
+  chatAway,
+  chatBack,
+  chatBuddies,
+  chatPulse,
+  chatDm,
   eventsHead,
 } from "./client.ts";
 
@@ -49,6 +56,8 @@ export type {
   ChatMember,
   ChatMessage,
   RoomSummary,
+  BuddyStatus,
+  PresenceRow,
 } from "./commands.ts";
 
 export { subscribe, DEFAULT_WS_URL } from "./relay.ts";

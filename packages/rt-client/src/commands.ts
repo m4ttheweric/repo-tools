@@ -90,6 +90,8 @@ export interface ChatMember {
   armedAt?: number;
   cwd?: string;
   pane?: string;
+  /** Presence-joined by chat:who's handler — the only place this type is ever returned, and it always attaches one. */
+  status: BuddyStatus;
 }
 
 export interface ChatMessage {
@@ -108,6 +110,32 @@ export interface RoomSummary {
   unread: number;
   mentions: number;
   lastPostedAt?: number;
+  /** Set only by chat:rooms's left join against chat_dms. */
+  kind?: "dm";
+  participants?: { a: string; b: string };
+}
+
+/**
+ * Duplicated shape on purpose, same reasoning as ChatMember/ChatMessage
+ * above: mirrors lib/state/presence-store.ts's types, which rt-client
+ * cannot import.
+ */
+export type BuddyStatus = "live" | "idle" | "deaf" | "offline";
+
+export interface PresenceRow {
+  sessionId: string;
+  handle: string;
+  baseHandle: string;
+  cwd?: string;
+  repo?: string;
+  branch?: string;
+  pane?: string;
+  statusText?: string;
+  signedInAt: number;
+  lastSeenAt: number;
+  tailSeenAt?: number;
+  armedAt?: number;
+  signedOutAt?: number;
 }
 
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
@@ -214,16 +242,33 @@ export interface Commands {
   "runs:abandon": { payload: { runId: string; repo?: string; reason?: string }; data: { ok: boolean } };
   "chat:join": { payload: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string }; data: { handle: string; memberCount: number; unread: number } };
   "chat:leave": { payload: { room: string; handle: string }; data: Record<string, never> };
-  "chat:post": { payload: { room: string; handle: string; body: string }; data: { id: number; recipients: string[] } };
+  "chat:post": { payload: { room: string; handle: string; body: string; mentions?: string[] }; data: { id: number; recipients: string[] } };
   "chat:read": { payload: { handle: string; room?: string; limit?: number; sinceMs?: number }; data: { rooms: { room: string; messages: ChatMessage[] }[] } };
   "chat:rooms": { payload: { handle: string }; data: { rooms: RoomSummary[] } };
   "chat:who": { payload: { room: string }; data: { members: ChatMember[] } };
   "chat:mark": { payload: { handle: string; room?: string }; data: Record<string, never> };
   "chat:messages": { payload: { room: string; before?: number; limit?: number }; data: { messages: ChatMessage[] } };
-  "chat:arm": { payload: { handle: string; room?: string }; data: Record<string, never> };
-  "chat:touch": { payload: { handle: string }; data: Record<string, never> };
-  "chat:disarm": { payload: { handle: string }; data: Record<string, never> };
+  "chat:arm": { payload: { handle: string; room?: string; sessionId?: string }; data: Record<string, never> };
+  "chat:touch": { payload: { handle: string; sessionId?: string }; data: Record<string, never> };
+  "chat:disarm": { payload: { handle: string; sessionId?: string }; data: Record<string, never> };
   "chat:unread-waking": { payload: { handle: string; room?: string }; data: { rooms: { room: string; count: number; mentions: number; maxId: number }[] } };
+
+  // A session id keys these to one signed-in handle, not a room-membership
+  // handle string.
+  "chat:sign-in": {
+    payload: { sessionId: string; baseHandle: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string };
+    data: { handle: string; reclaimed: boolean };
+  };
+  "chat:sign-out": { payload: { sessionId: string }; data: Record<string, never> };
+  "chat:away": { payload: { sessionId: string; text: string }; data: Record<string, never> };
+  "chat:back": { payload: { sessionId: string }; data: Record<string, never> };
+  "chat:buddies": { payload: Record<string, never>; data: { buddies: Array<PresenceRow & { status: BuddyStatus }> } };
+  /** `unread`'s three fields are disjoint and sum to the true total: `dms` is DM-room waking count; `mentions` is non-DM waking mentions; `rooms` is non-DM waking count minus those mentions (never negative). */
+  "chat:pulse": {
+    payload: { sessionId: string; cwd?: string; repo?: string; branch?: string; pane?: string };
+    data: { unread: { dms: number; mentions: number; rooms: number }; status: BuddyStatus };
+  };
+  "chat:dm": { payload: { from: string; to: string; body: string; sessionId?: string }; data: { room: string; id: number; recipients: string[] } };
 }
 
 export type CommandName = keyof Commands;
@@ -253,4 +298,11 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "chat:touch",
   "chat:disarm",
   "chat:unread-waking",
+  "chat:sign-in",
+  "chat:sign-out",
+  "chat:away",
+  "chat:back",
+  "chat:buddies",
+  "chat:pulse",
+  "chat:dm",
 ];

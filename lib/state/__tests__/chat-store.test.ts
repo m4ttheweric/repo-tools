@@ -214,3 +214,12 @@ test("clearAllArmed clears every row and reports how many it cleared", () => {
   expect(clearAllArmed(db)).toBe(2);
   expect(listMembers("r", db).every(m => m.armedAt === undefined)).toBe(true);
 });
+
+test("startup clear covers presence arming", () => {
+  const db = freshDb();
+  db.query(
+    "INSERT INTO chat_presence (session_id, handle, base_handle, signed_in_at, last_seen_at, armed_at) VALUES ('s1','a','a',1,1,1)",
+  ).run();
+  clearAllArmed(db);
+  expect(db.query("SELECT armed_at FROM chat_presence").get()).toMatchObject({ armed_at: null });
+});

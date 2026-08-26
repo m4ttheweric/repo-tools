@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3). */
-export const SCHEMA_VERSION = 3;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4). */
+export const SCHEMA_VERSION = 4;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -201,6 +201,42 @@ CREATE TABLE IF NOT EXISTS chat_members (
 );
 `;
 
+// Tables (v4): sign-in presence, DM participant pairs, and a room's
+// join-time wake_on default (lib/state/chat-store.ts owns these too). The
+// inline column comments below are the schema's only documentation — keep
+// them in sync with what the code actually does with each column.
+const V4_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chat_presence (
+  session_id     TEXT PRIMARY KEY,
+  handle         TEXT NOT NULL UNIQUE,   -- the assigned display name, suffix included
+  base_handle    TEXT NOT NULL,          -- what resolution produced before suffixing
+  cwd            TEXT,
+  repo           TEXT,                   -- repoLabel of the cwd's identity, for display
+  branch         TEXT,
+  pane           TEXT,                   -- HERDR_PANE_ID when known
+  status_text    TEXT,                   -- the away message; NULL when back
+  signed_in_at   INTEGER NOT NULL,
+  last_seen_at   INTEGER NOT NULL,       -- SESSION heartbeat: written by pulse (and sign-in)
+  tail_seen_at   INTEGER,                -- TAIL heartbeat: written ONLY by chat:touch from the tail loop
+  armed_at       INTEGER,                -- set while a tail is live, cleared on exit
+  signed_out_at  INTEGER                 -- NULL while signed in
+);
+CREATE INDEX IF NOT EXISTS chat_presence_handle ON chat_presence(handle);
+
+CREATE TABLE IF NOT EXISTS chat_room_defaults (
+  room     TEXT PRIMARY KEY,              -- rows exist only for rooms stamped at creation
+  wake_on  TEXT NOT NULL                  -- mention | all | none
+);
+
+CREATE TABLE IF NOT EXISTS chat_dms (
+  room        TEXT PRIMARY KEY REFERENCES chat_rooms(name),   -- documentation only: foreign_keys is off in applyPragmas; deletion is explicit
+  a           TEXT NOT NULL,             -- participants, sorted; either may be the human handle
+  b           TEXT NOT NULL CHECK (a <> b),
+  created_at  INTEGER NOT NULL,
+  UNIQUE (a, b)
+);
+`;
+
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
 function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code;
@@ -331,7 +367,7 @@ function runMigrations(db: Database, dir: string): void {
       // One exec of the full combined schema, not a per-version step: every
       // statement is IF NOT EXISTS, so replaying v1's DDL against an
       // already-v1 db is a no-op and existing rows are untouched.
-      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA);
+      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA);
       // Legacy-JSON import is single-shot and only correct from a true
       // v0 (never-migrated) database: branch-cache's UPSERT would silently
       // overwrite current rows with stale ones, and project-mrs-store's

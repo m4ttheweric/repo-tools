@@ -4,12 +4,21 @@
  *
  * The only module that touches chat_rooms/chat_members/chat_messages:
  * rooms, members, and messages live in one file because posting a message
- * reads membership inside the same transaction that writes it.
+ * reads membership inside the same transaction that writes it. It also
+ * clears `chat_presence.armed_at` alongside `chat_members.armed_at` in
+ * `clearAllArmed`, in the same transaction — the two flags must commit
+ * together, since presence-store.ts's dual-write functions (imported below)
+ * assume they never diverge.
  */
 
 import { Database } from "bun:sqlite";
 import { getStateDb } from "./db.ts";
 import { persistOrWarn, runCriticalWrite } from "./busy.ts";
+import { armPresenceByHandle, disarmPresenceByHandle, presenceForHandle, touchPresenceByHandle } from "./presence-store.ts";
+// Intra-lib/state exception (see presence-store.ts's note on the same
+// pattern): dm-store.ts is the only module that touches chat_dms, so
+// joinRoom asks it directly rather than duplicating a chat_dms query here.
+import { dmParticipants } from "./dm-store.ts";
 
 export type WakeMode = "mention" | "all" | "none";
 
@@ -108,6 +117,8 @@ const SELECT_ROOM_LAST_POSTED_SQL = `SELECT MAX(posted_at) AS lastPostedAt FROM 
 const SELECT_ROOM_UNREAD_SQL = `SELECT COUNT(*) AS n FROM chat_messages WHERE room = ? AND id > ?;`;
 const SELECT_ROOM_UNREAD_MENTIONS_SQL = `SELECT COUNT(*) AS n FROM chat_messages WHERE room = ? AND id > ? AND mentions LIKE ? ESCAPE '\\';`;
 const UPSERT_ROOM_SQL = `INSERT INTO chat_rooms (name, created_at) VALUES (?, ?) ON CONFLICT(name) DO NOTHING;`;
+const SELECT_ROOM_DEFAULT_WAKE_SQL = `SELECT wake_on FROM chat_room_defaults WHERE room = ?;`;
+const INSERT_ROOM_DEFAULT_WAKE_SQL = `INSERT INTO chat_room_defaults (room, wake_on) VALUES (?, ?) ON CONFLICT(room) DO NOTHING;`;
 const INSERT_MEMBER_SQL = `INSERT INTO chat_members (room, handle, joined_at, last_read_id, wake_on, cwd, pane) VALUES (?, ?, ?, ?, ?, ?, ?);`;
 const DELETE_MEMBER_SQL = `DELETE FROM chat_members WHERE room = ? AND handle = ?;`;
 const UPDATE_LAST_READ_SQL = `UPDATE chat_members SET last_read_id = ? WHERE room = ? AND handle = ?;`;
@@ -115,6 +126,7 @@ const UPDATE_ARMED_BY_ROOM_SQL = `UPDATE chat_members SET armed_at = ? WHERE roo
 const UPDATE_ARMED_BY_HANDLE_SQL = `UPDATE chat_members SET armed_at = ? WHERE handle = ?;`;
 const UPDATE_LAST_SEEN_SQL = `UPDATE chat_members SET last_seen_at = ? WHERE handle = ?;`;
 const CLEAR_ALL_ARMED_SQL = `UPDATE chat_members SET armed_at = NULL WHERE armed_at IS NOT NULL;`;
+const CLEAR_ALL_PRESENCE_ARMED_SQL = `UPDATE chat_presence SET armed_at = NULL WHERE armed_at IS NOT NULL;`;
 
 const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at";
 const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at) VALUES (?, ?, ?, ?, ?, ?);`;
@@ -132,6 +144,16 @@ export function isValidChatName(name: string): boolean {
 }
 
 /**
+ * The one INSERT that creates a chat_rooms row. dm-store.ts's dmRoomFor
+ * reuses this (intra-lib/state exception) so a DM's room row is created
+ * through the exact same idempotent statement a normal join uses, never a
+ * second, divergent one.
+ */
+export function ensureRoomRow(room: string, now: number, db: Database = getStateDb()): boolean {
+  return db.query(UPSERT_ROOM_SQL).run(room, now).changes > 0;
+}
+
+/**
  * Refuses a colliding handle rather than suffixing it. The suffix is only
  * reachable from inside this function, while `tail`/`post`/`read` each
  * resolve the same handle independently and can only produce the
@@ -142,12 +164,21 @@ export function joinRoom(
   args: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string },
   db: Database = getStateDb(),
 ): { handle: string; memberCount: number; unread: number } {
-  const { room, handle, wakeOn = "mention", cwd, pane } = args;
+  const { room, handle, cwd, pane } = args;
+  const explicitWakeOn = args.wakeOn;
   const argCwd = cwd ?? null;
 
   const run = db.transaction(() => {
+    // A DM's membership is fixed at creation (dmRoomFor) and its two
+    // participants live in chat_dms, not chat_rooms/chat_members alone —
+    // joining it here would let a third handle in without a chat_dms row
+    // to match, silently turning a DM into an ordinary room.
+    if (dmParticipants(room, db)) {
+      throw new Error(`chat: "${room}" is a DM room; use \`rt chat dm <handle>\` to message it, not \`join\``);
+    }
+
     const now = Date.now();
-    db.query(UPSERT_ROOM_SQL).run(room, now);
+    const creatingRoom = ensureRoomRow(room, now, db);
 
     const maxId = (db.query(SELECT_ROOM_MAX_ID_SQL).get(room) as { maxId: number }).maxId;
 
@@ -155,10 +186,13 @@ export function joinRoom(
     // handle ALONE, across every room — so a handle must map to one cwd
     // everywhere, not just within this room. A row for this handle in any room
     // from a different cwd is a collision: two directories sharing a handle
-    // would share one wake stream and one pidfile.
+    // would share one wake stream and one pidfile. Once a presence row exists
+    // for the handle, presence owns uniqueness instead (spec "The shipped
+    // joinRoom cwd guard is scoped to unsigned handles") — memberships from an
+    // earlier cwd are just that session's history.
     const priorRows = db.query(SELECT_HANDLE_MEMBERSHIPS_SQL).all(handle) as MemberRow[];
     const collision = priorRows.find((r) => r.cwd !== argCwd);
-    if (collision) {
+    if (collision && !presenceForHandle(handle, db)) {
       throw new Error(
         `chat: handle "${handle}" is already in use from a different directory (#${collision.room}) — pass --as <handle> to join under another name`,
       );
@@ -170,6 +204,17 @@ export function joinRoom(
       lastReadId = existing.last_read_id;
     } else {
       lastReadId = maxId;
+      let wakeOn: WakeMode;
+      if (explicitWakeOn !== undefined) {
+        wakeOn = explicitWakeOn;
+        // Only the join that CREATES the room stamps its default — a later
+        // explicit flag wins for that member alone (spec "A room can
+        // default its members to wake_on all").
+        if (creatingRoom) db.query(INSERT_ROOM_DEFAULT_WAKE_SQL).run(room, wakeOn);
+      } else {
+        const defaultRow = db.query(SELECT_ROOM_DEFAULT_WAKE_SQL).get(room) as { wake_on: WakeMode } | null;
+        wakeOn = defaultRow ? defaultRow.wake_on : "mention";
+      }
       db.query(INSERT_MEMBER_SQL).run(room, handle, now, lastReadId, wakeOn, argCwd, pane ?? null);
     }
 
@@ -208,41 +253,60 @@ export function listMembers(room: string, db: Database = getStateDb()): ChatMemb
 /**
  * Presence uses `persistOrWarn`, not `runCriticalWrite`: a lost arm/touch/
  * disarm write is regenerated by the next poll cycle, so it belongs to the
- * cache class, not the no-recovery-path class.
+ * cache class, not the no-recovery-path class. Each also dual-writes the
+ * presence row when `presenceForHandle` hits (spec "chat_members keeps its
+ * presence columns, and the two tables are dual-written"), wrapped in one
+ * transaction so both tables commit together or neither does.
  */
 export function armMember(room: string | undefined, handle: string, db: Database = getStateDb()): void {
   const now = Date.now();
-  persistOrWarn(
-    "chat-store",
-    () => {
-      if (room) db.query(UPDATE_ARMED_BY_ROOM_SQL).run(now, room, handle);
-      else db.query(UPDATE_ARMED_BY_HANDLE_SQL).run(now, handle);
-    },
-    { op: "armMember", room, handle },
-  );
+  const run = db.transaction(() => {
+    if (room) db.query(UPDATE_ARMED_BY_ROOM_SQL).run(now, room, handle);
+    else db.query(UPDATE_ARMED_BY_HANDLE_SQL).run(now, handle);
+    // Arming starts a new tail epoch: clearing tail_seen_at here is what
+    // keeps a re-arm reading live from the moment it arms rather than deaf
+    // until its first touch (spec "chat:arm starts a new tail epoch").
+    if (presenceForHandle(handle, db)) armPresenceByHandle(handle, now, db);
+  });
+  persistOrWarn("chat-store", run, { op: "armMember", room, handle });
 }
 
 export function touchMember(handle: string, db: Database = getStateDb()): void {
-  persistOrWarn("chat-store", () => db.query(UPDATE_LAST_SEEN_SQL).run(Date.now(), handle), {
-    op: "touchMember",
-    handle,
+  const now = Date.now();
+  const run = db.transaction(() => {
+    db.query(UPDATE_LAST_SEEN_SQL).run(now, handle);
+    if (presenceForHandle(handle, db)) touchPresenceByHandle(handle, now, db);
   });
+  persistOrWarn("chat-store", run, { op: "touchMember", handle });
 }
 
 export function disarmMember(handle: string, db: Database = getStateDb()): void {
-  persistOrWarn("chat-store", () => db.query(UPDATE_ARMED_BY_HANDLE_SQL).run(null, handle), {
-    op: "disarmMember",
-    handle,
+  const run = db.transaction(() => {
+    db.query(UPDATE_ARMED_BY_HANDLE_SQL).run(null, handle);
+    if (presenceForHandle(handle, db)) disarmPresenceByHandle(handle, db);
   });
+  persistOrWarn("chat-store", run, { op: "disarmMember", handle });
 }
 
 /**
  * No waiter outlives the daemon, so every `armed_at` still set at boot is
- * stale by definition — called once at daemon startup, before serving.
+ * stale by definition — called once at daemon startup, before serving. The
+ * return value is member rows cleared only: `chat_presence` is cleared
+ * alongside for the same reason, but a presence row shadows a member row
+ * rather than adding a distinct waiter, so counting both would double-count.
  */
 export function clearAllArmed(db: Database = getStateDb()): number {
+  // A single db.transaction()-wrapped write, per persistOrWarn's contract:
+  // both clears commit or neither does, and `cleared` is only assigned from
+  // the transaction's return value, so a swallowed SQLITE_BUSY on the second
+  // statement leaves it at 0 rather than reporting a count that never landed.
+  const run = db.transaction((): number => {
+    const n = db.query(CLEAR_ALL_ARMED_SQL).run().changes;
+    db.query(CLEAR_ALL_PRESENCE_ARMED_SQL).run();
+    return n;
+  });
   let cleared = 0;
-  persistOrWarn("chat-store", () => { cleared = db.query(CLEAR_ALL_ARMED_SQL).run().changes; }, {
+  persistOrWarn("chat-store", () => { cleared = run(); }, {
     op: "clearAllArmed",
   });
   return cleared;
@@ -284,6 +348,12 @@ export function parseMentions(body: string): string[] {
   return [...found];
 }
 
+/** Unions an explicit recipient list into a body's parsed @mentions — the one merge rule storage (postMessage) and the daemon's desk-notify check both need, so the two can never diverge. */
+export function mergeMentions(body: string, explicit?: string[]): string[] {
+  const parsed = parseMentions(body);
+  return explicit ? [...new Set([...parsed, ...explicit])] : parsed;
+}
+
 /**
  * The recipient rule over an already-fetched member list. Both the post path
  * and the wake-catch-up path route through here so they can never diverge —
@@ -315,11 +385,11 @@ export function recipientsFor(
 }
 
 export function postMessage(
-  args: { room: string; handle: string; body: string },
+  args: { room: string; handle: string; body: string; mentions?: string[] },
   db: Database = getStateDb(),
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body } = args;
-  const mentions = parseMentions(body);
+  const mentions = mergeMentions(body, args.mentions);
 
   const run = db.transaction((): { id: number; recipients: string[] } => {
     const now = Date.now();

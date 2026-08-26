@@ -1,10 +1,10 @@
 /**
- * rt chat CLI (RT-48 Task 7).
+ * rt chat CLI (RT-48).
  *
  * runChat/runChatRaw invoke the `chat` export in-process against a temp
  * HOME, backed by a real (not stubbed) chat daemon: a Bun.serve unix socket
  * bound at the HOME's default rt.sock, dispatching to the REAL
- * createChatHandlers (Task 6) over a per-test state.db. This exercises the
+ * createChatHandlers over a per-test state.db. This exercises the
  * actual join/member-count/unread rules, not a canned reply map.
  *
  * HERDR_PANE_ID is deliberately cleared for every test: this suite may
@@ -13,6 +13,7 @@
  * nondeterministic and slow. See commands/chat.ts's resolveHandle order.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { execSync } from "child_process";
 import {
   existsSync,
   mkdirSync,
@@ -30,12 +31,15 @@ import { join } from "path";
 import { chat, __test__ } from "../chat.ts";
 import { createChatHandlers } from "../../lib/daemon/handlers/chat.ts";
 import { getStateDb, closeStateDb } from "../../lib/state/index.ts";
+import { sessionFilePath } from "../../lib/chat-session.ts";
+import { drainNotifications, peekNotifications } from "../../lib/notifier.ts";
 
 // ─── in-process CLI + fake daemon harness ───────────────────────────────────
 
 let home = "";
 let origHome: string | undefined;
 let origPaneId: string | undefined;
+let origSessionId: string | undefined;
 let origBackoff: string | undefined;
 let server: ReturnType<typeof Bun.serve> | null = null;
 // Real child processes (spawnChat); reaped in afterEach so a stray tail can't
@@ -45,8 +49,13 @@ const children: Array<ReturnType<typeof Bun.spawn>> = [];
 beforeEach(() => {
   origHome = process.env.HOME;
   origPaneId = process.env.HERDR_PANE_ID;
+  origSessionId = process.env.CLAUDE_CODE_SESSION_ID;
   origBackoff = process.env.RT_CHAT_BACKOFF_MS;
   delete process.env.HERDR_PANE_ID;
+  // This suite runs inside a real Claude Code session; a leaked id would sign
+  // tests in against the developer's own session file. Every test below that
+  // needs a session id passes --session explicitly.
+  delete process.env.CLAUDE_CODE_SESSION_ID;
   // Keep the daemon-unreachable backoff short so the exit-69 path is fast.
   process.env.RT_CHAT_BACKOFF_MS = "150";
 
@@ -89,6 +98,8 @@ afterEach(async () => {
   process.env.HOME = origHome;
   if (origPaneId === undefined) delete process.env.HERDR_PANE_ID;
   else process.env.HERDR_PANE_ID = origPaneId;
+  if (origSessionId === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+  else process.env.CLAUDE_CODE_SESSION_ID = origSessionId;
   if (origBackoff === undefined) delete process.env.RT_CHAT_BACKOFF_MS;
   else process.env.RT_CHAT_BACKOFF_MS = origBackoff;
 });
@@ -166,6 +177,37 @@ async function runChat(args: string[]): Promise<string> {
   const { code, stdout, stderr } = await runChatRaw(args);
   if (code !== 0) throw new Error(`chat ${args.join(" ")} exited ${code}: ${stderr}`);
   return stdout;
+}
+
+/**
+ * `rt chat sign-in --session <id>`, then sets CLAUDE_CODE_SESSION_ID so
+ * subsequent calls in the same test resolve position 0 without repeating
+ * `--session` — exactly how a real Claude Code session's own Bash calls
+ * resolve it (env var, with `--session` as the documented override).
+ * afterEach's existing CLAUDE_CODE_SESSION_ID restore cleans this up.
+ */
+async function signInInProcess(
+  opts: { as: string; session: string; room?: string; noRoom?: boolean },
+): Promise<{ home: string; handle: string }> {
+  const args = ["sign-in", "--as", opts.as, "--session", opts.session];
+  if (opts.room) args.push("--room", opts.room);
+  if (opts.noRoom) args.push("--no-room");
+  const out = await runChat(args);
+  const handle = /signed in as (\S+)/.exec(out)?.[1] ?? opts.as;
+  process.env.CLAUDE_CODE_SESSION_ID = opts.session;
+  return { home, handle };
+}
+
+/**
+ * Ages `baseHandle`'s presence row past both reclaim thresholds (mirrors
+ * lib/daemon/__tests__/chat-handlers.test.ts's own `last_seen_at -
+ * 7200000` pattern) and signs a second session in under the same base — the
+ * daemon's own "the first reclaimable row, by suffix order" rule then hands
+ * the base handle straight back to the new session rather than suffixing.
+ */
+async function reclaimViaHandlers(baseHandle: string, newSessionId: string): Promise<void> {
+  getStateDb().run("UPDATE chat_presence SET last_seen_at = last_seen_at - 7200000 WHERE base_handle = ?", [baseHandle]);
+  await runChat(["sign-in", "--as", baseHandle, "--session", newSessionId, "--no-room"]);
 }
 
 // ─── Step 1 (brief) ──────────────────────────────────────────────────────────
@@ -251,6 +293,404 @@ describe("rt chat CLI — additional verb behavior", () => {
   });
 });
 
+// ─── sign-in / sign-out (presence) ──────────────────────────────────────────
+//
+// The flag-splice guard is exercised through `post`, not `dm`: post already
+// has a body-splice test above (for `--as`); this one covers the two flags
+// FLAGS_WITH_VALUES adds for presence (`--session`, `--status`).
+
+describe("rt chat CLI — sign-in / sign-out (presence)", () => {
+  test("flag values never splice into a body: --session and --status are FLAGS_WITH_VALUES", async () => {
+    await runChat(["join", "r", "--as", "x"]);
+    await runChat(["post", "r", "hello there", "--session", "s1", "--status", "busy", "--as", "x"]);
+    const read = JSON.parse(await runChat(["read", "r", "--as", "x", "--json"]));
+    expect(read.rooms[0].messages[0].body).toBe("hello there");
+  });
+
+  test("position 0: a signed-in session resolves the assigned handle for every verb", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    await runChat(["join", "r"]); // no --as, no --session: resolves from the session file
+    await runChat(["post", "r", "hello"]); // same — the session file, not the cwd-derived handle
+    expect(await runChat(["who", "r"])).toContain("x");
+  });
+
+  test("--as while signed in is refused with the reason", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    const { code, stderr } = await runChatRaw(["post", "r", "hi", "--as", "y", "--session", "s1"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/signed in as x.*sign out/);
+  });
+
+  test("deriveRoomForCwd: remote-kind, path-kind, not-a-worktree", () => {
+    expect(__test__.roomForIdentity({ kind: "remote", id: "gitlab.example.com/acme/Acme-Dev" })).toBe("acme-dev");
+    expect(__test__.roomForIdentity({ kind: "path", id: "/Users/m/pool/gamma" })).toBe("pool-gamma");
+
+    // findGitRoot gate: a real (non-symlinked) tmpdir outside any git work tree.
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-chat-noroom-")));
+    try {
+      expect(__test__.deriveRoomForCwd(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("sign-in prints the identity line and the arm instruction; --no-room and --room work", async () => {
+    const out = await runChat(["sign-in", "--as", "x", "--room", "warroom", "--session", "s1"]);
+    expect(out).toMatch(/signed in as x/);
+    expect(out).toMatch(/#warroom/);
+    expect(out).toMatch(/rt chat tail/); // bare — no --as in the arm line
+    expect(out).not.toMatch(/rt chat tail --as/);
+  });
+
+  test("--no-room signs in without joining any room", async () => {
+    const out = await runChat(["sign-in", "--as", "y", "--no-room", "--session", "s2"]);
+    expect(out).toMatch(/signed in as y/);
+    expect(out).not.toContain("joined #");
+  });
+
+  test("sign-out deletes the session file and disarms", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const sessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "s1.json");
+    expect(existsSync(sessionPath)).toBe(true);
+
+    await runChat(["sign-out", "--session", "s1"]);
+    expect(existsSync(sessionPath)).toBe(false);
+
+    const row = getStateDb()
+      .query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?")
+      .get("s1") as { signed_out_at: number | null } | null;
+    expect(row?.signed_out_at).not.toBeNull();
+  });
+
+  test("sign-out disarms: an armed tail is killed and its pidfile removed", async () => {
+    const { handle } = await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const pidPath = join(home, ".mattstack", "rt", `chat-tail-${handle}.pid`);
+    const tail = spawnChat(["tail", "--session", "s1"]);
+    await until(() => existsSync(pidPath));
+
+    await runChat(["sign-out", "--session", "s1"]);
+    expect(existsSync(pidPath)).toBe(false);
+
+    await tail.exited;
+  }, 15_000);
+
+  test("sign-out with the daemon unreachable still cleans up locally and exits 0", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const sessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "s1.json");
+    expect(existsSync(sessionPath)).toBe(true);
+
+    server?.stop(true);
+    server = null;
+
+    const { code, stderr } = await runChatRaw(["sign-out", "--session", "s1"]);
+    expect(code).toBe(0);
+    expect(existsSync(sessionPath)).toBe(false);
+    expect(stderr).toContain("daemon");
+  });
+
+  test("sign-out --quiet prints nothing even when the daemon is unreachable", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+
+    server?.stop(true);
+    server = null;
+
+    const { code, stdout, stderr } = await runChatRaw(["sign-out", "--session", "s1", "--quiet"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+
+  test("sign-out with no known session id is a refused no-op, not a crash", async () => {
+    const { code, stderr } = await runChatRaw(["sign-out"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("session id");
+  });
+
+  test("sign-in without a session id (no --session, no CLAUDE_CODE_SESSION_ID) refuses rather than inventing one", async () => {
+    const { code, stderr } = await runChatRaw(["sign-in", "--as", "x", "--no-room"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("session id");
+  });
+
+  test("sign-out --json reports a daemonError field rather than a bare {ok:true} when the daemon leg failed", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    server?.stop(true);
+    server = null;
+
+    const out = await runChat(["sign-out", "--session", "s1", "--json"]);
+    const parsed = JSON.parse(out);
+    expect(parsed.ok).toBe(true);
+    expect(typeof parsed.daemonError).toBe("string");
+  });
+
+  test("sign-out --quiet with an invalid session id exits 0 silently, matching the missing-id case", async () => {
+    const { code, stdout, stderr } = await runChatRaw(["sign-out", "--session", "bad/id", "--quiet"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+});
+
+// ─── buddies, away/back, dm, pulse ──────────────────────────────────────────
+
+describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
+  test("buddies renders sections listening → idle → deaf → offline and names the away text", async () => {
+    await signInInProcess({ as: "idle1", session: "sid", noRoom: true });
+    await signInInProcess({ as: "live1", session: "slv", noRoom: true });
+    await signInInProcess({ as: "deaf1", session: "sdf", noRoom: true });
+    await signInInProcess({ as: "off1", session: "soff", noRoom: true });
+
+    const now = Date.now();
+    const db = getStateDb();
+    db.run("UPDATE chat_presence SET status_text = ? WHERE handle = ?", ["rebasing #67", "idle1"]);
+    db.run("UPDATE chat_presence SET armed_at = ?, tail_seen_at = ? WHERE handle = ?", [now, now, "live1"]);
+    db.run("UPDATE chat_presence SET armed_at = ? WHERE handle = ?", [now - 20 * 60_000, "deaf1"]);
+    db.run("UPDATE chat_presence SET signed_out_at = ? WHERE handle = ?", [now, "off1"]);
+
+    const out = await runChat(["buddies"]);
+
+    const liveIdx = out.indexOf("live1");
+    const idleIdx = out.indexOf("idle1");
+    const deafIdx = out.indexOf("deaf1");
+    const offIdx = out.indexOf("off1");
+    expect(liveIdx).toBeGreaterThanOrEqual(0);
+    expect(idleIdx).toBeGreaterThan(liveIdx);
+    expect(deafIdx).toBeGreaterThan(idleIdx);
+    expect(offIdx).toBeGreaterThan(deafIdx);
+
+    expect(out).toMatch(/listening/); // live1
+    expect(out).toMatch(/deaf/); // deaf1
+    expect(out).toMatch(/idle/); // idle1
+    expect(out).toContain("rebasing #67"); // the away text
+    // offline is collapsed to one line, however many offline buddies exist.
+    expect(out.split("\n").filter((l) => l.includes("off1")).length).toBe(1);
+  });
+
+  test("bare who aliases buddies", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const out = await runChat(["who"]);
+    expect(out).toContain("x");
+    expect(out).toMatch(/idle/);
+  });
+
+  test("away sets the status text (visible on buddies) and back clears it", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+
+    await runChat(["away", "brb", "lunch", "--session", "s1"]);
+    const withAway = JSON.parse(await runChat(["buddies", "--json"]));
+    expect(withAway.buddies[0]).toMatchObject({ statusText: "brb lunch" });
+
+    await runChat(["back", "--session", "s1"]);
+    const withoutAway = JSON.parse(await runChat(["buddies", "--json"]));
+    expect(withoutAway.buddies[0].statusText).toBeUndefined();
+  });
+
+  test("away/back refuse without a session id rather than acting on a guessed handle", async () => {
+    const away = await runChatRaw(["away", "brb"]);
+    expect(away.code).not.toBe(0);
+    expect(away.stderr).toContain("session id");
+
+    const back = await runChatRaw(["back"]);
+    expect(back.code).not.toBe(0);
+    expect(back.stderr).toContain("session id");
+  });
+
+  test("dm posts and the desk notifies when the recipient is the human", async () => {
+    drainNotifications();
+    await signInInProcess({ as: "agent", session: "s1", noRoom: true });
+    await runChat(["dm", "matt", "you", "there?", "--session", "s1"]);
+    expect(peekNotifications()).toHaveLength(1);
+  });
+
+  test("dm prints nothing on success (plain), and --json reports the room/recipients", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+
+    expect(await runChat(["dm", "b", "hi", "--session", "s1"])).toBe("");
+
+    const out = await runChat(["dm", "b", "again", "--json", "--session", "s1"]);
+    const parsed = JSON.parse(out);
+    expect(parsed).toMatchObject({ ok: true, recipients: ["b"] });
+
+    const rooms = JSON.parse(await runChat(["rooms", "--json", "--session", "s1"]));
+    const dmRoom = rooms.rooms.find((r: { room: string }) => r.room === parsed.room);
+    expect(dmRoom).toMatchObject({ kind: "dm" });
+  });
+
+  test("rooms lists a DM room in a direct section after channels, headed a ↔ b, never the hashed room id", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["join", "general", "--session", "s1"]);
+    await runChat(["dm", "b", "hi", "--session", "s1"]);
+
+    const out = await runChat(["rooms", "--session", "s1"]);
+    expect(out).toContain("a ↔ b");
+    expect(out).not.toContain("#dm-");
+
+    const lines = out.split("\n");
+    const channelIdx = lines.findIndex((l) => l.startsWith("#general"));
+    const directIdx = lines.indexOf("direct");
+    const dmIdx = lines.findIndex((l) => l.startsWith("a ↔ b"));
+    expect(channelIdx).toBeGreaterThanOrEqual(0);
+    expect(directIdx).toBeGreaterThan(channelIdx);
+    expect(dmIdx).toBeGreaterThan(directIdx);
+  });
+
+  test("who on a DM room lists the two participants and never the human", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["dm", "b", "hi", "--session", "s1"]);
+    const rooms = JSON.parse(await runChat(["rooms", "--json", "--session", "s1"]));
+    const dmRoom = rooms.rooms.find((r: { kind?: string }) => r.kind === "dm").room;
+
+    const out = await runChat(["who", dmRoom]);
+    expect(out).toContain("a");
+    expect(out).toContain("b");
+    expect(out).not.toContain("matt");
+  });
+
+  test("who on a DM room renders the a ↔ b heading, never the hashed room id", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["dm", "b", "hi", "--session", "s1"]);
+    const rooms = JSON.parse(await runChat(["rooms", "--json", "--session", "s1"]));
+    const dmRoom = rooms.rooms.find((r: { kind?: string }) => r.kind === "dm").room;
+
+    const out = await runChat(["who", dmRoom, "--session", "s1"]);
+    expect(out).toContain("a ↔ b");
+    expect(out).not.toContain(`#${dmRoom}`);
+  });
+
+  test("read renders a DM room's heading as a ↔ b, never the hashed room id", async () => {
+    await signInInProcess({ as: "a", session: "s1", noRoom: true });
+    await signInInProcess({ as: "b", session: "s2", noRoom: true });
+    await runChat(["dm", "b", "hi", "--session", "s1"]);
+
+    const out = await runChat(["read", "--session", "s2"]);
+    expect(out).toContain("a ↔ b");
+    expect(out).not.toContain("dm-");
+  });
+
+  test("pulse --json returns the unread summary and never writes the tail heartbeat", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+
+    const before = JSON.parse(await runChat(["buddies", "--json"]));
+    expect(before.buddies[0]).toMatchObject({ status: "idle" });
+    expect(before.buddies[0].armedAt).toBeUndefined();
+
+    const out = await runChat(["pulse", "--json", "--session", "s1"]);
+    expect(JSON.parse(out)).toMatchObject({ ok: true, unread: { dms: 0, mentions: 0, rooms: 0 } });
+
+    // If pulse had called chat:touch/chat:arm, armed_at/tail_seen_at would
+    // now be set and the status would read "live" instead of "idle".
+    const after = JSON.parse(await runChat(["buddies", "--json"]));
+    expect(after.buddies[0]).toMatchObject({ status: "idle" });
+    expect(after.buddies[0].armedAt).toBeUndefined();
+  });
+
+  test("pulse on a reclaimed handle deletes the session file and reports it", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    await reclaimViaHandlers("x", "s2");
+    const out = await runChat(["pulse", "--json", "--session", "s1"]);
+    expect(JSON.parse(out)).toMatchObject({ reclaimed: true });
+    expect(existsSync(sessionFilePath("s1"))).toBe(false);
+  });
+
+  test("pulse's plain reclaim notice matches the reclaimed case, not the deliberately-signed-out case", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    await reclaimViaHandlers("x", "s2");
+    const out = await runChat(["pulse", "--session", "s1"]);
+    expect(out).toMatch(/reclaimed/);
+  });
+
+  test("pulse exits 0 with no output for a session that deliberately signed out (not a reclaim)", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    await runChat(["sign-out", "--session", "s1"]);
+    const { code, stdout, stderr } = await runChatRaw(["pulse", "--session", "s1"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+
+  test("pulse exits 0 silently when the daemon is unreachable", async () => {
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    server?.stop(true);
+    server = null;
+
+    const plain = await runChatRaw(["pulse", "--session", "s1"]);
+    expect(plain.code).toBe(0);
+    expect(plain.stdout).toBe("");
+    expect(plain.stderr).toBe("");
+
+    const json = await runChatRaw(["pulse", "--json", "--session", "s1"]);
+    expect(json.code).toBe(0);
+    expect(json.stdout).toBe("");
+  });
+
+  test("pulse with no session id is a silent no-op, never a crash", async () => {
+    const { code, stdout, stderr } = await runChatRaw(["pulse"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toBe("");
+  });
+
+  test("a stale (first-time) branch cache still completes pulse well under the hook budget", async () => {
+    // No prior pulse means no lastBranchReadAt to gate on, so this exercises
+    // the real git-spawning path — and it must still land well inside the
+    // 800ms daemon budget plus slack for the git spawn itself.
+    await signInInProcess({ as: "x", session: "s1", noRoom: true });
+    const start = Date.now();
+    const out = await runChat(["pulse", "--json", "--session", "s1"]);
+    const elapsed = Date.now() - start;
+    expect(JSON.parse(out)).toMatchObject({ ok: true });
+    // 800ms daemon bound plus headroom for the git spawn itself — measured
+    // locally at 96-120ms, so this is a real guard, not a rubber stamp.
+    expect(elapsed).toBeLessThan(1_500);
+  });
+
+  test("pulse re-reads branch/repo only when the cwd changed or the cache is over a minute old", async () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), "rt-chat-pulse-branch-")));
+    const origCwd = process.cwd();
+    try {
+      execSync("git init -q", { cwd: fixture });
+      execSync("git config user.email test@example.com", { cwd: fixture });
+      execSync("git config user.name test", { cwd: fixture });
+      writeFileSync(join(fixture, "f.txt"), "1");
+      execSync("git add f.txt && git commit -q -m init", { cwd: fixture });
+      execSync("git checkout -q -b branch-one", { cwd: fixture });
+
+      process.chdir(fixture);
+      await signInInProcess({ as: "x", session: "s1", noRoom: true });
+
+      // First pulse: no cache yet, so it reads the real (git-spawned) branch.
+      await runChat(["pulse", "--json", "--session", "s1"]);
+      let buddies = JSON.parse(await runChat(["buddies", "--json"]));
+      expect(buddies.buddies[0].branch).toBe("branch-one");
+
+      // Same cwd, well within the minute: the checked-out branch changes on
+      // disk, but the cached value must NOT be re-read.
+      execSync("git checkout -q -b branch-two", { cwd: fixture });
+      await runChat(["pulse", "--json", "--session", "s1"]);
+      buddies = JSON.parse(await runChat(["buddies", "--json"]));
+      expect(buddies.buddies[0].branch).toBe("branch-one");
+
+      // Age the cache past a minute — the next pulse must re-read and pick
+      // up the branch that actually changed on disk in between.
+      const sessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "s1.json");
+      const session = JSON.parse(readFileSync(sessionPath, "utf8"));
+      session.lastBranchReadAt = Date.now() - 61_000;
+      writeFileSync(sessionPath, JSON.stringify(session));
+
+      await runChat(["pulse", "--json", "--session", "s1"]);
+      buddies = JSON.parse(await runChat(["buddies", "--json"]));
+      expect(buddies.buddies[0].branch).toBe("branch-two");
+    } finally {
+      process.chdir(origCwd);
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── Task 8: the tail (wake protocol) ───────────────────────────────────────
 
 describe("rt chat tail", () => {
@@ -283,6 +723,18 @@ describe("rt chat tail", () => {
     first.kill();
   }, 15_000);
 
+  test("arming from a session whose handle was reclaimed exits clean, matching the touch-loop reclaim exit", async () => {
+    await signInInProcess({ as: "x", session: "s1" });
+    await reclaimViaHandlers("x", "s2");
+
+    const { code, stdout, stderr } = await runChatRaw(["tail", "--session", "s1"]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("handle reclaimed — sign in again");
+    expect(stderr).toBe("");
+    expect(existsSync(sessionFilePath("s1"))).toBe(false);
+    expect(hasTailPidfile()).toBe(false);
+  });
+
   test("every stdout write in the tail path is exactly one line", async () => {
     // Under Monitor each stdout line is one notification, so a multi-line write
     // floods the agent's context. Diagnostics must go to stderr.
@@ -293,16 +745,14 @@ describe("rt chat tail", () => {
   });
 });
 
-// ─── carry-forward: fixture-based derivation test (controller mandate) ─────
+// ─── fixture-based derivation coverage ──────────────────────────────────────
 //
-// Task 2's plan block orphaned a fixture-based derivation test; its coverage
-// is carried here. Builds real temp worktree structures (a `.git` FILE with
-// a hand-written `gitdir:` pointer — never a real git spawn, matching
-// commands/chat.ts's own resolution) plus a fixture repo index, and asserts
-// DISTINCT, repo-naming handles for a pool slot, the main worktree, and a
-// broken worktree. The failure this guards: a bare slot name like "main" or
-// "beta" colliding machine-wide across every repo that has a slot by that
-// name.
+// Builds real temp worktree structures (a `.git` FILE with a hand-written
+// `gitdir:` pointer — never a real git spawn, matching commands/chat.ts's
+// own resolution) plus a fixture repo index, and asserts DISTINCT,
+// repo-naming handles for a pool slot, the main worktree, and a broken
+// worktree. The failure this guards: a bare slot name like "main" or "beta"
+// colliding machine-wide across every repo that has a slot by that name.
 
 describe("chat handle derivation — worktree fixtures", () => {
   let root = "";
