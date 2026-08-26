@@ -139,6 +139,22 @@ export interface LinearTicket {
   branchName: string | null;
 }
 
+/**
+ * Linear answered, and answered with GraphQL errors — HTTP 200 plus an
+ * `errors` array. Transport failures (timeout, 5xx, 401, 429) stay plain
+ * Errors, and `fetchTicketsBatch` relies on the distinction: only this class
+ * may be read as "an id in that chunk is unresolvable".
+ */
+export class LinearGraphqlError extends Error {
+  readonly errors: Array<{ message: string }>;
+
+  constructor(errors: Array<{ message: string }>) {
+    super(errors[0]?.message ?? "Linear GraphQL error");
+    this.name = "LinearGraphqlError";
+    this.errors = errors;
+  }
+}
+
 async function linearGraphql(apiKey: string, query: string, variables: Record<string, unknown>): Promise<unknown> {
   const response = await fetch(GRAPHQL_URL, {
     method: "POST",
@@ -150,7 +166,7 @@ async function linearGraphql(apiKey: string, query: string, variables: Record<st
   if (!response.ok) throw new Error(`Linear API ${response.status}`);
 
   const json = (await response.json()) as { data?: unknown; errors?: Array<{ message: string }> };
-  if (json.errors?.length) throw new Error(json.errors[0]!.message);
+  if (json.errors?.length) throw new LinearGraphqlError(json.errors);
   return json.data;
 }
 
@@ -202,6 +218,12 @@ function batchQuery(identifiers: string[]): string {
  * still land, and a dead id costs log2(chunk) extra queries to isolate instead
  * of taking its neighbours with it. A chunk of one that still fails IS the
  * dead id, and is dropped.
+ *
+ * Only a `LinearGraphqlError` earns that treatment. A timeout or an HTTP
+ * failure would otherwise halve down to singletons and drop every id, handing
+ * callers an empty map that is indistinguishable from "none of these tickets
+ * exist" — and `enrichBranches` keeps its cached tickets only on a REJECTION,
+ * so swallowing an outage here is what overwrites good tickets with null.
  */
 export async function fetchTicketsBatch(
   apiKey: string,
@@ -222,7 +244,8 @@ export async function fetchTicketsBatch(
           results.set(ticket.identifier.toUpperCase(), ticket);
         }
       }
-    } catch {
+    } catch (err) {
+      if (!(err instanceof LinearGraphqlError)) throw err;
       if (chunk.length === 1) return; // this id is the unresolvable one
       const mid = Math.ceil(chunk.length / 2);
       await collect(chunk.slice(0, mid));
