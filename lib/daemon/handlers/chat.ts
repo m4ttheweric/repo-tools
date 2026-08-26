@@ -37,6 +37,7 @@ import {
   presenceThresholds,
 } from "../../state/index.ts";
 import { CHAT_NOTIFICATION_CATEGORY, notifyEnabled } from "../../notifier.ts";
+import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
@@ -99,11 +100,13 @@ function postAndNotify(
   if (humanHandle && allMentions.includes(humanHandle)) {
     const dm = dmParticipants(room, db);
     const title = dm ? `DM from ${handle}` : `#${room}`;
+    // The click target: the viewer at this exact message, when the viewer is
+    // configured. The tray opens `url` on a default click for any category.
     notifyEnabled(
       CHAT_NOTIFICATION_CATEGORY,
       title,
       `${handle}: ${body}`,
-      undefined,
+      chatViewerUrl(readChatViewerUrlSetting(), room, posted.id),
       undefined,
       `chat:${posted.id}`,
     );

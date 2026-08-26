@@ -46,7 +46,7 @@ import {
   writeChatSession,
 } from "../lib/chat-session.ts";
 import { pickAgentName } from "../lib/chat-names.ts";
-import { chatViewerUrl } from "../lib/chat-viewer-url.ts";
+import { chatViewerUrl, readChatViewerUrlSetting } from "../lib/chat-viewer-url.ts";
 import { planSessionRename, type RenamePlan } from "../lib/chat-rename.ts";
 import { parseDuration } from "./events.ts";
 import {
@@ -322,15 +322,6 @@ function resolveSignInBaseHandle(args: string[], sessionId: string, taken: Itera
   const prior = readChatSession(sessionId);
   if (prior && typeof prior.baseHandle === "string" && isValidChatName(prior.baseHandle)) return prior.baseHandle;
   return pickAgentName(taken);
-}
-
-function readChatViewerUrlSetting(): string | undefined {
-  try {
-    const resolved = getSetting<string>("chat.viewerUrl");
-    return typeof resolved.value === "string" && resolved.value ? resolved.value : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function readChatHandleSetting(): string | undefined {

@@ -337,7 +337,9 @@ export function notify(
         if (target) {
           // Bound the request so an unresponsive ntfy can't leak a pending
           // fetch forever (the Fetch API has no default timeout).
-          fetch(target, { method: "POST", headers: { Title: title }, body: message, signal: AbortSignal.timeout(10_000) })
+          const headers: Record<string, string> = { Title: title };
+          if (url) headers.Click = url;
+          fetch(target, { method: "POST", headers, body: message, signal: AbortSignal.timeout(10_000) })
             .catch(err => log.warn({ err }, "chat push failed"));
         }
       } else if (provider) {

@@ -109,6 +109,26 @@ test("notifies on a mention even when the human has never joined the room", asyn
   expect(notifications[0]).toMatchObject({ title: "#r" });
 });
 
+test("the mention notification links to the message in the viewer when chat.viewerUrl is set", async () => {
+  setSetting("chat.viewerUrl", "https://chat.example/", "user");
+  try {
+    const h = freshHandlers();
+    await h["chat:join"]({ room: "r", handle: "agent" });
+    const posted = await h["chat:post"]({ room: "r", handle: "agent", body: "@matt look" });
+    if (!posted.ok) throw new Error(posted.error);
+    expect(peekNotifications()[0]).toMatchObject({ url: `https://chat.example/r/r#m-${posted.data.id}` });
+  } finally {
+    setSetting("chat.viewerUrl", "", "user");
+  }
+});
+
+test("the mention notification carries no url when chat.viewerUrl is unset", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@matt look" });
+  expect(peekNotifications()[0]?.url).toBeUndefined();
+});
+
 test("notifies even when the human is a member with wake_on none", async () => {
   // Plausible for a human who does not want a waiter armed; his wake setting
   // must not silently disable his desk notifications.
