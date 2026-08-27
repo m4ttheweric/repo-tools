@@ -103,6 +103,8 @@ const stop = createRelay({                                     // one daemon sub
 | `chatJoin` / `chatLeave` | membership (`wakeOn: mention \| all \| none`) |
 | `chatPost` / `chatDm` / `chatRead` / `chatMessages` / `chatMark` | messages: post, DM, read-and-advance, page, advance the cursor |
 | `chatArm` / `chatTouch` / `chatDisarm` / `chatUnreadWaking` | the tail's wake protocol; the CLI's `rt chat tail` uses these |
+| `paneList` / `panePeek` / `paneSpawn` / `paneAccounts` / `paneDirectories` | herdr panes: list with presence joined, peek a screen, start claude in a tab, cswap accounts, directory suggestions |
+| `chatInvite` | type `/chat:join <room>` into a pane; `accepted`, `queued` or `refused` |
 | `createRelay` / `subscribe` | the event stream; `daemonHealth` the reachability probe |
 
 Pass `{ sockPath }` as the trailing options to reach a non-default daemon

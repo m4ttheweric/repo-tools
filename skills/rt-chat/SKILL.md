@@ -1,6 +1,6 @@
 ---
 name: rt:chat
-description: Use when asked to join or coordinate in an agent chat room, when told you are working alongside other agents, or when you need to reach an agent under a different account.
+description: Use when asked to join or coordinate in an agent chat room, when told you are working alongside other agents, or when you need to reach an agent under a different account, or when asked to put you and another agent into a room together (recruiting through herdr).
 ---
 
 # rt chat (agent coordination)
@@ -119,6 +119,10 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
   not, and does **not** move your read cursor. It is also the way back to
   a message you have already consumed (`--since 2h --full` when a tail
   line truncated it).
+- `rt chat read <room> --last N` shows the newest N messages of a room
+  regardless of your cursor, then marks the room read. Joining puts your
+  cursor at the room's newest message, so this is how you read a room you
+  were just invited to, or catch up on one you were pointed at.
 - `rt chat mark [room]` advances the cursor without printing anything — use
   it if you want to acknowledge messages you've already seen some other way
   (e.g. in the tail's wake lines) without re-reading their bodies.
@@ -140,9 +144,14 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
 | `rt chat join <room> [--wake-on mention\|all\|none]` | join an additional room; creates it if it doesn't exist. No `--as`: your handle comes from the session file |
 | `rt chat leave <room>` | drop membership; kills your tail only if this was your last room |
 | `rt chat post <room> [<text>]` | post a message: the body on stdin from a heredoc, or one line of text — see Posting a message below. Parses `@mentions` and emits wake events; prints only the message link |
+| `rt chat invite <pane> --room <room> [--note <text>]` | type `/chat:join <room>` into one herdr pane, so that agent joins itself; needs herdr. Reports `accepted` \| `queued` \| `refused`; never changes membership. The note is attributed to you |
 | `rt chat rooms` | rooms you're in, member counts, unread, last activity |
 | `rt chat mark [room]` | advance cursor without printing |
 | `rt chat tail` | the streaming wake feed; resolves your handle from the session file once signed in; always run under `Monitor` as above, never bare in Bash |
+
+`rt pane list`, `rt pane peek <pane>`, `rt pane spawn --cwd <path> [...]`,
+`rt pane accounts` and `rt pane directories` are the herdr-facing verbs that
+back this; `rt pane list --json` is how you find another agent's pane.
 
 `@mentions` are how you wake a specific agent: mentioning `@handle` in a
 `post` wakes that handle's armed tail whenever they're in `mention` (the
@@ -236,6 +245,34 @@ your line carries only the gist. The link opens the chat viewer
 `/r/<room>#m-<id>`, where
 a heredoc body renders as paragraphs and lists and a one-line body renders
 as one paragraph; that is why the posting form above matters.
+
+## Recruiting another agent
+
+When Matt says "add you and the agent working on foo into a room so you can
+coordinate" (or anything that means: put me and another pane in a room),
+this is the flow. It needs herdr; every step that touches another pane is
+gated on a form.
+
+1. `rt pane list --json`. If it errors with `herdr unavailable`, say this
+   needs herdr and stop.
+2. Match *foo* against each pane's `title`, `repo`, `branch`, `cwd` and
+   `presence.handle`. Exclude your own pane (`HERDR_PANE_ID`) and panes
+   whose `presence.rooms` already includes the target room.
+3. **Always a form.** One `AskUserQuestion` with up to three questions:
+   the candidate panes as options (`title · repo · agentStatus`;
+   `multiSelect: true`; the four best matches as options, the rest listed
+   by pane id and title in the question text, and `Other` accepting a
+   pane id), the proposed room name (a slug from the topic; `Other` to
+   rename), and the seed draft (post as drafted, or rewrite). Touch no pane
+   before the form returns.
+4. Sign in only if you are not already (`rt chat sign-in`, which keeps the
+   repository room), then `rt chat join <room>`. Never `sign-in --room`
+   here: it replaces the derived room and rewrites your session file.
+   Post the seed as yourself with a heredoc. Then, per chosen pane,
+   sequentially: `rt chat invite <pane> --room <room> [--note "<text>"]`.
+5. Report one line per pane (`accepted`, `queued (working)`,
+   `refused: at a prompt`) plus the room link. A refused pane is reported,
+   never retried blind; Matt answers its prompt and asks again.
 
 ## Announce before you take something
 

@@ -5,6 +5,7 @@
  *   rt chat leave <room>
  *   rt chat post <room> <<'EOF' ... EOF          the body on stdin; <text> for a one-liner
  *   rt chat read [room] [--limit 20] [--full] [--since <dur>]
+ *   rt chat read <room> --last <n>                 newest N regardless of cursor, then marks read
  *   rt chat rooms
  *   rt chat who [room]
  *   rt chat mark [room]
@@ -15,6 +16,7 @@
  *   rt chat buddies [--json]                       the roster; bare `who` aliases it
  *   rt chat dm <handle> <<'EOF' ... EOF           same body rules as post
  *   rt chat pulse [--json] [--session <id>]        hook-facing heartbeat; never fails
+ *   rt chat invite <pane> --room <room> [--note <text>]   types /chat:join into a herdr pane
  *
  * Identity resolution is CLIENT-SIDE (see resolveHandle): HERDR_PANE_ID and
  * the cwd's repo only exist in this process, never in the daemon, so the
@@ -25,13 +27,14 @@
  * Spec: docs/superpowers/specs/2026-08-23-rt-chat-design.md
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { homedir, hostname } from "os";
-import { basename, dirname, join, resolve as resolvePath } from "path";
+import { basename, dirname, join } from "path";
 
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
+import { findGitRoot, repoAliasForPath, resolveMainWorktreePath } from "../lib/repo-for-cwd.ts";
 import { getCurrentBranch, getRepoRoot } from "../lib/git.ts";
 import { getRepoIdentityForRoot } from "../lib/repo.ts";
 import { parseIdentity, type RepoIdentity } from "../lib/settings/identity.ts";
@@ -56,9 +59,11 @@ import {
   chatBuddies,
   chatDisarm,
   chatDm,
+  chatInvite,
   chatJoin,
   chatLeave,
   chatMark,
+  chatMessages,
   chatPost,
   chatPulse,
   chatRead,
@@ -83,7 +88,7 @@ import type {
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
-const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file"]);
+const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file", "--last", "--note"]);
 
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -114,6 +119,12 @@ function positionals(args: string[]): string[] {
 function flagValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+/** `--sock` as RtClientOptions, or `{}` when unset. */
+function sockOpts(args: string[]): { sockPath?: string } {
+  const sockPath = flagValue(args, "--sock");
+  return sockPath ? { sockPath } : {};
 }
 
 function fail(msg: string): never {
@@ -183,79 +194,6 @@ function slugify(raw: string): string {
     .replace(/-{2,}/g, "-")
     .replace(/^[-.]+|[-.]+$/g, "");
   return slug || "x";
-}
-
-function safeRealpath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
-/** Nearest ancestor directory holding a `.git` entry — a plain walk, never a git spawn. */
-function findGitRoot(start: string): string | null {
-  let dir = start;
-  while (true) {
-    if (existsSync(join(dir, ".git"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/**
- * The MAIN worktree path for `worktreeRoot`: itself when `.git` is a real
- * directory, or — for a linked worktree — the repo its `.git` FILE's
- * `gitdir: <main>/.git/worktrees/<slot>` pointer names, parsed by hand
- * (never `git worktree list`). Null when the pointer is stale or foreign
- * (a worktree whose gitdir survived a home-directory move errors with
- * "fatal: not a git repository" under real git) — this is why the
- * resolution order has a position AFTER the repo-name rung: dropping
- * straight to `<user>-<host>` here would give one shared handle to every
- * broken directory on the machine.
- */
-function resolveMainWorktreePath(worktreeRoot: string): string | null {
-  const gitPath = join(worktreeRoot, ".git");
-  let stat;
-  try {
-    stat = statSync(gitPath);
-  } catch {
-    return null;
-  }
-  if (stat.isDirectory()) return worktreeRoot;
-  if (!stat.isFile()) return null;
-
-  let content: string;
-  try {
-    content = readFileSync(gitPath, "utf8");
-  } catch {
-    return null;
-  }
-  const match = /^gitdir:\s*(.+?)\s*$/m.exec(content);
-  if (!match) return null;
-  const gitdir = match[1]!.startsWith("/") ? match[1]! : resolvePath(worktreeRoot, match[1]!);
-
-  // "<main>/.git/worktrees/<slot>" → <main>, three levels up.
-  const mainPath = dirname(dirname(dirname(gitdir)));
-  if (!existsSync(mainPath) || !existsSync(join(mainPath, ".git"))) return null;
-  return mainPath;
-}
-
-/**
- * Reverse lookup: which repos.json alias names `mainWorktreePath`. Index is an
- * explicit param so the derivation stays testable without a real HOME
- * (carry-forward fixture test). Index keys are serialized identities after the
- * RT-62 re-key (`remote:host%2Fpath`) — a wire form whose `%` and `:` the
- * handle charset forbids — so the alias is the key's display label, never the
- * key itself (repoLabel passes a legacy name-keyed row through unchanged).
- */
-function repoAliasForPath(mainWorktreePath: string, index: Record<string, string>): string | null {
-  const target = safeRealpath(mainWorktreePath);
-  for (const [name, path] of Object.entries(index)) {
-    if (safeRealpath(path) === target) return repoLabel(name);
-  }
-  return null;
 }
 
 /** `<alias>-<cwd-basename>`, or null when `cwd` isn't inside any indexed repo (or the git pointer is broken). */
@@ -805,6 +743,26 @@ async function runRead(args: string[]): Promise<void> {
     sinceMs = Date.now() - ms;
   }
 
+  const lastRaw = flagValue(args, "--last");
+  if (lastRaw !== undefined) {
+    if (sinceRaw !== undefined) fail("--last and --since are mutually exclusive");
+    if (!room) fail("--last needs a room");
+    const n = Number(lastRaw);
+    if (!Number.isInteger(n) || n <= 0) fail(`--last must be a positive integer (got "${lastRaw}")`);
+    // chat:messages orders newest-first, then reverses to oldest-first (same
+    // top-to-bottom order a plain read renders), so no reverse here.
+    const page = unwrap(await chatMessages({ room, limit: n }, sockOpts(args)), "read");
+    unwrap(await chatMark({ handle, room }, sockOpts(args)), "mark");
+    const rooms = [{ room, messages: page.messages }];
+    if (args.includes("--json")) {
+      console.log(JSON.stringify({ ok: true, rooms }));
+      return;
+    }
+    const headingFor = await dmHeadingsFor(handle);
+    console.log(renderReadRooms(rooms, args.includes("--full"), headingFor));
+    return;
+  }
+
   const res = await chatRead({ handle, room, limit, sinceMs });
   const data = unwrap(res, "read");
 
@@ -901,6 +859,30 @@ async function runDm(args: string[]): Promise<void> {
     return;
   }
   // prints nothing on success — Global Constraint, same as post
+}
+
+/**
+ * `from` prefers the signed-in session's own handle over the human default:
+ * an agent inviting from a signed-in session should show up as itself, not
+ * as "matt", in the target pane's /chat:join note.
+ */
+async function runInvite(args: string[]): Promise<void> {
+  const paneId = positional(args);
+  if (!paneId) fail("usage: rt chat invite <pane> --room <room> [--note <text>]");
+  const room = flagValue(args, "--room");
+  if (!room) fail("--room is required");
+  requireValidName("room", room);
+  const note = flagValue(args, "--note");
+  const session = readChatSession(currentSessionId(args));
+  const from = session?.handle ?? getSetting<string>("chat.humanHandle").value;
+  const callerPane = process.env.HERDR_PANE_ID;
+  const res = await chatInvite({ paneId, room, note, from, callerPane }, sockOpts(args));
+  const data = unwrap(res, "invite");
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, ...data }));
+    return;
+  }
+  console.log(data.delivered === "refused" ? `${paneId}: refused: ${data.reason ?? "unknown"}` : `${paneId}: ${data.delivered}`);
 }
 
 // ─── sign-in / sign-out (presence) ───────────────────────────────────────────
@@ -1282,8 +1264,8 @@ export async function chatTail(args: string[]): Promise<void> {
   const roomFilter = flagValue(args, "--room");
   if (roomFilter) requireValidName("room", roomFilter);
 
-  const sockPath = flagValue(args, "--sock");
-  const opts = sockPath ? { sockPath } : {};
+  const opts = sockOpts(args);
+  const sockPath = opts.sockPath;
 
   // Claim the pidfile BEFORE any daemon call, so a live duplicate is refused
   // even when the daemon is down. A stale/foreign pidfile is reclaimed.
@@ -1423,7 +1405,7 @@ export async function chatTail(args: string[]): Promise<void> {
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "usage: rt chat <join|leave|post|read|rooms|who|mark|tail|sign-in|sign-out|away|back|buddies|dm|pulse> ...";
+  "usage: rt chat <join|leave|post|read|rooms|who|mark|tail|sign-in|sign-out|away|back|buddies|dm|pulse|invite> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   join: runJoin,
@@ -1441,6 +1423,7 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   buddies: runBuddies,
   dm: runDm,
   pulse: runPulse,
+  invite: runInvite,
 };
 
 const VERB_HINTS: Record<string, string> = {

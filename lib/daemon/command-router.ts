@@ -22,6 +22,7 @@ import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
 import { createChatHandlers } from "./handlers/chat.ts";
 import { createAgentHandlers } from "./handlers/agent.ts";
+import { createPaneHandlers } from "./handlers/pane.ts";
 import { createEndpointHandlers } from "./handlers/endpoint.ts";
 import { createSettingsHandlers } from "./handlers/settings.ts";
 import { createHomeHandlers } from "./handlers/home.ts";
@@ -69,6 +70,7 @@ export function buildRoutedHandlers(opts: {
   // createChatHandlers also exposes `db` (its test-isolation seam); dropped
   // here so it never lands as a bogus "db" entry in the command map below.
   const { db: _chatDb, ...chatHandlers } = createChatHandlers({ db: opts.stateDb, emitEvent });
+  const { db: _paneDb, ...paneHandlers } = createPaneHandlers({ db: opts.stateDb, repoIndex: ctx.repoIndex });
   // Same seam as chatHandlers above: createAgentHandlers exposes `db` for
   // test isolation only.
   const { db: _agentDb, ...agentHandlers } = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
@@ -87,6 +89,7 @@ export function buildRoutedHandlers(opts: {
     ...createEventsHandlers(opts.eventsBus, broadcast),
     ...chatHandlers,
     ...agentHandlers,
+    ...paneHandlers,
     ...createEndpointHandlers(ctx),
     ...createSettingsHandlers(),
     ...createHomeHandlers(opts.homeSnapshot),

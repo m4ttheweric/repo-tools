@@ -146,6 +146,25 @@ export interface PresenceRow {
   signedOutAt?: number;
 }
 
+export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown";
+
+/** Duplicated shape on purpose (see EventsBusEvent above): mirrors the daemon's pane row, which rt-client cannot import. */
+export interface ChatPane {
+  paneId: string;
+  workspace: string;
+  title?: string;
+  cwd?: string;
+  repo?: string;
+  branch?: string;
+  agentStatus: AgentStatus;
+  sessionId?: string;
+  presence?: { handle: string; status: BuddyStatus; rooms: string[] };
+}
+
+export interface PaneAccount { slot: number; email: string; alias?: string; headroom?: string }
+export interface PaneDirectory { path: string; repo: string; branch?: string }
+export interface InviteResult { paneId: string; delivered: "accepted" | "queued" | "refused"; reason?: string }
+
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
 export type Attention = {
@@ -295,6 +314,15 @@ export interface Commands {
   "agent:resume": { payload: { id: string; prompt?: string; surface?: AgentSurface }; data: AgentRecord };
   "agent:get": { payload: { id: string }; data: AgentRecord };
   "agent:list": { payload: { repo?: string }; data: { agents: AgentRecord[] } };
+  "chat:invite": { payload: { paneId: string; room: string; note?: string; from: string; callerPane?: string }; data: InviteResult };
+  "pane:list": { payload: Record<string, never>; data: { panes: ChatPane[] } };
+  "pane:peek": { payload: { paneId: string; lines?: number }; data: { paneId: string; lines: string[] } };
+  "pane:accounts": { payload: Record<string, never>; data: { accounts: PaneAccount[] } };
+  "pane:directories": { payload: { q?: string }; data: { directories: PaneDirectory[] } };
+  "pane:spawn": {
+    payload: { cwd: string; account?: string; model?: string; effort?: string; prompt?: string; workspace?: string };
+    data: { pane: ChatPane; ready: boolean };
+  };
 }
 
 export type CommandName = keyof Commands;
@@ -335,4 +363,10 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "agent:resume",
   "agent:get",
   "agent:list",
+  "chat:invite",
+  "pane:list",
+  "pane:peek",
+  "pane:accounts",
+  "pane:directories",
+  "pane:spawn",
 ];

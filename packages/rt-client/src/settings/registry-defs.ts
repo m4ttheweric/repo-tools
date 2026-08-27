@@ -481,6 +481,14 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Base URL of the chat viewer, no trailing slash. When set, rt chat post and the tail's wake lines end with a link to the room or message.",
   },
   {
+    key: "chat.herdrWorkspace",
+    type: "string",
+    scopes: ["user"],
+    default: "chat",
+    merge: "replace",
+    description: "herdr workspace label that rt pane spawn opens new agent tabs in; created when missing.",
+  },
+  {
     key: "chat.push.provider",
     type: "string",
     scopes: ["user"],

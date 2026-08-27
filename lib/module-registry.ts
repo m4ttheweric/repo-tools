@@ -19,6 +19,7 @@ export const MODULE_REGISTRY: Record<string, () => Promise<any>> = {
   "./commands/extension.ts": () => import("../commands/extension.ts"),
   "./commands/home.ts": () => import("../commands/home.ts"),
   "./commands/hooks.ts": () => import("../commands/hooks.ts"),
+  "./commands/pane.ts": () => import("../commands/pane.ts"),
   "./commands/port.ts": () => import("../commands/port.ts"),
   "./commands/run.ts": () => import("../commands/run.ts"),
   "./commands/runs.ts": () => import("../commands/runs.ts"),

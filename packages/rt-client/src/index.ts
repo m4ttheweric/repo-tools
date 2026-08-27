@@ -34,6 +34,12 @@ export {
   agentResume,
   agentGet,
   agentList,
+  paneList,
+  panePeek,
+  paneSpawn,
+  paneAccounts,
+  paneDirectories,
+  chatInvite,
 } from "./client.ts";
 
 export { COMMAND_NAMES } from "./commands.ts";
@@ -64,6 +70,11 @@ export type {
   PresenceRow,
   AgentRecord,
   AgentSurface,
+  AgentStatus,
+  ChatPane,
+  PaneAccount,
+  PaneDirectory,
+  InviteResult,
 } from "./commands.ts";
 
 export { subscribe, createRelay, DEFAULT_WS_URL } from "./relay.ts";
