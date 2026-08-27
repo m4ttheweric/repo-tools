@@ -20,7 +20,7 @@ export function safeRealpath(p: string): string {
   }
 }
 
-/** Nearest ancestor directory holding a `.git` entry — a plain walk, never a git spawn. */
+/** Nearest ancestor directory holding a `.git` entry (a plain walk, never a git spawn). */
 export function findGitRoot(start: string): string | null {
   let dir = start;
   while (true) {
@@ -33,11 +33,11 @@ export function findGitRoot(start: string): string | null {
 
 /**
  * The MAIN worktree path for `worktreeRoot`: itself when `.git` is a real
- * directory, or — for a linked worktree — the repo its `.git` FILE's
+ * directory, or (for a linked worktree) the repo its `.git` FILE's
  * `gitdir: <main>/.git/worktrees/<slot>` pointer names, parsed by hand
  * (never `git worktree list`). Null when the pointer is stale or foreign
  * (a worktree whose gitdir survived a home-directory move errors with
- * "fatal: not a git repository" under real git) — this is why the
+ * "fatal: not a git repository" under real git). This is why the
  * resolution order has a position AFTER the repo-name rung: dropping
  * straight to `<user>-<host>` here would give one shared handle to every
  * broken directory on the machine.
@@ -73,8 +73,8 @@ export function resolveMainWorktreePath(worktreeRoot: string): string | null {
  * Reverse lookup: which repos.json alias names `mainWorktreePath`. Index is an
  * explicit param so the derivation stays testable without a real HOME
  * (carry-forward fixture test). Index keys are serialized identities after the
- * RT-62 re-key (`remote:host%2Fpath`) — a wire form whose `%` and `:` the
- * handle charset forbids — so the alias is the key's display label, never the
+ * RT-62 re-key (`remote:host%2Fpath`), a wire form whose `%` and `:` the
+ * handle charset forbids, so the alias is the key's display label, never the
  * key itself (repoLabel passes a legacy name-keyed row through unchanged).
  */
 export function repoAliasForPath(mainWorktreePath: string, index: Record<string, string>): string | null {
