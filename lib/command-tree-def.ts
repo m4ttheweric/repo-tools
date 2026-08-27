@@ -1048,6 +1048,57 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  pane: {
+    description: "herdr panes as rt sees them: list with chat presence, peek, spawn claude, cswap accounts, directory suggestions",
+    subcommands: {
+      list: {
+        description: "Claude panes with their chat handle, status and rooms joined in (needs herdr)",
+        module: "./commands/pane.ts",
+        fn: "paneList",
+        args: [{ name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit JSON instead of one line per pane" }],
+      },
+      peek: {
+        description: "The last lines of a pane's visible screen",
+        module: "./commands/pane.ts",
+        fn: "panePeek",
+        args: [
+          { name: "Pane", type: "text", placeholder: "w7A:pY", hint: "herdr pane id" },
+          { name: "Lines", flag: "--lines", type: "text", optional: true, placeholder: "8", hint: "How many lines from the bottom" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit JSON" },
+        ],
+      },
+      spawn: {
+        description: "Open a herdr tab in a directory and start claude in it, optionally under a cswap account",
+        module: "./commands/pane.ts",
+        fn: "paneSpawn",
+        args: [
+          { name: "Directory", flag: "--cwd", type: "text", placeholder: "~/Documents/GitHub/chat", hint: "Absolute directory to start in" },
+          { name: "Account", flag: "--account", type: "text", optional: true, placeholder: "Assured", hint: "cswap alias, email or slot" },
+          { name: "Model", flag: "--model", type: "text", optional: true, placeholder: "claude-fable-5", hint: "claude --model" },
+          { name: "Effort", flag: "--effort", type: "text", optional: true, placeholder: "high", hint: "claude --effort" },
+          { name: "Prompt", flag: "--prompt", type: "text", optional: true, placeholder: "read AGENTS.md", hint: "Typed once claude is idle" },
+          { name: "Workspace", flag: "--workspace", type: "text", optional: true, placeholder: "chat", hint: "herdr workspace label; default chat.herdrWorkspace" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit JSON" },
+        ],
+      },
+      accounts: {
+        description: "cswap accounts with rate-limit headroom, for spawn --account",
+        module: "./commands/pane.ts",
+        fn: "paneAccounts",
+        args: [{ name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit JSON" }],
+      },
+      directories: {
+        description: "Repos and worktrees rt knows, as suggestions for spawn --cwd",
+        module: "./commands/pane.ts",
+        fn: "paneDirectories",
+        args: [
+          { name: "Filter", flag: "--q", type: "text", optional: true, placeholder: "chat", hint: "Substring of the path" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit JSON" },
+        ],
+      },
+    },
+  },
+
   repos: {
     description: "Register repos with rt (index + tracking)",
     subcommands: {
