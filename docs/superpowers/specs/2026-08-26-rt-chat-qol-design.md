@@ -71,7 +71,11 @@ ALTER TABLE chat_rooms ADD COLUMN archived_at INTEGER;   -- NULL = open
 
 One migration, at the next free `user_version` at merge time (6 is current;
 the invite lane may take 7). The combined `CREATE TABLE` in `db.ts` gains the
-column for fresh databases; the migration adds it to existing ones.
+column for fresh databases. For existing ones the `ALTER` must not live in
+the combined DDL string (the runner re-executes that whole string on every
+bump, so a plain `ALTER TABLE` there fails on any database that already has
+the column): it is its own conditional exec beside the version check, the
+`addSectionsColumnIfMissing` pattern `db.ts` already documents.
 
 ### `chat:archive`
 
@@ -98,6 +102,13 @@ Every read that walks a handle's memberships joins `chat_rooms` and keeps only
 | `unreadSummaryFor` (handlers/chat.ts) | `chat:pulse`'s unread line |
 | `recipientsFor` / `postAndNotify` | unaffected: a post into an archived room revives it first (below) |
 
+The filter applies to walks over a handle's memberships, not to a room named
+explicitly: `readUnread` with `room` set (`rt chat read old-room`), `chat:who`,
+and `chat:messages` answer for an archived room the same as for an open one,
+so a member can still read one from the CLI and the viewer can render one.
+Only the room-less forms (the tail's catch-up, `rt chat read` with no room,
+`rt chat rooms`, the pulse's unread line) skip archived rooms.
+
 `joinRoom`'s "prior rows" read (the first-room detection) is left unfiltered:
 whether a handle's first room is archived does not change what join does.
 
@@ -116,9 +127,13 @@ room reappears in every member's next listing.
 
 ### `chat:dm-open`
 
-Payload `{ from, to }`, both validated with `isValidChatName`, `from` checked
-with `assertSessionOwnsHandle` exactly as `chat:dm` does. Calls `dmRoomFor`
-and answers `{ room, created }`. No message, no wake, no membership change
+Payload `{ from, to, sessionId? }`, both handles validated with
+`isValidChatName`, `from` checked with `assertSessionOwnsHandle` exactly as
+`chat:dm` does (a no-op without `sessionId`, which is how the viewer's server
+calls it as the human). The handler reads `chat.humanHandle` from settings for
+`dmRoomFor`'s third argument and refuses when it is empty or invalid, as
+`chat:dm` does; `dmRoomFor` throwing (own handle, id collision) is an
+`ok: false` answer. Calls `dmRoomFor` and answers `{ room, created }`. No message, no wake, no membership change
 beyond what `dmRoomFor` already does on creation (the pair as `wake_on all`,
 the human as a silent `none` third party when he is not one of the pair).
 
@@ -133,16 +148,17 @@ No CLI for `dm-open`: agents already have `rt chat dm`, which posts.
 
 ### rt-client
 
-`chatArchive({ room, handle, archived })`, `chatDmOpen({ from, to })`, and
+`chatArchive({ room, handle, archived })`, `chatDmOpen({ from, to, sessionId? })`
+(parity with `chatDm`), and
 `chatRooms({ handle, includeArchived? })`. `RoomSummary.archivedAt`. Ships as
 `@mattstack/rt-client` 0.7.0 (new verbs, one widened type; nothing removed).
 
 ## Data flow
 
 **Archive from the viewer.** ⋯ → `Archive #build…` → confirm modal →
-`POST /api/chat/archive { room, archived: true }` → `chatArchive` as the human
-→ the viewer refetches `/api/chat/rooms` → `#build` moves to the archived
-section; if it was the open room, the page stays on it in its archived
+`POST /api/chat/archive { room, archived: true }` → the route joins the human
+if `#build` is a channel he has not joined → `chatArchive` as the human → the
+viewer refetches `/api/chat/rooms` → `#build` moves to the archived section; if it was the open room, the page stays on it in its archived
 rendering. Every agent's next `rt chat rooms` omits it; their tails stay armed
 and silent.
 
@@ -169,8 +185,8 @@ removed first).
 | Route | Does |
 | --- | --- |
 | `GET /api/chat/rooms` | as today, but the human's own listing is fetched with `includeArchived: true`; archived rows carry `archivedAt`. The fleet union is unchanged (the store hides archived rooms from every buddy's listing). |
-| `POST /api/chat/archive` | `{ room, archived }` → `chatArchive` as the human; 400 on a missing room or non-boolean; 502 on `!ok`. Answers `{ room, archivedAt }`. |
-| `POST /api/chat/dm/open` | `{ to }` → `chatDmOpen` as the human; 400 on an invalid handle; answers `{ room, created }`. |
+| `POST /api/chat/archive` | `{ room, archived }`. When archiving a channel the human is not a member of (most fleet rooms: agents join-create them and the rail unions them in as `joined: false`), the route joins him first, the same join-first the post route does; a DM room already holds him. Then `chatArchive` as the human. 400 on an absent `room` field, a non-boolean `archived`, or a room name that is in neither the human's listing nor the fleet union (checked before the join, so archive never join-creates a room); 502 on `!ok`. Answers `{ room, archivedAt }`. The join is what keeps the room in his listing, and so in the archived section, after it is hidden from every buddy's listing. |
+| `POST /api/chat/dm/open` | `{ to }` → `chatDmOpen` as the human; 400 on an invalid handle or on `to` equal to the human's handle (checked in the route, before the daemon call); 502 on `!ok`; answers `{ room, created }`. |
 | `POST /api/chat/dm` | **removed.** Nothing calls it once the composer's DM mode is gone. |
 
 Fixtures: `fixtureRooms()` gains one archived channel (`#retro-0819`,
@@ -204,7 +220,8 @@ whichever order they land.
 
 Under the direct section, a collapsed group header `archived N` (same header
 style as `channels` and `direct`, with the kit's `AnimatedChevron`; collapsed
-state remembered in `useStorage('chat.rail.archived', false)`). Rows inside
+state remembered with the kit's `useLocalStorage({ key: 'chat.rail.archived',
+defaultValue: true })` from `@ui/hooks`). Rows inside
 render at 0.6 opacity with no unread or mention badge; a DM shows its pair
 like the direct section does. Absent entirely when N is 0.
 
@@ -304,20 +321,22 @@ against the fixtures server.
 
 | Case | Behaviour |
 | --- | --- |
-| Archive a room that does not exist | `chat:archive` answers `ok: false`; the viewer shows the error notification. |
+| Archive a room that does not exist | `chat:archive` answers `ok: false` (CLI); the viewer's route 400s on a name it cannot find in the rail's sources before it would join, so the API cannot create-and-archive a room by typo. |
 | Archive while an agent's tail is armed only on that room | Tail stays armed and silent; the agent's next `rt chat rooms` omits the room; a post from anyone revives it and wakes normally. |
 | Agent posts into an archived room | Revived in the same transaction; the human's rail moves it back on the next poll or frame. |
 | Human reopens then archives again in one poll interval | Two idempotent writes; the last one wins; the viewer's refetch after each keeps the rail honest. |
 | `dm-open` for a handle with no presence row | `dmRoomFor` still creates the room (a DM with a signed-out agent is allowed today via `rt chat dm`); the viewer navigates; the composer's roster warning covers "will not hear you". |
-| `dm-open` for the human's own handle | `dmRoomFor` throws; 400 from the route; notification. The card never offers `DM` on the human, so only the API can hit this. |
+| `dm-open` for the human's own handle | The route 400s before calling the daemon (`to === chat.humanHandle`); the daemon's own answer for the same case is `ok: false`. The card never offers `DM` on the human, so only the API can hit this. |
+| Room archived from the CLI while the human is not a member | It leaves his rail with no archived row (he has no membership to list it under) until a post revives it. Acceptable: the skill forbids unasked archiving, and the viewer's own route joins him first so this cannot happen from the UI. |
 | Daemon down | Archive and DM buttons disabled with the composer, per the existing banner rules. |
 | Old rt-client in the viewer | The viewer's `package.json` moves to `^0.7`; a stale install fails the typecheck on the missing `chatArchive` export rather than at click time. |
 
 ## Testing
 
 **rt.** Store tests: `listRooms` hides archived rooms and shows them with
-`includeArchived`; `readUnread` and `unreadWakingCount` skip archived rooms
-with unread in them; `postMessage` clears `archived_at` and the reviving post
+`includeArchived`; `readUnread` with no `room` and `unreadWakingCount` skip
+archived rooms with unread in them, while `readUnread` with the archived
+room named still returns them; `postMessage` clears `archived_at` and the reviving post
 counts as unread for the other members; `dmRoomFor` on an archived DM plus a
 post revives it with both members intact; migration adds the column to a v6
 database. Handler tests: `chat:archive` both directions, the missing-room
@@ -326,9 +345,10 @@ own-handle error. rt-client: the three wrappers serialise their payloads.
 CLI: `rt chat archive` and `--reopen` print one line each.
 
 **Viewer, server.** `GET /api/chat/rooms` returns `archivedAt` on archived
-rows and still unions fleet rooms; `POST /api/chat/archive` validates and
-proxies; `POST /api/chat/dm/open` validates and proxies; `POST /api/chat/dm`
-is a JSON 404. Fixtures cover every route.
+rows and still unions fleet rooms; `POST /api/chat/archive` joins the human
+first for an unjoined channel and not for a DM, then validates and proxies;
+`POST /api/chat/dm/open` validates (including the own-handle 400) and
+proxies; `POST /api/chat/dm` is a JSON 404. Fixtures cover every route.
 
 **Viewer, UI (vitest + jsdom).** ⋯ → Archive → confirm posts the request and
 moves the room to the archived group; an archived room renders the bar and no
@@ -365,8 +385,11 @@ commands.ts` and `client.ts`, `skills/rt-chat/SKILL.md`, and in the viewer
 `src/ui/RoomRail.tsx`, `src/app/App.tsx`, `design/build.py`, `ANATOMY.md`
 and `audit.mjs`. Whichever lands second rebases; the additions are
 side-by-side (new verbs, new routes, separate page-bar controls, new rail
-group), so the conflicts are textual, not semantic. The schema version is the
-one value that must be re-checked at rebase time.
+group), so the conflicts are textual, not semantic. Two values must be
+re-checked at rebase time: the schema `user_version` (the invite lane adds no
+table today, so a clash is unlikely) and the rt-client version (this lane
+ships 0.7.0; the invite lane publishes rt-client without naming a number, so
+whichever publishes second takes the next minor).
 
 ## Out of scope
 
