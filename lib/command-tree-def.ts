@@ -1014,6 +1014,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Write a secret (creates the domain file, or one key within it) — value prompted, never a CLI arg",
         module: "./commands/secrets.ts",
         fn: "secretsSet",
+        omitBehavior: "prompt",
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
           { name: "Key", type: "text", placeholder: "linearApiKey", hint: "Key name within the domain" },
@@ -1025,6 +1026,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "List a domain's secret names (never prints values)",
         module: "./commands/secrets.ts",
         fn: "secretsList",
+        omitBehavior: "picker",
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
           { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "List from this team's store instead of your personal one" },
@@ -1034,6 +1036,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Replace a secret's value, or (--team with no domain/key) re-encrypt every team domain file to its current recipients — value prompted, never a CLI arg",
         module: "./commands/secrets.ts",
         fn: "secretsRotate",
+        omitBehavior: "picker",
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board) — omit with --team to re-encrypt every domain file instead" },
           { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain — omit with --team to re-encrypt every domain file instead" },
