@@ -12,6 +12,7 @@ const eventsSubcommands: Record<string, CommandNode> = {
     description: "Publish an event to a topic",
     module: "./commands/events.ts",
     fn: "eventsEmit",
+    omitBehavior: { exempt: "the topic is a free-form string; nothing to enumerate" },
     args: [
       { name: "Topic", type: "text", placeholder: "job/myherd/report", hint: "Topic string; slash-separated by convention" },
       { name: "Payload", flag: "--json", type: "text", placeholder: "{\"k\":1}", hint: "Optional JSON payload (convention: small pointers, files carry data)" },
@@ -21,6 +22,7 @@ const eventsSubcommands: Record<string, CommandNode> = {
     description: "Block until a matching event lands (long-poll; exit 124 on timeout)",
     module: "./commands/events.ts",
     fn: "eventsWait",
+    omitBehavior: { exempt: "the match pattern is a free-form glob; nothing to enumerate" },
     args: [
       { name: "Pattern", type: "text", placeholder: "job/myherd/*", hint: "Glob pattern (* within a segment, ** across segments)" },
       { name: "After", flag: "--after", type: "text", placeholder: "42", hint: "Cursor from a previous response; omit for only-new events" },
@@ -331,6 +333,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "Toggle git hooks on/off (husky)",
     module: "./commands/hooks.ts",
     fn: "toggleHooks",
+    omitBehavior: "picker",
     context: "repo",
     args: [
       { name: "Target", type: "text", placeholder: "off | on | status | pre-push", hint: "Global action (off, on, status) or a specific hook name to target; omit for the interactive picker" },
@@ -342,6 +345,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "Interactive script runner (repo → worktree → package → script)",
     module: "./commands/run.ts",
     fn: "runCommand",
+    omitBehavior: "picker",
     context: "worktree",
     requiresTTY: true,
     args: [
@@ -364,6 +368,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "Port scanner + killer (zero-config, daemon-powered)",
     module: "./commands/port.ts",
     fn: "portScanner",
+    omitBehavior: "list",
     args: [
       { name: "Port or subcommand", type: "text", placeholder: "8080 | kill", hint: "A port number to kill directly, or 'kill' to open the interactive kill picker; omit to list all ports" },
       { name: "Port", type: "text", placeholder: "8080", hint: "When the first argument is 'kill', a port number to kill directly instead of opening the picker" },
@@ -377,6 +382,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Pick a connection and connect",
         module: "./commands/sdm.ts",
         fn: "connectCmd",
+        omitBehavior: "picker",
         args: [
           { name: "Connection key", type: "text", placeholder: "e.g. prod-db", hint: "Connect to this connection directly; omit for the interactive picker" },
           { name: "Duration", flag: "--duration", type: "text", placeholder: "8h", hint: "How long to keep the connection open" },
@@ -420,6 +426,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Show or scaffold (init) the declarative enrichment map",
         module: "./commands/sdm.ts",
         fn: "enrichmentCmd",
+        omitBehavior: "list",
         args: [
           { name: "Subcommand", type: "select", hint: "Omit to show enrichment coverage; 'init' scaffolds the enrichment file", options: [{ value: "init", label: "init", hint: "Scaffold ~/.mattstack/rt/sdm/enrichment.jsonc from the scanned catalog" }] },
         ],
@@ -428,6 +435,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Set your StrongDM email (skips the browser-login email prompt)",
         module: "./commands/settings.ts",
         fn: "setSdmEmail",
+        omitBehavior: "prompt",
         args: [
           { name: "Email", type: "text", placeholder: "you@example.com", hint: "Your StrongDM account email; omit to be prompted interactively" },
         ],
@@ -497,6 +505,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "Navigate filesystem with fzf; persistent picker, esc to quit",
     module: "./commands/nav.ts",
     fn: "navigate",
+    omitBehavior: "picker",
     requiresTTY: true,
     args: [
       { name: "Path", type: "text", placeholder: ".", hint: "Starting directory; defaults to the current directory" },
@@ -534,6 +543,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Dispose a worktree (no target + TTY → picker)",
         module: "./commands/worktree.ts",
         fn: "worktreeDispose",
+        omitBehavior: "picker",
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to dispose; omit to pick interactively" },
           { name: "Owner", flag: "--owner", type: "text", placeholder: "matt", hint: "Dispose every tree owned by this owner (can span repos)" },
@@ -555,6 +565,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Freshen worktrees (no arg + TTY → picker over freshenable trees)",
         module: "./commands/worktree.ts",
         fn: "worktreeFreshen",
+        omitBehavior: "picker",
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to freshen; omit to pick interactively (or run for every repo, headless)" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Narrow to this registered repo" },
@@ -574,6 +585,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Run a command in each worktree (--all | --on-deck, else pick)",
         module: "./commands/worktree.ts",
         fn: "worktreeEach",
+        omitBehavior: { exempt: "the command to run is free-text; nothing to enumerate (the worktrees themselves do get a picker)" },
         context: "repo",
         args: [
           { name: "All", flag: "--all", type: "boolean", default: false, hint: "Run in every worktree (mutually exclusive with --on-deck)" },
@@ -628,6 +640,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Per-repo background tracking (live/poll/off)",
         module: "./commands/daemon.ts",
         fn: "manageTracking",
+        omitBehavior: "list",
         aliases: ["events"],
         args: [
           { name: "Repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json (omit to list; repo alone opens the interactive editor)" },
@@ -772,6 +785,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Read a resolved setting (value + provenance) through the settings resolver",
         module: "./commands/settings-keys.ts",
         fn: "settingsGet",
+        omitBehavior: { exempt: "agent-facing; the key is passed explicitly (discover the set with rt settings list)" },
         args: [
           { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (see rt settings list)" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs and ${repoRoot}" },
@@ -782,6 +796,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Write a setting into one authored store (user/team/machine)",
         module: "./commands/settings-keys.ts",
         fn: "settingsSet",
+        omitBehavior: { exempt: "agent-facing; key and value are passed explicitly (discover keys with rt settings list)" },
         args: [
           { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (must be migrated:true)" },
           { name: "Value", type: "text", placeholder: "{\"onDeck\":3}", hint: "JSON(C) value" },
@@ -803,6 +818,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Show the full scope chain for one setting, weakest first",
         module: "./commands/settings-keys.ts",
         fn: "settingsExplain",
+        omitBehavior: { exempt: "agent-facing; the key is passed explicitly (discover the set with rt settings list)" },
         args: [
           { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (see rt settings list)" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs" },
@@ -853,6 +869,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Configure runaway process detection thresholds",
         module: "./commands/settings.ts",
         fn: "configureRunaway",
+        omitBehavior: "list",
         args: [
           { name: "Field", type: "select", hint: "Omit both to show current thresholds", options: [{ value: "cpu-threshold", label: "cpu-threshold", hint: "CPU percent" }, { value: "sustain-min", label: "sustain-min", hint: "Minutes sustained before flagging" }, { value: "grace-min", label: "grace-min", hint: "Grace period in minutes" }] },
           { name: "Value", type: "text", placeholder: "80", hint: "Numeric value for the chosen field" },
@@ -869,6 +886,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Toggle between local dev source and the installed production binary",
         module: "./commands/settings.ts",
         fn: "toggleDevMode",
+        omitBehavior: "prompt",
         // A TTY is needed only to PROMPT for a target: an explicit target,
         // --json, and the bare read-only tuple print are all non-interactive.
         requiresTTY: () => false,
@@ -1041,6 +1059,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Tell rt where a repo moved to — re-points the index, worktree registry, endpoint claims and git's worktree admin files together",
         module: "./commands/repos.ts",
         fn: "reposLocate",
+        omitBehavior: "picker",
         args: [
           { name: "New path", type: "text", placeholder: "/path/to/moved-repo", hint: "Where the repo lives now; omit to pick from candidates under rt.repoRoots" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Which indexed repo moved (identity, path, or name); omit to match by the new path's own identity" },
@@ -1100,6 +1119,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "List, set, or apply the pack's public/internal skill surface (bare invocation opens an fzf multi-toggle palette)",
         module: "./commands/skills.ts",
         fn: "skillsSurface",
+        omitBehavior: "picker",
         args: [
           { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name>... --public|--internal | apply; omit for the fzf palette" },
           { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
@@ -1172,6 +1192,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Scaffold a new plugin",
         module: "./commands/plugin.ts",
         fn: "runNew",
+        omitBehavior: "prompt",
         args: [
           { name: "Name", type: "text", placeholder: "my-plugin", hint: "Plugin name (kebab-case); omit to be prompted interactively" },
         ],
@@ -1186,6 +1207,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Deep-validate installed plugins",
         module: "./commands/plugin.ts",
         fn: "runValidate",
+        omitBehavior: "list",
         args: [
           { name: "Plugin", type: "text", placeholder: "my-plugin", hint: "Validate only this plugin by directory name; omit to validate all installed plugins" },
         ],
