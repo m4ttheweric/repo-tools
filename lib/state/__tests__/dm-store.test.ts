@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
-import { joinRoom, listMembers, postMessage, recipientsFor } from "../chat-store.ts";
+import { archiveRoom, joinRoom, listMembers, listRooms, postMessage, recipientsFor } from "../chat-store.ts";
 import { dmParticipants, dmRoomFor, listDms } from "../dm-store.ts";
 
 let n = 0;
@@ -81,4 +81,16 @@ test("a truncated-hash collision with a different pair fails loud instead of mer
     db.query("UPDATE chat_dms SET a = 'c', b = 'd' WHERE room = ?").run(collidingId);
   }).not.toThrow();
   expect(() => dmRoomFor("a", "b", "matt", db)).toThrow();
+});
+
+test("an archived DM revives on the next dm post with both participants and the silent human intact", () => {
+  const db = fresh();
+  const { room } = dmRoomFor("a", "b", "matt", db);
+  archiveRoom(room, true, db);
+  expect(listRooms("a", db)).toEqual([]);
+  expect(listRooms("matt", db)).toEqual([]);
+  const posted = postMessage({ room, handle: "a", body: "still there?", mentions: ["b"] }, db)!;
+  expect(posted.recipients).toEqual(["b"]);
+  expect(listRooms("a", db).map(r => r.room)).toEqual([room]);
+  expect(listMembers(room, db).map(m => m.handle).sort()).toEqual(["a", "b", "matt"]);
 });

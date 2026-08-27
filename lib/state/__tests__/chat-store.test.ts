@@ -15,6 +15,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
 import {
+  archiveRoom,
   armMember,
   clearAllArmed,
   disarmMember,
@@ -29,6 +30,7 @@ import {
   postMessage,
   readUnread,
   recipientsFor,
+  roomArchivedAt,
   touchMember,
   unreadWakingCount,
 } from "../chat-store.ts";
@@ -256,4 +258,70 @@ test("startup clear covers presence arming", () => {
   ).run();
   clearAllArmed(db);
   expect(db.query("SELECT armed_at FROM chat_presence").get()).toMatchObject({ armed_at: null });
+});
+
+test("archive hides a room from every membership walk and keeps the member rows", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  joinRoom({ room: "other", handle: "b" }, db);
+  postMessage({ room: "build", handle: "a", body: "@b look" }, db);
+
+  const stamped = archiveRoom("build", true, db);
+  expect(stamped.room).toBe("build");
+  expect(typeof stamped.archivedAt).toBe("number");
+  expect(roomArchivedAt("build", db)).toBe(stamped.archivedAt);
+
+  expect(listRooms("b", db).map(r => r.room)).toEqual(["other"]);
+  expect(listRooms("b", db, { includeArchived: true }).map(r => [r.room, r.archivedAt !== undefined])).toEqual([["build", true], ["other", false]]);
+  expect(unreadWakingCount("b", db)).toEqual([]);
+  expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
+  expect(listMembers("build", db).map(m => m.handle)).toEqual(["a", "b"]);
+});
+
+test("a room named explicitly still answers while archived", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  postMessage({ room: "build", handle: "a", body: "hi" }, db);
+  archiveRoom("build", true, db);
+  const read = readUnread({ handle: "b", room: "build", limit: 20 }, db);
+  expect(read).toHaveLength(1);
+  expect(read[0]!.messages.map(m => m.body)).toEqual(["hi"]);
+  expect(listMessages({ room: "build", limit: 20 }, db)).toHaveLength(1);
+});
+
+test("a post into an archived room revives it and wakes the members who were there", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b", wakeOn: "all" }, db);
+  archiveRoom("build", true, db);
+  expect(listRooms("a", db)).toEqual([]);
+
+  const posted = postMessage({ room: "build", handle: "a", body: "back to it" }, db)!;
+  expect(posted.recipients).toEqual(["b"]);
+  expect(roomArchivedAt("build", db)).toBeNull();
+  expect(listRooms("a", db).map(r => r.room)).toEqual(["build"]);
+  expect(listRooms("b", db).map(r => [r.room, r.unread])).toEqual([["build", 1]]);
+});
+
+test("archive refuses a room that does not exist, reopen clears the stamp, and both are idempotent", () => {
+  const db = freshDb();
+  expect(() => archiveRoom("nope", true, db)).toThrow(/no such room/);
+  expect(roomArchivedAt("nope", db)).toBeUndefined();
+  joinRoom({ room: "build", handle: "a" }, db);
+  const first = archiveRoom("build", true, db).archivedAt;
+  expect(archiveRoom("build", true, db).archivedAt).toBe(first);
+  expect(archiveRoom("build", false, db)).toEqual({ room: "build", archivedAt: null });
+  expect(archiveRoom("build", false, db)).toEqual({ room: "build", archivedAt: null });
+  expect(listRooms("a", db).map(r => r.room)).toEqual(["build"]);
+});
+
+test("join by name does not revive an archived room", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  archiveRoom("build", true, db);
+  joinRoom({ room: "build", handle: "c" }, db);
+  expect(roomArchivedAt("build", db)).not.toBeNull();
+  expect(listRooms("c", db)).toEqual([]);
 });

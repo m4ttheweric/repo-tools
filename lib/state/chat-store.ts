@@ -40,6 +40,8 @@ export interface RoomSummary {
   unread: number;
   mentions: number;
   lastPostedAt?: number;
+  /** Set only when the caller asked for archived rooms; absent on an open room. */
+  archivedAt?: number;
 }
 
 export interface ChatMessage {
@@ -62,6 +64,10 @@ interface MemberRow {
   armed_at: number | null;
   cwd: string | null;
   pane: string | null;
+}
+
+interface MembershipRow extends MemberRow {
+  archived_at: number | null;
 }
 
 function rowToMember(row: MemberRow): ChatMember {
@@ -111,6 +117,10 @@ const MEMBER_COLUMNS = "room, handle, joined_at, last_read_id, wake_on, last_see
 const SELECT_ROOM_MEMBER_SQL = `SELECT ${MEMBER_COLUMNS} FROM chat_members WHERE room = ? AND handle = ?;`;
 const SELECT_ROOM_MEMBERS_SQL = `SELECT ${MEMBER_COLUMNS} FROM chat_members WHERE room = ? ORDER BY handle;`;
 const SELECT_HANDLE_MEMBERSHIPS_SQL = `SELECT ${MEMBER_COLUMNS} FROM chat_members WHERE handle = ? ORDER BY room;`;
+const SELECT_HANDLE_MEMBERSHIPS_WITH_ROOM_SQL = `SELECT ${MEMBER_COLUMNS}, archived_at FROM chat_members JOIN chat_rooms ON chat_rooms.name = chat_members.room WHERE handle = ? ORDER BY room;`;
+const SELECT_ROOM_ARCHIVED_SQL = `SELECT archived_at FROM chat_rooms WHERE name = ?;`;
+const UPDATE_ROOM_ARCHIVED_SQL = `UPDATE chat_rooms SET archived_at = ? WHERE name = ?;`;
+const REVIVE_ROOM_SQL = `UPDATE chat_rooms SET archived_at = NULL WHERE name = ? AND archived_at IS NOT NULL;`;
 const SELECT_ROOM_MEMBER_COUNT_SQL = `SELECT COUNT(*) AS n FROM chat_members WHERE room = ?;`;
 const SELECT_ROOM_MAX_ID_SQL = `SELECT COALESCE(MAX(id), 0) AS maxId FROM chat_messages WHERE room = ?;`;
 const SELECT_ROOM_LAST_POSTED_SQL = `SELECT MAX(posted_at) AS lastPostedAt FROM chat_messages WHERE room = ?;`;
@@ -231,8 +241,21 @@ export function leaveRoom(room: string, handle: string, db: Database = getStateD
   db.query(DELETE_MEMBER_SQL).run(room, handle);
 }
 
-export function listRooms(handle: string, db: Database = getStateDb()): RoomSummary[] {
-  const rows = db.query(SELECT_HANDLE_MEMBERSHIPS_SQL).all(handle) as MemberRow[];
+/** A handle's memberships in rooms that are not archived: the rows every
+    room-less walk (rooms, read, the tail's catch-up, the pulse line) is
+    allowed to see. An explicit room bypasses this on purpose. */
+function openMembershipsFor(handle: string, db: Database): MembershipRow[] {
+  const rows = db.query(SELECT_HANDLE_MEMBERSHIPS_WITH_ROOM_SQL).all(handle) as MembershipRow[];
+  return rows.filter((r) => r.archived_at === null);
+}
+
+export function listRooms(
+  handle: string,
+  db: Database = getStateDb(),
+  opts: { includeArchived?: boolean } = {},
+): RoomSummary[] {
+  const all = db.query(SELECT_HANDLE_MEMBERSHIPS_WITH_ROOM_SQL).all(handle) as MembershipRow[];
+  const rows = opts.includeArchived ? all : all.filter((r) => r.archived_at === null);
   return rows.map((row) => {
     const memberCount = (db.query(SELECT_ROOM_MEMBER_COUNT_SQL).get(row.room) as { n: number }).n;
     const unread = (db.query(SELECT_ROOM_UNREAD_SQL).get(row.room, row.last_read_id) as { n: number }).n;
@@ -243,8 +266,33 @@ export function listRooms(handle: string, db: Database = getStateDb()): RoomSumm
 
     const summary: RoomSummary = { room: row.room, memberCount, unread, mentions };
     if (lastPosted !== null) summary.lastPostedAt = lastPosted;
+    if (row.archived_at !== null) summary.archivedAt = row.archived_at;
     return summary;
   });
+}
+
+export function roomArchivedAt(room: string, db: Database = getStateDb()): number | null | undefined {
+  const row = db.query(SELECT_ROOM_ARCHIVED_SQL).get(room) as { archived_at: number | null } | null;
+  return row ? row.archived_at : undefined;
+}
+
+export function archiveRoom(
+  room: string,
+  archived: boolean,
+  db: Database = getStateDb(),
+): { room: string; archivedAt: number | null } {
+  const run = db.transaction((): { room: string; archivedAt: number | null } => {
+    const current = roomArchivedAt(room, db);
+    if (current === undefined) throw new Error(`chat: no such room "${room}"`);
+    if (!archived) {
+      db.query(UPDATE_ROOM_ARCHIVED_SQL).run(null, room);
+      return { room, archivedAt: null };
+    }
+    const archivedAt = current ?? Date.now();
+    if (current === null) db.query(UPDATE_ROOM_ARCHIVED_SQL).run(archivedAt, room);
+    return { room, archivedAt };
+  });
+  return run();
 }
 
 /** The wake mode stamped by whichever join created `room`; undefined for a room never stamped (including every DM room — dmRoomFor never stamps one). */
@@ -355,7 +403,7 @@ function membershipsFor(handle: string, room: string | undefined, db: Database):
     const row = db.query(SELECT_ROOM_MEMBER_SQL).get(room, handle) as MemberRow | null;
     return row ? [row] : [];
   }
-  return db.query(SELECT_HANDLE_MEMBERSHIPS_SQL).all(handle) as MemberRow[];
+  return openMembershipsFor(handle, db);
 }
 
 // The lookbehind is what keeps `a@b.com` from reading as a mention of
@@ -415,6 +463,7 @@ export function postMessage(
 
   const run = db.transaction((): { id: number; recipients: string[] } => {
     const now = Date.now();
+    db.query(REVIVE_ROOM_SQL).run(room);
     const result = db.query(INSERT_MESSAGE_SQL).run(room, handle, body, JSON.stringify(mentions), null, now);
     const recipients = recipientsFor(room, handle, mentions, db);
     return { id: Number(result.lastInsertRowid), recipients };
@@ -486,7 +535,7 @@ export function unreadWakingCount(
   handle: string,
   db: Database = getStateDb(),
 ): { room: string; count: number; mentions: number; maxId: number }[] {
-  const members = db.query(SELECT_HANDLE_MEMBERSHIPS_SQL).all(handle) as MemberRow[];
+  const members = openMembershipsFor(handle, db);
   const results: { room: string; count: number; mentions: number; maxId: number }[] = [];
 
   for (const member of members) {
