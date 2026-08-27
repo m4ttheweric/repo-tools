@@ -5,6 +5,7 @@
  *   rt chat leave <room>
  *   rt chat post <room> <<'EOF' ... EOF          the body on stdin; <text> for a one-liner
  *   rt chat read [room] [--limit 20] [--full] [--since <dur>]
+ *   rt chat read <room> --last <n>                 newest N regardless of cursor, then marks read
  *   rt chat rooms
  *   rt chat who [room]
  *   rt chat mark [room]
@@ -15,6 +16,7 @@
  *   rt chat buddies [--json]                       the roster; bare `who` aliases it
  *   rt chat dm <handle> <<'EOF' ... EOF           same body rules as post
  *   rt chat pulse [--json] [--session <id>]        hook-facing heartbeat; never fails
+ *   rt chat invite <pane> --room <room> [--note <text>]   types /chat:join into a herdr pane
  *
  * Identity resolution is CLIENT-SIDE (see resolveHandle): HERDR_PANE_ID and
  * the cwd's repo only exist in this process, never in the daemon, so the
@@ -57,9 +59,11 @@ import {
   chatBuddies,
   chatDisarm,
   chatDm,
+  chatInvite,
   chatJoin,
   chatLeave,
   chatMark,
+  chatMessages,
   chatPost,
   chatPulse,
   chatRead,
@@ -84,7 +88,7 @@ import type {
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
-const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file"]);
+const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file", "--last", "--note"]);
 
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -115,6 +119,12 @@ function positionals(args: string[]): string[] {
 function flagValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+/** `--sock` as RtClientOptions, or `{}` when unset. */
+function sockOpts(args: string[]): { sockPath?: string } {
+  const sockPath = flagValue(args, "--sock");
+  return sockPath ? { sockPath } : {};
 }
 
 function fail(msg: string): never {
@@ -733,6 +743,26 @@ async function runRead(args: string[]): Promise<void> {
     sinceMs = Date.now() - ms;
   }
 
+  const lastRaw = flagValue(args, "--last");
+  if (lastRaw !== undefined) {
+    if (sinceRaw !== undefined) fail("--last and --since are mutually exclusive");
+    if (!room) fail("--last needs a room");
+    const n = Number(lastRaw);
+    if (!Number.isInteger(n) || n <= 0) fail(`--last must be a positive integer (got "${lastRaw}")`);
+    // chat:messages orders newest-first, then reverses to oldest-first (same
+    // top-to-bottom order a plain read renders), so no reverse here.
+    const page = unwrap(await chatMessages({ room, limit: n }, sockOpts(args)), "read");
+    unwrap(await chatMark({ handle, room }, sockOpts(args)), "mark");
+    const rooms = [{ room, messages: page.messages }];
+    if (args.includes("--json")) {
+      console.log(JSON.stringify({ ok: true, rooms }));
+      return;
+    }
+    const headingFor = await dmHeadingsFor(handle);
+    console.log(renderReadRooms(rooms, args.includes("--full"), headingFor));
+    return;
+  }
+
   const res = await chatRead({ handle, room, limit, sinceMs });
   const data = unwrap(res, "read");
 
@@ -829,6 +859,30 @@ async function runDm(args: string[]): Promise<void> {
     return;
   }
   // prints nothing on success — Global Constraint, same as post
+}
+
+/**
+ * `from` prefers the signed-in session's own handle over the human default:
+ * an agent inviting from a signed-in session should show up as itself, not
+ * as "matt", in the target pane's /chat:join note.
+ */
+async function runInvite(args: string[]): Promise<void> {
+  const paneId = positional(args);
+  if (!paneId) fail("usage: rt chat invite <pane> --room <room> [--note <text>]");
+  const room = flagValue(args, "--room");
+  if (!room) fail("--room is required");
+  requireValidName("room", room);
+  const note = flagValue(args, "--note");
+  const session = readChatSession(currentSessionId(args));
+  const from = session?.handle ?? getSetting<string>("chat.humanHandle").value;
+  const callerPane = process.env.HERDR_PANE_ID;
+  const res = await chatInvite({ paneId, room, note, from, callerPane }, sockOpts(args));
+  const data = unwrap(res, "invite");
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, ...data }));
+    return;
+  }
+  console.log(data.delivered === "refused" ? `${paneId}: refused: ${data.reason ?? "unknown"}` : `${paneId}: ${data.delivered}`);
 }
 
 // ─── sign-in / sign-out (presence) ───────────────────────────────────────────
@@ -1210,8 +1264,8 @@ export async function chatTail(args: string[]): Promise<void> {
   const roomFilter = flagValue(args, "--room");
   if (roomFilter) requireValidName("room", roomFilter);
 
-  const sockPath = flagValue(args, "--sock");
-  const opts = sockPath ? { sockPath } : {};
+  const opts = sockOpts(args);
+  const sockPath = opts.sockPath;
 
   // Claim the pidfile BEFORE any daemon call, so a live duplicate is refused
   // even when the daemon is down. A stale/foreign pidfile is reclaimed.
@@ -1351,7 +1405,7 @@ export async function chatTail(args: string[]): Promise<void> {
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "usage: rt chat <join|leave|post|read|rooms|who|mark|tail|sign-in|sign-out|away|back|buddies|dm|pulse> ...";
+  "usage: rt chat <join|leave|post|read|rooms|who|mark|tail|sign-in|sign-out|away|back|buddies|dm|pulse|invite> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   join: runJoin,
@@ -1369,6 +1423,7 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   buddies: runBuddies,
   dm: runDm,
   pulse: runPulse,
+  invite: runInvite,
 };
 
 const VERB_HINTS: Record<string, string> = {

@@ -696,23 +696,25 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   // Self-dispatching leaf: chat() routes its own verbs (join/leave/post/read/
-  // rooms/who/mark/tail/sign-in/sign-out/away/back/buddies/dm/pulse), so all
-  // args flow through rather than a subcommand map.
+  // rooms/who/mark/tail/sign-in/sign-out/away/back/buddies/dm/pulse/invite),
+  // so all args flow through rather than a subcommand map.
   chat: {
     description: "Group chat for agents and their human, over the rt daemon",
     module: "./commands/chat.ts",
     fn: "chat",
     omitBehavior: "picker",
     args: [
-      { name: "Verb", type: "text", placeholder: "join | leave | post | read | rooms | who | mark | tail | sign-in | sign-out | away | back | buddies | dm | pulse", hint: "The chat action to run" },
-      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/post/read/who/mark; the target handle for dm; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/pulse/back/away, which take no room" },
+      { name: "Verb", type: "text", placeholder: "join | leave | post | read | rooms | who | mark | tail | sign-in | sign-out | away | back | buddies | dm | pulse | invite", hint: "The chat action to run" },
+      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/post/read/who/mark; the target handle for dm; the pane id for invite; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/pulse/back/away, which take no room" },
       { name: "Text", type: "text", optional: true, placeholder: "@handle message", hint: "A one-line message body (every word after the room/handle) — post, dm; leave it out and feed the body on stdin (a heredoc) so paragraphs and lists survive; away takes this directly, with no room before it" },
       { name: "As handle", flag: "--as", type: "text", placeholder: "repo-tools-main", hint: "Override the derived handle for this invocation; refused while signed in (sign out first)" },
       { name: "Wake on", flag: "--wake-on", type: "text", placeholder: "mention | all | none", hint: "For join: when this handle's tail wakes (default mention)" },
       { name: "Limit", flag: "--limit", type: "text", placeholder: "20", hint: "For read: max messages (default 20)" },
       { name: "Since", flag: "--since", type: "text", placeholder: "5m", hint: "For read: a non-advancing peek at messages newer than this duration" },
+      { name: "Last", flag: "--last", type: "text", optional: true, placeholder: "10", hint: "read: the newest N messages regardless of your cursor, then mark read" },
       { name: "Full", flag: "--full", type: "boolean", default: false, hint: "For read: uncapped message bodies" },
-      { name: "Room filter", flag: "--room", type: "text", placeholder: "build", hint: "For tail: only emit wakes from this room; for sign-in: override the derived repository room" },
+      { name: "Room filter", flag: "--room", type: "text", placeholder: "build", hint: "For tail: only emit wakes from this room; for sign-in: override the derived repository room; for invite: the room to join the invited pane into" },
+      { name: "Note", flag: "--note", type: "text", optional: true, placeholder: "you own the vite side", hint: "invite: a one-line note appended to the /chat:join command" },
       { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb, and is required by away/back/pulse" },
       { name: "Status", flag: "--status", type: "text", placeholder: "rebasing #67", hint: "For sign-in: an away/status message to set on the presence row" },
       { name: "No room", flag: "--no-room", type: "boolean", default: false, hint: "For sign-in: skip joining the derived repository room" },
@@ -720,7 +722,7 @@ export const TREE: Record<string, CommandNode> = {
       { name: "Body file", flag: "--file", type: "text", placeholder: "post.md", hint: "For post/dm: read the body from a file instead of stdin or the text" },
       { name: "As is", flag: "--as-is", type: "boolean", default: false, hint: "For post/dm: post a long single-line body anyway (500+ characters with no line break is refused by default)" },
       { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For sign-out: suppress output (the SessionEnd hook's flag)" },
-      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/post/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/post/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out/invite)" },
     ],
   },
 

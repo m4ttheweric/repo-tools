@@ -47,6 +47,13 @@ let server: ReturnType<typeof Bun.serve> | null = null;
 // Real child processes (spawnChat); reaped in afterEach so a stray tail can't
 // outlive its test.
 const children: Array<ReturnType<typeof Bun.spawn>> = [];
+// Scripted replies for a command, consulted before the real handlers — for
+// commands whose real handler has side effects a unit test must not trigger
+// (chat:invite would actually type into a herdr pane). Reset every test.
+let canned: Record<string, unknown> = {};
+// Every command this fake daemon dispatched, in order, for asserting exactly
+// what a verb sent the daemon.
+let seen: Array<{ cmd: string; payload: unknown }> = [];
 
 beforeEach(() => {
   origHome = process.env.HOME;
@@ -67,11 +74,15 @@ beforeEach(() => {
   const sockDir = join(home, ".mattstack", "rt");
   mkdirSync(sockDir, { recursive: true });
 
+  canned = {};
+  seen = [];
+
   server = Bun.serve({
     unix: join(sockDir, "rt.sock"),
     async fetch(req) {
       const cmd = new URL(req.url).pathname.slice(1);
       const payload = req.method === "POST" ? await req.json() : {};
+      seen.push({ cmd, payload });
       // The tail drives the events bus directly; the CLI-verb harness has no
       // real bus, so stub just enough for a spawned tail to arm and block.
       if (cmd === "events:head") return Response.json({ ok: true, data: { cursor: 0 } });
@@ -79,6 +90,7 @@ beforeEach(() => {
         await Bun.sleep(300); // empty long-poll round; the tail loops and stays alive
         return Response.json({ ok: true, data: { events: [], cursor: 0 } });
       }
+      if (cmd in canned) return Response.json(canned[cmd]);
       const handlers = createChatHandlers({ db: getStateDb(), emitEvent: () => 0 }) as unknown as Record<string, (p: unknown) => Promise<unknown>>;
       const handler = handlers[cmd];
       if (!handler) return Response.json({ ok: false, error: `unknown command: ${cmd}` });
@@ -1028,5 +1040,55 @@ describe("pidfile identity — only a real rt chat tail reads as live", () => {
     expect(__test__.looksLikeRtChatTail("/opt/chat-tail-daemon --serve")).toBe(false);
     expect(__test__.looksLikeRtChatTail("rt chat read")).toBe(false);
     expect(__test__.looksLikeRtChatTail("vim tail-of-a-chat.log")).toBe(false);
+  });
+});
+
+// ─── Task 9: `rt chat read --last N` and `rt chat invite <pane>` ───────────
+
+describe("rt chat CLI — read --last, invite", () => {
+  test("read --last N shows the newest N messages regardless of the cursor, then marks read", async () => {
+    await runChat(["join", "build", "--as", "alice"]);
+    await runChat(["post", "build", "seed one", "--as", "alice"]);
+    await runChat(["post", "build", "seed two", "--as", "alice"]);
+    await runChat(["join", "build", "--as", "bob"]);
+    const nothing = await runChat(["read", "build", "--as", "bob", "--json"]);
+    expect(JSON.parse(nothing).rooms[0]?.messages ?? []).toHaveLength(0);
+    const last = await runChat(["read", "build", "--last", "5", "--as", "bob", "--json"]);
+    expect(JSON.parse(last).rooms[0].messages.map((m: { body: string }) => m.body)).toEqual(["seed one", "seed two"]);
+    const again = await runChat(["read", "build", "--as", "bob", "--json"]);
+    expect(JSON.parse(again).rooms[0]?.messages ?? []).toHaveLength(0);
+  });
+
+  test("read --last refuses --since and a non-positive N", async () => {
+    await runChat(["join", "build", "--as", "alice"]);
+    expect((await runChatRaw(["read", "build", "--last", "5", "--since", "5m", "--as", "alice"])).code).toBe(1);
+    expect((await runChatRaw(["read", "build", "--last", "0", "--as", "alice"])).code).toBe(1);
+  });
+
+  test("read --last requires a room", async () => {
+    expect((await runChatRaw(["read", "--last", "5", "--as", "alice"])).code).toBe(1);
+  });
+
+  test("invite sends the pane, room, note, the human handle when not signed in, and the caller pane", async () => {
+    canned = { "chat:invite": { ok: true, data: { paneId: "w1:p1", delivered: "accepted" } } };
+    process.env.HERDR_PANE_ID = "w9:p9";
+    const out = await runChat(["invite", "w1:p1", "--room", "build", "--note", "take vite"]);
+    expect(out).toContain("accepted");
+    const sent = seen.find((s) => s.cmd === "chat:invite")!;
+    expect(sent.payload).toEqual({ paneId: "w1:p1", room: "build", note: "take vite", from: "matt", callerPane: "w9:p9" });
+  });
+
+  test("invite uses the session's own handle when signed in, and reports refusals with exit 0", async () => {
+    await runChat(["sign-in", "--as", "carol", "--session", "sess-c", "--no-room"]);
+    canned = { "chat:invite": { ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "at a prompt" } } };
+    const r = await runChatRaw(["invite", "w1:p1", "--room", "build", "--session", "sess-c"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("refused: at a prompt");
+    expect((seen.find((s) => s.cmd === "chat:invite")!.payload as { from: string }).from).toBe("carol");
+  });
+
+  test("invite requires a pane and --room", async () => {
+    expect((await runChatRaw(["invite"])).code).toBe(1);
+    expect((await runChatRaw(["invite", "w1:p1"])).code).toBe(1);
   });
 });
