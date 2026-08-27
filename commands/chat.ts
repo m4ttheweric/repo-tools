@@ -25,13 +25,14 @@
  * Spec: docs/superpowers/specs/2026-08-23-rt-chat-design.md
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { homedir, hostname } from "os";
-import { basename, dirname, join, resolve as resolvePath } from "path";
+import { basename, dirname, join } from "path";
 
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
+import { findGitRoot, repoAliasForPath, resolveMainWorktreePath } from "../lib/repo-for-cwd.ts";
 import { getCurrentBranch, getRepoRoot } from "../lib/git.ts";
 import { getRepoIdentityForRoot } from "../lib/repo.ts";
 import { parseIdentity, type RepoIdentity } from "../lib/settings/identity.ts";
@@ -183,79 +184,6 @@ function slugify(raw: string): string {
     .replace(/-{2,}/g, "-")
     .replace(/^[-.]+|[-.]+$/g, "");
   return slug || "x";
-}
-
-function safeRealpath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
-/** Nearest ancestor directory holding a `.git` entry — a plain walk, never a git spawn. */
-function findGitRoot(start: string): string | null {
-  let dir = start;
-  while (true) {
-    if (existsSync(join(dir, ".git"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/**
- * The MAIN worktree path for `worktreeRoot`: itself when `.git` is a real
- * directory, or — for a linked worktree — the repo its `.git` FILE's
- * `gitdir: <main>/.git/worktrees/<slot>` pointer names, parsed by hand
- * (never `git worktree list`). Null when the pointer is stale or foreign
- * (a worktree whose gitdir survived a home-directory move errors with
- * "fatal: not a git repository" under real git) — this is why the
- * resolution order has a position AFTER the repo-name rung: dropping
- * straight to `<user>-<host>` here would give one shared handle to every
- * broken directory on the machine.
- */
-function resolveMainWorktreePath(worktreeRoot: string): string | null {
-  const gitPath = join(worktreeRoot, ".git");
-  let stat;
-  try {
-    stat = statSync(gitPath);
-  } catch {
-    return null;
-  }
-  if (stat.isDirectory()) return worktreeRoot;
-  if (!stat.isFile()) return null;
-
-  let content: string;
-  try {
-    content = readFileSync(gitPath, "utf8");
-  } catch {
-    return null;
-  }
-  const match = /^gitdir:\s*(.+?)\s*$/m.exec(content);
-  if (!match) return null;
-  const gitdir = match[1]!.startsWith("/") ? match[1]! : resolvePath(worktreeRoot, match[1]!);
-
-  // "<main>/.git/worktrees/<slot>" → <main>, three levels up.
-  const mainPath = dirname(dirname(dirname(gitdir)));
-  if (!existsSync(mainPath) || !existsSync(join(mainPath, ".git"))) return null;
-  return mainPath;
-}
-
-/**
- * Reverse lookup: which repos.json alias names `mainWorktreePath`. Index is an
- * explicit param so the derivation stays testable without a real HOME
- * (carry-forward fixture test). Index keys are serialized identities after the
- * RT-62 re-key (`remote:host%2Fpath`) — a wire form whose `%` and `:` the
- * handle charset forbids — so the alias is the key's display label, never the
- * key itself (repoLabel passes a legacy name-keyed row through unchanged).
- */
-function repoAliasForPath(mainWorktreePath: string, index: Record<string, string>): string | null {
-  const target = safeRealpath(mainWorktreePath);
-  for (const [name, path] of Object.entries(index)) {
-    if (safeRealpath(path) === target) return repoLabel(name);
-  }
-  return null;
 }
 
 /** `<alias>-<cwd-basename>`, or null when `cwd` isn't inside any indexed repo (or the git pointer is broken). */
