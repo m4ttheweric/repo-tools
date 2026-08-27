@@ -118,3 +118,33 @@ test("pane:peek passes herdr's pane_not_found through as an error", async () => 
   const res = await pane["pane:peek"]({ paneId: "w9:p9" });
   expect(res).toEqual({ ok: false, error: "pane_not_found: pane not found" });
 });
+
+test("pane:accounts parses cswap list through the injected exec", async () => {
+  const db = freshDb();
+  const exec = async (argv: [string, ...string[]]) =>
+    argv[1] === "list"
+      ? { stdout: "Accounts:\n  1: a@b.c [A]\n     └ 5h: 3%\n", stderr: "", exitCode: 0 }
+      : { stdout: "", stderr: "", exitCode: 1 };
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), exec });
+  const res = await pane["pane:accounts"]({});
+  expect(res).toEqual({ ok: true, data: { accounts: [{ slot: 1, email: "a@b.c", alias: "A", headroom: "5h 3%" }] } });
+});
+
+test("pane:directories lists indexed repos and their registered worktrees, filtered by q", async () => {
+  const db = freshDb();
+  const pane = createPaneHandlers({
+    db,
+    repoIndex: () => ({ "remote:gitlab.com%2Facme%2Facme-dev": "/repos/acme-dev", "remote:github.com%2Fm%2Fchat": "/repos/chat" }),
+    registry: (name) => (name.endsWith("acme-dev") ? [{ path: "/repos/acme-dev-wt-1", branch: "feat/one" }] : []),
+  });
+  const all = await pane["pane:directories"]({});
+  if (!all.ok) throw new Error(all.error);
+  expect(all.data.directories).toEqual([
+    { path: "/repos/acme-dev", repo: "acme-dev" },
+    { path: "/repos/acme-dev-wt-1", repo: "acme-dev", branch: "feat/one" },
+    { path: "/repos/chat", repo: "chat" },
+  ]);
+  const filtered = await pane["pane:directories"]({ q: "wt-1" });
+  if (!filtered.ok) throw new Error(filtered.error);
+  expect(filtered.data.directories.map((d) => d.path)).toEqual(["/repos/acme-dev-wt-1"]);
+});

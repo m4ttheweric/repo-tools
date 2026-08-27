@@ -3,11 +3,14 @@
  * lib/herdr/client.ts owns the socket; this module owns the join.
  */
 import type { Database } from "bun:sqlite";
-import type { AgentStatus, BuddyStatus, ChatPane, Commands } from "../../../packages/rt-client/src/commands.ts";
+import type { AgentStatus, BuddyStatus, ChatPane, Commands, PaneDirectory } from "../../../packages/rt-client/src/commands.ts";
+import { listCswapAccounts } from "../../cswap.ts";
 import { HERDR_UNAVAILABLE, herdrRequest, type HerdrResult } from "../../herdr/client.ts";
+import { repoLabel } from "../../repo-label.ts";
 import { branchForCwd, repoForCwd } from "../../repo-for-cwd.ts";
 import { listBuddies, listRooms, type PresenceRow } from "../../state/index.ts";
 import { runCapture } from "../../subprocess.ts";
+import { loadRegistry } from "../../worktree/registry.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
 
 export interface HerdrPane {
@@ -104,11 +107,13 @@ export function createPaneHandlers(opts: {
   herdr?: typeof herdrRequest;
   exec?: typeof runCapture;
   now?: () => number;
-}): Pick<TypedHandlers, "pane:list" | "pane:peek"> & { db: Database } {
+  registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
+}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories"> & { db: Database } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const exec = opts.exec ?? runCapture;
   const now = opts.now ?? Date.now;
+  const registry = opts.registry ?? ((name: string) => loadRegistry(name));
 
   async function snapshot(): Promise<HerdrResult<{ snapshot: HerdrSnapshot }>> {
     return herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
@@ -138,6 +143,28 @@ export function createPaneHandlers(opts: {
       const lines = res.result.read.text.split("\n");
       while (lines.length && lines[lines.length - 1]!.trim() === "") lines.pop();
       return { ok: true, data: { paneId: payload.paneId, lines } };
+    },
+
+    "pane:accounts": async (): Promise<CommandResult<"pane:accounts">> => {
+      return { ok: true, data: { accounts: await listCswapAccounts(exec) } };
+    },
+
+    "pane:directories": async (payload: Commands["pane:directories"]["payload"]): Promise<CommandResult<"pane:directories">> => {
+      const q = payload.q?.toLowerCase();
+      const seen = new Set<string>();
+      const out: PaneDirectory[] = [];
+      const push = (d: PaneDirectory) => {
+        if (seen.has(d.path)) return;
+        if (q && !d.path.toLowerCase().includes(q)) return;
+        seen.add(d.path);
+        out.push(d);
+      };
+      for (const [name, path] of Object.entries(repoIndex()).sort(([, a], [, b]) => a.localeCompare(b))) {
+        const repo = repoLabel(name);
+        push({ path, repo });
+        for (const tree of registry(name)) push({ path: tree.path, repo, ...(tree.branch ? { branch: tree.branch } : {}) });
+      }
+      return { ok: true, data: { directories: out } };
     },
   };
 }
