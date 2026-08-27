@@ -99,10 +99,30 @@ export async function servicesRegister(args: string[], _ctx: CommandContext = {}
   if (!ok) exitWith(deps, 1);
 }
 
+async function registeredAgents(deps: ServicesDeps): Promise<ServiceAgent[]> {
+  const res = await deps.probes.tray<{ agents: ServiceAgent[] }>("/services", { method: "GET" });
+  const agents = res.status === 200 ? res.json?.agents : undefined;
+  return Array.isArray(agents) ? agents : [];
+}
+
 export async function servicesRestart(args: string[], _ctx: CommandContext = {}, deps: ServicesDeps = realServicesDeps()): Promise<void> {
   const json = args.includes("--json");
-  const label = args.find((a) => !a.startsWith("--"));
-  if (!label) exitUserError(new UserActionableError("usage", "usage: rt services restart <label> [--json]"), json, "services restart", deps.print);
+  let label = args.find((a) => !a.startsWith("--"));
+  if (!label) {
+    const agents = process.stdin.isTTY && !json && !process.env.RT_BATCH ? await registeredAgents(deps) : [];
+    if (agents.length > 0) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const picked = await filterableSelect({
+        message: "Restart which service?",
+        options: agents.map((a) => ({ value: a.label, label: a.label, hint: a.status })),
+        stderr: true,
+      });
+      if (!picked) process.exit(0);
+      label = picked;
+    } else {
+      exitUserError(new UserActionableError("usage", "usage: rt services restart <label> [--json]"), json, "services restart", deps.print);
+    }
+  }
 
   const res = await deps.probes.tray<{ ok: boolean }>("/services/restart", { method: "POST", body: { label } });
   if (res.status === 0) appNotRunning(json, "services restart", deps);

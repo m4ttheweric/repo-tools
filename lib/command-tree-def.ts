@@ -204,6 +204,7 @@ export const TREE: Record<string, CommandNode> = {
             description: "Rebase onto a specific branch",
             module: "./commands/git/rebase.ts",
             fn: "ontoCommand",
+            omitBehavior: "picker",
             context: "worktree",
             args: [
               { name: "Branch", type: "text", placeholder: "main", hint: "Branch to rebase onto" },
@@ -746,6 +747,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Show where a tool actually runs from — bundled, a user copy on PATH, or unresolved",
         module: "./commands/deps.ts",
         fn: "depsResolve",
+        omitBehavior: "picker",
         args: [
           { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name (rt, gh, fast-browser, gitq, deck, ...)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the envelope as JSON" },
@@ -755,6 +757,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Expose a bundled tool at ~/.local/bin/<tool> (symlink, or a tagged wrapper for multi-argv tools)",
         module: "./commands/deps.ts",
         fn: "depsLink",
+        omitBehavior: "picker",
         args: [
           { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name to link" },
           { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Replace an existing user copy or unrelated file at the link path" },
@@ -765,6 +768,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Remove a tagged link (only ever removes rt's own links, never a user's file)",
         module: "./commands/deps.ts",
         fn: "depsUnlink",
+        omitBehavior: "picker",
         args: [
           { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name to unlink" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
@@ -975,6 +979,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Claim a zone so the daemon leaves it for you to commit by hand",
         module: "./commands/home.ts",
         fn: "homeClaim",
+        omitBehavior: "prompt",
         args: [
           {
             name: "Zone",
@@ -991,6 +996,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Release a claimed zone so the daemon resumes auto-committing it",
         module: "./commands/home.ts",
         fn: "homeRelease",
+        omitBehavior: "picker",
         args: [
           { name: "Zone", type: "text", placeholder: "prefs/", hint: "Zone to release" },
         ],
@@ -1042,6 +1048,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Add repo paths to the rt index, optionally granting background tracking",
         module: "./commands/repos.ts",
         fn: "reposRegister",
+        omitBehavior: "picker",
         args: [
           { name: "Path", type: "text", placeholder: "/path/to/repo", hint: "Repo path to register (pass more than one to register several at once)" },
           { name: "Track", flag: "--track", type: "select", options: [{ value: "live", label: "live" }, { value: "poll", label: "poll" }], hint: "Grant background tracking at this level; omit to register without tracking" },
@@ -1313,6 +1320,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Ask mattstack.app to restart a registered LaunchAgent",
         module: "./commands/services.ts",
         fn: "servicesRestart",
+        omitBehavior: "picker",
         args: [
           { name: "Label", type: "text", placeholder: "com.mattstack.daemon", hint: "LaunchAgent label" },
           SETUP_JSON_ARG,
