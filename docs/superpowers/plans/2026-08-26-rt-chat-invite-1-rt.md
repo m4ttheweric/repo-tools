@@ -1231,7 +1231,7 @@ export function launchCommand(a: { cwd: string; account?: string; model?: string
     },
 ```
 
-`now` is `Date.now` in production; the tests pass a fixed `now`, so replace the register loop's `now() < registerDeadline` with a counter when `opts.now` is injected: simplest is to compute attempts as `Math.ceil(REGISTER_BUDGET_MS / REGISTER_POLL_MS)` and loop by count with `Bun.sleep(REGISTER_POLL_MS)`, which works under both. Use the count loop.
+Write the registration poll as a count loop rather than a deadline: `Math.ceil(REGISTER_BUDGET_MS / REGISTER_POLL_MS)` attempts, each `Bun.sleep(REGISTER_POLL_MS)` apart, so it does not depend on the injected `now`.
 
 - [ ] **Step 6: Run the tests**
 
