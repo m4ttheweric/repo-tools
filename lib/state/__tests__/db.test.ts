@@ -74,10 +74,10 @@ const ALL_TABLE_NAMES = [
 ];
 
 describe("openStateDb — fresh open", () => {
-  test("a fresh database reaches v7 directly, gaining every v1, v2, v3, v4, v6, and v7 table", () => {
+  test("a fresh database reaches v8 directly, gaining every v1, v2, v3, v4, v6, v7, and v8 change", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
-    expect(SCHEMA_VERSION).toBe(7);
+    expect(SCHEMA_VERSION).toBe(8);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
     db.close();
@@ -96,7 +96,7 @@ describe("openStateDb — fresh open", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms','chat_room_defaults')").all(),
     ).toHaveLength(3);
-    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 7 });
+    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 8 });
     db.close();
   });
 });
@@ -110,6 +110,26 @@ describe("openStateDb — replay over an older user_version", () => {
     const db = openStateDb(dbPath, "cli");
     db.exec("PRAGMA user_version = 3;");
     db.close();
+    expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
+  });
+
+  test("v8 adds chat_rooms.archived_at to a v6 database without touching its rows", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.exec("INSERT INTO chat_rooms (name, created_at) VALUES ('build', 1);");
+    // A real v6 file has no such column; SQLite >= 3.35 can drop one, which is
+    // what makes this fixture honest rather than a fresh v7 relabelled.
+    db.exec("ALTER TABLE chat_rooms DROP COLUMN archived_at;");
+    db.exec("PRAGMA user_version = 6;");
+    db.close();
+
+    const migrated = openStateDb(dbPath, "cli");
+    expect(userVersion(migrated)).toBe(8);
+    const columns = (migrated.query("PRAGMA table_info(chat_rooms);").all() as { name: string }[]).map(c => c.name);
+    expect(columns).toContain("archived_at");
+    expect(migrated.query("SELECT name, archived_at FROM chat_rooms;").all()).toEqual([{ name: "build", archived_at: null }]);
+    migrated.close();
+
     expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
   });
 });
@@ -156,13 +176,13 @@ function buildV1Fixture(path: string): Database {
   return db;
 }
 
-describe("openStateDb — v1 database migrates to v7", () => {
-  test("existing v1 rows survive, and v2's, v3's, v4's, v6's, and v7's new tables appear alongside them", () => {
+describe("openStateDb: v1 database migrates to v8", () => {
+  test("existing v1 rows survive, and v2's, v3's, v4's, v6's, v7's, and v8's new tables and columns appear alongside them", () => {
     const dbPath = join(dir, "state.db");
     buildV1Fixture(dbPath);
 
     const db = openStateDb(dbPath, "cli");
-    expect(userVersion(db)).toBe(7);
+    expect(userVersion(db)).toBe(8);
     expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
 
     const branchRow = db.query("SELECT branch, repo, linear_id, fetched_at FROM branch_cache WHERE branch = ?;").get("main");
@@ -419,7 +439,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     // unrelated exports (reading SCHEMA_VERSION, pushing to LEGACY_IMPORTS)
     // never opens or creates a db file on its own.
     const before = SCHEMA_VERSION;
-    expect(before).toBe(7);
+    expect(before).toBe(8);
     LEGACY_IMPORTS.push({ file: "x.json", import: () => {} });
     LEGACY_IMPORTS.length = 0;
     // No db.ts function that touches disk was called above; nothing to assert
