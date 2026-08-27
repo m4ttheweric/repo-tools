@@ -20,6 +20,15 @@ test("parses slots, emails, aliases and a compact headroom summary", () => {
   ]);
 });
 
+test("a headroom label containing a colon still parses", () => {
+  const text = `
+Accounts:
+  1: a@b.c
+     ├ Sub:Label:  50%
+`;
+  expect(parseCswapList(text)).toEqual([{ slot: 1, email: "a@b.c", headroom: "Sub:Label 50%" }]);
+});
+
 test("an empty or unrelated output parses to no accounts", () => {
   expect(parseCswapList("")).toEqual([]);
   expect(parseCswapList("cswap: not found")).toEqual([]);

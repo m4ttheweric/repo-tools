@@ -148,3 +148,21 @@ test("pane:directories lists indexed repos and their registered worktrees, filte
   if (!filtered.ok) throw new Error(filtered.error);
   expect(filtered.data.directories.map((d) => d.path)).toEqual(["/repos/acme-dev-wt-1"]);
 });
+
+test("pane:directories keeps other repos when one repo's registry throws", async () => {
+  const db = freshDb();
+  const pane = createPaneHandlers({
+    db,
+    repoIndex: () => ({ "remote:gitlab.com%2Facme%2Facme-dev": "/repos/acme-dev", "remote:github.com%2Fm%2Fchat": "/repos/chat" }),
+    registry: (name) => {
+      if (name.endsWith("acme-dev")) throw new Error("boom");
+      return [];
+    },
+  });
+  const res = await pane["pane:directories"]({});
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.directories).toEqual([
+    { path: "/repos/acme-dev", repo: "acme-dev" },
+    { path: "/repos/chat", repo: "chat" },
+  ]);
+});

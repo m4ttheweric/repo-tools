@@ -5,7 +5,8 @@ import { runCapture } from "./subprocess.ts";
 
 const ACCOUNT_LINE = /^\s*(\d+):\s+(\S+)(?:\s+\[([^\]]+)\])?/;
 // The `$$` row is spend, not rate-limit headroom; it is skipped on purpose.
-const HEADROOM_LINE = /^\s*[├└]\s+([^:$]+):\s+(\d+)%/;
+// Lazy label capture tolerates a colon inside the label itself (e.g. "Sub:Label:").
+const HEADROOM_LINE = /^\s*[├└]\s+([^$\n]+?):\s+(\d+)%/;
 
 export function parseCswapList(text: string): PaneAccount[] {
   const accounts: PaneAccount[] = [];

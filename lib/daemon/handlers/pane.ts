@@ -162,7 +162,14 @@ export function createPaneHandlers(opts: {
       for (const [name, path] of Object.entries(repoIndex()).sort(([, a], [, b]) => a.localeCompare(b))) {
         const repo = repoLabel(name);
         push({ path, repo });
-        for (const tree of registry(name)) push({ path: tree.path, repo, ...(tree.branch ? { branch: tree.branch } : {}) });
+        // One repo's registry throwing (corrupt kv row, etc.) must not blank every other repo's listing.
+        let trees: Array<{ path: string; branch: string | null | undefined }> = [];
+        try {
+          trees = registry(name);
+        } catch {
+          trees = [];
+        }
+        for (const tree of trees) push({ path: tree.path, repo, ...(tree.branch ? { branch: tree.branch } : {}) });
       }
       return { ok: true, data: { directories: out } };
     },
