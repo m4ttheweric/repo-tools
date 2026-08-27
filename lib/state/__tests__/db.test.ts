@@ -80,6 +80,8 @@ describe("openStateDb — fresh open", () => {
     expect(SCHEMA_VERSION).toBe(8);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
+    const cols = (db.query("PRAGMA table_info(chat_rooms);").all() as { name: string }[]).map(c => c.name);
+    expect(cols).toContain("archived_at");
     db.close();
   });
 

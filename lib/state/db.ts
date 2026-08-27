@@ -175,8 +175,7 @@ const V3_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_rooms (
   name        TEXT PRIMARY KEY,
   purpose     TEXT,
-  created_at  INTEGER NOT NULL,
-  archived_at INTEGER                 -- NULL while open; every membership walk skips a stamped room; a post clears it
+  created_at  INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS chat_messages (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
