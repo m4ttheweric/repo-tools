@@ -125,7 +125,7 @@ Run:
 claude plugin validate "$PWD/plugins/chat" --strict
 claude plugin validate "$PWD" --strict || true
 grep -n $'\xe2\x80\x94\\|\xe2\x80\x93' plugins/chat/skills/join/SKILL.md plugins/chat/.claude-plugin/plugin.json .claude-plugin/marketplace.json && echo "DASHES FOUND" || echo "no dashes in new files"
-git diff -U0 -- plugins/chat/README.md | grep '^+' | grep $'\xe2\x80\x94\|\xe2\x80\x93' && echo "DASHES ADDED" || echo "no dashes added to README"
+git diff -U0 -- plugins/chat/README.md | grep '^+' | grep $'\xe2\x80\x94\\|\xe2\x80\x93' && echo "DASHES ADDED" || echo "no dashes added to README"
 ```
 
 Expected: the plugin validation prints `Validation passed` with no warnings. The marketplace validation prints three pre-existing warnings (no marketplace description; the two symlinked plugins, fast-browser and mattstack, not followed); none is this task's. The two greps print `no dashes in new files` and `no dashes added to README`. (The README, `hooks/pulse.sh` and `hooks/tests/test-pulse.sh` already contain em dashes in text the hook tests assert on; they are out of scope.)
@@ -153,7 +153,7 @@ Run:
 
 ```bash
 rt chat 2>&1 | grep -q invite && echo "rt has invite"
-rt chat read --last 0 2>&1 | grep -q 'positive integer' && echo "rt has --last"
+rt chat read x --last 0 2>&1 | grep -q 'positive integer' && echo "rt has --last"
 herdr workspace list >/dev/null && echo "herdr up"
 rt chat pulse --json | grep -q '"' && echo "this pane is signed in"
 ```
@@ -162,19 +162,18 @@ Expected: all four lines print. If either rt line is missing, stop: part 1 is no
 
 - [ ] **Step 2: Land the branch, then refresh the installed copy**
 
-The marketplace is registered as the directory `~/Documents/GitHub/mattstack-marketplace` (its main checkout) and the install pins a commit, so the branch has to reach `main` there before `claude plugin update` can see `skills/join`. This repo has no CI; the real run below is the verification, and anything it turns up goes on a follow-up branch.
+The marketplace is registered as the directory `~/Documents/GitHub/mattstack-marketplace` (its main checkout) and the install pins a commit, so the branch has to reach `main` there before `claude plugin update` can see `skills/join`. That repo has **no git remote** (its GitHub copy is behind local `main`), so there is no PR to open; the branch lands by a fast-forward merge into the main checkout, which stays on `main` throughout (a fast-forward is not a branch checkout). This repo has no CI; the real run below is the verification, and anything it turns up goes on a follow-up branch merged the same way.
 
 ```bash
-git push -u origin feat/chat-join
-gh pr create --title "chat: join skill, the text rt chat invite types into a pane" --body "Adds /chat:join <room> [note from <handle>: <text>] (spec: repo-tools docs/superpowers/specs/2026-08-26-rt-chat-invite-design.md). Verified by a real run in a herdr pane; evidence in the follow-up comment."
-gh pr merge --merge --delete-branch=false
-git -C ~/Documents/GitHub/mattstack-marketplace pull --ff-only
+git -C ~/Documents/GitHub/mattstack-marketplace status --short | grep . && echo "main checkout dirty: stop" || true
+git -C ~/Documents/GitHub/mattstack-marketplace merge --ff-only feat/chat-join
+git -C ~/Documents/GitHub/mattstack-marketplace log --oneline -1
 claude plugin marketplace update mattstack
 claude plugin update chat@mattstack -y || (claude plugin uninstall chat@mattstack && claude plugin install chat@mattstack -y)
 ls ~/.claude/plugins/cache/mattstack/chat/
 ```
 
-Expected: a `0.2.0` directory listed, containing `skills/join/SKILL.md`. If `gh pr merge` is refused (branch protection), stop and ask Matt to merge; do not check the branch out in the main checkout.
+Expected: the main checkout is clean, the merge fast-forwards to Task 1's commit, and a `0.2.0` directory is listed containing `skills/join/SKILL.md`. If the main checkout is dirty or the merge is not a fast-forward, stop and report; do not check the branch out there and do not force anything.
 
 - [ ] **Step 3: Run the skill in a fresh pane, with a note on the command line**
 
@@ -207,7 +206,7 @@ Expected: the tab is gone from `herdr tab list --workspace "$WS"`.
 
 - [ ] **Step 5: Record the run**
 
-No commit. Post the `rt chat who join-test` and `rt chat read join-test --last 5` output as a comment on the merged PR (`gh pr comment <number> --body-file -`), along with the `$PANE` id and the herdr version (`herdr --version`).
+No commit. Put the `rt chat who join-test` and `rt chat read join-test --last 5` output, the `$PANE` id and the herdr version (`herdr --version`) in your task report; there is no PR to attach it to until the marketplace gets a remote (worth telling Matt: local `main` is ahead of `m4ttstack/mattstack-marketplace` on GitHub, and `git remote add origin` plus a push would let future changes go through PRs).
 
 ---
 
