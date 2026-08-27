@@ -163,6 +163,7 @@ export interface ChatPane {
 
 export interface PaneAccount { slot: number; email: string; alias?: string; headroom?: string }
 export interface PaneDirectory { path: string; repo: string; branch?: string }
+export interface InviteResult { paneId: string; delivered: "accepted" | "queued" | "refused"; reason?: string }
 
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
@@ -313,6 +314,7 @@ export interface Commands {
   "agent:resume": { payload: { id: string; prompt?: string; surface?: AgentSurface }; data: AgentRecord };
   "agent:get": { payload: { id: string }; data: AgentRecord };
   "agent:list": { payload: { repo?: string }; data: { agents: AgentRecord[] } };
+  "chat:invite": { payload: { paneId: string; room: string; note?: string; from: string; callerPane?: string }; data: InviteResult };
   "pane:list": { payload: Record<string, never>; data: { panes: ChatPane[] } };
   "pane:peek": { payload: { paneId: string; lines?: number }; data: { paneId: string; lines: string[] } };
   "pane:accounts": { payload: Record<string, never>; data: { accounts: PaneAccount[] } };
@@ -361,6 +363,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "agent:resume",
   "agent:get",
   "agent:list",
+  "chat:invite",
   "pane:list",
   "pane:peek",
   "pane:accounts",

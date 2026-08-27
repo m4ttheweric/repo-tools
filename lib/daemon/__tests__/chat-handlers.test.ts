@@ -1,11 +1,19 @@
-import { beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../../state/index.ts";
-import { createChatHandlers } from "../handlers/chat.ts";
+import { createChatHandlers, inviteText } from "../handlers/chat.ts";
+import { herdrRequest } from "../../herdr/client.ts";
+import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
 import { drainNotifications, loadNotificationPrefs, peekNotifications, saveNotificationPrefs } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
+
+const stops: Array<() => void> = [];
+afterEach(() => {
+  for (const stop of stops) stop();
+  stops.length = 0;
+});
 
 let n = 0;
 function freshHandlers(emitEvent: (topic: string, payload?: unknown) => number = () => 0) {
@@ -428,4 +436,87 @@ test("chat:who reads an unsigned member as live right after arming, even joined 
   if (!who.ok) throw new Error("unreachable");
   const memberA = who.data.members.find((m) => m.handle === "a");
   expect(memberA?.status).toBe("live");
+});
+
+// ─── chat:invite ──────────────────────────────────────────────────────────
+
+function inviteHarness(handler: FakeHerdrHandler) {
+  const { sock, seen, stop } = fakeHerdr(handler);
+  stops.push(stop);
+  const db = openStateDb(join(tmpdir(), `chat-inv-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: sock });
+  return { h: createChatHandlers({ db, emitEvent: () => 0, herdr }), seen };
+}
+
+const agent = (status: string, kind = "claude") => ({ type: "agent_info", agent: { pane_id: "w1:p1", terminal_id: "t", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: kind, agent_status: status, revision: 1 } });
+
+test("inviteText is one line: the slash command, then the attributed note with newlines collapsed", () => {
+  expect(inviteText("build", "matt")).toBe("/chat:join build");
+  expect(inviteText("build", "fred", "take the\nserver half\n")).toBe("/chat:join build note from fred: take the server half");
+});
+
+test("chat:invite prompts an idle pane and reports accepted when it reaches working", async () => {
+  const { h, seen } = inviteHarness((method, params) => {
+    if (method === "agent.get") return agent("idle");
+    if (method === "agent.prompt") return { type: "agent_prompted", agent: { ...agent("working").agent, text: params.text } };
+    return new HerdrFakeError("invalid_request", method);
+  });
+  const res = await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt", note: "you own vite" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "accepted" } });
+  const prompt = seen.find((s) => s.method === "agent.prompt")!;
+  expect(prompt.params).toEqual({ target: "w1:p1", text: "/chat:join build note from matt: you own vite", wait: { until: ["working"], timeout_ms: 5000 } });
+});
+
+test("chat:invite queues into a working pane without waiting", async () => {
+  const { h, seen } = inviteHarness((method) => {
+    if (method === "agent.get") return agent("working");
+    if (method === "agent.prompt") return { type: "agent_prompted", agent: agent("working").agent };
+    return new HerdrFakeError("invalid_request", method);
+  });
+  const res = await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "queued" } });
+  expect(seen.find((s) => s.method === "agent.prompt")!.params).toEqual({ target: "w1:p1", text: "/chat:join build" });
+});
+
+test("chat:invite refuses a blocked pane without sending anything", async () => {
+  const { h, seen } = inviteHarness((method) => (method === "agent.get" ? agent("blocked") : new HerdrFakeError("invalid_request", method)));
+  const res = await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "at a prompt" } });
+  expect(seen.map((s) => s.method)).toEqual(["agent.get"]);
+});
+
+test("chat:invite nudges Enter once on a stalled prompt, then reports accepted or queued honestly", async () => {
+  let prompts = 0;
+  const { h, seen } = inviteHarness((method) => {
+    if (method === "agent.get") return agent("idle");
+    // herdr answers a stall inside the 5s effect window with `timeout`; `agent_prompt_stalled` needs a longer budget. The handler accepts both.
+    if (method === "agent.prompt") { prompts++; return new HerdrFakeError("timeout", "timed out waiting for agent status"); }
+    if (method === "pane.send_keys") return { type: "ok" };
+    if (method === "agent.wait") return new HerdrFakeError("timeout", "timed out waiting for agent status");
+    return new HerdrFakeError("invalid_request", method);
+  });
+  const res = await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "queued" } });
+  expect(prompts).toBe(1);
+  expect(seen.filter((s) => s.method === "pane.send_keys")).toHaveLength(1);
+});
+
+test("chat:invite refuses a pane that is not a claude pane, the caller's own pane, and a bad room", async () => {
+  const { h } = inviteHarness((method) => (method === "agent.get" ? new HerdrFakeError("agent_not_found", "agent target w1:p1 not found") : new HerdrFakeError("invalid_request", method)));
+  expect(await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" })).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "not a claude pane" } });
+  expect(await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt", callerPane: "w1:p1" })).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "that is this pane" } });
+  const codex = inviteHarness((method) => (method === "agent.get" ? agent("idle", "codex") : new HerdrFakeError("invalid_request", method)));
+  expect(await codex.h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" })).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "not a claude pane" } });
+  const bad = await h["chat:invite"]({ paneId: "w1:p1", room: "Bad Room", from: "matt" });
+  expect(bad.ok).toBe(false);
+});
+
+test("chat:invite is herdr unavailable when the socket is missing", async () => {
+  const db = openStateDb(join(tmpdir(), `chat-inv-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: join(tmpdir(), "absent-herdr.sock") });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr });
+  const res = await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error.startsWith("herdr unavailable")).toBe(true);
 });
