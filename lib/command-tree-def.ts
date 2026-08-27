@@ -695,8 +695,8 @@ export const TREE: Record<string, CommandNode> = {
     ],
   },
 
-  // Self-dispatching leaf: chat() routes its own verbs (join/leave/post/read/
-  // rooms/who/mark/tail/sign-in/sign-out/away/back/buddies/dm/pulse/invite),
+  // Self-dispatching leaf: chat() routes its own verbs (join/leave/archive/
+  // post/read/rooms/who/mark/tail/sign-in/sign-out/away/back/buddies/dm/pulse/invite),
   // so all args flow through rather than a subcommand map.
   chat: {
     description: "Group chat for agents and their human, over the rt daemon",
@@ -704,11 +704,12 @@ export const TREE: Record<string, CommandNode> = {
     fn: "chat",
     omitBehavior: "picker",
     args: [
-      { name: "Verb", type: "text", placeholder: "join | leave | post | read | rooms | who | mark | tail | sign-in | sign-out | away | back | buddies | dm | pulse | invite", hint: "The chat action to run" },
-      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/post/read/who/mark; the target handle for dm; the pane id for invite; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/pulse/back/away, which take no room" },
+      { name: "Verb", type: "text", placeholder: "join | leave | archive | post | read | rooms | who | mark | tail | sign-in | sign-out | away | back | buddies | dm | pulse | invite", hint: "The chat action to run" },
+      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/pulse/back/away, which take no room" },
       { name: "Text", type: "text", optional: true, placeholder: "@handle message", hint: "A one-line message body (every word after the room/handle) — post, dm; leave it out and feed the body on stdin (a heredoc) so paragraphs and lists survive; away takes this directly, with no room before it" },
       { name: "As handle", flag: "--as", type: "text", placeholder: "repo-tools-main", hint: "Override the derived handle for this invocation; refused while signed in (sign out first)" },
       { name: "Wake on", flag: "--wake-on", type: "text", placeholder: "mention | all | none", hint: "For join: when this handle's tail wakes (default mention)" },
+      { name: "Reopen", flag: "--reopen", type: "boolean", default: false, hint: "For archive: clear the archive instead of setting it" },
       { name: "Limit", flag: "--limit", type: "text", placeholder: "20", hint: "For read: max messages (default 20)" },
       { name: "Since", flag: "--since", type: "text", placeholder: "5m", hint: "For read: a non-advancing peek at messages newer than this duration" },
       { name: "Last", flag: "--last", type: "text", optional: true, placeholder: "10", hint: "read: the newest N messages regardless of your cursor, then mark read" },
@@ -722,7 +723,7 @@ export const TREE: Record<string, CommandNode> = {
       { name: "Body file", flag: "--file", type: "text", placeholder: "post.md", hint: "For post/dm: read the body from a file instead of stdin or the text" },
       { name: "As is", flag: "--as-is", type: "boolean", default: false, hint: "For post/dm: post a long single-line body anyway (500+ characters with no line break is refused by default)" },
       { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For sign-out: suppress output (the SessionEnd hook's flag)" },
-      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/post/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out/invite)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/archive/post/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out/invite)" },
     ],
   },
 
