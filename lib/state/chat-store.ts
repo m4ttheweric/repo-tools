@@ -271,6 +271,7 @@ export function listRooms(
   });
 }
 
+/** Tri-state: a timestamp means archived, null means open, undefined means no such room (archiveRoom's existence check relies on that undefined). */
 export function roomArchivedAt(room: string, db: Database = getStateDb()): number | null | undefined {
   const row = db.query(SELECT_ROOM_ARCHIVED_SQL).get(room) as { archived_at: number | null } | null;
   return row ? row.archived_at : undefined;

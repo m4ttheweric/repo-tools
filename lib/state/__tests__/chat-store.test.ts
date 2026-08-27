@@ -317,6 +317,24 @@ test("archive refuses a room that does not exist, reopen clears the stamp, and b
   expect(listRooms("a", db).map(r => r.room)).toEqual(["build"]);
 });
 
+test("room-less markRead skips an archived room, naming it still clears the cursor", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  joinRoom({ room: "other", handle: "a" }, db);
+  joinRoom({ room: "other", handle: "b" }, db);
+  postMessage({ room: "build", handle: "a", body: "skip me" }, db);
+  postMessage({ room: "other", handle: "a", body: "clear me" }, db);
+  archiveRoom("build", true, db);
+  archiveRoom("other", true, db);
+
+  markRead("b", undefined, db);
+  expect(readUnread({ handle: "b", room: "build", limit: 20 }, db)).toHaveLength(1);
+
+  markRead("b", "other", db);
+  expect(readUnread({ handle: "b", room: "other", limit: 20 }, db)).toHaveLength(0);
+});
+
 test("join by name does not revive an archived room", () => {
   const db = freshDb();
   joinRoom({ room: "build", handle: "a" }, db);

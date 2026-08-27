@@ -606,7 +606,7 @@ test("chat:dm-open refuses a self DM, an invalid handle, and an empty humanHandl
 });
 
 test("chat:dm-open refuses a reclaimed sender the same way chat:dm does", async () => {
-  // Same setup as `chat:dm refuses a reclaimed sender` (line 325): the
+  // Same setup as `chat:dm refuses a reclaimed sender`: the
   // first session goes stale, a second session claims the handle, and the
   // stale session's own id no longer owns it.
   const h = freshHandlers();
