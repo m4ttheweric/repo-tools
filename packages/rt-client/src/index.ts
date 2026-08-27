@@ -30,6 +30,10 @@ export {
   chatPulse,
   chatDm,
   eventsHead,
+  agentStart,
+  agentResume,
+  agentGet,
+  agentList,
 } from "./client.ts";
 
 export { COMMAND_NAMES } from "./commands.ts";
@@ -58,6 +62,8 @@ export type {
   RoomSummary,
   BuddyStatus,
   PresenceRow,
+  AgentRecord,
+  AgentSurface,
 } from "./commands.ts";
 
 export { subscribe, createRelay, DEFAULT_WS_URL } from "./relay.ts";

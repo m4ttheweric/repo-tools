@@ -5,11 +5,13 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { rebaseOnto, type RebaseResult } from "../../commands/git/rebase.ts";
+import type { HerdrRunner } from "../agent-herdr.ts";
 import {
   buildConflictBundle,
   renderAgentTask,
   renderHumanReport,
   resolveEscalationMode,
+  runEscalationFlow,
   verifyRebaseCompleted,
   writeTaskFile,
 } from "../rebase-escalation.ts";
@@ -182,4 +184,102 @@ describe("resolveEscalationMode", () => {
     expect(resolveEscalationMode([], true)).toBe("interactive");
     expect(resolveEscalationMode(["--agent"], true)).toBe("interactive");
   });
+});
+
+function scriptedHerdr(
+  overrides: Record<string, { stdout: string; exitCode?: number }> = {},
+): { calls: string[][]; runner: HerdrRunner } {
+  const calls: string[][] = [];
+  const responses: Record<string, { stdout: string; exitCode?: number }> = {
+    "workspace list": { stdout: JSON.stringify({ result: { workspaces: [] } }) },
+    "workspace create": {
+      stdout: JSON.stringify({ result: { root_pane: { pane_id: "p1", tab_id: "t1", workspace_id: "w1" } } }),
+    },
+    ...overrides,
+  };
+  const runner: HerdrRunner = async (args) => {
+    calls.push(args);
+    const r = responses[args.slice(0, 2).join(" ")] ?? { stdout: "" };
+    return { stdout: r.stdout, exitCode: r.exitCode ?? 0 };
+  };
+  return { calls, runner };
+}
+
+describe("runEscalationFlow (agent path)", () => {
+  // Regression coverage for the herdr-agent.ts migration: the old driver
+  // emitted the removed `wait agent-status` verb, so every agent-path
+  // assertion below pins the current `agent wait --until` verb instead.
+  test("agent resolves the conflict: launches via herdr, waits, verifies from git state", async () => {
+    const repo = makeConflictRepo();
+    const result = await pausedConflict(repo);
+    writeFileSync(join(repo, "app.txt"), "merged change\n");
+    sh("git add app.txt", repo);
+    sh("GIT_EDITOR=true git -c user.email=t@t -c user.name=t rebase --continue", repo);
+
+    const { calls, runner } = scriptedHerdr();
+    const code = await runEscalationFlow({
+      cwd: repo,
+      dataDir: join(tmpRoot, "data"),
+      repoName: "myrepo",
+      result,
+      mode: "interactive",
+      autoYes: true,
+      push: false,
+      herdrRunner: runner,
+    });
+
+    expect(code).toBe(0);
+    expect(calls.some((c) => c[0] === "wait" && c[1] === "agent-status")).toBe(false);
+    expect(calls.some((c) => c[0] === "agent" && c[1] === "wait")).toBe(true);
+    expect(calls).toContainEqual(["agent", "wait", "p1", "--until", "idle", "--until", "done", "--timeout", "600000"]);
+  }, 20_000);
+
+  test("agent wait times out: reports and reads the pane, never the removed verb", async () => {
+    const repo = makeConflictRepo();
+    const result = await pausedConflict(repo);
+
+    const { calls, runner } = scriptedHerdr({
+      "agent wait": { stdout: "", exitCode: 1 },
+      "pane read": { stdout: "last pane output" },
+    });
+    const code = await runEscalationFlow({
+      cwd: repo,
+      dataDir: join(tmpRoot, "data"),
+      repoName: "myrepo",
+      result,
+      mode: "interactive",
+      autoYes: true,
+      push: false,
+      herdrRunner: runner,
+    });
+
+    expect(code).toBe(1);
+    expect(calls.some((c) => c[0] === "wait" && c[1] === "agent-status")).toBe(false);
+    expect(calls).toContainEqual(["pane", "read", "p1", "--source", "recent"]);
+  }, 20_000);
+
+  test("an existing rebase tab is focused, not waited on: no wait against an empty pane id", async () => {
+    const repo = makeConflictRepo();
+    const result = await pausedConflict(repo);
+
+    const { calls, runner } = scriptedHerdr({
+      "workspace list": { stdout: JSON.stringify({ result: { workspaces: [{ workspace_id: "w1", label: "myrepo" }] } }) },
+      "tab list": { stdout: JSON.stringify({ result: { tabs: [{ tab_id: "t9", label: "rebase feature" }] } }) },
+    });
+    const code = await runEscalationFlow({
+      cwd: repo,
+      dataDir: join(tmpRoot, "data"),
+      repoName: "myrepo",
+      result,
+      mode: "interactive",
+      autoYes: true,
+      push: false,
+      herdrRunner: runner,
+    });
+
+    expect(code).toBe(1);
+    expect(calls.some((c) => c[0] === "tab" && c[1] === "focus")).toBe(true);
+    expect(calls.some((c) => c[0] === "agent" && c[1] === "wait")).toBe(false);
+    expect(calls).not.toContainEqual(["agent", "wait", "", "--until", "idle", "--until", "done", "--timeout", "600000"]);
+  }, 20_000);
 });

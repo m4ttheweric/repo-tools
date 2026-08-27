@@ -192,6 +192,18 @@ export interface RunFieldRow { key: string; value: string; produced_by: string; 
 export interface RunDecisionRow { contract: string; scope: string; selection: string; decided_by: string; decided_at: number; }
 export interface RunDetail { run: RunSummary; stages: RunStageRow[]; fields: RunFieldRow[]; decisions: RunDecisionRow[]; schemaAhead: boolean; }
 
+export type AgentSurface = "herdr" | "headless";
+
+export interface AgentRecord {
+  id: string; repo: string; cwd: string; provider: string;
+  surface: AgentSurface; sessionId: string;
+  model?: string; effort?: string; account?: string;
+  label?: string; caller?: string;
+  paneId?: string; tabId?: string; workspaceId?: string;
+  extraArgs?: string; exitCode?: number; resultPath?: string;
+  createdAt: number; lastResumedAt?: number; finishedAt?: number;
+}
+
 export interface Commands {
   "project-mrs:read": { payload: { repoName: string; maxAgeMs?: number; demand?: DemandDecl }; data: ProjectMRsData };
   "discussions:read": { payload: { repoName: string; iid: number }; data: DiscussionsData };
@@ -277,6 +289,12 @@ export interface Commands {
     data: { unread: { dms: number; mentions: number; rooms: number }; status: BuddyStatus };
   };
   "chat:dm": { payload: { from: string; to: string; body: string; sessionId?: string }; data: { room: string; id: number; recipients: string[] } };
+
+  // ─── Agent handoff (rt agent) ────────────────────────────────────────────
+  "agent:start": { payload: { repo: string; cwd: string; prompt?: string; surface?: AgentSurface; model?: string; effort?: string; account?: string; label?: string; caller?: string; workspace?: string; tab?: string; extraArgs?: string }; data: AgentRecord };
+  "agent:resume": { payload: { id: string; prompt?: string; surface?: AgentSurface }; data: AgentRecord };
+  "agent:get": { payload: { id: string }; data: AgentRecord };
+  "agent:list": { payload: { repo?: string }; data: { agents: AgentRecord[] } };
 }
 
 export type CommandName = keyof Commands;
@@ -313,4 +331,8 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "chat:buddies",
   "chat:pulse",
   "chat:dm",
+  "agent:start",
+  "agent:resume",
+  "agent:get",
+  "agent:list",
 ];

@@ -447,7 +447,7 @@ export function startDaemon(): void {
       withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
       refreshWatchedRepos: hooksGuard.refreshWatchedRepos,
     },
-    chatDb: getStateDb("daemon"),
+    stateDb: getStateDb("daemon"),
   });
 
   // No waiter outlives the daemon, so every armed_at set at boot is stale;

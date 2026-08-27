@@ -53,6 +53,7 @@ function tableNames(db: Database): string[] {
 }
 
 const ALL_TABLE_NAMES = [
+  "agents",
   "branch_cache",
   "chat_dms",
   "chat_members",
@@ -73,10 +74,10 @@ const ALL_TABLE_NAMES = [
 ];
 
 describe("openStateDb — fresh open", () => {
-  test("a fresh database reaches v6 directly, gaining every v1, v2, v3, v4, and v6 table (v5 is reserved by another lane)", () => {
+  test("a fresh database reaches v7 directly, gaining every v1, v2, v3, v4, v6, and v7 table", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
-    expect(SCHEMA_VERSION).toBe(6);
+    expect(SCHEMA_VERSION).toBe(7);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
     expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
     db.close();
@@ -95,7 +96,7 @@ describe("openStateDb — fresh open", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms','chat_room_defaults')").all(),
     ).toHaveLength(3);
-    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 6 });
+    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 7 });
     db.close();
   });
 });
@@ -155,13 +156,13 @@ function buildV1Fixture(path: string): Database {
   return db;
 }
 
-describe("openStateDb — v1 database migrates to v6", () => {
-  test("existing v1 rows survive, and v2's, v3's, v4's, and v6's new tables appear alongside them", () => {
+describe("openStateDb — v1 database migrates to v7", () => {
+  test("existing v1 rows survive, and v2's, v3's, v4's, v6's, and v7's new tables appear alongside them", () => {
     const dbPath = join(dir, "state.db");
     buildV1Fixture(dbPath);
 
     const db = openStateDb(dbPath, "cli");
-    expect(userVersion(db)).toBe(6);
+    expect(userVersion(db)).toBe(7);
     expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
 
     const branchRow = db.query("SELECT branch, repo, linear_id, fetched_at FROM branch_cache WHERE branch = ?;").get("main");
@@ -222,15 +223,15 @@ describe("openStateDb — reopen is a no-op", () => {
     db2.close();
   });
 
-  test("a future SCHEMA_VERSION bump replaying the full DDL string against an already-v6 db does not throw on the sections column", () => {
+  test("a future SCHEMA_VERSION bump replaying the full DDL string against an already-v7 db does not throw on the sections column", () => {
     const dbPath = join(dir, "state.db");
     const db1 = openStateDb(dbPath, "cli");
     expect(userVersion(db1)).toBe(SCHEMA_VERSION);
     db1.close();
 
     // Force user_version back below SCHEMA_VERSION on a db that already has
-    // the v6 shape (sections column included) -- exactly what every existing
-    // v6 db looks like to a future SCHEMA_VERSION bump, whose migration
+    // the v7 shape (sections column included) -- exactly what every existing
+    // v7 db looks like to a future SCHEMA_VERSION bump, whose migration
     // re-execs this same combined DDL string.
     const raw = new Database(dbPath);
     raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1};`);
@@ -418,7 +419,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     // unrelated exports (reading SCHEMA_VERSION, pushing to LEGACY_IMPORTS)
     // never opens or creates a db file on its own.
     const before = SCHEMA_VERSION;
-    expect(before).toBe(6);
+    expect(before).toBe(7);
     LEGACY_IMPORTS.push({ file: "x.json", import: () => {} });
     LEGACY_IMPORTS.length = 0;
     // No db.ts function that touches disk was called above; nothing to assert

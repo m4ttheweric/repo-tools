@@ -998,7 +998,7 @@ function candidateDataDirName(name: string, composite: boolean): string {
 
 /**
  * `execSync`'s `env` is passed explicitly (not left to the default) for the
- * same reason documented in lib/herdr-agent.ts: Bun resolves the executable
+ * same reason documented in lib/agent-herdr.ts: Bun resolves the executable
  * path from a startup snapshot of the environment otherwise, ignoring PATH
  * mutated at runtime — a test that fakes `git` on PATH would silently hit
  * the real binary without this. This is the only git spawn the scan

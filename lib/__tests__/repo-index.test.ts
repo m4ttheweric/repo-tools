@@ -102,9 +102,8 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   }
 
   /** A fake `git` on PATH that logs every invocation and always answers
-   *  "main"/exit 0 — mirrors the PATH-fake convention in
-   *  lib/__tests__/herdr-agent.test.ts, and relies on the same explicit
-   *  `env: process.env` fix documented on repo-index.ts's `branchOf`. */
+   *  "main"/exit 0. Relies on the same explicit `env: process.env` fix
+   *  documented on repo-index.ts's `branchOf`. */
   function fakeGit(): { callsLog: string; restore: () => void } {
     const binDir = mkdtempSync(join(tmpdir(), "rt-repoindex-git-bin-"));
     const callsLog = join(binDir, "calls.log");
