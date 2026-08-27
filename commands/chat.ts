@@ -1461,6 +1461,7 @@ const VERB_HINTS: Record<string, string> = {
   join: "join a room",
   leave: "leave a room",
   mark: "mark a room read",
+  archive: "park a room (post revives it)",
   tail: "stream wakes for this handle",
   "sign-in": "sign in and set presence",
   "sign-out": "sign out",
