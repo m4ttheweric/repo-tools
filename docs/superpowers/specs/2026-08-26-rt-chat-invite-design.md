@@ -5,9 +5,9 @@ Where this document disagrees with either, this one wins; the sections it
 revises are named under **What this changes in the base designs**.
 
 Mockups: https://claude.ai/code/artifact/93d55ea7-54c1-4866-9685-bdc3b605661b
-(three artboards: the New room form, the standalone PanePicker, entry points
-and the returned payload). Their generator lands in the chat repo's
-`design/build.py` with the viewer PR.
+(four artboards: the New room form, the standalone PanePicker, the New pane
+form inside it, entry points and the returned payload). Their generator lands
+in the chat repo's `design/build.py` with the viewer PR.
 
 ## Problem
 
@@ -50,7 +50,7 @@ Ratified in brainstorming, 2026-08-26:
 2. **The seed message is the brief.** One message, posted as the human when
    the room is created, visible in the transcript to anyone who opens the
    room later. A per-pane note is optional and rides the injected command.
-3. **The primitives live in rt** (`chat:panes`, `chat:invite`, `read --last`),
+3. **The primitives live in rt** (`pane:list`, `chat:invite`, `read --last`),
    called by the viewer through rt-client and by agents through the CLI.
    Rejected: the viewer's server talking to herdr on its own (agents would
    then depend on the viewer being up, and the pane/presence join would be
@@ -79,6 +79,14 @@ Ratified in brainstorming, 2026-08-26:
    `AskUserQuestion` forms: which pane, what room name, what seed. A wrong
    invite derails someone else's turn, and the herdr doorbell hook already
    rings on a form, so the confirmation is cheap for Matt.
+10. **The picker can start a pane.** A `new pane` form (directory, cswap
+    account, model, effort, optional opening prompt) runs the launch
+    sequence `remote-agent.sh` and shepherdr's `spawn-agent.sh` already do
+    by hand, and the new pane joins the list as `starting` until Claude is
+    idle. That is what lets a whole fleet be assembled from the chat instead
+    of one terminal at a time. The verbs live under `rt pane` (list, peek,
+    spawn), since they are herdr concerns rt already has helpers for;
+    `invite` stays under `rt chat` because it is about a room.
 
 ## The primitives (rt)
 
@@ -87,14 +95,15 @@ Ratified in brainstorming, 2026-08-26:
 `herdrAvailable()`: the socket at `HERDR_SOCKET_PATH`, else
 `~/.config/herdr/herdr.sock`, exists and answers `session.snapshot`. The
 daemon runs outside any pane, so the path is configured, never inherited.
-Both new verbs answer `{ ok: false, error: "herdr unavailable" }` when the
-gate fails; nothing else about their shape changes. The daemon speaks herdr's
-newline-delimited JSON directly over the socket, one connection per call,
-5s timeout per call. No shell-out.
+Every `pane:*` verb and `chat:invite` answer `{ ok: false, error: "herdr
+unavailable" }` when the gate fails; nothing else about their shape changes.
+The daemon speaks herdr's newline-delimited JSON directly over the socket,
+one connection per call, 5s timeout per call. No shell-out to `herdr`; the
+one shell-out in this feature is `cswap list` for the account roster.
 
-### `chat:panes`
+### `pane:list`
 
-`rt chat panes [--json]`, rt-client `chatPanes()`. One row per herdr pane
+`rt pane list [--json]`, rt-client `paneList()`. One row per herdr pane
 whose `agent === "claude"`, joined to presence:
 
 ```ts
@@ -118,12 +127,43 @@ handle's membership list (`listRooms`), so a caller can mark "already in
 #build" without a second call. Sort order for humans: listening, idle, deaf,
 not signed in; within a group, herdr's pane order.
 
-### `chat:pane-peek`
+### `pane:peek`
 
-`rt chat panes --peek <pane> [--lines 8]`, rt-client `chatPanePeek()`.
-Returns `{ paneId, lines: string[] }`, herdr `pane.read` of the visible
-screen, trailing blank lines dropped. Read on demand only; never as part of
-`chat:panes`.
+`rt pane peek <pane> [--lines 8]`, rt-client `panePeek()`. Returns
+`{ paneId, lines: string[] }`, herdr `pane.read` of the visible screen,
+trailing blank lines dropped. Read on demand only; never as part of
+`pane:list`.
+
+### `pane:spawn`
+
+`rt pane spawn --cwd <path> [--account <cswap>] [--model <m>] [--effort <e>]
+[--prompt <text>] [--workspace <label>]`, rt-client `paneSpawn()`. Starts
+Claude in a new herdr tab and returns it as a `ChatPane` once it is usable.
+
+1. Workspace: `--workspace`, else the `chat.herdrWorkspace` setting
+   (default `chat`), registered through the settings registry. Create-or-
+   reuse by label, mr-board's pattern: `workspace.list`, match the label,
+   else `workspace.create` with `--no-focus` semantics.
+2. `tab.create` in that workspace with the directory's basename as the
+   label, `--no-focus`; the tab's `root_pane` is the pane.
+3. `pane.send_input` of `cd <cwd> && <launch>` plus Enter, where launch is
+   `cswap run <account> --share-history -- claude [--model m] [--effort e]`
+   when an account is given and plain `claude [...]` otherwise. `--account`
+   accepts a cswap slot number, email or alias, validated against
+   `cswap list` (400-class error when unknown).
+4. Poll `agent.get` until herdr registers the agent (the 0.3s to 0.6s lag
+   shepherdr documents), then `agent.wait` until `idle`, `done` or
+   `blocked`, 60s. `blocked` with "trust" on the visible screen is the
+   trust dialog: send Enter and wait again.
+5. If `--prompt` was given, `agent.prompt` it and wait for `working`.
+6. Return the pane as `pane:list` would list it (`presence` absent,
+   `agentStatus` as observed) plus `ready: boolean`. A pane that never
+   reached idle within the budget is still returned, `ready: false`, with
+   the pane id, so nothing is orphaned silently.
+
+The account roster for callers: `rt pane accounts [--json]` parses
+`cswap list` into `{ slot, email, alias?, headroom? }` rows. No cswap means
+an empty list and the account field hidden.
 
 ### `chat:invite`
 
@@ -172,10 +212,18 @@ route with what comes back. Invitees are pointed at the room's newest
 messages by `read --last`; the page's hint says to post a fresh brief first
 if the room needs one.
 
-**Recruit from a pane.** The agent runs `rt chat panes --json`, matches the
+**Recruit from a pane.** The agent runs `rt pane list --json`, matches the
 request against title, repo, branch, cwd and handle, confirms through a
 form, signs itself in with `--room`, posts the seed as itself, and runs
 `rt chat invite` per chosen pane. See Skills.
+
+**Spawn from the picker.** `POST /api/panes { cwd, account?, model?,
+effort?, prompt?, workspace? }` runs `paneSpawn` and answers with the
+returned `ChatPane` when it is ready (the request stays open for up to the
+60s budget; the picker shows the row as `starting` meanwhile and swaps in
+the answer). A `ready: false` answer stays listed with its state so Matt can
+peek at what happened. Once idle the row is an ordinary pane: selectable,
+invitable, `not signed in` until it joins.
 
 ## Web viewer
 
@@ -183,8 +231,11 @@ form, signs itself in with `--room`, posts the seed as itself, and runs
 
 | Route | Does |
 | --- | --- |
-| `GET /api/herdr/panes` | `chatPanes()` as `{ available, panes }`. herdr unavailable is `available: false` with 200, not a 502, so the UI hides both entry points instead of erroring. |
-| `GET /api/herdr/panes/:id/peek?lines=8` | `chatPanePeek()` as `{ lines }`. |
+| `GET /api/panes` | `paneList()` as `{ available, panes }`. herdr unavailable is `available: false` with 200, not a 502, so the UI hides both entry points instead of erroring. |
+| `GET /api/panes/:id/peek?lines=8` | `panePeek()` as `{ lines }`. |
+| `GET /api/panes/accounts` | `paneAccounts()` as `{ accounts }`; empty without cswap. |
+| `POST /api/panes` | `{ cwd, account?, model?, effort?, prompt?, workspace? }`; `paneSpawn()`; answers `{ pane, ready }` when the pane is usable or the budget is spent; 400 on a missing cwd or unknown account. |
+| `GET /api/panes/directories?q=` | suggestions for the directory field: rt's repos and their worktrees (`repos list`, `worktree list`), filtered by `q`. |
 | `POST /api/chat/rooms` | `{ room, seed?, wakeOn? }`; validates the room name against rt's charset (400); joins as the human, posts the seed; returns `{ room, seedId? }`. |
 | `POST /api/chat/invite` | `{ room, panes: [{ paneId, note? }] }`; one `chatInvite` per pane, sequential; returns `{ results: InviteResult[] }` with 200 even when some refused. |
 
@@ -201,15 +252,27 @@ interface PickPanesOptions {
   multiple?: boolean;                            // default true
   disable?: (pane: ChatPane) => string | null;   // reason renders inline; null = selectable
   preselected?: string[];                        // paneIds
+  allowCreate?: boolean;                         // shows the `new pane` action; default false
 }
 const pickPanes = usePanePicker();               // (opts) => Promise<ChatPane[] | null>
 ```
 
-Owns fetching `/api/herdr/panes`, the filter (handle, workspace, title,
-repo, path), the sort, the per-row peek (fetched when the eye opens), and
-selection. Resolves with the picked `ChatPane` rows verbatim, `null` on
-cancel. Carries no invite semantics: which rows are disabled and why is the
-caller's `disable`.
+Owns fetching `/api/panes`, the filter (handle, workspace, title, repo,
+path), the sort, the per-row peek (fetched when the eye opens), selection,
+and, with `allowCreate`, the New pane form. Resolves with the picked
+`ChatPane` rows verbatim, `null` on cancel. Carries no invite semantics:
+which rows are disabled and why is the caller's `disable`.
+
+**New pane form** (a second view inside the picker, back arrow to the
+list): directory (a path input with suggestions from `/api/panes/
+directories`, any path accepted), account (from `/api/panes/accounts`,
+headroom beside each, hidden when the list is empty), model (defaults to
+the newest Claude), effort (optional), workspace (from `chat.herdrWorkspace`,
+editable), opening prompt (optional). `Start pane` posts to `/api/panes`,
+returns to the list with the new row shown as `starting · selectable when
+idle`, and preselects it when the answer comes back `ready`. A `ready:
+false` answer keeps the row, unselectable, with its observed state so the
+eye can show what the pane is doing.
 
 Row anatomy (see the artboards): a 16px checkbox; the 8px status dot and
 handle, or a hollow dot and `not signed in`; the workspace, plus the session
@@ -276,7 +339,7 @@ signed in or not:
 The skill's trigger line gains "put you and another agent in a room". For
 "add you and the agent working on foo into a room so you can coordinate":
 
-1. `rt chat panes --json`. Unavailable: say this needs herdr, stop.
+1. `rt pane list --json`. Unavailable: say this needs herdr, stop.
 2. Match foo against title, repo, branch, cwd and handle. Exclude this
    pane and panes already in the target room.
 3. **Always a form.** One `AskUserQuestion` carrying the candidate panes as
@@ -295,7 +358,7 @@ The skill's trigger line gains "put you and another agent in a room". For
 | Situation | What happens |
 | --- | --- |
 | rt daemon down | The existing banner; the `+` and `add agents` disable like the composer. |
-| herdr socket missing or not answering | `chat:panes` and `chat:invite` return `herdr unavailable`; the viewer hides both entry points; the recruiting flow says it needs herdr and stops. |
+| herdr socket missing or not answering | every `pane:*` verb and `chat:invite` return `herdr unavailable`; the viewer hides both entry points; the recruiting flow says it needs herdr and stops. |
 | Target pane blocked at a prompt | `refused: at a prompt`. The picker already disables it with that reason; a race between listing and inviting surfaces on the edge line. Matt answers the prompt and re-invites. |
 | Target agent working | `queued`. The text lands when its turn ends; nothing polls. |
 | Enter absorbed by the composer | One nudge, one more wait; still not `working` means `queued`, reported as such. |
@@ -303,19 +366,32 @@ The skill's trigger line gains "put you and another agent in a room". For
 | Seed post fails after the room was created | The room exists with no seed; the form reports the failure and keeps the draft, the same rule the composer follows. |
 | Invite fails part-way through a list | Every result is returned; the edge line shows each. Nothing is rolled back; a join is idempotent so re-inviting is safe. |
 | Short path in the picker | The LTR-isolated run keeps segment order; long paths still head-truncate. (Check `Roster.tsx`'s `.path` for the same bidi reorder on short paths while in there.) |
+| Spawn: workspace or tab creation fails | `pane:spawn` errors before anything runs; the form shows the herdr error and keeps its values. |
+| Spawn: Claude never registers or never reaches idle within 60s | The pane is returned with `ready: false` and its observed state; it stays open in herdr and listed in the picker, unselectable, peekable. Nothing is closed on rt's behalf. |
+| Spawn: trust dialog | `blocked` with "trust" on screen is answered with Enter once; any other `blocked` is returned as-is. |
+| Spawn: unknown cswap account | Refused before launch (`400`); the account field lists what `cswap list` knows. |
+| Spawn: an opening prompt on a pane that only reached `blocked` | Not sent; reported in `ready: false`. |
 
 ## Testing
 
 - repo-tools: the herdr NDJSON client against a fake unix socket
   (`Bun.listen`): pane/presence join by session id, the pane-id fallback,
-  `blocked` refused, stalled then nudged then accepted, timeout. `read
-  --last` at the CLI, cursor advancing, exclusive with `--since`. rt-client
-  exports and types. `lib/herdr-agent.ts` moves from the removed
-  `herdr wait` to `herdr agent wait` (0.8.0), with its test updated.
+  `blocked` refused, stalled then nudged then accepted, timeout. The spawn
+  sequence against the same fake with scripted status transitions:
+  registration lag, trust dialog answered once, idle within budget, budget
+  exhausted returning `ready: false`, unknown account refused before any
+  socket call. The `cswap list` parser on captured output, including the
+  no-cswap case. `read --last` at the CLI, cursor advancing, exclusive with
+  `--since`. rt-client exports and types. `lib/herdr-agent.ts` moves from
+  the removed `herdr wait` to `herdr agent wait` (0.8.0), with its test
+  updated.
 - chat: route tests with rt-client mocked as `chat.test.ts` does, including
   `available: false` and partial invite results. `PanePicker`: filter, sort,
   caller `disable` reasons, peek fetched only on open, resolve versus cancel,
-  `multiple: false`. `NewRoomModal`: submit order, name validation, draft
+  `multiple: false`, the `new pane` action hidden without `allowCreate`, the
+  form's field visibility with and without accounts, the `starting` row
+  swapping in the spawn answer and preselecting on `ready`, a `ready: false`
+  row staying unselectable. `NewRoomModal`: submit order, name validation, draft
   kept on failure, result line. Fixtures for every route. `audit.mjs`
   targets for the new components, passing against `CHAT_FIXTURES=1`.
 - skills: `/chat:join` and the recruiting flow each get a real run in a
@@ -323,8 +399,9 @@ The skill's trigger line gains "put you and another agent in a room". For
 
 ## Delivery order
 
-1. repo-tools: the herdr client and gate, `chat:panes`, `chat:pane-peek`,
-   `chat:invite`, `read --last`, rt-client wrappers and types, the verb
+1. repo-tools: the herdr client and gate, `pane:list`, `pane:peek`,
+   `pane:spawn`, `pane:accounts`, `chat:invite`, `read --last`, the
+   `chat.herdrWorkspace` setting, rt-client wrappers and types, the verb
    table and the recruiting section in `rt:chat`, the `herdr wait` fix.
    Publish rt-client.
 2. chat: routes and fixtures, `PanePicker`, `NewRoomModal`, the two entry
@@ -337,8 +414,11 @@ The skill's trigger line gains "put you and another agent in a room". For
 - A membership-change event from `chat:join`. Polling plus the join skill's
   first post covers arrival; a `chat/<room>/member` frame is a one-line
   follow-up if it lags.
-- Focusing a herdr pane from the roster, DMing whoever is in a pane, or
-  launching an agent into a new pane: future picker callers.
+- Focusing a herdr pane from the roster and DMing whoever is in a pane:
+  future picker callers.
+- Provisioning a worktree from the New pane form; the directory must exist
+  (`rt worktree provision` stays a CLI step).
+- Closing or restarting a spawned pane from the viewer.
 - Remote or multi-session herdr (`HERDR_SESSION`); only the default socket.
 - Per-pane account or model: herdr does not expose them.
 - A standalone `rt chat create` verb; join-creates stands.
@@ -350,8 +430,11 @@ The skill's trigger line gains "put you and another agent in a room". For
 - `2026-08-23-rt-chat-design.md`, reading: `read` gains `--last N`, a
   cursor-independent read that still advances the cursor.
 - `2026-08-24-rt-chat-presence-design.md`, web viewer: the viewer gains the
-  `/api/herdr/*` routes and two `POST` routes that create a room and invite
+  `/api/panes*` routes and two `POST` routes that create a room and invite
   panes; the "no route addresses a pane by id" note in the chat repo's
   CONFORMANCE.md is now false for the picker and stays true for the roster.
-- `skills/rt-chat/SKILL.md`: two new verbs in the table (`panes`, `invite`),
-  the `--last` flag on `read`, and the recruiting section.
+- `skills/rt-chat/SKILL.md`: `rt chat invite` in the verb table, the
+  `--last` flag on `read`, a pointer to the new `rt pane` group (`list`,
+  `peek`, `spawn`, `accounts`), and the recruiting section.
+- `lib/herdr-agent.ts`: the spawn sequence becomes the shared
+  implementation `pane:spawn` uses; its callers keep their interface.
