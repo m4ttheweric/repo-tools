@@ -41,3 +41,14 @@ describe("index.ts branch cache surface", () => {
     expect(typeof rtClient.readBranchCache).toBe("function");
   });
 });
+
+describe("index.ts pane and invite surface", () => {
+  test("exports the pane and invite wrappers", () => {
+    expect(typeof rtClient.paneList).toBe("function");
+    expect(typeof rtClient.panePeek).toBe("function");
+    expect(typeof rtClient.paneSpawn).toBe("function");
+    expect(typeof rtClient.paneAccounts).toBe("function");
+    expect(typeof rtClient.paneDirectories).toBe("function");
+    expect(typeof rtClient.chatInvite).toBe("function");
+  });
+});

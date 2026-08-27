@@ -1,5 +1,5 @@
-import { describe, expect, test, afterEach } from "bun:test";
-import { readProjectMRs, readDiscussions, readMrsByBranch, listRuns, abandonRun, readBranchCache } from "../src/client.ts";
+import { describe, expect, test, afterEach, spyOn } from "bun:test";
+import { readProjectMRs, readDiscussions, readMrsByBranch, listRuns, abandonRun, readBranchCache, chatInvite, paneDirectories, paneList, panePeek, paneSpawn } from "../src/client.ts";
 import { fakeDaemon } from "./fake-daemon.ts";
 
 const stops: Array<() => void> = [];
@@ -127,5 +127,36 @@ describe("run verbs", () => {
       payload: { runId: "run-1", repo: "repo-tools", reason: "wedged overnight" },
     });
     expect(seen[1]!.payload).toEqual({ runId: "run-2" });
+  });
+});
+
+describe("pane wrappers", () => {
+  test("paneList sends an empty payload; panePeek and paneDirectories omit undefined fields", async () => {
+    const { sock, seen, stop } = fakeDaemon({
+      "pane:list": { ok: true, data: { panes: [] } },
+      "pane:peek": { ok: true, data: { paneId: "w1:p1", lines: [] } },
+      "pane:directories": { ok: true, data: { directories: [] } },
+    });
+    stops.push(stop);
+    await paneList({ sockPath: sock });
+    await panePeek({ paneId: "w1:p1" }, { sockPath: sock });
+    await paneDirectories({}, { sockPath: sock });
+    expect(seen.map((s) => [s.cmd, s.payload])).toEqual([
+      ["pane:list", {}],
+      ["pane:peek", { paneId: "w1:p1" }],
+      ["pane:directories", {}],
+    ]);
+  });
+
+  test("paneSpawn and chatInvite outlive rt-client's 15s default", async () => {
+    const { sock, stop } = fakeDaemon({});
+    stops.push(stop);
+    // fakeDaemon answers instantly; the assertion is on the timeout the wrapper hands rtCommand,
+    // captured through the AbortSignal it builds. Spy on AbortSignal.timeout.
+    const spy = spyOn(AbortSignal, "timeout");
+    await paneSpawn({ cwd: "/x" }, { sockPath: sock });
+    await chatInvite({ paneId: "w1:p1", room: "build", from: "matt" }, { sockPath: sock });
+    expect(spy.mock.calls.map((c) => c[0])).toEqual([90_000, 30_000]);
+    spy.mockRestore();
   });
 });
