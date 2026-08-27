@@ -78,10 +78,9 @@ git commit -m "deps: rt-client with the pane and invite wrappers"
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `src/server/fixtures.test.ts`:
+Append to `src/server/fixtures.test.ts`, merging `fixtureAccounts, fixtureDirectories, fixtureInvite, fixturePanes, fixtureSpawn` into its existing `./fixtures` import (the sort-imports prettier plugin rejects a second import statement):
 
 ```ts
-import { fixtureAccounts, fixtureDirectories, fixtureInvite, fixturePanes, fixtureSpawn } from './fixtures';
 
 test('the pane fixtures cover every row state the picker artboard draws', () => {
   const panes = fixturePanes();
@@ -1558,7 +1557,7 @@ Append to `src/ui/Transcript.test.tsx` (the file has no local render helper; `Ol
 
 ```tsx
 test('a notice renders at the edge, above the older-messages row, and without any messages at all', () => {
-  const one = [{ id: 1, room: 'build', handle: 'meg', body: 'hi', postedAt: 1 }];
+  const one = [{ id: 1, room: 'build', handle: 'meg', body: 'hi', mentions: [], postedAt: 1 }];
   const { unmount } = renderWithProviders(<Transcript room="build" messages={one} notice={<span>invited 2 · assured accepted</span>} />);
   const notice = screen.getByTestId('transcript-notice');
   expect(notice).toHaveTextContent('invited 2 · assured accepted');
@@ -1598,7 +1597,7 @@ test('add agents invites the picked panes and shows the result line on the trans
     return new Response(JSON.stringify({}));
   });
   window.history.replaceState(null, '', '/r/build');
-  renderWithProviders(<App initialState={{ ...twoRooms, messages: [{ id: 1, room: 'build', handle: 'meg', body: 'hi', postedAt: 1 }] }} />);
+  renderWithProviders(<App initialState={{ ...twoRooms, messages: [{ id: 1, room: 'build', handle: 'meg', body: 'hi', mentions: [], postedAt: 1 }] }} />);
   await userEvent.click(await screen.findByTestId('add-agents-button'));
   await userEvent.click(await screen.findByTestId('pane-check-w1:p4'));
   await userEvent.click(screen.getByTestId('pane-use'));
@@ -1637,7 +1636,7 @@ Expected: the new tests FAIL.
       )}
 ```
 
-with a 7.2px gap to the next control (`mr={7.2}` on the button or a spacer `Box w={7.2}`).
+with a 7.2px gap to the next control (`mr={7.2}` on the button or a spacer `Box w={7.2}`), and `fontWeight: 500` in its `styles.root` (Mantine's Button default is 600; the artboard's `.btn.sm` is 500 and the audit checks it).
 
 - [ ] **Step 4: Transcript notice**
 
@@ -1851,7 +1850,7 @@ node design/audit.mjs /Users/matt/.fast-browser/chat-shots/computed-page.json
 node design/audit.mjs /Users/matt/.fast-browser/chat-shots/computed-picker.json
 ```
 
-Expected: every target either passes or is absent from that capture (the page capture has no picker rows; the picker capture has both). Fix any value mismatch in the component, not in the artboard, and re-run. Repeat once in dark (`--scheme dark`). Kill the server.
+Expected: every target either passes or is absent from that capture (the page capture has no picker rows; the picker capture has both). Fix any value mismatch in the component, not in the artboard, and re-run. Repeat once in dark (`--scheme dark`). Kill the server. Open the canvas once (`design/canvas.json` positions) and check the new artboards at `y: 3200` do not overlap the laws note at `y: 3060`; move them down if they do.
 
 - [ ] **Step 5: README and commit**
 

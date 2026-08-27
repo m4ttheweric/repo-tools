@@ -142,7 +142,7 @@ git commit -m "chat: add the join skill, the text rt chat invite types into a pa
 ### Task 2: refresh the installed plugin and run the skill for real
 
 **Files:**
-- None created. This task verifies the skill end to end in a herdr pane and records the result in the PR body.
+- None created. This task verifies the skill end to end in a herdr pane and records the result in the task report.
 
 **Interfaces:**
 - Consumes: the committed plugin from Task 1; the machine's `rt` with part 1 installed; a running herdr server (`herdr workspace list` exits 0).
@@ -165,7 +165,7 @@ Expected: all four lines print. If either rt line is missing, stop: part 1 is no
 The marketplace is registered as the directory `~/Documents/GitHub/mattstack-marketplace` (its main checkout) and the install pins a commit, so the branch has to reach `main` there before `claude plugin update` can see `skills/join`. That repo has **no git remote** (its GitHub copy is behind local `main`), so there is no PR to open; the branch lands by a fast-forward merge into the main checkout, which stays on `main` throughout (a fast-forward is not a branch checkout). This repo has no CI; the real run below is the verification, and anything it turns up goes on a follow-up branch merged the same way.
 
 ```bash
-git -C ~/Documents/GitHub/mattstack-marketplace status --short | grep . && echo "main checkout dirty: stop" || true
+git -C ~/Documents/GitHub/mattstack-marketplace status --short --untracked-files=no | grep . && echo "main checkout dirty: stop" || true
 git -C ~/Documents/GitHub/mattstack-marketplace merge --ff-only feat/chat-join
 git -C ~/Documents/GitHub/mattstack-marketplace log --oneline -1
 claude plugin marketplace update mattstack
