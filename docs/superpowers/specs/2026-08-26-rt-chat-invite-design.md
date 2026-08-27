@@ -98,7 +98,10 @@ daemon runs outside any pane, so the path is configured, never inherited.
 Every `pane:*` verb and `chat:invite` answer `{ ok: false, error: "herdr
 unavailable" }` when the gate fails; nothing else about their shape changes.
 The daemon speaks herdr's newline-delimited JSON directly over the socket,
-one connection per call, 5s timeout per call. No shell-out to `herdr`. The
+one connection per call. Socket timeout: 5s for a plain call; for a waiting
+call (`agent.wait`, `agent.prompt` with `wait`) the request's own
+`timeout_ms` plus a 5s margin, since herdr answers those at, not before,
+their budget. No shell-out to `herdr`. The
 two process spawns in this feature (`cswap list` for the account roster,
 `git` for an unsigned pane's branch) are async `Bun.spawn`s; the base
 design's rule that nothing sync-execs on the daemon thread (MAT-222) holds.
@@ -119,7 +122,7 @@ interface ChatPane {
   workspace: string;         // herdr WorkspaceInfo.label
   title?: string;            // terminal_title_stripped, the Claude session title
   cwd?: string;              // foreground_cwd ?? cwd
-  repo?: string;             // the presence row's; else the daemon's repo index for cwd (no git)
+  repo?: string;             // the presence row's; else the repo index for cwd, via the worktree table for a linked worktree (no git)
   branch?: string;           // the presence row's; else one async `git` spawn for cwd
   agentStatus: "idle" | "working" | "blocked" | "done" | "unknown";
   sessionId?: string;        // agent_session.value, the Claude Code session UUID
@@ -244,8 +247,8 @@ if the room needs one.
 
 **Recruit from a pane.** The agent runs `rt pane list --json`, matches the
 request against title, repo, branch, cwd and handle, confirms through a
-form, signs itself in with `--room`, posts the seed as itself, and runs
-`rt chat invite` per chosen pane. See Skills.
+form, joins the room (signing in first only if it has not), posts the seed
+as itself, and runs `rt chat invite` per chosen pane. See Skills.
 
 **Spawn from the picker.** `POST /api/panes { cwd, account?, model?,
 effort?, prompt?, workspace? }` runs `paneSpawn` and answers with the
@@ -387,9 +390,12 @@ The skill's trigger line gains "put you and another agent in a room". For
    matches are the options; when more match, the question text lists the
    rest by pane id and title and `Other` accepts a pane id. No pane is
    touched before the form returns.
-4. `rt chat sign-in --room <room>`, post the seed as itself, then
-   `rt chat invite <pane> --room <room> [--note ...]` per chosen pane,
-   sequentially.
+4. Sign in only if not already signed in (plain `rt chat sign-in`, which
+   keeps the derived repository room), then `rt chat join <room>`, the same
+   rule as `/chat:join`; a re-sign-in would rewrite the session file's
+   `room` and `sign-in --room` would replace the derived room. Post the
+   seed as itself, then `rt chat invite <pane> --room <room> [--note ...]`
+   per chosen pane, sequentially.
 5. Report one line per pane (`accepted`, `queued, working`, `refused: at a
    prompt`) and the room link. A refused pane is reported, never retried
    blind.
@@ -440,7 +446,9 @@ The skill's trigger line gains "put you and another agent in a room". For
   kept on failure, result line. Fixtures for every route. `audit.mjs`
   targets for the new components, passing against `CHAT_FIXTURES=1`.
 - skills: `/chat:join` and the recruiting flow each get a real run in a
-  pane before they are called done.
+  pane before they are called done; the join run includes a note on the
+  command line, since that is the case the one-line dispatch claim exists
+  for.
 
 ## Delivery order
 
