@@ -35,12 +35,15 @@ const SNAPSHOT = {
   },
 };
 
+const CSWAP_EXEC = async (argv: [string, ...string[]]) =>
+  argv[1] === "list" ? { stdout: "Accounts:\n  1: me@x.y [Me]\n", stderr: "", exitCode: 0 } : { stdout: "main\n", stderr: "", exitCode: 0 };
+
 function harness(handler: FakeHerdrHandler, extra: { repoIndex?: Record<string, string> } = {}) {
   const { sock, seen, stop } = fakeHerdr(handler);
   stops.push(stop);
   const db = freshDb();
   const herdr: typeof herdrRequest = (method, params, opts) => herdrRequest(method, params, { ...opts, sockPath: sock });
-  const exec = async () => ({ stdout: "feat/branch\n", stderr: "", exitCode: 0 });
+  const exec = CSWAP_EXEC;
   const chat = createChatHandlers({ db, emitEvent: () => 0 });
   const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: Date.now });
   return { db, seen, chat, pane };
@@ -77,7 +80,7 @@ test("pane:list derives repo and branch for an unsigned pane without touching th
   if (!res.ok) throw new Error(res.error);
   const unsigned = res.data.panes.find((p) => p.paneId === "w1:p2")!;
   expect(unsigned.presence).toBeUndefined();
-  expect(unsigned.branch).toBe("feat/branch");
+  expect(unsigned.branch).toBe("main");
   expect(unsigned.repo).toBeUndefined();
 });
 
@@ -165,4 +168,107 @@ test("pane:directories keeps other repos when one repo's registry throws", async
     { path: "/repos/acme-dev", repo: "acme-dev" },
     { path: "/repos/chat", repo: "chat" },
   ]);
+});
+
+function spawnFake(script: { statuses: string[]; screen?: string; agentGetFailures?: number }) {
+  let getCalls = 0;
+  let waitCalls = 0;
+  const calls: string[] = [];
+  const paneInfo = (status: string) => ({ pane_id: "w2:p7", terminal_id: "t7", workspace_id: "w2", tab_id: "w2:t3", focused: false, agent: "claude", agent_status: status, cwd: "/repos/acme-dev", terminal_title_stripped: "claude", revision: 3 });
+  const handler: FakeHerdrHandler = (method, params) => {
+    calls.push(method);
+    switch (method) {
+      case "workspace.list":
+        return { type: "workspace_list", workspaces: [{ workspace_id: "w2", label: "chat", focused: false }] };
+      case "workspace.create":
+        return { type: "workspace_created", workspace: { workspace_id: "w3", label: params.label }, tab: { tab_id: "w3:t1" }, root_pane: paneInfo("unknown") };
+      case "tab.create":
+        return { type: "tab_created", tab: { tab_id: "w2:t3", workspace_id: "w2", label: params.label }, root_pane: paneInfo("unknown") };
+      case "pane.send_input":
+      case "pane.send_keys":
+        return { type: "ok" };
+      case "agent.get":
+        if (getCalls++ < (script.agentGetFailures ?? 0)) return new HerdrFakeError("agent_not_found", "agent target w2:p7 not found");
+        return { type: "agent_info", agent: paneInfo(script.statuses[Math.min(waitCalls, script.statuses.length - 1)]!) };
+      case "agent.wait": {
+        const status = script.statuses[Math.min(waitCalls++, script.statuses.length - 1)]!;
+        if (status === "timeout") return new HerdrFakeError("timeout", "timed out waiting for agent status");
+        return { type: "agent_info", agent: paneInfo(status) };
+      }
+      case "pane.read":
+        return { type: "pane_read", read: { pane_id: "w2:p7", workspace_id: "w2", tab_id: "w2:t3", source: "visible", format: "text", text: script.screen ?? "", revision: 0, truncated: false } };
+      case "agent.prompt":
+        return { type: "agent_prompted", agent: paneInfo("working") };
+      case "pane.get":
+        return { type: "pane_info", pane: paneInfo(script.statuses[script.statuses.length - 1] === "timeout" ? "unknown" : script.statuses[script.statuses.length - 1]!) };
+      case "session.snapshot":
+        return { type: "session_snapshot", snapshot: { workspaces: [{ workspace_id: "w2", label: "chat" }], panes: [], tabs: [], layouts: [], agents: [], version: "0.8.0", protocol: 19 } };
+      default:
+        return new HerdrFakeError("invalid_request", method);
+    }
+  };
+  return { handler, calls };
+}
+
+test("pane:spawn creates a tab in the chat workspace, launches claude, waits for idle and returns the pane ready", async () => {
+  const { handler, calls } = spawnFake({ statuses: ["idle"], agentGetFailures: 2 });
+  const { pane, seen } = harness(handler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/acme-dev", account: "Me", model: "claude-fable-5", effort: "high" });
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.ready).toBe(true);
+  expect(res.data.pane).toMatchObject({ paneId: "w2:p7", workspace: "chat", cwd: "/repos/acme-dev", agentStatus: "idle" });
+  const tab = seen.find((s) => s.method === "tab.create")!;
+  expect(tab.params).toMatchObject({ workspace_id: "w2", label: "acme-dev", cwd: "/repos/acme-dev", focus: false });
+  const input = seen.find((s) => s.method === "pane.send_input")!;
+  // shellQuote leaves strings matching ^[a-zA-Z0-9_./:@=-]+$ bare; only a value outside that set gets quotes.
+  expect(input.params.text).toBe("cd /repos/acme-dev && cswap run Me --share-history -- claude --model claude-fable-5 --effort high");
+  expect(input.params.keys).toEqual(["enter"]);
+  expect(calls.filter((c) => c === "agent.get").length).toBeGreaterThanOrEqual(3);
+  expect(calls).not.toContain("workspace.create");
+});
+
+test("pane:spawn creates the workspace when the label is missing and launches plain claude without an account", async () => {
+  const { handler, calls } = spawnFake({ statuses: ["idle"] });
+  const { pane, seen } = harness(handler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/chat", workspace: "fleet" });
+  if (!res.ok) throw new Error(res.error);
+  expect(calls).toContain("workspace.create");
+  expect(seen.find((s) => s.method === "workspace.create")!.params).toMatchObject({ label: "fleet", focus: false });
+  expect(seen.find((s) => s.method === "pane.send_input")!.params.text).toBe("cd /repos/chat && claude");
+});
+
+test("pane:spawn quotes a cwd with a space", async () => {
+  const { handler } = spawnFake({ statuses: ["idle"] });
+  const { pane, seen } = harness(handler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/my repo" });
+  if (!res.ok) throw new Error(res.error);
+  expect(seen.find((s) => s.method === "pane.send_input")!.params.text).toBe("cd '/repos/my repo' && claude");
+});
+
+test("pane:spawn answers the trust dialog once, then sends the opening prompt", async () => {
+  const { handler, calls } = spawnFake({ statuses: ["blocked", "idle"], screen: "Do you trust the files in this folder?" });
+  const { pane, seen } = harness(handler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/chat", prompt: "read AGENTS.md" });
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.ready).toBe(true);
+  expect(calls.filter((c) => c === "pane.send_keys")).toHaveLength(1);
+  expect(seen.find((s) => s.method === "agent.prompt")!.params).toMatchObject({ target: "w2:p7", text: "read AGENTS.md", wait: { until: ["working"], timeout_ms: 5000 } });
+});
+
+test("pane:spawn returns ready:false with the pane when idle never arrives, and does not send the prompt", async () => {
+  const { handler, calls } = spawnFake({ statuses: ["timeout"] });
+  const { pane } = harness(handler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/chat", prompt: "hi" });
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.ready).toBe(false);
+  expect(res.data.pane.paneId).toBe("w2:p7");
+  expect(calls).not.toContain("agent.prompt");
+});
+
+test("pane:spawn refuses an unknown cswap account before touching herdr", async () => {
+  const { handler, calls } = spawnFake({ statuses: ["idle"] });
+  const { pane } = harness(handler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/chat", account: "nobody" });
+  expect(res).toEqual({ ok: false, error: 'unknown cswap account "nobody"' });
+  expect(calls).toHaveLength(0);
 });

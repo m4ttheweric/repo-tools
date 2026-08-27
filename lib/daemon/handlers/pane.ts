@@ -3,10 +3,13 @@
  * lib/herdr/client.ts owns the socket; this module owns the join.
  */
 import type { Database } from "bun:sqlite";
+import { basename } from "path";
 import type { AgentStatus, BuddyStatus, ChatPane, Commands, PaneDirectory } from "../../../packages/rt-client/src/commands.ts";
 import { listCswapAccounts } from "../../cswap.ts";
-import { HERDR_UNAVAILABLE, herdrRequest, type HerdrResult } from "../../herdr/client.ts";
+import { HERDR_UNAVAILABLE, herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
+import { shellQuote } from "../../herdr-launch.ts";
 import { repoLabel } from "../../repo-label.ts";
+import { getSetting } from "../../settings/resolve.ts";
 import { branchForCwd, repoForCwd } from "../../repo-for-cwd.ts";
 import { listBuddies, listRooms, type PresenceRow } from "../../state/index.ts";
 import { runCapture } from "../../subprocess.ts";
@@ -51,6 +54,19 @@ export interface PaneRowContext {
 }
 
 const STATUS_ORDER: Record<BuddyStatus | "none", number> = { live: 0, idle: 1, deaf: 2, offline: 3, none: 3 };
+
+const REGISTER_BUDGET_MS = 10_000;
+const REGISTER_POLL_MS = 250;
+const IDLE_BUDGET_MS = 50_000;
+const TRUST_BUDGET_MS = 15_000;
+const PROMPT_BUDGET_MS = 5_000;
+const SETTLED = ["idle", "done", "blocked"];
+
+export function launchCommand(a: { cwd: string; account?: string; model?: string; effort?: string }): string {
+  const claude = ["claude", ...(a.model ? ["--model", shellQuote(a.model)] : []), ...(a.effort ? ["--effort", shellQuote(a.effort)] : [])].join(" ");
+  const launch = a.account ? `cswap run ${shellQuote(a.account)} --share-history -- ${claude}` : claude;
+  return `cd ${shellQuote(a.cwd)} && ${launch}`;
+}
 
 export function herdrError(res: { ok: false; code: string; message: string }): { ok: false; error: string } {
   if (res.code === "unreachable" || res.code === "timeout") return { ok: false, error: res.message.startsWith(HERDR_UNAVAILABLE) ? res.message : `${HERDR_UNAVAILABLE}: ${res.message}` };
@@ -108,7 +124,7 @@ export function createPaneHandlers(opts: {
   exec?: typeof runCapture;
   now?: () => number;
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
-}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories"> & { db: Database } {
+}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn"> & { db: Database } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const exec = opts.exec ?? runCapture;
@@ -172,6 +188,70 @@ export function createPaneHandlers(opts: {
         for (const tree of trees) push({ path: tree.path, repo, ...(tree.branch ? { branch: tree.branch } : {}) });
       }
       return { ok: true, data: { directories: out } };
+    },
+
+    "pane:spawn": async (payload: Commands["pane:spawn"]["payload"]): Promise<CommandResult<"pane:spawn">> => {
+      const { cwd, account, model, effort, prompt } = payload;
+      if (!cwd || !cwd.startsWith("/")) return { ok: false, error: "cwd must be an absolute path" };
+      if (account) {
+        const accounts = await listCswapAccounts(exec);
+        const known = accounts.some((a) => a.alias === account || a.email === account || String(a.slot) === account);
+        if (!known) return { ok: false, error: `unknown cswap account "${account}"` };
+      }
+
+      const label = payload.workspace ?? getSetting<string>("chat.herdrWorkspace").value ?? "chat";
+      const list = await herdr<{ workspaces: HerdrWorkspace[] }>("workspace.list", {});
+      if (!list.ok) return herdrError(list);
+      let workspaceId = list.result.workspaces.find((w) => w.label === label)?.workspace_id;
+      if (!workspaceId) {
+        const created = await herdr<{ workspace: HerdrWorkspace }>("workspace.create", { label, focus: false });
+        if (!created.ok) return herdrError(created);
+        workspaceId = created.result.workspace.workspace_id;
+      }
+
+      const tab = await herdr<{ root_pane: HerdrPane }>("tab.create", { workspace_id: workspaceId, label: basename(cwd), cwd, focus: false });
+      if (!tab.ok) return herdrError(tab);
+      const paneId = tab.result.root_pane.pane_id;
+
+      const sent = await herdr("pane.send_input", { pane_id: paneId, text: launchCommand({ cwd, account, model, effort }), keys: ["enter"] });
+      if (!sent.ok) return herdrError(sent);
+
+      // herdr registers the agent a few hundred ms after the shell starts claude.
+      let registered = false;
+      for (let attempt = 0; attempt < Math.ceil(REGISTER_BUDGET_MS / REGISTER_POLL_MS); attempt++) {
+        const got = await herdr("agent.get", { target: paneId });
+        if (got.ok) {
+          registered = true;
+          break;
+        }
+        await Bun.sleep(REGISTER_POLL_MS);
+      }
+
+      let status: AgentStatus = "unknown";
+      let ready = false;
+      if (registered) {
+        const settled = await herdr<{ agent: HerdrAgent }>("agent.wait", { target: paneId, until: SETTLED, timeout_ms: IDLE_BUDGET_MS }, { timeoutMs: waitTimeout(IDLE_BUDGET_MS) });
+        if (settled.ok) status = settled.result.agent.agent_status;
+        if (status === "blocked") {
+          const screen = await herdr<{ read: { text: string } }>("pane.read", { pane_id: paneId, source: "visible" });
+          if (screen.ok && /trust/i.test(screen.result.read.text)) {
+            await herdr("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
+            const again = await herdr<{ agent: HerdrAgent }>("agent.wait", { target: paneId, until: SETTLED, timeout_ms: TRUST_BUDGET_MS }, { timeoutMs: waitTimeout(TRUST_BUDGET_MS) });
+            if (again.ok) status = again.result.agent.agent_status;
+          }
+        }
+        ready = status === "idle" || status === "done";
+      }
+
+      if (ready && prompt) {
+        await herdr("agent.prompt", { target: paneId, text: prompt, wait: { until: ["working"], timeout_ms: PROMPT_BUDGET_MS } }, { timeoutMs: waitTimeout(PROMPT_BUDGET_MS) });
+      }
+
+      const info = await herdr<{ pane: HerdrPane }>("pane.get", { pane_id: paneId });
+      const raw: HerdrPane = info.ok ? info.result.pane : { ...tab.result.root_pane, agent: "claude", agent_status: status };
+      const ctx: PaneRowContext = { db, repoIndex, exec, now, workspaces: new Map([[workspaceId, label]]), ...presenceMaps(db, now()) };
+      const pane = await paneRow(raw, ctx);
+      return { ok: true, data: { pane, ready } };
     },
   };
 }

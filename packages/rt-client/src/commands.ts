@@ -317,6 +317,10 @@ export interface Commands {
   "pane:peek": { payload: { paneId: string; lines?: number }; data: { paneId: string; lines: string[] } };
   "pane:accounts": { payload: Record<string, never>; data: { accounts: PaneAccount[] } };
   "pane:directories": { payload: { q?: string }; data: { directories: PaneDirectory[] } };
+  "pane:spawn": {
+    payload: { cwd: string; account?: string; model?: string; effort?: string; prompt?: string; workspace?: string };
+    data: { pane: ChatPane; ready: boolean };
+  };
 }
 
 export type CommandName = keyof Commands;
@@ -361,4 +365,5 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "pane:peek",
   "pane:accounts",
   "pane:directories",
+  "pane:spawn",
 ];
