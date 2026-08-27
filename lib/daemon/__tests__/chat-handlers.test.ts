@@ -523,3 +523,96 @@ test("chat:invite is herdr unavailable when the socket is missing", async () => 
   if (res.ok) throw new Error("unreachable");
   expect(res.error.startsWith("herdr unavailable")).toBe(true);
 });
+
+test("chat:archive hides the room from chat:rooms until includeArchived asks, and reopen restores it", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "build", handle: "a" });
+  const res = await h["chat:archive"]({ room: "build", handle: "a", archived: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBe("build");
+  expect(typeof res.data.archivedAt).toBe("number");
+
+  const hidden = await h["chat:rooms"]({ handle: "a" });
+  if (!hidden.ok) throw new Error("unreachable");
+  expect(hidden.data.rooms).toEqual([]);
+
+  const shown = await h["chat:rooms"]({ handle: "a", includeArchived: true });
+  if (!shown.ok) throw new Error("unreachable");
+  expect(shown.data.rooms).toHaveLength(1);
+  expect(shown.data.rooms[0]).toMatchObject({ room: "build", archivedAt: res.data.archivedAt });
+
+  const reopened = await h["chat:archive"]({ room: "build", handle: "a", archived: false });
+  if (!reopened.ok) throw new Error("unreachable");
+  expect(reopened.data).toEqual({ room: "build", archivedAt: null });
+  const back = await h["chat:rooms"]({ handle: "a" });
+  if (!back.ok) throw new Error("unreachable");
+  expect(back.data.rooms.map((r) => r.room)).toEqual(["build"]);
+});
+
+test("chat:archive refuses an unknown room and an invalid name with a reason", async () => {
+  const h = freshHandlers();
+  const missing = await h["chat:archive"]({ room: "nope", handle: "a", archived: true });
+  expect(missing.ok).toBe(false);
+  if (missing.ok) throw new Error("unreachable");
+  expect(missing.error).toContain("no such room");
+  const bad = await h["chat:archive"]({ room: "Has@Sigil", handle: "a", archived: true });
+  expect(bad.ok).toBe(false);
+  if (bad.ok) throw new Error("unreachable");
+  expect(bad.error).toContain("room");
+});
+
+test("chat:dm-open creates the pair's room without posting, then reuses it", async () => {
+  const emitted: string[] = [];
+  const h = freshHandlers((topic) => { emitted.push(topic); return 0; });
+  const first = await h["chat:dm-open"]({ from: "matt", to: "a" });
+  expect(first.ok).toBe(true);
+  if (!first.ok) throw new Error("unreachable");
+  expect(first.data.created).toBe(true);
+  expect(first.data.room).toMatch(/^dm-/);
+  expect(emitted).toEqual([]);
+
+  const again = await h["chat:dm-open"]({ from: "matt", to: "a" });
+  if (!again.ok) throw new Error("unreachable");
+  expect(again.data).toEqual({ room: first.data.room, created: false });
+
+  const messages = await h["chat:messages"]({ room: first.data.room });
+  if (!messages.ok) throw new Error("unreachable");
+  expect(messages.data.messages).toEqual([]);
+  const who = await h["chat:who"]({ room: first.data.room });
+  if (!who.ok) throw new Error("unreachable");
+  expect(who.data.members.map((m) => m.handle).sort()).toEqual(["a", "matt"]);
+});
+
+test("chat:dm-open refuses a self DM, an invalid handle, and an empty humanHandle setting", async () => {
+  const h = freshHandlers();
+  const self = await h["chat:dm-open"]({ from: "matt", to: "matt" });
+  expect(self.ok).toBe(false);
+  if (self.ok) throw new Error("unreachable");
+  expect(self.error).toMatch(/your own/i);
+
+  const bad = await h["chat:dm-open"]({ from: "matt", to: "a:b" });
+  expect(bad.ok).toBe(false);
+
+  setSetting("chat.humanHandle", "", "user");
+  try {
+    const empty = await h["chat:dm-open"]({ from: "matt", to: "a" });
+    expect(empty.ok).toBe(false);
+    if (empty.ok) throw new Error("unreachable");
+    expect(empty.error).toContain("chat.humanHandle");
+  } finally {
+    setSetting("chat.humanHandle", "matt", "user");
+  }
+});
+
+test("chat:dm-open refuses a reclaimed sender the same way chat:dm does", async () => {
+  // Same setup as `chat:dm refuses a reclaimed sender` (line 325): the
+  // first session goes stale, a second session claims the handle, and the
+  // stale session's own id no longer owns it.
+  const h = freshHandlers();
+  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "a" });
+  h.db.run("UPDATE chat_presence SET last_seen_at = last_seen_at - 7200000");
+  await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "a" });
+  const res = await h["chat:dm-open"]({ from: "a", to: "b", sessionId: "s1" });
+  expect(res.ok).toBe(false);
+});

@@ -16,6 +16,7 @@ import {
   markRead,
   unreadWakingCount,
   listRooms,
+  archiveRoom,
   roomDefaultWake,
   listMembers,
   armMember,
@@ -65,6 +66,8 @@ const CHAT_COMMANDS = [
   "chat:pulse",
   "chat:dm",
   "chat:invite",
+  "chat:archive",
+  "chat:dm-open",
 ] as const;
 
 /** Collapses the repeated try/catch every presence-assertion call site needs into one line: null on success, the refusal's message on throw. */
@@ -193,7 +196,7 @@ export function createChatHandlers(opts: {
     },
 
     "chat:rooms": async (payload: Commands["chat:rooms"]["payload"]): Promise<CommandResult<"chat:rooms">> => {
-      const rooms = listRooms(payload.handle, db).map((room) => {
+      const rooms = listRooms(payload.handle, db, { includeArchived: payload.includeArchived === true }).map((room) => {
         const defaultWake = roomDefaultWake(room.room, db);
         const withDefault = defaultWake ? { ...room, defaultWake } : room;
         const dm = dmParticipants(room.room, db);
@@ -375,6 +378,35 @@ export function createChatHandlers(opts: {
       await herdr("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
       const nudged = await herdr("agent.wait", { target: paneId, until: ["working"], timeout_ms: INVITE_WAIT_MS }, { timeoutMs: waitTimeout(INVITE_WAIT_MS) });
       return { ok: true, data: { paneId, delivered: nudged.ok ? "accepted" : "queued" } };
+    },
+
+    "chat:archive": async (payload: Commands["chat:archive"]["payload"]): Promise<CommandResult<"chat:archive">> => {
+      const { room, handle, archived } = payload;
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
+      if (typeof archived !== "boolean") return { ok: false, error: "archived must be true or false" };
+      try {
+        return { ok: true, data: archiveRoom(room, archived, db) };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
+    "chat:dm-open": async (payload: Commands["chat:dm-open"]["payload"]): Promise<CommandResult<"chat:dm-open">> => {
+      const { from, to, sessionId } = payload;
+      if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
+      if (!isValidChatName(to)) return { ok: false, error: `invalid handle "${to}"` };
+      const err = assertionError(() => assertSessionOwnsHandle(from, sessionId, db));
+      if (err) return { ok: false, error: err };
+      const humanHandle = getSetting<string>("chat.humanHandle").value;
+      if (!isValidChatName(humanHandle)) {
+        return { ok: false, error: `chat: chat.humanHandle setting is empty or invalid ("${humanHandle}")` };
+      }
+      try {
+        return { ok: true, data: dmRoomFor(from, to, humanHandle, db) };
+      } catch (dmErr) {
+        return { ok: false, error: dmErr instanceof Error ? dmErr.message : String(dmErr) };
+      }
     },
   };
 }
