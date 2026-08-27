@@ -332,7 +332,7 @@ close and navigate.
 
 `add agents` beside `mark read` in the page bar launches the picker directly
 and invites the result. After either flow, the transcript's edge line reads
-`invited 2 · assured pane accepted · fred queued (working) · members appear
+`invited 2 · acme pane accepted · fred queued (working) · members appear
 as they sign in` until the next room change.
 
 ### Phone

@@ -23,12 +23,12 @@ const SNAPSHOT = {
   snapshot: {
     version: "0.8.0",
     protocol: 19,
-    workspaces: [{ workspace_id: "w1", label: "assured", focused: false }],
+    workspaces: [{ workspace_id: "w1", label: "acme", focused: false }],
     tabs: [],
     layouts: [],
     agents: [],
     panes: [
-      { pane_id: "w1:p1", terminal_id: "t1", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "idle", cwd: "/tmp/assured", foreground_cwd: "/tmp/assured", terminal_title_stripped: "Evaluate codegen", agent_session: { source: "herdr:claude", agent: "claude", kind: "id", value: "sess-signed" }, revision: 1 },
+      { pane_id: "w1:p1", terminal_id: "t1", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "idle", cwd: "/tmp/acme", foreground_cwd: "/tmp/acme", terminal_title_stripped: "Evaluate codegen", agent_session: { source: "herdr:claude", agent: "claude", kind: "id", value: "sess-signed" }, revision: 1 },
       { pane_id: "w1:p2", terminal_id: "t2", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "working", cwd: "/tmp/other", terminal_title_stripped: "fred", revision: 1 },
       { pane_id: "w1:p3", terminal_id: "t3", workspace_id: "w1", tab_id: "w1:t2", focused: false, agent_status: "unknown", cwd: "/tmp", revision: 1 },
     ],
@@ -51,7 +51,7 @@ function harness(handler: FakeHerdrHandler, extra: { repoIndex?: Record<string, 
 
 test("pane:list lists only claude panes, joined to presence by session id, with rooms", async () => {
   const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
-  const signed = await chat["chat:sign-in"]({ sessionId: "sess-signed", baseHandle: "meg", cwd: "/tmp/assured", repo: "assured", branch: "main", pane: "w1:p1" });
+  const signed = await chat["chat:sign-in"]({ sessionId: "sess-signed", baseHandle: "meg", cwd: "/tmp/acme", repo: "acme", branch: "main", pane: "w1:p1" });
   if (!signed.ok) throw new Error(signed.error);
   await chat["chat:join"]({ room: "build", handle: signed.data.handle });
 
@@ -60,7 +60,7 @@ test("pane:list lists only claude panes, joined to presence by session id, with 
   if (!res.ok) throw new Error("unreachable");
   expect(res.data.panes.map((p) => p.paneId)).toEqual(["w1:p1", "w1:p2"]);
   const first = res.data.panes[0]!;
-  expect(first).toMatchObject({ workspace: "assured", title: "Evaluate codegen", cwd: "/tmp/assured", repo: "assured", branch: "main", agentStatus: "idle", sessionId: "sess-signed" });
+  expect(first).toMatchObject({ workspace: "acme", title: "Evaluate codegen", cwd: "/tmp/acme", repo: "acme", branch: "main", agentStatus: "idle", sessionId: "sess-signed" });
   expect(first.presence).toMatchObject({ handle: "meg", rooms: ["build"] });
   expect(first.presence!.status).not.toBe("offline");
 });

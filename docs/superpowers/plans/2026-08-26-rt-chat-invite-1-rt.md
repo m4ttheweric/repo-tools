@@ -521,12 +521,12 @@ const SNAPSHOT = {
   snapshot: {
     version: "0.8.0",
     protocol: 19,
-    workspaces: [{ workspace_id: "w1", label: "assured", focused: false }],
+    workspaces: [{ workspace_id: "w1", label: "acme", focused: false }],
     tabs: [],
     layouts: [],
     agents: [],
     panes: [
-      { pane_id: "w1:p1", terminal_id: "t1", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "idle", cwd: "/tmp/assured", foreground_cwd: "/tmp/assured", terminal_title_stripped: "Evaluate codegen", agent_session: { source: "herdr:claude", agent: "claude", kind: "id", value: "sess-signed" }, revision: 1 },
+      { pane_id: "w1:p1", terminal_id: "t1", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "idle", cwd: "/tmp/acme", foreground_cwd: "/tmp/acme", terminal_title_stripped: "Evaluate codegen", agent_session: { source: "herdr:claude", agent: "claude", kind: "id", value: "sess-signed" }, revision: 1 },
       { pane_id: "w1:p2", terminal_id: "t2", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "working", cwd: "/tmp/other", terminal_title_stripped: "fred", revision: 1 },
       { pane_id: "w1:p3", terminal_id: "t3", workspace_id: "w1", tab_id: "w1:t2", focused: false, agent_status: "unknown", cwd: "/tmp", revision: 1 },
     ],
@@ -546,7 +546,7 @@ function harness(handler: FakeHerdrHandler, extra: { repoIndex?: Record<string, 
 
 test("pane:list lists only claude panes, joined to presence by session id, with rooms", async () => {
   const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
-  const signed = await chat["chat:sign-in"]({ sessionId: "sess-signed", baseHandle: "meg", cwd: "/tmp/assured", repo: "assured", branch: "main", pane: "w1:p1" });
+  const signed = await chat["chat:sign-in"]({ sessionId: "sess-signed", baseHandle: "meg", cwd: "/tmp/acme", repo: "acme", branch: "main", pane: "w1:p1" });
   if (!signed.ok) throw new Error(signed.error);
   await chat["chat:join"]({ room: "build", handle: signed.data.handle });
 
@@ -555,7 +555,7 @@ test("pane:list lists only claude panes, joined to presence by session id, with 
   if (!res.ok) throw new Error("unreachable");
   expect(res.data.panes.map((p) => p.paneId)).toEqual(["w1:p1", "w1:p2"]);
   const first = res.data.panes[0]!;
-  expect(first).toMatchObject({ workspace: "assured", title: "Evaluate codegen", cwd: "/tmp/assured", repo: "assured", branch: "main", agentStatus: "idle", sessionId: "sess-signed" });
+  expect(first).toMatchObject({ workspace: "acme", title: "Evaluate codegen", cwd: "/tmp/acme", repo: "acme", branch: "main", agentStatus: "idle", sessionId: "sess-signed" });
   expect(first.presence).toMatchObject({ handle: "meg", rooms: ["build"] });
   expect(first.presence!.status).not.toBe("offline");
 });
@@ -834,7 +834,7 @@ import { listCswapAccounts, parseCswapList } from "../cswap.ts";
 const CAPTURED = `
 A newer version of claude-swap is available (0.25.0). You are using 0.23.0. Run \`cswap upgrade\` to update.
 Accounts:
-  1: matthew.goodwin@assured.claims [Assured] (history: shared)
+  1: alex@acme.test [Acme] (history: shared)
      ├ $$:    100%   $400.07 / $400.00
      ├ 5h:      0%
      ├ 7d:     40%   resets Aug 30 20:00  in 4d 0h
@@ -845,7 +845,7 @@ Accounts:
 
 test("parses slots, emails, aliases and a compact headroom summary", () => {
   expect(parseCswapList(CAPTURED)).toEqual([
-    { slot: 1, email: "matthew.goodwin@assured.claims", alias: "Assured", headroom: "5h 0% · 7d 40% · Fable 35%" },
+    { slot: 1, email: "alex@acme.test", alias: "Acme", headroom: "5h 0% · 7d 40% · Fable 35%" },
     { slot: 2, email: "someone@example.com", headroom: "5h 12%" },
   ]);
 });
@@ -1636,7 +1636,7 @@ async function run(fn: (args: string[]) => Promise<void>, args: string[]) {
   return { code, stdout: out.join("\n"), stderr: err.join("\n") };
 }
 
-const PANE = { paneId: "w1:p1", workspace: "assured", title: "Evaluate codegen", cwd: "/repos/assured", repo: "assured", branch: "main", agentStatus: "idle", presence: { handle: "meg", status: "live", rooms: ["build"] } };
+const PANE = { paneId: "w1:p1", workspace: "acme", title: "Evaluate codegen", cwd: "/repos/acme", repo: "acme", branch: "main", agentStatus: "idle", presence: { handle: "meg", status: "live", rooms: ["build"] } };
 
 test("pane list --json prints the rows; plain prints one line per pane", async () => {
   replies = { "pane:list": { ok: true, data: { panes: [PANE, { ...PANE, paneId: "w1:p2", presence: undefined, title: "fred" }] } } };
@@ -1664,8 +1664,8 @@ test("pane peek passes the pane id and --lines", async () => {
 
 test("pane spawn passes every flag and prints the pane and readiness", async () => {
   replies = { "pane:spawn": { ok: true, data: { pane: PANE, ready: true } } };
-  const r = await run(paneSpawn, ["--cwd", "/repos/assured", "--account", "Assured", "--model", "claude-fable-5", "--effort", "high", "--workspace", "chat", "--prompt", "read AGENTS.md", "--json"]);
-  expect(seen[0]!.payload).toEqual({ cwd: "/repos/assured", account: "Assured", model: "claude-fable-5", effort: "high", workspace: "chat", prompt: "read AGENTS.md" });
+  const r = await run(paneSpawn, ["--cwd", "/repos/acme", "--account", "Acme", "--model", "claude-fable-5", "--effort", "high", "--workspace", "chat", "--prompt", "read AGENTS.md", "--json"]);
+  expect(seen[0]!.payload).toEqual({ cwd: "/repos/acme", account: "Acme", model: "claude-fable-5", effort: "high", workspace: "chat", prompt: "read AGENTS.md" });
   expect(JSON.parse(r.stdout)).toMatchObject({ ok: true, ready: true, pane: { paneId: "w1:p1" } });
 });
 
@@ -1833,7 +1833,7 @@ In `lib/command-tree-def.ts`, add beside `secrets`:
         fn: "paneSpawn",
         args: [
           { name: "Directory", flag: "--cwd", type: "text", placeholder: "~/Documents/GitHub/chat", hint: "Absolute directory to start in" },
-          { name: "Account", flag: "--account", type: "text", optional: true, placeholder: "Assured", hint: "cswap alias, email or slot" },
+          { name: "Account", flag: "--account", type: "text", optional: true, placeholder: "Acme", hint: "cswap alias, email or slot" },
           { name: "Model", flag: "--model", type: "text", optional: true, placeholder: "claude-fable-5", hint: "claude --model" },
           { name: "Effort", flag: "--effort", type: "text", optional: true, placeholder: "high", hint: "claude --effort" },
           { name: "Prompt", flag: "--prompt", type: "text", optional: true, placeholder: "read AGENTS.md", hint: "Typed once claude is idle" },

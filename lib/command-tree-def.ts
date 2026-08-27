@@ -1075,7 +1075,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "paneSpawn",
         args: [
           { name: "Directory", flag: "--cwd", type: "text", placeholder: "~/Documents/GitHub/chat", hint: "Absolute directory to start in" },
-          { name: "Account", flag: "--account", type: "text", optional: true, placeholder: "Assured", hint: "cswap alias, email or slot" },
+          { name: "Account", flag: "--account", type: "text", optional: true, placeholder: "Acme", hint: "cswap alias, email or slot" },
           { name: "Model", flag: "--model", type: "text", optional: true, placeholder: "claude-fable-5", hint: "claude --model" },
           { name: "Effort", flag: "--effort", type: "text", optional: true, placeholder: "high", hint: "claude --effort" },
           { name: "Prompt", flag: "--prompt", type: "text", optional: true, placeholder: "read AGENTS.md", hint: "Typed once claude is idle" },

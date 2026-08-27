@@ -51,12 +51,13 @@ async function run(fn: (args: string[]) => Promise<void>, args: string[]) {
   return { code, stdout: out.join("\n"), stderr: err.join("\n") };
 }
 
-const PANE = { paneId: "w1:p1", workspace: "assured", title: "Evaluate codegen", cwd: "/repos/assured", repo: "assured", branch: "main", agentStatus: "idle", presence: { handle: "meg", status: "live", rooms: ["build"] } };
+const PANE = { paneId: "w1:p1", workspace: "acme", title: "Evaluate codegen", cwd: "/repos/acme", repo: "acme", branch: "main", agentStatus: "idle", presence: { handle: "meg", status: "live", rooms: ["build"] } };
 
 test("pane list --json prints the rows; plain prints one line per pane", async () => {
-  replies = { "pane:list": { ok: true, data: { panes: [PANE, { ...PANE, paneId: "w1:p2", presence: undefined, title: "fred" }] } } };
+  const panes = [PANE, { ...PANE, paneId: "w1:p2", presence: undefined, title: "fred" }];
+  replies = { "pane:list": { ok: true, data: { panes } } };
   const json = await run(paneList, ["--json"]);
-  expect(JSON.parse(json.stdout)).toEqual({ ok: true, panes: replies["pane:list"]!["data"]["panes"] });
+  expect(JSON.parse(json.stdout)).toEqual({ ok: true, panes });
   const plain = await run(paneList, []);
   expect(plain.stdout).toContain("w1:p1");
   expect(plain.stdout).toContain("meg");
@@ -79,8 +80,8 @@ test("pane peek passes the pane id and --lines", async () => {
 
 test("pane spawn passes every flag and prints the pane and readiness", async () => {
   replies = { "pane:spawn": { ok: true, data: { pane: PANE, ready: true } } };
-  const r = await run(paneSpawn, ["--cwd", "/repos/assured", "--account", "Assured", "--model", "claude-fable-5", "--effort", "high", "--workspace", "chat", "--prompt", "read AGENTS.md", "--json"]);
-  expect(seen[0]!.payload).toEqual({ cwd: "/repos/assured", account: "Assured", model: "claude-fable-5", effort: "high", workspace: "chat", prompt: "read AGENTS.md" });
+  const r = await run(paneSpawn, ["--cwd", "/repos/acme", "--account", "Acme", "--model", "claude-fable-5", "--effort", "high", "--workspace", "chat", "--prompt", "read AGENTS.md", "--json"]);
+  expect(seen[0]!.payload).toEqual({ cwd: "/repos/acme", account: "Acme", model: "claude-fable-5", effort: "high", workspace: "chat", prompt: "read AGENTS.md" });
   expect(JSON.parse(r.stdout)).toMatchObject({ ok: true, ready: true, pane: { paneId: "w1:p1" } });
 });
 

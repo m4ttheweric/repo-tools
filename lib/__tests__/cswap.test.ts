@@ -4,7 +4,7 @@ import { listCswapAccounts, parseCswapList } from "../cswap.ts";
 const CAPTURED = `
 A newer version of claude-swap is available (0.25.0). You are using 0.23.0. Run \`cswap upgrade\` to update.
 Accounts:
-  1: matthew.goodwin@assured.claims [Assured] (history: shared)
+  1: alex@acme.test [Acme] (history: shared)
      ├ $$:    100%   $400.07 / $400.00
      ├ 5h:      0%
      ├ 7d:     40%   resets Aug 30 20:00  in 4d 0h
@@ -15,7 +15,7 @@ Accounts:
 
 test("parses slots, emails, aliases and a compact headroom summary", () => {
   expect(parseCswapList(CAPTURED)).toEqual([
-    { slot: 1, email: "matthew.goodwin@assured.claims", alias: "Assured", headroom: "5h 0% · 7d 40% · Fable 35%" },
+    { slot: 1, email: "alex@acme.test", alias: "Acme", headroom: "5h 0% · 7d 40% · Fable 35%" },
     { slot: 2, email: "someone@example.com", headroom: "5h 12%" },
   ]);
 });

@@ -102,9 +102,9 @@ test('invite fixtures answer per pane: a working pane queues, a blocked one refu
 });
 
 test('directories filter by substring; accounts carry headroom; spawn returns a ready pane', () => {
-  expect(fixtureDirectories('assured').every(d => d.path.includes('assured'))).toBe(true);
-  expect(fixtureDirectories().length).toBeGreaterThan(fixtureDirectories('assured').length);
-  expect(fixtureAccounts()[0]).toMatchObject({ slot: 1, alias: 'Assured' });
+  expect(fixtureDirectories('acme').every(d => d.path.includes('acme'))).toBe(true);
+  expect(fixtureDirectories().length).toBeGreaterThan(fixtureDirectories('acme').length);
+  expect(fixtureAccounts()[0]).toMatchObject({ slot: 1, alias: 'Acme' });
   expect(fixtureSpawn('/Users/matt/Documents/GitHub/chat')).toMatchObject({ ready: true, pane: { cwd: '/Users/matt/Documents/GitHub/chat', agentStatus: 'idle' } });
 });
 ```
@@ -127,7 +127,7 @@ export function fixturePanes(): ChatPane[] {
     { paneId: 'w3f:p4', workspace: 'chat', title: 'meg', cwd: '/Users/matt/Documents/GitHub/chat', repo: 'chat', branch: 'main', agentStatus: 'idle', sessionId: 'fixture-meg', presence: { handle: 'meg', status: 'live', rooms: ['build', 'chat'] } },
     { paneId: 'w9c:p3', workspace: 'gitq', title: 'june', cwd: '/Users/matt/Documents/GitHub/gitq', repo: 'gitq', branch: 'main', agentStatus: 'blocked', sessionId: 'fixture-june', presence: { handle: 'june', status: 'idle', rooms: ['gitq'] } },
     { paneId: 'w2d:p1', workspace: 'deck', title: 'otis', cwd: '/Users/matt/Documents/GitHub/deck', repo: 'deck', branch: 'main', agentStatus: 'idle', sessionId: 'fixture-otis', presence: { handle: 'otis', status: 'deaf', rooms: ['deck'] } },
-    { paneId: 'w7A:pY', workspace: 'assured', title: 'Evaluate house codegen plugin for bundle optimization', cwd: '/Users/matt/Documents/GitHub/assured', repo: 'assured', branch: 'main', agentStatus: 'idle', sessionId: 'fixture-assured' },
+    { paneId: 'w7A:pY', workspace: 'acme', title: 'Evaluate house codegen plugin for bundle optimization', cwd: '/Users/matt/Documents/GitHub/acme', repo: 'acme', branch: 'main', agentStatus: 'idle', sessionId: 'fixture-acme' },
     { paneId: 'wB1:p1', workspace: 'mr-board', title: 'Fix invite onboarding modal focus trap', cwd: '/Users/matt/Documents/GitHub/mr-board-wt-invite-onboarding', repo: 'mr-board', branch: 'invite-onboarding', agentStatus: 'working', sessionId: 'fixture-mrboard' },
   ];
 }
@@ -140,13 +140,13 @@ export function fixturePeek(paneId: string): string[] {
 }
 
 export function fixtureAccounts(): PaneAccount[] {
-  return [{ slot: 1, email: 'matthew.goodwin@assured.claims', alias: 'Assured', headroom: '5h 0% · 7d 40% · Fable 35%' }];
+  return [{ slot: 1, email: 'alex@acme.test', alias: 'Acme', headroom: '5h 0% · 7d 40% · Fable 35%' }];
 }
 
 export function fixtureDirectories(q?: string): PaneDirectory[] {
   const all: PaneDirectory[] = [
-    { path: '/Users/matt/Documents/GitHub/assured', repo: 'assured', branch: 'main' },
-    { path: '/Users/matt/Documents/GitHub/assured-wt-codegen-split', repo: 'assured', branch: 'perf/codegen-split' },
+    { path: '/Users/matt/Documents/GitHub/acme', repo: 'acme', branch: 'main' },
+    { path: '/Users/matt/Documents/GitHub/acme-wt-codegen-split', repo: 'acme', branch: 'perf/codegen-split' },
     { path: '/Users/matt/Documents/GitHub/repo-tools', repo: 'repo-tools', branch: 'main' },
     { path: '/Users/matt/Documents/GitHub/chat', repo: 'chat', branch: 'main' },
   ];
@@ -271,10 +271,10 @@ test('POST /api/panes spawns with every field and answers pane plus ready', asyn
   vi.mocked(rt.paneSpawn).mockResolvedValueOnce({ ok: true, data: { pane: PANE, ready: true } });
   const res = await app.request('/api/panes', {
     method: 'POST',
-    body: JSON.stringify({ cwd: '/repos/chat', account: 'Assured', model: 'claude-fable-5', effort: 'high', prompt: 'hi', workspace: 'chat' }),
+    body: JSON.stringify({ cwd: '/repos/chat', account: 'Acme', model: 'claude-fable-5', effort: 'high', prompt: 'hi', workspace: 'chat' }),
   });
   expect(res.status).toBe(200);
-  expect(rt.paneSpawn).toHaveBeenCalledWith({ cwd: '/repos/chat', account: 'Assured', model: 'claude-fable-5', effort: 'high', prompt: 'hi', workspace: 'chat' }, expect.anything());
+  expect(rt.paneSpawn).toHaveBeenCalledWith({ cwd: '/repos/chat', account: 'Acme', model: 'claude-fable-5', effort: 'high', prompt: 'hi', workspace: 'chat' }, expect.anything());
   expect(await res.json()).toEqual({ pane: PANE, ready: true });
 });
 
@@ -698,7 +698,7 @@ const PANES: ChatPane[] = [
   { paneId: 'w1:p1', workspace: 'repo-tools', title: 'fred', cwd: '/r/repo-tools', repo: 'repo-tools', branch: 'main', agentStatus: 'working', presence: { handle: 'fred', status: 'live', rooms: ['repo-tools'] } },
   { paneId: 'w1:p2', workspace: 'chat', title: 'meg', cwd: '/r/chat', repo: 'chat', branch: 'main', agentStatus: 'idle', presence: { handle: 'meg', status: 'live', rooms: ['build'] } },
   { paneId: 'w1:p3', workspace: 'gitq', title: 'june', cwd: '/r/gitq', repo: 'gitq', branch: 'main', agentStatus: 'blocked', presence: { handle: 'june', status: 'idle', rooms: [] } },
-  { paneId: 'w1:p4', workspace: 'assured', title: 'Evaluate codegen', cwd: '/r/assured', repo: 'assured', branch: 'main', agentStatus: 'idle' },
+  { paneId: 'w1:p4', workspace: 'acme', title: 'Evaluate codegen', cwd: '/r/acme', repo: 'acme', branch: 'main', agentStatus: 'idle' },
 ];
 
 function json(body: unknown, status = 200) {
@@ -746,7 +746,7 @@ test('lists claude panes sorted listening, idle, deaf, not signed in, with handl
   expect(rows.map(r => r.getAttribute('data-testid'))).toEqual(['pane-row-w1:p1', 'pane-row-w1:p2', 'pane-row-w1:p3', 'pane-row-w1:p4']);
   expect(within(rows[0]!).getByText('fred')).toBeInTheDocument();
   expect(within(rows[3]!).getByText('not signed in')).toBeInTheDocument();
-  expect(within(rows[3]!).getByText('…/assured')).toBeInTheDocument();
+  expect(within(rows[3]!).getByText('…/acme')).toBeInTheDocument();
 });
 
 test('the filter matches handle, workspace, title, repo and path', async () => {
@@ -811,8 +811,8 @@ test('new pane is hidden without allowCreate and present with it; the form posts
   let release: (r: Response) => void = () => {};
   route({
     'GET /api/panes': () => json({ available: true, panes: PANES }),
-    'GET /api/panes/accounts': () => json({ accounts: [{ slot: 1, email: 'a@b.c', alias: 'Assured', headroom: '5h 0%' }] }),
-    'GET /api/panes/directories': () => json({ directories: [{ path: '/r/assured-wt', repo: 'assured', branch: 'perf' }] }),
+    'GET /api/panes/accounts': () => json({ accounts: [{ slot: 1, email: 'a@b.c', alias: 'Acme', headroom: '5h 0%' }] }),
+    'GET /api/panes/directories': () => json({ directories: [{ path: '/r/acme-wt', repo: 'acme', branch: 'perf' }] }),
     'POST /api/panes': () => new Promise<Response>(r => (release = r)),
   });
   mount();
@@ -824,18 +824,18 @@ test('new pane is hidden without allowCreate and present with it; the form posts
   const results = mount({ allowCreate: true });
   await userEvent.click(screen.getAllByText('open')[1]!);
   await userEvent.click(await screen.findByTestId('pane-new'));
-  await userEvent.type(screen.getByLabelText('Directory'), '/r/assured-wt');
+  await userEvent.type(screen.getByLabelText('Directory'), '/r/acme-wt');
   await userEvent.click(screen.getByTestId('pane-start'));
   expect(await screen.findByText(/starting/)).toBeInTheDocument();
   const body = JSON.parse(String(fetchMock.mock.calls.find(([, i]) => (i as RequestInit)?.method === 'POST')![1]!.body));
-  expect(body).toMatchObject({ cwd: '/r/assured-wt', account: 'Assured' });
+  expect(body).toMatchObject({ cwd: '/r/acme-wt', account: 'Acme' });
   await act(async () => {
-    release(json({ pane: { paneId: 'w9:p1', workspace: 'chat', cwd: '/r/assured-wt', agentStatus: 'idle' }, ready: true }));
+    release(json({ pane: { paneId: 'w9:p1', workspace: 'chat', cwd: '/r/acme-wt', agentStatus: 'idle' }, ready: true }));
   });
   const row = await screen.findByTestId('pane-row-w9:p1');
   expect(within(row).getByTestId('pane-check-w9:p1')).toHaveAttribute('aria-checked', 'true');
   await userEvent.click(screen.getByTestId('pane-use'));
-  expect(results[0]).toEqual([{ paneId: 'w9:p1', workspace: 'chat', cwd: '/r/assured-wt', agentStatus: 'idle' }]);
+  expect(results[0]).toEqual([{ paneId: 'w9:p1', workspace: 'chat', cwd: '/r/acme-wt', agentStatus: 'idle' }]);
 });
 
 test('a ready:false spawn keeps the row, unselectable, with its state', async () => {
@@ -1362,7 +1362,7 @@ import { NewRoomModal } from './NewRoomModal';
 import { PanePickerProvider } from './PanePicker';
 
 const PANES = [
-  { paneId: 'w1:p1', workspace: 'assured', title: 'Evaluate codegen', cwd: '/r/assured', repo: 'assured', branch: 'main', agentStatus: 'idle' },
+  { paneId: 'w1:p1', workspace: 'acme', title: 'Evaluate codegen', cwd: '/r/acme', repo: 'acme', branch: 'main', agentStatus: 'idle' },
   { paneId: 'w1:p2', workspace: 'chat', title: 'meg', cwd: '/r/chat', repo: 'chat', branch: 'main', agentStatus: 'idle', presence: { handle: 'meg', status: 'live', rooms: ['codegen-split'] } },
 ];
 
@@ -1558,9 +1558,9 @@ Append to `src/ui/Transcript.test.tsx` (the file has no local render helper; `Ol
 ```tsx
 test('a notice renders at the edge, above the older-messages row, and without any messages at all', () => {
   const one = [{ id: 1, room: 'build', handle: 'meg', body: 'hi', mentions: [], postedAt: 1 }];
-  const { unmount } = renderWithProviders(<Transcript room="build" messages={one} notice={<span>invited 2 · assured accepted</span>} />);
+  const { unmount } = renderWithProviders(<Transcript room="build" messages={one} notice={<span>invited 2 · acme accepted</span>} />);
   const notice = screen.getByTestId('transcript-notice');
-  expect(notice).toHaveTextContent('invited 2 · assured accepted');
+  expect(notice).toHaveTextContent('invited 2 · acme accepted');
   expect(notice.compareDocumentPosition(screen.getByTestId('transcript-edge')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   unmount();
   renderWithProviders(<Transcript room="quiet" messages={[]} notice={<span>invited 1</span>} />);
@@ -1592,7 +1592,7 @@ test('add agents invites the picked panes and shows the result line on the trans
   installFetchMock();
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const path = String(url).split('?')[0];
-    if (path === '/api/panes') return new Response(JSON.stringify({ available: true, panes: [{ paneId: 'w1:p4', workspace: 'assured', title: 'Evaluate codegen', cwd: '/r/assured', agentStatus: 'idle' }] }));
+    if (path === '/api/panes') return new Response(JSON.stringify({ available: true, panes: [{ paneId: 'w1:p4', workspace: 'acme', title: 'Evaluate codegen', cwd: '/r/acme', agentStatus: 'idle' }] }));
     if (path === '/api/chat/invite' && init?.method === 'POST') return new Response(JSON.stringify({ results: [{ paneId: 'w1:p4', delivered: 'accepted' }] }));
     return new Response(JSON.stringify({}));
   });
@@ -1601,7 +1601,7 @@ test('add agents invites the picked panes and shows the result line on the trans
   await userEvent.click(await screen.findByTestId('add-agents-button'));
   await userEvent.click(await screen.findByTestId('pane-check-w1:p4'));
   await userEvent.click(screen.getByTestId('pane-use'));
-  expect(await screen.findByTestId('transcript-notice')).toHaveTextContent('invited 1 · assured pane accepted');
+  expect(await screen.findByTestId('transcript-notice')).toHaveTextContent('invited 1 · acme pane accepted');
 });
 ```
 
@@ -1814,7 +1814,7 @@ without inviting` (`.btn`), `Create #<room> · invite N` (`.btn.primary`).
 The rooms rail header gains a 24px `.aicon` `+` beside the count. The page
 bar gains `add agents` (`.btn.sm`, user-plus icon) before `mark read`. After
 an invite the transcript opens with a `.notice` row (the `.edge` values, left-aligned): `invited 2 ·
-<ok>assured pane accepted</ok> · <warn>fred queued (working)</warn> ·
+<ok>acme pane accepted</ok> · <warn>fred queued (working)</warn> ·
 members appear as they sign in`. Both entry points hide when rt reports
 herdr unavailable and disable with the daemon down.
 ```
