@@ -63,7 +63,7 @@ import {
   sopsYamlRecipient,
   type AgeKeySeam,
 } from "../lib/home/age-key.ts";
-import { claimZone, InvalidZoneError, normalizeZone, releaseZone, ZoneOwnedByOthersError, type ZoneKind } from "../lib/home/snapshot-owners.ts";
+import { claimZone, InvalidZoneError, normalizeZone, readOwners, releaseZone, ZoneOwnedByOthersError, type ZoneKind } from "../lib/home/snapshot-owners.ts";
 import { promptSecret, type PromptIO } from "../lib/prompt-secret.ts";
 import { daemonQuery, type DaemonResponse } from "../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../lib/daemon/home-snapshot.ts";
@@ -1068,10 +1068,17 @@ export async function homeClaim(
   ownersPath: string = defaultOwnersPath(),
   probes: HomeProbes = defaultProbes(),
 ): Promise<void> {
-  const { zone, owner: ownerArg, note, force } = parseClaimArgs(args);
+  const { zone: zoneArg, owner: ownerArg, note, force } = parseClaimArgs(args);
+  let zone = zoneArg;
   if (!zone) {
-    console.error("rt home claim: a zone is required, e.g. `rt home claim prefs/` or `rt home claim scripts/deploy.sh`");
-    process.exit(1);
+    if (process.stdin.isTTY && !process.env.RT_BATCH) {
+      const { textInput } = await import("../lib/rt-render.tsx");
+      zone = await textInput({ message: "Zone to claim (path relative to the home repo)", placeholder: "prefs/ or scripts/deploy.sh" });
+      if (!zone) process.exit(0);
+    } else {
+      console.error("rt home claim: a zone is required, e.g. `rt home claim prefs/` or `rt home claim scripts/deploy.sh`");
+      process.exit(1);
+    }
   }
 
   refuseUnlessProvisioned("claim", probes);
@@ -1112,10 +1119,21 @@ export async function homeRelease(
   ownersPath: string = defaultOwnersPath(),
   probes: HomeProbes = defaultProbes(),
 ): Promise<void> {
-  const zone = args.find((arg) => !arg.startsWith("--"));
+  let zone = args.find((arg) => !arg.startsWith("--"));
   if (!zone) {
-    console.error("rt home release: a zone is required, e.g. `rt home release prefs/`");
-    process.exit(1);
+    const claimed = process.stdin.isTTY && !process.env.RT_BATCH ? Object.entries(readOwners(ownersPath).zones) : [];
+    if (claimed.length > 0) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      zone =
+        (await filterableSelect({
+          message: "Zone to release",
+          options: claimed.map(([z, entry]) => ({ value: z, label: z, hint: `claimed by ${entry.owner}` })),
+        })) ?? undefined;
+      if (!zone) process.exit(0);
+    } else {
+      console.error("rt home release: a zone is required, e.g. `rt home release prefs/`");
+      process.exit(1);
+    }
   }
 
   refuseUnlessProvisioned("release", probes);

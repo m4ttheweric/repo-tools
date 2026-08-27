@@ -114,7 +114,26 @@ export interface CommandNode {
    * interactive form to collect them before calling the handler.
    */
   args?: CommandArg[];
+
+  /**
+   * What this leaf does when its required positional is omitted in a TTY.
+   * The picker-conformance gate (lib/__tests__/picker-conformance.test.ts)
+   * requires every leaf with a required positional to declare one — the
+   * "omit args → interactive affordance" convention made explicit and
+   * checkable, since the behavior lives in the handler, not the dispatcher.
+   *
+   *  - "picker" → an fzf/ink picker over a listable set (the default shape)
+   *  - "list"   → prints the set; the no-arg call is itself a useful read
+   *  - "prompt" → a free-text / no-echo interactive prompt for the value
+   *  - { exempt } → deliberately errors instead; the reason is documented here
+   *    and reviewed, for values that cannot be enumerated (free-text commands,
+   *    brand-new paths) or verbs that must be pointed at explicitly.
+   */
+  omitBehavior?: OmitBehavior;
 }
+
+/** See CommandNode.omitBehavior. */
+export type OmitBehavior = "picker" | "list" | "prompt" | { exempt: string };
 
 // ─── Dispatcher ──────────────────────────────────────────────────────────────
 

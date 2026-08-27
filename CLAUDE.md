@@ -156,3 +156,24 @@ verbs before you publish. The package version is a shared resource like
 ### Bytecode compile (`--bytecode`) silently falls back on failure
 
 `bun build --compile --bytecode` does not reliably fail loudly when bytecode generation fails. Ink's dependency graph (via `yoga-layout`) and top-level await in `cli.ts` both currently break bytecode generation, but when the *post-bundle* bytecode step itself fails (as opposed to a bundling/parse error), bun still writes out a working binary — just without bytecode, and only a few hundred KB smaller than the non-bytecode build, so the artifact looks like a success. Never conclude `--bytecode` worked because a binary appeared and ran; check the build's stderr for `Failed to generate bytecode` (or read the exit code) before trusting the artifact. A hard parse-time failure (e.g. the top-level `await` in `cli.ts`) does exit non-zero with no binary produced, so that failure mode is safe -- it's specifically the later stage that goes silent.
+
+### A required-positional leaf must declare `omitBehavior`
+
+rt's convention is that omitting the next subcommand OR a required arg shows a
+picker, never a bare error. Branch-node subcommand pickers are structural (the
+dispatcher). The leaf *argument* picker lives in each handler, so it is enforced
+by a declaration: every visible leaf with a required positional (flagless,
+non-`optional`, text/select arg) must set `omitBehavior` on its node in
+`lib/command-tree-def.ts` — `"picker" | "list" | "prompt" | { exempt: "why" }`.
+`bun run picker:check` (`scripts/lib/picker-conformance.ts`) and
+`lib/__tests__/picker-conformance.test.ts` fail otherwise; the check gates
+`.github/workflows/checks.yml` and step 1 of the `rt:release` skill. Adding a
+command that just errors on a missing positional breaks CI, not review.
+
+The picker itself is the other half: rt is driven non-interactively by agents and
+scripts as much as by humans, so **every leaf picker must gate `process.stdin.isTTY
+&& !json && !process.env.RT_BATCH`** and leave the non-TTY / `--json` path exactly
+as it was (same usage message, same exit code, same JSON). An empty candidate set
+falls through to that existing error, never an empty picker. Tag `{ exempt }` only
+when the value genuinely cannot be enumerated (free-text topic/glob/name/new path)
+or the verb is agent-facing by contract.

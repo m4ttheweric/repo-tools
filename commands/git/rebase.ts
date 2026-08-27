@@ -566,7 +566,28 @@ export async function ontoCommand(
   args: string[],
   ctx: CommandContext,
 ): Promise<void> {
-  const target = args.find((a) => !a.startsWith("-"));
+  let target = args.find((a) => !a.startsWith("-"));
+  if (!target) {
+    const json = args.includes("--json");
+    if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
+      const cwd = ctx.identity!.repoRoot;
+      const current = getCurrentBranch(cwd);
+      const branches = git("for-each-ref --format=%(refname:short) refs/heads", cwd)
+        .split("\n")
+        .map((b) => b.trim())
+        .filter((b) => b && b !== current);
+      if (branches.length > 0) {
+        const { filterableSelect } = await import("../../lib/rt-render.tsx");
+        const picked = await filterableSelect({
+          message: "rebase onto which branch?",
+          options: branches.map((b) => ({ value: b, label: b })),
+          stderr: true,
+        });
+        if (!picked) process.exit(0);
+        target = picked;
+      }
+    }
+  }
   if (!target) {
     console.error(`\n  ${yellow}usage: rt git rebase onto <branch>${reset}\n`);
     process.exit(1);

@@ -77,10 +77,16 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
   const json = args.includes("--json");
   const track = flagValue(args, "--track");
   const cachesArg = flagValue(args, "--caches");
-  const paths = positionalPaths(args);
+  let paths = positionalPaths(args);
 
   if (paths.length === 0) {
-    exitUserError(new UserActionableError("usage", USAGE), json, "repos register", deps.print);
+    const picked =
+      process.stdin.isTTY && !json && !process.env.RT_BATCH ? await pickRegisterTarget() : undefined;
+    if (picked === undefined) {
+      exitUserError(new UserActionableError("usage", USAGE), json, "repos register", deps.print);
+    }
+    if (picked === null) process.exit(0);
+    paths = [picked];
   }
   if (track !== undefined && track !== "live" && track !== "poll") {
     exitUserError(new UserActionableError("usage", `--track must be "live" or "poll" (got "${track}")`), json, "repos register", deps.print);
@@ -163,6 +169,27 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
         : `registered ${r.name} (${r.path})`,
     );
   }
+}
+
+/**
+ * No `<path…>`: offer the git repos discovered under `rt.repoRoots` that are
+ * not yet indexed. `undefined` when the scan turns up none (the caller falls
+ * through to the usage error, never an empty picker); `null` when cancelled.
+ */
+async function pickRegisterTarget(): Promise<string | null | undefined> {
+  const candidates = getKnownRepos().filter((r) => r.registered === false && r.worktrees[0]);
+  if (candidates.length === 0) return undefined;
+
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  return filterableSelect({
+    message: "Which repo should rt register?",
+    options: candidates.map((r) => ({
+      value: r.worktrees[0]!.path,
+      label: r.worktrees[0]!.path.replace(homedir(), "~"),
+      hint: r.repoName,
+    })),
+    stderr: true,
+  });
 }
 
 // ─── prune ───────────────────────────────────────────────────────────────────

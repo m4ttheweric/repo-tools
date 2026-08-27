@@ -20,6 +20,7 @@ import { dim, green, reset, yellow } from "../lib/tui.ts";
 import { resolveIndexPathForIdentity } from "../lib/repo-index.ts";
 import { runCapture } from "../lib/subprocess.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
+import { loadEndpointConfig } from "../lib/endpoint/config.ts";
 // deriveRepoName, not getRepoIdentity: the latter's updateRepoIndex side
 // effect would write to the repo index from a read-only lookup.
 import { deriveRepoName } from "../lib/repo.ts";
@@ -53,10 +54,36 @@ interface LookupData {
   running: boolean;
 }
 
+async function pickRole(): Promise<string | null> {
+  const toplevel = await gitToplevel(process.cwd());
+  if (toplevel) {
+    const remote = await gitRemote(toplevel);
+    const repoName = remote ? deriveRepoName(remote) : basename(toplevel);
+    const identity = await deriveRepoIdentity(toplevel);
+    const repoIdentity = identity.kind === "remote" ? identity.id : null;
+    const roles = Object.keys(loadEndpointConfig({ repoIdentity, repoName }).roles);
+    if (roles.length > 0) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      return filterableSelect({
+        message: `endpoint role in ${repoName}`,
+        options: roles.map((r) => ({ value: r, label: r })),
+      });
+    }
+  }
+  fail("usage: rt endpoint lookup <role> [--json]");
+}
+
 export async function endpointLookup(args: string[]): Promise<void> {
   const json = args.includes("--json");
-  const role = args.find((a) => !a.startsWith("--"));
-  if (!role) fail("usage: rt endpoint lookup <role> [--json]");
+  let role = args.find((a) => !a.startsWith("--"));
+  if (!role) {
+    if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
+      role = (await pickRole()) ?? undefined;
+      if (!role) process.exit(0);
+    } else {
+      fail("usage: rt endpoint lookup <role> [--json]");
+    }
+  }
 
   const cwd = process.cwd();
   const toplevel = await gitToplevel(cwd);

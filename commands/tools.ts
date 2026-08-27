@@ -16,7 +16,9 @@ import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { readIntent, teamRefFromIntent } from "../lib/setup/intent.ts";
 import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
 import { readPackRequirements, type PackRequirements } from "../lib/setup/requirements.ts";
-import { claudeConfigDirs, installTool, setupTool } from "../lib/setup/tools-install.ts";
+import { BREW_FORMULAE, VENDOR_INSTALLERS, claudeConfigDirs, installTool, setupTool } from "../lib/setup/tools-install.ts";
+import { bundledToolExec } from "../lib/deps/resolve.ts";
+import { DEFAULT_EXPOSED } from "../lib/deps/links.ts";
 import { listTeams } from "../lib/settings/stores.ts";
 
 function tool(args: string[]): string | undefined {
@@ -29,10 +31,33 @@ function resolveTeamReqs(p: Probes): PackRequirements[] {
   return ref.slug ? readPackRequirements(p, ref.slug) : [];
 }
 
+/** What installTool can act on here, mirroring its branch order: apple-clt, rt's bundled tools that resolve in this environment, its hardcoded brew/vendor formulae, and the joined team's declared tools. */
+function installableTools(p: Probes, reqs: PackRequirements[]): string[] {
+  const names = new Set<string>(["apple-clt", ...Object.keys(BREW_FORMULAE), ...Object.keys(VENDOR_INSTALLERS)]);
+  for (const name of DEFAULT_EXPOSED) if (name !== "rt" && bundledToolExec(p, name)) names.add(name);
+  for (const r of reqs) for (const t of r.tools) names.add(t.name);
+  return [...names].sort();
+}
+
+/** The tools setupTool has a post-install routine for (its only branches). */
+const SETUP_TOOLS = ["herdr", "fast-browser", "extension"];
+
+async function pickTool(message: string, names: string[]): Promise<string | null> {
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  return filterableSelect({ message, options: names.map((n) => ({ value: n, label: n })), stderr: true });
+}
+
 export async function toolsInstall(args: string[], _ctx: CommandContext = {}, p: Probes = createRealProbes()): Promise<void> {
   const json = args.includes("--json");
-  const t = tool(args);
-  if (!t) exitUserError(new UserActionableError("usage", "usage: rt tools install <tool> [--json]"), json, "tools install");
+  let t = tool(args);
+  if (!t) {
+    if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
+      t = (await pickTool("Install which tool?", installableTools(p, resolveTeamReqs(p)))) ?? undefined;
+      if (!t) process.exit(0);
+    } else {
+      exitUserError(new UserActionableError("usage", "usage: rt tools install <tool> [--json]"), json, "tools install");
+    }
+  }
 
   const reqs = resolveTeamReqs(p);
 
@@ -55,8 +80,15 @@ export async function toolsInstall(args: string[], _ctx: CommandContext = {}, p:
 
 export async function toolsSetup(args: string[], _ctx: CommandContext = {}, p: Probes = createRealProbes()): Promise<void> {
   const json = args.includes("--json");
-  const t = tool(args);
-  if (!t) exitUserError(new UserActionableError("usage", "usage: rt tools setup <tool> [--config-dir <dir>]… [--json]"), json, "tools setup");
+  let t = tool(args);
+  if (!t) {
+    if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
+      t = (await pickTool("Set up which tool?", SETUP_TOOLS)) ?? undefined;
+      if (!t) process.exit(0);
+    } else {
+      exitUserError(new UserActionableError("usage", "usage: rt tools setup <tool> [--config-dir <dir>]… [--json]"), json, "tools setup");
+    }
+  }
 
   const configDirs = claudeConfigDirs(p, flagValues(args, "--config-dir"));
 

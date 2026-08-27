@@ -14,6 +14,7 @@
     "test:all": "bun test lib commands packages scripts && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/",
     "docs:gen": "bun scripts/gen-docs.ts",
     "docs:check": "bun scripts/check-docs.ts",
+    "picker:check": "bun scripts/lib/picker-conformance.ts",
     "docs:update": "bun scripts/update-docs.ts",
     "docs:deploy": "bash scripts/deploy-docs.sh",
     "postinstall": "bun run --cwd packages/rt-client build"

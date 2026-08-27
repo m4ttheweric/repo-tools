@@ -31,3 +31,9 @@ jobs:
       # two commands reached main with no reference page.
       - name: Command reference is in sync
         run: bun run docs:check
+
+      # Every leaf that requires a positional must declare how it behaves when
+      # the arg is omitted (picker/list/prompt or an explicit exempt). A new
+      # command that just errors on a missing arg fails here, not in review.
+      - name: Picker convention is enforced
+        run: bun run picker:check

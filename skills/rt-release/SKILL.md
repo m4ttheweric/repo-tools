@@ -38,7 +38,10 @@ left as-is or reduced to a pointer here.
 
 1. **Verify state.** On `main`, working tree clean (`git status --short` empty),
    and commits since the last tag (`git describe --tags --abbrev=0`, then
-   `<last-tag>..HEAD` non-empty). Abort otherwise.
+   `<last-tag>..HEAD` non-empty). Then the command-tree gate: `bun run
+   picker:check` green (every leaf that requires a positional declares an
+   `omitBehavior` — the "omit args → picker" convention; a new command that just
+   errors on a missing arg fails here). Abort on any of these.
 
 2. **Determine version bump.** From `git log --pretty=%s <last-tag>..HEAD`:
    any `feat(` or a new module/file is a minor bump; only `fix(` / `chore(` /

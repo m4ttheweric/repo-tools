@@ -16,9 +16,12 @@
  * with a clear pointer (mirrors commands/home.ts's AgeKeyAbsentError handling).
  */
 
+import { readdirSync } from "fs";
+import { dirname, join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
+import { mattstackHome } from "../lib/rt-paths.ts";
 import {
   InvalidSecretsSegmentError,
   NoAgeKeyError,
@@ -34,6 +37,7 @@ import {
   createRealTeamSecretsSeams,
   listTeamSecretNames,
   reencryptTeamSecrets,
+  teamSecretsFile,
   writeTeamSecret,
 } from "../lib/secrets/team-store.ts";
 
@@ -59,6 +63,19 @@ function positional(args: string[]): string[] {
     result.push(a);
   }
   return result;
+}
+
+/** Existing domain filenames (`.json` stripped) in the personal or `--team` secrets dir; [] when the dir is absent. */
+function existingDomains(team: string | undefined): string[] {
+  const dir = team ? dirname(teamSecretsFile(team, "x")) : join(mattstackHome(), "user", "secrets");
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => name.replace(/\.json$/, ""))
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 function reportSecretsError(err: unknown): never {
@@ -89,7 +106,22 @@ async function collectValue(message: string, args: string[]): Promise<string> {
 
 export async function secretsSet(args: string[], _ctx: CommandContext = {}, seams?: SecretsSeams): Promise<void> {
   const team = flagValue(args, "--team");
-  const [domain, key] = positional(args);
+  let [domain, key] = positional(args);
+  if ((!domain || !key) && process.stdin.isTTY && !process.env.RT_BATCH) {
+    const { textInput } = await import("../lib/rt-render.tsx");
+    if (!domain) {
+      const existing = existingDomains(team);
+      const hint = existing.length ? ` (existing: ${existing.join(", ")})` : "";
+      const picked = (await textInput({ message: `Domain${hint}`, stderr: true })).trim();
+      if (!picked) process.exit(0);
+      domain = picked;
+    }
+    if (!key) {
+      const picked = (await textInput({ message: `Key for ${domain}`, stderr: true })).trim();
+      if (!picked) process.exit(0);
+      key = picked;
+    }
+  }
   if (!domain || !key) {
     console.error("rt secrets set: usage: rt secrets set <domain> <key> [--team <slug>] [--stdin]");
     process.exit(1);
@@ -111,7 +143,20 @@ export async function secretsSet(args: string[], _ctx: CommandContext = {}, seam
 
 export async function secretsList(args: string[], _ctx: CommandContext = {}, seams?: SecretsSeams): Promise<void> {
   const team = flagValue(args, "--team");
-  const [domain] = positional(args);
+  let [domain] = positional(args);
+  if (!domain && process.stdin.isTTY && !process.env.RT_BATCH) {
+    const domains = existingDomains(team);
+    if (domains.length > 0) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const picked = await filterableSelect({
+        message: "Domain",
+        options: domains.map((d) => ({ value: d, label: d })),
+        stderr: true,
+      });
+      if (!picked) process.exit(0);
+      domain = picked;
+    }
+  }
   if (!domain) {
     console.error("rt secrets list: usage: rt secrets list <domain> [--team <slug>]");
     process.exit(1);
@@ -158,11 +203,32 @@ async function rotateTeamAll(team: string, seams?: SecretsSeams): Promise<void> 
 
 export async function secretsRotate(args: string[], _ctx: CommandContext = {}, seams?: SecretsSeams): Promise<void> {
   const team = flagValue(args, "--team");
-  const [domain, key] = positional(args);
+  let [domain, key] = positional(args);
 
   if (team && !domain && !key) {
     await rotateTeamAll(team, seams);
     return;
+  }
+
+  if ((!domain || !key) && process.stdin.isTTY && !process.env.RT_BATCH) {
+    const { filterableSelect, textInput } = await import("../lib/rt-render.tsx");
+    if (!domain) {
+      const domains = existingDomains(team);
+      if (domains.length > 0) {
+        const picked = await filterableSelect({
+          message: "Domain",
+          options: domains.map((d) => ({ value: d, label: d })),
+          stderr: true,
+        });
+        if (!picked) process.exit(0);
+        domain = picked;
+      }
+    }
+    if (domain && !key) {
+      const picked = (await textInput({ message: `Key for ${domain}`, stderr: true })).trim();
+      if (!picked) process.exit(0);
+      key = picked;
+    }
   }
 
   if (!domain || !key) {

@@ -10,11 +10,12 @@
  * — this module only parses args, wires the real Probes seam, and renders.
  */
 
+import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
-import { link, reconcile, unlink } from "../lib/deps/links.ts";
+import { DEFAULT_EXPOSED, isOurLink, link, reconcile, unlink } from "../lib/deps/links.ts";
 import { resolveTool } from "../lib/deps/resolve.ts";
 
 function tool(args: string[]): string | undefined {
@@ -26,9 +27,31 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-export async function depsResolve(args: string[], _ctx: CommandContext = {}, p: Probes = createRealProbes()): Promise<void> {
+async function pickTool(message: string, tools: readonly string[]): Promise<string | null> {
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  return filterableSelect({ message, options: tools.map((name) => ({ value: name, label: name })), stderr: true });
+}
+
+/** The positional, or an interactive pick when it's omitted on a TTY; the existing `fail` in every other case (no TTY, --json, RT_BATCH). */
+async function requireTool(args: string[], usage: string, message: string, candidates: () => readonly string[]): Promise<string> {
   const t = tool(args);
-  if (!t) fail("usage: rt deps resolve <tool> [--json]");
+  if (t) return t;
+  if (process.stdin.isTTY && !args.includes("--json") && !process.env.RT_BATCH) {
+    const picked = await pickTool(message, candidates());
+    if (!picked) process.exit(0);
+    return picked;
+  }
+  fail(usage);
+}
+
+/** Tools currently exposed by one of our tagged links, else the known-tool set (never empty, so the picker always has candidates). */
+function linkedTools(p: Probes): readonly string[] {
+  const linked = p.readDir(join(p.home, ".local", "bin")).filter((name) => isOurLink(p, name));
+  return linked.length ? linked : DEFAULT_EXPOSED;
+}
+
+export async function depsResolve(args: string[], _ctx: CommandContext = {}, p: Probes = createRealProbes()): Promise<void> {
+  const t = await requireTool(args, "usage: rt deps resolve <tool> [--json]", "Resolve which tool?", () => DEFAULT_EXPOSED);
 
   const resolution = resolveTool(p, t);
 
@@ -45,8 +68,7 @@ export async function depsResolve(args: string[], _ctx: CommandContext = {}, p: 
 }
 
 export async function depsLink(args: string[], _ctx: CommandContext = {}, p: Probes = createRealProbes()): Promise<void> {
-  const t = tool(args);
-  if (!t) fail("usage: rt deps link <tool> [--force] [--json]");
+  const t = await requireTool(args, "usage: rt deps link <tool> [--force] [--json]", "Link which tool?", () => DEFAULT_EXPOSED);
 
   const outcome = link(p, t, { force: args.includes("--force") });
   const json = args.includes("--json");
@@ -65,8 +87,7 @@ export async function depsLink(args: string[], _ctx: CommandContext = {}, p: Pro
 }
 
 export async function depsUnlink(args: string[], _ctx: CommandContext = {}, p: Probes = createRealProbes()): Promise<void> {
-  const t = tool(args);
-  if (!t) fail("usage: rt deps unlink <tool> [--json]");
+  const t = await requireTool(args, "usage: rt deps unlink <tool> [--json]", "Unlink which tool?", () => linkedTools(p));
 
   const outcome = unlink(p, t);
 
