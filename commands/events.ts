@@ -105,8 +105,9 @@ export async function eventsWait(args: string[]): Promise<void> {
 }
 
 export async function eventsList(args: string[]): Promise<void> {
-  const pattern = positional(args);
-  if (!pattern) fail("usage: rt events list <pattern> [--after <cursor>] [--limit <n>]");
+  // An omitted pattern matches everything: a bare `rt events list` is a useful
+  // read of the whole journal, not an error (safe for non-TTY/agent callers).
+  const pattern = positional(args) ?? "**";
   const payload: Record<string, unknown> = { pattern };
   const after = flagValue(args, "--after") !== undefined ? Number(flagValue(args, "--after")) : undefined;
   if (after !== undefined && !Number.isFinite(after)) fail("--after must be a number");
@@ -121,8 +122,7 @@ export async function eventsList(args: string[]): Promise<void> {
 }
 
 export async function eventsTail(args: string[]): Promise<void> {
-  const pattern = positional(args);
-  if (!pattern) fail("usage: rt events tail <pattern> [--after <cursor>]");
+  const pattern = positional(args) ?? "**";
   let after = flagValue(args, "--after") !== undefined ? Number(flagValue(args, "--after")) : undefined;
   if (after !== undefined && !Number.isFinite(after)) fail("--after must be a number");
 

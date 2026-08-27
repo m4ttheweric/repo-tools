@@ -33,6 +33,7 @@ const eventsSubcommands: Record<string, CommandNode> = {
     description: "Stream matching events as NDJSON until interrupted",
     module: "./commands/events.ts",
     fn: "eventsTail",
+    omitBehavior: "list",
     args: [
       { name: "Pattern", type: "text", placeholder: "job/**", hint: "Glob pattern to follow" },
       { name: "After", flag: "--after", type: "text", placeholder: "42", hint: "Start from this cursor (replays the journal first)" },
@@ -42,6 +43,7 @@ const eventsSubcommands: Record<string, CommandNode> = {
     description: "Read matching events from the journal (non-blocking)",
     module: "./commands/events.ts",
     fn: "eventsList",
+    omitBehavior: "list",
     args: [
       { name: "Pattern", type: "text", placeholder: "job/**", hint: "Glob pattern to match" },
       { name: "After", flag: "--after", type: "text", placeholder: "0", hint: "Only events with id greater than this cursor" },
@@ -695,6 +697,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "Group chat for agents and their human, over the rt daemon",
     module: "./commands/chat.ts",
     fn: "chat",
+    omitBehavior: "picker",
     args: [
       { name: "Verb", type: "text", placeholder: "join | leave | post | read | rooms | who | mark | tail | sign-in | sign-out | away | back | buddies | dm | pulse", hint: "The chat action to run" },
       { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/post/read/who/mark; the target handle for dm; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/pulse/back/away, which take no room" },
@@ -1168,6 +1171,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Install a daemon cron trigger",
         module: "./commands/cron.ts",
         fn: "cronInstall",
+        omitBehavior: "picker",
         args: [
           { name: "Trigger", type: "select", options: [{ value: "board-triage", label: "board-triage" }] },
           SETUP_JSON_ARG,
@@ -1177,6 +1181,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Remove an installed daemon cron trigger",
         module: "./commands/cron.ts",
         fn: "cronRemove",
+        omitBehavior: "picker",
         args: [
           { name: "Trigger", type: "select", options: [{ value: "board-triage", label: "board-triage" }] },
           SETUP_JSON_ARG,

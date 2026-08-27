@@ -1443,9 +1443,45 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   pulse: runPulse,
 };
 
+const VERB_HINTS: Record<string, string> = {
+  read: "show recent messages",
+  post: "send a message to a room",
+  dm: "send a direct message to a handle",
+  rooms: "list rooms",
+  who: "who is in a room",
+  join: "join a room",
+  leave: "leave a room",
+  mark: "mark a room read",
+  tail: "stream wakes for this handle",
+  "sign-in": "sign in and set presence",
+  "sign-out": "sign out",
+  away: "set an away status",
+  back: "clear away status",
+  buddies: "the presence roster",
+  pulse: "heartbeat (hook-facing)",
+};
+
+async function pickChatVerb(): Promise<string | null> {
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  return filterableSelect({
+    message: "rt chat",
+    options: Object.keys(VERBS).map((v) => ({ value: v, label: v, hint: VERB_HINTS[v] ?? "" })),
+  });
+}
+
 export async function chat(args: string[]): Promise<void> {
-  const [verb, ...rest] = args;
-  if (!verb) fail(USAGE);
+  let [verb, ...rest] = args;
+  if (!verb) {
+    // Non-TTY / --json callers (agents, scripts) keep the usage error and exit
+    // code; only an interactive terminal gets the verb picker.
+    if (process.stdin.isTTY && !args.includes("--json") && !process.env.RT_BATCH) {
+      const picked = await pickChatVerb();
+      if (!picked) process.exit(0);
+      verb = picked;
+    } else {
+      fail(USAGE);
+    }
+  }
   const handler = VERBS[verb];
   if (!handler) fail(`unknown verb "${verb}" — ${USAGE}`);
   await handler(rest);

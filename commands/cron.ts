@@ -16,22 +16,39 @@ import { createRealProbes } from "../lib/setup/probes.ts";
 const KNOWN_TRIGGERS = ["board-triage"] as const;
 type KnownTrigger = (typeof KNOWN_TRIGGERS)[number];
 
-function requireKnownTrigger(args: string[], json: boolean, verb: string): KnownTrigger {
+function usageForTrigger(json: boolean, verb: string): never {
+  exitUserError(
+    new UserActionableError("usage", `usage: rt cron ${verb} <trigger> [--json] (trigger: ${KNOWN_TRIGGERS.join(", ")})`),
+    json,
+    `cron ${verb}`,
+    console.log,
+  );
+}
+
+async function requireKnownTrigger(args: string[], json: boolean, verb: string): Promise<KnownTrigger> {
   const name = args.find((a) => !a.startsWith("--"));
-  if (!name || !(KNOWN_TRIGGERS as readonly string[]).includes(name)) {
-    exitUserError(
-      new UserActionableError("usage", `usage: rt cron ${verb} <trigger> [--json] (trigger: ${KNOWN_TRIGGERS.join(", ")})`),
-      json,
-      `cron ${verb}`,
-      console.log,
-    );
+  if (!name) {
+    // No trigger given: an interactive terminal gets a picker; agents and
+    // --json callers keep the usage error and its exit code.
+    if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const picked = await filterableSelect({
+        message: `rt cron ${verb}`,
+        options: KNOWN_TRIGGERS.map((t) => ({ value: t, label: t, hint: "" })),
+      });
+      if (!picked) process.exit(0);
+      return picked as KnownTrigger;
+    }
+    usageForTrigger(json, verb);
   }
+  // A present-but-unknown trigger is a typo, not an omission: still an error.
+  if (!(KNOWN_TRIGGERS as readonly string[]).includes(name)) usageForTrigger(json, verb);
   return name as KnownTrigger;
 }
 
 export async function cronInstall(args: string[], _ctx: CommandContext = {}): Promise<void> {
   const json = args.includes("--json");
-  requireKnownTrigger(args, json, "install");
+  await requireKnownTrigger(args, json, "install");
 
   const p = createRealProbes();
   const board = resolveTool(p, "board");
@@ -62,7 +79,7 @@ export async function cronInstall(args: string[], _ctx: CommandContext = {}): Pr
 
 export async function cronRemove(args: string[], _ctx: CommandContext = {}): Promise<void> {
   const json = args.includes("--json");
-  const name = requireKnownTrigger(args, json, "remove");
+  const name = await requireKnownTrigger(args, json, "remove");
 
   const result = removeCronTrigger(name);
 
