@@ -1377,6 +1377,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Scaffold a fresh team zone (~/.mattstack/teams/<slug>) and set its remote — Install pushes it",
         module: "./commands/team.ts",
         fn: "teamCreate",
+        omitBehavior: "prompt",
         args: [
           { name: "Name", type: "text", placeholder: "Acme", hint: "Team display name — slugified for the on-disk directory" },
           { name: "Remote", flag: "--remote", type: "text", placeholder: "https://github.com/acme/mattstack-team-acme.git", hint: "An existing empty repo's URL" },
@@ -1430,6 +1431,7 @@ export const TREE: Record<string, CommandNode> = {
             description: "Revoke forge access, drop the roster entry, and re-encrypt without the member's key",
             module: "./commands/team.ts",
             fn: "teamMembersRemove",
+            omitBehavior: "picker",
             args: [
               { name: "Handle", type: "text", placeholder: "octocat", hint: "The member's forge username" },
               { name: "Key", flag: "--key", type: "text", placeholder: "age1...", hint: "The recipient to remove, if it isn't recorded on the roster (a hand-edited store, a suspect entry)" },

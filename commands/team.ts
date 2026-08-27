@@ -22,9 +22,10 @@ import { join } from "path";
 import type { AgeKeySeam } from "../lib/home/age-key.ts";
 import { createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
+import { teamSettingsPath } from "../lib/rt-paths.ts";
 import { createRealTeamSecretsSeams } from "../lib/secrets/team-store.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
-import { listTeams } from "../lib/settings/stores.ts";
+import { listTeams, readStore } from "../lib/settings/stores.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { createRealProbes, readStdinJson, type Probes } from "../lib/setup/probes.ts";
@@ -109,10 +110,16 @@ export async function teamCreate(args: string[], _ctx: CommandContext = {}, deps
   const others = args.includes("--others");
   const remote = flagValue(args, "--remote") ?? null;
   const createRepoOwner = flagValue(args, "--create-repo");
-  const name = positional(args, ["--remote", "--create-repo"])[0];
+  let name = positional(args, ["--remote", "--create-repo"])[0];
 
   if (!name) {
-    usageError(deps, json, "team create", "rt team create <name> (--remote <url> | --create-repo <owner>) [--others] [--json]");
+    if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
+      const { textInput } = await import("../lib/rt-render.tsx");
+      name = await textInput({ message: "Team name", placeholder: "Platform Team" });
+      if (!name) process.exit(0);
+    } else {
+      usageError(deps, json, "team create", "rt team create <name> (--remote <url> | --create-repo <owner>) [--others] [--json]");
+    }
   }
 
   try {
@@ -269,13 +276,38 @@ export async function teamMembersSync(args: string[], _ctx: CommandContext = {},
   }
 }
 
+/** Removable roster handles for the resolved team, from the same `board.members` source `membersRemove` reads. Empty on an unresolved or ambiguous team or any read failure, so the picker falls through to the usage error an omitted handle always got. */
+function rosterHandles(args: string[]): string[] {
+  try {
+    const members = readStore(teamSettingsPath(resolveTeamSlug(args))).global["board.members"];
+    if (!Array.isArray(members)) return [];
+    return members
+      .filter((m): m is { username: string } => m !== null && typeof m === "object" && typeof (m as { username?: unknown }).username === "string")
+      .map((m) => m.username);
+  } catch {
+    return [];
+  }
+}
+
 export async function teamMembersRemove(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
   const json = args.includes("--json");
-  const handle = positional(args, ["--team", "--key"])[0];
+  let handle = positional(args, ["--team", "--key"])[0];
   const key = keyFlagValue(args);
 
   if (!handle) {
-    usageError(deps, json, "team members remove", "rt team members remove <handle> [--key <age1...>] [--team <slug>] [--json]");
+    const roster = process.stdin.isTTY && !json && !process.env.RT_BATCH ? rosterHandles(args) : [];
+    if (roster.length > 0) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const picked = await filterableSelect({
+        message: "Remove which member?",
+        options: roster.map((h) => ({ value: h, label: h })),
+        stderr: true,
+      });
+      if (!picked) process.exit(0);
+      handle = picked;
+    } else {
+      usageError(deps, json, "team members remove", "rt team members remove <handle> [--key <age1...>] [--team <slug>] [--json]");
+    }
   }
 
   try {
