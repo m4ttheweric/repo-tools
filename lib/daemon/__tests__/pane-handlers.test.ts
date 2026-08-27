@@ -38,14 +38,14 @@ const SNAPSHOT = {
 const CSWAP_EXEC = async (argv: [string, ...string[]]) =>
   argv[1] === "list" ? { stdout: "Accounts:\n  1: me@x.y [Me]\n", stderr: "", exitCode: 0 } : { stdout: "main\n", stderr: "", exitCode: 0 };
 
-function harness(handler: FakeHerdrHandler, extra: { repoIndex?: Record<string, string> } = {}) {
+function harness(handler: FakeHerdrHandler, extra: { repoIndex?: Record<string, string>; now?: () => number } = {}) {
   const { sock, seen, stop } = fakeHerdr(handler);
   stops.push(stop);
   const db = freshDb();
   const herdr: typeof herdrRequest = (method, params, opts) => herdrRequest(method, params, { ...opts, sockPath: sock });
   const exec = CSWAP_EXEC;
   const chat = createChatHandlers({ db, emitEvent: () => 0 });
-  const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: Date.now });
+  const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: extra.now ?? Date.now });
   return { db, seen, chat, pane };
 }
 
@@ -263,6 +263,20 @@ test("pane:spawn returns ready:false with the pane when idle never arrives, and 
   expect(res.data.ready).toBe(false);
   expect(res.data.pane.paneId).toBe("w2:p7");
   expect(calls).not.toContain("agent.prompt");
+});
+
+test("pane:spawn stops polling for registration at the wall-clock budget, not a fixed attempt count", async () => {
+  // A slow-but-alive herdr: the agent never registers, and the clock jumps past
+  // the budget after the first poll. A fixed attempt count would poll dozens of
+  // times (each agent.get up to the 5s socket timeout); the deadline stops after one.
+  let reads = 0;
+  const now = () => (reads++ < 2 ? 1_000 : 1_000 + 10_000_000);
+  const { handler, calls } = spawnFake({ statuses: ["idle"], agentGetFailures: 999 });
+  const { pane } = harness(handler, { now });
+  const res = await pane["pane:spawn"]({ cwd: "/repos/chat" });
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.ready).toBe(false);
+  expect(calls.filter((c) => c === "agent.get").length).toBeLessThanOrEqual(2);
 });
 
 test("pane:spawn refuses an unknown cswap account before touching herdr", async () => {

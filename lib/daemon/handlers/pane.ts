@@ -217,8 +217,13 @@ export function createPaneHandlers(opts: {
       if (!sent.ok) return herdrError(sent);
 
       // herdr registers the agent a few hundred ms after the shell starts claude.
+      // Bound the wait by wall-clock, not a fixed attempt count: a slow-but-alive
+      // herdr can make each agent.get take up to the plain socket timeout, so a
+      // count of attempts would run many times the intended budget while pane:spawn
+      // holds its caller.
       let registered = false;
-      for (let attempt = 0; attempt < Math.ceil(REGISTER_BUDGET_MS / REGISTER_POLL_MS); attempt++) {
+      const registerDeadline = now() + REGISTER_BUDGET_MS;
+      while (now() < registerDeadline) {
         const got = await herdr("agent.get", { target: paneId });
         if (got.ok) {
           registered = true;
