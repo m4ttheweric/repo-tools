@@ -20,7 +20,7 @@ test("a success reply comes back as ok with the result object", async () => {
   expect(res.ok).toBe(true);
   if (!res.ok) throw new Error("unreachable");
   expect(res.result.panes).toHaveLength(1);
-  expect(seen[0]).toEqual({ method: "pane.list", params: {} });
+  expect(seen[0]).toEqual({ id: expect.any(String), method: "pane.list", params: {} });
 });
 
 test("an error reply comes back as ok:false with herdr's code and message", async () => {
@@ -35,6 +35,7 @@ test("params travel verbatim, with the request id as a string", async () => {
   stops.push(stop);
   await herdrRequest("pane.send_input", { pane_id: "w1:p1", text: "ls", keys: ["enter"] }, { sockPath: sock });
   expect(seen[0]!.params).toEqual({ pane_id: "w1:p1", text: "ls", keys: ["enter"] });
+  expect(typeof seen[0]!.id).toBe("string");
 });
 
 test("a missing socket is herdr unavailable, never a throw", async () => {

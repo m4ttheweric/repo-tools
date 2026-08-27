@@ -54,30 +54,36 @@ export function herdrRequest<T = unknown>(
       return;
     }
 
+    const tryParseBuffered = (): HerdrResult<T> | undefined => {
+      const nl = buf.indexOf("\n");
+      if (nl < 0) return undefined;
+      const text = buf.slice(0, nl);
+      let parsed: { result?: T; error?: { code?: string; message?: string } };
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return { ok: false, code: "invalid_response", message: `herdr ${method}: unparseable reply` };
+      }
+      return parsed.error
+        ? { ok: false, code: String(parsed.error.code ?? "error"), message: String(parsed.error.message ?? "") }
+        : { ok: true, result: parsed.result as T };
+    };
+
     Bun.connect({
       unix: sockPath,
       socket: {
         open(socket) {
+          if (settled) {
+            try { socket.end(); } catch { /* already closed */ }
+            return;
+          }
           conn = socket;
           socket.write(line);
         },
         data(_socket, chunk) {
           buf += chunk.toString();
-          const nl = buf.indexOf("\n");
-          if (nl < 0) return;
-          const text = buf.slice(0, nl);
-          let parsed: { result?: T; error?: { code?: string; message?: string } };
-          try {
-            parsed = JSON.parse(text);
-          } catch {
-            finish({ ok: false, code: "invalid_response", message: `herdr ${method}: unparseable reply` });
-            return;
-          }
-          if (parsed.error) {
-            finish({ ok: false, code: String(parsed.error.code ?? "error"), message: String(parsed.error.message ?? "") });
-          } else {
-            finish({ ok: true, result: parsed.result as T });
-          }
+          const parsed = tryParseBuffered();
+          if (parsed) finish(parsed);
         },
         error(_socket, err) {
           finish(unavailable(err.message));
@@ -86,7 +92,15 @@ export function herdrRequest<T = unknown>(
           finish(unavailable(err.message));
         },
         close() {
-          finish(unavailable("connection closed before a reply"));
+          // `close` can fire before the `data` callback carrying a buffered
+          // reply has run; check the buffer first, then yield a turn so a
+          // pending `data` callback settles before this gives up.
+          const parsed = tryParseBuffered();
+          if (parsed) {
+            finish(parsed);
+            return;
+          }
+          queueMicrotask(() => finish(unavailable("connection closed before a reply")));
         },
       },
     }).catch((err: unknown) => finish(unavailable(err instanceof Error ? err.message : String(err))));

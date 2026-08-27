@@ -18,7 +18,7 @@ let counter = 0;
  */
 export function fakeHerdr(handler: FakeHerdrHandler) {
   const sock = join(tmpdir(), `fake-herdr-${process.pid}-${counter++}.sock`);
-  const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const seen: Array<{ id: string; method: string; params: Record<string, unknown> }> = [];
   const buffers = new Map<object, string>();
   const server = Bun.listen({
     unix: sock,
@@ -39,7 +39,7 @@ export function fakeHerdr(handler: FakeHerdrHandler) {
             const req = JSON.parse(line) as { id: string; method: string; params?: Record<string, unknown> };
             id = req.id;
             const params = req.params ?? {};
-            seen.push({ method: req.method, params });
+            seen.push({ id, method: req.method, params });
             const out = await handler(req.method, params);
             reply = out instanceof HerdrFakeError
               ? JSON.stringify({ id, error: { code: out.code, message: out.message } })
