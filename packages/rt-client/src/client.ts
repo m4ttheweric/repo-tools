@@ -23,10 +23,6 @@ import type {
   PresenceRow,
   AgentRecord,
   Commands,
-  ChatPane,
-  PaneAccount,
-  PaneDirectory,
-  InviteResult,
 } from "./commands.ts";
 
 /**
@@ -365,42 +361,42 @@ export function agentList(a: { repo?: string }, o: RtClientOptions = {}): Promis
 // ─── Panes (rt chat invite) ────────────────────────────────────────────────
 // herdr-facing verbs; the daemon answers `herdr unavailable` without herdr.
 
-export function paneList(o: RtClientOptions = {}): Promise<RtResponse<{ panes: ChatPane[] }>> {
-  return rtCommand<{ panes: ChatPane[] }>("pane:list", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+export function paneList(o: RtClientOptions = {}): Promise<RtResponse<Commands["pane:list"]["data"]>> {
+  return rtCommand<Commands["pane:list"]["data"]>("pane:list", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
-export function panePeek(a: { paneId: string; lines?: number }, o: RtClientOptions = {}): Promise<RtResponse<{ paneId: string; lines: string[] }>> {
+export function panePeek(a: Commands["pane:peek"]["payload"], o: RtClientOptions = {}): Promise<RtResponse<Commands["pane:peek"]["data"]>> {
   const payload: Record<string, unknown> = { paneId: a.paneId };
   if (a.lines !== undefined) payload.lines = a.lines;
-  return rtCommand<{ paneId: string; lines: string[] }>("pane:peek", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  return rtCommand<Commands["pane:peek"]["data"]>("pane:peek", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 /** The spawn waits on claude starting, so its budget is minutes, not seconds. */
 export function paneSpawn(
-  a: { cwd: string; account?: string; model?: string; effort?: string; prompt?: string; workspace?: string },
+  a: Commands["pane:spawn"]["payload"],
   o: RtClientOptions = {},
-): Promise<RtResponse<{ pane: ChatPane; ready: boolean }>> {
+): Promise<RtResponse<Commands["pane:spawn"]["data"]>> {
   const payload: Record<string, unknown> = { cwd: a.cwd };
   for (const k of ["account", "model", "effort", "prompt", "workspace"] as const) if (a[k] !== undefined) payload[k] = a[k];
-  return rtCommand<{ pane: ChatPane; ready: boolean }>("pane:spawn", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 90_000 });
+  return rtCommand<Commands["pane:spawn"]["data"]>("pane:spawn", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 90_000 });
 }
 
-export function paneAccounts(o: RtClientOptions = {}): Promise<RtResponse<{ accounts: PaneAccount[] }>> {
-  return rtCommand<{ accounts: PaneAccount[] }>("pane:accounts", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+export function paneAccounts(o: RtClientOptions = {}): Promise<RtResponse<Commands["pane:accounts"]["data"]>> {
+  return rtCommand<Commands["pane:accounts"]["data"]>("pane:accounts", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
-export function paneDirectories(a: { q?: string }, o: RtClientOptions = {}): Promise<RtResponse<{ directories: PaneDirectory[] }>> {
+export function paneDirectories(a: Commands["pane:directories"]["payload"], o: RtClientOptions = {}): Promise<RtResponse<Commands["pane:directories"]["data"]>> {
   const payload: Record<string, unknown> = {};
   if (a.q !== undefined) payload.q = a.q;
-  return rtCommand<{ directories: PaneDirectory[] }>("pane:directories", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  return rtCommand<Commands["pane:directories"]["data"]>("pane:directories", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function chatInvite(
-  a: { paneId: string; room: string; note?: string; from: string; callerPane?: string },
+  a: Commands["chat:invite"]["payload"],
   o: RtClientOptions = {},
-): Promise<RtResponse<InviteResult>> {
+): Promise<RtResponse<Commands["chat:invite"]["data"]>> {
   const payload: Record<string, unknown> = { paneId: a.paneId, room: a.room, from: a.from };
   if (a.note !== undefined) payload.note = a.note;
   if (a.callerPane !== undefined) payload.callerPane = a.callerPane;
-  return rtCommand<InviteResult>("chat:invite", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
+  return rtCommand<Commands["chat:invite"]["data"]>("chat:invite", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
