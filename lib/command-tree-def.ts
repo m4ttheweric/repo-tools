@@ -675,6 +675,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "Hand a prompt to a Claude Code agent (herdr pane or headless) and keep the receipt",
     module: "./commands/agent.ts",
     fn: "agent",
+    omitBehavior: "picker",
     args: [
       { name: "Verb", type: "text", placeholder: "start | resume | show | list", hint: "The agent action to run" },
       { name: "Id", type: "text", placeholder: "ag-1a2b3c4d", hint: "For resume/show: the handoff id or session uuid" },
