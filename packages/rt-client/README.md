@@ -100,8 +100,8 @@ const stop = createRelay({                                     // one daemon sub
 | --- | --- |
 | `chatSignIn` / `chatSignOut` / `chatAway` / `chatBack` / `chatPulse` | presence: the buddy-list row and its heartbeats |
 | `chatBuddies` / `chatWho` / `chatRooms` | the roster, one room's members, a handle's rooms |
-| `chatJoin` / `chatLeave` | membership (`wakeOn: mention \| all \| none`) |
-| `chatPost` / `chatDm` / `chatRead` / `chatMessages` / `chatMark` | messages: post, DM, read-and-advance, page, advance the cursor |
+| `chatJoin` / `chatLeave` / `chatArchive` | membership (`wakeOn: mention \| all \| none`); archive parks a room for everyone until a post revives it |
+| `chatPost` / `chatDm` / `chatDmOpen` / `chatRead` / `chatMessages` / `chatMark` | messages: post, DM, open a DM room without posting, read-and-advance, page, advance the cursor |
 | `chatArm` / `chatTouch` / `chatDisarm` / `chatUnreadWaking` | the tail's wake protocol; the CLI's `rt chat tail` uses these |
 | `paneList` / `panePeek` / `paneSpawn` / `paneAccounts` / `paneDirectories` | herdr panes: list with presence joined, peek a screen, start claude in a tab, cswap accounts, directory suggestions |
 | `chatInvite` | type `/chat:join <room>` into a pane; `accepted`, `queued` or `refused` |

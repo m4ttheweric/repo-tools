@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach, spyOn } from "bun:test";
-import { readProjectMRs, readDiscussions, readMrsByBranch, listRuns, abandonRun, readBranchCache, chatInvite, paneDirectories, paneList, panePeek, paneSpawn } from "../src/client.ts";
+import { readProjectMRs, readDiscussions, readMrsByBranch, listRuns, abandonRun, readBranchCache, chatInvite, paneDirectories, paneList, panePeek, paneSpawn, chatArchive, chatDmOpen, chatRooms } from "../src/client.ts";
 import { fakeDaemon } from "./fake-daemon.ts";
 
 const stops: Array<() => void> = [];
@@ -158,5 +158,41 @@ describe("pane wrappers", () => {
     await chatInvite({ paneId: "w1:p1", room: "build", from: "matt" }, { sockPath: sock });
     expect(spy.mock.calls.map((c) => c[0])).toEqual([90_000, 30_000]);
     spy.mockRestore();
+  });
+});
+
+describe("chat archive and dm-open", () => {
+  test("chatArchive sends room, handle and archived verbatim", async () => {
+    const { sock, seen, stop } = fakeDaemon({
+      "chat:archive": { ok: true, data: { room: "build", archivedAt: 5 } },
+    });
+    stops.push(stop);
+    const res = await chatArchive({ room: "build", handle: "matt", archived: true }, { sockPath: sock });
+    expect(res).toEqual({ ok: true, data: { room: "build", archivedAt: 5 } });
+    expect(seen).toEqual([{ cmd: "chat:archive", payload: { room: "build", handle: "matt", archived: true } }]);
+  });
+
+  test("chatDmOpen omits sessionId when not given and passes it when given", async () => {
+    const { sock, seen, stop } = fakeDaemon({
+      "chat:dm-open": { ok: true, data: { room: "dm-abc", created: true } },
+    });
+    stops.push(stop);
+    await chatDmOpen({ from: "matt", to: "a" }, { sockPath: sock });
+    await chatDmOpen({ from: "a", to: "b", sessionId: "s1" }, { sockPath: sock });
+    expect(seen[0]!.payload).toEqual({ from: "matt", to: "a" });
+    expect(seen[1]!.payload).toEqual({ from: "a", to: "b", sessionId: "s1" });
+  });
+
+  test("chatRooms sends includeArchived only when true", async () => {
+    const { sock, seen, stop } = fakeDaemon({ "chat:rooms": { ok: true, data: { rooms: [] } } });
+    stops.push(stop);
+    await chatRooms({ handle: "matt" }, { sockPath: sock });
+    await chatRooms({ handle: "matt", includeArchived: false }, { sockPath: sock });
+    await chatRooms({ handle: "matt", includeArchived: true }, { sockPath: sock });
+    expect(seen.map((s) => s.payload)).toEqual([
+      { handle: "matt" },
+      { handle: "matt" },
+      { handle: "matt", includeArchived: true },
+    ]);
   });
 });
