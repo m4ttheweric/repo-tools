@@ -1756,7 +1756,7 @@ Run from `design/artboards`: `python3 ../build.py && cd .. && python3 extract-sp
 Add to `design/ANATOMY.md`, after the Composer section:
 
 ```markdown
-## Pane picker — Task 6
+## Pane picker (Task 6)
 
 A `.pop` modal, 640px (a full-height drawer on phones). Header: the terminal
 icon, `Pick herdr panes` at 20px / 700, the caller's context in `.sm.muted`.
@@ -1791,7 +1791,7 @@ for Directory (with a `.card` of `.opt` suggestions), a 2-column grid of
 Account / Model then Effort / Workspace, and the Opening prompt `.area`;
 footer hint with the launch command, `Back`, `Start pane`.
 
-## New room — Task 7
+## New room (Task 7)
 
 A `.pop` modal, 680px. Header: hash icon + `New room`. `.field`s: Room
 (`#` prefix, hint `lowercase, digits, dashes · the room exists once you
@@ -1804,7 +1804,7 @@ checkboxes, each with a remove `.aicon` and a 28px note `.input`. Footer:
 the hint (`N invites · <handle> picks it up when its turn ends`), `Create
 without inviting` (`.btn`), `Create #<room> · invite N` (`.btn.primary`).
 
-## Entry points — Task 8
+## Entry points (Task 8)
 
 The rooms rail header gains a 24px `.aicon` `+` beside the count. The page
 bar gains `add agents` (`.btn.sm`, user-plus icon) before `mark read`. After

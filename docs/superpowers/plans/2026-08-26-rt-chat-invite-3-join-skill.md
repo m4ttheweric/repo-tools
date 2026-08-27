@@ -122,7 +122,7 @@ Run:
 ```bash
 claude plugin validate "$PWD/plugins/chat" --strict
 claude plugin validate "$PWD" --strict || true
-grep -rn '—\|–' plugins/chat .claude-plugin && echo "DASHES FOUND" || echo "no dashes"
+grep -rn $'\xe2\x80\x94\\|\xe2\x80\x93' plugins/chat .claude-plugin && echo "DASHES FOUND" || echo "no dashes"
 ```
 
 Expected: the plugin validation prints `Validation passed` with no warnings. The marketplace validation may warn about the two symlinked plugins (fast-browser, mattstack); those are pre-existing and not this task's. The grep prints `no dashes`.

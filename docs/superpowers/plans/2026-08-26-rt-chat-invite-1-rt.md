@@ -2096,7 +2096,7 @@ git commit -m "herdr-agent: herdr agent wait replaces the removed top-level wait
 
 - [ ] **Step 2: Check and commit**
 
-Run: `grep -n '—\|–' skills/rt-chat/SKILL.md | head` (the file already contains em dashes from earlier authors; do not add new ones in the inserted text: `grep -c` before and after must match).
+Run: `grep -n $'\xe2\x80\x94\\|\xe2\x80\x93' skills/rt-chat/SKILL.md | head` (the file already contains em dashes from earlier authors; do not add new ones in the inserted text: `grep -c` before and after must match).
 
 ```bash
 git add skills/rt-chat/SKILL.md
