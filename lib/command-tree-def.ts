@@ -1063,6 +1063,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "The last lines of a pane's visible screen",
         module: "./commands/pane.ts",
         fn: "panePeek",
+        omitBehavior: { exempt: "agent-facing; the pane id is passed explicitly (discover panes with rt pane list)" },
         args: [
           { name: "Pane", type: "text", placeholder: "w7A:pY", hint: "herdr pane id" },
           { name: "Lines", flag: "--lines", type: "text", optional: true, placeholder: "8", hint: "How many lines from the bottom" },

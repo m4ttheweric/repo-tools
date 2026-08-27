@@ -453,6 +453,9 @@ const agent = (status: string, kind = "claude") => ({ type: "agent_info", agent:
 test("inviteText is one line: the slash command, then the attributed note with newlines collapsed", () => {
   expect(inviteText("build", "matt")).toBe("/chat:join build");
   expect(inviteText("build", "fred", "take the\nserver half\n")).toBe("/chat:join build note from fred: take the server half");
+  // A lone CR (no LF) and a CRLF must collapse too, or the injected command spans lines.
+  expect(inviteText("build", "fred", "take the\rserver half\r")).toBe("/chat:join build note from fred: take the server half");
+  expect(inviteText("build", "fred", "a\r\nb")).toBe("/chat:join build note from fred: a b");
 });
 
 test("chat:invite prompts an idle pane and reports accepted when it reaches working", async () => {

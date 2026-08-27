@@ -145,7 +145,7 @@ const INVITE_WAIT_MS = 5_000;
 /** One line, because Claude Code dispatches a slash command from the first line only. */
 export function inviteText(room: string, from: string, note?: string): string {
   const head = `/chat:join ${room}`;
-  const body = note?.replace(/\s*\n+\s*/g, " ").trim();
+  const body = note?.replace(/\s*[\r\n\u2028\u2029]+\s*/g, " ").trim();
   return body ? `${head} note from ${from}: ${body}` : head;
 }
 
