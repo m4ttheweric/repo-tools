@@ -47,9 +47,9 @@ let server: ReturnType<typeof Bun.serve> | null = null;
 // Real child processes (spawnChat); reaped in afterEach so a stray tail can't
 // outlive its test.
 const children: Array<ReturnType<typeof Bun.spawn>> = [];
-// Scripted replies for a command, consulted before the real handlers — for
-// commands whose real handler has side effects a unit test must not trigger
-// (chat:invite would actually type into a herdr pane). Reset every test.
+// Scripted replies for a command, consulted before the real handlers (for
+// commands whose real handler has side effects a unit test must not trigger:
+// chat:invite would actually type into a herdr pane). Reset every test.
 let canned: Record<string, unknown> = {};
 // Every command this fake daemon dispatched, in order, for asserting exactly
 // what a verb sent the daemon.
@@ -1045,7 +1045,7 @@ describe("pidfile identity — only a real rt chat tail reads as live", () => {
 
 // ─── Task 9: `rt chat read --last N` and `rt chat invite <pane>` ───────────
 
-describe("rt chat CLI — read --last, invite", () => {
+describe("rt chat CLI: read --last, invite", () => {
   test("read --last N shows the newest N messages regardless of the cursor, then marks read", async () => {
     await runChat(["join", "build", "--as", "alice"]);
     await runChat(["post", "build", "seed one", "--as", "alice"]);
