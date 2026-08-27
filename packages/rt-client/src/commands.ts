@@ -121,6 +121,8 @@ export interface RoomSummary {
   participants?: { a: string; b: string };
   /** Set only by chat:rooms's left join against chat_room_defaults; undefined for a room never stamped a default (every DM room included). */
   defaultWake?: WakeMode;
+  /** Set only when chat:rooms was asked for archived rooms; absent on an open room. */
+  archivedAt?: number;
 }
 
 /**
@@ -283,7 +285,7 @@ export interface Commands {
   "chat:leave": { payload: { room: string; handle: string }; data: Record<string, never> };
   "chat:post": { payload: { room: string; handle: string; body: string; mentions?: string[] }; data: { id: number; recipients: string[] } };
   "chat:read": { payload: { handle: string; room?: string; limit?: number; sinceMs?: number }; data: { rooms: { room: string; messages: ChatMessage[] }[] } };
-  "chat:rooms": { payload: { handle: string }; data: { rooms: RoomSummary[] } };
+  "chat:rooms": { payload: { handle: string; includeArchived?: boolean }; data: { rooms: RoomSummary[] } };
   "chat:who": { payload: { room: string }; data: { members: ChatMember[] } };
   "chat:mark": { payload: { handle: string; room?: string }; data: Record<string, never> };
   "chat:messages": { payload: { room: string; before?: number; limit?: number }; data: { messages: ChatMessage[] } };
@@ -308,6 +310,8 @@ export interface Commands {
     data: { unread: { dms: number; mentions: number; rooms: number }; status: BuddyStatus };
   };
   "chat:dm": { payload: { from: string; to: string; body: string; sessionId?: string }; data: { room: string; id: number; recipients: string[] } };
+  "chat:archive": { payload: { room: string; handle: string; archived: boolean }; data: { room: string; archivedAt: number | null } };
+  "chat:dm-open": { payload: { from: string; to: string; sessionId?: string }; data: { room: string; created: boolean } };
 
   // ─── Agent handoff (rt agent) ────────────────────────────────────────────
   "agent:start": { payload: { repo: string; cwd: string; prompt?: string; surface?: AgentSurface; model?: string; effort?: string; account?: string; label?: string; caller?: string; workspace?: string; tab?: string; extraArgs?: string }; data: AgentRecord };
@@ -359,6 +363,8 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "chat:buddies",
   "chat:pulse",
   "chat:dm",
+  "chat:archive",
+  "chat:dm-open",
   "agent:start",
   "agent:resume",
   "agent:get",

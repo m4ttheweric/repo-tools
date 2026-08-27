@@ -3,6 +3,7 @@
  *
  *   rt chat join <room> [--as <h>] [--wake-on mention|all|none]
  *   rt chat leave <room>
+ *   rt chat archive <room> [--reopen]              park a room for everyone; a post revives it
  *   rt chat post <room> <<'EOF' ... EOF          the body on stdin; <text> for a one-liner
  *   rt chat read [room] [--limit 20] [--full] [--since <dur>]
  *   rt chat read <room> --last <n>                 newest N regardless of cursor, then marks read
@@ -53,6 +54,7 @@ import { chatViewerUrl, readChatViewerUrlSetting } from "../lib/chat-viewer-url.
 import { planSessionRename, type RenamePlan } from "../lib/chat-rename.ts";
 import { parseDuration } from "./events.ts";
 import {
+  chatArchive,
   chatArm,
   chatAway,
   chatBack,
@@ -630,6 +632,29 @@ async function runLeave(args: string[]): Promise<void> {
     return;
   }
   console.log(`✓ left #${room} (${handle})`);
+}
+
+async function runArchive(args: string[]): Promise<void> {
+  const room = positional(args);
+  if (!room) fail("usage: rt chat archive <room> [--reopen]");
+  requireValidName("room", room);
+
+  const handle = resolveHandle(args);
+  requireValidName("handle", handle);
+
+  const archived = !args.includes("--reopen");
+  const res = await chatArchive({ room, handle, archived });
+  const data = unwrap(res, "archive");
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, room: data.room, archivedAt: data.archivedAt }));
+    return;
+  }
+  console.log(
+    archived
+      ? `archived #${room}: hidden from every member's rooms until someone posts into it`
+      : `reopened #${room}`,
+  );
 }
 
 /**
@@ -1405,11 +1430,12 @@ export async function chatTail(args: string[]): Promise<void> {
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "usage: rt chat <join|leave|post|read|rooms|who|mark|tail|sign-in|sign-out|away|back|buddies|dm|pulse|invite> ...";
+  "usage: rt chat <join|leave|archive|post|read|rooms|who|mark|tail|sign-in|sign-out|away|back|buddies|dm|pulse|invite> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   join: runJoin,
   leave: runLeave,
+  archive: runArchive,
   post: runPost,
   read: runRead,
   rooms: runRooms,
@@ -1435,6 +1461,7 @@ const VERB_HINTS: Record<string, string> = {
   join: "join a room",
   leave: "leave a room",
   mark: "mark a room read",
+  archive: "park a room (post revives it)",
   tail: "stream wakes for this handle",
   "sign-in": "sign in and set presence",
   "sign-out": "sign out",

@@ -382,6 +382,25 @@ describe("rt chat CLI — additional verb behavior", () => {
     const rooms = JSON.parse(await runChat(["rooms", "--json", "--as", "solo"]));
     expect(rooms.rooms).toEqual([]);
   });
+
+  test("archive hides the room from rooms until reopened; --json reports the stamp", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    const out = JSON.parse(await runChat(["archive", "r", "--json", "--as", "a"]));
+    expect(out.ok).toBe(true);
+    expect(out.room).toBe("r");
+    expect(typeof out.archivedAt).toBe("number");
+    expect(JSON.parse(await runChat(["rooms", "--json", "--as", "a"])).rooms).toEqual([]);
+
+    const plain = await runChat(["archive", "r", "--reopen", "--as", "a"]);
+    expect(plain).toContain("reopened #r");
+    expect(JSON.parse(await runChat(["rooms", "--json", "--as", "a"])).rooms.map((x: { room: string }) => x.room)).toEqual(["r"]);
+  });
+
+  test("archive refuses a room that does not exist with exit 1", async () => {
+    const { code, stderr } = await runChatRaw(["archive", "ghost", "--as", "a"]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("no such room");
+  });
 });
 
 // ─── sign-in / sign-out (presence) ──────────────────────────────────────────

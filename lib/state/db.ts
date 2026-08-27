@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7). */
-export const SCHEMA_VERSION = 7;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8). */
+export const SCHEMA_VERSION = 8;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -295,6 +295,14 @@ function addSectionsColumnIfMissing(db: Database): void {
   db.exec("ALTER TABLE project_mr_demands ADD COLUMN sections TEXT;");
 }
 
+/** chat_rooms.archived_at (v8): the same conditional-exec rule as `sections`
+    above, because the DDL string replays on every bump. */
+function addArchivedAtColumnIfMissing(db: Database): void {
+  const columns = db.query("PRAGMA table_info(chat_rooms);").all() as { name: string }[];
+  if (columns.some((c) => c.name === "archived_at")) return;
+  db.exec("ALTER TABLE chat_rooms ADD COLUMN archived_at INTEGER;");
+}
+
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
 function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code;
@@ -431,6 +439,7 @@ function runMigrations(db: Database, dir: string): void {
       // already-v1 db is a no-op and existing rows are untouched.
       db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA + V7_SCHEMA);
       addSectionsColumnIfMissing(db);
+      addArchivedAtColumnIfMissing(db);
       // Legacy-JSON import is single-shot and only correct from a true
       // v0 (never-migrated) database: branch-cache's UPSERT would silently
       // overwrite current rows with stale ones, and project-mrs-store's

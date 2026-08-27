@@ -108,6 +108,8 @@ export {
   markRead,
   unreadWakingCount,
   listRooms,
+  archiveRoom,
+  roomArchivedAt,
   roomDefaultWake,
   listMembers,
   armMember,

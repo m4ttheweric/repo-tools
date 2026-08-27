@@ -29,6 +29,8 @@ export {
   chatBuddies,
   chatPulse,
   chatDm,
+  chatArchive,
+  chatDmOpen,
   eventsHead,
   agentStart,
   agentResume,

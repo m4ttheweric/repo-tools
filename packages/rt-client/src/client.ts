@@ -186,10 +186,12 @@ export function chatRead(
 }
 
 export function chatRooms(
-  a: { handle: string },
+  a: { handle: string; includeArchived?: boolean },
   o: RtClientOptions = {},
 ): Promise<RtResponse<{ rooms: RoomSummary[] }>> {
-  return rtCommand<{ rooms: RoomSummary[] }>("chat:rooms", { handle: a.handle }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  const payload: Record<string, unknown> = { handle: a.handle };
+  if (a.includeArchived === true) payload.includeArchived = true;
+  return rtCommand<{ rooms: RoomSummary[] }>("chat:rooms", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function chatWho(
@@ -321,6 +323,26 @@ export function chatDm(
   const payload: Record<string, unknown> = { from: a.from, to: a.to, body: a.body };
   if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
   return rtCommand<{ room: string; id: number; recipients: string[] }>("chat:dm", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function chatArchive(
+  a: { room: string; handle: string; archived: boolean },
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ room: string; archivedAt: number | null }>> {
+  return rtCommand<{ room: string; archivedAt: number | null }>(
+    "chat:archive",
+    { room: a.room, handle: a.handle, archived: a.archived },
+    { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 },
+  );
+}
+
+export function chatDmOpen(
+  a: { from: string; to: string; sessionId?: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ room: string; created: boolean }>> {
+  const payload: Record<string, unknown> = { from: a.from, to: a.to };
+  if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
+  return rtCommand<{ room: string; created: boolean }>("chat:dm-open", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function eventsHead(o: RtClientOptions = {}): Promise<RtResponse<{ cursor: number }>> {
