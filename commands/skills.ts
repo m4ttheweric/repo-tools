@@ -1752,9 +1752,116 @@ function parseBindFlags(args: string[]): BindFlags {
   return { team, manifest, dryRun, packDir, mattstackDir };
 }
 
+type PickedBind = { verbName: string; slotName: string; fill: string; flagArgs: string[] };
+
+/**
+ * TTY-only chained pickers for an omitted <verb>/<slot>/<fill>, resolved left to
+ * right from the pack's roster + manifest. Returns null when nothing needs
+ * picking (all three positionals present) or a step's candidate set is empty, so
+ * skillsBind falls through to its existing error -- the non-TTY / --json paths
+ * never call this and stay byte-for-byte unchanged.
+ */
+async function pickBindArgs(args: string[]): Promise<PickedBind | null> {
+  const valued = new Set(["--pack", "--team", "--manifest", "--pack-dir", "--mattstack-dir"]);
+  const positionals: string[] = [];
+  const flagArgs: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--dry-run") {
+      flagArgs.push(a);
+    } else if (valued.has(a)) {
+      flagArgs.push(a);
+      if (i + 1 < args.length) flagArgs.push(args[++i]!);
+    } else {
+      positionals.push(a);
+    }
+  }
+  if (positionals.length >= 3) return null;
+
+  const bindFlags = parseBindFlags(flagArgs);
+  const resolved = await resolve({
+    team: bindFlags.team,
+    verbs: null,
+    manifest: bindFlags.manifest,
+    dryRun: bindFlags.dryRun,
+    preview: false,
+    packDir: bindFlags.packDir,
+    mattstackDir: bindFlags.mattstackDir,
+    json: false,
+  });
+
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+
+  let verbName = positionals[0];
+  if (!verbName) {
+    const seen = new Set<string>();
+    const options = [];
+    for (const v of resolved.fullRoster) {
+      seen.add(v.name);
+      options.push({ value: v.name, label: v.name, hint: `verb  -> ${v.engine}` });
+    }
+    for (const s of resolved.stages) {
+      if (seen.has(s.name)) continue;
+      options.push({ value: s.name, label: s.name, hint: `stage  -> ${s.engine}` });
+    }
+    if (options.length === 0) return null;
+    const picked = await filterableSelect({ message: "which verb?", options, stderr: true });
+    if (picked === null) process.exit(0);
+    verbName = picked;
+  }
+
+  const verb = resolved.fullRoster.find((v) => v.name === verbName) ?? resolved.stages.find((v) => v.name === verbName);
+  if (!verb) return null;
+
+  let step;
+  try {
+    step = loadStepSource(verb.engine, resolved.pluginRoots);
+  } catch {
+    return null;
+  }
+
+  let slotName = positionals[1];
+  if (!slotName) {
+    const options = Object.entries(step.slots).map(([name, spec]) => ({
+      value: name,
+      label: name,
+      hint: `${spec.contract}${spec.required ? "  required" : ""}`,
+    }));
+    if (options.length === 0) return null;
+    const picked = await filterableSelect({ message: `which slot on "${verbName}"?`, options, stderr: true });
+    if (picked === null) process.exit(0);
+    slotName = picked;
+  }
+
+  const slotSpec = step.slots[slotName];
+  if (!slotSpec) return null;
+
+  let fill = positionals[2];
+  if (!fill) {
+    const options = enumerateFills(resolved.pluginRoots)
+      .filter((f) => f.provides === slotSpec.contract)
+      .map((f) => ({ value: f.binding, label: f.binding, hint: `${f.provides}  ${f.registered ? "registered" : "attachment"}` }));
+    if (options.length === 0) return null;
+    const picked = await filterableSelect({ message: `which fill for "${slotName}" (${slotSpec.contract})?`, options, stderr: true });
+    if (picked === null) process.exit(0);
+    fill = picked;
+  }
+
+  return { verbName, slotName, fill, flagArgs };
+}
+
 export async function skillsBind(args: string[]): Promise<void> {
   await withCleanErrors(async () => {
-    const [verbName, slotName, fill, ...rest] = args;
+    let [verbName, slotName, fill, ...rest] = args;
+    if ((!verbName || !slotName || !fill) && process.stdin.isTTY && !args.includes("--json") && resolveFzf()) {
+      const picked = await pickBindArgs(args);
+      if (picked) {
+        verbName = picked.verbName;
+        slotName = picked.slotName;
+        fill = picked.fill;
+        rest = picked.flagArgs;
+      }
+    }
     if (!verbName || !slotName || !fill) {
       throw new SkillsUsageError("bind requires: rt skills bind <verb> <slot> <fill>");
     }

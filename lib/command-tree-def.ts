@@ -1165,6 +1165,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Write bindings.<engineRef>.<slot> = <fill> into the manifest (jsonc-parser, comments preserved), validate the fill against the slot's contract, and recompile (a stage bind recompiles the whole pack)",
         module: "./commands/skills.ts",
         fn: "skillsBind",
+        omitBehavior: "picker",
         args: [
           { name: "Verb", type: "text", placeholder: "watch-ci", hint: "Roster verb or pipeline stage" },
           { name: "Slot", type: "text", placeholder: "domain", hint: "Slot declared on the verb's step" },

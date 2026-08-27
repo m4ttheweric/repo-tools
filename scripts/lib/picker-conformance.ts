@@ -89,4 +89,5 @@ if (import.meta.main) {
   }
   const v = conformanceViolations(TREE);
   console.log(`\n${leaves.length} in-scope leaf/leaves, ${v.length} violation(s)`);
+  process.exit(v.length ? 1 : 0);
 }
