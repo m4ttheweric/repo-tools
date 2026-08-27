@@ -86,6 +86,25 @@ async function resolveRunsRepoArg(arg: string): Promise<string> {
   }
 }
 
+async function fetchRunsForPicker(args: string[]): Promise<RunSummary[]> {
+  const repoArg = flagValue(args, "--repo");
+  const repo = repoArg ? await resolveRunsRepoArg(repoArg) : undefined;
+  const res = await daemonQuery("runs:list", { repo }, 10_000);
+  if (!res || !res.ok) return [];
+  return (res.data as { runs: RunSummary[] }).runs;
+}
+
+async function pickRunId(runs: RunSummary[], message: string): Promise<string | null> {
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const idWidth = Math.max(...runs.map((r) => r.id.length));
+  const options = runs.map((r) => ({
+    value: r.id,
+    label: r.id.padEnd(idWidth),
+    hint: `${r.repo}  ${r.status}${r.current_stage ? ` @ ${r.current_stage}` : ""}`,
+  }));
+  return filterableSelect({ message, options, stderr: true });
+}
+
 export async function runsList(args: string[]): Promise<void> {
   const repoArg = flagValue(args, "--repo");
   const repo = repoArg ? await resolveRunsRepoArg(repoArg) : undefined;
@@ -99,8 +118,17 @@ export async function runsList(args: string[]): Promise<void> {
 }
 
 export async function runsShow(args: string[]): Promise<void> {
-  const runId = positional(args);
-  if (!runId) fail("usage: rt runs show <runId> [--repo <name>] [--json]");
+  let runId = positional(args);
+  const json = args.includes("--json");
+  if (!runId) {
+    const runs = process.stdin.isTTY && !json && !process.env.RT_BATCH
+      ? await fetchRunsForPicker(args)
+      : [];
+    if (runs.length === 0) fail("usage: rt runs show <runId> [--repo <name>] [--json]");
+    const picked = await pickRunId(runs, "pick a run to show");
+    if (!picked) process.exit(0);
+    runId = picked;
+  }
   const repoArg = flagValue(args, "--repo");
   const repo = repoArg ? await resolveRunsRepoArg(repoArg) : undefined;
   const res = await daemonQuery("runs:get", { runId, repo }, 10_000);
@@ -112,8 +140,19 @@ export async function runsShow(args: string[]): Promise<void> {
 }
 
 export async function runsAbandon(args: string[]): Promise<void> {
-  const runId = positional(args);
-  if (!runId) fail("abandon needs a run id");
+  let runId = positional(args);
+  const json = args.includes("--json");
+  if (!runId) {
+    const runs = process.stdin.isTTY && !json && !process.env.RT_BATCH
+      ? await fetchRunsForPicker(args)
+      : [];
+    const targets = runs.filter((r) => r.status === "running");
+    const pick = targets.length > 0 ? targets : runs;
+    if (pick.length === 0) fail("abandon needs a run id");
+    const picked = await pickRunId(pick, "pick a run to abandon");
+    if (!picked) process.exit(0);
+    runId = picked;
+  }
   const repoArg = flagValue(args, "--repo");
   const repo = repoArg ? await resolveRunsRepoArg(repoArg) : undefined;
   const reason = flagValue(args, "--reason") ?? "reconciled by hand";

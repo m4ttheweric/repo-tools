@@ -57,6 +57,7 @@ const runsSubcommands: Record<string, CommandNode> = {
     description: "One run: stages, fields, decisions",
     module: "./commands/runs.ts",
     fn: "runsShow",
+    omitBehavior: "picker",
     args: [
       { name: "Run", type: "text", placeholder: "20260821-010101-abcd", hint: "Run id (repo auto-resolved; --repo to pin)" },
       { name: "Repo", flag: "--repo", type: "text", placeholder: "myrepo", hint: "Registry repo name" },
@@ -66,6 +67,7 @@ const runsSubcommands: Record<string, CommandNode> = {
     description: "Mark a wedged run abandoned (the run died with its session and the DB still says running)",
     module: "./commands/runs.ts",
     fn: "runsAbandon",
+    omitBehavior: "picker",
     args: [
       { name: "Run id", type: "text", placeholder: "20260822-134012-x4x2", hint: "Run to reconcile" },
       { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo the run belongs to; omit to scan" },
@@ -113,6 +115,7 @@ const endpointSubcommands: Record<string, CommandNode> = {
     description: "Does this worktree hold a dev-endpoint claim for a role?",
     module: "./commands/endpoint.ts",
     fn: "endpointLookup",
+    omitBehavior: "picker",
     args: [
       { name: "Role", type: "text", placeholder: "backend", hint: "Role name declared in the repo's endpoint config" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
