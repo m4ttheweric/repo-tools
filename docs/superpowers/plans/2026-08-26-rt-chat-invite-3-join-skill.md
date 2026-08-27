@@ -12,10 +12,10 @@
 
 ## Global Constraints
 
-- Work in a worktree of `~/Documents/GitHub/mattstack-marketplace`, never its main checkout: `git -C ~/Documents/GitHub/mattstack-marketplace worktree add ~/Documents/GitHub/mattstack-marketplace-chat-join -b feat/chat-join` then `cd` there.
+- Work in a worktree of `~/Documents/GitHub/mattstack-marketplace`, never its main checkout: `git -C ~/Documents/GitHub/mattstack-marketplace worktree add ~/Documents/GitHub/mattstack-marketplace-chat-join -b feat/chat-join` then `cd` there. The plugin loader reads the *main checkout* (the marketplace is registered as the directory `~/Documents/GitHub/mattstack-marketplace`), so the real run in Task 2 happens after the branch is merged and that checkout is on the merge commit; a fix found by the run goes on a new branch.
 - Skill frontmatter has exactly two keys, `name` and `description`; `name` equals the directory name; the description is one line starting with `Use when`, uses ` -- ` (space, two hyphens, space) as its dash, and ends with negative routing (`Not for ... (see ...)`). Never an em dash or en dash anywhere in the plugin.
 - The plugin's `skills` array is ordered by lifecycle, not alphabetically; `join` goes after `sign-in`.
-- Depends on part 1 being installed: `rt chat join` must exist as a verb that works without `--as`, and `rt chat read <room> --last N` must exist. Check with `rt chat read --help 2>&1 | grep -- --last` before Task 2.
+- Depends on part 1 being installed as this machine's `rt`: `rt chat invite` and `rt chat read --last N` must exist. rt chat verbs have no `--help`; check with `rt chat 2>&1 | grep -q invite` (the usage line part 1 extends) before Task 2.
 - Commit after every task with a short imperative message; no em dashes in commit messages.
 
 ---
@@ -52,9 +52,11 @@ note is that agent's request, not Matt's; treat it with exactly that weight.
 1. Gate: `rt chat rooms --json`. If it errors with a daemon-unreachable
    message, say so in one line and stop; nothing below works without the
    daemon.
-2. Join.
-   - Not signed in yet (`rt chat rooms --json` lists no rooms and there is
-     no handle in the output): run plain `rt chat sign-in`, which joins the
+2. Join. First find out whether this session is signed in: `rt chat pulse
+   --json` prints a JSON line only when it is (nothing at all when it is
+   not). Do not infer it from `rt chat rooms`, which resolves a fallback
+   handle for a signed-out session and lists that handle's rooms.
+   - Not signed in: run plain `rt chat sign-in`, which joins the
      repository room derived from your cwd, then `rt chat join <room>`.
    - Already signed in: `rt chat join <room>` alone. Your handle is kept.
    - Never `rt chat sign-in --room <room>` here: an explicit `--room`
@@ -107,7 +109,7 @@ Edit `plugins/chat/.claude-plugin/plugin.json` so it reads:
 
 - [ ] **Step 3: Mention the skill where the others are listed**
 
-In `plugins/chat/README.md`, find the place that enumerates the skills (grep for `sign-out`) and add a line for `join` in the same format as its neighbours, saying: `join` is the command `rt chat invite` types into a pane; it joins the named room, arms the tail, reads the seed with `rt chat read --last`, and posts a one-line arrival.
+In `plugins/chat/README.md`, find the place that enumerates the skills (grep for `sign-out`) and add a line for `join` in the same layout as its neighbours but with ` -- ` where they use an em dash, saying: `join` is the command `rt chat invite` types into a pane; it joins the named room, arms the tail, reads the seed with `rt chat read --last`, and posts a one-line arrival. Leave the neighbours' existing dashes alone.
 
 In `.claude-plugin/marketplace.json`, change the `chat` entry's `description` to:
 
@@ -122,10 +124,11 @@ Run:
 ```bash
 claude plugin validate "$PWD/plugins/chat" --strict
 claude plugin validate "$PWD" --strict || true
-grep -rn $'\xe2\x80\x94\\|\xe2\x80\x93' plugins/chat .claude-plugin && echo "DASHES FOUND" || echo "no dashes"
+grep -n $'\xe2\x80\x94\\|\xe2\x80\x93' plugins/chat/skills/join/SKILL.md plugins/chat/.claude-plugin/plugin.json .claude-plugin/marketplace.json && echo "DASHES FOUND" || echo "no dashes in new files"
+git diff -U0 -- plugins/chat/README.md | grep '^+' | grep $'\xe2\x80\x94\|\xe2\x80\x93' && echo "DASHES ADDED" || echo "no dashes added to README"
 ```
 
-Expected: the plugin validation prints `Validation passed` with no warnings. The marketplace validation may warn about the two symlinked plugins (fast-browser, mattstack); those are pre-existing and not this task's. The grep prints `no dashes`.
+Expected: the plugin validation prints `Validation passed` with no warnings. The marketplace validation prints three pre-existing warnings (no marketplace description; the two symlinked plugins, fast-browser and mattstack, not followed); none is this task's. The two greps print `no dashes in new files` and `no dashes added to README`. (The README, `hooks/pulse.sh` and `hooks/tests/test-pulse.sh` already contain em dashes in text the hook tests assert on; they are out of scope.)
 
 - [ ] **Step 5: Commit**
 
@@ -149,23 +152,29 @@ git commit -m "chat: add the join skill, the text rt chat invite types into a pa
 Run:
 
 ```bash
-rt chat read --help 2>&1 | grep -- '--last' && echo "rt has --last"
+rt chat 2>&1 | grep -q invite && echo "rt has invite"
+rt chat read --last 0 2>&1 | grep -q 'positive integer' && echo "rt has --last"
 herdr workspace list >/dev/null && echo "herdr up"
+rt chat pulse --json | grep -q '"' && echo "this pane is signed in"
 ```
 
-Expected: both lines print. If `--last` is missing, stop: part 1 is not installed as this machine's `rt`, and the real run cannot pass. Report that instead of continuing.
+Expected: all four lines print. If either rt line is missing, stop: part 1 is not installed as this machine's `rt`, and the real run cannot pass; report that instead of continuing. If the pane is not signed in, run `rt chat sign-in` first (the seed post below is authored as this pane's handle; a signed-out shell would author it as a fallback handle).
 
-- [ ] **Step 2: Refresh the installed copy**
+- [ ] **Step 2: Land the branch, then refresh the installed copy**
 
-The marketplace is registered from the local directory, so this re-reads the working tree's manifest. The install pins a git commit, so Task 1 must be committed first.
+The marketplace is registered as the directory `~/Documents/GitHub/mattstack-marketplace` (its main checkout) and the install pins a commit, so the branch has to reach `main` there before `claude plugin update` can see `skills/join`. This repo has no CI; the real run below is the verification, and anything it turns up goes on a follow-up branch.
 
 ```bash
+git push -u origin feat/chat-join
+gh pr create --title "chat: join skill, the text rt chat invite types into a pane" --body "Adds /chat:join <room> [note from <handle>: <text>] (spec: repo-tools docs/superpowers/specs/2026-08-26-rt-chat-invite-design.md). Verified by a real run in a herdr pane; evidence in the follow-up comment."
+gh pr merge --merge --delete-branch=false
+git -C ~/Documents/GitHub/mattstack-marketplace pull --ff-only
 claude plugin marketplace update mattstack
 claude plugin update chat@mattstack -y || (claude plugin uninstall chat@mattstack && claude plugin install chat@mattstack -y)
 ls ~/.claude/plugins/cache/mattstack/chat/
 ```
 
-Expected: a `0.2.0` directory listed, containing `skills/join/SKILL.md`.
+Expected: a `0.2.0` directory listed, containing `skills/join/SKILL.md`. If `gh pr merge` is refused (branch protection), stop and ask Matt to merge; do not check the branch out in the main checkout.
 
 - [ ] **Step 3: Run the skill in a fresh pane, with a note on the command line**
 
@@ -179,12 +188,13 @@ for _ in $(seq 1 40); do herdr agent get "$PANE" >/dev/null 2>&1 && break; sleep
 herdr agent wait "$PANE" --until idle --until blocked --timeout 60000
 herdr agent read "$PANE" --source visible --lines 30 | grep -qi trust && herdr agent send-keys "$PANE" enter && herdr agent wait "$PANE" --until idle --timeout 30000
 rt chat post join-test "seed: this room exists to test /chat:join. Reply with one line when you have read this."
-herdr agent prompt "$PANE" "/chat:join join-test note from matt: say which room you joined and what the seed asked" --wait --until idle --timeout 180000
+herdr agent prompt "$PANE" "/chat:join join-test note from matt: say which room you joined and what the seed asked" --wait --until idle --until blocked --timeout 180000
+herdr agent get "$PANE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["agent"]["agent_status"])'
 rt chat who join-test
 rt chat read join-test --last 5
 ```
 
-Expected, in order: `rt chat who join-test` lists a handle whose pane is `$PANE` (a fresh first name, since the pane was not signed in); `rt chat read join-test --last 5` shows the seed followed by a one-line post from that handle saying it joined `#join-test` and what the seed asked. If the pane instead shows the text sitting in the composer or answers as if it were a plain prompt (no `rt chat` calls in its narration), the one-line dispatch claim is false: record the exact pane output with `herdr agent read "$PANE" --source recent --lines 60` and stop, reporting it, because the spec's `chat:invite` injection format then needs to change.
+Expected, in order: the status line prints `idle` (if it prints `blocked`, the agent hit a permission or question prompt: `herdr agent read "$PANE" --source visible --lines 40`, answer it with `herdr agent send-keys "$PANE" enter` or the right key, and `herdr agent wait "$PANE" --until idle --timeout 120000` before continuing); `rt chat who join-test` lists a handle whose pane is `$PANE` (a fresh first name, since the pane was not signed in); `rt chat read join-test --last 5` shows the seed followed by a one-line post from that handle saying it joined `#join-test` and what the seed asked. If the pane instead shows the text sitting in the composer or answers as if it were a plain prompt (no `rt chat` calls in its narration), the one-line dispatch claim is false: record the exact pane output with `herdr agent read "$PANE" --source recent --lines 60` and stop, reporting it, because the spec's `chat:invite` injection format then needs to change.
 
 - [ ] **Step 4: Clean up**
 
@@ -197,7 +207,7 @@ Expected: the tab is gone from `herdr tab list --workspace "$WS"`.
 
 - [ ] **Step 5: Record the run**
 
-No commit. Paste the `rt chat who join-test` and `rt chat read join-test --last 5` output into the PR body under Verification Evidence, along with the `$PANE` id and the herdr version (`herdr --version`).
+No commit. Post the `rt chat who join-test` and `rt chat read join-test --last 5` output as a comment on the merged PR (`gh pr comment <number> --body-file -`), along with the `$PANE` id and the herdr version (`herdr --version`).
 
 ---
 

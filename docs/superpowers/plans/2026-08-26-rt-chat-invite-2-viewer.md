@@ -360,6 +360,7 @@ export const panes = new Hono()
     const paneId = c.req.param('id');
     const lines = parseIntParam(c.req.query('lines'));
     if (fixturesEnabled()) return c.json({ paneId, lines: fixturePeek(paneId) }, 200);
+    // Hono hands `:id` already decoded, so `w1:p1` arrives as itself.
     const res = await panePeek(lines === undefined ? { paneId } : { paneId, lines }, rtOpts());
     if (!res.ok) return c.json({ error: res.error }, 502);
     return c.json(res.data, 200);
@@ -549,15 +550,15 @@ git commit -m "server: POST /api/chat/rooms creates and seeds; POST /api/chat/in
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `src/app/App.test.tsx` (the file already installs `FakeWebSocket`; import `FakeWebSocket` from `@ui/test-utils` if not already):
+First, in `src/ui/test-utils.tsx`, add `export` to the `FakeWebSocket` class (today only `installFakeWebSocket`/`restoreWebSocket` are exported). Then append to `src/app/App.test.tsx`, adding `FakeWebSocket` to its `@ui/test-utils` import and `userEvent` from `@testing-library/user-event` (Task 8 needs it too):
 
 ```tsx
 test('a chat/<room>/msg frame refetches the open room\'s members', async () => {
   installFetchMock();
   fetchMock.mockImplementation(async (url: string) =>
-    new Response(JSON.stringify(url.startsWith('/api/chat/who/') ? { members: [{ room: 'build', handle: 'fred', joinedAt: 1, lastReadId: 0, wakeOn: 'mention', status: 'live' }] } : {}))
+    new Response(JSON.stringify(String(url).startsWith('/api/chat/who/') ? { members: [{ room: 'build', handle: 'fred', joinedAt: 1, lastReadId: 0, wakeOn: 'mention', status: 'live' }] } : {}))
   );
-  renderAt('/r/build');
+  window.history.replaceState(null, '', '/r/build');
   await act(async () => {
     renderWithProviders(<App initialState={{ ...twoRooms, members: [] }} />);
   });
@@ -569,8 +570,6 @@ test('a chat/<room>/msg frame refetches the open room\'s members', async () => {
   expect(after).toBeGreaterThan(before);
 });
 ```
-
-(Use the file's existing `renderAt` helper only once; drop the duplicate render if `renderAt` already mounts `<App />`: mount with `renderWithProviders(<App initialState={{ ...twoRooms, members: [] }} />)` after `window.history.replaceState(null, '', '/r/build')`.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -862,7 +861,7 @@ test('herdr unavailable shows a notice and only cancel', async () => {
   route({ 'GET /api/panes': () => json({ available: false, panes: [] }) });
   const results = mount();
   await userEvent.click(screen.getByText('open'));
-  expect(await screen.findByText(/herdr/)).toBeInTheDocument();
+  expect(await screen.findByText(/herdr is not running/)).toBeInTheDocument();
   expect(screen.queryByTestId('pane-use')).toBeNull();
   await userEvent.click(screen.getByTestId('pane-cancel'));
   expect(results).toEqual([null]);
@@ -1033,7 +1032,7 @@ export function PaneRow({ pane, selected, disabledReason, onToggle, onPeek, peek
               marginTop: 5,
               flex: 'none',
               borderRadius: '50%',
-              background: pane.presence ? DOT_COLOR[pane.presence.status as 'live' | 'idle' | 'deaf'] : 'transparent',
+              background: pane.presence ? (DOT_COLOR[pane.presence.status as 'live' | 'idle' | 'deaf'] ?? 'transparent') : 'transparent',
               border: pane.presence ? undefined : `1px solid ${BORDER}`,
             }}
           />
@@ -1212,7 +1211,8 @@ export function PanePickerModal({ opts, onDone }: { opts: PickPanesOptions; onDo
       return;
     }
     setPeeks(prev => ({ ...prev, [pane.paneId]: 'loading' }));
-    fetch(`/api/panes/${encodeURIComponent(pane.paneId)}/peek?lines=8`)
+    // Pane ids never contain a slash; sent bare so the server's `:id` and the tests' URL match.
+    fetch(`/api/panes/${pane.paneId}/peek?lines=8`)
       .then(res => res.json())
       .then((data: { lines?: string[] }) => setPeeks(prev => ({ ...prev, [pane.paneId]: data.lines ?? [] })))
       .catch(() => setPeeks(prev => ({ ...prev, [pane.paneId]: ['(could not read the pane)'] })));
@@ -1339,8 +1339,8 @@ git commit -m "ui: PanePicker, a standalone picker over /api/panes with peek and
 export interface NewRoomModalProps {
   opened: boolean;
   onClose: () => void;
-  /** After a successful create: the room, and the invite results when any were sent. */
-  onCreated: (room: string, results: InviteResult[]) => void;
+  /** After a successful create: the room, the invite results when any were sent, and the panes they were sent to (so the caller can name them). */
+  onCreated: (room: string, results: InviteResult[], picked: ChatPane[]) => void;
   daemonReachable?: boolean;
 }
 ```
@@ -1395,7 +1395,7 @@ test('the name field enforces the room charset before anything is sent', async (
   mount();
   await userEvent.type(screen.getByLabelText('Room'), 'Bad Room');
   expect(screen.getByTestId('new-room-create')).toBeDisabled();
-  expect(await screen.findByText(/lowercase, digits, dashes/)).toBeInTheDocument();
+  expect(await screen.findByText('lowercase, digits, dashes')).toBeInTheDocument();
   expect(fetchMock.mock.calls.some(([u]) => String(u) === '/api/chat/rooms')).toBe(false);
 });
 
@@ -1421,7 +1421,7 @@ test('submit creates, seeds, then invites in order, and reports the room and res
   await userEvent.click(screen.getByTestId('pane-use'));
   await userEvent.type(within(await screen.findByTestId('picked-w1:p1')).getByLabelText('note for this pane'), 'you own vite');
   await userEvent.click(screen.getByTestId('new-room-create'));
-  await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith('codegen-split', [{ paneId: 'w1:p1', delivered: 'accepted' }]));
+  await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith('codegen-split', [{ paneId: 'w1:p1', delivered: 'accepted' }], [PANES[0]]));
   const calls = fetchMock.mock.calls.map(([u, i]) => [String(u), i as RequestInit | undefined] as const);
   const rooms = calls.findIndex(([u]) => u === '/api/chat/rooms');
   const invite = calls.findIndex(([u]) => u === '/api/chat/invite');
@@ -1435,7 +1435,7 @@ test('create without inviting skips the invite route', async () => {
   const { onCreated } = mount();
   await userEvent.type(screen.getByLabelText('Room'), 'quiet');
   await userEvent.click(screen.getByTestId('new-room-create-only'));
-  await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith('quiet', []));
+  await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith('quiet', [], []));
   expect(fetchMock.mock.calls.some(([u]) => String(u) === '/api/chat/invite')).toBe(false);
 });
 
@@ -1460,7 +1460,7 @@ Expected: FAIL, module not found.
 
 - [ ] **Step 3: Write the modal**
 
-`src/ui/NewRoomModal.tsx`, built on `useForm` + `zodResolver` from `@ui/forms` (schema: `room` matching `/^[a-z0-9._-]+$/` with the message `lowercase, digits, dashes`, `seed` any string, `wakeOn` enum `mention | all`), `FormContainer` with `plain` and `hideChrome`, `TextInput` (`label="Room"`, `leftSection` a muted `#`, the hint `lowercase, digits, dashes · the room exists once you post the seed`), `Textarea` (`label="Seed"`, `autosize`, `minRows={4}`, the two hints `posted as matt · every invitee is told to read it first` and `markdown subset · blank line between points`), a `Select` for `wakeOn` (`aria-label="Wakes"`, data `mention`/`all`, hint `all = a war room, nobody has to @here`), the Agents section (header `AGENTS · N to invite`, a `pick panes` button `data-testid="new-room-pick"` that calls `pickPanes({ context: \`to invite to #${room || '…'}\`, allowCreate: true, disable, preselected: picked.map(p => p.paneId) })` and replaces the picked list with the result when it is not `null`), one `PaneRow` per picked pane inside `data-testid={\`picked-${paneId}\`}` with `extra` = a `TextInput` (`aria-label="note for this pane"`, placeholder `note for this pane (optional)`) and `trailing` = a remove `UnstyledButton` (`aria-label="Remove"`, the `close` icon), and the footer: `Create without inviting` (`data-testid="new-room-create-only"`) and `Create #<room> · invite N` (`data-testid="new-room-create"`), both disabled while the form is invalid or a submit is in flight. Submit:
+`src/ui/NewRoomModal.tsx`, built on `useForm` + `zodResolver` from `@ui/forms` (schema: `room` matching `/^[a-z0-9._-]+$/` with the message `lowercase, digits, dashes`, `seed` any string, `wakeOn` enum `mention | all`; `validateInputOnChange: true` so the charset error shows as you type), `FormContainer` with `plain` and `hideChrome`, `TextInput` (`label="Room"`, `leftSection` a muted `#`, the hint `lowercase, digits, dashes · the room exists once you post the seed`), `Textarea` (`label="Seed"`, `autosize`, `minRows={4}`, the two hints `posted as matt · every invitee is told to read it first` and `markdown subset · blank line between points`), a `Select` for `wakeOn` (`aria-label="Wakes"`, data `mention`/`all`, hint `all = a war room, nobody has to @here`), the Agents section (header `AGENTS · N to invite`, a `pick panes` button `data-testid="new-room-pick"` that calls `pickPanes({ context: \`to invite to #${room || '…'}\`, allowCreate: true, disable, preselected: picked.map(p => p.paneId) })` and replaces the picked list with the result when it is not `null`), one `PaneRow` per picked pane inside `data-testid={\`picked-${paneId}\`}` with `extra` = a `TextInput` (`aria-label="note for this pane"`, placeholder `note for this pane (optional)`) and `trailing` = a remove `UnstyledButton` (`aria-label="Remove"`, the `close` icon), and the footer: `Create without inviting` (`data-testid="new-room-create-only"`) and `Create #<room> · invite N` (`data-testid="new-room-create"`), both disabled while the form is invalid or a submit is in flight. Submit:
 
 ```ts
 async function submit(invite: boolean) {
@@ -1475,7 +1475,7 @@ async function submit(invite: boolean) {
       if (!inv.ok) throw new Error(((await inv.json()) as { error?: string }).error ?? 'invite failed');
       results = ((await inv.json()) as { results: InviteResult[] }).results;
     }
-    onCreated(values.room, results);
+    onCreated(values.room, results, invite ? picked : []);
     form.reset();
     setPicked([]);
     setNotes({});
@@ -1554,16 +1554,22 @@ test('add agents sits before mark read, only when wired, disabled while the daem
 });
 ```
 
-Append to `src/ui/Transcript.test.tsx` (use the file's own render helper):
+Append to `src/ui/Transcript.test.tsx` (the file has no local render helper; `OlderEdge` only renders with at least one message, so seed one):
 
 ```tsx
-test('a notice renders at the edge, above the older-messages row', () => {
-  renderTranscript({ notice: <span>invited 2 · assured accepted</span> });
+test('a notice renders at the edge, above the older-messages row, and without any messages at all', () => {
+  const one = [{ id: 1, room: 'build', handle: 'meg', body: 'hi', postedAt: 1 }];
+  const { unmount } = renderWithProviders(<Transcript room="build" messages={one} notice={<span>invited 2 · assured accepted</span>} />);
   const notice = screen.getByTestId('transcript-notice');
   expect(notice).toHaveTextContent('invited 2 · assured accepted');
   expect(notice.compareDocumentPosition(screen.getByTestId('transcript-edge')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  unmount();
+  renderWithProviders(<Transcript room="quiet" messages={[]} notice={<span>invited 1</span>} />);
+  expect(screen.getByTestId('transcript-notice')).toHaveTextContent('invited 1');
 });
 ```
+
+(Match the message object to the `ChatMessage` shape the file's other tests use; add `userEvent` to `RoomRail.test.tsx`'s and `PageBar.test.tsx`'s imports if absent.)
 
 Append to `src/app/App.test.tsx`:
 
@@ -1635,7 +1641,7 @@ with a 7.2px gap to the next control (`mr={7.2}` on the button or a spacer `Box 
 
 - [ ] **Step 4: Transcript notice**
 
-In `Transcript.tsx`, add `notice?: ReactNode` to `TranscriptProps` and render, above the `OlderEdge` mount:
+In `Transcript.tsx`, add `notice?: ReactNode` to `TranscriptProps` and render it above the `OlderEdge` mount but outside the `messages.length > 0 &&` guard, so a room created with `Create without inviting` (no messages yet) still shows it:
 
 ```tsx
             {notice && (
@@ -1715,7 +1721,7 @@ async function addAgents() {
 }
 ```
 
-5. `NewRoomModal` mounted with `opened={newRoomOpen}`, `onClose={() => setNewRoomOpen(false)}`, `daemonReachable={daemon.reachable}`, `onCreated={(room, results) => { setNewRoomOpen(false); refetchRooms(); selectRoom(room); if (results.length) setNotice({ room, node: resultLine(results, []) }); }}`. Since `NewRoomModal` knows the picked panes, extend `onCreated` to pass them too (`onCreated(room, results, picked)`) so names resolve; update the Task 7 interface accordingly.
+5. `NewRoomModal` mounted with `opened={newRoomOpen}`, `onClose={() => setNewRoomOpen(false)}`, `daemonReachable={daemon.reachable}`, `onCreated={(room, results, picked) => { setNewRoomOpen(false); refetchRooms(); selectRoom(room); if (results.length) setNotice({ room, node: resultLine(results, picked) }); }}` (the three-argument signature Task 7 defines).
 6. Pass `onNewRoom={panesAvailable ? () => setNewRoomOpen(true) : undefined}` and `daemonReachable={daemon.reachable}` to `RoomRail`; `onAddAgents={panesAvailable ? addAgents : undefined}` to `PageBar`; `notice={notice?.room === activeRoom ? notice.node : undefined}` to `Transcript`. Clear the notice when the room changes: `useEffect(() => { if (notice && notice.room !== activeRoom) setNotice(null); }, [activeRoom, notice]);` (drop this if the `room ===` gate above is enough for the tests; the spec says the line lasts until the next room change).
 
 - [ ] **Step 6: Run the suite**
@@ -1738,13 +1744,13 @@ git commit -m "app: + in the rail, add agents in the page bar, invite results at
 - Modify: `design/build.py` (CSS block, ICON dict, four generators, canvas entries), `design/artboards/*.dc.html` (regenerated), `design/canvas.json`, `design/spec.json` (regenerated), `design/ANATOMY.md`, `design/audit.mjs`, `design/README.md`
 
 **Interfaces:**
-- Produces: artboards `NewRoom.dc.html`, `PanePicker.dc.html`, `NewPane.dc.html`, `EntryPoints.dc.html`; `TARGETS` for `.pop` (the picker modal shell), `.pane`, `.cb`, `.peek`, `.btn.sm` (`add agents`), the rail `+` (`.aicon`), and the notice row (`.edge`).
+- Produces: artboards `NewRoom.dc.html`, `PanePicker.dc.html`, `NewPane.dc.html`, `EntryPoints.dc.html`; a new `.notice` rule in the shared CSS; `TARGETS` for `.pop` (the picker modal shell), `.pane`, `.cb`, `.peek`, `.btn.sm` (`add agents`), and the notice row (`.notice`). The rail `+` is a 24px control the spec's 28px `.aicon` does not describe; it is covered by the RoomRail test, not the audit.
 
 - [ ] **Step 1: Fold the mockup generator into `design/build.py`**
 
 The mockup generator is `/private/tmp/claude-501/-Users-matt-Documents-GitHub-chat/cb0994ad-4a10-49da-9f0f-b84d14861d54/scratchpad/pane-browser/build.py` (if that path is gone, the canvas at https://claude.ai/code/artifact/93d55ea7-54c1-4866-9685-bdc3b605661b holds the same four artboards; re-derive the generators from their markup). Into `design/build.py`:
 
-1. Append its `EXTRA` CSS rules to the `CSS = r"""..."""` block (inside it; `extract-spec.py` only parses that block). Keep `.pane + .pane` as the row separator rule.
+1. Append its `EXTRA` CSS rules to the `CSS = r"""..."""` block (inside it; `extract-spec.py` only parses that block). Keep `.pane + .pane` as the row separator rule. Add one more rule for the invite result row, and use it in place of `.edge` in `entry_points()`: `.notice { padding: 6px 0 4px; text-align: left; font-size: 10.56px; color: var(--muted-text); }`.
 2. Add its five `ICON` entries (`plus`, `x`, `eye`, `userplus`, `search`) to the `ICON` dict.
 3. Paste its `PANES` table and the functions `pane_row`, `pane_list`, `picked_row`, `picked_list`, `new_room`, `picker`, `new_pane`, `entry_points` as module-level defs, using the repo's own `head()`/`tail()` (dark default `false`), and renaming the New room output to `NewRoom.dc.html`.
 4. Add four `write_text` lines and four `canvas` entries placed below `y: 3060` (the laws note): `NewRoom` at `(0, 3200, 900, 900)`, `PanePicker` at `(1000, 3200, 820, 960)`, `NewPane` at `(1920, 3200, 720, 760)`, `EntryPoints` at `(0, 4300, 900, 560)`, plus the two annotations (`brief`, `states`) with matching `y` offsets. Update the final `print` count.
@@ -1808,7 +1814,7 @@ without inviting` (`.btn`), `Create #<room> · invite N` (`.btn.primary`).
 
 The rooms rail header gains a 24px `.aicon` `+` beside the count. The page
 bar gains `add agents` (`.btn.sm`, user-plus icon) before `mark read`. After
-an invite the transcript opens with a `.edge` row, left-aligned: `invited 2 ·
+an invite the transcript opens with a `.notice` row (the `.edge` values, left-aligned): `invited 2 ·
 <ok>assured pane accepted</ok> · <warn>fred queued (working)</warn> ·
 members appear as they sign in`. Both entry points hide when rt reports
 herdr unavailable and disable with the daemon down.
@@ -1823,7 +1829,7 @@ In `design/audit.mjs`'s `TARGETS`, add:
   { spec: '.cb', find: '[data-testid^="pane-check-"]', props: ['width', 'height', 'border-radius', 'display', 'align-items', 'justify-content'] },
   { spec: '.peek', find: '[data-testid^="pane-peek-"]:not([data-testid^="pane-peek-button-"])', props: ['padding', 'background', 'border-radius', 'font-size', 'line-height', 'white-space', 'overflow-x', 'color'], why: { padding: 'shorthand not enumerated by getComputedStyle; longhands verified by eye', 'white-space': WHITE_SPACE_NOT_ENUMERATED, 'line-height': LINE_HEIGHT_RESOLVES_TO_PX } },
   { spec: '.btn.sm', find: '[data-testid="add-agents-button"]', props: ['height', 'font-size', 'font-weight', 'border-radius'] },
-  { spec: '.edge', find: '[data-testid="transcript-notice"]', props: ['padding', 'font-size'], why: { padding: 'shorthand not enumerated by getComputedStyle; longhands verified by eye' } },
+  { spec: '.notice', find: '[data-testid="transcript-notice"]', props: ['padding', 'text-align', 'font-size', 'color'], why: { padding: 'shorthand not enumerated by getComputedStyle; longhands verified by eye' } },
 ```
 
 and, for the picker's modal shell, a `.pop` entry finding `[data-testid="pane-picker"] .mantine-Modal-content` (check the class Mantine 9.5 renders for the content box in its docs) with the same props and `why` as the existing `.pop` entry.

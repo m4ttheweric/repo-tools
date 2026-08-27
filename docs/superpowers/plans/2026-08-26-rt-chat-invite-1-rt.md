@@ -540,7 +540,7 @@ function harness(handler: FakeHerdrHandler, extra: { repoIndex?: Record<string, 
   const herdr: typeof herdrRequest = (method, params, opts) => herdrRequest(method, params, { ...opts, sockPath: sock });
   const exec = async () => ({ stdout: "feat/branch\n", stderr: "", exitCode: 0 });
   const chat = createChatHandlers({ db, emitEvent: () => 0 });
-  const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: () => 1_000_000 });
+  const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: Date.now });
   return { db, seen, chat, pane };
 }
 
@@ -1023,7 +1023,7 @@ In `packages/rt-client/src/settings/registry-defs.ts`, inside the `// --- chat (
 ```
 
 Run: `cd packages/rt-client && bun run build && cd ../.. && bun test packages/rt-client/test`
-Expected: pass (the registry tests accept a string row with a default under the chat block).
+Expected: pass (the rt-client suite has no registry-specific test; the build and dist-freshness check are what this step proves).
 
 - [ ] **Step 2: Catalog entry**
 
@@ -1087,7 +1087,8 @@ test("pane:spawn creates a tab in the chat workspace, launches claude, waits for
   const tab = seen.find((s) => s.method === "tab.create")!;
   expect(tab.params).toMatchObject({ workspace_id: "w2", label: "acme-dev", cwd: "/repos/acme-dev", focus: false });
   const input = seen.find((s) => s.method === "pane.send_input")!;
-  expect(input.params.text).toBe("cd '/repos/acme-dev' && cswap run 'Me' --share-history -- claude --model 'claude-fable-5' --effort 'high'");
+  // shellQuote leaves strings matching ^[a-zA-Z0-9_./:@=-]+$ bare; only a value outside that set gets quotes.
+  expect(input.params.text).toBe("cd /repos/acme-dev && cswap run Me --share-history -- claude --model claude-fable-5 --effort high");
   expect(input.params.keys).toEqual(["enter"]);
   expect(calls.filter((c) => c === "agent.get").length).toBeGreaterThanOrEqual(3);
   expect(calls).not.toContain("workspace.create");
@@ -1100,7 +1101,15 @@ test("pane:spawn creates the workspace when the label is missing and launches pl
   if (!res.ok) throw new Error(res.error);
   expect(calls).toContain("workspace.create");
   expect(seen.find((s) => s.method === "workspace.create")!.params).toMatchObject({ label: "fleet", focus: false });
-  expect(seen.find((s) => s.method === "pane.send_input")!.params.text).toBe("cd '/repos/chat' && claude");
+  expect(seen.find((s) => s.method === "pane.send_input")!.params.text).toBe("cd /repos/chat && claude");
+});
+
+test("pane:spawn quotes a cwd with a space", async () => {
+  const { handler } = spawnFake({ statuses: ["idle"] });
+  const { pane, seen } = harness(handler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/my repo" });
+  if (!res.ok) throw new Error(res.error);
+  expect(seen.find((s) => s.method === "pane.send_input")!.params.text).toBe("cd '/repos/my repo' && claude");
 });
 
 test("pane:spawn answers the trust dialog once, then sends the opening prompt", async () => {
@@ -1168,7 +1177,7 @@ export function launchCommand(a: { cwd: string; account?: string; model?: string
         if (!known) return { ok: false, error: `unknown cswap account "${account}"` };
       }
 
-      const label = payload.workspace ?? getSetting<string>("chat.herdrWorkspace").value;
+      const label = payload.workspace ?? getSetting<string>("chat.herdrWorkspace").value ?? "chat";
       const list = await herdr<{ workspaces: HerdrWorkspace[] }>("workspace.list", {});
       if (!list.ok) return herdrError(list);
       let workspaceId = list.result.workspaces.find((w) => w.label === label)?.workspace_id;
@@ -1274,7 +1283,7 @@ function inviteHarness(handler: FakeHerdrHandler) {
   return { h: createChatHandlers({ db, emitEvent: () => 0, herdr }), seen };
 }
 
-const agent = (status: string) => ({ type: "agent_info", agent: { pane_id: "w1:p1", terminal_id: "t", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: status, revision: 1 } });
+const agent = (status: string, kind = "claude") => ({ type: "agent_info", agent: { pane_id: "w1:p1", terminal_id: "t", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: kind, agent_status: status, revision: 1 } });
 
 test("inviteText is one line: the slash command, then the attributed note with newlines collapsed", () => {
   expect(inviteText("build", "matt")).toBe("/chat:join build");
@@ -1315,7 +1324,8 @@ test("chat:invite nudges Enter once on a stalled prompt, then reports accepted o
   let prompts = 0;
   const { h, seen } = inviteHarness((method) => {
     if (method === "agent.get") return agent("idle");
-    if (method === "agent.prompt") { prompts++; return new HerdrFakeError("agent_prompt_stalled", "no state change"); }
+    // herdr answers a stall inside the 5s effect window with `timeout`; `agent_prompt_stalled` needs a longer budget. The handler accepts both.
+    if (method === "agent.prompt") { prompts++; return new HerdrFakeError("timeout", "timed out waiting for agent status"); }
     if (method === "pane.send_keys") return { type: "ok" };
     if (method === "agent.wait") return new HerdrFakeError("timeout", "timed out waiting for agent status");
     return new HerdrFakeError("invalid_request", method);
@@ -1330,6 +1340,8 @@ test("chat:invite refuses a pane that is not a claude pane, the caller's own pan
   const { h } = inviteHarness((method) => (method === "agent.get" ? new HerdrFakeError("agent_not_found", "agent target w1:p1 not found") : new HerdrFakeError("invalid_request", method)));
   expect(await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" })).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "not a claude pane" } });
   expect(await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt", callerPane: "w1:p1" })).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "that is this pane" } });
+  const codex = inviteHarness((method) => (method === "agent.get" ? agent("idle", "codex") : new HerdrFakeError("invalid_request", method)));
+  expect(await codex.h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" })).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "not a claude pane" } });
   const bad = await h["chat:invite"]({ paneId: "w1:p1", room: "Bad Room", from: "matt" });
   expect(bad.ok).toBe(false);
 });
@@ -1373,11 +1385,12 @@ export function inviteText(room: string, from: string, note?: string): string {
       const refused = (reason: string): CommandResult<"chat:invite"> => ({ ok: true, data: { paneId, delivered: "refused", reason } });
       if (callerPane && callerPane === paneId) return refused("that is this pane");
 
-      const probe = await herdr<{ agent: { agent_status: string } }>("agent.get", { target: paneId });
+      const probe = await herdr<{ agent: { agent: string; agent_status: string } }>("agent.get", { target: paneId });
       if (!probe.ok) {
         if (probe.code === "agent_not_found" || probe.code === "agent_target_ambiguous") return refused("not a claude pane");
         return herdrError(probe);
       }
+      if (probe.result.agent.agent !== "claude") return refused("not a claude pane");
       const status = probe.result.agent.agent_status;
       if (status === "blocked") return refused("at a prompt");
 
@@ -1440,11 +1453,9 @@ chatInvite(a: { paneId: string; room: string; note?: string; from: string; calle
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `packages/rt-client/test/client.test.ts` (the file already imports `fakeDaemon` and keeps a `stops` list):
+Append to `packages/rt-client/test/client.test.ts` (the file already imports `fakeDaemon` and keeps a `stops` list); extend its existing `../src/client.ts` import at the top with `chatInvite, paneDirectories, paneList, panePeek, paneSpawn` and add `spyOn` to the `bun:test` import, then append:
 
 ```ts
-import { chatInvite, paneDirectories, paneList, panePeek, paneSpawn } from "../src/client.ts";
-
 describe("pane wrappers", () => {
   test("paneList sends an empty payload; panePeek and paneDirectories omit undefined fields", async () => {
     const { sock, seen, stop } = fakeDaemon({
@@ -1476,8 +1487,6 @@ describe("pane wrappers", () => {
   });
 });
 ```
-
-(Add `spyOn` to the `bun:test` import at the top of the file.)
 
 Append to `packages/rt-client/test/index-surface.test.ts` a check that `paneList`, `panePeek`, `paneSpawn`, `paneAccounts`, `paneDirectories`, `chatInvite` are functions on the barrel, in the file's existing style.
 
