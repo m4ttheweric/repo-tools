@@ -146,6 +146,21 @@ export interface PresenceRow {
   signedOutAt?: number;
 }
 
+export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown";
+
+/** Duplicated shape on purpose (see EventsBusEvent above): mirrors the daemon's pane row, which rt-client cannot import. */
+export interface ChatPane {
+  paneId: string;
+  workspace: string;
+  title?: string;
+  cwd?: string;
+  repo?: string;
+  branch?: string;
+  agentStatus: AgentStatus;
+  sessionId?: string;
+  presence?: { handle: string; status: BuddyStatus; rooms: string[] };
+}
+
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
 export type Attention = {
@@ -295,6 +310,8 @@ export interface Commands {
   "agent:resume": { payload: { id: string; prompt?: string; surface?: AgentSurface }; data: AgentRecord };
   "agent:get": { payload: { id: string }; data: AgentRecord };
   "agent:list": { payload: { repo?: string }; data: { agents: AgentRecord[] } };
+  "pane:list": { payload: Record<string, never>; data: { panes: ChatPane[] } };
+  "pane:peek": { payload: { paneId: string; lines?: number }; data: { paneId: string; lines: string[] } };
 }
 
 export type CommandName = keyof Commands;
@@ -335,4 +352,6 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "agent:resume",
   "agent:get",
   "agent:list",
+  "pane:list",
+  "pane:peek",
 ];
