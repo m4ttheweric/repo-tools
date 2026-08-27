@@ -261,6 +261,17 @@ export async function runEscalationFlow(opts: {
       { workspaceLabel: opts.repoName, tabLabel: `rebase ${bundle.branch}`, paneCommand },
       runner,
     );
+
+    // An existing "rebase <branch>" tab was focused, not launched: there is no
+    // fresh pane id to wait on (herdrAgentWait against "" would wait on nothing).
+    if (out.focusedExisting) {
+      syncLog.phase("escalation-agent", { focusedExisting: true, tab: out.tabId });
+      console.log(
+        `\n  ${yellow}herdr focused an existing agent tab${reset} ${dim}already working on ${bundle.branch}; nothing new was started.${reset}\n`,
+      );
+      return 1;
+    }
+
     syncLog.phase("escalation-agent", { pane: out.paneId, taskPath });
 
     console.log(

@@ -81,7 +81,7 @@ The spike reproduced the daemon's exact start env
 
 ### Command surface
 
-```
+```text
 rt agent start   [--repo <path>] [--prompt <text> | --prompt-file <path>]
                  [--surface herdr|headless] [--model M] [--effort E]
                  [--account A] [--label L] [--caller C]
@@ -166,7 +166,7 @@ watches, restarts, or manages anything.
 
 ### The record (`agents` table, state.db)
 
-```
+```text
 id            TEXT PK      -- rt-minted short id
 repo          TEXT         -- serialized repo identity (RT-62 wire form)
 cwd           TEXT         -- realpath actually launched in

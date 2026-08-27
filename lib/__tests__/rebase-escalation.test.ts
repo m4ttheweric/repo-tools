@@ -257,4 +257,29 @@ describe("runEscalationFlow (agent path)", () => {
     expect(calls.some((c) => c[0] === "wait" && c[1] === "agent-status")).toBe(false);
     expect(calls).toContainEqual(["pane", "read", "p1", "--source", "recent"]);
   }, 20_000);
+
+  test("an existing rebase tab is focused, not waited on: no wait against an empty pane id", async () => {
+    const repo = makeConflictRepo();
+    const result = await pausedConflict(repo);
+
+    const { calls, runner } = scriptedHerdr({
+      "workspace list": { stdout: JSON.stringify({ result: { workspaces: [{ workspace_id: "w1", label: "myrepo" }] } }) },
+      "tab list": { stdout: JSON.stringify({ result: { tabs: [{ tab_id: "t9", label: "rebase feature" }] } }) },
+    });
+    const code = await runEscalationFlow({
+      cwd: repo,
+      dataDir: join(tmpRoot, "data"),
+      repoName: "myrepo",
+      result,
+      mode: "interactive",
+      autoYes: true,
+      push: false,
+      herdrRunner: runner,
+    });
+
+    expect(code).toBe(1);
+    expect(calls.some((c) => c[0] === "tab" && c[1] === "focus")).toBe(true);
+    expect(calls.some((c) => c[0] === "agent" && c[1] === "wait")).toBe(false);
+    expect(calls).not.toContainEqual(["agent", "wait", "", "--until", "idle", "--until", "done", "--timeout", "600000"]);
+  }, 20_000);
 });

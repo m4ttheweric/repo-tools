@@ -67,6 +67,24 @@ test("herdr failure propagates as a throw", async () => {
   await expect(launchInWorkspace({ workspaceLabel: "w", tabLabel: "t", paneCommand: "X" }, runner)).rejects.toThrow(/herdr/);
 });
 
+test("a failed pane run makes the launch throw, not report success", async () => {
+  const { runner } = scripted({
+    "workspace list": { stdout: JSON.stringify({ result: { workspaces: [] } }) },
+    "workspace create": { stdout: WS_CREATE },
+    "pane run": { stdout: "claude: command not found", exitCode: 127 },
+  });
+  await expect(
+    launchInWorkspace({ workspaceLabel: "reviews", tabLabel: "!7", paneCommand: "cd '/r' && claude" }, runner),
+  ).rejects.toThrow(/herdr pane run/);
+});
+
+test("malformed workspace list JSON (exit 0) makes the launch throw", async () => {
+  const runner: HerdrRunner = async () => ({ stdout: "not json", exitCode: 0 });
+  await expect(
+    launchInWorkspace({ workspaceLabel: "reviews", tabLabel: "!7", paneCommand: "X" }, runner),
+  ).rejects.toThrow(/invalid JSON/);
+});
+
 test("herdrAgentWait builds the current verb (agent wait --until)", async () => {
   const { calls, runner } = scripted({ "agent wait": { stdout: "" } });
   await herdrAgentWait("wA:p1", ["idle", "done"], 45000, runner);

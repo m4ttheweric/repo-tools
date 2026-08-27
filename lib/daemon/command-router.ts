@@ -71,7 +71,7 @@ export function buildRoutedHandlers(opts: {
   const { db: _chatDb, ...chatHandlers } = createChatHandlers({ db: opts.stateDb, emitEvent });
   // Same seam as chatHandlers above: createAgentHandlers exposes `db` for
   // test isolation only.
-  const { db: _agentDb, ...agentHandlers } = createAgentHandlers({ db: opts.stateDb, emitEvent });
+  const { db: _agentDb, ...agentHandlers } = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
   return {
     ...createCacheHandlers(ctx),
     ...createHooksHandlers(ctx),

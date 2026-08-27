@@ -10,6 +10,7 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { Database } from "bun:sqlite";
+import type { Logger } from "pino";
 import {
   deleteAgent, finishAgent, getAgent, insertAgent, listAgents, markAgentResumed,
   newAgentId, updateAgentPane, type AgentRecord, type AgentSurface,
@@ -22,8 +23,6 @@ import { rtDir } from "../../rt-paths.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
-
-const log = lazyChildLogger("agent");
 
 export interface HeadlessChild {
   exited: Promise<number>;
@@ -44,10 +43,12 @@ function defaultSpawnHeadless(argv: string[], cwd: string): HeadlessChild {
   };
 }
 
-function fromSetting(key: string): string | undefined {
+/** A declared+unset key resolves undefined without throwing, so a caught error here is already the unexpected case. */
+function fromSetting(key: string, log: Logger): string | undefined {
   try {
     return getSetting<string>(key).value ?? undefined;
-  } catch {
+  } catch (err) {
+    log.warn({ err, key }, "agent: settings read failed");
     return undefined;
   }
 }
@@ -60,11 +61,14 @@ function agentResultPath(id: string): string {
 export function createAgentHandlers(opts: {
   db: Database;
   emitEvent: (topic: string, payload?: unknown) => unknown;
+  /** Daemon logger, wired from the router's ctx.log; falls back to a lazy child logger for callers (tests) that construct handlers directly. */
+  log?: Logger;
   herdrRunner?: HerdrRunner;
   spawnHeadless?: (argv: string[], cwd: string) => HeadlessChild;
   insertAgentFn?: typeof insertAgent;
 }): Pick<TypedHandlers, "agent:start" | "agent:resume" | "agent:get" | "agent:list"> & { db: Database } {
   const { db, emitEvent } = opts;
+  const log = opts.log ?? lazyChildLogger("agent");
   const spawnHeadless = opts.spawnHeadless ?? defaultSpawnHeadless;
   const insertAgentFn = opts.insertAgentFn ?? insertAgent;
 
@@ -136,10 +140,10 @@ export function createAgentHandlers(opts: {
         sessionId: crypto.randomUUID(),
         createdAt: Date.now(),
       };
-      const model = payload.model ?? fromSetting("agent.model");
-      const effort = payload.effort ?? fromSetting("agent.effort");
-      const account = payload.account ?? fromSetting("agent.account");
-      const extraArgs = payload.extraArgs ?? fromSetting("agent.extraArgs");
+      const model = payload.model ?? fromSetting("agent.model", log);
+      const effort = payload.effort ?? fromSetting("agent.effort", log);
+      const account = payload.account ?? fromSetting("agent.account", log);
+      const extraArgs = payload.extraArgs ?? fromSetting("agent.extraArgs", log);
       if (model !== undefined) rec.model = model;
       if (effort !== undefined) rec.effort = effort;
       if (account !== undefined) rec.account = account;
