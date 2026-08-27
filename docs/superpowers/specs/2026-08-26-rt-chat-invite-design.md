@@ -107,7 +107,7 @@ two process spawns in this feature (`cswap list` for the account roster,
 design's rule that nothing sync-execs on the daemon thread (MAT-222) holds.
 
 Request timeouts: rt-client's default is 15s. `paneSpawn()` passes
-`timeoutMs: 90_000` and `chatInvite()` `timeoutMs: 20_000`, and the viewer's
+`timeoutMs: 90_000` and `chatInvite()` `timeoutMs: 30_000`, and the viewer's
 own `fetch` for those routes sets no shorter limit; the daemon's socket idle
 timeout (255s) already covers both.
 
