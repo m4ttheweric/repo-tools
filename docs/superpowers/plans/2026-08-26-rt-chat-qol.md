@@ -86,7 +86,7 @@ bun install
 
 - [ ] **Step 2: Write the failing tests**
 
-In `lib/state/__tests__/db.test.ts`, change the two existing version assertions and add one test. Line 79 `expect(SCHEMA_VERSION).toBe(6);` becomes `expect(SCHEMA_VERSION).toBe(7);` and its test title becomes `"a fresh database reaches v7 directly, gaining every v1, v2, v3, v4, v6 and v7 change (v5 is reserved by another lane)"`. Line 98 `toMatchObject({ user_version: 6 })` becomes `{ user_version: 7 }`. Then add, inside `describe("openStateDb — replay over an older user_version", ...)`:
+In `lib/state/__tests__/db.test.ts`, every assertion that pins the schema version moves to 7. There are four: line 79 `expect(SCHEMA_VERSION).toBe(6);` (its test title becomes `"a fresh database reaches v7 directly, gaining every v1, v2, v3, v4, v6 and v7 change (v5 is reserved by another lane)"`), line 98 `toMatchObject({ user_version: 6 })`, line 164 `expect(userVersion(db)).toBe(6)` inside the `describe` at 158-159 (retitle that describe and its test from `migrates to v6` to `migrates to v7`), and line 421 `expect(before).toBe(6)`. Search the file for `toBe(6)` and `version: 6` once more before moving on. Then add, inside `describe("openStateDb — replay over an older user_version", ...)`:
 
 ```ts
   test("v7 adds chat_rooms.archived_at to a v6 database without touching its rows", () => {
@@ -517,16 +517,17 @@ test("chat:dm-open refuses a self DM, an invalid handle, and an empty humanHandl
 });
 
 test("chat:dm-open refuses a reclaimed sender the same way chat:dm does", async () => {
+  // Same setup as `chat:dm refuses a reclaimed sender` (line 325): the
+  // first session goes stale, a second session claims the handle, and the
+  // stale session's own id no longer owns it.
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "a" });
-  await h["chat:sign-out"]({ sessionId: "s1" });
+  h.db.run("UPDATE chat_presence SET last_seen_at = last_seen_at - 7200000");
   await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "a" });
   const res = await h["chat:dm-open"]({ from: "a", to: "b", sessionId: "s1" });
   expect(res.ok).toBe(false);
 });
 ```
-
-If the existing `chat:dm refuses a reclaimed sender` test (line 325) sets the sessions up differently, mirror its exact setup in the last test above; the assertion is the same.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1121,9 +1122,7 @@ test('POST /api/chat/dm is gone: a JSON 404, never the SPA shell', async () => {
 });
 ```
 
-The existing tests `posting into a room the human has not joined joins first` (181) and `rooms includes rooms the FLEET is in` (255) may assert `chatRooms` was called with `{ handle: 'matt' }` exactly; update those assertions to `{ handle: 'matt', includeArchived: true }` where the call is the human's own listing (the post route's listing stays `{ handle: 'matt' }`, see step 4).
-
-In `src/server/fixtures.test.ts`, add:
+In `src/server/fixtures.test.ts`, the existing assertion at lines 66-68 that `fixtureRooms().filter(r => r.kind === 'dm')` has length 2 must exclude archived rows: change its filter to `r => r.kind === 'dm' && r.archivedAt === undefined`. Then add:
 
 ```ts
 test('fixtures carry an archived channel, an archived DM, and a long code post', () => {
@@ -1429,10 +1428,15 @@ test('DM on a sender’s card opens the pair’s room and focuses the composer t
   );
   await screen.findByTestId(`room-row-${dmRoom.room}`);
   expect(window.location.pathname).toBe(`/r/${dmRoom.room}`);
-  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus();
+  // `focus()` defers through requestAnimationFrame.
+  await waitFor(() =>
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveFocus()
+  );
   expect(screen.queryByText(/direct message to/)).toBeNull();
 });
 ```
+
+(`waitFor` and `within` come from `@testing-library/react`.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1688,16 +1692,20 @@ function archiveTitle(room: RoomSummary): string {
 export function RoomMenu({
   room,
   memberHandles,
+  humanHandle = 'matt',
   onArchive,
   size = 30,
 }: {
   room: RoomSummary;
+  /** The room's current members; the human is filtered out of the confirm
+      text since it already says "for you". */
   memberHandles: string[];
+  humanHandle?: string;
   onArchive?: (room: string, archived: boolean) => void;
   size?: number;
 }) {
   const archived = room.archivedAt !== undefined;
-  const others = memberList(memberHandles);
+  const others = memberList(memberHandles.filter(h => h !== humanHandle));
   const confirmArchive = () =>
     modals.confirm({
       title: archiveTitle(room),
@@ -1738,7 +1746,7 @@ export function RoomMenu({
 }
 ```
 
-In `PageBar`, destructure `onArchive`, and in `controls`:
+`PageBarProps` also gains `memberHandles?: string[]` (doc: `The room's full membership for the archive confirm; defaults to the buddies' handles, which omit offline members`). In `PageBar`, destructure `onArchive` and `memberHandles`, and in `controls`:
 
 - the mark-read button's condition becomes `room.unread > 0 && room.archivedAt === undefined`;
 - after the `Select` (still inside the fragment), add:
@@ -1747,7 +1755,7 @@ In `PageBar`, destructure `onArchive`, and in `controls`:
       <Box ml={7.2} style={{ flex: 'none' }}>
         <RoomMenu
           room={room}
-          memberHandles={buddies.map(b => b.handle)}
+          memberHandles={memberHandles ?? buddies.map(b => b.handle)}
           onArchive={onArchive}
         />
       </Box>
@@ -1792,7 +1800,7 @@ In `src/app/App.tsx`'s `App`, after `openDm`:
   );
 ```
 
-and pass `onArchive={setArchived}` to the desktop `PageBar`.
+and pass `onArchive={setArchived}` and `memberHandles={roomMembers}` to the desktop `PageBar` (every member of the open room, signed in or not).
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -2203,7 +2211,11 @@ Append to `src/ui/Transcript.test.tsx`:
 
 ```tsx
 test('a day divider sits between messages on different days, never between same-day ones', () => {
-  const now = new Date(2026, 7, 26, 20, 0).getTime();
+  // Today at noon: `Transcript` labels against the real clock, so the
+  // fixture must be anchored to the day the test runs, never a fixed date.
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  const now = noon.getTime();
   const msg = (id: number, postedAt: number) => ({
     id, room: 'build', handle: 'fred', body: `m${id}`, mentions: [], postedAt,
   });
@@ -2243,7 +2255,11 @@ test('loading an older page puts a day divider above what was the first message'
   } as Response);
   fireEvent.click(screen.getByTestId('transcript-edge'));
   await screen.findByTestId('message-1');
-  expect(screen.getAllByTestId('day-divider').map(d => d.getAttribute('aria-label'))).toEqual(['Today']);
+  // Two: one above the loaded page (labelled with message 1's own day,
+  // which depends on the clock) and one at the boundary into today.
+  const labels = screen.getAllByTestId('day-divider').map(d => d.getAttribute('aria-label'));
+  expect(labels).toHaveLength(2);
+  expect(labels[1]).toBe('Today');
 });
 ```
 
@@ -2831,7 +2847,7 @@ git commit -m "transcript: fold tall posts behind show more"
 - Modify: `ARCHITECTURE.md` ("What renders in a message body")
 
 **Interfaces:**
-- Produces: spec selectors `.day`, `.pill`, `.copy`, `.fold`, `.more`, `.menu`, `.room.archived`, `.chip.archived`, `.archived-bar`; a new artboard `Archived.dc.html`; `TARGETS` entries for `day-divider`, `new-pill`, `code-copy`, `message-fold`, `fold-toggle`, `room-menu`, `archived-toggle`, `room-row-retro-0819`, `chip-archived`, `archived-bar`, `archived-reopen`.
+- Produces: spec selectors `.day`, `.pill`, `.copy`, `.fold`, `.more`, `.menu`, `.room.archived`, `.archived-bar` (the archived chip is a plain `.chip`); a new artboard `Archived.dc.html`; `TARGETS` entries for `day-divider`, `new-pill`, `code-copy`, `message-fold`, `fold-toggle`, `room-menu`, `archived-toggle`, `room-row-retro-0819`, `chip-archived`, `archived-bar`, `archived-reopen`.
 
 - [ ] **Step 1: Extend the artboard CSS**
 
