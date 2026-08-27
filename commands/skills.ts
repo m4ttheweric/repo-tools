@@ -1761,7 +1761,8 @@ type PickedBind = { verbName: string; slotName: string; fill: string; flagArgs: 
  * skillsBind falls through to its existing error -- the non-TTY / --json paths
  * never call this and stay byte-for-byte unchanged.
  */
-async function pickBindArgs(args: string[]): Promise<PickedBind | null> {
+/** Split `skills bind` args into positionals and flag args (bind's flags: --dry-run boolean, plus the value-taking --pack/--team/--manifest/--pack-dir/--mattstack-dir). Keeps the &lt;verb&gt; &lt;slot&gt; &lt;fill&gt; count right even when flags are interleaved. */
+function separateBindArgs(args: string[]): { positionals: string[]; flagArgs: string[] } {
   const valued = new Set(["--pack", "--team", "--manifest", "--pack-dir", "--mattstack-dir"]);
   const positionals: string[] = [];
   const flagArgs: string[] = [];
@@ -1776,6 +1777,11 @@ async function pickBindArgs(args: string[]): Promise<PickedBind | null> {
       positionals.push(a);
     }
   }
+  return { positionals, flagArgs };
+}
+
+async function pickBindArgs(args: string[]): Promise<PickedBind | null> {
+  const { positionals, flagArgs } = separateBindArgs(args);
   if (positionals.length >= 3) return null;
 
   const bindFlags = parseBindFlags(flagArgs);
@@ -1852,8 +1858,12 @@ async function pickBindArgs(args: string[]): Promise<PickedBind | null> {
 
 export async function skillsBind(args: string[]): Promise<void> {
   await withCleanErrors(async () => {
-    let [verbName, slotName, fill, ...rest] = args;
-    if ((!verbName || !slotName || !fill) && process.stdin.isTTY && !args.includes("--json") && resolveFzf()) {
+    // Positionals, not raw args, so an interleaved flag (bind verb --pack x slot
+    // fill) doesn't read as a filled <slot>/<fill> and skip the picker.
+    const { positionals, flagArgs } = separateBindArgs(args);
+    let [verbName, slotName, fill] = positionals;
+    let rest = flagArgs;
+    if ((!verbName || !slotName || !fill) && process.stdin.isTTY && !args.includes("--json") && !process.env.RT_BATCH && resolveFzf()) {
       const picked = await pickBindArgs(args);
       if (picked) {
         verbName = picked.verbName;

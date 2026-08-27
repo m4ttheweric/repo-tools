@@ -36,7 +36,8 @@ export function requiredPositionalLeaves(
       seen.add(node);
 
       const path = [...prefix, name];
-      const hasHandler = !!(node.handler || (node.module && node.fn));
+      // A module with no fn still resolves (resolveHandler defaults fn to "run").
+      const hasHandler = !!(node.handler || node.module);
       const positionals = (node.args ?? [])
         .filter((a) => !a.flag && !a.optional && (a.type === "text" || a.type === "select"))
         .map((a) => a.name);

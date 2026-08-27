@@ -1071,7 +1071,7 @@ export async function homeClaim(
   const { zone: zoneArg, owner: ownerArg, note, force } = parseClaimArgs(args);
   let zone = zoneArg;
   if (!zone) {
-    if (process.stdin.isTTY) {
+    if (process.stdin.isTTY && !process.env.RT_BATCH) {
       const { textInput } = await import("../lib/rt-render.tsx");
       zone = await textInput({ message: "Zone to claim (path relative to the home repo)", placeholder: "prefs/ or scripts/deploy.sh" });
       if (!zone) process.exit(0);
@@ -1121,7 +1121,7 @@ export async function homeRelease(
 ): Promise<void> {
   let zone = args.find((arg) => !arg.startsWith("--"));
   if (!zone) {
-    const claimed = process.stdin.isTTY ? Object.entries(readOwners(ownersPath).zones) : [];
+    const claimed = process.stdin.isTTY && !process.env.RT_BATCH ? Object.entries(readOwners(ownersPath).zones) : [];
     if (claimed.length > 0) {
       const { filterableSelect } = await import("../lib/rt-render.tsx");
       zone =

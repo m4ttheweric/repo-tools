@@ -41,7 +41,9 @@ function flagValue(args: string[], flag: string): string | undefined {
 
 // Index-based scan (not value comparison — a positional that EQUALS a flag's
 // value, e.g. `rt events wait 42 --after 42`, must still parse).
-const FLAGS_WITH_VALUES = new Set(["--json", "--after", "--timeout", "--limit"]);
+// --json is value-taking only for emit's payload, which reads it via flagValue;
+// out of this set a bare --json on list/tail/wait won't swallow the pattern.
+const FLAGS_WITH_VALUES = new Set(["--after", "--timeout", "--limit"]);
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
