@@ -36,6 +36,7 @@ import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
 import { parkUntilIntended, probeSocketHolder, daemonFlavor } from "./daemon/park.ts";
 import { evictStaleDaemon } from "./daemon/boot-reconcile.ts";
 import { resolveUserPath } from "./daemon/user-path.ts";
+import { shortReqId, makeSuppressor } from "./daemon/command-attribution.ts";
 // Every state.db API is reached through the lib/state barrel, never through
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
@@ -378,20 +379,52 @@ let routedHandlers: ReturnType<typeof buildRoutedHandlers> | undefined;
 // policy: docs/daemon-supervision-design.md).
 let shuttingDownViaVerb = false;
 
+// In-flight command name, polled by the loop monitor (wired in a later task)
+// to spot a handler that never returns.
+const currentCmd: { cmd: string | null } = { cmd: null };
+const rejectSuppressor = makeSuppressor(60_000);
+const SLOW_COMMAND_MS = 2000;
+
 async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
   const t0 = Date.now();
+  const reqId = shortReqId();
+  const caller = payload && typeof payload._client === "string" ? payload._client : "unknown";
+  currentCmd.cmd = cmd;
   try {
     const result = await routeCommand(cmd, payload, signal);
+    const durationMs = Date.now() - t0;
     if (result && result.ok === false) {
-      log.warn({ cmd, error: result.error, durationMs: Date.now() - t0 }, "command rejected");
+      const key = `${cmd}|${result.error ?? ""}`;
+      const { emit, suppressed } = rejectSuppressor.check(key, Date.now());
+      if (emit) {
+        log.warn(
+          { reqId, cmd, caller, error: result.error, durationMs, digest: redactDigest(payload), ...(suppressed ? { suppressed } : {}) },
+          "command rejected",
+        );
+      }
+      return { ...result, reqId };
+    }
+    if (durationMs > SLOW_COMMAND_MS) {
+      log.info({ reqId, cmd, caller, durationMs }, "command handled (slow)");
     } else {
-      log.debug({ cmd, durationMs: Date.now() - t0 }, "command handled");
+      log.debug({ reqId, cmd, caller, durationMs }, "command handled");
     }
     return result;
   } catch (err) {
-    log.error({ err, cmd, durationMs: Date.now() - t0 }, "command failed");
+    log.error({ err, reqId, cmd, caller, durationMs: Date.now() - t0, digest: redactDigest(payload) }, "command failed");
     throw err;
+  } finally {
+    currentCmd.cmd = null;
   }
+}
+
+/** Loggable, secret-free summary of a command payload: top-level key names
+ *  plus a whitelist of identifying fields safe to echo into logs. */
+function redactDigest(payload: any): Record<string, unknown> {
+  if (!payload || typeof payload !== "object") return {};
+  const keys = Object.keys(payload);
+  const pick = (k: string): Record<string, unknown> => (payload[k] !== undefined ? { [k]: payload[k] } : {});
+  return { keys, ...pick("repo"), ...pick("repoName"), ...pick("branch"), ...pick("iid"), ...pick("room") };
 }
 
 async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
