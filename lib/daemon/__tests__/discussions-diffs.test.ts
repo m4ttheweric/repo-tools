@@ -12,27 +12,27 @@ function fakeDiffs(n: number) {
 }
 
 test("truncated is false when fewer than a full page comes back", async () => {
-  const fetchFn = (async () => new Response(JSON.stringify(fakeDiffs(3)), { status: 200 })) as typeof fetch;
+  const fetchFn = (async () => new Response(JSON.stringify(fakeDiffs(3)), { status: 200 })) as unknown as typeof fetch;
   const out = await fetchMrDiffs("https://gitlab.example.com", "g/repo", 7, "tok", { fetchFn });
   expect(out.diffs).toHaveLength(3);
   expect(out.truncated).toBe(false);
 });
 
 test("truncated is true when exactly a full page (100) comes back", async () => {
-  const fetchFn = (async () => new Response(JSON.stringify(fakeDiffs(100)), { status: 200 })) as typeof fetch;
+  const fetchFn = (async () => new Response(JSON.stringify(fakeDiffs(100)), { status: 200 })) as unknown as typeof fetch;
   const out = await fetchMrDiffs("https://gitlab.example.com", "g/repo", 7, "tok", { fetchFn });
   expect(out.diffs).toHaveLength(100);
   expect(out.truncated).toBe(true);
 });
 
 test("maps new_path/diff to newPath/diff", async () => {
-  const fetchFn = (async () => new Response(JSON.stringify([{ new_path: "a.ts", diff: "@@" }]), { status: 200 })) as typeof fetch;
+  const fetchFn = (async () => new Response(JSON.stringify([{ new_path: "a.ts", diff: "@@" }]), { status: 200 })) as unknown as typeof fetch;
   const out = await fetchMrDiffs("https://gitlab.example.com", "g/repo", 7, "tok", { fetchFn });
   expect(out.diffs).toEqual([{ newPath: "a.ts", diff: "@@" }]);
 });
 
 test("a non-ok response throws with the status", async () => {
-  const fetchFn = (async () => new Response("", { status: 502 })) as typeof fetch;
+  const fetchFn = (async () => new Response("", { status: 502 })) as unknown as typeof fetch;
   await expect(fetchMrDiffs("https://gitlab.example.com", "g/repo", 7, "tok", { fetchFn })).rejects.toThrow(/502/);
 });
 
