@@ -267,6 +267,19 @@ describe("worktree trash", () => {
       expect(existsSync(stray)).toBe(true);
       expect(warns.length).toBe(1);
     });
+
+    // S079: a trailing small integer (a manual "backup-3", "notes-42" dropped
+    // "with the other trash") parses as a number just fine and, taken at face
+    // value as a ms-epoch, is always ancient — rm -rf'd on the very next pass
+    // despite the doc comment promising non-rt entries are kept. This is a
+    // distinct failure shape from "not-rt-made" above (no digits at all).
+    test("an entry whose trailing digits are not a plausible rt epoch is kept and warned about", async () => {
+      const stray = makeTree(retainedTrashRoot(repo), "backup-3");
+      const { log, warns } = capturingLog();
+      expect(await reapExpiredTrash(repo, log, Date.now())).toBe(0);
+      expect(existsSync(stray)).toBe(true);
+      expect(warns.length).toBe(1);
+    });
   });
 
   describe("reapTrashDir on retained entries", () => {

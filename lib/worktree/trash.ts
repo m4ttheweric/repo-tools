@@ -40,6 +40,21 @@ const RETAIN_DIR = ".trash";
 export const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
+ * A ms-epoch rt actually wrote (`${name}-${Date.now()}`) is always after
+ * this. A trailing small integer — a manual "backup-3" or "notes-42"
+ * dropped "with the other trash" — parses as a number just fine and, taken
+ * at face value as an epoch, is always ancient; without this floor it gets
+ * reaped on the very next pass despite not being rt's to delete.
+ */
+const EPOCH_FLOOR_MS = Date.UTC(2020, 0, 1);
+
+/** Whether `raw` looks like an epoch rt itself would have written, not merely any integer. */
+function looksLikeRtEpoch(raw: string): boolean {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= EPOCH_FLOOR_MS;
+}
+
+/**
  * Top-level dirs inside a retained tree that are reinstallable and deleted at
  * dispose time (exact names, plus the `dist-*` family). Mispredicting here
  * costs disk for the retention window, never data — the safe direction.
@@ -202,7 +217,7 @@ export async function reapExpiredTrash(
   let reaped = 0;
   for (const entry of entries) {
     const epoch = /-(\d+)$/.exec(entry)?.[1];
-    if (!epoch) {
+    if (!epoch || !looksLikeRtEpoch(epoch)) {
       log.warn({ root, entry }, "worktree retention sweep skipped an entry it did not write");
       continue;
     }

@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../../json-store.ts";
 import { closeStateDb, listKvValues, setKvValue } from "../../state/index.ts";
@@ -1379,5 +1379,24 @@ describe("reapRepoTrash", () => {
 
     await waitFor(() => !existsSync(leftover) && !existsSync(expired));
     expect(existsSync(fresh)).toBe(true);
+  });
+
+  // S079: sanitizeRoot (lib/worktree/config.ts) has no ancestor check, so a
+  // repo configured with e.g. `root: "${repoRoot}/.."` makes the crash sweep
+  // walk the parent directory of every sibling repo for `.trash-*` names.
+  test("refuses a configured root outside the repo and warns instead of sweeping it", async () => {
+    const parent = dirname(repo);
+    const siblingLeftover = join(parent, ".trash-should-survive-123");
+    mkdirSync(siblingLeftover, { recursive: true });
+    await declareWorktrees(repo, "acme", { root: parent });
+
+    const warns: unknown[][] = [];
+    const log = { info: () => {}, warn: (...a: unknown[]) => warns.push(a), error: () => {}, debug: () => {} } as unknown as Logger;
+
+    await __test__.reapRepoTrash({ repoName: "acme", repoPath: repo, log });
+    await new Promise((r) => setTimeout(r, 300)); // give a wrongly-spawned detached rm time to run
+
+    expect(existsSync(siblingLeftover)).toBe(true);
+    expect(warns.some((w) => JSON.stringify(w).includes(parent))).toBe(true);
   });
 });

@@ -8,7 +8,7 @@
  * `creationInFlight`).
  */
 
-import { basename, join } from "path";
+import { basename, isAbsolute, join, relative, resolve } from "path";
 import { realpathSync } from "fs";
 import type { Logger } from "pino";
 import { rtDir } from "../rt-paths.ts";
@@ -1002,10 +1002,30 @@ async function replenishAndShrink(
  * parks trees stripped-but-recoverable (RT-51) — are reaped only past the
  * retention window.
  */
+/**
+ * Whether `root` is repoPath itself or a strict ancestor of it —
+ * sanitizeRoot (lib/worktree/config.ts) has no such check, so a value like
+ * `${repoRoot}/..` sweeps the parent directory shared by every sibling repo
+ * for `.trash-*` names. An unrelated, dedicated external root (the
+ * documented `root: "~/wt"` case) is fine to sweep — it's a repo-specific
+ * destination nothing else shares — so this only refuses the ancestor
+ * shape, not "root lies outside repoPath" in general.
+ */
+function isRootAnAncestorOfRepo(repoPath: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(repoPath));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Logger }): Promise<void> {
   const { repoName, repoPath, log } = deps;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  const reaped = await reapTrashInRoots([join(repoPath, ".worktrees"), cfg.root], log);
+  const roots = [join(repoPath, ".worktrees")];
+  if (isRootAnAncestorOfRepo(repoPath, cfg.root)) {
+    log.warn({ repo: repoName, root: cfg.root, repoPath }, "worktree trash sweep refused a configured root that is an ancestor of the repo");
+  } else {
+    roots.push(cfg.root);
+  }
+  const reaped = await reapTrashInRoots(roots, log);
   if (reaped > 0) log.info({ repo: repoName, count: reaped }, "worktree trash reaped");
   const expired = await reapExpiredTrash(repoPath, log);
   if (expired > 0) log.info({ repo: repoName, count: expired }, "worktree retention trash reaped");
