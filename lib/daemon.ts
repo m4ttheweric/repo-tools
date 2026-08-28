@@ -85,13 +85,6 @@ import type { PortEntry } from "./port-scanner.ts";
 // entry (cli.ts) also runs it, but `bun run lib/daemon.ts` skips cli.ts.
 import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, logsDir } from "./rt-paths.ts";
 
-// Capture native panics (bypass JS entirely) at the fd level before anything
-// else in this module runs, so a throw during any later module-scope
-// construction (createEventsBus, cron, home-snapshot, …) lands in
-// daemon-stderr.log instead of vanishing down whatever fd 2 the launcher gave
-// us. Depends only on logsDir() and mkdirs its own dir; no logger needed yet.
-redirectNativeStderr();
-
 // Gates installCrashHandlers' unhandledRejection handler: fatal during boot
 // (no socket/API bound yet, nothing to recover), advisory-only once ready.
 let bootPhase: "booting" | "ready" = "booting";
@@ -107,6 +100,16 @@ function setPhase(phase: BootPhase): void {
 }
 
 const rtMigration = migrateLegacyRtDir();
+
+// Capture native panics (bypass JS entirely) at the fd level, so a throw
+// during any later module-scope construction (createEventsBus, cron,
+// home-snapshot, …) lands in daemon-stderr.log instead of vanishing down
+// whatever fd 2 the launcher gave us. Depends only on logsDir() and mkdirs
+// its own dir — this MUST run after migrateLegacyRtDir(): mkdirSync(logsDir())
+// creates the new rt dir, and migrateLegacyRtDir() treats that dir merely
+// existing as a "conflict" with a real legacy tree, so redirecting first
+// would defeat the migration.
+redirectNativeStderr();
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 // Pino-backed structured logger. See lib/daemon-logger.ts. Top-level await
@@ -396,11 +399,15 @@ async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Pr
   switch (cmd) {
     case "shutdown":
       log.info("received shutdown command");
+      // Set before the delay, not inside the setTimeout callback: a bare
+      // SIGTERM arriving in the 100ms window must see this flag already
+      // true, or the signal handler treats an intentional stop as a crash
+      // (exit 1, launchd respawns).
+      shuttingDownViaVerb = true;
       // Delay cleanup so this response can be written first — cleanup()
       // force-closes all in-flight connections, including the one that
       // carried the shutdown request.
       setTimeout(() => {
-        shuttingDownViaVerb = true;
         recordCleanExit("shutdown", 0);
         cleanup();
         loggerHandle.flush?.();
