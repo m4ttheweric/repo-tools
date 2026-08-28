@@ -7,7 +7,7 @@
 
 import { Database } from "bun:sqlite";
 import { AGENT_NAMES, pickAgentName } from "../chat-names.ts";
-import { resolveInbox, inboxAlive } from "../claude-registry.ts";
+import { resolveAllInboxes, resolveInbox, inboxAlive } from "../claude-registry.ts";
 import { getStateDb } from "./db.ts";
 import { getKvValue, setKvValue } from "./kv-blob.ts";
 
@@ -33,8 +33,21 @@ export interface PresenceThresholds {
 }
 
 /** The registry probe, fakeable the same way lib/daemon/handlers/chat.ts's InboxDeps is: real implementations by default, swapped for a fake in tests that need a dead or alive binding on demand. */
-export type RegistryDeps = { resolve: typeof resolveInbox; alive: typeof inboxAlive };
-const defaultRegistryDeps: RegistryDeps = { resolve: resolveInbox, alive: inboxAlive };
+export type RegistryDeps = { resolve: typeof resolveInbox; alive: typeof inboxAlive; resolveAll: typeof resolveAllInboxes };
+const defaultRegistryDeps: RegistryDeps = { resolve: resolveInbox, alive: inboxAlive, resolveAll: resolveAllInboxes };
+
+/**
+ * One registry scan (`deps.resolveAll()`) turned into a per-session lookup,
+ * so N row/candidate checks against the result cost one directory read
+ * total instead of N. Only `resolve` is replaced; `alive` and `resolveAll`
+ * still come from `deps`, so a caller-supplied fake keeps controlling both.
+ * Call once per outer operation (one `listBuddies`, one `chat:who`, one
+ * `signIn` transaction) and thread the result down to every row it checks.
+ */
+export function snapshotRegistryDeps(deps: RegistryDeps = defaultRegistryDeps): RegistryDeps {
+  const bindings = deps.resolveAll();
+  return { resolve: (sessionId) => bindings.get(sessionId) ?? null, alive: deps.alive, resolveAll: deps.resolveAll };
+}
 
 interface PresenceRawRow {
   session_id: string;
@@ -90,10 +103,13 @@ function isReclaimable(row: PresenceRawRow, sessionStaleCutoff: number, deps: Re
 }
 
 /**
- * Prune's own predicate, deliberately never RECLAIMABLE_SQL: that fragment's
- * bare `signed_out_at IS NOT NULL` leg would delete every signed-out row at
- * daemon startup and empty the offline window. Bind params in order:
- * dayAgo, dayAgo (same cutoff, both legs).
+ * Prune's own CANDIDATE predicate, deliberately not `isReclaimable`: a row
+ * only reaches deletion once it also passes the binding-aware check in
+ * `prunePresence` below (signed out, or a dead registry binding) -- a bare
+ * `signed_out_at IS NOT NULL` leg with no age bound would delete every
+ * signed-out row at daemon startup and empty the offline window, so this
+ * SQL only narrows to "old enough to be worth a registry check", never the
+ * final delete decision. Bind params in order: dayAgo, dayAgo (both legs).
  */
 const PRUNABLE_SQL = `(signed_out_at IS NOT NULL AND signed_out_at < ?) OR last_seen_at < ?`;
 
@@ -106,11 +122,12 @@ const SELECT_PRESENCE_BY_SESSION_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_pre
 // it depends on a live registry probe.
 const SELECT_BASE_HANDLE_ROWS_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE base_handle = ?;`;
 const SELECT_NON_PRUNABLE_PRESENCE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE NOT (${PRUNABLE_SQL});`;
-const DELETE_PRUNABLE_PRESENCE_SQL = `DELETE FROM chat_presence WHERE ${PRUNABLE_SQL};`;
+const SELECT_PRUNE_CANDIDATES_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE ${PRUNABLE_SQL};`;
 const DELETE_PRESENCE_BY_SESSION_SQL = `DELETE FROM chat_presence WHERE session_id = ?;`;
 const INSERT_PRESENCE_SQL = `INSERT INTO chat_presence (session_id, handle, base_handle, cwd, repo, branch, pane, status_text, signed_in_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`;
 const UPDATE_SIGN_OUT_SQL = `UPDATE chat_presence SET signed_out_at = ? WHERE session_id = ?;`;
 const UPDATE_STATUS_TEXT_SQL = `UPDATE chat_presence SET status_text = ? WHERE session_id = ?;`;
+const UPDATE_LAST_SEEN_SQL = `UPDATE chat_presence SET last_seen_at = ? WHERE session_id = ?;`;
 
 const DEFAULT_SESSION_STALE_MS = 60 * 60_000;
 const DEFAULT_PRUNE_MS = 24 * 60 * 60_000;
@@ -131,9 +148,11 @@ export function presenceThresholds(): PresenceThresholds {
 }
 
 /**
- * offline: signed out, or silent long enough to be pruned. Otherwise live
- * when the registry has an alive, busy binding for this session; idle
- * otherwise (alive-but-idle, or no resolvable binding yet).
+ * offline: signed out, silent long enough to be pruned, or the registry has
+ * nothing alive for this session -- no resolvable entry at all, or one
+ * whose pid is dead or whose socket is gone (spec: "pid dead, or socket
+ * gone"). Otherwise live when the alive binding's status is busy; idle
+ * otherwise (alive but not busy).
  */
 export function buddyStatus(
   row: Partial<Pick<PresenceRow, "signedOutAt" | "lastSeenAt" | "sessionId">>,
@@ -144,11 +163,10 @@ export function buddyStatus(
   if (row.signedOutAt !== undefined) return "offline";
   const lastSeenAt = row.lastSeenAt ?? 0;
   if (now - lastSeenAt > th.pruneMs) return "offline";
-  if (row.sessionId) {
-    const binding = deps.resolve(row.sessionId);
-    if (binding && deps.alive(binding) && binding.status === "busy") return "live";
-  }
-  return "idle";
+  if (!row.sessionId) return "offline";
+  const binding = deps.resolve(row.sessionId);
+  if (!binding || !deps.alive(binding)) return "offline";
+  return binding.status === "busy" ? "live" : "idle";
 }
 
 /**
@@ -222,8 +240,14 @@ export function signIn(
   const sessionStaleCutoff = now - th.sessionStaleMs;
 
   const run = db.transaction((): { handle: string; baseHandle: string; reclaimed: boolean } => {
+    // One registry scan for the whole transaction: prune's binding check,
+    // every family row's reclaimability, and findOpenSuffix's candidate
+    // walk all resolve against this same snapshot instead of each doing
+    // its own directory read.
+    const scoped = snapshotRegistryDeps(deps);
+
     // The two moments a handle is about to be needed (spec "Pruning").
-    prunePresence(now, db);
+    prunePresence(now, db, scoped);
 
     // A session may always retake its own seat: drop whatever row it
     // already held before selecting, so a repeat sign-in is idempotent
@@ -237,7 +261,7 @@ export function signIn(
     const baseHandle = args.baseHandle ?? ownPriorRow?.base_handle ?? drawPoolName(db);
 
     const familyRowsRaw = db.query(SELECT_BASE_HANDLE_ROWS_SQL).all(baseHandle) as PresenceRawRow[];
-    const familyRows = familyRowsRaw.map((row) => ({ ...row, reclaimable: isReclaimable(row, sessionStaleCutoff, deps) }));
+    const familyRows = familyRowsRaw.map((row) => ({ ...row, reclaimable: isReclaimable(row, sessionStaleCutoff, scoped) }));
     const bySuffix = new Map<number, PresenceRawRow & { reclaimable: boolean }>();
     for (const row of familyRows) {
       const suffix = suffixOf(row.handle, baseHandle);
@@ -272,7 +296,7 @@ export function signIn(
     }
 
     if (winnerSuffix === null) {
-      const open = findOpenSuffix(db, baseHandle, bySuffix, sessionStaleCutoff, deps);
+      const open = findOpenSuffix(db, baseHandle, bySuffix, sessionStaleCutoff, scoped);
       winnerSuffix = open.suffix;
       winnerRow = open.row;
     }
@@ -331,6 +355,17 @@ export function setAway(sessionId: string, text: string | null, db: Database = g
   db.query(UPDATE_STATUS_TEXT_SQL).run(text, sessionId);
 }
 
+/**
+ * Refreshes the SESSION heartbeat alone (no cwd/repo/branch/pane) -- the
+ * only remaining route to it now that chat:pulse is gone. Called on every
+ * successful delivery (lib/daemon/handlers/chat.ts's deliverPost and
+ * deliverWelcomeOnce), so a handle actively receiving messages never goes
+ * stale enough for prune to consider it, let alone delete it.
+ */
+export function touchLastSeen(sessionId: string, now: number, db: Database = getStateDb()): void {
+  db.query(UPDATE_LAST_SEEN_SQL).run(now, sessionId);
+}
+
 export function listBuddies(
   now: number,
   db: Database = getStateDb(),
@@ -339,9 +374,11 @@ export function listBuddies(
   const th = presenceThresholds();
   const dayAgo = now - th.pruneMs;
   const rows = db.query(SELECT_NON_PRUNABLE_PRESENCE_SQL).all(dayAgo, dayAgo) as PresenceRawRow[];
+  // One registry scan for the whole roster, reused by every row's status.
+  const scoped = snapshotRegistryDeps(deps);
   return rows.map((raw) => {
     const presence = rowToPresence(raw);
-    return { ...presence, status: buddyStatus(presence, now, th, deps) };
+    return { ...presence, status: buddyStatus(presence, now, th, scoped) };
   });
 }
 
@@ -381,9 +418,26 @@ export function assertSessionSignedIn(sessionId: string, db: Database = getState
  * Signed out more than 24h ago, or a session heartbeat over 24h old — the
  * two moments a handle is about to be needed (sign-in, daemon startup) are
  * the only call sites; RT_CHAT_PRUNE_MS has no other route in.
+ *
+ * PRUNABLE_SQL only narrows to candidates; the actual delete decision is
+ * binding-aware, per row: signed out prunes unconditionally (that leg
+ * already carries its own 24h age bound), but a never-signed-out row whose
+ * session heartbeat merely went stale is spared as long as the registry
+ * still vouches for it -- without chat:pulse to refresh last_seen_at, that
+ * is the only thing standing between a session still busy on an autonomous
+ * turn and getting pruned out from under it. `deps` is unscoped by default
+ * (one directory read per candidate); pass a `snapshotRegistryDeps` result
+ * from a caller that already paid for one scan this call (signIn does).
  */
-export function prunePresence(now: number, db: Database = getStateDb()): number {
+export function prunePresence(now: number, db: Database = getStateDb(), deps: RegistryDeps = defaultRegistryDeps): number {
   const th = presenceThresholds();
   const dayAgo = now - th.pruneMs;
-  return db.query(DELETE_PRUNABLE_PRESENCE_SQL).run(dayAgo, dayAgo).changes;
+  const candidates = db.query(SELECT_PRUNE_CANDIDATES_SQL).all(dayAgo, dayAgo) as PresenceRawRow[];
+  let deleted = 0;
+  for (const row of candidates) {
+    if (row.signed_out_at === null && bindingAlive(row.session_id, deps)) continue;
+    db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(row.session_id);
+    deleted++;
+  }
+  return deleted;
 }

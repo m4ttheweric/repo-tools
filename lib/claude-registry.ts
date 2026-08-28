@@ -27,7 +27,16 @@ export function registryRoots(): string[] {
 
 const STATUSES = new Set(["busy", "idle", "shell"]);
 
-export function resolveInbox(sessionId: string, opts?: { roots?: string[] }): InboxBinding | null {
+/**
+ * Every resolvable session id in one pass over the registry roots -- the
+ * batch form callers with more than one lookup (a buddy roster, a sign-in
+ * transaction's suffix scan) must use instead of calling `resolveInbox` once
+ * per id, or each of those becomes its own directory read. First match wins
+ * per session id, same root/file order `resolveInbox` itself walks, so a
+ * duplicate entry across roots resolves identically either way.
+ */
+export function resolveAllInboxes(opts?: { roots?: string[] }): Map<string, InboxBinding> {
+  const map = new Map<string, InboxBinding>();
   for (const root of opts?.roots ?? registryRoots()) {
     let files: string[];
     try { files = readdirSync(root); } catch { continue; }
@@ -40,13 +49,18 @@ export function resolveInbox(sessionId: string, opts?: { roots?: string[] }): In
       // the try/catch above.
       if (typeof parsed !== "object" || parsed === null) continue;
       const entry = parsed as Record<string, unknown>;
-      if (entry.sessionId !== sessionId) continue;
+      if (typeof entry.sessionId !== "string") continue;
       if (typeof entry.pid !== "number" || typeof entry.messagingSocketPath !== "string") continue;
+      if (map.has(entry.sessionId)) continue;
       const status = typeof entry.status === "string" && STATUSES.has(entry.status) ? (entry.status as InboxBinding["status"]) : undefined;
-      return { pid: entry.pid, socketPath: entry.messagingSocketPath, status, name: typeof entry.name === "string" ? entry.name : undefined };
+      map.set(entry.sessionId, { pid: entry.pid, socketPath: entry.messagingSocketPath, status, name: typeof entry.name === "string" ? entry.name : undefined });
     }
   }
-  return null;
+  return map;
+}
+
+export function resolveInbox(sessionId: string, opts?: { roots?: string[] }): InboxBinding | null {
+  return resolveAllInboxes(opts).get(sessionId) ?? null;
 }
 
 export function inboxAlive(b: InboxBinding): boolean {

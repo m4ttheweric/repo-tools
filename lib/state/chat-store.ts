@@ -398,10 +398,11 @@ export function readUnread(
       const maxId = getRoomMaxId(member.room, db);
       const cursor = clampCursor(member, maxId, db);
       // A sinceMs read is a time window over the room, read or not: the only
-      // way back to a message once the cursor has passed it (a tail line
-      // truncates, and the viewer may be unreachable). The cursor-bound read
-      // is contiguous, so advancing to the highest id returned marks exactly
-      // what was shown; the window is not contiguous and never advances.
+      // way back to a message once the cursor has passed it (a delivery that
+      // never landed, or a viewer that was unreachable at the time). The
+      // cursor-bound read is contiguous, so advancing to the highest id
+      // returned marks exactly what was shown; the window is not contiguous
+      // and never advances.
       const rows = (
         sinceMs !== undefined
           ? db.query(SELECT_SINCE_SQL).all(member.room, sinceMs, limit)

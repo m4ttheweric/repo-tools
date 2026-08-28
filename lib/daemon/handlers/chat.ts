@@ -26,6 +26,7 @@ import {
   signIn,
   signOut,
   setAway,
+  touchLastSeen,
   listBuddies,
   presenceForHandle,
   presenceForSession,
@@ -33,6 +34,7 @@ import {
   assertSessionSignedIn,
   buddyStatus,
   presenceThresholds,
+  snapshotRegistryDeps,
   type BuddyStatus,
   type RegistryDeps,
 } from "../../state/index.ts";
@@ -110,7 +112,12 @@ async function deliverPost(
   if (pending.length === 0) return;
   const content = renderDeliveries(pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body })));
   const result = await deps.deliver(binding.socketPath, content);
-  if (result.ok) markDelivered(msg.room, recipient, msg.id, db);
+  if (!result.ok) return;
+  markDelivered(msg.room, recipient, msg.id, db);
+  // Refreshes the SESSION heartbeat -- the only remaining route to it now
+  // that chat:pulse is gone -- so a recipient actively receiving messages
+  // never goes stale enough for prunePresence to delete its row.
+  touchLastSeen(presence.sessionId, Date.now(), db);
 }
 
 function chainKey(room: string, handle: string): string {
@@ -179,6 +186,7 @@ async function deliverWelcomeOnce(
   const result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) return;
   for (const { room, upToId } of catchupCursors) markDelivered(room, handle, upToId, db);
+  touchLastSeen(sessionId, Date.now(), db);
 }
 
 function deliverWelcome(
@@ -374,6 +382,8 @@ export function createChatHandlers(opts: {
           rows = rows.filter((member) => member.handle !== humanHandle);
         }
       }
+      // One registry scan for the whole room, reused by every member's status.
+      const scoped = snapshotRegistryDeps(registryDeps);
       const members = rows.map((member) => {
         const presence = presenceForHandle(member.handle, db);
         // Status is a presence-only concept now: an unsigned plan-1 member
@@ -381,7 +391,7 @@ export function createChatHandlers(opts: {
         // left behind or a name never signed in) has no session to probe
         // the registry with, so it reads offline rather than guessing from
         // stale membership columns.
-        const status: BuddyStatus = presence ? buddyStatus(presence, now, th, registryDeps) : "offline";
+        const status: BuddyStatus = presence ? buddyStatus(presence, now, th, scoped) : "offline";
         return { ...member, status };
       });
       return { ok: true, data: { members } };

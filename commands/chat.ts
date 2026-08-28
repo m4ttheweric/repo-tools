@@ -1009,9 +1009,9 @@ async function runSignOut(args: string[]): Promise<void> {
 }
 
 /**
- * away/back and pulse are session-keyed, not handle-keyed: they act on
- * whichever presence row this exact session owns, so a reclaimed session
- * refuses rather than silently touching a handle it no longer holds.
+ * away/back are session-keyed, not handle-keyed: they act on whichever
+ * presence row this exact session owns, so a reclaimed session refuses
+ * rather than silently touching a handle it no longer holds.
  */
 async function runAway(args: string[]): Promise<void> {
   const text = positionals(args).join(" ");
