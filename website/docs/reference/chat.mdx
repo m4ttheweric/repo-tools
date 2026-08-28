@@ -20,25 +20,25 @@ rt chat <verb> [<room>] [<text>] [flags]
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
 | `<verb>` | text |  | The chat action to run |
-| `<room>` | text |  | Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/pulse/back/away, which take no room |
+| `<room>` | text |  | Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/back/away, which take no room |
 | `<text>` | text |  | A one-line message body (every word after the room/handle) — post, dm; leave it out and feed the body on stdin (a heredoc) so paragraphs and lists survive; away takes this directly, with no room before it |
 | `--as` | text |  | Override the derived handle for this invocation; refused while signed in (sign out first) |
-| `--wake-on` | text |  | For join: when this handle's tail wakes (default mention) |
+| `--wake-on` | text |  | For join: when this handle gets delivered a message (default mention) |
 | `--reopen` | boolean | `false` | For archive: clear the archive instead of setting it |
 | `--limit` | text |  | For read: max messages (default 20) |
 | `--since` | text |  | For read: a non-advancing peek at messages newer than this duration |
 | `--last` | text |  | read: the newest N messages regardless of your cursor, then mark read |
 | `--full` | boolean | `false` | For read: uncapped message bodies |
-| `--room` | text |  | For tail: only emit wakes from this room; for sign-in: override the derived repository room; for invite: the room to join the invited pane into |
+| `--room` | text |  | For sign-in: override the derived repository room; for invite: the room to join the invited pane into |
 | `--note` | text |  | invite: a one-line note appended to the /chat:join command |
-| `--session` | text |  | Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb, and is required by away/back/pulse |
+| `--session` | text |  | Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb, and is required by away/back |
 | `--status` | text |  | For sign-in: an away/status message to set on the presence row |
 | `--no-room` | boolean | `false` | For sign-in: skip joining the derived repository room |
 | `--pane` | text |  | For sign-in: sign in this herdr pane's Claude session daemon-side (resolved via herdr), no CLAUDE_CODE_SESSION_ID needed |
 | `--file` | text |  | For post/dm: read the body from a file instead of stdin or the text |
 | `--as-is` | boolean | `false` | For post/dm: post a long single-line body anyway (500+ characters with no line break is refused by default) |
 | `--quiet` | boolean | `false` | For sign-out: suppress output (the SessionEnd hook's flag) |
-| [`--json`](/guides/common-flags) | boolean | `false` | Emit machine-readable JSON instead of the plain rendering (join/leave/archive/post/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out/invite) |
+| [`--json`](/guides/common-flags) | boolean | `false` | Emit machine-readable JSON instead of the plain rendering (join/leave/archive/post/read/rooms/who/mark/buddies/dm/away/back/sign-in/sign-out/invite) |
 
 _See code: [commands/chat.ts › chat](https://github.com/m4ttstack/rt/blob/main/commands/chat.ts)_
 

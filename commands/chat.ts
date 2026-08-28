@@ -10,15 +10,17 @@
  *   rt chat rooms
  *   rt chat who [room]
  *   rt chat mark [room]
- *   rt chat tail                                   Task 8
  *   rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]
  *   rt chat sign-in --pane <id> [--as <h>] [--status <text>]   sign in a herdr pane's session, no CLAUDE_CODE_SESSION_ID needed
  *   rt chat sign-out [--quiet] [--session <id>]
  *   rt chat away <text> [--session <id>]           rt chat back [--session <id>]
  *   rt chat buddies [--json]                       the roster; bare `who` aliases it
  *   rt chat dm <handle> <<'EOF' ... EOF           same body rules as post
- *   rt chat pulse [--json] [--session <id>]        hook-facing heartbeat; never fails
  *   rt chat invite <pane> --room <room> [--note <text>]   types /chat:join into a herdr pane
+ *
+ * Delivery is automatic: a signed-in agent's messages arrive straight in its
+ * Claude session inbox (the daemon's socket push), so there is no tail to
+ * arm and no pulse heartbeat to fire on every prompt.
  *
  * Identity resolution is CLIENT-SIDE (see resolveHandle): HERDR_PANE_ID and
  * the cwd's repo only exist in this process, never in the daemon, so the
@@ -29,10 +31,10 @@
  * Spec: docs/superpowers/specs/2026-08-23-rt-chat-design.md
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { readFileSync } from "fs";
 import { execSync } from "child_process";
 import { homedir, hostname } from "os";
-import { basename, dirname, join } from "path";
+import { basename } from "path";
 
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
@@ -56,11 +58,9 @@ import { chatViewerUrl, readChatViewerUrlSetting } from "../lib/chat-viewer-url.
 import { parseDuration } from "./events.ts";
 import {
   chatArchive,
-  chatArm,
   chatAway,
   chatBack,
   chatBuddies,
-  chatDisarm,
   chatDm,
   chatInvite,
   chatJoin,
@@ -68,16 +68,11 @@ import {
   chatMark,
   chatMessages,
   chatPost,
-  chatPulse,
   chatRead,
   chatRooms,
   chatSignIn,
   chatSignOut,
-  chatTouch,
-  chatUnreadWaking,
   chatWho,
-  eventsHead,
-  rtCommand,
 } from "../packages/rt-client/src/index.ts";
 import type {
   BuddyStatus,
@@ -167,10 +162,11 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
 // for the unsigned path, where a name that changed on every call would
 // scatter one session's posts across many authors.
 //
-// NO BRANCH COMPONENT: a tail resolves its handle once and holds it for the
-// whole session, while post/read/join re-resolve on every call. A
-// branch-bearing handle would drift on a mid-session branch switch, leaving
-// the tail deaf on its own current identity. A directory cannot drift.
+// NO BRANCH COMPONENT: sign-in resolves its handle once and holds it for the
+// whole session (the session file), while post/read/join re-resolve on every
+// call. A branch-bearing handle would drift on a mid-session branch switch,
+// desyncing the signed-in presence row from the identity those later calls
+// would resolve. A directory cannot drift.
 //
 // The repo name comes from rt's index (loadRepoIndex, a FILE read — never a
 // git spawn, see commands/settings-keys.ts's "async — never a sync spawn"
@@ -185,10 +181,9 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
 //
 // Deliberately NOT resolved through an existing chat_members row for this
 // cwd: that would be the only daemon-dependent step in an otherwise local
-// order (failing during exactly the outage the tail's backoff exists to
-// survive), would outlive its task (a recycled worktree slot inherits the
-// previous occupant's identity), and two rows for one cwd have no defined
-// tie-break.
+// order (failing during exactly the outage every other step here survives),
+// would outlive its task (a recycled worktree slot inherits the previous
+// occupant's identity), and two rows for one cwd have no defined tie-break.
 
 /** `<alias>-<cwd-basename>`, or null when `cwd` isn't inside any indexed repo (or the git pointer is broken). */
 function deriveRepoDirHandle(cwd: string, index: Record<string, string>): string | null {
@@ -456,13 +451,12 @@ function renderReadRooms(
     .join("\n\n");
 }
 
-// The spec's four statuses (Statuses table), computed server-side by
+// The spec's three statuses (Statuses table), computed server-side by
 // buddyStatus and carried on every ChatMember/PresenceRow already — never
 // recomputed here. "live" reads as "listening", matching the AIM mapping.
 const STATUS_WORD: Record<BuddyStatus, string> = {
   live: "listening",
   idle: "idle",
-  deaf: "deaf",
   offline: "offline",
 };
 
@@ -483,26 +477,22 @@ function buddyDeets(b: PresenceRow): string {
   return [b.repo, b.branch, b.pane ? `pane ${b.pane}` : undefined].filter((s): s is string => Boolean(s)).join(" · ");
 }
 
-/** The status word plus the staleness detail the Statuses table's condition names for it — armed-but-silent is distinguished from an unarmed stale row, since they read as the same status but different causes. */
+/** The status word plus the staleness detail for an idle row (a live or offline row needs none). */
 function buddyStatusWord(b: PresenceRow & { status: BuddyStatus }): string {
   switch (b.status) {
     case "live":
       return "listening";
     case "idle":
       return `idle ${relativeAgo(b.lastSeenAt)}`;
-    case "deaf":
-      return b.armedAt !== undefined
-        ? `deaf ${relativeAgo(b.tailSeenAt ?? b.armedAt)} — armed but silent`
-        : `deaf ${relativeAgo(b.lastSeenAt)}`;
     case "offline":
       return "offline";
   }
 }
 
 // Listening first, most-stale last — the order someone scanning the roster
-// wants, not buddyStatus's own most-stale-first evaluation order (used to
-// settle a single row's status, never to rank rows against each other).
-const BUDDY_SECTIONS: BuddyStatus[] = ["live", "idle", "deaf", "offline"];
+// wants, not buddyStatus's own evaluation order (used to settle a single
+// row's status, never to rank rows against each other).
+const BUDDY_SECTIONS: BuddyStatus[] = ["live", "idle", "offline"];
 
 function renderBuddies(buddies: Array<PresenceRow & { status: BuddyStatus }>): string {
   if (buddies.length === 0) return "(nobody signed in)";
@@ -525,7 +515,7 @@ function renderBuddies(buddies: Array<PresenceRow & { status: BuddyStatus }>): s
       lines.push(`  offline (last 24h): ${entries}`);
       continue;
     }
-    const bullet = status === "idle" ? "○" : "●"; // filled = a tail is armed (live, or deaf-while-armed)
+    const bullet = status === "idle" ? "○" : "●"; // filled = live
     for (const b of rows) {
       const name = `${bullet} ${b.handle}`.padEnd(nameColWidth);
       const deets = buddyDeets(b).padEnd(deetsColWidth);
@@ -576,15 +566,6 @@ async function runLeave(args: string[]): Promise<void> {
 
   const res = await chatLeave({ room, handle });
   unwrap(res, "leave");
-
-  // Kill the handle's tail ONLY when this was its last room. The pidfile and
-  // the wake topic are per-handle (one tail serves every room), while leave is
-  // per-room: killing while the handle is still in other rooms would deafen it
-  // for those, and the "unless you ended it" re-arm rule would keep it deaf.
-  const remaining = await chatRooms({ handle });
-  if (remaining.ok && remaining.data && remaining.data.rooms.length === 0) {
-    killChatTail(handle);
-  }
 
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true }));
@@ -982,18 +963,13 @@ async function runSignInViaPane(args: string[], paneId: string): Promise<void> {
 }
 
 /**
- * Local cleanup (kill the tail, delete the session file) runs REGARDLESS of
- * the daemon result. A daemon-down sign-out that stopped here would strand
- * the session file: every verb would keep resolving position 0 to a handle
- * nothing can heartbeat, `--as` would stay refused, and — since this is also
- * the `SessionEnd` hook's command — `--quiet` would exit non-zero despite
- * the "must never fail a session shutdown" contract. A daemon failure is
- * still reported (non-quiet only); sign-out itself exits 0 either way.
- *
- * killChatTail falls back to the --as-first chain when there is no valid
- * local session (file corrupt or already gone) — a guess, but a safe one:
- * it is a no-op unless a live tail happens to hold that exact handle's
- * pidfile.
+ * Local cleanup (delete the session file) runs REGARDLESS of the daemon
+ * result. A daemon-down sign-out that stopped here would strand the session
+ * file: every verb would keep resolving position 0 to a handle nothing can
+ * heartbeat, `--as` would stay refused, and — since this is also the
+ * `SessionEnd` hook's command — `--quiet` would exit non-zero despite the
+ * "must never fail a session shutdown" contract. A daemon failure is still
+ * reported (non-quiet only); sign-out itself exits 0 either way.
  *
  * A missing or malformed session id degrades to a silent no-op under
  * --quiet, same as the daemon-failure path below: this is the SessionEnd
@@ -1016,7 +992,6 @@ async function runSignOut(args: string[]): Promise<void> {
   // daemon can't eat the budget local cleanup (below) still needs to run.
   const res = await chatSignOut({ sessionId }, { timeoutMs: 3000 });
 
-  killChatTail(session ? session.handle : resolveBaseHandle(args));
   deleteChatSession(sessionId);
 
   if (!res.ok && !quiet) {
@@ -1069,367 +1044,10 @@ async function runBack(args: string[]): Promise<void> {
   console.log("✓ back");
 }
 
-/** Re-derive `branch`/`repo` only when the cwd changed since the last pulse, or the last read is over a minute old — the git-spawning half of deriving deets, gated on the session file's own cache so most prompts cost one IPC round trip and nothing else. */
-const BRANCH_RECHECK_MS = 60_000;
-
-function shouldRereadBranch(session: ReturnType<typeof readChatSession>, cwd: string | undefined): boolean {
-  if (!session) return true;
-  if (session.lastCwd !== cwd) return true;
-  if (session.lastBranchReadAt === undefined) return true;
-  return Date.now() - session.lastBranchReadAt > BRANCH_RECHECK_MS;
-}
-
-/**
- * Hook-facing (`UserPromptSubmit`) and hard-bounded: the daemon call carries
- * `timeoutMs: 800` (the wrappers' 10s default would blow the hook's own
- * budget), and every failure below — timeout, daemon down, a refusal other
- * than reclaim — exits 0 with NOTHING printed. A hook that hangs or errors on
- * every prompt is worse than no hook at all. The one exception is a
- * reclaimed session: that notice is the whole point of pulsing, so it prints
- * (or, under --json, reports `{ reclaimed: true }`) and deletes the now-dead
- * session file, same as the tail's own reclaim exit.
- */
-async function runPulse(args: string[]): Promise<void> {
-  try {
-    const json = args.includes("--json");
-    const sessionId = currentSessionId(args);
-    if (!sessionId || !isValidSessionId(sessionId)) return;
-
-    const session = readChatSession(sessionId);
-    const cwd = safeCwd();
-    const pane = process.env.HERDR_PANE_ID;
-
-    let repo: string | undefined;
-    let branch: string | undefined;
-    let branchReadNow: number | undefined;
-    if (shouldRereadBranch(session, cwd)) {
-      const root = cwd ? getRepoRoot(cwd) : null;
-      if (root) {
-        const identity = getRepoIdentityForRoot(root);
-        if (identity) repo = repoLabel(identity.identity);
-        branch = getCurrentBranch() ?? undefined;
-      }
-      branchReadNow = Date.now();
-    }
-
-    const res = await chatPulse({ sessionId, cwd, repo, branch, pane }, { timeoutMs: 800 });
-
-    if (!res.ok || res.data === undefined) {
-      if (res.error?.includes("handle reclaimed")) {
-        deleteChatSession(sessionId);
-        console.log(json ? JSON.stringify({ reclaimed: true }) : "your handle was reclaimed while you were away — sign in again");
-      }
-      return; // every other failure: silent, exit 0 — never fail the hook
-    }
-
-    if (session) {
-      writeChatSession({
-        ...session,
-        lastCwd: cwd,
-        lastBranchReadAt: branchReadNow ?? session.lastBranchReadAt,
-      });
-    }
-
-    if (json) {
-      console.log(JSON.stringify({ ok: true, unread: res.data.unread, status: res.data.status }));
-    }
-    // plain mode prints nothing — the hook, not this command, decides
-    // whether to inject context from the unread summary and status.
-  } catch {
-    // pulse must never fail the hook, for any reason
-  }
-}
-
-// ─── tail: the wake protocol ─────────────────────────────────────────────────
-//
-// A long-lived stream, launched under Claude Code's Monitor (persistent: true).
-// Monitor turns each stdout line into one notification, so stdout carries
-// EXACTLY one line per wake and every diagnostic goes to stderr. The step order
-// below is the whole feature — see the spec's Wake protocol section.
-
-/** rt dir holding the sock and the per-handle tail pidfiles (mirrors transport's defaultSock dir). */
-function rtChatDir(): string {
-  return join(process.env.HOME ?? homedir(), ".mattstack", "rt");
-}
-
-/** Pidfile is keyed on HANDLE ALONE: one tail serves every room the handle is in. */
-function chatTailPidPath(handle: string): string {
-  return join(rtChatDir(), `chat-tail-${handle}.pid`);
-}
-
-function readTailPid(pidPath: string): number | null {
-  try {
-    const pid = parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-    return Number.isNaN(pid) ? null : pid;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Alive AND actually an `rt chat tail`. A tail dies abnormally (session end,
- * sleep, SIGKILL, Monitor stopping it) without running cleanup, so a stale
- * pidfile — or one whose pid the OS recycled to an unrelated process — must not
- * refuse a re-arm. Recovery IS *stream ends → agent notified → agent re-arms*,
- * and a false "already armed" leaves the agent permanently deaf.
- */
-/**
- * Whether a process's `ps args` line is an rt (or dev cli.ts) invocation
- * running `chat tail`, in that order. Stricter than "contains chat and tail
- * somewhere": the binary/script is anchored to a path boundary and the two
- * verbs must be adjacent, so a recycled PID whose unrelated args merely
- * mention both words does not read as a live tail and spuriously refuse an
- * agent's re-arm.
- */
-function looksLikeRtChatTail(args: string): boolean {
-  return /(?:^|\/)(?:rt|cli\.ts)\b[\s\S]*\bchat\s+tail\b/.test(args);
-}
-
-function isLiveChatTail(pid: number): boolean {
-  try {
-    process.kill(pid, 0); // signal 0 = existence check
-  } catch {
-    return false;
-  }
-  try {
-    const args = execSync(`ps -p ${pid} -o args=`, { encoding: "utf8", stdio: "pipe" });
-    return looksLikeRtChatTail(args);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Claim the per-handle tail pidfile for this process. Returns null when
- * claimed, or the pid of a live `rt chat tail` that already holds it.
- *
- * Every write is an exclusive create ('wx'): only one racer wins, and O_EXCL
- * refuses a symlink outright, so a link planted at pidPath is never written
- * through. A stale pidfile is reclaimed by removing it and retrying the
- * exclusive create, never by overwriting in place — and it is only removed if
- * it is a regular file whose inode is unchanged since the staleness check, so
- * a racer that re-claimed the path meanwhile does not get its fresh pidfile
- * deleted from under it.
- */
-function claimTailPidfile(pidPath: string): number | null {
-  mkdirSync(dirname(pidPath), { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(pidPath, String(process.pid), { flag: "wx" });
-      return null;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    }
-    const seen = lstatSync(pidPath);
-    if (!seen.isFile()) {
-      throw new Error(`${pidPath} exists but is not a regular file — remove it to arm`);
-    }
-    const existing = readTailPid(pidPath);
-    if (existing !== null && existing !== process.pid && isLiveChatTail(existing)) return existing;
-    try {
-      const now = lstatSync(pidPath);
-      if (now.isFile() && now.ino === seen.ino && now.dev === seen.dev) rmSync(pidPath);
-    } catch { /* already gone — the retry below settles it */ }
-  }
-  const holder = readTailPid(pidPath);
-  if (holder !== null && holder !== process.pid && isLiveChatTail(holder)) return holder;
-  throw new Error(`${pidPath} could not be claimed`);
-}
-
-/** SIGTERM the handle's tail if one is genuinely running, then drop the pidfile (leave's last-room path). */
-function killChatTail(handle: string): void {
-  const pidPath = chatTailPidPath(handle);
-  const pid = readTailPid(pidPath);
-  if (pid !== null && isLiveChatTail(pid)) {
-    try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
-  }
-  try { rmSync(pidPath); } catch { /* already gone */ }
-}
-
-/** One line per wake, count-style; identical format for the catch-up and the stream. */
-function wakeLine(room: string, count: number, url?: string): string {
-  return `${count} new in #${room} — \`rt chat read\` to see it.${url ? ` ${url}` : ""}`;
-}
-
-/**
- * A test seam that opens a timing window: create the file the env var NAMES,
- * block until it is removed, give up after 2s. It names a PATH, never a
- * command — a seam that evaluated a shell string would be arbitrary code
- * execution in a shipped binary.
- */
-async function testMarkerPause(envKey: string): Promise<void> {
-  const path = process.env[envKey];
-  if (!path) return;
-  try { writeFileSync(path, String(process.pid)); } catch { return; }
-  const deadline = Date.now() + 2_000;
-  while (existsSync(path) && Date.now() < deadline) {
-    await Bun.sleep(20);
-  }
-}
-
-const TAIL_ROUND_MS = 15_000; // events:wait ceiling per round; also the chat:touch heartbeat cadence.
-
-export async function chatTail(args: string[]): Promise<void> {
-  // Monitor owns the lifetime (persistent: true). A tail that could time out
-  // would end its own stream and read as a dead feed.
-  if (args.includes("--timeout")) {
-    console.error("rt chat: tail takes no --timeout — Monitor owns the tail's lifetime");
-    process.exit(2);
-  }
-
-  const handle = resolveHandle(args);
-  requireValidName("handle", handle);
-
-  // Carried on every arm/touch/disarm call: without it the daemon has no way
-  // to tell this tail's session apart from whichever session now holds the
-  // handle, so a reclaimed handle would arm (and keep touching) clean.
-  const sessionId = currentSessionId(args);
-
-  const roomFilter = flagValue(args, "--room");
-  if (roomFilter) requireValidName("room", roomFilter);
-
-  const opts = sockOpts(args);
-  const sockPath = opts.sockPath;
-
-  // Claim the pidfile BEFORE any daemon call, so a live duplicate is refused
-  // even when the daemon is down. A stale/foreign pidfile is reclaimed.
-  const pidPath = chatTailPidPath(handle);
-  let livePid: number | null;
-  try {
-    livePid = claimTailPidfile(pidPath);
-  } catch (err) {
-    console.error(`rt chat: could not claim tail pidfile: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  }
-  if (livePid !== null) {
-    console.error(`rt chat: already armed — a tail for ${handle} is already running (pid ${livePid})`);
-    process.exit(3);
-  }
-  const cleanup = (): void => { try { rmSync(pidPath); } catch { /* already gone */ } };
-
-  // A signal is a DELIBERATE stop (Monitor stopping the command, or leave on
-  // the last room). Exit 0 — never 69 — so the daemon-down backoff cannot mask
-  // it, and if the handle is now in zero rooms say so on one line.
-  let shuttingDown = false;
-  const onSignal = async (): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    try {
-      const rooms = await chatRooms({ handle }, opts);
-      if (rooms.ok && rooms.data && rooms.data.rooms.length === 0) {
-        console.log(`no longer in any room — #${handle} tail stopped. Do not re-arm.`);
-      }
-    } catch { /* daemon unreachable — still a deliberate stop */ }
-    cleanup();
-    process.exit(0);
-  };
-  process.on("SIGTERM", () => { void onSignal(); });
-  process.on("SIGINT", () => { void onSignal(); });
-
-  // A non-numeric override would make budgetMs NaN, so `Date.now() + NaN` is
-  // NaN, the retry loop never runs, and the tail exits 69 on the first blip.
-  const budgetRaw = Number(process.env.RT_CHAT_BACKOFF_MS);
-  const budgetMs = Number.isFinite(budgetRaw) && budgetRaw >= 0 ? budgetRaw : 60_000;
-
-  /**
-   * The one daemon refusal that must short-circuit both callOrBackoff and the
-   * touch loop below rather than retry/backoff/get-ignored: once the handle
-   * is reclaimed, this pidfile is stale and there is nothing left to listen
-   * for. A no-op for every other error.
-   */
-  function exitOnReclaim(error: string | undefined): void {
-    if (!error?.includes("handle reclaimed")) return;
-    console.log("handle reclaimed — sign in again");
-    if (sessionId) deleteChatSession(sessionId);
-    cleanup();
-    process.exit(0);
-  }
-
-  // Daemon-unreachable is not silence: retry with bounded backoff (a mechanical
-  // brake against a re-arm spin), diagnostics to stderr; when the budget is
-  // exhausted, one stdout line, disarm, exit 69. A reclaimed handle skips all
-  // of that via exitOnReclaim above.
-  async function callOrBackoff<T>(fn: () => Promise<{ ok: boolean; data?: T; error?: string }>): Promise<T> {
-    let res = await fn();
-    if (res.ok && res.data !== undefined) return res.data;
-    exitOnReclaim(res.error);
-    const deadline = Date.now() + budgetMs;
-    let delay = 250;
-    while (Date.now() < deadline) {
-      console.error(`rt chat: daemon unreachable, retrying in ${delay}ms…`);
-      await Bun.sleep(delay);
-      res = await fn();
-      if (res.ok && res.data !== undefined) return res.data;
-      exitOnReclaim(res.error);
-      delay = Math.min(delay * 2, 10_000);
-    }
-    console.log("chat stream ended — the rt daemon is unreachable.");
-    await chatDisarm({ handle, sessionId }, opts).catch(() => undefined);
-    cleanup();
-    process.exit(69);
-  }
-
-  // Step 1: snapshot the journal head → cursor C. This precedes the unread read
-  // so a post landing before waiter registration still emits above C and is
-  // replayed by the stream (the arm-race fix).
-  const head = await callOrBackoff(() => eventsHead(opts));
-  const C = head.cursor;
-  const viewerBase = readChatViewerUrlSetting();
-
-  // Step 2: arm (scoped to --room when given; all the handle's rooms otherwise).
-  // sessionId travels here so a reclaimed handle is refused at arm time, not
-  // just on the touch loop below.
-  await callOrBackoff(() => chatArm({ handle, room: roomFilter, sessionId }, opts));
-
-  await testMarkerPause("RT_CHAT_TEST_PRE_CATCHUP_MARKER");
-
-  // Step 3: catch-up — one line per room with its real count, and the watermark
-  // W = highest chat_messages id already seen. W (a chat_messages rowid) and C
-  // (a journal rowid) live in different id spaces and guard opposite defects.
-  const catchup = await callOrBackoff(() => chatUnreadWaking({ handle, room: roomFilter }, opts));
-  let W = 0;
-  for (const r of catchup.rooms) {
-    if (roomFilter && r.room !== roomFilter) continue;
-    if (r.count > 0) console.log(wakeLine(r.room, r.count, chatViewerUrl(viewerBase, r.room)));
-    if (r.maxId > W) W = r.maxId;
-  }
-
-  await testMarkerPause("RT_CHAT_TEST_PRE_WAIT_MARKER");
-
-  // Step 4: stream. events:wait with pattern chat/wake/<me> and after=C, cursor
-  // threaded forward; one line per wake; chat:touch each round so presence
-  // rides the loop. Skip any wake whose message id is at or below W — that
-  // message was already delivered by the catch-up (the mirror hole the
-  // streaming transport opened).
-  const pattern = `chat/wake/${handle}`;
-  let cursor = C;
-  while (true) {
-    const round = await callOrBackoff(() =>
-      rtCommand<{ events: { id: number; topic: string; payload: { id: number; room: string } }[]; cursor: number }>(
-        "events:wait",
-        { pattern, after: cursor, waitMs: TAIL_ROUND_MS },
-        { sockPath, timeoutMs: TAIL_ROUND_MS + 10_000 },
-      ),
-    );
-    cursor = round.cursor;
-    const touched = await chatTouch({ handle, room: roomFilter, sessionId }, opts).catch(
-      (err) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }) as const,
-    );
-    if (!touched.ok) exitOnReclaim(touched.error);
-    for (const e of round.events) {
-      const msgId = e.payload?.id;
-      const room = e.payload?.room;
-      if (typeof msgId === "number" && msgId <= W) continue; // dup: already in the catch-up
-      if (roomFilter && room !== roomFilter) continue; // --room: silently skip other rooms
-      console.log(wakeLine(room, 1, chatViewerUrl(viewerBase, room, typeof msgId === "number" ? msgId : undefined)));
-    }
-  }
-}
-
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "usage: rt chat <join|leave|archive|post|read|rooms|who|mark|tail|sign-in|sign-out|away|back|buddies|dm|pulse|invite> ...";
+  "usage: rt chat <join|leave|archive|post|read|rooms|who|mark|sign-in|sign-out|away|back|buddies|dm|invite> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   join: runJoin,
@@ -1440,14 +1058,12 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   rooms: runRooms,
   who: runWho,
   mark: runMark,
-  tail: chatTail,
   "sign-in": runSignIn,
   "sign-out": runSignOut,
   away: runAway,
   back: runBack,
   buddies: runBuddies,
   dm: runDm,
-  pulse: runPulse,
   invite: runInvite,
 };
 
@@ -1461,13 +1077,11 @@ const VERB_HINTS: Record<string, string> = {
   leave: "leave a room",
   mark: "mark a room read",
   archive: "park a room (post revives it)",
-  tail: "stream wakes for this handle",
   "sign-in": "sign in and set presence",
   "sign-out": "sign out",
   away: "set an away status",
   back: "clear away status",
   buddies: "the presence roster",
-  pulse: "heartbeat (hook-facing)",
 };
 
 async function pickChatVerb(): Promise<string | null> {
@@ -1506,8 +1120,6 @@ export const __test__ = {
   deriveRepoDirHandle,
   cwdRelativeHandle,
   userHostHandle,
-  looksLikeRtChatTail,
-  claimTailPidfile,
   roomForIdentity,
   deriveRoomForCwd,
 };
