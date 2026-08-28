@@ -261,9 +261,9 @@ export function chatUnreadWaking(
 // ─── Presence ──────────────────────────────────────────────────────────
 
 export function chatSignIn(
-  a: { sessionId: string; baseHandle?: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string },
+  a: Commands["chat:sign-in"]["payload"],
   o: RtClientOptions = {},
-): Promise<RtResponse<{ handle: string; baseHandle: string; reclaimed: boolean }>> {
+): Promise<RtResponse<Commands["chat:sign-in"]["data"]>> {
   const payload: Record<string, unknown> = { sessionId: a.sessionId };
   if (a.baseHandle !== undefined) payload.baseHandle = a.baseHandle;
   if (a.cwd !== undefined) payload.cwd = a.cwd;
@@ -271,7 +271,7 @@ export function chatSignIn(
   if (a.branch !== undefined) payload.branch = a.branch;
   if (a.pane !== undefined) payload.pane = a.pane;
   if (a.statusText !== undefined) payload.statusText = a.statusText;
-  return rtCommand<{ handle: string; baseHandle: string; reclaimed: boolean }>("chat:sign-in", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  return rtCommand<Commands["chat:sign-in"]["data"]>("chat:sign-in", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function chatSignOut(

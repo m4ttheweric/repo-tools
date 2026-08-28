@@ -301,6 +301,14 @@ test("the draw is least-recently-used: every name goes once before any comes bac
   expect(drawn[AGENT_NAMES.length]).toBe(drawn[0]);
 });
 
+test("a repeat sign-in with no base keeps the name the session already holds", () => {
+  const db = fresh();
+  const first = signIn({ sessionId: "s1", now }, db);
+  const again = signIn({ sessionId: "s1", now: now + MIN }, db);
+  expect(again.baseHandle).toBe(first.baseHandle);
+  expect(again.handle).toBe(first.handle);
+});
+
 test("an explicitly named pool name counts as used; a non-pool base is not recorded", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "kai", now }, db);

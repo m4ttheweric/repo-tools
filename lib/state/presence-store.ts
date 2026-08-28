@@ -227,15 +227,17 @@ export function signIn(
   const run = db.transaction((): { handle: string; baseHandle: string; reclaimed: boolean } => {
     // The two moments a handle is about to be needed (spec "Pruning").
     prunePresence(now, db);
-    const baseHandle = args.baseHandle ?? drawPoolName(db);
 
     // A session may always retake its own seat: drop whatever row it
     // already held before selecting, so a repeat sign-in is idempotent
     // rather than a raw UNIQUE violation against the very handle it's
     // about to be granted again. Once dropped, that exact handle string
     // can never be "occupied" by anyone else inside this same transaction.
+    // With no base requested, the row's own base is kept over a fresh
+    // draw, so a repeat sign-in never changes identity.
     const ownPriorRow = db.query(SELECT_PRESENCE_BY_SESSION_SQL).get(sessionId) as PresenceRawRow | null;
     if (ownPriorRow) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(sessionId);
+    const baseHandle = args.baseHandle ?? ownPriorRow?.base_handle ?? drawPoolName(db);
 
     const familyRows = db.query(SELECT_BASE_HANDLE_ROWS_SQL).all(sessionStaleCutoff, tailStaleCutoff, baseHandle) as (PresenceRawRow & {
       reclaimable: number;
