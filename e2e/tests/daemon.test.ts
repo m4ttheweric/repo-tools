@@ -57,6 +57,30 @@ describe("fatal boot", () => {
     }
   }, 60_000);
 
+  test("API-bind failure surfaces as boot-failed/crash-looping via rt daemon status --json", async () => {
+    const { path: home, cleanup } = createTestHome();
+    // A different port than the other API-bind-failure tests above, so
+    // parallel test files can never collide on the same bound TCP port.
+    const port = 9413;
+    const squatter = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("busy") });
+    try {
+      // `rt daemon status` short-circuits to "not installed" before it ever
+      // reaches the boot-failed/crash-looping classification — install first.
+      await rt(["daemon", "install"], { home });
+
+      const boot = await rt(["--daemon"], { home, env: { RT_API_PORT: String(port) } });
+      expect(boot.exitCode).not.toBe(0);
+
+      const status = await rt(["daemon", "status", "--json"], { home });
+      expect(status.exitCode).toBe(0);
+      const parsed = JSON.parse(status.stdout);
+      expect(["boot-failed", "crash-looping"]).toContain(parsed.state);
+    } finally {
+      squatter.stop(true);
+      cleanup();
+    }
+  }, 60_000);
+
   test("a corrupt events.db self-heals — quarantined, and the daemon boots and serves", async () => {
     const { path: home, cleanup } = createTestHome();
     const bunDir = join(process.execPath, "..");

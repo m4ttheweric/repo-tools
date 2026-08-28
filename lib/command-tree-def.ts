@@ -640,7 +640,9 @@ export const TREE: Record<string, CommandNode> = {
         description: "Show daemon status",
         module: "./commands/daemon.ts",
         fn: "showStatus",
-        args: [],
+        args: [
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the verdict as JSON instead of the formatted lines" },
+        ],
       },
       track: {
         description: "Per-repo background tracking (live/poll/off)",
