@@ -32,7 +32,7 @@ test("deliverToInbox reports failure on a dead socket", async () => {
   expect(res.ok).toBe(false);
 });
 
-test("deliverToInbox never writes once it has already reported failure", async () => {
+test("no frame is written after a failed connect has settled", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "inbox-late-")), "s.sock");
   const res = await deliverToInbox(path, "late", { timeoutMs: 50 });
   expect(res.ok).toBe(false);
