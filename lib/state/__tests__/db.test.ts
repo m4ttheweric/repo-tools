@@ -351,6 +351,13 @@ describe("pragma values per flavor", () => {
     expect(timeout).toBe(5000);
     db.close();
   });
+
+  test("getStateDb('daemon') reports busy_timeout 250 even after a default open", () => {
+    const cli = getStateDb(); // opens singleton, cli flavor
+    expect(cli.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
+    const daemon = getStateDb("daemon"); // same singleton — must not stay at 5000
+    expect(daemon.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 250 });
+  });
 });
 
 describe("startup busy budget — open+migrate blocks, it does not throw", () => {

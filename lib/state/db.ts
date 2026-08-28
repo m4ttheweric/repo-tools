@@ -521,11 +521,19 @@ export function stateDbPath(): string {
  */
 export function getStateDb(flavor: DbFlavor = "cli"): Database {
   const path = stateDbPath();
-  if (!singleton || singletonPath !== path) {
-    singleton?.close();
-    singleton = openStateDb(path, flavor);
-    singletonPath = path;
+  if (singleton && singletonPath === path) {
+    // A caller asking for a stronger (shorter) contention policy than the
+    // singleton currently holds must not silently inherit whatever flavor
+    // opened it first (e.g. a "cli" 5000ms opener beating the daemon's own
+    // "daemon" 250ms open) — re-tighten in place rather than reopening.
+    const want = BUSY_TIMEOUT_MS[flavor];
+    const have = Number((singleton.query("PRAGMA busy_timeout").get() as { timeout?: number } | null)?.timeout ?? 0);
+    if (want < have) singleton.exec(`PRAGMA busy_timeout = ${want};`);
+    return singleton;
   }
+  singleton?.close();
+  singleton = openStateDb(path, flavor);
+  singletonPath = path;
   return singleton;
 }
 
