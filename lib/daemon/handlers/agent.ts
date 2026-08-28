@@ -95,11 +95,17 @@ export function createAgentHandlers(opts: {
         { workspaceLabel, tabLabel, paneCommand: buildPaneCommand(rec.cwd, inv) },
         runner,
       );
-      if (!out.focusedExisting) {
-        rec.paneId = out.paneId;
-        rec.tabId = out.tabId;
-        rec.workspaceId = out.workspaceId;
+      if (out.focusedExisting) {
+        // A live tab already answers to this label: launchInWorkspace
+        // focused it and ran nothing. Reporting ok:true here would insert a
+        // record with a freshly minted sessionId nothing is listening on —
+        // rt agent resume against it would run `claude --resume` for a
+        // session that was never started.
+        return { ok: false, error: `tab "${tabLabel}" already open; focused it` };
       }
+      rec.paneId = out.paneId;
+      rec.tabId = out.tabId;
+      rec.workspaceId = out.workspaceId;
       return { ok: true, data: rec };
     }
 

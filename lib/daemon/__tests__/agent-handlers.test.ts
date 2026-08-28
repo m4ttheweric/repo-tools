@@ -4,6 +4,7 @@ import { join } from "path";
 import { openStateDb } from "../../state/index.ts";
 import { createAgentHandlers, type HeadlessChild } from "../handlers/agent.ts";
 import type { HerdrRunner } from "../../agent-herdr.ts";
+import { repoLabel } from "../../repo-arg.ts";
 
 let n = 0;
 const REPO = "remote:example.com%2Fa%2Fb";
@@ -56,6 +57,34 @@ test("agent:start herdr rolls back the inserted record when launch fails", async
   const h = fresh({ runner: throwingRunner });
   const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
   expect(res.ok).toBe(false);
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
+});
+
+// Pins S051: a tab-label dedup must never report success with a phantom
+// record nothing is listening on (rt agent resume on it would run
+// `claude --resume` for a session that never started).
+test("agent:start herdr returns ok:false and rolls back when herdr dedups the tab label", async () => {
+  const label = "!7";
+  const focusCalls: string[][] = [];
+  const runner: HerdrRunner = async (args) => {
+    focusCalls.push(args);
+    if (args[0] === "workspace" && args[1] === "list") {
+      return { stdout: JSON.stringify({ result: { workspaces: [{ workspace_id: "w1", label: repoLabel(REPO) }] } }), exitCode: 0 };
+    }
+    if (args[0] === "tab" && args[1] === "list") {
+      return { stdout: JSON.stringify({ result: { tabs: [{ tab_id: "w1:t9", label } ] } }), exitCode: 0 };
+    }
+    return { stdout: "{}", exitCode: 0 };
+  };
+  const h = fresh({ runner });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", tab: label });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toMatch(/already open/);
+  expect(focusCalls.some((c) => c[0] === "tab" && c[1] === "focus")).toBe(true);
+  expect(focusCalls.some((c) => c[0] === "pane" && c[1] === "run")).toBe(false);
   const list = await h["agent:list"]({});
   if (!list.ok) throw new Error("unreachable");
   expect(list.data.agents).toHaveLength(0);
