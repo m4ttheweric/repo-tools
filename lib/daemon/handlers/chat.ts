@@ -297,6 +297,14 @@ export function createChatHandlers(opts: {
 
     "chat:sign-in": async (payload: Commands["chat:sign-in"]["payload"]): Promise<CommandResult<"chat:sign-in">> => {
       const { sessionId, baseHandle, cwd, repo, branch, pane, statusText } = payload;
+      // A missing/empty sessionId binds as NULL against session_id TEXT
+      // PRIMARY KEY, which SQLite accepts silently: the row then holds the
+      // UNIQUE handle, but the reclaim-by-session_id path can never match
+      // it, so every later sign-in under this base handle 500s with a
+      // UNIQUE constraint failure until prunePresence eventually removes it.
+      if (typeof sessionId !== "string" || sessionId.length === 0) {
+        return { ok: false, error: "chat:sign-in requires a non-empty sessionId" };
+      }
       if (!isValidChatName(baseHandle)) return { ok: false, error: `invalid handle "${baseHandle}"` };
       const data = signIn({ sessionId, baseHandle, cwd, repo, branch, pane, statusText }, db);
       return { ok: true, data };

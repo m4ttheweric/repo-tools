@@ -221,6 +221,35 @@ test("sign-in rejects an invalid baseHandle with a reason rather than normalizin
   expect(res.error).toContain("handle");
 });
 
+// S076: a missing/empty sessionId binds as NULL against session_id TEXT
+// PRIMARY KEY, which SQLite accepts — the row then holds the UNIQUE handle
+// but the reclaim-by-session_id path can never match it, wedging every
+// later sign-in under that base handle with a UNIQUE constraint failure.
+test("sign-in rejects a missing sessionId rather than storing a NULL-keyed row", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:sign-in"]({ baseHandle: "x" } as any);
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("sessionId");
+});
+
+test("sign-in rejects an empty-string sessionId the same way", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:sign-in"]({ sessionId: "", baseHandle: "x" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("sessionId");
+});
+
+test("a rejected sign-in never wedges the next sign-in under the same base handle", async () => {
+  const h = freshHandlers();
+  await h["chat:sign-in"]({ baseHandle: "x" } as any); // rejected, must not persist a row
+  const ok = await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
+  expect(ok.ok).toBe(true);
+  if (!ok.ok) throw new Error("unreachable");
+  expect(ok.data).toMatchObject({ handle: "x" });
+});
+
 test("a reclaimed handle refuses the old session's pulse with the reason", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });

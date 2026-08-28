@@ -224,6 +224,12 @@ export function signIn(
   db: Database = getStateDb(),
 ): { handle: string; reclaimed: boolean } {
   const { sessionId, baseHandle, statusText } = args;
+  // Defense in depth: the handler (lib/daemon/handlers/chat.ts) is the
+  // root-cause guard, but session_id is a bare TEXT PRIMARY KEY with no
+  // NOT NULL/CHECK constraint (bun:sqlite binds undefined as NULL, which
+  // SQLite accepts), so any future caller of this store function directly
+  // must not be able to wedge the same NULL-keyed-row failure mode.
+  if (!sessionId) throw new Error("signIn: sessionId is required");
   const cwd = args.cwd ?? null;
   const repo = args.repo ?? null;
   const branch = args.branch ?? null;
