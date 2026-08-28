@@ -1,5 +1,5 @@
 /**
- * e2e — daemon-side pane sign-in and push delivery against a real socket
+ * e2e: daemon-side pane sign-in and push delivery against a real socket
  * (RT-48 delivery-v2, Task 9). This is the fake-inbox e2e
  * e2e/tests/chat-presence-roster.test.ts's own header explicitly defers to
  * this file: a real unix-socket "Claude Code inbox" the daemon's own
