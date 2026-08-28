@@ -17,11 +17,22 @@ import type { PortEntry } from "../../port-scanner.ts";
 import { listWorktrees } from "../../git-worktrees.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { getFreshnessSnapshot } from "../freshness.ts";
+import { readSupervisionState } from "../supervision-state.ts";
 
 export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
   return {
     "ping": async () => {
-      return { ok: true, uptime: Date.now() - ctx.startedAt, pid: process.pid, ...ctx.identity };
+      // Read here (not once at ctx build time): a status/status.ts request
+      // must see this run's own boot-attempt/failure counters, not whatever
+      // they were when the daemon started.
+      const { bootAttempts, lastReadyAt, recentFailures, lastExit } = readSupervisionState();
+      return {
+        ok: true,
+        uptime: Date.now() - ctx.startedAt,
+        pid: process.pid,
+        ...ctx.identity,
+        supervision: { bootAttempts, lastReadyAt, recentFailures: recentFailures.slice(-3), lastExit },
+      };
     },
 
     "status": async () => {

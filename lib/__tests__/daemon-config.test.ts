@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { activeLaunchdLabel } from "../daemon-config.ts";
+import { activeLaunchdLabel, resolveApiPort } from "../daemon-config.ts";
 
 const WRAPPER_PATH = join(process.env.HOME!, ".local", "bin", "rt");
 
@@ -26,5 +26,17 @@ describe("activeLaunchdLabel", () => {
     mkdirSync(join(process.env.HOME!, ".local", "bin"), { recursive: true });
     writeFileSync(WRAPPER_PATH, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     expect(activeLaunchdLabel()).toBe("com.mattstack.daemon.dev");
+  });
+});
+
+describe("resolveApiPort", () => {
+  test("env wins, then setting, then 9401", () => {
+    const prev = process.env.RT_API_PORT;
+    process.env.RT_API_PORT = "12345";
+    expect(resolveApiPort()).toBe(12345);
+    delete process.env.RT_API_PORT;
+    expect(resolveApiPort()).toBe(9401); // default setting value
+    if (prev !== undefined) process.env.RT_API_PORT = prev;
+    else delete process.env.RT_API_PORT;
   });
 });
