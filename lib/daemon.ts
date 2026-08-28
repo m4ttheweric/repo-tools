@@ -382,7 +382,7 @@ const cleanup = (): void => {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function startDaemon(): Promise<void> {
+async function runDaemon(): Promise<void> {
   mkdirSync(RT_DIR, { recursive: true });
 
   // Capture native panics (bypass JS entirely) at the fd level, then wire
@@ -466,18 +466,7 @@ export async function startDaemon(): Promise<void> {
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
   servers.socket = startSocketServer({ handleCommand, log });
-  try {
-    servers.api = await startApiServer({ handleCommand, log });
-  } catch (err) {
-    // An exhausted bind retry must exit, not just reject: startDaemon() is
-    // always called fire-and-forget, so an uncaught rejection here would
-    // otherwise hit unhandledRejection's log-and-continue policy — leaving
-    // rt.sock answering with no API/WS server and nothing past this point
-    // (signal handlers, pollers) ever wired. Exiting lets the same
-    // supervisor that restarts on any other daemon crash restart this one.
-    log.fatal({ err }, "api server failed to bind after retries — exiting");
-    process.exit(1);
-  }
+  servers.api = await startApiServer({ handleCommand, log });
 
   // Wire notification broadcasts to WebSocket clients
   onNotification(emit);
@@ -522,6 +511,27 @@ export async function startDaemon(): Promise<void> {
   installSignalHandlers({ cleanup, flushLogs: () => loggerHandle.flush?.(), log });
 
   log.info({ pid: process.pid }, "daemon ready");
+}
+
+/**
+ * Both real callers (cli.ts's `--daemon` entry, and this file's own
+ * import.meta.main guard below) invoke this fire-and-forget — neither awaits
+ * or catches. Left as a bare async function, ANY failure inside runDaemon()
+ * (this bind, openBranchCacheStore, anything else awaited) becomes an
+ * unhandledRejection, whose handler (installCrashHandlers, above) logs and
+ * deliberately does NOT exit — the daemon would stay alive with rt.sock
+ * possibly bound but startup never having reached signal handlers, pollers,
+ * or "daemon ready". Catching here and exiting explicitly gives every
+ * startup failure the same outcome a synchronous one already had: the
+ * process dies and whatever restarts a crashed daemon restarts this one too.
+ */
+export async function startDaemon(): Promise<void> {
+  try {
+    await runDaemon();
+  } catch (err) {
+    log.fatal({ err }, "daemon startup failed — exiting");
+    process.exit(1);
+  }
 }
 
 // Auto-run when executed directly (source mode: bun run lib/daemon.ts)
