@@ -12,6 +12,7 @@
  *   rt chat mark [room]
  *   rt chat tail                                   Task 8
  *   rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]
+ *   rt chat sign-in --pane <id> [--as <h>] [--status <text>]   sign in a herdr pane's session, no CLAUDE_CODE_SESSION_ID needed
  *   rt chat sign-out [--quiet] [--session <id>]
  *   rt chat away <text> [--session <id>]           rt chat back [--session <id>]
  *   rt chat buddies [--json]                       the roster; bare `who` aliases it
@@ -50,8 +51,6 @@ import {
   writeChatSession,
 } from "../lib/chat-session.ts";
 import { chatViewerUrl, readChatViewerUrlSetting } from "../lib/chat-viewer-url.ts";
-import { planSessionRename, type RenamePlan } from "../lib/chat-rename.ts";
-import { claudeConfigDir, composeSessionTitle, readSessionCustomTitle } from "../lib/chat-title.ts";
 import { parseDuration } from "./events.ts";
 import {
   chatArchive,
@@ -90,7 +89,7 @@ import type {
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
-const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file", "--last", "--note"]);
+const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file", "--last", "--note", "--pane"]);
 
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -251,7 +250,7 @@ function herdrPaneHandle(): string | null {
  * daemon to draw a first name (it holds the buddy list and the
  * least-recently-used ledger, so the draw is made where both live).
  */
-function resolveSignInBaseHandle(args: string[], sessionId: string): string | undefined {
+function resolveSignInBaseHandle(args: string[], sessionId: string | undefined): string | undefined {
   const explicit = flagValue(args, "--as");
   if (explicit) {
     requireValidName("handle", explicit);
@@ -379,19 +378,6 @@ function renderJoin(room: string, handle: string, data: { memberCount: number; u
   if (data.memberCount === 1) parts.push("you are alone here");
   else if (data.unread > 0) parts.push(`${data.unread} unread`);
   return `✓ joined #${room} as ${handle} — ${parts.join(", ")}`;
-}
-
-/** Best effort and bounded: a rename that fails or hangs must never fail the sign-in that already succeeded. */
-async function runSessionRename(plan: RenamePlan): Promise<boolean> {
-  try {
-    const proc = Bun.spawn(plan.argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-    const timer = setTimeout(() => proc.kill(), 20_000);
-    const code = await proc.exited;
-    clearTimeout(timer);
-    return code === 0;
-  } catch {
-    return false;
-  }
 }
 
 function renderSignIn(
@@ -927,6 +913,12 @@ async function runInvite(args: string[]): Promise<void> {
  * each of those is a real `git` spawn plus an index write.
  */
 async function runSignIn(args: string[]): Promise<void> {
+  const paneFlag = flagValue(args, "--pane");
+  if (paneFlag) {
+    await runSignInViaPane(args, paneFlag);
+    return;
+  }
+
   const sessionId = currentSessionId(args);
   if (!sessionId) fail("no session id — pass --session <id> or run under CLAUDE_CODE_SESSION_ID");
   requireValidSessionId(sessionId);
@@ -958,7 +950,6 @@ async function runSignIn(args: string[]): Promise<void> {
   const signInRes = await chatSignIn({ sessionId, baseHandle: requestedBase, cwd, repo, branch, pane, statusText });
   const { handle, baseHandle } = unwrap(signInRes, "sign-in");
 
-  const prior = readChatSession(sessionId);
   writeChatSession({ sessionId, handle, baseHandle, signedInAt: Date.now(), room: roomName ?? undefined });
 
   let joinedRoom: { name: string; memberCount: number } | null = null;
@@ -968,22 +959,34 @@ async function runSignIn(args: string[]): Promise<void> {
     joinedRoom = { name: roomName, memberCount: joinData.memberCount };
   }
 
-  const title = composeSessionTitle({
-    customTitle: readSessionCustomTitle(sessionId, claudeConfigDir()),
-    prior: prior ? { handle: prior.handle } : null,
-    handle,
-  });
-  const renamePlan = planSessionRename({ title, sessionId, env: process.env, disabled: args.includes("--no-rename") });
-  const renamed = renamePlan && (await runSessionRename(renamePlan)) ? renamePlan.via : null;
-
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ ok: true, handle, room: roomName, renamed, title: renamed ? title : null }));
+    console.log(JSON.stringify({ ok: true, handle, room: roomName }));
     return;
   }
   console.log(renderSignIn(handle, { repo, branch, pane }, root !== null, noRoomFlag, joinedRoom));
-  if (renamed === "herdr") console.log(`your session is being renamed to ${title} (lands when this turn ends)`);
-  else if (renamed === "claude") console.log(`your session is now titled ${title}`);
-  console.log("arm your tail now: Monitor `rt chat tail`, persistent");
+}
+
+/**
+ * Signs another pane's Claude session in on its behalf: the daemon resolves
+ * `paneId` to a session id via herdr, so this process needs neither
+ * CLAUDE_CODE_SESSION_ID nor a repo underfoot to derive cwd/repo/branch/room
+ * from -- there is nothing local to derive them from, since the signed-in
+ * identity belongs to a different pane. The welcome frame (daemon-side)
+ * is that pane's own notice of what it just joined.
+ */
+async function runSignInViaPane(args: string[], paneId: string): Promise<void> {
+  const requestedBase = resolveSignInBaseHandle(args, undefined);
+  if (requestedBase !== undefined) requireValidName("handle", requestedBase);
+  const statusText = flagValue(args, "--status");
+
+  const signInRes = await chatSignIn({ baseHandle: requestedBase, pane: paneId, viaPane: true, statusText });
+  const { handle } = unwrap(signInRes, "sign-in");
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, handle, room: null }));
+    return;
+  }
+  console.log(`signed in as ${handle} · pane ${paneId}`);
 }
 
 /**

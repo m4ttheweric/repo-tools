@@ -264,13 +264,15 @@ export function chatSignIn(
   a: Commands["chat:sign-in"]["payload"],
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["chat:sign-in"]["data"]>> {
-  const payload: Record<string, unknown> = { sessionId: a.sessionId };
+  const payload: Record<string, unknown> = {};
+  if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
   if (a.baseHandle !== undefined) payload.baseHandle = a.baseHandle;
   if (a.cwd !== undefined) payload.cwd = a.cwd;
   if (a.repo !== undefined) payload.repo = a.repo;
   if (a.branch !== undefined) payload.branch = a.branch;
   if (a.pane !== undefined) payload.pane = a.pane;
   if (a.statusText !== undefined) payload.statusText = a.statusText;
+  if (a.viaPane !== undefined) payload.viaPane = a.viaPane;
   return rtCommand<Commands["chat:sign-in"]["data"]>("chat:sign-in", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 

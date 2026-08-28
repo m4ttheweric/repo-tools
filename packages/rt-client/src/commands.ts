@@ -301,8 +301,9 @@ export interface Commands {
   // A session id keys these to one signed-in handle, not a room-membership
   // handle string.
   /** No `baseHandle` means "draw me a first name": the daemon picks the least recently used pool name no live session holds. */
+  /** `viaPane` resolves `sessionId` daemon-side from herdr's `session.snapshot` for the pane id in `pane`, rather than trusting a caller-supplied id -- the caller may have none of its own (a human or another agent signing a target pane in on its behalf). */
   "chat:sign-in": {
-    payload: { sessionId: string; baseHandle?: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string };
+    payload: { sessionId?: string; baseHandle?: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string; viaPane?: boolean };
     data: { handle: string; baseHandle: string; reclaimed: boolean };
   };
   "chat:sign-out": { payload: { sessionId: string }; data: Record<string, never> };

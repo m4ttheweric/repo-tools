@@ -444,12 +444,10 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     }
   });
 
-  test("sign-in prints the identity line and the arm instruction; --no-room and --room work", async () => {
+  test("sign-in prints the identity line; --no-room and --room work", async () => {
     const out = await runChat(["sign-in", "--as", "x", "--room", "warroom", "--session", "s1"]);
     expect(out).toMatch(/signed in as x/);
     expect(out).toMatch(/#warroom/);
-    expect(out).toMatch(/rt chat tail/); // bare — no --as in the arm line
-    expect(out).not.toMatch(/rt chat tail --as/);
   });
 
   test("sign-in without --as draws a first name from the pool and keeps it on a repeat sign-in", async () => {
@@ -470,9 +468,35 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     }
   });
 
-  test("sign-in --json reports whether the session was renamed; never from a foreign --session", async () => {
+  test("sign-in --json reports the handle and room, with no rename-related fields", async () => {
     const out = await runChat(["sign-in", "--no-room", "--session", "s10", "--json"]);
-    expect(JSON.parse(out)).toMatchObject({ ok: true, renamed: null });
+    const parsed = JSON.parse(out);
+    expect(parsed).toMatchObject({ ok: true, room: null });
+    expect(parsed).not.toHaveProperty("renamed");
+    expect(parsed).not.toHaveProperty("title");
+  });
+
+  test("the session-rename module is gone: sign-in never spawns a rename subprocess", () => {
+    expect(existsSync(join(import.meta.dir, "..", "..", "lib", "chat-rename.ts"))).toBe(false);
+  });
+
+  test("sign-in --pane works with no CLAUDE_CODE_SESSION_ID or --session, skipping git derivation", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false } };
+    const out = await runChat(["sign-in", "--pane", "w1:p1"]);
+    expect(out).toMatch(/signed in as kai/);
+    const call = seen.find((s) => s.cmd === "chat:sign-in");
+    expect(call?.payload).toMatchObject({ pane: "w1:p1", viaPane: true });
+    const payload = call?.payload as Record<string, unknown>;
+    expect(payload.sessionId).toBeUndefined();
+    expect(payload.cwd).toBeUndefined();
+    expect(payload.repo).toBeUndefined();
+    expect(payload.branch).toBeUndefined();
+  });
+
+  test("sign-in --pane --json reports the handle with no room joined", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false } };
+    const out = await runChat(["sign-in", "--pane", "w1:p1", "--json"]);
+    expect(JSON.parse(out)).toEqual({ ok: true, handle: "kai", room: null });
   });
 
   test("--no-room signs in without joining any room", async () => {

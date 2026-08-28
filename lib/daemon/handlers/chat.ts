@@ -44,6 +44,7 @@ import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.t
 import { getSetting } from "../../settings/resolve.ts";
 import { herdrRequest } from "../../herdr/client.ts";
 import { injectIntoPane } from "../inject.ts";
+import type { HerdrSnapshot } from "./pane.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
 import { deliverToInbox, renderDeliveries } from "../inbox.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
@@ -122,15 +123,25 @@ function chainKey(room: string, handle: string): string {
 }
 
 /**
- * Runs deliverPost serialized per (room, handle): a post landing while an
- * earlier delivery to the same recipient is still in flight must wait for it
- * rather than read pendingMessages against the same pre-advance cursor,
- * which is what produced the duplicate-backlog bug (the same body sent in
- * two frames). The predecessor's failure is swallowed before chaining, so
- * one failed delivery never blocks the next -- pendingMessages naturally
- * re-batches it instead. The map entry is deleted once nothing is chained
- * behind it, so a quiet recipient leaves no permanent entry.
+ * Runs `task` serialized per `key`: a delivery landing while an earlier one
+ * for the same key is still in flight must wait for it rather than run
+ * concurrently -- for message delivery that would read pendingMessages
+ * against the same pre-advance cursor and duplicate a frame. The
+ * predecessor's failure is swallowed before chaining, so one failure never
+ * blocks the next. The map entry is deleted once nothing is chained behind
+ * it, so a quiet key leaves no permanent entry.
  */
+function serializeDelivery(chains: Map<string, Promise<void>>, key: string, task: () => Promise<void>): Promise<void> {
+  const prior = chains.get(key) ?? Promise.resolve();
+  const result = prior.catch(() => {}).then(() => task());
+  const swallowed = result.catch(() => {});
+  chains.set(key, swallowed);
+  void swallowed.finally(() => {
+    if (chains.get(key) === swallowed) chains.delete(key);
+  });
+  return result;
+}
+
 function deliverSerialized(
   chains: Map<string, Promise<void>>,
   db: Database,
@@ -138,15 +149,65 @@ function deliverSerialized(
   recipient: string,
   msg: { room: string; dm: boolean; id: number },
 ): Promise<void> {
-  const key = chainKey(msg.room, recipient);
-  const prior = chains.get(key) ?? Promise.resolve();
-  const result = prior.catch(() => {}).then(() => deliverPost(db, deps, recipient, msg));
-  const swallowed = result.catch(() => {});
-  chains.set(key, swallowed);
-  void swallowed.finally(() => {
-    if (chains.get(key) === swallowed) chains.delete(key);
-  });
-  return result;
+  return serializeDelivery(chains, chainKey(msg.room, recipient), () => deliverPost(db, deps, recipient, msg));
+}
+
+// Not a real room -- isValidChatName forbids '_' -- so this key can never
+// collide with a genuine (room, handle) delivery chain, only order behind it.
+const WELCOME_CHAIN_ROOM = "__welcome__";
+const WELCOME_CATCHUP_LIMIT = 10;
+
+async function deliverWelcomeOnce(deps: InboxDeps, sessionId: string, content: string): Promise<void> {
+  const binding = deps.resolve(sessionId);
+  if (!binding || !inboxAlive(binding)) return;
+  await deps.deliver(binding.socketPath, content);
+}
+
+function deliverWelcome(
+  chains: Map<string, Promise<void>>,
+  deps: InboxDeps,
+  sessionId: string,
+  handle: string,
+  content: string,
+): Promise<void> {
+  return serializeDelivery(chains, chainKey(WELCOME_CHAIN_ROOM, handle), () => deliverWelcomeOnce(deps, sessionId, content));
+}
+
+/**
+ * The frame a freshly signed-in member gets, once, in place of the manual
+ * "arm your tail" instruction: it explains that delivery is automatic and
+ * carries whatever unread was already waiting in the rooms sign-in found the
+ * handle already a member of. `catchup` entries with no lines (nothing
+ * unread in that room) are skipped.
+ */
+export function renderWelcome(handle: string, rooms: string[], catchup: Array<{ room: string; lines: string[] }>): string {
+  const lines: string[] = [
+    `You're signed in to rt chat as ${handle}.`,
+    rooms.length ? `Rooms: ${rooms.map((r) => `#${r}`).join(", ")}` : "Rooms: none yet.",
+    "Messages will arrive in your context automatically; you never need to poll or arm anything.",
+    `Reply with: rt chat post <#room|@handle> "..."`,
+  ];
+  for (const entry of catchup) {
+    const capped = entry.lines.slice(0, WELCOME_CATCHUP_LIMIT);
+    if (capped.length === 0) continue;
+    lines.push(`#${entry.room} catch-up:`);
+    for (const line of capped) lines.push(`  ${line}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Herdr's own `pane:list` join (lib/daemon/handlers/pane.ts) reads
+ * `agent_session.value` for its "which session is this pane" answer; sign-in
+ * `--pane` needs the exact same fact, so it takes the identical snapshot
+ * shape rather than growing a second reader.
+ */
+async function resolvePaneSessionId(herdr: typeof herdrRequest, paneId: string): Promise<{ sessionId: string; cwd?: string } | null> {
+  const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
+  if (!snap.ok) return null;
+  const pane = snap.result.snapshot.panes.find((p) => p.pane_id === paneId);
+  if (!pane || pane.agent_session?.kind !== "id") return null;
+  return { sessionId: pane.agent_session.value, cwd: pane.foreground_cwd ?? pane.cwd };
 }
 
 /**
@@ -358,9 +419,44 @@ export function createChatHandlers(opts: {
     },
 
     "chat:sign-in": async (payload: Commands["chat:sign-in"]["payload"]): Promise<CommandResult<"chat:sign-in">> => {
-      const { sessionId, baseHandle, cwd, repo, branch, pane, statusText } = payload;
+      const { baseHandle, cwd, repo, branch, pane, statusText, viaPane } = payload;
       if (baseHandle !== undefined && !isValidChatName(baseHandle)) return { ok: false, error: `invalid handle "${baseHandle}"` };
-      const data = signIn({ sessionId, baseHandle, cwd, repo, branch, pane, statusText }, db);
+
+      let sessionId = payload.sessionId;
+      let signInCwd = cwd;
+      if (viaPane) {
+        if (!pane) return { ok: false, error: "chat: sign-in --pane requires a pane id" };
+        const resolved = await resolvePaneSessionId(herdr, pane);
+        if (!resolved) return { ok: false, error: `chat: no Claude session found for pane "${pane}"` };
+        sessionId = resolved.sessionId;
+        if (signInCwd === undefined) signInCwd = resolved.cwd;
+      }
+      if (!sessionId) return { ok: false, error: "chat: sign-in requires a sessionId or --pane" };
+
+      // No explicit baseHandle: prefer the name Claude Code's own registry
+      // already knows this session by over drawing a fresh pool name, so a
+      // repeat sign-in (or one resolved via --pane) lands on a familiar handle.
+      let resolvedBase = baseHandle;
+      if (resolvedBase === undefined) {
+        const binding = inboxDeps.resolve(sessionId);
+        if (binding?.name && isValidChatName(binding.name)) resolvedBase = binding.name;
+      }
+
+      const data = signIn({ sessionId, baseHandle: resolvedBase, cwd: signInCwd, repo, branch, pane, statusText }, db);
+
+      const rooms = listRooms(data.handle, db).map((r) => r.room);
+      const catchup = readUnread({ handle: data.handle, limit: WELCOME_CATCHUP_LIMIT }, db).map((r) => ({
+        room: r.room,
+        lines: r.messages.map((m) => `${m.handle}: ${m.body}`),
+      }));
+      const welcomeContent = renderWelcome(data.handle, rooms, catchup);
+      const welcomeSessionId = sessionId;
+      queueMicrotask(() => {
+        deliverWelcome(deliveryChains, inboxDeps, welcomeSessionId, data.handle, welcomeContent).catch((err) => {
+          log.warn({ err, handle: data.handle }, "chat: welcome delivery failed");
+        });
+      });
+
       return { ok: true, data };
     },
 

@@ -25,6 +25,20 @@ function lastReadId(db: ReturnType<typeof openStateDb>, room: string, handle: st
   return (db.query("SELECT last_read_id FROM chat_members WHERE room = ? AND handle = ?;").get(room, handle) as { last_read_id: number }).last_read_id;
 }
 
+/**
+ * chat:sign-in now fires a welcome delivery through the same queued
+ * microtask + InboxDeps seam as a post: a test whose resolve/deliver mocks
+ * happen to answer for the just-signed-in session (most of this file's do,
+ * since that is exactly what they are testing) sees that delivery land in
+ * `calls` too. Awaiting the microtask then clearing the log is the seam
+ * between "sign-in settled" and "now assert only the deliveries the test
+ * actually cares about".
+ */
+async function settleWelcome(calls: unknown[]): Promise<void> {
+  await Bun.sleep(0);
+  calls.length = 0;
+}
+
 beforeEach(() => {
   drainNotifications();
   setSetting("chat.humanHandle", "matt", "user");
@@ -39,6 +53,7 @@ test("posting to a room delivers the body to a signed-in recipient's inbox and a
   };
   const h = freshHandlers(inboxDeps);
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
   await h["chat:join"]({ room: "general", handle: "a" });
   await h["chat:join"]({ room: "general", handle: "b" });
   const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
@@ -96,6 +111,8 @@ test("a failed delivery batches with the next successful one, catching up the wh
   };
   const h = freshHandlers(inboxDeps);
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  attempt = 0;
   await h["chat:join"]({ room: "general", handle: "a" });
   await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
   const first = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
@@ -127,6 +144,8 @@ test("concurrent posts to the same recipient serialize delivery so a held first 
   };
   const h = freshHandlers(inboxDeps);
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  deliverCount = 0;
   await h["chat:join"]({ room: "general", handle: "a" });
   await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
 
@@ -171,6 +190,8 @@ test("a held first delivery that ultimately fails still lets the second carry bo
   };
   const h = freshHandlers(inboxDeps);
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  attempt = 0;
   await h["chat:join"]({ room: "general", handle: "a" });
   await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
 
@@ -224,6 +245,7 @@ test("a signed-out recipient's inbox is never delivered to", async () => {
   };
   const h = freshHandlers(inboxDeps);
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
   await h["chat:join"]({ room: "general", handle: "a" });
   await h["chat:join"]({ room: "general", handle: "b" });
   await h["chat:sign-out"]({ sessionId: "sess-b" });
@@ -241,6 +263,7 @@ test("a wake_on none member is never delivered even when signed in", async () =>
   };
   const h = freshHandlers(inboxDeps);
   await h["chat:sign-in"]({ sessionId: "sess-c", baseHandle: "c" });
+  await settleWelcome(calls);
   await h["chat:join"]({ room: "general", handle: "a" });
   await h["chat:join"]({ room: "general", handle: "c", wakeOn: "none" });
   await h["chat:post"]({ room: "general", handle: "a", body: "hello" });
@@ -258,6 +281,7 @@ test("a dm post renders with the [dm] tag, not the room hash", async () => {
   const h = freshHandlers(inboxDeps);
   await h["chat:sign-in"]({ sessionId: "sess-a", baseHandle: "a" });
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
   await h["chat:dm"]({ from: "a", to: "b", body: "hi" });
   await Bun.sleep(0);
   expect(calls).toEqual([[sock, "[dm] a: hi"]]);
