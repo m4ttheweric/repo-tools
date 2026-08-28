@@ -85,10 +85,13 @@ const RECLAIMABLE_SQL = `signed_out_at IS NOT NULL OR (last_seen_at < ? AND COAL
 /**
  * Prune's own predicate, deliberately never RECLAIMABLE_SQL: that fragment's
  * bare `signed_out_at IS NOT NULL` leg would delete every signed-out row at
- * daemon startup and empty the offline window. Bind params in order:
- * dayAgo, dayAgo (same cutoff, both legs).
+ * daemon startup and empty the offline window. The second leg also honors
+ * the tail heartbeat (COALESCE(tail_seen_at, armed_at, 0)), the same fold
+ * buddyStatus's offline check uses — an armed row a long autonomous turn is
+ * still touching must survive even once last_seen_at alone looks stale.
+ * Bind params in order: dayAgo, dayAgo, dayAgo (same cutoff, all three legs).
  */
-const PRUNABLE_SQL = `(signed_out_at IS NOT NULL AND signed_out_at < ?) OR last_seen_at < ?`;
+const PRUNABLE_SQL = `(signed_out_at IS NOT NULL AND signed_out_at < ?) OR (last_seen_at < ? AND COALESCE(tail_seen_at, armed_at, 0) < ?)`;
 
 const SELECT_PRESENCE_BY_HANDLE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE handle = ?;`;
 const SELECT_PRESENCE_BY_SESSION_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE session_id = ?;`;
@@ -149,7 +152,15 @@ export function buddyStatus(
 ): BuddyStatus {
   if (row.signedOutAt !== undefined) return "offline";
   const lastSeenAt = row.lastSeenAt ?? 0;
-  if (now - lastSeenAt > th.pruneMs) return "offline";
+  // A >24h autonomous agent (Monitor-driven, no user prompt) keeps only its
+  // tail heartbeat fresh — last_seen_at advances on a user prompt alone, so
+  // it starves for hours while the tail keeps touching. The offline check
+  // must honor whichever heartbeat is newer, or the handle reads offline
+  // (and the next chat:sign-in by any session prunes and reclaims it) out
+  // from under a session that never left.
+  const tailLiveness = row.armedAt !== undefined ? (row.tailSeenAt ?? row.armedAt) : 0;
+  const liveness = Math.max(lastSeenAt, tailLiveness);
+  if (now - liveness > th.pruneMs) return "offline";
   if (row.armedAt !== undefined) {
     const tailHeartbeat = row.tailSeenAt ?? row.armedAt;
     return now - tailHeartbeat <= th.tailStaleMs ? "live" : "deaf";
@@ -215,6 +226,12 @@ export function signIn(
   db: Database = getStateDb(),
 ): { handle: string; baseHandle: string; reclaimed: boolean } {
   const { sessionId, statusText } = args;
+  // Defense in depth: the handler (lib/daemon/handlers/chat.ts) is the
+  // root-cause guard, but session_id is a bare TEXT PRIMARY KEY with no
+  // NOT NULL/CHECK constraint (bun:sqlite binds undefined as NULL, which
+  // SQLite accepts), so any future caller of this store function directly
+  // must not be able to wedge the same NULL-keyed-row failure mode.
+  if (!sessionId) throw new Error("signIn: sessionId is required");
   const cwd = args.cwd ?? null;
   const repo = args.repo ?? null;
   const branch = args.branch ?? null;
@@ -332,7 +349,7 @@ export function pulseSession(
 export function listBuddies(now: number, db: Database = getStateDb()): Array<PresenceRow & { status: BuddyStatus }> {
   const th = presenceThresholds();
   const dayAgo = now - th.pruneMs;
-  const rows = db.query(SELECT_NON_PRUNABLE_PRESENCE_SQL).all(dayAgo, dayAgo) as PresenceRawRow[];
+  const rows = db.query(SELECT_NON_PRUNABLE_PRESENCE_SQL).all(dayAgo, dayAgo, dayAgo) as PresenceRawRow[];
   return rows.map((raw) => {
     const presence = rowToPresence(raw);
     return { ...presence, status: buddyStatus(presence, now, th) };
@@ -381,7 +398,7 @@ export function assertSessionSignedIn(sessionId: string, db: Database = getState
 export function prunePresence(now: number, db: Database = getStateDb()): number {
   const th = presenceThresholds();
   const dayAgo = now - th.pruneMs;
-  return db.query(DELETE_PRUNABLE_PRESENCE_SQL).run(dayAgo, dayAgo).changes;
+  return db.query(DELETE_PRUNABLE_PRESENCE_SQL).run(dayAgo, dayAgo, dayAgo).changes;
 }
 
 // --- Internal wiring for chat-store.ts's dual-write (arm/touch/disarm). ---

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join } from "path";
-import { openStateDb } from "../../state/index.ts";
+import { openStateDb, postMessage } from "../../state/index.ts";
 import { createChatHandlers, inviteText } from "../handlers/chat.ts";
 import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
@@ -45,6 +45,21 @@ test("chat:join rejects an invalid handle with a reason rather than normalizing 
   expect(res.error).toContain("handle");
 });
 
+// R033: an unchecked wakeOn value is stored on chat_members and, when the
+// join creates the room, stamped into chat_room_defaults for every future
+// joiner too — recipientsFromMembers treats it as neither "none" nor "all"
+// (falls through to mention-only) and nothing ever reports the bad value.
+test("chat:join rejects a wakeOn value outside mention/all/none, naming the allowed values", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:join"]({ room: "build", handle: "a", wakeOn: "sometimes" as any });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("wakeOn");
+  expect(res.error).toContain("mention");
+  expect(res.error).toContain("all");
+  expect(res.error).toContain("none");
+});
+
 test("chat:post returns the recipients and emits one wake event per recipient", async () => {
   const emitted: string[] = [];
   const h = freshHandlers((topic) => { emitted.push(topic); return 0; });
@@ -57,6 +72,40 @@ test("chat:post returns the recipients and emits one wake event per recipient", 
   expect(emitted).toEqual(["chat/r/msg", "chat/wake/b"]);
 });
 
+test("chat:post still reports success when emitEvent throws after the message is durable", async () => {
+  const h = freshHandlers(() => { throw new Error("events.db locked"); });
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "hi" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.id).toBeGreaterThan(0);
+});
+
+test("chat:post continues waking the rest of the recipients when one recipient's emit throws", async () => {
+  const emitted: string[] = [];
+  const h = freshHandlers((topic) => {
+    emitted.push(topic);
+    if (topic === "chat/wake/a") throw new Error("boom for a");
+    return 0;
+  });
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  await h["chat:join"]({ room: "r", handle: "c" });
+  const res = await h["chat:post"]({ room: "r", handle: "poster", body: "@a @b @c hi" });
+  expect(res.ok).toBe(true);
+  expect(emitted).toContain("chat/wake/a");
+  expect(emitted).toContain("chat/wake/b");
+  expect(emitted).toContain("chat/wake/c");
+});
+
+test("chat:dm still reports success when emitEvent throws after the message is durable", async () => {
+  const h = freshHandlers(() => { throw new Error("events.db locked"); });
+  const res = await h["chat:dm"]({ from: "agent", to: "matt", body: "ping" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.id).toBeGreaterThan(0);
+});
+
 test("chat:post rejects an invalid mentions element with a reason rather than storing it", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "a" });
@@ -64,6 +113,62 @@ test("chat:post rejects an invalid mentions element with a reason rather than st
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toContain("handle");
+});
+
+// R010: a typo'd room silently no-op'd through postMessage's REVIVE (a
+// no-op for a room with no chat_rooms row) and returned {ok:true,
+// recipients:[]} — no error, no listing, unreachable except by the exact
+// typo'd name. It must fail loudly instead.
+test("chat:post refuses a room nobody has joined instead of silently black-holing the message", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:post"]({ room: "typo-room", handle: "a", body: "hi" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("typo-room");
+});
+
+test("chat:post's unknown-room error names a close existing room", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "deck-main", handle: "a" });
+  const res = await h["chat:post"]({ room: "deck", handle: "a", body: "hi" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("deck-main");
+});
+
+test("chat:post rejects a missing or empty body rather than routing it through unenforced", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const missing = await h["chat:post"]({ room: "r", handle: "a" } as any);
+  expect(missing.ok).toBe(false);
+  const empty = await h["chat:post"]({ room: "r", handle: "a", body: "" });
+  expect(empty.ok).toBe(false);
+});
+
+test("chat:post rejects a body over the size cap", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "x".repeat(64 * 1024 + 1) });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error.toLowerCase()).toContain("body");
+});
+
+test("chat:post rejects a non-array mentions field", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "hi", mentions: "b" as any });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("mentions");
+});
+
+test("chat:dm rejects a missing or empty body", async () => {
+  const h = freshHandlers();
+  const missing = await h["chat:dm"]({ from: "a", to: "b" } as any);
+  expect(missing.ok).toBe(false);
+  const empty = await h["chat:dm"]({ from: "a", to: "b", body: "" });
+  expect(empty.ok).toBe(false);
 });
 
 test("chat:unread-waking reports what would wake a handle without advancing its cursor", async () => {
@@ -81,6 +186,46 @@ test("chat:unread-waking reports what would wake a handle without advancing its 
   const res2 = await h["chat:unread-waking"]({ handle: "b" });
   if (!res2.ok) throw new Error("unreachable");
   expect(res2.data).toEqual(first);
+});
+
+// R034: `limit: -1` reaches `ORDER BY id ASC LIMIT ?`, where SQLite treats a
+// negative LIMIT as unlimited, so a viewer/agent bug returns and
+// JSON-serializes an entire (100k-row) room on the event loop.
+test("chat:messages clamps a negative limit into [1,500] instead of reaching SQLite's unlimited LIMIT", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  for (let i = 0; i < 502; i++) postMessage({ room: "r", handle: "a", body: `msg ${i}` }, h.db);
+  const res = await h["chat:messages"]({ room: "r", limit: -1 });
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.messages.length).toBeGreaterThanOrEqual(1);
+  expect(res.data.messages.length).toBeLessThanOrEqual(500);
+});
+
+test("chat:messages clamps an absurdly large limit to the cap", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  for (let i = 0; i < 502; i++) postMessage({ room: "r", handle: "a", body: `msg ${i}` }, h.db);
+  const res = await h["chat:messages"]({ room: "r", limit: 1_000_000 });
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.messages.length).toBe(500);
+});
+
+test("chat:messages coerces a non-numeric limit to the default instead of a datatype 500", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:post"]({ room: "r", handle: "a", body: "hi" });
+  const res = await h["chat:messages"]({ room: "r", limit: "lots" as any });
+  expect(res.ok).toBe(true);
+});
+
+test("chat:read clamps a negative limit into [1,500] rather than reaching SQLite's unlimited LIMIT", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "b" }); // b's own cursor starts before every message below
+  for (let i = 0; i < 502; i++) postMessage({ room: "r", handle: "a", body: `msg ${i}` }, h.db);
+  const res = await h["chat:read"]({ handle: "b", limit: -1 } as any);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.rooms[0]!.messages.length).toBeGreaterThanOrEqual(1);
+  expect(res.data.rooms[0]!.messages.length).toBeLessThanOrEqual(500);
 });
 
 test("the read-only handlers mutate nothing", async () => {
@@ -194,6 +339,35 @@ test("sign-in rejects an invalid baseHandle with a reason rather than normalizin
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toContain("handle");
+});
+
+// S076: a missing/empty sessionId binds as NULL against session_id TEXT
+// PRIMARY KEY, which SQLite accepts — the row then holds the UNIQUE handle
+// but the reclaim-by-session_id path can never match it, wedging every
+// later sign-in under that base handle with a UNIQUE constraint failure.
+test("sign-in rejects a missing sessionId rather than storing a NULL-keyed row", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:sign-in"]({ baseHandle: "x" } as any);
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("sessionId");
+});
+
+test("sign-in rejects an empty-string sessionId the same way", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:sign-in"]({ sessionId: "", baseHandle: "x" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("sessionId");
+});
+
+test("a rejected sign-in never wedges the next sign-in under the same base handle", async () => {
+  const h = freshHandlers();
+  await h["chat:sign-in"]({ baseHandle: "x" } as any); // rejected, must not persist a row
+  const ok = await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
+  expect(ok.ok).toBe(true);
+  if (!ok.ok) throw new Error("unreachable");
+  expect(ok.data).toMatchObject({ handle: "x" });
 });
 
 test("a reclaimed handle refuses the old session's pulse with the reason", async () => {

@@ -5,7 +5,7 @@
  * and must stay in front of every rmSync.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, realpathSync, rmSync, statSync, type Dirent } from "fs";
+import { existsSync, readdirSync, realpathSync, statSync, type Dirent } from "fs";
 import { basename, dirname, join, sep } from "path";
 import { getSetting } from "../settings/resolve.ts";
 import { runsRoot } from "./store.ts";
@@ -56,6 +56,26 @@ function realDirNames(path: string): string[] {
   }
 }
 
+/**
+ * Detached, unawaited `rm -rf` — mirrors lib/worktree/trash.ts's reap
+ * pattern. A recursive unlink of a large run tree must never block the
+ * daemon's single event-loop thread: a sync rmSync here froze every
+ * concurrent tray poll and chat post for the sweep's full duration.
+ */
+function reapAsync(path: string): void {
+  try {
+    const proc = Bun.spawn(["rm", "-rf", "--", path], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      detached: true,
+    });
+    proc.unref();
+  } catch {
+    // Best-effort: a run tree that survives a failed spawn costs disk, never correctness.
+  }
+}
+
 function floorDays(): number {
   try {
     const v = getSetting<unknown>("rt.runsPruneDays").value;
@@ -98,7 +118,7 @@ export function pruneRuns(now: number = Date.now()): { removed: string[] } {
       }
       if (stamp < cutoff) {
         assertPrunable(runDir, root);
-        rmSync(runDir, { recursive: true, force: true });
+        reapAsync(runDir);
         removed.push(runDir);
       }
     }

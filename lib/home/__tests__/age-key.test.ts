@@ -9,6 +9,8 @@ import {
   keyExport,
   withArgvRedaction,
   AgeKeyAbsentError,
+  AgeKeyTimeoutError,
+  createRealAgeKeySeam,
   type AgeExecResult,
   type AgeKeySeam,
 } from "../age-key.ts";
@@ -376,5 +378,38 @@ describe("keyExport", () => {
     expect('const fs = require("node:fs/promises");').toMatch(FS_IMPORT_RE);
     // Never a false positive on an unrelated import that merely contains "fs".
     expect('import { statfs } from "./statfs-helpers.ts";').not.toMatch(FS_IMPORT_RE);
+  });
+});
+
+// S070: a locked keychain (screen-lock, or an ACL mismatch between the dev
+// shim and mattstack.app) pops a GUI dialog that blocks the real spawn
+// forever; every seam.run must have a bounded deadline instead.
+describe("createRealAgeKeySeam timeout (S070)", () => {
+  test("a spawn that outlives its timeout rejects with a distinguished AgeKeyTimeoutError instead of hanging", async () => {
+    const seam = createRealAgeKeySeam();
+    await expect(seam.run(["sleep", "5"], { timeoutMs: 50 })).rejects.toThrow(AgeKeyTimeoutError);
+  });
+
+  test("the timeout error names the command without leaking a sensitive -w value", async () => {
+    const seam = createRealAgeKeySeam();
+    // sh -c's trailing args become unused positional params ($0, $1, ...) —
+    // this still sleeps for the script text alone, while still carrying a
+    // "-w <secret>" pair later in argv for redactArgv to find.
+    const cmd = ["sh", "-c", "sleep 5", "argv0", "-w", "AGE-SECRET-KEY-should-not-appear"];
+    try {
+      await seam.run(cmd, { timeoutMs: 50, sensitive: true });
+      throw new Error("expected a timeout");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AgeKeyTimeoutError);
+      expect((err as Error).message).not.toContain("AGE-SECRET-KEY-should-not-appear");
+      expect((err as Error).message).toContain("<redacted>");
+    }
+  });
+
+  test("a spawn that finishes well within its timeout resolves normally", async () => {
+    const seam = createRealAgeKeySeam();
+    const res = await seam.run(["echo", "hi"], { timeoutMs: 5000 });
+    expect(res.code).toBe(0);
+    expect(res.stdout.trim()).toBe("hi");
   });
 });

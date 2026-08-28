@@ -164,6 +164,31 @@ describe("worktree trash", () => {
       expect(result.ok).toBe(false);
       expect(existsSync(tree)).toBe(true);
     });
+
+    // S078: `.worktrees/` was never added to info/exclude unless the tree
+    // went through createTree first (e.g. `rt worktree adopt`'s disposals,
+    // or any repo whose worktrees root differs from the default, skip that
+    // call entirely) — the retention store then shows up as `?? .worktrees/`
+    // in the user's own `git status`, and `git add -A` stages a whole second
+    // copy of the source tree into it.
+    test("retireTree excludes .worktrees/ from the repo's own git status, even without going through createTree first", async () => {
+      Bun.spawnSync(["git", "init", "-q", repo]);
+      Bun.spawnSync(["git", "-C", repo, "config", "user.email", "test@example.com"]);
+      Bun.spawnSync(["git", "-C", repo, "config", "user.name", "Test"]);
+      writeFileSync(join(repo, "README.md"), "hi\n");
+      Bun.spawnSync(["git", "-C", repo, "add", "README.md"]);
+      Bun.spawnSync(["git", "-C", repo, "commit", "-q", "-m", "init"]);
+
+      const tree = makeTree(root, "hotel");
+      const result = await retireTree(tree, "hotel", repo);
+      expect(result.ok).toBe(true);
+
+      const exclude = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
+      expect(exclude).toContain(".worktrees/");
+
+      const status = Bun.spawnSync(["git", "-C", repo, "status", "--porcelain"]).stdout.toString();
+      expect(status).not.toContain(".worktrees");
+    });
   });
 
   describe("stripTrashDir", () => {
@@ -237,6 +262,19 @@ describe("worktree trash", () => {
 
     test("an entry without a parseable epoch is kept and warned about", async () => {
       const stray = makeTree(retainedTrashRoot(repo), "not-rt-made");
+      const { log, warns } = capturingLog();
+      expect(await reapExpiredTrash(repo, log, Date.now())).toBe(0);
+      expect(existsSync(stray)).toBe(true);
+      expect(warns.length).toBe(1);
+    });
+
+    // S079: a trailing small integer (a manual "backup-3", "notes-42" dropped
+    // "with the other trash") parses as a number just fine and, taken at face
+    // value as a ms-epoch, is always ancient — rm -rf'd on the very next pass
+    // despite the doc comment promising non-rt entries are kept. This is a
+    // distinct failure shape from "not-rt-made" above (no digits at all).
+    test("an entry whose trailing digits are not a plausible rt epoch is kept and warned about", async () => {
+      const stray = makeTree(retainedTrashRoot(repo), "backup-3");
       const { log, warns } = capturingLog();
       expect(await reapExpiredTrash(repo, log, Date.now())).toBe(0);
       expect(existsSync(stray)).toBe(true);
