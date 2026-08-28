@@ -88,6 +88,16 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
       return files[path] ?? null;
     },
 
+    // Mirrors the real bounded (4096-byte) prefix read, through `links`
+    // exactly like fileSize does -- a symlinked fixture (e.g. `p.symlink`
+    // registering an rt bundle target) must resolve here too, not just for
+    // real files planted via `files`.
+    readPrefix(path) {
+      const resolved = resolveThroughLinks(path);
+      if (resolved === null || resolved in dirs) return null;
+      return (files[resolved] ?? "").slice(0, 4096);
+    },
+
     readDir(path) {
       // A copy, not the live array: real readdirSync snapshots the directory
       // at call time, so a caller iterating the result while also removing

@@ -8,7 +8,7 @@
  */
 
 import { dirname, join } from "path";
-import { installRtBinary, isDevModeWrapperContent, readWrapperPrefix } from "../dev-mode.ts";
+import { installRtBinary, isDevModeWrapperContent } from "../dev-mode.ts";
 import type { Probes } from "../setup/probes.ts";
 import { readSetupState, updateSetupState } from "../setup/state.ts";
 import { bundledToolExec, isOurLink, LINK_TAG, linkPath, userCopyOnPath } from "./resolve.ts";
@@ -40,13 +40,16 @@ const REAL_SEAMS: LinkSeams = { installRtBinary: (src) => installRtBinary(src) }
 /**
  * rt in dev mode is signalled the same way lib/dev-mode.ts's currentMode()
  * detects it: shares isDevModeWrapperContent so the two call sites can never
- * disagree. Reads the real filesystem (not the Probes seam) via the same
- * bounded readWrapperPrefix currentMode() uses -- in prod this path is a
- * symlink to the multi-MB compiled binary, so a whole-file read here would
- * be exactly the bug this detector exists to avoid.
+ * disagree. Reads through the Probes seam's readPrefix -- a real bounded
+ * (4096-byte) read in production, same as currentMode()'s own standalone
+ * read, but routed through `p` so link()'s tests (which drive the rest of
+ * this function entirely via a fake bundle/home) don't have to touch the
+ * real machine's HOME just to simulate this one check. currentMode() itself
+ * keeps its own direct real-fs read -- it has no Probes seam to route
+ * through, and is not this function's concern.
  */
-function isDevModeWrapper(path: string): boolean {
-  const prefix = readWrapperPrefix(path);
+function isDevModeWrapper(p: Pick<Probes, "readPrefix">, path: string): boolean {
+  const prefix = p.readPrefix(path);
   return prefix !== null && isDevModeWrapperContent(prefix);
 }
 
@@ -90,7 +93,7 @@ function clearForced(p: Probes, tool: string): void {
 export function link(p: Probes, tool: string, opts: { force?: boolean } = {}, seams: LinkSeams = REAL_SEAMS): LinkOutcome {
   const path = linkPath(p.home, tool);
 
-  if (tool === "rt" && isDevModeWrapper(path)) {
+  if (tool === "rt" && isDevModeWrapper(p, path)) {
     return { ok: false, reason: "dev-mode-owns-rt", detail: `${path} is the dev-mode wrapper script; leave dev mode before linking rt` };
   }
 

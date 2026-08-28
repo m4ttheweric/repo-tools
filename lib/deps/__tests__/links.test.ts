@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { join } from "path";
 import { HELPERS_DIR, RT_BUNDLE_PATH, __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
 import { setSetting } from "../../settings/write.ts";
 import { fakeProbes, type FakeProbesOpts } from "../../setup/__tests__/fakes.ts";
@@ -201,12 +201,11 @@ describe("tagged PATH links", () => {
   });
 
   test("link(rt) refuses dev-mode-owns-rt when ~/.local/bin/rt is the dev-mode wrapper script", () => {
-    // isDevModeWrapper reads the real fs at `path` (bounded prefix, never
-    // through the Probes seam), so this needs a real file on disk -- `home`
-    // is a real mkdtempSync'd directory, not a fake one.
+    // isDevModeWrapper reads through p.readPrefix (Probes-routed, bounded),
+    // so the fake in-memory files map is enough -- no real fs write, and the
+    // content must be genuinely recognized (RT_LAUNCH_CWD tell) rather than
+    // any bare "#!" script, matching the shared detector's real rule.
     const path = linkPath(home, "rt");
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, "#!/bin/sh\nexport RT_LAUNCH_CWD=\"$PWD\"\nexec bun run cli.ts \"$@\"\n");
     const p = bundleProbe({ files: { [path]: "#!/bin/sh\nexport RT_LAUNCH_CWD=\"$PWD\"\nexec bun run cli.ts \"$@\"\n" } });
 
     const outcome = link(p, "rt");
