@@ -15,27 +15,49 @@ export async function deliverToInbox(
   };
   const line = JSON.stringify(frame) + "\n";
 
+  // Shared across both racers so a late connect (after the timeout already
+  // told the caller ok:false) closes without writing, instead of delivering
+  // a frame the caller believes never went out.
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
   const attempt = new Promise<{ ok: true } | { ok: false; error: string }>((resolve) => {
     Bun.connect({
       unix: socketPath,
       socket: {
         open(socket) {
+          if (settled) {
+            socket.end();
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
           socket.write(line);
           socket.end();
           resolve({ ok: true });
         },
         data() {},
         error(_socket, error) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           resolve({ ok: false, error: error.message });
         },
       },
     }).catch((error: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
     });
   });
 
   const timeout = new Promise<{ ok: false; error: string }>((resolve) => {
-    setTimeout(() => resolve({ ok: false, error: "timeout" }), timeoutMs);
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({ ok: false, error: "timeout" });
+    }, timeoutMs);
   });
 
   return Promise.race([attempt, timeout]);
