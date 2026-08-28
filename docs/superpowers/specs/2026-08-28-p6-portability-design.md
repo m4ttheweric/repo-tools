@@ -76,23 +76,30 @@ No change here requires a `SCHEMA_VERSION` bump (S069 reuses the existing
 
 ### Decisions
 
-1. **Drop the interactive shell (`-i`).** The probe uses a *non-interactive
-   login* shell (`-lc`), which sources `.zprofile`/`.zshenv` (zsh) or
-   `.bash_profile` (bash) but never the interactive rc files (`.zshrc`,
-   `.bashrc`). This removes both the hang (S014: interactive plugins live in
-   `.zshrc`) and the exec-into-tmux fallback (S062: those idioms live in
-   `.zshrc`) at the source. `.zshenv`'s absolute-path fnm bootstrap and
-   `.zprofile`'s `brew shellenv` (both fixed by the 2026-08-21 spawn-env
-   contract) are still sourced, so a standard Homebrew+fnm Mac resolves fully.
+1. **Non-interactive login base probe (`-lc`), interactive overlay unioned on
+   top.** The base probe uses a *non-interactive login* shell (`-lc`), which
+   sources `.zprofile`/`.zshenv` (zsh) or `.bash_profile` (bash) but never the
+   interactive rc files (`.zshrc`, `.bashrc`). This is the safe floor: it
+   cannot hang on an interactive plugin (S014) or exec into tmux/fish (S062),
+   because those idioms live in `.zshrc`. `.zshenv`'s absolute-path fnm
+   bootstrap and `.zprofile`'s `brew shellenv` (both fixed by the 2026-08-21
+   spawn-env contract) are still sourced, so a standard Homebrew+fnm Mac
+   resolves fully from the base alone.
 
-   **Accepted cost:** PATH exports that a user put *only* in `.zshrc` (classic
-   `nvm` installs, hand-rolled `export PATH=` lines) are no longer picked up by
-   the shell probe. This is the exact trade-off S062's fixer notes flagged.
-   It is covered by (a) an explicit `rt.daemonPath` override (decision 4),
-   (b) an explicit `nvm.sh` overlay inside the probe (decision 3), and (c) a
-   loud missing-tools warning (decision 6). This reverses the current file's
-   header preference for `-ilc`; the reversal is deliberate and is the crux of
-   Phase 6, so it is called out here for the spec-review gate.
+   **Interactive overlay (best-effort), per the shepherd ruling.** After the
+   base resolves, run a best-effort `$SHELL -ilc 'echo $PATH'` (fish:
+   `-ilc 'string join : $PATH'`) with **stdin from `/dev/null`**, **`TERM=dumb`**
+   in the child env, and a **3s hard timeout in the same killable process
+   group** (decision 2). Validate its output as a colon-separated list of
+   *absolute* dirs; **union its unique dirs after the base entries** (append,
+   never prepend, so the base and the daemon's own prefix keep priority). On
+   timeout or garbage, skip it with one `warn` line and keep the base result.
+   This recovers the common `.zshrc`-only PATH exports (`nvm`, `pyenv`,
+   `cargo`) without reintroducing the hang: the interactive shell can block or
+   exec, but the base has already resolved and the overlay is bounded and
+   killable, so a bad `.zshrc` only costs the overlay, never the daemon. The
+   `rt.daemonPath` override (decision 4) and the missing-tools warning
+   (decision 6) remain the backstops when both probes fall short.
 
 2. **Hard timeout in a killable process group.** The probe spawns via
    `Bun.spawn([...], { detached: true })` (a new session/process group; the
@@ -114,8 +121,10 @@ No change here requires a `SCHEMA_VERSION` bump (S069 reuses the existing
      list (fixes S013).
    - everything else: `[$SHELL, "-lc", '{ [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1; }; printf %s "$PATH"']`
      ... `printf %s "$PATH"` is already colon-joined; the nvm overlay replaces
-     the current file's second `execSync` and is now the only way an
-     `.zshrc`-only nvm node reaches PATH under `-lc`.
+     the current file's second `execSync`. It is the fast, safe recovery of an
+     nvm node in the base probe (so nvm resolves even when the interactive
+     overlay in decision 1 is skipped on timeout); the interactive overlay is
+     the broader net for pyenv/cargo/hand-rolled `.zshrc` exports.
 
 4. **Explicit `rt.daemonPath` override (settings registry).** A new
    machine-scoped key. When set to a non-empty value, `resolveUserPath` uses it
@@ -147,12 +156,15 @@ No change here requires a `SCHEMA_VERSION` bump (S069 reuses the existing
    silent-fallback signature). Acceptance is the only path that overwrites the
    baseline.
 
-6. **Observability.** The probe's tool set grows to `node`, `git`, `bun`,
-   `pnpm`. After resolution (override, probe, or baseline), if any are missing
-   from the resolved PATH, log one `warn` naming the remedy ("set
-   `rt.daemonPath`"). Distinguish, in the log, the three outcomes: override
-   used / probe accepted / fell back to baseline (with the reason: killed,
-   empty, invalid).
+6. **Observability.** The probe's tool set becomes `node`, `git`, `bun`,
+   `pnpm`. `doppler` is intentionally dropped from the logged tool set: it is
+   an optional integration, not a toolchain prerequisite, and its absence is
+   not a portability failure worth a boot-time signal. After resolution
+   (override, base, base+overlay, or baseline), if any of node/git/bun/pnpm are
+   missing from the resolved PATH, log one `warn` naming the remedy ("set
+   `rt.daemonPath`"). Distinguish, in the log, the outcomes: override used /
+   base accepted / overlay unioned / fell back to baseline (with the reason:
+   killed, empty, invalid).
 
 7. **Async integration (fence-granted).** `resolveUserPath` becomes
    `async (log) => Promise<string>`. `lib/daemon.ts:163` changes the one
@@ -174,30 +186,39 @@ No change here requires a `SCHEMA_VERSION` bump (S069 reuses the existing
 ### Shape
 
 ```
-resolveUserPath(log):                          // async, Promise<string>
-  override = getSetting("rt.daemonPath")        // sync read
+resolveUserPath(log):                                // async, Promise<string>
+  override = getSetting("rt.daemonPath")              // sync read
   if override non-empty:
      result = override; source = "override"
   else:
-     raw = await probe(shell, timeout)          // Bun.spawn detached, pgroup kill, race
-     result = validate(raw) ? raw : baseline    // reject fish/empty/launchd-baseline
-     source = accepted ? "probe" : "baseline"
-  warnIfMissing(result, [node, git, bun, pnpm]) // one warn line, names rt.daemonPath
+     raw  = await probe(shell, "-lc", 5000)           // base: detached pgroup, hard timeout, race
+     base = validate(raw) ? raw : baseline            // reject fish-space / empty / launchd-baseline
+     ov   = await probe(shell, "-ilc", 3000,          // overlay: stdin=/dev/null, TERM=dumb,
+              { stdin: "/dev/null", env: { TERM: "dumb" } })  //   same detached pgroup kill
+     result = union(base, absoluteDirsOf(ov))         // append overlay's unique absolute dirs
+     source = base-rejected ? "baseline" : ("base" + overlay-unioned? "+overlay" : "")
+  warnIfMissing(result, [node, git, bun, pnpm])       // one warn line, names rt.daemonPath
   log.info({ source, entries, hasNode, hasGit, hasBun, hasPnpm }, "PATH resolved")
   return result
 ```
 
-`probe` is an injectable seam (default: the real `Bun.spawn`) so tests never
-spawn a real shell.
+`probe` is a single injectable seam (default: the real detached `Bun.spawn` +
+pgroup-kill + deadline-race), used for both the base and the overlay, so tests
+never spawn a real shell. `absoluteDirsOf` rejects a non-colon / whitespace /
+non-absolute overlay value (returns `[]`, logs the skip).
 
 ### Tests (`lib/daemon/__tests__/user-path.test.ts`)
 
-- fish-style space-separated output is rejected → baseline kept + warn.
-- a hanging probe (injected seam that never settles) → resolves within the
+- fish-style space-separated base output is rejected → baseline kept + warn.
+- a hanging base probe (injected seam that never settles) → resolves within the
   timeout, returns baseline, logs the killed/fallback reason.
-- an `exec`-into-empty `.zshrc` (probe returns "") → baseline kept, distinguishable in the log.
-- `rt.daemonPath` set → probe never called, value used verbatim.
-- a valid colon PATH → accepted; `hasNode` etc. reflected; no warn.
+- an `exec`-into-empty `.zshrc` (base returns "") → baseline kept, distinguishable in the log.
+- `rt.daemonPath` set → neither probe called, value used verbatim.
+- a valid colon base PATH → accepted; `hasNode` etc. reflected; no warn.
+- interactive overlay contributes a `.zshrc`-only dir (e.g. an nvm/pyenv dir) →
+  it is appended after the base entries, unique-only, order preserved.
+- a hanging or garbage overlay → skipped with one warn; the base result is kept
+  unchanged (overlay never regresses the base).
 - missing-tool warn fires once when node/git absent.
 - `probeTools` existing coverage retained.
 
@@ -236,7 +257,13 @@ pin at setup time, data-preservingly:
   1. pin file already exists → return `machineKey()` (its current value; **no change**).
   2. else the hostname-slug machine store already has data on disk → return the
      hostname slug (freeze the current key; this is the "migrate the
-     hostname-keyed section" step, done with zero data movement).
+     hostname-keyed section" step, done with zero data movement). The predicate
+     is the one `gatherHomeState` already uses ... `profileDirPresent`
+     (`commands/home.ts:152`, `probes.exists(join(home, "user", "local",
+     <key>))`) ... except the freeze guard requires the dir to be **non-empty**
+     (an empty stub is a fresh machine, not data to preserve), so it checks
+     existence AND at least one entry (e.g. `settings.local.jsonc`), not bare
+     existence.
   3. else (truly fresh) → `(await stableMachineId()) ?? machineKey()` (hardware
      UUID for new installs; hostname slug as the last resort).
   The interactive picker's explicit key still wins (`seams.key`).
@@ -286,14 +313,21 @@ together").
 
 - `renderDevModeWrapper()` emits `# mattstack-dev-mode` as line 2 (after the
   shebang, before the `export PATH`).
-- New shared `isDevModeWrapperContent(content): boolean` (in `lib/dev-mode.ts`,
-  imported by `lib/deps/links.ts`): true iff `content` starts with `#!` **and**
+- New shared `isDevModeWrapperContent(prefix): boolean` (in `lib/dev-mode.ts`,
+  imported by `lib/deps/links.ts`): true iff `prefix` starts with `#!` **and**
   either line 2 starts with `# mattstack-dev-mode` (new wrappers) **or**
-  `content.includes("RT_LAUNCH_CWD")` (the legacy markerless body's unique
-  tell). A foreign `#!` script has neither → false → classified prod / eligible
-  for replacement.
-- `currentMode()` reads the whole (small) file and delegates to
-  `isDevModeWrapperContent`; `isDevModeWrapper()` in `links.ts` delegates too.
+  `prefix.includes("RT_LAUNCH_CWD")` (the legacy markerless body's unique tell,
+  which is line 3). A foreign `#!` script has neither → false → classified
+  prod / eligible for replacement.
+- **Read a bounded prefix, never the whole file.** In prod, `~/.local/bin/rt`
+  is a symlink to the compiled binary inside the app bundle, and `readFileSync`
+  follows the symlink ... reading the whole file would slurp a multi-MB binary.
+  Both detectors read only the first few KB (e.g. an `openSync` +
+  `readSync(4096)`, extending the current `currentMode()` 2-byte read), which
+  is more than enough for the marker on line 2 and the `RT_LAUNCH_CWD` tell on
+  line 3. `currentMode()` reads that prefix and delegates to
+  `isDevModeWrapperContent`; `isDevModeWrapper()` in `links.ts` reads a bounded
+  prefix (not `p.readFile`'s full read) and delegates too.
 
 **Backward-compatible:** existing dev machines whose wrapper predates the
 marker still classify as dev (via the `RT_LAUNCH_CWD` tell), so no re-link is
@@ -307,6 +341,8 @@ dev/prod standoff that `rt` daemon verbs cannot themselves repair.
 - a legacy markerless wrapper (`RT_LAUNCH_CWD` body) → dev / true.
 - a new marked wrapper → dev / true.
 - a `LINK_TAG` link → not a dev wrapper.
+- the wrapper path is a symlink to a large (>4KB) binary-shaped file → prod,
+  and only the bounded prefix is read (no whole-file slurp).
 
 ---
 
@@ -386,16 +422,59 @@ KEY` column (no DDL change). This is safe to parse because a git branch name
 cannot contain `:` (git `check-ref-format`), so the bare branch is always
 `key.slice(key.lastIndexOf(":") + 1)` and the identity is everything before it.
 
-- Store API takes `(identity, branch)` and composes internally; a shared
-  `composeKey(identity, branch)` / `branchOf(key)` pair lives in
-  `lib/state/branch-cache.ts`.
-- Writers (`lib/enrich.ts writeEnriched`/`fetchAndCache`/`refreshAllMRs`, and
-  the standalone `import.meta.main` entry) already hold the repo identity
-  (via `serializeIdentity(await deriveRepoIdentity(...))` from the local
-  `lib/settings/identity.ts` barrel); they pass it to `put`.
-- Readers: `enrich.ts` composes the key for its `in store.entries` / lookup
-  checks; `commands/status/data.ts` (raw SELECT for display) shows
-  `branchOf(row.branch)` and reads identity from the `repo` column.
+**Read contract (unchanged externally).** `cache:read` and every by-branch
+lookup keep resolving a **bare branch name**: scoped to the caller's repo when
+the repo is known (compose the exact `${identity}:${branch}` key), falling back
+to a **suffix match** across repos (`key.endsWith(":" + branch)`) when it is
+not. The CLI, board, and tray therefore see bare branch names exactly as today
+and never regress; the composite key is an internal storage detail.
+
+**Store API** (`lib/state/branch-cache.ts`): shared `composeKey(identity,
+branch)`, `branchOf(key)`, `identityOf(key)` helpers (split on the LAST `:`,
+safe because branches contain none). `put(identity, branch, entry)` /
+`get(identity, branch)` compose the exact key; `getByBranch(branch)` does the
+suffix-match fallback for callers without an identity. `entries` stays a map,
+now keyed by the composite; iterating consumers use `branchOf`/`identityOf`.
+
+**Consumer sites** (each gets a test):
+
+- **Writers** ... `lib/enrich.ts` (`writeEnriched`/`fetchAndCache`/
+  `refreshAllMRs` and the standalone `import.meta.main` entry) already hold the
+  identity (`serializeIdentity(await deriveRepoIdentity(...))` via the local
+  `lib/settings/identity.ts` barrel); they call `put(identity, branch, …)` and
+  compose keys for their own `branch in store.entries` / lookup checks.
+- **`lib/notifier.ts`** ... `state.branches` and the `fired` set key off the
+  same map keys as `cacheEntries` (`ctx.cache.entries`), and
+  `pruneFiredForEvictedBranches(fired, Object.keys(cacheEntries))` (line 887)
+  compares them directly. Carrying the composite key through
+  `state.branches`/`fired`/`detectBranchTransitions` makes the fired-state
+  correctly repo-scoped for free (two repos' same-named branch no longer share
+  one fired entry); `branchOf(key)` is used only where a human-readable branch
+  name is shown in the notification. **Test:** two repos, same branch name →
+  independent fired-state; evicting one repo's branch does not prune the
+  other's.
+- **`lib/daemon/worktree-reconciler.ts`** ... `for (const [branch, entry] of
+  Object.entries(cacheEntries))` (line 594) treats the map key as a bare branch
+  and builds `mrState` keyed `<repo>:<branch>` (comment line 262). It switches
+  to `branchOf(key)` for the branch and scopes to the repo being reconciled via
+  `identityOf(key)` (the reconciler always knows its repo). **Test:** the
+  reactor builds `mrState` only from the reconciled repo's entries; a same-named
+  branch in another repo does not leak in.
+- **`lib/daemon/freshness.ts`** ... direct lookups
+  `ctx.cache.entries[pr.sourceBranch]` (545), `[k.ref]` (579), `[branch]` (639)
+  and the `Object.entries(ctx.cache.entries)` iterations (505, 657, 703) run
+  per repo (the enclosing loop carries `repoName`/`repoPath` → identity). Each
+  direct lookup composes the exact key; each iteration filters by
+  `identityOf(key)` and uses `branchOf(key)`. **Test:** a branch present in two
+  repos resolves to the correct repo's entry.
+- **`lib/daemon/handlers/cache.ts` (`cache:read`)** ... returns bare-branch-
+  keyed data per the read contract: exact-key when the request names a repo,
+  suffix-match otherwise. **Test:** `cache:read` returns bare branch names, and
+  a repo-scoped read never returns another repo's same-named branch.
+- **`commands/status/data.ts`** (raw `SELECT branch,…` for display) ... shows
+  `branchOf(row.branch)`, taking identity from the row's `repo` column.
+- **`lib/daemon/discussions-poller.ts`** ... iterates `Object.values(entries)`
+  (line 73), never keying by branch, so it **self-heals** and needs no change.
 - `boot-migrate.ts`'s existing `repo`-column rekey is untouched and coexists.
 
 **Migration:** none. Old bare-branch rows become unused and age out via the
@@ -422,7 +501,14 @@ Independent enough to parallelize; 6.1 is the spine.
 6. **6.3** ... `archRow` in `mac.ts` + tests.
 7. **6.4a** ... S090 `existsSync` + R043 identity check in home-snapshot / init-exec + tests.
 8. **6.4b** ... S070 sops timeout in `lib/secrets/store.ts` + test.
-9. **6.4c** ... S069 composite branch-cache key across store + enrich + status + tests.
+9. **6.4c** ... S069 composite branch-cache key. Wider blast radius (each with
+   a test): store API (`composeKey`/`branchOf`/`identityOf`/`getByBranch`) →
+   writers (`enrich.ts`) → `notifier.ts` (fired-state + prune) →
+   `worktree-reconciler.ts` (mrState) → `freshness.ts` (direct lookups +
+   iterations) → `handlers/cache.ts` (`cache:read` read contract) →
+   `status/data.ts` (display). `discussions-poller.ts` self-heals (no change).
+   Land the store + helpers first, then the consumers; keep the read contract
+   (bare branch out) intact at each step.
 
 ## Verification (must pass)
 
