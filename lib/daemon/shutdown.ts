@@ -11,6 +11,7 @@ import { clearWsClients } from "./api-server.ts";
 import { disposeFreshness } from "./freshness.ts";
 import { stopDiscussionsPoller } from "./discussions-poller.ts";
 import type { HooksGuard } from "./hooks-guard.ts";
+import { recordCleanExit } from "./supervision-state.ts";
 
 export interface ShutdownDeps {
   /** Mutable holder — daemon.ts assigns the servers after boot. */
@@ -49,22 +50,50 @@ export function createCleanup(deps: ShutdownDeps): () => void {
   };
 }
 
+export interface GracefulExitDeps {
+  cleanup: () => void;
+  flushLogs: () => void;
+  log: Logger;
+  /** True once the `shutdown` verb has claimed this exit as intentional. */
+  wasVerbShutdown: () => boolean;
+  exit: (code?: number) => void;
+  recordCleanExit: (kind: "shutdown" | "signal", code: number) => void;
+}
+
 /**
  * Graceful shutdown on all termination signals. SIGHUP is sent when the
  * parent process exits (e.g. launchd session ends, or a tray-spawned daemon's
- * parent tray is killed) — treat it as a clean stop.
+ * parent tray is killed).
+ *
+ * launchd's KeepAlive.SuccessfulExit=false only respawns on a non-zero exit,
+ * so the code here must distinguish the intentional `shutdown` verb (exit 0,
+ * stay down) from a bare external signal — pkill, memory pressure, a stray
+ * script (exit 1, launchd respawns). The sanctioned stop path
+ * (SMAppService.unregister) doesn't go through this signal path at all, so
+ * exiting non-zero on a bare signal never fights an intended stop.
  */
+export function makeGracefulExit(deps: GracefulExitDeps): (signal: NodeJS.Signals) => void {
+  return (signal: NodeJS.Signals) => {
+    deps.log.info({ signal }, "received signal; shutting down");
+    deps.cleanup();
+    deps.flushLogs();
+    if (deps.wasVerbShutdown()) {
+      deps.recordCleanExit("shutdown", 0);
+      deps.exit(0);
+    } else {
+      deps.recordCleanExit("signal", 1);
+      deps.exit(1);
+    }
+  };
+}
+
 export function installSignalHandlers(opts: {
   cleanup: () => void;
   flushLogs: () => void;
   log: Logger;
+  wasVerbShutdown: () => boolean;
 }): void {
-  const gracefulExit = (signal: NodeJS.Signals) => {
-    opts.log.info({ signal }, "received signal; shutting down");
-    opts.cleanup();
-    opts.flushLogs();
-    process.exit(0);
-  };
+  const gracefulExit = makeGracefulExit({ ...opts, exit: process.exit, recordCleanExit });
   process.on("SIGTERM", () => gracefulExit("SIGTERM"));
   process.on("SIGINT",  () => gracefulExit("SIGINT"));
   process.on("SIGHUP",  () => gracefulExit("SIGHUP"));

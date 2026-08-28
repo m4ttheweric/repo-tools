@@ -368,6 +368,11 @@ const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast: emit };
 // branch-cache facade above).
 let routedHandlers: ReturnType<typeof buildRoutedHandlers> | undefined;
 
+// Set by the `shutdown` verb before it exits, so a bare OS signal arriving
+// mid-teardown is still distinguishable from the intentional stop (exit-code
+// policy: docs/daemon-supervision-design.md).
+let shuttingDownViaVerb = false;
+
 async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
   const t0 = Date.now();
   try {
@@ -395,6 +400,7 @@ async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Pr
       // force-closes all in-flight connections, including the one that
       // carried the shutdown request.
       setTimeout(() => {
+        shuttingDownViaVerb = true;
         recordCleanExit("shutdown", 0);
         cleanup();
         loggerHandle.flush?.();
@@ -556,7 +562,12 @@ async function runDaemon(): Promise<void> {
     // typed-event → notification fan-out (no-op while no controller answers).
 
     // Graceful shutdown on all termination signals
-    installSignalHandlers({ cleanup, flushLogs: () => loggerHandle.flush?.(), log });
+    installSignalHandlers({
+      cleanup,
+      flushLogs: () => loggerHandle.flush?.(),
+      log,
+      wasVerbShutdown: () => shuttingDownViaVerb,
+    });
 
     bootPhase = "ready";
     recordDaemonReady();
