@@ -1166,3 +1166,19 @@ async function waitForPort(port: number, timeoutMs: number): Promise<void> {
     await new Promise(r => setTimeout(r, 100));
   }
 }
+
+/** Pure formatter for `daemon:log-level` results — shared by the CLI and its tests. */
+export function formatLogLevelResult(res: { ok: boolean; level?: string; error?: string }, wasSet: boolean): string {
+  if (!res.ok) return `  ${red}●${reset} ${res.error ?? "failed"}`;
+  return `  ${green}●${reset} daemon log level ${wasSet ? "set to" : "is"} ${res.level}`;
+}
+
+/** Show (no arg) or set (level arg) the running daemon's live pino log level. */
+export async function setLogLevel(args: string[] = []): Promise<void> {
+  const json = args.includes("--json");
+  const level = args.find((a) => !a.startsWith("--"));
+  const res = await daemonQuery("daemon:log-level", level ? { level } : {});
+  if (!res) { console.log(`  ${red}●${reset} daemon not reachable`); return; }
+  if (json) { console.log(JSON.stringify(res)); return; }
+  console.log(formatLogLevelResult(res as any, Boolean(level)));
+}

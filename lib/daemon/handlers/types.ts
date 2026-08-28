@@ -75,6 +75,10 @@ export interface HandlerContext {
   getHealth:               () => HealthSnapshot;
   /** Current loop-monitor heartbeat sequence number, echoed by `ping`. */
   heartbeatSeq:            () => number;
+  /** Sets the daemon logger's live level (trace/debug/info/warn/error). */
+  setLogLevel:             (l: string) => void;
+  /** Reads the daemon logger's current live level. */
+  getLogLevel:             () => string;
 }
 
 export type Handler    = (payload: any, signal?: AbortSignal) => Promise<any>;

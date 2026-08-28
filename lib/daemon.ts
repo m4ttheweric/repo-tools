@@ -436,6 +436,8 @@ const handlerCtx: HandlerContext = {
   refreshStatusRef,
   getHealth: buildHealthSnapshot,
   heartbeatSeq: loopMon.seq,
+  setLogLevel: (l) => { log.level = l; log.info({ level: l }, "log level changed"); },
+  getLogLevel: () => log.level,
 };
 
 /** Env bundle for the live-freshness subsystem. */

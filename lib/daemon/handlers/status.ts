@@ -9,6 +9,7 @@
  *   ports                 — cached port-scan data, optionally filtered by repo
  *   notifications         — drain the notification queue
  *   notifications:peek    — peek at the notification queue (diagnostics)
+ *   daemon:log-level      — show or set the live pino log level
  */
 
 import { existsSync, readdirSync } from "fs";
@@ -183,6 +184,15 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
     "notifications:peek": async () => {
       // Peek without draining — for diagnostics
       return { ok: true, data: peekNotifications() };
+    },
+
+    "daemon:log-level": async (payload?: { level?: string }) => {
+      const VALID = ["trace", "debug", "info", "warn", "error"];
+      if (payload?.level) {
+        if (!VALID.includes(payload.level)) return { ok: false, error: `invalid level: ${payload.level}` };
+        ctx.setLogLevel(payload.level);
+      }
+      return { ok: true, level: ctx.getLogLevel() };
     },
   };
 }
