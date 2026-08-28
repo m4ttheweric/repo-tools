@@ -27,12 +27,14 @@
  */
 
 import { GitLabProvider, type InvalidationKey, type MRApprovalRules, type PullRequest } from "@mattstack/glance";
-import { loadRepoTracking, grants, type RepoGrants } from "../repo-tracking.ts";
+import { loadRepoTracking, grants, type RepoGrants, type RepoTracking } from "../repo-tracking.ts";
+import { existsSync } from "fs";
 import { loadSecrets } from "../linear.ts";
 import { parseRemoteUrl, isGitLabRemote, toMRInfo } from "../enrich.ts";
 import { checkAndNotify } from "../notifier.ts";
 import type { HandlerContext } from "./handlers/types.ts";
 import { lazyChildLogger } from "../daemon-logger.ts";
+import { redactCredentials } from "./redact-credentials.ts";
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { getDiscussionsFileStore } from "./discussions-file-store.ts";
 import { createCursorStore, type CursorStore } from "../state/index.ts";
@@ -156,13 +158,13 @@ async function ensureProvider(repoName: string, repoPath: string): Promise<GitLa
   }
 
   if (!isGitLabRemote(remoteUrl)) {
-    log.info(`remote "${remoteUrl}" for ${repoName} is not GitLab; skipping events watch`);
+    log.info(`remote "${redactCredentials(remoteUrl)}" for ${repoName} is not GitLab; skipping events watch`);
     return null;
   }
 
   const remote = parseRemoteUrl(remoteUrl);
   if (!remote) {
-    log.info(`could not parse remote "${remoteUrl}" for ${repoName}; skipping`);
+    log.info(`could not parse remote "${redactCredentials(remoteUrl)}" for ${repoName}; skipping`);
     return null;
   }
 
@@ -188,6 +190,40 @@ async function ensureUserId(): Promise<number | null> {
     log.warn({ err }, "token validation failed");
   }
   return userId;
+}
+
+let userIdSuppressedWarned = false;
+
+/**
+ * S022: reconcileFreshnessImpl only ever builds a provider (and thus only
+ * ever calls ensureUserId) for repos in live mode, so a poll-only tracked
+ * user's getCurrentUserId() stayed null forever and checkAndNotify silently
+ * suppressed every self-authored transition. Called from cache-refresh.ts
+ * BEFORE its checkAndNotify (reconcileSubscriptions/reconcileFreshnessImpl
+ * runs after, so relying on it alone would leave the first cache-refresh
+ * cycle still passing null). Gates on the `branches`/`project-mrs` grant,
+ * never on mode, and is a no-op once userIdResolved (ensureUserId's own
+ * guard) or once every candidate repo has been tried this cycle.
+ */
+export async function resolveUserIdAcrossTracking(
+  repoIndex: Record<string, string>,
+  tracking: RepoTracking,
+): Promise<void> {
+  if (userIdResolved) return;
+  for (const [repoName, repoPath] of Object.entries(repoIndex)) {
+    const g = grants(tracking, repoName);
+    if (g.mode === "off") continue;
+    if (!g.caches.has("branches") && !g.caches.has("project-mrs")) continue;
+    if (!existsSync(repoPath)) continue;
+    const provider = await ensureProvider(repoName, repoPath);
+    if (!provider) continue;
+    await ensureUserId();
+    if (userIdResolved) return;
+  }
+  if (!userIdResolved && !userIdSuppressedWarned) {
+    userIdSuppressedWarned = true;
+    log.warn("userId is unresolved; self-authored MR transitions are being suppressed (no gitlabToken, or token validation failed)");
+  }
 }
 
 export function getSelfUsername(): string | null { return selfUsername; }
@@ -307,7 +343,7 @@ export async function getRepoContext(
     }
     const remote = parseRemoteUrl(remoteUrl);
     if (!remote) {
-      throw new Error(`could not parse remote URL "${remoteUrl}"`);
+      throw new Error(`could not parse remote URL "${redactCredentials(remoteUrl)}"`);
     }
     provider = makeProvider(remote.host, secrets.gitlabToken);
     providers.set(repoName, { provider, token: secrets.gitlabToken });

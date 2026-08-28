@@ -1,6 +1,8 @@
-import { describe, test, expect } from "bun:test";
-import { bindApiServerWithRetry, BIND_RETRY_ATTEMPTS, BIND_RETRY_DELAY_MS, type BindRetryDeps } from "../api-server.ts";
+import { describe, test, expect, afterEach } from "bun:test";
+import type { Server } from "bun";
+import { bindApiServerWithRetry, BIND_RETRY_ATTEMPTS, BIND_RETRY_DELAY_MS, startApiServer, type BindRetryDeps } from "../api-server.ts";
 import { ApiPortInUseError } from "../api-server.ts";
+import { setSetting } from "../../settings/write.ts";
 
 function eaddrinuse(): Error {
   return Object.assign(new Error("EADDRINUSE"), { code: "EADDRINUSE" });
@@ -123,5 +125,34 @@ describe("bindApiServerWithRetry — exhausted retries (S043)", () => {
     const d = depsWithProbe();
     await bindApiServerWithRetry(() => "server" as any, d);
     expect(d.probeCalls.length).toBe(0);
+  });
+});
+
+describe("startApiServer — binds via resolveApiPort() (S043 caller-side wiring)", () => {
+  let server: Server<any> | undefined;
+
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+  });
+
+  test("binds to the rt.apiPort setting value, not the hardcoded 9401 default", async () => {
+    const prevEnv = process.env.RT_API_PORT;
+    delete process.env.RT_API_PORT;
+
+    // Measure a free port rather than hardcoding one, then release it
+    // immediately — startApiServer binds it back before anything else can.
+    const probe = Bun.serve({ port: 0, fetch: () => new Response() });
+    const port = probe.port;
+    probe.stop(true);
+
+    setSetting("rt.apiPort", port, "user");
+    const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as any;
+
+    server = await startApiServer({ handleCommand: async () => ({ ok: true }), log });
+
+    expect(server.port).toBe(port);
+
+    if (prevEnv !== undefined) process.env.RT_API_PORT = prevEnv;
   });
 });

@@ -6,8 +6,9 @@
  * exercise the dual-write and room-default wiring those tests cover.
  */
 import { expect, test } from "bun:test";
+import { readFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { openStateDb } from "../db.ts";
 import { armMember, clearAllArmed, disarmMember, joinRoom, listMembers, touchMember } from "../chat-store.ts";
 import { assertSessionOwnsHandle, assertSessionSignedIn, buddyStatus, presenceForSession, presenceThresholds, prunePresence, pulseSession, signIn, signOut } from "../presence-store.ts";
@@ -98,6 +99,21 @@ test("assertSessionOwnsHandle throws only on a mismatched signed handle", () => 
   expect(() => assertSessionOwnsHandle("x", "s2", db)).toThrow(/handle reclaimed/);
   expect(() => assertSessionOwnsHandle("unsigned", "s2", db)).not.toThrow(); // plan-1 path: no presence row, no enforcement
   expect(() => assertSessionOwnsHandle("x", undefined, db)).not.toThrow(); // no session id offered, no enforcement
+});
+
+test("S073: signIn's read-then-write transaction uses .immediate() (BEGIN IMMEDIATE), not a deferred BEGIN", () => {
+  // A plain db.transaction()'s deferred BEGIN lets signIn's own reads
+  // (prunePresence, SELECT_PRESENCE_BY_SESSION_SQL) open a snapshot before
+  // any write; a commit by another connection in that window turns the
+  // eventual write into an unretryable SQLITE_BUSY_SNAPSHOT that the
+  // flavor's busy_timeout cannot absorb. .immediate() takes the write lock
+  // at BEGIN, so contention surfaces as an ordinary, retryable SQLITE_BUSY
+  // instead (matching the chat-store.ts/dm-store.ts/notifier-store.ts
+  // siblings already converted for the same reason).
+  const src = readFileSync(resolve(import.meta.dir, "..", "presence-store.ts"), "utf8");
+  const runIndex = src.indexOf("const run = db.transaction(");
+  expect(runIndex).toBeGreaterThan(-1);
+  expect(src.indexOf("return run.immediate();", runIndex)).toBeGreaterThan(runIndex);
 });
 
 test("assertSessionSignedIn throws when the session's row is gone", () => {

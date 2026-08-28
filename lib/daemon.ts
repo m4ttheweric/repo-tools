@@ -50,7 +50,7 @@ import { runBootIdentityMigration } from "./daemon/boot-migrate.ts";
 import { runCapture } from "./subprocess.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
-import { startApiServer, broadcast } from "./daemon/api-server.ts";
+import { startApiServer, withApiPortParkRetry, broadcast } from "./daemon/api-server.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
@@ -518,9 +518,16 @@ async function runDaemon(): Promise<void> {
 
     // API server first: a failed bind exits fatally (boot-phase catch below),
     // and binding API before the unix socket means that fatal exit never
-    // strands a socket-bound zombie behind it.
+    // strands a socket-bound zombie behind it. ApiPortInUseError is the one
+    // exception to "fatal": bindApiServerWithRetry has already exhausted its
+    // own ~3s inner retry, so the holder is a whole other process that may
+    // take much longer to exit — park-and-retry with backoff instead of
+    // crash-looping (S043 caller-side contract, docs/daemon-api-auth.md).
     setPhase("api");
-    servers.api = await startApiServer({ handleCommand, log });
+    servers.api = await withApiPortParkRetry(
+      () => startApiServer({ handleCommand, log }),
+      { sleep: (ms) => Bun.sleep(ms), log },
+    );
     setPhase("socket");
     servers.socket = startSocketServer({ handleCommand, log });
 

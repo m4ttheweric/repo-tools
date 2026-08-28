@@ -11,8 +11,6 @@ const ALLOWLIST = new Set<string>([
   "lib/daemon/boot-reconcile.ts",   // Phase 0.6 / S044 (Bun.sleepSync)
   "lib/state/db.ts",                // Phase 0.7 / S072-S073 busy-retry
   "lib/state/busy.ts",              // Phase 0.7 / S072-S073 busy-retry
-  "lib/git-worktrees.ts",           // S055: reached only via handlers/status.ts
-  "lib/daemon/handlers/status.ts",  // S055: the edge into git-worktrees.ts
   "lib/repo-index.ts",              // Phase 5.3 dedup (heal/derive execSync)
   "lib/repo.ts",                    // R050 / Phase 5.4 (via handlers/system-processes.ts)
   "lib/git.ts",                     // R050 / Phase 5.4 (via repo.ts)

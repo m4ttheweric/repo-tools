@@ -308,7 +308,7 @@ export function signIn(
     return { handle, baseHandle, reclaimed: winnerRow !== null };
   });
 
-  return run();
+  return run.immediate();
 }
 
 const NAMES_KV_NS = "chat";

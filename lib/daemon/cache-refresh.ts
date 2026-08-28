@@ -16,7 +16,7 @@ import type { Logger } from "pino";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 import type { BranchCacheStore } from "../state/index.ts";
 import { checkAndNotify } from "../notifier.ts";
-import { getCurrentUserId } from "./freshness.ts";
+import { getCurrentUserId, resolveUserIdAcrossTracking } from "./freshness.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import { syncProjectMRs } from "./project-sync.ts";
 import { getProjectMRs } from "./project-mrs-store.ts";
@@ -219,6 +219,16 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
         if (removed > 0) log.debug({ removed }, "discussions prune");
       } catch (err) {
         log.warn({ err }, "discussions prune failed");
+      }
+
+      // S022: resolve userId for any branches/project-mrs tracked repo,
+      // regardless of mode, BEFORE checkAndNotify — reconcileSubscriptions
+      // (below) only ever reaches live-mode repos and only runs after this,
+      // so a poll-only user's first cycle would otherwise still pass null.
+      try {
+        await resolveUserIdAcrossTracking(repos, tracking);
+      } catch (err) {
+        log.warn({ err }, "S022: userId resolution across tracked repos failed");
       }
 
       // Check for state transitions and fire notifications

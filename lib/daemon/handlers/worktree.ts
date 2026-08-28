@@ -32,6 +32,7 @@ import { realpathSync, rmSync } from "fs";
 import { join } from "path";
 
 import { parseIdentity } from "../../settings/identity.ts";
+import { validateGitRef } from "../git-ref-validation.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import {
   findByBranch,
@@ -294,6 +295,12 @@ export function createWorktreeHandlers(
       } else {
         return { ok: false, error: "branch-unresolved" };
       }
+
+      // S010: a branch that git would parse as an option (e.g.
+      // "--upload-pack=...") must never reach a runGit call, including
+      // divergence()'s below — both read this same `branch`.
+      const refCheck = validateGitRef(branch);
+      if (!refCheck.ok) return { ok: false, error: refCheck.error };
 
       const attached = findByBranch(trees, branch);
       if (attached.length > 1) return { ok: false, error: "branch-duplicated" };

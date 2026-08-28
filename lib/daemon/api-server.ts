@@ -9,7 +9,7 @@
 
 import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "pino";
-import { API_PORT } from "../daemon-config.ts";
+import { API_PORT, resolveApiPort } from "../daemon-config.ts";
 import { needsToken, tokenOk, getApiToken, resolveOriginTrust } from "./api-auth.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
@@ -262,7 +262,7 @@ export const BIND_RETRY_DELAY_MS = 500;
  * ApiPortInUseError instead of the bare EADDRINUSE Error, so a caller can
  * tell "give up cleanly" apart from "the bind function itself is broken".
  */
-export async function bindApiServerWithRetry<T>(bind: () => T, deps: BindRetryDeps): Promise<T> {
+export async function bindApiServerWithRetry<T>(bind: () => T, deps: BindRetryDeps, port: number = API_PORT): Promise<T> {
   const probe = deps.probePortHolder ?? defaultProbePortHolder;
   for (let attempt = 1; ; attempt++) {
     try {
@@ -271,12 +271,48 @@ export async function bindApiServerWithRetry<T>(bind: () => T, deps: BindRetryDe
       const isAddrInUse = err instanceof Error && (err as NodeJS.ErrnoException).code === "EADDRINUSE";
       if (!isAddrInUse) throw err;
       if (attempt >= BIND_RETRY_ATTEMPTS) {
-        const holder = await probe(API_PORT).catch((probeErr) => `lsof failed: ${String(probeErr)}`);
-        deps.log.warn({ port: API_PORT, holder }, "api port still in use after retries; giving up bind (the daemon should park and retry with backoff rather than crash-loop)");
-        throw new ApiPortInUseError(API_PORT);
+        const holder = await probe(port).catch((probeErr) => `lsof failed: ${String(probeErr)}`);
+        deps.log.warn({ port, holder }, "api port still in use after retries; giving up bind (the daemon should park and retry with backoff rather than crash-loop)");
+        throw new ApiPortInUseError(port);
       }
-      deps.log.warn({ attempt, port: API_PORT }, "api port in use, retrying — another daemon is likely still shutting down");
+      deps.log.warn({ attempt, port }, "api port in use, retrying — another daemon is likely still shutting down");
       await deps.sleep(BIND_RETRY_DELAY_MS);
+    }
+  }
+}
+
+/**
+ * Backoff base/cap for {@link withApiPortParkRetry}'s outer loop. Distinct
+ * from BIND_RETRY_* (bindApiServerWithRetry's own ~3s inner retry, already
+ * exhausted before an ApiPortInUseError ever reaches here): this loop
+ * assumes the holder is a whole other process that may take much longer
+ * than 3s to exit, so it backs off further between each full re-attempt.
+ */
+const PARK_RETRY_BASE_MS = 3_000;
+const PARK_RETRY_MAX_MS = 60_000;
+
+export interface ParkRetryDeps {
+  sleep: (ms: number) => Promise<void>;
+  log: { warn: (o: unknown, m: string) => void };
+}
+
+/**
+ * Wraps a `startApiServer`-shaped call: on `ApiPortInUseError` (bind retries
+ * already exhausted), logs and waits with exponential backoff, then calls
+ * `start` again — indefinitely, never giving up — instead of letting the
+ * error reach the daemon's top-level crash path (S043 caller-side contract,
+ * docs/daemon-api-auth.md). Any other error propagates immediately: that is
+ * a genuine misconfiguration, not a transient port squat.
+ */
+export async function withApiPortParkRetry<T>(start: () => Promise<T>, deps: ParkRetryDeps): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await start();
+    } catch (err) {
+      if (!(err instanceof ApiPortInUseError)) throw err;
+      const delayMs = Math.min(PARK_RETRY_BASE_MS * 2 ** (attempt - 1), PARK_RETRY_MAX_MS);
+      deps.log.warn({ attempt, port: err.port, delayMs }, "api server port still in use; parked, retrying with backoff");
+      await deps.sleep(delayMs);
     }
   }
 }
@@ -285,9 +321,10 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
   const { handleCommand, log } = deps;
   apiServerLog = log;
   const apiToken = getApiToken();
+  const port = resolveApiPort();
 
   const server = await bindApiServerWithRetry(() => Bun.serve<ApiWSData, never>({
-    port: API_PORT,
+    port,
     // Bind to loopback only — never expose the control surface on the LAN.
     hostname: "127.0.0.1",
     // Raise the request idle timeout off Bun's 10s default so long-lived
@@ -429,8 +466,8 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
         // Broadcast clients are read-only; inbound frames are ignored.
       },
     },
-  }), { sleep: (ms) => Bun.sleep(ms), log });
+  }), { sleep: (ms) => Bun.sleep(ms), log }, port);
 
-  log.info({ port: API_PORT }, "api server listening");
+  log.info({ port }, "api server listening");
   return server;
 }
