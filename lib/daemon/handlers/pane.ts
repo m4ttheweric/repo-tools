@@ -6,7 +6,8 @@ import type { Database } from "bun:sqlite";
 import { basename } from "path";
 import type { AgentStatus, BuddyStatus, ChatPane, Commands, PaneDirectory } from "../../../packages/rt-client/src/commands.ts";
 import { listCswapAccounts } from "../../cswap.ts";
-import { HERDR_UNAVAILABLE, herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
+import { herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
+import { herdrError, injectIntoPane } from "../inject.ts";
 import { shellQuote } from "../../herdr-launch.ts";
 import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
@@ -68,10 +69,7 @@ export function launchCommand(a: { cwd: string; account?: string; model?: string
   return `cd ${shellQuote(a.cwd)} && ${launch}`;
 }
 
-export function herdrError(res: { ok: false; code: string; message: string }): { ok: false; error: string } {
-  if (res.code === "unreachable" || res.code === "timeout") return { ok: false, error: res.message.startsWith(HERDR_UNAVAILABLE) ? res.message : `${HERDR_UNAVAILABLE}: ${res.message}` };
-  return { ok: false, error: `${res.code}: ${res.message}` };
-}
+export { herdrError } from "../inject.ts";
 
 /** Presence maps built once per verb call; offline rows are not presence. */
 export function presenceMaps(db: Database, now: number): Pick<PaneRowContext, "bySession" | "byPane"> {
@@ -124,7 +122,7 @@ export function createPaneHandlers(opts: {
   exec?: typeof runCapture;
   now?: () => number;
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
-}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn"> & { db: Database } {
+}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn" | "pane:send"> & { db: Database } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const exec = opts.exec ?? runCapture;
@@ -258,5 +256,8 @@ export function createPaneHandlers(opts: {
       const pane = await paneRow(raw, ctx);
       return { ok: true, data: { pane, ready } };
     },
+
+    "pane:send": async (payload: Commands["pane:send"]["payload"]): Promise<CommandResult<"pane:send">> =>
+      injectIntoPane({ paneId: payload.paneId, text: payload.text, callerPane: payload.callerPane, herdr }),
   };
 }

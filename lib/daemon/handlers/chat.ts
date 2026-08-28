@@ -40,8 +40,8 @@ import {
 import { CHAT_NOTIFICATION_CATEGORY, notifyEnabled } from "../../notifier.ts";
 import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.ts";
 import { getSetting } from "../../settings/resolve.ts";
-import { herdrRequest, waitTimeout } from "../../herdr/client.ts";
-import { herdrError } from "./pane.ts";
+import { herdrRequest } from "../../herdr/client.ts";
+import { injectIntoPane } from "../inject.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
 
@@ -142,8 +142,6 @@ function unreadSummaryFor(handle: string, db: Database): { dms: number; mentions
   }
   return { dms, mentions, rooms: Math.max(0, nonDmWaking - mentions) };
 }
-
-const INVITE_WAIT_MS = 5_000;
 
 /** One line, because Claude Code dispatches a slash command from the first line only. */
 export function inviteText(room: string, from: string, note?: string): string {
@@ -350,34 +348,7 @@ export function createChatHandlers(opts: {
       const { paneId, room, note, from, callerPane } = payload;
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
       if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
-      const refused = (reason: string): CommandResult<"chat:invite"> => ({ ok: true, data: { paneId, delivered: "refused", reason } });
-      if (callerPane && callerPane === paneId) return refused("that is this pane");
-
-      const probe = await herdr<{ agent: { agent: string; agent_status: string } }>("agent.get", { target: paneId });
-      if (!probe.ok) {
-        if (probe.code === "agent_not_found" || probe.code === "agent_target_ambiguous") return refused("not a claude pane");
-        return herdrError(probe);
-      }
-      if (probe.result.agent.agent !== "claude") return refused("not a claude pane");
-      const status = probe.result.agent.agent_status;
-      if (status === "blocked") return refused("at a prompt");
-
-      const text = inviteText(room, from, note);
-      if (status === "working") {
-        const queued = await herdr("agent.prompt", { target: paneId, text });
-        if (!queued.ok) return queued.code === "agent_blocked" ? refused("at a prompt") : herdrError(queued);
-        return { ok: true, data: { paneId, delivered: "queued" } };
-      }
-
-      const prompted = await herdr("agent.prompt", { target: paneId, text, wait: { until: ["working"], timeout_ms: INVITE_WAIT_MS } }, { timeoutMs: waitTimeout(INVITE_WAIT_MS) });
-      if (prompted.ok) return { ok: true, data: { paneId, delivered: "accepted" } };
-      if (prompted.code === "agent_blocked") return refused("at a prompt");
-      if (prompted.code !== "timeout" && prompted.code !== "agent_prompt_stalled") return herdrError(prompted);
-
-      // The Claude TUI can absorb the bundled Enter into the composer; one nudge, one more wait.
-      await herdr("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
-      const nudged = await herdr("agent.wait", { target: paneId, until: ["working"], timeout_ms: INVITE_WAIT_MS }, { timeoutMs: waitTimeout(INVITE_WAIT_MS) });
-      return { ok: true, data: { paneId, delivered: nudged.ok ? "accepted" : "queued" } };
+      return injectIntoPane({ paneId, text: inviteText(room, from, note), callerPane, herdr });
     },
 
     "chat:archive": async (payload: Commands["chat:archive"]["payload"]): Promise<CommandResult<"chat:archive">> => {
