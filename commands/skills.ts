@@ -1424,26 +1424,32 @@ function isInsideGitWorkTree(dir: string): boolean {
   }
 }
 
-type MovedDir = { fromRel: string; toRel: string; note: string | null };
+type PlannedMove = { fromRel: string; toRel: string };
 
 /**
- * git mv keeps rename history for the common case; fixtures (and any non-git
- * pack dir) fall back to a plain rename. The source is the entry's real dir:
- * a registered skill may live under any plugin.json root (plugin/skills/<name>),
- * not only skills/. A grouped skill keeps its group on the other side.
+ * The source is the entry's real dir: a registered skill may live under any
+ * plugin.json root (plugin/skills/<name>), not only skills/. A grouped skill
+ * keeps its group on the other side.
  */
-function moveHandAuthoredDir(packDir: string, entry: SkillEntry, to: "skills" | "attachments"): MovedDir {
-  const fromRel = relativePath(canonicalPath(packDir), canonicalPath(entry.dir));
-  const toRel = entry.group ? join(to, entry.group, entry.name) : join(to, entry.name);
+function planMove(packDir: string, entry: SkillEntry, to: "skills" | "attachments"): PlannedMove {
+  return {
+    fromRel: relativePath(canonicalPath(packDir), canonicalPath(entry.dir)),
+    toRel: entry.group ? join(to, entry.group, entry.name) : join(to, entry.name),
+  };
+}
+
+/** git mv keeps rename history for the common case; fixtures (and any non-git pack dir) fall back to a plain rename. */
+function moveHandAuthoredDir(packDir: string, move: PlannedMove): string | null {
+  const { fromRel, toRel } = move;
   mkdirSync(dirname(join(packDir, toRel)), { recursive: true });
 
   if (isInsideGitWorkTree(packDir)) {
     execFileSync("git", ["mv", fromRel, toRel], { cwd: packDir, stdio: "pipe" });
-    return { fromRel, toRel, note: null };
+    return null;
   }
 
   renameSync(join(packDir, fromRel), join(packDir, toRel));
-  return { fromRel, toRel, note: "plain rename -- pack dir is not a git repo" };
+  return "plain rename -- pack dir is not a git repo";
 }
 
 function printSurfaceRows(flags: SurfaceFlags, source: string, rows: SurfaceRow[]): void {
@@ -1492,17 +1498,17 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
     const wantPublic = publicSet.has(name);
     if (currentlyUnderSkills === wantPublic) continue;
 
-    const from = currentlyUnderSkills ? "skills" : "attachments";
-    const to = currentlyUnderSkills ? "attachments" : "skills";
+    const move = planMove(packDir, entry, currentlyUnderSkills ? "attachments" : "skills");
+    const route = `${dirname(move.fromRel)}/ -> ${dirname(move.toRel)}/`;
     moved++;
 
     if (flags.dryRun) {
-      console.log(`would move ${name}: ${from}/ -> ${to}/`);
+      console.log(`would move ${name}: ${route}`);
       continue;
     }
 
-    const { fromRel, toRel, note } = moveHandAuthoredDir(packDir, entry, to);
-    console.log(`moved ${name}: ${dirname(fromRel)}/ -> ${dirname(toRel)}/${note ? ` (${note})` : ""}`);
+    const note = moveHandAuthoredDir(packDir, move);
+    console.log(`moved ${name}: ${route}${note ? ` (${note})` : ""}`);
   }
 
   // surface.jsonc only ever names the public side -- internal is the absence

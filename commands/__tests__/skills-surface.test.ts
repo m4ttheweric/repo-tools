@@ -870,6 +870,18 @@ describe("apply on packs with plugin.json skills roots", () => {
     expect(logs.join("\n")).toContain("moved helper: plugin/skills/ -> attachments/");
   });
 
+  test("--dry-run names the same real source root the move would use", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0", skills: ["./skills/review", "./plugin/skills"] }));
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["helper"] }\n`);
+    writeFile(join(packDir, "plugin", "skills", "helper", "SKILL.md"), "---\nname: helper\n---\nbody\n");
+
+    await skillsSurface(["set", "helper", "--internal", "--dry-run", "--pack", "p", "--pack-dir", packDir]);
+
+    expect(logs.join("\n")).toContain("would move helper: plugin/skills/ -> attachments/");
+    expect(existsSync(join(packDir, "plugin", "skills", "helper", "SKILL.md"))).toBe(true);
+  });
+
   test("set rewrites surface.jsonc without dropping its leading comment block", async () => {
     const packDir = makePackDir();
     const header = "// surface.jsonc -- names this pack's public skills.\n// Ratified 2026-08-21 (surface-ratchet amendment).\n";
