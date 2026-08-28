@@ -10,7 +10,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "pino";
 import { API_PORT } from "../daemon-config.ts";
-import { needsToken, tokenOk, loadOrCreateApiToken } from "./api-auth.ts";
+import { needsToken, tokenOk, getApiToken } from "./api-auth.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
 
@@ -131,7 +131,7 @@ export async function bindApiServerWithRetry<T>(bind: () => T, deps: BindRetryDe
 
 export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> {
   const { handleCommand, log } = deps;
-  const apiToken = loadOrCreateApiToken();
+  const apiToken = getApiToken();
 
   const server = await bindApiServerWithRetry(() => Bun.serve<ApiWSData, never>({
     port: API_PORT,
