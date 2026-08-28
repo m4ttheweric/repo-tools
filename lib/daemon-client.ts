@@ -60,10 +60,12 @@ async function trySocketQuery(
   try {
     const hasBody = payload && Object.keys(payload).length > 0;
 
+    const headers: Record<string, string> = { "X-RT-Client": `rt-cli/${process.pid}` };
+    if (hasBody) headers["Content-Type"] = "application/json";
     const response = await fetch(`http://localhost/${cmd}`, {
       unix: DAEMON_SOCK_PATH,
       method: hasBody ? "POST" : "GET",
-      headers: hasBody ? { "Content-Type": "application/json" } : undefined,
+      headers,
       body: hasBody ? JSON.stringify(payload) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
     } as any);
@@ -153,10 +155,12 @@ export async function trayRequest<T = unknown>(
 
   try {
     const hasBody = init.body !== undefined;
+    const headers: Record<string, string> = { "X-RT-Client": `rt-cli/${process.pid}` };
+    if (hasBody) headers["Content-Type"] = "application/json";
     const response = await fetch(`http://localhost${path}`, {
       unix: sockPath,
       method: init.method,
-      headers: hasBody ? { "Content-Type": "application/json" } : undefined,
+      headers,
       body: hasBody ? JSON.stringify(init.body) : undefined,
       signal: AbortSignal.timeout(init.timeoutMs ?? REQUEST_TIMEOUT_MS),
     } as any);

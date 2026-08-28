@@ -37,6 +37,7 @@ import { parkUntilIntended, probeSocketHolder, daemonFlavor } from "./daemon/par
 import { evictStaleDaemon } from "./daemon/boot-reconcile.ts";
 import { resolveUserPath } from "./daemon/user-path.ts";
 import { shortReqId, makeSuppressor } from "./daemon/command-attribution.ts";
+import { unknownCommandReply } from "./daemon/unknown-command.ts";
 // Every state.db API is reached through the lib/state barrel, never through
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
@@ -451,7 +452,7 @@ async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Pr
       return { ok: true, message: "shutting down" };
 
     default:
-      return { ok: false, error: `unknown command: ${cmd}` };
+      return unknownCommandReply(cmd, typeof RT_VERSION !== "undefined" ? RT_VERSION : "source");
   }
 }
 

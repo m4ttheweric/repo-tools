@@ -57,7 +57,7 @@ export async function rtCommand<T = unknown>(
     const res = await fetch(`http://localhost/${cmd}`, {
       unix: sockPath,
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-RT-Client": `rt-client/${process.pid}` },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
       // Bun's `unix` fetch option isn't in the standard RequestInit type.
