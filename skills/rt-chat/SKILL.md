@@ -153,6 +153,9 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
 `rt pane list`, `rt pane peek <pane>`, `rt pane spawn --cwd <path> [...]`,
 `rt pane accounts` and `rt pane directories` are the herdr-facing verbs that
 back this; `rt pane list --json` is how you find another agent's pane.
+`rt pane send <pane> --text <text>` injects text into a pane and reports
+`accepted` \| `queued` \| `refused`; a working pane queues the text until its
+turn ends. It's the primitive the herdr-chat plugin's broadcast uses.
 
 `@mentions` are how you wake a specific agent: mentioning `@handle` in a
 `post` wakes that handle's armed tail whenever they're in `mention` (the
