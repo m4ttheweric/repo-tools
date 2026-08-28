@@ -76,6 +76,13 @@ import type { PortEntry } from "./port-scanner.ts";
 // entry (cli.ts) also runs it, but `bun run lib/daemon.ts` skips cli.ts.
 import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, logsDir } from "./rt-paths.ts";
 
+// Capture native panics (bypass JS entirely) at the fd level before anything
+// else in this module runs, so a throw during any later module-scope
+// construction (createEventsBus, cron, home-snapshot, …) lands in
+// daemon-stderr.log instead of vanishing down whatever fd 2 the launcher gave
+// us. Depends only on logsDir() and mkdirs its own dir; no logger needed yet.
+redirectNativeStderr();
+
 // Gates installCrashHandlers' unhandledRejection handler: fatal during boot
 // (no socket/API bound yet, nothing to recover), advisory-only once ready.
 let bootPhase: "booting" | "ready" = "booting";
@@ -89,6 +96,12 @@ const rtMigration = migrateLegacyRtDir();
 
 const loggerHandle = await getDaemonLogger();
 const log = loggerHandle.logger;
+
+// Wire uncaughtException + unhandledRejection through pino as early as the
+// logger allows: every module-scope side effect below this point
+// (createEventsBus, cron, home-snapshot, sweep timers) can throw, and this
+// must run BEFORE any of it does.
+installCrashHandlers(loggerHandle, { booting: () => bootPhase === "booting" });
 
 if (rtMigration === "migrated") {
   log.info(`migrated legacy ${LEGACY_RT_LABEL} state to ${RT_DIR_LABEL}`);
@@ -390,12 +403,6 @@ const cleanup = (): void => {
 async function runDaemon(): Promise<void> {
   try {
     mkdirSync(RT_DIR, { recursive: true });
-
-    // Capture native panics (bypass JS entirely) at the fd level, then wire
-    // uncaughtException + unhandledRejection through pino. Must run BEFORE
-    // any async work that could throw uncaught.
-    redirectNativeStderr();
-    installCrashHandlers(loggerHandle, { booting: () => bootPhase === "booting" });
 
     // If a previous daemon process is still alive (orphan from a failed
     // restart), evict it before we bind the socket.
