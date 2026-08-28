@@ -42,8 +42,11 @@ import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.t
 import { getSetting } from "../../settings/resolve.ts";
 import { herdrRequest, waitTimeout } from "../../herdr/client.ts";
 import { herdrError } from "./pane.ts";
+import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
+
+const log = lazyChildLogger("chat");
 
 const CHAT_COMMANDS = [
   "chat:join",
@@ -94,9 +97,22 @@ function postAndNotify(
   const { room, handle, body, mentions } = args;
   const posted = postMessage({ room, handle, body, mentions }, db);
   if (!posted) return undefined;
-  emitEvent(`chat/${room}/msg`, { id: posted.id });
+  // The row is durable at this point. Every step below is best-effort: a
+  // throw here (a full disk, an orphan daemon holding an events.db lock)
+  // must never surface as a failed post — the caller would retry and post
+  // the message twice — and one recipient's failure must not skip the wake
+  // for the rest.
+  try {
+    emitEvent(`chat/${room}/msg`, { id: posted.id });
+  } catch (err) {
+    log.warn({ err, id: posted.id, room }, "chat: emit for the posted message threw; message is durable, this emit was not");
+  }
   for (const recipient of posted.recipients) {
-    emitEvent(`chat/wake/${recipient}`, { id: posted.id, room });
+    try {
+      emitEvent(`chat/wake/${recipient}`, { id: posted.id, room });
+    } catch (err) {
+      log.warn({ err, id: posted.id, room, recipient }, "chat: wake emit threw for one recipient; continuing to the rest");
+    }
   }
   // Independent of chat_members / wake_on: agents create rooms via
   // join-creates, so the human is typically not a member yet, and a
@@ -104,18 +120,22 @@ function postAndNotify(
   const humanHandle = getSetting<string>("chat.humanHandle").value;
   const allMentions = mergeMentions(body, mentions);
   if (humanHandle && allMentions.includes(humanHandle)) {
-    const dm = dmParticipants(room, db);
-    const title = dm ? `DM from ${handle}` : `#${room}`;
-    // The click target: the viewer at this exact message, when the viewer is
-    // configured. The tray opens `url` on a default click for any category.
-    notifyEnabled(
-      CHAT_NOTIFICATION_CATEGORY,
-      title,
-      `${handle}: ${body}`,
-      chatViewerUrl(readChatViewerUrlSetting(), room, posted.id),
-      undefined,
-      `chat:${posted.id}`,
-    );
+    try {
+      const dm = dmParticipants(room, db);
+      const title = dm ? `DM from ${handle}` : `#${room}`;
+      // The click target: the viewer at this exact message, when the viewer is
+      // configured. The tray opens `url` on a default click for any category.
+      notifyEnabled(
+        CHAT_NOTIFICATION_CATEGORY,
+        title,
+        `${handle}: ${body}`,
+        chatViewerUrl(readChatViewerUrlSetting(), room, posted.id),
+        undefined,
+        `chat:${posted.id}`,
+      );
+    } catch (err) {
+      log.warn({ err, id: posted.id, room }, "chat: desk notify threw after a successful post");
+    }
   }
   return posted;
 }

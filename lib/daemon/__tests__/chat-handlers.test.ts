@@ -56,6 +56,40 @@ test("chat:post returns the recipients and emits one wake event per recipient", 
   expect(emitted).toEqual(["chat/r/msg", "chat/wake/b"]);
 });
 
+test("chat:post still reports success when emitEvent throws after the message is durable", async () => {
+  const h = freshHandlers(() => { throw new Error("events.db locked"); });
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "hi" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.id).toBeGreaterThan(0);
+});
+
+test("chat:post continues waking the rest of the recipients when one recipient's emit throws", async () => {
+  const emitted: string[] = [];
+  const h = freshHandlers((topic) => {
+    emitted.push(topic);
+    if (topic === "chat/wake/a") throw new Error("boom for a");
+    return 0;
+  });
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  await h["chat:join"]({ room: "r", handle: "c" });
+  const res = await h["chat:post"]({ room: "r", handle: "poster", body: "@a @b @c hi" });
+  expect(res.ok).toBe(true);
+  expect(emitted).toContain("chat/wake/a");
+  expect(emitted).toContain("chat/wake/b");
+  expect(emitted).toContain("chat/wake/c");
+});
+
+test("chat:dm still reports success when emitEvent throws after the message is durable", async () => {
+  const h = freshHandlers(() => { throw new Error("events.db locked"); });
+  const res = await h["chat:dm"]({ from: "agent", to: "matt", body: "ping" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.id).toBeGreaterThan(0);
+});
+
 test("chat:post rejects an invalid mentions element with a reason rather than storing it", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "a" });
