@@ -1,9 +1,17 @@
+import { readFileSync } from "fs";
+import { resolve } from "path";
 import { describe, expect, test } from "bun:test";
 import { selectKillTargets, type KillCandidate } from "../worktree-process-kill.ts";
 
 function row(pid: number, ppid: number, command: string, fullCommand: string): KillCandidate {
   return { pid, ppid, command, fullCommand };
 }
+
+test("worktree-process-kill.ts imports no sync exec", () => {
+  const src = readFileSync(resolve(import.meta.dir, "..", "worktree-process-kill.ts"), "utf8");
+  expect(src).not.toMatch(/from\s+["']child_process["']/);
+  expect(src).not.toMatch(/\bexecSync\b/);
+});
 
 describe("selectKillTargets", () => {
   test("kills package-script chains and orphaned compilers", () => {

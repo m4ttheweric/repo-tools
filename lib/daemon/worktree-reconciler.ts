@@ -442,10 +442,9 @@ async function autoReturnMain(
   }
 
   if (appConfig.killProcesses) {
-    // The ruled execSync exception (the process killer is sync by design);
-    // a failure here never blocks the return.
+    // A failure here never blocks the return.
     try {
-      const { terminated } = killWorktreeProcesses(rec.path);
+      const { terminated } = await killWorktreeProcesses(rec.path);
       if (terminated.length > 0) log.info({ ...fields, count: terminated.length }, "worktree processes terminated");
     } catch (err) {
       log.warn({ err, ...fields }, "auto-return: process kill failed; returning anyway");
