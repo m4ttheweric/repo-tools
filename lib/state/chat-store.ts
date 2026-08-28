@@ -532,6 +532,11 @@ export function markRead(handle: string, room?: string, db: Database = getStateD
   }
 }
 
+/** A delivered body is the read surface: the daemon calls this in place of markRead once a Claude inbox socket confirms the frame landed, bounded to the id actually delivered rather than the room's current max. */
+export function markDelivered(room: string, handle: string, upToId: number, db: Database = getStateDb()): void {
+  db.query(UPDATE_LAST_READ_SQL).run(upToId, room, handle);
+}
+
 export function unreadWakingCount(
   handle: string,
   db: Database = getStateDb(),

@@ -45,7 +45,9 @@ test("chat:join rejects an invalid handle with a reason rather than normalizing 
   expect(res.error).toContain("handle");
 });
 
-test("chat:post returns the recipients and emits one wake event per recipient", async () => {
+test("chat:post returns the recipients and emits only the room's msg event", async () => {
+  // The wake topic is gone: delivery to a recipient now goes through the
+  // Claude inbox socket seam (chat-delivery.test.ts), not an events-bus emit.
   const emitted: string[] = [];
   const h = freshHandlers((topic) => { emitted.push(topic); return 0; });
   await h["chat:join"]({ room: "r", handle: "a" });
@@ -54,7 +56,7 @@ test("chat:post returns the recipients and emits one wake event per recipient", 
   expect(res.ok).toBe(true);
   if (!res.ok) throw new Error("unreachable");
   expect(res.data).toMatchObject({ recipients: ["b"] });
-  expect(emitted).toEqual(["chat/r/msg", "chat/wake/b"]);
+  expect(emitted).toEqual(["chat/r/msg"]);
 });
 
 test("chat:post rejects an invalid mentions element with a reason rather than storing it", async () => {

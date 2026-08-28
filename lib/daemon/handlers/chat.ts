@@ -14,6 +14,7 @@ import {
   readUnread,
   listMessages,
   markRead,
+  markDelivered,
   unreadWakingCount,
   listRooms,
   archiveRoom,
@@ -42,8 +43,14 @@ import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.t
 import { getSetting } from "../../settings/resolve.ts";
 import { herdrRequest } from "../../herdr/client.ts";
 import { injectIntoPane } from "../inject.ts";
+import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
+import { deliverToInbox, renderDeliveries } from "../inbox.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
+
+/** The seam tests inject fakes through; production callers pass nothing and get the real registry + socket sender. */
+export type InboxDeps = { resolve: typeof resolveInbox; deliver: typeof deliverToInbox };
+const defaultInboxDeps: InboxDeps = { resolve: resolveInbox, deliver: deliverToInbox };
 
 const CHAT_COMMANDS = [
   "chat:join",
@@ -81,22 +88,48 @@ function assertionError(fn: () => void): string | null {
 }
 
 /**
- * The row must commit before either emit fires, or a woken agent reads the
- * wake pointer and finds no message yet. Shared by chat:post and chat:dm so
- * the desk-notify check (mentions merged the same way postMessage merges
- * them for storage) never diverges between the two entry points.
+ * A resolver miss and a delivered-but-failed send are the same outcome here:
+ * no deliver call (or an ok:false one), cursor left untouched. A later post
+ * to the same recipient tries again; a stalled inbox otherwise surfaces
+ * through the unread badge, not through a retry loop here.
+ */
+async function deliverPost(
+  db: Database,
+  deps: InboxDeps,
+  recipient: string,
+  msg: { room: string; dm: boolean; handle: string; body: string; id: number },
+): Promise<void> {
+  const presence = presenceForHandle(recipient, db);
+  if (!presence) return;
+  const binding = deps.resolve(presence.sessionId);
+  if (!binding || !inboxAlive(binding)) return;
+  const content = renderDeliveries([{ room: msg.room, dm: msg.dm, handle: msg.handle, body: msg.body }]);
+  const result = await deps.deliver(binding.socketPath, content);
+  if (result.ok) markDelivered(msg.room, recipient, msg.id, db);
+}
+
+/**
+ * The row must commit before the viewer's `chat/<room>/msg` emit fires, or a
+ * viewer reading the event finds no message yet. Shared by chat:post and
+ * chat:dm so the desk-notify check (mentions merged the same way postMessage
+ * merges them for storage) never diverges between the two entry points.
+ * Recipient delivery is fire-and-forget relative to this function's return:
+ * chat:post's response time stays one store write, never a socket round
+ * trip.
  */
 function postAndNotify(
   db: Database,
   emitEvent: (topic: string, payload?: unknown) => unknown,
   args: { room: string; handle: string; body: string; mentions?: string[] },
+  inboxDeps: InboxDeps = defaultInboxDeps,
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body, mentions } = args;
   const posted = postMessage({ room, handle, body, mentions }, db);
   if (!posted) return undefined;
   emitEvent(`chat/${room}/msg`, { id: posted.id });
+  const dm = dmParticipants(room, db);
   for (const recipient of posted.recipients) {
-    emitEvent(`chat/wake/${recipient}`, { id: posted.id, room });
+    void deliverPost(db, inboxDeps, recipient, { room, dm: dm !== null, handle, body, id: posted.id });
   }
   // Independent of chat_members / wake_on: agents create rooms via
   // join-creates, so the human is typically not a member yet, and a
@@ -104,7 +137,6 @@ function postAndNotify(
   const humanHandle = getSetting<string>("chat.humanHandle").value;
   const allMentions = mergeMentions(body, mentions);
   if (humanHandle && allMentions.includes(humanHandle)) {
-    const dm = dmParticipants(room, db);
     const title = dm ? `DM from ${handle}` : `#${room}`;
     // The click target: the viewer at this exact message, when the viewer is
     // configured. The tray opens `url` on a default click for any category.
@@ -154,9 +186,11 @@ export function createChatHandlers(opts: {
   db: Database;
   emitEvent: (topic: string, payload?: unknown) => unknown;
   herdr?: typeof herdrRequest;
+  inboxDeps?: InboxDeps;
 }): Pick<TypedHandlers, (typeof CHAT_COMMANDS)[number]> & { db: Database } {
   const { db, emitEvent } = opts;
   const herdr = opts.herdr ?? herdrRequest;
+  const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
 
   return {
     db,
@@ -182,7 +216,7 @@ export function createChatHandlers(opts: {
       const { room, handle, body, mentions } = payload;
       const invalidMention = mentions?.find((m) => !isValidChatName(m));
       if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions });
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
     },
@@ -339,7 +373,7 @@ export function createChatHandlers(opts: {
       // Recipient travels in `mentions`, not the body, so the transcript
       // shows the text as typed and the desk still notifies when `to` is
       // the human.
-      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] });
+      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps);
       if (!posted) return { ok: false, error: "chat: dm failed (retry budget exhausted)" };
       return { ok: true, data: { room, id: posted.id, recipients: posted.recipients } };
     },
