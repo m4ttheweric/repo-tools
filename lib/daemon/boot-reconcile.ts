@@ -36,7 +36,7 @@ async function waitForDeath(pid: number, maxMs: number): Promise<boolean> {
  * the `start` command's orphan-detection doesn't fire (e.g. launchd relaunches
  * us automatically without going through `rt daemon start`).
  *
- * Waits for the old process to actually die rather than a blind sleep — a
+ * Waits for the old process to actually die rather than a blind sleep: a
  * daemon that survives the eviction window can still race the new one for
  * rt.sock/rt.pid (S044). Escalates to SIGKILL if SIGTERM alone doesn't land.
  */

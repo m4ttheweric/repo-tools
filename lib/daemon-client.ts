@@ -181,7 +181,7 @@ async function attemptRestart(): Promise<boolean> {
     if (res === null) return false;
 
     // The tray ack only proves the request was received, not that the
-    // daemon actually came up — re-probe rt.sock before reporting success,
+    // daemon actually came up, so re-probe rt.sock before reporting success,
     // so daemonQuery's caller isn't told "restarted" while the daemon is
     // still mid-boot and then misdirected into warnDaemonDown() on the very
     // next query instead of actually waiting for it.

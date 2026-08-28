@@ -74,8 +74,8 @@ export interface GracefulExitDeps {
  *
  * launchd's KeepAlive.SuccessfulExit=false only respawns on a non-zero exit,
  * so the code here must distinguish the intentional `shutdown` verb (exit 0,
- * stay down) from a bare external signal — pkill, memory pressure, a stray
- * script (exit 1, launchd respawns). The sanctioned stop path
+ * stay down) from a bare external signal (pkill, memory pressure, a stray
+ * script, exit 1, launchd respawns). The sanctioned stop path
  * (SMAppService.unregister) doesn't go through this signal path at all, so
  * exiting non-zero on a bare signal never fights an intended stop.
  */

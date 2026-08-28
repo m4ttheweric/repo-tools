@@ -391,7 +391,7 @@ function quarantine(path: string): void {
 /**
  * Runs each registered legacy importer whose source file exists, inside the
  * caller's transaction. Returns the list of source paths that were consumed
- * (successfully imported OR corrupt/throwing-and-skipped) — all three cases
+ * (successfully imported OR corrupt/throwing-and-skipped): all three cases
  * still rename per spec "Migration & contention" ("corrupt = warn + skip";
  * brief: "warn + skip + still rename"). Renaming itself happens AFTER COMMIT
  * (the caller does it), since a filesystem rename cannot participate in the
@@ -543,7 +543,7 @@ export function getStateDb(flavor: DbFlavor = "cli"): Database {
     // A caller asking for a stronger (shorter) contention policy than the
     // singleton currently holds must not silently inherit whatever flavor
     // opened it first (e.g. a "cli" 5000ms opener beating the daemon's own
-    // "daemon" 250ms open) — re-tighten in place rather than reopening.
+    // "daemon" 250ms open); re-tighten in place rather than reopening.
     const want = BUSY_TIMEOUT_MS[flavor];
     const have = Number((singleton.query("PRAGMA busy_timeout").get() as { timeout?: number } | null)?.timeout ?? 0);
     if (want < have) singleton.exec(`PRAGMA busy_timeout = ${want};`);

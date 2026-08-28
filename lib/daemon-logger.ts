@@ -200,7 +200,7 @@ function todayDate(): string {
 
 /**
  * Picks the rotation target for `daemon-stderr.log`: `daemon-stderr.<date>.log`,
- * or `.<N>.log` if that name is already taken (e.g. two boots same day) — both
+ * or `.<N>.log` if that name is already taken (e.g. two boots same day); both
  * shapes match log-janitor's LOG_FILE_PATTERN, so pruneLogs sweeps them for free.
  */
 function nextRotatedStderrPath(dir: string, date: string): string {
@@ -227,7 +227,7 @@ export function redirectNativeStderr(): void {
     const dir = logsDir();
     mkdirSync(dir, { recursive: true });
     const stderrPath = join(dir, "daemon-stderr.log");
-    // Rotate any leftover content from a previous crash before reopening —
+    // Rotate any leftover content from a previous crash before reopening,
     // otherwise `rt daemon logs` keeps showing yesterday's panic as "most
     // recent". A rename here can never lose data (unlike truncation).
     if (existsSync(stderrPath) && statSync(stderrPath).size > 0) {

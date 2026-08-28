@@ -75,7 +75,7 @@ export const API_PORT = Number(process.env.RT_API_PORT) || 9401;
 /**
  * Call-time API port resolution: RT_API_PORT env wins (e2e isolation, RT-45),
  * then the rt.apiPort setting (escape hatch when 9401 is held), then 9401.
- * A function, not a const — must never be evaluated at module load, since
+ * A function, not a const: it must never be evaluated at module load, since
  * getSetting() reads the settings stores off ambient HOME.
  */
 export function resolveApiPort(): number {

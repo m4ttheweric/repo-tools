@@ -136,9 +136,9 @@ describe("lazyChildLogger", () => {
   });
 });
 
-describe("redirectNativeStderr — rotation", () => {
+describe("redirectNativeStderr (rotation)", () => {
   // redirectNativeStderr dup2's the REAL process fd 2 to the log file (that is
-  // the whole point of the function) — a bare call here would swallow this
+  // the whole point of the function); a bare call here would swallow this
   // test process's own stderr for the rest of the run. Save/restore fd 2
   // around the call with the same dup/dup2 pair the implementation uses.
   function withRealFd2Saved(fn: () => void): void {
@@ -286,12 +286,12 @@ describe("lazyChildLogger — Proxy guard", () => {
   });
 });
 
-describe("installCrashHandlers — boot-phase gating", () => {
+describe("installCrashHandlers (boot-phase gating)", () => {
   it("unhandledRejection exits(1) while booting, only logs once ready", () => {
     const exits: number[] = [];
     const origExit = process.exit;
     const origStderrWrite = process.stderr.write.bind(process.stderr);
-    // @ts-expect-error test stub — captures the exit code instead of terminating
+    // @ts-expect-error test stub (captures the exit code instead of terminating)
     process.exit = (code?: number) => { exits.push(code ?? 0); };
     const fatal = mock(() => {});
     const error = mock(() => {});

@@ -37,7 +37,7 @@ let logHandle: Promise<DaemonLoggerHandle> | null = null;
 
 /**
  * True for the bun:sqlite error thrown when a write can't get the lock
- * inside busy_timeout — including the SNAPSHOT/RECOVERY variants a
+ * inside busy_timeout, including the SNAPSHOT/RECOVERY variants a
  * deferred-BEGIN read-then-write transaction can throw, which busy_timeout
  * does not retry the way it retries a plain SQLITE_BUSY.
  */

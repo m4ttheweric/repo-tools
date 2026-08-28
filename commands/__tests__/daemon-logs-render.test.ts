@@ -1,5 +1,5 @@
 /**
- * nativeStderrDisplay — showLogs' stale-crash mtime gate.
+ * nativeStderrDisplay (showLogs' stale-crash mtime gate).
  *
  * daemon-stderr.log is rotated on daemon boot (lib/daemon-logger.ts), but a
  * leftover file can still predate the *currently running* daemon (e.g. it was
@@ -31,7 +31,7 @@ describe("nativeStderrDisplay", () => {
     expect(header).toBe(`native stderr (captured ${new Date(mtimeMs).toISOString()})`);
   });
 
-  test("fails open (shows) when the daemon's startedAt is unknown — nothing to compare against", () => {
+  test("fails open (shows) when the daemon's startedAt is unknown (nothing to compare against)", () => {
     const { show } = nativeStderrDisplay(NOW - 999_999, null);
     expect(show).toBe(true);
   });

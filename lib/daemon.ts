@@ -105,10 +105,10 @@ const rtMigration = migrateLegacyRtDir();
 // during any later module-scope construction (createEventsBus, cron,
 // home-snapshot, …) lands in daemon-stderr.log instead of vanishing down
 // whatever fd 2 the launcher gave us. Depends only on logsDir() and mkdirs
-// its own dir — this MUST run after migrateLegacyRtDir(): mkdirSync(logsDir())
+// its own dir (this MUST run after migrateLegacyRtDir(): mkdirSync(logsDir())
 // creates the new rt dir, and migrateLegacyRtDir() treats that dir merely
 // existing as a "conflict" with a real legacy tree, so redirecting first
-// would defeat the migration.
+// would defeat the migration).
 redirectNativeStderr();
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -449,7 +449,7 @@ async function runDaemon(): Promise<void> {
     // Auto-unlink any tagged tool link whose tool now has a genuine user copy
     // elsewhere on PATH (e.g. the user ran `brew install gh` after rt linked
     // the bundled one). reconcile() itself is synchronous (a ~/.local/bin
-    // readDir plus a handful of stats) — wrapping the call in `async` alone
+    // readDir plus a handful of stats); wrapping the call in `async` alone
     // would NOT defer it, since nothing inside actually awaits. setTimeout(0)
     // is what actually pushes it past the rest of this function: the PID
     // write, openBranchCacheStore, and both server binds below all run first,
@@ -476,7 +476,7 @@ async function runDaemon(): Promise<void> {
 
     // one-shot re-key of every legacy NAME-keyed store row onto its
     // serialized repo identity. Fire-and-forget (not awaited) like the PATH
-    // reconcile above — the ordering guarantee this depends on (running before
+    // reconcile above: the ordering guarantee this depends on (running before
     // anything prunes the repo index) only needs this to be on the boot path,
     // not blocking the socket bind; a prune only ever arrives as a command sent
     // to an already-running daemon.
@@ -524,7 +524,7 @@ async function runDaemon(): Promise<void> {
     setPhase("socket");
     servers.socket = startSocketServer({ handleCommand, log });
 
-    // Only write rt.pid once both servers are actually bound — a boot that
+    // Only write rt.pid once both servers are actually bound: a boot that
     // fails before this point must never leave a live-pid file with no
     // socket/API behind it.
     writeFileSync(DAEMON_PID_PATH, String(process.pid));
@@ -536,7 +536,7 @@ async function runDaemon(): Promise<void> {
     hooksGuard.refreshWatchedRepos();
 
     // Team tracking intent (mattstack.tracking) resolves through a primed
-    // identity→name map, not live derivation — loadRepoTracking is sync and
+    // identity→name map, not live derivation; loadRepoTracking is sync and
     // runs on every freshness tick. Team intent is inert until this completes.
     // The repo index moved into state.db (RT-50): there is no file to fs.watch
     // for new-repo changes any more, so the 60s hooks-scan poller (pollers.ts)
@@ -588,7 +588,7 @@ async function runDaemon(): Promise<void> {
   }
 }
 
-// runDaemon() never rejects — it logs fatal and exit(1)s internally on any
+// runDaemon() never rejects: it logs fatal and exit(1)s internally on any
 // boot failure, so this wrapper needs no catch of its own.
 export async function startDaemon(): Promise<void> {
   await runDaemon();

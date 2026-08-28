@@ -1,5 +1,5 @@
 /**
- * lib/daemon/supervision-state.ts — daemon boot/crash history, so
+ * lib/daemon/supervision-state.ts: daemon boot/crash history, so
  * `rt daemon status` can report boot-failed/crash-looping and a stuck-phase
  * breadcrumb for a live-but-silent daemon.
  *
@@ -11,7 +11,7 @@
  *    `recordCleanExit`, and the kv half of `recordBootFailure`) goes through
  *    `getStateDb("daemon")`, so callers must not reach it until the daemon
  *    has opened its state.db (lib/daemon.ts's `openBranchCacheStore()`).
- *    `recordBootFailure` is safe to call at any point regardless — its kv
+ *    `recordBootFailure` is safe to call at any point regardless: its kv
  *    write is try/catch'd and silently no-ops if the db isn't open yet.
  */
 
@@ -76,7 +76,7 @@ export function recordBootFailure(phase: BootPhase, reason: string): void {
     setKvValue(NS, KEY_RECENT_FAILURES, next, db());
     setKvValue<LastExit>(NS, KEY_LAST_EXIT, { at, kind: "boot-failed", code: 1, reason }, db());
   } catch {
-    // Pre-db failure (or a busy/corrupt state.db) — the breadcrumb file above
+    // Pre-db failure (or a busy/corrupt state.db): the breadcrumb file above
     // is the only record this failure gets, and that's fine.
   }
 }
@@ -122,7 +122,7 @@ function breadcrumbPath(): string {
   return join(RT_DIR, "daemon-boot.json");
 }
 
-/** Never fatal — a breadcrumb is a diagnostic aid, not something boot may fail over. */
+/** Never fatal: a breadcrumb is a diagnostic aid, not something boot may fail over. */
 export function writeBreadcrumb(phase: BootPhase): void {
   try {
     const breadcrumb: Breadcrumb = { at: Date.now(), pid: process.pid, flavor: daemonFlavor(), phase };

@@ -1,11 +1,11 @@
 /**
- * `rt daemon uninstall`/`start` — the CLI-side liveness guards (Task 14,
+ * `rt daemon uninstall`/`start` (the CLI-side liveness guards, Task 14,
  * S027/S030/S028-CLI). Fakes the tray over a real Bun.serve on
  * TRAY_SOCK_PATH (same rig as commands/__tests__/settings-dev-mode.test.ts)
  * and, where a scenario needs "the daemon is live", a real Bun.serve on
- * DAEMON_SOCK_PATH answering /ping — isDaemonProcessRunning's pid check and
+ * DAEMON_SOCK_PATH answering /ping (isDaemonProcessRunning's pid check and
  * probeSocketHolder/isDaemonRunning's socket ping are both exercised for
- * real, never mocked module internals.
+ * real, never mocked module internals).
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -40,12 +40,12 @@ function serveTray(handlers: Record<string, () => Response>): void {
   }));
 }
 
-/** A real listener on rt.sock that answers /ping — what both isDaemonRunning()
+/** A real listener on rt.sock that answers /ping (what both isDaemonRunning()
  *  (daemon-client.ts) and probeSocketHolder() (lib/daemon/park.ts) fetch.
  *  Flavor defaults to the CURRENT intended mode (not a hardcoded "prod") so
  *  start()'s post-liveness warnIfWrongFlavor() check never fires a spurious
  *  mismatch when this file runs after another test flips mattstack.mode in
- *  the shared isolated HOME `bun test` uses for the whole process. */
+ *  the shared isolated HOME `bun test` uses for the whole process). */
 function serveDaemonPing(body?: Record<string, unknown>): void {
   const resolvedBody = body ?? { ok: true, pid: 4242, flavor: resolveIntendedMode().mode };
   servers.push(Bun.serve({
@@ -67,7 +67,7 @@ afterEach(() => {
   }
 });
 
-describe("uninstall — liveness guard", () => {
+describe("uninstall (liveness guard)", () => {
   test("leaves rt.pid/daemon.json when isDaemonProcessRunning() says the daemon is alive", async () => {
     mkdirSync(RT_DIR, { recursive: true });
     markDaemonInstalled();
@@ -98,7 +98,7 @@ describe("uninstall — liveness guard", () => {
     mkdirSync(RT_DIR, { recursive: true });
     markDaemonInstalled();
     writeFileSync(DAEMON_PID_PATH, "999999"); // no such pid
-    writeFileSync(DAEMON_SOCK_PATH, ""); // stale file, not a real listener — probeSocketHolder's fetch fails
+    writeFileSync(DAEMON_SOCK_PATH, ""); // stale file, not a real listener (probeSocketHolder's fetch fails)
 
     captureLogs();
     await uninstall();
@@ -110,7 +110,7 @@ describe("uninstall — liveness guard", () => {
   });
 });
 
-describe("start — kickstart escalation", () => {
+describe("start (kickstart escalation)", () => {
   test("falls back to /daemon/restart when the tray acks /daemon/start but the socket never comes up", async () => {
     mkdirSync(RT_DIR, { recursive: true });
     markDaemonInstalled();

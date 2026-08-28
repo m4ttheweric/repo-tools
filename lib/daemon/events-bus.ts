@@ -68,7 +68,7 @@ function rowToEvent(row: EventRow): BusEvent {
  * Renames a corrupt events.db out of the way and warns loudly, mirroring
  * lib/state/db.ts's `quarantine`. events.db is a bounded-retention journal
  * (sweep() already discards old rows), so losing it entirely on corruption
- * is harmless — recreate empty rather than attempt any repair. WAL sidecars
+ * is harmless: recreate empty rather than attempt any repair. WAL sidecars
  * are best-effort cleaned since they are meaningless without the main file.
  */
 function quarantineEventsDb(path: string, log: Logger): void {
@@ -83,7 +83,7 @@ function quarantineEventsDb(path: string, log: Logger): void {
     try {
       renameSync(sidecar, `${sidecar}.corrupt-${stamp}`);
     } catch {
-      // sidecar absent — fine, WAL mode doesn't always leave one
+      // sidecar absent, fine: WAL mode doesn't always leave one
     }
   }
 }

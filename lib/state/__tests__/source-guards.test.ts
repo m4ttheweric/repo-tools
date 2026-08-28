@@ -93,7 +93,7 @@ describe("daemon startup opens state.db before serving", () => {
   test("openBranchCacheStore() precedes both server binds in runDaemon", () => {
     const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
     // startDaemon() itself is now just `await runDaemon()` (see "boot
-    // failure is fatal" below — the catch-and-exit lives in runDaemon
+    // failure is fatal" below; the catch-and-exit lives in runDaemon
     // itself); the real ordered startup sequence this test asserts on
     // lives in runDaemon() too.
     const start = src.indexOf("async function runDaemon(");
@@ -145,7 +145,7 @@ describe("boot failure is fatal for both fire-and-forget callers", () => {
 
     // Both real callers (cli.ts's --daemon entry, this file's own
     // import.meta.main guard) invoke startDaemon() fire-and-forget, and
-    // startDaemon() is now just `await runDaemon()` — so the catch-and-exit
+    // startDaemon() is now just `await runDaemon()`, so the catch-and-exit
     // MUST live inside runDaemon() itself, or an unhandledRejection could
     // silently leave the daemon half-up (rt.sock possibly bound, nothing
     // past the failure ever wired). The booting-gated unhandledRejection

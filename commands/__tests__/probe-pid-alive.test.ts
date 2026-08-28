@@ -5,7 +5,7 @@ import { readSupervisionState } from "../../lib/daemon/supervision-state.ts";
 describe("probePidAlive", () => {
   // Regression: the lsof fallback must exclude the CALLING process itself.
   // showStatus opens a bun:sqlite handle on state.db (inside RT_DIR) via
-  // readSupervisionState() immediately before this probe runs — `lsof +D
+  // readSupervisionState() immediately before this probe runs ... `lsof +D
   // RT_DIR` then legitimately reports the calling CLI process as a live
   // holder of the directory, with no daemon involved at all. Without the
   // process.pid filter this self-matches and a genuinely dead daemon

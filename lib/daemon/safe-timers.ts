@@ -1,9 +1,9 @@
 /**
- * lib/daemon/safe-timers.ts — try/catch-wrapped setInterval/setTimeout.
+ * lib/daemon/safe-timers.ts: try/catch-wrapped setInterval/setTimeout.
  *
  * A bare `setInterval`/`setTimeout` callback that throws synchronously
  * (e.g. a sqlite SQLITE_FULL on a WAL write) becomes an uncaughtException
- * with no stack frame back to the timer that scheduled it — Node/Bun's
+ * with no stack frame back to the timer that scheduled it; Node/Bun's
  * event loop has nothing to attribute the throw to but the process itself,
  * so installCrashHandlers treats it as fatal and exits the daemon. Wrapping
  * the tick converts that crash into a logged warning.

@@ -260,7 +260,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   const rawReadSettings = rawDeps.readSettings ?? (() => getSetting<HomeSnapshotSettings>("rt.homeSnapshot").value);
   // Thunk, not a resolved value: module-scope construction (lib/daemon.ts)
   // must not open state.db before startDaemon() has opened it daemon-flavored
-  // via openBranchCacheStore — see loadState's call site inside init() below,
+  // via openBranchCacheStore; see loadState's call site inside init() below,
   // which is the first place this ever actually gets invoked.
   const resolveDb = rawDeps.db ? (() => rawDeps.db!) : (() => getStateDb("daemon"));
   const deps = {
@@ -300,7 +300,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let lastPushError: string | null = null;
   /** True once `home:push-failed` has been broadcast for the CURRENT unbroken run of push failures — reset to false the moment a push succeeds, so a retry storm broadcasts once, not on every attempt. */
   let pushFailureBroadcast = false;
-  /** Populated in init(), after the is-inside-work-tree check — see resolveDb's comment for why this can't happen at construction time. */
+  /** Populated in init(), after the is-inside-work-tree check; see resolveDb's comment for why this can't happen at construction time. */
   let firstSeenDirty: Record<string, number> = {};
   let lastLoggedOwnersError: string | null = null;
   /** Shared dedup key for every "deps.readSettings() itself threw" warn (armWatcher's debounce read, status()) — a settings store that broke after boot and stays broken must warn once, not on every fs event or every `rt home snapshot --status` poll. */

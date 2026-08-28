@@ -22,7 +22,7 @@ import { readSupervisionState } from "../supervision-state.ts";
 export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
   return {
     "ping": async () => {
-      // Read here (not once at ctx build time) — a status/status.ts request
+      // Read here (not once at ctx build time): a status/status.ts request
       // must see this run's own boot-attempt/failure counters, not whatever
       // they were when the daemon started.
       const { bootAttempts, lastReadyAt, recentFailures, lastExit } = readSupervisionState();

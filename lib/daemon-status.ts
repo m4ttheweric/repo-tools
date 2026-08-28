@@ -13,7 +13,7 @@
  * `pidAlive`/`breadcrumb`/`supervision` (Task 9's supervision-state.ts) are
  * the only signals that can tell, and per Ruling P1 (2026-08-28 p0-supervision
  * ledger) the breadcrumb FILE is the sole record a pre-state.db boot failure
- * leaves — `supervision` (the kv tier) can be absent even when `breadcrumb`
+ * leaves. `supervision` (the kv tier) can be absent even when `breadcrumb`
  * is present, and classification must still resolve to something useful from
  * the breadcrumb alone.
  */
@@ -27,7 +27,7 @@ export type DaemonStatusVerdict =
   /** Up — proven by an answer or a ping — but `status` itself did not deliver. */
   | { state: "degraded"; reason: "error" | "unresponsive"; detail?: string; pid: number | null }
   /** Ping fails, a live pid exists, and it's parked waiting for a different
-   *  flavor to hold rt.sock (park.ts) — a flavor standoff, not a stuck boot. */
+   *  flavor to hold rt.sock (park.ts): a flavor standoff, not a stuck boot. */
   | { state: "parked"; pid: number; holderFlavor?: string }
   /** Ping fails but the pid is alive: still mid-boot, stuck after reaching
    *  ready, or alive-but-quarantined (recovered from a corrupt db). */
@@ -39,7 +39,7 @@ export type DaemonStatusVerdict =
   | { state: "not-running"; pid: number | null };
 
 /** The boot breadcrumb (`daemon-boot.json`), as classifyDaemonStatus needs it. Not
- *  imported from supervision-state.ts — that module's `Breadcrumb` interface is
+ *  imported from supervision-state.ts, since that module's `Breadcrumb` interface is
  *  intentionally unexported, and this shape only needs to be structurally
  *  compatible with it. */
 export interface DaemonBreadcrumbInput {
@@ -58,19 +58,19 @@ export interface DaemonStatusInputs {
   /** Last recorded pid, for the operator to act on. */
   pid: number | null;
   /** Raw OS-level liveness of `pid` (process.kill(pid,0), or a pgrep-found
-   *  stand-in) — independent of rt.sock. Only worth gathering once `pingOk`
+   *  stand-in), independent of rt.sock. Only worth gathering once `pingOk`
    *  has already come back false; see `classifyDaemonStatus.needsPidProbe`. */
   pidAlive?: boolean;
   /** This machine's currently-intended flavor (`resolveIntendedMode().mode`).
    *  A live pid whose own breadcrumb flavor disagrees with this is parked
-   *  (park.ts), not stuck — the same signal `parkUntilIntended` itself acts on. */
+   *  (park.ts), not stuck: the same signal `parkUntilIntended` itself acts on. */
   intendedFlavor?: "dev" | "prod";
   /** The socket holder's flavor, when the caller managed to learn it (best
-   *  effort — probing rt.sock again after a failed ping/status round rarely
+   *  effort: probing rt.sock again after a failed ping/status round rarely
    *  succeeds, since a parked pid never binds it). Display-only. */
   holderFlavor?: string | null;
   breadcrumb?: DaemonBreadcrumbInput | null;
-  /** Task 9's kv tier. Can be absent even when `breadcrumb` is present — a
+  /** Task 9's kv tier. Can be absent even when `breadcrumb` is present: a
    *  pre-state.db failure leaves only the breadcrumb file (Ruling P1). */
   supervision?: SupervisionState;
   /** Injected for deterministic crash-loop window checks under test; defaults to Date.now(). */
@@ -85,7 +85,7 @@ function classifyAliveNotServingDetail(
 ): "booting" | "wedged" | "quarantined" {
   const phase = breadcrumb?.phase;
   if (!phase || PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf("ready")) return "booting";
-  // Reached ready this run, but a prior attempt is on record as boot-failed —
+  // Reached ready this run, but a prior attempt is on record as boot-failed,
   // most likely a corrupt-db quarantine (lib/state/db.ts, events-bus.ts) it
   // recovered from and is now stuck behind for an unrelated reason.
   if (supervision?.lastExit?.kind === "boot-failed") return "quarantined";
@@ -116,7 +116,7 @@ export function classifyDaemonStatus(opts: DaemonStatusInputs): DaemonStatusVerd
   if (pingOk) return { state: "degraded", reason: "unresponsive", pid };
 
   // Ping failed too. From here, only pidAlive/breadcrumb/supervision (new
-  // signals) can say more than "not running" — absent them, fall straight
+  // signals) can say more than "not running"; absent them, fall straight
   // through to the pre-existing not-running verdict.
   if (pidAlive && pid !== null) {
     if (breadcrumb?.flavor && intendedFlavor && breadcrumb.flavor !== intendedFlavor) {

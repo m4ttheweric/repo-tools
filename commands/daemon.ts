@@ -227,14 +227,14 @@ export async function uninstall(): Promise<void> {
   }
 
   // 3. A failed/absent tray stop must never delete rt.sock/rt.pid/daemon.json
-  // out from under a daemon that's actually still alive — that would orphan
-  // it (still running, launchd-supervised, but rt's own bookkeeping says
+  // out from under a daemon that's actually still alive (that would orphan
+  // it, still running, launchd-supervised, but rt's own bookkeeping says
   // uninstalled). Check both liveness signals: the recorded pid, and whether
   // anything still answers on rt.sock (a daemon can be alive with no
   // matching rt.pid, e.g. after a crash-and-respawn under launchd).
   const stillAlive = isDaemonProcessRunning() || (await probeSocketHolder()) !== null;
   if (stillAlive) {
-    console.log(`\n  ${yellow}⚠${reset} daemon is still running — leaving rt.sock/rt.pid/daemon.json in place`);
+    console.log(`\n  ${yellow}⚠${reset} daemon is still running, leaving rt.sock/rt.pid/daemon.json in place`);
     console.log(`  ${dim}Fix: ${bold}launchctl bootout gui/$UID/${activeLaunchdLabel()}${reset}\n`);
     return;
   }
@@ -276,10 +276,10 @@ export async function start(): Promise<void> {
   if (await pollForDaemonUp(intended)) return;
 
   // The tray acked /daemon/start, but SMAppService can register a job that
-  // never actually launches (still booting, crash-looping, etc.) — kick it
+  // never actually launches (still booting, crash-looping, etc.); kick it
   // via /daemon/restart, which forces launchd to invoke it, rather than
   // leaving the operator staring at "check logs" for something a retry fixes.
-  console.log(`  ${dim}not up yet — escalating to restart (kickstart)…${reset}`);
+  console.log(`  ${dim}not up yet, escalating to restart (kickstart)…${reset}`);
   const restartResult = await trayQuery("/daemon/restart", "POST");
   if (restartResult?.ok && (await pollForDaemonUp(intended))) return;
 
@@ -350,18 +350,18 @@ export async function restart(): Promise<void> {
 
 /**
  * Raw OS-level liveness, independent of rt.sock. Tries a direct pid check
- * first against every pid this HOME actually recorded — rt.pid, then the
+ * first against every pid this HOME actually recorded: rt.pid, then the
  * boot breadcrumb's pid (the breadcrumb survives failures rt.pid never gets
- * written for, per Ruling P1) — before falling back to a last-resort scan.
+ * written for, per Ruling P1), before falling back to a last-resort scan.
  *
  * That scan is `lsof +D <RT_DIR>`, not the brief's suggested system-wide
  * `pgrep -f 'rt --daemon|lib/daemon.ts'`: a raw pgrep matches ANY rt daemon
  * on the machine regardless of which HOME started it, and on an ordinary dev
- * workstation there usually IS one — the developer's own real daemon — so a
+ * workstation there usually IS one (the developer's own real daemon), so a
  * pgrep-based check on an isolated/alternate HOME reliably misreports a dead
  * boot attempt as alive-not-serving (verified live against this repo's own
  * dev daemon while writing the e2e test below). `lsof +D` instead asks "does
- * any process hold a file open under THIS HOME's rt dir" — home-scoped by
+ * any process hold a file open under THIS HOME's rt dir", home-scoped by
  * construction, immune to that false positive and to pid-reuse. Only worth
  * calling once both `status` and a plain ping have already failed.
  *
@@ -369,11 +369,11 @@ export async function restart(): Promise<void> {
  * own `bun:sqlite` handle on `state.db` (inside RT_DIR) via
  * `readSupervisionState()` just before this probe runs, so `lsof +D RT_DIR`
  * legitimately reports the calling CLI process as a live holder of the
- * directory — with no daemon involved at all. Left unfiltered, a genuinely
+ * directory, with no daemon involved at all. Left unfiltered, a genuinely
  * dead daemon self-matches and misclassifies as alive-not-serving/parked;
  * this only failed to show up in manual testing because incidental work
  * happened to separate the state.db open from the lsof call by enough time
- * for state.db's own transient lock window to close — an accident of
+ * for state.db's own transient lock window to close, an accident of
  * timing, not a guarantee.
  */
 export async function probePidAlive(recordedPid: number | null, breadcrumbPid?: number): Promise<{ alive: boolean; pid: number | null }> {
@@ -382,7 +382,7 @@ export async function probePidAlive(recordedPid: number | null, breadcrumbPid?: 
     try {
       process.kill(candidate, 0);
       return { alive: true, pid: candidate };
-    } catch { /* not this one — try the next candidate */ }
+    } catch { /* not this one, try the next candidate */ }
   }
   const { stdout } = await runCapture(["lsof", "-t", "+D", RT_DIR], { timeoutMs: 3000 });
   const pids = stdout.trim().split(/\s+/).filter(Boolean).map(Number)
@@ -408,7 +408,7 @@ export async function showStatus(args: string[] = []): Promise<void> {
 
   // Ping ALSO failed: the only remaining ground is the pid/breadcrumb/kv
   // trail Task 9 left behind. Read it here, once, rather than on every status
-  // call — it's the uncommon path.
+  // call, since it's the uncommon path.
   let pidAlive: boolean | undefined;
   let pid = recordedPid;
   let breadcrumb: ReturnType<typeof readBreadcrumb> | undefined;
@@ -416,7 +416,7 @@ export async function showStatus(args: string[] = []): Promise<void> {
   if (classifyDaemonStatus.needsPidProbe(response, pingOk)) {
     breadcrumb = readBreadcrumb();
     // The kv tier can be legitimately empty (or reflect nothing useful) when
-    // a failure happened before state.db ever opened — Ruling P1. The
+    // a failure happened before state.db ever opened (Ruling P1). The
     // breadcrumb read above is what classifyDaemonStatus falls back to then.
     supervision = readSupervisionState();
     const probed = await probePidAlive(recordedPid, breadcrumb?.pid);
@@ -521,7 +521,7 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
   }
 
   if (verdict.state === "parked") {
-    const lines = [`  ${yellow}◐${reset} parked ${dim}(pid ${verdict.pid} — another flavor owns rt.sock)${reset}`];
+    const lines = [`  ${yellow}◐${reset} parked ${dim}(pid ${verdict.pid}, another flavor owns rt.sock)${reset}`];
     lines.push(
       verdict.holderFlavor
         ? `    ${dim}held by: ${verdict.holderFlavor}${reset}`
@@ -534,7 +534,7 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
   if (verdict.state === "alive-not-serving") {
     const detailLine = {
       booting: "still booting",
-      wedged: "reached ready but stopped answering — likely deadlocked",
+      wedged: "reached ready but stopped answering (likely deadlocked)",
       quarantined: "recovered from a corrupt db but still not answering",
     }[verdict.detail];
     return [
@@ -853,9 +853,9 @@ export async function manageTracking(args: string[] = []): Promise<void> {
  * Decides whether showLogs' native-stderr block is worth printing, and its
  * header. `daemon-stderr.log` is rotated on open (daemon-logger.ts) but the
  * fresh file can still be non-empty from a crash that happened before *this*
- * boot's rotation ran (e.g. a bun panic mid-startup) — so staleness is judged
+ * boot's rotation ran (e.g. a bun panic mid-startup), so staleness is judged
  * by mtime vs. the live daemon's startedAt, not by rotation alone. A `null`
- * startedAt (daemon unreachable — nothing to compare against) fails open:
+ * startedAt (daemon unreachable, nothing to compare against) fails open:
  * show it, since a down daemon is exactly when the last crash matters most.
  */
 export function nativeStderrDisplay(
@@ -885,7 +885,7 @@ export async function showLogs(args: string[] = []): Promise<void> {
 
   // Surface captured native stderr first — these are bun panics/asserts that
   // bypassed the JS-side interceptor and were caught by the swift-shim's
-  // freopen of fd 2. Only shown when it postdates the running daemon's boot —
+  // freopen of fd 2. Only shown when it postdates the running daemon's boot,
   // otherwise it's a previous life's crash, not "the most recent crash".
   const stderrPath = join(LOG_DIR, "daemon-stderr.log");
   if (existsSync(stderrPath)) {

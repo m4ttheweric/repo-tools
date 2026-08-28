@@ -65,7 +65,7 @@ describe("fatal boot", () => {
     const squatter = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("busy") });
     try {
       // `rt daemon status` short-circuits to "not installed" before it ever
-      // reaches the boot-failed/crash-looping classification — install first.
+      // reaches the boot-failed/crash-looping classification, install first.
       await rt(["daemon", "install"], { home });
 
       const boot = await rt(["--daemon"], { home, env: { RT_API_PORT: String(port) } });
@@ -81,13 +81,13 @@ describe("fatal boot", () => {
     }
   }, 60_000);
 
-  test("a corrupt events.db self-heals — quarantined, and the daemon boots and serves", async () => {
+  test("a corrupt events.db self-heals (quarantined), and the daemon boots and serves", async () => {
     const { path: home, cleanup } = createTestHome();
     const bunDir = join(process.execPath, "..");
     let daemon: ReturnType<typeof Bun.spawn> | undefined;
     try {
       // Pre-create a corrupt events.db in the isolated HOME, before the
-      // daemon ever runs — createEventsBus (module scope) opens it.
+      // daemon ever runs; createEventsBus (module scope) opens it.
       const rtDir = join(home, ".mattstack", "rt");
       mkdirSync(rtDir, { recursive: true });
       writeFileSync(join(rtDir, "events.db"), "not a sqlite file at all");

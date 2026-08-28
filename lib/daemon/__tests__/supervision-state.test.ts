@@ -14,7 +14,7 @@ import {
 import { RT_DIR } from "../../daemon-config.ts";
 
 /** Test-only cleanup mirroring the breadcrumb file's path (production has
- * no clear API — the daemon only ever writes or reads it). */
+ * no clear API; the daemon only ever writes or reads it). */
 function removeBreadcrumbFile(): void {
   rmSync(join(RT_DIR, "daemon-boot.json"), { force: true });
 }
