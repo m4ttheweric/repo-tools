@@ -25,6 +25,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync,
 import { bold, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
   isDaemonInstalled,
+  isDaemonProcessRunning,
+  activeLaunchdLabel,
   markDaemonInstalled, markDaemonUninstalled, cleanupDaemonFiles,
   readDaemonPid,
   RT_DIR,
@@ -224,7 +226,20 @@ export async function uninstall(): Promise<void> {
     console.log(`  ${green}✓${reset} removed legacy launchd plist`);
   }
 
-  // 3. Clear install flag + sock/pid files.
+  // 3. A failed/absent tray stop must never delete rt.sock/rt.pid/daemon.json
+  // out from under a daemon that's actually still alive — that would orphan
+  // it (still running, launchd-supervised, but rt's own bookkeeping says
+  // uninstalled). Check both liveness signals: the recorded pid, and whether
+  // anything still answers on rt.sock (a daemon can be alive with no
+  // matching rt.pid, e.g. after a crash-and-respawn under launchd).
+  const stillAlive = isDaemonProcessRunning() || (await probeSocketHolder()) !== null;
+  if (stillAlive) {
+    console.log(`\n  ${yellow}⚠${reset} daemon is still running — leaving rt.sock/rt.pid/daemon.json in place`);
+    console.log(`  ${dim}Fix: ${bold}launchctl bootout gui/$UID/${activeLaunchdLabel()}${reset}\n`);
+    return;
+  }
+
+  // 4. Clear install flag + sock/pid files.
   markDaemonUninstalled();
   cleanupDaemonFiles();
   console.log(`  ${green}✓${reset} cleared install flag`);
@@ -258,16 +273,31 @@ export async function start(): Promise<void> {
   }
 
   console.log(`  ${dim}starting ${intended.mode} daemon via tray…${reset}`);
+  if (await pollForDaemonUp(intended)) return;
+
+  // The tray acked /daemon/start, but SMAppService can register a job that
+  // never actually launches (still booting, crash-looping, etc.) — kick it
+  // via /daemon/restart, which forces launchd to invoke it, rather than
+  // leaving the operator staring at "check logs" for something a retry fixes.
+  console.log(`  ${dim}not up yet — escalating to restart (kickstart)…${reset}`);
+  const restartResult = await trayQuery("/daemon/restart", "POST");
+  if (restartResult?.ok && (await pollForDaemonUp(intended))) return;
+
+  console.log(`\n  ${yellow}daemon starting… check logs: rt daemon logs${reset}\n`);
+}
+
+/** Shared poll loop for start()'s initial wait and its kickstart escalation. */
+async function pollForDaemonUp(intended: IntendedMode): Promise<boolean> {
   for (let i = 0; i < 12; i++) {
     await Bun.sleep(250);
     if (await isDaemonRunning()) {
       if (!(await warnIfWrongFlavor("start", intended))) {
         console.log(`\n  ${green}✓ daemon started${reset}\n`);
       }
-      return;
+      return true;
     }
   }
-  console.log(`\n  ${yellow}daemon starting… check logs: rt daemon logs${reset}\n`);
+  return false;
 }
 
 export async function stop(): Promise<void> {

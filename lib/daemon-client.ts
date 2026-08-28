@@ -178,7 +178,18 @@ async function attemptRestart(): Promise<boolean> {
     // null response (tray socket absent / request failed) means no restart
     // actually happened.
     const res = await trayQuery("/daemon/start", "POST");
-    return res !== null;
+    if (res === null) return false;
+
+    // The tray ack only proves the request was received, not that the
+    // daemon actually came up — re-probe rt.sock before reporting success,
+    // so daemonQuery's caller isn't told "restarted" while the daemon is
+    // still mid-boot and then misdirected into warnDaemonDown() on the very
+    // next query instead of actually waiting for it.
+    for (let i = 0; i < 12; i++) {
+      await Bun.sleep(250);
+      if (await isDaemonRunning()) return true;
+    }
+    return false;
   } catch {
     return false;
   }
