@@ -59,6 +59,28 @@ test("buddyStatus: table order, first match wins, tail heartbeat is COALESCE(tai
   expect(buddyStatus({ lastSeenAt: now }, now)).toBe("idle");
 });
 
+// S075: a >24h autonomous agent (Monitor-driven, no user prompt) keeps its
+// tail heartbeat fresh but its session heartbeat (last_seen_at, which only
+// advances on a user prompt) goes stale past pruneMs. Both the offline rule
+// and the prune predicate must honor the tail heartbeat, or the handle gets
+// reclaimed out from under a session that never left.
+test("buddyStatus: a fresh tail heartbeat keeps an armed row live past the 24h pruneMs boundary", () => {
+  expect(buddyStatus({ lastSeenAt: now - 25 * HOUR, armedAt: now, tailSeenAt: now }, now)).toBe("live");
+});
+
+test("buddyStatus: an armed row is still offline when BOTH heartbeats are stale past pruneMs", () => {
+  expect(buddyStatus({ lastSeenAt: now - 25 * HOUR, armedAt: now - 25 * HOUR, tailSeenAt: now - 25 * HOUR }, now)).toBe("offline");
+});
+
+test("prune: an armed row with a stale session heartbeat but a fresh tail heartbeat survives past 24h", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // last_seen_at stays at `now`, 25h stale by the prune call below
+  const pruneNow = now + 25 * HOUR;
+  db.run("UPDATE chat_presence SET armed_at = ?, tail_seen_at = ? WHERE session_id = 's1'", [pruneNow, pruneNow]); // still touching
+  expect(prunePresence(pruneNow, db)).toBe(0);
+  expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
+});
+
 test("pulse writes last_seen_at and deets only", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
