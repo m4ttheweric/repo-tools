@@ -203,7 +203,7 @@ export const REGISTRY: readonly SettingDef[] = [
     default: 9401,
     merge: "replace",
     migrated: true,
-    description: "TCP port the daemon's local HTTP/WS API binds (escape hatch when 9401 is held).",
+    description: "TCP port for the daemon's local HTTP/WS API. Not yet consumed at bind time (pending api-server wiring); today only the RT_API_PORT env var overrides the default 9401.",
   },
   {
     key: "rt.hooks",
