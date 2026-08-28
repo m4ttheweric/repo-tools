@@ -6,11 +6,29 @@ import { openStateDb, presenceForSession } from "../../state/index.ts";
 import { createChatHandlers, type InboxDeps } from "../handlers/chat.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
+import { herdrRequest } from "../../herdr/client.ts";
+import { fakeHerdr, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
 
 let n = 0;
-function freshHandlers(inboxDeps?: InboxDeps) {
+function freshHandlers(inboxDeps?: InboxDeps, herdr?: typeof herdrRequest) {
   const db = openStateDb(join(tmpdir(), `chat-deliv-${process.pid}-${n++}.db`));
-  return createChatHandlers({ db, emitEvent: () => 0, inboxDeps });
+  return createChatHandlers({ db, emitEvent: () => 0, inboxDeps, herdr });
+}
+
+/** Points a real `herdrRequest` at a fake unix-socket herdr server for the duration of one test. */
+function fakeHerdrClient(handler: FakeHerdrHandler) {
+  const { sock, seen, stop } = fakeHerdr(handler);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: sock });
+  return { herdr, seen, stop };
+}
+
+/** The badge call is a real unix-socket round trip past the queued delivery microtask, so a bare `Bun.sleep(0)` isn't enough; poll instead of guessing a fixed delay. */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor: timed out");
+    await Bun.sleep(5);
+  }
 }
 
 /** inboxAlive checks process.kill(pid,0) and existsSync(socketPath) for real; a live pid and a real (empty) file satisfy both without a listener, since `deliver` itself is faked. */
@@ -136,6 +154,59 @@ test("a recipient whose resolver misses gets no deliver call and keeps unread", 
   await Bun.sleep(0);
   expect(calls).toEqual([]);
   expect(lastReadId(h.db, "general", "b")).toBe(before);
+});
+
+test("a delivery failure paints the recipient's pane with an unread badge over herdr", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: false, error: "timeout" }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const h = freshHandlers(inboxDeps, herdr);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b", pane: "w1:p1" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  await waitFor(() => seen.some((r) => r.method === "pane.report_metadata"));
+  const badge = seen.find((r) => r.method === "pane.report_metadata");
+  expect(badge?.params).toMatchObject({ pane_id: "w1:p1", source: "rt-chat", tokens: { chat_unread: "1" }, ttl_ms: 600_000 });
+  stop();
+});
+
+test("a successful delivery never paints an unread badge", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: true }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const h = freshHandlers(inboxDeps, herdr);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b", pane: "w1:p1" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  await Bun.sleep(50); // give a stray badge call, if any, time to land before asserting its absence
+  expect(seen.find((r) => r.method === "pane.report_metadata")).toBeUndefined();
+  stop();
+});
+
+test("a delivery failure with no pane on presence skips the badge call entirely", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: false, error: "timeout" }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const h = freshHandlers(inboxDeps, herdr);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" }); // no pane
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  expect(posted.ok).toBe(true);
+  await Bun.sleep(50); // give a stray badge call, if any, time to land before asserting its absence
+  expect(seen.find((r) => r.method === "pane.report_metadata")).toBeUndefined();
+  stop();
 });
 
 test("a delivery failure leaves the recipient's cursor untouched", async () => {

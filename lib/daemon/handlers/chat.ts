@@ -88,6 +88,30 @@ function assertionError(fn: () => void): string | null {
 }
 
 /**
+ * Best-effort desk signal for a delivery the inbox socket never got: paints
+ * the recipient's pane with an unread count through herdr so a failed push
+ * isn't silent. No pane on presence (never signed in via `--pane`) means
+ * nothing to paint, so this is a no-op rather than a guess. `herdrRequest`
+ * never throws, but the try/catch is the contract this function promises
+ * its caller regardless of that -- a badge that never lands must not break
+ * message delivery.
+ */
+async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | undefined, count: number): Promise<void> {
+  if (!paneId) return;
+  try {
+    await herdr("pane.report_metadata", {
+      pane_id: paneId,
+      source: "rt-chat",
+      tokens: { chat_unread: String(count) },
+      ttl_ms: 600_000,
+      seq: Date.now(),
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
  * A resolver miss, a signed-out recipient, a dead binding, and an ok:false
  * send are all the same outcome here: no cursor advance. A later post to the
  * same recipient tries again and, via pendingMessages, catches up everything
@@ -101,6 +125,7 @@ function assertionError(fn: () => void): string | null {
 async function deliverPost(
   db: Database,
   deps: InboxDeps,
+  herdr: typeof herdrRequest,
   recipient: string,
   msg: { room: string; dm: boolean; id: number },
 ): Promise<void> {
@@ -112,7 +137,10 @@ async function deliverPost(
   if (pending.length === 0) return;
   const content = renderDeliveries(pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body })));
   const result = await deps.deliver(binding.socketPath, content);
-  if (!result.ok) return;
+  if (!result.ok) {
+    await reportUnreadBadge(herdr, presence.pane, pending.length);
+    return;
+  }
   markDelivered(msg.room, recipient, msg.id, db);
   // Refreshes the SESSION heartbeat -- the only remaining route to it now
   // that chat:pulse is gone -- so a recipient actively receiving messages
@@ -148,10 +176,11 @@ function deliverSerialized(
   chains: Map<string, Promise<void>>,
   db: Database,
   deps: InboxDeps,
+  herdr: typeof herdrRequest,
   recipient: string,
   msg: { room: string; dm: boolean; id: number },
 ): Promise<void> {
-  return serializeDelivery(chains, chainKey(msg.room, recipient), () => deliverPost(db, deps, recipient, msg));
+  return serializeDelivery(chains, chainKey(msg.room, recipient), () => deliverPost(db, deps, herdr, recipient, msg));
 }
 
 // Not a real room -- isValidChatName forbids '_' -- so this key can never
@@ -261,6 +290,7 @@ function postAndNotify(
   emitEvent: (topic: string, payload?: unknown) => unknown,
   args: { room: string; handle: string; body: string; mentions?: string[] },
   inboxDeps: InboxDeps,
+  herdr: typeof herdrRequest,
   deliveryChains: Map<string, Promise<void>>,
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body, mentions } = args;
@@ -270,7 +300,7 @@ function postAndNotify(
   const dm = dmParticipants(room, db);
   for (const recipient of posted.recipients) {
     queueMicrotask(() => {
-      deliverSerialized(deliveryChains, db, inboxDeps, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
+      deliverSerialized(deliveryChains, db, inboxDeps, herdr, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
         log.warn({ err, room, recipient, id: posted.id }, "chat: inbox delivery failed");
       });
     });
@@ -348,7 +378,7 @@ export function createChatHandlers(opts: {
       const { room, handle, body, mentions } = payload;
       const invalidMention = mentions?.find((m) => !isValidChatName(m));
       if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, deliveryChains);
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
     },
@@ -550,7 +580,7 @@ export function createChatHandlers(opts: {
       // Recipient travels in `mentions`, not the body, so the transcript
       // shows the text as typed and the desk still notifies when `to` is
       // the human.
-      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, deliveryChains);
+      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains);
       if (!posted) return { ok: false, error: "chat: dm failed (retry budget exhausted)" };
       return { ok: true, data: { room, id: posted.id, recipients: posted.recipients } };
     },
