@@ -11,8 +11,8 @@
  *
  * Every verb needs herdr; without it the daemon answers "herdr unavailable".
  */
-import type { ChatPane, Commands, RtResponse } from "../packages/rt-client/src/index.ts";
-import { paneAccounts as paneAccountsRt, paneDirectories as paneDirectoriesRt, paneList as paneListRt, panePeek as panePeekRt, paneSpawn as paneSpawnRt, rtCommand } from "../packages/rt-client/src/index.ts";
+import type { ChatPane, RtResponse } from "../packages/rt-client/src/index.ts";
+import { paneAccounts as paneAccountsRt, paneDirectories as paneDirectoriesRt, paneList as paneListRt, panePeek as panePeekRt, paneSend as paneSendRt, paneSpawn as paneSpawnRt } from "../packages/rt-client/src/index.ts";
 
 const FLAGS_WITH_VALUES = new Set(["--lines", "--cwd", "--account", "--model", "--effort", "--prompt", "--workspace", "--q", "--sock", "--text"]);
 
@@ -97,8 +97,7 @@ export async function paneSend(args: string[]): Promise<void> {
   if (!paneId || rawText === undefined) fail("usage: rt pane send <pane> --text <text>  (--text - reads stdin)");
   const text = rawText === "-" ? await new Response(Bun.stdin.stream()).text() : rawText;
   const callerPane = process.env.HERDR_PANE_ID;
-  const payload: Commands["pane:send"]["payload"] = { paneId, text, ...(callerPane ? { callerPane } : {}) };
-  const data = unwrap(await rtCommand<Commands["pane:send"]["data"]>("pane:send", payload, opts(args)), "pane send");
+  const data = unwrap(await paneSendRt({ paneId, text, ...(callerPane ? { callerPane } : {}) }, opts(args)), "pane send");
   if (args.includes("--json")) return void console.log(JSON.stringify({ ok: true, ...data }));
   console.log(`${data.paneId} ${data.delivered}${data.reason ? ` (${data.reason})` : ""}`);
 }

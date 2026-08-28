@@ -66,6 +66,35 @@ test("a stalled prompt gets one pane.send_keys Enter nudge, then queued", async 
   expect(seen.filter((s) => s.method === "pane.send_keys")).toHaveLength(1);
 });
 
+test("the Enter nudge failing unreachable is herdr unavailable, not queued", async () => {
+  const { herdr, seen } = on((method) => {
+    if (method === "agent.get") return agent("idle");
+    if (method === "agent.prompt") return new HerdrFakeError("timeout", "timed out waiting for agent status");
+    if (method === "pane.send_keys") return new HerdrFakeError("unreachable", "herdr socket vanished");
+    return new HerdrFakeError("invalid_request", method);
+  });
+  const res = await injectIntoPane({ paneId: "w1:p1", text: "x", herdr });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error.startsWith("herdr unavailable")).toBe(true);
+  expect(seen.some((s) => s.method === "agent.wait")).toBe(false);
+});
+
+test("agent.wait failing unreachable after the nudge is herdr unavailable, not queued", async () => {
+  const { herdr, seen } = on((method) => {
+    if (method === "agent.get") return agent("idle");
+    if (method === "agent.prompt") return new HerdrFakeError("timeout", "timed out waiting for agent status");
+    if (method === "pane.send_keys") return { type: "ok" };
+    if (method === "agent.wait") return new HerdrFakeError("unreachable", "herdr socket vanished");
+    return new HerdrFakeError("invalid_request", method);
+  });
+  const res = await injectIntoPane({ paneId: "w1:p1", text: "x", herdr });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error.startsWith("herdr unavailable")).toBe(true);
+  expect(seen.filter((s) => s.method === "pane.send_keys")).toHaveLength(1);
+});
+
 test("the caller's own pane is refused before any herdr call", async () => {
   const { herdr, seen } = on(() => new HerdrFakeError("invalid_request", "unreachable in this test"));
   const res = await injectIntoPane({ paneId: "w1:p1", text: "x", callerPane: "w1:p1", herdr });

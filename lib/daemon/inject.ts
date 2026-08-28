@@ -52,7 +52,10 @@ export async function injectIntoPane(opts: InjectOptions): Promise<{ ok: true; d
   if (prompted.code !== "timeout" && prompted.code !== "agent_prompt_stalled") return herdrError(prompted);
 
   // The Claude TUI can absorb the bundled Enter into the composer; one nudge, one more wait.
-  await herdr("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
+  const nudge = await herdr("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
+  if (!nudge.ok) return herdrError(nudge);
   const nudged = await herdr("agent.wait", { target: paneId, until: ["working"], timeout_ms: waitMs }, { timeoutMs: waitTimeout(waitMs) });
-  return ok(nudged.ok ? "accepted" : "queued");
+  if (nudged.ok) return ok("accepted");
+  if (nudged.code !== "timeout" && nudged.code !== "agent_prompt_stalled") return herdrError(nudged);
+  return ok("queued");
 }
