@@ -91,7 +91,7 @@ export { repoNameForPath } from "./repos.ts";
 
 // ─── Settings (RT-50) ────────────────────────────────────────────────────────
 
-export { getSetting, listSettings, explainSetting, expandVariables, SCOPE_ORDER } from "./settings/resolve.ts";
+export { getSetting, listSettings, explainSetting, expandVariables, SCOPE_ORDER, setSettingsWarnSink } from "./settings/resolve.ts";
 export type {
   Scope,
   Provenance,

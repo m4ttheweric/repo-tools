@@ -487,8 +487,29 @@ function expandCtxFrom(opts: ResolveOpts): ExpandCtx {
   };
 }
 
+let warnSink: ((msg: string) => void) | null = null;
+const warnedOnce = new Set<string>();
+
+/** The daemon binds a deduped log.warn here so a hot-path getSetting on a
+ *  disallowed-scope key warns once, not every tick. Default: console.warn
+ *  (CLI/test behavior unchanged). null restores the default. */
+export function setSettingsWarnSink(sink: ((msg: string) => void) | null): void {
+  warnSink = sink;
+  warnedOnce.clear();
+}
+
+export function emitSettingsWarning(msg: string): void {
+  if (warnSink) {
+    if (warnedOnce.has(msg)) return;
+    warnedOnce.add(msg);
+    warnSink(msg);
+    return;
+  }
+  console.warn(msg);
+}
+
 function warnInvalid(key: string, entry: InvalidScope): void {
-  console.warn(
+  emitSettingsWarning(
     `rt: ignoring "${key}" from the ${entry.scope} scope (${entry.file ?? "no file"}): ${entry.reason}`,
   );
 }
@@ -543,7 +564,7 @@ export function listSettings(opts: ResolveOpts = {}): ListedSetting[] {
         listed.value = expandVariables(resolution.value, ctx);
       } catch (err) {
         listed.expandError = (err as Error).message;
-        console.warn(`rt: showing "${def.key}" unexpanded — ${listed.expandError}`);
+        emitSettingsWarning(`rt: showing "${def.key}" unexpanded — ${listed.expandError}`);
       }
     }
 
@@ -583,7 +604,7 @@ function listUnregistered(stores: StoreBundle, opts: ResolveOpts): ListedSetting
   return [...found.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, hit]) => {
-      console.warn(
+      emitSettingsWarning(
         `rt: unregistered setting "${key}" in ${hit.file} — ignoring it (this rt may be older than the store)`,
       );
       return {

@@ -197,6 +197,15 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Age floor in days for the log janitor pruning every surface's rotated log files under ~/.mattstack/rt/logs (default 14). A fresh key, not an ownership-latch port, so a default is fine here.",
   },
   {
+    key: "rt.logLevel",
+    type: "string",
+    scopes: ["machine", "user"],
+    default: "info",
+    merge: "replace",
+    migrated: true,
+    description: "Daemon log level (trace|debug|info|warn|error). RT_LOG_LEVEL env wins, then this setting, then info (lib/daemon-logger.ts resolveDaemonLogLevel). A fresh key, not an ownership-latch port, so a default is fine here.",
+  },
+  {
     key: "rt.apiPort",
     type: "number",
     scopes: ["machine", "user"],
