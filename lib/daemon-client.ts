@@ -199,6 +199,31 @@ async function attemptRestart(): Promise<boolean> {
   }
 }
 
+const SOCKET_POLL_TOTAL_MS = 3_000;
+const SOCKET_POLL_INTERVAL_MS = 150;
+
+/**
+ * Polls for rt.sock to exist and answer for up to ~3s after a restart
+ * request. parkUntilIntended's own socket probe, state.db open, and the
+ * identity migration routinely take longer than a single fixed delay, so a
+ * start that genuinely succeeds must not be reported as "installed but not
+ * running" just because the retry landed too early.
+ */
+async function waitForSocket(
+  totalMs: number = SOCKET_POLL_TOTAL_MS,
+  intervalMs: number = SOCKET_POLL_INTERVAL_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + totalMs;
+  while (Date.now() < deadline) {
+    if (existsSync(DAEMON_SOCK_PATH)) {
+      const ping = await trySocketQuery("ping", {}, Math.min(intervalMs * 2, 1000));
+      if (ping.response !== null) return true;
+    }
+    await Bun.sleep(intervalMs);
+  }
+  return existsSync(DAEMON_SOCK_PATH);
+}
+
 function warnDaemonDown(): void {
   if (hasWarnedThisSession || _warningSuppressed) return;
   hasWarnedThisSession = true;
@@ -249,8 +274,11 @@ export async function daemonQueryAttributed(
   const restarted = await attemptRestart();
   let last = first;
   if (restarted) {
-    // Retry once after short delay
-    await Bun.sleep(300);
+    // Bounded poll, not one fixed-delay retry: parkUntilIntended's own
+    // socket probe, state.db open, and the identity migration routinely
+    // take longer than 300ms, and a successful start must not be reported
+    // as "installed but not running" just because the retry landed early.
+    await waitForSocket();
     const retry = await trySocketQuery(cmd, payload, timeoutMs);
     if (retry.response !== null) return retry;
     last = retry;
