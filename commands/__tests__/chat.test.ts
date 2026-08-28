@@ -654,6 +654,63 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     expect(stdout).toBe("");
     expect(stderr).toBe("");
   });
+
+  test("sign-out --pane with an inherited foreign CLAUDE_CODE_SESSION_ID signs out the pane's session, not the env one", async () => {
+    const uuid = "77777777-7777-7777-7777-777777777777";
+    const { sock: herdrSock, stop } = fakeHerdr((method) => {
+      if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+      return {
+        snapshot: {
+          workspaces: [],
+          panes: [
+            {
+              pane_id: "w1:p1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              agent: "claude",
+              agent_status: "idle",
+              agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid },
+            },
+          ],
+        },
+      };
+    });
+    const origSock = process.env.HERDR_SOCKET_PATH;
+    process.env.HERDR_SOCKET_PATH = herdrSock;
+    try {
+      // The target pane's own session, signed in for real so it has a
+      // session file and a live presence row to tear down.
+      await signInInProcess({ as: "pane-agent", session: uuid, noRoom: true });
+      const paneSessionPath = join(home, ".mattstack", "rt", "chat", "sessions", `${uuid}.json`);
+      expect(existsSync(paneSessionPath)).toBe(true);
+
+      // This process inherits a DIFFERENT session id -- the exact hazard
+      // --pane sign-out must ignore rather than sign out.
+      await signInInProcess({ as: "foreign", session: "foreign-sess", noRoom: true });
+      const foreignSessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "foreign-sess.json");
+      expect(existsSync(foreignSessionPath)).toBe(true);
+      expect(process.env.CLAUDE_CODE_SESSION_ID).toBe("foreign-sess");
+
+      await runChat(["sign-out", "--pane", "w1:p1"]);
+
+      expect(existsSync(paneSessionPath)).toBe(false);
+      expect(existsSync(foreignSessionPath)).toBe(true);
+
+      const paneRow = getStateDb()
+        .query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?")
+        .get(uuid) as { signed_out_at: number | null } | null;
+      expect(paneRow?.signed_out_at).not.toBeNull();
+
+      const foreignRow = getStateDb()
+        .query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?")
+        .get("foreign-sess") as { signed_out_at: number | null } | null;
+      expect(foreignRow?.signed_out_at).toBeNull();
+    } finally {
+      stop();
+      if (origSock === undefined) delete process.env.HERDR_SOCKET_PATH;
+      else process.env.HERDR_SOCKET_PATH = origSock;
+    }
+  });
 });
 
 // ─── buddies, away/back, dm, pulse ──────────────────────────────────────────

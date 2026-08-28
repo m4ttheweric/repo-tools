@@ -102,9 +102,19 @@ async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | un
     await herdr("pane.report_metadata", {
       pane_id: paneId,
       source: "rt-chat",
+      // `count` is the failed delivery's OWN room, not a fleet-wide total:
+      // each report_metadata call overwrites the `chat_unread` token
+      // outright (herdr keeps only the latest value per source+pane), so a
+      // second failure in a different room replaces rather than adds to
+      // whatever the first one reported.
       tokens: { chat_unread: String(count) },
       ttl_ms: 600_000,
-      seq: Date.now(),
+      // Nanosecond-monotonic, not Date.now(): two failed deliveries inside
+      // the same millisecond would otherwise share a seq, and herdr drops a
+      // report whose seq does not advance -- silently losing the second
+      // badge. Stringified because hrtime's bigint would otherwise coerce
+      // through a lossy JSON number.
+      seq: process.hrtime.bigint().toString(),
     });
   } catch {
     /* best-effort */
@@ -275,6 +285,38 @@ function findPaneSession(snapshot: HerdrSnapshot, paneId: string): { sessionId: 
   return { sessionId: pane.agent_session.value, cwd: pane.foreground_cwd ?? pane.cwd };
 }
 
+// Mirrors pane.ts's REGISTER_BUDGET_MS/REGISTER_POLL_MS wait: a few seconds
+// at a short poll, bounded by wall-clock rather than an attempt count.
+const PANE_SESSION_BUDGET_MS = 3000;
+const PANE_SESSION_POLL_MS = 200;
+
+/**
+ * `findPaneSession`, re-polled: herdr-chat calls `sign-in --pane` right as a
+ * pane starts, the exact window herdr has not yet reported that pane's
+ * `agent_session` in a snapshot. An immediate miss is not yet a real
+ * "no session" answer, so this re-fetches the snapshot until one appears or
+ * the budget runs out. A herdr-unreachable failure is NOT retried -- that is
+ * a different failure than a not-yet-registered session, and retrying it
+ * would only spend the budget on a snapshot call that keeps failing the
+ * same way.
+ */
+async function findPaneSessionRetrying(
+  herdr: typeof herdrRequest,
+  paneId: string,
+  budgetMs: number,
+  pollMs: number,
+): Promise<{ ok: true; session: { sessionId: string; cwd?: string } } | { ok: false; error: string }> {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
+    if (!snap.ok) return herdrError(snap);
+    const resolved = findPaneSession(snap.result.snapshot, paneId);
+    if (resolved) return { ok: true, session: resolved };
+    if (Date.now() >= deadline) return { ok: false, error: `chat: no Claude session found for pane "${paneId}"` };
+    await Bun.sleep(pollMs);
+  }
+}
+
 /**
  * The row must commit before the viewer's `chat/<room>/msg` emit fires, or a
  * viewer reading the event finds no message yet. Shared by chat:post and
@@ -343,6 +385,9 @@ export function createChatHandlers(opts: {
   /** repo/branch/room derivation for `--pane` sign-in (lib/repo-for-cwd.ts, the same index-based, no-sync-git-spawn source pane.ts's own paneRow uses). */
   repoIndex?: () => Record<string, string>;
   exec?: typeof runCapture;
+  /** `findPaneSessionRetrying`'s wall-clock budget/poll; overridable so a test whose fake herdr never resolves does not have to wait out the real production budget. */
+  paneSessionBudgetMs?: number;
+  paneSessionPollMs?: number;
 }): Pick<TypedHandlers, (typeof CHAT_COMMANDS)[number]> & { db: Database } {
   const { db, emitEvent } = opts;
   const herdr = opts.herdr ?? herdrRequest;
@@ -350,6 +395,8 @@ export function createChatHandlers(opts: {
   const registryDeps = opts.registryDeps;
   const repoIndex = opts.repoIndex ?? (() => ({}));
   const exec = opts.exec ?? runCapture;
+  const paneSessionBudgetMs = opts.paneSessionBudgetMs ?? PANE_SESSION_BUDGET_MS;
+  const paneSessionPollMs = opts.paneSessionPollMs ?? PANE_SESSION_POLL_MS;
   // One chain map per handler instance (one daemon, one db): shared across
   // every chat:post/chat:dm call so deliverSerialized actually serializes.
   const deliveryChains = new Map<string, Promise<void>>();
@@ -466,12 +513,10 @@ export function createChatHandlers(opts: {
 
       if (viaPane) {
         if (!pane) return { ok: false, error: "chat: sign-in --pane requires a pane id" };
-        const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
-        if (!snap.ok) return herdrError(snap);
-        const resolved = findPaneSession(snap.result.snapshot, pane);
-        if (!resolved) return { ok: false, error: `chat: no Claude session found for pane "${pane}"` };
-        sessionId = resolved.sessionId;
-        if (signInCwd === undefined) signInCwd = resolved.cwd;
+        const resolved = await findPaneSessionRetrying(herdr, pane, paneSessionBudgetMs, paneSessionPollMs);
+        if (!resolved.ok) return resolved;
+        sessionId = resolved.session.sessionId;
+        if (signInCwd === undefined) signInCwd = resolved.session.cwd;
 
         if (signInCwd) {
           if (signInRepo === undefined) signInRepo = repoForCwd(signInCwd, repoIndex()) ?? undefined;
@@ -536,11 +581,25 @@ export function createChatHandlers(opts: {
 
     // A missing row is the common case, not a refusal: SessionEnd fires for
     // every session and most never sign in.
+    //
+    // viaPane resolves `pane` -> sessionId through the same findPaneSession
+    // path chat:sign-in --pane uses, so a foreign CLAUDE_CODE_SESSION_ID the
+    // caller happens to have inherited never substitutes for the target
+    // pane's own session -- that would sign the wrong session out.
     "chat:sign-out": async (payload: Commands["chat:sign-out"]["payload"]): Promise<CommandResult<"chat:sign-out">> => {
-      const { sessionId } = payload;
-      if (!presenceForSession(sessionId, db)) return { ok: true, data: {} };
+      let sessionId = payload.sessionId;
+      if (payload.viaPane) {
+        if (!payload.pane) return { ok: false, error: "chat: sign-out --pane requires a pane id" };
+        const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
+        if (!snap.ok) return herdrError(snap);
+        const resolved = findPaneSession(snap.result.snapshot, payload.pane);
+        if (!resolved) return { ok: false, error: `chat: no Claude session found for pane "${payload.pane}"` };
+        sessionId = resolved.sessionId;
+      }
+      if (!sessionId) return { ok: false, error: "chat: sign-out requires a sessionId or --pane" };
+      if (!presenceForSession(sessionId, db)) return { ok: true, data: { sessionId } };
       signOut(sessionId, undefined, db);
-      return { ok: true, data: {} };
+      return { ok: true, data: { sessionId } };
     },
 
     "chat:away": async (payload: Commands["chat:away"]["payload"]): Promise<CommandResult<"chat:away">> => {

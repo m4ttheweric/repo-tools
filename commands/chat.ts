@@ -13,6 +13,7 @@
  *   rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]
  *   rt chat sign-in --pane <id> [--as <h>] [--status <text>]   sign in a herdr pane's session, no CLAUDE_CODE_SESSION_ID needed
  *   rt chat sign-out [--quiet] [--session <id>]
+ *   rt chat sign-out --pane <id> [--quiet]         sign out a herdr pane's session daemon-side, no CLAUDE_CODE_SESSION_ID needed
  *   rt chat away <text> [--session <id>]           rt chat back [--session <id>]
  *   rt chat buddies [--json]                       the roster; bare `who` aliases it
  *   rt chat dm <handle> <<'EOF' ... EOF           same body rules as post
@@ -976,6 +977,12 @@ async function runSignInViaPane(args: string[], paneId: string): Promise<void> {
  * hook's command, and it must never exit non-zero on a shutdown.
  */
 async function runSignOut(args: string[]): Promise<void> {
+  const paneFlag = flagValue(args, "--pane");
+  if (paneFlag) {
+    await runSignOutViaPane(args, paneFlag);
+    return;
+  }
+
   const quiet = args.includes("--quiet");
   const sessionId = currentSessionId(args);
   if (!sessionId) {
@@ -1006,6 +1013,30 @@ async function runSignOut(args: string[]): Promise<void> {
   } else if (!quiet) {
     console.log(session ? `✓ signed out (${session.handle})` : "✓ signed out");
   }
+}
+
+/**
+ * Signs another pane's Claude session out on its behalf, mirroring
+ * runSignInViaPane: the daemon resolves `paneId` to a session id via herdr,
+ * so this branch never calls currentSessionId(args) -- an inherited
+ * CLAUDE_CODE_SESSION_ID (this process's own, foreign to the target pane)
+ * must never substitute for the pane's session, or --pane sign-out would
+ * sign the WRONG session out. The daemon's RESOLVED sessionId, not
+ * anything local, is what gets deleted here -- the same file the target
+ * pane's own sign-out would delete.
+ */
+async function runSignOutViaPane(args: string[], paneId: string): Promise<void> {
+  const res = await chatSignOut({ pane: paneId, viaPane: true }, { timeoutMs: 3000 });
+  const { sessionId } = unwrap(res, "sign-out");
+
+  const session = readChatSession(sessionId);
+  deleteChatSession(sessionId);
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true }));
+    return;
+  }
+  console.log(session ? `✓ signed out (${session.handle}) · pane ${paneId}` : `✓ signed out · pane ${paneId}`);
 }
 
 /**

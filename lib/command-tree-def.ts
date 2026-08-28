@@ -719,7 +719,7 @@ export const TREE: Record<string, CommandNode> = {
       { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb, and is required by away/back" },
       { name: "Status", flag: "--status", type: "text", placeholder: "rebasing #67", hint: "For sign-in: an away/status message to set on the presence row" },
       { name: "No room", flag: "--no-room", type: "boolean", default: false, hint: "For sign-in: skip joining the derived repository room" },
-      { name: "Pane", flag: "--pane", type: "text", placeholder: "w1:p1", hint: "For sign-in: sign in this herdr pane's Claude session daemon-side (resolved via herdr), no CLAUDE_CODE_SESSION_ID needed" },
+      { name: "Pane", flag: "--pane", type: "text", placeholder: "w1:p1", hint: "For sign-in/sign-out: target this herdr pane's Claude session daemon-side (resolved via herdr), no CLAUDE_CODE_SESSION_ID needed" },
       { name: "Body file", flag: "--file", type: "text", placeholder: "post.md", hint: "For post/dm: read the body from a file instead of stdin or the text" },
       { name: "As is", flag: "--as-is", type: "boolean", default: false, hint: "For post/dm: post a long single-line body anyway (500+ characters with no line break is refused by default)" },
       { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For sign-out: suppress output (the SessionEnd hook's flag)" },

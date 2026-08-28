@@ -241,10 +241,14 @@ export function chatSignIn(
 }
 
 export function chatSignOut(
-  a: { sessionId: string },
+  a: Commands["chat:sign-out"]["payload"],
   o: RtClientOptions = {},
-): Promise<RtResponse<Record<string, never>>> {
-  return rtCommand<Record<string, never>>("chat:sign-out", { sessionId: a.sessionId }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+): Promise<RtResponse<Commands["chat:sign-out"]["data"]>> {
+  const payload: Record<string, unknown> = {};
+  if (a.sessionId !== undefined) payload.sessionId = a.sessionId;
+  if (a.pane !== undefined) payload.pane = a.pane;
+  if (a.viaPane !== undefined) payload.viaPane = a.viaPane;
+  return rtCommand<Commands["chat:sign-out"]["data"]>("chat:sign-out", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function chatAway(

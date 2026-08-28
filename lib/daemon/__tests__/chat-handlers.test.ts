@@ -405,7 +405,10 @@ test("chat:sign-in viaPane refuses a pane herdr has no Claude session for, disti
   const { sock: herdrSock, stop } = fakeHerdr(() => ({ snapshot: { workspaces: [], panes: [] } }));
   stops.push(stop);
   const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
-  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-miss-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr });
+  // A tiny budget/poll: this fake herdr never reports a session, so the
+  // re-poll loop (below) would otherwise burn the full production budget
+  // for a genuinely-no-session pane.
+  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-miss-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr, paneSessionBudgetMs: 20, paneSessionPollMs: 5 });
   const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true });
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
@@ -418,6 +421,36 @@ test("chat:sign-in viaPane refuses a pane herdr has no Claude session for, disti
   if (res2.ok) throw new Error("unreachable");
   expect(res2.error).toContain("herdr unavailable");
   expect(res2.error).not.toBe(res.error);
+});
+
+test("chat:sign-in viaPane re-polls the snapshot when herdr has not yet reported the pane's agent_session, and succeeds once it does", async () => {
+  const uuid = "33333333-3333-3333-3333-333333333333";
+  let calls = 0;
+  const { sock: herdrSock, stop } = fakeHerdr((method) => {
+    if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+    calls++;
+    // Misses on the first two calls (the pane exists but herdr has not yet
+    // attached its agent_session), reports it on the third.
+    const panes = calls < 3
+      ? [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "claude", agent_status: "idle" }]
+      : [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "claude", agent_status: "idle", agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid } }];
+    return { snapshot: { workspaces: [], panes } };
+  });
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({
+    db: openStateDb(join(tmpdir(), `chat-viapane-repoll-${process.pid}-${n++}.db`)),
+    emitEvent: () => 0,
+    herdr,
+    paneSessionBudgetMs: 2000,
+    paneSessionPollMs: 20,
+  });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.sessionId).toBe(uuid);
+  expect(calls).toBeGreaterThanOrEqual(3);
 });
 
 test("chat:sign-in draws baseHandle from the inbox registry's own name when none is given explicitly", async () => {
@@ -453,6 +486,38 @@ test("chat:sign-out is a no-op success once the session's presence row was recla
   await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "x" });
   const res = await h["chat:sign-out"]({ sessionId: "s1" });
   expect(res.ok).toBe(true);
+});
+
+test("chat:sign-out viaPane resolves the pane's Claude session via herdr (the same findPaneSession path sign-in uses) and signs that session out", async () => {
+  const uuid = "22222222-2222-2222-2222-222222222222";
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-out-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr });
+
+  await h["chat:sign-in"]({ sessionId: uuid, baseHandle: "x" });
+
+  const res = await h["chat:sign-out"]({ pane: "w1:p1", viaPane: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.sessionId).toBe(uuid);
+
+  const row = h.db.query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?").get(uuid) as
+    | { signed_out_at: number | null }
+    | null;
+  expect(row?.signed_out_at).not.toBeNull();
+});
+
+test("chat:sign-out viaPane refuses a pane herdr has no Claude session for", async () => {
+  const { sock: herdrSock, stop } = fakeHerdr(() => ({ snapshot: { workspaces: [], panes: [] } }));
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-out-miss-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr });
+
+  const res = await h["chat:sign-out"]({ pane: "w1:p1", viaPane: true });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("w1:p1");
 });
 
 test("chat:away sets status_text and chat:back clears it, both refusing an unsigned session", async () => {

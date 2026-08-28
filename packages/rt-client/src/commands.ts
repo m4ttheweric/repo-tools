@@ -319,7 +319,18 @@ export interface Commands {
     };
     data: { handle: string; baseHandle: string; reclaimed: boolean; sessionId: string; room: string | null };
   };
-  "chat:sign-out": { payload: { sessionId: string }; data: Record<string, never> };
+  /**
+   * `viaPane` mirrors `chat:sign-in`'s: the daemon resolves `pane` to a
+   * session id via herdr's `session.snapshot` rather than trusting a
+   * caller-supplied one, so a process signing another pane out (herdr-chat,
+   * or a human invoking a target pane) needs neither that pane's session id
+   * nor its own. The response's `sessionId` is the RESOLVED id, the only way
+   * such a caller learns which session file to delete locally.
+   */
+  "chat:sign-out": {
+    payload: { sessionId?: string; pane?: string; viaPane?: boolean };
+    data: { sessionId: string };
+  };
   "chat:away": { payload: { sessionId: string; text: string }; data: Record<string, never> };
   "chat:back": { payload: { sessionId: string }; data: Record<string, never> };
   "chat:buddies": { payload: Record<string, never>; data: { buddies: Array<PresenceRow & { status: BuddyStatus }> } };
