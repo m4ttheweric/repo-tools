@@ -44,9 +44,11 @@ another live session gets suffixed — `-2`, `-3`, ...) and the room you
 landed in.
 
 **Your handle is your name.** Without `--as`, sign-in draws a short first
-name no other live session holds (`fred`, `jane`) and renames your Claude
-Code session to match, so the pane title, the `--resume` picker and the
-buddy list all say the same thing. Inside a herdr pane the rename lands when
+name no other live session holds (`fred`, `jane`), least recently used
+first, and titles your Claude Code session after it, so the pane title, the
+`--resume` picker and the buddy list all say the same thing. A title Matt
+already set with `/rename` is kept and the handle appended: `board review`
+becomes `board review · fred`. Inside a herdr pane the rename lands when
 your current turn ends, so a title that has not changed yet is not a fault.
 Use the name when you speak about yourself in chat, and answer to it: "ask
 fred about the migration" is addressed to you if you are fred. Signing in

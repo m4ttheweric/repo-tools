@@ -8,6 +8,7 @@ import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
 import { drainNotifications, loadNotificationPrefs, peekNotifications, saveNotificationPrefs } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
+import { AGENT_NAMES } from "../../chat-names.ts";
 
 const stops: Array<() => void> = [];
 afterEach(() => {
@@ -177,6 +178,14 @@ test("sign-in assigns and a second same-base session gets the suffix", async () 
   const second = await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "x" });
   if (!second.ok) throw new Error("unreachable");
   expect(second.data).toMatchObject({ handle: "x-2" });
+});
+
+test("sign-in without a baseHandle draws a first name from the pool", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:sign-in"]({ sessionId: "s1" });
+  if (!res.ok) throw new Error("unreachable");
+  expect(AGENT_NAMES).toContain(res.data.baseHandle);
+  expect(res.data.handle).toBe(res.data.baseHandle);
 });
 
 test("sign-in rejects an invalid baseHandle with a reason rather than normalizing it", async () => {

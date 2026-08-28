@@ -275,7 +275,7 @@ export function createChatHandlers(opts: {
 
     "chat:sign-in": async (payload: Commands["chat:sign-in"]["payload"]): Promise<CommandResult<"chat:sign-in">> => {
       const { sessionId, baseHandle, cwd, repo, branch, pane, statusText } = payload;
-      if (!isValidChatName(baseHandle)) return { ok: false, error: `invalid handle "${baseHandle}"` };
+      if (baseHandle !== undefined && !isValidChatName(baseHandle)) return { ok: false, error: `invalid handle "${baseHandle}"` };
       const data = signIn({ sessionId, baseHandle, cwd, repo, branch, pane, statusText }, db);
       return { ok: true, data };
     },
