@@ -217,3 +217,45 @@ describe("rt agent (handoff e2e)", () => {
     expect(p.exitCode).toBe(1);
   }, 15_000);
 });
+
+describe("rt agent (daemon-down fallback)", () => {
+  let home: string;
+  let cleanup: () => void;
+  let herdrLog: string;
+  let herdrEnv: Record<string, string>;
+
+  beforeAll(() => {
+    ({ path: home, cleanup } = createTestHome());
+    const binDir = join(home, ".local", "bin");
+    mkdirSync(binDir, { recursive: true });
+    const herdrBin = join(binDir, "herdr");
+    writeFileSync(herdrBin, FAKE_HERDR, { mode: 0o755 });
+    herdrLog = join(home, "herdr.log");
+    writeFileSync(herdrLog, "");
+    const herdrState = join(home, "herdr-state");
+    mkdirSync(herdrState, { recursive: true });
+    // No daemon is started for this HOME, so isDaemonRunning() resolves
+    // false and the CLI itself shells out to herdr in the fallback path.
+    herdrEnv = { HERDR_BIN: herdrBin, FAKE_HERDR_LOG: herdrLog, FAKE_HERDR_STATE: herdrState };
+  });
+
+  afterAll(() => cleanup());
+
+  test("herdr start records with no daemon, and show reads it back", async () => {
+    const start = await finished(runRt(["agent", "start", "--repo", home, "--surface", "herdr", "--prompt", "hi", "--json"], home, herdrEnv));
+    expect(start.exitCode).toBe(0);
+    const parsed = JSON.parse(start.stdout.trim());
+    expect(parsed.agent.paneId).toBe("w1:p1");
+    expect(readFileSync(herdrLog, "utf8")).toContain("pane run w1:p1");
+
+    const show = await finished(runRt(["agent", "show", parsed.agent.id, "--json"], home, herdrEnv));
+    expect(show.exitCode).toBe(0);
+    expect(JSON.parse(show.stdout.trim()).agent.id).toBe(parsed.agent.id);
+  }, 30_000);
+
+  test("headless start is refused with no daemon", async () => {
+    const res = await finished(runRt(["agent", "start", "--repo", home, "--surface", "headless", "--prompt", "hi", "--json"], home, herdrEnv));
+    expect(res.exitCode).not.toBe(0);
+    expect(res.stderr).toContain("headless needs the rt daemon");
+  }, 15_000);
+});
