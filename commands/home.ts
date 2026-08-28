@@ -38,6 +38,7 @@ import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { bold, dim, green, red, reset, yellow } from "../lib/ansi.ts";
 import { isSafeMachineKeySegment, machineKey, mattstackHome } from "../lib/rt-paths.ts";
+import { resolveInitialMachineKey } from "../lib/home/machine-id.ts";
 import {
   buildInitPlan,
   chooseMachineProfile,
@@ -549,7 +550,7 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
   const exec = seams.exec ?? createRealExecSeam(mattstackHome());
   const ageKeySeam = seams.ageKeySeam ?? createRealAgeKeySeam();
   const sopsYamlSeam = seams.sopsYamlSeam ?? defaultSopsYamlSeam();
-  const key = seams.key ?? machineKey();
+  const key = seams.key ?? (await resolveInitialMachineKey(mattstackHome(), probes));
   const pickerSeam = seams.pickerSeam ?? createRealMachineProfilePickerSeam();
   const isInteractive = seams.isInteractive ?? (() => Boolean(process.stdin.isTTY));
   const materializeExec = seams.materializeExec ?? defaultMaterializeExec();
