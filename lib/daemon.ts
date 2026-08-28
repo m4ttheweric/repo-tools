@@ -437,7 +437,7 @@ async function runDaemon(): Promise<void> {
 
     // If a previous daemon process is still alive (orphan from a failed
     // restart), evict it before we bind the socket.
-    evictStaleDaemon(log);
+    await evictStaleDaemon(log);
 
     // Auto-unlink any tagged tool link whose tool now has a genuine user copy
     // elsewhere on PATH (e.g. the user ran `brew install gh` after rt linked

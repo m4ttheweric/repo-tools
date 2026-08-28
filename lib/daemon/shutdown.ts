@@ -3,7 +3,7 @@
  * runtime files in an order that beats launchd's 5s ExitTimeOut.
  */
 
-import { existsSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, unlinkSync } from "fs";
 import type { Server } from "bun";
 import type { Logger } from "pino";
 import { DAEMON_SOCK_PATH, DAEMON_PID_PATH } from "../daemon-config.ts";
@@ -18,10 +18,12 @@ export interface ShutdownDeps {
   servers: { socket?: Server<any>; api?: Server<any> };
   hooksGuard: HooksGuard;
   log: Logger;
+  /** This process's pid. Injected so cleanup's ownership check is testable. */
+  pid?: number;
 }
 
 export function createCleanup(deps: ShutdownDeps): () => void {
-  const { servers, hooksGuard, log } = deps;
+  const { servers, hooksGuard, log, pid = process.pid } = deps;
 
   return function cleanup(): void {
     // Stop accepting new traffic first, and force-close all in-flight
@@ -41,10 +43,15 @@ export function createCleanup(deps: ShutdownDeps): () => void {
     // through at every mutation site (lib/state/branch-cache.ts), so there
     // is nothing dirty in memory to race launchd's 5s ExitTimeOut.
 
-    // Remove runtime files
-    for (const path of [DAEMON_SOCK_PATH, DAEMON_PID_PATH]) {
-      try { if (existsSync(path)) unlinkSync(path); } catch { /* */ }
-    }
+    // Remove runtime files, but only if rt.pid still names THIS process.
+    // A shutting-down old daemon that unlinks unconditionally can delete a
+    // new daemon's rt.sock/rt.pid out from under it (S012/S044).
+    try {
+      if (existsSync(DAEMON_PID_PATH) && readFileSync(DAEMON_PID_PATH, "utf8").trim() === String(pid)) {
+        unlinkSync(DAEMON_PID_PATH);
+        if (existsSync(DAEMON_SOCK_PATH)) unlinkSync(DAEMON_SOCK_PATH);
+      }
+    } catch (err) { log.warn({ err }, "cleanup unlink skipped"); }
 
     log.info("daemon stopped");
   };
