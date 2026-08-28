@@ -187,6 +187,27 @@ export function pathParam(pathname: string, prefix: string, suffix = ""): string
   }
 }
 
+const PLAIN_NUMBER_RE = /^-?\d+(\.\d+)?$/;
+
+/**
+ * REST query strings arrive as strings no matter what the client meant
+ * (S085): "?maxAgeMs=60000" and "?refresh=true" reached handlers that do a
+ * strict `typeof x === "number"` or `x === true` check, so the documented
+ * flag silently no-op'd over HTTP while working over the socket (where
+ * payloads are real JSON). One coercion at the REST seam fixes every such
+ * flag at once instead of a per-handler private parser.
+ */
+export function coerceQueryParams(params: URLSearchParams): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of params) {
+    if (value === "true") out[key] = true;
+    else if (value === "false") out[key] = false;
+    else if (value !== "" && PLAIN_NUMBER_RE.test(value)) out[key] = Number(value);
+    else out[key] = value;
+  }
+  return out;
+}
+
 export interface ApiServerDeps {
   handleCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
   log: Logger;
@@ -336,7 +357,7 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
         if (req.method === "POST") {
           try { payload = await req.json(); } catch { /* empty body */ }
         } else {
-          payload = Object.fromEntries(url.searchParams);
+          payload = coerceQueryParams(url.searchParams);
         }
 
         const result = await handleCommand(route.cmd, payload, req.signal);
