@@ -9,6 +9,7 @@ import { existsSync, unlinkSync } from "fs";
 import type { Server } from "bun";
 import type { Logger } from "pino";
 import { DAEMON_SOCK_PATH } from "../daemon-config.ts";
+import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
 
 export function startSocketServer(opts: {
   handleCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
@@ -33,6 +34,7 @@ export function startSocketServer(opts: {
     // on how long an idle connection may sit before Bun kills it — it never
     // holds connections open on its own.
     idleTimeout: 255,
+    maxRequestBodySize: MAX_REQUEST_BODY_SIZE,
     async fetch(req) {
       try {
         const url = new URL(req.url);

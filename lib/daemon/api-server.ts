@@ -12,6 +12,7 @@ import type { Logger } from "pino";
 import { API_PORT } from "../daemon-config.ts";
 import { needsToken, tokenOk, loadOrCreateApiToken } from "./api-auth.ts";
 import { getAggregatedConnection } from "./freshness.ts";
+import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
 
 const API_INDEX = {
   name: "rt daemon",
@@ -140,6 +141,7 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
     // clients aren't reaped every 10s ("[Bun.serve]: request timed out").
     // 255 is the server max; the websocket block below sets its own larger one.
     idleTimeout: 255,
+    maxRequestBodySize: MAX_REQUEST_BODY_SIZE,
     async fetch(req, server) {
       const url = new URL(req.url);
 
