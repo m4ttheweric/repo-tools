@@ -160,7 +160,7 @@ const systemProcessScanner = new SystemProcessScanner();
 // runCapture forwards process.env explicitly (lib/subprocess.ts) because
 // Bun.spawn would otherwise ignore this assignment.
 {
-  const resolvedPath = resolveUserPath(log);
+  const resolvedPath = await resolveUserPath(log);
   if (resolvedPath) process.env.PATH = resolvedPath;
 }
 
