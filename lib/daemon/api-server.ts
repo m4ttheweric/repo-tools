@@ -10,7 +10,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "pino";
 import { API_PORT } from "../daemon-config.ts";
-import { needsToken, tokenOk, getApiToken } from "./api-auth.ts";
+import { needsToken, tokenOk, getApiToken, isBrowserRequestTrusted, getTrustedBrowserOrigins } from "./api-auth.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
 
@@ -92,6 +92,25 @@ export function clearWsClients(): void {
   wsClients.clear();
 }
 
+/**
+ * CORS default-deny (S006): a browser page on an untrusted Origin still gets
+ * its request served (127.0.0.1 loopback + the per-route token gate are the
+ * real defenses), but the response carries no Access-Control-Allow-Origin,
+ * so the page's own JavaScript cannot read the body. A request with no
+ * Origin at all (every non-browser consumer today) needs no CORS headers.
+ */
+export function buildCorsHeaders(origin: string | null, trusted: boolean): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-RT-Token",
+  };
+  if (origin && trusted) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Vary"] = "Origin";
+  }
+  return headers;
+}
+
 export interface ApiServerDeps {
   handleCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
   log: Logger;
@@ -144,19 +163,27 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
     maxRequestBodySize: MAX_REQUEST_BODY_SIZE,
     async fetch(req, server) {
       const url = new URL(req.url);
+      const origin = req.headers.get("origin");
+      const allowedOrigins = getTrustedBrowserOrigins();
 
-      // WebSocket upgrade — broadcast channel
+      // WebSocket upgrade (broadcast channel). Browsers cannot set custom
+      // headers on a WS handshake, so the token (when a browser page wants
+      // to identify itself) travels as a ?token= query param instead of
+      // X-RT-Token (S005).
       if (url.pathname === "/ws") {
+        const wsToken = url.searchParams.get("token");
+        if (!isBrowserRequestTrusted(origin, wsToken, apiToken, allowedOrigins)) {
+          return new Response("origin not allowed", { status: 403 });
+        }
         if (server.upgrade(req, { data: { kind: "broadcast" } })) return undefined as any;
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
 
-      // CORS headers for local dev
-      const corsHeaders = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-      };
+      // CORS: default-deny. A trusted Origin (token or allowlist) gets its
+      // Origin echoed back; anything else gets no Access-Control-Allow-Origin
+      // at all, so a malicious page's own JS cannot read the response (S006).
+      const trusted = isBrowserRequestTrusted(origin, req.headers.get("x-rt-token"), apiToken, allowedOrigins);
+      const corsHeaders = buildCorsHeaders(origin, trusted);
 
       if (req.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: corsHeaders });
