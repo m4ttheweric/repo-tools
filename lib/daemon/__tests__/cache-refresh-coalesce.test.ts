@@ -31,3 +31,15 @@ test("coalesces concurrent callers onto one run", async () => {
   resolveRun();
   await Promise.all([a, b]);
 });
+
+test("a fast success does not fire onTimeout after the deadline elapses", async () => {
+  let timedOut = 0;
+  const coalesce = makeCoalescer(
+    () => Promise.resolve(), // settles well before the deadline
+    50,
+    () => { timedOut++; },
+  );
+  await coalesce();
+  await new Promise((r) => setTimeout(r, 150)); // past the deadline
+  expect(timedOut).toBe(0); // the deadline timer must have been cleared, not just outraced
+});

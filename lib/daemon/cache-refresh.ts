@@ -66,10 +66,17 @@ export function makeCoalescer(
   return () => {
     if (inFlight) return inFlight;
     const impl = run().catch(() => {}); // a rejected cycle still clears the latch
-    const guarded = Promise.race([
-      impl,
-      new Promise<void>((resolve) => setTimeout(() => { onTimeout(); resolve(); }, deadlineMs)),
-    ]).finally(() => { inFlight = null; });
+    // Promise.race never cancels the losing branch, so the deadline timer must be
+    // captured and cleared on every settle path or a fast success still fires
+    // onTimeout deadlineMs later, misreported as a wedge.
+    let deadlineTimer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<void>((resolve) => {
+      deadlineTimer = setTimeout(() => { onTimeout(); resolve(); }, deadlineMs);
+    });
+    const guarded = Promise.race([impl, deadline]).finally(() => {
+      clearTimeout(deadlineTimer);
+      inFlight = null;
+    });
     inFlight = guarded;
     return guarded;
   };
