@@ -26,7 +26,6 @@
  *   disposeFreshness()      — daemon shutdown
  */
 
-import { execSync } from "child_process";
 import { GitLabProvider, type InvalidationKey, type MRApprovalRules, type PullRequest } from "@mattstack/glance";
 import { loadRepoTracking, grants, type RepoGrants } from "../repo-tracking.ts";
 import { loadSecrets } from "../linear.ts";
@@ -37,6 +36,7 @@ import { lazyChildLogger } from "../daemon-logger.ts";
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { getDiscussionsFileStore } from "./discussions-file-store.ts";
 import { createCursorStore, type CursorStore } from "../state/index.ts";
+import { runCapture } from "../subprocess.ts";
 
 const log = lazyChildLogger("freshness");
 
@@ -90,16 +90,23 @@ let   userId: number | null = null;
 let   userIdResolved = false;
 let   selfUsername: string | null = null;
 
+const remoteUrlCache = new Map<string, string | null>();
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function getRemoteUrl(repoPath: string): string | null {
-  try {
-    return execSync("git config --get remote.origin.url", {
-      cwd: repoPath, encoding: "utf8", stdio: "pipe",
-    }).trim();
-  } catch {
-    return null;
-  }
+/** remote.origin.url, cached per repoPath for the process lifetime (remotes
+ *  rarely change). Async so it never blocks the event loop. */
+async function getRemoteUrl(repoPath: string): Promise<string | null> {
+  const cached = remoteUrlCache.get(repoPath);
+  if (cached !== undefined) return cached;
+  const r = await runCapture(["git", "config", "--get", "remote.origin.url"], {
+    cwd: repoPath,
+    timeoutMs: 5000,
+    stderr: "ignore",
+  });
+  const url = r.exitCode === 0 ? (r.stdout.trim() || null) : null;
+  remoteUrlCache.set(repoPath, url);
+  return url;
 }
 
 /** The same debug-accounting hook makeProvider wires, for SDK helpers rt constructs directly (NoteMutator). */
@@ -132,7 +139,7 @@ async function ensureProvider(repoName: string, repoPath: string): Promise<GitLa
     return null;
   }
 
-  const remoteUrl = getRemoteUrl(repoPath);
+  const remoteUrl = await getRemoteUrl(repoPath);
   if (!remoteUrl) {
     log.info(`no origin remote for ${repoName}; skipping`);
     return null;
@@ -270,7 +277,7 @@ export async function getRepoContext(
     if (!secrets.gitlabToken) {
       throw new Error("missing gitlabToken (run: rt secrets set rt gitlabToken)");
     }
-    const remoteUrl = getRemoteUrl(repoPath);
+    const remoteUrl = await getRemoteUrl(repoPath);
     if (!remoteUrl) {
       throw new Error(`could not read git remote.origin.url in ${repoPath}`);
     }
@@ -289,7 +296,7 @@ export async function getRepoContext(
     if (cached) projectPath = cached.projectPath;
   }
   if (!projectPath && repoPath) {
-    const remoteUrl = getRemoteUrl(repoPath);
+    const remoteUrl = await getRemoteUrl(repoPath);
     const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
     if (remote) projectPath = remote.projectPath;
   }
@@ -689,7 +696,7 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
     // startWatch rather than trust a check made before it.
     if (watches.has(repoName)) continue;
 
-    const remoteUrl = getRemoteUrl(repoPath);
+    const remoteUrl = await getRemoteUrl(repoPath);
     const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
     if (!remote) continue;
 
