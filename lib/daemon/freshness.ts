@@ -26,7 +26,6 @@
  *   disposeFreshness()      — daemon shutdown
  */
 
-import { execSync } from "child_process";
 import { GitLabProvider, type InvalidationKey, type MRApprovalRules, type PullRequest } from "@mattstack/glance";
 import { loadRepoTracking, grants, type RepoGrants } from "../repo-tracking.ts";
 import { loadSecrets } from "../linear.ts";
@@ -37,6 +36,7 @@ import { lazyChildLogger } from "../daemon-logger.ts";
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { getDiscussionsFileStore } from "./discussions-file-store.ts";
 import { createCursorStore, type CursorStore } from "../state/index.ts";
+import { runCapture } from "../subprocess.ts";
 
 const log = lazyChildLogger("freshness");
 
@@ -85,21 +85,32 @@ interface RepoWatch {
 }
 
 const watches   = new Map<string, RepoWatch>();
-const providers = new Map<string, GitLabProvider>();
+
+/** Bound merged pending so a wedged processKeys cannot grow memory unbounded. */
+export const PENDING_CAP = 1000;
+
+const providers = new Map<string, { provider: GitLabProvider; token: string }>();
 let   userId: number | null = null;
 let   userIdResolved = false;
 let   selfUsername: string | null = null;
 
+const remoteUrlCache = new Map<string, string | null>();
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function getRemoteUrl(repoPath: string): string | null {
-  try {
-    return execSync("git config --get remote.origin.url", {
-      cwd: repoPath, encoding: "utf8", stdio: "pipe",
-    }).trim();
-  } catch {
-    return null;
-  }
+/** remote.origin.url, cached per repoPath for the process lifetime (remotes
+ *  rarely change). Async so it never blocks the event loop. */
+async function getRemoteUrl(repoPath: string): Promise<string | null> {
+  const cached = remoteUrlCache.get(repoPath);
+  if (cached !== undefined) return cached;
+  const r = await runCapture(["git", "config", "--get", "remote.origin.url"], {
+    cwd: repoPath,
+    timeoutMs: 5000,
+    stderr: "ignore",
+  });
+  const url = r.exitCode === 0 ? (r.stdout.trim() || null) : null;
+  remoteUrlCache.set(repoPath, url);
+  return url;
 }
 
 /** The same debug-accounting hook makeProvider wires, for SDK helpers rt constructs directly (NoteMutator). */
@@ -123,16 +134,22 @@ function makeProvider(host: string, token: string): GitLabProvider {
 }
 
 async function ensureProvider(repoName: string, repoPath: string): Promise<GitLabProvider | null> {
-  const cached = providers.get(repoName);
-  if (cached) return cached;
-
   const secrets = await loadSecrets();
   if (!secrets.gitlabToken) {
     log.info(`no gitlabToken; skipping ${repoName}`);
     return null;
   }
 
-  const remoteUrl = getRemoteUrl(repoPath);
+  const cached = providers.get(repoName);
+  if (cached && cached.token === secrets.gitlabToken) return cached.provider;
+  if (cached) {
+    // Token rotated: drop the stale watch built on the old token and
+    // re-resolve userId against the new one on the next reconcile.
+    stopWatch(repoName);
+    userIdResolved = false;
+  }
+
+  const remoteUrl = await getRemoteUrl(repoPath);
   if (!remoteUrl) {
     log.info(`no origin remote for ${repoName}; skipping`);
     return null;
@@ -150,14 +167,14 @@ async function ensureProvider(repoName: string, repoPath: string): Promise<GitLa
   }
 
   const provider = makeProvider(remote.host, secrets.gitlabToken);
-  providers.set(repoName, provider);
+  providers.set(repoName, { provider, token: secrets.gitlabToken });
   return provider;
 }
 
 async function ensureUserId(): Promise<number | null> {
   if (userIdResolved) return userId;
   // Resolve via any available provider. If none exist yet, defer until one does.
-  const anyProvider = providers.values().next().value as GitLabProvider | undefined;
+  const anyProvider = providers.values().next().value?.provider as GitLabProvider | undefined;
   if (!anyProvider) return null;
 
   try {
@@ -247,8 +264,22 @@ export async function getRepoContext(
   repoPath?: string,
   projectPathOverride?: string,
 ): Promise<{ provider: GitLabProvider; projectPath: string; projectId: number }> {
+  // A cached provider's token may have rotated since it was built; poll-mode
+  // repos and already-cached forge-handler providers never pass back through
+  // ensureProvider, so this is the only place that catches a stale token for
+  // them (S048/S049).
+  const cachedForToken = providers.get(repoName);
+  if (cachedForToken) {
+    const currentSecrets = await loadSecrets();
+    if (currentSecrets.gitlabToken && cachedForToken.token !== currentSecrets.gitlabToken) {
+      stopWatch(repoName);
+      userIdResolved = false;
+      providers.delete(repoName);
+    }
+  }
+
   const watch = watches.get(repoName);
-  let provider = providers.get(repoName) ?? null;
+  let provider = providers.get(repoName)?.provider ?? null;
 
   // Live-watch fast path — but only when the caller didn't override projectPath.
   // If they did, fall through to the ephemeral path so we use the canonical path.
@@ -270,7 +301,7 @@ export async function getRepoContext(
     if (!secrets.gitlabToken) {
       throw new Error("missing gitlabToken (run: rt secrets set rt gitlabToken)");
     }
-    const remoteUrl = getRemoteUrl(repoPath);
+    const remoteUrl = await getRemoteUrl(repoPath);
     if (!remoteUrl) {
       throw new Error(`could not read git remote.origin.url in ${repoPath}`);
     }
@@ -279,7 +310,7 @@ export async function getRepoContext(
       throw new Error(`could not parse remote URL "${remoteUrl}"`);
     }
     provider = makeProvider(remote.host, secrets.gitlabToken);
-    providers.set(repoName, provider);
+    providers.set(repoName, { provider, token: secrets.gitlabToken });
   }
 
   // Pick projectPath: explicit override > previously-cached ephemeral > git remote.
@@ -289,7 +320,7 @@ export async function getRepoContext(
     if (cached) projectPath = cached.projectPath;
   }
   if (!projectPath && repoPath) {
-    const remoteUrl = getRemoteUrl(repoPath);
+    const remoteUrl = await getRemoteUrl(repoPath);
     const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
     if (remote) projectPath = remote.projectPath;
   }
@@ -390,7 +421,14 @@ export async function applyInvalidationBatch(
   overrides: MappingOverrides = {},
 ): Promise<void> {
   if (runner.processing) {
-    runner.pending.push(...keys);
+    const seen = new Set(runner.pending.map((k) => `${k.kind}:${k.ref}`));
+    for (const k of keys) {
+      if (runner.pending.length >= PENDING_CAP) break;
+      const id = `${k.kind}:${k.ref}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      runner.pending.push(k);
+    }
     return;
   }
   runner.processing = true;
@@ -678,6 +716,15 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
 
   for (const [repoName, repoPath] of Object.entries(repoIndex)) {
     if (grants(tracking, repoName).mode !== "live") continue;
+
+    // A live watch whose provider token has since rotated must be dropped so the
+    // ensureProvider/startWatch below rebuilds it with the current token (S048/S049).
+    const existing = providers.get(repoName);
+    if (existing && watches.has(repoName)) {
+      const secrets = await loadSecrets();
+      if (secrets.gitlabToken && existing.token !== secrets.gitlabToken) stopWatch(repoName);
+    }
+
     if (watches.has(repoName)) continue;
 
     const provider = await ensureProvider(repoName, repoPath);
@@ -689,7 +736,7 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
     // startWatch rather than trust a check made before it.
     if (watches.has(repoName)) continue;
 
-    const remoteUrl = getRemoteUrl(repoPath);
+    const remoteUrl = await getRemoteUrl(repoPath);
     const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
     if (!remote) continue;
 

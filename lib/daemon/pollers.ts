@@ -12,11 +12,14 @@ import { checkRunawayProcesses } from "../notifier.ts";
 import { primeTeamTrackingIdentityMap } from "../repo-tracking.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
+import { demandedWithin } from "./demand-tracker.ts";
 
 const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;        // 5 minutes
 const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
 const HOOKS_SCAN_INTERVAL_MS = 60 * 1000;            // 60 seconds (fallback for stale watchers)
 const SYSTEM_PROCESS_SCAN_INTERVAL_MS = 10 * 1000;   // 10 seconds
+/** Consider a consumer "present" for 5 min after its last scan-backed read. */
+const DEMAND_WINDOW_MS = 5 * 60 * 1000;
 
 export interface PollerDeps {
   log: Logger;
@@ -39,6 +42,7 @@ export function startPollers(deps: PollerDeps): void {
 
   async function refreshPortCache(): Promise<void> {
     if (portScanInFlight) return;
+    if (!demandedWithin(DEMAND_WINDOW_MS)) return; // no consumer asked recently
     portScanInFlight = true;
     try {
       portCacheRef.ports = await scanListeningPorts();
@@ -55,6 +59,7 @@ export function startPollers(deps: PollerDeps): void {
 
   async function refreshSystemProcesses(): Promise<void> {
     if (processScanInFlight) return;
+    if (!demandedWithin(DEMAND_WINDOW_MS)) return;
     processScanInFlight = true;
     try {
       const processes = await systemProcessScanner.scan(portCacheRef.ports);

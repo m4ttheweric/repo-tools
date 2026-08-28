@@ -29,6 +29,7 @@ import {
   gitOk,
   headSha,
   listWorktreesAsync,
+  MUTATING_TIMEOUT_MS,
   remoteDefaultRef,
   runGit,
   stashChangesAsync,
@@ -441,24 +442,23 @@ async function autoReturnMain(
   }
 
   if (appConfig.killProcesses) {
-    // The ruled execSync exception (the process killer is sync by design);
-    // a failure here never blocks the return.
+    // A failure here never blocks the return.
     try {
-      const { terminated } = killWorktreeProcesses(rec.path);
+      const { terminated } = await killWorktreeProcesses(rec.path);
       if (terminated.length > 0) log.info({ ...fields, count: terminated.length }, "worktree processes terminated");
     } catch (err) {
       log.warn({ err, ...fields }, "auto-return: process kill failed; returning anyway");
     }
   }
 
-  const status = await runGit(rec.path, ["status", "--porcelain"]);
+  const status = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (status.exitCode !== 0) {
     log.warn({ ...fields, output: status.stderr.trim() }, "auto-return: git status failed");
     return "retry";
   }
   if (status.stdout.trim().length > 0) {
     await stashChangesAsync(rec.path, mergedBranch);
-    const after = await runGit(rec.path, ["status", "--porcelain"]);
+    const after = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
     if (after.exitCode !== 0 || after.stdout.trim().length > 0) {
       log.warn({ ...fields }, "auto-return: stash did not clear the worktree");
       return "retry";
@@ -466,13 +466,13 @@ async function autoReturnMain(
     log.info({ ...fields }, `stashed uncommitted changes on "${mergedBranch}"`);
   }
 
-  const checkout = await runGit(rec.path, ["checkout", defaultBranch]);
+  const checkout = await runGit(rec.path, ["checkout", defaultBranch], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (checkout.exitCode !== 0) {
     log.warn({ ...fields, defaultBranch, output: checkout.stderr.trim() }, "auto-return: checkout failed");
     return "retry";
   }
 
-  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef]);
+  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (ff.exitCode !== 0) {
     log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "auto-return: fast-forward failed");
     return "retry";
@@ -724,7 +724,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
 
   const classify = await classifyDirtyAsync(rec.path);
   if (classify.discard.length > 0) {
-    await runGit(rec.path, ["checkout", "--", ...classify.discard]);
+    await runGit(rec.path, ["checkout", "--", ...classify.discard], { timeoutMs: MUTATING_TIMEOUT_MS });
   }
 
   // Blockers stashed under the tree's own branch name (Desktop-compatible
@@ -744,7 +744,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
 
   const popStash = async (): Promise<void> => {
     if (!stashName) return;
-    const pop = await runGit(rec.path, ["stash", "pop", stashName]);
+    const pop = await runGit(rec.path, ["stash", "pop", stashName], { timeoutMs: MUTATING_TIMEOUT_MS });
     if (pop.exitCode !== 0) {
       log.warn(
         { ...fields, stashName },
@@ -753,7 +753,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     }
   };
 
-  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef]);
+  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (ff.exitCode !== 0) {
     log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "freshen: fast-forward failed");
     await popStash();

@@ -235,7 +235,7 @@ export async function disposeTree(
   }
 
   if (deps.killProcesses) {
-    const { terminated } = killWorktreeProcesses(rec.path);
+    const { terminated } = await killWorktreeProcesses(rec.path);
     if (terminated.length > 0) {
       log.info(
         { repo: repoName, tree: rec.name, count: terminated.length },

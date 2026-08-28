@@ -12,9 +12,8 @@
  * the caller — parking proceeds while stragglers wind down.
  */
 
-import { execSync } from "child_process";
-
 import { lazyChildLogger } from "../daemon-logger.ts";
+import { runCapture } from "../subprocess.ts";
 import { parseLsofCwdMap, parsePackageScripts } from "./system-process-scanner.ts";
 
 const log = lazyChildLogger("worktree-kill");
@@ -126,18 +125,14 @@ export interface WorktreeKillResult {
  * Discovery is done fresh (not from the scanner's 10s-old snapshot) so we act
  * on ground truth at park time.
  */
-export function killWorktreeProcesses(worktreePath: string): WorktreeKillResult {
-  let lsofOut: string;
-  try {
-    lsofOut = execSync("lsof -d cwd -Fpn 2>/dev/null", {
-      encoding: "utf8", stdio: "pipe", timeout: 10000,
-    });
-  } catch (err) {
-    log.warn({ err, worktreePath }, "lsof failed; skipping worktree process kill");
+export async function killWorktreeProcesses(worktreePath: string): Promise<WorktreeKillResult> {
+  const lsof = await runCapture(["lsof", "-d", "cwd", "-Fpn"], { timeoutMs: 10_000 });
+  if (lsof.exitCode !== 0 && !lsof.stdout) {
+    log.warn({ exitCode: lsof.exitCode, worktreePath }, "lsof failed; skipping worktree process kill");
     return { terminated: [] };
   }
 
-  const cwdMap = parseLsofCwdMap(lsofOut, [worktreePath]);
+  const cwdMap = parseLsofCwdMap(lsof.stdout, [worktreePath]);
   // Drop close-parent matches (parseLsofCwdMap keeps them for scanner display;
   // a process merely *above* the worktree must not be killed).
   for (const [pid, cwd] of cwdMap) {
@@ -147,23 +142,20 @@ export function killWorktreeProcesses(worktreePath: string): WorktreeKillResult 
 
   const pidList = [...cwdMap.keys()].join(",");
   const rows: KillCandidate[] = [];
-  try {
-    const psOut = execSync(`ps -p ${pidList} -o pid=,ppid=,comm=,args= 2>/dev/null`, {
-      encoding: "utf8", stdio: "pipe", timeout: 5000,
-    });
-    for (const line of psOut.split("\n")) {
-      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)/);
-      if (!match) continue;
-      rows.push({
-        pid: parseInt(match[1]!, 10),
-        ppid: parseInt(match[2]!, 10),
-        command: basename(match[3]!),
-        fullCommand: match[4]!,
-      });
-    }
-  } catch (err) {
-    log.warn({ err, worktreePath }, "ps failed; skipping worktree process kill");
+  const ps = await runCapture(["ps", "-p", pidList, "-o", "pid=,ppid=,comm=,args="], { timeoutMs: 5000 });
+  if (ps.exitCode !== 0 && !ps.stdout) {
+    log.warn({ exitCode: ps.exitCode, worktreePath }, "ps failed; skipping worktree process kill");
     return { terminated: [] };
+  }
+  for (const line of ps.stdout.split("\n")) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.*)/);
+    if (!match) continue;
+    rows.push({
+      pid: parseInt(match[1]!, 10),
+      ppid: parseInt(match[2]!, 10),
+      command: basename(match[3]!),
+      fullCommand: match[4]!,
+    });
   }
 
   const targets = selectKillTargets(rows, {
@@ -174,12 +166,11 @@ export function killWorktreeProcesses(worktreePath: string): WorktreeKillResult 
   // Label with the package-script invocation when known — that's the name the
   // developer recognizes ("pnpm start:lite:watch", not "node").
   let scripts = new Map<number, string>();
-  try {
-    const ewwOut = execSync(`ps eww -o pid=,command= -p ${targets.map(t => t.pid).join(",")} 2>/dev/null`, {
-      encoding: "utf8", stdio: "pipe", timeout: 5000, maxBuffer: 32 * 1024 * 1024,
-    });
-    scripts = parsePackageScripts(ewwOut);
-  } catch { /* labels fall back to comm */ }
+  const eww = await runCapture(
+    ["ps", "eww", "-o", "pid=,command=", "-p", targets.map(t => t.pid).join(",")],
+    { timeoutMs: 5000 },
+  );
+  if (eww.exitCode === 0 || eww.stdout) scripts = parsePackageScripts(eww.stdout);
 
   const terminated: { pid: number; label: string }[] = [];
   for (const target of targets) {
