@@ -228,6 +228,7 @@ describe("rt-paths", () => {
     const home = makeHome();
     process.env.HOME = home;
     mkdirSync(join(home, ".rt"), { recursive: true });
+    writeFileSync(join(home, ".rt", "repos.json"), "{}"); // rt signature marker (S099)
     writeFileSync(join(home, ".rt", "old.json"), "old");
     mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
     writeFileSync(join(home, ".mattstack", "rt", "new.json"), "new");
@@ -241,8 +242,55 @@ describe("rt-paths", () => {
     const home = makeHome();
     process.env.HOME = home;
     mkdirSync(join(home, ".rt"), { recursive: true });
+    writeFileSync(join(home, ".rt", "repos.json"), "{}"); // rt signature marker (S099)
     expect(migrateLegacyRtDir()).toBe("migrated");
     expect(migrateLegacyRtDir()).toBe("none");
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  // S099: a new user who has never run rt, but has another tool that also
+  // uses ~/.rt as its config dir, must not have that directory silently
+  // annexed as rt state (parsed, quarantined, or renamed) — only a
+  // directory carrying an actual rt signature is ever touched.
+  test("migrate: a foreign ~/.rt with no rt signature is left alone, no ~/.mattstack/rt materializes (S099)", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt"), { recursive: true });
+    writeFileSync(join(home, ".rt", "config.toml"), "some-other-tools-config");
+    const result = migrateLegacyRtDir();
+    expect(result).not.toBe("migrated");
+    expect(result).not.toBe("conflict");
+    expect(readFileSync(join(home, ".rt", "config.toml"), "utf8")).toBe("some-other-tools-config");
+    expect(existsSync(join(home, ".mattstack", "rt"))).toBe(false);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("migrate: a foreign ~/.rt is left alone even when ~/.mattstack/rt already exists — not reported as a conflict (S099)", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt"), { recursive: true });
+    writeFileSync(join(home, ".rt", "config.toml"), "some-other-tools-config");
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+    const result = migrateLegacyRtDir();
+    expect(result).not.toBe("conflict");
+    expect(readFileSync(join(home, ".rt", "config.toml"), "utf8")).toBe("some-other-tools-config");
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("migrate: a bare 'logs' dir alone is a sufficient rt signature", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt", "logs"), { recursive: true });
+    expect(migrateLegacyRtDir()).toBe("migrated");
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("migrate: a bare 'state.db' file alone is a sufficient rt signature", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt"), { recursive: true });
+    writeFileSync(join(home, ".rt", "state.db"), "");
+    expect(migrateLegacyRtDir()).toBe("migrated");
     rmSync(home, { recursive: true, force: true });
   });
 

@@ -197,6 +197,15 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Age floor in days for the log janitor pruning every surface's rotated log files under ~/.mattstack/rt/logs (default 14). A fresh key, not an ownership-latch port, so a default is fine here.",
   },
   {
+    key: "rt.apiPort",
+    type: "number",
+    scopes: ["machine", "user"],
+    default: 9401,
+    merge: "replace",
+    migrated: true,
+    description: "TCP port for the daemon's local HTTP/WS API. Escape hatch when 9401 is held: RT_API_PORT env wins, then this setting, then 9401 (lib/daemon-config.ts resolveApiPort(), read at bind time by lib/daemon/api-server.ts).",
+  },
+  {
     key: "rt.hooks",
     type: "object",
     scopes: ALL_SCOPES,
@@ -204,6 +213,14 @@ export const REGISTRY: readonly SettingDef[] = [
     repoScoped: true,
     migrated: true,
     description: "Per-repo git hook enable/disable state ({enabled, hooks: {<hookName>: boolean}}); ownership-latch port of repos/<repo>/hooks.json, store wins per field once it owns the key — including per-hook-name entries inside the nested hooks map, each defaulting to enabled when absent. The installed git-hook shim still greps repos/<repo>/hooks.json with zero process spawns (a hook fires on every git operation); that file is now a DERIVED CACHE this key writes through, kept current by commands/hooks.ts's regenerateHooksCache at every write seam.",
+  },
+  {
+    key: "rt.trustedBrowserOrigins",
+    type: "array",
+    scopes: ["user", "machine"],
+    default: [],
+    merge: "replace",
+    description: "Browser Origins (scheme://host:port, exact string match) trusted to read the :9401 daemon API and subscribe to /ws without presenting the local api-token -- e.g. a locally-hosted console or chat-viewer dev server. Empty by default: every current mattstack consumer (the CLI, the Swift tray, rt-client from Bun/Node processes, the VS Code extension) is a non-browser client (sends no Origin header at all) and is unaffected either way.",
   },
 
   // --- mattstack (installer-lane) -----------------------------------------

@@ -214,6 +214,29 @@ export function peekNotifications(): NotificationEvent[] {
  * Attempt to push a notification event to the tray app via its Unix socket.
  * Returns true if the push succeeded, false if tray is unavailable.
  */
+/**
+ * removeQueuedNotification's own write already retries on SQLITE_BUSY (3 x
+ * 20ms, lib/state/notifier-store.ts) and gives up silently. When that
+ * happens after a successful tray push, the row stays queued and the next
+ * drainNotifications()/peekNotifications() redelivers it as a duplicate.
+ * Retry the removal at this layer, bounded, before reporting success.
+ */
+async function removeFromQueueWithRetry(
+  eventId: string,
+  attempts = 3,
+  delayMs = 50,
+  removeFn: (id: string) => void = removeQueuedNotification,
+  isQueuedFn: (id: string) => boolean = isNotificationQueued,
+): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    removeFn(eventId);
+    if (!isQueuedFn(eventId)) return true;
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  log.warn({ eventId }, "notification queue removal kept failing after a successful push; it may redeliver on the next drain");
+  return false;
+}
+
 async function pushToTray(event: NotificationEvent): Promise<boolean> {
   if (!existsSync(TRAY_SOCK_PATH)) return false;
 
@@ -227,8 +250,7 @@ async function pushToTray(event: NotificationEvent): Promise<boolean> {
     } as any);
 
     if (response.ok) {
-      // Push succeeded — remove from queue
-      removeQueuedNotification(event.id);
+      await removeFromQueueWithRetry(event.id);
       return true;
     }
     return false;
@@ -878,6 +900,7 @@ export const __test__ = {
   notifyFallback,
   firedKey,
   pruneFiredForEvictedBranches,
+  removeFromQueueWithRetry,
   setFallbackNotifier(path: string | null): void {
     fallbackNotifier = path ?? "osascript";
   },

@@ -35,6 +35,15 @@ function seedRun(dir: string, repo: string, id: string, startedAt: number, userV
   db.close();
 }
 
+/** Polls until the detached rm -rf a prune spawns has actually removed `path` (S100: the delete is no longer synchronous). */
+async function waitGone(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (existsSync(path)) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${path} to be reaped`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 function seedRunEnded(dir: string, repo: string, id: string, startedAt: number, endedAt: number, status = "done"): void {
   const runDir = join(dir, repo, id);
   mkdirSync(runDir, { recursive: true });
@@ -55,7 +64,7 @@ function seedRunEnded(dir: string, repo: string, id: string, startedAt: number, 
 }
 
 describe("pruneRuns", () => {
-  test("removes runs ended past the floor, keeps recent and running ones", () => {
+  test("removes runs ended past the floor, keeps recent and running ones", async () => {
     const dir = root();
     const now = Date.now();
     seedRunEnded(dir, "alpha", "old-done", now - 40 * DAY, now - 40 * DAY);   // ended 40d ago -> pruned
@@ -64,12 +73,12 @@ describe("pruneRuns", () => {
     // never-finished: age by state.db mtime (fresh in this test) -> kept
     const { removed } = pruneRuns(now);
     expect(removed).toEqual([join(dir, "alpha", "old-done")]);
-    expect(existsSync(join(dir, "alpha", "old-done"))).toBe(false);
+    await waitGone(join(dir, "alpha", "old-done")); // reaped by a detached rm -rf, not synchronously
     expect(existsSync(join(dir, "alpha", "new-done"))).toBe(true);
     expect(existsSync(join(dir, "alpha", "still-running"))).toBe(true);
   });
 
-  test("a running run ages out once its state.db mtime crosses the floor", () => {
+  test("a running run ages out once its state.db mtime crosses the floor", async () => {
     const dir = root();
     const now = Date.now();
     seedRun(dir, "alpha", "stale-running", now - 40 * DAY);
@@ -78,7 +87,7 @@ describe("pruneRuns", () => {
     utimesSync(dbPath, oldTime, oldTime);
     const { removed } = pruneRuns(now);
     expect(removed).toEqual([join(dir, "alpha", "stale-running")]);
-    expect(existsSync(join(dir, "alpha", "stale-running"))).toBe(false);
+    await waitGone(join(dir, "alpha", "stale-running"));
   });
 
   test("a stale regular file inside a repo dir is not mistaken for a run and survives pruning", () => {
@@ -109,5 +118,28 @@ describe("pruneRuns", () => {
     symlinkSync(outside, join(dir, "alpha"));
     expect(() => assertPrunable(join(dir, "alpha", "victim-run"), dir)).toThrow();
     expect(existsSync(join(outside, "victim-run"))).toBe(true);
+  });
+
+  // S100: the boot-time prune (60s after start) previously unlinked every
+  // expired run tree synchronously, blocking the daemon's single thread for
+  // the full duration of each recursive rm — a tray poll or chat post
+  // arriving mid-sweep would time out. The delete must be off-thread.
+  test("prune spawns the delete asynchronously — the run dir is not synchronously unlinked (S100)", () => {
+    const dir = root();
+    const now = Date.now();
+    seedRunEnded(dir, "alpha", "old-done", now - 40 * DAY, now - 40 * DAY);
+    const { removed } = pruneRuns(now);
+    expect(removed).toEqual([join(dir, "alpha", "old-done")]);
+    // Not gone yet: the unlink runs in a detached child process, off this
+    // thread, so pruneRuns returning never means the disk is clean yet.
+    expect(existsSync(join(dir, "alpha", "old-done"))).toBe(true);
+  });
+
+  test("prune's detached delete eventually removes the run dir", async () => {
+    const dir = root();
+    const now = Date.now();
+    seedRunEnded(dir, "alpha", "old-done", now - 40 * DAY, now - 40 * DAY);
+    pruneRuns(now);
+    await waitGone(join(dir, "alpha", "old-done"));
   });
 });

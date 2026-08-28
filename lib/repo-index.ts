@@ -32,6 +32,7 @@ import { repoLabel, repoLabelFull, repoLabelQualified } from "./repo-label.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 import { mergeRegistries, type TreeRecord } from "./worktree/registry.ts";
+import { listWorktreesAsync } from "./worktree/git-async.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -149,6 +150,13 @@ function observedMainPath(repoRoot: string): string {
   } catch {
     return repoRoot;
   }
+}
+
+/** Async twin of observedMainPath: the repo's MAIN worktree path as git
+ *  reports it, degrading to repoRoot. Safe on the daemon thread. */
+async function observedMainPathAsync(repoRoot: string): Promise<string> {
+  const wts = await listWorktreesAsync(repoRoot);
+  return wts?.[0]?.path ?? repoRoot;
 }
 
 /**
@@ -274,7 +282,7 @@ export async function resolveIndexPathForIdentity(serialized: string): Promise<s
     } catch {
       continue;
     }
-    updateRepoIndex(serialized, path);
+    writeIndexRow(serialized, await observedMainPathAsync(path));
     return path;
   }
   return null;
