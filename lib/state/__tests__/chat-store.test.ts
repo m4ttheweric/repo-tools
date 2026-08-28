@@ -16,9 +16,6 @@ import { join } from "path";
 import { openStateDb } from "../db.ts";
 import {
   archiveRoom,
-  armMember,
-  clearAllArmed,
-  disarmMember,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -33,8 +30,6 @@ import {
   readUnread,
   recipientsFor,
   roomArchivedAt,
-  touchMember,
-  unreadWakingCount,
 } from "../chat-store.ts";
 
 let n = 0;
@@ -197,9 +192,10 @@ test("a last_read_id ahead of MAX(id) is clamped rather than hanging", () => {
   joinRoom({ room: "r", handle: "b" }, db);
   postMessage({ room: "r", handle: "a", body: "@b one" }, db);
   db.run("UPDATE chat_members SET last_read_id = 999999 WHERE handle = 'b';");
-  expect(unreadWakingCount("b", db)).toEqual([]);
+  expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
   postMessage({ room: "r", handle: "a", body: "@b two" }, db);
-  expect(unreadWakingCount("b", db)[0]!.count).toBe(1);
+  const after = readUnread({ handle: "b", limit: 20 }, db);
+  expect(after[0]!.messages.map((m) => m.body)).toEqual(["@b two"]);
 });
 
 test("mark advances without returning messages", () => {
@@ -235,57 +231,6 @@ test("pendingMessages returns the recipient's unread backlog bounded above by th
   expect(pendingMessages("r", "nobody", two.id, db)).toEqual([]);
 });
 
-test("arm sets armed_at, disarm clears it, touch updates last_seen_at", () => {
-  const db = freshDb();
-  joinRoom({ room: "r", handle: "a" }, db);
-  armMember(undefined, "a", db);
-  expect(listMembers("r", db)[0]!.armedAt).toBeGreaterThan(0);
-  touchMember(undefined, "a", db);
-  expect(listMembers("r", db)[0]!.lastSeenAt).toBeGreaterThan(0);
-  disarmMember("a", db);
-  expect(listMembers("r", db)[0]!.armedAt).toBeUndefined();
-});
-
-test("clearAllArmed clears every row and reports how many it cleared", () => {
-  const db = freshDb();
-  joinRoom({ room: "r", handle: "a" }, db);
-  joinRoom({ room: "r", handle: "b" }, db);
-  armMember(undefined, "a", db);
-  armMember(undefined, "b", db);
-  expect(clearAllArmed(db)).toBe(2);
-  expect(listMembers("r", db).every(m => m.armedAt === undefined)).toBe(true);
-});
-
-test("touch re-arms what the boot clear disarmed, scoped like arm, and never moves a live armed_at", () => {
-  const db = freshDb();
-  joinRoom({ room: "r1", handle: "a" }, db);
-  joinRoom({ room: "r2", handle: "a" }, db);
-  armMember(undefined, "a", db);
-  const armedAt = listMembers("r1", db)[0]!.armedAt!;
-
-  touchMember(undefined, "a", db);
-  expect(listMembers("r1", db)[0]!.armedAt).toBe(armedAt); // touch keeps the arm epoch
-
-  clearAllArmed(db); // the daemon restarted under a tail that is still running
-  touchMember("r1", "a", db); // a --room r1 tail touches
-  expect(listMembers("r1", db)[0]!.armedAt).toBeGreaterThan(0);
-  expect(listMembers("r2", db)[0]!.armedAt).toBeUndefined(); // arm scope respected
-
-  clearAllArmed(db);
-  touchMember(undefined, "a", db); // an unscoped tail touches
-  expect(listMembers("r1", db)[0]!.armedAt).toBeGreaterThan(0);
-  expect(listMembers("r2", db)[0]!.armedAt).toBeGreaterThan(0);
-});
-
-test("startup clear covers presence arming", () => {
-  const db = freshDb();
-  db.query(
-    "INSERT INTO chat_presence (session_id, handle, base_handle, signed_in_at, last_seen_at, armed_at) VALUES ('s1','a','a',1,1,1)",
-  ).run();
-  clearAllArmed(db);
-  expect(db.query("SELECT armed_at FROM chat_presence").get()).toMatchObject({ armed_at: null });
-});
-
 test("archive hides a room from every membership walk and keeps the member rows", () => {
   const db = freshDb();
   joinRoom({ room: "build", handle: "a" }, db);
@@ -300,7 +245,6 @@ test("archive hides a room from every membership walk and keeps the member rows"
 
   expect(listRooms("b", db).map(r => r.room)).toEqual(["other"]);
   expect(listRooms("b", db, { includeArchived: true }).map(r => [r.room, r.archivedAt !== undefined])).toEqual([["build", true], ["other", false]]);
-  expect(unreadWakingCount("b", db)).toEqual([]);
   expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
   expect(listMembers("build", db).map(m => m.handle)).toEqual(["a", "b"]);
 });
