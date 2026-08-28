@@ -94,12 +94,17 @@ test("a dead registry binding does not block reclaim once session-stale", () => 
   expect(r).toMatchObject({ handle: "x", reclaimed: true });
 });
 
-test("buddyStatus: offline beats everything (signed out, pruned, unresolvable, or a dead pid); otherwise the registry mirror decides live vs idle", () => {
+test("buddyStatus: offline beats everything (signed out, unresolvable, or a dead pid); otherwise the registry mirror decides live vs idle, regardless of how stale last_seen_at is", () => {
   expect(buddyStatus({ signedOutAt: now }, now)).toBe("offline");
+  // No sessionId at all: offline, independent of lastSeenAt.
   expect(buddyStatus({ lastSeenAt: now - 25 * HOUR }, now)).toBe("offline");
   expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("busy"))).toBe("live");
   expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("idle"))).toBe("idle");
   expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("shell"))).toBe("idle");
+  // A last_seen_at well past pruneMs never turns this offline on its own:
+  // an alive, busy binding still vouches for the session. prunePresence,
+  // not buddyStatus, is what retires a truly dead row.
+  expect(buddyStatus({ lastSeenAt: now - 25 * HOUR, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("busy"))).toBe("live");
   // No resolvable registry entry at all (a session id the registry has never
   // heard of): offline, per spec ("pid dead, or socket gone" -- unresolvable
   // is the same "nothing to vouch for this session" case).
@@ -134,6 +139,21 @@ test("listBuddies scans the registry exactly once regardless of buddy count", ()
   const buddies = listBuddies(now, db, deps);
   expect(buddies).toHaveLength(3);
   expect(deps.scans).toBe(1);
+});
+
+test("listBuddies: a live-binding row with a 25h-old stamp still appears, classified by the registry; a dead-binding stale row reads offline but still appears", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "live-stale", now }, db);
+  signIn({ sessionId: "s2", baseHandle: "dead-stale", now }, db);
+  db.run("UPDATE chat_presence SET last_seen_at = ? WHERE session_id IN ('s1', 's2')", [now - 25 * HOUR]);
+
+  const deps = fakeBinding("busy", "s1"); // only s1 resolves; s2 has no registry entry
+  const buddies = listBuddies(now, db, deps);
+
+  const live = buddies.find((b) => b.handle === "live-stale");
+  const dead = buddies.find((b) => b.handle === "dead-stale");
+  expect(live?.status).toBe("live");
+  expect(dead?.status).toBe("offline");
 });
 
 test("signIn scans the registry exactly once per call, even while probing several suffix candidates", () => {

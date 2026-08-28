@@ -87,17 +87,37 @@ test("a successful delivery refreshes the recipient's last_seen_at -- the only r
 test("a successful welcome delivery also refreshes last_seen_at", async () => {
   const calls: Array<[string, string]> = [];
   const sock = fakeSocketPath();
+  // Held until the test explicitly releases it, so the sentinel write below
+  // is guaranteed to land strictly BEFORE touchLastSeen's own write, rather
+  // than racing the queued welcome-delivery microtask against a clock tick
+  // (a millisecond stamp and a bare Bun.sleep were flaky here).
+  let releaseDeliver: () => void = () => {};
+  const deliverGate = new Promise<void>((resolve) => { releaseDeliver = resolve; });
   const inboxDeps: InboxDeps = {
     resolve: (sessionId) => (sessionId === "sess-c" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
-    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+    deliver: async (socketPath, content) => {
+      await deliverGate;
+      calls.push([socketPath, content]);
+      return { ok: true };
+    },
   };
   const h = freshHandlers(inboxDeps);
   const signedIn = await h["chat:sign-in"]({ sessionId: "sess-c", baseHandle: "c" });
   if (!signedIn.ok) throw new Error("unreachable");
-  const atSignIn = presenceForSession("sess-c", h.db)!.lastSeenAt;
-  await Bun.sleep(2); // last_seen_at is a millisecond Date.now() stamp; the welcome must land strictly after sign-in's own stamp, and the queued delivery needs a tick to run
-  expect(calls).toHaveLength(1); // the welcome frame itself, not cleared by settleWelcome here since this test's own point is to observe it
-  expect(presenceForSession("sess-c", h.db)!.lastSeenAt).toBeGreaterThan(atSignIn);
+
+  // Let the queued welcome delivery run up to (and block on) the gate.
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(0); // still held -- proves the gate is doing its job, not skipping delivery
+
+  const SENTINEL = 0;
+  h.db.run("UPDATE chat_presence SET last_seen_at = ? WHERE session_id = ?", [SENTINEL, "sess-c"]);
+  expect(presenceForSession("sess-c", h.db)!.lastSeenAt).toBe(SENTINEL);
+
+  releaseDeliver();
+  await Bun.sleep(0); // drain: deliver() resolves, markDelivered + touchLastSeen run
+
+  expect(calls).toHaveLength(1); // the welcome frame landed
+  expect(presenceForSession("sess-c", h.db)!.lastSeenAt).toBeGreaterThan(SENTINEL);
 });
 
 test("a recipient whose resolver misses gets no deliver call and keeps unread", async () => {

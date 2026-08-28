@@ -121,7 +121,11 @@ const SELECT_PRESENCE_BY_SESSION_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_pre
 // beyond it). Reclaimability is computed in TS (isReclaimable), never SQL --
 // it depends on a live registry probe.
 const SELECT_BASE_HANDLE_ROWS_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE base_handle = ?;`;
-const SELECT_NON_PRUNABLE_PRESENCE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE NOT (${PRUNABLE_SQL});`;
+// The roster's own cutoff is the signed-out leg alone, never last_seen_at:
+// a stale-but-live-binding row must reach buddyStatus to be classified
+// live/idle, not disappear from the list before buddyStatus ever sees it.
+// One bind param: dayAgo.
+const SELECT_ROSTER_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE signed_out_at IS NULL OR signed_out_at >= ?;`;
 const SELECT_PRUNE_CANDIDATES_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE ${PRUNABLE_SQL};`;
 const DELETE_PRESENCE_BY_SESSION_SQL = `DELETE FROM chat_presence WHERE session_id = ?;`;
 const INSERT_PRESENCE_SQL = `INSERT INTO chat_presence (session_id, handle, base_handle, cwd, repo, branch, pane, status_text, signed_in_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`;
@@ -148,11 +152,18 @@ export function presenceThresholds(): PresenceThresholds {
 }
 
 /**
- * offline: signed out, silent long enough to be pruned, or the registry has
- * nothing alive for this session -- no resolvable entry at all, or one
- * whose pid is dead or whose socket is gone (spec: "pid dead, or socket
- * gone"). Otherwise live when the alive binding's status is busy; idle
- * otherwise (alive but not busy).
+ * offline: signed out, or the registry has nothing alive for this session --
+ * no resolvable entry at all, or one whose pid is dead or whose socket is
+ * gone (spec: "pid dead, or socket gone"). Otherwise live when the alive
+ * binding's status is busy; idle otherwise (alive but not busy).
+ *
+ * Deliberately no `last_seen_at` staleness leg: prunePresence (below) is
+ * what actually retires a row, and it already spares anything the registry
+ * still vouches for regardless of how old the heartbeat has gone.
+ * Duplicating that staleness check here would flip a still-busy session to
+ * offline the moment its heartbeat aged past pruneMs, even though nothing
+ * about its row is anywhere near being pruned -- `now`/`th` stay for
+ * signature stability with every existing call site.
  */
 export function buddyStatus(
   row: Partial<Pick<PresenceRow, "signedOutAt" | "lastSeenAt" | "sessionId">>,
@@ -161,8 +172,6 @@ export function buddyStatus(
   deps: RegistryDeps = defaultRegistryDeps,
 ): BuddyStatus {
   if (row.signedOutAt !== undefined) return "offline";
-  const lastSeenAt = row.lastSeenAt ?? 0;
-  if (now - lastSeenAt > th.pruneMs) return "offline";
   if (!row.sessionId) return "offline";
   const binding = deps.resolve(row.sessionId);
   if (!binding || !deps.alive(binding)) return "offline";
@@ -373,7 +382,7 @@ export function listBuddies(
 ): Array<PresenceRow & { status: BuddyStatus }> {
   const th = presenceThresholds();
   const dayAgo = now - th.pruneMs;
-  const rows = db.query(SELECT_NON_PRUNABLE_PRESENCE_SQL).all(dayAgo, dayAgo) as PresenceRawRow[];
+  const rows = db.query(SELECT_ROSTER_SQL).all(dayAgo) as PresenceRawRow[];
   // One registry scan for the whole roster, reused by every row's status.
   const scoped = snapshotRegistryDeps(deps);
   return rows.map((raw) => {

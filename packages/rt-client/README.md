@@ -107,10 +107,9 @@ const stop = createRelay({                                     // one daemon sub
 | `createRelay` / `subscribe` | the event stream; `daemonHealth` the reachability probe |
 
 Pass `{ sockPath }` as the trailing options to reach a non-default daemon
-socket. The verbs, their payloads and the wake protocol are specified in
-repo-tools `docs/superpowers/specs/2026-08-23-rt-chat-design.md` and
-`2026-08-24-rt-chat-presence-design.md`; the agent-facing rules are
-`skills/rt-chat/SKILL.md`.
+socket. The verbs and their payloads are specified in repo-tools
+`docs/superpowers/specs/2026-08-28-rt-chat-delivery-v2-design.md`; the
+agent-facing rules are `skills/rt-chat/SKILL.md`.
 
 ## License
 
