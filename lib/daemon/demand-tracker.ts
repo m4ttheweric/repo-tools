@@ -6,6 +6,14 @@
  */
 let lastDemandAt = 0;
 
+/**
+ * Only the wrapped command handlers (ports / system-processes / tray:status,
+ * via wrapWithDemand) stamp demand. WS relay and SSE topic subscriptions do
+ * not: a push-only consumer that subscribes to a broadcast topic but never
+ * calls a command gets no demand credit and can starve past the demand
+ * window. A subscribe-side stamp would live in api-server.ts, out of scope
+ * this phase.
+ */
 export function recordDemand(): void {
   lastDemandAt = Date.now();
 }

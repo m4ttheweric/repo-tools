@@ -70,6 +70,10 @@ export async function runCapture(
     killTimer = setTimeout(() => {
       try { proc.kill("SIGKILL"); } catch { /* already exited */ }
     }, 2000);
+    // unref: a short-lived CLI process must not be held open by a timed-out
+    // call waiting on this timer; the daemon stays alive regardless, so its
+    // SIGKILL still fires.
+    killTimer.unref?.();
   }, timeoutMs);
 
   const captured: Promise<RunResult> = (async () => {
