@@ -22,25 +22,25 @@ import { mkdirSync, openSync, closeSync, existsSync, statSync, renameSync, write
 import { join } from "path";
 import { logsDir } from "./rt-paths.ts";
 
-/** Last-resort write straight to fd 2, bypassing pino entirely — used only when the logger itself has failed or can't be trusted. */
+/** Last-resort write straight to fd 2, bypassing pino entirely. Used only when the logger itself has failed or can't be trusted. */
 function rawStderr(text: string): void {
   try {
     writeSync(2, text);
   } catch {
-    // Nothing left to do — even fd 2 is gone.
+    // Nothing left to do... even fd 2 is gone.
   }
 }
 
 export interface DaemonLoggerHandle {
   /** Root logger — use when no specific module scope applies. */
   logger: Logger;
-  /** Underlying pino-roll write stream — exposed as a test seam for simulating write errors. */
+  /** Underlying pino-roll write stream. Exposed as a test seam for simulating write errors. */
   stream: NodeJS.WritableStream;
   /** Returns a child logger that stamps `module: <name>` on every line. */
   childLogger: (module: string) => Logger;
   /** Force a flush (best-effort; pino-roll's stream is sync but exposes flushSync). */
   flush?: () => void;
-  /** True once the underlying stream has emitted an 'error' (e.g. ENOSPC) — writes since then were swallowed, not lost silently. */
+  /** True once the underlying stream has emitted an 'error' (e.g. ENOSPC); writes since then were swallowed, not lost silently. */
   loggerDegraded: () => boolean;
 }
 
@@ -70,10 +70,10 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
   });
 
   // A write failure (e.g. ENOSPC) on the underlying stream otherwise throws
-  // out of the next log.*() call — every call site would need its own guard.
-  // One listener here flips a flag instead, so callers keep calling log.*()
-  // without throwing, and the raw write means the failure itself is still
-  // visible somewhere even though the JSON log can't take it.
+  // out of the next log.*() call, and every call site would need its own
+  // guard. One listener here flips a flag instead, so callers keep calling
+  // log.*() without throwing, and the raw write means the failure itself is
+  // still visible somewhere even though the JSON log can't take it.
   let degraded = false;
   stream.on("error", (err: NodeJS.ErrnoException) => {
     degraded = true;
@@ -297,7 +297,7 @@ export function installCrashHandlers(
   //
   // The logger.*() calls below are wrapped in try/catch: a logging failure
   // (e.g. the stream is degraded from ENOSPC) must not itself abort a crash
-  // handler and skip the exit it's here to guarantee — only the logging is
+  // handler and skip the exit it's here to guarantee. Only the logging is
   // guarded, never the exit decision.
   process.on("uncaughtException", (err) => {
     try {
