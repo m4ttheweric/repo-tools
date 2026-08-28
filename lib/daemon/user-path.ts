@@ -153,8 +153,8 @@ export async function resolveUserPath(log: Logger, probe: ProbeFn = runProbe): P
     const ovRaw = await probe(ovArgv, { timeoutMs: OVERLAY_TIMEOUT_MS, env: { ...process.env, TERM: "dumb" } });
     const extra = absoluteDirsOf(ovRaw);
     if (extra.length === 0) {
-      // Warn on BOTH timeout (null) and garbage (non-null but no usable
-      // absolute dirs) ... the ruling says timeout OR garbage.
+      // Warn on both timeout (null) and garbage (non-null but no usable
+      // absolute dirs): either way the overlay contributed nothing.
       log.warn("PATH interactive overlay skipped (timed out or no usable dirs)");
     } else {
       const before = result;
