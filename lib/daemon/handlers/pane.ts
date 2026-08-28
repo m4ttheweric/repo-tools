@@ -6,7 +6,8 @@ import type { Database } from "bun:sqlite";
 import { basename } from "path";
 import type { AgentStatus, BuddyStatus, ChatPane, Commands, PaneDirectory } from "../../../packages/rt-client/src/commands.ts";
 import { listCswapAccounts } from "../../cswap.ts";
-import { HERDR_UNAVAILABLE, herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
+import { herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
+import { herdrError } from "../inject.ts";
 import { shellQuote } from "../../herdr-launch.ts";
 import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
@@ -68,10 +69,7 @@ export function launchCommand(a: { cwd: string; account?: string; model?: string
   return `cd ${shellQuote(a.cwd)} && ${launch}`;
 }
 
-export function herdrError(res: { ok: false; code: string; message: string }): { ok: false; error: string } {
-  if (res.code === "unreachable" || res.code === "timeout") return { ok: false, error: res.message.startsWith(HERDR_UNAVAILABLE) ? res.message : `${HERDR_UNAVAILABLE}: ${res.message}` };
-  return { ok: false, error: `${res.code}: ${res.message}` };
-}
+export { herdrError } from "../inject.ts";
 
 /** Presence maps built once per verb call; offline rows are not presence. */
 export function presenceMaps(db: Database, now: number): Pick<PaneRowContext, "bySession" | "byPane"> {
