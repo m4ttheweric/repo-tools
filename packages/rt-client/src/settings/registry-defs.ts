@@ -197,6 +197,15 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Age floor in days for the log janitor pruning every surface's rotated log files under ~/.mattstack/rt/logs (default 14). A fresh key, not an ownership-latch port, so a default is fine here.",
   },
   {
+    key: "rt.apiPort",
+    type: "number",
+    scopes: ["machine", "user"],
+    default: 9401,
+    merge: "replace",
+    migrated: true,
+    description: "TCP port the daemon's local HTTP/WS API binds (escape hatch when 9401 is held).",
+  },
+  {
     key: "rt.hooks",
     type: "object",
     scopes: ALL_SCOPES,

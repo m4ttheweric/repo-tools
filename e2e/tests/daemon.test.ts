@@ -37,6 +37,26 @@ describe("fatal boot", () => {
     }
   }, 60_000);
 
+  test("API-bind failure leaves neither rt.sock nor rt.pid", async () => {
+    const { path: home, cleanup } = createTestHome();
+    // A different port than the sibling squatter test above, so parallel
+    // test files can never collide on the same bound TCP port.
+    const port = 9412;
+    const squatter = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("busy") });
+    try {
+      const result = await rt(["--daemon"], { home, env: { RT_API_PORT: String(port) } });
+
+      expect(result.exitCode).not.toBe(0);
+      // The API bind (now first) fails before the socket ever binds, so a
+      // fatal exit must strand neither file.
+      expect(existsSync(join(home, ".mattstack", "rt", "rt.sock"))).toBe(false);
+      expect(existsSync(join(home, ".mattstack", "rt", "rt.pid"))).toBe(false);
+    } finally {
+      squatter.stop(true);
+      cleanup();
+    }
+  }, 60_000);
+
   test("a corrupt events.db self-heals — quarantined, and the daemon boots and serves", async () => {
     const { path: home, cleanup } = createTestHome();
     const bunDir = join(process.execPath, "..");

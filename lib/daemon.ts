@@ -479,9 +479,11 @@ async function runDaemon(): Promise<void> {
     persistOrWarn("daemon", () => { prunedPresence = prunePresence(Date.now()); }, { op: "prunePresence" });
     if (prunedPresence > 0) log.info({ prunedPresence }, "chat: pruned stale presence rows at daemon startup");
 
-    // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
-    servers.socket = startSocketServer({ handleCommand, log });
+    // API server first: a failed bind exits fatally (boot-phase catch below),
+    // and binding API before the unix socket means that fatal exit never
+    // strands a socket-bound zombie behind it.
     servers.api = await startApiServer({ handleCommand, log });
+    servers.socket = startSocketServer({ handleCommand, log });
 
     // Only write rt.pid once both servers are actually bound — a boot that
     // fails before this point must never leave a live-pid file with no
