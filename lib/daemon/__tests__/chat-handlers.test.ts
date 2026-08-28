@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join } from "path";
-import { openStateDb } from "../../state/index.ts";
+import { openStateDb, postMessage } from "../../state/index.ts";
 import { createChatHandlers, inviteText } from "../handlers/chat.ts";
 import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
@@ -185,6 +185,46 @@ test("chat:unread-waking reports what would wake a handle without advancing its 
   const res2 = await h["chat:unread-waking"]({ handle: "b" });
   if (!res2.ok) throw new Error("unreachable");
   expect(res2.data).toEqual(first);
+});
+
+// R034: `limit: -1` reaches `ORDER BY id ASC LIMIT ?`, where SQLite treats a
+// negative LIMIT as unlimited, so a viewer/agent bug returns and
+// JSON-serializes an entire (100k-row) room on the event loop.
+test("chat:messages clamps a negative limit into [1,500] instead of reaching SQLite's unlimited LIMIT", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  for (let i = 0; i < 502; i++) postMessage({ room: "r", handle: "a", body: `msg ${i}` }, h.db);
+  const res = await h["chat:messages"]({ room: "r", limit: -1 });
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.messages.length).toBeGreaterThanOrEqual(1);
+  expect(res.data.messages.length).toBeLessThanOrEqual(500);
+});
+
+test("chat:messages clamps an absurdly large limit to the cap", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  for (let i = 0; i < 502; i++) postMessage({ room: "r", handle: "a", body: `msg ${i}` }, h.db);
+  const res = await h["chat:messages"]({ room: "r", limit: 1_000_000 });
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.messages.length).toBe(500);
+});
+
+test("chat:messages coerces a non-numeric limit to the default instead of a datatype 500", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:post"]({ room: "r", handle: "a", body: "hi" });
+  const res = await h["chat:messages"]({ room: "r", limit: "lots" as any });
+  expect(res.ok).toBe(true);
+});
+
+test("chat:read clamps a negative limit into [1,500] rather than reaching SQLite's unlimited LIMIT", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "b" }); // b's own cursor starts before every message below
+  for (let i = 0; i < 502; i++) postMessage({ room: "r", handle: "a", body: `msg ${i}` }, h.db);
+  const res = await h["chat:read"]({ handle: "b", limit: -1 } as any);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.rooms[0]!.messages.length).toBeGreaterThanOrEqual(1);
+  expect(res.data.rooms[0]!.messages.length).toBeLessThanOrEqual(500);
 });
 
 test("the read-only handlers mutate nothing", async () => {

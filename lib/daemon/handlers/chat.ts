@@ -97,6 +97,22 @@ function closestRoomNames(typo: string, handle: string, db: Database): string[] 
   return known.filter((r) => r.startsWith(typo) || typo.startsWith(r)).slice(0, 3);
 }
 
+/**
+ * `limit: -1` reaches `ORDER BY id ASC LIMIT ?`, where SQLite treats a
+ * negative LIMIT as unlimited, so a viewer/agent bug returns and
+ * JSON-serializes an entire (100k-row) room on the event loop; a
+ * non-numeric limit hits a datatype-mismatch SQLite error instead.
+ * Mirrors the events handler's `num()` coercion pattern.
+ */
+const MAX_CHAT_LIMIT = 500;
+
+function clampLimit(v: unknown, fallback: number): number {
+  if (v == null || v === "") return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.trunc(n), 1), MAX_CHAT_LIMIT);
+}
+
 /** An unchecked value here lands on chat_members (and, on a join-creates, chat_room_defaults for every future joiner) and is silently treated as mention-only — never "none", never "all", never reported. */
 const VALID_WAKE_ON = ["mention", "all", "none"] as const;
 
@@ -246,7 +262,7 @@ export function createChatHandlers(opts: {
 
     "chat:read": async (payload: Commands["chat:read"]["payload"]): Promise<CommandResult<"chat:read">> => {
       const { handle, room, limit, sinceMs } = payload;
-      const rooms = readUnread({ handle, room, limit: limit ?? 20, sinceMs }, db);
+      const rooms = readUnread({ handle, room, limit: clampLimit(limit, 20), sinceMs }, db);
       return { ok: true, data: { rooms } };
     },
 
@@ -298,7 +314,7 @@ export function createChatHandlers(opts: {
 
     "chat:messages": async (payload: Commands["chat:messages"]["payload"]): Promise<CommandResult<"chat:messages">> => {
       const { room, before, limit } = payload;
-      const messages = listMessages({ room, before, limit: limit ?? 50 }, db);
+      const messages = listMessages({ room, before, limit: clampLimit(limit, 50) }, db);
       return { ok: true, data: { messages } };
     },
 
