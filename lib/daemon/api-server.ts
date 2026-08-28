@@ -13,6 +13,7 @@ import { API_PORT } from "../daemon-config.ts";
 import { needsToken, tokenOk, getApiToken, isBrowserRequestTrusted, getTrustedBrowserOrigins } from "./api-auth.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
+import { runCapture } from "../subprocess.ts";
 
 const API_INDEX = {
   name: "rt daemon",
@@ -213,9 +214,34 @@ export interface ApiServerDeps {
   log: Logger;
 }
 
+/**
+ * Thrown when every bind retry is exhausted with EADDRINUSE still held. A
+ * named error type rather than the raw EADDRINUSE Error, so lib/daemon.ts's
+ * caller can distinguish "the port is genuinely squatted" from any other
+ * startup failure and park-and-retry with backoff instead of crash-looping
+ * (that caller-side change belongs to a sibling job; this class is the
+ * contract it wires into).
+ */
+export class ApiPortInUseError extends Error {
+  readonly code = "EADDRINUSE" as const;
+  readonly port: number;
+  constructor(port: number) {
+    super(`EADDRINUSE: api server port ${port} is still in use after ${BIND_RETRY_ATTEMPTS} bind attempts`);
+    this.name = "ApiPortInUseError";
+    this.port = port;
+  }
+}
+
 export interface BindRetryDeps {
   sleep: (ms: number) => Promise<void>;
   log: { warn: (o: unknown, m: string) => void };
+  /** Defaults to a real `lsof -i :<port>` via runCapture; overridable so tests never shell out. */
+  probePortHolder?: (port: number) => Promise<string>;
+}
+
+async function defaultProbePortHolder(port: number): Promise<string> {
+  const result = await runCapture(["lsof", "-i", `:${port}`], { timeoutMs: 5_000, stderr: "pipe" });
+  return result.stdout.trim();
 }
 
 // evictStaleDaemon (lib/daemon/boot-reconcile.ts) already assumes a prior
@@ -231,14 +257,24 @@ export const BIND_RETRY_DELAY_MS = 500;
  * daemon can reach this bind before the old one has actually released
  * 9401. Only EADDRINUSE is retried (bounded, ~3s total); anything else is a
  * real misconfiguration and fails on the first attempt, same as before.
+ *
+ * Once retries are exhausted, this logs who holds the port and throws
+ * ApiPortInUseError instead of the bare EADDRINUSE Error, so a caller can
+ * tell "give up cleanly" apart from "the bind function itself is broken".
  */
 export async function bindApiServerWithRetry<T>(bind: () => T, deps: BindRetryDeps): Promise<T> {
+  const probe = deps.probePortHolder ?? defaultProbePortHolder;
   for (let attempt = 1; ; attempt++) {
     try {
       return bind();
     } catch (err) {
       const isAddrInUse = err instanceof Error && (err as NodeJS.ErrnoException).code === "EADDRINUSE";
-      if (!isAddrInUse || attempt >= BIND_RETRY_ATTEMPTS) throw err;
+      if (!isAddrInUse) throw err;
+      if (attempt >= BIND_RETRY_ATTEMPTS) {
+        const holder = await probe(API_PORT).catch((probeErr) => `lsof failed: ${String(probeErr)}`);
+        deps.log.warn({ port: API_PORT, holder }, "api port still in use after retries; giving up bind (the daemon should park and retry with backoff rather than crash-loop)");
+        throw new ApiPortInUseError(API_PORT);
+      }
       deps.log.warn({ attempt, port: API_PORT }, "api port in use, retrying — another daemon is likely still shutting down");
       await deps.sleep(BIND_RETRY_DELAY_MS);
     }
