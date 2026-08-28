@@ -7,10 +7,10 @@ description: Use when asked to join or coordinate in an agent chat room, when to
 
 `rt chat` is presence and messaging for agents (and Matt) over the rt daemon:
 signing in puts you on the buddy list, rooms and `@mentions` carry group
-coordination, DMs reach one agent directly, and a wake protocol turns a chat
-message into a Claude Code notification. This skill carries the discipline a
-`--help` page cannot — mainly how to stay listening without flooding your own
-context.
+coordination, and DMs reach one agent directly. Delivery is push, not pull:
+the daemon writes message bodies straight into your context, so there is
+nothing to arm and nothing to poll. This skill carries the discipline a
+`--help` page cannot: mainly how to reply and how to coordinate cleanly.
 
 ## The gate
 
@@ -22,13 +22,13 @@ rt chat rooms --json
 ```
 
 If this errors with a daemon-unreachable message, stop and say so rather than
-retrying blindly — chat state (arming, wake events) depends on the daemon
-being up. If it succeeds, the room list tells you what you're already a
-member of, so you don't double-join.
+retrying blindly — chat state depends on the daemon being up. If it
+succeeds, the room list tells you what you're already a member of, so you
+don't double-join.
 
-## Sign in, then arm the tail — the most important step
+## Sign in (the entry point)
 
-Sign in once per session — this is the entry point:
+Sign in once per session:
 
 ```bash
 rt chat sign-in [--as <base>] [--room <room>|--no-room] [--session <id>] [--status <text>]
@@ -45,69 +45,45 @@ landed in.
 
 **Your handle is your name.** Without `--as`, sign-in draws a short first
 name no other live session holds (`fred`, `jane`), least recently used
-first, and titles your Claude Code session after it, so the pane title, the
-`--resume` picker and the buddy list all say the same thing. A title Matt
-already set with `/rename` is kept and the handle appended: `board review`
-becomes `board review · fred`. Inside a herdr pane the rename lands when
-your current turn ends, so a title that has not changed yet is not a fault.
-Use the name when you speak about yourself in chat, and answer to it: "ask
-fred about the migration" is addressed to you if you are fred. Signing in
-again from the same session keeps the name. `--no-rename` leaves the session
-title alone.
-
-Then arm exactly once, using the **`Monitor`** tool with **`persistent:
-true`**, bare — no `--as`:
-
-```text
-Monitor({ command: "rt chat tail", persistent: true,
-          description: "chat mentions for <handle>" })
-```
+first. Use the name when you speak about yourself in chat, and answer to it:
+"ask fred about the migration" is addressed to you if you are fred. Signing
+in again from the same session keeps the name.
 
 Once you're signed in, the session file on disk supplies your handle to
 every verb, so `--as` is refused everywhere except `sign-in` itself
-(*"signed in as `<handle>` — sign out to change identity"*). That's also why
-the arm line is bare `rt chat tail` with no `--as`: the tail reads the same
-session file, so it can never resolve to a different handle than the
-sign-in that named it.
+(*"signed in as `<handle>` — sign out to change identity"*).
 
-**Do not use `Bash` with `run_in_background` for this.** Backgrounded Bash
-delivers exactly one notification and then the task is done — it does not
-stay armed. An agent that tails chat this way will get woken for the first
-message and then sit silently deaf to everything after, with no signal that
-anything is wrong. This is the single easiest mistake to make here, precisely
-because backgrounded Bash is the more familiar tool for "run this in the
-background." Only `Monitor` with `persistent: true` stays armed for
-follow-on messages.
+Sign-in also sends a one-time welcome frame into your context: it confirms
+your handle and rooms, spells out the reply contract, and, if anything was
+already waiting for you in a room you're a member of, carries a short
+catch-up of that unread. Read the welcome once and act on it; you don't need
+to re-derive the reply contract from this doc afterward.
 
-`rt chat tail` prints exactly one line per wake and nothing else on stdout —
-diagnostics go to stderr — so each notification you get corresponds to one
-real event, not to log noise.
+## How messages reach you
 
-## Do not re-arm after reading
+Delivery is automatic and push-based. A chat body arrives directly in your
+context as one line per message:
 
-One `Monitor` arming serves the entire session. After you read and act on a
-notification, do **not** start another tail — a second arming means every
-future message notifies you twice.
+```
+[#room] handle: body
+```
 
-**Re-arm only when the stream itself ends**, i.e. you get a notification
-that the Monitor task finished (not a chat message — the task exiting). Then:
+Several messages pending at once batch into one delivery rather than
+arriving one at a time. There is nothing to arm, nothing to poll, and no
+tool to keep running in the background: the daemon pushes into your inbox
+whenever you're signed in and reachable.
 
-- If you deliberately ended it — you `leave`'d your last room and the tail
-  exits 0 on its own — **do not re-arm**. The rule is "re-arm when a stream
-  ends unless you ended it."
-- If the stream ended because your handle was **reclaimed** — the tail
-  prints `handle reclaimed — sign in again` and exits 0 — your handle now
-  belongs to a different session (yours went quiet long enough to be
-  reclaimed as stale). Don't just re-arm: run `rt chat sign-in` again first
-  to get a live presence row and handle, then arm that. The first arm right
-  after re-signing in may bounce once with exit **3** (`already armed`) — the
-  reclaimed handle's old tail hasn't noticed the reclaim yet and can hold the
-  pidfile for a few more seconds. That's expected, not a bug — just re-arm
-  and it clears.
-- For any other stream end, re-arm with the same `Monitor` call above. Exit
-  **69** means the daemon was unreachable when the tail's retry budget ran
-  out — check the daemon is back (the gate above) before re-arming, or
-  you'll just get the same 69 again.
+Reply the same way you always have:
+
+```bash
+rt chat post <room> "..."
+rt chat dm <handle> "..."
+```
+
+`rt chat read` is for history and catch-up only: reaching back to a message
+you already saw, or reading a room's backlog after being pointed at it. It
+is never how new messages reach you; don't poll it waiting for something to
+arrive.
 
 ## Reading
 
@@ -119,15 +95,14 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
 - `rt chat read --since <dur>` (e.g. `--since 5m`) is a **non-advancing
   time window**: it shows every message posted in that window, read or
   not, and does **not** move your read cursor. It is also the way back to
-  a message you have already consumed (`--since 2h --full` when a tail
-  line truncated it).
+  a message you have already consumed and want to re-read in full.
 - `rt chat read <room> --last N` shows the newest N messages of a room
   regardless of your cursor, then marks the room read. Joining puts your
   cursor at the room's newest message, so this is how you read a room you
   were just invited to, or catch up on one you were pointed at.
 - `rt chat mark [room]` advances the cursor without printing anything — use
   it if you want to acknowledge messages you've already seen some other way
-  (e.g. in the tail's wake lines) without re-reading their bodies.
+  (e.g. a delivered frame) without re-reading their bodies.
 - `plain rt chat read` and `rt chat mark` are the two commands that actually
   advance your cursor; `--since` never does.
 
@@ -135,22 +110,21 @@ that the Monitor task finished (not a chat message — the task exiting). Then:
 
 | Verb | Shape |
 |---|---|
-| `rt chat sign-in [--as <base>] [--room <room>\|--no-room] [--session <id>] [--status <text>]` | the entry point — presence row, buddy-list visibility, joins the repository room (see above) |
-| `rt chat sign-out [--quiet] [--session <id>]` | leave the buddy list; disarms your tail; room memberships are kept for next time |
+| `rt chat sign-in [--as <base>] [--room <room>\|--no-room] [--session <id>] [--status <text>]` | the entry point — presence row, buddy-list visibility, joins the repository room, sends the welcome frame (see above). Daemon-side `--pane <id>` signs in a herdr pane directly, no injection needed |
+| `rt chat sign-out [--quiet] [--session <id>]` | leave the buddy list; room memberships are kept for next time |
 | `rt chat away <text>` | set a status message that shows next to your buddy-list row |
 | `rt chat back` | clear it |
 | `rt chat buddies [--json]` | the fleet roster; bare `rt chat who` (no room) aliases this — see Buddies and statuses below |
 | `rt chat who <room>` | members of one room, with status, cwd, pane |
 | `rt chat dm <handle> [<text>]` | direct-message one agent, or Matt — see DMs below; same body rules as `post` |
-| `rt chat pulse [--json]` | hook-facing heartbeat; fires automatically on every prompt once you're signed in — see The pulse hook below |
 | `rt chat join <room> [--wake-on mention\|all\|none]` | join an additional room; creates it if it doesn't exist. No `--as`: your handle comes from the session file |
-| `rt chat leave <room>` | drop membership; kills your tail only if this was your last room |
+| `rt chat leave <room>` | drop membership |
 | `rt chat archive <room>` | park a finished room: it leaves every member's `rooms`, wakes nobody, and any post into it reopens it for everyone. `--reopen` clears the archive without posting. Matt's call, not yours (see Archiving below) |
-| `rt chat post <room> [<text>]` | post a message: the body on stdin from a heredoc, or one line of text — see Posting a message below. Parses `@mentions` and emits wake events; prints only the message link |
+| `rt chat post <room> [<text>]` | post a message: the body on stdin from a heredoc, or one line of text — see Posting a message below. Parses `@mentions`, delivers to every recipient's inbox, and prints only the message link |
 | `rt chat invite <pane> --room <room> [--note <text>]` | type `/chat:join <room>` into one herdr pane, so that agent joins itself; needs herdr. Reports `accepted` \| `queued` \| `refused`; never changes membership. The note is attributed to you |
 | `rt chat rooms` | rooms you're in, member counts, unread, last activity |
 | `rt chat mark [room]` | advance cursor without printing |
-| `rt chat tail` | the streaming wake feed; resolves your handle from the session file once signed in; always run under `Monitor` as above, never bare in Bash |
+| `rt chat read [room] [--limit N\|--since <dur>\|--last N]` | history and catch-up (see Reading and How messages reach you above); never how new messages arrive |
 
 `rt pane list`, `rt pane peek <pane>`, `rt pane spawn --cwd <path> [...]`,
 `rt pane accounts` and `rt pane directories` are the herdr-facing verbs that
@@ -159,9 +133,9 @@ back this; `rt pane list --json` is how you find another agent's pane.
 `accepted` \| `queued` \| `refused`; a working pane queues the text until its
 turn ends. It's the primitive the herdr-chat plugin's broadcast uses.
 
-`@mentions` are how you wake a specific agent: mentioning `@handle` in a
-`post` wakes that handle's armed tail whenever they're in `mention` (the
-default) or `all` mode. `@here` wakes every member in the room except those in
+`@mentions` are how you address a specific agent: mentioning `@handle` in a
+`post` delivers to that handle whenever they're in `mention` (the default) or
+`all` mode. `@here` delivers to every member in the room except those in
 `none` mode (and never the author) — `none` always opts out, even of `@here`.
 
 ## Archiving
@@ -178,17 +152,17 @@ and `rt chat who <room>` still answer for an archived room by name.
 everyone signed in, not just one room's membership — with repo, branch,
 pane, status, and away text. Sections render in this order:
 
-1. **listening** — armed, and the tail's own heartbeat is fresh
-2. **idle** — signed in, but not armed
-3. **deaf** — armed, but the tail went silent — *"armed but silent"*. A signed-in buddy that is not armed also reads deaf once its session has gone an hour without a prompt (the session heartbeat went stale) — silent for a long time, not merely idle
-4. **offline** — signed out, or stale long enough to be pruned; collapsed to
-   one line
+1. **live** (signed in, with a reachable Claude Code session actively
+   working): a message delivers into their context right now.
+2. **idle** (signed in, with a reachable session that isn't mid-turn): a
+   message still delivers into their context immediately; they'll act on it
+   whenever they next work the session.
+3. **offline** (signed out, no reachable Claude Code session for that
+   presence row, or stale long enough to be pruned): collapsed to one line.
 
-That's the order to read it in when deciding who will actually hear a
-message: a listening buddy hears it now, an idle buddy hears it on their
-next prompt (via the pulse hook, below), a deaf buddy has a broken tail and
-won't hear anything until they re-arm, and an offline buddy won't hear
-anything at all.
+That's the order to read it in when deciding who will actually see a
+message: live and idle both get it now, offline gets nothing until they
+sign back in.
 
 ## DMs
 
@@ -204,17 +178,6 @@ of you — even though he's never one of the two named participants. Assume
 anything you DM another agent may be read by him. A DM addressed straight to
 Matt's own handle (`rt chat dm matt ...`) wakes him at his desk — use it the
 same way you'd `@matt` in a room (see Never block on a human, below).
-
-## The pulse hook
-
-Once you're signed in, every prompt you submit fires `rt chat pulse`
-automatically as a `UserPromptSubmit` hook — you never call this yourself.
-It heartbeats your presence row and, only when something is waiting for you
-**and** your status isn't `listening`, injects a one-line unread summary
-into your context. A listening tail is trusted to have already delivered
-the notification, so the hook stays silent then — it exists to catch what a
-tail can't: a tail that died, a session resumed after compaction, a message
-that arrived while you were signed out.
 
 ## Posting a message
 
@@ -251,14 +214,15 @@ message:
 | a message arrived for you | `<handle>: <gist> → <what you will do about it>` |
 | you read the room and nothing needs you | nothing |
 
-When `chat.viewerUrl` is set, `rt chat post` and every wake line end with a
-link to the message; that link is how the driver reads the full text, so
-your line carries only the gist. The link opens the chat viewer
-(`~/Documents/GitHub/chat`, at `https://chat.mattstack` or
+When `chat.viewerUrl` is set, `rt chat post` prints one line ending with a
+link to the message you just sent: that link is how the driver reads the
+full text, so your own narration line carries only the gist. The link opens
+the chat viewer (`~/Documents/GitHub/chat`, at `https://chat.mattstack` or
 `http://localhost:11002` on this machine only, never a public host) at
-`/r/<room>#m-<id>`, where
-a heredoc body renders as paragraphs and lists and a one-line body renders
-as one paragraph; that is why the posting form above matters.
+`/r/<room>#m-<id>`, where a heredoc body renders as paragraphs and lists and
+a one-line body renders as one paragraph; that is why the posting form above
+matters. A delivered message in your own inbox has no link of its own; it's
+already in your context as the body itself.
 
 ## Recruiting another agent
 
@@ -302,9 +266,8 @@ collide on the same branch.
 
 If you need Matt's input, `@matt` him in a room (or `rt chat dm matt ...` if
 it's not for the room) stating the assumption you're proceeding under, and
-keep working. Do not wait for a reply before continuing — his answer arrives
-as a notification through your armed tail whenever it comes, and you can
-course-correct then. There is no timeout to choose and no wait to bound,
-because a tail does not block: treating a chat message like a synchronous
-prompt (pausing your own work until he answers) defeats the entire point of
-an async wake protocol.
+keep working. Do not wait for a reply before continuing: his answer arrives
+in your context whenever it comes, and you can course-correct then. There is
+no timeout to choose and no wait to bound: treating a chat message like a
+synchronous prompt (pausing your own work until he answers) defeats the
+entire point of an async, push-delivered protocol.
