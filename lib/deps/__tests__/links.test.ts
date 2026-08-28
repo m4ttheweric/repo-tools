@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { HELPERS_DIR, RT_BUNDLE_PATH, __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
 import { setSetting } from "../../settings/write.ts";
 import { fakeProbes, type FakeProbesOpts } from "../../setup/__tests__/fakes.ts";
@@ -201,8 +201,13 @@ describe("tagged PATH links", () => {
   });
 
   test("link(rt) refuses dev-mode-owns-rt when ~/.local/bin/rt is the dev-mode wrapper script", () => {
+    // isDevModeWrapper reads the real fs at `path` (bounded prefix, never
+    // through the Probes seam), so this needs a real file on disk -- `home`
+    // is a real mkdtempSync'd directory, not a fake one.
     const path = linkPath(home, "rt");
-    const p = bundleProbe({ files: { [path]: "#!/bin/sh\nexec bun run cli.ts \"$@\"\n" } });
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "#!/bin/sh\nexport RT_LAUNCH_CWD=\"$PWD\"\nexec bun run cli.ts \"$@\"\n");
+    const p = bundleProbe({ files: { [path]: "#!/bin/sh\nexport RT_LAUNCH_CWD=\"$PWD\"\nexec bun run cli.ts \"$@\"\n" } });
 
     const outcome = link(p, "rt");
     expect(outcome).toEqual({ ok: false, reason: "dev-mode-owns-rt", detail: expect.any(String) });

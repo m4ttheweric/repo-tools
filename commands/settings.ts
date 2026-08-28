@@ -16,7 +16,7 @@ import {
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE,
   trayAppPath, devTrayAppPath,
 } from "../lib/rt-paths.ts";
-import { installRtBinary } from "../lib/dev-mode.ts";
+import { DEV_MODE_TAG, installRtBinary } from "../lib/dev-mode.ts";
 import { describeTuple, tupleWarning, type FlavorTuple } from "./daemon.ts";
 import { RT_BUNDLE_PATH } from "../lib/bundle-layout.ts";
 import { spawnSync } from "child_process";
@@ -511,6 +511,7 @@ export function renderDevModeWrapper(sourcePath: string, bunPath: string): strin
   const bunDir = dirname(bunPath);
   return [
     `#!/bin/zsh`,
+    `${DEV_MODE_TAG}`,
     `export PATH="${bunDir}:/opt/homebrew/bin:/usr/local/bin:$PATH"`,
     `export RT_LAUNCH_CWD="$PWD"`,
     `cd "${sourcePath}" || { echo "rt: dev-mode source checkout missing: ${sourcePath}" >&2; exit 1; }`,
