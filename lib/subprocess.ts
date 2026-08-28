@@ -89,14 +89,19 @@ export async function runCapture(
     }
   })();
 
+  let deadlineTimer: ReturnType<typeof setTimeout>;
   const deadline: Promise<RunResult> = new Promise((resolve) => {
-    setTimeout(() => resolve({ stdout: "", stderr: "", exitCode: -1, timedOut: true }), timeoutMs);
+    deadlineTimer = setTimeout(() => resolve({ stdout: "", stderr: "", exitCode: -1, timedOut: true }), timeoutMs);
   });
 
   try {
     return await Promise.race([captured, deadline]);
   } finally {
     clearTimeout(term);
-    if (killTimer) clearTimeout(killTimer);
+    clearTimeout(deadlineTimer!);
+    // killTimer intentionally NOT cleared here: on the timeout path it must
+    // survive this finally to fire SIGKILL against a child that ignored
+    // SIGTERM. proc.kill is already try/catch guarded, so it is a harmless
+    // no-op if the child exited before the 2s grace elapses.
   }
 }
