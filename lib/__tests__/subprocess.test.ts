@@ -29,6 +29,44 @@ describe("runCapture env", () => {
   });
 });
 
+describe("runCapture timeout enforcement", () => {
+  test("resolves within the deadline even when a grandchild holds the pipe", async () => {
+    // zsh exits after ~0.2s, but backgrounds `sleep 20` which inherits stdout.
+    const t0 = Date.now();
+    const r = await runCapture(
+      ["/bin/zsh", "-c", "sleep 20 & echo started; sleep 0.2"],
+      { timeoutMs: 1000 },
+    );
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(4000); // must NOT wait for the 20s grandchild
+    expect(r.timedOut).toBe(true);
+    expect(r.exitCode).toBe(-1);
+  });
+
+  test("a SIGTERM-ignoring child is bounded by SIGKILL escalation", async () => {
+    const t0 = Date.now();
+    const r = await runCapture(
+      ["/bin/zsh", "-c", "trap '' TERM; sleep 20"],
+      { timeoutMs: 800 },
+    );
+    expect(Date.now() - t0).toBeLessThan(4000);
+    expect(r.timedOut).toBe(true);
+  });
+
+  test("normal fast command still returns real stdout and exitCode 0", async () => {
+    const r = await runCapture(["/bin/echo", "hello"], { timeoutMs: 5000 });
+    expect(r.stdout.trim()).toBe("hello");
+    expect(r.exitCode).toBe(0);
+    expect(r.timedOut).toBeUndefined();
+  });
+
+  test("timed-out call reports exitCode -1 so callers treat it as failure", async () => {
+    const r = await runCapture(["/bin/sleep", "20"], { timeoutMs: 500 });
+    expect(r.exitCode).toBe(-1);
+    expect(r.timedOut).toBe(true);
+  });
+});
+
 describe("outputTail", () => {
   test("passes short output through, trimmed", () => {
     expect(outputTail("  env: node: No such file or directory\n", 2000))

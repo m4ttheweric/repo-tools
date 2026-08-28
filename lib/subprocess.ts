@@ -10,6 +10,8 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** Set true only when the deadline fired before the child settled. */
+  timedOut?: boolean;
 }
 
 /** Longest slice of a failed step's output carried into a log line. */
@@ -57,21 +59,44 @@ export async function runCapture(
     return { stdout: "", stderr: "", exitCode: -1 };
   }
 
-  const timer = setTimeout(() => {
-    try { proc.kill(); } catch { /* already exited */ }
-  }, opts.timeoutMs ?? 10_000);
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  // SIGTERM at the deadline, SIGKILL a short grace later. A child that ignores
+  // SIGTERM (or a D-state descendant) cannot be reaped in-band, so the read is
+  // raced against the deadline below rather than awaited unconditionally: that
+  // is what lets runCapture settle while a grandchild still holds the pipe.
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const term = setTimeout(() => {
+    try { proc.kill("SIGTERM"); } catch { /* already exited */ }
+    killTimer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+    }, 2000);
+  }, timeoutMs);
+
+  const captured: Promise<RunResult> = (async () => {
+    try {
+      const stdoutPromise = new Response(proc.stdout as ReadableStream).text();
+      const stderrPromise = captureStderr
+        ? new Response(proc.stderr as ReadableStream).text()
+        : Promise.resolve("");
+      const [stdout, stderr, exitCode] = await Promise.all([
+        stdoutPromise,
+        stderrPromise,
+        proc.exited,
+      ]);
+      return { stdout, stderr, exitCode };
+    } catch {
+      return { stdout: "", stderr: "", exitCode: -1 };
+    }
+  })();
+
+  const deadline: Promise<RunResult> = new Promise((resolve) => {
+    setTimeout(() => resolve({ stdout: "", stderr: "", exitCode: -1, timedOut: true }), timeoutMs);
+  });
 
   try {
-    const stdoutPromise = new Response(proc.stdout as ReadableStream).text();
-    const stderrPromise = captureStderr
-      ? new Response(proc.stderr as ReadableStream).text()
-      : Promise.resolve("");
-    const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-    const exitCode = await proc.exited;
-    return { stdout, stderr, exitCode };
-  } catch {
-    return { stdout: "", stderr: "", exitCode: -1 };
+    return await Promise.race([captured, deadline]);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(term);
+    if (killTimer) clearTimeout(killTimer);
   }
 }
