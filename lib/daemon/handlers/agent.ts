@@ -135,6 +135,9 @@ export function createAgentHandlers(opts: {
     "agent:start": async (payload: Commands["agent:start"]["payload"]): Promise<CommandResult<"agent:start">> => {
       const { repo, cwd } = payload;
       if (!repo || !cwd) return { ok: false, error: "agent:start requires repo (serialized identity) and cwd" };
+      if (payload.surface !== undefined && payload.surface !== "herdr" && payload.surface !== "headless") {
+        return { ok: false, error: `invalid surface "${payload.surface}"; must be one of herdr, headless` };
+      }
       const surface: AgentSurface = payload.surface ?? "herdr";
       const prompt = payload.prompt;
       if (surface === "headless" && !prompt) {
@@ -192,6 +195,9 @@ export function createAgentHandlers(opts: {
     "agent:resume": async (payload: Commands["agent:resume"]["payload"]): Promise<CommandResult<"agent:resume">> => {
       const rec = getAgent(payload.id, db);
       if (!rec) return { ok: false, error: `no agent record for "${payload.id}"` };
+      if (payload.surface !== undefined && payload.surface !== "herdr" && payload.surface !== "headless") {
+        return { ok: false, error: `invalid surface "${payload.surface}"; must be one of herdr, headless` };
+      }
       const surface: AgentSurface = payload.surface ?? rec.surface;
       if (surface === "headless" && !payload.prompt) {
         return { ok: false, error: "headless resume requires a prompt (claude -p with no prompt blocks on stdin)" };

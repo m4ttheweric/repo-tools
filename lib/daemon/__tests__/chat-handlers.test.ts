@@ -44,6 +44,21 @@ test("chat:join rejects an invalid handle with a reason rather than normalizing 
   expect(res.error).toContain("handle");
 });
 
+// R033: an unchecked wakeOn value is stored on chat_members and, when the
+// join creates the room, stamped into chat_room_defaults for every future
+// joiner too — recipientsFromMembers treats it as neither "none" nor "all"
+// (falls through to mention-only) and nothing ever reports the bad value.
+test("chat:join rejects a wakeOn value outside mention/all/none, naming the allowed values", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:join"]({ room: "build", handle: "a", wakeOn: "sometimes" as any });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("wakeOn");
+  expect(res.error).toContain("mention");
+  expect(res.error).toContain("all");
+  expect(res.error).toContain("none");
+});
+
 test("chat:post returns the recipients and emits one wake event per recipient", async () => {
   const emitted: string[] = [];
   const h = freshHandlers((topic) => { emitted.push(topic); return 0; });

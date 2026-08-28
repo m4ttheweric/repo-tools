@@ -97,6 +97,13 @@ function closestRoomNames(typo: string, handle: string, db: Database): string[] 
   return known.filter((r) => r.startsWith(typo) || typo.startsWith(r)).slice(0, 3);
 }
 
+/** An unchecked value here lands on chat_members (and, on a join-creates, chat_room_defaults for every future joiner) and is silently treated as mention-only — never "none", never "all", never reported. */
+const VALID_WAKE_ON = ["mention", "all", "none"] as const;
+
+function isValidWakeOn(v: unknown): v is (typeof VALID_WAKE_ON)[number] {
+  return typeof v === "string" && (VALID_WAKE_ON as readonly string[]).includes(v);
+}
+
 /**
  * The row must commit before either emit fires, or a woken agent reads the
  * wake pointer and finds no message yet. Shared by chat:post and chat:dm so
@@ -201,6 +208,9 @@ export function createChatHandlers(opts: {
       const { room, handle, wakeOn, cwd, pane } = payload;
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
+      if (wakeOn !== undefined && !isValidWakeOn(wakeOn)) {
+        return { ok: false, error: `invalid wakeOn "${wakeOn}"; must be one of ${VALID_WAKE_ON.join(", ")}` };
+      }
       try {
         const data = joinRoom({ room, handle, wakeOn, cwd, pane }, db);
         return { ok: true, data };

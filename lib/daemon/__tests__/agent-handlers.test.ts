@@ -119,6 +119,22 @@ test("agent:start headless refuses a missing prompt", async () => {
   expect(res.error).toMatch(/prompt/);
 });
 
+// R033: an unchecked surface value falls through to the headless spawn path
+// with headless=false, spawning an interactive claude with stdin ignored
+// and recording surface "bogus" — never a caller-visible error.
+test("agent:start rejects a surface outside herdr/headless, naming the allowed values", async () => {
+  const h = fresh();
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "bogus" as any });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("surface");
+  expect(res.error).toContain("herdr");
+  expect(res.error).toContain("headless");
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
+});
+
 test("agent:start headless finishes the record and emits agent/done", async () => {
   const emitted: string[] = [];
   let resolveExit!: (c: number) => void;
