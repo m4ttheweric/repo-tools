@@ -11,6 +11,8 @@ import { join } from "path";
 import { openStateDb } from "../db.ts";
 import { armMember, clearAllArmed, disarmMember, joinRoom, listMembers, touchMember } from "../chat-store.ts";
 import { assertSessionOwnsHandle, assertSessionSignedIn, buddyStatus, presenceForSession, presenceThresholds, prunePresence, pulseSession, signIn, signOut } from "../presence-store.ts";
+import { AGENT_NAMES } from "../../chat-names.ts";
+import { getKvValue } from "../kv-blob.ts";
 
 let n = 0;
 function fresh() {
@@ -268,4 +270,42 @@ test("a tail that outlives a daemon restart reads live again on its next touch",
   const row = presenceForSession("s1", db)!;
   expect(row.armedAt).toBeGreaterThan(0);
   expect(buddyStatus(row, Date.now())).toBe("live");
+});
+
+// ─── The pool draw (no baseHandle) ──────────────────────────────────────────
+
+const DAY = 24 * HOUR;
+
+test("signIn without a base draws a pool name that no live session holds", () => {
+  const db = fresh();
+  const a = signIn({ sessionId: "s1", now }, db);
+  const b = signIn({ sessionId: "s2", now }, db);
+  expect(AGENT_NAMES).toContain(a.baseHandle);
+  expect(AGENT_NAMES).toContain(b.baseHandle);
+  expect(a.handle).toBe(a.baseHandle);
+  expect(b.baseHandle).not.toBe(a.baseHandle);
+});
+
+test("the draw is least-recently-used: every name goes once before any comes back", () => {
+  const db = fresh();
+  const drawn: string[] = [];
+  // Each sign-in lands two days after the last, so the previous row is
+  // pruned and only the ledger keeps the name from coming back.
+  for (let i = 0; i <= AGENT_NAMES.length; i++) {
+    const t = now + i * 2 * DAY;
+    const { baseHandle } = signIn({ sessionId: `s${i}`, now: t }, db);
+    signOut(`s${i}`, t, db);
+    drawn.push(baseHandle);
+  }
+  expect(new Set(drawn.slice(0, AGENT_NAMES.length)).size).toBe(AGENT_NAMES.length);
+  expect(drawn[AGENT_NAMES.length]).toBe(drawn[0]);
+});
+
+test("an explicitly named pool name counts as used; a non-pool base is not recorded", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "kai", now }, db);
+  signIn({ sessionId: "s2", baseHandle: "mr-board", now }, db);
+  const ledger = getKvValue<Record<string, number>>("chat", "names", {}, db);
+  expect(ledger.kai).toBe(now);
+  expect(ledger["mr-board"]).toBeUndefined();
 });

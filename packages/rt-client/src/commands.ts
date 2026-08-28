@@ -300,9 +300,10 @@ export interface Commands {
 
   // A session id keys these to one signed-in handle, not a room-membership
   // handle string.
+  /** No `baseHandle` means "draw me a first name": the daemon picks the least recently used pool name no live session holds. */
   "chat:sign-in": {
-    payload: { sessionId: string; baseHandle: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string };
-    data: { handle: string; reclaimed: boolean };
+    payload: { sessionId: string; baseHandle?: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string };
+    data: { handle: string; baseHandle: string; reclaimed: boolean };
   };
   "chat:sign-out": { payload: { sessionId: string }; data: Record<string, never> };
   "chat:away": { payload: { sessionId: string; text: string }; data: Record<string, never> };

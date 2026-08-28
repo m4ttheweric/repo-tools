@@ -6,7 +6,9 @@
  */
 
 import { Database } from "bun:sqlite";
+import { AGENT_NAMES, pickAgentName } from "../chat-names.ts";
 import { getStateDb } from "./db.ts";
+import { getKvValue, setKvValue } from "./kv-blob.ts";
 
 export type BuddyStatus = "live" | "idle" | "deaf" | "offline";
 
@@ -202,7 +204,7 @@ function findOpenSuffix(
 export function signIn(
   args: {
     sessionId: string;
-    baseHandle: string;
+    baseHandle?: string;
     cwd?: string;
     repo?: string;
     branch?: string;
@@ -211,8 +213,8 @@ export function signIn(
     now?: number;
   },
   db: Database = getStateDb(),
-): { handle: string; reclaimed: boolean } {
-  const { sessionId, baseHandle, statusText } = args;
+): { handle: string; baseHandle: string; reclaimed: boolean } {
+  const { sessionId, statusText } = args;
   const cwd = args.cwd ?? null;
   const repo = args.repo ?? null;
   const branch = args.branch ?? null;
@@ -222,9 +224,10 @@ export function signIn(
   const sessionStaleCutoff = now - th.sessionStaleMs;
   const tailStaleCutoff = now - th.tailStaleMs;
 
-  const run = db.transaction((): { handle: string; reclaimed: boolean } => {
+  const run = db.transaction((): { handle: string; baseHandle: string; reclaimed: boolean } => {
     // The two moments a handle is about to be needed (spec "Pruning").
     prunePresence(now, db);
+    const baseHandle = args.baseHandle ?? drawPoolName(db);
 
     // A session may always retake its own seat: drop whatever row it
     // already held before selecting, so a repeat sign-in is idempotent
@@ -281,11 +284,29 @@ export function signIn(
     // UNIQUE, so it cannot be updated into the new session — delete then insert.
     if (winnerRow) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(winnerRow.session_id);
     db.query(INSERT_PRESENCE_SQL).run(sessionId, handle, baseHandle, cwd, repo, branch, pane, statusText ?? null, now, now);
+    recordPoolNameUse(baseHandle, now, db);
 
-    return { handle, reclaimed: winnerRow !== null };
+    return { handle, baseHandle, reclaimed: winnerRow !== null };
   });
 
   return run();
+}
+
+const NAMES_KV_NS = "chat";
+const NAMES_KV_KEY = "names";
+const SELECT_ALL_HANDLES_SQL = `SELECT handle FROM chat_presence;`;
+
+/** Runs after the prune, so every remaining row counts as held: signed-out rows in their offline window included, which is exactly the buddy list. */
+function drawPoolName(db: Database): string {
+  const taken = (db.query(SELECT_ALL_HANDLES_SQL).all() as { handle: string }[]).map((r) => r.handle);
+  return pickAgentName(taken, getKvValue<Record<string, number>>(NAMES_KV_NS, NAMES_KV_KEY, {}, db));
+}
+
+function recordPoolNameUse(name: string, now: number, db: Database): void {
+  if (!AGENT_NAMES.includes(name)) return;
+  const ledger = getKvValue<Record<string, number>>(NAMES_KV_NS, NAMES_KV_KEY, {}, db);
+  ledger[name] = now;
+  setKvValue(NAMES_KV_NS, NAMES_KV_KEY, ledger, db);
 }
 
 export function signOut(sessionId: string, now: number = Date.now(), db: Database = getStateDb()): void {
