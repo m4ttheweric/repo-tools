@@ -13,7 +13,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb, getStateDb, openStateDb } from "../db.ts";
-import { branchOf, composeKey, getBranchCacheStore, identityOf, rekeyBranchCacheTable, type CacheEntry } from "../branch-cache.ts";
+import { branchOf, composeKey, getBranchCacheStore, getByBranch, identityOf, rekeyBranchCacheTable, type CacheEntry } from "../branch-cache.ts";
 
 test("composeKey/branchOf/identityOf round-trip with a serialized identity", () => {
   const id = "remote:gitlab.com%2Facme%2Facme-dev";
@@ -31,6 +31,32 @@ test("branch never contains a colon, so lastIndexOf split is unambiguous", () =>
   const k = composeKey("path:%2FUsers%2Fdev%2Fscratch", "release");
   expect(branchOf(k)).toBe("release");
   expect(identityOf(k)).toBe("path:%2FUsers%2Fdev%2Fscratch");
+});
+
+describe("getByBranch — free function over an entries map", () => {
+  function makeCacheEntry(linearId: string): CacheEntry {
+    return { ticket: null, linearId, mr: null, fetchedAt: Date.now() };
+  }
+
+  test("exact bare-key hit", () => {
+    const entries: Record<string, CacheEntry> = { main: makeCacheEntry("bare") };
+    expect(getByBranch(entries, "main")?.linearId).toBe("bare");
+  });
+
+  test("suffix hit across two repos sharing the same branch name picks a match, not a false negative", () => {
+    const entries: Record<string, CacheEntry> = {
+      "remote:gitlab.com%2Facme%2Frepo-a:feature/x": makeCacheEntry("repo-a"),
+      "remote:gitlab.com%2Facme%2Frepo-b:feature/x": makeCacheEntry("repo-b"),
+    };
+    const hit = getByBranch(entries, "feature/x");
+    expect(hit).toBeDefined();
+    expect(["repo-a", "repo-b"]).toContain(hit!.linearId);
+  });
+
+  test("miss returns undefined", () => {
+    const entries: Record<string, CacheEntry> = { main: makeCacheEntry("bare") };
+    expect(getByBranch(entries, "nonexistent")).toBeUndefined();
+  });
 });
 
 let dir: string;

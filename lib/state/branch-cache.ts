@@ -69,6 +69,18 @@ export function identityOf(key: string): string | undefined {
   return i < 0 ? undefined : key.slice(0, i);
 }
 
+/**
+ * Free function, not a store method, on purpose: `BranchCacheStore` is a
+ * structural interface with implementers outside this module's ownership
+ * (lib/daemon.ts's facade), so growing the interface forces edits there too.
+ * Scans for any key ending in `:${branch}` (or the bare branch itself).
+ */
+export function getByBranch(entries: Record<string, CacheEntry>, branch: string): CacheEntry | undefined {
+  const suffix = `:${branch}`;
+  for (const [k, v] of Object.entries(entries)) if (k === branch || k.endsWith(suffix)) return v;
+  return undefined;
+}
+
 export interface BranchCacheStore {
   /** The live map — ctx.cache-compatible. Same object identity across reload(). */
   entries: Record<string, CacheEntry>;
@@ -76,10 +88,6 @@ export interface BranchCacheStore {
   put(branch: string, entry: CacheEntry): void;
   /** Map + row delete, one call. */
   delete(branch: string): void;
-  /** Looks up by composeKey(identity, branch). Store is still bare-keyed this task, so this degrades to a bare-branch lookup until Task 10 flips the PK. */
-  get(identity: string | undefined, branch: string): CacheEntry | undefined;
-  /** Scans for any key ending in `:${branch}` (or the bare branch itself), for callers without an identity yet. */
-  getByBranch(branch: string): CacheEntry | undefined;
   /** Rebuilds `entries` in place from the db (replaces loadCache-from-file). */
   reload(): void;
   /**
@@ -202,19 +210,9 @@ function createStore(db: Database): BranchCacheStore {
     }, { op: "gc", count: toDelete.length });
   }
 
-  function get(identity: string | undefined, branch: string): CacheEntry | undefined {
-    return entries[composeKey(identity, branch)];
-  }
-
-  function getByBranch(branch: string): CacheEntry | undefined {
-    const suffix = `:${branch}`;
-    for (const [k, v] of Object.entries(entries)) if (k === branch || k.endsWith(suffix)) return v;
-    return undefined;
-  }
-
   reload();
 
-  return { entries, put, delete: del, reload, gc, get, getByBranch };
+  return { entries, put, delete: del, reload, gc };
 }
 
 let singletonStore: BranchCacheStore | null = null;
