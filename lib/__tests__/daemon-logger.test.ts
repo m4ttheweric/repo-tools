@@ -1,10 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Logger } from "pino";
 
 // We import the factory (not the singleton) so each test gets isolation.
-import { createDaemonLogger, lazyChildLogger, getDaemonLogger, __test__ } from "../daemon-logger.ts";
+import {
+  createDaemonLogger,
+  lazyChildLogger,
+  getDaemonLogger,
+  installCrashHandlers,
+  __test__,
+  type DaemonLoggerHandle,
+} from "../daemon-logger.ts";
 import { logsDir } from "../rt-paths.ts";
 
 let logDir: string;
@@ -189,5 +197,35 @@ describe("lazyChildLogger — Proxy guard", () => {
     const log = lazyChildLogger("guard-throw-test", { getLogger: () => new Promise(() => {}) });
     expect(() => (log as any).child({})).toThrow(/guard-throw-test/);
     expect(() => (log as any).level).toThrow();
+  });
+});
+
+describe("installCrashHandlers — boot-phase gating", () => {
+  it("unhandledRejection exits(1) while booting, only logs once ready", () => {
+    const exits: number[] = [];
+    const origExit = process.exit;
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
+    // @ts-expect-error test stub — captures the exit code instead of terminating
+    process.exit = (code?: number) => { exits.push(code ?? 0); };
+    const fatal = mock(() => {});
+    const error = mock(() => {});
+    const logger = { fatal, error } as unknown as Logger;
+    let booting = true;
+    try {
+      installCrashHandlers({ logger } as DaemonLoggerHandle, { booting: () => booting });
+      process.emit("unhandledRejection", new Error("boot boom"), Promise.resolve());
+      expect(fatal).toHaveBeenCalledTimes(1);
+      expect(exits).toEqual([1]);
+
+      booting = false;
+      process.emit("unhandledRejection", new Error("steady boom"), Promise.resolve());
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(exits).toEqual([1]); // no second exit
+    } finally {
+      process.exit = origExit;
+      process.stderr.write = origStderrWrite;
+      process.removeAllListeners("unhandledRejection");
+      process.removeAllListeners("uncaughtException");
+    }
   });
 });

@@ -3,6 +3,24 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { createTestHome, rt } from "../harness.ts";
 
+describe("fatal boot", () => {
+  test("daemon boot with API port already bound exits non-zero and leaves no stale rt.pid", async () => {
+    const { path: home, cleanup } = createTestHome();
+    // Bind the API port inside the isolated HOME so the daemon cannot.
+    const port = 9411;
+    const squatter = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("busy") });
+    try {
+      const result = await rt(["--daemon"], { home, env: { RT_API_PORT: String(port) } });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(existsSync(join(home, ".mattstack", "rt", "rt.pid"))).toBe(false);
+    } finally {
+      squatter.stop(true);
+      cleanup();
+    }
+  }, 60_000);
+});
+
 describe("daemon", () => {
   describe("install creates config", () => {
     let home: string;

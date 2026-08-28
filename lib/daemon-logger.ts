@@ -225,11 +225,18 @@ export function redirectNativeStderr(): void {
  * logger before exit. Call ONCE during daemon startup, AFTER logger init.
  *
  * - uncaughtException: log as fatal (sync), exit 1
- * - unhandledRejection: log as error, do NOT exit (let the daemon recover)
+ * - unhandledRejection: fatal + exit 1 while `opts.booting()` is true (no
+ *   socket/API bound yet, nothing worth staying up for); log as error and
+ *   stay alive once booted, so a stray steady-state rejection doesn't kill a
+ *   daemon that's already serving. No `booting` given preserves the old
+ *   always-log, never-exit behavior.
  * - process.stderr.write: intercept so console.error / anything writing to
  *   stderr lands in the JSON log instead of vanishing.
  */
-export function installCrashHandlers(handle: DaemonLoggerHandle): void {
+export function installCrashHandlers(
+  handle: DaemonLoggerHandle,
+  opts: { booting?: () => boolean } = {},
+): void {
   const { logger } = handle;
 
   // Because the pino-roll stream is opened with sync:true, logger.fatal()
@@ -240,6 +247,11 @@ export function installCrashHandlers(handle: DaemonLoggerHandle): void {
   });
 
   process.on("unhandledRejection", (reason) => {
+    if (opts.booting?.()) {
+      logger.fatal({ err: reason }, "unhandledRejection during boot");
+      process.exit(1);
+      return;
+    }
     logger.error({ err: reason }, "unhandledRejection");
   });
 
