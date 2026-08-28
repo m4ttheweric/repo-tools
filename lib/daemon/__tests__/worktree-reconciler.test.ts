@@ -19,7 +19,7 @@ import {
 import { createTree } from "../../worktree/create.ts";
 import type { WorktreeAppConfig } from "../../worktree/config.ts";
 import { RETENTION_MS } from "../../worktree/trash.ts";
-import { reconcileRepoRegistry, createWorktreeReconciler, __test__ } from "../worktree-reconciler.ts";
+import { reconcileRepoRegistry, createWorktreeReconciler, withCreateLock, __test__ } from "../worktree-reconciler.ts";
 
 function makeRepo(): string {
   // realpathSync: git canonicalizes /var -> /private/var on macOS (Global Constraints)
@@ -1399,4 +1399,56 @@ describe("reapRepoTrash", () => {
     expect(existsSync(siblingLeftover)).toBe(true);
     expect(warns.some((w) => JSON.stringify(w).includes(parent))).toBe(true);
   });
+});
+
+// S089: a provision's cold createTree and the reconciler's own replenish
+// createTree can run concurrently for the same repo, both `git fetch origin
+// <branch>` against the same repoPath — the loser fails to lock
+// refs/remotes/origin/<branch>, and that failure gets charged to
+// createBackoff (a 5-to-30-minute replenish hold) for what was really just
+// contention, not a genuine failure. Serializing createTree per repoPath
+// closes the race at its root.
+describe("withCreateLock", () => {
+  test("serializes concurrent calls for the same repoPath — never two holders at once", async () => {
+    const order: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const run = (id: string) => withCreateLock("/repo/a", async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      order.push(`start-${id}`);
+      await new Promise((r) => setTimeout(r, 10));
+      order.push(`end-${id}`);
+      active--;
+    });
+    await Promise.all([run("1"), run("2"), run("3")]);
+    expect(maxActive).toBe(1);
+    expect(order).toEqual(["start-1", "end-1", "start-2", "end-2", "start-3", "end-3"]);
+  });
+
+  test("different repoPaths are not serialized against each other", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const run = (path: string) => withCreateLock(path, async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 10));
+      active--;
+    });
+    await Promise.all([run("/repo/b"), run("/repo/c")]);
+    expect(maxActive).toBe(2);
+  });
+
+  test("a holder that throws still releases the lock for the next caller", async () => {
+    await expect(withCreateLock("/repo/d", async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+    let ran = false;
+    await withCreateLock("/repo/d", async () => { ran = true; });
+    expect(ran).toBe(true);
+  });
+});
+
+test("both cold-create call sites in handlers/worktree.ts serialize createTree through the shared per-repo lock (S089)", () => {
+  const source = readFileSync(new URL("../handlers/worktree.ts", import.meta.url), "utf8");
+  const matches = source.match(/withCreateLock\(/g) ?? [];
+  expect(matches.length).toBeGreaterThanOrEqual(2);
 });

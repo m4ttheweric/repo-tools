@@ -851,6 +851,30 @@ export async function freshenRepo(
  */
 const createBackoff = new Map<string, { failures: number; nextRetryAt: string }>();
 
+/**
+ * S089: a provision's cold `createTree` (handlers/worktree.ts) and this
+ * reconciler's own replenish `createTree` can run concurrently for the same
+ * repo, both `git fetch origin <branch>` against the same repoPath — the
+ * loser fails to lock refs/remotes/origin/<branch>, and that failure gets
+ * charged to createBackoff (a 5-to-30-minute replenish hold) for what was
+ * really just contention, not a genuine failure. Chained per repoPath so
+ * concurrent callers queue instead of racing; a rejected holder still
+ * releases the lock for the next one.
+ */
+const createLocks = new Map<string, Promise<void>>();
+
+export function withCreateLock<T>(repoPath: string, fn: () => Promise<T>): Promise<T> {
+  const prior = createLocks.get(repoPath) ?? Promise.resolve();
+  const ready = prior.catch(() => {}); // a previous holder's rejection must not block the next one
+  const result = ready.then(fn);
+  const tracked: Promise<void> = result.then(() => undefined, () => undefined);
+  createLocks.set(repoPath, tracked);
+  void tracked.finally(() => {
+    if (createLocks.get(repoPath) === tracked) createLocks.delete(repoPath);
+  });
+  return result;
+}
+
 /** The active backoff deadline for a repo, or null when creates may run now. */
 function createBlockedUntil(repoName: string): string | null {
   const entry = createBackoff.get(repoName);
@@ -920,7 +944,7 @@ async function replenishAndShrink(
       break;
     }
     budget--;
-    const p: Promise<void> = createTree({ repoName, repoPath, emit, log })
+    const p: Promise<void> = withCreateLock(repoPath, () => createTree({ repoName, repoPath, emit, log }))
       .then((result) => {
         if (result.ok) {
           createBackoff.delete(repoName);
