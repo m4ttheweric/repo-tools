@@ -1093,6 +1093,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Pane", type: "text", placeholder: "w7A:pY", hint: "herdr pane id to send to" },
           { name: "Text", flag: "--text", type: "text", placeholder: "standup in 5", hint: "Body to inject; pass - to read the body from stdin" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the delivery result as JSON instead of the plain line" },
         ],
       },
       accounts: {

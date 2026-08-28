@@ -99,6 +99,7 @@ export async function paneSend(args: string[]): Promise<void> {
   const callerPane = process.env.HERDR_PANE_ID;
   const payload: Commands["pane:send"]["payload"] = { paneId, text, ...(callerPane ? { callerPane } : {}) };
   const data = unwrap(await rtCommand<Commands["pane:send"]["data"]>("pane:send", payload, opts(args)), "pane send");
+  if (args.includes("--json")) return void console.log(JSON.stringify(data));
   console.log(`${data.paneId} ${data.delivered}${data.reason ? ` (${data.reason})` : ""}`);
 }
 

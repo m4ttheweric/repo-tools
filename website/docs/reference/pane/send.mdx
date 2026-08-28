@@ -21,6 +21,7 @@ rt pane send <pane> [flags]
 | --- | --- | --- | --- |
 | `<pane>` | text |  | herdr pane id to send to |
 | `--text` | text |  | Body to inject; pass - to read the body from stdin |
+| [`--json`](/guides/common-flags) | boolean | `false` | Emit the delivery result as JSON instead of the plain line |
 
 _See code: [commands/pane.ts › paneSend](https://github.com/m4ttstack/rt/blob/main/commands/pane.ts)_
 
