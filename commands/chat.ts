@@ -51,6 +51,7 @@ import {
 } from "../lib/chat-session.ts";
 import { chatViewerUrl, readChatViewerUrlSetting } from "../lib/chat-viewer-url.ts";
 import { planSessionRename, type RenamePlan } from "../lib/chat-rename.ts";
+import { claudeConfigDir, composeSessionTitle, readSessionCustomTitle } from "../lib/chat-title.ts";
 import { parseDuration } from "./events.ts";
 import {
   chatArchive,
@@ -957,6 +958,7 @@ async function runSignIn(args: string[]): Promise<void> {
   const signInRes = await chatSignIn({ sessionId, baseHandle: requestedBase, cwd, repo, branch, pane, statusText });
   const { handle, baseHandle } = unwrap(signInRes, "sign-in");
 
+  const prior = readChatSession(sessionId);
   writeChatSession({ sessionId, handle, baseHandle, signedInAt: Date.now(), room: roomName ?? undefined });
 
   let joinedRoom: { name: string; memberCount: number } | null = null;
@@ -966,16 +968,21 @@ async function runSignIn(args: string[]): Promise<void> {
     joinedRoom = { name: roomName, memberCount: joinData.memberCount };
   }
 
-  const renamePlan = planSessionRename({ handle, sessionId, env: process.env, disabled: args.includes("--no-rename") });
+  const title = composeSessionTitle({
+    customTitle: readSessionCustomTitle(sessionId, claudeConfigDir()),
+    prior: prior ? { handle: prior.handle } : null,
+    handle,
+  });
+  const renamePlan = planSessionRename({ title, sessionId, env: process.env, disabled: args.includes("--no-rename") });
   const renamed = renamePlan && (await runSessionRename(renamePlan)) ? renamePlan.via : null;
 
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ ok: true, handle, room: roomName, renamed }));
+    console.log(JSON.stringify({ ok: true, handle, room: roomName, renamed, title: renamed ? title : null }));
     return;
   }
   console.log(renderSignIn(handle, { repo, branch, pane }, root !== null, noRoomFlag, joinedRoom));
-  if (renamed === "herdr") console.log(`your session is being renamed to ${handle} (lands when this turn ends)`);
-  else if (renamed === "claude") console.log(`your session is now titled ${handle}`);
+  if (renamed === "herdr") console.log(`your session is being renamed to ${title} (lands when this turn ends)`);
+  else if (renamed === "claude") console.log(`your session is now titled ${title}`);
   console.log("arm your tail now: Monitor `rt chat tail`, persistent");
 }
 
