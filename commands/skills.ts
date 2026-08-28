@@ -295,7 +295,28 @@ function listFilesRecursive(dir: string, prefix = ""): string[] {
   return files;
 }
 
-function findDefaultManifest(mattstackRoot: string, team: string): string {
+function canonicalPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolvePath(p);
+  }
+}
+
+function isUnder(parent: string, child: string): boolean {
+  const rel = relativePath(canonicalPath(parent), canonicalPath(child));
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolutePath(rel);
+}
+
+/**
+ * A team-zone pack is compiled against its repo's merged manifest, never its
+ * own pack/skills.jsonc: that file is one fragment merge-manifests.sh folds in
+ * with the other packs' and the user's overrides, so compiling from it alone
+ * would commit an artifact that check flags as drift on every registered
+ * machine. A standalone pack (the mattstack plugin) has no repo and no merge;
+ * its pack/skills.jsonc IS its manifest.
+ */
+function findDefaultManifest(mattstackRoot: string, team: string, packDir: string): string {
   const reposRoot = join(mattstackRoot, "repos");
   const candidates: { path: string; mtimeMs: number }[] = [];
 
@@ -303,13 +324,21 @@ function findDefaultManifest(mattstackRoot: string, team: string): string {
     const manifestPath = join(reposRoot, repoName, "skills.jsonc");
     if (!existsSync(manifestPath)) continue;
     const header = leadingCommentBlock(readFileSync(manifestPath, "utf8"));
-    if (!header.includes(team)) continue;
+    // Each provenance line reads `<engine-plugin>:<engine> <slot> <- <pack>@<marketplace>`.
+    // Only the source half names the pack; the key half names the engine's plugin,
+    // which is "mattstack" in every team's manifest.
+    if (!header.includes(`<- ${team}@`)) continue;
     candidates.push({ path: manifestPath, mtimeMs: statSync(manifestPath).mtimeMs });
   }
 
   if (candidates.length === 0) {
+    const ownManifest = join(packDir, "pack", "skills.jsonc");
+    const standalone = !isUnder(join(mattstackRoot, "teams"), packDir);
+    if (standalone && existsSync(ownManifest)) return ownManifest;
     throw new SkillsUsageError(
-      `no skills.jsonc under ${reposRoot}/*/ names team "${team}" in its provenance header; pass --manifest explicitly`,
+      `no skills.jsonc under ${reposRoot}/*/ names team "${team}" in its provenance header (<- ${team}@...)` +
+        (standalone ? ` and ${ownManifest} is absent` : "") +
+        `; pass --manifest explicitly`,
     );
   }
 
@@ -425,7 +454,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
 
   const fullRoster = readVerbRoster(packDir);
   // A pack with no verb roster needs no manifest: bindings only feed compile targets.
-  const manifestPath = fullRoster.length === 0 ? null : (flags.manifest ?? findDefaultManifest(mattstackRoot, team));
+  const manifestPath = fullRoster.length === 0 ? null : (flags.manifest ?? findDefaultManifest(mattstackRoot, team, packDir));
   const bindings = manifestPath ? readManifestBindings(manifestPath) : {};
   // No compile targets means nothing needs plugin roots or the invocable roster;
   // skipping the `claude plugin list` subprocess keeps rosterless packs usable
@@ -967,10 +996,11 @@ type CompositionPayload = {
   packDir: string;
   /**
    * The manifest that supplies these bindings, absolute -- the file to edit to
-   * rebind a slot. NOT `<packDir>/skills.jsonc`: it lives in a registered repo
-   * under `~/.mattstack/repos/<repoName>/`, whose dir name is the repo, not the
-   * pack, so it cannot be reconstructed from `pack`. Null when the pack has no
-   * roster (nothing to bind).
+   * rebind a slot. For a team pack it lives in a registered repo under
+   * `~/.mattstack/repos/<repoName>/`, whose dir name is the repo, not the
+   * pack, so it cannot be reconstructed from `pack`; a standalone pack's is
+   * its own `<packDir>/pack/skills.jsonc`. Null when the pack has no roster
+   * (nothing to bind).
    */
   manifestPath: string | null;
   verbs: CompositionVerb[];
@@ -1324,7 +1354,7 @@ function stageNamesFor(flags: SurfaceFlags, packDir: string): Set<string> {
     manifest = flags.manifest;
   } else {
     try {
-      manifest = findDefaultManifest(mattstackRoot, team);
+      manifest = findDefaultManifest(mattstackRoot, team, packDir);
     } catch (err) {
       if (err instanceof SkillsUsageError) return new Set();
       throw err;
