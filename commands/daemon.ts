@@ -334,8 +334,19 @@ export async function restart(): Promise<void> {
  * any process hold a file open under THIS HOME's rt dir" — home-scoped by
  * construction, immune to that false positive and to pid-reuse. Only worth
  * calling once both `status` and a plain ping have already failed.
+ *
+ * The CALLER itself is excluded from the lsof result: `showStatus` opens its
+ * own `bun:sqlite` handle on `state.db` (inside RT_DIR) via
+ * `readSupervisionState()` just before this probe runs, so `lsof +D RT_DIR`
+ * legitimately reports the calling CLI process as a live holder of the
+ * directory — with no daemon involved at all. Left unfiltered, a genuinely
+ * dead daemon self-matches and misclassifies as alive-not-serving/parked;
+ * this only failed to show up in manual testing because incidental work
+ * happened to separate the state.db open from the lsof call by enough time
+ * for state.db's own transient lock window to close — an accident of
+ * timing, not a guarantee.
  */
-async function probePidAlive(recordedPid: number | null, breadcrumbPid?: number): Promise<{ alive: boolean; pid: number | null }> {
+export async function probePidAlive(recordedPid: number | null, breadcrumbPid?: number): Promise<{ alive: boolean; pid: number | null }> {
   for (const candidate of [recordedPid, breadcrumbPid ?? null]) {
     if (candidate === null) continue;
     try {
@@ -344,7 +355,8 @@ async function probePidAlive(recordedPid: number | null, breadcrumbPid?: number)
     } catch { /* not this one — try the next candidate */ }
   }
   const { stdout } = await runCapture(["lsof", "-t", "+D", RT_DIR], { timeoutMs: 3000 });
-  const pids = stdout.trim().split(/\s+/).filter(Boolean).map(Number).filter((n) => !isNaN(n));
+  const pids = stdout.trim().split(/\s+/).filter(Boolean).map(Number)
+    .filter((n) => !isNaN(n) && n !== process.pid);
   return pids.length > 0 ? { alive: true, pid: pids[0]! } : { alive: false, pid: recordedPid };
 }
 
