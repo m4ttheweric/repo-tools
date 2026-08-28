@@ -29,6 +29,7 @@ import {
   gitOk,
   headSha,
   listWorktreesAsync,
+  MUTATING_TIMEOUT_MS,
   remoteDefaultRef,
   runGit,
   stashChangesAsync,
@@ -466,13 +467,13 @@ async function autoReturnMain(
     log.info({ ...fields }, `stashed uncommitted changes on "${mergedBranch}"`);
   }
 
-  const checkout = await runGit(rec.path, ["checkout", defaultBranch]);
+  const checkout = await runGit(rec.path, ["checkout", defaultBranch], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (checkout.exitCode !== 0) {
     log.warn({ ...fields, defaultBranch, output: checkout.stderr.trim() }, "auto-return: checkout failed");
     return "retry";
   }
 
-  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef]);
+  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (ff.exitCode !== 0) {
     log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "auto-return: fast-forward failed");
     return "retry";
@@ -724,7 +725,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
 
   const classify = await classifyDirtyAsync(rec.path);
   if (classify.discard.length > 0) {
-    await runGit(rec.path, ["checkout", "--", ...classify.discard]);
+    await runGit(rec.path, ["checkout", "--", ...classify.discard], { timeoutMs: MUTATING_TIMEOUT_MS });
   }
 
   // Blockers stashed under the tree's own branch name (Desktop-compatible
@@ -753,7 +754,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     }
   };
 
-  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef]);
+  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (ff.exitCode !== 0) {
     log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "freshen: fast-forward failed");
     await popStash();

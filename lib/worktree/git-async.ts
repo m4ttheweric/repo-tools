@@ -32,6 +32,10 @@ const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+/** Checkout/merge/stash on a large tree can legitimately exceed a minute; a
+ *  60s SIGKILL leaves the working tree half-switched. Match fetch/worktree-add. */
+export const MUTATING_TIMEOUT_MS = 5 * 60_000;
+
 const DESKTOP_STASH_RE = /!!GitHub_Desktop<(.+)>$/;
 
 /** Run a git command with hooks suppressed, capturing stdout+stderr. Never throws. */
@@ -64,7 +68,7 @@ export async function currentBranchAsync(cwd: string): Promise<string | null> {
 }
 
 export async function statusPorcelainAsync(cwd: string): Promise<string> {
-  const r = await runGit(cwd, ["status", "--porcelain"]);
+  const r = await runGit(cwd, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
   return r.stdout;
 }
 
@@ -174,13 +178,25 @@ export async function ensureInfoExclude(repoPath: string, pattern: string): Prom
  * Async port of git-ops.ts stashChanges — interoperable with GitHub Desktop
  * and worktree-context.
  */
-export async function stashChangesAsync(cwd: string, label: string): Promise<void> {
+export async function stashChangesAsync(
+  cwd: string,
+  label: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<void> {
   const message = `!!GitHub_Desktop<${label}>`;
-  await runGit(cwd, ["stash", "push", "-u", "-m", message]);
+  await runGit(cwd, ["stash", "push", "-u", "-m", message], {
+    timeoutMs: opts.timeoutMs ?? MUTATING_TIMEOUT_MS,
+  });
 }
 
-export async function popStashAsync(cwd: string, stashName: string): Promise<void> {
-  await runGit(cwd, ["stash", "pop", stashName]);
+export async function popStashAsync(
+  cwd: string,
+  stashName: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<void> {
+  await runGit(cwd, ["stash", "pop", stashName], {
+    timeoutMs: opts.timeoutMs ?? MUTATING_TIMEOUT_MS,
+  });
 }
 
 /**
