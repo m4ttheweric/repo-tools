@@ -501,7 +501,7 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
   return db;
 }
 
-/** Version-guarded open for the CLI daemon-down fallback (spec 2026-08-28).
+/** Version-guarded open for the CLI daemon-down fallback.
     Refuses a db STRICTLY newer than this build so a short-lived CLI never
     stamps a schema another build owns; equal-or-behind opens and migrates
     normally (data-preserving, IF NOT EXISTS). A missing file is created. */

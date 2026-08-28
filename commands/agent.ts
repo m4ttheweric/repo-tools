@@ -57,7 +57,7 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
 }
 
 // Daemon-optional: the herdr and read verbs run in-process when the daemon is
-// down (spec 2026-08-28). Headless is refused inside the fallback. The fallback
+// down. Headless is refused inside the fallback. The fallback
 // module is imported lazily so a daemon-up call never loads daemon-side code.
 async function dispatch<T>(
   command: "agent:start" | "agent:resume" | "agent:get" | "agent:list",
@@ -66,7 +66,11 @@ async function dispatch<T>(
 ): Promise<RtResponse<T>> {
   if (await isDaemonRunning()) return wrapper();
   const { runAgentFallback } = await import("./agent-fallback.ts");
-  return runAgentFallback<T>(command, payload);
+  try {
+    return await runAgentFallback<T>(command, payload);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 function parseSurface(s: string | undefined): AgentSurface | undefined {

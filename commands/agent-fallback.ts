@@ -1,5 +1,5 @@
 /**
- * Daemon-down execution for `rt agent` (spec 2026-08-28). Reuses the exact
+ * Daemon-down execution for `rt agent`. Reuses the exact
  * daemon handlers in-process for the surfaces a short-lived CLI can serve:
  * herdr launch/resume and the read verbs. Headless is refused BEFORE any
  * handler is constructed, because the CLI exits immediately and cannot reap
