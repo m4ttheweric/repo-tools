@@ -193,8 +193,8 @@ CREATE TABLE IF NOT EXISTS chat_members (
   joined_at     INTEGER NOT NULL,
   last_read_id  INTEGER NOT NULL DEFAULT 0,
   wake_on       TEXT NOT NULL DEFAULT 'mention',
-  last_seen_at  INTEGER,
-  armed_at      INTEGER,
+  last_seen_at  INTEGER,                 -- vestigial (delivery-v2 hard cutover): no code reads or writes this column; kept for schema stability, never migrated away
+  armed_at      INTEGER,                 -- vestigial (delivery-v2 hard cutover): no code reads or writes this column; kept for schema stability, never migrated away
   cwd           TEXT,
   pane          TEXT,
   PRIMARY KEY (room, handle)
@@ -216,9 +216,9 @@ CREATE TABLE IF NOT EXISTS chat_presence (
   pane           TEXT,                   -- HERDR_PANE_ID when known
   status_text    TEXT,                   -- the away message; NULL when back
   signed_in_at   INTEGER NOT NULL,
-  last_seen_at   INTEGER NOT NULL,       -- SESSION heartbeat: written by pulse (and sign-in)
-  tail_seen_at   INTEGER,                -- TAIL heartbeat: written ONLY by chat:touch from the tail loop
-  armed_at       INTEGER,                -- set while a tail is live, cleared on exit
+  last_seen_at   INTEGER NOT NULL,       -- set at sign-in; prune's staleness leg reads it
+  tail_seen_at   INTEGER,                -- vestigial (delivery-v2 hard cutover): no code reads or writes this column; kept for schema stability, never migrated away
+  armed_at       INTEGER,                -- vestigial (delivery-v2 hard cutover): no code reads or writes this column; kept for schema stability, never migrated away
   signed_out_at  INTEGER                 -- NULL while signed in
 );
 CREATE INDEX IF NOT EXISTS chat_presence_handle ON chat_presence(handle);

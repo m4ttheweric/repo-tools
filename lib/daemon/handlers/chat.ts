@@ -17,21 +17,15 @@ import {
   markRead,
   markDelivered,
   pendingMessages,
-  unreadWakingCount,
   listRooms,
   archiveRoom,
   roomDefaultWake,
   listMembers,
-  armMember,
-  touchMember,
-  disarmMember,
   dmRoomFor,
   dmParticipants,
-  listDms,
   signIn,
   signOut,
   setAway,
-  pulseSession,
   listBuddies,
   presenceForHandle,
   presenceForSession,
@@ -39,6 +33,8 @@ import {
   assertSessionSignedIn,
   buddyStatus,
   presenceThresholds,
+  type BuddyStatus,
+  type RegistryDeps,
 } from "../../state/index.ts";
 import { CHAT_NOTIFICATION_CATEGORY, notifyEnabled } from "../../notifier.ts";
 import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.ts";
@@ -68,16 +64,11 @@ const CHAT_COMMANDS = [
   "chat:who",
   "chat:mark",
   "chat:messages",
-  "chat:arm",
-  "chat:touch",
-  "chat:disarm",
-  "chat:unread-waking",
   "chat:sign-in",
   "chat:sign-out",
   "chat:away",
   "chat:back",
   "chat:buddies",
-  "chat:pulse",
   "chat:dm",
   "chat:invite",
   "chat:archive",
@@ -261,8 +252,8 @@ function postAndNotify(
   db: Database,
   emitEvent: (topic: string, payload?: unknown) => unknown,
   args: { room: string; handle: string; body: string; mentions?: string[] },
-  inboxDeps: InboxDeps = defaultInboxDeps,
-  deliveryChains: Map<string, Promise<void>> = new Map(),
+  inboxDeps: InboxDeps,
+  deliveryChains: Map<string, Promise<void>>,
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body, mentions } = args;
   const posted = postMessage({ room, handle, body, mentions }, db);
@@ -297,29 +288,6 @@ function postAndNotify(
   return posted;
 }
 
-/**
- * Three disjoint buckets that sum to the true unread total: `dms` is the
- * waking count over DM rooms; `mentions` is the mention count over non-DM
- * rooms; `rooms` is non-DM waking count minus those same mentions, floored
- * at 0 (a self-mention can otherwise make a room's mention count exceed its
- * waking count).
- */
-function unreadSummaryFor(handle: string, db: Database): { dms: number; mentions: number; rooms: number } {
-  const dmRooms = new Set(listDms(handle, db).map((d) => d.room));
-  let dms = 0;
-  let mentions = 0;
-  let nonDmWaking = 0;
-  for (const w of unreadWakingCount(handle, db)) {
-    if (dmRooms.has(w.room)) {
-      dms += w.count;
-    } else {
-      nonDmWaking += w.count;
-      mentions += w.mentions;
-    }
-  }
-  return { dms, mentions, rooms: Math.max(0, nonDmWaking - mentions) };
-}
-
 /** One line, because Claude Code dispatches a slash command from the first line only. */
 export function inviteText(room: string, from: string, note?: string): string {
   const head = `/chat:join ${room}`;
@@ -332,6 +300,8 @@ export function createChatHandlers(opts: {
   emitEvent: (topic: string, payload?: unknown) => unknown;
   herdr?: typeof herdrRequest;
   inboxDeps?: InboxDeps;
+  /** The registry probe behind buddyStatus (chat:who, chat:buddies) and signIn's reclaim check; real by default, fakeable the same way inboxDeps is. */
+  registryDeps?: RegistryDeps;
   /** repo/branch/room derivation for `--pane` sign-in (lib/repo-for-cwd.ts, the same index-based, no-sync-git-spawn source pane.ts's own paneRow uses). */
   repoIndex?: () => Record<string, string>;
   exec?: typeof runCapture;
@@ -339,6 +309,7 @@ export function createChatHandlers(opts: {
   const { db, emitEvent } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
+  const registryDeps = opts.registryDeps;
   const repoIndex = opts.repoIndex ?? (() => ({}));
   const exec = opts.exec ?? runCapture;
   // One chain map per handler instance (one daemon, one db): shared across
@@ -405,17 +376,12 @@ export function createChatHandlers(opts: {
       }
       const members = rows.map((member) => {
         const presence = presenceForHandle(member.handle, db);
-        // Presence takes priority: pulse only ever heartbeats the presence
-        // row, so a signed-in handle with no chat:touch yet would otherwise
-        // read stale. joinedAt floors lastSeenAt only (keeps a member who
-        // joined but never touched/armed from reading as instantly offline)
-        // — it must NOT flow into tailSeenAt too, or a member who joined long
-        // ago and only just armed reads deaf off its own join time instead of
-        // its fresh armedAt.
-        const memberLastSeenAt = member.lastSeenAt ?? member.joinedAt;
-        const status = presence
-          ? buddyStatus(presence, now, th)
-          : buddyStatus({ lastSeenAt: memberLastSeenAt, tailSeenAt: member.lastSeenAt, armedAt: member.armedAt }, now, th);
+        // Status is a presence-only concept now: an unsigned plan-1 member
+        // (no presence row, e.g. a chat_members row this task's deletions
+        // left behind or a name never signed in) has no session to probe
+        // the registry with, so it reads offline rather than guessing from
+        // stale membership columns.
+        const status: BuddyStatus = presence ? buddyStatus(presence, now, th, registryDeps) : "offline";
         return { ...member, status };
       });
       return { ok: true, data: { members } };
@@ -430,34 +396,6 @@ export function createChatHandlers(opts: {
       const { room, before, limit } = payload;
       const messages = listMessages({ room, before, limit: limit ?? 50 }, db);
       return { ok: true, data: { messages } };
-    },
-
-    "chat:arm": async (payload: Commands["chat:arm"]["payload"]): Promise<CommandResult<"chat:arm">> => {
-      const err = assertionError(() => assertSessionOwnsHandle(payload.handle, payload.sessionId, db));
-      if (err) return { ok: false, error: err };
-      armMember(payload.room, payload.handle, db);
-      return { ok: true, data: {} };
-    },
-
-    "chat:touch": async (payload: Commands["chat:touch"]["payload"]): Promise<CommandResult<"chat:touch">> => {
-      const err = assertionError(() => assertSessionOwnsHandle(payload.handle, payload.sessionId, db));
-      if (err) return { ok: false, error: err };
-      touchMember(payload.room, payload.handle, db);
-      return { ok: true, data: {} };
-    },
-
-    "chat:disarm": async (payload: Commands["chat:disarm"]["payload"]): Promise<CommandResult<"chat:disarm">> => {
-      const err = assertionError(() => assertSessionOwnsHandle(payload.handle, payload.sessionId, db));
-      if (err) return { ok: false, error: err };
-      disarmMember(payload.handle, db);
-      return { ok: true, data: {} };
-    },
-
-    "chat:unread-waking": async (
-      payload: Commands["chat:unread-waking"]["payload"],
-    ): Promise<CommandResult<"chat:unread-waking">> => {
-      const rooms = unreadWakingCount(payload.handle, db);
-      return { ok: true, data: { rooms: payload.room ? rooms.filter((r) => r.room === payload.room) : rooms } };
     },
 
     "chat:sign-in": async (payload: Commands["chat:sign-in"]["payload"]): Promise<CommandResult<"chat:sign-in">> => {
@@ -524,7 +462,7 @@ export function createChatHandlers(opts: {
         if (binding?.name && isValidChatName(binding.name)) resolvedBase = binding.name;
       }
 
-      const data = signIn({ sessionId, baseHandle: resolvedBase, cwd: signInCwd, repo: signInRepo, branch: signInBranch, pane, statusText }, db);
+      const data = signIn({ sessionId, baseHandle: resolvedBase, cwd: signInCwd, repo: signInRepo, branch: signInBranch, pane, statusText }, db, registryDeps);
 
       if (derivedRoom) {
         try {
@@ -580,20 +518,7 @@ export function createChatHandlers(opts: {
     },
 
     "chat:buddies": async (): Promise<CommandResult<"chat:buddies">> => {
-      return { ok: true, data: { buddies: listBuddies(Date.now(), db) } };
-    },
-
-    "chat:pulse": async (payload: Commands["chat:pulse"]["payload"]): Promise<CommandResult<"chat:pulse">> => {
-      const { sessionId, cwd, repo, branch, pane } = payload;
-      const err = assertionError(() => assertSessionSignedIn(sessionId, db));
-      if (err) return { ok: false, error: err };
-      const now = Date.now();
-      // Heartbeat before computing unread: the session row must reflect
-      // "here now" before status/unread are read back off it.
-      pulseSession({ sessionId, cwd, repo, branch, pane, now }, db);
-      const row = presenceForSession(sessionId, db)!;
-      const status = buddyStatus(row, now);
-      return { ok: true, data: { unread: unreadSummaryFor(row.handle, db), status } };
+      return { ok: true, data: { buddies: listBuddies(Date.now(), db, registryDeps) } };
     },
 
     "chat:dm": async (payload: Commands["chat:dm"]["payload"]): Promise<CommandResult<"chat:dm">> => {

@@ -7,10 +7,11 @@
 
 import { Database } from "bun:sqlite";
 import { AGENT_NAMES, pickAgentName } from "../chat-names.ts";
+import { resolveInbox, inboxAlive } from "../claude-registry.ts";
 import { getStateDb } from "./db.ts";
 import { getKvValue, setKvValue } from "./kv-blob.ts";
 
-export type BuddyStatus = "live" | "idle" | "deaf" | "offline";
+export type BuddyStatus = "live" | "idle" | "offline";
 
 export interface PresenceRow {
   sessionId: string;
@@ -23,16 +24,17 @@ export interface PresenceRow {
   statusText?: string;
   signedInAt: number;
   lastSeenAt: number;
-  tailSeenAt?: number;
-  armedAt?: number;
   signedOutAt?: number;
 }
 
 export interface PresenceThresholds {
-  tailStaleMs: number;
   sessionStaleMs: number;
   pruneMs: number;
 }
+
+/** The registry probe, fakeable the same way lib/daemon/handlers/chat.ts's InboxDeps is: real implementations by default, swapped for a fake in tests that need a dead or alive binding on demand. */
+export type RegistryDeps = { resolve: typeof resolveInbox; alive: typeof inboxAlive };
+const defaultRegistryDeps: RegistryDeps = { resolve: resolveInbox, alive: inboxAlive };
 
 interface PresenceRawRow {
   session_id: string;
@@ -45,8 +47,6 @@ interface PresenceRawRow {
   status_text: string | null;
   signed_in_at: number;
   last_seen_at: number;
-  tail_seen_at: number | null;
-  armed_at: number | null;
   signed_out_at: number | null;
 }
 
@@ -63,24 +63,31 @@ function rowToPresence(row: PresenceRawRow): PresenceRow {
   if (row.branch !== null) presence.branch = row.branch;
   if (row.pane !== null) presence.pane = row.pane;
   if (row.status_text !== null) presence.statusText = row.status_text;
-  if (row.tail_seen_at !== null) presence.tailSeenAt = row.tail_seen_at;
-  if (row.armed_at !== null) presence.armedAt = row.armed_at;
   if (row.signed_out_at !== null) presence.signedOutAt = row.signed_out_at;
   return presence;
 }
 
 const PRESENCE_COLUMNS =
-  "session_id, handle, base_handle, cwd, repo, branch, pane, status_text, signed_in_at, last_seen_at, tail_seen_at, armed_at, signed_out_at";
+  "session_id, handle, base_handle, cwd, repo, branch, pane, status_text, signed_in_at, last_seen_at, signed_out_at";
+
+function bindingAlive(sessionId: string, deps: RegistryDeps): boolean {
+  const binding = deps.resolve(sessionId);
+  return binding !== null && deps.alive(binding);
+}
 
 /**
- * The one reclaim predicate (spec "Failure modes" — "Suffix churn"): a
- * handle's holder is reclaimable when signed out, OR its session heartbeat
- * is older than the session-stale cutoff AND its tail heartbeat
- * (COALESCE(tail_seen_at, armed_at), absent counting as 0 — maximally
- * stale) is older than the tail-stale cutoff. Bind params in order:
- * sessionStaleCutoff, tailStaleCutoff (absolute timestamps, `now - Ms`).
+ * The one reclaim predicate (spec "Failure modes", "Suffix churn"): a
+ * handle's holder is reclaimable when signed out, or its session heartbeat
+ * is older than the session-stale cutoff AND the registry has nothing alive
+ * for its session id -- a long autonomous turn can leave last_seen_at old
+ * while the agent is very much still there, so staleness alone must never
+ * reclaim a seat the registry still vouches for.
  */
-const RECLAIMABLE_SQL = `signed_out_at IS NOT NULL OR (last_seen_at < ? AND COALESCE(tail_seen_at, armed_at, 0) < ?)`;
+function isReclaimable(row: PresenceRawRow, sessionStaleCutoff: number, deps: RegistryDeps): boolean {
+  if (row.signed_out_at !== null) return true;
+  if (row.last_seen_at >= sessionStaleCutoff) return false;
+  return !bindingAlive(row.session_id, deps);
+}
 
 /**
  * Prune's own predicate, deliberately never RECLAIMABLE_SQL: that fragment's
@@ -92,30 +99,19 @@ const PRUNABLE_SQL = `(signed_out_at IS NOT NULL AND signed_out_at < ?) OR last_
 
 const SELECT_PRESENCE_BY_HANDLE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE handle = ?;`;
 const SELECT_PRESENCE_BY_SESSION_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE session_id = ?;`;
-// Bind order: sessionStaleCutoff, tailStaleCutoff, baseHandle — the whole
-// suffix family in one query, so signIn's seat selection scans an in-memory
-// set instead of probing candidates one handle string at a time (a probe
-// loop can never look past the first free slot to a same-base row beyond
-// it).
-const SELECT_BASE_HANDLE_ROWS_SQL = `SELECT ${PRESENCE_COLUMNS}, (${RECLAIMABLE_SQL}) AS reclaimable FROM chat_presence WHERE base_handle = ?;`;
-// `handle` is globally UNIQUE across every base_handle family, so a "gap"
-// suffix absent from THIS family's rows can still be occupied by a row from
-// an unrelated one (e.g. a worktree dir literally named "2" derives the
-// base "x-2", which collides with "x"'s own second suffix). Bind order:
-// sessionStaleCutoff, tailStaleCutoff, handle.
-const SELECT_HANDLE_RECLAIMABLE_SQL = `SELECT ${PRESENCE_COLUMNS}, (${RECLAIMABLE_SQL}) AS reclaimable FROM chat_presence WHERE handle = ?;`;
+// The whole suffix family in one query, so signIn's seat selection scans an
+// in-memory set instead of probing candidates one handle string at a time (a
+// probe loop can never look past the first free slot to a same-base row
+// beyond it). Reclaimability is computed in TS (isReclaimable), never SQL --
+// it depends on a live registry probe.
+const SELECT_BASE_HANDLE_ROWS_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE base_handle = ?;`;
 const SELECT_NON_PRUNABLE_PRESENCE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE NOT (${PRUNABLE_SQL});`;
 const DELETE_PRUNABLE_PRESENCE_SQL = `DELETE FROM chat_presence WHERE ${PRUNABLE_SQL};`;
 const DELETE_PRESENCE_BY_SESSION_SQL = `DELETE FROM chat_presence WHERE session_id = ?;`;
 const INSERT_PRESENCE_SQL = `INSERT INTO chat_presence (session_id, handle, base_handle, cwd, repo, branch, pane, status_text, signed_in_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`;
-const UPDATE_SIGN_OUT_SQL = `UPDATE chat_presence SET signed_out_at = ?, armed_at = NULL WHERE session_id = ?;`;
+const UPDATE_SIGN_OUT_SQL = `UPDATE chat_presence SET signed_out_at = ? WHERE session_id = ?;`;
 const UPDATE_STATUS_TEXT_SQL = `UPDATE chat_presence SET status_text = ? WHERE session_id = ?;`;
-const UPDATE_PULSE_SQL = `UPDATE chat_presence SET last_seen_at = ?, cwd = COALESCE(?, cwd), repo = COALESCE(?, repo), branch = COALESCE(?, branch), pane = COALESCE(?, pane) WHERE session_id = ?;`;
-const UPDATE_PRESENCE_ARMED_BY_HANDLE_SQL = `UPDATE chat_presence SET armed_at = ?, tail_seen_at = NULL WHERE handle = ?;`;
-const UPDATE_PRESENCE_TAIL_BY_HANDLE_SQL = `UPDATE chat_presence SET tail_seen_at = ?, armed_at = COALESCE(armed_at, ?) WHERE handle = ?;`;
-const UPDATE_PRESENCE_DISARMED_BY_HANDLE_SQL = `UPDATE chat_presence SET armed_at = NULL WHERE handle = ?;`;
 
-const DEFAULT_TAIL_STALE_MS = 10 * 60_000;
 const DEFAULT_SESSION_STALE_MS = 60 * 60_000;
 const DEFAULT_PRUNE_MS = 24 * 60 * 60_000;
 
@@ -129,32 +125,30 @@ function envMs(name: string, fallback: number): number {
 /** Read at call time (never memoized): the daemon evaluates thresholds fresh on every status computation, per env at that instant. */
 export function presenceThresholds(): PresenceThresholds {
   return {
-    tailStaleMs: envMs("RT_CHAT_TAIL_STALE_MS", DEFAULT_TAIL_STALE_MS),
     sessionStaleMs: envMs("RT_CHAT_SESSION_STALE_MS", DEFAULT_SESSION_STALE_MS),
     pruneMs: envMs("RT_CHAT_PRUNE_MS", DEFAULT_PRUNE_MS),
   };
 }
 
 /**
- * The spec's Statuses table, rows tested most-stale-first so the first
- * match wins (a signed-in row silent for 30 hours is offline, not deaf).
- * For an armed row the tail heartbeat is the sole authority — the session
- * heartbeat only advances on user prompts, so a long autonomous turn
- * starves it for hours while the tail keeps touching.
+ * offline: signed out, or silent long enough to be pruned. Otherwise live
+ * when the registry has an alive, busy binding for this session; idle
+ * otherwise (alive-but-idle, or no resolvable binding yet).
  */
 export function buddyStatus(
-  row: Partial<Pick<PresenceRow, "signedOutAt" | "lastSeenAt" | "tailSeenAt" | "armedAt">>,
+  row: Partial<Pick<PresenceRow, "signedOutAt" | "lastSeenAt" | "sessionId">>,
   now: number,
   th: PresenceThresholds = presenceThresholds(),
+  deps: RegistryDeps = defaultRegistryDeps,
 ): BuddyStatus {
   if (row.signedOutAt !== undefined) return "offline";
   const lastSeenAt = row.lastSeenAt ?? 0;
   if (now - lastSeenAt > th.pruneMs) return "offline";
-  if (row.armedAt !== undefined) {
-    const tailHeartbeat = row.tailSeenAt ?? row.armedAt;
-    return now - tailHeartbeat <= th.tailStaleMs ? "live" : "deaf";
+  if (row.sessionId) {
+    const binding = deps.resolve(row.sessionId);
+    if (binding && deps.alive(binding) && binding.status === "busy") return "live";
   }
-  return now - lastSeenAt > th.sessionStaleMs ? "deaf" : "idle";
+  return "idle";
 }
 
 /**
@@ -187,17 +181,20 @@ function suffixToHandle(suffix: number, baseHandle: string): string {
 function findOpenSuffix(
   db: Database,
   baseHandle: string,
-  bySuffix: Map<number, PresenceRawRow & { reclaimable: number }>,
+  bySuffix: Map<number, PresenceRawRow & { reclaimable: boolean }>,
   sessionStaleCutoff: number,
-  tailStaleCutoff: number,
-): { suffix: number; row: (PresenceRawRow & { reclaimable: number }) | null } {
+  deps: RegistryDeps,
+): { suffix: number; row: (PresenceRawRow & { reclaimable: boolean }) | null } {
   for (let candidate = 1; ; candidate++) {
     if (bySuffix.has(candidate)) continue;
-    const globalRow = db.query(SELECT_HANDLE_RECLAIMABLE_SQL).get(sessionStaleCutoff, tailStaleCutoff, suffixToHandle(candidate, baseHandle)) as
-      | (PresenceRawRow & { reclaimable: number })
-      | null;
+    // `handle` is globally UNIQUE across every base_handle family, so a
+    // "gap" suffix absent from THIS family's rows can still be occupied by
+    // a row from an unrelated one (e.g. a worktree dir literally named "2"
+    // derives the base "x-2", which collides with "x"'s own second suffix).
+    const globalRow = db.query(SELECT_PRESENCE_BY_HANDLE_SQL).get(suffixToHandle(candidate, baseHandle)) as PresenceRawRow | null;
     if (!globalRow) return { suffix: candidate, row: null };
-    if (globalRow.reclaimable) return { suffix: candidate, row: globalRow };
+    const reclaimable = isReclaimable(globalRow, sessionStaleCutoff, deps);
+    if (reclaimable) return { suffix: candidate, row: { ...globalRow, reclaimable } };
   }
 }
 
@@ -213,6 +210,7 @@ export function signIn(
     now?: number;
   },
   db: Database = getStateDb(),
+  deps: RegistryDeps = defaultRegistryDeps,
 ): { handle: string; baseHandle: string; reclaimed: boolean } {
   const { sessionId, statusText } = args;
   const cwd = args.cwd ?? null;
@@ -222,7 +220,6 @@ export function signIn(
   const now = args.now ?? Date.now();
   const th = presenceThresholds();
   const sessionStaleCutoff = now - th.sessionStaleMs;
-  const tailStaleCutoff = now - th.tailStaleMs;
 
   const run = db.transaction((): { handle: string; baseHandle: string; reclaimed: boolean } => {
     // The two moments a handle is about to be needed (spec "Pruning").
@@ -239,10 +236,9 @@ export function signIn(
     if (ownPriorRow) db.query(DELETE_PRESENCE_BY_SESSION_SQL).run(sessionId);
     const baseHandle = args.baseHandle ?? ownPriorRow?.base_handle ?? drawPoolName(db);
 
-    const familyRows = db.query(SELECT_BASE_HANDLE_ROWS_SQL).all(sessionStaleCutoff, tailStaleCutoff, baseHandle) as (PresenceRawRow & {
-      reclaimable: number;
-    })[];
-    const bySuffix = new Map<number, PresenceRawRow & { reclaimable: number }>();
+    const familyRowsRaw = db.query(SELECT_BASE_HANDLE_ROWS_SQL).all(baseHandle) as PresenceRawRow[];
+    const familyRows = familyRowsRaw.map((row) => ({ ...row, reclaimable: isReclaimable(row, sessionStaleCutoff, deps) }));
+    const bySuffix = new Map<number, PresenceRawRow & { reclaimable: boolean }>();
     for (const row of familyRows) {
       const suffix = suffixOf(row.handle, baseHandle);
       if (suffix !== null) bySuffix.set(suffix, row);
@@ -259,7 +255,7 @@ export function signIn(
     // construction (just dropped above) and the cwd/pane match is a real
     // row already in hand.
     let winnerSuffix: number | null = ownPriorRow ? suffixOf(ownPriorRow.handle, baseHandle) : null;
-    let winnerRow: (PresenceRawRow & { reclaimable: number }) | null = null;
+    let winnerRow: (PresenceRawRow & { reclaimable: boolean }) | null = null;
     if (winnerSuffix === null) {
       const seatMatch = familyRows.find((row) => row.reclaimable && row.cwd === cwd && row.pane === pane);
       if (seatMatch) {
@@ -276,7 +272,7 @@ export function signIn(
     }
 
     if (winnerSuffix === null) {
-      const open = findOpenSuffix(db, baseHandle, bySuffix, sessionStaleCutoff, tailStaleCutoff);
+      const open = findOpenSuffix(db, baseHandle, bySuffix, sessionStaleCutoff, deps);
       winnerSuffix = open.suffix;
       winnerRow = open.row;
     }
@@ -319,9 +315,12 @@ function recordPoolNameUse(name: string, now: number, db: Database): void {
  * lands does not also land on it.
  */
 export function reserveAgentHandle(db: Database = getStateDb(), now: number = Date.now()): string {
-  const name = drawPoolName(db);
-  recordPoolNameUse(name, now, db);
-  return name;
+  const run = db.transaction((): string => {
+    const name = drawPoolName(db);
+    recordPoolNameUse(name, now, db);
+    return name;
+  });
+  return run();
 }
 
 export function signOut(sessionId: string, now: number = Date.now(), db: Database = getStateDb()): void {
@@ -332,23 +331,17 @@ export function setAway(sessionId: string, text: string | null, db: Database = g
   db.query(UPDATE_STATUS_TEXT_SQL).run(text, sessionId);
 }
 
-/** last_seen_at + deets only — NEVER tail_seen_at, which is chat:touch's alone (spec "Two heartbeats, never one"). */
-export function pulseSession(
-  args: { sessionId: string; cwd?: string; repo?: string; branch?: string; pane?: string; now?: number },
+export function listBuddies(
+  now: number,
   db: Database = getStateDb(),
-): void {
-  const { sessionId, cwd, repo, branch, pane } = args;
-  const now = args.now ?? Date.now();
-  db.query(UPDATE_PULSE_SQL).run(now, cwd ?? null, repo ?? null, branch ?? null, pane ?? null, sessionId);
-}
-
-export function listBuddies(now: number, db: Database = getStateDb()): Array<PresenceRow & { status: BuddyStatus }> {
+  deps: RegistryDeps = defaultRegistryDeps,
+): Array<PresenceRow & { status: BuddyStatus }> {
   const th = presenceThresholds();
   const dayAgo = now - th.pruneMs;
   const rows = db.query(SELECT_NON_PRUNABLE_PRESENCE_SQL).all(dayAgo, dayAgo) as PresenceRawRow[];
   return rows.map((raw) => {
     const presence = rowToPresence(raw);
-    return { ...presence, status: buddyStatus(presence, now, th) };
+    return { ...presence, status: buddyStatus(presence, now, th, deps) };
   });
 }
 
@@ -362,7 +355,7 @@ export function presenceForSession(sessionId: string, db: Database = getStateDb(
   return row ? rowToPresence(row) : null;
 }
 
-/** Handle-keyed payloads (arm/touch/disarm): enforced only when a presence row exists for the handle AND a session id was offered — the unsigned plan-1 path stays unenforced. */
+/** Handle-keyed payloads (dm/dm-open): enforced only when a presence row exists for the handle AND a session id was offered (the unsigned plan-1 path stays unenforced). */
 export function assertSessionOwnsHandle(handle: string, sessionId: string | undefined, db: Database = getStateDb()): void {
   if (sessionId === undefined) return;
   const row = db.query(SELECT_PRESENCE_BY_HANDLE_SQL).get(handle) as PresenceRawRow | null;
@@ -371,13 +364,11 @@ export function assertSessionOwnsHandle(handle: string, sessionId: string | unde
 }
 
 /**
- * Session-keyed payloads (pulse/away/back): no row for this session id means
- * the handle was reclaimed; a row whose `signed_out_at` is set means this
- * exact session chose to sign out — a deliberate state, not a reclaim, so
- * its message must never contain "handle reclaimed" (the hook treats that
- * substring as the reclaimed notice). pulse's own contract (`status` is
- * never "offline") holds only because this throws before pulse ever
- * heartbeats a signed-out row.
+ * Session-keyed payloads (away/back): no row for this session id means the
+ * handle was reclaimed; a row whose `signed_out_at` is set means this exact
+ * session chose to sign out (a deliberate state, not a reclaim), so its
+ * message must never contain "handle reclaimed" (the hook treats that
+ * substring as the reclaimed notice).
  */
 export function assertSessionSignedIn(sessionId: string, db: Database = getStateDb()): PresenceRow {
   const row = presenceForSession(sessionId, db);
@@ -395,21 +386,4 @@ export function prunePresence(now: number, db: Database = getStateDb()): number 
   const th = presenceThresholds();
   const dayAgo = now - th.pruneMs;
   return db.query(DELETE_PRUNABLE_PRESENCE_SQL).run(dayAgo, dayAgo).changes;
-}
-
-// --- Internal wiring for chat-store.ts's dual-write (arm/touch/disarm). ---
-// Not part of the barrel-exported contract: chat-store.ts imports these
-// directly, per RT-48's intra-lib/state exception, so every write against
-// chat_presence stays owned by this file.
-
-export function armPresenceByHandle(handle: string, now: number, db: Database = getStateDb()): void {
-  db.query(UPDATE_PRESENCE_ARMED_BY_HANDLE_SQL).run(now, handle);
-}
-
-export function touchPresenceByHandle(handle: string, now: number, db: Database = getStateDb()): void {
-  db.query(UPDATE_PRESENCE_TAIL_BY_HANDLE_SQL).run(now, now, handle);
-}
-
-export function disarmPresenceByHandle(handle: string, db: Database = getStateDb()): void {
-  db.query(UPDATE_PRESENCE_DISARMED_BY_HANDLE_SQL).run(handle);
 }

@@ -12,7 +12,7 @@ import { shellQuote } from "../../herdr-launch.ts";
 import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { branchForCwd, repoForCwd } from "../../repo-for-cwd.ts";
-import { listBuddies, listRooms, type PresenceRow } from "../../state/index.ts";
+import { listBuddies, listRooms, type PresenceRow, type RegistryDeps } from "../../state/index.ts";
 import { runCapture } from "../../subprocess.ts";
 import { loadRegistry } from "../../worktree/registry.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
@@ -54,7 +54,7 @@ export interface PaneRowContext {
   byPane: Map<string, PresenceRow & { status: BuddyStatus }>;
 }
 
-const STATUS_ORDER: Record<BuddyStatus | "none", number> = { live: 0, idle: 1, deaf: 2, offline: 3, none: 3 };
+const STATUS_ORDER: Record<BuddyStatus | "none", number> = { live: 0, idle: 1, offline: 2, none: 2 };
 
 const REGISTER_BUDGET_MS = 10_000;
 const REGISTER_POLL_MS = 250;
@@ -72,10 +72,10 @@ export function launchCommand(a: { cwd: string; account?: string; model?: string
 export { herdrError } from "../inject.ts";
 
 /** Presence maps built once per verb call; offline rows are not presence. */
-export function presenceMaps(db: Database, now: number): Pick<PaneRowContext, "bySession" | "byPane"> {
+export function presenceMaps(db: Database, now: number, deps?: RegistryDeps): Pick<PaneRowContext, "bySession" | "byPane"> {
   const bySession = new Map<string, PresenceRow & { status: BuddyStatus }>();
   const byPane = new Map<string, PresenceRow & { status: BuddyStatus }>();
-  for (const row of listBuddies(now, db)) {
+  for (const row of listBuddies(now, db, deps)) {
     if (row.status === "offline") continue;
     bySession.set(row.sessionId, row);
     if (row.pane) byPane.set(row.pane, row);
@@ -122,12 +122,15 @@ export function createPaneHandlers(opts: {
   exec?: typeof runCapture;
   now?: () => number;
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
+  /** The registry probe behind buddyStatus, fakeable the same way lib/daemon/handlers/chat.ts's registryDeps is. */
+  registryDeps?: RegistryDeps;
 }): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn" | "pane:send"> & { db: Database } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const exec = opts.exec ?? runCapture;
   const now = opts.now ?? Date.now;
   const registry = opts.registry ?? ((name: string) => loadRegistry(name));
+  const registryDeps = opts.registryDeps;
 
   async function snapshot(): Promise<HerdrResult<{ snapshot: HerdrSnapshot }>> {
     return herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
@@ -142,7 +145,7 @@ export function createPaneHandlers(opts: {
       const ctx: PaneRowContext = {
         db, repoIndex, exec, now,
         workspaces: new Map(snap.result.snapshot.workspaces.map((w) => [w.workspace_id, w.label])),
-        ...presenceMaps(db, now()),
+        ...presenceMaps(db, now(), registryDeps),
       };
       const claude = snap.result.snapshot.panes.filter((p) => p.agent === "claude");
       const rows = await Promise.all(claude.map((p) => paneRow(p, ctx)));
@@ -252,7 +255,7 @@ export function createPaneHandlers(opts: {
 
       const info = await herdr<{ pane: HerdrPane }>("pane.get", { pane_id: paneId });
       const raw: HerdrPane = info.ok ? info.result.pane : { ...tab.result.root_pane, agent: "claude", agent_status: status };
-      const ctx: PaneRowContext = { db, repoIndex, exec, now, workspaces: new Map([[workspaceId, label]]), ...presenceMaps(db, now()) };
+      const ctx: PaneRowContext = { db, repoIndex, exec, now, workspaces: new Map([[workspaceId, label]]), ...presenceMaps(db, now(), registryDeps) };
       const pane = await paneRow(raw, ctx);
       return { ok: true, data: { pane, ready } };
     },

@@ -40,7 +40,7 @@ import { resolveUserPath } from "./daemon/user-path.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { clearAllArmed, getBranchCacheStore, getStateDb, persistOrWarn, prunePresence, type BranchCacheStore } from "./state/index.ts";
+import { getBranchCacheStore, getStateDb, persistOrWarn, prunePresence, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -449,12 +449,6 @@ async function runDaemon(): Promise<void> {
     },
     stateDb: getStateDb("daemon"),
   });
-
-  // No waiter outlives the daemon, so every armed_at set at boot is stale;
-  // clearing must finish before the socket listens, or an agent that arms
-  // in the gap has its fresh armed_at wiped.
-  const clearedArmed = clearAllArmed();
-  if (clearedArmed > 0) log.info({ clearedArmed }, "chat: cleared stale armed_at from previous daemon run");
 
   // Daemon startup is one of the two moments a handle is about to be
   // needed (spec "Pruning"); sign-in is the other, inside signIn itself.

@@ -110,16 +110,11 @@ export {
   markRead,
   markDelivered,
   pendingMessages,
-  unreadWakingCount,
   listRooms,
   archiveRoom,
   roomArchivedAt,
   roomDefaultWake,
   listMembers,
-  armMember,
-  touchMember,
-  disarmMember,
-  clearAllArmed,
   type ChatMember,
   type ChatMessage,
   type WakeMode,
@@ -138,7 +133,6 @@ export {
   signIn,
   signOut,
   setAway,
-  pulseSession,
   buddyStatus,
   presenceThresholds,
   listBuddies,
@@ -151,6 +145,7 @@ export {
   type BuddyStatus,
   type PresenceRow,
   type PresenceThresholds,
+  type RegistryDeps,
 } from "./presence-store.ts";
 
 export {
