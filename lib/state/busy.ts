@@ -35,9 +35,15 @@ import type { DaemonLoggerHandle } from "../daemon-logger.ts";
 
 let logHandle: Promise<DaemonLoggerHandle> | null = null;
 
-/** True for the bun:sqlite error thrown when a write can't get the lock inside busy_timeout. */
+/**
+ * True for the bun:sqlite error thrown when a write can't get the lock
+ * inside busy_timeout — including the SNAPSHOT/RECOVERY variants a
+ * deferred-BEGIN read-then-write transaction can throw, which busy_timeout
+ * does not retry the way it retries a plain SQLITE_BUSY.
+ */
 export function isBusyError(err: unknown): boolean {
-  return (err as { code?: string } | undefined)?.code === "SQLITE_BUSY";
+  const code = (err as { code?: string } | undefined)?.code;
+  return code === "SQLITE_BUSY" || (typeof code === "string" && code.startsWith("SQLITE_BUSY_"));
 }
 
 function warnBusy(module: string, context: Record<string, unknown>): void {
