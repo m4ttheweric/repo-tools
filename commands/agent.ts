@@ -5,7 +5,8 @@
  *                   [--surface herdr|headless] [--model M] [--effort E]
  *                   [--account A] [--label L] [--caller C]
  *                   [--workspace W] [--tab T] [--extra-args "<tail>"] [--json]
- *   rt agent resume <id|session-uuid> [--prompt <text>] [--surface herdr|headless] [--json]
+ *   rt agent resume <id|session-uuid> [--prompt <text>] [--surface herdr|headless]
+ *                   [--workspace W] [--tab T] [--json]
  *   rt agent show   <id|session-uuid> [--json]
  *   rt agent list   [--repo <path>] [--json]
  *
@@ -15,6 +16,7 @@
  */
 
 import { readFileSync, realpathSync } from "fs";
+import { isDaemonRunning } from "../lib/daemon-client.ts";
 import { currentRepoIdentity, repoLabel, resolveRepoArg } from "../lib/repo-arg.ts";
 import {
   agentGet, agentList, agentResume, agentStart,
@@ -54,6 +56,23 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
   return res.data;
 }
 
+// Daemon-optional: the herdr and read verbs run in-process when the daemon is
+// down. Headless is refused inside the fallback. The fallback
+// module is imported lazily so a daemon-up call never loads daemon-side code.
+async function dispatch<T>(
+  command: "agent:start" | "agent:resume" | "agent:get" | "agent:list",
+  payload: Record<string, unknown>,
+  wrapper: () => Promise<RtResponse<T>>,
+): Promise<RtResponse<T>> {
+  if (await isDaemonRunning()) return wrapper();
+  const { runAgentFallback } = await import("./agent-fallback.ts");
+  try {
+    return await runAgentFallback<T>(command, payload);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 function parseSurface(s: string | undefined): AgentSurface | undefined {
   if (s === undefined) return undefined;
   if (s !== "herdr" && s !== "headless") throw new Error(`invalid surface "${s}": expected herdr or headless`);
@@ -86,14 +105,18 @@ function parseStartArgs(args: string[]): StartArgs {
   return out;
 }
 
-function parseResumeArgs(args: string[]): { id: string; prompt?: string; surface?: AgentSurface } {
+function parseResumeArgs(args: string[]): { id: string; prompt?: string; surface?: AgentSurface; workspace?: string; tab?: string } {
   const id = positional(args);
   if (!id) throw new Error("missing id: rt agent resume <id|session-uuid>");
-  const out: { id: string; prompt?: string; surface?: AgentSurface } = { id };
+  const out: { id: string; prompt?: string; surface?: AgentSurface; workspace?: string; tab?: string } = { id };
   const prompt = flagValue(args, "--prompt");
   if (prompt !== undefined) out.prompt = prompt;
   const surface = parseSurface(flagValue(args, "--surface"));
   if (surface !== undefined) out.surface = surface;
+  const workspace = flagValue(args, "--workspace");
+  if (workspace !== undefined) out.workspace = workspace;
+  const tab = flagValue(args, "--tab");
+  if (tab !== undefined) out.tab = tab;
   return out;
 }
 
@@ -136,7 +159,8 @@ async function runStart(args: string[]): Promise<void> {
     fail(err instanceof Error ? err.message : String(err));
   }
   const { repo, cwd } = await repoAndCwd(args);
-  const data = unwrap(await agentStart({ repo, cwd, ...parsed }), "start");
+  const payload = { repo, cwd, ...parsed };
+  const data = unwrap(await dispatch("agent:start", payload, () => agentStart(payload)), "start");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, agent: data }));
     return;
@@ -151,7 +175,7 @@ async function runResume(args: string[]): Promise<void> {
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err));
   }
-  const data = unwrap(await agentResume(parsed), "resume");
+  const data = unwrap(await dispatch("agent:resume", parsed, () => agentResume(parsed)), "resume");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, agent: data }));
     return;
@@ -162,7 +186,7 @@ async function runResume(args: string[]): Promise<void> {
 async function runShow(args: string[]): Promise<void> {
   const id = positional(args);
   if (!id) fail("missing id: rt agent show <id|session-uuid>");
-  const data = unwrap(await agentGet({ id }), "show");
+  const data = unwrap(await dispatch("agent:get", { id }, () => agentGet({ id })), "show");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, agent: data }));
     return;
@@ -173,7 +197,7 @@ async function runShow(args: string[]): Promise<void> {
 async function runList(args: string[]): Promise<void> {
   const repoArg = flagValue(args, "--repo");
   const repo = repoArg ? await resolveRepoArg(repoArg, fail) : currentRepoIdentity();
-  const data = unwrap(await agentList(repo ? { repo } : {}), "list");
+  const data = unwrap(await dispatch("agent:list", repo ? { repo } : {}, () => agentList(repo ? { repo } : {})), "list");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, agents: data.agents }));
     return;

@@ -52,6 +52,7 @@ export {
   SCHEMA_VERSION,
   LEGACY_IMPORTS,
   openStateDb,
+  openStateDbGuarded,
   getStateDb,
   stateDbPath,
   closeStateDb,

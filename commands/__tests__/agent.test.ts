@@ -41,4 +41,9 @@ describe("parseResumeArgs", () => {
   test("missing id fails", () => {
     expect(() => parseResumeArgs(["--prompt", "x"])).toThrow(/id/);
   });
+
+  test("parseResumeArgs reads --workspace and --tab", () => {
+    const r = parseResumeArgs(["ag-1", "--workspace", "reviews", "--tab", "⟲ !5", "--prompt", "go"]);
+    expect(r).toMatchObject({ id: "ag-1", workspace: "reviews", tab: "⟲ !5", prompt: "go" });
+  });
 });

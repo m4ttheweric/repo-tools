@@ -192,8 +192,8 @@ export function createAgentHandlers(opts: {
       }
       // ↺ prefix: resume tabs must never dedup against the still-open launch
       // tab; repeated resumes share the label and dedup against each other.
-      const tabLabel = `↺ ${rec.label ?? rec.id}`;
-      const workspaceLabel = repoLabel(rec.repo);
+      const tabLabel = payload.tab ?? `↺ ${rec.label ?? rec.id}`;
+      const workspaceLabel = payload.workspace ?? repoLabel(rec.repo);
       const attempt: AgentRecord = { ...rec, surface };
       try {
         const res = await launch(attempt, { kind: "resume", sessionId: rec.sessionId }, payload.prompt, tabLabel, workspaceLabel);
