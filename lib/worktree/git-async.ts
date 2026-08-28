@@ -148,6 +148,12 @@ export async function listWorktreesAsync(repoPath: string): Promise<WorktreeEntr
   return results;
 }
 
+/** Worktree root paths (main + linked), existing-on-disk only. `[]` on git
+ *  failure ... the async twin of git-worktrees.ts listWorktreeRoots. */
+export async function listWorktreeRootsAsync(repoPath: string): Promise<string[]> {
+  return (await listWorktreesAsync(repoPath) ?? []).map((w) => w.path);
+}
+
 /**
  * Idempotently append `pattern` to the common git dir's info/exclude, with a
  * "# rt worktree" marker comment written on first use of this file. Returns

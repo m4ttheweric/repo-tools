@@ -6,13 +6,12 @@
  *
  * Concurrent callers are coalesced: the 5-minute timer and `cache:refresh` IPC
  * both fire-and-forget into the returned function. Without a guard they stack
- * up, each running execSync across every repo + a batch GraphQL. If a refresh
+ * up, each running async git across every repo + a batch GraphQL. If a refresh
  * is already in flight, callers await the existing run instead of starting a
  * second one.
  */
 
 import { existsSync } from "fs";
-import { execSync } from "child_process";
 import type { Logger } from "pino";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 import type { BranchCacheStore } from "../state/index.ts";
@@ -24,7 +23,7 @@ import { getProjectMRs } from "./project-mrs-store.ts";
 import { pruneDiscussionsStore } from "./discussions-file-store.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { deriveRepoIdentity } from "../settings/identity.ts";
-import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
+import { listWorktreesAsync, listWorktreeRootsAsync, runGit } from "../worktree/git-async.ts";
 
 export interface CacheRefresherDeps {
   log: Logger;
@@ -109,37 +108,29 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           // 1. Discover worktree branches (detached worktrees have no branch).
           // on-deck/* branches are pool plumbing, not feature work — never
           // worth MR/Linear enrichment.
-          const branches: Array<{ path: string; branch: string }> = listWorktrees(repoPath).filter(
-            (w) => w.branch && !w.branch.startsWith("on-deck/"),
-          );
+          const branches: Array<{ path: string; branch: string }> = ((await listWorktreesAsync(repoPath)) ?? [])
+            .filter((w): w is { path: string; branch: string } => !!w.branch && !w.branch.startsWith("on-deck/"));
 
           // 2. Discover local branches (not just worktrees)
           const worktreeBranchSet = new Set(branches.map(b => b.branch));
-          try {
-            const localBranchOutput = execSync(
-              "git for-each-ref --format='%(refname:short)' refs/heads/",
-              { cwd: repoPath, encoding: "utf8", stdio: "pipe" },
-            );
-
-            for (const name of localBranchOutput.split("\n")) {
-              const trimmed = name.trim().replace(/^'|'$/g, "");
+          const localBranches = await runGit(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads/"]);
+          if (localBranches.exitCode === 0) {
+            for (const name of localBranches.stdout.split("\n")) {
+              const trimmed = name.trim();
               if (!trimmed || worktreeBranchSet.has(trimmed) || trimmed.startsWith("on-deck/")) continue;
               if (extractLinearId(trimmed)) {
                 branches.push({ path: repoPath, branch: trimmed });
               }
             }
-          } catch (err) {
-            log.warn({ err, repo: repoPath }, "local branch listing failed");
+          } else {
+            log.warn({ repo: repoPath }, "local branch listing failed");
           }
 
           if (branches.length > 0) {
             // Get remote URL
             let remoteUrl: string | undefined;
-            try {
-              remoteUrl = execSync("git config --get remote.origin.url", {
-                cwd: repoPath, encoding: "utf8", stdio: "pipe",
-              }).trim();
-            } catch { /* no remote */ }
+            const remote = await runGit(repoPath, ["config", "--get", "remote.origin.url"]);
+            if (remote.exitCode === 0) remoteUrl = remote.stdout.trim() || undefined;
 
             // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch.
             // The onError callback fires on per-MR enrich failures (GitLab,
@@ -205,8 +196,9 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // never overwrites existing entries.
       for (const [repoName, repoPath] of Object.entries(repoIndex())) {
         if (!existsSync(repoPath)) continue;
+        if (grants(tracking, repoName).caches.size === 0) continue; // off = zero background work
         try {
-          const worktreeRoots = listWorktreeRoots(repoPath);
+          const worktreeRoots = await listWorktreeRootsAsync(repoPath);
           const derivedIdentity = await deriveRepoIdentity(repoPath);
           const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
           const summary = await reconcileForRepo({ repoIdentity, worktreeRoots });
