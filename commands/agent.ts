@@ -16,6 +16,7 @@
  */
 
 import { readFileSync, realpathSync } from "fs";
+import { isDaemonRunning } from "../lib/daemon-client.ts";
 import { currentRepoIdentity, repoLabel, resolveRepoArg } from "../lib/repo-arg.ts";
 import {
   agentGet, agentList, agentResume, agentStart,
@@ -53,6 +54,19 @@ function positional(args: string[]): string | undefined {
 function unwrap<T>(res: RtResponse<T>, label: string): T {
   if (!res.ok || res.data === undefined) fail(res.error ?? `${label} failed: is the rt daemon running?`);
   return res.data;
+}
+
+// Daemon-optional: the herdr and read verbs run in-process when the daemon is
+// down (spec 2026-08-28). Headless is refused inside the fallback. The fallback
+// module is imported lazily so a daemon-up call never loads daemon-side code.
+async function dispatch<T>(
+  command: "agent:start" | "agent:resume" | "agent:get" | "agent:list",
+  payload: Record<string, unknown>,
+  wrapper: () => Promise<RtResponse<T>>,
+): Promise<RtResponse<T>> {
+  if (await isDaemonRunning()) return wrapper();
+  const { runAgentFallback } = await import("./agent-fallback.ts");
+  return runAgentFallback<T>(command, payload);
 }
 
 function parseSurface(s: string | undefined): AgentSurface | undefined {
@@ -141,7 +155,8 @@ async function runStart(args: string[]): Promise<void> {
     fail(err instanceof Error ? err.message : String(err));
   }
   const { repo, cwd } = await repoAndCwd(args);
-  const data = unwrap(await agentStart({ repo, cwd, ...parsed }), "start");
+  const payload = { repo, cwd, ...parsed };
+  const data = unwrap(await dispatch("agent:start", payload, () => agentStart(payload)), "start");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, agent: data }));
     return;
@@ -156,7 +171,7 @@ async function runResume(args: string[]): Promise<void> {
   } catch (err) {
     fail(err instanceof Error ? err.message : String(err));
   }
-  const data = unwrap(await agentResume(parsed), "resume");
+  const data = unwrap(await dispatch("agent:resume", parsed, () => agentResume(parsed)), "resume");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, agent: data }));
     return;
@@ -167,7 +182,7 @@ async function runResume(args: string[]): Promise<void> {
 async function runShow(args: string[]): Promise<void> {
   const id = positional(args);
   if (!id) fail("missing id: rt agent show <id|session-uuid>");
-  const data = unwrap(await agentGet({ id }), "show");
+  const data = unwrap(await dispatch("agent:get", { id }, () => agentGet({ id })), "show");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, agent: data }));
     return;
@@ -178,7 +193,7 @@ async function runShow(args: string[]): Promise<void> {
 async function runList(args: string[]): Promise<void> {
   const repoArg = flagValue(args, "--repo");
   const repo = repoArg ? await resolveRepoArg(repoArg, fail) : currentRepoIdentity();
-  const data = unwrap(await agentList(repo ? { repo } : {}), "list");
+  const data = unwrap(await dispatch("agent:list", repo ? { repo } : {}, () => agentList(repo ? { repo } : {})), "list");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, agents: data.agents }));
     return;
