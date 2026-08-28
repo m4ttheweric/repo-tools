@@ -365,8 +365,9 @@ export function agentResume(
   a: Commands["agent:resume"]["payload"], o: RtClientOptions = {},
 ): Promise<RtResponse<AgentRecord>> {
   const payload: Record<string, unknown> = { id: a.id };
-  if (a.prompt !== undefined) payload.prompt = a.prompt;
-  if (a.surface !== undefined) payload.surface = a.surface;
+  for (const k of ["prompt", "surface", "workspace", "tab"] as const) {
+    if (a[k] !== undefined) payload[k] = a[k];
+  }
   return rtCommand<AgentRecord>("agent:resume", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
 

@@ -5,7 +5,8 @@
  *                   [--surface herdr|headless] [--model M] [--effort E]
  *                   [--account A] [--label L] [--caller C]
  *                   [--workspace W] [--tab T] [--extra-args "<tail>"] [--json]
- *   rt agent resume <id|session-uuid> [--prompt <text>] [--surface herdr|headless] [--json]
+ *   rt agent resume <id|session-uuid> [--prompt <text>] [--surface herdr|headless]
+ *                   [--workspace W] [--tab T] [--json]
  *   rt agent show   <id|session-uuid> [--json]
  *   rt agent list   [--repo <path>] [--json]
  *
@@ -86,14 +87,18 @@ function parseStartArgs(args: string[]): StartArgs {
   return out;
 }
 
-function parseResumeArgs(args: string[]): { id: string; prompt?: string; surface?: AgentSurface } {
+function parseResumeArgs(args: string[]): { id: string; prompt?: string; surface?: AgentSurface; workspace?: string; tab?: string } {
   const id = positional(args);
   if (!id) throw new Error("missing id: rt agent resume <id|session-uuid>");
-  const out: { id: string; prompt?: string; surface?: AgentSurface } = { id };
+  const out: { id: string; prompt?: string; surface?: AgentSurface; workspace?: string; tab?: string } = { id };
   const prompt = flagValue(args, "--prompt");
   if (prompt !== undefined) out.prompt = prompt;
   const surface = parseSurface(flagValue(args, "--surface"));
   if (surface !== undefined) out.surface = surface;
+  const workspace = flagValue(args, "--workspace");
+  if (workspace !== undefined) out.workspace = workspace;
+  const tab = flagValue(args, "--tab");
+  if (tab !== undefined) out.tab = tab;
   return out;
 }
 

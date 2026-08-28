@@ -159,6 +159,20 @@ test("agent:resume headless without prompt is refused; unknown id errors", async
   expect(res.error).toMatch(/prompt/);
 });
 
+test("agent:resume honors workspace and tab overrides", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const started = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", label: "L" });
+  if (!started.ok) throw new Error("unreachable");
+  calls.length = 0;
+  const resumed = await h["agent:resume"]({ id: started.data.id, workspace: "reviews", tab: "⟲ !5" });
+  expect(resumed.ok).toBe(true);
+  expect(calls.find((c) => c[0] === "workspace" && c[1] === "create")?.[3]).toBe("reviews");
+  const tabArg = calls.find((c) => c[0] === "tab" && c[1] === "rename")?.[3]
+    ?? calls.find((c) => c[0] === "tab" && c[1] === "create")?.[5];
+  expect(tabArg).toBe("⟲ !5");
+});
+
 test("agent:list filters by repo", async () => {
   const h = fresh({ runner: okRunner([]) });
   await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "a", surface: "herdr" });
