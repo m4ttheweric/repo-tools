@@ -21,62 +21,100 @@ function freePort(): number {
 }
 
 describe("fatal boot", () => {
-  test("daemon boot with API port already bound exits non-zero and leaves no stale rt.pid", async () => {
+  // These three used to assert a crash (S043 pre-fix: EADDRINUSE on the API
+  // port took the daemon down the fatal boot-failed path). The integration
+  // job's I5(a) wiring (lib/daemon.ts's withApiPortParkRetry around
+  // startApiServer, docs/daemon-api-auth.md's S043 caller-side contract)
+  // makes this recoverable instead: the daemon parks and retries with
+  // backoff rather than crashing, so it now boots successfully once the
+  // squatted port frees.
+  test("daemon parks (does not crash) while the API port is squatted, and boots once it frees", async () => {
     const { path: home, cleanup } = createTestHome();
-    // Bind the API port inside the isolated HOME so the daemon cannot.
+    const bunDir = join(process.execPath, "..");
     const port = 9411;
+    const rtDir = join(home, ".mattstack", "rt");
     const squatter = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("busy") });
+    let daemon: ReturnType<typeof Bun.spawn> | undefined;
     try {
-      const result = await rt(["--daemon"], { home, env: { RT_API_PORT: String(port) } });
+      daemon = Bun.spawn([RT_BINARY, "--daemon"], {
+        env: {
+          HOME: home,
+          PATH: `${join(RT_BINARY, "..")}:${bunDir}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
+          TERM: "xterm-256color",
+          RT_SKIP_SETUP: "1",
+          CI: "true",
+          RT_API_PORT: String(port),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
-      expect(result.exitCode).not.toBe(0);
-      expect(existsSync(join(home, ".mattstack", "rt", "rt.pid"))).toBe(false);
+      // Give bindApiServerWithRetry's own ~3s inner retry a full cycle to
+      // exhaust and reach the outer park-retry loop; it must still be alive
+      // (parked, not crashed) and must not have written rt.sock/rt.pid yet
+      // (neither server has bound).
+      await Bun.sleep(4_000);
+      expect(daemon.exitCode).toBeNull();
+      expect(existsSync(join(rtDir, "rt.sock"))).toBe(false);
+      expect(existsSync(join(rtDir, "rt.pid"))).toBe(false);
+
+      squatter.stop(true);
+
+      await waitForSocket(join(rtDir, "rt.sock"), 40_000);
+      expect(daemon.exitCode).toBeNull();
+      expect(existsSync(join(rtDir, "rt.pid"))).toBe(true);
     } finally {
       squatter.stop(true);
+      try { daemon?.kill(); } catch { /* already gone */ }
+      await daemon?.exited;
       cleanup();
     }
   }, 60_000);
 
-  test("API-bind failure leaves neither rt.sock nor rt.pid", async () => {
+  test("daemon status --json never claims 'running' while parked on a squatted API port, and does once it recovers", async () => {
     const { path: home, cleanup } = createTestHome();
-    // A different port than the sibling squatter test above, so parallel
-    // test files can never collide on the same bound TCP port.
+    const bunDir = join(process.execPath, "..");
+    // A different port than the sibling test above, so parallel test files
+    // can never collide on the same bound TCP port.
     const port = 9412;
+    const rtDir = join(home, ".mattstack", "rt");
     const squatter = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("busy") });
-    try {
-      const result = await rt(["--daemon"], { home, env: { RT_API_PORT: String(port) } });
-
-      expect(result.exitCode).not.toBe(0);
-      // The API bind (now first) fails before the socket ever binds, so a
-      // fatal exit must strand neither file.
-      expect(existsSync(join(home, ".mattstack", "rt", "rt.sock"))).toBe(false);
-      expect(existsSync(join(home, ".mattstack", "rt", "rt.pid"))).toBe(false);
-    } finally {
-      squatter.stop(true);
-      cleanup();
-    }
-  }, 60_000);
-
-  test("API-bind failure surfaces as boot-failed/crash-looping via rt daemon status --json", async () => {
-    const { path: home, cleanup } = createTestHome();
-    // A different port than the other API-bind-failure tests above, so
-    // parallel test files can never collide on the same bound TCP port.
-    const port = 9413;
-    const squatter = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("busy") });
+    let daemon: ReturnType<typeof Bun.spawn> | undefined;
     try {
       // `rt daemon status` short-circuits to "not installed" before it ever
-      // reaches the boot-failed/crash-looping classification, install first.
+      // reaches a liveness classification, install first.
       await rt(["daemon", "install"], { home });
 
-      const boot = await rt(["--daemon"], { home, env: { RT_API_PORT: String(port) } });
-      expect(boot.exitCode).not.toBe(0);
+      daemon = Bun.spawn([RT_BINARY, "--daemon"], {
+        env: {
+          HOME: home,
+          PATH: `${join(RT_BINARY, "..")}:${bunDir}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
+          TERM: "xterm-256color",
+          RT_SKIP_SETUP: "1",
+          CI: "true",
+          RT_API_PORT: String(port),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
-      const status = await rt(["daemon", "status", "--json"], { home });
-      expect(status.exitCode).toBe(0);
-      const parsed = JSON.parse(status.stdout);
-      expect(["boot-failed", "crash-looping"]).toContain(parsed.state);
+      await Bun.sleep(4_000);
+      expect(daemon.exitCode).toBeNull();
+
+      const parked = await rt(["daemon", "status", "--json"], { home, env: { RT_API_PORT: String(port) } });
+      expect(parked.exitCode).toBe(0);
+      expect(JSON.parse(parked.stdout).state).not.toBe("running");
+
+      squatter.stop(true);
+      await waitForSocket(join(rtDir, "rt.sock"), 40_000);
+
+      const recovered = await rt(["daemon", "status", "--json"], { home, env: { RT_API_PORT: String(port) } });
+      expect(recovered.exitCode).toBe(0);
+      expect(JSON.parse(recovered.stdout).state).toBe("running");
     } finally {
       squatter.stop(true);
+      try { daemon?.kill(); } catch { /* already gone */ }
+      await daemon?.exited;
       cleanup();
     }
   }, 60_000);
