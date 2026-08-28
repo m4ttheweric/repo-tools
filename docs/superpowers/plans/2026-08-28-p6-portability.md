@@ -168,6 +168,15 @@ test("overlay timeout is skipped with a warn; base kept unchanged", async () => 
   expect(warns.some((w) => JSON.stringify(w).includes("overlay"))).toBe(true);
 });
 
+test("garbage overlay (non-null, no absolute dirs) is skipped with a warn", async () => {
+  const { log, warns } = makeLog();
+  process.env.PATH = "/usr/bin:/bin";
+  const probe = async (argv: any) => (argv[1] === "-lc" ? "/opt/homebrew/bin:/usr/bin:/bin" : "not-a-path:also-not");
+  const out = await resolveUserPath(log, probe);
+  expect(out).toBe("/opt/homebrew/bin:/usr/bin:/bin");
+  expect(warns.some((w) => JSON.stringify(w).includes("overlay"))).toBe(true);
+});
+
 test("missing-tool warn fires when node is absent", async () => {
   const { log, warns } = makeLog();
   process.env.PATH = "/usr/bin:/bin";
@@ -308,12 +317,14 @@ export async function resolveUserPath(log: Logger, probe: ProbeFn = runProbe): P
       : [shell, "-ilc", "echo $PATH"];
     const ovRaw = await probe(ovArgv, { timeoutMs: OVERLAY_TIMEOUT_MS, env: { ...process.env, TERM: "dumb" } });
     const extra = absoluteDirsOf(ovRaw);
-    if (extra.length > 0) {
+    if (extra.length === 0) {
+      // Warn on BOTH timeout (null) and garbage (non-null but no usable
+      // absolute dirs) ... the ruling says timeout OR garbage.
+      log.warn("PATH interactive overlay skipped (timed out or no usable dirs)");
+    } else {
       const before = result;
       result = unionAppend(result, extra);
       if (result !== before) source += "+overlay";
-    } else if (ovRaw === null) {
-      log.warn("PATH interactive overlay skipped (timed out or empty)");
     }
   }
 
@@ -611,7 +622,10 @@ export function isDevModeWrapperContent(prefix: string): boolean {
   return line2.startsWith(DEV_MODE_TAG) || prefix.includes("RT_LAUNCH_CWD");
 }
 
-function readWrapperPrefix(path: string): string | null {
+/** A bounded head of the file (never the whole file: in prod the wrapper path
+ *  is a symlink to the multi-MB compiled binary). Exported so links.ts shares
+ *  the same real bounded read. */
+export function readWrapperPrefix(path: string): string | null {
   try {
     const fd = openSync(path, "r");
     try {
@@ -636,21 +650,28 @@ export function currentMode(): "dev" | "prod" {
 
 (Keep the existing `openSync`/`readSync`/`closeSync` imports; add `Buffer` if not already available via global.)
 
-- [ ] **Step 5: Delegate from `lib/deps/links.ts`**
+- [ ] **Step 5: Delegate from `lib/deps/links.ts` via a REAL bounded read**
 
-Replace `isDevModeWrapper`:
+`p.readFile` is `readFileSync`, which in prod follows the `~/.local/bin/rt`
+symlink into the multi-MB compiled binary ... a whole-file read. Slicing its
+result does NOT deliver the bounded-read ruling (the whole file is already in
+memory). Use the exported bounded `readWrapperPrefix` (openSync + readSync
+4096) instead, so no whole-file read ever happens:
 
 ```ts
-import { isDevModeWrapperContent } from "../dev-mode.ts";
+import { isDevModeWrapperContent, readWrapperPrefix } from "../dev-mode.ts";
 
-function isDevModeWrapper(p: Pick<Probes, "readFile">, path: string): boolean {
-  const content = p.readFile(path);
-  if (content === null) return false;
-  return isDevModeWrapperContent(content.slice(0, 4096));
+function isDevModeWrapper(path: string): boolean {
+  const prefix = readWrapperPrefix(path);
+  return prefix !== null && isDevModeWrapperContent(prefix);
 }
 ```
 
-(`p.readFile` returns the whole file here; slicing to 4096 keeps the detector bounded and consistent with `currentMode`. If a `Probes` bounded-read seam exists, prefer it; otherwise the slice suffices for the string comparison.)
+Drop the now-unused `p: Pick<Probes, "readFile">` parameter and update
+`isDevModeWrapper`'s single call site in `links.ts` to pass just the path.
+Any `links.ts` test that drove this through an injected `readFile` switches to
+writing a real temp file at `path` (the detector reads the actual symlink
+target's head on the real fs, by design).
 
 - [ ] **Step 6: Run tests + type-check**
 
@@ -806,6 +827,15 @@ export type SkipReason =
   | "no-changes";
 ```
 
+Also widen the local `disabledReason` declaration ... it is currently narrowed
+(`let disabledReason: "not-a-repo" | "init-failed" | null;` around
+`lib/daemon/home-snapshot.ts:281`), so assigning `"not-provisioned"` /
+`"no-git-identity"` fails `tsc`. Change it to:
+
+```ts
+  let disabledReason: SkipReason | null = null;
+```
+
 - [ ] **Step 4: S090 ... existsSync guard in `init()`**
 
 In `init()` (around line 357), before the `git rev-parse` spawn:
@@ -887,19 +917,33 @@ git commit -m "home-snapshot: diagnose not-provisioned and missing git identity 
 
 - [ ] **Step 1: Write the failing test**
 
+Do NOT spawn a real `trap '' TERM; sleep 60` process: the seam's kill is
+SIGTERM-only (mirroring age-key), so a SIGTERM-immune child would hang the
+test (`proc.exited` never resolves). Instead inject a fake spawn whose child
+resolves `exited` only when `kill()` is called (a killable process), so the
+timeout timer fires, kills it, and the seam throws:
+
 ```ts
 import { createRealSecretsExecSeam, SecretsTimeoutError } from "../store.ts";
 
-test("a sops spawn that never exits times out with SecretsTimeoutError, does not hang", async () => {
-  const seam = createRealSecretsExecSeam();
-  // Inject a hanging command via the seam's spawn boundary; use a fixture like
-  // ["sh", "-c", "trap '' TERM; sleep 60"] with a short timeout override.
-  await expect(seam.run(["sh", "-c", "trap '' TERM; sleep 60"], { timeoutMs: 200 } as any))
+test("a hanging sops spawn times out with SecretsTimeoutError, does not hang", async () => {
+  let resolveExit: (code: number) => void = () => {};
+  const fakeProc = {
+    pid: 1,
+    stdout: new Response("").body,
+    stderr: new Response("").body,
+    exited: new Promise<number>((r) => { resolveExit = r; }),
+    kill: () => resolveExit(143), // killable: kill resolves exit, no real process
+  };
+  const seam = createRealSecretsExecSeam(undefined, () => fakeProc as any);
+  await expect(seam.run(["sops", "-d", "x"], { timeoutMs: 50 } as any))
     .rejects.toBeInstanceOf(SecretsTimeoutError);
-}, 5_000);
+}, 2_000);
 ```
 
-(Executor: the real seam resolves argv[0] via `resolveBundledTool`; for the test, either pass a plain command that resolves to itself, or add a spawn-injection seam mirroring age-key's testability. The contract: a non-exiting child rejects with `SecretsTimeoutError` within the timeout, and the killable child is terminated.)
+(The contract: a child that does not exit on its own rejects with
+`SecretsTimeoutError` within the timeout, and the timer's `kill()` terminates
+it. The fake models a real killable process without one.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -917,14 +961,22 @@ export class SecretsTimeoutError extends Error {}
 const DEFAULT_SECRETS_TIMEOUT_MS = 30_000;
 ```
 
-In `createRealSecretsExecSeam`'s `run` (lines 470-484), wrap the await with the same timer pattern `age-key.ts` uses:
+Make the spawn injectable (mirroring how age-key isolates its raw seam for
+testability) and wrap the await with the same timer pattern `age-key.ts` uses.
+Change the factory signature to accept an optional spawn seam:
 
 ```ts
+type SecretsSpawn = (argv: string[], opts: any) => {
+  stdout: ReadableStream; stderr: ReadableStream; exited: Promise<number>; kill: (sig?: number | string) => void;
+};
+
+export function createRealSecretsExecSeam(cwd?: string, spawn: SecretsSpawn = Bun.spawn as unknown as SecretsSpawn): SecretsExecSeam {
+  return {
     async run(cmd, opts) {
       debugLog(cmd, opts?.sensitive);
       const [bin, ...args] = cmd;
       const resolved = bin === undefined ? cmd : [resolveBundledTool(bin), ...args];
-      const proc = Bun.spawn(resolved, buildSecretsSpawnOptions({ env: opts?.env, cwd }));
+      const proc = spawn(resolved, buildSecretsSpawnOptions({ env: opts?.env, cwd }));
       const timeoutMs = (opts as { timeoutMs?: number } | undefined)?.timeoutMs ?? DEFAULT_SECRETS_TIMEOUT_MS;
       let timedOut = false;
       const timer = setTimeout(() => { timedOut = true; try { proc.kill(); } catch { /* already exited */ } }, timeoutMs);
@@ -938,9 +990,12 @@ In `createRealSecretsExecSeam`'s `run` (lines 470-484), wrap the await with the 
         return { code, stdout, stderr };
       } finally { clearTimeout(timer); }
     },
+    // ... fileExists / listDir / the rest of the seam unchanged ...
+  };
+}
 ```
 
-(If `SecretsExecSeam.run`'s opts type has no `timeoutMs`, add it to the interface as optional.)
+(If `SecretsExecSeam.run`'s opts type has no `timeoutMs`, add it to the interface as optional. The default `spawn` is the real `Bun.spawn`, so production behavior is unchanged; only tests inject a fake.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
