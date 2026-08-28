@@ -7,7 +7,7 @@ import { basename } from "path";
 import type { AgentStatus, BuddyStatus, ChatPane, Commands, PaneDirectory } from "../../../packages/rt-client/src/commands.ts";
 import { listCswapAccounts } from "../../cswap.ts";
 import { herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
-import { herdrError } from "../inject.ts";
+import { herdrError, injectIntoPane } from "../inject.ts";
 import { shellQuote } from "../../herdr-launch.ts";
 import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
@@ -122,7 +122,7 @@ export function createPaneHandlers(opts: {
   exec?: typeof runCapture;
   now?: () => number;
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
-}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn"> & { db: Database } {
+}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn" | "pane:send"> & { db: Database } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const exec = opts.exec ?? runCapture;
@@ -256,5 +256,8 @@ export function createPaneHandlers(opts: {
       const pane = await paneRow(raw, ctx);
       return { ok: true, data: { pane, ready } };
     },
+
+    "pane:send": async (payload: Commands["pane:send"]["payload"]): Promise<CommandResult<"pane:send">> =>
+      injectIntoPane({ paneId: payload.paneId, text: payload.text, callerPane: payload.callerPane, herdr }),
   };
 }
