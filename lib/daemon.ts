@@ -466,7 +466,18 @@ export async function startDaemon(): Promise<void> {
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
   servers.socket = startSocketServer({ handleCommand, log });
-  servers.api = await startApiServer({ handleCommand, log });
+  try {
+    servers.api = await startApiServer({ handleCommand, log });
+  } catch (err) {
+    // An exhausted bind retry must exit, not just reject: startDaemon() is
+    // always called fire-and-forget, so an uncaught rejection here would
+    // otherwise hit unhandledRejection's log-and-continue policy — leaving
+    // rt.sock answering with no API/WS server and nothing past this point
+    // (signal handlers, pollers) ever wired. Exiting lets the same
+    // supervisor that restarts on any other daemon crash restart this one.
+    log.fatal({ err }, "api server failed to bind after retries — exiting");
+    process.exit(1);
+  }
 
   // Wire notification broadcasts to WebSocket clients
   onNotification(emit);

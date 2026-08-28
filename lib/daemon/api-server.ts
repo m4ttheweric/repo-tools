@@ -101,8 +101,12 @@ export interface BindRetryDeps {
   log: { warn: (o: unknown, m: string) => void };
 }
 
-const BIND_RETRY_ATTEMPTS = 6;
-const BIND_RETRY_DELAY_MS = 500;
+// evictStaleDaemon (lib/daemon/boot-reconcile.ts) already assumes a prior
+// holder is gone after a 300ms Bun.sleepSync — 6 attempts at 500ms (~3s
+// worst case, exported so tests assert against these, not hardcoded copies)
+// gives that same assumption room to be wrong once before this gives up too.
+export const BIND_RETRY_ATTEMPTS = 6;
+export const BIND_RETRY_DELAY_MS = 500;
 
 /**
  * evictStaleDaemon() SIGTERMs the previous holder of this port before a new

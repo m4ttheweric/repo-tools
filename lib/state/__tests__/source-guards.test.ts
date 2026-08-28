@@ -92,7 +92,7 @@ describe("legacy JSON state files are retired", () => {
 describe("daemon startup opens state.db before serving", () => {
   test("openBranchCacheStore() precedes both server binds in startDaemon", () => {
     const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
-    const start = src.indexOf("export function startDaemon(");
+    const start = src.indexOf("export async function startDaemon(");
     expect(start).toBeGreaterThan(-1);
 
     const body = src.slice(start);

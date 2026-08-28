@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { bindApiServerWithRetry, type BindRetryDeps } from "../api-server.ts";
+import { bindApiServerWithRetry, BIND_RETRY_ATTEMPTS, BIND_RETRY_DELAY_MS, type BindRetryDeps } from "../api-server.ts";
 
 function eaddrinuse(): Error {
   return Object.assign(new Error("EADDRINUSE"), { code: "EADDRINUSE" });
@@ -37,15 +37,18 @@ describe("bindApiServerWithRetry", () => {
     }, d);
     expect(server).toBe("server");
     expect(calls).toBe(3);
-    expect(d.sleeps.length).toBe(2);
+    expect(d.sleeps).toEqual([BIND_RETRY_DELAY_MS, BIND_RETRY_DELAY_MS]);
     expect(d.logs.some((l) => l.includes("retrying"))).toBe(true);
   });
 
-  test("exhausting retries rethrows the original error", async () => {
+  test("exhausting retries rethrows the original error after exactly BIND_RETRY_ATTEMPTS calls", async () => {
     const d = deps();
+    let calls = 0;
     await expect(
-      bindApiServerWithRetry(() => { throw eaddrinuse(); }, d),
+      bindApiServerWithRetry(() => { calls++; throw eaddrinuse(); }, d),
     ).rejects.toThrow("EADDRINUSE");
+    expect(calls).toBe(BIND_RETRY_ATTEMPTS);
+    expect(d.sleeps.length).toBe(BIND_RETRY_ATTEMPTS - 1);
   });
 
   test("a non-EADDRINUSE error is never retried", async () => {
