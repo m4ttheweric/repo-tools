@@ -33,8 +33,13 @@ export function resolveInbox(sessionId: string, opts?: { roots?: string[] }): In
     try { files = readdirSync(root); } catch { continue; }
     for (const f of files) {
       if (!/^\d+\.json$/.test(f)) continue;
-      let entry: Record<string, unknown>;
-      try { entry = JSON.parse(readFileSync(join(root, f), "utf8")); } catch { continue; }
+      let parsed: unknown;
+      try { parsed = JSON.parse(readFileSync(join(root, f), "utf8")); } catch { continue; }
+      // JSON.parse accepts any value -- a bare `null` or a number is valid
+      // JSON but not a record, and property access below would throw past
+      // the try/catch above.
+      if (typeof parsed !== "object" || parsed === null) continue;
+      const entry = parsed as Record<string, unknown>;
       if (entry.sessionId !== sessionId) continue;
       if (typeof entry.pid !== "number" || typeof entry.messagingSocketPath !== "string") continue;
       const status = typeof entry.status === "string" && STATUSES.has(entry.status) ? (entry.status as InboxBinding["status"]) : undefined;

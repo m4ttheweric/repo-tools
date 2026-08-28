@@ -34,4 +34,10 @@ describe("resolveInbox", () => {
     expect(resolveInbox("cccccccc-0000-0000-0000-000000000003", { roots: [join(root, "missing")] })).toBeNull();
     expect(resolveInbox("dddddddd-0000-0000-0000-000000000004", { roots: [root] })).toBeNull();
   });
+  test("skips a registry file whose JSON parses to a non-object without throwing", () => {
+    const root = fakeRoot([{ pid: 336, sessionId: "ffffffff-0000-0000-0000-000000000006" }]);
+    writeFileSync(join(root, "337.json"), "null");
+    writeFileSync(join(root, "338.json"), "42");
+    expect(resolveInbox("ffffffff-0000-0000-0000-000000000006", { roots: [root] })?.pid).toBe(336);
+  });
 });
