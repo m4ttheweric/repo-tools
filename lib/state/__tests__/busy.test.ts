@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { runCriticalWrite } from "../busy.ts";
+import { Database } from "bun:sqlite";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { isBusyError, runCriticalWrite } from "../busy.ts";
 
 test("returns the value when fn succeeds", () => {
   expect(runCriticalWrite("t", () => 42, {})).toBe(42);
@@ -25,4 +29,21 @@ test("returns undefined after exhausting attempts on a busy error", () => {
 
 test("rethrows a non-busy error rather than retrying", () => {
   expect(() => runCriticalWrite("t", () => { throw new Error("syntax error"); }, {})).toThrow("syntax error");
+});
+
+test("isBusyError matches SQLITE_BUSY_SNAPSHOT from a real conflict", () => {
+  const dir = mkdtempSync(join(tmpdir(), "busy-snap-"));
+  const path = join(dir, "t.db");
+  const a = new Database(path); a.exec("PRAGMA journal_mode=WAL; CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER);");
+  a.exec("INSERT INTO t(id,v) VALUES(1,0);");
+  const b = new Database(path);
+  a.exec("BEGIN;"); a.query("SELECT v FROM t WHERE id=1").get(); // pin snapshot on A
+  b.exec("UPDATE t SET v=1 WHERE id=1;");                        // B commits (autocommit)
+  let caught: unknown;
+  try { a.exec("UPDATE t SET v=2 WHERE id=1;"); } catch (e) { caught = e; }
+  expect(caught).toBeDefined();
+  expect((caught as any).code?.startsWith("SQLITE_BUSY")).toBe(true);
+  expect(isBusyError(caught)).toBe(true);
+  try { a.exec("ROLLBACK;"); } catch {}
+  a.close(); b.close();
 });

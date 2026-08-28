@@ -50,7 +50,7 @@ import { runBootIdentityMigration } from "./daemon/boot-migrate.ts";
 import { runCapture } from "./subprocess.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
-import { startApiServer, broadcast } from "./daemon/api-server.ts";
+import { startApiServer, withApiPortParkRetry, broadcast } from "./daemon/api-server.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
@@ -63,6 +63,15 @@ import {
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import { createEventsBus } from "./daemon/events-bus.ts";
+import {
+  writeBreadcrumb,
+  recordBootAttempt,
+  recordDaemonReady,
+  recordBootFailure,
+  recordCleanExit,
+  type BootPhase,
+} from "./daemon/supervision-state.ts";
+import { safeInterval, safeTimeout } from "./daemon/safe-timers.ts";
 import { pruneRuns } from "./runs/prune.ts";
 import { pruneLogs } from "./log-janitor.ts";
 import { getSetting } from "./settings/resolve.ts";
@@ -75,7 +84,32 @@ import type { PortEntry } from "./port-scanner.ts";
 // a clean rename of a real legacy tree into a conflict. Idempotent — the CLI
 // entry (cli.ts) also runs it, but `bun run lib/daemon.ts` skips cli.ts.
 import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, logsDir } from "./rt-paths.ts";
+
+// Gates installCrashHandlers' unhandledRejection handler: fatal during boot
+// (no socket/API bound yet, nothing to recover), advisory-only once ready.
+let bootPhase: "booting" | "ready" = "booting";
+
+// Tracks the finer-grained boot phase for the breadcrumb file and for
+// attributing a Task-2 fatal boot error to the phase it happened in.
+// setPhase is db-free (writeBreadcrumb only writes a file), so it is safe
+// to call from module scope, before state.db exists.
+let currentPhase: BootPhase = "start";
+function setPhase(phase: BootPhase): void {
+  currentPhase = phase;
+  writeBreadcrumb(phase);
+}
+
 const rtMigration = migrateLegacyRtDir();
+
+// Capture native panics (bypass JS entirely) at the fd level, so a throw
+// during any later module-scope construction (createEventsBus, cron,
+// home-snapshot, …) lands in daemon-stderr.log instead of vanishing down
+// whatever fd 2 the launcher gave us. Depends only on logsDir() and mkdirs
+// its own dir (this MUST run after migrateLegacyRtDir(): mkdirSync(logsDir())
+// creates the new rt dir, and migrateLegacyRtDir() treats that dir merely
+// existing as a "conflict" with a real legacy tree, so redirecting first
+// would defeat the migration).
+redirectNativeStderr();
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 // Pino-backed structured logger. See lib/daemon-logger.ts. Top-level await
@@ -84,6 +118,14 @@ const rtMigration = migrateLegacyRtDir();
 
 const loggerHandle = await getDaemonLogger();
 const log = loggerHandle.logger;
+
+// Wire uncaughtException + unhandledRejection through pino as early as the
+// logger allows: every module-scope side effect below this point
+// (createEventsBus, cron, home-snapshot, sweep timers) can throw, and this
+// must run BEFORE any of it does.
+installCrashHandlers(loggerHandle, { booting: () => bootPhase === "booting" });
+
+setPhase("start");
 
 if (rtMigration === "migrated") {
   log.info(`migrated legacy ${LEGACY_RT_LABEL} state to ${RT_DIR_LABEL}`);
@@ -189,11 +231,14 @@ const hooksGuard = createHooksGuard(log);
 
 // Pane-communication events bus (RT-44): SQLite journal + in-memory waiters.
 const eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
+setPhase("events-db");
 // Hourly retention sweep — cheap; rides its own interval rather than pollers
-// because it needs no poller deps.
-setInterval(() => eventsBus.sweep(), 60 * 60 * 1000);
+// because it needs no poller deps. safeInterval/safeTimeout: a sync sqlite
+// throw here (e.g. SQLITE_FULL) must warn, not become an uncaughtException
+// that exits the daemon.
+safeInterval(() => eventsBus.sweep(), 60 * 60 * 1000, "events-sweep", log);
 // Boot-time sweep to handle frequent daemon restarts that would otherwise starve the hourly interval.
-setTimeout(() => eventsBus.sweep(), 30_000);
+safeTimeout(() => eventsBus.sweep(), 30_000, "events-sweep-boot", log);
 
 // Age-floor prune of pipeline run dirs — daily; assertPrunable in prune.ts
 // guards every deletion against the runs root.
@@ -326,6 +371,11 @@ const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast: emit };
 // branch-cache facade above).
 let routedHandlers: ReturnType<typeof buildRoutedHandlers> | undefined;
 
+// Set by the `shutdown` verb before it exits, so a bare OS signal arriving
+// mid-teardown is still distinguishable from the intentional stop (exit-code
+// policy: docs/daemon-supervision-design.md).
+let shuttingDownViaVerb = false;
+
 async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
   const t0 = Date.now();
   try {
@@ -349,10 +399,16 @@ async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Pr
   switch (cmd) {
     case "shutdown":
       log.info("received shutdown command");
+      // Set before the delay, not inside the setTimeout callback: a bare
+      // SIGTERM arriving in the 100ms window must see this flag already
+      // true, or the signal handler treats an intentional stop as a crash
+      // (exit 1, launchd respawns).
+      shuttingDownViaVerb = true;
       // Delay cleanup so this response can be written first — cleanup()
       // force-closes all in-flight connections, including the one that
       // carried the shutdown request.
       setTimeout(() => {
+        recordCleanExit("shutdown", 0);
         cleanup();
         loggerHandle.flush?.();
         process.exit(0);
@@ -383,155 +439,166 @@ const cleanup = (): void => {
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 async function runDaemon(): Promise<void> {
-  mkdirSync(RT_DIR, { recursive: true });
-
-  // Capture native panics (bypass JS entirely) at the fd level, then wire
-  // uncaughtException + unhandledRejection through pino. Must run BEFORE
-  // any async work that could throw uncaught.
-  redirectNativeStderr();
-  installCrashHandlers(loggerHandle);
-
-  // If a previous daemon process is still alive (orphan from a failed
-  // restart), evict it before we bind the socket.
-  evictStaleDaemon(log);
-
-  // Auto-unlink any tagged tool link whose tool now has a genuine user copy
-  // elsewhere on PATH (e.g. the user ran `brew install gh` after rt linked
-  // the bundled one). reconcile() itself is synchronous (a ~/.local/bin
-  // readDir plus a handful of stats) — wrapping the call in `async` alone
-  // would NOT defer it, since nothing inside actually awaits. setTimeout(0)
-  // is what actually pushes it past the rest of this function: the PID
-  // write, openBranchCacheStore, and both server binds below all run first,
-  // on this same synchronous pass, before the timer callback ever fires.
-  setTimeout(() => {
-    try {
-      const { removed } = reconcileLinks(createRealProbes());
-      if (removed.length > 0) log.info({ removed }, "deps: auto-unlinked tools now shadowed by a user copy");
-    } catch (err) {
-      log.warn({ err }, "deps: link reconcile failed");
-    }
-  }, 0);
-
-  log.info("daemon starting");
-  writeFileSync(DAEMON_PID_PATH, String(process.pid));
-
-  // Open state.db and build the in-memory branch-cache map BEFORE serving
-  // (spec "Migration & contention"): the one long transaction is the
-  // legacy-JSON import, and it must never land inside the event loop. If a
-  // CLI process is mid-import right now, we block here, in startup.
-  openBranchCacheStore();
-  log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
-
-  // one-shot re-key of every legacy NAME-keyed store row onto its
-  // serialized repo identity. Fire-and-forget (not awaited) like the PATH
-  // reconcile above — the ordering guarantee this depends on (running before
-  // anything prunes the repo index) only needs this to be on the boot path,
-  // not blocking the socket bind; a prune only ever arrives as a command sent
-  // to an already-running daemon.
-  runBootIdentityMigration(log).catch((err) => {
-    log.warn({ err }, "boot identity migration failed");
-  });
-
-  routedHandlers = buildRoutedHandlers({
-    ctx: handlerCtx,
-    broadcast: emit,
-    systemProcessScanner,
-    worktree: {
-      emit,
-      kick: worktreeReconciler.kick,
-      creationInFlight: worktreeReconciler.creationInFlight,
-    },
-    eventsBus,
-    homeSnapshot,
-    repos: {
-      withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
-      refreshWatchedRepos: hooksGuard.refreshWatchedRepos,
-    },
-    stateDb: getStateDb("daemon"),
-  });
-
-  // No waiter outlives the daemon, so every armed_at set at boot is stale;
-  // clearing must finish before the socket listens, or an agent that arms
-  // in the gap has its fresh armed_at wiped.
-  const clearedArmed = clearAllArmed();
-  if (clearedArmed > 0) log.info({ clearedArmed }, "chat: cleared stale armed_at from previous daemon run");
-
-  // Daemon startup is one of the two moments a handle is about to be
-  // needed (spec "Pruning"); sign-in is the other, inside signIn itself.
-  // Pruning is best-effort cleanup, so a concurrent CLI writer's
-  // SQLITE_BUSY must not abort startup before the socket binds.
-  let prunedPresence = 0;
-  persistOrWarn("daemon", () => { prunedPresence = prunePresence(Date.now()); }, { op: "prunePresence" });
-  if (prunedPresence > 0) log.info({ prunedPresence }, "chat: pruned stale presence rows at daemon startup");
-
-  // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
-  servers.socket = startSocketServer({ handleCommand, log });
-  servers.api = await startApiServer({ handleCommand, log });
-
-  // Wire notification broadcasts to WebSocket clients
-  onNotification(emit);
-
-  // Discover and watch repos
-  hooksGuard.refreshWatchedRepos();
-
-  // Team tracking intent (mattstack.tracking) resolves through a primed
-  // identity→name map, not live derivation — loadRepoTracking is sync and
-  // runs on every freshness tick. Team intent is inert until this completes.
-  // The repo index moved into state.db (RT-50): there is no file to fs.watch
-  // for new-repo changes any more, so the 60s hooks-scan poller (pollers.ts)
-  // is the only re-prime mechanism now, not just the reliable one.
-  primeTeamTrackingIdentityMap(loadRepoIndex()).catch((err) => {
-    log.warn({ err }, "repo-tracking: failed to prime team-intent identity map");
-  });
-
-  // Periodic background work: cache refresh, port scan, system-process scan,
-  // hooks-guard fallback rescan.
-  startPollers({
-    log, refreshCache, portCacheRef, broadcast: emit, systemProcessScanner,
-    repoIndex: loadRepoIndex,
-    checkAndRepairHooksPath: hooksGuard.checkAndRepairHooksPath,
-  });
-
-  // Kick off the events watchers once the first refresh has populated the
-  // cache with repoName stamps. reconcileFreshness inside the cache refresher
-  // follows repo-index changes from there.
-  setTimeout(() => {
-    initFreshness(freshnessEnv).catch((err) => {
-      log.error({ err }, "freshness: init failed");
-    });
-  }, 7000);
-
-  // Background sweep for new MR comments → `discussions:new-comments` events.
-  startDiscussionsPoller({ ctx: handlerCtx, broadcast: emit });
-
-  // Sandbox ground-truth reconcile: port-forwards, dev-ports mirroring, and
-  // typed-event → notification fan-out (no-op while no controller answers).
-
-  // Graceful shutdown on all termination signals
-  installSignalHandlers({ cleanup, flushLogs: () => loggerHandle.flush?.(), log });
-
-  log.info({ pid: process.pid }, "daemon ready");
-}
-
-/**
- * Both real callers (cli.ts's `--daemon` entry, and this file's own
- * import.meta.main guard below) invoke this fire-and-forget — neither awaits
- * or catches. Left as a bare async function, ANY failure inside runDaemon()
- * (this bind, openBranchCacheStore, anything else awaited) becomes an
- * unhandledRejection, whose handler (installCrashHandlers, above) logs and
- * deliberately does NOT exit — the daemon would stay alive with rt.sock
- * possibly bound but startup never having reached signal handlers, pollers,
- * or "daemon ready". Catching here and exiting explicitly gives every
- * startup failure the same outcome a synchronous one already had: the
- * process dies and whatever restarts a crashed daemon restarts this one too.
- */
-export async function startDaemon(): Promise<void> {
   try {
-    await runDaemon();
+    mkdirSync(RT_DIR, { recursive: true });
+
+    // If a previous daemon process is still alive (orphan from a failed
+    // restart), evict it before we bind the socket.
+    await evictStaleDaemon(log);
+
+    // Auto-unlink any tagged tool link whose tool now has a genuine user copy
+    // elsewhere on PATH (e.g. the user ran `brew install gh` after rt linked
+    // the bundled one). reconcile() itself is synchronous (a ~/.local/bin
+    // readDir plus a handful of stats); wrapping the call in `async` alone
+    // would NOT defer it, since nothing inside actually awaits. setTimeout(0)
+    // is what actually pushes it past the rest of this function: the PID
+    // write, openBranchCacheStore, and both server binds below all run first,
+    // on this same synchronous pass, before the timer callback ever fires.
+    setTimeout(() => {
+      try {
+        const { removed } = reconcileLinks(createRealProbes());
+        if (removed.length > 0) log.info({ removed }, "deps: auto-unlinked tools now shadowed by a user copy");
+      } catch (err) {
+        log.warn({ err }, "deps: link reconcile failed");
+      }
+    }, 0);
+
+    log.info("daemon starting");
+
+    // Open state.db and build the in-memory branch-cache map BEFORE serving
+    // (spec "Migration & contention"): the one long transaction is the
+    // legacy-JSON import, and it must never land inside the event loop. If a
+    // CLI process is mid-import right now, we block here, in startup.
+    openBranchCacheStore();
+    setPhase("state-db");
+    recordBootAttempt();
+    log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
+
+    // one-shot re-key of every legacy NAME-keyed store row onto its
+    // serialized repo identity. Fire-and-forget (not awaited) like the PATH
+    // reconcile above: the ordering guarantee this depends on (running before
+    // anything prunes the repo index) only needs this to be on the boot path,
+    // not blocking the socket bind; a prune only ever arrives as a command sent
+    // to an already-running daemon.
+    runBootIdentityMigration(log).catch((err) => {
+      log.warn({ err }, "boot identity migration failed");
+    });
+
+    routedHandlers = buildRoutedHandlers({
+      ctx: handlerCtx,
+      broadcast: emit,
+      systemProcessScanner,
+      worktree: {
+        emit,
+        kick: worktreeReconciler.kick,
+        creationInFlight: worktreeReconciler.creationInFlight,
+      },
+      eventsBus,
+      homeSnapshot,
+      repos: {
+        withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
+        refreshWatchedRepos: hooksGuard.refreshWatchedRepos,
+      },
+      stateDb: getStateDb("daemon"),
+    });
+
+    // No waiter outlives the daemon, so every armed_at set at boot is stale;
+    // clearing must finish before the socket listens, or an agent that arms
+    // in the gap has its fresh armed_at wiped.
+    const clearedArmed = clearAllArmed();
+    if (clearedArmed > 0) log.info({ clearedArmed }, "chat: cleared stale armed_at from previous daemon run");
+
+    // Daemon startup is one of the two moments a handle is about to be
+    // needed (spec "Pruning"); sign-in is the other, inside signIn itself.
+    // Pruning is best-effort cleanup, so a concurrent CLI writer's
+    // SQLITE_BUSY must not abort startup before the socket binds.
+    let prunedPresence = 0;
+    persistOrWarn("daemon", () => { prunedPresence = prunePresence(Date.now()); }, { op: "prunePresence" });
+    if (prunedPresence > 0) log.info({ prunedPresence }, "chat: pruned stale presence rows at daemon startup");
+
+    // API server first: a failed bind exits fatally (boot-phase catch below),
+    // and binding API before the unix socket means that fatal exit never
+    // strands a socket-bound zombie behind it. ApiPortInUseError is the one
+    // exception to "fatal": bindApiServerWithRetry has already exhausted its
+    // own ~3s inner retry, so the holder is a whole other process that may
+    // take much longer to exit — park-and-retry with backoff instead of
+    // crash-looping (S043 caller-side contract, docs/daemon-api-auth.md).
+    setPhase("api");
+    servers.api = await withApiPortParkRetry(
+      () => startApiServer({ handleCommand, log }),
+      { sleep: (ms) => Bun.sleep(ms), log },
+    );
+    setPhase("socket");
+    servers.socket = startSocketServer({ handleCommand, log });
+
+    // Only write rt.pid once both servers are actually bound: a boot that
+    // fails before this point must never leave a live-pid file with no
+    // socket/API behind it.
+    writeFileSync(DAEMON_PID_PATH, String(process.pid));
+
+    // Wire notification broadcasts to WebSocket clients
+    onNotification(emit);
+
+    // Discover and watch repos
+    hooksGuard.refreshWatchedRepos();
+
+    // Team tracking intent (mattstack.tracking) resolves through a primed
+    // identity→name map, not live derivation; loadRepoTracking is sync and
+    // runs on every freshness tick. Team intent is inert until this completes.
+    // The repo index moved into state.db (RT-50): there is no file to fs.watch
+    // for new-repo changes any more, so the 60s hooks-scan poller (pollers.ts)
+    // is the only re-prime mechanism now, not just the reliable one.
+    primeTeamTrackingIdentityMap(loadRepoIndex()).catch((err) => {
+      log.warn({ err }, "repo-tracking: failed to prime team-intent identity map");
+    });
+
+    // Periodic background work: cache refresh, port scan, system-process scan,
+    // hooks-guard fallback rescan.
+    startPollers({
+      log, refreshCache, portCacheRef, broadcast: emit, systemProcessScanner,
+      repoIndex: loadRepoIndex,
+      checkAndRepairHooksPath: hooksGuard.checkAndRepairHooksPath,
+    });
+
+    // Kick off the events watchers once the first refresh has populated the
+    // cache with repoName stamps. reconcileFreshness inside the cache refresher
+    // follows repo-index changes from there.
+    setTimeout(() => {
+      initFreshness(freshnessEnv).catch((err) => {
+        log.error({ err }, "freshness: init failed");
+      });
+    }, 7000);
+
+    // Background sweep for new MR comments → `discussions:new-comments` events.
+    startDiscussionsPoller({ ctx: handlerCtx, broadcast: emit });
+
+    // Sandbox ground-truth reconcile: port-forwards, dev-ports mirroring, and
+    // typed-event → notification fan-out (no-op while no controller answers).
+
+    // Graceful shutdown on all termination signals
+    installSignalHandlers({
+      cleanup,
+      flushLogs: () => loggerHandle.flush?.(),
+      log,
+      wasVerbShutdown: () => shuttingDownViaVerb,
+    });
+
+    bootPhase = "ready";
+    recordDaemonReady();
+    setPhase("ready");
+    log.info({ pid: process.pid }, "daemon ready");
   } catch (err) {
-    log.fatal({ err }, "daemon startup failed — exiting");
+    log.fatal({ err }, "daemon boot failed");
+    recordBootFailure(currentPhase, String(err));
+    try { loggerHandle.flush?.(); } catch { /* */ }
     process.exit(1);
   }
+}
+
+// runDaemon() never rejects: it logs fatal and exit(1)s internally on any
+// boot failure, so this wrapper needs no catch of its own.
+export async function startDaemon(): Promise<void> {
+  await runDaemon();
 }
 
 // Auto-run when executed directly (source mode: bun run lib/daemon.ts)

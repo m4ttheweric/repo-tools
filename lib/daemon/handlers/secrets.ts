@@ -46,7 +46,7 @@
 import { loadSecrets } from "../../linear.ts";
 import { parseIdentity } from "../../settings/identity.ts";
 import { loadMachineRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
-import { loadOrCreateApiToken, tokenOk } from "../api-auth.ts";
+import { getApiToken, tokenOk } from "../api-auth.ts";
 import { readSecret, createRealSecretsExecSeam, type SecretsSeams } from "../../secrets/store.ts";
 import { createRealAgeKeySeam } from "../../home/age-key.ts";
 import type { Commands, ForgeSlug } from "../../../packages/rt-client/src/commands.ts";
@@ -125,7 +125,7 @@ export interface SecretsHandlerOverrides {
   deckSecrets?: () => Promise<{ cfApiToken?: string; cfZoneId?: string }>;
   /** Defaults to `loadBoardSecrets` (cross-domain: `board` + `rt`) for secrets:read's "board" scope. */
   boardSecrets?: () => Promise<BoardSecretsData>;
-  /** Defaults to `loadOrCreateApiToken` (the real ~/.mattstack/rt/api-token, shared with api-auth.ts). */
+  /** Defaults to `getApiToken` (the real ~/.mattstack/rt/api-token, shared with api-auth.ts and api-server.ts). */
   apiToken?: () => string;
 }
 
@@ -142,7 +142,7 @@ export function createSecretsHandlers(
   const extensionSecrets = overrides.extensionSecrets ?? loadSecrets;
   const deckSecrets = overrides.deckSecrets ?? loadDeckSecrets;
   const boardSecrets = overrides.boardSecrets ?? loadBoardSecrets;
-  const apiToken = overrides.apiToken ?? (() => loadOrCreateApiToken());
+  const apiToken = overrides.apiToken ?? (() => getApiToken());
 
   return {
     "secrets:forge-token": async (payload: Commands["secrets:forge-token"]["payload"]) => {

@@ -12,6 +12,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { rtDir } from "./rt-paths.ts";
 import { currentMode } from "./dev-mode.ts";
+import { getSetting } from "./settings/resolve.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,22 @@ export const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
  *  (e2e spawns a real foreground one) never collides with a live local
  *  daemon's hardcoded port (RT-45). */
 export const API_PORT = Number(process.env.RT_API_PORT) || 9401;
+
+/**
+ * Call-time API port resolution: RT_API_PORT env wins (e2e isolation, RT-45),
+ * then the rt.apiPort setting (escape hatch when 9401 is held), then 9401.
+ * A function, not a const: it must never be evaluated at module load, since
+ * getSetting() reads the settings stores off ambient HOME.
+ */
+export function resolveApiPort(): number {
+  const env = Number(process.env.RT_API_PORT);
+  if (env) return env;
+  try {
+    return getSetting<number>("rt.apiPort").value || 9401;
+  } catch {
+    return 9401;
+  }
+}
 
 // ─── Read / Write ────────────────────────────────────────────────────────────
 

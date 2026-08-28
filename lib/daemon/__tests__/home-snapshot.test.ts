@@ -1005,6 +1005,43 @@ describe("startHomeSnapshot — state persistence", () => {
   });
 });
 
+// ─── boot order: db must open daemon-flavored, never at construction ────────
+
+describe("startHomeSnapshot (boot order)", () => {
+  test("constructing startHomeSnapshot does not open the state.db singleton before the caller's next await", async () => {
+    const home = mkdtempSync(join(tmpdir(), "rt-home-snapshot-bootorder-"));
+    const origHome = process.env.HOME;
+    process.env.HOME = home;
+    closeStateDb();
+    try {
+      const stateDbPath = join(home, ".mattstack", "rt", "state.db");
+      const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+      // No `db` override: this exercises the real getStateDb() singleton,
+      // matching lib/daemon.ts's module-scope `startHomeSnapshot(...)` call,
+      // the exact call site that used to open state.db "cli"-flavored before
+      // startDaemon() ever got to openBranchCacheStore().
+      const { deps } = baseDeps({ exec: execFn, db: undefined });
+
+      const handle = startHomeSnapshot(deps);
+
+      // Synchronously, right after construction returns, mirroring the
+      // module-scope call in lib/daemon.ts, which runs to completion before
+      // startDaemon() (and its openBranchCacheStore() daemon-flavored open)
+      // is ever reached, no db file may exist yet.
+      expect(existsSync(stateDbPath)).toBe(false);
+
+      await handle.ready;
+      // First real use (init()'s loadState, past its own `await deps.exec`)
+      // has by now opened it.
+      expect(existsSync(stateDbPath)).toBe(true);
+    } finally {
+      process.env.HOME = origHome;
+      closeStateDb();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── stop() ───────────────────────────────────────────────────────────────
 
 describe("startHomeSnapshot — stop", () => {

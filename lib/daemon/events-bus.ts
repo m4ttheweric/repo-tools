@@ -8,9 +8,10 @@
  */
 
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "fs";
+import { mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
 import type { Logger } from "pino";
+import { isCorruptionError } from "../state/db.ts";
 
 export interface BusEvent { id: number; topic: string; payload: unknown; emittedAt: number }
 export interface WaitResult { events: BusEvent[]; cursor: number }
@@ -31,6 +32,8 @@ export interface EventsBus {
   sweep(): number;
   waiterCount(): number;
   close(): void;
+  /** Test-only debug accessor for the underlying handle (e.g. pragma checks). Not for feature code. */
+  __db?: Database;
 }
 
 // One matcher for wait AND list. Bun.Glob: `*` does not cross `/`, `**` does.
@@ -61,6 +64,30 @@ function rowToEvent(row: EventRow): BusEvent {
   return { id: row.id, topic: row.topic, payload, emittedAt: row.emittedAt };
 }
 
+/**
+ * Renames a corrupt events.db out of the way and warns loudly, mirroring
+ * lib/state/db.ts's `quarantine`. events.db is a bounded-retention journal
+ * (sweep() already discards old rows), so losing it entirely on corruption
+ * is harmless: recreate empty rather than attempt any repair. WAL sidecars
+ * are best-effort cleaned since they are meaningless without the main file.
+ */
+function quarantineEventsDb(path: string, log: Logger): void {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const quarantinedPath = `${path}.corrupt-${stamp}`;
+  log.warn(
+    { path, quarantinedPath },
+    "events db could not be opened (corrupt), quarantining and recreating empty",
+  );
+  renameSync(path, quarantinedPath);
+  for (const sidecar of [`${path}-wal`, `${path}-shm`]) {
+    try {
+      renameSync(sidecar, `${sidecar}.corrupt-${stamp}`);
+    } catch {
+      // sidecar absent, fine: WAL mode doesn't always leave one
+    }
+  }
+}
+
 export function createEventsBus(opts: {
   dbPath: string;
   log: Logger;
@@ -73,8 +100,26 @@ export function createEventsBus(opts: {
   // Self-sufficient about its parent dir — daemon.ts constructs the bus at
   // module scope, before startDaemon()'s mkdirSync(RT_DIR) runs.
   mkdirSync(dirname(opts.dbPath), { recursive: true });
-  const db = new Database(opts.dbPath, { create: true });
-  db.exec("PRAGMA journal_mode = WAL;");
+  // PRAGMA order matches lib/state/db.ts's applyPragmas: busy_timeout FIRST
+  // so the WAL conversion itself respects it, then journal_mode, then
+  // synchronous.
+  let db: Database;
+  try {
+    db = new Database(opts.dbPath, { create: true });
+    db.exec("PRAGMA busy_timeout = 250;");
+    db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA synchronous = NORMAL;");
+    // Pragmas alone don't always force sqlite to validate the file header;
+    // touch it now so a corrupt file surfaces here, not mid-query later.
+    db.query("PRAGMA user_version").get();
+  } catch (err) {
+    if (!isCorruptionError(err)) throw err;
+    quarantineEventsDb(opts.dbPath, log);
+    db = new Database(opts.dbPath, { create: true });
+    db.exec("PRAGMA busy_timeout = 250;");
+    db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA synchronous = NORMAL;");
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
       id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,6 +259,8 @@ export function createEventsBus(opts: {
     },
 
     waiterCount() { return waiters.size; },
+
+    __db: db,
 
     close() {
       const head = maxId();

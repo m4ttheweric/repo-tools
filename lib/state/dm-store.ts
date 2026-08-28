@@ -72,7 +72,7 @@ export function dmRoomFor(
     return { room, created: true };
   });
 
-  return run();
+  return run.immediate();
 }
 
 export function dmParticipants(room: string, db: Database = getStateDb()): { a: string; b: string } | null {

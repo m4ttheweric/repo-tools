@@ -222,7 +222,7 @@ async function getPackageScripts(pidList: string): Promise<Map<number, string>> 
   return parsePackageScripts(stdout);
 }
 
-async function getAllRepoPids(trackedPaths: string[]): Promise<Map<number, string>> {
+async function getAllRepoPids(trackedPaths: string[]): Promise<Map<number, string> | null> {
   if (trackedPaths.length === 0) return new Map();
 
   // Single lsof call to get cwds for ALL processes at once.
@@ -232,8 +232,11 @@ async function getAllRepoPids(trackedPaths: string[]): Promise<Map<number, strin
     { timeoutMs: 10_000 },
   );
   if (exitCode !== 0 && !stdout) {
-    log.warn({ exitCode }, "lsof scan failed; returning empty cwd map");
-    return new Map();
+    // null (not an empty Map) so callers can tell "lsof failed" apart from
+    // "genuinely no tracked-cwd processes" and preserve runaway state instead
+    // of pruning every tracked pid on a transient scan failure.
+    log.warn({ exitCode }, "lsof scan failed; preserving prior process state");
+    return null;
   }
   return parseLsofCwdMap(stdout, trackedPaths);
 }
@@ -261,8 +264,9 @@ export class SystemProcessScanner {
    * path may feed samples. On-demand reads use `refresh` instead.
    */
   async scan(portEntries: PortEntry[] = []): Promise<SystemProcess[]> {
+    const gathered = await this.gather(portEntries);
+    if (gathered === null) return this.lastResult; // failed tick: preserve tracked/lastResult/lastScanAt
     try {
-      const gathered = await this.gather(portEntries);
       const now = Date.now();
 
       const currentPids = new Set<number>();
@@ -344,8 +348,9 @@ export class SystemProcessScanner {
    * alert. Also advances `lastScanAt` so freshness checks see the update.
    */
   async refresh(portEntries: PortEntry[] = []): Promise<SystemProcess[]> {
+    const gathered = await this.gather(portEntries);
+    if (gathered === null) return this.lastResult; // failed tick: preserve tracked/lastResult/lastScanAt
     try {
-      const gathered = await this.gather(portEntries);
       const prev = new Map(this.lastResult.map(p => [p.pid, p]));
       const results = gathered.map<SystemProcess>(proc => {
         const before = prev.get(proc.pid);
@@ -368,7 +373,7 @@ export class SystemProcessScanner {
    * decorate it with port + package-script, but no runaway/tracking state.
    * Shared by `scan` (adds tracking) and `refresh` (carries flags forward).
    */
-  private async gather(portEntries: PortEntry[]): Promise<GatheredProcess[]> {
+  protected async gather(portEntries: PortEntry[]): Promise<GatheredProcess[] | null> {
     const repos = loadRepoIndex();
     if (Object.keys(repos).length === 0) return [];
 
@@ -378,7 +383,8 @@ export class SystemProcessScanner {
     const worktreeMap = await buildWorktreeMap(repos);
     const trackedPaths = [...new Set([...Object.values(repos), ...worktreeMap.keys()])];
     const cwdMap = await getAllRepoPids(trackedPaths);
-    if (cwdMap.size === 0) return [];
+    if (cwdMap === null) return null; // lsof failed
+    if (cwdMap.size === 0) return []; // genuinely no tracked-cwd processes
 
     // Get CPU/memory for discovered PIDs
     const pidList = [...cwdMap.keys()].join(",");
@@ -386,6 +392,7 @@ export class SystemProcessScanner {
       ["ps", "-p", pidList, "-o", "pid=,ppid=,pcpu=,rss=,etime=,comm=,args="],
       { timeoutMs: 5000 },
     );
+    if (psRes.exitCode !== 0 && !psRes.stdout) return null; // ps failed
     if (!psRes.stdout) return [];
 
     const parsed = parseProcessList(psRes.stdout, repos, cwdMap, worktreeMap);

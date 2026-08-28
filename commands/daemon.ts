@@ -25,6 +25,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync,
 import { bold, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
   isDaemonInstalled,
+  isDaemonProcessRunning,
+  activeLaunchdLabel,
   markDaemonInstalled, markDaemonUninstalled, cleanupDaemonFiles,
   readDaemonPid,
   RT_DIR,
@@ -35,6 +37,8 @@ import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts
 import { classifyDaemonStatus, type DaemonStatusVerdict } from "../lib/daemon-status.ts";
 import { resolveIntendedMode, currentMode, type IntendedMode } from "../lib/dev-mode.ts";
 import { probeSocketHolder } from "../lib/daemon/park.ts";
+import { readBreadcrumb, readSupervisionState } from "../lib/daemon/supervision-state.ts";
+import { runCapture } from "../lib/subprocess.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind, RepoTrackingEntry } from "../lib/repo-tracking.ts";
 import { loadRepoTracking, loadMachineRepoTracking, loadMachineRepoTrackingRaw, saveRepoTrackingRaw, grants, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS, teamNamesIdentity } from "../lib/repo-tracking.ts";
@@ -222,7 +226,20 @@ export async function uninstall(): Promise<void> {
     console.log(`  ${green}✓${reset} removed legacy launchd plist`);
   }
 
-  // 3. Clear install flag + sock/pid files.
+  // 3. A failed/absent tray stop must never delete rt.sock/rt.pid/daemon.json
+  // out from under a daemon that's actually still alive (that would orphan
+  // it, still running, launchd-supervised, but rt's own bookkeeping says
+  // uninstalled). Check both liveness signals: the recorded pid, and whether
+  // anything still answers on rt.sock (a daemon can be alive with no
+  // matching rt.pid, e.g. after a crash-and-respawn under launchd).
+  const stillAlive = isDaemonProcessRunning() || (await probeSocketHolder()) !== null;
+  if (stillAlive) {
+    console.log(`\n  ${yellow}⚠${reset} daemon is still running, leaving rt.sock/rt.pid/daemon.json in place`);
+    console.log(`  ${dim}Fix: ${bold}launchctl bootout gui/$UID/${activeLaunchdLabel()}${reset}\n`);
+    return;
+  }
+
+  // 4. Clear install flag + sock/pid files.
   markDaemonUninstalled();
   cleanupDaemonFiles();
   console.log(`  ${green}✓${reset} cleared install flag`);
@@ -256,16 +273,31 @@ export async function start(): Promise<void> {
   }
 
   console.log(`  ${dim}starting ${intended.mode} daemon via tray…${reset}`);
+  if (await pollForDaemonUp(intended)) return;
+
+  // The tray acked /daemon/start, but SMAppService can register a job that
+  // never actually launches (still booting, crash-looping, etc.); kick it
+  // via /daemon/restart, which forces launchd to invoke it, rather than
+  // leaving the operator staring at "check logs" for something a retry fixes.
+  console.log(`  ${dim}not up yet, escalating to restart (kickstart)…${reset}`);
+  const restartResult = await trayQuery("/daemon/restart", "POST");
+  if (restartResult?.ok && (await pollForDaemonUp(intended))) return;
+
+  console.log(`\n  ${yellow}daemon starting… check logs: rt daemon logs${reset}\n`);
+}
+
+/** Shared poll loop for start()'s initial wait and its kickstart escalation. */
+async function pollForDaemonUp(intended: IntendedMode): Promise<boolean> {
   for (let i = 0; i < 12; i++) {
     await Bun.sleep(250);
     if (await isDaemonRunning()) {
       if (!(await warnIfWrongFlavor("start", intended))) {
         console.log(`\n  ${green}✓ daemon started${reset}\n`);
       }
-      return;
+      return true;
     }
   }
-  console.log(`\n  ${yellow}daemon starting… check logs: rt daemon logs${reset}\n`);
+  return false;
 }
 
 export async function stop(): Promise<void> {
@@ -316,8 +348,53 @@ export async function restart(): Promise<void> {
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 
-export async function showStatus(): Promise<void> {
+/**
+ * Raw OS-level liveness, independent of rt.sock. Tries a direct pid check
+ * first against every pid this HOME actually recorded: rt.pid, then the
+ * boot breadcrumb's pid (the breadcrumb survives failures rt.pid never gets
+ * written for, per Ruling P1), before falling back to a last-resort scan.
+ *
+ * That scan is `lsof +D <RT_DIR>`, not the brief's suggested system-wide
+ * `pgrep -f 'rt --daemon|lib/daemon.ts'`: a raw pgrep matches ANY rt daemon
+ * on the machine regardless of which HOME started it, and on an ordinary dev
+ * workstation there usually IS one (the developer's own real daemon), so a
+ * pgrep-based check on an isolated/alternate HOME reliably misreports a dead
+ * boot attempt as alive-not-serving (verified live against this repo's own
+ * dev daemon while writing the e2e test below). `lsof +D` instead asks "does
+ * any process hold a file open under THIS HOME's rt dir", home-scoped by
+ * construction, immune to that false positive and to pid-reuse. Only worth
+ * calling once both `status` and a plain ping have already failed.
+ *
+ * The CALLER itself is excluded from the lsof result: `showStatus` opens its
+ * own `bun:sqlite` handle on `state.db` (inside RT_DIR) via
+ * `readSupervisionState()` just before this probe runs, so `lsof +D RT_DIR`
+ * legitimately reports the calling CLI process as a live holder of the
+ * directory, with no daemon involved at all. Left unfiltered, a genuinely
+ * dead daemon self-matches and misclassifies as alive-not-serving/parked;
+ * this only failed to show up in manual testing because incidental work
+ * happened to separate the state.db open from the lsof call by enough time
+ * for state.db's own transient lock window to close, an accident of
+ * timing, not a guarantee.
+ */
+export async function probePidAlive(recordedPid: number | null, breadcrumbPid?: number): Promise<{ alive: boolean; pid: number | null }> {
+  for (const candidate of [recordedPid, breadcrumbPid ?? null]) {
+    if (candidate === null) continue;
+    try {
+      process.kill(candidate, 0);
+      return { alive: true, pid: candidate };
+    } catch { /* not this one, try the next candidate */ }
+  }
+  const { stdout } = await runCapture(["lsof", "-t", "+D", RT_DIR], { timeoutMs: 3000 });
+  const pids = stdout.trim().split(/\s+/).filter(Boolean).map(Number)
+    .filter((n) => !isNaN(n) && n !== process.pid);
+  return pids.length > 0 ? { alive: true, pid: pids[0]! } : { alive: false, pid: recordedPid };
+}
+
+export async function showStatus(args: string[] = []): Promise<void> {
+  const json = args.includes("--json");
+
   if (!isDaemonInstalled()) {
+    if (json) return void console.log(JSON.stringify({ ok: true, state: "not-installed" }));
     console.log(`  ${dim}○${reset} not installed ${dim}(run rt daemon install)${reset}\n`);
     return;
   }
@@ -326,13 +403,39 @@ export async function showStatus(): Promise<void> {
   // A failed status query does NOT mean the daemon is down — it answers `ping`
   // in a fraction of the budget a loaded `status` needs. Establish liveness
   // before reporting, and only pay for the probe when nothing came back.
-  const alive = classifyDaemonStatus.needsLivenessProbe(response) ? await isDaemonRunning() : false;
+  const pingOk = classifyDaemonStatus.needsLivenessProbe(response) ? await isDaemonRunning() : false;
+  const recordedPid = readDaemonPid() ?? null;
+
+  // Ping ALSO failed: the only remaining ground is the pid/breadcrumb/kv
+  // trail Task 9 left behind. Read it here, once, rather than on every status
+  // call, since it's the uncommon path.
+  let pidAlive: boolean | undefined;
+  let pid = recordedPid;
+  let breadcrumb: ReturnType<typeof readBreadcrumb> | undefined;
+  let supervision: ReturnType<typeof readSupervisionState> | undefined;
+  if (classifyDaemonStatus.needsPidProbe(response, pingOk)) {
+    breadcrumb = readBreadcrumb();
+    // The kv tier can be legitimately empty (or reflect nothing useful) when
+    // a failure happened before state.db ever opened (Ruling P1). The
+    // breadcrumb read above is what classifyDaemonStatus falls back to then.
+    supervision = readSupervisionState();
+    const probed = await probePidAlive(recordedPid, breadcrumb?.pid);
+    pidAlive = probed.alive;
+    pid = probed.pid;
+  }
+
   const verdict = classifyDaemonStatus({
     installed: true,
     response,
-    alive,
-    pid: readDaemonPid() ?? null,
+    pingOk,
+    pid,
+    pidAlive,
+    intendedFlavor: resolveIntendedMode().mode,
+    breadcrumb,
+    supervision,
   });
+
+  if (json) return void console.log(JSON.stringify({ ok: true, ...verdict }));
 
   for (const line of statusLines(verdict, Date.now())) console.log(line);
 
@@ -415,6 +518,46 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
     );
     lines.push(`    ${dim}check: rt daemon logs${reset}`);
     return lines;
+  }
+
+  if (verdict.state === "parked") {
+    const lines = [`  ${yellow}◐${reset} parked ${dim}(pid ${verdict.pid}, another flavor owns rt.sock)${reset}`];
+    lines.push(
+      verdict.holderFlavor
+        ? `    ${dim}held by: ${verdict.holderFlavor}${reset}`
+        : `    ${dim}waiting for the intended flavor to take rt.sock${reset}`,
+    );
+    lines.push(`    ${dim}check: rt settings dev-mode${reset}`);
+    return lines;
+  }
+
+  if (verdict.state === "alive-not-serving") {
+    const detailLine = {
+      booting: "still booting",
+      wedged: "reached ready but stopped answering (likely deadlocked)",
+      quarantined: "recovered from a corrupt db but still not answering",
+    }[verdict.detail];
+    return [
+      `  ${yellow}●${reset} process ${verdict.pid} is running but not answering rt.sock`,
+      `    ${dim}${detailLine}${reset}`,
+      `    ${dim}check: rt daemon logs -t${reset}`,
+    ];
+  }
+
+  if (verdict.state === "crash-looping") {
+    return [
+      `  ${red}●${reset} crash-looping ${dim}(${verdict.failures} failures recently)${reset}`,
+      `    ${dim}last reason: ${verdict.reason}${reset}`,
+      `    ${dim}check: rt daemon logs -t${reset}`,
+    ];
+  }
+
+  if (verdict.state === "boot-failed") {
+    return [
+      `  ${red}●${reset} boot failed ${dim}(phase: ${verdict.phase})${reset}`,
+      `    ${dim}reason: ${verdict.reason}${reset}`,
+      `    ${dim}run: rt daemon start${reset}`,
+    ];
   }
 
   if (verdict.state === "not-running") {
@@ -707,6 +850,25 @@ export async function manageTracking(args: string[] = []): Promise<void> {
 // ─── Logs ────────────────────────────────────────────────────────────────────
 
 /**
+ * Decides whether showLogs' native-stderr block is worth printing, and its
+ * header. `daemon-stderr.log` is rotated on open (daemon-logger.ts) but the
+ * fresh file can still be non-empty from a crash that happened before *this*
+ * boot's rotation ran (e.g. a bun panic mid-startup), so staleness is judged
+ * by mtime vs. the live daemon's startedAt, not by rotation alone. A `null`
+ * startedAt (daemon unreachable, nothing to compare against) fails open:
+ * show it, since a down daemon is exactly when the last crash matters most.
+ */
+export function nativeStderrDisplay(
+  mtimeMs: number,
+  daemonStartedAt: number | null,
+): { show: boolean; header: string } {
+  if (daemonStartedAt !== null && mtimeMs <= daemonStartedAt) {
+    return { show: false, header: "no crash since this daemon started" };
+  }
+  return { show: true, header: `native stderr (captured ${new Date(mtimeMs).toISOString()})` };
+}
+
+/**
  * Show daemon logs.
  *
  *   rt daemon logs              → open browser-based viewer (logdy)
@@ -723,16 +885,28 @@ export async function showLogs(args: string[] = []): Promise<void> {
 
   // Surface captured native stderr first — these are bun panics/asserts that
   // bypassed the JS-side interceptor and were caught by the swift-shim's
-  // freopen of fd 2. If non-empty, the most recent crash leads the output.
+  // freopen of fd 2. Only shown when it postdates the running daemon's boot,
+  // otherwise it's a previous life's crash, not "the most recent crash".
   const stderrPath = join(LOG_DIR, "daemon-stderr.log");
   if (existsSync(stderrPath)) {
     const content = readFileSync(stderrPath, "utf8").trim();
     if (content) {
-      console.log(`\n  ${red}${bold}native stderr${reset} ${dim}(${stderrPath})${reset}`);
-      for (const line of content.split("\n").slice(-20)) {
-        console.log(`  ${red}${line}${reset}`);
+      const mtimeMs = statSync(stderrPath).mtimeMs;
+      const ping = await daemonQuery("ping");
+      const daemonStartedAt =
+        ping && (ping as any).ok && typeof (ping as any).startedAt === "number"
+          ? ((ping as any).startedAt as number)
+          : null;
+      const { show, header } = nativeStderrDisplay(mtimeMs, daemonStartedAt);
+      if (show) {
+        console.log(`\n  ${red}${bold}${header}${reset} ${dim}(${stderrPath})${reset}`);
+        for (const line of content.split("\n").slice(-20)) {
+          console.log(`  ${red}${line}${reset}`);
+        }
+        console.log("");
+      } else {
+        console.log(`\n  ${dim}${header}${reset}\n`);
       }
-      console.log("");
     }
   }
 

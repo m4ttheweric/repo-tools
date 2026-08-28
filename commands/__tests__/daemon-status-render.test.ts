@@ -71,4 +71,41 @@ describe("statusLines", () => {
     expect(out).toContain("watching: 1 repo");
     expect(out).not.toContain("1 repos");
   });
+
+  // ── Task 10 ──
+
+  test("a parked pid points at the flavor mismatch, not 'not running'", () => {
+    const out = plain({ state: "parked", pid: 42, holderFlavor: "prod" });
+    expect(out).toContain("parked");
+    expect(out).toContain("pid 42");
+    expect(out).toContain("held by: prod");
+    expect(out).not.toContain("installed but not running");
+  });
+
+  test("alive-not-serving names the pid and the stuck detail", () => {
+    const out = plain({ state: "alive-not-serving", pid: 42, detail: "booting" });
+    expect(out).toContain("process 42 is running but not answering rt.sock");
+    expect(out).toContain("still booting");
+    expect(out).not.toContain("installed but not running");
+  });
+
+  test("alive-not-serving wedged/quarantined get their own detail lines", () => {
+    expect(plain({ state: "alive-not-serving", pid: 1, detail: "wedged" })).toContain("deadlocked");
+    expect(plain({ state: "alive-not-serving", pid: 1, detail: "quarantined" })).toContain("recovered from a corrupt db");
+  });
+
+  test("crash-looping surfaces the failure count and the last reason", () => {
+    const out = plain({ state: "crash-looping", failures: 4, reason: "EADDRINUSE" });
+    expect(out).toContain("crash-looping");
+    expect(out).toContain("4 failures");
+    expect(out).toContain("EADDRINUSE");
+  });
+
+  test("boot-failed surfaces the phase and reason, and points at rt daemon start", () => {
+    const out = plain({ state: "boot-failed", reason: "EADDRINUSE", phase: "api" });
+    expect(out).toContain("boot failed");
+    expect(out).toContain("phase: api");
+    expect(out).toContain("EADDRINUSE");
+    expect(out).toContain("rt daemon start");
+  });
 });

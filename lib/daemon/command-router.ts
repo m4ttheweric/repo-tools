@@ -28,6 +28,7 @@ import { createSettingsHandlers } from "./handlers/settings.ts";
 import { createHomeHandlers } from "./handlers/home.ts";
 import { createReposHandlers } from "./handlers/repos.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
+import { wrapWithDemand } from "./demand-tracker.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
 import type { HomeSnapshotHandle } from "./home-snapshot.ts";
@@ -74,7 +75,7 @@ export function buildRoutedHandlers(opts: {
   // Same seam as chatHandlers above: createAgentHandlers exposes `db` for
   // test isolation only.
   const { db: _agentDb, ...agentHandlers } = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
-  return {
+  const handlers: TypedHandlers & HandlerMap = {
     ...createCacheHandlers(ctx),
     ...createHooksHandlers(ctx),
     ...createStatusHandlers(ctx),
@@ -102,4 +103,7 @@ export function buildRoutedHandlers(opts: {
       return { ok: true, data: getFreshnessSnapshot() };
     },
   };
+  // A tray/CLI/console read of any scan-backed command means "someone is
+  // watching", which un-gates the background scans (see pollers.ts, S058/S093).
+  return wrapWithDemand(handlers, ["ports", "system-processes", "tray:status"]);
 }

@@ -8,7 +8,7 @@
  * `creationInFlight`).
  */
 
-import { basename, join } from "path";
+import { basename, isAbsolute, join, relative, resolve } from "path";
 import { realpathSync } from "fs";
 import type { Logger } from "pino";
 import { rtDir } from "../rt-paths.ts";
@@ -29,6 +29,7 @@ import {
   gitOk,
   headSha,
   listWorktreesAsync,
+  MUTATING_TIMEOUT_MS,
   remoteDefaultRef,
   runGit,
   stashChangesAsync,
@@ -441,24 +442,23 @@ async function autoReturnMain(
   }
 
   if (appConfig.killProcesses) {
-    // The ruled execSync exception (the process killer is sync by design);
-    // a failure here never blocks the return.
+    // A failure here never blocks the return.
     try {
-      const { terminated } = killWorktreeProcesses(rec.path);
+      const { terminated } = await killWorktreeProcesses(rec.path);
       if (terminated.length > 0) log.info({ ...fields, count: terminated.length }, "worktree processes terminated");
     } catch (err) {
       log.warn({ err, ...fields }, "auto-return: process kill failed; returning anyway");
     }
   }
 
-  const status = await runGit(rec.path, ["status", "--porcelain"]);
+  const status = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (status.exitCode !== 0) {
     log.warn({ ...fields, output: status.stderr.trim() }, "auto-return: git status failed");
     return "retry";
   }
   if (status.stdout.trim().length > 0) {
     await stashChangesAsync(rec.path, mergedBranch);
-    const after = await runGit(rec.path, ["status", "--porcelain"]);
+    const after = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
     if (after.exitCode !== 0 || after.stdout.trim().length > 0) {
       log.warn({ ...fields }, "auto-return: stash did not clear the worktree");
       return "retry";
@@ -466,13 +466,13 @@ async function autoReturnMain(
     log.info({ ...fields }, `stashed uncommitted changes on "${mergedBranch}"`);
   }
 
-  const checkout = await runGit(rec.path, ["checkout", defaultBranch]);
+  const checkout = await runGit(rec.path, ["checkout", defaultBranch], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (checkout.exitCode !== 0) {
     log.warn({ ...fields, defaultBranch, output: checkout.stderr.trim() }, "auto-return: checkout failed");
     return "retry";
   }
 
-  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef]);
+  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (ff.exitCode !== 0) {
     log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "auto-return: fast-forward failed");
     return "retry";
@@ -724,7 +724,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
 
   const classify = await classifyDirtyAsync(rec.path);
   if (classify.discard.length > 0) {
-    await runGit(rec.path, ["checkout", "--", ...classify.discard]);
+    await runGit(rec.path, ["checkout", "--", ...classify.discard], { timeoutMs: MUTATING_TIMEOUT_MS });
   }
 
   // Blockers stashed under the tree's own branch name (Desktop-compatible
@@ -744,7 +744,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
 
   const popStash = async (): Promise<void> => {
     if (!stashName) return;
-    const pop = await runGit(rec.path, ["stash", "pop", stashName]);
+    const pop = await runGit(rec.path, ["stash", "pop", stashName], { timeoutMs: MUTATING_TIMEOUT_MS });
     if (pop.exitCode !== 0) {
       log.warn(
         { ...fields, stashName },
@@ -753,7 +753,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     }
   };
 
-  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef]);
+  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (ff.exitCode !== 0) {
     log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "freshen: fast-forward failed");
     await popStash();
@@ -851,6 +851,30 @@ export async function freshenRepo(
  */
 const createBackoff = new Map<string, { failures: number; nextRetryAt: string }>();
 
+/**
+ * S089: a provision's cold `createTree` (handlers/worktree.ts) and this
+ * reconciler's own replenish `createTree` can run concurrently for the same
+ * repo, both `git fetch origin <branch>` against the same repoPath — the
+ * loser fails to lock refs/remotes/origin/<branch>, and that failure gets
+ * charged to createBackoff (a 5-to-30-minute replenish hold) for what was
+ * really just contention, not a genuine failure. Chained per repoPath so
+ * concurrent callers queue instead of racing; a rejected holder still
+ * releases the lock for the next one.
+ */
+const createLocks = new Map<string, Promise<void>>();
+
+export function withCreateLock<T>(repoPath: string, fn: () => Promise<T>): Promise<T> {
+  const prior = createLocks.get(repoPath) ?? Promise.resolve();
+  const ready = prior.catch(() => {}); // a previous holder's rejection must not block the next one
+  const result = ready.then(fn);
+  const tracked: Promise<void> = result.then(() => undefined, () => undefined);
+  createLocks.set(repoPath, tracked);
+  void tracked.finally(() => {
+    if (createLocks.get(repoPath) === tracked) createLocks.delete(repoPath);
+  });
+  return result;
+}
+
 /** The active backoff deadline for a repo, or null when creates may run now. */
 function createBlockedUntil(repoName: string): string | null {
   const entry = createBackoff.get(repoName);
@@ -920,7 +944,7 @@ async function replenishAndShrink(
       break;
     }
     budget--;
-    const p: Promise<void> = createTree({ repoName, repoPath, emit, log })
+    const p: Promise<void> = withCreateLock(repoPath, () => createTree({ repoName, repoPath, emit, log }))
       .then((result) => {
         if (result.ok) {
           createBackoff.delete(repoName);
@@ -1002,10 +1026,30 @@ async function replenishAndShrink(
  * parks trees stripped-but-recoverable (RT-51) — are reaped only past the
  * retention window.
  */
+/**
+ * Whether `root` is repoPath itself or a strict ancestor of it —
+ * sanitizeRoot (lib/worktree/config.ts) has no such check, so a value like
+ * `${repoRoot}/..` sweeps the parent directory shared by every sibling repo
+ * for `.trash-*` names. An unrelated, dedicated external root (the
+ * documented `root: "~/wt"` case) is fine to sweep — it's a repo-specific
+ * destination nothing else shares — so this only refuses the ancestor
+ * shape, not "root lies outside repoPath" in general.
+ */
+function isRootAnAncestorOfRepo(repoPath: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(repoPath));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Logger }): Promise<void> {
   const { repoName, repoPath, log } = deps;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  const reaped = await reapTrashInRoots([join(repoPath, ".worktrees"), cfg.root], log);
+  const roots = [join(repoPath, ".worktrees")];
+  if (isRootAnAncestorOfRepo(repoPath, cfg.root)) {
+    log.warn({ repo: repoName, root: cfg.root, repoPath }, "worktree trash sweep refused a configured root that is an ancestor of the repo");
+  } else {
+    roots.push(cfg.root);
+  }
+  const reaped = await reapTrashInRoots(roots, log);
   if (reaped > 0) log.info({ repo: repoName, count: reaped }, "worktree trash reaped");
   const expired = await reapExpiredTrash(repoPath, log);
   if (expired > 0) log.info({ repo: repoName, count: expired }, "worktree retention trash reaped");
@@ -1057,6 +1101,16 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
   /** Non-null while a holder owns the reconciler. */
   let hold: Promise<void> | null = null;
   let kickQueued = false;
+  /**
+   * True once the current pass's per-repo loop has begun processing at
+   * least one repo. Two kicks that both land before this flips (the common
+   * "two synchronous kicks" case) still collapse to one pass — the
+   * upcoming loop reads fresh state regardless. A kick landing after it
+   * flips might be about a repo this pass has already stepped past (e.g. a
+   * provision claiming the last on-deck tree right after replenish ran for
+   * it), so it queues a follow-up instead of being silently dropped.
+   */
+  let passStartedWork = false;
   const creationPromises = new Map<string, Promise<void>>();
 
   async function runOnce(): Promise<void> {
@@ -1074,6 +1128,7 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
     const appConfig = loadWorktreeAppConfig();
 
     for (const [repoName, repoPath] of Object.entries(repos)) {
+      passStartedWork = true;
       if (!(await repoHasWorktreeActivity(repoName, repoPath))) continue;
       try {
         await reconcileRepoRegistry({ repoName, repoPath, emit: deps.emit, log: deps.log });
@@ -1123,13 +1178,25 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
       kickQueued = true;
       return;
     }
-    if (inFlight) return;
+    if (inFlight) {
+      // Two kicks landing before this pass has stepped into its per-repo
+      // loop still collapse to one pass; once it has, a kick might be about
+      // a repo already stepped past (its replenish already ran this pass),
+      // so queue a follow-up rather than dropping it silently.
+      if (passStartedWork) kickQueued = true;
+      return;
+    }
+    passStartedWork = false;
     const p = runOnce()
       .catch((err) => {
         deps.log.warn({ err }, "worktree reconciler: kick failed");
       })
       .finally(() => {
         if (inFlight === p) inFlight = null;
+        if (kickQueued) {
+          kickQueued = false;
+          kick();
+        }
       });
     inFlight = p;
   }

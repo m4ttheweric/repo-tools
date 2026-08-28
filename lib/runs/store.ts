@@ -4,7 +4,7 @@
  * and per-call — no held connections, so a run dir can be pruned under us.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, type Dirent } from "fs";
+import { existsSync, readdirSync, statSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { Attention, RunDetail, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
@@ -114,17 +114,33 @@ function withAttention(db: Database, row: RunSummary, liveness?: RunLiveness): R
   }
 }
 
+// Finished runs never change; skip the open+PRAGMA+4-reads when the db mtime
+// is unchanged. Running runs are never cached: their db still mutates and
+// their liveness overlay is recomputed per call.
+const summaryCache = new Map<string, { mtimeMs: number; summary: RunSummary }>();
+
 export function listRuns(repo?: string, liveness?: RunLiveness): RunSummary[] {
   if (repo != null && !isPathComponent(repo)) return [];
   const repos = repo ? [repo] : dirs(runsRoot());
   const out: RunSummary[] = [];
   for (const r of repos) {
     for (const id of dirs(join(runsRoot(), r))) {
+      const dbPath = join(runsRoot(), r, id, "state.db");
+      let mtimeMs: number;
+      try { mtimeMs = statSync(dbPath).mtimeMs; } catch { continue; }
+      const key = `${runsRoot()}/${r}/${id}`;
+      const hit = summaryCache.get(key);
+      if (hit && hit.mtimeMs === mtimeMs) { out.push(hit.summary); continue; }
+
       const opened = openRun(r, id);
       if (!opened) continue;
       try {
         const row = runRow(opened.db);
-        if (row) out.push(withAttention(opened.db, row, liveness));
+        if (row) {
+          const summary = withAttention(opened.db, row, liveness);
+          out.push(summary);
+          if (summary.status !== "running") summaryCache.set(key, { mtimeMs, summary });
+        }
       } finally {
         opened.db.close();
       }
