@@ -501,6 +501,26 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
   return db;
 }
 
+/** Version-guarded open for the CLI daemon-down fallback (spec 2026-08-28).
+    Refuses a db STRICTLY newer than this build so a short-lived CLI never
+    stamps a schema another build owns; equal-or-behind opens and migrates
+    normally (data-preserving, IF NOT EXISTS). A missing file is created. */
+export function openStateDbGuarded(path: string): Database {
+  if (existsSync(path)) {
+    const probe = new Database(path, { readonly: true });
+    let userVersion: number;
+    try {
+      userVersion = (probe.query("PRAGMA user_version;").get() as { user_version: number }).user_version;
+    } finally {
+      probe.close();
+    }
+    if (userVersion > SCHEMA_VERSION) {
+      throw new Error(`state.db is newer than this rt build (v${userVersion} > v${SCHEMA_VERSION}); start the matching daemon`);
+    }
+  }
+  return openStateDb(path, "cli");
+}
+
 let singleton: Database | null = null;
 let singletonPath: string | null = null;
 
