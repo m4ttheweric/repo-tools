@@ -9,11 +9,12 @@ import { createChatHandlers, inviteText, renderWelcome, type InboxDeps } from ".
 import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
 import { deriveRoomForCwd } from "../../chat-room.ts";
+import { runCapture } from "../../subprocess.ts";
 import { drainNotifications, loadNotificationPrefs, peekNotifications, saveNotificationPrefs } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
 import { AGENT_NAMES } from "../../chat-names.ts";
 
-/** A real local git repo, no remote: exercises deriveRoomForCwd's real `git rev-parse` spawn (acceptable at sign-in, per lib/chat-room.ts's own doc comment) rather than a `.git`-directory stub. */
+/** A real local git repo, no remote: the daemon's `deriveRoomForCwdAsync` (via deriveRepoIdentity) needs a real toplevel and a real `git worktree list`/`config --get` to resolve against, not a stub `.git/worktrees` dir. */
 function initRepo(dir: string): void {
   execSync("git init -q", { cwd: dir });
   execSync("git config user.email t@example.com", { cwd: dir });
@@ -294,7 +295,12 @@ test("chat:sign-in viaPane joins the SAME room the CLI's own codec would derive 
   // something OTHER than what the git identity slugifies to -- if the room
   // ever came from this label again, the parity assertion below would catch it.
   const repoIndex = () => ({ "remote:gitlab.com%2Facme%2FRepo-Tools": repoDir });
-  const exec = async () => ({ stdout: "feat/pane-sign-in\n", stderr: "", exitCode: 0 });
+  // Stubs ONLY the branch read (deterministic output, no checked-out feature
+  // branch needed); the room derivation's own git calls (rev-parse
+  // --show-toplevel, and everything deriveRepoIdentity itself spawns) reach
+  // the real repo initRepo() created, through the real runCapture.
+  const exec: typeof runCapture = async (argv, opts) =>
+    argv.includes("--abbrev-ref") ? { stdout: "feat/pane-sign-in\n", stderr: "", exitCode: 0 } : runCapture(argv, opts);
   const h = createChatHandlers({ db, emitEvent: () => 0, herdr, repoIndex, exec });
 
   const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
@@ -313,6 +319,34 @@ test("chat:sign-in viaPane joins the SAME room the CLI's own codec would derive 
   const who = await h["chat:who"]({ room: expectedRoom! });
   if (!who.ok) throw new Error("unreachable");
   expect(who.data.members.map((m) => m.handle)).toEqual(["kai"]);
+});
+
+test("chat:sign-in viaPane degrades to no room, without failing sign-in, when room derivation throws (e.g. a read-only HOME)", async () => {
+  const uuid = "10101010-1010-1010-1010-101010101010";
+  const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "chat-viapane-throws-")));
+  initRepo(repoDir);
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
+  stops.push(stop);
+
+  const db = openStateDb(join(tmpdir(), `chat-viapane-throws-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  // Only the room-derivation call (rev-parse --show-toplevel) throws; the
+  // branch read must keep working normally, same as `runCapture`'s real
+  // "never throws" contract everywhere except the one seam under test.
+  const exec: typeof runCapture = async (argv) => {
+    if (argv.includes("--abbrev-ref")) return { stdout: "main\n", stderr: "", exitCode: 0 };
+    throw new Error("EACCES: permission denied, mkdir '/read-only-home/.mattstack'");
+  };
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr, exec });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBeNull();
+
+  const rooms = await h["chat:rooms"]({ handle: "kai" });
+  if (!rooms.ok) throw new Error("unreachable");
+  expect(rooms.data.rooms).toEqual([]);
 });
 
 test("chat:sign-in viaPane with a cwd that isn't a git work tree at all joins nothing", async () => {

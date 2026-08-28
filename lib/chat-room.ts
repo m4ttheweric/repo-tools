@@ -19,8 +19,9 @@
  */
 import { getRepoRoot } from "./git.ts";
 import { getRepoIdentityForRoot } from "./repo.ts";
-import { parseIdentity, type RepoIdentity } from "./settings/identity.ts";
+import { deriveRepoIdentity, parseIdentity, type RepoIdentity } from "./settings/identity.ts";
 import { slugifyChatName } from "./chat-room-name.ts";
+import { runCapture } from "./subprocess.ts";
 
 export function roomForIdentity(id: RepoIdentity): string {
   if (id.kind === "remote") {
@@ -34,9 +35,10 @@ export function roomForIdentity(id: RepoIdentity): string {
 /**
  * Null when `cwd` isn't inside a git work tree at all -- the gate is a real
  * `git rev-parse`, not a directory walk, so a scratch dir with a stray
- * `.git` file never derives a bogus room. A real git spawn (via
- * `getRepoRoot`): acceptable here -- sign-in is rare, unlike the daemon's
- * per-request paths (pane:list, etc.) that must never sync-exec.
+ * `.git` file never derives a bogus room. A real (sync) git spawn, via
+ * `getRepoRoot`: fine for the CLI, which runs once per invocation and exits
+ * -- never call this from the daemon thread (MAT-222); it must never
+ * sync-exec. `deriveRoomForCwdAsync` below is the daemon's counterpart.
  */
 export function deriveRoomForCwd(cwd: string): string | null {
   const root = getRepoRoot(cwd);
@@ -46,4 +48,28 @@ export function deriveRoomForCwd(cwd: string): string | null {
   const parsed = parseIdentity(identity.identity);
   if (!parsed) return null;
   return roomForIdentity(parsed);
+}
+
+/**
+ * The daemon's counterpart to `deriveRoomForCwd`: the SAME
+ * identity -> `roomForIdentity` codec, so parity holds, but resolved
+ * through the async exec seam with a bounded timeout (mirrors
+ * lib/repo-for-cwd.ts's `branchForCwd`) instead of `getRepoRoot`'s sync
+ * spawn -- the daemon thread must never sync-exec (MAT-222). The toplevel
+ * probe here is what actually answers "is `cwd` even a git work tree":
+ * `deriveRepoIdentity` (packages/rt-client/src/settings/identity.ts) never
+ * returns null -- given a non-repo path it degrades to a path-kind identity
+ * off that literal path instead, which would derive a bogus room for a
+ * scratch directory. `deriveRepoIdentity` also does none of
+ * `getRepoIdentityForRoot`'s side-effecting writes (no `mkdirSync`, no
+ * `updateRepoIndex`): it only reads the machine settings store for fork
+ * overrides, so there is nothing here for a read-only HOME to fail on.
+ */
+export async function deriveRoomForCwdAsync(cwd: string, exec: typeof runCapture = runCapture): Promise<string | null> {
+  const top = await exec(["git", "-C", cwd, "rev-parse", "--show-toplevel"], { timeoutMs: 2_000 });
+  if (top.exitCode !== 0) return null;
+  const root = top.stdout.trim();
+  if (!root) return null;
+  const identity = await deriveRepoIdentity(root);
+  return roomForIdentity(identity);
 }

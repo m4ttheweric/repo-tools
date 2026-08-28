@@ -49,7 +49,7 @@ import type { HerdrSnapshot } from "./pane.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
 import { deliverToInbox, renderDeliveries } from "../inbox.ts";
 import { repoForCwd, branchForCwd } from "../../repo-for-cwd.ts";
-import { deriveRoomForCwd } from "../../chat-room.ts";
+import { deriveRoomForCwdAsync } from "../../chat-room.ts";
 import { runCapture } from "../../subprocess.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
@@ -472,14 +472,18 @@ export function createChatHandlers(opts: {
       // The room --pane sign-in joins on its own: derived from the TARGET
       // pane's cwd (never the invoking process's, which never resolves one
       // for --pane at all -- see commands/chat.ts's runSignInViaPane) through
-      // the SAME deriveRoomForCwd/roomForIdentity codec the CLI's own sign-in
-      // uses (lib/chat-room.ts), so a pane-signed-in and a normally-signed-in
+      // the SAME identity -> roomForIdentity codec the CLI's own sign-in uses
+      // (lib/chat-room.ts), so a pane-signed-in and a normally-signed-in
       // agent for the same repo always land in the same room -- the
       // index-based repoForCwd label below is display-only (presence.repo)
       // and must not double as the room source, since it diverges from
-      // roomForIdentity's path-kind rule on every pool-slot worktree. `--room`
-      // overrides the derivation outright; `--no-room` skips it, same as a
-      // pane with no repo cwd.
+      // roomForIdentity's path-kind rule on every pool-slot worktree. The
+      // daemon uses `deriveRoomForCwdAsync`, not the CLI's sync
+      // `deriveRoomForCwd`: this runs on the daemon thread, which must never
+      // sync-exec (MAT-222). `--room` overrides the derivation outright;
+      // `--no-room` skips it, same as a pane with no repo cwd. A derivation
+      // failure degrades to no room rather than failing the sign-in --
+      // exactly like a joinRoom failure below.
       let derivedRoom: string | null = null;
 
       if (viaPane) {
@@ -496,9 +500,18 @@ export function createChatHandlers(opts: {
           if (signInBranch === undefined) signInBranch = await branchForCwd(signInCwd, exec);
         }
 
-        if (noRoom) derivedRoom = null;
-        else if (explicitRoom) derivedRoom = explicitRoom;
-        else if (signInCwd) derivedRoom = deriveRoomForCwd(signInCwd);
+        if (noRoom) {
+          derivedRoom = null;
+        } else if (explicitRoom) {
+          derivedRoom = explicitRoom;
+        } else if (signInCwd) {
+          try {
+            derivedRoom = await deriveRoomForCwdAsync(signInCwd, exec);
+          } catch (err) {
+            log.warn({ err, cwd: signInCwd }, "chat: --pane sign-in could not derive a room for this cwd");
+            derivedRoom = null;
+          }
+        }
       }
       if (!sessionId) return { ok: false, error: "chat: sign-in requires a sessionId or --pane" };
 
