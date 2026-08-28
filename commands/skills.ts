@@ -1399,8 +1399,12 @@ function writeSurfaceConfig(packDir: string, publicList: string[]): void {
   // the plugin root for packs without a pack/ dir); new packs get pack/.
   const path = surfaceFileFor(packDir) ?? join(packDir, "pack", "surface.jsonc");
   mkdirSync(dirname(path), { recursive: true });
+  // The leading comment block is the pack's own record (ratification notes,
+  // what lives where); a rewrite carries it forward.
+  const existing = existsSync(path) ? leadingCommentBlock(readFileSync(path, "utf8")) : "";
+  const header = existing || "// surface.jsonc -- names this pack's public skills/ directories.";
   const json = JSON.stringify({ public: publicList }, null, 2);
-  writeFileSync(path, `// surface.jsonc -- names this pack's public skills/ directories.\n${json}\n`);
+  writeFileSync(path, `${header}\n${json}\n`);
 }
 
 function compileArgs(flags: SurfaceFlags, packDir: string): string[] {
@@ -1420,19 +1424,26 @@ function isInsideGitWorkTree(dir: string): boolean {
   }
 }
 
-/** git mv keeps rename history for the common case; fixtures (and any non-git pack dir) fall back to a plain rename. A grouped skill keeps its group on the other side. */
-function moveHandAuthoredDir(packDir: string, name: string, from: "skills" | "attachments", to: "skills" | "attachments", group: string | null): string | null {
-  const fromRel = group ? join(from, group, name) : join(from, name);
-  const toRel = group ? join(to, group, name) : join(to, name);
+type MovedDir = { fromRel: string; toRel: string; note: string | null };
+
+/**
+ * git mv keeps rename history for the common case; fixtures (and any non-git
+ * pack dir) fall back to a plain rename. The source is the entry's real dir:
+ * a registered skill may live under any plugin.json root (plugin/skills/<name>),
+ * not only skills/. A grouped skill keeps its group on the other side.
+ */
+function moveHandAuthoredDir(packDir: string, entry: SkillEntry, to: "skills" | "attachments"): MovedDir {
+  const fromRel = relativePath(canonicalPath(packDir), canonicalPath(entry.dir));
+  const toRel = entry.group ? join(to, entry.group, entry.name) : join(to, entry.name);
   mkdirSync(dirname(join(packDir, toRel)), { recursive: true });
 
   if (isInsideGitWorkTree(packDir)) {
     execFileSync("git", ["mv", fromRel, toRel], { cwd: packDir, stdio: "pipe" });
-    return null;
+    return { fromRel, toRel, note: null };
   }
 
   renameSync(join(packDir, fromRel), join(packDir, toRel));
-  return "plain rename -- pack dir is not a git repo";
+  return { fromRel, toRel, note: "plain rename -- pack dir is not a git repo" };
 }
 
 function printSurfaceRows(flags: SurfaceFlags, source: string, rows: SurfaceRow[]): void {
@@ -1490,9 +1501,8 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
       continue;
     }
 
-    const note = moveHandAuthoredDir(packDir, name, from, to, entry.group);
-    const where = entry.group ? `${entry.group}/` : "";
-    console.log(`moved ${name}: ${from}/${where} -> ${to}/${where}${note ? ` (${note})` : ""}`);
+    const { fromRel, toRel, note } = moveHandAuthoredDir(packDir, entry, to);
+    console.log(`moved ${name}: ${dirname(fromRel)}/ -> ${dirname(toRel)}/${note ? ` (${note})` : ""}`);
   }
 
   // surface.jsonc only ever names the public side -- internal is the absence
