@@ -1348,6 +1348,40 @@ describe("detached trigger / latency", () => {
 
     expect(events.filter((e) => e.type === "worktree:created").length).toBe(1);
   }, 10_000);
+
+  // S065: a kick() during an in-flight pass, once the pass has started
+  // working (its per-repo loop has begun — this repo's replenish may
+  // already have run), must not be silently dropped. Observed here via
+  // repoIndex() call count: it's read fresh once per runOnce() invocation,
+  // so a queued follow-up pass is externally visible as a second call.
+  test("a kick() arriving after the pass has started work triggers a follow-up pass, not a silent drop (S065)", async () => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick2-home-")));
+    closeStateDb();
+    __test__.createBackoff.clear();
+    const repoName = "acme-kick2";
+    const repo = makeRepo();
+    addBareOrigin(repo);
+    writeFileSync(join(repo, "wip.txt"), "not idle\n");
+    await declareWorktrees(repo, repoName, { onDeck: 1, root: join(repo, ".worktrees"), ready: [{ run: "sleep 2" }] });
+
+    let repoIndexCalls = 0;
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => { repoIndexCalls++; return { [repoName]: repo }; },
+      emit: () => {},
+      log: fakeLog(),
+    });
+
+    reconciler.kick();
+    await waitFor(() => reconciler.creationInFlight(repoName) !== null, 2000);
+    // Mid-pass: this repo's replenish step is already running, so this kick
+    // must queue a follow-up rather than being dropped.
+    reconciler.kick();
+
+    await waitFor(() => reconciler.creationInFlight(repoName) === null, 6000);
+    await waitFor(() => repoIndexCalls >= 2, 6000); // the queued follow-up pass actually ran
+    expect(repoIndexCalls).toBeGreaterThanOrEqual(2);
+  }, 15_000);
 });
 
 describe("reapRepoTrash", () => {

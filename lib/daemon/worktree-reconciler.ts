@@ -1101,6 +1101,16 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
   /** Non-null while a holder owns the reconciler. */
   let hold: Promise<void> | null = null;
   let kickQueued = false;
+  /**
+   * True once the current pass's per-repo loop has begun processing at
+   * least one repo. Two kicks that both land before this flips (the common
+   * "two synchronous kicks" case) still collapse to one pass — the
+   * upcoming loop reads fresh state regardless. A kick landing after it
+   * flips might be about a repo this pass has already stepped past (e.g. a
+   * provision claiming the last on-deck tree right after replenish ran for
+   * it), so it queues a follow-up instead of being silently dropped.
+   */
+  let passStartedWork = false;
   const creationPromises = new Map<string, Promise<void>>();
 
   async function runOnce(): Promise<void> {
@@ -1118,6 +1128,7 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
     const appConfig = loadWorktreeAppConfig();
 
     for (const [repoName, repoPath] of Object.entries(repos)) {
+      passStartedWork = true;
       if (!(await repoHasWorktreeActivity(repoName, repoPath))) continue;
       try {
         await reconcileRepoRegistry({ repoName, repoPath, emit: deps.emit, log: deps.log });
@@ -1167,13 +1178,25 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
       kickQueued = true;
       return;
     }
-    if (inFlight) return;
+    if (inFlight) {
+      // Two kicks landing before this pass has stepped into its per-repo
+      // loop still collapse to one pass; once it has, a kick might be about
+      // a repo already stepped past (its replenish already ran this pass),
+      // so queue a follow-up rather than dropping it silently.
+      if (passStartedWork) kickQueued = true;
+      return;
+    }
+    passStartedWork = false;
     const p = runOnce()
       .catch((err) => {
         deps.log.warn({ err }, "worktree reconciler: kick failed");
       })
       .finally(() => {
         if (inFlight === p) inFlight = null;
+        if (kickQueued) {
+          kickQueued = false;
+          kick();
+        }
       });
     inFlight = p;
   }
