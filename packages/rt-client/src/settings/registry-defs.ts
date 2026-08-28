@@ -215,6 +215,14 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Per-repo git hook enable/disable state ({enabled, hooks: {<hookName>: boolean}}); ownership-latch port of repos/<repo>/hooks.json, store wins per field once it owns the key — including per-hook-name entries inside the nested hooks map, each defaulting to enabled when absent. The installed git-hook shim still greps repos/<repo>/hooks.json with zero process spawns (a hook fires on every git operation); that file is now a DERIVED CACHE this key writes through, kept current by commands/hooks.ts's regenerateHooksCache at every write seam.",
   },
   {
+    key: "rt.daemonPath",
+    type: "string",
+    scopes: ["machine"],
+    merge: "replace",
+    description:
+      "Absolute colon-separated PATH the daemon uses for every child it spawns, instead of probing your login shell. Set this when the daemon can't find node/git/bun/pnpm (e.g. a fish shell, a blocking .zshrc, or PATH exports that live only in .zshrc). Machine-scoped: it never travels to another machine.",
+  },
+  {
     key: "rt.trustedBrowserOrigins",
     type: "array",
     scopes: ["user", "machine"],
