@@ -25,18 +25,35 @@ export type DaemonStatusVerdict =
   | { state: "not-installed" }
   | { state: "running"; data: any }
   /** Up — proven by an answer or a ping — but `status` itself did not deliver. */
-  | { state: "degraded"; reason: "error" | "unresponsive"; detail?: string; pid: number | null }
+  | { state: "degraded"; reason: "error" | "unresponsive"; detail?: string; pid: number | null; eventLoop?: StatusEventLoop }
   /** Ping fails, a live pid exists, and it's parked waiting for a different
    *  flavor to hold rt.sock (park.ts): a flavor standoff, not a stuck boot. */
   | { state: "parked"; pid: number; holderFlavor?: string }
   /** Ping fails but the pid is alive: still mid-boot, stuck after reaching
-   *  ready, or alive-but-quarantined (recovered from a corrupt db). */
-  | { state: "alive-not-serving"; pid: number; detail: "booting" | "wedged" | "quarantined" }
+   *  ready, alive-but-quarantined (recovered from a corrupt db), or stalled
+   *  (reached ready but the heartbeat file has gone stale). */
+  | { state: "alive-not-serving"; pid: number; detail: "booting" | "wedged" | "quarantined" | "stalled"; stalledForMs?: number }
   /** No live pid, and the kv failure record shows >= N failures within the window. */
   | { state: "crash-looping"; failures: number; reason: string }
   /** No live pid, and the most recent recorded exit was a boot throw (fewer than N failures). */
   | { state: "boot-failed"; reason: string; phase: string }
   | { state: "not-running"; pid: number | null };
+
+/** Structural match for the daemon's heartbeat-file record; not imported from
+ *  its owning module to avoid a cycle. */
+export interface HeartbeatInput {
+  at: number;
+  seq: number;
+}
+
+/** Structural match for the ping-supplied event-loop summary, passed through
+ *  on the degraded verdict for display. */
+export interface StatusEventLoop {
+  maxLagMs: number;
+  lastStallAt: number | null;
+  lastStallCmd: string | null;
+  stalls: number;
+}
 
 /** The boot breadcrumb (`daemon-boot.json`), as classifyDaemonStatus needs it. Not
  *  imported from supervision-state.ts, since that module's `Breadcrumb` interface is
@@ -75,6 +92,12 @@ export interface DaemonStatusInputs {
   supervision?: SupervisionState;
   /** Injected for deterministic crash-loop window checks under test; defaults to Date.now(). */
   now?: number;
+  /** The daemon's heartbeat-file record, when the caller read one. */
+  heartbeat?: HeartbeatInput | null;
+  /** How old `heartbeat` must be to count as stale. Defaults to 6000ms. */
+  heartbeatStaleMs?: number;
+  /** Ping's event-loop summary, passed through onto a `degraded` verdict. */
+  pingEventLoop?: StatusEventLoop;
 }
 
 const PHASE_ORDER: BootPhase[] = ["start", "events-db", "state-db", "api", "socket", "ready"];
@@ -82,14 +105,23 @@ const PHASE_ORDER: BootPhase[] = ["start", "events-db", "state-db", "api", "sock
 function classifyAliveNotServingDetail(
   breadcrumb: DaemonBreadcrumbInput | null | undefined,
   supervision: SupervisionState | undefined,
-): "booting" | "wedged" | "quarantined" {
+  heartbeat: HeartbeatInput | null | undefined,
+  heartbeatStaleMs: number,
+  now: number,
+): { detail: "booting" | "wedged" | "quarantined" | "stalled"; stalledForMs?: number } {
   const phase = breadcrumb?.phase;
-  if (!phase || PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf("ready")) return "booting";
+  if (!phase || PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf("ready")) return { detail: "booting" };
+  // A live heartbeat gone stale outranks the boot-failed check below: it is
+  // ground truth that the process stopped ticking, not a record of a past
+  // recovery it may be running fine behind.
+  if (heartbeat && now - heartbeat.at > heartbeatStaleMs) {
+    return { detail: "stalled", stalledForMs: now - heartbeat.at };
+  }
   // Reached ready this run, but a prior attempt is on record as boot-failed,
   // most likely a corrupt-db quarantine (lib/state/db.ts, events-bus.ts) it
   // recovered from and is now stuck behind for an unrelated reason.
-  if (supervision?.lastExit?.kind === "boot-failed") return "quarantined";
-  return "wedged";
+  if (supervision?.lastExit?.kind === "boot-failed") return { detail: "quarantined" };
+  return { detail: "wedged" };
 }
 
 function countRecentFailures(supervision: SupervisionState, now: number, windowMs = 5 * 60_000): number {
@@ -113,7 +145,7 @@ export function classifyDaemonStatus(opts: DaemonStatusInputs): DaemonStatusVerd
 
   // No reply. A plain ping is the next ground truth: a daemon busy enough to
   // blow the status timeout still answers a trivial ping.
-  if (pingOk) return { state: "degraded", reason: "unresponsive", pid };
+  if (pingOk) return { state: "degraded", reason: "unresponsive", pid, eventLoop: opts.pingEventLoop };
 
   // Ping failed too. From here, only pidAlive/breadcrumb/supervision (new
   // signals) can say more than "not running"; absent them, fall straight
@@ -122,7 +154,9 @@ export function classifyDaemonStatus(opts: DaemonStatusInputs): DaemonStatusVerd
     if (breadcrumb?.flavor && intendedFlavor && breadcrumb.flavor !== intendedFlavor) {
       return { state: "parked", pid, ...(holderFlavor ? { holderFlavor } : {}) };
     }
-    return { state: "alive-not-serving", pid, detail: classifyAliveNotServingDetail(breadcrumb, supervision) };
+    const now = opts.now ?? Date.now();
+    const d = classifyAliveNotServingDetail(breadcrumb, supervision, opts.heartbeat, opts.heartbeatStaleMs ?? 6000, now);
+    return { state: "alive-not-serving", pid, detail: d.detail, ...(d.stalledForMs !== undefined ? { stalledForMs: d.stalledForMs } : {}) };
   }
 
   if (supervision) {
