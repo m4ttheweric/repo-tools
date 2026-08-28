@@ -391,11 +391,22 @@ function quarantine(path: string): void {
 /**
  * Runs each registered legacy importer whose source file exists, inside the
  * caller's transaction. Returns the list of source paths that were consumed
- * (successfully imported OR corrupt-and-skipped) — both cases still rename
- * per spec "Migration & contention" ("corrupt = warn + skip"; brief: "warn +
- * skip + still rename"). Renaming itself happens AFTER COMMIT (the caller
- * does it), since a filesystem rename cannot participate in the sqlite
- * transaction.
+ * (successfully imported OR corrupt/throwing-and-skipped) — all three cases
+ * still rename per spec "Migration & contention" ("corrupt = warn + skip";
+ * brief: "warn + skip + still rename"). Renaming itself happens AFTER COMMIT
+ * (the caller does it), since a filesystem rename cannot participate in the
+ * sqlite transaction.
+ *
+ * Each importer's `import(db, json)` runs inside its own SAVEPOINT, nested
+ * inside the caller's outer BEGIN IMMEDIATE. A throwing importer (e.g. two
+ * legacy keys that normalize to the same primary key, tripping a UNIQUE
+ * constraint) previously rolled back the WHOLE v0->v1 migration: user_version
+ * stayed 0, so every later openStateDb call replayed the identical throw
+ * forever with no self-heal. The savepoint confines that rollback to the one
+ * importer's own writes, so the schema DDL and every OTHER importer still
+ * commit and the db reaches SCHEMA_VERSION. This is deliberately narrower
+ * than the outer transaction's own error handling: schema/DDL failures are
+ * not wrapped here and still abort the whole migration loudly.
  */
 function importLegacyStores(db: Database, dir: string): string[] {
   const consumed: string[] = [];
@@ -410,7 +421,14 @@ function importLegacyStores(db: Database, dir: string): string[] {
       consumed.push(path);
       continue;
     }
-    entry.import(db, json);
+    db.exec("SAVEPOINT legacy_import;");
+    try {
+      entry.import(db, json);
+      db.exec("RELEASE legacy_import;");
+    } catch (err) {
+      db.exec("ROLLBACK TO legacy_import; RELEASE legacy_import;");
+      console.warn(`rt: legacy import failed for ${path}, skipping (file will still be renamed): ${(err as Error).message}`);
+    }
     consumed.push(path);
   }
   return consumed;
