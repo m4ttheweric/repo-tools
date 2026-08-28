@@ -245,7 +245,18 @@ export function createProjectMRsHandlers(
           try {
             const { pr, projectPath } = await fetchByBranch(repoName, branch);
             if (pr) {
-              store().upsert(repoName, projectPath, pr, "events");
+              // Same scope/tagged gate upsertProject (lib/daemon/freshness.ts)
+              // enforces for every other write path: a demand-scoped repo
+              // must not pick up a stranger's MR here just because a client
+              // happened to ask for their branch by name — the next delta
+              // sync would filter it right back out, and it would reappear
+              // on the next by-branch call. The caller still gets the PR
+              // (it asked for this exact branch); it just isn't stored.
+              const rec = store().read(repoName);
+              const scope = rec?.scope;
+              const tagged = (rec?.mrs[pr.iid]?.codeownerSections?.length ?? 0) > 0;
+              const inScope = !scope || !pr.author?.username || scope.authors.includes(pr.author.username) || tagged;
+              if (inScope) store().upsert(repoName, projectPath, pr, "events");
               byBranch[branch] = { pr, source: "forge" };
             } else {
               byBranch[branch] = null;
