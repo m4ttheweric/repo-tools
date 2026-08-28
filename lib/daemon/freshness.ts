@@ -85,6 +85,10 @@ interface RepoWatch {
 }
 
 const watches   = new Map<string, RepoWatch>();
+
+/** Bound merged pending so a wedged processKeys cannot grow memory unbounded. */
+export const PENDING_CAP = 1000;
+
 const providers = new Map<string, GitLabProvider>();
 let   userId: number | null = null;
 let   userIdResolved = false;
@@ -397,7 +401,14 @@ export async function applyInvalidationBatch(
   overrides: MappingOverrides = {},
 ): Promise<void> {
   if (runner.processing) {
-    runner.pending.push(...keys);
+    const seen = new Set(runner.pending.map((k) => `${k.kind}:${k.ref}`));
+    for (const k of keys) {
+      if (runner.pending.length >= PENDING_CAP) break;
+      const id = `${k.kind}:${k.ref}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      runner.pending.push(k);
+    }
     return;
   }
   runner.processing = true;

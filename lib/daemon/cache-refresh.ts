@@ -47,16 +47,42 @@ export interface CacheRefresherDeps {
  */
 const BRANCH_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** Below the 5-min tick, above the slowest legitimate deep sync. */
+const REFRESH_CYCLE_DEADLINE_MS = 4 * 60 * 1000;
+
+/**
+ * Coalesce concurrent callers onto one in-flight run, but clear the latch after
+ * `deadlineMs` even if the run never settles, so a wedged cycle (a half-open
+ * GitLab socket that never rejects) cannot pin the latch forever. The wedged
+ * run's frame still leaks until the OS reaps the socket; this only frees the
+ * next tick.
+ */
+export function makeCoalescer(
+  run: () => Promise<void>,
+  deadlineMs: number,
+  onTimeout: () => void,
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+  return () => {
+    if (inFlight) return inFlight;
+    const impl = run().catch(() => {}); // a rejected cycle still clears the latch
+    const guarded = Promise.race([
+      impl,
+      new Promise<void>((resolve) => setTimeout(() => { onTimeout(); resolve(); }, deadlineMs)),
+    ]).finally(() => { inFlight = null; });
+    inFlight = guarded;
+    return guarded;
+  };
+}
+
 export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<void> {
   const { log, cache, refreshStatusRef, portCacheRef, repoIndex, broadcast } = deps;
 
-  let refreshInFlight: Promise<void> | null = null;
-
-  function refreshCache(): Promise<void> {
-    if (refreshInFlight) return refreshInFlight;
-    refreshInFlight = refreshCacheImpl().finally(() => { refreshInFlight = null; });
-    return refreshInFlight;
-  }
+  const refreshCache = makeCoalescer(
+    refreshCacheImpl,
+    REFRESH_CYCLE_DEADLINE_MS,
+    () => log.warn("cache refresh timed out; cleared in-flight latch for next tick"),
+  );
 
   async function refreshCacheImpl(): Promise<void> {
     log.debug("cache: starting background refresh");
