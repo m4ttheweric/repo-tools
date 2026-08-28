@@ -47,3 +47,16 @@ and `.port`). Catch it around the `startApiServer()` call and park-and-retry
 with backoff instead of letting it reach the top-level crash path; any other
 error out of `startApiServer()` is a genuine misconfiguration and should keep
 crashing as it does today.
+
+## Known gap: GET routes that trigger real work stay ungated
+
+`GET /api/cache?maxAgeMs=<n>` can force a full cache refresh, and
+`GET /api/sdm/recents` spawns `sdm status`; neither requires the local token.
+Default-deny CORS stops an untrusted browser Origin from reading the
+response, but a plain cross-origin GET needs no preflight, so the request
+still lands and the work still runs even when the response is unreadable.
+This is deliberately not fixed here: gating these routes risks breaking
+non-browser REST consumers that read them untokened today (the tray,
+editor extensions), and there was no time in this pass to audit every such
+consumer, which the audit's own fixer notes flag as the real risk of
+tokening reads. Tracked as an open follow-up, not a silently-closed finding.
