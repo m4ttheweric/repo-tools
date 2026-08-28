@@ -63,6 +63,14 @@ import {
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import { createEventsBus } from "./daemon/events-bus.ts";
+import {
+  writeBreadcrumb,
+  recordBootAttempt,
+  recordDaemonReady,
+  recordBootFailure,
+  recordCleanExit,
+  type BootPhase,
+} from "./daemon/supervision-state.ts";
 import { safeInterval, safeTimeout } from "./daemon/safe-timers.ts";
 import { pruneRuns } from "./runs/prune.ts";
 import { pruneLogs } from "./log-janitor.ts";
@@ -88,6 +96,16 @@ redirectNativeStderr();
 // (no socket/API bound yet, nothing to recover), advisory-only once ready.
 let bootPhase: "booting" | "ready" = "booting";
 
+// Tracks the finer-grained boot phase for the breadcrumb file and for
+// attributing a Task-2 fatal boot error to the phase it happened in.
+// setPhase is db-free (writeBreadcrumb only writes a file), so it is safe
+// to call from module scope, before state.db exists.
+let currentPhase: BootPhase = "start";
+function setPhase(phase: BootPhase): void {
+  currentPhase = phase;
+  writeBreadcrumb(phase);
+}
+
 const rtMigration = migrateLegacyRtDir();
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -103,6 +121,8 @@ const log = loggerHandle.logger;
 // (createEventsBus, cron, home-snapshot, sweep timers) can throw, and this
 // must run BEFORE any of it does.
 installCrashHandlers(loggerHandle, { booting: () => bootPhase === "booting" });
+
+setPhase("start");
 
 if (rtMigration === "migrated") {
   log.info(`migrated legacy ${LEGACY_RT_LABEL} state to ${RT_DIR_LABEL}`);
@@ -208,6 +228,7 @@ const hooksGuard = createHooksGuard(log);
 
 // Pane-communication events bus (RT-44): SQLite journal + in-memory waiters.
 const eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
+setPhase("events-db");
 // Hourly retention sweep — cheap; rides its own interval rather than pollers
 // because it needs no poller deps. safeInterval/safeTimeout: a sync sqlite
 // throw here (e.g. SQLITE_FULL) must warn, not become an uncaughtException
@@ -374,6 +395,7 @@ async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Pr
       // force-closes all in-flight connections, including the one that
       // carried the shutdown request.
       setTimeout(() => {
+        recordCleanExit("shutdown", 0);
         cleanup();
         loggerHandle.flush?.();
         process.exit(0);
@@ -435,6 +457,8 @@ async function runDaemon(): Promise<void> {
     // legacy-JSON import, and it must never land inside the event loop. If a
     // CLI process is mid-import right now, we block here, in startup.
     openBranchCacheStore();
+    setPhase("state-db");
+    recordBootAttempt();
     log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
 
     // one-shot re-key of every legacy NAME-keyed store row onto its
@@ -482,7 +506,9 @@ async function runDaemon(): Promise<void> {
     // API server first: a failed bind exits fatally (boot-phase catch below),
     // and binding API before the unix socket means that fatal exit never
     // strands a socket-bound zombie behind it.
+    setPhase("api");
     servers.api = await startApiServer({ handleCommand, log });
+    setPhase("socket");
     servers.socket = startSocketServer({ handleCommand, log });
 
     // Only write rt.pid once both servers are actually bound — a boot that
@@ -533,10 +559,12 @@ async function runDaemon(): Promise<void> {
     installSignalHandlers({ cleanup, flushLogs: () => loggerHandle.flush?.(), log });
 
     bootPhase = "ready";
+    recordDaemonReady();
+    setPhase("ready");
     log.info({ pid: process.pid }, "daemon ready");
   } catch (err) {
     log.fatal({ err }, "daemon boot failed");
-    // Task 9 adds recordBootFailure(currentPhase, err) here.
+    recordBootFailure(currentPhase, String(err));
     try { loggerHandle.flush?.(); } catch { /* */ }
     process.exit(1);
   }
