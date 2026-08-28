@@ -39,6 +39,26 @@ async function cltRow(p: Probes): Promise<Row> {
   return row({ ...base, status: "missing", detail: "Apple command line tools not installed", action: CLT_INSTALL_ACTION });
 }
 
+async function archRow(p: Probes): Promise<Row> {
+  const base = {
+    id: "tool.arch",
+    kind: "tool" as const,
+    title: "Processor",
+    why: "mattstack ships an Apple-silicon (arm64) build; Intel Macs are not supported.",
+    required: true,
+  };
+  const res = await p.exec(["uname", "-m"]);
+  const arch = res.stdout.trim();
+
+  // Same honesty ruling as macosVersionRow: a probe that couldn't run reports
+  // "error", not "invalid" — only a definite non-arm64 result is invalid.
+  if (res.code !== 0 || !arch) {
+    return row({ ...base, status: "error", detail: "Could not determine your processor" });
+  }
+  if (arch === "arm64") return row({ ...base, status: "ready", detail: "Apple silicon (arm64)" });
+  return row({ ...base, status: "invalid", detail: `${arch}: Apple silicon (arm64) required` });
+}
+
 function pathRow(p: Probes): Row {
   const base = { id: "tool.path", kind: "info" as const, title: "PATH precedence", why: "Makes sure your shell finds rt's shims and team intercepts before any conflicting binary.", required: false };
   const localBin = `${p.home}/.local/bin`;
@@ -57,6 +77,6 @@ function pathRow(p: Probes): Row {
 }
 
 export async function macRows(p: Probes): Promise<Row[]> {
-  const [macos, clt] = await Promise.all([macosVersionRow(p), cltRow(p)]);
-  return [macos, clt, pathRow(p)];
+  const [macos, clt, arch] = await Promise.all([macosVersionRow(p), cltRow(p), archRow(p)]);
+  return [macos, clt, arch, pathRow(p)];
 }
