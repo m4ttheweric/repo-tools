@@ -89,7 +89,7 @@ const watches   = new Map<string, RepoWatch>();
 /** Bound merged pending so a wedged processKeys cannot grow memory unbounded. */
 export const PENDING_CAP = 1000;
 
-const providers = new Map<string, GitLabProvider>();
+const providers = new Map<string, { provider: GitLabProvider; token: string }>();
 let   userId: number | null = null;
 let   userIdResolved = false;
 let   selfUsername: string | null = null;
@@ -134,13 +134,19 @@ function makeProvider(host: string, token: string): GitLabProvider {
 }
 
 async function ensureProvider(repoName: string, repoPath: string): Promise<GitLabProvider | null> {
-  const cached = providers.get(repoName);
-  if (cached) return cached;
-
   const secrets = await loadSecrets();
   if (!secrets.gitlabToken) {
     log.info(`no gitlabToken; skipping ${repoName}`);
     return null;
+  }
+
+  const cached = providers.get(repoName);
+  if (cached && cached.token === secrets.gitlabToken) return cached.provider;
+  if (cached) {
+    // Token rotated: drop the stale watch built on the old token and
+    // re-resolve userId against the new one on the next reconcile.
+    stopWatch(repoName);
+    userIdResolved = false;
   }
 
   const remoteUrl = await getRemoteUrl(repoPath);
@@ -161,14 +167,14 @@ async function ensureProvider(repoName: string, repoPath: string): Promise<GitLa
   }
 
   const provider = makeProvider(remote.host, secrets.gitlabToken);
-  providers.set(repoName, provider);
+  providers.set(repoName, { provider, token: secrets.gitlabToken });
   return provider;
 }
 
 async function ensureUserId(): Promise<number | null> {
   if (userIdResolved) return userId;
   // Resolve via any available provider. If none exist yet, defer until one does.
-  const anyProvider = providers.values().next().value as GitLabProvider | undefined;
+  const anyProvider = providers.values().next().value?.provider as GitLabProvider | undefined;
   if (!anyProvider) return null;
 
   try {
@@ -259,7 +265,7 @@ export async function getRepoContext(
   projectPathOverride?: string,
 ): Promise<{ provider: GitLabProvider; projectPath: string; projectId: number }> {
   const watch = watches.get(repoName);
-  let provider = providers.get(repoName) ?? null;
+  let provider = providers.get(repoName)?.provider ?? null;
 
   // Live-watch fast path — but only when the caller didn't override projectPath.
   // If they did, fall through to the ephemeral path so we use the canonical path.
@@ -290,7 +296,7 @@ export async function getRepoContext(
       throw new Error(`could not parse remote URL "${remoteUrl}"`);
     }
     provider = makeProvider(remote.host, secrets.gitlabToken);
-    providers.set(repoName, provider);
+    providers.set(repoName, { provider, token: secrets.gitlabToken });
   }
 
   // Pick projectPath: explicit override > previously-cached ephemeral > git remote.
