@@ -85,8 +85,8 @@ export function makeCoalescer(
 /**
  * Records one refresh cycle's outcome onto the shared ref. `lastSuccessAt`
  * only advances when the cycle was clean (no failed repos, no enrich
- * errors) — a health signal downstream must be able to trust as "refresh is
- * actually working", not just "a cycle ran".
+ * errors). Downstream health reporting must be able to trust it as "refresh
+ * is actually working", not just "a cycle ran".
  */
 export function applyRefreshOutcome(
   ref: { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number },
