@@ -334,6 +334,13 @@ export async function isDaemonRunning(): Promise<boolean> {
   return response?.ok === true;
 }
 
+/** Single-attempt ping that never triggers the restart machinery, so
+ *  `rt daemon status` can probe liveness and read the daemon's eventLoop
+ *  summary without spawning a daemon as a side effect. */
+export async function pingDaemon(timeoutMs?: number): Promise<DaemonResponse | null> {
+  return (await trySocketQuery("ping", undefined, timeoutMs)).response;
+}
+
 // ─── MR action facade ────────────────────────────────────────────────────────
 
 /**

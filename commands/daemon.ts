@@ -33,11 +33,12 @@ import {
   LOG_DIR,
   LAUNCHD_PLIST_PATH,
 } from "../lib/daemon-config.ts";
-import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
+import { daemonQuery, isDaemonRunning, pingDaemon, trayQuery } from "../lib/daemon-client.ts";
 import { classifyDaemonStatus, type DaemonStatusVerdict } from "../lib/daemon-status.ts";
 import { resolveIntendedMode, currentMode, type IntendedMode } from "../lib/dev-mode.ts";
 import { probeSocketHolder } from "../lib/daemon/park.ts";
 import { readBreadcrumb, readSupervisionState } from "../lib/daemon/supervision-state.ts";
+import { readHeartbeat } from "../lib/daemon/heartbeat-file.ts";
 import { runCapture } from "../lib/subprocess.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind, RepoTrackingEntry } from "../lib/repo-tracking.ts";
@@ -403,22 +404,27 @@ export async function showStatus(args: string[] = []): Promise<void> {
   // A failed status query does NOT mean the daemon is down — it answers `ping`
   // in a fraction of the budget a loaded `status` needs. Establish liveness
   // before reporting, and only pay for the probe when nothing came back.
-  const pingOk = classifyDaemonStatus.needsLivenessProbe(response) ? await isDaemonRunning() : false;
+  // pingDaemon (not isDaemonRunning) so the raw reply's eventLoop summary is
+  // still on hand to render, and so this probe never risks a restart.
+  const pingResp = classifyDaemonStatus.needsLivenessProbe(response) ? await pingDaemon() : null;
+  const pingOk = pingResp?.ok === true;
   const recordedPid = readDaemonPid() ?? null;
 
-  // Ping ALSO failed: the only remaining ground is the pid/breadcrumb/kv
-  // trail Task 9 left behind. Read it here, once, rather than on every status
+  // Ping ALSO failed: the only remaining ground is the pid/breadcrumb/kv/heartbeat
+  // trail Task 9/2 left behind. Read it here, once, rather than on every status
   // call, since it's the uncommon path.
   let pidAlive: boolean | undefined;
   let pid = recordedPid;
   let breadcrumb: ReturnType<typeof readBreadcrumb> | undefined;
   let supervision: ReturnType<typeof readSupervisionState> | undefined;
+  let heartbeat: ReturnType<typeof readHeartbeat> | undefined;
   if (classifyDaemonStatus.needsPidProbe(response, pingOk)) {
     breadcrumb = readBreadcrumb();
     // The kv tier can be legitimately empty (or reflect nothing useful) when
     // a failure happened before state.db ever opened (Ruling P1). The
     // breadcrumb read above is what classifyDaemonStatus falls back to then.
     supervision = readSupervisionState();
+    heartbeat = readHeartbeat(RT_DIR);
     const probed = await probePidAlive(recordedPid, breadcrumb?.pid);
     pidAlive = probed.alive;
     pid = probed.pid;
@@ -433,6 +439,8 @@ export async function showStatus(args: string[] = []): Promise<void> {
     intendedFlavor: resolveIntendedMode().mode,
     breadcrumb,
     supervision,
+    heartbeat,
+    pingEventLoop: (pingResp as any)?.eventLoop,
   });
 
   if (json) return void console.log(JSON.stringify({ ok: true, ...verdict }));
@@ -503,6 +511,15 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
       });
       lines.push(`    ${dim}events: ${parts.join(" · ")}${reset}`);
     }
+
+    const health = verdict.data.health as { level: string; reasons: string[] } | undefined;
+    if (health && health.level !== "ok") {
+      const dot = health.level === "unhealthy" ? red : yellow;
+      lines.push(`    ${dot}health: ${health.level}${reset}`);
+      for (const r of health.reasons) lines.push(`      ${dim}- ${r}${reset}`);
+    }
+    const el = verdict.data.eventLoop as { maxLagMs: number } | undefined;
+    if (el && el.maxLagMs >= 500) lines.push(`    ${dim}event loop: maxLag ${el.maxLagMs}ms${reset}`);
     return lines;
   }
 
@@ -511,11 +528,14 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
     // the operator to `rt daemon start` against a daemon that is already up.
     const lines = [`  ${yellow}●${reset} running, but not reporting status`];
     if (verdict.pid) lines.push(`    ${dim}pid: ${verdict.pid}${reset}`);
-    lines.push(
-      verdict.reason === "error"
-        ? `    ${dim}status command failed: ${verdict.detail ?? "unknown error"}${reset}`
-        : `    ${dim}answers ping, but status timed out — likely mid-sync${reset}`,
-    );
+    if (verdict.reason === "error") {
+      lines.push(`    ${dim}status command failed: ${verdict.detail ?? "unknown error"}${reset}`);
+    } else if (verdict.eventLoop && verdict.eventLoop.maxLagMs > 0) {
+      const el = verdict.eventLoop;
+      lines.push(`    ${dim}answers ping, status timed out — event loop maxLag ${el.maxLagMs}ms${el.lastStallCmd ? ` (last stall in ${el.lastStallCmd})` : ""}${reset}`);
+    } else {
+      lines.push(`    ${dim}answers ping, but status timed out — likely mid-sync${reset}`);
+    }
     lines.push(`    ${dim}check: rt daemon logs${reset}`);
     return lines;
   }
@@ -536,6 +556,7 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
       booting: "still booting",
       wedged: "reached ready but stopped answering (likely deadlocked)",
       quarantined: "recovered from a corrupt db but still not answering",
+      stalled: `event loop stalled ${Math.round((verdict.stalledForMs ?? 0) / 1000)}s ago (no heartbeat)`,
     }[verdict.detail];
     return [
       `  ${yellow}●${reset} process ${verdict.pid} is running but not answering rt.sock`,
