@@ -295,7 +295,28 @@ function listFilesRecursive(dir: string, prefix = ""): string[] {
   return files;
 }
 
-function findDefaultManifest(mattstackRoot: string, team: string): string {
+function canonicalPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolvePath(p);
+  }
+}
+
+function isUnder(parent: string, child: string): boolean {
+  const rel = relativePath(canonicalPath(parent), canonicalPath(child));
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolutePath(rel);
+}
+
+/**
+ * A team-zone pack is compiled against its repo's merged manifest, never its
+ * own pack/skills.jsonc: that file is one fragment merge-manifests.sh folds in
+ * with the other packs' and the user's overrides, so compiling from it alone
+ * would commit an artifact that check flags as drift on every registered
+ * machine. A standalone pack (the mattstack plugin) has no repo and no merge;
+ * its pack/skills.jsonc IS its manifest.
+ */
+function findDefaultManifest(mattstackRoot: string, team: string, packDir: string): string {
   const reposRoot = join(mattstackRoot, "repos");
   const candidates: { path: string; mtimeMs: number }[] = [];
 
@@ -303,13 +324,21 @@ function findDefaultManifest(mattstackRoot: string, team: string): string {
     const manifestPath = join(reposRoot, repoName, "skills.jsonc");
     if (!existsSync(manifestPath)) continue;
     const header = leadingCommentBlock(readFileSync(manifestPath, "utf8"));
-    if (!header.includes(team)) continue;
+    // Each provenance line reads `<engine-plugin>:<engine> <slot> <- <pack>@<marketplace>`.
+    // Only the source half names the pack; the key half names the engine's plugin,
+    // which is "mattstack" in every team's manifest.
+    if (!header.includes(`<- ${team}@`)) continue;
     candidates.push({ path: manifestPath, mtimeMs: statSync(manifestPath).mtimeMs });
   }
 
   if (candidates.length === 0) {
+    const ownManifest = join(packDir, "pack", "skills.jsonc");
+    const standalone = !isUnder(join(mattstackRoot, "teams"), packDir);
+    if (standalone && existsSync(ownManifest)) return ownManifest;
     throw new SkillsUsageError(
-      `no skills.jsonc under ${reposRoot}/*/ names team "${team}" in its provenance header; pass --manifest explicitly`,
+      `no skills.jsonc under ${reposRoot}/*/ names team "${team}" in its provenance header (<- ${team}@...)` +
+        (standalone ? ` and ${ownManifest} is absent` : "") +
+        `; pass --manifest explicitly`,
     );
   }
 
@@ -425,7 +454,7 @@ async function resolve(flags: Flags): Promise<Resolved> {
 
   const fullRoster = readVerbRoster(packDir);
   // A pack with no verb roster needs no manifest: bindings only feed compile targets.
-  const manifestPath = fullRoster.length === 0 ? null : (flags.manifest ?? findDefaultManifest(mattstackRoot, team));
+  const manifestPath = fullRoster.length === 0 ? null : (flags.manifest ?? findDefaultManifest(mattstackRoot, team, packDir));
   const bindings = manifestPath ? readManifestBindings(manifestPath) : {};
   // No compile targets means nothing needs plugin roots or the invocable roster;
   // skipping the `claude plugin list` subprocess keeps rosterless packs usable
@@ -967,10 +996,11 @@ type CompositionPayload = {
   packDir: string;
   /**
    * The manifest that supplies these bindings, absolute -- the file to edit to
-   * rebind a slot. NOT `<packDir>/skills.jsonc`: it lives in a registered repo
-   * under `~/.mattstack/repos/<repoName>/`, whose dir name is the repo, not the
-   * pack, so it cannot be reconstructed from `pack`. Null when the pack has no
-   * roster (nothing to bind).
+   * rebind a slot. For a team pack it lives in a registered repo under
+   * `~/.mattstack/repos/<repoName>/`, whose dir name is the repo, not the
+   * pack, so it cannot be reconstructed from `pack`; a standalone pack's is
+   * its own `<packDir>/pack/skills.jsonc`. Null when the pack has no roster
+   * (nothing to bind).
    */
   manifestPath: string | null;
   verbs: CompositionVerb[];
@@ -1324,7 +1354,7 @@ function stageNamesFor(flags: SurfaceFlags, packDir: string): Set<string> {
     manifest = flags.manifest;
   } else {
     try {
-      manifest = findDefaultManifest(mattstackRoot, team);
+      manifest = findDefaultManifest(mattstackRoot, team, packDir);
     } catch (err) {
       if (err instanceof SkillsUsageError) return new Set();
       throw err;
@@ -1369,8 +1399,12 @@ function writeSurfaceConfig(packDir: string, publicList: string[]): void {
   // the plugin root for packs without a pack/ dir); new packs get pack/.
   const path = surfaceFileFor(packDir) ?? join(packDir, "pack", "surface.jsonc");
   mkdirSync(dirname(path), { recursive: true });
+  // The leading comment block is the pack's own record (ratification notes,
+  // what lives where); a rewrite carries it forward.
+  const existing = existsSync(path) ? leadingCommentBlock(readFileSync(path, "utf8")) : "";
+  const header = existing || "// surface.jsonc -- names this pack's public skills/ directories.";
   const json = JSON.stringify({ public: publicList }, null, 2);
-  writeFileSync(path, `// surface.jsonc -- names this pack's public skills/ directories.\n${json}\n`);
+  writeFileSync(path, `${header}\n${json}\n`);
 }
 
 function compileArgs(flags: SurfaceFlags, packDir: string): string[] {
@@ -1390,10 +1424,23 @@ function isInsideGitWorkTree(dir: string): boolean {
   }
 }
 
-/** git mv keeps rename history for the common case; fixtures (and any non-git pack dir) fall back to a plain rename. A grouped skill keeps its group on the other side. */
-function moveHandAuthoredDir(packDir: string, name: string, from: "skills" | "attachments", to: "skills" | "attachments", group: string | null): string | null {
-  const fromRel = group ? join(from, group, name) : join(from, name);
-  const toRel = group ? join(to, group, name) : join(to, name);
+type PlannedMove = { fromRel: string; toRel: string };
+
+/**
+ * The source is the entry's real dir: a registered skill may live under any
+ * plugin.json root (plugin/skills/<name>), not only skills/. A grouped skill
+ * keeps its group on the other side.
+ */
+function planMove(packDir: string, entry: SkillEntry, to: "skills" | "attachments"): PlannedMove {
+  return {
+    fromRel: relativePath(canonicalPath(packDir), canonicalPath(entry.dir)),
+    toRel: entry.group ? join(to, entry.group, entry.name) : join(to, entry.name),
+  };
+}
+
+/** git mv keeps rename history for the common case; fixtures (and any non-git pack dir) fall back to a plain rename. */
+function moveHandAuthoredDir(packDir: string, move: PlannedMove): string | null {
+  const { fromRel, toRel } = move;
   mkdirSync(dirname(join(packDir, toRel)), { recursive: true });
 
   if (isInsideGitWorkTree(packDir)) {
@@ -1451,18 +1498,17 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
     const wantPublic = publicSet.has(name);
     if (currentlyUnderSkills === wantPublic) continue;
 
-    const from = currentlyUnderSkills ? "skills" : "attachments";
-    const to = currentlyUnderSkills ? "attachments" : "skills";
+    const move = planMove(packDir, entry, currentlyUnderSkills ? "attachments" : "skills");
+    const route = `${dirname(move.fromRel)}/ -> ${dirname(move.toRel)}/`;
     moved++;
 
     if (flags.dryRun) {
-      console.log(`would move ${name}: ${from}/ -> ${to}/`);
+      console.log(`would move ${name}: ${route}`);
       continue;
     }
 
-    const note = moveHandAuthoredDir(packDir, name, from, to, entry.group);
-    const where = entry.group ? `${entry.group}/` : "";
-    console.log(`moved ${name}: ${from}/${where} -> ${to}/${where}${note ? ` (${note})` : ""}`);
+    const note = moveHandAuthoredDir(packDir, move);
+    console.log(`moved ${name}: ${route}${note ? ` (${note})` : ""}`);
   }
 
   // surface.jsonc only ever names the public side -- internal is the absence
