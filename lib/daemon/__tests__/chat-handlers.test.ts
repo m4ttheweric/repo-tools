@@ -494,19 +494,21 @@ test("a signed-out session refuses away/back without the reclaimed wording", asy
   expect(back.error).not.toMatch(/handle reclaimed/);
 });
 
-test("chat:buddies reports the roster with a status per row", async () => {
+test("chat:buddies reports the roster with a status per row, offline with no resolvable registry binding", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
   const res = await h["chat:buddies"]({});
   if (!res.ok) throw new Error("unreachable");
   expect(res.data.buddies).toHaveLength(1);
-  expect(res.data.buddies[0]).toMatchObject({ handle: "x", status: "idle" });
+  // No fake registryDeps here: the default resolver finds nothing for this
+  // test session id, which now reads offline (unresolvable), not idle.
+  expect(res.data.buddies[0]).toMatchObject({ handle: "x", status: "offline" });
 });
 
 test("chat:buddies and chat:who read the registry mirror through the injected registryDeps seam", async () => {
   const db = openStateDb(join(tmpdir(), `chat-h-registry-${process.pid}-${n++}.db`));
   const busyBinding = { pid: process.pid, socketPath: fakeSocketPath(), status: "busy" as const };
-  const registryDeps = { resolve: () => busyBinding, alive: () => true };
+  const registryDeps = { resolve: () => busyBinding, alive: () => true, resolveAll: () => new Map([["s1", busyBinding]]) };
   const h = createChatHandlers({ db, emitEvent: () => 0, registryDeps });
 
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
@@ -600,7 +602,9 @@ test("chat:rooms marks a dm and chat:who carries presence statuses", async () =>
   const who = await h["chat:who"]({ room: dm.data.room });
   if (!who.ok) throw new Error("unreachable");
   const memberA = who.data.members.find((m) => m.handle === "a");
-  expect(memberA?.status).toBe("idle");
+  // No fake registryDeps: the default resolver finds nothing for this test
+  // session id, which reads offline (unresolvable), not idle.
+  expect(memberA?.status).toBe("offline");
 });
 
 test("chat:rooms carries a room's stamped default wake mode, and leaves it undefined when never stamped", async () => {

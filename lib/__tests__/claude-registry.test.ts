@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { resolveInbox } from "../claude-registry.ts";
+import { resolveAllInboxes, resolveInbox } from "../claude-registry.ts";
 
 function fakeRoot(entries: Array<{ pid: number; sessionId: string; sock?: string; status?: string }>): string {
   const root = mkdtempSync(join(tmpdir(), "creg-"));
@@ -43,5 +43,26 @@ describe("resolveInbox", () => {
     writeFileSync(join(root, "337.json"), "null");
     writeFileSync(join(root, "338.json"), "42");
     expect(resolveInbox("ffffffff-0000-0000-0000-000000000006", { roots: [root] })).toBeNull();
+  });
+});
+
+describe("resolveAllInboxes", () => {
+  test("maps every resolvable session id in one pass, agreeing with resolveInbox per id", () => {
+    const root = fakeRoot([
+      { pid: 401, sessionId: "s1", status: "busy" },
+      { pid: 402, sessionId: "s2", status: "idle" },
+    ]);
+    const map = resolveAllInboxes({ roots: [root] });
+    expect(map.size).toBe(2);
+    expect(map.get("s1")).toEqual(resolveInbox("s1", { roots: [root] }) ?? undefined);
+    expect(map.get("s2")).toEqual(resolveInbox("s2", { roots: [root] }) ?? undefined);
+    expect(map.get("unknown")).toBeUndefined();
+  });
+
+  test("first root wins on a duplicate session id, same as resolveInbox's own root order", () => {
+    const a = fakeRoot([{ pid: 501, sessionId: "dup", status: "busy" }]);
+    const b = fakeRoot([{ pid: 502, sessionId: "dup", status: "idle" }]);
+    const map = resolveAllInboxes({ roots: [a, b] });
+    expect(map.get("dup")?.pid).toBe(501);
   });
 });

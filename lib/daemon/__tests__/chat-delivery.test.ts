@@ -2,7 +2,7 @@ import { beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { openStateDb } from "../../state/index.ts";
+import { openStateDb, presenceForSession } from "../../state/index.ts";
 import { createChatHandlers, type InboxDeps } from "../handlers/chat.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
@@ -61,6 +61,43 @@ test("posting to a room delivers the body to a signed-in recipient's inbox and a
   await Bun.sleep(0);
   expect(calls).toEqual([[sock, "[#general] a: @b hi"]]);
   expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
+});
+
+test("a successful delivery refreshes the recipient's last_seen_at -- the only remaining route to it now that chat:pulse is gone", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const before = presenceForSession("sess-b", h.db)!.lastSeenAt;
+  await Bun.sleep(2); // last_seen_at is a millisecond Date.now() stamp; the post must land strictly after sign-in's own stamp
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(1);
+  expect(presenceForSession("sess-b", h.db)!.lastSeenAt).toBeGreaterThan(before);
+});
+
+test("a successful welcome delivery also refreshes last_seen_at", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-c" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  const signedIn = await h["chat:sign-in"]({ sessionId: "sess-c", baseHandle: "c" });
+  if (!signedIn.ok) throw new Error("unreachable");
+  const atSignIn = presenceForSession("sess-c", h.db)!.lastSeenAt;
+  await Bun.sleep(2); // last_seen_at is a millisecond Date.now() stamp; the welcome must land strictly after sign-in's own stamp, and the queued delivery needs a tick to run
+  expect(calls).toHaveLength(1); // the welcome frame itself, not cleared by settleWelcome here since this test's own point is to observe it
+  expect(presenceForSession("sess-c", h.db)!.lastSeenAt).toBeGreaterThan(atSignIn);
 });
 
 test("a recipient whose resolver misses gets no deliver call and keeps unread", async () => {

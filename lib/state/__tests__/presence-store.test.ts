@@ -14,10 +14,13 @@ import {
   assertSessionOwnsHandle,
   assertSessionSignedIn,
   buddyStatus,
+  listBuddies,
+  presenceForSession,
   presenceThresholds,
   prunePresence,
   signIn,
   signOut,
+  touchLastSeen,
   type RegistryDeps,
 } from "../presence-store.ts";
 import type { InboxBinding } from "../../claude-registry.ts";
@@ -25,11 +28,26 @@ import { AGENT_NAMES } from "../../chat-names.ts";
 import { getKvValue } from "../kv-blob.ts";
 
 /** No binding for any session id: the default in every test that doesn't care about the registry (matches the real resolver's behavior for a fake test session id it will never find on disk). */
-const NO_BINDING: RegistryDeps = { resolve: () => null, alive: () => false };
+const NO_BINDING: RegistryDeps = { resolve: () => null, alive: () => false, resolveAll: () => new Map() };
 
-function fakeBinding(status: InboxBinding["status"]): RegistryDeps {
+/** Resolves ONLY `sessionId` (default "s1", matching every test's own session id) -- `resolveAll` must carry the same entry, since callers with more than one lookup go through it instead of `resolve` directly. */
+function fakeBinding(status: InboxBinding["status"], sessionId = "s1"): RegistryDeps {
   const binding: InboxBinding = { pid: 1, socketPath: "/fake.sock", status };
-  return { resolve: () => binding, alive: () => true };
+  return {
+    resolve: (id) => (id === sessionId ? binding : null),
+    alive: () => true,
+    resolveAll: () => new Map([[sessionId, binding]]),
+  };
+}
+
+/** A registry entry that resolves but whose process is gone (dead pid, or a socket that no longer exists). */
+function deadPidBinding(sessionId = "s1"): RegistryDeps {
+  const binding: InboxBinding = { pid: 1, socketPath: "/fake.sock", status: "busy" };
+  return {
+    resolve: (id) => (id === sessionId ? binding : null),
+    alive: () => false,
+    resolveAll: () => new Map([[sessionId, binding]]),
+  };
 }
 
 let n = 0;
@@ -76,15 +94,61 @@ test("a dead registry binding does not block reclaim once session-stale", () => 
   expect(r).toMatchObject({ handle: "x", reclaimed: true });
 });
 
-test("buddyStatus: offline (signed out, then pruned) beats everything else; otherwise the registry mirror decides live vs idle", () => {
+test("buddyStatus: offline beats everything (signed out, pruned, unresolvable, or a dead pid); otherwise the registry mirror decides live vs idle", () => {
   expect(buddyStatus({ signedOutAt: now }, now)).toBe("offline");
   expect(buddyStatus({ lastSeenAt: now - 25 * HOUR }, now)).toBe("offline");
   expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("busy"))).toBe("live");
   expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("idle"))).toBe("idle");
   expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("shell"))).toBe("idle");
-  // No resolvable binding at all (dead pid, or a session id the registry has never heard of): idle, not offline, until pruned.
-  expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), NO_BINDING)).toBe("idle");
-  expect(buddyStatus({ lastSeenAt: now }, now, presenceThresholds(), NO_BINDING)).toBe("idle");
+  // No resolvable registry entry at all (a session id the registry has never
+  // heard of): offline, per spec ("pid dead, or socket gone" -- unresolvable
+  // is the same "nothing to vouch for this session" case).
+  expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), NO_BINDING)).toBe("offline");
+  expect(buddyStatus({ lastSeenAt: now }, now, presenceThresholds(), NO_BINDING)).toBe("offline");
+  // A registry file resolves, but the pid is dead (or the socket is gone): offline too.
+  expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), deadPidBinding())).toBe("offline");
+});
+
+/** Counts `resolveAll()` calls; `resolve`/`alive` are unused once a caller batches through `resolveAll`, so they throw if anything still calls them directly. */
+function countingRegistryDeps(): RegistryDeps & { scans: number } {
+  const state = {
+    scans: 0,
+    resolve: (): InboxBinding | null => {
+      throw new Error("resolve() called directly -- the caller under test should batch through resolveAll() instead");
+    },
+    alive: () => true,
+    resolveAll: (): Map<string, InboxBinding> => {
+      state.scans++;
+      return new Map();
+    },
+  };
+  return state;
+}
+
+test("listBuddies scans the registry exactly once regardless of buddy count", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "a", now }, db);
+  signIn({ sessionId: "s2", baseHandle: "b", now }, db);
+  signIn({ sessionId: "s3", baseHandle: "c", now }, db);
+  const deps = countingRegistryDeps();
+  const buddies = listBuddies(now, db, deps);
+  expect(buddies).toHaveLength(3);
+  expect(deps.scans).toBe(1);
+});
+
+test("signIn scans the registry exactly once per call, even while probing several suffix candidates", () => {
+  const db = fresh();
+  // Three existing "x" rows (x, x-2, x-3) so the incoming sign-in's own
+  // family scan, plus findOpenSuffix's fallback walk if it reaches that far,
+  // both have several rows to check reclaimability for -- all against the
+  // one map a single signIn call is allowed to build.
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  signIn({ sessionId: "s2", baseHandle: "x", now }, db);
+  signIn({ sessionId: "s3", baseHandle: "x", now }, db);
+  const deps = countingRegistryDeps();
+  const r = signIn({ sessionId: "s4", baseHandle: "x", now }, db, deps);
+  expect(r.handle).toBe("x-4");
+  expect(deps.scans).toBe(1);
 });
 
 test("assertSessionOwnsHandle throws only on a mismatched signed handle", () => {
@@ -122,6 +186,30 @@ test("prune: the signed-out path keeps the offline window", () => {
   signOut("s1", now, db);
   expect(prunePresence(now + 2 * HOUR, db)).toBe(0); // offline (last 24h) still shows it
   expect(prunePresence(now + 25 * HOUR, db)).toBe(1); // signed_out_at leg
+});
+
+test("prune: a never-signed-out row past 24h survives when the registry still vouches for its session", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  expect(prunePresence(now + 25 * HOUR, db, fakeBinding("busy"))).toBe(0);
+  expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
+});
+
+test("prune: a never-signed-out row past 24h with no live binding is deleted", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  expect(prunePresence(now + 25 * HOUR, db, NO_BINDING)).toBe(1);
+  expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 0 });
+});
+
+test("touchLastSeen refreshes only last_seen_at -- the sole remaining route to it now that chat:pulse is gone", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  touchLastSeen("s1", now + HOUR, db);
+  expect(presenceForSession("s1", db)?.lastSeenAt).toBe(now + HOUR);
+  // A row delivery keeps touching never goes stale enough for prune to
+  // consider it, even with no registry binding at all.
+  expect(prunePresence(now + HOUR + 23 * HOUR, db, NO_BINDING)).toBe(0);
 });
 
 test("a creating join with wake-on stamps the room default and later joins inherit it", () => {

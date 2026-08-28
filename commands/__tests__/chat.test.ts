@@ -29,6 +29,7 @@ import { join } from "path";
 import { chat, __test__ } from "../chat.ts";
 import { createChatHandlers } from "../../lib/daemon/handlers/chat.ts";
 import { getStateDb, closeStateDb, type RegistryDeps } from "../../lib/state/index.ts";
+import type { InboxBinding } from "../../lib/claude-registry.ts";
 import { sessionFilePath } from "../../lib/chat-session.ts";
 import { AGENT_NAMES } from "../../lib/chat-names.ts";
 import { setSetting } from "../../packages/rt-client/src/settings/write.ts";
@@ -668,9 +669,13 @@ describe("rt chat CLI — buddies, away, back, dm", () => {
     db.run("UPDATE chat_presence SET status_text = ? WHERE handle = ?", ["rebasing #67", "idle1"]);
     db.run("UPDATE chat_presence SET signed_out_at = ? WHERE handle = ?", [now, "off1"]);
 
-    // A live, busy registry binding for live1's session (sessionId "slv").
-    const busyBinding = { pid: process.pid, socketPath: "/fake.sock", status: "busy" as const };
-    registryDeps = { resolve: (sessionId) => (sessionId === "slv" ? busyBinding : null), alive: () => true };
+    // live1's session (sessionId "slv") resolves alive+busy; idle1's
+    // (sessionId "sid") resolves alive but not busy. off1 gets no binding
+    // at all, but its row is already signed out, which alone reads offline.
+    const busyBinding: InboxBinding = { pid: process.pid, socketPath: "/fake.sock", status: "busy" };
+    const idleBinding: InboxBinding = { pid: process.pid, socketPath: "/fake.sock", status: "idle" };
+    const bindings = new Map<string, InboxBinding>([["slv", busyBinding], ["sid", idleBinding]]);
+    registryDeps = { resolve: (sessionId) => bindings.get(sessionId) ?? null, alive: () => true, resolveAll: () => bindings };
 
     const out = await runChat(["buddies"]);
 
@@ -692,7 +697,9 @@ describe("rt chat CLI — buddies, away, back, dm", () => {
     await signInInProcess({ as: "x", session: "s1", noRoom: true });
     const out = await runChat(["who"]);
     expect(out).toContain("x");
-    expect(out).toMatch(/idle/);
+    // No fake registryDeps: the default resolver finds nothing for this
+    // test session id, which reads offline (unresolvable), not idle.
+    expect(out).toMatch(/offline/);
   });
 
   test("away sets the status text (visible on buddies) and back clears it", async () => {

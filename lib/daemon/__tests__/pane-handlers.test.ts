@@ -3,9 +3,18 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { HERDR_UNAVAILABLE, herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
-import { openStateDb } from "../../state/index.ts";
+import { openStateDb, type RegistryDeps } from "../../state/index.ts";
+import type { InboxBinding } from "../../claude-registry.ts";
 import { createChatHandlers } from "../handlers/chat.ts";
 import { createPaneHandlers } from "../handlers/pane.ts";
+
+/** A resolvable, alive binding for each named session id -- buddyStatus now reads offline for anything not covered here, so a test whose point is a live/idle join must supply one. */
+function fakeRegistryDeps(bindings: Record<string, InboxBinding["status"]>): RegistryDeps {
+  const map = new Map<string, InboxBinding>(
+    Object.entries(bindings).map(([sessionId, status]) => [sessionId, { pid: process.pid, socketPath: "/fake.sock", status }]),
+  );
+  return { resolve: (sessionId) => map.get(sessionId) ?? null, alive: () => true, resolveAll: () => map };
+}
 
 const stops: Array<() => void> = [];
 afterEach(() => {
@@ -38,19 +47,25 @@ const SNAPSHOT = {
 const CSWAP_EXEC = async (argv: [string, ...string[]]) =>
   argv[1] === "list" ? { stdout: "Accounts:\n  1: me@x.y [Me]\n", stderr: "", exitCode: 0 } : { stdout: "main\n", stderr: "", exitCode: 0 };
 
-function harness(handler: FakeHerdrHandler, extra: { repoIndex?: Record<string, string>; now?: () => number } = {}) {
+function harness(
+  handler: FakeHerdrHandler,
+  extra: { repoIndex?: Record<string, string>; now?: () => number; registryDeps?: RegistryDeps } = {},
+) {
   const { sock, seen, stop } = fakeHerdr(handler);
   stops.push(stop);
   const db = freshDb();
   const herdr: typeof herdrRequest = (method, params, opts) => herdrRequest(method, params, { ...opts, sockPath: sock });
   const exec = CSWAP_EXEC;
   const chat = createChatHandlers({ db, emitEvent: () => 0 });
-  const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: extra.now ?? Date.now });
+  const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: extra.now ?? Date.now, registryDeps: extra.registryDeps });
   return { db, seen, chat, pane };
 }
 
 test("pane:list lists only claude panes, joined to presence by session id, with rooms", async () => {
-  const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
+  const { chat, pane } = harness(
+    (method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)),
+    { registryDeps: fakeRegistryDeps({ "sess-signed": "busy" }) },
+  );
   const signed = await chat["chat:sign-in"]({ sessionId: "sess-signed", baseHandle: "meg", cwd: "/tmp/acme", repo: "acme", branch: "main", pane: "w1:p1" });
   if (!signed.ok) throw new Error(signed.error);
   await chat["chat:join"]({ room: "build", handle: signed.data.handle });
@@ -61,12 +76,14 @@ test("pane:list lists only claude panes, joined to presence by session id, with 
   expect(res.data.panes.map((p) => p.paneId)).toEqual(["w1:p1", "w1:p2"]);
   const first = res.data.panes[0]!;
   expect(first).toMatchObject({ workspace: "acme", title: "Evaluate codegen", cwd: "/tmp/acme", repo: "acme", branch: "main", agentStatus: "idle", sessionId: "sess-signed" });
-  expect(first.presence).toMatchObject({ handle: "meg", rooms: ["build"] });
-  expect(first.presence!.status).not.toBe("offline");
+  expect(first.presence).toMatchObject({ handle: "meg", rooms: ["build"], status: "live" });
 });
 
 test("pane:list falls back to the presence row's pane id when herdr has no session id", async () => {
-  const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
+  const { chat, pane } = harness(
+    (method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)),
+    { registryDeps: fakeRegistryDeps({ "sess-by-pane": "idle" }) },
+  );
   const signed = await chat["chat:sign-in"]({ sessionId: "sess-by-pane", baseHandle: "fred", cwd: "/tmp/other", pane: "w1:p2" });
   if (!signed.ok) throw new Error(signed.error);
   const res = await pane["pane:list"]({});
@@ -84,8 +101,24 @@ test("pane:list derives repo and branch for an unsigned pane without touching th
   expect(unsigned.repo).toBeUndefined();
 });
 
-test("pane:list sorts listening, idle, then not signed in", async () => {
+test("pane:list drops the presence join for a signed-in session with no resolvable registry binding", async () => {
+  // No registryDeps override: the default resolver finds nothing for this
+  // test session id, so the row reads offline and presenceMaps excludes it
+  // -- the pane falls back to the unsigned repo/branch derivation, same as
+  // a pane nobody ever signed in on.
   const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
+  const signed = await chat["chat:sign-in"]({ sessionId: "sess-dead", baseHandle: "ghost", pane: "w1:p1" });
+  if (!signed.ok) throw new Error(signed.error);
+  const res = await pane["pane:list"]({});
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.panes.find((p) => p.paneId === "w1:p1")!.presence).toBeUndefined();
+});
+
+test("pane:list sorts listening, idle, then not signed in", async () => {
+  const { chat, pane } = harness(
+    (method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)),
+    { registryDeps: fakeRegistryDeps({ "sess-p2": "idle" }) },
+  );
   const signed = await chat["chat:sign-in"]({ sessionId: "sess-p2", baseHandle: "fred", pane: "w1:p2" });
   if (!signed.ok) throw new Error(signed.error);
   const res = await pane["pane:list"]({});
@@ -99,8 +132,7 @@ test("pane:list threads registryDeps through to presence status", async () => {
   const db = freshDb();
   const herdr: typeof herdrRequest = (method, params, opts) => herdrRequest(method, params, { ...opts, sockPath: sock });
   const chat = createChatHandlers({ db, emitEvent: () => 0 });
-  const busyBinding = { pid: process.pid, socketPath: "/fake.sock", status: "busy" as const };
-  const registryDeps = { resolve: () => busyBinding, alive: () => true };
+  const registryDeps = fakeRegistryDeps({ "sess-signed": "busy" });
   const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr, exec: CSWAP_EXEC, registryDeps });
 
   const signed = await chat["chat:sign-in"]({ sessionId: "sess-signed", baseHandle: "meg", pane: "w1:p1" });

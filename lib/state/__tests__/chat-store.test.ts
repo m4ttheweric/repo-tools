@@ -57,7 +57,7 @@ test("join creates the room and reports being alone", () => {
 test("a colliding handle from a different cwd is refused, not suffixed", () => {
   // Suffixing is unreachable from local resolution: every other verb would
   // still produce the unsuffixed base, so the agent would join as "a-2" while
-  // its tail armed on chat/wake/a.
+  // post/read/join keep resolving plain "a" for it.
   const db = freshDb();
   joinRoom({ room: "build", handle: "a", cwd: "/one" }, db);
   expect(() => joinRoom({ room: "build", handle: "a", cwd: "/two" }, db)).toThrow(/--as/);
@@ -65,8 +65,8 @@ test("a colliding handle from a different cwd is refused, not suffixed", () => {
 });
 
 test("a colliding handle from a different cwd is refused across DIFFERENT rooms", () => {
-  // The wake topic and pidfile are per-handle across every room, so the
-  // collision check spans all rooms — not just the one being joined.
+  // An unsigned handle has no presence row to establish identity, so it must
+  // map to one cwd across every room, not just the one being joined here.
   const db = freshDb();
   joinRoom({ room: "a", handle: "agent", cwd: "/one" }, db);
   expect(() => joinRoom({ room: "b", handle: "agent", cwd: "/two" }, db)).toThrow(/--as/);
@@ -125,7 +125,7 @@ test("recipients: wakeOn all wakes without a mention; none never wakes", () => {
   joinRoom({ room: "r", handle: "c", wakeOn: "none" }, db);
   expect(recipientsFor("r", "a", [], db)).toEqual(["b"]);
   // c (none) is excluded even when directly mentioned; b (all) still wakes,
-  // because all-mode is unconditional and does not go deaf on a directed message.
+  // because all-mode is unconditional and does not silence on a directed message.
   expect(recipientsFor("r", "a", ["c"], db)).toEqual(["b"]);
 });
 
