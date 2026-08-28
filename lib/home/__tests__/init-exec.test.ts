@@ -26,7 +26,7 @@ class FakeExecSeam implements ExecSeam {
       failRun?: (cmd: string[]) => string | undefined;
       exists?: (path: string) => boolean;
       blocksSymlink?: (path: string) => boolean;
-      /** git config user.name/user.email answers for commitInitialUserRepo's identity check — defaults to a fully-configured identity so every other test's commit step doesn't have to opt in. */
+      /** git config user.name/user.email answers for commitInitialUserRepo's identity check. Defaults to a fully-configured identity so every other test's commit step doesn't have to opt in. */
       identity?: { name?: string; email?: string };
     } = {},
   ) {}

@@ -667,7 +667,28 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     let committed = false;
     let sha: string | null = null;
 
-    if (plan.autoPaths.length > 0 && plan.message !== null) {
+    // Two independent commit sites below (the auto commit and the
+    // janitor-zone loop) can each attempt a commit this cycle; both fail the
+    // same doomed way (exit 128, "empty ident name") against an unconfigured
+    // identity. Checked once, up front, whenever EITHER would run, so a
+    // janitor-only cycle (no auto paths, one dirty claimed zone) is covered
+    // too, not just the auto-commit path.
+    const willAutoCommit = plan.autoPaths.length > 0 && plan.message !== null;
+    const willJanitorCommit = (reason === "janitor" || reason === "manual") && plan.janitorZones.length > 0;
+    if (willAutoCommit || willJanitorCommit) {
+      const name = await deps.exec(["git", "config", "user.name"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      const email = await deps.exec(["git", "config", "user.email"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      if (name.exitCode !== 0 || !name.stdout.trim() || email.exitCode !== 0 || !email.stdout.trim()) {
+        disabledReason = "no-git-identity";
+        if (lastLoggedCommitError !== "no-git-identity") {
+          deps.log.warn("home-snapshot: no git identity; run `git config --global user.name` and `git config --global user.email`; snapshots inert");
+          lastLoggedCommitError = "no-git-identity";
+        }
+        return { committed: false, sha: null, paths: [], reason, skipped: "no-git-identity" };
+      }
+    }
+
+    if (willAutoCommit) {
       // `plan.autoPaths` describes what the STATUS SNAPSHOT at the top of
       // this run looked like — a purely descriptive record of intent. The
       // exclude pathspec built from `plan.excludedZones` (identical on both
@@ -698,22 +719,9 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       //
       // `-c commit.gpgsign=false`: a global signing config with an unusable
       // key fails every snapshot commit outright (exit 128), and nothing
-      // about an unattended backup commit needs a signature.
-      // Checked once, right before the first commit attempt: an unconfigured
-      // identity fails every commit the same way (exit 128, "empty ident
-      // name"), so this latches disabledReason rather than retrying the
-      // same doomed commit every cycle.
-      const name = await deps.exec(["git", "config", "user.name"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-      const email = await deps.exec(["git", "config", "user.email"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-      if (name.exitCode !== 0 || !name.stdout.trim() || email.exitCode !== 0 || !email.stdout.trim()) {
-        disabledReason = "no-git-identity";
-        if (lastLoggedCommitError !== "no-git-identity") {
-          deps.log.warn("home-snapshot: no git identity; run `git config --global user.name` and `git config --global user.email`; snapshots inert");
-          lastLoggedCommitError = "no-git-identity";
-        }
-        return { committed: false, sha: null, paths: [], reason, skipped: "no-git-identity" };
-      }
-      const message = reason === "manual" ? plan.message.replace(/^snapshot:/, "snapshot (manual):") : plan.message;
+      // about an unattended backup commit needs a signature. (Git identity
+      // is confirmed once, above, before either commit site runs.)
+      const message = reason === "manual" ? plan.message!.replace(/^snapshot:/, "snapshot (manual):") : plan.message!;
       const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
         cwd: deps.repoDir,
         timeoutMs: GIT_TIMEOUT_MS,
@@ -736,7 +744,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       }
     }
 
-    if ((reason === "janitor" || reason === "manual") && plan.janitorZones.length > 0) {
+    if (willJanitorCommit) {
       for (const jz of plan.janitorZones) {
         const dirtyHours = Math.floor((deps.now() - jz.dirtySinceMs) / (60 * 60 * 1000));
         const message = `snapshot (janitor): ${jz.zone} dirty >${dirtyHours}h, owner ${jz.owner}`;

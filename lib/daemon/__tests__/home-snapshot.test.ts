@@ -61,7 +61,7 @@ function defaultResponders(opts: {
       : undefined,
     (argv) => (argv[1] === "status") ? { stdout: statusZ, stderr: "", exitCode: 0 } : undefined,
     (argv) => (argv[1] === "add") ? { stdout: "", stderr: "", exitCode: addExit } : undefined,
-    // git identity probe, checked right before the first auto commit —
+    // git identity probe, checked right before either commit site runs...
     // defaults to "configured" so every fixture not testing R043 stays green.
     (argv) => (argv[1] === "config" && argv[2] === "user.name")
       ? (hasIdentity ? { stdout: "rt test\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 1 })
@@ -177,8 +177,8 @@ const DEFAULT_SETTINGS: HomeSnapshotSettings = {
 
 const NO_OWNERS: Owners = { zones: {} };
 
-// A real (but never touched — every git call underneath it is faked)
-// directory: the S090 existsSync guard runs against the real filesystem, so
+// A real directory (never touched; every git call underneath it is faked):
+// the S090 existsSync guard runs against the real filesystem, so
 // the fixture repoDir the whole suite shares must actually exist on disk,
 // not just look plausible as a string.
 const FAKE_REPO_DIR = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-fakerepo-")));
@@ -722,7 +722,7 @@ describe("startHomeSnapshot — commit shapes", () => {
     expect(log.calls.filter((c) => c.level === "warn").length).toBe(1); // still just the one warn
   });
 
-  test("git identity present — commits normally, exactly one identity probe pair", async () => {
+  test("git identity present: commits normally, exactly one identity probe pair", async () => {
     const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
     const { deps } = baseDeps({ exec: execFn });
     const handle = startHomeSnapshot(deps);
@@ -732,6 +732,32 @@ describe("startHomeSnapshot — commit shapes", () => {
     expect(result.committed).toBe(true);
     expect(execCalls.filter((c) => c[1] === "config" && c[2] === "user.name").length).toBe(1);
     expect(execCalls.filter((c) => c[1] === "config" && c[2] === "user.email").length).toBe(1);
+  });
+
+  test("R043: a janitor-only cycle (no auto paths, one dirty claimed zone past threshold) with no git identity also skips 'no-git-identity', never attempts the janitor commit", async () => {
+    const owners: Owners = { zones: { "prefs/": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" } } };
+    const db = freshDb();
+    db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES ('home-snapshot', 'state', ?, 0);")
+      .run(JSON.stringify({ firstSeenDirty: { "prefs/": 0 } }));
+
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? prefs/x.md\0", hasIdentity: false }));
+    const { deps, log } = baseDeps({
+      exec: execFn,
+      readOwners: () => owners,
+      db,
+      now: () => 10_000_000, // far past a 1-hour threshold from firstSeenDirty=0
+    });
+
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const result = await handle.runNow("manual");
+    expect(result.skipped).toBe("no-git-identity");
+    // Only the claimed zone was dirty, so this cycle has no auto commit at
+    // all: the identity gate must still catch the janitor-only path.
+    expect(execCalls.some((c) => c[1] === "add")).toBe(false);
+    expect(execCalls.some((c) => gitVerb(c) === "commit")).toBe(false);
+    expect(log.calls.filter((c) => c.level === "warn" && String(c.args[c.args.length - 1]).includes("git config --global user.name")).length).toBe(1);
   });
 });
 
