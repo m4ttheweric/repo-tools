@@ -452,14 +452,14 @@ async function autoReturnMain(
     }
   }
 
-  const status = await runGit(rec.path, ["status", "--porcelain"]);
+  const status = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (status.exitCode !== 0) {
     log.warn({ ...fields, output: status.stderr.trim() }, "auto-return: git status failed");
     return "retry";
   }
   if (status.stdout.trim().length > 0) {
     await stashChangesAsync(rec.path, mergedBranch);
-    const after = await runGit(rec.path, ["status", "--porcelain"]);
+    const after = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
     if (after.exitCode !== 0 || after.stdout.trim().length > 0) {
       log.warn({ ...fields }, "auto-return: stash did not clear the worktree");
       return "retry";
@@ -745,7 +745,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
 
   const popStash = async (): Promise<void> => {
     if (!stashName) return;
-    const pop = await runGit(rec.path, ["stash", "pop", stashName]);
+    const pop = await runGit(rec.path, ["stash", "pop", stashName], { timeoutMs: MUTATING_TIMEOUT_MS });
     if (pop.exitCode !== 0) {
       log.warn(
         { ...fields, stashName },
