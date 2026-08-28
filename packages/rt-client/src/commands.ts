@@ -311,7 +311,20 @@ export interface Commands {
    * nothing local to derive either from.
    */
   "chat:sign-in": {
-    payload: { sessionId?: string; baseHandle?: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string; viaPane?: boolean };
+    payload: {
+      sessionId?: string;
+      baseHandle?: string;
+      cwd?: string;
+      repo?: string;
+      branch?: string;
+      pane?: string;
+      statusText?: string;
+      viaPane?: boolean;
+      /** `viaPane` only: overrides the pane-cwd-derived room outright. */
+      room?: string;
+      /** `viaPane` only: skip room derivation/join entirely, same as --no-room on the non-pane path. */
+      noRoom?: boolean;
+    };
     data: { handle: string; baseHandle: string; reclaimed: boolean; sessionId: string; room: string | null };
   };
   "chat:sign-out": { payload: { sessionId: string }; data: Record<string, never> };

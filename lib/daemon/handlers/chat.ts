@@ -49,7 +49,7 @@ import type { HerdrSnapshot } from "./pane.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
 import { deliverToInbox, renderDeliveries } from "../inbox.ts";
 import { repoForCwd, branchForCwd } from "../../repo-for-cwd.ts";
-import { slugifyChatName } from "../../chat-room-name.ts";
+import { deriveRoomForCwd } from "../../chat-room.ts";
 import { runCapture } from "../../subprocess.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
@@ -461,18 +461,25 @@ export function createChatHandlers(opts: {
     },
 
     "chat:sign-in": async (payload: Commands["chat:sign-in"]["payload"]): Promise<CommandResult<"chat:sign-in">> => {
-      const { baseHandle, cwd, repo, branch, pane, statusText, viaPane } = payload;
+      const { baseHandle, cwd, repo, branch, pane, statusText, viaPane, room: explicitRoom, noRoom } = payload;
       if (baseHandle !== undefined && !isValidChatName(baseHandle)) return { ok: false, error: `invalid handle "${baseHandle}"` };
+      if (explicitRoom !== undefined && !isValidChatName(explicitRoom)) return { ok: false, error: `invalid room "${explicitRoom}"` };
 
       let sessionId = payload.sessionId;
       let signInCwd = cwd;
       let signInRepo = repo;
       let signInBranch = branch;
       // The room --pane sign-in joins on its own: derived from the TARGET
-      // pane's cwd, never the invoking process's (which never resolves one
-      // for --pane at all -- see commands/chat.ts's runSignInViaPane). A pane
-      // with no repo cwd legitimately signs in with no room, same as
-      // --no-room.
+      // pane's cwd (never the invoking process's, which never resolves one
+      // for --pane at all -- see commands/chat.ts's runSignInViaPane) through
+      // the SAME deriveRoomForCwd/roomForIdentity codec the CLI's own sign-in
+      // uses (lib/chat-room.ts), so a pane-signed-in and a normally-signed-in
+      // agent for the same repo always land in the same room -- the
+      // index-based repoForCwd label below is display-only (presence.repo)
+      // and must not double as the room source, since it diverges from
+      // roomForIdentity's path-kind rule on every pool-slot worktree. `--room`
+      // overrides the derivation outright; `--no-room` skips it, same as a
+      // pane with no repo cwd.
       let derivedRoom: string | null = null;
 
       if (viaPane) {
@@ -487,8 +494,11 @@ export function createChatHandlers(opts: {
         if (signInCwd) {
           if (signInRepo === undefined) signInRepo = repoForCwd(signInCwd, repoIndex()) ?? undefined;
           if (signInBranch === undefined) signInBranch = await branchForCwd(signInCwd, exec);
-          if (signInRepo) derivedRoom = slugifyChatName(signInRepo);
         }
+
+        if (noRoom) derivedRoom = null;
+        else if (explicitRoom) derivedRoom = explicitRoom;
+        else if (signInCwd) derivedRoom = deriveRoomForCwd(signInCwd);
       }
       if (!sessionId) return { ok: false, error: "chat: sign-in requires a sessionId or --pane" };
 

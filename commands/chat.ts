@@ -38,9 +38,10 @@ import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
 import { findGitRoot, repoAliasForPath, resolveMainWorktreePath } from "../lib/repo-for-cwd.ts";
 import { slugifyChatName as slugify } from "../lib/chat-room-name.ts";
+import { roomForIdentity, deriveRoomForCwd } from "../lib/chat-room.ts";
 import { getCurrentBranch, getRepoRoot } from "../lib/git.ts";
 import { getRepoIdentityForRoot } from "../lib/repo.ts";
-import { parseIdentity, type RepoIdentity } from "../lib/settings/identity.ts";
+import { parseIdentity } from "../lib/settings/identity.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { isValidChatName } from "../lib/state/index.ts";
 import { shellQuote } from "../lib/herdr-launch.ts";
@@ -337,44 +338,6 @@ function safeCwd(): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-// ─── the repository room (sign-in) ───────────────────────────────────────────
-//
-// Room naming is display, never a store key — unlike handle derivation, which
-// must never leak the serialized identity's `%2F`/`:`, a room name only needs
-// the chat charset. remote-kind takes the identity's LAST segment (what
-// people call the repo); path-kind takes the last TWO segments of the main
-// worktree realpath, because one segment alone is the bare pool-slot name
-// (`gamma`, `main`) — the same cross-repo collision handle derivation avoids.
-// Both go through `slugify`, so the result always satisfies the room charset.
-
-function roomForIdentity(id: RepoIdentity): string {
-  if (id.kind === "remote") {
-    const last = id.id.split("/").pop() ?? id.id;
-    return slugify(last);
-  }
-  const segments = id.id.split("/").filter(Boolean);
-  return slugify(segments.slice(-2).join("-"));
-}
-
-/**
- * Null when `cwd` isn't inside a git work tree at all — the gate is a real
- * `git rev-parse`, not a directory walk, so a scratch dir with a stray
- * `.git` file never derives a bogus room. The thin cwd → identity →
- * roomForIdentity composition, kept as its own function for the test seam;
- * `runSignIn` inlines the same three steps itself so it can reuse the
- * identity it already resolved for the display `repo` label rather than
- * re-deriving it here.
- */
-function deriveRoomForCwd(cwd: string): string | null {
-  const root = getRepoRoot(cwd);
-  if (!root) return null;
-  const identity = getRepoIdentityForRoot(root);
-  if (!identity) return null;
-  const parsed = parseIdentity(identity.identity);
-  if (!parsed) return null;
-  return roomForIdentity(parsed);
 }
 
 // ─── rendering ────────────────────────────────────────────────────────────────
@@ -981,17 +944,32 @@ async function runSignIn(args: string[]): Promise<void> {
  * `paneId` to a session id via herdr, so this process needs neither
  * CLAUDE_CODE_SESSION_ID nor a repo underfoot -- this process's OWN cwd is
  * never consulted. The daemon still derives cwd/repo/branch/room and joins a
- * room, just from the TARGET pane's cwd (via herdr), not from this one; the
- * resolved sessionId and room travel back in the response so this process
- * can write the session file for the pane it just signed in, same as a
- * normal sign-in writes its own. The welcome frame (daemon-side) is that
- * pane's own notice of what it just joined.
+ * room, just from the TARGET pane's cwd (via herdr), not from this one, and
+ * through the SAME deriveRoomForCwd/roomForIdentity codec this file's own
+ * sign-in uses (lib/chat-room.ts) -- so the room a pane-signed-in agent
+ * lands in never diverges from the one a normally-signed-in agent for the
+ * same repo would. `--room`/`--no-room` still work: they travel through
+ * unchanged and the daemon honors them the same way it honors its own
+ * derivation. The resolved sessionId and room travel back in the response
+ * so this process can write the session file for the pane it just signed
+ * in, same as a normal sign-in writes its own. The welcome frame
+ * (daemon-side) is that pane's own notice of what it just joined.
  */
 async function runSignInViaPane(args: string[], paneId: string): Promise<void> {
   const requestedBase = resolvePaneBaseHandle(args);
   const statusText = flagValue(args, "--status");
+  const noRoomFlag = args.includes("--no-room");
+  const explicitRoom = flagValue(args, "--room");
+  if (explicitRoom) requireValidName("room", explicitRoom);
 
-  const signInRes = await chatSignIn({ baseHandle: requestedBase, pane: paneId, viaPane: true, statusText });
+  const signInRes = await chatSignIn({
+    baseHandle: requestedBase,
+    pane: paneId,
+    viaPane: true,
+    statusText,
+    room: explicitRoom,
+    noRoom: noRoomFlag,
+  });
   const { handle, baseHandle, sessionId, room } = unwrap(signInRes, "sign-in");
 
   writeChatSession({ sessionId, handle, baseHandle, signedInAt: Date.now(), room: room ?? undefined });

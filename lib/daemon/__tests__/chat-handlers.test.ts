@@ -1,15 +1,25 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { execSync } from "child_process";
+import { mkdtempSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../../state/index.ts";
 import { createChatHandlers, inviteText, renderWelcome, type InboxDeps } from "../handlers/chat.ts";
 import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
+import { deriveRoomForCwd } from "../../chat-room.ts";
 import { drainNotifications, loadNotificationPrefs, peekNotifications, saveNotificationPrefs } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
 import { AGENT_NAMES } from "../../chat-names.ts";
+
+/** A real local git repo, no remote: exercises deriveRoomForCwd's real `git rev-parse` spawn (acceptable at sign-in, per lib/chat-room.ts's own doc comment) rather than a `.git`-directory stub. */
+function initRepo(dir: string): void {
+  execSync("git init -q", { cwd: dir });
+  execSync("git config user.email t@example.com", { cwd: dir });
+  execSync("git config user.name t", { cwd: dir });
+  execSync("git commit --allow-empty -q -m init", { cwd: dir });
+}
 
 /** inboxAlive checks process.kill(pid,0) and existsSync(socketPath) for real; a live pid and a real (empty) file satisfy both without a listener. */
 function fakeSocketPath(): string {
@@ -270,15 +280,19 @@ test("chat:sign-in viaPane resolves the pane's Claude session via herdr, signs i
   expect(calls[0]![1]).toContain('Reply in a room with: rt chat post <room> "..."');
 });
 
-test("chat:sign-in viaPane with a repo cwd joins the derived room and stamps repo/branch onto presence", async () => {
+test("chat:sign-in viaPane joins the SAME room the CLI's own codec would derive for that repo (parity fix), independent of the repos.json index label", async () => {
   const uuid = "33333333-3333-3333-3333-333333333333";
-  const repoDir = mkdtempSync(join(tmpdir(), "chat-viapane-repo-"));
-  mkdirSync(join(repoDir, ".git", "worktrees"), { recursive: true });
+  const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "chat-viapane-repo-")));
+  initRepo(repoDir);
   const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
   stops.push(stop);
 
   const db = openStateDb(join(tmpdir(), `chat-viapane-repo-${process.pid}-${n++}.db`));
   const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  // The repos.json index label is display-only (presence.repo) now: it must
+  // NOT double as the room source, so this fixture deliberately names
+  // something OTHER than what the git identity slugifies to -- if the room
+  // ever came from this label again, the parity assertion below would catch it.
   const repoIndex = () => ({ "remote:gitlab.com%2Facme%2FRepo-Tools": repoDir });
   const exec = async () => ({ stdout: "feat/pane-sign-in\n", stderr: "", exitCode: 0 });
   const h = createChatHandlers({ db, emitEvent: () => 0, herdr, repoIndex, exec });
@@ -286,19 +300,22 @@ test("chat:sign-in viaPane with a repo cwd joins the derived room and stamps rep
   const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
   expect(res.ok).toBe(true);
   if (!res.ok) throw new Error("unreachable");
-  expect(res.data.room).toBe("repo-tools");
+  const expectedRoom = deriveRoomForCwd(repoDir);
+  expect(expectedRoom).not.toBeNull();
+  expect(res.data.room).toBe(expectedRoom);
+  expect(res.data.room).not.toBe("repo-tools"); // the old, now-wrong, index-label-derived room
 
   const presence = db.query("SELECT repo, branch FROM chat_presence WHERE session_id = ?").get(uuid) as
     | { repo: string; branch: string }
     | null;
-  expect(presence).toMatchObject({ repo: "Repo-Tools", branch: "feat/pane-sign-in" });
+  expect(presence).toMatchObject({ repo: "Repo-Tools", branch: "feat/pane-sign-in" }); // display label: unaffected
 
-  const who = await h["chat:who"]({ room: "repo-tools" });
+  const who = await h["chat:who"]({ room: expectedRoom! });
   if (!who.ok) throw new Error("unreachable");
   expect(who.data.members.map((m) => m.handle)).toEqual(["kai"]);
 });
 
-test("chat:sign-in viaPane with a cwd outside any indexed repo joins nothing", async () => {
+test("chat:sign-in viaPane with a cwd that isn't a git work tree at all joins nothing", async () => {
   const uuid = "44444444-4444-4444-4444-444444444444";
   const strayDir = mkdtempSync(join(tmpdir(), "chat-viapane-stray-"));
   const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, strayDir));
@@ -306,7 +323,7 @@ test("chat:sign-in viaPane with a cwd outside any indexed repo joins nothing", a
 
   const db = openStateDb(join(tmpdir(), `chat-viapane-stray-${process.pid}-${n++}.db`));
   const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
-  const h = createChatHandlers({ db, emitEvent: () => 0, herdr, repoIndex: () => ({}) });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr });
 
   const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
   expect(res.ok).toBe(true);
@@ -316,6 +333,56 @@ test("chat:sign-in viaPane with a cwd outside any indexed repo joins nothing", a
   const rooms = await h["chat:rooms"]({ handle: "kai" });
   if (!rooms.ok) throw new Error("unreachable");
   expect(rooms.data.rooms).toEqual([]);
+});
+
+test("chat:sign-in viaPane --no-room skips the join even with a real repo cwd", async () => {
+  const uuid = "77777777-7777-7777-7777-777777777777";
+  const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "chat-viapane-noroom-")));
+  initRepo(repoDir);
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
+  stops.push(stop);
+  const db = openStateDb(join(tmpdir(), `chat-viapane-noroom-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai", noRoom: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBeNull();
+  const rooms = await h["chat:rooms"]({ handle: "kai" });
+  if (!rooms.ok) throw new Error("unreachable");
+  expect(rooms.data.rooms).toEqual([]);
+});
+
+test("chat:sign-in viaPane --room overrides the derived room with the explicit one", async () => {
+  const uuid = "88888888-8888-8888-8888-888888888888";
+  const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "chat-viapane-explicit-")));
+  initRepo(repoDir);
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
+  stops.push(stop);
+  const db = openStateDb(join(tmpdir(), `chat-viapane-explicit-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai", room: "warroom" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBe("warroom");
+  const who = await h["chat:who"]({ room: "warroom" });
+  if (!who.ok) throw new Error("unreachable");
+  expect(who.data.members.map((m) => m.handle)).toEqual(["kai"]);
+});
+
+test("chat:sign-in viaPane rejects an invalid explicit --room with a reason", async () => {
+  const uuid = "99999999-9999-9999-9999-999999999999";
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-badroom-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr });
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, room: "Bad Room" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("room");
 });
 
 test("chat:sign-in viaPane refuses a pane herdr has no Claude session for, distinctly from herdr being unreachable", async () => {

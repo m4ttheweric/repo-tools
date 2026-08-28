@@ -273,6 +273,8 @@ export function chatSignIn(
   if (a.pane !== undefined) payload.pane = a.pane;
   if (a.statusText !== undefined) payload.statusText = a.statusText;
   if (a.viaPane !== undefined) payload.viaPane = a.viaPane;
+  if (a.room !== undefined) payload.room = a.room;
+  if (a.noRoom !== undefined) payload.noRoom = a.noRoom;
   return rtCommand<Commands["chat:sign-in"]["data"]>("chat:sign-in", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 

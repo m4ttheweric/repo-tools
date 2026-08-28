@@ -586,6 +586,31 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     }
   });
 
+  test("sign-in --pane --no-room forwards noRoom rather than silently ignoring it", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false, sessionId: "pane-sess-4", room: null } };
+    const out = await runChat(["sign-in", "--pane", "w1:p1", "--no-room"]);
+    expect(out).toMatch(/no room joined/);
+    const call = seen.find((s) => s.cmd === "chat:sign-in");
+    expect((call?.payload as Record<string, unknown>).noRoom).toBe(true);
+    expect((call?.payload as Record<string, unknown>).room).toBeUndefined();
+  });
+
+  test("sign-in --pane --room forwards the explicit room rather than silently ignoring it", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false, sessionId: "pane-sess-5", room: "warroom" } };
+    const out = await runChat(["sign-in", "--pane", "w1:p1", "--room", "warroom"]);
+    expect(out).toMatch(/joined #warroom/);
+    const call = seen.find((s) => s.cmd === "chat:sign-in");
+    expect((call?.payload as Record<string, unknown>).room).toBe("warroom");
+    expect((call?.payload as Record<string, unknown>).noRoom).toBe(false);
+  });
+
+  test("sign-in --pane --room rejects an invalid room name locally, before contacting the daemon", async () => {
+    const { code, stderr } = await runChatRaw(["sign-in", "--pane", "w1:p1", "--room", "Bad Room"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("[a-z0-9._-]");
+    expect(seen.find((s) => s.cmd === "chat:sign-in")).toBeUndefined();
+  });
+
   test("--no-room signs in without joining any room", async () => {
     const out = await runChat(["sign-in", "--as", "y", "--no-room", "--session", "s2"]);
     expect(out).toMatch(/signed in as y/);
