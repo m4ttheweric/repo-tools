@@ -78,13 +78,68 @@ interface ApiWSData {
 
 const wsClients = new Set<ServerWebSocket<ApiWSData>>();
 
+let apiServerLog: { warn: (o: unknown, m: string) => void } = { warn: () => {} };
+
+/** Consecutive Bun `ws.send()` backpressure (-1) returns tolerated before a
+    client is dropped as chronically stalled. */
+const BACKPRESSURE_CLOSE_THRESHOLD = 3;
+const backpressureCounts = new WeakMap<object, number>();
+
+export interface BroadcastTarget {
+  send(data: string): number;
+  close(): void;
+}
+
+/**
+ * Sends one frame to every client, dropping any that Bun's own send() return
+ * value marks as gone (S042). `ws.send()` never throws on a dead socket --
+ * it returns 0 (this send silently failed) or -1 (backpressure) -- so a
+ * disconnected or stalled console/chat-viewer tab used to keep receiving a
+ * SUBSET of frames forever with nothing logged. 0 means Bun already dropped
+ * this exact frame for this client: closing immediately (rather than
+ * counting) is correct because the client's own reconnect logic is the only
+ * way it recovers a consistent stream. -1 means backpressure, which can be
+ * transient, so a few in a row are tolerated before giving up on the client.
+ */
+export function broadcastToClients(
+  clients: Iterable<BroadcastTarget>,
+  type: string,
+  data: any,
+  log: { warn: (o: unknown, m: string) => void },
+): void {
+  const msg = JSON.stringify({ type, data, timestamp: Date.now() });
+  for (const client of clients) {
+    let result: number;
+    try {
+      result = client.send(msg);
+    } catch (err) {
+      log.warn({ err }, "ws client send threw; dropping");
+      try { client.close(); } catch { /* already gone */ }
+      continue;
+    }
+    if (result === 0) {
+      log.warn({ type }, "ws client dropped a frame (send()=0); closing so its reconnect resyncs");
+      backpressureCounts.delete(client);
+      try { client.close(); } catch { /* already gone */ }
+    } else if (result === -1) {
+      const count = (backpressureCounts.get(client) ?? 0) + 1;
+      if (count >= BACKPRESSURE_CLOSE_THRESHOLD) {
+        log.warn({ type, count }, "ws client chronically backpressured; closing");
+        backpressureCounts.delete(client);
+        try { client.close(); } catch { /* already gone */ }
+      } else {
+        backpressureCounts.set(client, count);
+      }
+    } else {
+      backpressureCounts.delete(client);
+    }
+  }
+}
+
 /** Broadcast an event to all connected WebSocket clients. */
 export function broadcast(type: string, data: any): void {
   if (wsClients.size === 0) return;
-  const msg = JSON.stringify({ type, data, timestamp: Date.now() });
-  for (const ws of wsClients) {
-    try { ws.send(msg); } catch { /* client disconnected */ }
-  }
+  broadcastToClients(wsClients, type, data, apiServerLog);
 }
 
 /** Drop all broadcast clients (shutdown). */
@@ -150,6 +205,7 @@ export async function bindApiServerWithRetry<T>(bind: () => T, deps: BindRetryDe
 
 export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> {
   const { handleCommand, log } = deps;
+  apiServerLog = log;
   const apiToken = getApiToken();
 
   const server = await bindApiServerWithRetry(() => Bun.serve<ApiWSData, never>({
