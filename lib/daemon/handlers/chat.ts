@@ -94,7 +94,11 @@ function assertionError(fn: () => void): string | null {
  * send are all the same outcome here: no cursor advance. A later post to the
  * same recipient tries again and, via pendingMessages, catches up everything
  * still behind the cursor at that point -- not just its own message -- so a
- * failed send never drops a body permanently.
+ * failed send never drops a body permanently. This function does not defend
+ * against a concurrent call for the same (room, handle): two overlapping
+ * calls would both read the same pre-advance pending range and duplicate it
+ * into two frames. Callers must go through deliverSerialized, never call
+ * this directly from postAndNotify.
  */
 async function deliverPost(
   db: Database,
@@ -113,6 +117,38 @@ async function deliverPost(
   if (result.ok) markDelivered(msg.room, recipient, msg.id, db);
 }
 
+function chainKey(room: string, handle: string): string {
+  return `${room}:${handle}`;
+}
+
+/**
+ * Runs deliverPost serialized per (room, handle): a post landing while an
+ * earlier delivery to the same recipient is still in flight must wait for it
+ * rather than read pendingMessages against the same pre-advance cursor,
+ * which is what produced the duplicate-backlog bug (the same body sent in
+ * two frames). The predecessor's failure is swallowed before chaining, so
+ * one failed delivery never blocks the next -- pendingMessages naturally
+ * re-batches it instead. The map entry is deleted once nothing is chained
+ * behind it, so a quiet recipient leaves no permanent entry.
+ */
+function deliverSerialized(
+  chains: Map<string, Promise<void>>,
+  db: Database,
+  deps: InboxDeps,
+  recipient: string,
+  msg: { room: string; dm: boolean; id: number },
+): Promise<void> {
+  const key = chainKey(msg.room, recipient);
+  const prior = chains.get(key) ?? Promise.resolve();
+  const result = prior.catch(() => {}).then(() => deliverPost(db, deps, recipient, msg));
+  const swallowed = result.catch(() => {});
+  chains.set(key, swallowed);
+  void swallowed.finally(() => {
+    if (chains.get(key) === swallowed) chains.delete(key);
+  });
+  return result;
+}
+
 /**
  * The row must commit before the viewer's `chat/<room>/msg` emit fires, or a
  * viewer reading the event finds no message yet. Shared by chat:post and
@@ -128,6 +164,7 @@ function postAndNotify(
   emitEvent: (topic: string, payload?: unknown) => unknown,
   args: { room: string; handle: string; body: string; mentions?: string[] },
   inboxDeps: InboxDeps = defaultInboxDeps,
+  deliveryChains: Map<string, Promise<void>> = new Map(),
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body, mentions } = args;
   const posted = postMessage({ room, handle, body, mentions }, db);
@@ -136,7 +173,7 @@ function postAndNotify(
   const dm = dmParticipants(room, db);
   for (const recipient of posted.recipients) {
     queueMicrotask(() => {
-      deliverPost(db, inboxDeps, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
+      deliverSerialized(deliveryChains, db, inboxDeps, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
         log.warn({ err, room, recipient, id: posted.id }, "chat: inbox delivery failed");
       });
     });
@@ -201,6 +238,9 @@ export function createChatHandlers(opts: {
   const { db, emitEvent } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
+  // One chain map per handler instance (one daemon, one db): shared across
+  // every chat:post/chat:dm call so deliverSerialized actually serializes.
+  const deliveryChains = new Map<string, Promise<void>>();
 
   return {
     db,
@@ -226,7 +266,7 @@ export function createChatHandlers(opts: {
       const { room, handle, body, mentions } = payload;
       const invalidMention = mentions?.find((m) => !isValidChatName(m));
       if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps);
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, deliveryChains);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
     },
@@ -383,7 +423,7 @@ export function createChatHandlers(opts: {
       // Recipient travels in `mentions`, not the body, so the transcript
       // shows the text as typed and the desk still notifies when `to` is
       // the human.
-      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps);
+      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, deliveryChains);
       if (!posted) return { ok: false, error: "chat: dm failed (retry budget exhausted)" };
       return { ok: true, data: { room, id: posted.id, recipients: posted.recipients } };
     },

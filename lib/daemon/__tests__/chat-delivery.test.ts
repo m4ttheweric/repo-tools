@@ -109,6 +109,90 @@ test("a failed delivery batches with the next successful one, catching up the wh
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
 });
 
+test("concurrent posts to the same recipient serialize delivery so a held first send never duplicates the backlog", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let releaseFirst: (() => void) | undefined;
+  let deliverCount = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => {
+      deliverCount++;
+      calls.push([socketPath, content]);
+      if (deliverCount === 1) {
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      }
+      return { ok: true };
+    },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+
+  const first = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
+  if (!first.ok) throw new Error("unreachable");
+  await Bun.sleep(0); // let the first delivery's synchronous prefix run and start blocking on deliver()
+
+  const second = await h["chat:post"]({ room: "general", handle: "a", body: "two" });
+  if (!second.ok) throw new Error("unreachable");
+  await Bun.sleep(0); // let the second delivery register behind the first in the chain
+
+  // The second delivery must not have started yet: it is chained behind the
+  // first, which is still awaiting release.
+  expect(calls).toHaveLength(1);
+
+  releaseFirst?.();
+  await Bun.sleep(0);
+  await Bun.sleep(0);
+
+  expect(calls).toHaveLength(2);
+  expect(calls[0]![1]).toBe("[#general] a: one");
+  expect(calls[1]![1]).toBe("[#general] a: two");
+  expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
+});
+
+test("a held first delivery that ultimately fails still lets the second carry both bodies once released", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let releaseFirst: (() => void) | undefined;
+  let attempt = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => {
+      attempt++;
+      calls.push([socketPath, content]);
+      if (attempt === 1) {
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+        return { ok: false, error: "timeout" };
+      }
+      return { ok: true };
+    },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+
+  const first = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
+  if (!first.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+
+  const second = await h["chat:post"]({ room: "general", handle: "a", body: "two" });
+  if (!second.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+
+  expect(calls).toHaveLength(1); // second still chained behind the held first
+
+  releaseFirst?.();
+  await Bun.sleep(0);
+  await Bun.sleep(0);
+
+  expect(calls).toHaveLength(2);
+  expect(calls[1]![1]).toBe("[#general] a: one\n[#general] a: two");
+  expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
+});
+
 test("a resolver that throws is caught, leaving chat:post ok and no unhandled rejection", async () => {
   const rejections: unknown[] = [];
   const onRejection = (reason: unknown) => rejections.push(reason);
