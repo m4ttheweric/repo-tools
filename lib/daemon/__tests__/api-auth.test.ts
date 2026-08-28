@@ -5,7 +5,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { needsToken, tokenOk, getApiToken, reloadApiToken, loadOrCreateApiToken } from "../api-auth.ts";
-import { isOriginAllowed, isBrowserRequestTrusted, getTrustedBrowserOrigins } from "../api-auth.ts";
+import { isOriginAllowed, isBrowserRequestTrusted, getTrustedBrowserOrigins, resolveOriginTrust } from "../api-auth.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -175,5 +175,37 @@ describe("getTrustedBrowserOrigins", () => {
   test("returns an array (empty by default in an isolated test HOME)", () => {
     const origins = getTrustedBrowserOrigins();
     expect(Array.isArray(origins)).toBe(true);
+  });
+});
+
+describe("resolveOriginTrust", () => {
+  const apiToken = "the-real-token";
+
+  test("no Origin header: never calls getAllowedOrigins (the settings read is disk I/O every non-browser request would otherwise pay for)", () => {
+    let calls = 0;
+    const getAllowedOrigins = () => { calls++; return []; };
+    const trusted = resolveOriginTrust(null, null, apiToken, getAllowedOrigins);
+    expect(trusted).toBe(true);
+    expect(calls).toBe(0);
+  });
+
+  test("an Origin header present: does call getAllowedOrigins", () => {
+    let calls = 0;
+    const getAllowedOrigins = () => { calls++; return ["http://localhost:5544"]; };
+    const trusted = resolveOriginTrust("http://localhost:5544", null, apiToken, getAllowedOrigins);
+    expect(trusted).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  test("an Origin header with the correct token is trusted without needing the allowlist call to matter", () => {
+    let calls = 0;
+    const getAllowedOrigins = () => { calls++; return []; };
+    const trusted = resolveOriginTrust("http://evil.example", apiToken, apiToken, getAllowedOrigins);
+    expect(trusted).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  test("defaults to the real getTrustedBrowserOrigins when no override is passed", () => {
+    expect(resolveOriginTrust(null, null, apiToken)).toBe(true);
   });
 });

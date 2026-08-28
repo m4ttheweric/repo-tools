@@ -10,7 +10,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "pino";
 import { API_PORT } from "../daemon-config.ts";
-import { needsToken, tokenOk, getApiToken, isBrowserRequestTrusted, getTrustedBrowserOrigins } from "./api-auth.ts";
+import { needsToken, tokenOk, getApiToken, resolveOriginTrust } from "./api-auth.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
 import { runCapture } from "../subprocess.ts";
@@ -93,7 +93,7 @@ export interface BroadcastTarget {
 
 /**
  * Sends one frame to every client, dropping any that Bun's own send() return
- * value marks as gone (S042). `ws.send()` never throws on a dead socket --
+ * value marks as gone. `ws.send()` never throws on a dead socket --
  * it returns 0 (this send silently failed) or -1 (backpressure) -- so a
  * disconnected or stalled console/chat-viewer tab used to keep receiving a
  * SUBSET of frames forever with nothing logged. 0 means Bun already dropped
@@ -149,7 +149,7 @@ export function clearWsClients(): void {
 }
 
 /**
- * CORS default-deny (S006): a browser page on an untrusted Origin still gets
+ * CORS default-deny: a browser page on an untrusted Origin still gets
  * its request served (127.0.0.1 loopback + the per-route token gate are the
  * real defenses), but the response carries no Access-Control-Allow-Origin,
  * so the page's own JavaScript cannot read the body. A request with no
@@ -170,7 +170,7 @@ export function buildCorsHeaders(origin: string | null, trusted: boolean): Recor
 /**
  * Decodes one path segment between a fixed prefix (and optional suffix),
  * returning `undefined` (never throwing) on any shape mismatch or malformed
- * %-encoding (S083). Before this, each parameterized route hand-rolled its
+ * %-encoding. Before this, each parameterized route hand-rolled its
  * own decodeURIComponent inside the route's try block, so a malformed
  * segment fell through to the OUTER catch and came back as a logged 500;
  * every route using this helper instead gets a clean 400.
@@ -191,8 +191,8 @@ export function pathParam(pathname: string, prefix: string, suffix = ""): string
 const PLAIN_NUMBER_RE = /^-?\d+(\.\d+)?$/;
 
 /**
- * REST query strings arrive as strings no matter what the client meant
- * (S085): "?maxAgeMs=60000" and "?refresh=true" reached handlers that do a
+ * REST query strings arrive as strings no matter what the client meant:
+ * "?maxAgeMs=60000" and "?refresh=true" reached handlers that do a
  * strict `typeof x === "number"` or `x === true` check, so the documented
  * flag silently no-op'd over HTTP while working over the socket (where
  * payloads are real JSON). One coercion at the REST seam fixes every such
@@ -298,15 +298,14 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
     async fetch(req, server) {
       const url = new URL(req.url);
       const origin = req.headers.get("origin");
-      const allowedOrigins = getTrustedBrowserOrigins();
 
       // WebSocket upgrade (broadcast channel). Browsers cannot set custom
       // headers on a WS handshake, so the token (when a browser page wants
       // to identify itself) travels as a ?token= query param instead of
-      // X-RT-Token (S005).
+      // X-RT-Token.
       if (url.pathname === "/ws") {
         const wsToken = url.searchParams.get("token");
-        if (!isBrowserRequestTrusted(origin, wsToken, apiToken, allowedOrigins)) {
+        if (!resolveOriginTrust(origin, wsToken, apiToken)) {
           return new Response("origin not allowed", { status: 403 });
         }
         if (server.upgrade(req, { data: { kind: "broadcast" } })) return undefined as any;
@@ -315,16 +314,20 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
 
       // CORS: default-deny. A trusted Origin (token or allowlist) gets its
       // Origin echoed back; anything else gets no Access-Control-Allow-Origin
-      // at all, so a malicious page's own JS cannot read the response (S006).
-      const trusted = isBrowserRequestTrusted(origin, req.headers.get("x-rt-token"), apiToken, allowedOrigins);
+      // at all, so a malicious page's own JS cannot read the response.
+      // resolveOriginTrust only resolves the allowlist when origin is set,
+      // since the settings read behind it is synchronous disk I/O.
+      const trusted = resolveOriginTrust(origin, req.headers.get("x-rt-token"), apiToken);
       const corsHeaders = buildCorsHeaders(origin, trusted);
 
       if (req.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: corsHeaders });
       }
 
-      // Gate mutating routes behind the local token (CORS is *, so this is the
-      // CSRF defense against a malicious page driving control endpoints).
+      // Gate mutating routes behind the local token. CORS default-deny only
+      // stops a malicious page from reading the response; it can still fire
+      // the request itself (a classic CSRF), so the token is the actual
+      // defense against a malicious page driving control endpoints.
       if (needsToken(req.method, url.pathname) && !tokenOk(req.headers.get("x-rt-token"), apiToken)) {
         return Response.json({ ok: false, error: "unauthorized" }, { status: 401, headers: corsHeaders });
       }

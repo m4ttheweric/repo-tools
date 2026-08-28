@@ -1,8 +1,10 @@
 /**
  * Local-token auth for the :9401 API server.
  *
- * The server binds to 127.0.0.1, but CORS is `*`, so a malicious web page could
- * still drive *mutating* endpoints via the browser. Requiring a custom header
+ * The server binds to 127.0.0.1, and CORS is default-deny (only a trusted
+ * Origin gets its response readable), but CORS alone does not stop a
+ * malicious web page from firing a mutating request in the first place -- it
+ * only stops the page from reading the reply. Requiring a custom header
  * (X-RT-Token) on those routes forces a CORS preflight the page can't satisfy
  * (it can't read the token), blocking cross-site control while leaving reads
  * open for convenience.
@@ -44,7 +46,7 @@ export function loadOrCreateApiToken(tokenPath: string = API_TOKEN_PATH): string
 
 /**
  * `getApiToken`/`reloadApiToken` share ONE in-memory value between
- * api-server.ts and the secrets handler (S054): before this, api-server
+ * api-server.ts and the secrets handler: before this, api-server
  * captured a token once at boot while the secrets handler called
  * `loadOrCreateApiToken()` fresh on every request, so an external rotation
  * (deleting api-token to force a new one) left the two permanently
@@ -72,15 +74,15 @@ export function reloadApiToken(tokenPath: string = API_TOKEN_PATH): string {
  * drains something a GET should not silently consume, and must present the
  * local token. A CORS preflight (OPTIONS) can never present the custom
  * X-RT-Token header, so it is never gated, on any path. Otherwise
- * default-gated for every method except GET/HEAD (S040: an allowlist-by-path
- * guaranteed the next mutating route would ship unguarded), plus two
+ * default-gated for every method except GET/HEAD (an allowlist-by-path
+ * approach guarantees the next mutating route would ship unguarded), plus two
  * explicit GET exceptions whose verb lies about being a read.
  */
 export function needsToken(method: string, pathname: string): boolean {
   if (method === "OPTIONS") return false;
   if (method === "GET" || method === "HEAD") {
     // Gated despite being a GET: /api/secrets's response body IS a
-    // credential (S054); /api/notifications DRAINS the queue (S041), so its
+    // credential; /api/notifications DRAINS the queue, so its
     // verb lies about being a read the way every other GET here is not.
     if (pathname === "/api/secrets") return true;
     if (pathname === "/api/notifications") return true;
@@ -114,7 +116,7 @@ export function isOriginAllowed(origin: string, allowedOrigins: readonly string[
 }
 
 /**
- * The 127.0.0.1 trust boundary (S005/S006): the daemon binds loopback-only,
+ * The 127.0.0.1 trust boundary: the daemon binds loopback-only,
  * but any web page the user visits also runs on 127.0.0.1 and can send a
  * request. A request with NO Origin header at all is not a browser fetch --
  * it is the CLI, the Swift tray, rt-client from a Bun/Node process, or the
@@ -131,4 +133,21 @@ export function isBrowserRequestTrusted(
   if (!origin) return true;
   if (tokenOk(token, apiToken)) return true;
   return isOriginAllowed(origin, allowedOrigins);
+}
+
+/**
+ * Same trust decision as isBrowserRequestTrusted, but resolves the allowlist
+ * lazily: getAllowedOrigins() only runs when an Origin header is present.
+ * getTrustedBrowserOrigins does synchronous disk I/O on the settings store,
+ * and the vast majority of :9401 traffic (the CLI, the tray, rt-client from a
+ * Bun/Node process) carries no Origin at all, so it must never pay that cost.
+ */
+export function resolveOriginTrust(
+  origin: string | null,
+  presentedToken: string | null,
+  apiToken: string,
+  getAllowedOrigins: () => readonly string[] = getTrustedBrowserOrigins,
+): boolean {
+  if (!origin) return true;
+  return isBrowserRequestTrusted(origin, presentedToken, apiToken, getAllowedOrigins());
 }
