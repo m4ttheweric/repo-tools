@@ -129,7 +129,7 @@ test("pane send --json prints the PaneSendResult and exits 0 on refused", async 
   const result = { paneId: "w1:p2", delivered: "refused", reason: "at a prompt" };
   replies = { "pane:send": { ok: true, data: result } };
   const r = await run(paneSend, ["w1:p2", "--text", "x", "--json"]);
-  expect(JSON.parse(r.stdout)).toEqual(result);
+  expect(JSON.parse(r.stdout)).toEqual({ ok: true, ...result });
   expect(r.code).toBe(0);
 });
 
