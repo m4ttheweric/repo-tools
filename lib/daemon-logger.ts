@@ -18,17 +18,30 @@ import pino, { type Logger } from "pino";
 // @ts-ignore — no types shipped; the JS API is well-tested.
 import roll from "pino-roll";
 import { dlopen, suffix, FFIType } from "bun:ffi";
-import { mkdirSync, openSync, closeSync, existsSync, statSync, renameSync } from "fs";
+import { mkdirSync, openSync, closeSync, existsSync, statSync, renameSync, writeSync } from "fs";
 import { join } from "path";
 import { logsDir } from "./rt-paths.ts";
+
+/** Last-resort write straight to fd 2, bypassing pino entirely — used only when the logger itself has failed or can't be trusted. */
+function rawStderr(text: string): void {
+  try {
+    writeSync(2, text);
+  } catch {
+    // Nothing left to do — even fd 2 is gone.
+  }
+}
 
 export interface DaemonLoggerHandle {
   /** Root logger — use when no specific module scope applies. */
   logger: Logger;
+  /** Underlying pino-roll write stream — exposed as a test seam for simulating write errors. */
+  stream: NodeJS.WritableStream;
   /** Returns a child logger that stamps `module: <name>` on every line. */
   childLogger: (module: string) => Logger;
   /** Force a flush (best-effort; pino-roll's stream is sync but exposes flushSync). */
   flush?: () => void;
+  /** True once the underlying stream has emitted an 'error' (e.g. ENOSPC) — writes since then were swallowed, not lost silently. */
+  loggerDegraded: () => boolean;
 }
 
 export interface CreateOptions {
@@ -56,6 +69,17 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
     sync: true,
   });
 
+  // A write failure (e.g. ENOSPC) on the underlying stream otherwise throws
+  // out of the next log.*() call — every call site would need its own guard.
+  // One listener here flips a flag instead, so callers keep calling log.*()
+  // without throwing, and the raw write means the failure itself is still
+  // visible somewhere even though the JSON log can't take it.
+  let degraded = false;
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    degraded = true;
+    rawStderr(`daemon-logger: stream error ${err?.code ?? ""} ${err?.message ?? err}\n`);
+  });
+
   const logger = pino(
     {
       level: opts.level ?? "info",
@@ -74,11 +98,13 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
 
   return {
     logger,
+    stream,
     childLogger: (module: string) => logger.child({ module }),
     flush: () => {
       // pino's flushSync drains any buffered writes; safe to call repeatedly.
       try { logger.flush(); } catch { /* */ }
     },
+    loggerDegraded: () => degraded,
   };
 }
 
@@ -268,18 +294,35 @@ export function installCrashHandlers(
 
   // Because the pino-roll stream is opened with sync:true, logger.fatal()
   // flushes immediately to the fd — no need for pino.final() here.
+  //
+  // The logger.*() calls below are wrapped in try/catch: a logging failure
+  // (e.g. the stream is degraded from ENOSPC) must not itself abort a crash
+  // handler and skip the exit it's here to guarantee — only the logging is
+  // guarded, never the exit decision.
   process.on("uncaughtException", (err) => {
-    logger.fatal({ err }, "uncaughtException");
+    try {
+      logger.fatal({ err }, "uncaughtException");
+    } catch {
+      rawStderr(`uncaughtException (logger failed): ${err?.stack ?? err}\n`);
+    }
     process.exit(1);
   });
 
   process.on("unhandledRejection", (reason) => {
     if (opts.booting?.()) {
-      logger.fatal({ err: reason }, "unhandledRejection during boot");
+      try {
+        logger.fatal({ err: reason }, "unhandledRejection during boot");
+      } catch {
+        rawStderr(`unhandledRejection during boot (logger failed): ${reason}\n`);
+      }
       process.exit(1);
       return;
     }
-    logger.error({ err: reason }, "unhandledRejection");
+    try {
+      logger.error({ err: reason }, "unhandledRejection");
+    } catch {
+      rawStderr(`unhandledRejection (logger failed): ${reason}\n`);
+    }
   });
 
   // Intercept process.stderr.write so JS-side stderr writes land in the log.
