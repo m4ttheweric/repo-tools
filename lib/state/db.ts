@@ -304,7 +304,7 @@ function addArchivedAtColumnIfMissing(db: Database): void {
 }
 
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
-function isCorruptionError(err: unknown): boolean {
+export function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code;
   return code === "SQLITE_CORRUPT" || code === "SQLITE_NOTADB";
 }

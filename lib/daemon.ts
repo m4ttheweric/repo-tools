@@ -63,6 +63,7 @@ import {
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import { createEventsBus } from "./daemon/events-bus.ts";
+import { safeInterval, safeTimeout } from "./daemon/safe-timers.ts";
 import { pruneRuns } from "./runs/prune.ts";
 import { pruneLogs } from "./log-janitor.ts";
 import { getSetting } from "./settings/resolve.ts";
@@ -208,10 +209,12 @@ const hooksGuard = createHooksGuard(log);
 // Pane-communication events bus (RT-44): SQLite journal + in-memory waiters.
 const eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
 // Hourly retention sweep — cheap; rides its own interval rather than pollers
-// because it needs no poller deps.
-setInterval(() => eventsBus.sweep(), 60 * 60 * 1000);
+// because it needs no poller deps. safeInterval/safeTimeout: a sync sqlite
+// throw here (e.g. SQLITE_FULL) must warn, not become an uncaughtException
+// that exits the daemon.
+safeInterval(() => eventsBus.sweep(), 60 * 60 * 1000, "events-sweep", log);
 // Boot-time sweep to handle frequent daemon restarts that would otherwise starve the hourly interval.
-setTimeout(() => eventsBus.sweep(), 30_000);
+safeTimeout(() => eventsBus.sweep(), 30_000, "events-sweep-boot", log);
 
 // Age-floor prune of pipeline run dirs — daily; assertPrunable in prune.ts
 // guards every deletion against the runs root.
