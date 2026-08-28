@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { execFileSync } from "child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -886,6 +887,37 @@ describe("skillsCheck", () => {
     expect(staleLine).toContain("watch-ci");
     expect(staleLine).toContain("leftover.txt");
     expect(process.exitCode).toBe(1);
+  });
+
+  test("a gitignored file inside the compiled dir (a __pycache__ from running its scripts) is not an orphan", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    execFileSync("git", ["init", "-q"], { cwd: packDir });
+    writeFileSync(join(packDir, ".gitignore"), "__pycache__/\n");
+
+    await skillsCompile([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    mkdirSync(join(packDir, "skills", "watch-ci", "scripts", "__pycache__"), { recursive: true });
+    writeFileSync(join(packDir, "skills", "watch-ci", "scripts", "__pycache__", "ci_watch.cpython-314.pyc"), "bytecode\n");
+    logs = [];
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    expect(logs).toContain("watch-ci: current");
+    expect(process.exitCode).not.toBe(1);
   });
 
   test("never-compiled public verb (missing outDir) reports stale and exits 1", async () => {

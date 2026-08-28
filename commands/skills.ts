@@ -894,8 +894,12 @@ export async function skillsCheck(args: string[]): Promise<void> {
 
       // A file left behind by an earlier compile: writeCompiledVerb would delete it on
       // the next real compile, so "current" here would be a false clean bill of health.
-      for (const onDisk of listFilesRecursive(outDir)) {
-        if (!expectedPaths.has(onDisk)) orphanFiles.push(onDisk);
+      const onDiskFiles = listFilesRecursive(outDir);
+      const outRel = relativePath(resolved.packDir, outDir);
+      const ignored = gitIgnoredFiles(resolved.packDir, onDiskFiles.map((f) => join(outRel, f)));
+      for (const onDisk of onDiskFiles) {
+        if (expectedPaths.has(onDisk) || ignored.has(join(outRel, onDisk))) continue;
+        orphanFiles.push(onDisk);
       }
 
       if (staleFiles.length > 0 || orphanFiles.length > 0) {
@@ -1422,6 +1426,25 @@ function isInsideGitWorkTree(dir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Files git ignores inside a compiled dir (a __pycache__ from running the
+ * verb's scripts in place, editor droppings) were never written by a compile
+ * and are not drift. Outside a git checkout there are no ignore rules, so
+ * every stray file counts. Paths are pack-relative, as git check-ignore
+ * reports them.
+ */
+function gitIgnoredFiles(packDir: string, relPaths: string[]): Set<string> {
+  if (relPaths.length === 0 || !isInsideGitWorkTree(packDir)) return new Set();
+  const res = spawnSync("git", ["check-ignore", "--stdin", "-z"], {
+    cwd: packDir,
+    input: relPaths.join("\0") + "\0",
+    encoding: "utf8",
+  });
+  // exit 1 means nothing matched; any other non-zero status is a git error
+  if (res.status !== 0) return new Set();
+  return new Set(res.stdout.split("\0").filter(Boolean));
 }
 
 type PlannedMove = { fromRel: string; toRel: string };
