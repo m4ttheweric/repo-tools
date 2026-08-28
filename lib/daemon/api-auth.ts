@@ -13,6 +13,7 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { RT_DIR } from "../daemon-config.ts";
 import { lazyChildLogger } from "../daemon-logger.ts";
+import { getSetting } from "../settings/resolve.ts";
 
 const log = lazyChildLogger("api-auth");
 
@@ -66,20 +67,66 @@ export function reloadApiToken(tokenPath: string = API_TOKEN_PATH): string {
   return cachedApiToken;
 }
 
-/** True when a request mutates state, or (secrets) returns raw credential values, and must present the local token. */
+/**
+ * True when a request mutates state, or (secrets/notifications) returns or
+ * drains something a GET should not silently consume, and must present the
+ * local token. Default-gated for every method except GET/HEAD/OPTIONS (S040:
+ * an allowlist-by-path guaranteed the next mutating route would ship
+ * unguarded) plus two explicit GET exceptions whose verb lies about being a
+ * read.
+ */
 export function needsToken(method: string, pathname: string): boolean {
-  if (method === "OPTIONS") return false;
-  if (pathname === "/api/shutdown") return true;
-  if (pathname === "/api/sdm/reconnect") return true;
-  if (pathname === "/api/events/emit") return true;
-  // Gated despite being a GET: every other read-only route returns metadata
-  // (branch names, MR titles, ports) safe under the open-CORS "reads are
-  // free" policy above; this one's response body IS the credential.
-  if (pathname === "/api/secrets") return true;
-  return false;
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+    // Gated despite being a GET: /api/secrets's response body IS a
+    // credential (S054); /api/notifications DRAINS the queue (S041), so its
+    // verb lies about being a read the way every other GET here is not.
+    if (pathname === "/api/secrets") return true;
+    if (pathname === "/api/notifications") return true;
+    return false;
+  }
+  return true;
 }
 
 /** True when the presented token matches the configured one (and one exists). */
 export function tokenOk(provided: string | null, expected: string): boolean {
   return expected.length > 0 && provided === expected;
+}
+
+/**
+ * `rt.trustedBrowserOrigins` -- see registry-defs.ts. Read fresh on every
+ * call (the settings resolver is deliberately unmemoized), wrapped in a
+ * try/catch since a request-path settings read must never 500 the daemon
+ * over a malformed store file.
+ */
+export function getTrustedBrowserOrigins(): readonly string[] {
+  try {
+    const resolved = getSetting<string[]>("rt.trustedBrowserOrigins");
+    return Array.isArray(resolved.value) ? resolved.value : [];
+  } catch {
+    return [];
+  }
+}
+
+export function isOriginAllowed(origin: string, allowedOrigins: readonly string[]): boolean {
+  return allowedOrigins.includes(origin);
+}
+
+/**
+ * The 127.0.0.1 trust boundary (S005/S006): the daemon binds loopback-only,
+ * but any web page the user visits also runs on 127.0.0.1 and can send a
+ * request. A request with NO Origin header at all is not a browser fetch --
+ * it is the CLI, the Swift tray, rt-client from a Bun/Node process, or the
+ * VS Code extension, none of which send one -- so it is trusted unchanged.
+ * A request that DOES carry an Origin header is trusted only if it presents
+ * the local api-token or its Origin is on the explicit allowlist.
+ */
+export function isBrowserRequestTrusted(
+  origin: string | null,
+  token: string | null,
+  apiToken: string,
+  allowedOrigins: readonly string[],
+): boolean {
+  if (!origin) return true;
+  if (tokenOk(token, apiToken)) return true;
+  return isOriginAllowed(origin, allowedOrigins);
 }

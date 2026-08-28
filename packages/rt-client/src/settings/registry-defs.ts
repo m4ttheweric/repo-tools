@@ -205,6 +205,14 @@ export const REGISTRY: readonly SettingDef[] = [
     migrated: true,
     description: "Per-repo git hook enable/disable state ({enabled, hooks: {<hookName>: boolean}}); ownership-latch port of repos/<repo>/hooks.json, store wins per field once it owns the key — including per-hook-name entries inside the nested hooks map, each defaulting to enabled when absent. The installed git-hook shim still greps repos/<repo>/hooks.json with zero process spawns (a hook fires on every git operation); that file is now a DERIVED CACHE this key writes through, kept current by commands/hooks.ts's regenerateHooksCache at every write seam.",
   },
+  {
+    key: "rt.trustedBrowserOrigins",
+    type: "array",
+    scopes: ["user", "machine"],
+    default: [],
+    merge: "replace",
+    description: "Browser Origins (scheme://host:port, exact string match) trusted to read the :9401 daemon API and subscribe to /ws without presenting the local api-token -- e.g. a locally-hosted console or chat-viewer dev server. Empty by default: every current mattstack consumer (the CLI, the Swift tray, rt-client from Bun/Node processes, the VS Code extension) is a non-browser client (sends no Origin header at all) and is unaffected either way.",
+  },
 
   // --- mattstack (installer-lane) -----------------------------------------
   {
