@@ -55,8 +55,9 @@ primitive.
    the recommended adoption pattern for them.
 3. Headless in fallback is a hard error, not a synchronous foreground run. "It
    genuinely doesn't need the daemon unless headless is wanted" (Matt).
-4. No schema change: the `agents` table already exists (v7 on main). Neither A
-   nor B bumps `SCHEMA_VERSION`.
+4. No schema change: the `agents` table already exists (it landed in
+   `V7_SCHEMA`; current `SCHEMA_VERSION` on main is 8, v8 having added
+   `chat_rooms.archived_at`). Neither A nor B bumps `SCHEMA_VERSION`.
 
 ## Design
 
@@ -78,13 +79,25 @@ const tabLabel       = payload.tab       ?? `↺ ${rec.label ?? rec.id}`;
 const workspaceLabel = payload.workspace ?? repoLabel(rec.repo);
 ```
 
-That is the entire behavioral change. `rt-client`'s `agentResume` wrapper
-already forwards the whole payload, so it carries the new fields once the
-`Commands` type includes them. `commands/agent.ts` `resume` parsing gains
-`--workspace` / `--tab` for shell/human parity (board uses the wrapper, not the
-CLI, but the CLI surface must stay consistent).
+That two-liner is the behavioral change, but delivering it end to end is FOUR
+edits, and the wrapper edit is the one that bites if missed:
 
-board maps directly: `agentResume({ id, prompt: reReviewResumePrompt(iid),
+1. Add `workspace?` / `tab?` to `Commands["agent:resume"].payload`
+   (`packages/rt-client/src/commands.ts:318`).
+2. Add `"workspace"` / `"tab"` to the `agentResume` WRAPPER's forwarded keys
+   (`packages/rt-client/src/client.ts:364-371`). The wrapper today cherry-picks
+   `id`/`prompt`/`surface` only... it does NOT forward the whole payload
+   (unlike `agentStart` at `:359`, whose key list already includes
+   `workspace`/`tab`). Miss this and board's `agentResume({ id, prompt,
+   workspace, tab })` type-checks and then silently drops `workspace`/`tab` at
+   the wrapper before the IPC call: the "types promise verbs the runtime does
+   not deliver" footgun (CLAUDE.md). This edit is mandatory, not incidental.
+3. The handler default change above (`lib/daemon/handlers/agent.ts:195-196`).
+4. `commands/agent.ts` `resume` parsing gains `--workspace` / `--tab` for
+   shell/human parity (board uses the wrapper, not the CLI, but the CLI surface
+   must stay consistent).
+
+board then maps directly: `agentResume({ id, prompt: reReviewResumePrompt(iid),
 workspace: config.reviewsWorkspace, tab: mrTabLabel(iid, author, "⟲") })`.
 
 ### B. Daemon-optional herdr + read verbs
@@ -103,26 +116,36 @@ if (await isDaemonRunning()) {
 }
 ```
 
-The fallback reuses the exact handler logic, zero duplication:
+The fallback reuses the exact handler logic for the surfaces it supports, zero
+duplication. The **headless refusal is a gate in `commands/agent.ts` BEFORE the
+handler is ever constructed or called** — NOT inside the reused handler. This is
+load order, and it is the subtle correctness point: the handler's
+`agent:start`/`agent:resume` will happily spawn `claude -p` async and insert a
+record for a headless surface, so routing headless THROUGH the reused handler
+would spawn a child the exiting CLI then orphans and contradict "records
+nothing". So:
 
 ```text
-const db = openStateDbForFallback();                 // version-guarded, below
+if (surface === "headless") fail(HEADLESS_NEEDS_DAEMON);   // in commands/agent.ts, before the handler
+const db = openStateDbForFallback();                       // version-guarded, below
 const handlers = createAgentHandlers({ db, emitEvent: () => {}, log });
-// call handlers["agent:start" | "agent:resume" | "agent:get" | "agent:list"]
+// only herdr start/resume + get/list reach the handler:
+// handlers["agent:start" | "agent:resume" | "agent:get" | "agent:list"]
 ```
 
 Per verb, daemon down:
 
-- `start` / `resume`, `surface: "herdr"` (the default): runs fully. Builds the
-  pane command, calls `launchInWorkspace` (spawns the herdr CLI directly), and
-  records to the SAME `state.db` the daemon reads when it returns. The record
-  is durable and unified; `rt agent list` shows it later.
-- `start` / `resume`, `surface: "headless"`: hard error. Message:
-  `"headless needs the rt daemon to reap completion; start it (rt daemon
-  start) or use --surface herdr"`. The CLI exits immediately and cannot
-  async-reap a `claude -p` child.
-- `show` / `list`: run against the local db (read path). Work daemon-up or
-  daemon-down identically.
+- `start` / `resume`, `surface: "herdr"` (the default): runs fully via the
+  reused handler. Builds the pane command, calls `launchInWorkspace` (spawns
+  the herdr CLI directly), and records to the SAME `state.db` the daemon reads
+  when it returns. The record is durable and unified; `rt agent list` shows it
+  later.
+- `start` / `resume`, `surface: "headless"`: hard error, raised in the CLI
+  before the handler (above). Message: `"headless needs the rt daemon to reap
+  completion; start it (rt daemon start) or use --surface herdr"`. Nothing is
+  recorded and nothing is spawned.
+- `show` / `list`: run against the local db (read path) via the handler. Work
+  daemon-up or daemon-down identically.
 
 ### The state.db writer / migration contract (the invariant this lane touches)
 
@@ -134,17 +157,35 @@ that convention protects. The fallback:
    a private copy. Records unify.
 2. **Goes through `runCriticalWrite`.** `agents-store` already wraps its
    inserts/updates in it, so BUSY is retried and the write is safe concurrent
-   with any other writer (WAL). No new concurrency code.
-3. **Never migrates a db newer than this binary.** `openStateDb` runs
+   with any other writer (WAL). No new concurrency code. The
+   probe-then-act race (the daemon starts between `isDaemonRunning()` and the
+   fallback write) is benign for the same reason: `state.db` is a shared
+   CLI+daemon store in WAL mode, both writers go through `runCriticalWrite`, and
+   records land in one unified table. Worst case is a record written by the CLI
+   while a just-started daemon also runs — still one durable, visible row.
+3. **Never migrates a db newer than this build.** `openStateDb` runs
    `runMigrations` unconditionally, which would stamp `user_version` up to this
    binary's `SCHEMA_VERSION`. That is safe on a normal install (one binary, so
    CLI and daemon share `SCHEMA_VERSION`) but hazardous across dev lanes
    (CLAUDE.md `SCHEMA_VERSION` footgun). Guard: read `PRAGMA user_version`
    first; if it is **greater than** `SCHEMA_VERSION`, refuse the fallback with
    `"state.db is newer than this rt build; start the matching daemon"`. Equal
-   or behind proceeds (migrating up is data-preserving, IF NOT EXISTS). This is
-   `openStateDbForFallback()`: open, version-check, then either bail or hand
-   back the normally-migrated handle.
+   or behind proceeds (migrating up is data-preserving, IF NOT EXISTS).
+
+   Scope honestly: this guard refuses only the **db-strictly-newer** direction.
+   It does NOT address the estate's equal-version-divergent-schema footgun (two
+   lanes both at `vN` with different tables, first-to-stamp wins) — and it need
+   not, because this lane bumps no `SCHEMA_VERSION`, so it introduces no new
+   divergence, and the CLI flavor already migrates `state.db` today. Do not
+   describe the guard as "closing the cross-lane footgun"; it refuses a db
+   newer than this build, nothing more.
+
+   Implementation note: `openStateDb(path, flavor)` opens AND migrates in one
+   call with no pre-migrate seam, so `openStateDbForFallback()` must either
+   raw-open the file → read `PRAGMA user_version` → close → (bail, or
+   `openStateDb(path, "cli")`), or inline the same pragma check. The daemon
+   uses flavor `"daemon"`; the fallback uses the default `"cli"` flavor, same as
+   every other CLI `state.db` open today.
 4. **Never starts a daemon.** The fallback is in-process work, then exit. It
    does not spawn, kickstart, or auto-start `rt daemon` (CLAUDE.md: diagnose
    live services without starting competing instances).
@@ -158,9 +199,13 @@ that convention protects. The fallback:
 - **A** changes the `Commands` type and the `agentResume` wrapper contract, so
   it ships in a **new rt-client version** (main-only publish, `prepack`
   rebuilds `dist`, OTP-gated by Matt, grep the built bundle for `agentStart`
-  and the new resume fields before publish). That same publish is what first
-  delivers `agent:*` to any consumer at all (board pins `^0.6.1`, gitq `^0.4.1`,
-  both predate the wrappers).
+  and the new resume fields before publish). Consumer version state differs:
+  gitq's `^0.4.1` predates the `agent:*` wrappers entirely (they landed at
+  0.6.1, #113); board's `^0.6.1` sits in the wrapper-bearing range, so board
+  needs only A's new resume fields (a publish `>0.7.0`). (board's *installed*
+  dist was grep-verified to lack `agentStart` today — the dist-staleness
+  footgun; that is board's to resolve at its migration, not this lane.) Either
+  way A's fields require a fresh publish and no consumer bump lands here.
 - **B** is binary-only (lives in `commands/agent.ts` + `lib/state`), no
   rt-client change.
 - **No consumer bump** in this lane. Consumers upgrade their pin only when they
