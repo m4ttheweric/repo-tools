@@ -87,6 +87,18 @@ function assertionError(fn: () => void): string | null {
   }
 }
 
+// herdr's report_metadata schema types `seq` as a uint64 INTEGER: a
+// nanosecond-bigint string is rejected (invalid_request), and Date.now()
+// alone repeats within the same millisecond -- either loses a badge, the
+// first silently (herdr rejects it), the second because herdr drops a
+// report whose seq does not advance. Monotonic and always a plain number:
+// each call takes the greater of "now" and "one past the last seq sent."
+let lastBadgeSeq = 0;
+function nextBadgeSeq(): number {
+  lastBadgeSeq = Math.max(Date.now(), lastBadgeSeq + 1);
+  return lastBadgeSeq;
+}
+
 /**
  * Best-effort desk signal for a delivery the inbox socket never got: paints
  * the recipient's pane with an unread count through herdr so a failed push
@@ -109,12 +121,7 @@ async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | un
       // whatever the first one reported.
       tokens: { chat_unread: String(count) },
       ttl_ms: 600_000,
-      // Nanosecond-monotonic, not Date.now(): two failed deliveries inside
-      // the same millisecond would otherwise share a seq, and herdr drops a
-      // report whose seq does not advance -- silently losing the second
-      // badge. Stringified because hrtime's bigint would otherwise coerce
-      // through a lossy JSON number.
-      seq: process.hrtime.bigint().toString(),
+      seq: nextBadgeSeq(),
     });
   } catch {
     /* best-effort */

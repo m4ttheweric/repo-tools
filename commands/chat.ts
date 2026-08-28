@@ -13,7 +13,7 @@
  *   rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]
  *   rt chat sign-in --pane <id> [--as <h>] [--status <text>]   sign in a herdr pane's session, no CLAUDE_CODE_SESSION_ID needed
  *   rt chat sign-out [--quiet] [--session <id>]
- *   rt chat sign-out --pane <id> [--quiet]         sign out a herdr pane's session daemon-side, no CLAUDE_CODE_SESSION_ID needed
+ *   rt chat sign-out --pane <id>                   sign out a herdr pane's session daemon-side, no CLAUDE_CODE_SESSION_ID needed
  *   rt chat away <text> [--session <id>]           rt chat back [--session <id>]
  *   rt chat buddies [--json]                       the roster; bare `who` aliases it
  *   rt chat dm <handle> <<'EOF' ... EOF           same body rules as post
@@ -1028,6 +1028,11 @@ async function runSignOut(args: string[]): Promise<void> {
 async function runSignOutViaPane(args: string[], paneId: string): Promise<void> {
   const res = await chatSignOut({ pane: paneId, viaPane: true }, { timeoutMs: 3000 });
   const { sessionId } = unwrap(res, "sign-out");
+  // An old daemon (pre-viaPane sign-out) still replies {ok:true, data:{}}
+  // for an unrecognized `pane`/`viaPane` field it silently ignores -- with
+  // no sessionId, printing "signed out" would be a false success and no
+  // session would actually be deleted.
+  if (!sessionId) fail("sign-out --pane needs a daemon that supports it; restart the rt daemon");
 
   const session = readChatSession(sessionId);
   deleteChatSession(sessionId);

@@ -171,6 +171,32 @@ test("a delivery failure paints the recipient's pane with an unread badge over h
   await waitFor(() => seen.some((r) => r.method === "pane.report_metadata"));
   const badge = seen.find((r) => r.method === "pane.report_metadata");
   expect(badge?.params).toMatchObject({ pane_id: "w1:p1", source: "rt-chat", tokens: { chat_unread: "1" }, ttl_ms: 600_000 });
+  // herdr's report_metadata schema types `seq` as a uint64 INTEGER -- a
+  // number, never a bigint-derived string (which herdr would reject as
+  // invalid_request and drop the badge silently).
+  const params = badge?.params as { seq?: unknown } | undefined;
+  expect(typeof params?.seq).toBe("number");
+  expect(Number.isInteger(params?.seq)).toBe(true);
+  stop();
+});
+
+test("two badges in the same delivery chain get strictly increasing seq numbers", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: false, error: "timeout" }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const h = freshHandlers(inboxDeps, herdr);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b", pane: "w1:p1" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b one" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b two" });
+  await waitFor(() => seen.filter((r) => r.method === "pane.report_metadata").length >= 2);
+  const badges = seen.filter((r) => r.method === "pane.report_metadata").map((r) => (r.params as { seq: number }).seq);
+  expect(badges.length).toBeGreaterThanOrEqual(2);
+  for (let i = 1; i < badges.length; i++) expect(badges[i]).toBeGreaterThan(badges[i - 1]!);
   stop();
 });
 

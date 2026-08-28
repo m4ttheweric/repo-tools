@@ -711,6 +711,14 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
       else process.env.HERDR_SOCKET_PATH = origSock;
     }
   });
+
+  test("sign-out --pane against an old daemon (no sessionId in the reply) fails loudly rather than reporting a false success", async () => {
+    canned["chat:sign-out"] = { ok: true, data: {} };
+    const { code, stdout, stderr } = await runChatRaw(["sign-out", "--pane", "w1:p1"]);
+    expect(code).not.toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("sign-out --pane needs a daemon that supports it");
+  });
 });
 
 // ─── buddies, away/back, dm, pulse ──────────────────────────────────────────
