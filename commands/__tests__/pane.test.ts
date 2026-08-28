@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { paneAccounts, paneDirectories, paneList, panePeek, paneSpawn } from "../pane.ts";
+import { paneAccounts, paneDirectories, paneList, panePeek, paneSend, paneSpawn } from "../pane.ts";
 
 let home: string;
 let origHome: string | undefined;
@@ -100,4 +100,69 @@ test("pane accounts and directories render", async () => {
   const d = await run(paneDirectories, ["--q", "chat"]);
   expect(seen.at(-1)).toEqual({ cmd: "pane:directories", payload: { q: "chat" } });
   expect(d.stdout).toContain("/repos/chat");
+});
+
+test("pane send forwards the text and HERDR_PANE_ID as callerPane", async () => {
+  replies = { "pane:send": { ok: true, data: { paneId: "w1:p2", delivered: "accepted" } } };
+  const orig = process.env.HERDR_PANE_ID;
+  process.env.HERDR_PANE_ID = "w1:p1";
+  try {
+    const r = await run(paneSend, ["w1:p2", "--text", "standup in 5"]);
+    expect(seen[0]).toEqual({ cmd: "pane:send", payload: { paneId: "w1:p2", text: "standup in 5", callerPane: "w1:p1" } });
+    expect(r.stdout).toBe("w1:p2 accepted");
+    expect(r.code).toBe(0);
+  } finally {
+    if (orig === undefined) delete process.env.HERDR_PANE_ID;
+    else process.env.HERDR_PANE_ID = orig;
+  }
+});
+
+test("pane send prints the outcome and does not exit non-zero on refused", async () => {
+  replies = { "pane:send": { ok: true, data: { paneId: "w1:p2", delivered: "refused", reason: "at a prompt" } } };
+  const r = await run(paneSend, ["w1:p2", "--text", "x"]);
+  expect(r.stdout).toContain("refused");
+  expect(r.stdout).toContain("at a prompt");
+  expect(r.code).toBe(0);
+});
+
+test("pane send omits callerPane when HERDR_PANE_ID is unset", async () => {
+  replies = { "pane:send": { ok: true, data: { paneId: "w1:p2", delivered: "queued" } } };
+  const orig = process.env.HERDR_PANE_ID;
+  delete process.env.HERDR_PANE_ID;
+  try {
+    await run(paneSend, ["w1:p2", "--text", "hi"]);
+    expect(seen[0]).toEqual({ cmd: "pane:send", payload: { paneId: "w1:p2", text: "hi" } });
+  } finally {
+    if (orig !== undefined) process.env.HERDR_PANE_ID = orig;
+  }
+});
+
+test("pane send --text - reads a multi-line body from stdin", async () => {
+  replies = { "pane:send": { ok: true, data: { paneId: "w1:p2", delivered: "accepted" } } };
+  const orig = process.env.HERDR_PANE_ID;
+  delete process.env.HERDR_PANE_ID;
+  const stdinSpy = spyOn(Bun.stdin, "stream").mockImplementation(() => new Response("line one\nline two").body!);
+  try {
+    await run(paneSend, ["w1:p2", "--text", "-"]);
+    expect(seen[0]).toEqual({ cmd: "pane:send", payload: { paneId: "w1:p2", text: "line one\nline two" } });
+  } finally {
+    stdinSpy.mockRestore();
+    if (orig !== undefined) process.env.HERDR_PANE_ID = orig;
+  }
+});
+
+test("pane send requires a pane and --text", async () => {
+  const noPane = await run(paneSend, ["--text", "x"]);
+  expect(noPane.code).toBe(1);
+  expect(noPane.stderr).toContain("usage");
+  const noText = await run(paneSend, ["w1:p2"]);
+  expect(noText.code).toBe(1);
+  expect(noText.stderr).toContain("usage");
+});
+
+test("pane send exits non-zero when the daemon fails", async () => {
+  replies = { "pane:send": { ok: false, error: "herdr unavailable: no socket" } };
+  const r = await run(paneSend, ["w1:p2", "--text", "x"]);
+  expect(r.code).toBe(1);
+  expect(r.stderr).toContain("herdr unavailable");
 });
