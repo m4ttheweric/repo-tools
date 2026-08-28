@@ -8,13 +8,13 @@
 
 **Tech Stack:** Bun, `bun:sqlite`, pino, TypeScript. Tests are `bun test` (unit) and `bun test --preload ./e2e/setup.ts` (e2e, isolated-HOME daemon spawns).
 
-**Spec:** `/Users/matt/Documents/GitHub/repo-tools/.claude/worktrees/daemon-stability-audit/docs/daemon-stability-audit-2026-08.md` — "Roadmap › Phase 0" plus Appendix A/B entries S001, S003, S004, S009, S011, S012, S026, S027, S028, S029, S030, S035, S036, S037, S043, S044, S060, S072, S073, S074, R001, R002, R007, R017. Each carries a failure scenario, prescribed fix, and fixer notes; read the relevant entry before implementing its task.
+**Spec:** `/Users/matt/Documents/GitHub/repo-tools/.claude/worktrees/daemon-stability-audit/docs/daemon-stability-audit-2026-08.md` ... "Roadmap › Phase 0" plus Appendix A/B entries S001, S003, S004, S009, S011, S012, S026, S027, S028, S029, S030, S035, S036, S037, S043, S044, S060, S072, S073, S074, R001, R002, R007, R017. Each carries a failure scenario, prescribed fix, and fixer notes; read the relevant entry before implementing its task.
 
 ## Global Constraints
 
-- **No `SCHEMA_VERSION` bump and no new/edited `V*_SCHEMA` block.** Persist all supervision state (restart counters, last-exit reason, boot-failed markers) in the existing `kv` table under namespace `daemon-supervision`, via `setKvValue`/`getKvValue` from `lib/state/kv-blob.ts`. If any task appears to need a schema change, STOP and ask the user (per the job brief's question format) — do not proceed.
+- **No `SCHEMA_VERSION` bump and no new/edited `V*_SCHEMA` block.** Persist all supervision state (restart counters, last-exit reason, boot-failed markers) in the existing `kv` table under namespace `daemon-supervision`, via `setKvValue`/`getKvValue` from `lib/state/kv-blob.ts`. If any task appears to need a schema change, STOP and ask the user (per the job brief's question format) ... do not proceed.
 - **Never start a daemon or run `rt` against the real machine.** Every daemon or `dist/rt` invocation in a test or check runs under `env -i HOME=<temp dir>` only (repo CLAUDE.md, "Operating on this machine"). e2e daemon spawns already do this via `e2e/setup.ts`; new e2e tests must follow the same isolation.
-- **Write fence — do NOT modify these sibling-owned files** (ask the user if a task seems to need one): `lib/daemon/api-server.ts`, `lib/daemon/api-auth.ts`, `lib/daemon/socket-server.ts`, `lib/daemon/handlers/secrets.ts`, `lib/subprocess.ts`, `lib/daemon/cache-refresh.ts`, `lib/git-worktrees.ts`, `lib/daemon/freshness.ts`, `lib/daemon/pollers.ts`, `lib/daemon/worktree-process-kill.ts`, `lib/daemon/system-process-scanner.ts`, `lib/runs/store.ts`, `lib/notifier.ts`, `lib/daemon/handlers/discussions.ts`, `lib/daemon/handlers/chat.ts`, `lib/daemon/handlers/agent.ts`, `lib/daemon/handlers/pane.ts`, `lib/daemon/handlers/project-mrs.ts`, `lib/daemon/handlers/worktree.ts`, `lib/herdr/client.ts`, `lib/port-scanner.ts`, `lib/deps/links.ts`, `lib/worktree/trash.ts`, `lib/agent-herdr.ts`, `lib/daemon/cron.ts`, `lib/daemon/hooks-guard.ts`, `lib/home/age-key.ts`, `lib/daemon/discussions-store.ts`, `lib/state/presence-store.ts`.
+- **Write fence ... do NOT modify these sibling-owned files** (ask the user if a task seems to need one): `lib/daemon/api-server.ts`, `lib/daemon/api-auth.ts`, `lib/daemon/socket-server.ts`, `lib/daemon/handlers/secrets.ts`, `lib/subprocess.ts`, `lib/daemon/cache-refresh.ts`, `lib/git-worktrees.ts`, `lib/daemon/freshness.ts`, `lib/daemon/pollers.ts`, `lib/daemon/worktree-process-kill.ts`, `lib/daemon/system-process-scanner.ts`, `lib/runs/store.ts`, `lib/notifier.ts`, `lib/daemon/handlers/discussions.ts`, `lib/daemon/handlers/chat.ts`, `lib/daemon/handlers/agent.ts`, `lib/daemon/handlers/pane.ts`, `lib/daemon/handlers/project-mrs.ts`, `lib/daemon/handlers/worktree.ts`, `lib/herdr/client.ts`, `lib/port-scanner.ts`, `lib/deps/links.ts`, `lib/worktree/trash.ts`, `lib/agent-herdr.ts`, `lib/daemon/cron.ts`, `lib/daemon/hooks-guard.ts`, `lib/home/age-key.ts`, `lib/daemon/discussions-store.ts`, `lib/state/presence-store.ts`.
 - **Every subagent dispatched during execution carries an explicit `model`** (`sonnet` for mechanical tasks, `haiku` for lookups).
 - **`packages/rt-client` is touched** (Task 5 edits `registry-defs.ts`). After that task and before the final whole-branch review, run `bun run build` inside `packages/rt-client` (keeps `dist/` and `dist-freshness.test.ts` green).
 - **Verification (must pass before the work is done):**
@@ -24,15 +24,15 @@
 
 ## Deferred / out-of-fence items (documented, not implemented here)
 
-- **S073 · `presence-store.ts:signIn` → `.immediate()`** — `lib/state/presence-store.ts` is fenced. Task 7 converts the chat-store and notifier-store read-then-write transactions; the `signIn` caller is a follow-up for the presence-store owner. Not required for verification.
-- **0.3 · `rt.apiPort` bind-time consumption** — `lib/daemon/api-server.ts` (the binder) is fenced. Task 5 registers the `rt.apiPort` setting and exposes `resolveApiPort()`; the bind-time read is the api-server sibling's hop. The escape hatch is therefore wired daemon-side but consumed sibling-side; do not claim it functions end-to-end until the sibling reads it.
-- **Swift tray edits (S026 dot mapping, S028 `DaemonLifecycle` kickstart fallback, S029 `tray-crash.log` rotation, S060 `AppDelegate` comment)** — grouped as optional Task 16. They cannot be verified by the bun/tsc/e2e gate and the operating rules forbid rebuilding the blessed bundle. Scope confirmation is raised at the plan-review checkpoint. The verifiable CLI-side halves (S028 start→kickstart fallback, S060 exit-code policy) live in Tasks 14 and 12 and are done regardless.
+- **S073 · `presence-store.ts:signIn` → `.immediate()`** ... `lib/state/presence-store.ts` is fenced. Task 7 converts the chat-store and notifier-store read-then-write transactions; the `signIn` caller is a follow-up for the presence-store owner. Not required for verification.
+- **0.3 · `rt.apiPort` bind-time consumption** ... `lib/daemon/api-server.ts` (the binder) is fenced. Task 5 registers the `rt.apiPort` setting and exposes `resolveApiPort()`; the bind-time read is the api-server sibling's hop. The escape hatch is therefore wired daemon-side but consumed sibling-side; do not claim it functions end-to-end until the sibling reads it.
+- **Swift tray edits (S026 dot mapping, S028 `DaemonLifecycle` kickstart fallback, S029 `tray-crash.log` rotation, S060 `AppDelegate` comment)** ... grouped as optional Task 16. They cannot be verified by the bun/tsc/e2e gate and the operating rules forbid rebuilding the blessed bundle. Scope confirmation is raised at the plan-review checkpoint. The verifiable CLI-side halves (S028 start→kickstart fallback, S060 exit-code policy) live in Tasks 14 and 12 and are done regardless.
 
 ---
 
 ## Task 1: Status-verdict + exit-code design sketch
 
-The half-page design that Tasks 9–14 depend on. No production code; the deliverable is a committed design doc. (Retires nothing directly; anchors R001, R002, S036, S060, S026, S028.)
+The half-page design that Tasks 9-14 depend on. No production code; the deliverable is a committed design doc. (Retires nothing directly; anchors R001, R002, S036, S060, S026, S028.)
 
 **Files:**
 - Create: `docs/daemon-supervision-design.md`
@@ -46,7 +46,7 @@ The half-page design that Tasks 9–14 depend on. No production code; the delive
 # Daemon supervision: status verdicts and exit-code semantics
 
 Phase 0 design anchor for the rt daemon stability roadmap (audit
-2026-08). Tasks 9–14 of the Phase 0 plan implement this.
+2026-08). Tasks 9-14 of the Phase 0 plan implement this.
 
 ## launchd contract
 
@@ -65,44 +65,44 @@ down". Every exit-code decision below follows from that single fact.
 
 Mechanism: a module-scope `shuttingDownViaVerb` flag is set true by the
 `shutdown` verb before it calls cleanup; `gracefulExit(signal)` reads it
-— set → exit(0), unset (bare signal) → exit(1).
+... set → exit(0), unset (bare signal) → exit(1).
 
 Boot-phase gate: a module-scope `bootPhase: "booting" | "ready"` flips
 to `"ready"` immediately before the `daemon ready` log. The
 `unhandledRejection` handler exits(1) while `bootPhase === "booting"`
-and only logs (recovers) once ready — so a boot-time stray rejection is
+and only logs (recovers) once ready ... so a boot-time stray rejection is
 fatal but a steady-state one is not.
 
 ## Status verdicts
 
 `rt daemon status` and `/api/status` classify by first match:
 
-1. `not-installed` — SMAppService not registered.
-2. `serving` — ping on rt.sock succeeds.
-3. `parked` — ping fails, a live rt pid exists, and the boot breadcrumb
+1. `not-installed` ... SMAppService not registered.
+2. `serving` ... ping on rt.sock succeeds.
+3. `parked` ... ping fails, a live rt pid exists, and the boot breadcrumb
    phase is a flavor standoff (park). Named distinctly so the user is
    told "another flavor owns the socket", not "wedged".
-4. `alive-not-serving` — ping fails but a live rt pid exists
+4. `alive-not-serving` ... ping fails but a live rt pid exists
    (`process.kill(pid,0)` on rt.pid, or `pgrep -f 'rt --daemon|lib/daemon.ts'`).
    Sub-detail from the breadcrumb phase: `booting` / `wedged`, or
    `quarantined` when a state.db/events.db boot-failed marker is present.
-   Prints "process <pid> is running but not answering rt.sock — rt daemon logs -t".
-5. `crash-looping` — no live pid AND the kv failure record shows ≥ N
+   Prints "process <pid> is running but not answering rt.sock ... rt daemon logs -t".
+5. `crash-looping` ... no live pid AND the kv failure record shows ≥ N
    failures within the last M minutes (N=3, M=5). Prints the last reason.
-6. `boot-failed` — no live pid AND the most recent kv exit record is a
+6. `boot-failed` ... no live pid AND the most recent kv exit record is a
    boot throw (fewer than N failures). Prints the last reason + phase.
-7. `installed-not-running` — registered, no live pid, clean/again-absent
+7. `installed-not-running` ... registered, no live pid, clean/again-absent
    exit record.
 
 ## Persisted state (kv, ns `daemon-supervision`, no schema change)
 
-- `boot-attempts` (number) — incremented at the top of `runDaemon()`.
-- `last-ready-at` (number, epoch ms) — stamped just before `daemon ready`.
-- `recent-failures` (array of `{ at, phase, reason }`, capped to 10) —
+- `boot-attempts` (number) ... incremented at the top of `runDaemon()`.
+- `last-ready-at` (number, epoch ms) ... stamped just before `daemon ready`.
+- `recent-failures` (array of `{ at, phase, reason }`, capped to 10) ...
   appended by the boot fatal path and by state.db/events.db boot-failed
   markers. Crash-loop = ≥ N entries newer than now − M minutes.
 - `last-exit` (`{ at, kind: "shutdown" | "signal" | "boot-failed", code, reason? }`)
-  — written by the shutdown verb, the signal handlers, and the boot
+  ... written by the shutdown verb, the signal handlers, and the boot
   fatal path. Lets status distinguish "cleanly stopped" from "died".
 
 ## Boot breadcrumb
@@ -123,7 +123,7 @@ git commit -m "docs: sketch daemon supervision verdicts + exit-code semantics"
 
 ---
 
-## Task 2: Fatal boot means exit (0.1 — S001, S037)
+## Task 2: Fatal boot means exit (0.1 ... S001, S037)
 
 Boot failures on the prod path currently become an `unhandledRejection` that only logs, leaving a live-pid zombie with no socket/API. Make a `runDaemon()` throw fatal, gate the rejection handler on a boot-phase flag, and move the rt.pid write to after both binds.
 
@@ -133,7 +133,7 @@ Boot failures on the prod path currently become an `unhandledRejection` that onl
 - Test: `lib/__tests__/daemon-logger.test.ts` (rejection handler), `e2e/tests/daemon.test.ts` (fatal boot)
 
 **Interfaces:**
-- Produces: `installCrashHandlers(logger, opts?: { booting?: () => boolean })` — when `booting()` is true, `unhandledRejection` logs `fatal` and `process.exit(1)`; otherwise it logs `error` only (today's behavior). Default (no `booting`) preserves today's error-only behavior.
+- Produces: `installCrashHandlers(logger, opts?: { booting?: () => boolean })` ... when `booting()` is true, `unhandledRejection` logs `fatal` and `process.exit(1)`; otherwise it logs `error` only (today's behavior). Default (no `booting`) preserves today's error-only behavior.
 - Produces: module-scope `let bootPhase: "booting" | "ready" = "booting"` in `lib/daemon.ts`, flipped to `"ready"` at line 513.
 
 - [ ] **Step 1: Write the failing unit test** in `lib/__tests__/daemon-logger.test.ts`:
@@ -162,7 +162,7 @@ test("unhandledRejection exits(1) while booting, only logs once ready", () => {
 
 (If `makeFakeLogger` does not exist, build a minimal `{ info, warn, error, fatal }` of `mock(() => {})`. Remove the listeners this test adds in `afterEach` via `process.removeAllListeners("unhandledRejection")` scoped to the test, matching the file's existing cleanup convention.)
 
-- [ ] **Step 2: Run it — expect FAIL** (`booting` option not supported):
+- [ ] **Step 2: Run it ... expect FAIL** (`booting` option not supported):
 
 Run: `bun test lib/__tests__/daemon-logger.test.ts -t "unhandledRejection exits"`
 Expected: FAIL.
@@ -187,7 +187,7 @@ export function installCrashHandlers(
 }
 ```
 
-- [ ] **Step 4: Run the unit test — expect PASS.**
+- [ ] **Step 4: Run the unit test ... expect PASS.**
 
 - [ ] **Step 5: Wire the boot-phase flag + fatal wrap + rt.pid move in `lib/daemon.ts`.**
   - Add near the top of module scope (after imports, before line 78): `let bootPhase: "booting" | "ready" = "booting";`
@@ -207,7 +207,7 @@ async function runDaemon() {
 }
 ```
 
-  - **Move the rt.pid write** (currently `writeFileSync(DAEMON_PID_PATH, String(process.pid))` at line 416) to AFTER both binds — i.e. after the API bind at line 469 and the socket bind at line 468 (Task 5 will make API bind first; either way, rt.pid is written only once both `servers.socket` and `servers.api` are assigned). A failed boot then never leaves a live-pid file.
+  - **Move the rt.pid write** (currently `writeFileSync(DAEMON_PID_PATH, String(process.pid))` at line 416) to AFTER both binds ... i.e. after the API bind at line 469 and the socket bind at line 468 (Task 5 will make API bind first; either way, rt.pid is written only once both `servers.socket` and `servers.api` are assigned). A failed boot then never leaves a live-pid file.
   - Set `bootPhase = "ready";` immediately before `log.info({ pid }, "daemon ready")` at line 513.
 
 - [ ] **Step 6: Write the failing e2e test** in `e2e/tests/daemon.test.ts` (uses the isolated-HOME harness already in `e2e/setup.ts`):
@@ -232,9 +232,9 @@ test("daemon boot with API port already bound exits non-zero and leaves no stale
 });
 ```
 
-(Reuse the harness's existing `rtBinary`, `isolatedEnv`, `isolatedHome` fixtures — mirror `e2e/tests/daemon.test.ts`'s existing setup. The daemon's own `startApiServer` retries the bind 6× before throwing, so allow up to the 60s timeout.)
+(Reuse the harness's existing `rtBinary`, `isolatedEnv`, `isolatedHome` fixtures ... mirror `e2e/tests/daemon.test.ts`'s existing setup. The daemon's own `startApiServer` retries the bind 6× before throwing, so allow up to the 60s timeout.)
 
-- [ ] **Step 7: Run the e2e test — expect PASS.** Run: `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/daemon.test.ts -t "API port already bound"`
+- [ ] **Step 7: Run the e2e test ... expect PASS.** Run: `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/daemon.test.ts -t "API port already bound"`
 
 - [ ] **Step 8: Commit**
 
@@ -245,7 +245,7 @@ git commit -m "daemon: boot failure is fatal (exit 1), gated by boot-phase flag;
 
 ---
 
-## Task 3: Crash handlers first (0.2 — S003, S004, R007)
+## Task 3: Crash handlers first (0.2 ... S003, S004, R007)
 
 Move `redirectNativeStderr()` and `installCrashHandlers()` above every module-scope side effect so a pre-`startDaemon` failure lands in the crash log instead of a discarded stderr.
 
@@ -256,16 +256,16 @@ Move `redirectNativeStderr()` and `installCrashHandlers()` above every module-sc
 **Interfaces:**
 - Consumes: `installCrashHandlers(logger, { booting })` from Task 2.
 
-- [ ] **Step 1: Hoist `redirectNativeStderr()`** to the very first executable statement of `lib/daemon.ts` module scope — before `migrateLegacyRtDir()` at line 78. It depends only on `logsDir()` and has its own internal try/catch, so a subsequent module-scope throw's fd-2 output lands in `daemon-stderr.log`.
+- [ ] **Step 1: Hoist `redirectNativeStderr()`** to the very first executable statement of `lib/daemon.ts` module scope ... before `migrateLegacyRtDir()` at line 78. It depends only on `logsDir()` and has its own internal try/catch, so a subsequent module-scope throw's fd-2 output lands in `daemon-stderr.log`.
 
 - [ ] **Step 2: Hoist `installCrashHandlers(loggerHandle, { booting: () => bootPhase === "booting" })`** to immediately after `getDaemonLogger()` resolves (right after line ~95, before `parkUntilIntended` at 103 and before `createEventsBus` at 191). The logger must exist first (line 85), so this is the earliest correct point.
 
-- [ ] **Step 3: Remove the now-duplicate `redirectNativeStderr()` and `installCrashHandlers()` calls** inside `runDaemon()` (lines 391-392). Keep `mkdirSync(RT_DIR, …)` at 386 (redirect needs the logs dir; `redirectNativeStderr` already mkdirs its own dir, and RT_DIR creation is idempotent — verify the hoisted `redirectNativeStderr` still finds/creates `logsDir()`).
+- [ ] **Step 3: Remove the now-duplicate `redirectNativeStderr()` and `installCrashHandlers()` calls** inside `runDaemon()` (lines 391-392). Keep `mkdirSync(RT_DIR, …)` at 386 (redirect needs the logs dir; `redirectNativeStderr` already mkdirs its own dir, and RT_DIR creation is idempotent ... verify the hoisted `redirectNativeStderr` still finds/creates `logsDir()`).
 
 - [ ] **Step 4: Write the failing e2e test** in `e2e/tests/daemon.test.ts`:
 
 ```ts
-test("a corrupt events.db does not crash the daemon silently — error is captured", async () => {
+test("a corrupt events.db does not crash the daemon silently ... error is captured", async () => {
   // Pre-create a corrupt events.db in the isolated HOME.
   const rtDir = join(isolatedHome, ".mattstack/rt");
   mkdirSync(rtDir, { recursive: true });
@@ -280,7 +280,7 @@ test("a corrupt events.db does not crash the daemon silently — error is captur
 });
 ```
 
-- [ ] **Step 5: Run — expect PASS** (the redirect now runs before events.db construction, so a corruption throw is captured in `daemon-stderr.log`; after Task 4 it is quarantined instead). Run: `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/daemon.test.ts -t "corrupt events.db"`
+- [ ] **Step 5: Run ... expect PASS** (the redirect now runs before events.db construction, so a corruption throw is captured in `daemon-stderr.log`; after Task 4 it is quarantined instead). Run: `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/daemon.test.ts -t "corrupt events.db"`
 
 - [ ] **Step 6: Commit**
 
@@ -291,7 +291,7 @@ git commit -m "daemon: install stderr redirect + crash handlers before every mod
 
 ---
 
-## Task 4: events.db joins the discipline (0.4 — S009, S035)
+## Task 4: events.db joins the discipline (0.4 ... S009, S035)
 
 Give `events.db` the corruption quarantine + busy_timeout/synchronous pragmas state.db has, and guard the two sweep timers so a sync sqlite throw cannot exit the daemon.
 
@@ -301,7 +301,7 @@ Give `events.db` the corruption quarantine + busy_timeout/synchronous pragmas st
 - Test: `lib/daemon/__tests__/events-bus.test.ts`
 
 **Interfaces:**
-- Consumes: `isCorruptionError` and `quarantine` shape from `lib/state/db.ts` (reuse the `SQLITE_CORRUPT`/`SQLITE_NOTADB` detection; `events.db` is a bounded-retention journal, so total loss on quarantine is harmless — no migration concern).
+- Consumes: `isCorruptionError` and `quarantine` shape from `lib/state/db.ts` (reuse the `SQLITE_CORRUPT`/`SQLITE_NOTADB` detection; `events.db` is a bounded-retention journal, so total loss on quarantine is harmless ... no migration concern).
 
 - [ ] **Step 1: Write the failing test** in `lib/daemon/__tests__/events-bus.test.ts`:
 
@@ -331,9 +331,9 @@ test("createEventsBus sets busy_timeout and synchronous=NORMAL", () => {
 
 (If the bus does not expose its handle, add a minimal `__db` back-reference or a `busyTimeout()` debug accessor in `events-bus.ts` for the test; do not expose it beyond the module's test needs.)
 
-- [ ] **Step 2: Run — expect FAIL.** Run: `bun test lib/daemon/__tests__/events-bus.test.ts -t "quarantine"`
+- [ ] **Step 2: Run ... expect FAIL.** Run: `bun test lib/daemon/__tests__/events-bus.test.ts -t "quarantine"`
 
-- [ ] **Step 3: Implement in `lib/daemon/events-bus.ts`** — wrap the open (lines 73-86):
+- [ ] **Step 3: Implement in `lib/daemon/events-bus.ts`** ... wrap the open (lines 73-86):
 
 ```ts
 import { isCorruptionError } from "../state/db"; // export it if not already exported
@@ -359,7 +359,7 @@ try {
 
 Write a local `quarantineEventsDb(path, log)` mirroring `state/db.ts`'s `quarantine` (rename the db + `-wal`/`-shm` sidecars to `path.corrupt-<ISO>`, `log.warn`). If `isCorruptionError` is not exported from `state/db.ts`, add the export (it is a pure predicate, safe to export).
 
-- [ ] **Step 4: Run the events-bus tests — expect PASS.**
+- [ ] **Step 4: Run the events-bus tests ... expect PASS.**
 
 - [ ] **Step 5: Write the failing sweep-guard test** in `lib/daemon/__tests__/events-bus.test.ts` OR a small `lib/__tests__/daemon-sweep-guard.test.ts` for the helper:
 
@@ -391,7 +391,7 @@ export function safeTimeout(fn: () => void, ms: number, label: string, log: Logg
 
 Replace the two bare sweep timers at `lib/daemon.ts:194` and `:196` with `safeInterval(() => eventsBus.sweep(), 60*60*1000, "events-sweep", log)` and `safeTimeout(() => eventsBus.sweep(), 30_000, "events-sweep-boot", log)`. (The `pruneRuns`/`pruneLogs` timers at 200-248 already wrap their bodies; leaving them is fine, but converting them to `safeInterval` is a welcome DRY cleanup if trivial.)
 
-- [ ] **Step 7: Run — expect PASS.** Then `bun test lib/daemon/__tests__/events-bus.test.ts`.
+- [ ] **Step 7: Run ... expect PASS.** Then `bun test lib/daemon/__tests__/events-bus.test.ts`.
 
 - [ ] **Step 8: Commit**
 
@@ -402,7 +402,7 @@ git commit -m "events.db: corruption quarantine + busy_timeout/synchronous pragm
 
 ---
 
-## Task 5: Bind order + rt.apiPort setting (0.3, my side — S043, S030 seam)
+## Task 5: Bind order + rt.apiPort setting (0.3, my side ... S043, S030 seam)
 
 Bind the API server before the unix socket so a failed API bind never strands a socket-bound zombie, and register the `rt.apiPort` escape-hatch setting (the api-server sibling consumes it at bind time).
 
@@ -446,7 +446,7 @@ test("resolveApiPort: env wins, then setting, then 9401", () => {
 });
 ```
 
-- [ ] **Step 4: Run — expect FAIL** (`resolveApiPort` undefined).
+- [ ] **Step 4: Run ... expect FAIL** (`resolveApiPort` undefined).
 
 - [ ] **Step 5: Implement in `lib/daemon-config.ts`** (leave `API_PORT` at line 72 untouched):
 
@@ -459,13 +459,13 @@ export function resolveApiPort(): number {
 }
 ```
 
-- [ ] **Step 6: Run — expect PASS.**
+- [ ] **Step 6: Run ... expect PASS.**
 
 - [ ] **Step 7: Swap the bind order in `lib/daemon.ts`.** Reorder so the API binds before the socket:
 
 ```ts
-servers.api = await startApiServer({ handleCommand, log });   // was line 469 — now first
-servers.socket = startSocketServer({ handleCommand, log });   // was line 468 — now second
+servers.api = await startApiServer({ handleCommand, log });   // was line 469 ... now first
+servers.socket = startSocketServer({ handleCommand, log });   // was line 468 ... now second
 // rt.pid write (moved by Task 2) stays after BOTH assignments
 ```
 
@@ -484,7 +484,7 @@ test("API-bind failure leaves neither rt.sock nor rt.pid", async () => {
 });
 ```
 
-- [ ] **Step 9: Run — expect PASS.** Run: `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/daemon.test.ts -t "API-bind failure"`
+- [ ] **Step 9: Run ... expect PASS.** Run: `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/daemon.test.ts -t "API-bind failure"`
 
 - [ ] **Step 10: Commit**
 
@@ -495,7 +495,7 @@ git commit -m "daemon: bind API before socket; register rt.apiPort setting + res
 
 ---
 
-## Task 6: home-snapshot opens state.db daemon-flavored (0.7 — S011)
+## Task 6: home-snapshot opens state.db daemon-flavored (0.7 ... S011)
 
 `startHomeSnapshot` opens the state.db singleton at module scope with the default `cli` flavor (5000ms busy_timeout), so the daemon runs with the wrong contention policy forever. Make its db lazy and daemon-flavored, and harden `getStateDb` against a silent flavor mismatch.
 
@@ -505,7 +505,7 @@ git commit -m "daemon: bind API before socket; register rt.apiPort setting + res
 - Test: `lib/state/__tests__/db.test.ts`
 
 **Interfaces:**
-- Consumes: `getStateDb("daemon")` — 250ms busy_timeout.
+- Consumes: `getStateDb("daemon")` ... 250ms busy_timeout.
 
 - [ ] **Step 1: Write the failing test** in `lib/state/__tests__/db.test.ts` (`describe("pragma values per flavor")`):
 
@@ -513,16 +513,16 @@ git commit -m "daemon: bind API before socket; register rt.apiPort setting + res
 test("getStateDb('daemon') reports busy_timeout 250 even after a default open", () => {
   const cli = getStateDb();              // opens singleton, cli flavor
   expect(cli.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
-  const daemon = getStateDb("daemon");   // same singleton — must not stay at 5000
+  const daemon = getStateDb("daemon");   // same singleton ... must not stay at 5000
   expect(daemon.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 250 });
 });
 ```
 
 (Use the file's existing isolated-HOME / `closeStateDb` setup so this does not leak into other tests.)
 
-- [ ] **Step 2: Run — expect FAIL** (singleton keeps the cli 5000 timeout).
+- [ ] **Step 2: Run ... expect FAIL** (singleton keeps the cli 5000 timeout).
 
-- [ ] **Step 3: Harden `getStateDb` in `lib/state/db.ts:522-530`** — when the singleton is already open and a caller requests a stronger (shorter) flavor timeout, re-apply the pragma:
+- [ ] **Step 3: Harden `getStateDb` in `lib/state/db.ts:522-530`** ... when the singleton is already open and a caller requests a stronger (shorter) flavor timeout, re-apply the pragma:
 
 ```ts
 export function getStateDb(flavor: DbFlavor = "cli"): Database {
@@ -537,13 +537,13 @@ export function getStateDb(flavor: DbFlavor = "cli"): Database {
 }
 ```
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
 - [ ] **Step 5: Make home-snapshot's db lazy + daemon-flavored** in `lib/daemon/home-snapshot.ts`. Replace the eager `db: rawDeps.db ?? getStateDb()` (line 272) with a thunk defaulting to `() => getStateDb("daemon")`, and resolve it on first use inside `loadState`/`runNow`/`status` rather than at construction (line 299). Concretely: store `const resolveDb = rawDeps.db ? () => rawDeps.db! : () => getStateDb("daemon");` and call `resolveDb()` where `deps.db` was read, so no db opens until `startDaemon` has already opened it daemon-flavored via `openBranchCacheStore`.
 
-- [ ] **Step 6: Add a boot-order regression test** in `lib/state/__tests__/db.test.ts` (or `home-snapshot.test.ts`) asserting that constructing `startHomeSnapshot` does NOT open the state.db singleton (call it, then assert `getStateDb` was not yet invoked — spy on the module or assert no `state.db` file exists until first use in an isolated HOME).
+- [ ] **Step 6: Add a boot-order regression test** in `lib/state/__tests__/db.test.ts` (or `home-snapshot.test.ts`) asserting that constructing `startHomeSnapshot` does NOT open the state.db singleton (call it, then assert `getStateDb` was not yet invoked ... spy on the module or assert no `state.db` file exists until first use in an isolated HOME).
 
-- [ ] **Step 7: Run the db tests — expect PASS.** Run: `bun test lib/state/__tests__/db.test.ts`
+- [ ] **Step 7: Run the db tests ... expect PASS.** Run: `bun test lib/state/__tests__/db.test.ts`
 
 - [ ] **Step 8: Commit**
 
@@ -554,7 +554,7 @@ git commit -m "home-snapshot: lazy daemon-flavored state.db; getStateDb re-appli
 
 ---
 
-## Task 7: Extended busy codes + IMMEDIATE transactions (0.7 — S072, S073)
+## Task 7: Extended busy codes + IMMEDIATE transactions (0.7 ... S072, S073)
 
 `isBusyError` misses `SQLITE_BUSY_SNAPSHOT`/`_RECOVERY`, and read-then-write daemon transactions use a deferred `BEGIN` that produces snapshot conflicts busy_timeout cannot absorb. Widen the match and take the write lock up front.
 
@@ -563,12 +563,12 @@ git commit -m "home-snapshot: lazy daemon-flavored state.db; getStateDb re-appli
 - Modify: `lib/state/chat-store.ts` (`readUnread`, `joinRoom`, `archiveRoom`, `dmRoomFor` → `.immediate()`)
 - Modify: `lib/state/notifier-store.ts` (`drainNotificationQueue` → `.immediate()`)
 - Test: `lib/state/__tests__/busy.test.ts`
-- **Deferred (fenced):** `lib/state/presence-store.ts:signIn` — documented follow-up, not done here.
+- **Deferred (fenced):** `lib/state/presence-store.ts:signIn` ... documented follow-up, not done here.
 
 **Interfaces:**
 - Produces: `isBusyError` returns true for any `code` starting `SQLITE_BUSY`.
 
-- [ ] **Step 1: Write the failing test** in `lib/state/__tests__/busy.test.ts` — a real two-connection snapshot conflict:
+- [ ] **Step 1: Write the failing test** in `lib/state/__tests__/busy.test.ts` ... a real two-connection snapshot conflict:
 
 ```ts
 test("isBusyError matches SQLITE_BUSY_SNAPSHOT from a real conflict", () => {
@@ -589,7 +589,7 @@ test("isBusyError matches SQLITE_BUSY_SNAPSHOT from a real conflict", () => {
 });
 ```
 
-- [ ] **Step 2: Run — expect FAIL** (`isBusyError` returns false for `SQLITE_BUSY_SNAPSHOT`).
+- [ ] **Step 2: Run ... expect FAIL** (`isBusyError` returns false for `SQLITE_BUSY_SNAPSHOT`).
 
 - [ ] **Step 3: Widen `isBusyError`** in `lib/state/busy.ts:39-41`:
 
@@ -600,11 +600,11 @@ export function isBusyError(err: unknown): boolean {
 }
 ```
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
 - [ ] **Step 5: Convert read-then-write transactions to `.immediate()`.** In `lib/state/chat-store.ts`, change the four cited transaction builders (`readUnread` ~483, `joinRoom`, `archiveRoom`, `dmRoomFor`) from `db.transaction(fn)(...)` to `db.transaction(fn).immediate(...)` so the write lock is taken at `BEGIN IMMEDIATE`. Do the same for `drainNotificationQueue` in `lib/state/notifier-store.ts:111`. Leave a one-line comment at the first site: `// BEGIN IMMEDIATE: read-then-write must lock up front or SQLITE_BUSY_SNAPSHOT bypasses busy_timeout.`
 
-- [ ] **Step 6: Verify no regression** — run the chat/notifier/state suites: `bun test lib/state` and any `chat` command tests. Expect PASS (behavior identical under no contention; the change only affects lock acquisition timing).
+- [ ] **Step 6: Verify no regression** ... run the chat/notifier/state suites: `bun test lib/state` and any `chat` command tests. Expect PASS (behavior identical under no contention; the change only affects lock acquisition timing).
 
 - [ ] **Step 7: Commit**
 
@@ -615,12 +615,12 @@ git commit -m "state: isBusyError matches SQLITE_BUSY_*; read-then-write daemon 
 
 ---
 
-## Task 8: state.db importer isolation (0.3 — S074)
+## Task 8: state.db importer isolation (0.3 ... S074)
 
 A throwing legacy importer inside the v0 migration rolls back the whole migration, so `user_version` stays 0 and every subsequent open repeats the failure. Wrap each importer in a SAVEPOINT; on throw, roll back that one importer, warn, and still rename the file.
 
 **Files:**
-- Modify: `lib/state/db.ts:400-417` (`importLegacyStores` — SAVEPOINT per importer)
+- Modify: `lib/state/db.ts:400-417` (`importLegacyStores` ... SAVEPOINT per importer)
 - Test: `lib/state/__tests__/db.test.ts`
 
 **Interfaces:**
@@ -644,9 +644,9 @@ test("a throwing legacy importer is isolated: db reaches SCHEMA_VERSION, other s
 });
 ```
 
-(Fill `<benign-legacy>`/`<benign_table>`/fixtures from an existing importer in `LEGACY_IMPORTS`; the db.test.ts legacy-import cases already build such fixtures — reuse one.)
+(Fill `<benign-legacy>`/`<benign_table>`/fixtures from an existing importer in `LEGACY_IMPORTS`; the db.test.ts legacy-import cases already build such fixtures ... reuse one.)
 
-- [ ] **Step 2: Run — expect FAIL** (the throw rolls back the whole migration; `user_version` stays 0 / benign rows absent).
+- [ ] **Step 2: Run ... expect FAIL** (the throw rolls back the whole migration; `user_version` stays 0 / benign rows absent).
 
 - [ ] **Step 3: Implement SAVEPOINT-per-importer** in `importLegacyStores` (`lib/state/db.ts:400-417`). For each `LEGACY_IMPORTS` entry, wrap its `run(db)` in a savepoint scoped to that importer only (do NOT loosen the surrounding schema-DDL migration, which must stay loud):
 
@@ -666,9 +666,9 @@ for (const imp of LEGACY_IMPORTS) {
 }
 ```
 
-(Match the exact `LegacyImport` shape at db.ts:64-69 — `path()`/`run(db)` names may differ; adapt to the real fields.)
+(Match the exact `LegacyImport` shape at db.ts:64-69 ... `path()`/`run(db)` names may differ; adapt to the real fields.)
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
 - [ ] **Step 5: Commit**
 
@@ -679,7 +679,7 @@ git commit -m "state.db: isolate each legacy importer in a SAVEPOINT so one bad 
 
 ---
 
-## Task 9: Restart counter + last-exit reason in kv (0.5 — R002, S037)
+## Task 9: Restart counter + last-exit reason in kv (0.5 ... R002, S037)
 
 Persist boot attempts, last-ready stamp, recent failures, and last-exit reason in the `kv` table (ns `daemon-supervision`), plus a boot breadcrumb file. Wire the record calls into the boot path, the shutdown verb, the signal handlers, and the boot fatal path. No schema change.
 
@@ -690,13 +690,13 @@ Persist boot attempts, last-ready stamp, recent failures, and last-exit reason i
 
 **Interfaces:**
 - Produces:
-  - `recordBootAttempt(): void` — increments `boot-attempts`, appends nothing.
-  - `recordDaemonReady(): void` — sets `last-ready-at = Date.now()`.
-  - `recordBootFailure(phase: BootPhase, reason: string): void` — appends `{ at, phase, reason }` to `recent-failures` (cap 10), sets `last-exit = { at, kind: "boot-failed", code: 1, reason }`.
-  - `recordCleanExit(kind: "shutdown" | "signal", code: number): void` — sets `last-exit = { at, kind, code }`.
+  - `recordBootAttempt(): void` ... increments `boot-attempts`, appends nothing.
+  - `recordDaemonReady(): void` ... sets `last-ready-at = Date.now()`.
+  - `recordBootFailure(phase: BootPhase, reason: string): void` ... appends `{ at, phase, reason }` to `recent-failures` (cap 10), sets `last-exit = { at, kind: "boot-failed", code: 1, reason }`.
+  - `recordCleanExit(kind: "shutdown" | "signal", code: number): void` ... sets `last-exit = { at, kind, code }`.
   - `readSupervisionState(): { bootAttempts, lastReadyAt, recentFailures, lastExit }`.
-  - `isCrashLooping(state, now, n = 3, windowMs = 5*60_000): boolean` — ≥ n failures newer than `now - windowMs`.
-  - `writeBreadcrumb(phase: BootPhase): void` / `clearBreadcrumb(): void` — `~/.mattstack/rt/daemon-boot.json`.
+  - `isCrashLooping(state, now, n = 3, windowMs = 5*60_000): boolean` ... ≥ n failures newer than `now - windowMs`.
+  - `writeBreadcrumb(phase: BootPhase): void` / `clearBreadcrumb(): void` ... `~/.mattstack/rt/daemon-boot.json`.
   - `type BootPhase = "start" | "crash-handlers" | "events-db" | "state-db" | "socket" | "api" | "ready"`.
 - Consumes: `getKvValue`/`setKvValue` from `lib/state/kv-blob.ts`; `getStateDb("daemon")`.
 
@@ -723,26 +723,26 @@ test("isCrashLooping true at >=3 failures within the window", () => {
 });
 ```
 
-(Use the file's isolated-HOME convention — `bunfig` preload already repoints HOME for `bun test`; `recordBootAttempt` writes to the test state.db.)
+(Use the file's isolated-HOME convention ... `bunfig` preload already repoints HOME for `bun test`; `recordBootAttempt` writes to the test state.db.)
 
-- [ ] **Step 2: Run — expect FAIL** (module does not exist).
+- [ ] **Step 2: Run ... expect FAIL** (module does not exist).
 
 - [ ] **Step 3: Implement `lib/daemon/supervision-state.ts`** with the interfaces above. All reads/writes go through `getKvValue("daemon-supervision", key, fallback, getStateDb("daemon"))` / `setKvValue("daemon-supervision", key, value, getStateDb("daemon"))`. Cap `recent-failures` at 10 on append. Breadcrumb via `writeFileSync(join(RT_DIR, "daemon-boot.json"), JSON.stringify({ at, pid: process.pid, flavor: currentMode(), phase }))` inside a try/catch (never fatal).
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
 - [ ] **Step 5: Wire into the boot path** (`lib/daemon.ts`):
   - `recordBootAttempt(); writeBreadcrumb("start");` at the top of `runDaemon()` (after Task 3's crash handlers are already at module scope; call these first thing inside `runDaemon`).
-  - `writeBreadcrumb("events-db" | "state-db" | "socket" | "api")` at each corresponding phase (events.db is module-scope — write that breadcrumb right after `createEventsBus`; state-db right after `openBranchCacheStore`; socket/api at the binds).
+  - `writeBreadcrumb("events-db" | "state-db" | "socket" | "api")` at each corresponding phase (events.db is module-scope ... write that breadcrumb right after `createEventsBus`; state-db right after `openBranchCacheStore`; socket/api at the binds).
   - In Task 2's catch: `recordBootFailure(currentPhase, String(err));` (track `currentPhase` in a module var updated alongside each `writeBreadcrumb`).
   - `recordDaemonReady(); writeBreadcrumb("ready");` right where `bootPhase = "ready"` is set (line 513).
   - Shutdown verb (349-364): before `process.exit(0)`, `recordCleanExit("shutdown", 0);` and set the Task 12 `shuttingDownViaVerb = true` flag (Task 12 adds the flag; here just add the record call).
 
 - [ ] **Step 6: Wire into signal exit** (`lib/daemon/shutdown.ts` `gracefulExit`): before exit, `recordCleanExit("signal", code)` (Task 12 sets `code` to 1 for bare signals; for now record with the code it exits with).
 
-- [ ] **Step 7: Add an e2e assertion** in `e2e/tests/daemon.test.ts`: after the Task 5 API-bind-failure spawn, assert `daemon-boot.json` exists with `phase: "api"` and the kv `recent-failures` has an entry (read the state.db in the isolated HOME, or assert via `rt daemon status --json` once Task 10 lands — for Task 9, assert the breadcrumb file only).
+- [ ] **Step 7: Add an e2e assertion** in `e2e/tests/daemon.test.ts`: after the Task 5 API-bind-failure spawn, assert `daemon-boot.json` exists with `phase: "api"` and the kv `recent-failures` has an entry (read the state.db in the isolated HOME, or assert via `rt daemon status --json` once Task 10 lands ... for Task 9, assert the breadcrumb file only).
 
-- [ ] **Step 8: Run the unit + e2e tests — expect PASS.**
+- [ ] **Step 8: Run the unit + e2e tests ... expect PASS.**
 
 - [ ] **Step 9: Commit**
 
@@ -753,7 +753,7 @@ git commit -m "daemon: persist boot attempts, failures, last-exit in kv + boot b
 
 ---
 
-## Task 10: Status verdicts (0.5 — R001, S026 daemon-side)
+## Task 10: Status verdicts (0.5 ... R001, S026 daemon-side)
 
 Extend `DaemonStatusVerdict` and `classifyDaemonStatus` with `alive-not-serving`, `parked`, `boot-failed`, `crash-looping`, read from the liveness probe + supervision state + breadcrumb. Expose the fields in `ping`/`/api/status`, and print them in `rt daemon status`.
 
@@ -787,17 +787,17 @@ test("no pid + single boot-failed -> boot-failed with reason", () => {
 });
 ```
 
-- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2: Run ... expect FAIL.**
 
 - [ ] **Step 3: Extend the verdict type and `classifyDaemonStatus`** in `lib/daemon-status.ts` following the resolution order from the design doc (Task 1): not-installed → serving → parked → alive-not-serving → crash-looping → boot-failed → installed-not-running. `classifyDaemonStatus` takes the already-gathered inputs (`pingOk`, `pidAlive`, `pid`, `breadcrumb`, `supervision`); keep it a pure function (the liveness probe and kv/breadcrumb reads happen in `commands/daemon.ts`/the caller, matching the existing `needsLivenessProbe` split). `parked` when breadcrumb phase indicates a flavor standoff; `alive-not-serving` detail = `booting` (phase < ready), `wedged` (phase == ready), `quarantined` (a `*.boot-failed` marker present).
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
 - [ ] **Step 5: Surface the data.** In `lib/daemon/handlers/status.ts` `ping`, add a `supervision: { bootAttempts, lastReadyAt, recentFailures: recentFailures.slice(-3), lastExit }` field (read via Task 9). In `commands/daemon.ts` `showStatus`/liveness probe, gather `pidAlive` (`process.kill(pid,0)` on rt.pid, fallback `pgrep -f 'rt --daemon|lib/daemon.ts'` via `runCapture`) and read the breadcrumb + supervision state (when ping fails), then pass to `classifyDaemonStatus`. In `statusLines`, print a line per new verdict (see the design doc's status strings).
 
 - [ ] **Step 6: Add a `--json` assertion e2e** in `e2e/tests/daemon.test.ts`: after an API-bind-failure spawn, `rt daemon status --json` under the same isolated HOME reports `boot-failed` or `crash-looping` (whichever the failure count yields). Run under `env -i HOME=<temp>`.
 
-- [ ] **Step 7: Run the unit + e2e tests — expect PASS.** `bun test lib/__tests__/daemon-status.test.ts`
+- [ ] **Step 7: Run the unit + e2e tests ... expect PASS.** `bun test lib/__tests__/daemon-status.test.ts`
 
 - [ ] **Step 8: Commit**
 
@@ -808,7 +808,7 @@ git commit -m "daemon status: alive-not-serving / parked / boot-failed / crash-l
 
 ---
 
-## Task 11: stderr log rotation + stale-crash stamp (0.5 — S029)
+## Task 11: stderr log rotation + stale-crash stamp (0.5 ... S029)
 
 `daemon-stderr.log` is never rotated and its stale contents are shown as "most recent crash". Rotate on open and gate the crash block on mtime.
 
@@ -833,13 +833,13 @@ test("redirectNativeStderr rotates a non-empty daemon-stderr.log before reopenin
 });
 ```
 
-- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2: Run ... expect FAIL.**
 
 - [ ] **Step 3: Implement rotate-on-open** in `redirectNativeStderr` (`lib/daemon-logger.ts:204-219`): before `openSync(path, "a")`, if the file exists and is non-empty, `renameSync` it to `daemon-stderr.<yyyy-MM-dd>.log` (dedupe with a `.N` suffix if that name already exists, matching the janitor's dated-file convention). Keep the existing swallow-on-failure behavior.
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
-- [ ] **Step 5: Write the failing `showLogs` test** — the native-stderr block is hidden when the file mtime predates the current daemon's start:
+- [ ] **Step 5: Write the failing `showLogs` test** ... the native-stderr block is hidden when the file mtime predates the current daemon's start:
 
 ```ts
 test("showLogs hides the native-stderr block when the file is older than the daemon start", () => {
@@ -849,7 +849,7 @@ test("showLogs hides the native-stderr block when the file is older than the dae
 
 - [ ] **Step 6: Implement in `showLogs`** (`commands/daemon.ts:724-737`): only print the native-stderr block when the file's `mtime` is newer than the current daemon's `startedAt` (from `ping`); include the mtime in the header (`native stderr (captured <mtime>)`). When older, skip it silently (or print a one-line "no crash since this daemon started").
 
-- [ ] **Step 7: Run — expect PASS.**
+- [ ] **Step 7: Run ... expect PASS.**
 
 - [ ] **Step 8: Commit**
 
@@ -860,7 +860,7 @@ git commit -m "logs: rotate daemon-stderr.log on open; hide stale crash block by
 
 ---
 
-## Task 12: Exit-code semantics (0.6 — S036, S060)
+## Task 12: Exit-code semantics (0.6 ... S036, S060)
 
 The `shutdown` verb correctly exits 0, but bare OS signals also exit 0, so an externally-killed daemon stays down. Reserve exit 0 for the verb; exit non-zero on bare signals.
 
@@ -892,11 +892,11 @@ test("gracefulExit exits 0 after the shutdown verb, 1 on a bare signal", () => {
 
 (Refactor `gracefulExit` into a testable `makeGracefulExit(deps)` that returns the handler, injecting `exit`/`recordCleanExit` so no real `process.exit` fires in the test.)
 
-- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2: Run ... expect FAIL.**
 
 - [ ] **Step 3: Implement.** In `lib/daemon/shutdown.ts`, refactor `installSignalHandlers`/`gracefulExit` to `makeGracefulExit(deps)` reading `deps.wasVerbShutdown()`: true → `recordCleanExit("shutdown", 0)` + `exit(0)`; false → `recordCleanExit("signal", 1)` + `exit(1)`. In `lib/daemon.ts`, add module-scope `let shuttingDownViaVerb = false;`, set it `true` in the shutdown verb before `cleanup()`, and pass `wasVerbShutdown: () => shuttingDownViaVerb` into `installSignalHandlers` at line 511. The shutdown verb keeps `process.exit(0)`.
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
 - [ ] **Step 5: Commit**
 
@@ -907,7 +907,7 @@ git commit -m "daemon: bare-signal exit is non-zero (launchd respawns); shutdown
 
 ---
 
-## Task 13: Ownership-aware cleanup + eviction death-confirmation (0.6 — S012, S044)
+## Task 13: Ownership-aware cleanup + eviction death-confirmation (0.6 ... S012, S044)
 
 `cleanup()` unlinks rt.sock/rt.pid unconditionally, and eviction sleeps a blind 300ms. Make cleanup compare-and-delete, and make eviction wait for the old pid to actually die.
 
@@ -940,7 +940,7 @@ test("cleanup unlinks when the pid file is ours", () => {
 
 (Inject `pid` into `createCleanup` deps for testability; default to `process.pid`.)
 
-- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2: Run ... expect FAIL.**
 
 - [ ] **Step 3: Implement ownership-aware unlink** in `createCleanup` (`lib/daemon/shutdown.ts:44-46`):
 
@@ -953,7 +953,7 @@ try {
 } catch (err) { deps.log.warn({ err }, "cleanup unlink skipped"); }
 ```
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
 - [ ] **Step 5: Write the failing eviction test** in `lib/daemon/__tests__/boot-reconcile.test.ts`:
 
@@ -969,9 +969,9 @@ test("evictStaleDaemon waits for the old pid to die, escalating to SIGKILL", asy
 });
 ```
 
-- [ ] **Step 6: Implement in `evictStaleDaemon`** (`lib/daemon/boot-reconcile.ts`): replace `Bun.sleepSync(300)` with an async poll — after SIGTERM, loop `process.kill(pid, 0)` every 100ms up to ~2.5s; if still alive, `process.kill(pid, "SIGKILL")` and poll another ~0.5s; return once `process.kill(pid,0)` throws (pid gone). Make the function `async` and `await` it at the call site (`lib/daemon.ts:396`). Keep the `previousPid === process.pid` self-guard.
+- [ ] **Step 6: Implement in `evictStaleDaemon`** (`lib/daemon/boot-reconcile.ts`): replace `Bun.sleepSync(300)` with an async poll ... after SIGTERM, loop `process.kill(pid, 0)` every 100ms up to ~2.5s; if still alive, `process.kill(pid, "SIGKILL")` and poll another ~0.5s; return once `process.kill(pid,0)` throws (pid gone). Make the function `async` and `await` it at the call site (`lib/daemon.ts:396`). Keep the `previousPid === process.pid` self-guard.
 
-- [ ] **Step 7: Run — expect PASS.** Then `bun test lib/daemon/__tests__/boot-reconcile.test.ts lib/daemon/__tests__/shutdown.test.ts`
+- [ ] **Step 7: Run ... expect PASS.** Then `bun test lib/daemon/__tests__/boot-reconcile.test.ts lib/daemon/__tests__/shutdown.test.ts`
 
 - [ ] **Step 8: Commit**
 
@@ -982,7 +982,7 @@ git commit -m "daemon: ownership-aware socket/pid unlink; eviction waits for pid
 
 ---
 
-## Task 14: uninstall + start guards (0.6 — S027, S030, S028 CLI-side)
+## Task 14: uninstall + start guards (0.6 ... S027, S030, S028 CLI-side)
 
 `rt daemon uninstall` deletes rt.sock/rt.pid from under a live daemon, and `rt daemon start` cannot revive a registered-but-exited-0 daemon. Guard uninstall on liveness; make start escalate to a kickstart route.
 
@@ -1005,11 +1005,11 @@ test("uninstall leaves rt.sock/rt.pid and daemon.json when the daemon is still r
 });
 ```
 
-- [ ] **Step 2: Run — expect FAIL.**
+- [ ] **Step 2: Run ... expect FAIL.**
 
 - [ ] **Step 3: Implement the uninstall guard** (`commands/daemon.ts:210-231`): after a failed/absent `trayQuery("/daemon/stop")`, call `isDaemonProcessRunning()` (and `probeSocketHolder()` as a second signal). Only run `markDaemonUninstalled()` + `cleanupDaemonFiles()` when no live holder; otherwise print the remedy `launchctl bootout gui/$UID/${activeLaunchdLabel()}` and leave the files. Audit other callers of `cleanupDaemonFiles`/`markDaemonUninstalled` (e.g. the dev-mode toggle in `commands/settings.ts`) for the same missing guard and note any in the commit body.
 
-- [ ] **Step 4: Run — expect PASS.**
+- [ ] **Step 4: Run ... expect PASS.**
 
 - [ ] **Step 5: Write the failing start-escalation test**:
 
@@ -1021,9 +1021,9 @@ test("start escalates to the restart/kickstart route when the tray acks but the 
 });
 ```
 
-- [ ] **Step 6: Implement start escalation** (`commands/daemon.ts:235-269`): when the tray acked `/daemon/start` but `isDaemonRunning()` stays false through the 12×250ms poll, fall back to the `/daemon/restart` route (kickstart). In `lib/daemon-client.ts:171-185`, make `attemptRestart` re-probe `isDaemonRunning()` after `trayQuery("/daemon/start")` and return `true` only when the daemon actually answers — so the `daemonQuery` nag stops misdirecting. Do NOT change signal-handler exit codes here (that is Task 12).
+- [ ] **Step 6: Implement start escalation** (`commands/daemon.ts:235-269`): when the tray acked `/daemon/start` but `isDaemonRunning()` stays false through the 12×250ms poll, fall back to the `/daemon/restart` route (kickstart). In `lib/daemon-client.ts:171-185`, make `attemptRestart` re-probe `isDaemonRunning()` after `trayQuery("/daemon/start")` and return `true` only when the daemon actually answers ... so the `daemonQuery` nag stops misdirecting. Do NOT change signal-handler exit codes here (that is Task 12).
 
-- [ ] **Step 7: Run — expect PASS.**
+- [ ] **Step 7: Run ... expect PASS.**
 
 - [ ] **Step 8: Commit**
 
@@ -1034,7 +1034,7 @@ git commit -m "daemon CLI: uninstall guards on liveness; start escalates to kick
 
 ---
 
-## Task 15: Retire the stale audit doc (0.8 — R017)
+## Task 15: Retire the stale audit doc (0.8 ... R017)
 
 Replace `docs/daemon-runner-health.md` (which audits deleted subsystems) with a pointer to the current audit and the new supervision design doc.
 
@@ -1044,7 +1044,7 @@ Replace `docs/daemon-runner-health.md` (which audits deleted subsystems) with a 
 - [ ] **Step 1: Replace the file's contents** with a short pointer:
 
 ```markdown
-# Daemon runner health — superseded
+# Daemon runner health ... superseded
 
 This document audited subsystems (process-manager, remedy-engine,
 runner.tsx, workspace-sync) that no longer exist. It is retained only as
@@ -1066,14 +1066,14 @@ git commit -m "docs: retire stale daemon-runner-health.md, point at the current 
 
 ---
 
-## Task 16 (OPTIONAL — pending plan-review scope confirmation): Swift tray consumption
+## Task 16 (OPTIONAL ... pending plan-review scope confirmation): Swift tray consumption
 
 **Do not start without the reviewer's go-ahead** (raised in the plan-milestone report). These edits cannot be verified by the bun/tsc/e2e gate, and the operating rules forbid rebuilding the blessed bundle, so they ship as source-only, unverified changes following the fixer notes:
 
-- **S026** — `rt-tray/Sources/AppDelegate.swift`: give `.starting` an expiry (record `startingSince`; in `refreshStatus` treat `.starting` as expired after ~30s / 3 failed polls and fall through to `setHealth(.down)`), so the health dot stops sticking yellow; map the new daemon verdicts (Task 10) to dot colors.
-- **S028** — `rt-tray/Sources/DaemonLifecycle.swift`: when `register()` returns already-registered but the socket stays unreachable, fall back to `launchctl kickstart` (Kickstart.arguments already exists).
-- **S029** — `rt-tray/Sources/TrayLog.swift`: rotate `tray-crash.log` on open (rename-if-nonempty), matching Task 11's `daemon-stderr.log` treatment.
-- **S060** — `rt-tray/Sources/AppDelegate.swift:625-627`: fix the stale comment to say `KeepAlive: SuccessfulExit=false` (not `KeepAlive=true`).
+- **S026** ... `rt-tray/Sources/AppDelegate.swift`: give `.starting` an expiry (record `startingSince`; in `refreshStatus` treat `.starting` as expired after ~30s / 3 failed polls and fall through to `setHealth(.down)`), so the health dot stops sticking yellow; map the new daemon verdicts (Task 10) to dot colors.
+- **S028** ... `rt-tray/Sources/DaemonLifecycle.swift`: when `register()` returns already-registered but the socket stays unreachable, fall back to `launchctl kickstart` (Kickstart.arguments already exists).
+- **S029** ... `rt-tray/Sources/TrayLog.swift`: rotate `tray-crash.log` on open (rename-if-nonempty), matching Task 11's `daemon-stderr.log` treatment.
+- **S060** ... `rt-tray/Sources/AppDelegate.swift:625-627`: fix the stale comment to say `KeepAlive: SuccessfulExit=false` (not `KeepAlive=true`).
 
 If confirmed, do the comment fix (S060) first (trivial), then S026/S028/S029, one commit each, each commit body noting "source-only, unverified: blessed bundle not rebuilt".
 
@@ -1082,7 +1082,7 @@ If confirmed, do the comment fix (S060) first (trivial), then S026/S028/S029, on
 ## Final verification (before the whole-branch review)
 
 - [ ] `cd packages/rt-client && bun run build && cd -` (rt-client was touched in Task 5)
-- [ ] `bunx tsc --noEmit` — zero errors
-- [ ] `bun test lib commands packages scripts` — green
-- [ ] `bun run test:e2e` (or `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/daemon.test.ts` — record which)
+- [ ] `bunx tsc --noEmit` ... zero errors
+- [ ] `bun test lib commands packages scripts` ... green
+- [ ] `bun run test:e2e` (or `bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/daemon.test.ts` ... record which)
 - [ ] Request the whole-branch code review (superpowers:requesting-code-review); address findings; re-run the gate.

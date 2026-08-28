@@ -1,4 +1,4 @@
-# Daemon runner health — superseded
+# Daemon runner health (superseded)
 
 This document audited subsystems (process-manager, remedy-engine,
 runner.tsx, workspace-sync) that no longer exist. It is retained only as
