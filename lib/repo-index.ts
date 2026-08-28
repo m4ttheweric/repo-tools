@@ -282,7 +282,7 @@ export async function resolveIndexPathForIdentity(serialized: string): Promise<s
     } catch {
       continue;
     }
-    setIndexPath(serialized, await observedMainPathAsync(path));
+    writeIndexRow(serialized, await observedMainPathAsync(path));
     return path;
   }
   return null;
