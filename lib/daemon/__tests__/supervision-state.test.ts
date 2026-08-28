@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { rmSync } from "fs";
+import { join } from "path";
 import {
   recordBootAttempt,
   recordDaemonReady,
@@ -8,8 +10,14 @@ import {
   isCrashLooping,
   writeBreadcrumb,
   readBreadcrumb,
-  clearBreadcrumb,
 } from "../supervision-state.ts";
+import { RT_DIR } from "../../daemon-config.ts";
+
+/** Test-only cleanup mirroring the breadcrumb file's path (production has
+ * no clear API — the daemon only ever writes or reads it). */
+function removeBreadcrumbFile(): void {
+  rmSync(join(RT_DIR, "daemon-boot.json"), { force: true });
+}
 
 describe("supervision-state kv round-trip", () => {
   test("boot attempts, ready stamp, failures and last-exit round-trip through kv", () => {
@@ -58,14 +66,8 @@ describe("breadcrumb file", () => {
     expect(typeof b?.at).toBe("number");
   });
 
-  test("clearBreadcrumb removes the file so readBreadcrumb returns null", () => {
-    writeBreadcrumb("ready");
-    clearBreadcrumb();
-    expect(readBreadcrumb()).toBeNull();
-  });
-
   test("readBreadcrumb returns null when no breadcrumb has been written", () => {
-    clearBreadcrumb();
+    removeBreadcrumbFile();
     expect(readBreadcrumb()).toBeNull();
   });
 });

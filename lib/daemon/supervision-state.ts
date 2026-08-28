@@ -4,7 +4,7 @@
  * breadcrumb for a live-but-silent daemon.
  *
  * Two tiers, deliberately not one:
- *  - The breadcrumb FILE (`writeBreadcrumb`/`readBreadcrumb`/`clearBreadcrumb`)
+ *  - The breadcrumb FILE (`writeBreadcrumb`/`readBreadcrumb`)
  *    opens no database, so it is safe to call at module scope, before
  *    state.db exists. It is the only tier a pre-db boot failure can reach.
  *  - The kv tier (`recordBootAttempt`, `recordDaemonReady`,
@@ -15,7 +15,7 @@
  *    write is try/catch'd and silently no-ops if the db isn't open yet.
  */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { RT_DIR } from "../daemon-config.ts";
 import { daemonFlavor } from "./park.ts";
@@ -138,13 +138,5 @@ export function readBreadcrumb(): Breadcrumb | null {
     return JSON.parse(readFileSync(breadcrumbPath(), "utf8")) as Breadcrumb;
   } catch {
     return null;
-  }
-}
-
-export function clearBreadcrumb(): void {
-  try {
-    if (existsSync(breadcrumbPath())) unlinkSync(breadcrumbPath());
-  } catch {
-    // Best-effort.
   }
 }
