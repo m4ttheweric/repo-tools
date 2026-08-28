@@ -166,6 +166,27 @@ export function buildCorsHeaders(origin: string | null, trusted: boolean): Recor
   return headers;
 }
 
+/**
+ * Decodes one path segment between a fixed prefix (and optional suffix),
+ * returning `undefined` (never throwing) on any shape mismatch or malformed
+ * %-encoding (S083). Before this, each parameterized route hand-rolled its
+ * own decodeURIComponent inside the route's try block, so a malformed
+ * segment fell through to the OUTER catch and came back as a logged 500;
+ * every route using this helper instead gets a clean 400.
+ */
+export function pathParam(pathname: string, prefix: string, suffix = ""): string | undefined {
+  if (!pathname.startsWith(prefix)) return undefined;
+  if (suffix && !pathname.endsWith(suffix)) return undefined;
+  const end = suffix ? pathname.length - suffix.length : pathname.length;
+  if (end <= prefix.length) return undefined;
+  const raw = pathname.slice(prefix.length, end);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return undefined;
+  }
+}
+
 export interface ApiServerDeps {
   handleCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
   log: Logger;
@@ -259,33 +280,36 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
 
         // Single branch lookup: /api/cache/:branch
         if (url.pathname.startsWith("/api/cache/") && req.method === "GET") {
-          const branch = decodeURIComponent(url.pathname.slice("/api/cache/".length));
+          const branch = pathParam(url.pathname, "/api/cache/");
+          if (branch === undefined) {
+            return Response.json({ ok: false, error: "malformed path parameter" }, { status: 400, headers: corsHeaders });
+          }
           const result = await handleCommand("cache:read", { branches: [branch] }, req.signal);
           return Response.json(result, { headers: corsHeaders });
         }
 
         // Hooks repair: /api/hooks/:repo/repair
         if (url.pathname.startsWith("/api/hooks/") && url.pathname.endsWith("/repair") && req.method === "POST") {
-          const repo = decodeURIComponent(url.pathname.slice("/api/hooks/".length, -"/repair".length));
+          const repo = pathParam(url.pathname, "/api/hooks/", "/repair");
+          if (repo === undefined) {
+            return Response.json({ ok: false, error: "malformed path parameter" }, { status: 400, headers: corsHeaders });
+          }
           const result = await handleCommand("hooks:repair", { repo }, req.signal);
           return Response.json(result, { headers: corsHeaders });
         }
 
         // Runs detail: /api/runs/:repo/:runId
         if (url.pathname.startsWith("/api/runs/") && req.method === "GET") {
-          let rest: string | undefined;
-          try {
-            rest = decodeURIComponent(url.pathname.slice("/api/runs/".length));
-          } catch {
-            rest = undefined; // malformed %-encoding -> fall through to the 404 path below
+          const rest = pathParam(url.pathname, "/api/runs/");
+          if (rest === undefined) {
+            return Response.json({ ok: false, error: "malformed path parameter" }, { status: 400, headers: corsHeaders });
           }
-          if (rest !== undefined) {
-            const slash = rest.indexOf("/");
-            if (slash > 0 && slash < rest.length - 1) {
-              const result = await handleCommand("runs:get", { repo: rest.slice(0, slash), runId: rest.slice(slash + 1) }, req.signal);
-              return Response.json(result, { headers: corsHeaders });
-            }
+          const slash = rest.indexOf("/");
+          if (slash > 0 && slash < rest.length - 1) {
+            const result = await handleCommand("runs:get", { repo: rest.slice(0, slash), runId: rest.slice(slash + 1) }, req.signal);
+            return Response.json(result, { headers: corsHeaders });
           }
+          // falls through to the 404 path below for a shape mismatch, e.g. "/api/runs/onlyonesegment"
         }
 
         // Secrets: forward the X-RT-Token header (already verified above by
