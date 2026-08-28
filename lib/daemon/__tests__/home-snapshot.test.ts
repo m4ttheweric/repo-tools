@@ -43,10 +43,11 @@ function defaultResponders(opts: {
   pushStderr?: string;
   sha?: string;
   hasRemote?: boolean;
+  hasIdentity?: boolean;
 } = {}): Responder[] {
   const {
     isRepo = true, branch = "main", branchExit = 0, statusZ = "", commitExit = 0, addExit = 0, pushExit = 0, pushStderr = "", sha = "abc123",
-    hasRemote = true,
+    hasRemote = true, hasIdentity = true,
   } = opts;
   return [
     (argv) => (argv[1] === "rev-parse" && argv[2] === "--is-inside-work-tree")
@@ -60,6 +61,14 @@ function defaultResponders(opts: {
       : undefined,
     (argv) => (argv[1] === "status") ? { stdout: statusZ, stderr: "", exitCode: 0 } : undefined,
     (argv) => (argv[1] === "add") ? { stdout: "", stderr: "", exitCode: addExit } : undefined,
+    // git identity probe, checked right before the first auto commit —
+    // defaults to "configured" so every fixture not testing R043 stays green.
+    (argv) => (argv[1] === "config" && argv[2] === "user.name")
+      ? (hasIdentity ? { stdout: "rt test\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 1 })
+      : undefined,
+    (argv) => (argv[1] === "config" && argv[2] === "user.email")
+      ? (hasIdentity ? { stdout: "rt@example.test\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 1 })
+      : undefined,
     (argv) => (gitVerb(argv) === "commit") ? { stdout: "", stderr: "", exitCode: commitExit } : undefined,
     // `hasRemote()`'s own probe — most fixtures simulate a repo that already has origin configured, matching every pre-existing push test's assumption.
     (argv) => (argv[1] === "remote" && argv.length === 2) ? { stdout: hasRemote ? "origin\n" : "", stderr: "", exitCode: 0 } : undefined,
@@ -168,6 +177,15 @@ const DEFAULT_SETTINGS: HomeSnapshotSettings = {
 
 const NO_OWNERS: Owners = { zones: {} };
 
+// A real (but never touched — every git call underneath it is faked)
+// directory: the S090 existsSync guard runs against the real filesystem, so
+// the fixture repoDir the whole suite shares must actually exist on disk,
+// not just look plausible as a string.
+const FAKE_REPO_DIR = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-fakerepo-")));
+afterAll(() => {
+  try { rmSync(FAKE_REPO_DIR, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+});
+
 async function flushAsync(): Promise<void> {
   // Real macrotask hop — lets fake-exec's async chain (all microtasks, no
   // real timers involved) fully settle before assertions run.
@@ -211,7 +229,7 @@ function baseDeps(overrides: Partial<HomeSnapshotDeps> = {}): {
   const deps: HomeSnapshotDeps = {
     log,
     broadcast: (type, data) => broadcasts.push({ type, data }),
-    repoDir: "/fake/repo",
+    repoDir: FAKE_REPO_DIR,
     exec: execFn,
     watch: watch.fn,
     setTimeout: timers.setTimeoutFn,
@@ -259,6 +277,23 @@ describe("startHomeSnapshot — inert paths", () => {
     expect(result.skipped).toBe("not-a-repo");
     // Only the one is-inside-work-tree probe — no further git calls attempted.
     expect(execCalls.length).toBe(1);
+  });
+
+  test("S090: a missing repoDir is diagnosed 'not-provisioned', names `rt home init`, never spawns git", async () => {
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders());
+    const { deps, log, watch } = baseDeps({ exec: execFn, repoDir: "/does/not/exist/rt-home-snapshot-s090" });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    expect(watch.calls.length).toBe(0);
+    const warnCall = log.calls.find((c) => c.level === "warn");
+    expect(warnCall?.args[1]).toContain("rt home init");
+    // The existsSync guard runs before any git spawn at all.
+    expect(execCalls.length).toBe(0);
+
+    const result = await handle.runNow("manual");
+    expect(result.skipped).toBe("not-provisioned");
+    expect(execCalls.length).toBe(0);
   });
 
   test("a throwing watch seam (fs.watch EMFILE/ENOSPC/ENOENT) resolves ready promptly and makes runNow return an inert result, not hang", async () => {
@@ -319,7 +354,7 @@ describe("startHomeSnapshot — live enabled toggle", () => {
 
     expect(result.committed).toBe(true);
     expect(handle.status().watching).toBe(true);
-    expect(watch.calls).toEqual([{ path: "/fake/repo", options: { recursive: true } }]);
+    expect(watch.calls).toEqual([{ path: FAKE_REPO_DIR, options: { recursive: true } }]);
     const janitorEntry = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.janitorIntervalMin * 60_000);
     expect(janitorEntry).toBeDefined();
   });
@@ -345,7 +380,7 @@ describe("startHomeSnapshot — watcher", () => {
     const handle = startHomeSnapshot(deps);
     await handle.ready;
 
-    expect(watch.calls).toEqual([{ path: "/fake/repo", options: { recursive: true } }]);
+    expect(watch.calls).toEqual([{ path: FAKE_REPO_DIR, options: { recursive: true } }]);
     expect(handle.status().watching).toBe(true);
     // One pending timer: the janitor interval (debounceSec*1000 == distinguishable via ms below).
     const janitorEntry = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.janitorIntervalMin * 60_000);
@@ -565,7 +600,7 @@ describe("startHomeSnapshot — commit shapes", () => {
       },
     };
     const { fn: execFn, calls: execCalls, optsLog } = makeFakeExec(defaultResponders({ statusZ: "?? notes/a.md\0" }));
-    const { deps } = baseDeps({ exec: execFn, readOwners: () => owners, repoDir: "/fake/repo" });
+    const { deps } = baseDeps({ exec: execFn, readOwners: () => owners, repoDir: FAKE_REPO_DIR });
     const handle = startHomeSnapshot(deps);
     await handle.ready;
 
@@ -582,9 +617,9 @@ describe("startHomeSnapshot — commit shapes", () => {
       "git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "snapshot (manual): notes",
       "--", ".", ":(exclude)prefs/", ":(exclude)secrets/",
     ]);
-    expect(optsLog[addIdx]?.cwd).toBe("/fake/repo");
+    expect(optsLog[addIdx]?.cwd).toBe(FAKE_REPO_DIR);
     expect(optsLog[addIdx]?.timeoutMs).toBeGreaterThan(0);
-    expect(optsLog[commitIdx]?.cwd).toBe("/fake/repo");
+    expect(optsLog[commitIdx]?.cwd).toBe(FAKE_REPO_DIR);
     expect(optsLog[commitIdx]?.timeoutMs).toBeGreaterThan(0);
   });
 
@@ -667,6 +702,37 @@ describe("startHomeSnapshot — commit shapes", () => {
     expect(commits.length).toBe(2); // the auto commit and the janitor zone commit
     for (const argv of commits) expect(argv.slice(0, 3)).toEqual(["git", "-c", "commit.gpgsign=false"]);
   });
+
+  test("R043: missing git identity skips with 'no-git-identity', warns once, never attempts the commit", async () => {
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", hasIdentity: false }));
+    const { deps, log } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const result = await handle.runNow("manual");
+    expect(result.skipped).toBe("no-git-identity");
+    expect(execCalls.some((c) => gitVerb(c) === "commit")).toBe(false);
+    expect(log.calls.filter((c) => c.level === "warn" && String(c.args[c.args.length - 1]).includes("git config --global user.name")).length).toBe(1);
+
+    // A later manual call short-circuits without re-probing identity or git status.
+    execCalls.length = 0;
+    const secondResult = await handle.runNow("manual");
+    expect(secondResult.skipped).toBe("no-git-identity");
+    expect(execCalls.length).toBe(0);
+    expect(log.calls.filter((c) => c.level === "warn").length).toBe(1); // still just the one warn
+  });
+
+  test("git identity present — commits normally, exactly one identity probe pair", async () => {
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const result = await handle.runNow("manual");
+    expect(result.committed).toBe(true);
+    expect(execCalls.filter((c) => c[1] === "config" && c[2] === "user.name").length).toBe(1);
+    expect(execCalls.filter((c) => c[1] === "config" && c[2] === "user.email").length).toBe(1);
+  });
 });
 
 // ─── concurrency guard ───────────────────────────────────────────────────────
@@ -691,7 +757,7 @@ describe("startHomeSnapshot — concurrency guard", () => {
 describe("startHomeSnapshot — push", () => {
   test("a commit schedules a trailing push after pushDelaySec; success clears pushPending", async () => {
     const { fn: execFn, calls: execCalls, optsLog } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 0 }));
-    const { deps, timers } = baseDeps({ exec: execFn, repoDir: "/fake/repo" });
+    const { deps, timers } = baseDeps({ exec: execFn, repoDir: FAKE_REPO_DIR });
     const handle = startHomeSnapshot(deps);
     await handle.ready;
 
@@ -704,7 +770,7 @@ describe("startHomeSnapshot — push", () => {
 
     const pushIdx = execCalls.findIndex((c) => c[0] === "git" && c[1] === "push");
     expect(execCalls[pushIdx]).toEqual(["git", "push", "-q", "origin", "HEAD"]);
-    expect(optsLog[pushIdx]?.cwd).toBe("/fake/repo");
+    expect(optsLog[pushIdx]?.cwd).toBe(FAKE_REPO_DIR);
     expect(optsLog[pushIdx]?.timeoutMs).toBeGreaterThan(0);
     expect(handle.status().pushPending).toBe(false);
     expect(handle.status().lastPushAt).toBe(1_000_000);
@@ -829,6 +895,7 @@ describe("startHomeSnapshot — push", () => {
       if (argv[1] === "rev-parse" && argv[2] === "HEAD") return { stdout: "sha1\n", stderr: "", exitCode: 0 };
       if (argv[1] === "status") return { stdout: "?? a.txt\0", stderr: "", exitCode: 0 };
       if (argv[1] === "add") return { stdout: "", stderr: "", exitCode: 0 };
+      if (argv[1] === "config") return { stdout: "rt test\n", stderr: "", exitCode: 0 };
       if (gitVerb(argv) === "commit") { await gate; return { stdout: "", stderr: "", exitCode: 0 }; }
       return { stdout: "", stderr: "", exitCode: 0 };
     };

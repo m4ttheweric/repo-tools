@@ -46,6 +46,8 @@ export type SnapshotReason = "manual" | "watch" | "janitor";
 export type SkipReason =
   | "disabled"
   | "not-a-repo"
+  | "not-provisioned"
+  | "no-git-identity"
   | "init-failed"
   | "detached"
   | "merge-in-progress"
@@ -278,7 +280,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
   const ownersPath = ownersPathFor(deps.repoDir);
 
-  let disabledReason: "not-a-repo" | "init-failed" | null = null;
+  let disabledReason: SkipReason | null = null;
   let stopped = false;
   let watcher: { close(): void } | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -356,6 +358,15 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
   async function init(): Promise<void> {
     try {
+      // Checked before spawning git at all: a missing repoDir (never `rt
+      // home init`'d) otherwise reaches the same exitCode === -1 branch as a
+      // genuinely missing git binary, misdiagnosing "not provisioned" as
+      // "could not run git".
+      if (!existsSync(deps.repoDir)) {
+        disabledReason = "not-provisioned";
+        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: home repo not provisioned; run `rt home init`; inert");
+        return;
+      }
       const check = await deps.exec(["git", "rev-parse", "--is-inside-work-tree"], {
         cwd: deps.repoDir,
         timeoutMs: GIT_TIMEOUT_MS,
@@ -688,6 +699,20 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // `-c commit.gpgsign=false`: a global signing config with an unusable
       // key fails every snapshot commit outright (exit 128), and nothing
       // about an unattended backup commit needs a signature.
+      // Checked once, right before the first commit attempt: an unconfigured
+      // identity fails every commit the same way (exit 128, "empty ident
+      // name"), so this latches disabledReason rather than retrying the
+      // same doomed commit every cycle.
+      const name = await deps.exec(["git", "config", "user.name"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      const email = await deps.exec(["git", "config", "user.email"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      if (name.exitCode !== 0 || !name.stdout.trim() || email.exitCode !== 0 || !email.stdout.trim()) {
+        disabledReason = "no-git-identity";
+        if (lastLoggedCommitError !== "no-git-identity") {
+          deps.log.warn("home-snapshot: no git identity; run `git config --global user.name` and `git config --global user.email`; snapshots inert");
+          lastLoggedCommitError = "no-git-identity";
+        }
+        return { committed: false, sha: null, paths: [], reason, skipped: "no-git-identity" };
+      }
       const message = reason === "manual" ? plan.message.replace(/^snapshot:/, "snapshot (manual):") : plan.message;
       const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
         cwd: deps.repoDir,

@@ -82,6 +82,14 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog): Promise<vo
     case "commitInitialUserRepo": {
       log("committing the initial user/ tree");
       await run(exec, ["git", "-C", "user", "add", "-A"]);
+      // Checked before the commit spawn: an unconfigured identity fails
+      // `git commit` with an opaque "empty ident name" error, so this turns
+      // it into an actionable message instead.
+      const name = await exec.run(["git", "-C", "user", "config", "user.name"]);
+      const email = await exec.run(["git", "-C", "user", "config", "user.email"]);
+      if (name.code !== 0 || !name.stdout.trim() || email.code !== 0 || !email.stdout.trim()) {
+        throw new StepFailed("no git identity: run `git config --global user.name` and `git config --global user.email`, then re-run `rt home init`");
+      }
       // `-c commit.gpgsign=false`: a global signing config with an unusable
       // key fails this commit outright (exit 128), taking down an init that
       // needs no signature. An empty tree is not a failure either — a
