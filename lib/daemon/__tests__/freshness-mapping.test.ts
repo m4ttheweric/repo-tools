@@ -826,7 +826,7 @@ describe("write-through at updateEntry (RT-48)", () => {
     const dir = mkdtempSync(join(tmpdir(), "rt-writethrough-api-"));
     const db = openStateDb(join(dir, "state.db"));
     const store = getBranchCacheStore(db);
-    expect(Object.keys(store).sort()).toEqual(["delete", "entries", "gc", "put", "reload"]);
+    expect(Object.keys(store).sort()).toEqual(["delete", "entries", "gc", "get", "getByBranch", "put", "reload"]);
     db.close();
   });
 });

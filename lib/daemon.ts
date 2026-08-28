@@ -201,6 +201,8 @@ const cache: BranchCacheStore = {
   delete: (branch)             => openBranchCacheStore().delete(branch),
   reload: ()                   => openBranchCacheStore().reload(),
   gc:     (repos, maxAgeMs)    => openBranchCacheStore().gc(repos, maxAgeMs),
+  get:    (identity, branch)   => openBranchCacheStore().get(identity, branch),
+  getByBranch: (branch)        => openBranchCacheStore().getByBranch(branch),
 };
 // Port scan cache, held as a single mutable ref so handler modules can read
 // fresh values without getters. The port poller mutates it in place.

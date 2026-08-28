@@ -54,6 +54,21 @@ export function rekeyBranchCacheTable(): Promise<RekeyReport> {
   return rekeyTableColumn("branch_cache", "repo");
 }
 
+/** state.db keys the branch cache on `${serializedIdentity}:${branch}`. Split
+ *  on the LAST colon: git branch names contain none, serialized identities
+ *  always carry their own (remote:/path:), so this is unambiguous. */
+export function composeKey(identity: string | undefined, branch: string): string {
+  return identity ? `${identity}:${branch}` : branch;
+}
+export function branchOf(key: string): string {
+  const i = key.lastIndexOf(":");
+  return i < 0 ? key : key.slice(i + 1);
+}
+export function identityOf(key: string): string | undefined {
+  const i = key.lastIndexOf(":");
+  return i < 0 ? undefined : key.slice(0, i);
+}
+
 export interface BranchCacheStore {
   /** The live map — ctx.cache-compatible. Same object identity across reload(). */
   entries: Record<string, CacheEntry>;
@@ -61,6 +76,10 @@ export interface BranchCacheStore {
   put(branch: string, entry: CacheEntry): void;
   /** Map + row delete, one call. */
   delete(branch: string): void;
+  /** Looks up by composeKey(identity, branch). Store is still bare-keyed this task, so this degrades to a bare-branch lookup until Task 10 flips the PK. */
+  get(identity: string | undefined, branch: string): CacheEntry | undefined;
+  /** Scans for any key ending in `:${branch}` (or the bare branch itself), for callers without an identity yet. */
+  getByBranch(branch: string): CacheEntry | undefined;
   /** Rebuilds `entries` in place from the db (replaces loadCache-from-file). */
   reload(): void;
   /**
@@ -183,9 +202,19 @@ function createStore(db: Database): BranchCacheStore {
     }, { op: "gc", count: toDelete.length });
   }
 
+  function get(identity: string | undefined, branch: string): CacheEntry | undefined {
+    return entries[composeKey(identity, branch)];
+  }
+
+  function getByBranch(branch: string): CacheEntry | undefined {
+    const suffix = `:${branch}`;
+    for (const [k, v] of Object.entries(entries)) if (k === branch || k.endsWith(suffix)) return v;
+    return undefined;
+  }
+
   reload();
 
-  return { entries, put, delete: del, reload, gc };
+  return { entries, put, delete: del, reload, gc, get, getByBranch };
 }
 
 let singletonStore: BranchCacheStore | null = null;

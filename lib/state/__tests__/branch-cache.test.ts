@@ -13,7 +13,25 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb, getStateDb, openStateDb } from "../db.ts";
-import { getBranchCacheStore, rekeyBranchCacheTable, type CacheEntry } from "../branch-cache.ts";
+import { branchOf, composeKey, getBranchCacheStore, identityOf, rekeyBranchCacheTable, type CacheEntry } from "../branch-cache.ts";
+
+test("composeKey/branchOf/identityOf round-trip with a serialized identity", () => {
+  const id = "remote:gitlab.com%2Facme%2Facme-dev";
+  const k = composeKey(id, "feature/x");
+  expect(k).toBe(`${id}:feature/x`);
+  expect(branchOf(k)).toBe("feature/x");
+  expect(identityOf(k)).toBe(id);
+});
+test("bare key (no identity) degrades gracefully", () => {
+  expect(composeKey(undefined, "main")).toBe("main");
+  expect(branchOf("main")).toBe("main");
+  expect(identityOf("main")).toBeUndefined();
+});
+test("branch never contains a colon, so lastIndexOf split is unambiguous", () => {
+  const k = composeKey("path:%2FUsers%2Fdev%2Fscratch", "release");
+  expect(branchOf(k)).toBe("release");
+  expect(identityOf(k)).toBe("path:%2FUsers%2Fdev%2Fscratch");
+});
 
 let dir: string;
 
