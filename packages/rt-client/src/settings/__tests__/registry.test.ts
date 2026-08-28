@@ -248,8 +248,9 @@ describe("settings/registry", () => {
         "agent.effort",
         "agent.account",
         "agent.extraArgs",
+        "rt.trustedBrowserOrigins",
       ];
-      expect(suiteKeys).toHaveLength(42);
+      expect(suiteKeys).toHaveLength(43);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),
