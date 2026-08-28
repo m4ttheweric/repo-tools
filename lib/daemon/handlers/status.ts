@@ -26,16 +26,21 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
       // must see this run's own boot-attempt/failure counters, not whatever
       // they were when the daemon started.
       const { bootAttempts, lastReadyAt, recentFailures, lastExit } = readSupervisionState();
+      const h = ctx.getHealth();
       return {
         ok: true,
         uptime: Date.now() - ctx.startedAt,
         pid: process.pid,
         ...ctx.identity,
+        health: h.level,
+        eventLoop: h.eventLoop,
+        heartbeatSeq: ctx.heartbeatSeq(),
         supervision: { bootAttempts, lastReadyAt, recentFailures: recentFailures.slice(-3), lastExit },
       };
     },
 
     "status": async () => {
+      const h = ctx.getHealth();
       return {
         ok: true,
         data: {
@@ -47,6 +52,9 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
           portCacheAge: ctx.portCacheRef.updatedAt ? Date.now() - ctx.portCacheRef.updatedAt : null,
           freshness: getFreshnessSnapshot(),
           identity: ctx.identity,
+          health: { level: h.level, reasons: h.reasons },
+          metrics: h.metrics,
+          eventLoop: h.eventLoop,
         },
       };
     },
@@ -58,6 +66,7 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
         const repo = p.repo || "unknown";
         portsByRepo[repo] = (portsByRepo[repo] || 0) + 1;
       }
+      const h = ctx.getHealth();
 
       return {
         ok: true,
@@ -72,6 +81,9 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
           lastRefresh: ctx.refreshStatusRef.lastRefreshAt || null,
           portsByRepo,
           pendingNotifications: peekNotifications().length,
+          health: { level: h.level, reasons: h.reasons },
+          metrics: h.metrics,
+          eventLoop: h.eventLoop,
         },
       };
     },

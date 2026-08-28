@@ -10,6 +10,7 @@ import type { FSWatcher } from "fs";
 import type { Logger } from "pino";
 import type { PortEntry } from "../../port-scanner.ts";
 import type { BranchCacheStore } from "../../state/index.ts";
+import type { HealthSnapshot } from "../health.ts";
 
 /**
  * RT-48: `CacheEntry` used to be DECLARED here — a third copy of the same
@@ -70,6 +71,10 @@ export interface HandlerContext {
   startWatchingRepo:       (repoName: string, repoPath: string) => void;
   /** Holder for the last cache-refresh cycle's outcome (0s = never run). */
   refreshStatusRef:        { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number };
+  /** Computes the current health verdict (level/reasons/metrics/eventLoop) on demand; not cached, cheap enough per call. */
+  getHealth:               () => HealthSnapshot;
+  /** Current loop-monitor heartbeat sequence number, echoed by `ping`. */
+  heartbeatSeq:            () => number;
 }
 
 export type Handler    = (payload: any, signal?: AbortSignal) => Promise<any>;
