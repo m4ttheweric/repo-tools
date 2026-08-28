@@ -9,7 +9,7 @@
  *   ports                 — cached port-scan data, optionally filtered by repo
  *   notifications         — drain the notification queue
  *   notifications:peek    — peek at the notification queue (diagnostics)
- *   daemon:log-level      — show or set the live pino log level
+ *   daemon:log-level      - show or set the live pino log level
  */
 
 import { existsSync, readdirSync } from "fs";

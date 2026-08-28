@@ -1167,7 +1167,7 @@ async function waitForPort(port: number, timeoutMs: number): Promise<void> {
   }
 }
 
-/** Pure formatter for `daemon:log-level` results — shared by the CLI and its tests. */
+/** Pure formatter for `daemon:log-level` results, shared by the CLI and its tests. */
 export function formatLogLevelResult(res: { ok: boolean; level?: string; error?: string }, wasSet: boolean): string {
   if (!res.ok) return `  ${red}●${reset} ${res.error ?? "failed"}`;
   return `  ${green}●${reset} daemon log level ${wasSet ? "set to" : "is"} ${res.level}`;
