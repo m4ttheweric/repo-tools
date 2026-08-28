@@ -70,13 +70,15 @@ export function reloadApiToken(tokenPath: string = API_TOKEN_PATH): string {
 /**
  * True when a request mutates state, or (secrets/notifications) returns or
  * drains something a GET should not silently consume, and must present the
- * local token. Default-gated for every method except GET/HEAD/OPTIONS (S040:
- * an allowlist-by-path guaranteed the next mutating route would ship
- * unguarded) plus two explicit GET exceptions whose verb lies about being a
- * read.
+ * local token. A CORS preflight (OPTIONS) can never present the custom
+ * X-RT-Token header, so it is never gated, on any path. Otherwise
+ * default-gated for every method except GET/HEAD (S040: an allowlist-by-path
+ * guaranteed the next mutating route would ship unguarded), plus two
+ * explicit GET exceptions whose verb lies about being a read.
  */
 export function needsToken(method: string, pathname: string): boolean {
-  if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+  if (method === "OPTIONS") return false;
+  if (method === "GET" || method === "HEAD") {
     // Gated despite being a GET: /api/secrets's response body IS a
     // credential (S054); /api/notifications DRAINS the queue (S041), so its
     // verb lies about being a read the way every other GET here is not.

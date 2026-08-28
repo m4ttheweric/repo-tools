@@ -67,6 +67,11 @@ describe("needsToken", () => {
     expect(needsToken("GET", "/api/cache")).toBe(false);
     expect(needsToken("HEAD", "/api/repos")).toBe(false);
   });
+
+  test("OPTIONS never requires a token even for secrets/notifications (preflight must never be gated)", () => {
+    expect(needsToken("OPTIONS", "/api/secrets")).toBe(false);
+    expect(needsToken("OPTIONS", "/api/notifications")).toBe(false);
+  });
 });
 
 describe("tokenOk", () => {
