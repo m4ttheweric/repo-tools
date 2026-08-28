@@ -35,9 +35,13 @@ describe("resolveInbox", () => {
     expect(resolveInbox("dddddddd-0000-0000-0000-000000000004", { roots: [root] })).toBeNull();
   });
   test("skips a registry file whose JSON parses to a non-object without throwing", () => {
-    const root = fakeRoot([{ pid: 336, sessionId: "ffffffff-0000-0000-0000-000000000006" }]);
+    // No matching entry at all, so every file in the root must be read
+    // before resolveInbox gives up -- including the null one. A version
+    // without the guard throws partway through this scan instead of
+    // finishing it and returning null.
+    const root = fakeRoot([]);
     writeFileSync(join(root, "337.json"), "null");
     writeFileSync(join(root, "338.json"), "42");
-    expect(resolveInbox("ffffffff-0000-0000-0000-000000000006", { roots: [root] })?.pid).toBe(336);
+    expect(resolveInbox("ffffffff-0000-0000-0000-000000000006", { roots: [root] })).toBeNull();
   });
 });

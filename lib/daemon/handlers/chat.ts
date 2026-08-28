@@ -15,6 +15,7 @@ import {
   listMessages,
   markRead,
   markDelivered,
+  pendingMessages,
   unreadWakingCount,
   listRooms,
   archiveRoom,
@@ -45,12 +46,13 @@ import { herdrRequest } from "../../herdr/client.ts";
 import { injectIntoPane } from "../inject.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
 import { deliverToInbox, renderDeliveries } from "../inbox.ts";
+import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
 
-/** The seam tests inject fakes through; production callers pass nothing and get the real registry + socket sender. */
 export type InboxDeps = { resolve: typeof resolveInbox; deliver: typeof deliverToInbox };
 const defaultInboxDeps: InboxDeps = { resolve: resolveInbox, deliver: deliverToInbox };
+const log = lazyChildLogger("chat");
 
 const CHAT_COMMANDS = [
   "chat:join",
@@ -88,22 +90,25 @@ function assertionError(fn: () => void): string | null {
 }
 
 /**
- * A resolver miss and a delivered-but-failed send are the same outcome here:
- * no deliver call (or an ok:false one), cursor left untouched. A later post
- * to the same recipient tries again; a stalled inbox otherwise surfaces
- * through the unread badge, not through a retry loop here.
+ * A resolver miss, a signed-out recipient, a dead binding, and an ok:false
+ * send are all the same outcome here: no cursor advance. A later post to the
+ * same recipient tries again and, via pendingMessages, catches up everything
+ * still behind the cursor at that point -- not just its own message -- so a
+ * failed send never drops a body permanently.
  */
 async function deliverPost(
   db: Database,
   deps: InboxDeps,
   recipient: string,
-  msg: { room: string; dm: boolean; handle: string; body: string; id: number },
+  msg: { room: string; dm: boolean; id: number },
 ): Promise<void> {
   const presence = presenceForHandle(recipient, db);
-  if (!presence) return;
+  if (!presence || presence.signedOutAt !== undefined) return;
   const binding = deps.resolve(presence.sessionId);
   if (!binding || !inboxAlive(binding)) return;
-  const content = renderDeliveries([{ room: msg.room, dm: msg.dm, handle: msg.handle, body: msg.body }]);
+  const pending = pendingMessages(msg.room, recipient, msg.id, db);
+  if (pending.length === 0) return;
+  const content = renderDeliveries(pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body })));
   const result = await deps.deliver(binding.socketPath, content);
   if (result.ok) markDelivered(msg.room, recipient, msg.id, db);
 }
@@ -113,9 +118,10 @@ async function deliverPost(
  * viewer reading the event finds no message yet. Shared by chat:post and
  * chat:dm so the desk-notify check (mentions merged the same way postMessage
  * merges them for storage) never diverges between the two entry points.
- * Recipient delivery is fire-and-forget relative to this function's return:
- * chat:post's response time stays one store write, never a socket round
- * trip.
+ * Recipient delivery is deferred a microtask past this function's return:
+ * presenceForHandle plus a full registry scan run per recipient, and a
+ * queued call lets chat:post's response get built before that work starts,
+ * rather than paying it inline on the request path.
  */
 function postAndNotify(
   db: Database,
@@ -129,7 +135,11 @@ function postAndNotify(
   emitEvent(`chat/${room}/msg`, { id: posted.id });
   const dm = dmParticipants(room, db);
   for (const recipient of posted.recipients) {
-    void deliverPost(db, inboxDeps, recipient, { room, dm: dm !== null, handle, body, id: posted.id });
+    queueMicrotask(() => {
+      deliverPost(db, inboxDeps, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
+        log.warn({ err, room, recipient, id: posted.id }, "chat: inbox delivery failed");
+      });
+    });
   }
   // Independent of chat_members / wake_on: agents create rooms via
   // join-creates, so the human is typically not a member yet, and a

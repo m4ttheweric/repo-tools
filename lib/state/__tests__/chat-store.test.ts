@@ -25,8 +25,10 @@ import {
   listMembers,
   listMessages,
   listRooms,
+  markDelivered,
   markRead,
   parseMentions,
+  pendingMessages,
   postMessage,
   readUnread,
   recipientsFor,
@@ -207,6 +209,30 @@ test("mark advances without returning messages", () => {
   postMessage({ room: "r", handle: "a", body: "one" }, db);
   markRead("b", "r", db);
   expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
+});
+
+test("markDelivered clamps the cursor: a slower delivery completing after a newer one never moves it backwards", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  postMessage({ room: "r", handle: "a", body: "two" }, db);
+  markDelivered("r", "b", 2, db);
+  markDelivered("r", "b", 1, db); // a slow send for the older message settling second
+  expect(listMembers("r", db).find((m) => m.handle === "b")!.lastReadId).toBe(2);
+});
+
+test("pendingMessages returns the recipient's unread backlog bounded above by the given id, in order", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  const one = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  const two = postMessage({ room: "r", handle: "a", body: "two" }, db)!;
+  postMessage({ room: "r", handle: "a", body: "three" }, db);
+  expect(pendingMessages("r", "b", two.id, db).map((m) => m.body)).toEqual(["one", "two"]);
+  markDelivered("r", "b", one.id, db);
+  expect(pendingMessages("r", "b", two.id, db).map((m) => m.body)).toEqual(["two"]);
+  expect(pendingMessages("r", "nobody", two.id, db)).toEqual([]);
 });
 
 test("arm sets armed_at, disarm clears it, touch updates last_seen_at", () => {

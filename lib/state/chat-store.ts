@@ -147,6 +147,8 @@ const SELECT_SINCE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE roo
 const SELECT_UNREAD_ALL_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? ORDER BY id ASC;`;
 const SELECT_MESSAGES_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? ORDER BY id DESC LIMIT ?;`;
 const SELECT_MESSAGES_BEFORE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id < ? ORDER BY id DESC LIMIT ?;`;
+const SELECT_PENDING_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? AND id <= ? ORDER BY id ASC;`;
+const UPDATE_LAST_READ_CLAMPED_SQL = `UPDATE chat_members SET last_read_id = MAX(last_read_id, ?) WHERE room = ? AND handle = ?;`;
 
 // `@` is strictly the mention sigil and `/` would reshape chat/wake/<handle>
 // into a nested topic glob, so both are excluded even though the rest of
@@ -532,9 +534,31 @@ export function markRead(handle: string, room?: string, db: Database = getStateD
   }
 }
 
-/** A delivered body is the read surface: the daemon calls this in place of markRead once a Claude inbox socket confirms the frame landed, bounded to the id actually delivered rather than the room's current max. */
+/**
+ * A delivered body is the read surface: the daemon calls this in place of
+ * markRead once a Claude inbox socket confirms the frame landed, bounded to
+ * the id actually delivered rather than the room's current max. The MAX
+ * clamp is required, not defensive: two deliveries for the same recipient
+ * can be in flight at once (a slow send racing a fast one for a later
+ * message), and the slower one completing second must never walk the cursor
+ * backwards past what the faster one already confirmed delivered.
+ */
 export function markDelivered(room: string, handle: string, upToId: number, db: Database = getStateDb()): void {
-  db.query(UPDATE_LAST_READ_SQL).run(upToId, room, handle);
+  db.query(UPDATE_LAST_READ_CLAMPED_SQL).run(upToId, room, handle);
+}
+
+/**
+ * A recipient's undelivered backlog in one room, bounded above by upToId. A
+ * failed delivery leaves the cursor behind; the next successful one must
+ * catch up everything since, not just the message that triggered it, or the
+ * skipped ones are gone from the recipient's inbox for good once the cursor
+ * advances past them.
+ */
+export function pendingMessages(room: string, handle: string, upToId: number, db: Database = getStateDb()): ChatMessage[] {
+  const member = db.query(SELECT_ROOM_MEMBER_SQL).get(room, handle) as MemberRow | null;
+  if (!member) return [];
+  const rows = db.query(SELECT_PENDING_SQL).all(room, member.last_read_id, upToId) as MessageRow[];
+  return rows.map(rowToMessage);
 }
 
 export function unreadWakingCount(

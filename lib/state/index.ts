@@ -108,6 +108,7 @@ export {
   listMessages,
   markRead,
   markDelivered,
+  pendingMessages,
   unreadWakingCount,
   listRooms,
   archiveRoom,

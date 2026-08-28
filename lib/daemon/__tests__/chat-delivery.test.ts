@@ -82,6 +82,72 @@ test("a delivery failure leaves the recipient's cursor untouched", async () => {
   expect(lastReadId(h.db, "general", "b")).toBe(before);
 });
 
+test("a failed delivery batches with the next successful one, catching up the whole pending range", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let attempt = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => {
+      attempt++;
+      calls.push([socketPath, content]);
+      return attempt === 1 ? { ok: false, error: "timeout" } : { ok: true };
+    },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  const first = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
+  if (!first.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  const second = await h["chat:post"]({ room: "general", handle: "a", body: "two" });
+  if (!second.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(2);
+  expect(calls[1]![1]).toBe("[#general] a: one\n[#general] a: two");
+  expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
+});
+
+test("a resolver that throws is caught, leaving chat:post ok and no unhandled rejection", async () => {
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown) => rejections.push(reason);
+  process.on("unhandledRejection", onRejection);
+  try {
+    const inboxDeps: InboxDeps = {
+      resolve: () => { throw new Error("registry scan exploded"); },
+      deliver: async () => ({ ok: true }),
+    };
+    const h = freshHandlers(inboxDeps);
+    await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+    await h["chat:join"]({ room: "general", handle: "a" });
+    await h["chat:join"]({ room: "general", handle: "b" });
+    const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+    expect(posted.ok).toBe(true);
+    await Bun.sleep(0);
+    expect(rejections).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+});
+
+test("a signed-out recipient's inbox is never delivered to", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:sign-out"]({ sessionId: "sess-b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+});
+
 test("a wake_on none member is never delivered even when signed in", async () => {
   const calls: Array<[string, string]> = [];
   const sock = fakeSocketPath();
