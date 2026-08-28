@@ -73,3 +73,20 @@ test("finished runs are ignored and dropped from tracking", async () => {
   await handle!.tick();
   expect(events).toHaveLength(0);
 });
+
+test("backs off the herdr probe after repeated failures", async () => {
+  let probeCalls = 0;
+  handle = startAgentStatusPoller({
+    emitEvent: () => {},
+    log: quietLog,
+    intervalMs: 3_600_000,           // real timer never fires
+    probe: async () => { probeCalls++; return null; }, // herdr absent
+    list: () => [],
+  });
+  for (let i = 0; i < 20; i++) await handle.tick();
+  // Without backoff this would be 20; with backoff (threshold 3, 1-in-6) far fewer.
+  expect(probeCalls).toBeLessThan(10);
+  // Backoff never stops probing forever: 3 initial failures engage it, then
+  // one probe every BACKOFF_TICKS (ticks 9 and 15 of 20) keeps checking.
+  expect(probeCalls).toBe(5);
+});
