@@ -820,6 +820,25 @@ export async function manageTracking(args: string[] = []): Promise<void> {
 // ─── Logs ────────────────────────────────────────────────────────────────────
 
 /**
+ * Decides whether showLogs' native-stderr block is worth printing, and its
+ * header. `daemon-stderr.log` is rotated on open (daemon-logger.ts) but the
+ * fresh file can still be non-empty from a crash that happened before *this*
+ * boot's rotation ran (e.g. a bun panic mid-startup) — so staleness is judged
+ * by mtime vs. the live daemon's startedAt, not by rotation alone. A `null`
+ * startedAt (daemon unreachable — nothing to compare against) fails open:
+ * show it, since a down daemon is exactly when the last crash matters most.
+ */
+export function nativeStderrDisplay(
+  mtimeMs: number,
+  daemonStartedAt: number | null,
+): { show: boolean; header: string } {
+  if (daemonStartedAt !== null && mtimeMs <= daemonStartedAt) {
+    return { show: false, header: "no crash since this daemon started" };
+  }
+  return { show: true, header: `native stderr (captured ${new Date(mtimeMs).toISOString()})` };
+}
+
+/**
  * Show daemon logs.
  *
  *   rt daemon logs              → open browser-based viewer (logdy)
@@ -836,16 +855,28 @@ export async function showLogs(args: string[] = []): Promise<void> {
 
   // Surface captured native stderr first — these are bun panics/asserts that
   // bypassed the JS-side interceptor and were caught by the swift-shim's
-  // freopen of fd 2. If non-empty, the most recent crash leads the output.
+  // freopen of fd 2. Only shown when it postdates the running daemon's boot —
+  // otherwise it's a previous life's crash, not "the most recent crash".
   const stderrPath = join(LOG_DIR, "daemon-stderr.log");
   if (existsSync(stderrPath)) {
     const content = readFileSync(stderrPath, "utf8").trim();
     if (content) {
-      console.log(`\n  ${red}${bold}native stderr${reset} ${dim}(${stderrPath})${reset}`);
-      for (const line of content.split("\n").slice(-20)) {
-        console.log(`  ${red}${line}${reset}`);
+      const mtimeMs = statSync(stderrPath).mtimeMs;
+      const ping = await daemonQuery("ping");
+      const daemonStartedAt =
+        ping && (ping as any).ok && typeof (ping as any).startedAt === "number"
+          ? ((ping as any).startedAt as number)
+          : null;
+      const { show, header } = nativeStderrDisplay(mtimeMs, daemonStartedAt);
+      if (show) {
+        console.log(`\n  ${red}${bold}${header}${reset} ${dim}(${stderrPath})${reset}`);
+        for (const line of content.split("\n").slice(-20)) {
+          console.log(`  ${red}${line}${reset}`);
+        }
+        console.log("");
+      } else {
+        console.log(`\n  ${dim}${header}${reset}\n`);
       }
-      console.log("");
     }
   }
 

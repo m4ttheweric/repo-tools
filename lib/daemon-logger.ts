@@ -18,7 +18,7 @@ import pino, { type Logger } from "pino";
 // @ts-ignore — no types shipped; the JS API is well-tested.
 import roll from "pino-roll";
 import { dlopen, suffix, FFIType } from "bun:ffi";
-import { mkdirSync, openSync, closeSync } from "fs";
+import { mkdirSync, openSync, closeSync, existsSync, statSync, renameSync } from "fs";
 import { join } from "path";
 import { logsDir } from "./rt-paths.ts";
 
@@ -192,6 +192,26 @@ export const __test__ = {
 
 // ─── Native stderr capture ───────────────────────────────────────────────────
 
+/** Local `yyyy-MM-dd`, matching the janitor's dated-file convention (lib/cli-logger.ts's `today()`). */
+function todayDate(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Picks the rotation target for `daemon-stderr.log`: `daemon-stderr.<date>.log`,
+ * or `.<N>.log` if that name is already taken (e.g. two boots same day) — both
+ * shapes match log-janitor's LOG_FILE_PATTERN, so pruneLogs sweeps them for free.
+ */
+function nextRotatedStderrPath(dir: string, date: string): string {
+  const base = join(dir, `daemon-stderr.${date}.log`);
+  if (!existsSync(base)) return base;
+  for (let n = 1; ; n++) {
+    const candidate = join(dir, `daemon-stderr.${date}.${n}.log`);
+    if (!existsSync(candidate)) return candidate;
+  }
+}
+
 /**
  * Point fd 2 at ~/.mattstack/rt/logs/daemon-stderr.log so native output that bypasses
  * JS entirely (bun panics, segfault reports, runtime asserts) is captured no
@@ -206,7 +226,14 @@ export function redirectNativeStderr(): void {
   try {
     const dir = logsDir();
     mkdirSync(dir, { recursive: true });
-    const fd = openSync(join(dir, "daemon-stderr.log"), "a");
+    const stderrPath = join(dir, "daemon-stderr.log");
+    // Rotate any leftover content from a previous crash before reopening —
+    // otherwise `rt daemon logs` keeps showing yesterday's panic as "most
+    // recent". A rename here can never lose data (unlike truncation).
+    if (existsSync(stderrPath) && statSync(stderrPath).size > 0) {
+      renameSync(stderrPath, nextRotatedStderrPath(dir, todayDate()));
+    }
+    const fd = openSync(stderrPath, "a");
     const libc = dlopen(`libSystem.${suffix}`, {
       dup2: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
     });

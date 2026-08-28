@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, writeFileSync, statSync, unlinkSync, mkdirSync, closeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dlopen, suffix, FFIType } from "bun:ffi";
 import type { Logger } from "pino";
 
 // We import the factory (not the singleton) so each test gets isolation.
@@ -10,6 +11,7 @@ import {
   lazyChildLogger,
   getDaemonLogger,
   installCrashHandlers,
+  redirectNativeStderr,
   __test__,
   type DaemonLoggerHandle,
 } from "../daemon-logger.ts";
@@ -131,6 +133,90 @@ describe("lazyChildLogger", () => {
     const content = readSingletonLog();
     expect(content).toContain('"module":"lazy-warm-test"');
     expect(content).toContain('"msg":"lazy-warm-line"');
+  });
+});
+
+describe("redirectNativeStderr — rotation", () => {
+  // redirectNativeStderr dup2's the REAL process fd 2 to the log file (that is
+  // the whole point of the function) — a bare call here would swallow this
+  // test process's own stderr for the rest of the run. Save/restore fd 2
+  // around the call with the same dup/dup2 pair the implementation uses.
+  function withRealFd2Saved(fn: () => void): void {
+    const libc = dlopen(`libSystem.${suffix}`, {
+      dup: { args: [FFIType.i32], returns: FFIType.i32 },
+      dup2: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    });
+    const savedFd2 = libc.symbols.dup(2);
+    try {
+      fn();
+    } finally {
+      libc.symbols.dup2(savedFd2, 2);
+      closeSync(savedFd2);
+      libc.close();
+    }
+  }
+
+  function stderrPath(): string {
+    return join(logsDir(), "daemon-stderr.log");
+  }
+
+  function clearRotatedFiles(): void {
+    const dir = logsDir();
+    if (!existsSync(dir)) return;
+    for (const f of readdirSync(dir)) {
+      if (/^daemon-stderr\.\d{4}-\d{2}-\d{2}(\.\d+)?\.log$/.test(f)) unlinkSync(join(dir, f));
+    }
+  }
+
+  beforeEach(() => {
+    mkdirSync(logsDir(), { recursive: true });
+    clearRotatedFiles();
+    try { unlinkSync(stderrPath()); } catch { /* not present yet */ }
+  });
+
+  afterEach(() => {
+    clearRotatedFiles();
+    try { unlinkSync(stderrPath()); } catch { /* already gone */ }
+  });
+
+  it("rotates a non-empty daemon-stderr.log before reopening, matching the janitor's dated pattern", () => {
+    if (process.platform !== "darwin") return; // redirectNativeStderr is a darwin-only no-op elsewhere
+
+    writeFileSync(stderrPath(), "old panic\n");
+
+    withRealFd2Saved(() => redirectNativeStderr());
+
+    const rotated = readdirSync(logsDir()).filter((f) => /^daemon-stderr\.\d{4}-\d{2}-\d{2}\.log$/.test(f));
+    expect(rotated.length).toBe(1);
+    expect(readFileSync(join(logsDir(), rotated[0]!), "utf8")).toBe("old panic\n");
+    expect(statSync(stderrPath()).size).toBe(0);
+  });
+
+  it("dedupes with a .N suffix when the dated rotation name is already taken", () => {
+    if (process.platform !== "darwin") return;
+
+    const d = new Date();
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    writeFileSync(join(logsDir(), `daemon-stderr.${date}.log`), "yesterday's rotation\n");
+    writeFileSync(stderrPath(), "today's panic\n");
+
+    withRealFd2Saved(() => redirectNativeStderr());
+
+    const rotated = readdirSync(logsDir()).filter((f) => new RegExp(`^daemon-stderr\\.${date}(\\.\\d+)?\\.log$`).test(f));
+    expect(rotated.length).toBe(2);
+    const suffixed = rotated.find((f) => f !== `daemon-stderr.${date}.log`);
+    expect(suffixed).toBeDefined();
+    expect(readFileSync(join(logsDir(), suffixed!), "utf8")).toBe("today's panic\n");
+  });
+
+  it("leaves an empty or missing daemon-stderr.log alone (nothing to rotate)", () => {
+    if (process.platform !== "darwin") return;
+
+    withRealFd2Saved(() => redirectNativeStderr());
+
+    const rotated = readdirSync(logsDir()).filter((f) => /^daemon-stderr\.\d{4}-\d{2}-\d{2}(\.\d+)?\.log$/.test(f));
+    expect(rotated.length).toBe(0);
+    expect(statSync(stderrPath()).size).toBe(0);
   });
 });
 
