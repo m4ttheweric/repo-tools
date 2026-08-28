@@ -21,6 +21,7 @@ import { dlopen, suffix, FFIType } from "bun:ffi";
 import { mkdirSync, openSync, closeSync, existsSync, statSync, renameSync, writeSync } from "fs";
 import { join } from "path";
 import { logsDir } from "./rt-paths.ts";
+import { getSetting } from "./settings/resolve.ts";
 
 /** Last-resort write straight to fd 2, bypassing pino entirely. Used only when the logger itself has failed or can't be trusted. */
 function rawStderr(text: string): void {
@@ -42,12 +43,48 @@ export interface DaemonLoggerHandle {
   flush?: () => void;
   /** True once the underlying stream has emitted an 'error' (e.g. ENOSPC); writes since then were swallowed, not lost silently. */
   loggerDegraded: () => boolean;
+  /** Count of errors that were observed and handled without crashing the daemon: demoted stderr noise plus steady-state recovered unhandledRejections. */
+  recoveredErrorCount: () => number;
 }
 
 export interface CreateOptions {
   logDir: string;
   level?: pino.LevelWithSilent;
 }
+
+/**
+ * Resolves the daemon's pino level: RT_LOG_LEVEL env, then the `rt.logLevel`
+ * setting, then "info". The setting read is try/catch-guarded because the
+ * `rt.logLevel` registry key may not exist yet (added in a later task), and
+ * the resolver may also run pre-boot; this must never throw.
+ */
+export function resolveDaemonLogLevel(
+  env: string | undefined,
+  fromSetting: () => string | undefined,
+): string {
+  if (env) return env;
+  try {
+    const v = fromSetting();
+    if (v) return v;
+  } catch {
+    // Setting unavailable (unknown key pre-registration, or resolver not
+    // ready yet)... fall through to the "info" default below.
+  }
+  return "info";
+}
+
+const PANIC_PREFIXES = ["panic:", "fatal error:", "Uncaught ", "UnhandledPromiseRejection"];
+
+/** True for stderr text that looks like a native/runtime panic, not ordinary noise (warnings, CLI messages). */
+export function isPanicLine(text: string): boolean {
+  return PANIC_PREFIXES.some((p) => text.startsWith(p));
+}
+
+// Counts errors observed and handled without crashing the daemon: demoted
+// stderr lines (installCrashHandlers) plus steady-state recovered
+// unhandledRejections. Module-scoped (one daemon process, one counter) rather
+// than per-handle, matching the process-wide handlers that increment it.
+let recovered = 0;
 
 /**
  * Async factory — call once at daemon startup OR in each test.
@@ -65,6 +102,7 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
     frequency: "daily",
     dateFormat: "yyyy-MM-dd",
     mkdir: true,
+    size: "50m",
     limit: { count: 14 },
     sync: true,
   });
@@ -105,6 +143,7 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
       try { logger.flush(); } catch { /* */ }
     },
     loggerDegraded: () => degraded,
+    recoveredErrorCount: () => recovered,
   };
 }
 
@@ -125,7 +164,10 @@ export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
   if (!cachedPromise) {
     cachedPromise = createDaemonLogger({
       logDir: logsDir(),
-      level: (process.env.RT_LOG_LEVEL as pino.LevelWithSilent | undefined) ?? "info",
+      level: resolveDaemonLogLevel(
+        process.env.RT_LOG_LEVEL,
+        () => getSetting<string>("rt.logLevel").value,
+      ) as pino.LevelWithSilent,
     }).catch((err) => {
       // Clear the cache on failure — a transient cause (log dir momentarily
       // unwritable) may not recur, so a later call should retry rather than
@@ -284,7 +326,9 @@ export function redirectNativeStderr(): void {
  *   daemon that's already serving. No `booting` given preserves the old
  *   always-log, never-exit behavior.
  * - process.stderr.write: intercept so console.error / anything writing to
- *   stderr lands in the JSON log instead of vanishing.
+ *   stderr lands in the JSON log instead of vanishing, at `warn` (ordinary
+ *   noise) or `error` (a panic-looking line per isPanicLine); demoted lines
+ *   also count toward recoveredErrorCount().
  */
 export function installCrashHandlers(
   handle: DaemonLoggerHandle,
@@ -318,6 +362,7 @@ export function installCrashHandlers(
       process.exit(1);
       return;
     }
+    recovered += 1;
     try {
       logger.error({ err: reason }, "unhandledRejection");
     } catch {
@@ -332,7 +377,14 @@ export function installCrashHandlers(
     try {
       const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
       const trimmed = text.replace(/\n+$/, "");
-      if (trimmed.length > 0) logger.error({ source: "stderr" }, trimmed);
+      if (trimmed.length > 0) {
+        if (isPanicLine(trimmed)) {
+          logger.error({ source: "stderr" }, trimmed);
+        } else {
+          recovered += 1;
+          logger.warn({ source: "stderr" }, trimmed);
+        }
+      }
     } catch {
       // If anything in the logger fails, fall back to the original stderr.
       return origWrite(chunk, ...rest);
