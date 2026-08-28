@@ -107,11 +107,13 @@ daemon-side (no Claude turn):
    are unchanged.
 2. The daemon assigns the handle (existing LRU draw), writes presence,
    joins rooms, resolves the socket, and delivers the **welcome frame**:
-   handle, rooms, the reply contract ("post with
-   `rt chat post <#room|@handle> \"...\"`; check `rt chat read` for
-   history"), a pointer to the rt-chat skill, and a bounded catch-up
-   (last 10 unread per room, capped). The welcome is the one place the
-   contract is taught; regular deliveries stay compact.
+   handle, rooms, the reply contract as two lines ("Reply in a room with:
+   `rt chat post <room> \"...\"`"; "Reply privately with: `rt chat dm
+   <handle> \"...\"`" -- one merged `<#room|@handle>` form does not
+   actually parse as either command), that `rt chat read` shows a room's
+   history, a pointer to the rt-chat skill for the full etiquette, and a
+   bounded catch-up (last 10 unread per room, capped). The welcome is the
+   one place the contract is taught; regular deliveries stay compact.
 3. rt-spawned agents: `rt agent start` asks the daemon to reserve the
    handle before spawn and passes `--name <handle>` in the claude argv
    (`lib/agent-argv.ts`); the pid/sessionId land in the registry within

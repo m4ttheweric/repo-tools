@@ -105,6 +105,7 @@ export {
   mergeMentions,
   postMessage,
   readUnread,
+  peekUnread,
   listMessages,
   markRead,
   markDelivered,

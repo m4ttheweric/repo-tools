@@ -35,6 +35,7 @@ import { sessionFilePath } from "../../lib/chat-session.ts";
 import { AGENT_NAMES } from "../../lib/chat-names.ts";
 import { setSetting } from "../../packages/rt-client/src/settings/write.ts";
 import { drainNotifications, peekNotifications } from "../../lib/notifier.ts";
+import { fakeHerdr, HerdrFakeError } from "../../lib/herdr/__tests__/fake-herdr.ts";
 
 // ─── in-process CLI + fake daemon harness ───────────────────────────────────
 
@@ -481,7 +482,7 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
   });
 
   test("sign-in --pane works with no CLAUDE_CODE_SESSION_ID or --session, skipping git derivation", async () => {
-    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false } };
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false, sessionId: "pane-sess-1", room: null } };
     const out = await runChat(["sign-in", "--pane", "w1:p1"]);
     expect(out).toMatch(/signed in as kai/);
     const call = seen.find((s) => s.cmd === "chat:sign-in");
@@ -493,10 +494,96 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     expect(payload.branch).toBeUndefined();
   });
 
-  test("sign-in --pane --json reports the handle with no room joined", async () => {
-    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false } };
+  test("sign-in --pane --json reports the handle and room from the response, and writes the session file under the daemon-resolved sessionId", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false, sessionId: "pane-sess-2", room: "build" } };
     const out = await runChat(["sign-in", "--pane", "w1:p1", "--json"]);
-    expect(JSON.parse(out)).toEqual({ ok: true, handle: "kai", room: null });
+    expect(JSON.parse(out)).toEqual({ ok: true, handle: "kai", room: "build" });
+    expect(existsSync(sessionFilePath("pane-sess-2"))).toBe(true);
+    expect(JSON.parse(readFileSync(sessionFilePath("pane-sess-2"), "utf8"))).toMatchObject({
+      sessionId: "pane-sess-2",
+      handle: "kai",
+      baseHandle: "kai",
+      room: "build",
+    });
+  });
+
+  test("sign-in --pane resolves the pane's Claude session via herdr, and that session's own later commands then resolve the daemon-assigned handle (finding g)", async () => {
+    const uuid = "55555555-5555-5555-5555-555555555555";
+    const { sock: herdrSock, stop } = fakeHerdr((method) => {
+      if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+      return {
+        snapshot: {
+          workspaces: [],
+          panes: [
+            {
+              pane_id: "w1:p1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              agent: "claude",
+              agent_status: "idle",
+              agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid },
+            },
+          ],
+        },
+      };
+    });
+    const origSock = process.env.HERDR_SOCKET_PATH;
+    process.env.HERDR_SOCKET_PATH = herdrSock;
+    try {
+      const out = await runChat(["sign-in", "--pane", "w1:p1"]);
+      const handle = /signed in as (\S+)/.exec(out)?.[1] ?? "";
+      expect(handle).not.toBe("");
+      expect(existsSync(sessionFilePath(uuid))).toBe(true);
+
+      // The pane's OWN later commands (its CLAUDE_CODE_SESSION_ID is the
+      // uuid the daemon resolved) must resolve position 0 to that handle,
+      // not fall through resolveBaseHandle's cwd/pane fallbacks.
+      process.env.CLAUDE_CODE_SESSION_ID = uuid;
+      await runChat(["join", "r"]);
+      expect(await runChat(["who", "r"])).toContain(handle);
+    } finally {
+      stop();
+      if (origSock === undefined) delete process.env.HERDR_SOCKET_PATH;
+      else process.env.HERDR_SOCKET_PATH = origSock;
+    }
+  });
+
+  test("sign-in --pane never draws baseHandle from chat.handle: with the setting pinned, the daemon still draws from the pool", async () => {
+    const uuid = "66666666-6666-6666-6666-666666666666";
+    const { sock: herdrSock, stop } = fakeHerdr((method) => {
+      if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+      return {
+        snapshot: {
+          workspaces: [],
+          panes: [
+            {
+              pane_id: "w1:p1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              agent: "claude",
+              agent_status: "idle",
+              agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid },
+            },
+          ],
+        },
+      };
+    });
+    const origSock = process.env.HERDR_SOCKET_PATH;
+    process.env.HERDR_SOCKET_PATH = herdrSock;
+    setSetting("chat.handle", "invoker-name", "user");
+    try {
+      const out = await runChat(["sign-in", "--pane", "w1:p1"]);
+      const handle = /signed in as (\S+)/.exec(out)?.[1] ?? "";
+      expect(handle).not.toBe("invoker-name");
+      expect(AGENT_NAMES).toContain(handle);
+      const call = seen.find((s) => s.cmd === "chat:sign-in");
+      expect((call?.payload as Record<string, unknown>).baseHandle).toBeUndefined();
+    } finally {
+      stop();
+      setSetting("chat.handle", "", "user");
+      if (origSock === undefined) delete process.env.HERDR_SOCKET_PATH;
+      else process.env.HERDR_SOCKET_PATH = origSock;
+    }
   });
 
   test("--no-room signs in without joining any room", async () => {

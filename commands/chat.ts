@@ -37,6 +37,7 @@ import { basename, dirname, join } from "path";
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
 import { findGitRoot, repoAliasForPath, resolveMainWorktreePath } from "../lib/repo-for-cwd.ts";
+import { slugifyChatName as slugify } from "../lib/chat-room-name.ts";
 import { getCurrentBranch, getRepoRoot } from "../lib/git.ts";
 import { getRepoIdentityForRoot } from "../lib/repo.ts";
 import { parseIdentity, type RepoIdentity } from "../lib/settings/identity.ts";
@@ -188,15 +189,6 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
 // previous occupant's identity), and two rows for one cwd have no defined
 // tie-break.
 
-function slugify(raw: string): string {
-  const slug = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^[-.]+|[-.]+$/g, "");
-  return slug || "x";
-}
-
 /** `<alias>-<cwd-basename>`, or null when `cwd` isn't inside any indexed repo (or the git pointer is broken). */
 function deriveRepoDirHandle(cwd: string, index: Record<string, string>): string | null {
   const worktreeRoot = findGitRoot(cwd) ?? cwd;
@@ -270,6 +262,24 @@ function readChatHandleSetting(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * `--pane` sign-in's baseHandle chain is `--as` only, never chat.handle: that
+ * setting names the INVOKING process's own preferred handle, and this
+ * process isn't the one signing in -- a different pane's session is. Falling
+ * through to it would hand the invoker's name to whatever pane happened to
+ * be signed in this way, silently colliding the two. No "prior session"
+ * fallback either, for the same reason: this process has no session of its
+ * own to have a prior handle for.
+ */
+function resolvePaneBaseHandle(args: string[]): string | undefined {
+  const explicit = flagValue(args, "--as");
+  if (explicit) {
+    requireValidName("handle", explicit);
+    return explicit;
+  }
+  return undefined;
 }
 
 /** The --as-first chain (positions 1-6): what sign-in assigns a baseHandle from, and what resolveHandle falls back to for an unsigned-in session. */
@@ -969,24 +979,28 @@ async function runSignIn(args: string[]): Promise<void> {
 /**
  * Signs another pane's Claude session in on its behalf: the daemon resolves
  * `paneId` to a session id via herdr, so this process needs neither
- * CLAUDE_CODE_SESSION_ID nor a repo underfoot to derive cwd/repo/branch/room
- * from -- there is nothing local to derive them from, since the signed-in
- * identity belongs to a different pane. The welcome frame (daemon-side)
- * is that pane's own notice of what it just joined.
+ * CLAUDE_CODE_SESSION_ID nor a repo underfoot -- this process's OWN cwd is
+ * never consulted. The daemon still derives cwd/repo/branch/room and joins a
+ * room, just from the TARGET pane's cwd (via herdr), not from this one; the
+ * resolved sessionId and room travel back in the response so this process
+ * can write the session file for the pane it just signed in, same as a
+ * normal sign-in writes its own. The welcome frame (daemon-side) is that
+ * pane's own notice of what it just joined.
  */
 async function runSignInViaPane(args: string[], paneId: string): Promise<void> {
-  const requestedBase = resolveSignInBaseHandle(args, undefined);
-  if (requestedBase !== undefined) requireValidName("handle", requestedBase);
+  const requestedBase = resolvePaneBaseHandle(args);
   const statusText = flagValue(args, "--status");
 
   const signInRes = await chatSignIn({ baseHandle: requestedBase, pane: paneId, viaPane: true, statusText });
-  const { handle } = unwrap(signInRes, "sign-in");
+  const { handle, baseHandle, sessionId, room } = unwrap(signInRes, "sign-in");
+
+  writeChatSession({ sessionId, handle, baseHandle, signedInAt: Date.now(), room: room ?? undefined });
 
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ ok: true, handle, room: null }));
+    console.log(JSON.stringify({ ok: true, handle, room }));
     return;
   }
-  console.log(`signed in as ${handle} · pane ${paneId}`);
+  console.log(`signed in as ${handle} · pane ${paneId} · ${room ? `joined #${room}` : "no room joined"}`);
 }
 
 /**

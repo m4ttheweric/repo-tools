@@ -513,6 +513,31 @@ export function readUnread(
   return run();
 }
 
+/**
+ * Same shape as `readUnread`'s cursor-bound branch, minus the write: never
+ * advances `last_read_id`. For a caller that must preview what a member
+ * would see (the sign-in welcome frame) before committing to having shown
+ * it -- delivery can still fail after the preview is built, and only a
+ * caller that confirms delivery (via `markDelivered`) may advance the
+ * cursor, or a failed send permanently loses whatever this returned.
+ */
+export function peekUnread(
+  args: { handle: string; room?: string; limit: number },
+  db: Database = getStateDb(),
+): { room: string; messages: ChatMessage[] }[] {
+  const { handle, room, limit } = args;
+  const members = membershipsFor(handle, room, db);
+  const results: { room: string; messages: ChatMessage[] }[] = [];
+  for (const member of members) {
+    const maxId = getRoomMaxId(member.room, db);
+    const cursor = member.last_read_id <= maxId ? member.last_read_id : maxId;
+    const rows = db.query(SELECT_UNREAD_SQL).all(member.room, cursor, limit) as MessageRow[];
+    if (rows.length === 0) continue;
+    results.push({ room: member.room, messages: rows.map(rowToMessage) });
+  }
+  return results;
+}
+
 export function listMessages(
   args: { room: string; before?: number; limit: number },
   db: Database = getStateDb(),

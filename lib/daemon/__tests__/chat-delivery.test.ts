@@ -294,3 +294,29 @@ test("the desk-notification path still fires on a mention, independent of inbox 
   await Bun.sleep(0);
   expect(peekNotifications()).toHaveLength(1);
 });
+
+test("a failed welcome delivery leaves the catch-up cursor untouched; the same message re-batches into a later successful welcome", async () => {
+  const sock = fakeSocketPath();
+  let deliverOk = false;
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async () => (deliverOk ? { ok: true } : { ok: false, error: "boom" }),
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  await h["chat:post"]({ room: "r", handle: "a", body: "hello" });
+  await Bun.sleep(0);
+
+  const before = lastReadId(h.db, "r", "b");
+
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await Bun.sleep(0);
+  expect(lastReadId(h.db, "r", "b")).toBe(before); // welcome delivery failed: cursor must not move
+
+  await h["chat:sign-out"]({ sessionId: "sess-b" });
+  deliverOk = true;
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await Bun.sleep(0);
+  expect(lastReadId(h.db, "r", "b")).toBeGreaterThan(before); // same unread, now shown and confirmed: cursor advances
+});

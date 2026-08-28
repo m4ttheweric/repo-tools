@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../../state/index.ts";
@@ -197,7 +197,7 @@ test("sign-in without a baseHandle draws a first name from the pool", async () =
   expect(res.data.handle).toBe(res.data.baseHandle);
 });
 
-test("renderWelcome carries the handle, room list, the automatic-delivery sentence, the reply contract, and catch-up capped at 10 lines per room", () => {
+test("renderWelcome carries the handle, room list, the automatic-delivery sentence, the two-line reply contract, the read/skill pointers, and catch-up capped at 10 lines per room", () => {
   const manyLines = Array.from({ length: 12 }, (_, i) => `agent: msg ${i}`);
   const text = renderWelcome("kai", ["build", "general"], [
     { room: "build", lines: manyLines },
@@ -207,30 +207,38 @@ test("renderWelcome carries the handle, room list, the automatic-delivery senten
   expect(text).toContain("#build");
   expect(text).toContain("#general");
   expect(text).toContain("Messages will arrive in your context automatically; you never need to poll or arm anything.");
-  expect(text).toContain('Reply with: rt chat post <#room|@handle> "..."');
+  expect(text).toContain('Reply in a room with: rt chat post <room> "..."');
+  expect(text).toContain('Reply privately with: rt chat dm <handle> "..."');
+  expect(text).toContain("rt chat read shows a room's history.");
+  expect(text).toContain("rt:chat skill");
   expect(text.split("\n").filter((l) => l.includes("msg "))).toHaveLength(10);
 });
 
-test("chat:sign-in viaPane resolves the pane's Claude session via herdr, signs it in under that session id, and sends a welcome frame", async () => {
-  const uuid = "11111111-1111-1111-1111-111111111111";
-  const { sock: herdrSock, stop } = fakeHerdr((method) => {
+function paneSnapshotHandler(paneId: string, sessionId: string, cwd?: string): FakeHerdrHandler {
+  return (method) => {
     if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
     return {
       snapshot: {
         workspaces: [],
         panes: [
           {
-            pane_id: "w1:p1",
+            pane_id: paneId,
             workspace_id: "w1",
             tab_id: "w1:t1",
             agent: "claude",
             agent_status: "idle",
-            agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid },
+            cwd,
+            agent_session: { source: "claude", agent: "claude", kind: "id", value: sessionId },
           },
         ],
       },
     };
-  });
+  };
+}
+
+test("chat:sign-in viaPane resolves the pane's Claude session via herdr, signs it in under that session id, and sends a welcome frame", async () => {
+  const uuid = "11111111-1111-1111-1111-111111111111";
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
   stops.push(stop);
 
   const inboxSock = fakeSocketPath();
@@ -247,6 +255,8 @@ test("chat:sign-in viaPane resolves the pane's Claude session via herdr, signs i
   const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true });
   expect(res.ok).toBe(true);
   if (!res.ok) throw new Error("unreachable");
+  expect(res.data.sessionId).toBe(uuid);
+  expect(res.data.room).toBeNull(); // no cwd on this pane: nothing to derive a room from
 
   const presence = db.query("SELECT session_id, handle FROM chat_presence WHERE session_id = ?").get(uuid) as
     | { session_id: string; handle: string }
@@ -257,10 +267,58 @@ test("chat:sign-in viaPane resolves the pane's Claude session via herdr, signs i
   expect(calls).toHaveLength(1);
   expect(calls[0]![0]).toBe(inboxSock);
   expect(calls[0]![1]).toContain(res.data.handle);
-  expect(calls[0]![1]).toContain('Reply with: rt chat post <#room|@handle> "..."');
+  expect(calls[0]![1]).toContain('Reply in a room with: rt chat post <room> "..."');
 });
 
-test("chat:sign-in viaPane refuses a pane herdr has no Claude session for", async () => {
+test("chat:sign-in viaPane with a repo cwd joins the derived room and stamps repo/branch onto presence", async () => {
+  const uuid = "33333333-3333-3333-3333-333333333333";
+  const repoDir = mkdtempSync(join(tmpdir(), "chat-viapane-repo-"));
+  mkdirSync(join(repoDir, ".git", "worktrees"), { recursive: true });
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
+  stops.push(stop);
+
+  const db = openStateDb(join(tmpdir(), `chat-viapane-repo-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const repoIndex = () => ({ "remote:gitlab.com%2Facme%2FRepo-Tools": repoDir });
+  const exec = async () => ({ stdout: "feat/pane-sign-in\n", stderr: "", exitCode: 0 });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr, repoIndex, exec });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBe("repo-tools");
+
+  const presence = db.query("SELECT repo, branch FROM chat_presence WHERE session_id = ?").get(uuid) as
+    | { repo: string; branch: string }
+    | null;
+  expect(presence).toMatchObject({ repo: "Repo-Tools", branch: "feat/pane-sign-in" });
+
+  const who = await h["chat:who"]({ room: "repo-tools" });
+  if (!who.ok) throw new Error("unreachable");
+  expect(who.data.members.map((m) => m.handle)).toEqual(["kai"]);
+});
+
+test("chat:sign-in viaPane with a cwd outside any indexed repo joins nothing", async () => {
+  const uuid = "44444444-4444-4444-4444-444444444444";
+  const strayDir = mkdtempSync(join(tmpdir(), "chat-viapane-stray-"));
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, strayDir));
+  stops.push(stop);
+
+  const db = openStateDb(join(tmpdir(), `chat-viapane-stray-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr, repoIndex: () => ({}) });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBeNull();
+
+  const rooms = await h["chat:rooms"]({ handle: "kai" });
+  if (!rooms.ok) throw new Error("unreachable");
+  expect(rooms.data.rooms).toEqual([]);
+});
+
+test("chat:sign-in viaPane refuses a pane herdr has no Claude session for, distinctly from herdr being unreachable", async () => {
   const { sock: herdrSock, stop } = fakeHerdr(() => ({ snapshot: { workspaces: [], panes: [] } }));
   stops.push(stop);
   const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
@@ -269,6 +327,14 @@ test("chat:sign-in viaPane refuses a pane herdr has no Claude session for", asyn
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toContain("w1:p1");
+
+  const unreachableHerdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: join(tmpdir(), "absent-herdr.sock") });
+  const h2 = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-down-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr: unreachableHerdr });
+  const res2 = await h2["chat:sign-in"]({ pane: "w1:p1", viaPane: true });
+  expect(res2.ok).toBe(false);
+  if (res2.ok) throw new Error("unreachable");
+  expect(res2.error).toContain("herdr unavailable");
+  expect(res2.error).not.toBe(res.error);
 });
 
 test("chat:sign-in draws baseHandle from the inbox registry's own name when none is given explicitly", async () => {

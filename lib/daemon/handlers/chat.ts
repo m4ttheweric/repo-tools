@@ -12,6 +12,7 @@ import {
   mergeMentions,
   postMessage,
   readUnread,
+  peekUnread,
   listMessages,
   markRead,
   markDelivered,
@@ -43,10 +44,13 @@ import { CHAT_NOTIFICATION_CATEGORY, notifyEnabled } from "../../notifier.ts";
 import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { herdrRequest } from "../../herdr/client.ts";
-import { injectIntoPane } from "../inject.ts";
+import { injectIntoPane, herdrError } from "../inject.ts";
 import type { HerdrSnapshot } from "./pane.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
 import { deliverToInbox, renderDeliveries } from "../inbox.ts";
+import { repoForCwd, branchForCwd } from "../../repo-for-cwd.ts";
+import { slugifyChatName } from "../../chat-room-name.ts";
+import { runCapture } from "../../subprocess.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult, TypedHandlers } from "./types.ts";
@@ -153,24 +157,51 @@ function deliverSerialized(
 }
 
 // Not a real room -- isValidChatName forbids '_' -- so this key can never
-// collide with a genuine (room, handle) delivery chain, only order behind it.
+// collide with a genuine (room, handle) delivery chain. Deliberately its OWN
+// chain, not the joined room's: the welcome is never ordered against a post
+// delivery to the same recipient, only against another welcome for the same
+// handle (a fast sign-out/sign-in pair) -- there is no correctness
+// requirement that "you're signed in" land before or after a room message
+// that happens to arrive the same tick, unlike two posts to the same room,
+// which must not race past pendingMessages' shared cursor.
 const WELCOME_CHAIN_ROOM = "__welcome__";
 const WELCOME_CATCHUP_LIMIT = 10;
 
-async function deliverWelcomeOnce(deps: InboxDeps, sessionId: string, content: string): Promise<void> {
+/**
+ * Mirrors deliverPost's contract: an unresolvable/dead binding or a failed
+ * send is silently skipped and, critically, never advances a cursor.
+ * `catchupCursors` is the caller's peek of what the welcome's catch-up
+ * section actually shows (peekUnread, not readUnread -- see renderWelcome's
+ * caller) -- only a confirmed-delivered welcome may mark that range read, or
+ * a welcome that never arrived would still have "shown" it.
+ */
+async function deliverWelcomeOnce(
+  db: Database,
+  deps: InboxDeps,
+  sessionId: string,
+  handle: string,
+  content: string,
+  catchupCursors: Array<{ room: string; upToId: number }>,
+): Promise<void> {
   const binding = deps.resolve(sessionId);
   if (!binding || !inboxAlive(binding)) return;
-  await deps.deliver(binding.socketPath, content);
+  const result = await deps.deliver(binding.socketPath, content);
+  if (!result.ok) return;
+  for (const { room, upToId } of catchupCursors) markDelivered(room, handle, upToId, db);
 }
 
 function deliverWelcome(
+  db: Database,
   chains: Map<string, Promise<void>>,
   deps: InboxDeps,
   sessionId: string,
   handle: string,
   content: string,
+  catchupCursors: Array<{ room: string; upToId: number }>,
 ): Promise<void> {
-  return serializeDelivery(chains, chainKey(WELCOME_CHAIN_ROOM, handle), () => deliverWelcomeOnce(deps, sessionId, content));
+  return serializeDelivery(chains, chainKey(WELCOME_CHAIN_ROOM, handle), () =>
+    deliverWelcomeOnce(db, deps, sessionId, handle, content, catchupCursors),
+  );
 }
 
 /**
@@ -178,14 +209,19 @@ function deliverWelcome(
  * "arm your tail" instruction: it explains that delivery is automatic and
  * carries whatever unread was already waiting in the rooms sign-in found the
  * handle already a member of. `catchup` entries with no lines (nothing
- * unread in that room) are skipped.
+ * unread in that room) are skipped. The reply contract is two lines, not
+ * one: `rt chat post <room>` and `rt chat dm <handle>` take different first
+ * arguments, so one merged `<#room|@handle>` form does not actually parse.
  */
 export function renderWelcome(handle: string, rooms: string[], catchup: Array<{ room: string; lines: string[] }>): string {
   const lines: string[] = [
     `You're signed in to rt chat as ${handle}.`,
     rooms.length ? `Rooms: ${rooms.map((r) => `#${r}`).join(", ")}` : "Rooms: none yet.",
     "Messages will arrive in your context automatically; you never need to poll or arm anything.",
-    `Reply with: rt chat post <#room|@handle> "..."`,
+    'Reply in a room with: rt chat post <room> "..."',
+    'Reply privately with: rt chat dm <handle> "..."',
+    "rt chat read shows a room's history.",
+    "See the rt:chat skill for the full etiquette.",
   ];
   for (const entry of catchup) {
     const capped = entry.lines.slice(0, WELCOME_CATCHUP_LIMIT);
@@ -200,12 +236,13 @@ export function renderWelcome(handle: string, rooms: string[], catchup: Array<{ 
  * Herdr's own `pane:list` join (lib/daemon/handlers/pane.ts) reads
  * `agent_session.value` for its "which session is this pane" answer; sign-in
  * `--pane` needs the exact same fact, so it takes the identical snapshot
- * shape rather than growing a second reader.
+ * shape rather than growing a second reader. Pure (no herdr call): the
+ * caller fetches the snapshot itself, so a herdr-unreachable failure and a
+ * "found the pane, no claude session" miss stay distinguishable instead of
+ * collapsing into one null.
  */
-async function resolvePaneSessionId(herdr: typeof herdrRequest, paneId: string): Promise<{ sessionId: string; cwd?: string } | null> {
-  const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
-  if (!snap.ok) return null;
-  const pane = snap.result.snapshot.panes.find((p) => p.pane_id === paneId);
+function findPaneSession(snapshot: HerdrSnapshot, paneId: string): { sessionId: string; cwd?: string } | null {
+  const pane = snapshot.panes.find((p) => p.pane_id === paneId);
   if (!pane || pane.agent_session?.kind !== "id") return null;
   return { sessionId: pane.agent_session.value, cwd: pane.foreground_cwd ?? pane.cwd };
 }
@@ -295,10 +332,15 @@ export function createChatHandlers(opts: {
   emitEvent: (topic: string, payload?: unknown) => unknown;
   herdr?: typeof herdrRequest;
   inboxDeps?: InboxDeps;
+  /** repo/branch/room derivation for `--pane` sign-in (lib/repo-for-cwd.ts, the same index-based, no-sync-git-spawn source pane.ts's own paneRow uses). */
+  repoIndex?: () => Record<string, string>;
+  exec?: typeof runCapture;
 }): Pick<TypedHandlers, (typeof CHAT_COMMANDS)[number]> & { db: Database } {
   const { db, emitEvent } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
+  const repoIndex = opts.repoIndex ?? (() => ({}));
+  const exec = opts.exec ?? runCapture;
   // One chain map per handler instance (one daemon, one db): shared across
   // every chat:post/chat:dm call so deliverSerialized actually serializes.
   const deliveryChains = new Map<string, Promise<void>>();
@@ -424,12 +466,29 @@ export function createChatHandlers(opts: {
 
       let sessionId = payload.sessionId;
       let signInCwd = cwd;
+      let signInRepo = repo;
+      let signInBranch = branch;
+      // The room --pane sign-in joins on its own: derived from the TARGET
+      // pane's cwd, never the invoking process's (which never resolves one
+      // for --pane at all -- see commands/chat.ts's runSignInViaPane). A pane
+      // with no repo cwd legitimately signs in with no room, same as
+      // --no-room.
+      let derivedRoom: string | null = null;
+
       if (viaPane) {
         if (!pane) return { ok: false, error: "chat: sign-in --pane requires a pane id" };
-        const resolved = await resolvePaneSessionId(herdr, pane);
+        const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
+        if (!snap.ok) return herdrError(snap);
+        const resolved = findPaneSession(snap.result.snapshot, pane);
         if (!resolved) return { ok: false, error: `chat: no Claude session found for pane "${pane}"` };
         sessionId = resolved.sessionId;
         if (signInCwd === undefined) signInCwd = resolved.cwd;
+
+        if (signInCwd) {
+          if (signInRepo === undefined) signInRepo = repoForCwd(signInCwd, repoIndex()) ?? undefined;
+          if (signInBranch === undefined) signInBranch = await branchForCwd(signInCwd, exec);
+          if (signInRepo) derivedRoom = slugifyChatName(signInRepo);
+        }
       }
       if (!sessionId) return { ok: false, error: "chat: sign-in requires a sessionId or --pane" };
 
@@ -442,22 +501,36 @@ export function createChatHandlers(opts: {
         if (binding?.name && isValidChatName(binding.name)) resolvedBase = binding.name;
       }
 
-      const data = signIn({ sessionId, baseHandle: resolvedBase, cwd: signInCwd, repo, branch, pane, statusText }, db);
+      const data = signIn({ sessionId, baseHandle: resolvedBase, cwd: signInCwd, repo: signInRepo, branch: signInBranch, pane, statusText }, db);
+
+      if (derivedRoom) {
+        try {
+          joinRoom({ room: derivedRoom, handle: data.handle, cwd: signInCwd, pane }, db);
+        } catch (err) {
+          log.warn({ err, room: derivedRoom, handle: data.handle }, "chat: --pane sign-in could not join the derived room");
+          derivedRoom = null;
+        }
+      }
 
       const rooms = listRooms(data.handle, db).map((r) => r.room);
-      const catchup = readUnread({ handle: data.handle, limit: WELCOME_CATCHUP_LIMIT }, db).map((r) => ({
-        room: r.room,
-        lines: r.messages.map((m) => `${m.handle}: ${m.body}`),
-      }));
+      // A non-advancing peek, not readUnread: the welcome is composed BEFORE
+      // delivery is attempted, and readUnread's cursor write happens
+      // unconditionally at read time -- a failed or unresolvable welcome
+      // would then have permanently skipped whatever it "showed". The
+      // cursor only actually advances, per room, once deliverWelcomeOnce
+      // confirms the frame was sent.
+      const peeked = peekUnread({ handle: data.handle, limit: WELCOME_CATCHUP_LIMIT }, db);
+      const catchup = peeked.map((r) => ({ room: r.room, lines: r.messages.map((m) => `${m.handle}: ${m.body}`) }));
+      const catchupCursors = peeked.map((r) => ({ room: r.room, upToId: r.messages[r.messages.length - 1]!.id }));
       const welcomeContent = renderWelcome(data.handle, rooms, catchup);
       const welcomeSessionId = sessionId;
       queueMicrotask(() => {
-        deliverWelcome(deliveryChains, inboxDeps, welcomeSessionId, data.handle, welcomeContent).catch((err) => {
+        deliverWelcome(db, deliveryChains, inboxDeps, welcomeSessionId, data.handle, welcomeContent, catchupCursors).catch((err) => {
           log.warn({ err, handle: data.handle }, "chat: welcome delivery failed");
         });
       });
 
-      return { ok: true, data };
+      return { ok: true, data: { ...data, sessionId, room: derivedRoom } };
     },
 
     // A missing row is the common case, not a refusal: SessionEnd fires for
