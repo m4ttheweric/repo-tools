@@ -276,7 +276,8 @@ function logRetentionDays(): number {
 }
 setInterval(() => {
   try {
-    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now());
+    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now(),
+      (phase, err, file) => log.warn({ err, phase, file }, "log prune step failed"));
     if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
   } catch (err) {
     log.warn({ err }, "log prune failed");
@@ -285,7 +286,8 @@ setInterval(() => {
 // Boot-time sweep to handle frequent daemon restarts that would otherwise starve the daily interval.
 setTimeout(() => {
   try {
-    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now());
+    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now(),
+      (phase, err, file) => log.warn({ err, phase, file }, "log prune step failed"));
     if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
   } catch (err) {
     log.warn({ err }, "log prune failed");
