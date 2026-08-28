@@ -147,6 +147,7 @@ export {
   assertSessionOwnsHandle,
   assertSessionSignedIn,
   prunePresence,
+  reserveAgentHandle,
   type BuddyStatus,
   type PresenceRow,
   type PresenceThresholds,

@@ -311,6 +311,19 @@ function recordPoolNameUse(name: string, now: number, db: Database): void {
   setKvValue(NAMES_KV_NS, NAMES_KV_KEY, ledger, db);
 }
 
+/**
+ * Draws a pool name for an agent that has not signed in yet (`rt agent
+ * start`), against the same live-presence-held set and LRU ledger `signIn`'s
+ * own draw uses, and records the draw immediately -- so a second
+ * reservation or a sign-in racing before this agent's own chat:sign-in
+ * lands does not also land on it.
+ */
+export function reserveAgentHandle(db: Database = getStateDb(), now: number = Date.now()): string {
+  const name = drawPoolName(db);
+  recordPoolNameUse(name, now, db);
+  return name;
+}
+
 export function signOut(sessionId: string, now: number = Date.now(), db: Database = getStateDb()): void {
   db.query(UPDATE_SIGN_OUT_SQL).run(now, sessionId);
 }

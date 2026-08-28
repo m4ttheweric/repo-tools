@@ -223,7 +223,7 @@ export interface AgentRecord {
   id: string; repo: string; cwd: string; provider: string;
   surface: AgentSurface; sessionId: string;
   model?: string; effort?: string; account?: string;
-  label?: string; caller?: string;
+  label?: string; caller?: string; handle?: string;
   paneId?: string; tabId?: string; workspaceId?: string;
   extraArgs?: string; exitCode?: number; resultPath?: string;
   createdAt: number; lastResumedAt?: number; finishedAt?: number;

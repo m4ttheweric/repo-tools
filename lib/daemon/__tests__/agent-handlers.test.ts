@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
-import { openStateDb } from "../../state/index.ts";
+import { AGENT_NAMES } from "../../chat-names.ts";
+import { openStateDb, signIn } from "../../state/index.ts";
 import { createAgentHandlers, type HeadlessChild } from "../handlers/agent.ts";
 import type { HerdrRunner } from "../../agent-herdr.ts";
 
@@ -171,6 +172,52 @@ test("agent:resume honors workspace and tab overrides", async () => {
   const tabArg = calls.find((c) => c[0] === "tab" && c[1] === "rename")?.[3]
     ?? calls.find((c) => c[0] === "tab" && c[1] === "create")?.[5];
   expect(tabArg).toBe("⟲ !5");
+});
+
+test("agent:start herdr reserves a handle not held by live presence, passes it as --name, and stamps AgentRecord.handle", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const held = AGENT_NAMES[0]!;
+  signIn({ sessionId: "s-held", baseHandle: held, cwd: "/tmp/held" }, h.db);
+
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.handle).toBeTruthy();
+  expect(AGENT_NAMES).toContain(res.data.handle!);
+  expect(res.data.handle).not.toBe(held);
+
+  const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
+  expect(paneRun?.[3]).toContain(`'--name' '${res.data.handle}'`);
+  expect(paneRun?.[3]).toContain(`'--settings' '{"crossSessionInbound":"accept"}'`);
+});
+
+test("agent:start headless never reserves a handle or passes --name/--settings", async () => {
+  let argv: string[] = [];
+  const h = fresh({
+    spawn: (a) => {
+      argv = a;
+      return { exited: Promise.resolve(0), stdout: async () => "{}" };
+    },
+  });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", surface: "headless", prompt: "go" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.handle).toBeUndefined();
+  expect(argv).not.toContain("--name");
+  expect(argv).not.toContain("--settings");
+});
+
+test("agent:resume threads the reserved handle back into --name", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const started = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
+  if (!started.ok) throw new Error("unreachable");
+  calls.length = 0;
+  const resumed = await h["agent:resume"]({ id: started.data.id });
+  expect(resumed.ok).toBe(true);
+  const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
+  expect(paneRun?.[3]).toContain(`'--name' '${started.data.handle}'`);
 });
 
 test("agent:list filters by repo", async () => {

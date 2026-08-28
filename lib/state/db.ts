@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8). */
-export const SCHEMA_VERSION = 8;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8 + v9). */
+export const SCHEMA_VERSION = 9;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -303,6 +303,14 @@ function addArchivedAtColumnIfMissing(db: Database): void {
   db.exec("ALTER TABLE chat_rooms ADD COLUMN archived_at INTEGER;");
 }
 
+/** agents.handle (v9): the chat handle reserved at agent:start. Same
+    conditional-exec rule as `sections` and `archived_at` above. */
+function addHandleColumnIfMissing(db: Database): void {
+  const columns = db.query("PRAGMA table_info(agents);").all() as { name: string }[];
+  if (columns.some((c) => c.name === "handle")) return;
+  db.exec("ALTER TABLE agents ADD COLUMN handle TEXT;");
+}
+
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
 function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code;
@@ -440,6 +448,7 @@ function runMigrations(db: Database, dir: string): void {
       db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA + V7_SCHEMA);
       addSectionsColumnIfMissing(db);
       addArchivedAtColumnIfMissing(db);
+      addHandleColumnIfMissing(db);
       // Legacy-JSON import is single-shot and only correct from a true
       // v0 (never-migrated) database: branch-cache's UPSERT would silently
       // overwrite current rows with stale ones, and project-mrs-store's
