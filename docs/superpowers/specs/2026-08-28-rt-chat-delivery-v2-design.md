@@ -89,8 +89,9 @@ computation (`wake_on` all/mentions/none, `@here`, DMs) and replaces the
 DMs render as `[dm] sender: body`. The human's mention desk-notification
 path is unchanged.
 
-**Resolution** (daemon-side, cached per handle at sign-in, re-resolved on
-failure): presence row -> pane id -> herdr snapshot `agent_session.id` ->
+**Resolution** (daemon-side, resolved fresh on every delivery; a miss or dead
+binding leaves the cursor unadvanced so the next post retries): presence row
+-> pane id -> herdr snapshot `agent_session.id` ->
 scan the known registry dirs for the file whose `sessionId` matches ->
 `messagingSocketPath` + pid. Registry dirs: `~/.claude/sessions` and each
 `~/.claude-swap-backup/sessions/*/sessions`. A liveness check is
