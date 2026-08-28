@@ -1,5 +1,12 @@
 # rt chat presence — sign-in, the buddy list, and DMs
 
+> **Superseded in part:** `2026-08-28-rt-chat-delivery-v2-design.md` replaces
+> this document's armed/deaf presence model (arming a tail, the `deaf`
+> buddy status, the pulse hook) with automatic push delivery and a
+> `live | idle | offline` status derived from the Claude Code registry. The
+> rooms, membership, and store sections below remain authoritative; only the
+> presence/delivery mechanism changed.
+
 Extends `2026-08-23-rt-chat-design.md` (plan 1 shipped as #67). Where the two
 disagree, this document wins; the sections it revises are named explicitly
 under **What this changes in the base design**.
