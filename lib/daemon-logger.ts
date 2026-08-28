@@ -52,25 +52,31 @@ export interface CreateOptions {
   level?: pino.LevelWithSilent;
 }
 
+const VALID_LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
+
 /**
  * Resolves the daemon's pino level: RT_LOG_LEVEL env, then the `rt.logLevel`
  * setting, then "info". The setting read is try/catch-guarded because the
  * `rt.logLevel` registry key may not exist yet (added in a later task), and
- * the resolver may also run pre-boot; this must never throw.
+ * the resolver may also run pre-boot; this must never throw. The resolved
+ * value is validated against pino's level set: an unrecognized value (a typo
+ * like "warning") must not reach pino's constructor, which throws on it.
  */
 export function resolveDaemonLogLevel(
   env: string | undefined,
   fromSetting: () => string | undefined,
 ): string {
-  if (env) return env;
-  try {
-    const v = fromSetting();
-    if (v) return v;
-  } catch {
-    // Setting unavailable (unknown key pre-registration, or resolver not
-    // ready yet)... fall through to the "info" default below.
+  let resolved = env;
+  if (!resolved) {
+    try {
+      resolved = fromSetting();
+    } catch {
+      // Setting unavailable (unknown key pre-registration, or resolver not
+      // ready yet)... fall through to the "info" default below.
+    }
   }
-  return "info";
+  if (!resolved || !VALID_LOG_LEVELS.has(resolved)) return "info";
+  return resolved;
 }
 
 const PANIC_PREFIXES = ["panic:", "fatal error:", "Uncaught ", "UnhandledPromiseRejection"];

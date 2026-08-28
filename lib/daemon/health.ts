@@ -13,6 +13,7 @@ export const HEALTH_THRESHOLDS = {
   diskHardFloorBytes: 100 * 1024 * 1024,
   restartsPerHourUnhealthy: 5,
   recoveredErrorRate: 10,
+  loopLagDegradedMs: 500,
 } as const;
 
 export interface HealthMetrics {
@@ -93,7 +94,7 @@ export function computeHealth(i: HealthInputs): HealthSnapshot {
   if (i.rssBaseline && i.mem.rss > i.rssBaseline.rss * (1 + T.rssGrowthPct / 100)) {
     degraded.push(`memory: rss grew >${T.rssGrowthPct}% in the last hour`);
   }
-  if (i.eventLoop.maxLagMs > 500) degraded.push(`event-loop: lag ${i.eventLoop.maxLagMs}ms`);
+  if (i.eventLoop.maxLagMs > T.loopLagDegradedMs) degraded.push(`event-loop: lag ${i.eventLoop.maxLagMs}ms`);
   if (i.recoveredErrorRateLastWindow > T.recoveredErrorRate) {
     degraded.push(`errors: ${i.recoveredErrorRateLastWindow} recovered in 5min`);
   }

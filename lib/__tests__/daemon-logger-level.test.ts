@@ -17,6 +17,12 @@ test("a thrown setting read falls back to info instead of propagating", () => {
     }),
   ).toBe("info");
 });
+test("an unknown level falls back to info instead of reaching pino", () => {
+  expect(resolveDaemonLogLevel("verbose", () => undefined)).toBe("info");
+});
+test("a valid level still passes through", () => {
+  expect(resolveDaemonLogLevel("debug", () => undefined)).toBe("debug");
+});
 test("a panic-looking stderr line is escalated; ordinary noise is not", () => {
   expect(isPanicLine("panic: runtime error")).toBe(true);
   expect(isPanicLine("Uncaught Error: boom")).toBe(true);

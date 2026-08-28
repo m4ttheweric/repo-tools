@@ -21,6 +21,12 @@ test("corrupt file reads as null", () => {
   expect(readHeartbeat(dir)).toBeNull();
 });
 
+test("a partial-but-valid-JSON object (missing `at`) reads as null", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hb-"));
+  writeFileSync(join(dir, "daemon-heartbeat.json"), JSON.stringify({ seq: 1 }));
+  expect(readHeartbeat(dir)).toBeNull();
+});
+
 test("a second write overwrites atomically", () => {
   const dir = mkdtempSync(join(tmpdir(), "hb-"));
   writeHeartbeat(dir, { at: 1, seq: 1 });

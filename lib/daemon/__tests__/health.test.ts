@@ -73,3 +73,19 @@ test("stale refresh (older than 2 intervals) is degraded", () => {
   i.refresh = { lastSuccessAt: i.now - 11 * 60_000, failedRepos: 0, enrichErrors: 0 };
   expect(computeHealth(i).level).toBe("degraded");
 });
+
+test("event-loop lag over the named threshold flips degraded", () => {
+  const i = base();
+  i.eventLoop.maxLagMs = 600;
+  const h = computeHealth(i);
+  expect(h.level).toBe("degraded");
+  expect(h.reasons.some((r) => r.startsWith("event-loop:"))).toBe(true);
+});
+
+test("event-loop lag under the named threshold stays ok", () => {
+  const i = base();
+  i.eventLoop.maxLagMs = 400;
+  const h = computeHealth(i);
+  expect(h.level).toBe("ok");
+  expect(h.reasons).toEqual([]);
+});

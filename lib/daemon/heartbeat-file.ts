@@ -31,7 +31,11 @@ export function readHeartbeat(dir: string): Heartbeat | null {
   try {
     const p = heartbeatPath(dir);
     if (!existsSync(p)) return null;
-    return JSON.parse(readFileSync(p, "utf8")) as Heartbeat;
+    const parsed = JSON.parse(readFileSync(p, "utf8"));
+    if (typeof parsed?.at === "number" && typeof parsed?.seq === "number") {
+      return parsed as Heartbeat;
+    }
+    return null;
   } catch {
     return null;
   }

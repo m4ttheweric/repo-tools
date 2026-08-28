@@ -532,7 +532,7 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
       lines.push(`    ${dim}status command failed: ${verdict.detail ?? "unknown error"}${reset}`);
     } else if (verdict.eventLoop && verdict.eventLoop.maxLagMs > 0) {
       const el = verdict.eventLoop;
-      lines.push(`    ${dim}answers ping, status timed out — event loop maxLag ${el.maxLagMs}ms${el.lastStallCmd ? ` (last stall in ${el.lastStallCmd})` : ""}${reset}`);
+      lines.push(`    ${dim}answers ping, status timed out: event loop maxLag ${el.maxLagMs}ms${el.lastStallCmd ? ` (last stall in ${el.lastStallCmd})` : ""}${reset}`);
     } else {
       lines.push(`    ${dim}answers ping, but status timed out — likely mid-sync${reset}`);
     }

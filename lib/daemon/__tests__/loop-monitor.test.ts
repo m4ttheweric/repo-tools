@@ -39,3 +39,14 @@ test("maxLagMs is a high-water mark", () => {
   applyTick(s, 1550, 1600, null, OPTS, () => {});
   expect(s.maxLagMs).toBe(300);
 });
+
+test("maxLagMs decays once no bigger spike lands within the window", () => {
+  const s: LoopStats = newLoopStats();
+  applyTick(s, 1000, 1800, null, OPTS, () => {}); // drift 800, maxLagMs -> 800 at now=1800
+  expect(s.maxLagMs).toBe(800);
+  // OPTS has no maxLagWindowMs, so it falls back to stallRecentMs (10_000).
+  // now=12000 is 10200ms past maxLagAt(1800), past the window, so an
+  // on-time tick (drift 0) decays maxLagMs to the current lagMs.
+  applyTick(s, 12000, 12000, null, OPTS, () => {});
+  expect(s.maxLagMs).toBe(0);
+});
