@@ -264,6 +264,20 @@ export async function getRepoContext(
   repoPath?: string,
   projectPathOverride?: string,
 ): Promise<{ provider: GitLabProvider; projectPath: string; projectId: number }> {
+  // A cached provider's token may have rotated since it was built; poll-mode
+  // repos and already-cached forge-handler providers never pass back through
+  // ensureProvider, so this is the only place that catches a stale token for
+  // them (S048/S049).
+  const cachedForToken = providers.get(repoName);
+  if (cachedForToken) {
+    const currentSecrets = await loadSecrets();
+    if (currentSecrets.gitlabToken && cachedForToken.token !== currentSecrets.gitlabToken) {
+      stopWatch(repoName);
+      userIdResolved = false;
+      providers.delete(repoName);
+    }
+  }
+
   const watch = watches.get(repoName);
   let provider = providers.get(repoName)?.provider ?? null;
 
@@ -702,6 +716,15 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
 
   for (const [repoName, repoPath] of Object.entries(repoIndex)) {
     if (grants(tracking, repoName).mode !== "live") continue;
+
+    // A live watch whose provider token has since rotated must be dropped so the
+    // ensureProvider/startWatch below rebuilds it with the current token (S048/S049).
+    const existing = providers.get(repoName);
+    if (existing && watches.has(repoName)) {
+      const secrets = await loadSecrets();
+      if (secrets.gitlabToken && existing.token !== secrets.gitlabToken) stopWatch(repoName);
+    }
+
     if (watches.has(repoName)) continue;
 
     const provider = await ensureProvider(repoName, repoPath);
