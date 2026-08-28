@@ -1085,6 +1085,17 @@ export const TREE: Record<string, CommandNode> = {
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit JSON" },
         ],
       },
+      send: {
+        description: "Inject text into a pane as if typed and submitted (--text - reads stdin)",
+        module: "./commands/pane.ts",
+        fn: "paneSend",
+        omitBehavior: { exempt: "agent-facing; the pane id is passed explicitly (discover panes with rt pane list)" },
+        args: [
+          { name: "Pane", type: "text", placeholder: "w7A:pY", hint: "herdr pane id to send to" },
+          { name: "Text", flag: "--text", type: "text", placeholder: "standup in 5", hint: "Body to inject; pass - to read the body from stdin" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the delivery result as JSON instead of the plain line" },
+        ],
+      },
       accounts: {
         description: "cswap accounts with rate-limit headroom, for spawn --account",
         module: "./commands/pane.ts",

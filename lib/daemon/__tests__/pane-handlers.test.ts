@@ -286,3 +286,29 @@ test("pane:spawn refuses an unknown cswap account before touching herdr", async 
   expect(res).toEqual({ ok: false, error: 'unknown cswap account "nobody"' });
   expect(calls).toHaveLength(0);
 });
+
+test("pane:send delivers caller text and returns accepted", async () => {
+  const claude = (status: string) => ({ type: "agent_info", agent: { pane_id: "w1:p1", agent: "claude", agent_status: status } });
+  const { pane } = harness((method, params) =>
+    method === "agent.get" ? claude("idle")
+    : method === "agent.prompt" ? { type: "agent_prompted", agent: { ...claude("working").agent, text: params.text } }
+    : new HerdrFakeError("invalid_request", method));
+  const res = await pane["pane:send"]({ paneId: "w1:p1", text: "broadcast: standup in 5" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "accepted" } });
+});
+
+test("pane:send refuses the caller's own pane", async () => {
+  const { pane } = harness(() => new HerdrFakeError("invalid_request", "unused"));
+  const res = await pane["pane:send"]({ paneId: "w1:p1", text: "x", callerPane: "w1:p1" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "that is this pane" } });
+});
+
+test("pane:send is herdr unavailable when the socket is missing", async () => {
+  const db = freshDb();
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: join(tmpdir(), "absent-herdr.sock") });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr });
+  const res = await pane["pane:send"]({ paneId: "w1:p1", text: "x" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error.startsWith(HERDR_UNAVAILABLE)).toBe(true);
+});

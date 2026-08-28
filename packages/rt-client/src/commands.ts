@@ -167,6 +167,10 @@ export interface PaneAccount { slot: number; email: string; alias?: string; head
 export interface PaneDirectory { path: string; repo: string; branch?: string }
 export interface InviteResult { paneId: string; delivered: "accepted" | "queued" | "refused"; reason?: string }
 
+/** Duplicated shape on purpose: mirrors lib/daemon/inject.ts's InjectResult. */
+export type PaneDelivery = "accepted" | "queued" | "refused";
+export interface PaneSendResult { paneId: string; delivered: PaneDelivery; reason?: string }
+
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
 export type Attention = {
@@ -327,6 +331,7 @@ export interface Commands {
     payload: { cwd: string; account?: string; model?: string; effort?: string; prompt?: string; workspace?: string };
     data: { pane: ChatPane; ready: boolean };
   };
+  "pane:send": { payload: { paneId: string; text: string; callerPane?: string }; data: PaneSendResult };
 }
 
 export type CommandName = keyof Commands;
@@ -375,4 +380,5 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "pane:accounts",
   "pane:directories",
   "pane:spawn",
+  "pane:send",
 ];

@@ -422,3 +422,13 @@ export function chatInvite(
   if (a.callerPane !== undefined) payload.callerPane = a.callerPane;
   return rtCommand<Commands["chat:invite"]["data"]>("chat:invite", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
+
+/** A working target holds the connection through its prompt wait, so the budget matches chatInvite's 30s. */
+export function paneSend(
+  a: Commands["pane:send"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["pane:send"]["data"]>> {
+  const payload: Record<string, unknown> = { paneId: a.paneId, text: a.text };
+  if (a.callerPane !== undefined) payload.callerPane = a.callerPane;
+  return rtCommand<Commands["pane:send"]["data"]>("pane:send", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
+}
