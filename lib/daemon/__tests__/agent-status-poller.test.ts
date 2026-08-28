@@ -90,3 +90,28 @@ test("backs off the herdr probe after repeated failures", async () => {
   // one probe every BACKOFF_TICKS (ticks 9 and 15 of 20) keeps checking.
   expect(probeCalls).toBe(5);
 });
+
+test("a successful probe after backoff resets consecutiveFailures and resumes per-tick probing", async () => {
+  let probeCalls = 0;
+  handle = startAgentStatusPoller({
+    emitEvent: () => {},
+    log: quietLog,
+    intervalMs: 3_600_000,
+    probe: async () => {
+      probeCalls++;
+      // Invocations 1-3 cross FAILURE_THRESHOLD and engage backoff; the
+      // backoff window then skips ticks 4-8 without invoking probe at all,
+      // so invocation 4 is the tick-9 retry ... make it succeed.
+      return probeCalls <= 3 ? null : [];
+    },
+    list: () => [],
+  });
+  for (let i = 0; i < 9; i++) await handle.tick();
+  expect(probeCalls).toBe(4); // probed at ticks 1, 2, 3, then again at tick 9
+  const callsBeforeRecovery = probeCalls;
+  await handle.tick(); // tick 10, immediately after the successful tick-9 probe
+  // A successful probe resets consecutiveFailures to 0, so the very next
+  // tick is not gated by backoff ... it probes right away instead of
+  // waiting out another BACKOFF_TICKS window.
+  expect(probeCalls).toBe(callsBeforeRecovery + 1);
+});

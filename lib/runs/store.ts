@@ -128,7 +128,7 @@ export function listRuns(repo?: string, liveness?: RunLiveness): RunSummary[] {
       const dbPath = join(runsRoot(), r, id, "state.db");
       let mtimeMs: number;
       try { mtimeMs = statSync(dbPath).mtimeMs; } catch { continue; }
-      const key = `${r}/${id}`;
+      const key = `${runsRoot()}/${r}/${id}`;
       const hit = summaryCache.get(key);
       if (hit && hit.mtimeMs === mtimeMs) { out.push(hit.summary); continue; }
 
