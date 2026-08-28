@@ -99,6 +99,62 @@ test("chat:post rejects an invalid mentions element with a reason rather than st
   expect(res.error).toContain("handle");
 });
 
+// R010: a typo'd room silently no-op'd through postMessage's REVIVE (a
+// no-op for a room with no chat_rooms row) and returned {ok:true,
+// recipients:[]} — no error, no listing, unreachable except by the exact
+// typo'd name. It must fail loudly instead.
+test("chat:post refuses a room nobody has joined instead of silently black-holing the message", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:post"]({ room: "typo-room", handle: "a", body: "hi" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("typo-room");
+});
+
+test("chat:post's unknown-room error names a close existing room", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "deck-main", handle: "a" });
+  const res = await h["chat:post"]({ room: "deck", handle: "a", body: "hi" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("deck-main");
+});
+
+test("chat:post rejects a missing or empty body rather than routing it through unenforced", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const missing = await h["chat:post"]({ room: "r", handle: "a" } as any);
+  expect(missing.ok).toBe(false);
+  const empty = await h["chat:post"]({ room: "r", handle: "a", body: "" });
+  expect(empty.ok).toBe(false);
+});
+
+test("chat:post rejects a body over the size cap", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "x".repeat(64 * 1024 + 1) });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error.toLowerCase()).toContain("body");
+});
+
+test("chat:post rejects a non-array mentions field", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "hi", mentions: "b" as any });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("mentions");
+});
+
+test("chat:dm rejects a missing or empty body", async () => {
+  const h = freshHandlers();
+  const missing = await h["chat:dm"]({ from: "a", to: "b" } as any);
+  expect(missing.ok).toBe(false);
+  const empty = await h["chat:dm"]({ from: "a", to: "b", body: "" });
+  expect(empty.ok).toBe(false);
+});
+
 test("chat:unread-waking reports what would wake a handle without advancing its cursor", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "a" });

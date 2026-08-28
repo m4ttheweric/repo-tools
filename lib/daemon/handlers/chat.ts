@@ -17,6 +17,7 @@ import {
   unreadWakingCount,
   listRooms,
   archiveRoom,
+  roomArchivedAt,
   roomDefaultWake,
   listMembers,
   armMember,
@@ -81,6 +82,19 @@ function assertionError(fn: () => void): string | null {
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
   }
+}
+
+/** Generous, not tight: bounds a single message body without constraining any real conversation. */
+const MAX_BODY_BYTES = 64 * 1024;
+
+function isValidBody(body: unknown): body is string {
+  return typeof body === "string" && body.length > 0 && Buffer.byteLength(body, "utf8") <= MAX_BODY_BYTES;
+}
+
+/** Rooms `handle` already belongs to whose name is a prefix/suffix of the typo'd one — the common shape of a "deck" vs "deck-main" miss. */
+function closestRoomNames(typo: string, handle: string, db: Database): string[] {
+  const known = listRooms(handle, db, { includeArchived: true }).map((r) => r.room);
+  return known.filter((r) => r.startsWith(typo) || typo.startsWith(r)).slice(0, 3);
 }
 
 /**
@@ -202,8 +216,19 @@ export function createChatHandlers(opts: {
 
     "chat:post": async (payload: Commands["chat:post"]["payload"]): Promise<CommandResult<"chat:post">> => {
       const { room, handle, body, mentions } = payload;
+      if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!isValidBody(body)) return { ok: false, error: `body must be a non-empty string under ${MAX_BODY_BYTES} bytes` };
+      if (mentions !== undefined && !Array.isArray(mentions)) return { ok: false, error: "mentions must be an array of handles" };
       const invalidMention = mentions?.find((m) => !isValidChatName(m));
       if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
+      // A typo'd room previously no-op'd through postMessage's REVIVE (a
+      // no-op for a room with no chat_rooms row) and returned ok with no
+      // recipients — unreachable except by the exact typo'd name.
+      if (roomArchivedAt(room, db) === undefined) {
+        const nearby = closestRoomNames(room, handle, db);
+        return { ok: false, error: `unknown room "${room}"${nearby.length ? ` — did you mean: ${nearby.join(", ")}` : ""}` };
+      }
       const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions });
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
@@ -354,6 +379,7 @@ export function createChatHandlers(opts: {
       const { from, to, body, sessionId } = payload;
       if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
       if (!isValidChatName(to)) return { ok: false, error: `invalid handle "${to}"` };
+      if (!isValidBody(body)) return { ok: false, error: `body must be a non-empty string under ${MAX_BODY_BYTES} bytes` };
       const err = assertionError(() => assertSessionOwnsHandle(from, sessionId, db));
       if (err) return { ok: false, error: err };
       const humanHandle = getSetting<string>("chat.humanHandle").value;
