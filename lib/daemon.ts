@@ -382,7 +382,7 @@ const cleanup = (): void => {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export function startDaemon(): void {
+export async function startDaemon(): Promise<void> {
   mkdirSync(RT_DIR, { recursive: true });
 
   // Capture native panics (bypass JS entirely) at the fd level, then wire
@@ -466,7 +466,7 @@ export function startDaemon(): void {
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
   servers.socket = startSocketServer({ handleCommand, log });
-  servers.api = startApiServer({ handleCommand, log });
+  servers.api = await startApiServer({ handleCommand, log });
 
   // Wire notification broadcasts to WebSocket clients
   onNotification(emit);

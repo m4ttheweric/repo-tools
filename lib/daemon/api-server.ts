@@ -96,11 +96,39 @@ export interface ApiServerDeps {
   log: Logger;
 }
 
-export function startApiServer(deps: ApiServerDeps): Server<any> {
+export interface BindRetryDeps {
+  sleep: (ms: number) => Promise<void>;
+  log: { warn: (o: unknown, m: string) => void };
+}
+
+const BIND_RETRY_ATTEMPTS = 6;
+const BIND_RETRY_DELAY_MS = 500;
+
+/**
+ * evictStaleDaemon() SIGTERMs the previous holder of this port before a new
+ * daemon binds, but the kill isn't synchronous with the exit — a fresh
+ * daemon can reach this bind before the old one has actually released
+ * 9401. Only EADDRINUSE is retried (bounded, ~3s total); anything else is a
+ * real misconfiguration and fails on the first attempt, same as before.
+ */
+export async function bindApiServerWithRetry<T>(bind: () => T, deps: BindRetryDeps): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return bind();
+    } catch (err) {
+      const isAddrInUse = err instanceof Error && (err as NodeJS.ErrnoException).code === "EADDRINUSE";
+      if (!isAddrInUse || attempt >= BIND_RETRY_ATTEMPTS) throw err;
+      deps.log.warn({ attempt, port: API_PORT }, "api port in use, retrying — another daemon is likely still shutting down");
+      await deps.sleep(BIND_RETRY_DELAY_MS);
+    }
+  }
+}
+
+export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> {
   const { handleCommand, log } = deps;
   const apiToken = loadOrCreateApiToken();
 
-  const server = Bun.serve<ApiWSData, never>({
+  const server = await bindApiServerWithRetry(() => Bun.serve<ApiWSData, never>({
     port: API_PORT,
     // Bind to loopback only — never expose the control surface on the LAN.
     hostname: "127.0.0.1",
@@ -228,7 +256,7 @@ export function startApiServer(deps: ApiServerDeps): Server<any> {
         // Broadcast clients are read-only; inbound frames are ignored.
       },
     },
-  });
+  }), { sleep: (ms) => Bun.sleep(ms), log });
 
   log.info({ port: API_PORT }, "api server listening");
   return server;
