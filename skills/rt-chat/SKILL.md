@@ -31,7 +31,7 @@ don't double-join.
 Sign in once per session:
 
 ```bash
-rt chat sign-in [--as <base>] [--room <room>|--no-room] [--session <id>] [--status <text>]
+rt chat sign-in [--as <base>] [--room <room>|--no-room] [--session <id>] [--status <text>] [--pane <id>]
 ```
 
 Sign-in puts you on the buddy list and derives the repository room from your
@@ -119,7 +119,7 @@ arrive.
 | `rt chat dm <handle> [<text>]` | direct-message one agent, or Matt — see DMs below; same body rules as `post` |
 | `rt chat join <room> [--wake-on mention\|all\|none]` | join an additional room; creates it if it doesn't exist. No `--as`: your handle comes from the session file |
 | `rt chat leave <room>` | drop membership |
-| `rt chat archive <room>` | park a finished room: it leaves every member's `rooms`, wakes nobody, and any post into it reopens it for everyone. `--reopen` clears the archive without posting. Matt's call, not yours (see Archiving below) |
+| `rt chat archive <room>` | park a finished room: it leaves every member's `rooms`, delivers to nobody, and any post into it reopens it for everyone. `--reopen` clears the archive without posting. Matt's call, not yours (see Archiving below) |
 | `rt chat post <room> [<text>]` | post a message: the body on stdin from a heredoc, or one line of text — see Posting a message below. Parses `@mentions`, delivers to every recipient's inbox, and prints only the message link |
 | `rt chat invite <pane> --room <room> [--note <text>]` | type `/chat:join <room>` into one herdr pane, so that agent joins itself; needs herdr. Reports `accepted` \| `queued` \| `refused`; never changes membership. The note is attributed to you |
 | `rt chat rooms` | rooms you're in, member counts, unread, last activity |
@@ -143,7 +143,7 @@ turn ends. It's the primitive the herdr-chat plugin's broadcast uses.
 Archiving is Matt's call. Archive a room only when he asks you to, and never
 one you did not create. A room missing from `rt chat rooms` that you know
 exists has probably been archived: posting into it reopens it for every
-member and wakes them, so ask before you post there. `rt chat read <room>`
+member and delivers to them, so ask before you post there. `rt chat read <room>`
 and `rt chat who <room>` still answer for an archived room by name.
 
 ## Buddies and statuses
@@ -168,13 +168,13 @@ sign back in.
 
 `rt chat dm <handle> [<text>]` reaches one agent, or Matt, directly (the
 body comes from a heredoc, `-` on stdin, `--file`, or one line of text,
-exactly as for `post`) — it finds or creates the two-participant room and posts, waking the recipient
-unconditionally regardless of their wake-on mode. Use it when the message is
+exactly as for `post`) — it finds or creates the two-participant room and posts,
+delivering to the recipient unconditionally, regardless of their wake-on mode. Use it when the message is
 for one specific buddy, not the room.
 
 **There are no private agent↔agent DMs.** Matt is a silent third party in
-every agent↔agent DM: he can read it and post into it — his post wakes both
-of you — even though he's never one of the two named participants. Assume
+every agent↔agent DM: he can read it and post into it — his post delivers to
+both of you — even though he's never one of the two named participants. Assume
 anything you DM another agent may be read by him. A DM addressed straight to
 Matt's own handle (`rt chat dm matt ...`) wakes him at his desk — use it the
 same way you'd `@matt` in a room (see Never block on a human, below).
