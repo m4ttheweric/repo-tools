@@ -22,6 +22,7 @@
 
 import { mkdir, readdir, rename } from "fs/promises";
 import { basename, dirname, join } from "path";
+import { ensureInfoExclude } from "./git-async.ts";
 
 /** Marks a directory as rt's to delete. Nothing without this prefix is ever reaped. */
 export const TRASH_PREFIX = ".trash-";
@@ -110,6 +111,13 @@ export async function retireTree(
     if (!name || name.includes("/") || name.includes("\\")) {
       throw new Error(`worktree trash name must be a single path component: ${JSON.stringify(name)}`);
     }
+    // retainedTrashRoot is always <repoPath>/.worktrees/.trash regardless of
+    // cfg.root, so this exclude pattern is correct in every case — including
+    // a tree disposed without ever going through createTree first (e.g. `rt
+    // worktree adopt`'s disposals), whose repo may never have had
+    // ".worktrees/" excluded at all. Without it the retention store shows up
+    // as `?? .worktrees/` in the user's own `git status`.
+    await ensureInfoExclude(repoPath, ".worktrees/");
     const root = retainedTrashRoot(repoPath);
     await mkdir(root, { recursive: true });
     trashPath = join(root, `${name}-${Date.now()}`);

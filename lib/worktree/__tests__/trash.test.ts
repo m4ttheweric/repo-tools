@@ -164,6 +164,31 @@ describe("worktree trash", () => {
       expect(result.ok).toBe(false);
       expect(existsSync(tree)).toBe(true);
     });
+
+    // S078: `.worktrees/` was never added to info/exclude unless the tree
+    // went through createTree first (e.g. `rt worktree adopt`'s disposals,
+    // or any repo whose worktrees root differs from the default, skip that
+    // call entirely) — the retention store then shows up as `?? .worktrees/`
+    // in the user's own `git status`, and `git add -A` stages a whole second
+    // copy of the source tree into it.
+    test("retireTree excludes .worktrees/ from the repo's own git status, even without going through createTree first", async () => {
+      Bun.spawnSync(["git", "init", "-q", repo]);
+      Bun.spawnSync(["git", "-C", repo, "config", "user.email", "test@example.com"]);
+      Bun.spawnSync(["git", "-C", repo, "config", "user.name", "Test"]);
+      writeFileSync(join(repo, "README.md"), "hi\n");
+      Bun.spawnSync(["git", "-C", repo, "add", "README.md"]);
+      Bun.spawnSync(["git", "-C", repo, "commit", "-q", "-m", "init"]);
+
+      const tree = makeTree(root, "hotel");
+      const result = await retireTree(tree, "hotel", repo);
+      expect(result.ok).toBe(true);
+
+      const exclude = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
+      expect(exclude).toContain(".worktrees/");
+
+      const status = Bun.spawnSync(["git", "-C", repo, "status", "--porcelain"]).stdout.toString();
+      expect(status).not.toContain(".worktrees");
+    });
   });
 
   describe("stripTrashDir", () => {
