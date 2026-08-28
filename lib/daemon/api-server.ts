@@ -79,6 +79,11 @@ interface ApiWSData {
 
 const wsClients = new Set<ServerWebSocket<ApiWSData>>();
 
+/** Count of currently connected WS broadcast clients, for health reporting. */
+export function apiWsClientCount(): number {
+  return wsClients.size;
+}
+
 let apiServerLog: { warn: (o: unknown, m: string) => void } = { warn: () => {} };
 
 /** Consecutive Bun `ws.send()` backpressure (-1) returns tolerated before a

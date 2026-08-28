@@ -207,9 +207,9 @@ const cache: BranchCacheStore = {
 // Port scan cache, held as a single mutable ref so handler modules can read
 // fresh values without getters. The port poller mutates it in place.
 const portCacheRef = { ports: [] as PortEntry[], updatedAt: 0 };
-// Refresh-cycle status ref (last successful cache refresh), also mutated in
-// place so status handlers read a live value.
-const refreshStatusRef = { lastRefreshAt: 0 };
+// Refresh-cycle status ref (last cycle's outcome), also mutated in place so
+// status handlers read a live value.
+const refreshStatusRef = { lastRefreshAt: 0, lastSuccessAt: 0, failedRepos: 0, enrichErrors: 0 };
 const startedAt = Date.now();
 
 // Injected at compile time via `bun build --define RT_VERSION='"v1.x.x"'` (see cli.ts) —

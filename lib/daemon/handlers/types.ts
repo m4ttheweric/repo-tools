@@ -68,8 +68,8 @@ export interface HandlerContext {
   checkAndRepairHooksPath: (repoName: string, repoPath: string) => Promise<boolean>;
   /** Start a directory watch over a repo's .git/config and run an initial check. */
   startWatchingRepo:       (repoName: string, repoPath: string) => void;
-  /** Holder for the last cache-refresh timestamp (0 = never). */
-  refreshStatusRef:        { lastRefreshAt: number };
+  /** Holder for the last cache-refresh cycle's outcome (0s = never run). */
+  refreshStatusRef:        { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number };
 }
 
 export type Handler    = (payload: any, signal?: AbortSignal) => Promise<any>;

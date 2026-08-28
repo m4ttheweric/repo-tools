@@ -29,7 +29,7 @@ export interface CacheRefresherDeps {
   log: Logger;
   /** The process-wide branch-cache store; `cache.reload()` replaces the old read-from-disk. */
   cache: BranchCacheStore;
-  refreshStatusRef: { lastRefreshAt: number };
+  refreshStatusRef: { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number };
   portCacheRef: PortCacheRef;
   repoIndex: () => RepoIndex;
   broadcast: (type: string, data: any) => void;
@@ -82,6 +82,24 @@ export function makeCoalescer(
   };
 }
 
+/**
+ * Records one refresh cycle's outcome onto the shared ref. `lastSuccessAt`
+ * only advances when the cycle was clean (no failed repos, no enrich
+ * errors) — a health signal downstream must be able to trust as "refresh is
+ * actually working", not just "a cycle ran".
+ */
+export function applyRefreshOutcome(
+  ref: { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number },
+  at: number,
+  failedReposCount: number,
+  enrichErrorsCount: number,
+): void {
+  ref.lastRefreshAt = at;
+  ref.failedRepos = failedReposCount;
+  ref.enrichErrors = enrichErrorsCount;
+  if (failedReposCount === 0 && enrichErrorsCount === 0) ref.lastSuccessAt = at;
+}
+
 export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<void> {
   const { log, cache, refreshStatusRef, portCacheRef, repoIndex, broadcast } = deps;
 
@@ -107,6 +125,10 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // "branches" grant, missing path — never enters this set, so its rows
       // are never pruned on a cycle that did not refresh them.
       const succeededRepos = new Set<string>();
+      // Cycle-wide total; the per-repo `enrichErrors` below is scoped to one
+      // iteration and resets each repo, so this is the only place the total
+      // for the whole cycle (fed to applyRefreshOutcome below) accumulates.
+      let totalEnrichErrors = 0;
 
       // `repos` keys on the serialized repo identity (repo-index.ts), so every
       // `repoName` below — passed on into refreshAllMRs, project-sync, and the
@@ -181,6 +203,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           // repo too — a cycle that went wrong anywhere for a repo is not the
           // cycle to delete its rows on.
           if (enrichErrors === 0 && !failedRepos.has(repoName)) succeededRepos.add(repoName);
+          totalEnrichErrors += enrichErrors;
         } catch (err) {
           log.warn({ err, repo: repoName }, "cache refresh skipped repo");
           failedRepos.add(repoName);
@@ -192,7 +215,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // but a CLI `rt run` enrichment may have upserted rows concurrently —
       // this is where those become visible (spec "In-memory ownership").
       cache.reload();
-      refreshStatusRef.lastRefreshAt = Date.now();
+      applyRefreshOutcome(refreshStatusRef, Date.now(), failedRepos.size, totalEnrichErrors);
       log.debug({ count: Object.keys(cache.entries).length }, "cache refresh complete");
 
       // Branch-cache GC: age out rows the succeeded repos no longer refresh.
