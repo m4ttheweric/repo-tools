@@ -382,7 +382,7 @@ const cleanup = (): void => {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export function startDaemon(): void {
+async function runDaemon(): Promise<void> {
   mkdirSync(RT_DIR, { recursive: true });
 
   // Capture native panics (bypass JS entirely) at the fd level, then wire
@@ -466,7 +466,7 @@ export function startDaemon(): void {
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
   servers.socket = startSocketServer({ handleCommand, log });
-  servers.api = startApiServer({ handleCommand, log });
+  servers.api = await startApiServer({ handleCommand, log });
 
   // Wire notification broadcasts to WebSocket clients
   onNotification(emit);
@@ -511,6 +511,27 @@ export function startDaemon(): void {
   installSignalHandlers({ cleanup, flushLogs: () => loggerHandle.flush?.(), log });
 
   log.info({ pid: process.pid }, "daemon ready");
+}
+
+/**
+ * Both real callers (cli.ts's `--daemon` entry, and this file's own
+ * import.meta.main guard below) invoke this fire-and-forget — neither awaits
+ * or catches. Left as a bare async function, ANY failure inside runDaemon()
+ * (this bind, openBranchCacheStore, anything else awaited) becomes an
+ * unhandledRejection, whose handler (installCrashHandlers, above) logs and
+ * deliberately does NOT exit — the daemon would stay alive with rt.sock
+ * possibly bound but startup never having reached signal handlers, pollers,
+ * or "daemon ready". Catching here and exiting explicitly gives every
+ * startup failure the same outcome a synchronous one already had: the
+ * process dies and whatever restarts a crashed daemon restarts this one too.
+ */
+export async function startDaemon(): Promise<void> {
+  try {
+    await runDaemon();
+  } catch (err) {
+    log.fatal({ err }, "daemon startup failed — exiting");
+    process.exit(1);
+  }
 }
 
 // Auto-run when executed directly (source mode: bun run lib/daemon.ts)

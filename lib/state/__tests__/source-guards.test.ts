@@ -90,9 +90,12 @@ describe("legacy JSON state files are retired", () => {
 });
 
 describe("daemon startup opens state.db before serving", () => {
-  test("openBranchCacheStore() precedes both server binds in startDaemon", () => {
+  test("openBranchCacheStore() precedes both server binds in runDaemon", () => {
     const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
-    const start = src.indexOf("export function startDaemon(");
+    // startDaemon() itself is now a thin catch-and-exit wrapper (see
+    // "startDaemon exits on any runDaemon failure" below); the real ordered
+    // startup sequence this test asserts on lives in runDaemon().
+    const start = src.indexOf("async function runDaemon(");
     expect(start).toBeGreaterThan(-1);
 
     const body = src.slice(start);
@@ -122,5 +125,29 @@ describe("daemon startup opens state.db before serving", () => {
     expect(routed).toBeGreaterThan(open);
     expect(routed).toBeLessThan(socket);
     expect(routed).toBeLessThan(api);
+  });
+});
+
+describe("startDaemon exits on any runDaemon failure", () => {
+  test("runDaemon is not exported — startDaemon is the only safe entry point", () => {
+    const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
+    expect(src).not.toContain("export async function runDaemon(");
+    expect(src).not.toContain("export function runDaemon(");
+  });
+
+  test("startDaemon wraps runDaemon in try/catch and exits nonzero on failure", () => {
+    const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
+    const start = src.indexOf("export async function startDaemon(");
+    expect(start).toBeGreaterThan(-1);
+
+    // Both real callers (cli.ts's --daemon entry, this file's own
+    // import.meta.main guard) invoke startDaemon() fire-and-forget — the
+    // catch-and-exit MUST live inside startDaemon itself, not at either
+    // call site, or an unhandledRejection silently leaves the daemon
+    // half-up (rt.sock possibly bound, nothing past the failure ever wired).
+    const body = src.slice(start, start + 400);
+    expect(body).toContain("await runDaemon()");
+    expect(body).toContain("catch");
+    expect(body).toContain("process.exit(1)");
   });
 });
