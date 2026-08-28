@@ -40,7 +40,10 @@ Level is severity-ordered; unhealthy wins over degraded.
 `reasons` name the failing subsystem so the operator knows where to look, e.g.
 `"refresh: 3 repos failing (auth?)"`, `"event-loop: stalled 8s"`,
 `"logging: disabled (ENOSPC)"`, `"disk: 180MB free"` (R011). `metrics` gives the
-memory/handle/uptime numbers a leak hunt needs (R012).
+memory/handle/uptime numbers a leak hunt needs (R012). R012's watcher-close
+remediation (closing fs.watch handles for repos no longer indexed) is **out of
+Phase 2 scope**: Phase 2 ships the metrics + growth-alarm half only, and the
+leak-close rides the later watcher-lifecycle work.
 
 A daemon-side adapter (`buildHealthSnapshot(ctx)`) gathers the inputs from `ctx`,
 the loop monitor, the logger handle, Phase 0 supervision, and an optional
@@ -57,12 +60,17 @@ change.
 - `status` and `tray:status` verbs (`lib/daemon/handlers/status.ts`) gain
   additive `health`, `metrics`, `eventLoop` blocks. `/api/status` aliases
   `tray:status`, so it carries the verdict.
-- `ping` gains `health.level`, `version` (`ctx.identity.version`), and the
-  heartbeat `seq` (all cheap).
+- `ping` gains `health.level`, `version` (`ctx.identity.version`), the heartbeat
+  `seq`, and the `eventLoop` summary (`maxLagMs`, `lastStallAt`, `lastStallCmd`) so
+  a caller that only got a ping through can still show lag (all cheap).
 - `rt daemon status` (`commands/daemon.ts` `statusLines`) renders `level` +
-  `reasons` and metrics/eventLoop lines on the running branch; on the
-  alive-but-not-serving branch it prints `maxLag` / last stall instead of today's
-  "likely mid-sync" guess (R003).
+  `reasons` and the metrics/eventLoop lines on the running branch. Two corrections
+  to today's guesswork, on two different verdicts (R003):
+  - **degraded / unresponsive** (ping answered but the `status` verb timed out):
+    print the ping-carried `maxLagMs` / last stall instead of "likely mid-sync".
+  - **alive-not-serving** (ping failed, pid alive): print the new "stalled Ns ago"
+    detail from `now - heartbeat.at`. The heartbeat file is the only signal
+    reachable here and carries `{ at, seq }`, no `maxLag`.
 - **Swift tray is deferred** (brief constraint): no `rt-tray/` edits. Documented
   contract for the follow-up: read `data.health.level` -> green/orange/red and
   `data.health.reasons[0]` as `statusText`; the current client derivation
@@ -92,6 +100,35 @@ alive-not-serving branch, when `breadcrumb.phase === "ready"` and
 `"booting" | "wedged" | "quarantined" | "stalled"`. `commands/daemon.ts` reads the
 heartbeat file only when the pid probe is already needed (`needsPidProbe`), and
 `statusLines` prints "event loop stalled Ns ago".
+
+## Default thresholds
+
+`computeHealth` stays pure; these are the defaults the daemon-side adapter feeds
+it (and the classifier's heartbeat threshold). Named constants, tunable later.
+
+| Constant | Default | Drives |
+|---|---|---|
+| `loopTickMs` | 250 ms | loop-monitor tick cadence |
+| `loopLagDegradedMs` | 500 ms | degraded: `maxLagMs` in the window exceeds this |
+| `loopStallLogMs` | 1000 ms | warn + `stalls++` when a single tick's drift exceeds this (R003's "> 1s") |
+| `loopStallUnhealthyMs` | 2000 ms | "currently stalled" -> unhealthy: the most recent tick's drift exceeded this within the last `stallRecentMs` |
+| `stallRecentMs` | 10 s | window in which a large recent drift still counts as "currently stalled" |
+| `heartbeatIntervalMs` | 2000 ms | heartbeat file write cadence |
+| `heartbeatStaleMs` | 6000 ms | classifier: alive-not-serving + heartbeat age over this -> "stalled Ns ago" (3 missed writes) |
+| `refreshStaleMultiplier` | 2x the refresh interval | degraded: last successful refresh older than this |
+| `rssSoftThresholdMB` | 1024 MB | degraded: rss over this |
+| `rssGrowthPct` / `rssGrowthWindow` | 50% over 1 h | degraded: rss grew this much in the window |
+| `diskSoftFloorMB` | 500 MB | degraded: free space under RT_DIR below this |
+| `diskHardFloorMB` | 100 MB | unhealthy: free space below this |
+| `restartsPerHourUnhealthy` | 5 (or Phase 0 `isCrashLooping`, >= 3 / 5 min) | unhealthy: restart storm |
+| `recoveredErrorRate` / window | > 10 in 5 min | degraded: stderr/rejection error churn |
+| `slowCommandMs` | 2000 ms | log a successful command at `info` above this |
+
+"Currently stalled" is necessarily an in-process near-miss (a daemon answering
+`status` is not stalled at that instant): the adapter sets it when the last tick's
+drift exceeded `loopStallUnhealthyMs` within `stallRecentMs`, catching a daemon
+that just unstuck. An ongoing stall is caught cross-process instead, by the
+classifier's stale-heartbeat path above.
 
 ## Log level and growth policy
 
