@@ -23,6 +23,7 @@ import {
   type TreeKind,
   type TreeRecord,
 } from "../worktree/registry.ts";
+import { patchTree } from "../worktree/patch.ts";
 import {
   branchExistsLocalAsync,
   currentBranchAsync,
@@ -368,15 +369,6 @@ const TERMINAL_STATES = new Set(["merged", "closed"]);
  *              defeated its own retry.
  */
 type Reaction = "done" | "fired" | "retry";
-
-/** Load-mutate-save one registry row without clobbering concurrent edits. */
-function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): void {
-  const trees = loadRegistry(repoName);
-  const rec = trees.find((t) => t.path === path);
-  if (!rec) return;
-  patch(rec);
-  saveRegistry(repoName, trees);
-}
 
 function markDisposable(deps: ReactorDeps, rec: TreeRecord, reason: string): void {
   patchTree(deps.repoName, rec.path, (r) => {

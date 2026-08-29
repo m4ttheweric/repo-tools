@@ -42,6 +42,7 @@ import {
   type DisposalMode,
   type TreeRecord,
 } from "../../worktree/registry.ts";
+import { patchTree } from "../../worktree/patch.ts";
 import { disambiguate, slugifyTicketTitle } from "../../worktree/branch-name.ts";
 import { createTree } from "../../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree, type DisposeDeps } from "../../worktree/dispose.ts";
@@ -88,15 +89,6 @@ export interface WorktreeHandlerOpts {
 }
 
 // ─── Small shared helpers ────────────────────────────────────────────────────
-
-/** Returns whether the save landed... false means the mutation is only in the caller's discarded `trees` snapshot, never on disk. */
-function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): boolean {
-  const trees = loadRegistry(repoName);
-  const rec = trees.find((t) => t.path === path);
-  if (!rec) return false;
-  patch(rec);
-  return saveRegistry(repoName, trees);
-}
 
 /**
  * `create-failed:<step>` carrying the tail of that step's output, same shape as
