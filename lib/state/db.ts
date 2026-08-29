@@ -280,15 +280,25 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE INDEX IF NOT EXISTS agents_repo_created ON agents(repo, created_at);
 `;
 
+/**
+ * Every schema block, in version order. `runMigrations` execs
+ * `SCHEMAS.join("")` unconditionally on EVERY open (R015/R056): every
+ * statement here is `IF NOT EXISTS`, so replaying against a db that already
+ * has the shape is a no-op, and a db missing a table (dropped by hand, by a
+ * bug, or by a partial write) self-heals instead of staying broken forever.
+ * A future schema block joins this array; leaving one out is caught by the
+ * dynamic table-presence test in db-schema-convergence.test.ts.
+ */
+const SCHEMAS = [V1_SCHEMA, V2_SCHEMA, V3_SCHEMA, V4_SCHEMA, V6_SCHEMA, V7_SCHEMA];
+
 /** project_mr_demands.sections (v6): SQLite's ALTER TABLE ADD COLUMN has no
     IF NOT EXISTS, so unlike every statement in the V*_SCHEMA strings above it
-    cannot simply replay -- a future SCHEMA_VERSION bump re-execs this whole
-    combined block against every db already at v6, and an unconditional ALTER
-    would throw "duplicate column", rolling back that migration and wedging
-    every later openStateDb call. Run it here instead, inside the same
-    migration transaction, gated on the column's actual absence. Any future
-    ALTER-added column follows this same conditional-exec pattern, never the
-    DDL strings. */
+    cannot simply replay -- SCHEMAS.join("") execs against every db on every
+    open, and an unconditional ALTER would throw "duplicate column", rolling
+    back the migration and wedging every later openStateDb call. Run it here
+    instead, inside the same migration transaction, gated on the column's
+    actual absence. Any future ALTER-added column follows this same
+    conditional-exec pattern, never the DDL strings. */
 function addSectionsColumnIfMissing(db: Database): void {
   const columns = db.query("PRAGMA table_info(project_mr_demands);").all() as { name: string }[];
   if (columns.some((c) => c.name === "sections")) return;
@@ -314,12 +324,14 @@ function addHandleColumnIfMissing(db: Database): void {
 /**
  * endpoint_claims.start_time (S068): the claiming pid's start-time, so a
  * recycled pid across a reboot reads as dead rather than pinning a port
- * forever. Called unconditionally from `openStateDb`, NOT from inside
- * `runMigrations`'s `user_version < SCHEMA_VERSION` gate: a machine already
- * at SCHEMA_VERSION never enters that gate, so a call placed there would
- * never add the column on such a machine. No SCHEMA_VERSION bump: this
- * column ships out-of-band of the versioned schema, like `sections`,
- * `archived_at`, and `handle` above.
+ * forever. Called unconditionally from `openStateDb`, outside
+ * `runMigrations`'s BEGIN IMMEDIATE transaction, unlike the three
+ * `addXColumnIfMissing` helpers above: those run inside the transaction,
+ * where a losing racer's duplicate-column error rolls back the whole
+ * migration; this one needs its own catch-and-recheck (below) to tolerate
+ * that same race outside a transaction's protection. No SCHEMA_VERSION
+ * bump: this column ships out-of-band of the versioned schema, like
+ * `sections`, `archived_at`, and `handle` above.
  */
 export function ensureEndpointClaimsStartTimeColumn(db: Database): void {
   const columns = db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[];
@@ -469,41 +481,37 @@ function importLegacyStores(db: Database, dir: string): string[] {
 
 /**
  * The race-proof migration runner (spec "Schema versioning"): BEGIN
- * IMMEDIATE takes the write lock up front, user_version is RE-READ inside
- * the transaction, and every statement in the combined DDL string is IF NOT
- * EXISTS-safe (the one exception, an ALTER TABLE ADD COLUMN, lives outside
- * that string as its own conditional exec -- see addSectionsColumnIfMissing
- * -- and any future ALTER-added column must follow that same pattern rather
- * than join the DDL string). Two processes racing at v0: the loser blocks on
- * IMMEDIATE (busy_timeout), then sees v1 inside its own transaction and
- * applies nothing. A throwing migration rolls back and propagates, no
- * swallow.
+ * IMMEDIATE takes the write lock up front, and every statement in
+ * `SCHEMAS.join("")` plus the three guarded column helpers below is IF NOT
+ * EXISTS or table_info-guarded, so the whole block runs UNCONDITIONALLY on
+ * every open, not only while `user_version < SCHEMA_VERSION` (R015/R056): a
+ * db already at SCHEMA_VERSION but missing a table or column self-heals on
+ * its next open instead of staying broken forever. `user_version` is read
+ * once to gate ONLY the legacy-JSON import, which is not idempotent (see
+ * importLegacyStores' own comment), and is unconditionally re-stamped to
+ * SCHEMA_VERSION for compatibility with older builds' version checks. Two
+ * processes racing at v0: the loser blocks on IMMEDIATE (busy_timeout), then
+ * re-reads v1 inside its own transaction and skips the import. A throwing
+ * migration rolls back and propagates, no swallow.
  */
 function runMigrations(db: Database, dir: string): void {
   db.exec("BEGIN IMMEDIATE;");
   let toRename: string[] = [];
   try {
     const { user_version } = db.query("PRAGMA user_version;").get() as { user_version: number };
-    if (user_version < SCHEMA_VERSION) {
-      // One exec of the full combined schema, not a per-version step: every
-      // statement is IF NOT EXISTS, so replaying v1's DDL against an
-      // already-v1 db is a no-op and existing rows are untouched.
-      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA + V7_SCHEMA);
-      addSectionsColumnIfMissing(db);
-      addArchivedAtColumnIfMissing(db);
-      addHandleColumnIfMissing(db);
-      // Legacy-JSON import is single-shot and only correct from a true
-      // v0 (never-migrated) database: branch-cache's UPSERT would silently
-      // overwrite current rows with stale ones, and project-mrs-store's
-      // plain INSERT would hit its UNIQUE constraint, roll back this whole
-      // migration, and make every later openStateDb call throw. A v1->v2
-      // bump (this schema's own case, and any future one) must apply the
-      // new DDL without re-arming this seam.
-      if (user_version === 0) {
-        toRename = importLegacyStores(db, dir);
-      }
-      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
+    db.exec(SCHEMAS.join(""));
+    addSectionsColumnIfMissing(db);
+    addArchivedAtColumnIfMissing(db);
+    addHandleColumnIfMissing(db);
+    // Legacy-JSON import is single-shot and only correct from a true
+    // v0 (never-migrated) database: branch-cache's UPSERT would silently
+    // overwrite current rows with stale ones, and project-mrs-store's
+    // plain INSERT would hit its UNIQUE constraint, roll back this whole
+    // migration, and make every later openStateDb call throw.
+    if (user_version === 0) {
+      toRename = importLegacyStores(db, dir);
     }
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
     db.exec("COMMIT;");
   } catch (err) {
     try {
@@ -546,8 +554,8 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
   }
 
   runMigrations(db, dirname(path));
-  // Unconditional, outside runMigrations' version gate: see
-  // ensureEndpointClaimsStartTimeColumn's own comment for why.
+  // Outside runMigrations' transaction: see ensureEndpointClaimsStartTimeColumn's
+  // own comment for why.
   ensureEndpointClaimsStartTimeColumn(db);
   // Migration is done: drop from the startup budget to the flavor's
   // steady-state serve-time policy (daemon = 250ms warn-and-defer).

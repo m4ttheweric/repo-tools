@@ -54,39 +54,15 @@ function userVersion(db: Database): number {
   return (db.query("PRAGMA user_version;").get() as { user_version: number }).user_version;
 }
 
-function tableNames(db: Database): string[] {
-  const rows = db.query("SELECT name FROM sqlite_master WHERE type = 'table';").all() as { name: string }[];
-  return rows.map(r => r.name).sort();
-}
-
-const ALL_TABLE_NAMES = [
-  "agents",
-  "branch_cache",
-  "chat_dms",
-  "chat_members",
-  "chat_messages",
-  "chat_presence",
-  "chat_room_defaults",
-  "chat_rooms",
-  "discussions",
-  "endpoint_claims",
-  "kv",
-  "notify_queue",
-  "project_mr_demands",
-  "project_mr_sections",
-  "project_mrs",
-  "project_mrs_meta",
-  "run_history",
-  "sqlite_sequence", // AUTOINCREMENT bookkeeping table (notify_queue.id, run_history.id, chat_messages.id)
-];
-
 describe("openStateDb — fresh open", () => {
   test("a fresh database reaches v9 directly, gaining every v1, v2, v3, v4, v6, v7, v8, and v9 change", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
     expect(SCHEMA_VERSION).toBe(9);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
-    expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
+    // Full table-list coverage lives in db-schema-convergence.test.ts's
+    // dynamic presence test, derived from db.ts's own CREATE TABLE
+    // statements rather than a hand-maintained list here.
     const cols = (db.query("PRAGMA table_info(chat_rooms);").all() as { name: string }[]).map(c => c.name);
     expect(cols).toContain("archived_at");
     const agentCols = (db.query("PRAGMA table_info(agents);").all() as { name: string }[]).map(c => c.name);
@@ -168,13 +144,13 @@ describe("openStateDb — replay over an older user_version", () => {
     expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
   });
 
-  test("a machine already at v9 gains endpoint_claims.start_time on open (S068, added outside the version gate)", () => {
+  test("a machine already at v9 gains endpoint_claims.start_time on open (S068, added outside runMigrations' transaction)", () => {
     const dbPath = join(dir, "state.db");
     const db1 = openStateDb(dbPath, "cli");
     expect(userVersion(db1)).toBe(SCHEMA_VERSION);
-    // Simulate a real v9 machine that predates the start_time column: it
-    // never re-enters runMigrations' `user_version < SCHEMA_VERSION` gate,
-    // so ensureEndpointClaimsStartTimeColumn must run unconditionally.
+    // Simulate a real v9 machine that predates the start_time column: only
+    // ensureEndpointClaimsStartTimeColumn's own table_info guard, called
+    // unconditionally from openStateDb, can add it back.
     db1.exec("ALTER TABLE endpoint_claims DROP COLUMN start_time;");
     db1.close();
 
@@ -283,7 +259,6 @@ describe("openStateDb: v1 database migrates to v9", () => {
 
     const db = openStateDb(dbPath, "cli");
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
-    expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
 
     const branchRow = db.query("SELECT branch, repo, linear_id, fetched_at FROM branch_cache WHERE branch = ?;").get("main");
     expect(branchRow).toEqual({ branch: "main", repo: "repo-a", linear_id: "RT-1", fetched_at: 1000 });
