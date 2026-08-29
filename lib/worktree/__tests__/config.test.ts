@@ -9,7 +9,9 @@ import {
   rtDir,
   teamSettingsPath,
   userSettingsPath,
+  worktreePoolRoot,
 } from "../../rt-paths.ts";
+import { deriveRepoIdentity, serializeIdentity } from "../../settings/identity.ts";
 import {
   loadWorktreeRepoConfig,
   resolveImplicitInstall,
@@ -19,6 +21,11 @@ import {
   worktreeSettingsDeclared,
   type WorktreeRepoConfig,
 } from "../config.ts";
+
+/** The out-of-repo pool root (RT-52) `sanitizeRoot` defaults to for `repoPath`. */
+async function defaultRoot(repoPath: string): Promise<string> {
+  return worktreePoolRoot(serializeIdentity(await deriveRepoIdentity(repoPath)));
+}
 
 function tmpRepoPath(prefix: string): string {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -60,7 +67,7 @@ describe("worktree config", () => {
       const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg).toEqual({
         onDeck: 0,
-        root: join(repoPath, ".worktrees"),
+        root: await defaultRoot(repoPath),
         branchFormat: "<ticket>-<slug>",
         ready: [],
       });
@@ -138,7 +145,7 @@ describe("worktree config", () => {
       expect(cfg.onDeck).toBe(2);
       expect(cfg.namePool).toEqual(["luna"]);
       // computed default still lives in the reader, not the registry
-      expect(cfg.root).toBe(join(repoPath, ".worktrees"));
+      expect(cfg.root).toBe(await defaultRoot(repoPath));
       expect(cfg.branchFormat).toBe("<ticket>-<slug>");
     });
 
@@ -201,7 +208,7 @@ describe("worktree config", () => {
       const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg).toEqual({
         onDeck: 0,
-        root: join(repoPath, ".worktrees"),
+        root: await defaultRoot(repoPath),
         branchFormat: "<ticket>-<slug>",
         ready: [],
       });

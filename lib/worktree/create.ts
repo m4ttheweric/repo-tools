@@ -10,7 +10,7 @@
  */
 
 import { existsSync } from "fs";
-import { join } from "path";
+import { isAbsolute, join, relative } from "path";
 import {
   loadRegistry,
   saveRegistry,
@@ -54,9 +54,12 @@ export async function createTree(deps: CreateDeps): Promise<CreateResult> {
   const name = pickName(cfg.namePool, usedNames(existing));
   const path = join(cfg.root, name);
 
-  const defaultRoot = join(repoPath, ".worktrees");
-  if (cfg.root === defaultRoot) {
-    await ensureInfoExclude(repoPath, ".worktrees/");
+  // The default pool root (RT-52) lives outside the clone, so info/exclude is
+  // only needed when a user override points root back inside the repo.
+  const rel = relative(repoPath, cfg.root);
+  const rootInsideRepo = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  if (rootInsideRepo) {
+    await ensureInfoExclude(repoPath, `${rel.split("/")[0]}/`);
   }
 
   const outcome = await withTreeLock(path, () => runCreate(deps, cfg, name, path));

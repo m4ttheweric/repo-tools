@@ -22,8 +22,9 @@
  * Honest degrade, not an error.
  *
  * ── Computed defaults and sanitizers stay HERE ────────────────────────────
- * The registry only carries `{ onDeck: 0 }`; `root` (= `<repoPath>/.worktrees`)
- * and `branchFormat` cannot live there because they depend on the repo being
+ * The registry only carries `{ onDeck: 0 }`; `root` (= the pool root under
+ * `~/.mattstack/rt/worktrees/<serialized identity>`, RT-52) and `branchFormat`
+ * cannot live there because they depend on the repo being
  * read. And the resolver only type-checks the TOP level of a value (an
  * object), so the sanitizers below are what actually guarantee the
  * `WorktreeRepoConfig` shape, from whichever rung a field arrived on. That
@@ -62,8 +63,8 @@ import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { readJson, writeJson } from "../json-store.ts";
-import { rtDir } from "../rt-paths.ts";
-import { deriveRepoIdentity } from "../settings/identity.ts";
+import { rtDir, worktreePoolRoot } from "../rt-paths.ts";
+import { deriveRepoIdentity, serializeIdentity } from "../settings/identity.ts";
 import { explainSetting, getSetting, type ResolveOpts } from "../settings/resolve.ts";
 
 /**
@@ -88,7 +89,7 @@ export interface ReadyStep {
 export interface WorktreeRepoConfig {
   onDeck: number; // default 0
   namePool?: string[];
-  root: string; // default join(repoPath, ".worktrees")
+  root: string; // default worktreePoolRoot(serializedIdentity), out of the clone (RT-52)
   branchFormat: string; // default "<ticket>-<slug>"
   ready: ReadyStep[]; // declared domain steps ONLY (implicit install prepended at resolve time)
 }
@@ -149,11 +150,12 @@ function sanitizeOnDeck(raw: unknown): number {
 
 /**
  * Worktree root, with the reader's computed default. `expandHome` is applied
- * after the resolver's own variable expansion — see the module header for why
- * a bare `~` still has to work.
+ * after the resolver's own variable expansion (module header: a bare `~` still
+ * has to work). The default is the out-of-repo pool root (RT-52) keyed by the
+ * repo's serialized identity, not a directory inside the clone.
  */
-function sanitizeRoot(raw: unknown, repoPath: string): string {
-  return typeof raw === "string" && raw.length > 0 ? expandHome(raw) : join(repoPath, ".worktrees");
+function sanitizeRoot(raw: unknown, serializedIdentity: string): string {
+  return typeof raw === "string" && raw.length > 0 ? expandHome(raw) : worktreePoolRoot(serializedIdentity);
 }
 
 function sanitizeBranchFormat(raw: unknown): string {
@@ -193,11 +195,12 @@ export async function loadWorktreeRepoConfig(
 ): Promise<WorktreeRepoConfig> {
   const derived = await deriveRepoIdentity(repoPath);
   const identity = derived.kind === "remote" ? derived.id : null;
+  const serialized = serializeIdentity(derived);
   const declared = resolveDeclared(repoName, identity, repoPath);
 
   const cfg: WorktreeRepoConfig = {
     onDeck: sanitizeOnDeck(declared.onDeck),
-    root: sanitizeRoot(declared.root, repoPath),
+    root: sanitizeRoot(declared.root, serialized),
     branchFormat: sanitizeBranchFormat(declared.branchFormat),
     ready: sanitizeReady(declared.ready),
   };

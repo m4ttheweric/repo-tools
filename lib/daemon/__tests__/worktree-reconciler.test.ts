@@ -184,7 +184,9 @@ describe("reconcileRepoRegistry", () => {
 
     // Reusing the same name must succeed now that `git worktree prune` ran;
     // without it git still holds the stale worktree registration at manualPath.
-    await declareWorktrees(repo, repoName, { namePool: [name] });
+    // root pins the pool back at manualPath's directory, matching the manually
+    // added worktree above.
+    await declareWorktrees(repo, repoName, { namePool: [name], root: join(repo, ".worktrees") });
 
     const result = await createTree({
       repoName,

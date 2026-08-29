@@ -117,7 +117,19 @@ describe("createTree", () => {
     expect(events.some((e) => e.type === "worktree:created")).toBe(true);
   });
 
-  test("in-repo default root writes .git/info/exclude", async () => {
+  test("out-of-repo default root leaves .git/info/exclude untouched", async () => {
+    const deps = makeDeps(repoName, repo, events);
+    const result = await createTree(deps);
+
+    expect(result.ok).toBe(true);
+    const excludePath = join(repo, ".git", "info", "exclude");
+    const content = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
+    expect(content).not.toContain(".worktrees/");
+  });
+
+  test("an in-repo root override writes .git/info/exclude", async () => {
+    await declareWorktrees(repo, repoName, { root: join(repo, ".worktrees") });
+
     const deps = makeDeps(repoName, repo, events);
     const result = await createTree(deps);
 
