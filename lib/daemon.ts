@@ -109,6 +109,69 @@ import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, logsDir } from "./rt
 
 type HandleCommand = (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
 
+export interface HandleCommandDeps {
+  routeCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
+  /** Read as `ctx.log` on every call (not captured once), so this stays
+   *  correct across the boot-time swap from the bootstrap logger to the real
+   *  one (unit 1 reassigns `ctx.log` after `buildUnits` has already wired
+   *  this closure). */
+  ctx: { log: Logger };
+  rejectSuppressor: ReturnType<typeof makeSuppressor>;
+  redactDigest: (payload: any) => Record<string, unknown>;
+  currentCmd: { cmd: string | null };
+  slowCommandMs?: number;
+}
+
+/**
+ * Wraps `routeCommand` with request-id stamping, reject/slow-command logging,
+ * and a handler-throw safety net (R035): a thrown error becomes an additive
+ * `{ ok: false, error, failure: { code, message } }` envelope instead of
+ * propagating to the transport as an uncaught exception. `error` stays the
+ * plain string every rt-client wrapper already displays; `failure` is the
+ * new structured key, filled from the same throw.
+ */
+export function createHandleCommand(deps: HandleCommandDeps): HandleCommand {
+  const { routeCommand, ctx, rejectSuppressor, redactDigest, currentCmd } = deps;
+  const slowCommandMs = deps.slowCommandMs ?? 2000;
+  return async (cmd, payload, signal) => {
+    const t0 = Date.now();
+    const reqId = shortReqId();
+    const caller = payload && typeof payload._client === "string" ? payload._client : "unknown";
+    currentCmd.cmd = cmd;
+    try {
+      const result = await routeCommand(cmd, payload, signal);
+      const durationMs = Date.now() - t0;
+      if (result && result.ok === false) {
+        const key = `${cmd}|${result.error ?? ""}`;
+        const { emit: shouldEmit, suppressed } = rejectSuppressor.check(key, Date.now());
+        if (shouldEmit) {
+          ctx.log.warn(
+            { reqId, cmd, caller, error: result.error, durationMs, digest: redactDigest(payload), ...(suppressed ? { suppressed } : {}) },
+            "command rejected",
+          );
+        }
+        return { ...result, reqId };
+      }
+      if (durationMs > slowCommandMs) {
+        ctx.log.info({ reqId, cmd, caller, durationMs }, "command handled (slow)");
+      } else {
+        ctx.log.debug({ reqId, cmd, caller, durationMs }, "command handled");
+      }
+      return result;
+    } catch (err) {
+      ctx.log.error({ err, reqId, cmd, caller, durationMs: Date.now() - t0, digest: redactDigest(payload) }, "command failed");
+      const message = err instanceof Error ? err.message : String(err);
+      const code =
+        err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
+          ? (err as { code: string }).code
+          : "handler-threw";
+      return { ok: false, error: message, failure: { code, message }, reqId };
+    } finally {
+      currentCmd.cmd = null;
+    }
+  };
+}
+
 /**
  * The out-of-process / process-global operations a unit performs, injected so
  * the in-process boot test can supply fakes (servers, pid, crash/signal
@@ -333,38 +396,14 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
     }
   };
 
-  const handleCommand: HandleCommand = async (cmd, payload, signal) => {
-    const t0 = Date.now();
-    const reqId = shortReqId();
-    const caller = payload && typeof payload._client === "string" ? payload._client : "unknown";
-    currentCmd.cmd = cmd;
-    try {
-      const result = await routeCommand(cmd, payload, signal);
-      const durationMs = Date.now() - t0;
-      if (result && result.ok === false) {
-        const key = `${cmd}|${result.error ?? ""}`;
-        const { emit: shouldEmit, suppressed } = rejectSuppressor.check(key, Date.now());
-        if (shouldEmit) {
-          log.warn(
-            { reqId, cmd, caller, error: result.error, durationMs, digest: redactDigest(payload), ...(suppressed ? { suppressed } : {}) },
-            "command rejected",
-          );
-        }
-        return { ...result, reqId };
-      }
-      if (durationMs > SLOW_COMMAND_MS) {
-        log.info({ reqId, cmd, caller, durationMs }, "command handled (slow)");
-      } else {
-        log.debug({ reqId, cmd, caller, durationMs }, "command handled");
-      }
-      return result;
-    } catch (err) {
-      log.error({ err, reqId, cmd, caller, durationMs: Date.now() - t0, digest: redactDigest(payload) }, "command failed");
-      throw err;
-    } finally {
-      currentCmd.cmd = null;
-    }
-  };
+  const handleCommand: HandleCommand = createHandleCommand({
+    routeCommand,
+    ctx,
+    rejectSuppressor,
+    redactDigest,
+    currentCmd,
+    slowCommandMs: SLOW_COMMAND_MS,
+  });
 
   /** Not cached: computeHealth is pure/cheap and every input is a live ref or a
    *  fast getter, so recomputing per call keeps the snapshot honest without a

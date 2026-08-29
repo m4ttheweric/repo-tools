@@ -14,6 +14,10 @@ export interface RtResponse<T = unknown> {
   ok: boolean;
   data?: T;
   error?: string;
+  /** Structured form of `error` on a handler throw (R035): `code` defaults
+   *  to "handler-threw" when the thrown error carries none. Additive; older
+   *  daemons and the reject path never set this. */
+  failure?: { code: string; message: string };
 }
 
 export interface RtClientOptions {
