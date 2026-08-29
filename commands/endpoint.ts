@@ -149,6 +149,8 @@ async function pickWorktree(identity: string): Promise<string | null> {
 export interface ParsedEndpointReleaseArgs {
   worktree: string | undefined;
   role: string | undefined;
+  /** `--role` was present but its value was missing or itself another flag (e.g. `--role --json`): a real role must never be silently treated as omitted. */
+  roleInvalid: boolean;
 }
 
 /**
@@ -160,9 +162,11 @@ export interface ParsedEndpointReleaseArgs {
 export function parseEndpointReleaseArgs(args: string[]): ParsedEndpointReleaseArgs {
   const roleFlagIdx = args.indexOf("--role");
   const roleValueIdx = roleFlagIdx === -1 ? -1 : roleFlagIdx + 1;
-  const role = roleFlagIdx !== -1 ? args[roleValueIdx] : undefined;
+  const roleValue = roleFlagIdx !== -1 ? args[roleValueIdx] : undefined;
+  const roleInvalid = roleFlagIdx !== -1 && (roleValue === undefined || roleValue.startsWith("--"));
+  const role = roleInvalid ? undefined : roleValue;
   const worktreeArgs = args.filter((a, i) => i !== roleFlagIdx && i !== roleValueIdx && !a.startsWith("--"));
-  return { worktree: worktreeArgs[0], role };
+  return { worktree: worktreeArgs[0], role, roleInvalid };
 }
 
 /**
@@ -175,6 +179,7 @@ export function parseEndpointReleaseArgs(args: string[]): ParsedEndpointReleaseA
 export async function endpointRelease(args: string[]): Promise<void> {
   const json = args.includes("--json");
   const parsed = parseEndpointReleaseArgs(args);
+  if (parsed.roleInvalid) fail("--role needs a value (usage: rt endpoint release <worktree> --role <role>)");
   const role = parsed.role;
   let worktree = parsed.worktree;
 
