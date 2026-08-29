@@ -1040,7 +1040,7 @@ The first `db` is never closed before rename: its fd (and any -wal/-shm it mappe
 #### S104 · P3 · hazard · `lib/worktree/git-async.ts:33`
 **Mutating git verbs share the 60s SIGTERM timeout; a large-repo checkout can be killed half-applied**
 
-Provision on a monorepo the size of assured-dev checks out a branch that touches tens of thousands of files on a cold disk; at 60s runCapture SIGTERMs git mid-checkout. HEAD may already point at the new branch while the index/working tree are partially updated. rollbackClaim sees current !== onDeckBranch and flips the tree to `disposable` with reason `checkout-failed:` and an empty detail (stdout/stderr truncated). The user gets an opaque refusal and a half-switched tree that the dirty guard will then refuse to dispose automatically. Only fetch and worktree-add were given 5 minutes.
+Provision on a very large monorepo checks out a branch that touches tens of thousands of files on a cold disk; at 60s runCapture SIGTERMs git mid-checkout. HEAD may already point at the new branch while the index/working tree are partially updated. rollbackClaim sees current !== onDeckBranch and flips the tree to `disposable` with reason `checkout-failed:` and an empty detail (stdout/stderr truncated). The user gets an opaque refusal and a half-switched tree that the dirty guard will then refuse to dispose automatically. Only fetch and worktree-add were given 5 minutes.
 
 *Fix (small):* Give checkout, merge, stash push/pop and status explicit long timeouts (5 min) matching fetch/add, and after a timeout on a mutating verb log at warn with the partial output rather than returning an empty detail.
 
