@@ -1,5 +1,5 @@
 /**
- * Worktree reconciler — brings the on-disk registry back in line with git
+ * Worktree reconciler... brings the on-disk registry back in line with git
  * ground truth, then reacts to the MR transitions that end a tree's life.
  * Task 12 extends `runOnce` in place with the freshen and replenish/shrink
  * passes, so structure here is deliberately left open for that: each duty is
@@ -8,40 +8,27 @@
  * `creationInFlight`).
  */
 
-import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
-import { existsSync, statfsSync } from "fs";
+import { isAbsolute, join, relative, resolve } from "path";
+import { statfsSync } from "fs";
 import type { Logger } from "pino";
-import { canon } from "../fs-canon.ts";
-import { rtDir } from "../rt-paths.ts";
-import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
 import {
-  findByBranch,
   findByPath,
   loadRegistry,
-  registryEpoch,
-  saveRegistry,
-  type TreeKind,
   type TreeRecord,
 } from "../worktree/registry.ts";
 import { patchTree } from "../worktree/patch.ts";
 import { MR_TERMINAL_STATES } from "../enrich.ts";
 import {
-  branchExistsLocalAsync,
-  currentBranchAsync,
   findDesktopStashAsync,
-  gitOk,
   headSha,
-  listWorktreesAsync,
   MUTATING_TIMEOUT_MS,
   remoteDefaultRef,
   runGit,
   stashChangesAsync,
-  type WorktreeEntry,
 } from "../worktree/git-async.ts";
-import { isTreeLocked, withTreeLock } from "../worktree/locks.ts";
+import { withTreeLock } from "../worktree/locks.ts";
 import { ensureWorktreeRegistryRekeyed } from "../repo-index.ts";
-import { createTree, scrapTree, type CreateDeps } from "../worktree/create.ts";
-import { branchOf } from "../state/branch-cache.ts";
+import { createTree } from "../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree } from "../worktree/dispose.ts";
 import { changedSince, stepsToRun, runReadySteps } from "../worktree/ready.ts";
 import { MAX_LOGGED_OUTPUT, outputTail } from "../subprocess.ts";
@@ -52,623 +39,27 @@ import {
   worktreeSettingsDeclared,
   type WorktreeAppConfig,
 } from "../worktree/config.ts";
-import { killWorktreeProcesses } from "./worktree-process-kill.ts";
 import { reapExpiredTrash, reapTrashInRoots } from "../worktree/trash.ts";
+import {
+  MISSING_PRUNE_PASSES,
+  reconcileRepo,
+  reconcileRepoRegistry,
+  __test__ as reconcileTest,
+} from "./reconciler/reconcile.ts";
+import {
+  detectTransitions,
+  __test__ as reactorTest,
+} from "./reconciler/reactor.ts";
+
+export type { ReconcileDeps } from "./reconciler/reconcile.ts";
+export type { ReactorDeps } from "./reconciler/reactor.ts";
+export { reconcileRepo, reconcileRepoRegistry, detectTransitions };
 
 export interface ReconcilerDeps {
   cache: { entries: Record<string, any> };
   repoIndex: () => Record<string, string>;
   emit: (type: string, data: unknown) => void;
   log: Logger;
-}
-
-export interface ReconcileDeps {
-  repoName: string;
-  repoPath: string;
-  emit: (type: string, data: unknown) => void;
-  log: Logger;
-  /**
-   * Test-only seam, invoked right after an attempt captures its registry
-   * snapshot and epoch — the exact window a competing writer (a provision
-   * claim, a dispose prune) lands in on the shared event loop. Production
-   * callers never pass it.
-   */
-  onAfterLoad?: (attempt: number) => void;
-}
-
-/** One attempt's outcome: its trees, or "a concurrent write invalidated me". */
-type PassResult = { trees: TreeRecord[] } | { conflict: true };
-
-/** Attempts before a contended pass gives up and leaves the work to the next tick. */
-const RECONCILE_MAX_ATTEMPTS = 3;
-
-/** Consecutive misses before a registry path absent from git ground truth is dropped: ~15 min at the 5-min cadence rides out a transient unmount, and still cleans up a real removal within a cache window. */
-const MISSING_PRUNE_PASSES = 3;
-
-/**
- * Reconcile one repo's worktree registry against git ground truth (spec §4).
- *
- * Order matters:
- *  1. `git worktree prune` FIRST — an `rm -rf`'d tree otherwise leaves git's
- *     stale worktree registration holding the path/branch, which blocks a
- *     later create from reusing the same name. Skipped for this pass when any
- *     registered tree's parent directory is currently unreadable (S063: a
- *     network-mount blip must not be read as a mass removal).
- *  2. (d) orphaned `creating` entries (no held lock) are scrapped before (a)
- *     evaluates existence, since an in-flight (locked) `creating` entry has
- *     no git worktree yet and must not be pruned out from under the create.
- *  3. (a) registry entries with no matching git/disk worktree are held for
- *     `MISSING_PRUNE_PASSES` consecutive passes (S063), then pruned.
- *  4. (b) git worktrees unknown to the registry are adopted (main/unmanaged).
- *  5. (c) every remaining registered tree's `branch` is set to git ground
- *     truth; kind/state/owner are left untouched.
- *  6. (e) duplicate branches across registered trees are left as-is —
- *     surfaced elsewhere (findByBranch / T13's list handler).
- *
- * Concurrency: this is the one registry writer that saves a WHOLE snapshot
- * taken before a long run of git awaits. Every other writer is a synchronous
- * fresh-load → mutate → save of one row, so per-tree locks are enough for them;
- * they are not enough here, because reconcile holds no lock on the trees it
- * rewrites (and taking a repo-wide one would reintroduce the coarse locking
- * this design avoids). Instead each attempt captures `registryEpoch` with its
- * snapshot and re-checks it in the same synchronous block as its save: if
- * anyone else wrote in between, the snapshot is stale and the whole pass is
- * retried against fresh state rather than overwriting them. Retries are bounded
- * — a pass that keeps losing simply skips its save and lets the next tick redo
- * it, since every correction here is derived from ground truth and idempotent.
- */
-export async function reconcileRepoRegistry(deps: ReconcileDeps): Promise<TreeRecord[]> {
-  for (let attempt = 1; attempt <= RECONCILE_MAX_ATTEMPTS; attempt++) {
-    const result = await reconcilePass(deps, attempt);
-    if (!("conflict" in result)) return result.trees;
-    deps.log.debug?.(
-      { repo: deps.repoName, attempt },
-      "reconcile: registry changed mid-pass; retrying against a fresh snapshot",
-    );
-  }
-  deps.log.warn(
-    { repo: deps.repoName, attempts: RECONCILE_MAX_ATTEMPTS },
-    "reconcile: registry kept changing mid-pass; skipping this pass's save",
-  );
-  return loadRegistry(deps.repoName);
-}
-
-async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<PassResult> {
-  const { repoName, repoPath, emit, log } = deps;
-
-  // A `creating` row has no git worktree yet, so it never counts against
-  // readability; any other row whose parent dir can't be listed right now is
-  // a transient mount blip, not evidence its worktree was removed, so the
-  // sweep that would otherwise register that removal is skipped this pass.
-  const rootsReadable = loadRegistry(repoName).every(
-    (t) => t.state === "creating" || existsSync(dirname(t.path)),
-  );
-  if (rootsReadable) {
-    await runGit(repoPath, ["worktree", "prune"]);
-  } else {
-    log.info({ repo: repoName }, "reconcile: a pool root is unreadable this pass; skipping git worktree prune");
-  }
-
-  let trees = loadRegistry(repoName);
-  let epoch = registryEpoch(repoName);
-  deps.onAfterLoad?.(attempt);
-  let changed = false;
-  const createDeps: CreateDeps = { repoName, repoPath, emit, log };
-
-  // (d) creating entries with no held lock -> scrap, no recreate. Entries
-  // still locked (genuinely in-flight) pass through untouched. Scrapping
-  // mutates git state (worktree remove + branch -D), so the git listing used
-  // by (a)-(c) below is captured AFTER this loop, not before.
-  //
-  // This is the one mutating step in an otherwise read-only reconcile, so
-  // (unlike (a)-(c)/(e), which only ever sync the registry file to ground
-  // truth) it is gated on the app-level enabled flag same as freshen/replenish.
-  const appConfig = loadWorktreeAppConfig();
-  const afterScrap: TreeRecord[] = [];
-  let scrapped = false;
-  for (const rec of trees) {
-    if (appConfig.enabled && rec.state === "creating" && !isTreeLocked(rec.path)) {
-      log.info({ repo: repoName, tree: rec.name, path: rec.path }, "reconcile: scrapping orphaned creating tree");
-      await scrapTree(createDeps, rec);
-      scrapped = true;
-      continue;
-    }
-    afterScrap.push(rec);
-  }
-  trees = afterScrap;
-
-  if (scrapped) {
-    // scrapTree persists its own removal (fresh-load → filter → save), so the
-    // scrap is already on disk and has already bumped the epoch. (A scrap
-    // whose rename failed keeps its record for retry and writes nothing; the
-    // re-read below is correct either way.) Re-read from
-    // that write instead of carrying the pre-scrap snapshot forward: anything
-    // another writer landed during the scrap's git awaits is in the file now,
-    // and re-capturing the epoch here is what keeps our own intentional write
-    // from reading as somebody else's.
-    trees = loadRegistry(repoName);
-    epoch = registryEpoch(repoName);
-  }
-
-  const gitEntries = await listWorktreesAsync(repoPath);
-  if (gitEntries === null) {
-    // Nothing to save: the scrap above already persisted itself, and writing
-    // this snapshot back would be exactly the stale-snapshot clobber.
-    log.warn({ repo: repoName, repoPath }, "reconcile: git worktree list failed; skipping this repo's pass");
-    return { trees };
-  }
-  const gitByCanon = new Map<string, WorktreeEntry>();
-  for (const entry of gitEntries) {
-    gitByCanon.set(canon(entry.path), entry);
-  }
-
-  // (a) registry paths missing from git/disk -> held for MISSING_PRUNE_PASSES
-  // consecutive passes (S063: a transiently missing directory, e.g. a network
-  // mount blip, must not orphan the row and poison its name), then pruned.
-  // `creating` entries are exempt: they legitimately have no git worktree yet.
-  const afterPrune: TreeRecord[] = [];
-  for (const rec of trees) {
-    if (rec.state === "creating") {
-      afterPrune.push(rec);
-      continue;
-    }
-    if (gitByCanon.has(canon(rec.path))) {
-      if (rec.missCount) {
-        delete rec.missCount;
-        changed = true;
-      }
-      afterPrune.push(rec);
-    } else {
-      const misses = (rec.missCount ?? 0) + 1;
-      if (misses < MISSING_PRUNE_PASSES) {
-        rec.missCount = misses;
-        changed = true;
-        afterPrune.push(rec);
-        log.info({ repo: repoName, tree: rec.name, path: rec.path, misses }, "reconcile: worktree path missing, holding");
-      } else {
-        log.info({ repo: repoName, tree: rec.name, path: rec.path }, "reconcile: pruning registry entry after sustained absence");
-        changed = true;
-      }
-    }
-  }
-  trees = afterPrune;
-
-  // (b) git paths unknown to registry -> adopt. The first porcelain entry is
-  // always the main clone.
-  const known = new Set(trees.map((t) => canon(t.path)));
-  let mainRegistered = trees.some((t) => t.kind === "main");
-  for (const entry of gitEntries) {
-    const c = canon(entry.path);
-    if (known.has(c)) continue;
-
-    const isMain = entry === gitEntries[0] && !mainRegistered;
-    const kind: TreeKind = isMain ? "main" : "unmanaged";
-    if (isMain) mainRegistered = true;
-
-    const rec: TreeRecord = {
-      name: basename(entry.path),
-      path: entry.path,
-      kind,
-      branch: entry.branch,
-      createdAt: new Date().toISOString(),
-    };
-    trees.push(rec);
-    known.add(c);
-    changed = true;
-    log.info({ repo: repoName, tree: rec.name, kind, path: rec.path }, "reconcile: adopted worktree into registry");
-  }
-
-  // (c) ground-truth branch sync for every registered tree git still knows
-  // about. kind/state/owner are never touched here.
-  for (const rec of trees) {
-    const entry = gitByCanon.get(canon(rec.path));
-    if (entry && rec.branch !== entry.branch) {
-      rec.branch = entry.branch;
-      changed = true;
-    }
-  }
-
-  // (e) duplicate branches across registered trees: leave records as-is.
-
-  if (changed) {
-    // Check and save in one synchronous block — an await between them would
-    // reopen the very window this closes.
-    if (registryEpoch(repoName) !== epoch) return { conflict: true };
-    saveRegistry(repoName, trees);
-  }
-
-  return { trees };
-}
-
-// ─── Merge reactor (spec §6.2) ───────────────────────────────────────────────
-
-/**
- * The reactor's own memory, at `~/.mattstack/rt/worktree-reactor-state.json`.
- *
- * `mrState` is the last-seen MR state per `<repo>:<branch>`, compared against
- * the live cache to find `opened → merged|closed` edges. A branch the file has
- * never seen fails the `prev === "opened"` gate, which is what makes a cold
- * boot on an already-merged cache entry a no-op rather than a mass disposal.
- *
- * `fired` is keyed by MR, not branch: `disposed:<repo>:<mr-iid>:<state>`.
- * Branch keys are wrong here because this design derives branch names from
- * tickets, so a recut MR reuses the branch and a branch-keyed fire would
- * silently never act a second time. The MR's keys are pruned when it returns
- * to `opened`.
- */
-interface ReactorState {
-  mrState: Record<string, string | null>;
-  fired: string[];
-}
-
-const REACTOR_STATE_NS = "worktree-reactor";
-const REACTOR_STATE_KEY = "state";
-
-/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
-export function reactorStatePath(): string {
-  return join(rtDir(), "worktree-reactor-state.json");
-}
-
-function normalizeReactorState(raw: Partial<ReactorState> | null | undefined): ReactorState {
-  return {
-    mrState: raw?.mrState ?? {},
-    fired: Array.isArray(raw?.fired) ? raw.fired : [],
-  };
-}
-
-function loadReactorState(): ReactorState {
-  if (hasKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY)) {
-    return normalizeReactorState(getKvValue<Partial<ReactorState>>(REACTOR_STATE_NS, REACTOR_STATE_KEY, {}));
-  }
-
-  const result = importLegacyJsonFile<ReactorState>(reactorStatePath(), (json) => {
-    const state = normalizeReactorState(json as Partial<ReactorState> | null);
-    setKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY, state);
-    return state;
-  }, { verifyPersisted: () => hasKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY) });
-  return result.imported ? result.value! : normalizeReactorState({});
-}
-
-function saveReactorState(state: ReactorState, log: Logger): void {
-  try {
-    setKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY, state);
-    renameLegacyOutOfTheWay(reactorStatePath());
-  } catch (err) {
-    log.warn({ err }, "worktree reactor: could not persist state");
-  }
-}
-
-/** Branch-keyed MR cache entry, as the daemon holds it (`ctx.cache.entries`). */
-interface ReactorCacheEntry {
-  mr?: { iid?: number; state?: string | null } | null;
-  repoName?: string;
-}
-
-export interface ReactorDeps {
-  repoName: string;
-  repoPath: string;
-  /** Branch-keyed MR cache (daemon `ctx.cache.entries`). */
-  cacheEntries: Record<string, ReactorCacheEntry>;
-  emit: (type: string, data: unknown) => void;
-  log: Logger;
-}
-
-/**
- * What one tree's reaction did, which is also what the snapshot is allowed to
- * do afterwards:
- *  - `done`  — nothing to react to (wrong kind, job disposal, main already
- *              moved on). The edge is spent; advance the snapshot.
- *  - `fired` — the reaction happened (disposed / flipped disposable /
- *              auto-returned). Advance the snapshot AND record the fired key
- *              so a cache churn can't re-notify.
- *  - `retry` — the reaction failed for a mechanical, transient reason. The
- *              snapshot must stay at "opened" or the edge never re-arms; this
- *              is the correctness fix over the harvested parking-lot version,
- *              which advanced the snapshot unconditionally and so silently
- *              defeated its own retry.
- */
-type Reaction = "done" | "fired" | "retry";
-
-function markDisposable(deps: ReactorDeps, rec: TreeRecord, reason: string): void {
-  patchTree(deps.repoName, rec.path, (r) => {
-    r.state = "disposable";
-    r.disposableReason = reason;
-  });
-  deps.emit("worktree:disposable", {
-    repo: deps.repoName,
-    tree: rec.name,
-    path: rec.path,
-    branch: rec.branch,
-    reason,
-  });
-  deps.log.info(
-    { repo: deps.repoName, tree: rec.name, reason },
-    `worktree ${rec.name} is disposable: ${reason}`,
-  );
-}
-
-/**
- * Return the main clone to its default branch after its branch merged.
- *
- * Harvested from `park()` minus the parking-slot branch: verify main is still
- * on the merged branch, stop its workload, stash-and-LEAVE any dirt under the
- * GitHub Desktop-compatible marker keyed to the branch that left, check out the
- * default branch, fast-forward it. The stash is deliberately never popped — it
- * belongs to the merged branch, not to the default branch main now sits on.
- *
- * Any mechanical failure returns "retry" so the snapshot holds and the next
- * pass tries again; main has no disposable-equivalent state to park a failure
- * in, so without the retry a transient failure would strand main on a dead
- * branch forever.
- */
-async function autoReturnMain(
-  deps: ReactorDeps,
-  rec: TreeRecord,
-  mergedBranch: string,
-  appConfig: WorktreeAppConfig,
-): Promise<Reaction> {
-  const { repoName, log } = deps;
-  const fields = { repo: repoName, tree: rec.name, path: rec.path, branch: mergedBranch };
-
-  const current = await currentBranchAsync(rec.path);
-  if (current !== mergedBranch) {
-    log.debug?.({ ...fields, current }, "auto-return skipped: main is no longer on the merged branch");
-    return "done";
-  }
-
-  // Resolve and vet the destination BEFORE touching anything. Every step below
-  // is destructive-ish (kill, stash) and every failure after them re-arms the
-  // edge, so a destination that can never work would stash the user's dirt and
-  // then spin on it forever. Both of these are configurations, not transients:
-  // they return "done" (edge spent) with one warn, not "retry".
-  const defaultRef = await remoteDefaultRef(rec.path);
-  const defaultBranch = defaultRef.replace(/^origin\//, "");
-
-  // (a) remoteDefaultRef falls back to "origin/master" unverified, so a repo
-  //     whose default is develop/trunk yields a ref that resolves nowhere and a
-  //     checkout that can never succeed.
-  const haveLocal = await branchExistsLocalAsync(rec.path, defaultBranch);
-  const haveRemote = await gitOk(rec.path, ["rev-parse", "--verify", defaultRef]);
-  if (!haveLocal && !haveRemote) {
-    log.warn(
-      { ...fields, defaultRef },
-      `auto-return skipped: neither ${defaultBranch} nor ${defaultRef} exists — set the repo's default branch`,
-    );
-    return "done";
-  }
-
-  // (b) git refuses to check out a branch another worktree holds. park()
-  //     refused up front for exactly this; without the check the checkout
-  //     fails after the stash and retries every pass.
-  const gitEntries = await listWorktreesAsync(deps.repoPath);
-  if (gitEntries === null) {
-    log.warn({ ...fields }, "auto-return: git worktree list failed; retrying next pass");
-    return "retry";
-  }
-  const holder = gitEntries.find(
-    (w) => w.branch === defaultBranch && canon(w.path) !== canon(rec.path),
-  );
-  if (holder) {
-    log.warn(
-      { ...fields, defaultBranch, holder: holder.path },
-      `auto-return skipped: ${defaultBranch} is checked out at ${holder.path}`,
-    );
-    return "done";
-  }
-
-  if (appConfig.killProcesses) {
-    // A failure here never blocks the return.
-    try {
-      // Sibling trees' paths never belong to this kill, even a nested checkout
-      // whose cwd sits underneath rec.path.
-      const siblings = loadRegistry(repoName)
-        .filter((t) => t.path !== rec.path)
-        .map((t) => t.path);
-      const { terminated } = await killWorktreeProcesses(rec.path, { excludePaths: siblings });
-      if (terminated.length > 0) log.info({ ...fields, count: terminated.length }, "worktree processes terminated");
-    } catch (err) {
-      log.warn({ err, ...fields }, "auto-return: process kill failed; returning anyway");
-    }
-  }
-
-  const status = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
-  if (status.exitCode !== 0) {
-    log.warn({ ...fields, output: status.stderr.trim() }, "auto-return: git status failed");
-    return "retry";
-  }
-  if (status.stdout.trim().length > 0) {
-    await stashChangesAsync(rec.path, mergedBranch);
-    const after = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
-    if (after.exitCode !== 0 || after.stdout.trim().length > 0) {
-      log.warn({ ...fields }, "auto-return: stash did not clear the worktree");
-      return "retry";
-    }
-    log.info({ ...fields }, `stashed uncommitted changes on "${mergedBranch}"`);
-  }
-
-  const checkout = await runGit(rec.path, ["checkout", defaultBranch], { timeoutMs: MUTATING_TIMEOUT_MS });
-  if (checkout.exitCode !== 0) {
-    log.warn({ ...fields, defaultBranch, output: checkout.stderr.trim() }, "auto-return: checkout failed");
-    return "retry";
-  }
-
-  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
-  if (ff.exitCode !== 0) {
-    log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "auto-return: fast-forward failed");
-    return "retry";
-  }
-
-  // Ground truth now, not next reconcile: `rt worktree list` must not show
-  // main sitting on a branch it already left.
-  patchTree(repoName, rec.path, (r) => {
-    r.branch = defaultBranch;
-  });
-
-  log.info({ ...fields, defaultRef }, `returned ${rec.name} to ${defaultBranch} after ${mergedBranch} merged`);
-  return "fired";
-}
-
-/** React to one terminal MR state on one registered tree. Caller holds the tree lock. */
-async function actOnTree(
-  deps: ReactorDeps,
-  rec: TreeRecord,
-  branch: string,
-  mrState: string,
-  appConfig: WorktreeAppConfig,
-): Promise<Reaction> {
-  if (rec.kind === "main") {
-    // Closed-without-merge leaves main alone: the branch's commits are still
-    // only on that branch, and a closed MR often means recut.
-    return mrState === "merged" ? autoReturnMain(deps, rec, branch, appConfig) : "done";
-  }
-  if (rec.kind !== "ephemeral") return "done";
-  // Job trees are the caller's to end, MR or no MR.
-  if (rec.disposal === "job") return "done";
-  // claimed AND disposable both react, so a reopened-then-merged MR still
-  // disposes; on-deck/creating trees never carry MR branches.
-  if (rec.state !== "claimed" && rec.state !== "disposable") return "done";
-
-  if (mrState === "closed") {
-    markDisposable(deps, rec, "MR closed without merge");
-    return "fired";
-  }
-
-  // disposeTree's joinedMr looks up by the BARE branch (its own contract,
-  // unaware of the composite `${identity}:${branch}` keys this repo's
-  // cache map now carries): hand it a bare-keyed, this-repo-only view so a
-  // same-named branch in another repo can never shadow the real entry.
-  const scopedEntries: Record<string, ReactorCacheEntry> = {};
-  for (const [key, entry] of Object.entries(deps.cacheEntries)) {
-    if (entry.repoName && entry.repoName !== deps.repoName) continue;
-    scopedEntries[branchOf(key)] = entry;
-  }
-
-  const outcome = await disposeTree(
-    {
-      repoName: deps.repoName,
-      repoPath: deps.repoPath,
-      cacheEntries: scopedEntries as Record<string, { mr: any; repoName?: string }>,
-      emit: deps.emit,
-      log: deps.log,
-      killProcesses: appConfig.killProcesses,
-    },
-    rec,
-    { auto: true },
-  );
-  if (outcome.disposed) return "fired";
-
-  // "remove-failed" is mechanical and transient (a locked file, a busy
-  // directory) — the tree is still perfectly claimable, so it must NOT be
-  // advertised as disposable. Hold the edge and try again next pass.
-  if (outcome.refusal === "remove-failed") {
-    deps.log.warn(
-      { repo: deps.repoName, tree: rec.name, path: rec.path },
-      "auto-dispose: worktree removal failed; retrying next pass",
-    );
-    return "retry";
-  }
-
-  markDisposable(deps, rec, outcome.refusal);
-  return "fired";
-}
-
-/** Worst outcome wins: any retry re-arms the edge, otherwise any fire records it. */
-function worse(a: Reaction, b: Reaction): Reaction {
-  if (a === "retry" || b === "retry") return "retry";
-  if (a === "fired" || b === "fired") return "fired";
-  return "done";
-}
-
-/** An MR back to `opened` un-disposables the trees on its branch: work resumed. */
-async function resumeTrees(deps: ReactorDeps, branch: string): Promise<void> {
-  for (const rec of findByBranch(loadRegistry(deps.repoName), branch)) {
-    if (rec.kind !== "ephemeral" || rec.state !== "disposable") continue;
-    await withTreeLock(rec.path, async () => {
-      patchTree(deps.repoName, rec.path, (r) => {
-        r.state = "claimed";
-        delete r.disposableReason;
-      });
-      deps.log.info(
-        { repo: deps.repoName, tree: rec.name, branch },
-        `MR reopened — ${rec.name} is claimed again`,
-      );
-    });
-  }
-}
-
-/**
- * Detect `opened → merged|closed` MR transitions for one repo and react.
- *
- * Port of `parking-lot.ts` checkAndPark's detector with three deliberate
- * changes: the retry fix (see `Reaction`), MR-keyed fired keys with reopen
- * pruning, and a merged/closed/reopened dispatch that branches on tree kind
- * and disposal mode instead of parking everything onto a slot branch.
- */
-export async function detectTransitions(deps: ReactorDeps): Promise<void> {
-  const { repoName, cacheEntries, log } = deps;
-  const appConfig = loadWorktreeAppConfig();
-  if (!appConfig.enabled) return;
-
-  const state = loadReactorState();
-  const fired = new Set(state.fired);
-
-  // Snapshots are per repo; other repos' keys ride through untouched so a
-  // single-repo pass can't erase their memory, while this repo's stale
-  // branches drop out by being rebuilt from the live cache.
-  const prefix = `${repoName}:`;
-  const nextMrState: Record<string, string | null> = {};
-  for (const [key, value] of Object.entries(state.mrState)) {
-    if (!key.startsWith(prefix)) nextMrState[key] = value;
-  }
-
-  for (const [mapKey, entry] of Object.entries(cacheEntries)) {
-    // Unattributed entries (older caches predate repoName) may join any repo;
-    // an entry attributed elsewhere never does.
-    if (entry.repoName && entry.repoName !== repoName) continue;
-    if (!entry.mr) continue;
-    const branch = branchOf(mapKey);
-
-    const cur = entry.mr.state ?? null;
-    const mrKey = prefix + branch;
-    const prev = state.mrState[mrKey] ?? null;
-    const iid = typeof entry.mr.iid === "number" ? String(entry.mr.iid) : branch;
-
-    if (cur === "opened") {
-      nextMrState[mrKey] = "opened";
-      // Reopen: forget this MR's fires so a later merge acts again, and hand
-      // any disposable tree back to its owner.
-      for (const fireKey of [...fired]) {
-        if (fireKey.startsWith(`disposed:${repoName}:${iid}:`)) fired.delete(fireKey);
-      }
-      await resumeTrees(deps, branch);
-      continue;
-    }
-
-    nextMrState[mrKey] = cur;
-    if (prev !== "opened") continue; // cold-boot safety: unknown prev never fires
-    if (!cur || !MR_TERMINAL_STATES.has(cur)) continue;
-
-    const fireKey = `disposed:${repoName}:${iid}:${cur}`;
-    if (fired.has(fireKey)) continue;
-
-    const trees = findByBranch(loadRegistry(repoName), branch);
-    if (trees.length === 0) {
-      log.debug?.({ repo: repoName, branch, mrState: cur }, "reactor: no registered tree on the branch");
-      continue;
-    }
-
-    let reaction: Reaction = "done";
-    for (const rec of trees) {
-      const result = await withTreeLock(rec.path, () => actOnTree(deps, rec, branch, cur, appConfig));
-      // A locked tree is someone else's in-flight work; come back next pass.
-      reaction = worse(reaction, result === "busy" ? "retry" : result);
-    }
-
-    if (reaction === "retry") nextMrState[mrKey] = "opened";
-    else if (reaction === "fired") fired.add(fireKey);
-  }
-
-  saveReactorState({ mrState: nextMrState, fired: [...fired] }, log);
 }
 
 // ─── Freshen (spec §6.3) ─────────────────────────────────────────────────────
@@ -681,7 +72,7 @@ const FRESHEN_MAX_BACKOFF_MS = 30 * 60_000;
 /**
  * Delay after the Nth consecutive failure: one pass, doubled N-1 times, capped.
  * Shared by the freshen retry stamp and the per-repo create backoff (spec §6.4)
- * — both count in passes and both cap at 30 minutes.
+ *... both count in passes and both cap at 30 minutes.
  */
 function backoffDelayMs(failures: number): number {
   return Math.min(FRESHEN_PASS_MS * 2 ** (failures - 1), FRESHEN_MAX_BACKOFF_MS);
@@ -696,7 +87,7 @@ export interface FreshenDeps {
 
 /**
  * Whether a registered tree is a freshen candidate: any on-deck ephemeral
- * tree, or "idle main" — sitting on the default branch with no blocking dirt.
+ * tree, or "idle main"... sitting on the default branch with no blocking dirt.
  * A main clone on a feature branch is the merge reactor's concern (auto-return
  * on merge); a main clone with real uncommitted work, even on the default
  * branch, is the user's and must be left alone.
@@ -727,7 +118,7 @@ async function freshenCandidate(deps: FreshenDeps, rec: TreeRecord): Promise<boo
  * passed.
  *
  * `readyStamp` (and therefore future `changedSince` diffs) only advances when
- * a ready step actually ran and succeeded — a ff that triggers nothing hasn't
+ * a ready step actually ran and succeeded... a ff that triggers nothing hasn't
  * validated anything new, so claiming otherwise would let a later real change
  * hide behind a stamp nothing ever checked.
  */
@@ -875,12 +266,12 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
  * Freshen every eligible tree in one repo, each under its own tree lock.
  *
  * `trees` is one snapshot for the whole pass, but candidacy for tree N+1
- * isn't evaluated until tree N's (potentially slow — real fetches, ready
+ * isn't evaluated until tree N's (potentially slow... real fetches, ready
  * steps) freshen finishes, so by the time a later tree's lock is acquired its
  * snapshot `rec` can be minutes stale: a provision claim (T13, same event
  * loop) could have landed in between. Re-reading the registry as the first
  * thing inside the lock and bailing on any state/branch drift closes that
- * window — the alternative is running a ff + ready steps inside a tree a
+ * window... the alternative is running a ff + ready steps inside a tree a
  * human just claimed.
  */
 export async function freshenRepo(
@@ -902,7 +293,7 @@ export async function freshenRepo(
       if (!fresh || fresh.state !== rec.state || fresh.branch !== rec.branch) {
         log.debug?.(
           { repo: repoName, tree: rec.name, path: rec.path },
-          "freshen: skipping — tree changed since candidacy was decided",
+          "freshen: skipping... tree changed since candidacy was decided",
         );
         return false;
       }
@@ -920,7 +311,7 @@ export async function freshenRepo(
  * times, capped at 30 minutes.
  *
  * A failed `createTree` scraps its own registry row, so there is no on-disk row
- * left to hang retry bookkeeping off — without this, a persistently failing
+ * left to hang retry bookkeeping off... without this, a persistently failing
  * ready step (a broken install costing minutes per attempt) is retried on every
  * cache tick, forever. The state is deliberately in-memory, same as the
  * in-flight creation map above it: a daemon restart clearing the backoff costs
@@ -931,7 +322,7 @@ const createBackoff = new Map<string, { failures: number; nextRetryAt: string }>
 /**
  * S089: a provision's cold `createTree` (handlers/worktree.ts) and this
  * reconciler's own replenish `createTree` can run concurrently for the same
- * repo, both `git fetch origin <branch>` against the same repoPath — the
+ * repo, both `git fetch origin <branch>` against the same repoPath... the
  * loser fails to lock refs/remotes/origin/<branch>, and that failure gets
  * charged to createBackoff (a 5-to-30-minute replenish hold) for what was
  * really just contention, not a genuine failure. Chained per repoPath so
@@ -1003,7 +394,7 @@ function poolCounts(repoName: string): {
 }
 
 /**
- * Grow the on-deck pool toward `onDeck` (serially — one `createTree` in
+ * Grow the on-deck pool toward `onDeck` (serially... one `createTree` in
  * flight at a time, which `runOnce` awaiting each pass makes natural), then
  * shrink it back down by disposing the stalest ready entries when it's over.
  *
@@ -1011,7 +402,7 @@ function poolCounts(repoName: string): {
  * measured once at the start, not re-derived from live state on every
  * iteration: `createTree` scraps its own registry row on failure, so an
  * always-failing config would otherwise re-read "still short" forever and spin
- * this pass indefinitely. Across passes it is bounded by `createBackoff` — the
+ * this pass indefinitely. Across passes it is bounded by `createBackoff`... the
  * first failure of a pass ends replenish for that repo and holds it off for the
  * doubling backoff window, so a broken ready step costs one multi-minute
  * attempt per window instead of `onDeck` attempts per cache tick.
@@ -1038,7 +429,7 @@ async function replenishAndShrink(
     if (blockedUntil) {
       log.debug?.(
         { repo: repoName, nextRetryAt: blockedUntil },
-        "replenish: skipped — create backoff in effect",
+        "replenish: skipped... create backoff in effect",
       );
       break;
     }
@@ -1081,7 +472,7 @@ async function replenishAndShrink(
   }
 
   // `attempted` guards against spinning forever on an entry disposeTree keeps
-  // refusing (e.g. a guard failure) — each path gets one shrink attempt per
+  // refusing (e.g. a guard failure)... each path gets one shrink attempt per
   // pass; a refusal just leaves it for the next pass rather than looping here.
   let counts = poolCounts(repoName);
   const attempted = new Set<string>();
@@ -1098,13 +489,13 @@ async function replenishAndShrink(
     await withTreeLock(stalest.path, async () => {
       // Same revalidation as freshen: `stalest` is a snapshot from this
       // iteration's `poolCounts()` read; re-check it under the lock before
-      // disposing so a claim that landed since (no grace guard applies here —
+      // disposing so a claim that landed since (no grace guard applies here...
       // auto is false) can't get its tree deleted out from under it.
       const fresh = findByPath(loadRegistry(repoName), stalest.path);
       if (!fresh || fresh.kind !== "ephemeral" || fresh.state !== "on-deck") {
         log.debug?.(
           { repo: repoName, tree: stalest.name, path: stalest.path },
-          "shrink: skipping — tree changed since candidacy was decided",
+          "shrink: skipping... tree changed since candidacy was decided",
         );
         return;
       }
@@ -1121,8 +512,8 @@ async function replenishAndShrink(
 /**
  * Reap duty, two sweeps with different clocks.
  *
- * Crash leftovers — sibling `.trash-*` dirs from a disposal whose detached
- * delete died (daemon crash, reboot) — are reaped immediately: nobody will
+ * Crash leftovers... sibling `.trash-*` dirs from a disposal whose detached
+ * delete died (daemon crash, reboot)... are reaped immediately: nobody will
  * ever look at them again, so a crash costs disk and nothing else. Both roots
  * are swept, the repo's default `.worktrees` and whatever root the repo config
  * declares, because a root that changed after a disposal still has the old
@@ -1135,12 +526,12 @@ async function replenishAndShrink(
  * the new default pool root both drain during migration.
  */
 /**
- * Whether `root` is repoPath itself or a strict ancestor of it —
+ * Whether `root` is repoPath itself or a strict ancestor of it...
  * sanitizeRoot (lib/worktree/config.ts) has no such check, so a value like
  * `${repoRoot}/..` sweeps the parent directory shared by every sibling repo
  * for `.trash-*` names. An unrelated, dedicated external root (the
- * documented `root: "~/wt"` case) is fine to sweep — it's a repo-specific
- * destination nothing else shares — so this only refuses the ancestor
+ * documented `root: "~/wt"` case) is fine to sweep... it's a repo-specific
+ * destination nothing else shares... so this only refuses the ancestor
  * shape, not "root lies outside repoPath" in general.
  */
 function isRootAnAncestorOfRepo(repoPath: string, root: string): boolean {
@@ -1168,7 +559,7 @@ async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Lo
  * an `rt.worktrees` declaration on any rung stronger than the registry default.
  *
  * Since RT-47 the declaration can live in a settings store as well as in the
- * legacy per-repo config.json, so this asks the reader rather than the file —
+ * legacy per-repo config.json, so this asks the reader rather than the file...
  * a repo whose pool config lives ONLY in the team store must still be
  * reconciled. Async for the same reason the reader is (identity derivation);
  * the pass that calls it is async already.
@@ -1191,7 +582,7 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
    *  instead of racing its own create against replenish's. */
   creationInFlight: (repoName: string) => Promise<void> | null;
   /** Whether a `kick()`-triggered pass is currently running. Test-only: lets a
-   *  test that calls `kick()` (deliberately not awaited — that's the point of
+   *  test that calls `kick()` (deliberately not awaited... that's the point of
    *  `kick`) poll for true completion instead of guessing at a sleep, so no
    *  background pass survives into a later test's HOME once its own
    *  `beforeEach` repoints that (shared, global) env var. */
@@ -1212,7 +603,7 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
   /**
    * True once the current pass's per-repo loop has begun processing at
    * least one repo. Two kicks that both land before this flips (the common
-   * "two synchronous kicks" case) still collapse to one pass — the
+   * "two synchronous kicks" case) still collapse to one pass... the
    * upcoming loop reads fresh state regardless. A kick landing after it
    * flips might be about a repo this pass has already stepped past (e.g. a
    * provision claiming the last on-deck tree right after replenish ran for
@@ -1346,10 +737,10 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
 export const __test__ = {
   detectTransitions,
   reapRepoTrash,
-  reactorStatePath,
-  hasReactorState: () => getKvValue<ReactorState | null>(REACTOR_STATE_NS, REACTOR_STATE_KEY, null) !== null,
-  loadReactorState,
-  saveReactorState,
+  reactorStatePath: reactorTest.reactorStatePath,
+  hasReactorState: reactorTest.hasReactorState,
+  loadReactorState: reactorTest.loadReactorState,
+  saveReactorState: reactorTest.saveReactorState,
   freshenRepo,
   freshenOne,
   replenishAndShrink,
@@ -1361,4 +752,5 @@ export const __test__ = {
   WORKTREE_ONDECK_CEILING,
   WORKTREE_MIN_FREE_DISK_GB,
   MR_TERMINAL_STATES,
+  reconcilePass: reconcileTest.reconcilePass,
 };
