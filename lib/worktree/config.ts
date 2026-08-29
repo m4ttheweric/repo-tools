@@ -52,11 +52,15 @@
  * means the store does not own the key yet: the file stays authoritative,
  * INCLUDING the one-time seed from the legacy `~/.mattstack/rt/parking-lot.json`
  * when the new file is absent and the old one exists. Once the store owns the
- * key it wins PER-FIELD (`rt.worktreeApp` is a field-bag object, not a map) —
- * a store value carrying only `killProcesses` still gets `enabled`'s default.
- * Both fields default to true either way, matching the legacy
- * `raw?.enabled !== false` semantics. A probe failure (thrown by getSetting)
- * counts as unowned plus one warning that never echoes the store's value.
+ * key it wins PER-FIELD (`rt.worktreeApp` is a field-bag object, not a map);
+ * a store value carrying only `killProcesses` still gets `enabled`'s per-field
+ * default, which stays `true` on that path (the store branch's own
+ * `!== false` semantics, matching the legacy `raw?.enabled !== false` reading
+ * of an owned value). The machine-wide DEFAULT for a genuinely unowned
+ * machine (no store rung, no legacy file) is different (S077): `enabled`
+ * defaults to `false` there, `killProcesses` still defaults to `true`. A
+ * probe failure (thrown by getSetting) counts as unowned plus one warning
+ * that never echoes the store's value.
  */
 
 import { existsSync, readFileSync } from "fs";

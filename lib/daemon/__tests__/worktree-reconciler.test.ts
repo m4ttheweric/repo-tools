@@ -1527,10 +1527,18 @@ describe("replenish / shrink", () => {
     expect(trees.length).toBe(__test__.WORKTREE_ONDECK_CEILING);
   });
 
-  test("S077: free disk below the threshold skips create and warns, without charging a create failure", async () => {
-    await declareWorktrees(repo, repoName, { onDeck: 2, root: join(repo, ".worktrees") });
+  test("S077: free disk below the threshold on cfg.root skips create and warns, without charging a create failure", async () => {
+    // A pool root distinct from repoPath (the RT-52 default shape: the pool
+    // root lives off-repo and can be a different volume). The mock only
+    // starves THIS path; repoPath itself reports plenty of free space, so the
+    // test fails if the precheck ever queries repoPath instead of cfg.root.
+    const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), "rtpool-root-")));
+    await declareWorktrees(repo, repoName, { onDeck: 2, root: externalRoot });
 
-    const statfsSpy = spyOn(fsNamespace, "statfsSync").mockReturnValue({ bavail: 1, bsize: 1 } as any);
+    const statfsSpy = spyOn(fsNamespace, "statfsSync").mockImplementation((path: any) => {
+      if (path === externalRoot) return { bavail: 1, bsize: 1 } as any;
+      return { bavail: Number.MAX_SAFE_INTEGER, bsize: 1 } as any;
+    });
     const warns: unknown[][] = [];
     const log = {
       info: () => {},
