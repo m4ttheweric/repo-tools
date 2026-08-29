@@ -26,6 +26,22 @@ export interface EventsBus {
    * to plant old rows.
    */
   emitAt(topic: string, payload: unknown, emittedAt: number): number;
+  /**
+   * The single owner of "persist + broadcast" (R020): builds the frame,
+   * persists it via emitAt, and fans out (topic, payload) to every
+   * onBroadcast subscriber. Replaces the copies formerly duplicated in
+   * command-router.ts and the inline reactions formerly living in
+   * daemon.ts's `emit()`.
+   */
+  emitEvent(topic: string, payload: unknown): BusEvent;
+  /**
+   * Subscribe to every emitEvent call, in registration order. Subscribers
+   * see the same (topic, payload) the caller passed to emitEvent -- not a
+   * wrapped "event" frame -- so a subscriber can match on the real topic
+   * (e.g. a cron trigger's `event`, or `type === "worktree:disposed"`).
+   * Returns an unsubscribe.
+   */
+  onBroadcast(fn: (type: string, data: unknown) => void): () => void;
   list(opts: { pattern: string; after?: number; limit?: number }): WaitResult;
   head(): number;
   wait(opts: { pattern: string; after?: number; waitMs?: number; signal?: AbortSignal }): Promise<WaitResult>;
@@ -155,6 +171,7 @@ export function createEventsBus(opts: {
     signal?: AbortSignal;
   }
   const waiters = new Set<Waiter>();
+  const broadcastSubscribers = new Set<(type: string, data: unknown) => void>();
 
   const settle = (w: Waiter, result: WaitResult): void => {
     if (!waiters.has(w)) return;
@@ -193,6 +210,18 @@ export function createEventsBus(opts: {
 
     emitAt(topic, payload, emittedAt) {
       return insertAndWake(topic, payload, emittedAt);
+    },
+
+    emitEvent(topic, payload) {
+      const emittedAt = Date.now();
+      const id = insertAndWake(topic, payload, emittedAt);
+      for (const fn of [...broadcastSubscribers]) fn(topic, payload);
+      return { id, topic, payload, emittedAt };
+    },
+
+    onBroadcast(fn) {
+      broadcastSubscribers.add(fn);
+      return () => { broadcastSubscribers.delete(fn); };
     },
 
     list({ pattern, after, limit }) {

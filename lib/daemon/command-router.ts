@@ -63,10 +63,14 @@ export function buildRoutedHandlers(opts: {
   stateDb: Database;
 }): TypedHandlers & HandlerMap {
   const { ctx, broadcast, systemProcessScanner } = opts;
-  const emitEvent = (topic: string, payload: unknown) => {
-    const emittedAt = Date.now();
-    const id = opts.eventsBus.emitAt(topic, payload, emittedAt);
-    broadcast("event", { id, topic, payload, emittedAt });
+  // The bus owns frame-building + persistence (R020, events-bus.ts); this
+  // just keeps the "event"-wrapped WS broadcast contract rt-client's relay
+  // depends on (packages/rt-client/src/relay.ts: `type === "event"`, topic
+  // in `data.topic`).
+  const emitEvent = (topic: string, payload: unknown): number => {
+    const frame = opts.eventsBus.emitEvent(topic, payload);
+    broadcast("event", frame);
+    return frame.id;
   };
   // createChatHandlers also exposes `db` (its test-isolation seam); dropped
   // here so it never lands as a bogus "db" entry in the command map below.

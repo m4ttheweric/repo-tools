@@ -300,13 +300,19 @@ sweepHandles.push(scheduleSweep(
 
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
 const cron = startCron(loadCronConfig(log), { log });
+// Former inline `emit()` reactions (R020), now owned by the bus: both fire
+// off eventsBus.emitEvent's fan-out, keyed on the real (type, data) pair --
+// not a wrapped "event" frame -- so cron's trigger.event match and this
+// type check see exactly what they did before.
+eventsBus.onBroadcast((type, data) => cron.onBroadcast(type, data));
+eventsBus.onBroadcast((type, data) => {
+  if (type !== "worktree:disposed") return;
+  const d = data as { repo?: string; path?: string };
+  if (d?.repo && d?.path) releaseEndpointsForWorktree({ log }, d.repo, d.path);
+});
 const emit: typeof broadcast = (type, data) => {
   broadcast(type, data);
-  cron.onBroadcast(type, data);
-  if (type === "worktree:disposed") {
-    const d = data as { repo?: string; path?: string };
-    if (d?.repo && d?.path) releaseEndpointsForWorktree({ log }, d.repo, d.path);
-  }
+  eventsBus.emitEvent(type, data);
 };
 
 // Worktree lifecycle reconciler: reconcile → merge reactor → freshen →
