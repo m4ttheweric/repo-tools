@@ -12,7 +12,7 @@
 
 import { Database } from "bun:sqlite";
 import { getStateDb } from "./db.ts";
-import { persistOrWarn } from "./busy.ts";
+import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 
 const KV_SELECT_SQL = `SELECT v FROM kv WHERE ns = ? AND k = ?;`;
 const KV_SELECT_NS_SQL = `SELECT k, v FROM kv WHERE ns = ?;`;
@@ -58,6 +58,16 @@ export function setKvValue<T>(ns: string, key: string, value: T, db: Database = 
     () => { db.query(KV_UPSERT_SQL).run(ns, key, JSON.stringify(value), Date.now()); },
     { ns, k: key, op: "write" },
   );
+}
+
+/** Critical write: retries via runCriticalWrite (busy.ts) and reports whether the row actually landed, so a destructive caller can refuse to advance state on a dropped write. */
+export function setKvValueCritical<T>(ns: string, key: string, value: T, db: Database = getStateDb()): boolean {
+  const done = runCriticalWrite(
+    `kv:${ns}`,
+    () => { db.query(KV_UPSERT_SQL).run(ns, key, JSON.stringify(value), Date.now()); return true; },
+    { ns, k: key, op: "write" },
+  );
+  return done === true;
 }
 
 export function deleteKvValue(ns: string, key: string, db: Database = getStateDb()): void {

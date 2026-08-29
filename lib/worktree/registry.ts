@@ -1,7 +1,7 @@
 import { realpathSync } from "fs";
 import { join } from "path";
 import { repoDataDir } from "../rt-paths.ts";
-import { deleteKvValue, getKvValue, hasKvValue, importLegacyJsonFile, setKvValue } from "../state/index.ts";
+import { deleteKvValue, getKvValue, hasKvValue, importLegacyJsonFile, setKvValue, setKvValueCritical } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
 export type TreeState = "creating" | "on-deck" | "claimed" | "disposable";
@@ -72,7 +72,14 @@ export function registryEpoch(repoName: string): number {
   return epochs.get(repoName) ?? 0;
 }
 
-export function saveRegistry(repoName: string, trees: TreeRecord[]): void {
+/**
+ * Critical write: retries on busy (runCriticalWrite via setKvValueCritical)
+ * and reports whether the write landed. The epoch bumps only on a landed
+ * write... a dropped write must not advance the epoch, or a concurrent
+ * reconcile pass reading the epoch afterward would wrongly believe this
+ * save happened.
+ */
+export function saveRegistry(repoName: string, trees: TreeRecord[]): boolean {
   // Folds in (and safely imports/renames) any legacy worktrees.json first —
   // every current call site loads before saving, but nothing enforced that,
   // and a save reached without a prior load would otherwise strand an
@@ -80,8 +87,9 @@ export function saveRegistry(repoName: string, trees: TreeRecord[]): void {
   // non-empty. loadRegistry() is the no-op it looks like once already
   // migrated (one indexed point lookup).
   loadRegistry(repoName);
-  setKvValue(WORKTREE_REGISTRY_NS, repoName, trees);
-  epochs.set(repoName, registryEpoch(repoName) + 1);
+  const ok = setKvValueCritical(WORKTREE_REGISTRY_NS, repoName, trees);
+  if (ok) epochs.set(repoName, registryEpoch(repoName) + 1);
+  return ok;
 }
 
 export function findByPath(

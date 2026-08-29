@@ -147,7 +147,13 @@ async function runCreate(
   };
 
   const finalTrees = loadRegistry(repoName).map((t) => (t.path === path ? updated : t));
-  saveRegistry(repoName, finalTrees);
+  if (!saveRegistry(repoName, finalTrees)) {
+    log.warn(
+      { repo: repoName, tree: name, path },
+      "worktree create: final registry flip dropped; leaving row creating",
+    );
+    return { ok: false, error: "create-failed", failedStep: "registry-flip" };
+  }
 
   emit("worktree:created", { repo: repoName, tree: name, path });
   log.info({ repo: repoName, tree: name, path }, "worktree created");

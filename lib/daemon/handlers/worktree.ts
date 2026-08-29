@@ -94,12 +94,13 @@ function canon(path: string): string {
   }
 }
 
-function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): void {
+/** Returns whether the save landed... false means the mutation is only in the caller's discarded `trees` snapshot, never on disk. */
+function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): boolean {
   const trees = loadRegistry(repoName);
   const rec = trees.find((t) => t.path === path);
-  if (!rec) return;
+  if (!rec) return false;
   patch(rec);
-  saveRegistry(repoName, trees);
+  return saveRegistry(repoName, trees);
 }
 
 /**
@@ -366,12 +367,16 @@ export function createWorktreeHandlers(
         // second checkout fails with "already checked out", which rolls that
         // caller back rather than handing two trees the same branch.
         const disposal: DisposalMode = payload.disposal === "job" ? "job" : "merge";
-        patchTree(repoName, tree.path, (r) => {
+        const claimWritten = patchTree(repoName, tree.path, (r) => {
           r.state = "claimed";
           r.disposal = disposal;
           r.claimedAt = new Date().toISOString();
           if (typeof payload.owner === "string" && payload.owner.length > 0) r.owner = payload.owner;
         });
+        // A dropped write leaves the tree genuinely on-deck on disk... acting
+        // as though this caller owns it would double-hand it to whoever
+        // claims it for real next.
+        if (!claimWritten) return { ok: false, error: "claim-write-failed" };
         opts.emit("worktree:claimed", {
           repo: repoName, tree: tree.name, branch, owner: payload.owner ?? null,
         });

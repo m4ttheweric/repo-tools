@@ -11,7 +11,7 @@
 
 import { Database } from "bun:sqlite";
 import { getStateDb } from "./db.ts";
-import { persistOrWarn } from "./busy.ts";
+import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 
 export interface EndpointClaim {
   worktree: string;
@@ -61,4 +61,22 @@ export function replaceEndpointClaims(repo: string, claims: EndpointClaim[], db:
     for (const c of entries) insert.run(repo, c.worktree, c.role, c.port, c.pid ?? null, c.ts);
   });
   persistOrWarn("endpoint-claims", () => run(claims), { repo, op: "replace", count: claims.length });
+}
+
+/**
+ * Critical variant: retries on busy and reports whether the replace landed,
+ * for a caller that must not advance state on a dropped claim write.
+ */
+export function replaceEndpointClaimsCritical(repo: string, claims: EndpointClaim[], db: Database = getStateDb()): boolean {
+  const run = db.transaction((entries: EndpointClaim[]) => {
+    db.query(DELETE_REPO_SQL).run(repo);
+    const insert = db.query(INSERT_SQL);
+    for (const c of entries) insert.run(repo, c.worktree, c.role, c.port, c.pid ?? null, c.ts);
+  });
+  const done = runCriticalWrite(
+    "endpoint-claims",
+    () => { run(claims); return true; },
+    { repo, op: "replace", count: claims.length },
+  );
+  return done === true;
 }
