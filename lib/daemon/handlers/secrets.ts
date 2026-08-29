@@ -44,7 +44,7 @@
  */
 
 import { loadSecrets } from "../../linear.ts";
-import { parseIdentity } from "../../settings/identity.ts";
+import { decodeRepo } from "../identity-decoder.ts";
 import { loadMachineRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { getApiToken, tokenOk } from "../api-auth.ts";
 import { readSecret, createRealSecretsExecSeam, type SecretsSeams } from "../../secrets/store.ts";
@@ -148,17 +148,19 @@ export function createSecretsHandlers(
   return {
     "secrets:forge-token": async (rawPayload: unknown) => {
       const payload = rawPayload as Commands["secrets:forge-token"]["payload"] | undefined;
-      const repoName = payload?.repoName;
       const forge = payload?.forge;
-      if (!repoName) return { ok: false as const, error: "missing repoName" };
+      if (!payload?.repoName) return { ok: false as const, error: "missing repoName" };
       if (forge !== "gitlab" && forge !== "github") {
         return { ok: false as const, error: `unknown forge "${String(forge)}"; expected gitlab or github` };
       }
       // Hard cutover: grants() keys on identity now; a bare legacy
       // name is refused before it can be read as "not tracked".
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
+        const repoName = payload.repoName;
         return { ok: false as const, error: `repo ${repoName} is not tracked by rt; run: rt daemon track ${repoName} live branches` };
       }
+      const repoName = decoded.repo;
 
       // The grant gate, and the whole point of the verb: an untracked repo
       // gets nothing, where the old direct file read handed every caller

@@ -19,7 +19,7 @@
  */
 
 import { NoteMutator } from "@mattstack/glance";
-import { parseIdentity } from "../../settings/identity.ts";
+import { decodeRepo } from "../identity-decoder.ts";
 import { getRepoContext, providerRequestHook } from "../freshness.ts";
 import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
@@ -85,18 +85,19 @@ export function createDiscussionHandlers(
       rawPayload: unknown,
     ): Promise<{ ok: true; data: Commands["discussions:read"]["data"] } | { ok: false; error: string }> => {
       const payload = rawPayload as (Commands["discussions:read"]["payload"] & { force?: boolean }) | undefined;
-      const repoName = payload?.repoName;
-      const iid      = payload?.iid;
-      const force    = payload?.force === true;
-      if (!repoName || typeof iid !== "number") {
+      const iid   = payload?.iid;
+      const force = payload?.force === true;
+      if (!payload?.repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
       // Hard cutover: the discussions table is identity-keyed now;
       // a bare legacy name resolves nothing rather than reading a row that
       // no longer exists under that key.
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: true, data: { discussions: [], fetchedAt: 0, stale: true } };
       }
+      const repoName = decoded.repo;
 
       const granted = grants(loadRepoTracking(), repoName).caches.has("discussions");
       const cached = getDiscussionsFileStore().read(repoName, iid);
@@ -119,14 +120,15 @@ export function createDiscussionHandlers(
 
     "discussions:refresh": async (payload) => {
       const p = payload as { repoName?: string; iid?: number } | undefined;
-      const repoName = p?.repoName;
-      const iid      = p?.iid;
-      if (!repoName || typeof iid !== "number") {
+      const iid = p?.iid;
+      if (!p?.repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: false, error: "repo must be a serialized identity" };
       }
+      const repoName = decoded.repo;
       try {
         const res = await refreshDiscussions(deps, repoName, iid);
         return { ok: true, data: { discussions: res.discussions, fetchedAt: res.fetchedAt } };
@@ -137,17 +139,18 @@ export function createDiscussionHandlers(
 
     "discussions:resolve": async (payload) => {
       const p = payload as { repoName?: string; iid?: number; discussionId?: string; resolved?: boolean } | undefined;
-      const repoName      = p?.repoName;
-      const iid           = p?.iid;
-      const discussionId  = p?.discussionId;
-      const resolved      = p?.resolved !== false; // default: mark resolved
+      const iid          = p?.iid;
+      const discussionId = p?.discussionId;
+      const resolved     = p?.resolved !== false; // default: mark resolved
 
-      if (!repoName || typeof iid !== "number" || !discussionId) {
+      if (!p?.repoName || typeof iid !== "number" || !discussionId) {
         return { ok: false, error: "missing repoName/iid/discussionId" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: false, error: "repo must be a serialized identity" };
       }
+      const repoName = decoded.repo;
 
       const repoPath = ctx.repoIndex()[repoName];
       try {
@@ -166,14 +169,15 @@ export function createDiscussionHandlers(
 
     "discussions:diffs": async (payload, signal) => {
       const p = payload as { repoName?: string; iid?: number } | undefined;
-      const repoName = p?.repoName;
-      const iid      = p?.iid;
-      if (!repoName || typeof iid !== "number") {
+      const iid = p?.iid;
+      if (!p?.repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: false, error: "repo must be a serialized identity" };
       }
+      const repoName = decoded.repo;
 
       const repoPath = ctx.repoIndex()[repoName];
       try {
@@ -196,17 +200,18 @@ export function createDiscussionHandlers(
 
     "discussions:reply": async (payload) => {
       const p = payload as { repoName?: string; iid?: number; discussionId?: string; body?: string } | undefined;
-      const repoName     = p?.repoName;
       const iid          = p?.iid;
       const discussionId = p?.discussionId;
       const body         = p?.body;
 
-      if (!repoName || typeof iid !== "number" || !discussionId || !body?.trim()) {
+      if (!p?.repoName || typeof iid !== "number" || !discussionId || !body?.trim()) {
         return { ok: false, error: "missing repoName/iid/discussionId/body" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: false, error: "repo must be a serialized identity" };
       }
+      const repoName = decoded.repo;
 
       const repoPath = ctx.repoIndex()[repoName];
       try {

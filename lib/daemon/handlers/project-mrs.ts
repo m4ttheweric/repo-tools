@@ -17,7 +17,7 @@
  */
 
 import type { PullRequest } from "@mattstack/glance";
-import { parseIdentity } from "../../settings/identity.ts";
+import { decodeRepo } from "../identity-decoder.ts";
 import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
 import { syncProjectMRs, backfillAuthors, backfillSections } from "../project-sync.ts";
@@ -92,16 +92,17 @@ export function createProjectMRsHandlers(
       rawPayload: unknown,
     ): Promise<{ ok: true; data: Commands["project-mrs:read"]["data"] } | { ok: false; error: string }> => {
       const payload = rawPayload as Commands["project-mrs:read"]["payload"] | undefined;
-      const repoName = payload?.repoName;
       const maxAgeMs = payload?.maxAgeMs;
       const rawDemand = payload?.demand;
-      if (!repoName) return { ok: false, error: "missing repoName" };
+      if (!payload?.repoName) return { ok: false, error: "missing repoName" };
       // Hard cutover: the store is identity-keyed now, so a bare
       // legacy name resolves nothing rather than name-matching a store row
       // that no longer exists under that key.
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: true, data: { mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 } };
       }
+      const repoName = decoded.repo;
 
       if (rawDemand !== undefined && !isValidDemand(rawDemand)) {
         return { ok: false, error: "malformed demand" };
@@ -203,14 +204,15 @@ export function createProjectMRsHandlers(
       rawPayload: unknown,
     ): Promise<{ ok: true; data: Commands["mr:by-branch"]["data"] } | { ok: false; error: string }> => {
       const payload = rawPayload as Commands["mr:by-branch"]["payload"] | undefined;
-      const repoName = payload?.repoName;
       const branches = payload?.branches;
-      if (!repoName || !isValidBranches(branches)) {
+      if (!payload?.repoName || !isValidBranches(branches)) {
         return { ok: false, error: "malformed by-branch request" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: true, data: { byBranch: {}, syncedAt: 0 } };
       }
+      const repoName = decoded.repo;
 
       if (!grants(tracking(), repoName).caches.has("project-mrs")) {
         return {
