@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from "bun:test";
 import type { Server } from "bun";
 import { buildCorsHeaders, startApiServer } from "../api-server.ts";
 import { getApiToken } from "../api-auth.ts";
-import { setSetting } from "../../settings/write.ts";
+import { setSetting, unsetSetting } from "../../settings/write.ts";
 
 describe("buildCorsHeaders", () => {
   test("no Origin header: no Access-Control-Allow-Origin is set (non-browser request, CORS is irrelevant)", () => {
@@ -34,6 +34,7 @@ describe("token-authenticated browser preflight (S-C1: off-allowlist Origin, X-R
   afterEach(() => {
     server?.stop(true);
     server = undefined;
+    unsetSetting("rt.apiPort", "user");
   });
 
   test("an OPTIONS preflight requesting X-RT-Token from an off-allowlist Origin still gets Access-Control-Allow-Origin, so the browser proceeds to the real token-bearing request", async () => {
@@ -64,5 +65,32 @@ describe("token-authenticated browser preflight (S-C1: off-allowlist Origin, X-R
     });
     expect(actual.status).not.toBe(401);
     expect(actual.headers.get("access-control-allow-origin")).toBe(origin);
+  });
+});
+
+describe("advertised URLs use the resolved bind port, not the compile-time default (S9-a)", () => {
+  let server: Server<any> | undefined;
+
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+    unsetSetting("rt.apiPort", "user");
+  });
+
+  test("GET / and a 404 both report the actually-bound port when it differs from 9401", async () => {
+    const probe = Bun.serve({ port: 0, fetch: () => new Response() });
+    const port = probe.port;
+    probe.stop(true);
+    expect(port).not.toBe(9401);
+    setSetting("rt.apiPort", port, "user");
+    const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as any;
+    server = await startApiServer({ handleCommand: async () => ({ ok: true }), log });
+
+    const root = await (await fetch(`http://127.0.0.1:${port}/`)).json();
+    expect(root.docs).toBe(`http://localhost:${port}/`);
+    expect(root.websocket).toBe(`ws://localhost:${port}/ws`);
+
+    const notFound = await (await fetch(`http://127.0.0.1:${port}/nope`)).json();
+    expect(notFound.docs).toBe(`http://localhost:${port}/`);
   });
 });
