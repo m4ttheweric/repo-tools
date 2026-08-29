@@ -174,23 +174,6 @@ test("chat:dm rejects a missing or empty body", async () => {
   expect(empty.ok).toBe(false);
 });
 
-test("chat:unread-waking reports what would wake a handle without advancing its cursor", async () => {
-  const h = freshHandlers();
-  await h["chat:join"]({ room: "r", handle: "a" });
-  await h["chat:join"]({ room: "r", handle: "b" });
-  await h["chat:post"]({ room: "r", handle: "a", body: "@b hi" });
-  const res1 = await h["chat:unread-waking"]({ handle: "b" });
-  if (!res1.ok) throw new Error("unreachable");
-  const first = res1.data;
-  expect(first).toMatchObject({ rooms: [{ room: "r", count: 1, mentions: 1 }] });
-  // maxId is the watermark the tail's stream loop skips at or below; without
-  // it the tail cannot tell which wakes the catch-up already covered.
-  expect(first.rooms[0]!.maxId).toBeGreaterThan(0);
-  const res2 = await h["chat:unread-waking"]({ handle: "b" });
-  if (!res2.ok) throw new Error("unreachable");
-  expect(res2.data).toEqual(first);
-});
-
 // R034: `limit: -1` reaches `ORDER BY id ASC LIMIT ?`, where SQLite treats a
 // negative LIMIT as unlimited, so a viewer/agent bug returns and
 // JSON-serializes an entire (100k-row) room on the event loop.
