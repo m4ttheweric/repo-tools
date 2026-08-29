@@ -13,7 +13,23 @@ import {
   stripTrashDir,
   trashPathFor,
   trashTree,
+  writeDisposalManifest,
+  type DisposalManifest,
 } from "../trash.ts";
+
+/** A valid manifest, with any field overridable per test. */
+function makeManifest(overrides: Partial<DisposalManifest> = {}): DisposalManifest {
+  return {
+    name: "hotel",
+    originalPath: "/somewhere/hotel",
+    branch: "feature-hotel",
+    headSha: "a".repeat(40),
+    reason: "manual",
+    disposedAt: new Date(0).toISOString(),
+    keptUntil: new Date(0).toISOString(),
+    ...overrides,
+  };
+}
 
 function capturingLog(): { log: { warn: (...args: unknown[]) => void }; warns: unknown[][] } {
   const warns: unknown[][] = [];
@@ -338,6 +354,48 @@ describe("worktree trash", () => {
       expect(await reapExpiredTrash([repo], log, Date.now())).toBe(0);
       expect(existsSync(stray)).toBe(true);
       expect(warns.length).toBe(1);
+    });
+
+    // The manifest branch (RT-51): keptUntil governs when a manifest is
+    // present, full stop... it overrides whatever the epoch in the name would
+    // otherwise decide. These three cases are the reaper's core safety
+    // property, since reap is the destroy.
+
+    test("a manifest whose keptUntil is in the FUTURE survives a reap pass, even past an ancient epoch name", async () => {
+      const now = 1_700_000_000_000;
+      // The epoch alone would already be well past RETENTION_MS...only the
+      // manifest's keptUntil is what should keep this entry alive.
+      const entry = makeTree(retainedTrashRoot(repo), `hotel-${now - RETENTION_MS - 1}`);
+      const { log, warns } = capturingLog();
+      await writeDisposalManifest(entry, makeManifest({ keptUntil: new Date(now + 1000).toISOString() }), log);
+
+      expect(await reapExpiredTrash([repo], log, now)).toBe(0);
+      expect(existsSync(entry)).toBe(true);
+      expect(warns.length).toBe(0);
+    });
+
+    test("a manifest whose keptUntil is in the PAST is reaped, even under a fresh epoch name", async () => {
+      const now = 1_700_000_000_000;
+      // The epoch alone would keep this entry (well inside RETENTION_MS)...
+      // only the manifest's keptUntil is what should condemn it.
+      const entry = makeTree(retainedTrashRoot(repo), `india-${now - 1000}`);
+      const { log, warns } = capturingLog();
+      await writeDisposalManifest(entry, makeManifest({ keptUntil: new Date(now - 1000).toISOString() }), log);
+
+      expect(await reapExpiredTrash([repo], log, now)).toBe(1);
+      expect(existsSync(entry)).toBe(false);
+      expect(warns.length).toBe(0);
+    });
+
+    test("a manifest whose keptUntil is unparseable is kept... fails CLOSED, not reaped on a guess", async () => {
+      const now = 1_700_000_000_000;
+      const entry = makeTree(retainedTrashRoot(repo), `juliet-${now - RETENTION_MS - 1}`);
+      const { log, warns } = capturingLog();
+      await writeDisposalManifest(entry, makeManifest({ keptUntil: "not-a-date" }), log);
+
+      expect(await reapExpiredTrash([repo], log, now)).toBe(0);
+      expect(existsSync(entry)).toBe(true);
+      expect(warns.length).toBe(0);
     });
   });
 

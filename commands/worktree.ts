@@ -223,15 +223,22 @@ function explainError(error: string): string {
   }
   if (error.startsWith("checkout-failed:")) return `checkout failed: ${error.slice("checkout-failed:".length)}`;
   if (error.startsWith("create-failed:")) return `worktree creation failed at step "${error.slice("create-failed:".length)}"`;
-  if (error === "no-target") return "need a tree name to restore";
   if (error === "not-found") return "no retained trash entry with that name";
   if (error === "no-manifest") return "that entry has no disposal manifest (disposed before RT-51, or the write failed) and cannot be restored";
   if (error === "branch-elsewhere") return "that branch already exists again... restore refuses to clobber it";
   if (error === "no-head-sha") return "the disposal manifest has no recorded commit to restore from";
   if (error === "path-exists") return "the pool root already has a tree at that name";
   if (error === "worktree-add-failed") return "git worktree add failed while restoring";
-  if (error === "copy-failed") return "copying the retained tree's gitignored content back failed";
-  if (error === "register-failed") return "worktree add succeeded but the registry write did not land... retry the restore";
+  if (error === "copy-failed") {
+    return "the worktree was recreated but copying the retained tree's gitignored content back failed... " +
+      "the checkout and the retained trash entry are both left in place; a plain retry will refuse " +
+      "with \"path-exists\", so recover by hand (copy the entry's content over yourself, or `rt worktree dispose --force` the half-restored tree and retry)";
+  }
+  if (error === "register-failed") {
+    return "the worktree was recreated but the registry write did not land, so rt does not know about it yet... " +
+      "the checkout and the retained trash entry are both left in place; a plain retry will refuse " +
+      "with \"branch-elsewhere\"/\"path-exists\", so recover by hand (`rt worktree adopt --repo <name>` picks up the checkout, or dispose it and retry)";
+  }
   return error;
 }
 
