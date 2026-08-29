@@ -151,3 +151,18 @@ export function resolveOriginTrust(
   if (!origin) return true;
   return isBrowserRequestTrusted(origin, presentedToken, apiToken, getAllowedOrigins());
 }
+
+/**
+ * A browser CORS preflight (OPTIONS) cannot carry the X-RT-Token value
+ * itself -- only Access-Control-Request-Headers names it as a header the
+ * follow-up request will use -- so an off-allowlist Origin that intends to
+ * authenticate with the token must be granted the preflight on trust alone.
+ * tokenOk() still gates the actual request; this only lets the browser send it.
+ */
+export function isTokenPreflight(method: string, requestHeaders: string | null): boolean {
+  if (method !== "OPTIONS" || !requestHeaders) return false;
+  return requestHeaders
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .includes("x-rt-token");
+}

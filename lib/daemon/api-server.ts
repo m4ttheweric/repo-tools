@@ -10,7 +10,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "pino";
 import { API_PORT, resolveApiPort } from "../daemon-config.ts";
-import { needsToken, tokenOk, getApiToken, resolveOriginTrust } from "./api-auth.ts";
+import { needsToken, tokenOk, getApiToken, resolveOriginTrust, isTokenPreflight } from "./api-auth.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
 import { runCapture } from "../subprocess.ts";
@@ -354,7 +354,8 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
       // at all, so a malicious page's own JS cannot read the response.
       // resolveOriginTrust only resolves the allowlist when origin is set,
       // since the settings read behind it is synchronous disk I/O.
-      const trusted = resolveOriginTrust(origin, req.headers.get("x-rt-token"), apiToken);
+      const trusted = resolveOriginTrust(origin, req.headers.get("x-rt-token"), apiToken)
+        || isTokenPreflight(req.method, req.headers.get("access-control-request-headers"));
       const corsHeaders = buildCorsHeaders(origin, trusted);
 
       if (req.method === "OPTIONS") {
