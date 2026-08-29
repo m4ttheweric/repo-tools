@@ -1,4 +1,4 @@
-# Phase 4: The destructive engine earns its paranoia — Implementation Plan
+# Phase 4: The destructive engine earns its paranoia ... Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -25,33 +25,33 @@
 ## File Structure
 
 New files:
-- `lib/worktree/__tests__/pool-root.test.ts` — RT-52 default-root tests.
-- `lib/worktree/restore.ts` — RT-51 restore engine (manifest read, rehydrate, re-register).
+- `lib/worktree/__tests__/pool-root.test.ts` ... RT-52 default-root tests.
+- `lib/worktree/restore.ts` ... RT-51 restore engine (manifest read, rehydrate, re-register).
 - `lib/worktree/__tests__/restore.test.ts`, `lib/worktree/__tests__/manifest.test.ts`.
 
 Modified (by responsibility):
-- `lib/rt-paths.ts` — add `worktreesDir()`/`worktreePoolRoot()`.
-- `lib/worktree/config.ts` — default root, unowned app-config default flip, onDeck ceiling constant.
-- `lib/worktree/trash.ts` — retention root follows the tree; manifest write/read; reaper honors keptUntil.
-- `lib/worktree/create.ts` — info/exclude gate; critical create-flip.
-- `lib/worktree/dispose.ts` — re-read under lock; caller-pid threading; manifest at dispose.
-- `lib/worktree/registry.ts` — critical `saveRegistry`, boolean return, `missCount`, manifest fields.
-- `lib/worktree/git-async.ts` — `stashChangesAsync` returns the git result.
-- `lib/state/kv-blob.ts` — `setKvValueCritical`.
-- `lib/state/db.ts` — `ensureEndpointClaimsStartTimeColumn`, called from `openStateDb`.
-- `lib/state/endpoint-claims-store.ts` — `startTime` column plumbing.
-- `lib/endpoint/allocator.ts` — `pidStartTime` probe, TTL-aware `isLiveClaim`, capture at claim.
-- `lib/endpoint/store.ts` — passthrough for critical claim writes.
-- `lib/daemon/worktree-process-kill.ts` — spared-set, caller pids, nested-tree exclusion, realpath.
-- `lib/daemon/worktree-reconciler.ts` — main-freshen gate/abort, S063 hold, reap both roots, onDeck ceiling + disk precheck, dormant surfacing.
-- `lib/daemon/handlers/worktree.ts` — adopt unmanaged/`--claim`, dispose re-read, restore handler, dormant status.
-- `commands/worktree.ts` — `--claim`, `worktreeRestore`, caller pid in dispose payload.
-- `commands/endpoint.ts` — `endpointRelease`.
-- `lib/command-tree-def.ts` — `--claim`, `worktree restore`, `endpoint release`.
+- `lib/rt-paths.ts` ... add `worktreesDir()`/`worktreePoolRoot()`.
+- `lib/worktree/config.ts` ... default root, unowned app-config default flip, onDeck ceiling constant.
+- `lib/worktree/trash.ts` ... retention root follows the tree; manifest write/read; reaper honors keptUntil.
+- `lib/worktree/create.ts` ... info/exclude gate; critical create-flip.
+- `lib/worktree/dispose.ts` ... re-read under lock; caller-pid threading; manifest at dispose.
+- `lib/worktree/registry.ts` ... critical `saveRegistry`, boolean return, `missCount`, manifest fields.
+- `lib/worktree/git-async.ts` ... `stashChangesAsync` returns the git result.
+- `lib/state/kv-blob.ts` ... `setKvValueCritical`.
+- `lib/state/db.ts` ... `ensureEndpointClaimsStartTimeColumn`, called from `openStateDb`.
+- `lib/state/endpoint-claims-store.ts` ... `startTime` column plumbing.
+- `lib/endpoint/allocator.ts` ... `pidStartTime` probe, TTL-aware `isLiveClaim`, capture at claim.
+- `lib/endpoint/store.ts` ... passthrough for critical claim writes.
+- `lib/daemon/worktree-process-kill.ts` ... spared-set, caller pids, nested-tree exclusion, realpath.
+- `lib/daemon/worktree-reconciler.ts` ... main-freshen gate/abort, S063 hold, reap both roots, onDeck ceiling + disk precheck, dormant surfacing.
+- `lib/daemon/handlers/worktree.ts` ... adopt unmanaged/`--claim`, dispose re-read, restore handler, dormant status.
+- `commands/worktree.ts` ... `--claim`, `worktreeRestore`, caller pid in dispose payload.
+- `commands/endpoint.ts` ... `endpointRelease`.
+- `lib/command-tree-def.ts` ... `--claim`, `worktree restore`, `endpoint release`.
 
 ---
 
-## Task 1: RT-52 — pool root moves out of the clone
+## Task 1: RT-52 ... pool root moves out of the clone
 
 **Files:**
 - Modify: `lib/rt-paths.ts:39-79`
@@ -88,7 +88,7 @@ Expected: FAIL, `worktreesDir` / `worktreePoolRoot` are not exported.
 
 ```ts
 /**
- * ~/.mattstack/rt/worktrees — the pool root container. A repo's ephemeral and
+ * ~/.mattstack/rt/worktrees ... the pool root container. A repo's ephemeral and
  * on-deck trees live at worktrees/<serialized identity>/ so they stay OUT of
  * the user's clone (repo-stealth) and no sibling tree's cwd is ever nested
  * under the main clone (retires S017's collateral-kill root cause).
@@ -97,7 +97,7 @@ export function worktreesDir(): string {
   return join(rtDir(), "worktrees");
 }
 
-/** worktrees/<serialized identity> — one repo's pool root. */
+/** worktrees/<serialized identity> ... one repo's pool root. */
 export function worktreePoolRoot(serializedIdentity: string): string {
   return join(worktreesDir(), serializedIdentity);
 }
@@ -179,7 +179,7 @@ git commit -m "RT-52: default worktree pool root to ~/.mattstack/rt/worktrees/<i
 
 ---
 
-## Task 2: RT-52 — retention store follows the tree; reaper sweeps every root
+## Task 2: RT-52 ... retention store follows the tree; reaper sweeps every root
 
 **Files:**
 - Modify: `lib/worktree/trash.ts:103-105` (`retainedTrashRoot`), `:119-165` (`retireTree`), `:201-240` (`reapExpiredTrash`)
@@ -297,7 +297,7 @@ git commit -m "RT-52: retention store follows the tree's pool root; reaper sweep
 
 ---
 
-## Task 3: S025 — registry and claim writes are critical
+## Task 3: S025 ... registry and claim writes are critical
 
 **Files:**
 - Modify: `lib/state/kv-blob.ts:54-61` (add `setKvValueCritical`)
@@ -332,7 +332,7 @@ Expected: FAIL, `setKvValueCritical` not exported.
 - [ ] **Step 3: Add `setKvValueCritical`**
 
 ```ts
-// kv-blob.ts — the file already imports persistOrWarn; add runCriticalWrite to that existing import line:
+// kv-blob.ts ... the file already imports persistOrWarn; add runCriticalWrite to that existing import line:
 import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 
 /** Critical write: retries, and reports whether the row actually landed so a
@@ -398,7 +398,7 @@ if (!saveRegistry(repoName, finalTrees)) {
 - [ ] **Step 7: Write the integration test** (busy at flip → tree not scrapped)
 
 ```ts
-// registry-critical.test.ts (add) — use the reconciler's onAfterLoad seam + a busy-injecting db to assert a completed tree is not scrapped and a claimed tree is not re-handed. Model on lib/worktree/__tests__ existing db-stub helpers.
+// registry-critical.test.ts (add) ... use the reconciler's onAfterLoad seam + a busy-injecting db to assert a completed tree is not scrapped and a claimed tree is not re-handed. Model on lib/worktree/__tests__ existing db-stub helpers.
 ```
 
 - [ ] **Step 8: Run and commit**
@@ -411,7 +411,7 @@ git commit -m "S025: route registry and claim writes through runCriticalWrite; d
 
 ---
 
-## Task 4: S017/S018 — process-kill correctness
+## Task 4: S017/S018 ... process-kill correctness
 
 **Files:**
 - Modify: `lib/daemon/worktree-process-kill.ts:96-113` (`selectKillTargets`), `:128-181` (`killWorktreeProcesses`)
@@ -511,7 +511,7 @@ Add `callerPids?: number[]` to `DisposeDeps`, set it in `disposeDeps(...)` from 
 - [ ] **Step 6: Write the nested-tree exclusion test** (fixture with a main cwd and a nested tree cwd)
 
 ```ts
-// worktree-process-kill.test.ts — since killWorktreeProcesses spawns lsof/ps,
+// worktree-process-kill.test.ts ... since killWorktreeProcesses spawns lsof/ps,
 // extract the cwd-attribution filter into a pure helper attributeCwds(target, excludes, cwdMap)
 // and unit-test it: a cwd under <target>/.worktrees/other is excluded when other is in excludes.
 // Include a symlinked-prefix fixture: target given via a symlink whose realpath
@@ -529,7 +529,7 @@ git commit -m "S017/S018: kill scoped to the exact tree (realpath, nested-tree e
 
 ---
 
-## Task 5: S019 — never pop a stash this pass did not push
+## Task 5: S019 ... never pop a stash this pass did not push
 
 **Files:**
 - Modify: `lib/worktree/git-async.ts:187-196` (`stashChangesAsync` returns the result)
@@ -603,7 +603,7 @@ git commit -m "S019: freshen never falls back to a positional stash ref; a faile
 
 ---
 
-## Task 6: S064 — do not stash the user's live main checkout
+## Task 6: S064 ... do not stash the user's live main checkout
 
 **Files:**
 - Modify: `lib/daemon/worktree-reconciler.ts:678-699` (`freshenCandidate` gate), `:744-807` (`freshenOne` main abort + pop event)
@@ -662,7 +662,7 @@ git commit -m "S064: idle-main freshen is opt-in and aborts on live edits; faile
 
 ---
 
-## Task 7: R040 — dispose re-reads the record under the lock
+## Task 7: R040 ... dispose re-reads the record under the lock
 
 **Files:**
 - Modify: `lib/worktree/dispose.ts:180-200` (re-read + compare at the top of `disposeTree`)
@@ -673,7 +673,7 @@ git commit -m "S064: idle-main freshen is opt-in and aborts on live edits; faile
 - [ ] **Step 1: Write the failing test** (a stale snapshot whose state changed under the lock is refused `changed`)
 
 ```ts
-// dispose.test.ts — load a registry with a tree, mutate its state on disk
+// dispose.test.ts ... load a registry with a tree, mutate its state on disk
 // (simulate a concurrent claim), call disposeTree with the OLD snapshot, assert
 // { disposed: false, refusal: "changed" } and that nothing was trashed.
 ```
@@ -702,7 +702,7 @@ git commit -m "R040: disposeTree re-reads the registry record under the lock and
 
 ---
 
-## Task 8: S063 — a missing path is held, not pruned
+## Task 8: S063 ... a missing path is held, not pruned
 
 **Files:**
 - Modify: `lib/worktree/registry.ts:9-24` (`TreeRecord.missCount`)
@@ -772,7 +772,7 @@ git commit -m "S063: reconcile holds a transiently-missing path for 3 passes ins
 
 ---
 
-## Task 9: S056 — adopt leaves foreign trees unmanaged; `--claim` opts in
+## Task 9: S056 ... adopt leaves foreign trees unmanaged; `--claim` opts in
 
 **Files:**
 - Modify: `commands/worktree.ts:157-167` (`AdoptArgs.claim`, `parseAdoptArgs`), `:488-497` (payload)
@@ -839,7 +839,7 @@ git commit -m "S056: adopt leaves foreign worktrees unmanaged; --claim opts a tr
 
 ---
 
-## Task 10: S077 — on-deck consent gate, ceiling, disk precheck, dormant surfacing
+## Task 10: S077 ... on-deck consent gate, ceiling, disk precheck, dormant surfacing
 
 **Files:**
 - Modify: `lib/worktree/config.ts:364` (`APP_CONFIG_DEFAULTS`), add ceiling constant
@@ -857,7 +857,7 @@ git commit -m "S056: adopt leaves foreign worktrees unmanaged; --claim opts a tr
 - [ ] **Step 3: Flip the unowned default**
 
 ```ts
-// config.ts — unowned machines start disabled; a machine that explicitly set it, or a legacy parking-lot.json, keeps its value via the ownership latch.
+// config.ts ... unowned machines start disabled; a machine that explicitly set it, or a legacy parking-lot.json, keeps its value via the ownership latch.
 const APP_CONFIG_DEFAULTS: WorktreeAppConfig = { enabled: false, killProcesses: true };
 ```
 
@@ -895,7 +895,7 @@ git commit -m "S077: on-deck pool is opt-in on unowned machines, capped, disk-ga
 
 ---
 
-## Task 11: S068 — endpoint claim liveness by process start-time
+## Task 11: S068 ... endpoint claim liveness by process start-time
 
 **Files:**
 - Modify: `lib/state/db.ts` (add `ensureEndpointClaimsStartTimeColumn`, call from `openStateDb` after `runMigrations`)
@@ -980,7 +980,7 @@ git commit -m "S068: endpoint liveness compares process start-time (recycled pid
 
 ---
 
-## Task 12: RT-51 — durable disposal manifest and `rt worktree restore`
+## Task 12: RT-51 ... durable disposal manifest and `rt worktree restore`
 
 **Files:**
 - Create: `lib/worktree/restore.ts`, `lib/worktree/__tests__/restore.test.ts`, `lib/worktree/__tests__/manifest.test.ts`
