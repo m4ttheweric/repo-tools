@@ -51,7 +51,7 @@ async function archRow(p: Probes): Promise<Row> {
   const arch = res.stdout.trim();
 
   // Same honesty ruling as macosVersionRow: a probe that couldn't run reports
-  // "error", not "invalid" — only a definite non-arm64 result is invalid.
+  // "error", not "invalid": only a definite non-arm64 result is invalid.
   if (res.code !== 0 || !arch) {
     return row({ ...base, status: "error", detail: "Could not determine your processor" });
   }

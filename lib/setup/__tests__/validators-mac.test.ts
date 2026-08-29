@@ -75,7 +75,7 @@ describe("macRows — tool.clt", () => {
   });
 });
 
-describe("macRows — tool.arch", () => {
+describe("macRows: tool.arch", () => {
   test("arm64 -> ready", async () => {
     const execScript: ExecScript = (argv) => (argv[0] === "uname" ? ok("arm64\n") : ok());
     const r = await pickRow(macRows(fakeProbes({ exec: execScript })), "tool.arch");
