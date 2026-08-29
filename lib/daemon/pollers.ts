@@ -32,7 +32,13 @@ export interface PollerDeps {
   checkAndRepairHooksPath: (repoName: string, repoPath: string) => Promise<boolean>;
 }
 
-export function startPollers(deps: PollerDeps): void {
+export interface PollersHandle {
+  /** Clears every timer this armed, so the pollers unit's reverse-stop leaves
+   *  no interval running (these were never cleared before the lifecycle seam). */
+  stop(): void;
+}
+
+export function startPollers(deps: PollerDeps): PollersHandle {
   const { log, refreshCache, portCacheRef, broadcast, systemProcessScanner } = deps;
 
   // In-flight guards: the scans are async now, so a slow scan must not
@@ -81,17 +87,20 @@ export function startPollers(deps: PollerDeps): void {
     }
   }
 
+  const timeouts: ReturnType<typeof setTimeout>[] = [];
+  const intervals: ReturnType<typeof setInterval>[] = [];
+
   // Periodic cache refresh
-  setTimeout(() => refreshCache(), 5000); // initial refresh after 5s
-  setInterval(() => refreshCache(), MR_REFRESH_INTERVAL_MS);
+  timeouts.push(setTimeout(() => refreshCache(), 5000)); // initial refresh after 5s
+  intervals.push(setInterval(() => refreshCache(), MR_REFRESH_INTERVAL_MS));
 
   // Port scanning (lightweight — every 30s)
-  setTimeout(() => refreshPortCache(), 2000); // initial scan after 2s
-  setInterval(() => refreshPortCache(), PORT_SCAN_INTERVAL_MS);
+  timeouts.push(setTimeout(() => refreshPortCache(), 2000)); // initial scan after 2s
+  intervals.push(setInterval(() => refreshPortCache(), PORT_SCAN_INTERVAL_MS));
 
   // System process scanning (every 10s)
-  setTimeout(() => refreshSystemProcesses(), 3000);  // initial scan after 3s
-  setInterval(() => refreshSystemProcesses(), SYSTEM_PROCESS_SCAN_INTERVAL_MS);
+  timeouts.push(setTimeout(() => refreshSystemProcesses(), 3000));  // initial scan after 3s
+  intervals.push(setInterval(() => refreshSystemProcesses(), SYSTEM_PROCESS_SCAN_INTERVAL_MS));
 
   // Periodic hooks scan — belt-and-suspenders fallback in case a directory
   // watcher ever misses a write (e.g. watcher limit hit, FS edge-case).
@@ -100,7 +109,7 @@ export function startPollers(deps: PollerDeps): void {
   // Rides the same interval to re-prime the team-tracking identity map: this
   // is the ONLY re-prime mechanism now that the repo index lives in
   // state.db (RT-50) — there is no file left to fs.watch (see daemon.ts).
-  setInterval(async () => {
+  intervals.push(setInterval(async () => {
     const repos = deps.repoIndex();
     await primeTeamTrackingIdentityMap(repos).catch((err) => {
       log.warn({ err }, "repo-tracking: failed to re-prime team-intent identity map");
@@ -108,5 +117,12 @@ export function startPollers(deps: PollerDeps): void {
     for (const [repoName, repoPath] of Object.entries(repos)) {
       if (existsSync(repoPath)) await deps.checkAndRepairHooksPath(repoName, repoPath);
     }
-  }, HOOKS_SCAN_INTERVAL_MS);
+  }, HOOKS_SCAN_INTERVAL_MS));
+
+  return {
+    stop() {
+      for (const t of timeouts) clearTimeout(t);
+      for (const i of intervals) clearInterval(i);
+    },
+  };
 }

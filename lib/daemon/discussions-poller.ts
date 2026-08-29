@@ -106,6 +106,7 @@ export interface DiscussionsPoller {
  */
 export function createDiscussionsPoller(env: PollerEnv): DiscussionsPoller {
   let timer: ReturnType<typeof setInterval> | null = null;
+  let bootTimer: ReturnType<typeof setTimeout> | null = null;
   let sweeping = false;
 
   async function sweep(): Promise<void> {
@@ -133,12 +134,15 @@ export function createDiscussionsPoller(env: PollerEnv): DiscussionsPoller {
     if (timer) return;
     log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
     // Kick off a first sweep after a short delay so the daemon finishes
-    // initializing freshness watchers before we start hitting GitLab.
-    setTimeout(() => { sweep(); }, 10_000);
+    // initializing freshness watchers before we start hitting GitLab. Captured
+    // so stop() clears it too — an uncleared boot timer would fire a sweep
+    // after the poller was torn down.
+    bootTimer = setTimeout(() => { bootTimer = null; sweep(); }, 10_000);
     timer = setInterval(() => { sweep(); }, POLL_INTERVAL_MS);
   }
 
   function stop(): void {
+    if (bootTimer) { clearTimeout(bootTimer); bootTimer = null; }
     if (!timer) return;
     clearInterval(timer);
     timer = null;
