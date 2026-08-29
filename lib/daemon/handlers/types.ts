@@ -10,6 +10,7 @@ import type { FSWatcher } from "fs";
 import type { Logger } from "pino";
 import type { PortEntry } from "../../port-scanner.ts";
 import type { BranchCacheStore } from "../../state/index.ts";
+import type { HealthSnapshot } from "../health.ts";
 
 /**
  * RT-48: `CacheEntry` used to be DECLARED here — a third copy of the same
@@ -68,8 +69,16 @@ export interface HandlerContext {
   checkAndRepairHooksPath: (repoName: string, repoPath: string) => Promise<boolean>;
   /** Start a directory watch over a repo's .git/config and run an initial check. */
   startWatchingRepo:       (repoName: string, repoPath: string) => void;
-  /** Holder for the last cache-refresh timestamp (0 = never). */
-  refreshStatusRef:        { lastRefreshAt: number };
+  /** Holder for the last cache-refresh cycle's outcome (0s = never run). */
+  refreshStatusRef:        { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number };
+  /** Computes the current health verdict (level/reasons/metrics/eventLoop) on demand; not cached, cheap enough per call. */
+  getHealth:               () => HealthSnapshot;
+  /** Current loop-monitor heartbeat sequence number, echoed by `ping`. */
+  heartbeatSeq:            () => number;
+  /** Sets the daemon logger's live level (trace/debug/info/warn/error). */
+  setLogLevel:             (l: string) => void;
+  /** Reads the daemon logger's current live level. */
+  getLogLevel:             () => string;
 }
 
 export type Handler    = (payload: any, signal?: AbortSignal) => Promise<any>;

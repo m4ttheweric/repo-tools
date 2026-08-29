@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { createTestHome, rt, RT_BINARY } from "../harness.ts";
 
@@ -213,4 +213,130 @@ describe("daemon", () => {
       expect(result.stdout).toContain("not installed");
     });
   });
+});
+
+// Additive coverage for the health snapshot (level/reasons + metrics +
+// eventLoop) that computeHealth (lib/daemon/health.ts) attaches to every
+// status-shaped surface, and for the heartbeat file the loop monitor writes
+// alongside it. A live foreground daemon on a per-run free RT_API_PORT, same
+// pattern as e2e/tests/events.test.ts and e2e/tests/endpoint.test.ts.
+describe("health surfaces", () => {
+  let home: string;
+  let cleanup: () => void;
+  let apiPort = 0;
+  let daemon: ReturnType<typeof Bun.spawn>;
+
+  /** Grab a free TCP port by binding port 0 and releasing it. */
+  function freePort(): number {
+    const srv = Bun.serve({ port: 0, fetch: () => new Response("") });
+    const port = srv.port;
+    srv.stop(true);
+    if (!port) throw new Error("failed to allocate a free port");
+    return port;
+  }
+
+  beforeAll(async () => {
+    apiPort = freePort();
+    ({ path: home, cleanup } = createTestHome());
+    // `rt daemon status` short-circuits to "not installed" before it ever
+    // reaches a liveness classification, install first.
+    await rt(["daemon", "install"], { home });
+    const bunDir = join(process.execPath, "..");
+    daemon = Bun.spawn([RT_BINARY, "--daemon"], {
+      env: {
+        HOME: home,
+        PATH: `${join(RT_BINARY, "..")}:${bunDir}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
+        TERM: "xterm-256color",
+        RT_SKIP_SETUP: "1",
+        CI: "true",
+        RT_API_PORT: String(apiPort),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await waitForSocket(join(home, ".mattstack", "rt", "rt.sock"));
+    if (daemon.exitCode !== null) {
+      throw new Error(
+        `daemon process exited (code ${daemon.exitCode}) right after creating its socket ` +
+          `(port ${apiPort} collision or daemon boot crash; check the daemon's stderr).`,
+      );
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    try { daemon?.kill(); } catch { /* already gone */ }
+    await daemon?.exited;
+    cleanup();
+  });
+
+  function expectHealthLevel(level: unknown) {
+    expect(["ok", "degraded", "unhealthy"]).toContain(level as string);
+  }
+
+  test("rt daemon status --json carries health, metrics, and eventLoop, additive to the existing fields", async () => {
+    const result = await rt(["daemon", "status", "--json"], { home });
+    expect(result.exitCode).toBe(0);
+    const out = JSON.parse(result.stdout);
+
+    // Pre-existing fields still present.
+    expect(out.ok).toBe(true);
+    expect(out.state).toBe("running");
+    expect(typeof out.data.pid).toBe("number");
+    expect(typeof out.data.watchedRepos).toBe("number");
+
+    // New blocks.
+    expectHealthLevel(out.data.health.level);
+    expect(Array.isArray(out.data.health.reasons)).toBe(true);
+    expect(typeof out.data.metrics.rss).toBe("number");
+    expect(typeof out.data.eventLoop.maxLagMs).toBe("number");
+  }, 30_000);
+
+  test("GET /api/status (tray:status) carries health, metrics, and eventLoop, additive to the existing fields", async () => {
+    const res = await fetch(`http://127.0.0.1:${apiPort}/api/status`);
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as any;
+
+    // Pre-existing fields still present.
+    expect(out.ok).toBe(true);
+    expect(typeof out.data.pid).toBe("number");
+    expect(typeof out.data.memoryUsage).toBe("number");
+
+    // New blocks.
+    expectHealthLevel(out.data.health.level);
+    expect(Array.isArray(out.data.health.reasons)).toBe(true);
+    expect(typeof out.data.metrics.rss).toBe("number");
+    expect(typeof out.data.eventLoop.maxLagMs).toBe("number");
+  }, 15_000);
+
+  test("ping over rt.sock carries the health level and eventLoop, additive to the existing fields", async () => {
+    const sockPath = join(home, ".mattstack", "rt", "rt.sock");
+    const res = await fetch("http://localhost/ping", {
+      unix: sockPath,
+      signal: AbortSignal.timeout(5_000),
+    } as any);
+    const out = (await res.json()) as any;
+
+    // Pre-existing fields still present.
+    expect(out.ok).toBe(true);
+    expect(typeof out.uptime).toBe("number");
+    expect(typeof out.pid).toBe("number");
+
+    // New blocks. ping's `health` field is the level string itself (not an
+    // object), unlike status/tray:status where health.level is nested.
+    expectHealthLevel(out.health);
+    expect(typeof out.eventLoop.maxLagMs).toBe("number");
+  }, 15_000);
+
+  test("a heartbeat file appears under the isolated HOME's RT_DIR within a few seconds", async () => {
+    const heartbeatPath = join(home, ".mattstack", "rt", "daemon-heartbeat.json");
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(heartbeatPath) && Date.now() < deadline) {
+      await Bun.sleep(200);
+    }
+    expect(existsSync(heartbeatPath)).toBe(true);
+
+    const hb = JSON.parse(readFileSync(heartbeatPath, "utf8"));
+    expect(typeof hb.at).toBe("number");
+    expect(typeof hb.seq).toBe("number");
+  }, 10_000);
 });

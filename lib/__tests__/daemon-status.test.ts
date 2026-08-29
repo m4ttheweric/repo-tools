@@ -185,6 +185,44 @@ describe("classifyDaemonStatus", () => {
     const v = classifyDaemonStatus({ installed: true, pingOk: false, pidAlive: false, pid: null });
     expect(v.state).toBe("not-running");
   });
+
+
+  // ── Task 4: heartbeat-stale "stalled" detail + degraded eventLoop ──
+
+  test("alive + ping-fail + ready + stale heartbeat => alive-not-serving 'stalled'", () => {
+    const now = 1_000_000;
+    const v = classifyDaemonStatus({
+      installed: true, response: null, pingOk: false, pid: 42, pidAlive: true,
+      breadcrumb: { phase: "ready" },
+      heartbeat: { at: now - 8000, seq: 3 }, heartbeatStaleMs: 6000,
+      now,
+    });
+    expect(v.state).toBe("alive-not-serving");
+    if (v.state === "alive-not-serving") {
+      expect(v.detail).toBe("stalled");
+      expect(v.stalledForMs).toBe(8000);
+    }
+  });
+
+  test("alive + ready + FRESH heartbeat => 'wedged', not 'stalled'", () => {
+    const now = 1_000_000;
+    const v = classifyDaemonStatus({
+      installed: true, response: null, pingOk: false, pid: 42, pidAlive: true,
+      breadcrumb: { phase: "ready" },
+      heartbeat: { at: now - 500, seq: 9 }, heartbeatStaleMs: 6000,
+      now,
+    });
+    expect(v.state === "alive-not-serving" && v.detail).toBe("wedged");
+  });
+
+  test("degraded/unresponsive carries the ping-supplied eventLoop", () => {
+    const v = classifyDaemonStatus({
+      installed: true, response: null, pingOk: true, pid: 42,
+      pingEventLoop: { maxLagMs: 1400, lastStallAt: 123, lastStallCmd: "mr:action", stalls: 2 },
+    });
+    expect(v.state).toBe("degraded");
+    if (v.state === "degraded") expect(v.eventLoop?.maxLagMs).toBe(1400);
+  });
 });
 
 describe("needsLivenessProbe", () => {

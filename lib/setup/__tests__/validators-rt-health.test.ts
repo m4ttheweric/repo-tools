@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { DAEMON_CONFIG_PATH } from "../../daemon-config.ts";
+import { DEV_MODE_TAG } from "../../dev-mode.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
 import { setSetting } from "../../settings/write.ts";
 import { homeBackupRow, rtHealthRows } from "../validators/rt-health.ts";
@@ -139,7 +140,7 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
     test("dev mode wrapper at ~/.local/bin/rt -> skipped, dev mode owns it", async () => {
       const wrapperDir = join(home, ".local", "bin");
       mkdirSync(wrapperDir, { recursive: true });
-      writeFileSync(join(wrapperDir, "rt"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      writeFileSync(join(wrapperDir, "rt"), `#!/bin/sh\n${DEV_MODE_TAG}\nexit 0\n`, { mode: 0o755 });
       const p = bundleProbe();
       const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.rt-link");
       expect(r.status).toBe("skipped");
@@ -529,10 +530,10 @@ describe("rtHealthRows — tool.flavor", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  /** A script at ~/.local/bin/rt is the dev-mode signal currentMode() reads. */
+  /** A recognized wrapper at ~/.local/bin/rt is the dev-mode signal currentMode() reads. */
   function writeDevWrapper(): void {
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "rt"), "#!/bin/sh\necho dev\n");
+    writeFileSync(join(home, ".local", "bin", "rt"), `#!/bin/sh\n${DEV_MODE_TAG}\necho dev\n`);
   }
 
   test("live daemon of the wrong flavor: fail, names all three legs", async () => {

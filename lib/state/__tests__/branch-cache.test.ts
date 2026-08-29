@@ -13,7 +13,77 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb, getStateDb, openStateDb } from "../db.ts";
-import { getBranchCacheStore, rekeyBranchCacheTable, type CacheEntry } from "../branch-cache.ts";
+import { branchOf, composeKey, getBranchCacheStore, getByBranch, identityOf, rekeyBranchCacheTable, type CacheEntry } from "../branch-cache.ts";
+
+test("composeKey/branchOf/identityOf round-trip with a serialized identity", () => {
+  const id = "remote:gitlab.com%2Facme%2Facme-dev";
+  const k = composeKey(id, "feature/x");
+  expect(k).toBe(`${id}:feature/x`);
+  expect(branchOf(k)).toBe("feature/x");
+  expect(identityOf(k)).toBe(id);
+});
+test("bare key (no identity) degrades gracefully", () => {
+  expect(composeKey(undefined, "main")).toBe("main");
+  expect(branchOf("main")).toBe("main");
+  expect(identityOf("main")).toBeUndefined();
+});
+test("branch never contains a colon, so lastIndexOf split is unambiguous", () => {
+  const k = composeKey("path:%2FUsers%2Fdev%2Fscratch", "release");
+  expect(branchOf(k)).toBe("release");
+  expect(identityOf(k)).toBe("path:%2FUsers%2Fdev%2Fscratch");
+});
+
+describe("getByBranch: free function over an entries map", () => {
+  function makeCacheEntry(linearId: string): CacheEntry {
+    return { ticket: null, linearId, mr: null, fetchedAt: Date.now() };
+  }
+
+  test("exact bare-key hit", () => {
+    const entries: Record<string, CacheEntry> = { main: makeCacheEntry("bare") };
+    expect(getByBranch(entries, "main")?.linearId).toBe("bare");
+  });
+
+  test("suffix hit across two repos sharing the same branch name picks a match, not a false negative", () => {
+    const entries: Record<string, CacheEntry> = {
+      "remote:gitlab.com%2Facme%2Frepo-a:feature/x": makeCacheEntry("repo-a"),
+      "remote:gitlab.com%2Facme%2Frepo-b:feature/x": makeCacheEntry("repo-b"),
+    };
+    const hit = getByBranch(entries, "feature/x");
+    expect(hit).toBeDefined();
+    expect(["repo-a", "repo-b"]).toContain(hit!.linearId);
+  });
+
+  test("miss returns undefined", () => {
+    const entries: Record<string, CacheEntry> = { main: makeCacheEntry("bare") };
+    expect(getByBranch(entries, "nonexistent")).toBeUndefined();
+  });
+});
+
+describe("put: composite-key collision safety (S069/Task 10)", () => {
+  let collisionDir: string;
+
+  beforeEach(() => {
+    collisionDir = mkdtempSync(join(tmpdir(), "rt-branch-cache-collision-"));
+  });
+
+  afterEach(() => {
+    rmSync(collisionDir, { recursive: true, force: true });
+  });
+
+  test("put keys by entry.repoName so same-name branches in two repos coexist", () => {
+    const dbPath = join(collisionDir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    const store = getBranchCacheStore(db);
+
+    store.put("main", { repoName: "remote:host%2Fa", ticket: null, linearId: "", mr: null, fetchedAt: 1 });
+    store.put("main", { repoName: "remote:host%2Fb", ticket: null, linearId: "", mr: null, fetchedAt: 2 });
+
+    expect(store.entries[composeKey("remote:host%2Fa", "main")]?.fetchedAt).toBe(1);
+    expect(store.entries[composeKey("remote:host%2Fb", "main")]?.fetchedAt).toBe(2);
+    expect(Object.keys(store.entries).length).toBe(2);
+    db.close();
+  });
+});
 
 let dir: string;
 
@@ -170,19 +240,34 @@ describe("two handles, per-row last-writer-wins", () => {
 });
 
 describe("bare-branch upsert semantics", () => {
-  test("a no-repoName upsert hits the same row a repoName-bearing write created (no NULL duplicate)", () => {
+  test("two puts with the same repoName hit the same row (no duplicate)", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    const store = getBranchCacheStore(db);
+    const key = composeKey("repo-tools", "feature/x");
+
+    store.put("feature/x", makeEntry({ repoName: "repo-tools", linearId: "first" }));
+    expect(rowCount(db, key)).toBe(1);
+
+    store.put("feature/x", makeEntry({ repoName: "repo-tools", linearId: "second" }));
+
+    expect(rowCount(db, key)).toBe(1);
+    expect(store.entries[key]?.linearId).toBe("second");
+    db.close();
+  });
+
+  test("a repoName-bearing write and a bare (no-repoName) write to the same branch land in different rows (Task 10: key is composeKey(entry.repoName, branch), not the bare branch)", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
     const store = getBranchCacheStore(db);
 
-    store.put("feature/x", makeEntry({ repoName: "repo-tools", linearId: "first" }));
-    expect(rowCount(db, "feature/x")).toBe(1);
-
+    store.put("feature/x", makeEntry({ repoName: "repo-tools", linearId: "attributed" }));
     // enrichBranches-style upsert: same bare branch, no repoName available.
-    store.put("feature/x", makeEntry({ linearId: "second" }));
+    store.put("feature/x", makeEntry({ linearId: "bare" }));
 
-    expect(rowCount(db, "feature/x")).toBe(1);
-    expect(store.entries["feature/x"]?.linearId).toBe("second");
+    expect(store.entries[composeKey("repo-tools", "feature/x")]?.linearId).toBe("attributed");
+    expect(store.entries["feature/x"]?.linearId).toBe("bare");
+    expect(Object.keys(store.entries).length).toBe(2);
     db.close();
   });
 
@@ -215,13 +300,15 @@ describe("gc — succeeded-repo gating and NULL-repo age rule", () => {
 
     store.gc(new Set(["repo-a"]), 30 * DAY_MS);
 
-    expect(store.entries["stale-succeeded"]).toBeUndefined();
-    expect(rowCount(db, "stale-succeeded")).toBe(0);
+    const succeededKey = composeKey("repo-a", "stale-succeeded");
+    const failedKey = composeKey("repo-b", "stale-failed");
+    expect(store.entries[succeededKey]).toBeUndefined();
+    expect(rowCount(db, succeededKey)).toBe(0);
 
     // repo-b had a swallowed fetch error this cycle (never made it into
     // succeededRepos) — its stale rows must survive (r2 finding 1).
-    expect(store.entries["stale-failed"]).toBeDefined();
-    expect(rowCount(db, "stale-failed")).toBe(1);
+    expect(store.entries[failedKey]).toBeDefined();
+    expect(rowCount(db, failedKey)).toBe(1);
     db.close();
   });
 
@@ -248,8 +335,9 @@ describe("gc — succeeded-repo gating and NULL-repo age rule", () => {
 
     store.gc(new Set(["repo-a"]), 30 * DAY_MS);
 
-    expect(store.entries["fresh-succeeded"]).toBeDefined();
-    expect(rowCount(db, "fresh-succeeded")).toBe(1);
+    const key = composeKey("repo-a", "fresh-succeeded");
+    expect(store.entries[key]).toBeDefined();
+    expect(rowCount(db, key)).toBe(1);
     db.close();
   });
 
@@ -264,9 +352,10 @@ describe("gc — succeeded-repo gating and NULL-repo age rule", () => {
 
     store.gc(new Set(["repo-a"]), 30 * DAY_MS);
 
-    expect(Object.keys(store.entries).sort()).toEqual(["keep"]);
+    const keepKey = composeKey("repo-a", "keep");
+    expect(Object.keys(store.entries).sort()).toEqual([keepKey]);
     const remaining = db.query("SELECT branch FROM branch_cache;").all() as { branch: string }[];
-    expect(remaining.map(r => r.branch).sort()).toEqual(["keep"]);
+    expect(remaining.map(r => r.branch).sort()).toEqual([keepKey]);
     db.close();
   });
 
@@ -275,6 +364,8 @@ describe("gc — succeeded-repo gating and NULL-repo age rule", () => {
     const db = openStateDb(dbPath, "cli");
     const store = getBranchCacheStore(db);
 
+    const racyKey = composeKey("repo-a", "racy");
+    const doomedKey = composeKey("repo-a", "doomed");
     store.put("racy", makeEntry({ repoName: "repo-a", fetchedAt: oldTs }));
     store.put("doomed", makeEntry({ repoName: "repo-a", fetchedAt: oldTs }));
 
@@ -296,7 +387,7 @@ describe("gc — succeeded-repo gating and NULL-repo age rule", () => {
         (stmt as unknown as { all: unknown }).all = (...args: never[]) => {
           const rows = realAll(...args);
           (stmt as unknown as { all: unknown }).all = realAll; // one-shot
-          cli.query("UPDATE branch_cache SET fetched_at = ? WHERE branch = ?;").run(freshTs, "racy");
+          cli.query("UPDATE branch_cache SET fetched_at = ? WHERE branch = ?;").run(freshTs, racyKey);
           return rows;
         };
       }
@@ -311,13 +402,13 @@ describe("gc — succeeded-repo gating and NULL-repo age rule", () => {
 
     // The freshly enriched row survives with its new timestamp; its stale
     // sibling is still pruned.
-    expect(rowCount(db, "racy")).toBe(1);
-    const { fetched_at } = db.query("SELECT fetched_at FROM branch_cache WHERE branch = ?;").get("racy") as { fetched_at: number };
+    expect(rowCount(db, racyKey)).toBe(1);
+    const { fetched_at } = db.query("SELECT fetched_at FROM branch_cache WHERE branch = ?;").get(racyKey) as { fetched_at: number };
     expect(fetched_at).toBe(freshTs);
-    expect(rowCount(db, "doomed")).toBe(0);
+    expect(rowCount(db, doomedKey)).toBe(0);
     // Row/map parity holds on both sides of the re-guard.
-    expect(store.entries["racy"]).toBeDefined();
-    expect(store.entries["doomed"]).toBeUndefined();
+    expect(store.entries[racyKey]).toBeDefined();
+    expect(store.entries[doomedKey]).toBeUndefined();
 
     cli.close();
     db.close();
@@ -349,7 +440,7 @@ describe("daemon-flavor busy handling", () => {
       expect(() => store.put("busy-branch", makeEntry({ repoName: "repo-a" }))).not.toThrow();
       // The map is the daemon's read model (spec "In-memory ownership") —
       // it must carry the enrichment even when the row could not.
-      expect(store.entries["busy-branch"]).toBeDefined();
+      expect(store.entries[composeKey("repo-a", "busy-branch")]).toBeDefined();
     } finally {
       lock.release();
     }
@@ -360,6 +451,7 @@ describe("daemon-flavor busy handling", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "daemon");
     const store = getBranchCacheStore(db);
+    const key = composeKey("repo-a", "stale-busy");
     store.put("stale-busy", makeEntry({ repoName: "repo-a", fetchedAt: Date.now() - 40 * 24 * 60 * 60 * 1000 }));
 
     const lock = holdWriteLock(dbPath);
@@ -367,11 +459,11 @@ describe("daemon-flavor busy handling", () => {
       expect(() => store.gc(new Set(["repo-a"]), 30 * 24 * 60 * 60 * 1000)).not.toThrow();
       // Rows survived, so the map must too — otherwise the next reload()
       // would resurrect an entry the map had already dropped.
-      expect(store.entries["stale-busy"]).toBeDefined();
+      expect(store.entries[key]).toBeDefined();
     } finally {
       lock.release();
     }
-    expect(rowCount(db, "stale-busy")).toBe(1);
+    expect(rowCount(db, key)).toBe(1);
     db.close();
   }, 10_000);
 
@@ -379,16 +471,17 @@ describe("daemon-flavor busy handling", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "daemon");
     const store = getBranchCacheStore(db);
+    const key = composeKey("repo-a", "doomed");
     store.put("doomed", makeEntry({ repoName: "repo-a" }));
 
     const lock = holdWriteLock(dbPath);
     try {
-      expect(() => store.delete("doomed")).not.toThrow();
-      expect(store.entries["doomed"]).toBeDefined();
+      expect(() => store.delete(key)).not.toThrow();
+      expect(store.entries[key]).toBeDefined();
     } finally {
       lock.release();
     }
-    expect(rowCount(db, "doomed")).toBe(1);
+    expect(rowCount(db, key)).toBe(1);
     db.close();
   }, 10_000);
 });
@@ -443,7 +536,8 @@ describe("rekeyBranchCacheTable", () => {
     getBranchCacheStore().put("feature/x", makeEntry({ repoName: "remote:gitlab.com%2Fg%2Fr" }));
     const report = await rekeyBranchCacheTable();
     expect(report.migrated).toEqual([]);
-    const row = getStateDb().query("SELECT repo FROM branch_cache WHERE branch = ?;").get("feature/x") as { repo: string };
+    const row = getStateDb().query("SELECT repo FROM branch_cache WHERE branch = ?;")
+      .get(composeKey("remote:gitlab.com%2Fg%2Fr", "feature/x")) as { repo: string };
     expect(row.repo).toBe("remote:gitlab.com%2Fg%2Fr");
   });
 
@@ -451,7 +545,8 @@ describe("rekeyBranchCacheTable", () => {
     getBranchCacheStore().put("feature/y", makeEntry({ repoName: "ghost-repo" }));
     const report = await rekeyBranchCacheTable();
     expect(report.retained).toEqual(["ghost-repo"]);
-    const row = getStateDb().query("SELECT repo FROM branch_cache WHERE branch = ?;").get("feature/y") as { repo: string };
+    const row = getStateDb().query("SELECT repo FROM branch_cache WHERE branch = ?;")
+      .get(composeKey("ghost-repo", "feature/y")) as { repo: string };
     expect(row.repo).toBe("ghost-repo");
     expect(warnSpy).toHaveBeenCalled();
   });

@@ -38,6 +38,7 @@ import {
 import { isTreeLocked, withTreeLock } from "../worktree/locks.ts";
 import { ensureWorktreeRegistryRekeyed } from "../repo-index.ts";
 import { createTree, scrapTree, type CreateDeps } from "../worktree/create.ts";
+import { branchOf } from "../state/branch-cache.ts";
 import { classifyDirtyAsync, disposeTree } from "../worktree/dispose.ts";
 import { changedSince, stepsToRun, runReadySteps } from "../worktree/ready.ts";
 import { MAX_LOGGED_OUTPUT, outputTail } from "../subprocess.ts";
@@ -513,11 +514,21 @@ async function actOnTree(
     return "fired";
   }
 
+  // disposeTree's joinedMr looks up by the BARE branch (its own contract,
+  // unaware of the composite `${identity}:${branch}` keys this repo's
+  // cache map now carries): hand it a bare-keyed, this-repo-only view so a
+  // same-named branch in another repo can never shadow the real entry.
+  const scopedEntries: Record<string, ReactorCacheEntry> = {};
+  for (const [key, entry] of Object.entries(deps.cacheEntries)) {
+    if (entry.repoName && entry.repoName !== deps.repoName) continue;
+    scopedEntries[branchOf(key)] = entry;
+  }
+
   const outcome = await disposeTree(
     {
       repoName: deps.repoName,
       repoPath: deps.repoPath,
-      cacheEntries: deps.cacheEntries as Record<string, { mr: any; repoName?: string }>,
+      cacheEntries: scopedEntries as Record<string, { mr: any; repoName?: string }>,
       emit: deps.emit,
       log: deps.log,
       killProcesses: appConfig.killProcesses,
@@ -591,19 +602,20 @@ export async function detectTransitions(deps: ReactorDeps): Promise<void> {
     if (!key.startsWith(prefix)) nextMrState[key] = value;
   }
 
-  for (const [branch, entry] of Object.entries(cacheEntries)) {
+  for (const [mapKey, entry] of Object.entries(cacheEntries)) {
     // Unattributed entries (older caches predate repoName) may join any repo;
     // an entry attributed elsewhere never does.
     if (entry.repoName && entry.repoName !== repoName) continue;
     if (!entry.mr) continue;
+    const branch = branchOf(mapKey);
 
     const cur = entry.mr.state ?? null;
-    const key = prefix + branch;
-    const prev = state.mrState[key] ?? null;
+    const mrKey = prefix + branch;
+    const prev = state.mrState[mrKey] ?? null;
     const iid = typeof entry.mr.iid === "number" ? String(entry.mr.iid) : branch;
 
     if (cur === "opened") {
-      nextMrState[key] = "opened";
+      nextMrState[mrKey] = "opened";
       // Reopen: forget this MR's fires so a later merge acts again, and hand
       // any disposable tree back to its owner.
       for (const fireKey of [...fired]) {
@@ -613,7 +625,7 @@ export async function detectTransitions(deps: ReactorDeps): Promise<void> {
       continue;
     }
 
-    nextMrState[key] = cur;
+    nextMrState[mrKey] = cur;
     if (prev !== "opened") continue; // cold-boot safety: unknown prev never fires
     if (!cur || !TERMINAL_STATES.has(cur)) continue;
 
@@ -633,7 +645,7 @@ export async function detectTransitions(deps: ReactorDeps): Promise<void> {
       reaction = worse(reaction, result === "busy" ? "retry" : result);
     }
 
-    if (reaction === "retry") nextMrState[key] = "opened";
+    if (reaction === "retry") nextMrState[mrKey] = "opened";
     else if (reaction === "fired") fired.add(fireKey);
   }
 

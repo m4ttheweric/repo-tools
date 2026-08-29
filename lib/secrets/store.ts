@@ -44,7 +44,8 @@ export interface SecretsExecResult {
 }
 
 export interface SecretsExecSeam {
-  run(cmd: string[], opts?: { env?: Record<string, string>; sensitive?: boolean }): Promise<SecretsExecResult>;
+  /** `timeoutMs` overrides the default kill-and-reject deadline (see SecretsTimeoutError). */
+  run(cmd: string[], opts?: { env?: Record<string, string>; sensitive?: boolean; timeoutMs?: number }): Promise<SecretsExecResult>;
   fileExists(path: string): boolean;
   /**
    * Direct child names of a directory (not recursive); [] when the directory
@@ -137,6 +138,16 @@ export function validateKey(key: string): void {
 export function validateSlug(slug: string): void {
   if (!SLUG_PATTERN.test(slug)) throw new InvalidSecretsSegmentError("slug", slug, SLUG_PATTERN);
 }
+
+/** Thrown when a sops/keychain spawn does not exit in time (a locked keychain pops a GUI dialog and blocks until clicked). */
+export class SecretsTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SecretsTimeoutError";
+  }
+}
+
+const DEFAULT_SECRETS_TIMEOUT_MS = 30_000;
 
 /** Validates `domain` — every path construction routes through here, so this is the one choke point. */
 export function secretsFilePath(domain: string): string {
@@ -458,14 +469,23 @@ export function buildSecretsSpawnOptions(opts?: { env?: Record<string, string>; 
   };
 }
 
+type SecretsSpawn = (argv: string[], opts: any) => {
+  stdout: ReadableStream;
+  stderr: ReadableStream;
+  exited: Promise<number>;
+  kill: (sig?: number | string) => void;
+};
+
 /**
  * Real seam: Bun.spawn-based capture, real fs reads/writes. `cwd`, when
  * given, is pinned for every sops spawn this seam instance makes — the
  * personal store's default seam (`cwd` omitted) resolves `<mattstackHome>/user`;
  * team-store.ts constructs its own instance per team with `cwd` set to that
- * team's clone root (see `buildTeamSpawnOptions`).
+ * team's clone root (see `buildTeamSpawnOptions`). `spawn` is injectable so
+ * tests can model a hanging child without a real subprocess; the default is
+ * the real `Bun.spawn`, so production behavior is unchanged.
  */
-export function createRealSecretsExecSeam(cwd?: string): SecretsExecSeam {
+export function createRealSecretsExecSeam(cwd?: string, spawn: SecretsSpawn = Bun.spawn as unknown as SecretsSpawn): SecretsExecSeam {
   return {
     async run(cmd, opts) {
       debugLog(cmd, opts?.sensitive);
@@ -475,13 +495,30 @@ export function createRealSecretsExecSeam(cwd?: string): SecretsExecSeam {
       // stay unaware of the bundle.
       const [bin, ...args] = cmd;
       const resolved = bin === undefined ? cmd : [resolveBundledTool(bin), ...args];
-      const proc = Bun.spawn(resolved, buildSecretsSpawnOptions({ env: opts?.env, cwd }));
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      return { code, stdout, stderr };
+      const proc = spawn(resolved, buildSecretsSpawnOptions({ env: opts?.env, cwd }));
+      const timeoutMs = opts?.timeoutMs ?? DEFAULT_SECRETS_TIMEOUT_MS;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          proc.kill();
+        } catch {
+          // already exited
+        }
+      }, timeoutMs);
+      try {
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        if (timedOut) {
+          throw new SecretsTimeoutError(`${cmd[0]}: did not exit within ${timeoutMs}ms (keychain prompt pending?)`);
+        }
+        return { code, stdout, stderr };
+      } finally {
+        clearTimeout(timer);
+      }
     },
     fileExists(path) {
       return existsSync(path);

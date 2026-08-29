@@ -45,6 +45,8 @@ export function startSocketServer(opts: {
           try { payload = await req.json(); } catch { /* empty body is fine */ }
         }
 
+        const client = req.headers.get("x-rt-client");
+        if (client) (payload as any)._client = client;
         const result = await handleCommand(cmd, payload, req.signal);
         return Response.json(result);
       } catch (err) {

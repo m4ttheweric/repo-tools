@@ -26,6 +26,7 @@ import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
 import { lazyChildLogger } from "./daemon-logger.ts";
 import { repoLabel } from "./repo-arg.ts";
+import { branchOf } from "./state/branch-cache.ts";
 import {
   getNotifierStateBlob,
   setNotifierStateBlob,
@@ -552,6 +553,11 @@ function detectBranchTransitions(
   prefs: NotificationPrefs,
   currentUserId: number | null,
 ): void {
+  // `branch` is the branch-cache map key (composite `${identity}:${branch}`
+  // when attributed, bare otherwise), kept as-is here rather than unwrapped
+  // to the bare branch, so `firedKey` and the snapshot map come out
+  // repo-scoped for free. `branchOf(branch)` is used only for the
+  // human-readable notification text.
   for (const [branch, entry] of Object.entries(current)) {
     // If the MR slot is null we have no fresh data — skipping prevents
     // false "transition" detection that would clear the fired key set.
@@ -566,7 +572,8 @@ function detectBranchTransitions(
     if (!was) continue; // First time seeing this branch — no transition
     const now = snapshotBranch(entry, was);
 
-    const branchShort = branch.length > 40 ? branch.slice(0, 39) + "…" : branch;
+    const displayBranch = branchOf(branch);
+    const branchShort = displayBranch.length > 40 ? displayBranch.slice(0, 39) + "…" : displayBranch;
     const mrUrl = entry.mr?.webUrl ?? undefined;
 
     // MR merged (opened → merged) — check BEFORE skipping merged MRs

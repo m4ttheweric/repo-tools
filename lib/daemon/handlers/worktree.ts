@@ -44,6 +44,7 @@ import {
 import { disambiguate, slugifyTicketTitle } from "../../worktree/branch-name.ts";
 import { createTree } from "../../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree, type DisposeDeps } from "../../worktree/dispose.ts";
+import { branchOf, composeKey } from "../../state/branch-cache.ts";
 import { isTreeLocked, withTreeLock } from "../../worktree/locks.ts";
 import {
   branchExistsLocalAsync,
@@ -172,10 +173,18 @@ function disposeDeps(
   repoName: string,
   repoPath: string,
 ): DisposeDeps {
+  // disposeTree's joinedMr looks up by the BARE branch: hand it a
+  // bare-keyed, this-repo-only view of the (now composite-keyed) cache map
+  // so a same-named branch in another repo can never shadow the real entry.
+  const cacheEntries: DisposeDeps["cacheEntries"] = {};
+  for (const [key, entry] of Object.entries(ctx.cache.entries)) {
+    if (entry.repoName && entry.repoName !== repoName) continue;
+    cacheEntries[branchOf(key)] = entry;
+  }
   return {
     repoName,
     repoPath,
-    cacheEntries: ctx.cache.entries as DisposeDeps["cacheEntries"],
+    cacheEntries,
     emit: opts.emit,
     log: ctx.log,
     killProcesses: loadWorktreeAppConfig().killProcesses,
@@ -558,9 +567,12 @@ export function createWorktreeHandlers(
         }
 
         for (const t of trees) {
-          // The join key is (repoName, branch): a bare-branch join would hand
-          // a tree another repo's MR when both repos use the same name.
-          const entry = t.branch ? entries[t.branch] : undefined;
+          // The join key is composeKey(repoName, branch): an exact hit scopes
+          // to this repo so a same-named branch elsewhere can never join here.
+          // The bare-key fallback only ever matches an unattributed entry
+          // (older caches predate repoName), never another repo's, since
+          // every attributed write now composes under its own identity.
+          const entry = t.branch ? (entries[composeKey(repoName, t.branch)] ?? entries[t.branch]) : undefined;
           const mr =
             entry?.mr && (!entry.repoName || entry.repoName === repoName)
               ? { iid: entry.mr.iid, state: entry.mr.state, title: entry.mr.title }

@@ -87,6 +87,30 @@ describe("rt status fallback (no daemon)", () => {
     expect(existsSync(rtDirPath) ? readdirSync(rtDirPath) : []).toEqual([]);
   });
 
+  test("S069/Task 10: two repos sharing a branch name display as a bare branch, not a composite key", async () => {
+    const dbPath = stateDbPath();
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+    const db = openStateDb(dbPath);
+    const store = getBranchCacheStore(db);
+    store.put("shared-branch", {
+      ticket: null, linearId: "", mr: null, fetchedAt: 1, repoName: "repo-a",
+    });
+    store.put("shared-branch", {
+      ticket: null, linearId: "", mr: null, fetchedAt: 2, repoName: "repo-b",
+    });
+    db.close();
+
+    const data = await fetchStatusData();
+
+    // Both rows are real, distinct composite-keyed rows in state.db...the
+    // dashboard's flat bare-branch dict can only show one, never a raw
+    // composite key, and never crashes reconciling the two.
+    expect(Object.keys(data.branches)).toEqual(["shared-branch"]);
+    const winner = data.branches["shared-branch"]!.repoName;
+    expect(winner).toBeDefined();
+    expect(["repo-a", "repo-b"]).toContain(winner!);
+  });
+
   test("an empty branch_cache table serves an empty dashboard", async () => {
     mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
     openStateDb(stateDbPath()).close();

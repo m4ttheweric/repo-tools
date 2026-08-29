@@ -81,6 +81,12 @@ interface ApiWSData {
 
 const wsClients = new Set<ServerWebSocket<ApiWSData>>();
 
+/** Count of currently connected WS broadcast clients, for health reporting. */
+export function apiWsClientCount(): number {
+  return wsClients.size;
+}
+
+
 let apiServerLog: { warn: (o: unknown, m: string) => void } = { warn: () => {} };
 
 /** Consecutive Bun `ws.send()` backpressure (-1) returns tolerated before a
@@ -160,7 +166,7 @@ export function clearWsClients(): void {
 export function buildCorsHeaders(origin: string | null, trusted: boolean): Record<string, string> {
   const headers: Record<string, string> = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-RT-Token",
+    "Access-Control-Allow-Headers": "Content-Type, X-RT-Token, X-RT-Client",
   };
   if (origin && trusted) {
     headers["Access-Control-Allow-Origin"] = origin;
@@ -439,6 +445,8 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
           payload = coerceQueryParams(url.searchParams);
         }
 
+        const client = req.headers.get("x-rt-client");
+        if (client) payload._client = client;
         const result = await handleCommand(route.cmd, payload, req.signal);
         return Response.json(result, { headers: corsHeaders });
       } catch (err) {

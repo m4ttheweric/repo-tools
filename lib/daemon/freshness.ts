@@ -38,6 +38,7 @@ import { redactCredentials } from "./redact-credentials.ts";
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { getDiscussionsFileStore } from "./discussions-file-store.ts";
 import { createCursorStore, type CursorStore } from "../state/index.ts";
+import { composeKey, branchOf } from "../state/branch-cache.ts";
 import { runCapture } from "../subprocess.ts";
 
 const log = lazyChildLogger("freshness");
@@ -310,6 +311,7 @@ export async function getRepoContext(
     if (cachedForToken.token !== currentSecrets.gitlabToken) {
       stopWatch(repoName);
       userIdResolved = false;
+      selfUsername = null;
       providers.delete(repoName);
     }
   }
@@ -502,9 +504,9 @@ async function processKeys(
   // iid → branch for this repo, rebuilt per batch (the cache may have been
   // reloaded from disk by the full poll since the last tick).
   const branchByIid = new Map<number, string>();
-  for (const [branch, entry] of Object.entries(ctx.cache.entries)) {
+  for (const [key, entry] of Object.entries(ctx.cache.entries)) {
     if (entry.repoName !== repoName) continue;
-    if (typeof entry.mr?.iid === "number") branchByIid.set(entry.mr.iid, branch);
+    if (typeof entry.mr?.iid === "number") branchByIid.set(entry.mr.iid, branchOf(key));
   }
 
   const g = (overrides.grantsFor ?? ((r: string) => grants(loadRepoTracking(), r)))(repoName);
@@ -542,7 +544,7 @@ async function processKeys(
           }
           const pr = await provider.fetchSingleMR(projectPath, iid, getCurrentUserId());
           const feedBranch = branch
-            ?? (pr && ctx.cache.entries[pr.sourceBranch]?.repoName === repoName ? pr.sourceBranch : undefined);
+            ?? (pr && ctx.cache.entries[composeKey(repoName, pr.sourceBranch)] !== undefined ? pr.sourceBranch : undefined);
           if (feedBranch) mutated = updateEntry(env, repoName, feedBranch, pr) || mutated;
           if (wantProject && pr) upsertProject(pr);
           // GitLab's approval action bumps no updatedAt, so this is the only
@@ -576,8 +578,8 @@ async function processKeys(
           break;
         }
         case "branch": {
-          const entry = ctx.cache.entries[k.ref];
-          const isOurs = entry !== undefined && entry.repoName === repoName;
+          const entry = ctx.cache.entries[composeKey(repoName, k.ref)];
+          const isOurs = entry !== undefined;
           let fetchedForRef: PullRequest | null | undefined;
           if (isOurs) {
             fetchedForRef = await provider.fetchPullRequestByBranch(projectPath, k.ref, "all");
@@ -636,7 +638,7 @@ async function processKeys(
  */
 function updateEntry(env: FreshnessEnv, repoName: string, branch: string, pr: PullRequest | null): boolean {
   const { ctx } = env;
-  const existing = ctx.cache.entries[branch];
+  const existing = ctx.cache.entries[composeKey(repoName, branch)];
   if (!existing) return false; // lost race with a full refresh — skip
   const mr = pr ? toMRInfo(pr) : null;
   ctx.cache.put(branch, { ...existing, mr, fetchedAt: Date.now(), repoName });
@@ -654,8 +656,8 @@ function updateEntry(env: FreshnessEnv, repoName: string, branch: string, pr: Pu
  */
 export function applyMRWriteback(env: FreshnessEnv, repoName: string, projectPath: string, pr: PullRequest): void {
   let branch: string | null = null;
-  for (const [b, entry] of Object.entries(env.ctx.cache.entries)) {
-    if (entry.repoName === repoName && entry.mr?.iid === pr.iid) { branch = b; break; }
+  for (const [key, entry] of Object.entries(env.ctx.cache.entries)) {
+    if (entry.repoName === repoName && entry.mr?.iid === pr.iid) { branch = branchOf(key); break; }
   }
   if (branch) updateEntry(env, repoName, branch, pr);
 
@@ -702,7 +704,7 @@ async function runGapFill(env: FreshnessEnv, target: RepoTarget, overrides: Mapp
 
   const nullMrBranches = Object.entries(ctx.cache.entries)
     .filter(([, e]) => e.repoName === repoName && e.mr == null)
-    .map(([branch]) => branch);
+    .map(([key]) => branchOf(key));
   if (nullMrBranches.length === 0) return;
   if (!provider.fetchPullRequestsByBranches) return;
 

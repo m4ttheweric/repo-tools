@@ -51,7 +51,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 23 keys are migrated:true", () => {
+    test("exactly 24 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
@@ -59,7 +59,7 @@ describe("settings/registry", () => {
           "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees",
           "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
           "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.integrations", "rt.hooks",
+          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.logLevel", "rt.integrations", "rt.hooks",
           "rt.apiPort",
         ].sort(),
       );
@@ -72,6 +72,15 @@ describe("settings/registry", () => {
       expect(def?.type).toBe("number");
       expect(def?.merge).toBe("replace");
       expect(def?.default).toBe(14);
+    });
+
+    test("rt.daemonPath is a machine-scoped string key with no default", () => {
+      const def = getDef("rt.daemonPath");
+      expect(def).toBeDefined();
+      expect(def!.type).toBe("string");
+      expect(def!.scopes).toEqual(["machine"]);
+      expect(def!.default).toBeUndefined();
+      expect(def!.pathGuardFields).toBeUndefined();
     });
 
     test("rt.worktreeApp is a machine-only field-bag object with no default (ownership latch)", () => {
@@ -198,13 +207,13 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 23 migrated:true keys and the 43 suite keys", () => {
+    test("has exactly the 24 migrated:true keys and the 44 suite keys", () => {
       const migratedFalseKeys: string[] = [];
       const migratedTrueKeys = [
         "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
         "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
         "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.integrations", "rt.hooks",
+        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.logLevel", "rt.integrations", "rt.hooks",
         "rt.apiPort",
       ];
       const suiteKeys = [
@@ -251,8 +260,9 @@ describe("settings/registry", () => {
         "agent.account",
         "agent.extraArgs",
         "rt.trustedBrowserOrigins",
+        "rt.daemonPath",
       ];
-      expect(suiteKeys).toHaveLength(43);
+      expect(suiteKeys).toHaveLength(44);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),

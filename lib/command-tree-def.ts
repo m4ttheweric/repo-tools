@@ -664,6 +664,20 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Terminal", flag: "--terminal", type: "boolean", default: false, hint: "Tail logs in terminal via lnav or pino-pretty instead of opening the web viewer (alias -t)" },
         ],
       },
+      "log-level": {
+        description: "Show or set the daemon's live log level",
+        module: "./commands/daemon.ts",
+        fn: "setLogLevel",
+        omitBehavior: "list",
+        args: [
+          { name: "Level", type: "select", hint: "Omit to show the current level",
+            options: [
+              { value: "trace", label: "trace" }, { value: "debug", label: "debug" },
+              { value: "info", label: "info" }, { value: "warn", label: "warn" },
+              { value: "error", label: "error" },
+            ] },
+        ],
+      },
     },
   },
 

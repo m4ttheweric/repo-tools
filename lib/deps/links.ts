@@ -8,7 +8,7 @@
  */
 
 import { dirname, join } from "path";
-import { installRtBinary } from "../dev-mode.ts";
+import { installRtBinary, isDevModeWrapperContent } from "../dev-mode.ts";
 import type { Probes } from "../setup/probes.ts";
 import { readSetupState, updateSetupState } from "../setup/state.ts";
 import { bundledToolExec, isOurLink, LINK_TAG, linkPath, userCopyOnPath } from "./resolve.ts";
@@ -39,14 +39,18 @@ const REAL_SEAMS: LinkSeams = { installRtBinary: (src) => installRtBinary(src) }
 
 /**
  * rt in dev mode is signalled the same way lib/dev-mode.ts's currentMode()
- * detects it — a "#!" wrapper script at the link path — but read through the
- * Probes seam instead of raw fs, and narrowed to exclude our own tagged
- * wrapper (whose second line carries LINK_TAG, not a dev-mode shebang body).
+ * detects it: shares isDevModeWrapperContent so the two call sites can never
+ * disagree. Reads through the Probes seam's readPrefix -- a real bounded
+ * (4096-byte) read in production, same as currentMode()'s own standalone
+ * read, but routed through `p` so link()'s tests (which drive the rest of
+ * this function entirely via a fake bundle/home) don't have to touch the
+ * real machine's HOME just to simulate this one check. currentMode() itself
+ * keeps its own direct real-fs read -- it has no Probes seam to route
+ * through, and is not this function's concern.
  */
-function isDevModeWrapper(p: Pick<Probes, "readFile">, path: string): boolean {
-  const content = p.readFile(path);
-  if (!content || !content.startsWith("#!")) return false;
-  return !(content.split("\n")[1] ?? "").startsWith(LINK_TAG);
+function isDevModeWrapper(p: Pick<Probes, "readPrefix">, path: string): boolean {
+  const prefix = p.readPrefix(path);
+  return prefix !== null && isDevModeWrapperContent(prefix);
 }
 
 /** Single-quotes `s` for /bin/sh, escaping embedded single quotes via the standard '\'' trick — safe against $, `, \, " and everything else a relocated bundle path could contain. */

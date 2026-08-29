@@ -10,6 +10,7 @@
  */
 
 import type { HandlerContext, HandlerMap, CacheEntry } from "./types.ts";
+import { branchOf, composeKey, getByBranch } from "../../state/branch-cache.ts";
 
 /** How long an entry that resolved a ticket id but never got the ticket is
     left alone before another lookup is spent on it. Short enough that a key
@@ -36,26 +37,40 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
     "cache:read": async (payload) => {
       const branches = payload?.branches as string[] | undefined;
       const maxAgeMs = payload?.maxAgeMs as number | undefined;
+      // Optional exact scoping: an absent repoIdentity falls back to a
+      // suffix match across repos (today's callers never pass this yet).
+      const repoIdentity = payload?.repoIdentity as string | undefined;
+
+      const lookup = (b: string): CacheEntry | undefined =>
+        repoIdentity ? ctx.cache.entries[composeKey(repoIdentity, b)] : getByBranch(ctx.cache.entries, b);
 
       // Freshness gate: when the caller sets maxAgeMs, refresh first if the
       // oldest requested entry is older than that. Missing entries and an
       // empty cache count as infinitely stale. refreshCache is coalesced, so
       // concurrent stale readers share one refresh.
       if (typeof maxAgeMs === "number") {
-        const pool = branches ?? Object.keys(ctx.cache.entries);
+        const pool = branches ?? Object.keys(ctx.cache.entries).map(branchOf);
         let oldestFetchedAt = 0;
         if (pool.length > 0) {
-          oldestFetchedAt = Math.min(...pool.map((b) => ctx.cache.entries[b]?.fetchedAt ?? 0));
+          oldestFetchedAt = Math.min(...pool.map((b) => lookup(b)?.fetchedAt ?? 0));
         }
         if (Date.now() - oldestFetchedAt >= maxAgeMs) {
           await ctx.refreshCache();
         }
       }
 
-      if (!branches) return { ok: true, data: ctx.cache.entries };
+      // The output is always bare-branch keyed, never the store's internal
+      // composite keys, so cache:read's contract to the CLI/board/tray
+      // never changes underneath them.
+      if (!branches) {
+        const out: Record<string, CacheEntry> = {};
+        for (const [k, v] of Object.entries(ctx.cache.entries)) out[branchOf(k)] = v;
+        return { ok: true, data: out };
+      }
       const filtered: Record<string, CacheEntry> = {};
       for (const b of branches) {
-        if (ctx.cache.entries[b]) filtered[b] = ctx.cache.entries[b];
+        const entry = lookup(b);
+        if (entry) filtered[b] = entry;
       }
       return { ok: true, data: filtered };
     },
@@ -66,9 +81,10 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
     },
 
     "branch:enrich": async (payload) => {
-      const branch    = payload?.branch    as string;
-      const repoPath  = payload?.repoPath  as string;
-      const remoteUrl = payload?.remoteUrl as string | undefined;
+      const branch      = payload?.branch      as string;
+      const repoPath    = payload?.repoPath    as string;
+      const remoteUrl   = payload?.remoteUrl   as string | undefined;
+      const repoIdentity = payload?.repoIdentity as string | undefined;
       // Test seam: the enricher, so a test never reaches Linear or the forge.
       const inject    = payload?.enrich    as
         | ((b: unknown, r: unknown, o: unknown) => Promise<void>)
@@ -76,7 +92,10 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
 
       if (!branch) return { ok: false, error: "missing branch" };
 
-      const cached = ctx.cache.entries[branch];
+      const lookupBranch = (): CacheEntry | undefined =>
+        repoIdentity ? ctx.cache.entries[composeKey(repoIdentity, branch)] : getByBranch(ctx.cache.entries, branch);
+
+      const cached = lookupBranch();
       const healing = !!cached;
       if (cached && !isIncomplete(cached)) {
         return { ok: true, data: cached, source: "cache" };
@@ -102,8 +121,9 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
         // it also picks up rows a racing CLI enrichment upserted.
         ctx.cache.reload();
 
-        if (ctx.cache.entries[branch]) {
-          return { ok: true, data: ctx.cache.entries[branch], source: "fresh" };
+        const fresh = lookupBranch();
+        if (fresh) {
+          return { ok: true, data: fresh, source: "fresh" };
         }
         return { ok: true, data: null, source: "empty" };
       } catch (err) {

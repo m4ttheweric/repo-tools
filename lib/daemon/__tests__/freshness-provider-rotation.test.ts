@@ -32,6 +32,19 @@ test("getRepoContext invalidates the cached provider when gitlabToken is removed
   expect(src).toMatch(/if \(cachedForToken\.token !== currentSecrets\.gitlabToken\)/);
 });
 
+test("getRepoContext resets the cached selfUsername when the token changes, not just userIdResolved", () => {
+  const src = readFileSync(resolve(import.meta.dir, "..", "freshness.ts"), "utf8");
+  const tokenChangeBlock = src.match(
+    /if \(cachedForToken\.token !== currentSecrets\.gitlabToken\) \{\s*\n([\s\S]*?)\n\s*\}/,
+  );
+  expect(tokenChangeBlock).not.toBeNull();
+  // resolveSelfUsername() short-circuits on a truthy cached selfUsername
+  // (`if (selfUsername) return selfUsername;`), bypassing userIdResolved
+  // entirely, so the previous token's identity keeps being served unless
+  // selfUsername is cleared alongside it here.
+  expect(tokenChangeBlock![1]).toMatch(/selfUsername = null;/);
+});
+
 test("reconcileFreshnessImpl drops a stale-token watch before skipping already-watched repos (S048/S049 fix 2)", () => {
   const src = readFileSync(resolve(import.meta.dir, "..", "freshness.ts"), "utf8");
   const staleWatchDrop = src.match(/existing\.token !== secrets\.gitlabToken\)\s*stopWatch\(repoName\);/);
