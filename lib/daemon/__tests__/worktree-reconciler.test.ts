@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import * as fsNamespace from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import type { Logger } from "pino";
@@ -10,6 +11,7 @@ import { composeKey } from "../../state/branch-cache.ts";
 import { machineSettingsPath, rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { deriveRepoIdentity, parseIdentity } from "../../settings/identity.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
+import * as gitAsync from "../../worktree/git-async.ts";
 import {
   branchExistsLocalAsync,
   currentBranchAsync,
@@ -144,6 +146,10 @@ describe("reconcileRepoRegistry", () => {
     repo = makeRepo();
     repoName = "acme";
     events = [];
+    // S077 flipped the unowned default to disabled; reconcileRepoRegistry's
+    // creating-entry scrap is itself gated on this flag, so this suite's
+    // fixtures opt in explicitly instead of riding the old implicit default.
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: true });
   });
 
   test("adopts main and a manually-added worktree as unmanaged", async () => {
@@ -165,7 +171,7 @@ describe("reconcileRepoRegistry", () => {
     expect(registry.length).toBe(2);
   });
 
-  test("rm -rf'd manual tree is pruned, and prune lets the name be reused by createTree", async () => {
+  test("a missing path is held for MISSING_PRUNE_PASSES, then pruned and the name reusable by createTree", async () => {
     addBareOrigin(repo);
     const name = "reuseme";
     const manualPath = join(repo, ".worktrees", name);
@@ -178,13 +184,25 @@ describe("reconcileRepoRegistry", () => {
     // registration (and the registry entry) stale.
     rmSync(manualPath, { recursive: true, force: true });
 
+    // S063: held (missCount climbing), not pruned, for the first
+    // MISSING_PRUNE_PASSES - 1 consecutive misses.
+    for (let i = 1; i < __test__.MISSING_PRUNE_PASSES; i++) {
+      const trees = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+      const rec = findByPath(trees, manualPath);
+      expect(rec).toBeDefined();
+      expect(rec!.missCount).toBe(i);
+    }
+
+    // The MISSING_PRUNE_PASSES'th consecutive miss drops the row.
     const trees = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
     expect(findByPath(trees, manualPath)).toBeUndefined();
     expect(findByPath(loadRegistry(repoName), manualPath)).toBeUndefined();
 
-    // Reusing the same name must succeed now that `git worktree prune` ran;
-    // without it git still holds the stale worktree registration at manualPath.
-    await declareWorktrees(repo, repoName, { namePool: [name] });
+    // Reusing the same name must succeed now that `git worktree prune` ran
+    // (it runs every one of the passes above, since the parent dir stays
+    // readable throughout) and the registry row is gone. root pins the pool
+    // back at manualPath's directory, matching the manually added worktree.
+    await declareWorktrees(repo, repoName, { namePool: [name], root: join(repo, ".worktrees") });
 
     const result = await createTree({
       repoName,
@@ -197,6 +215,57 @@ describe("reconcileRepoRegistry", () => {
     if (!result.ok) return;
     expect(result.tree.name).toBe(name);
     expect(result.tree.path).toBe(manualPath);
+  });
+
+  test("a path that reappears after a miss clears missCount", async () => {
+    const manualPath = join(repo, ".worktrees", "reappear");
+    execSync(`git worktree add -b reappear-branch ${manualPath}`, { cwd: repo, shell: "/bin/zsh" });
+    await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    expect(findByPath(loadRegistry(repoName), manualPath)).toBeDefined();
+
+    rmSync(manualPath, { recursive: true, force: true });
+    const afterMiss = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    expect(findByPath(afterMiss, manualPath)!.missCount).toBe(1);
+
+    // The mount (or whatever removed it) comes back: re-add the same branch
+    // at the same path.
+    execSync(`git worktree add ${manualPath} reappear-branch`, { cwd: repo, shell: "/bin/zsh" });
+    const afterReappear = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    const rec = findByPath(afterReappear, manualPath);
+    expect(rec).toBeDefined();
+    expect(rec!.missCount).toBeUndefined();
+  });
+
+  test("git worktree prune is skipped when a registered tree's parent dir is unreadable", async () => {
+    // A registered path whose parent directory does not exist at all: the
+    // shape a network-mount blip leaves behind, distinct from a path merely
+    // absent from git's own worktree list.
+    const unreadableParent = join(tmpdir(), `rtrecon-unreadable-${Date.now()}`);
+    saveRegistry(repoName, [
+      {
+        name: "ghost",
+        path: join(unreadableParent, "ghost-tree"),
+        kind: "ephemeral",
+        state: "on-deck",
+        branch: "on-deck/ghost",
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+
+    const calls: string[][] = [];
+    const originalRunGit = gitAsync.runGit;
+    const runGitSpy = spyOn(gitAsync, "runGit").mockImplementation(async (cwd, args, opts) => {
+      calls.push(args);
+      return originalRunGit(cwd, args, opts);
+    });
+
+    try {
+      await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    } finally {
+      runGitSpy.mockRestore();
+    }
+
+    expect(calls.some((a) => a[0] === "worktree" && a[1] === "prune")).toBe(false);
   });
 
   test("branch rename updates the registry's ground-truth branch field", async () => {
@@ -359,6 +428,10 @@ describe("createWorktreeReconciler", () => {
     __test__.createBackoff.clear();
     repo = makeRepo();
     repoName = "acme";
+    // S077 flipped the unowned default to disabled; runOnce gates freshen/
+    // replenish/reap on it, so this suite opts in explicitly (the "app
+    // disabled" test below overrides this with its own write).
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: true });
   });
 
   test("runOnce reconciles only repos with registry entries or a worktrees config", async () => {
@@ -517,6 +590,55 @@ describe("createWorktreeReconciler", () => {
     // Reap skipped: it deletes directories, so it is gated like every other
     // mutating duty.
     expect(existsSync(seededTrash)).toBe(true);
+  });
+
+  test("S077: an unowned machine with a team-only onDeck declaration stays dormant, replenish never creates", async () => {
+    // Fresh HOME, deliberately bypassing this describe's beforeEach write: the
+    // app-level toggle here is genuinely unowned (no file, no store), not
+    // merely disabled.
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-dormant-home-")));
+    closeStateDb();
+    const dormantRepo = makeRepo();
+    addBareOrigin(dormantRepo);
+    const dormantRepoName = "acme-dormant";
+    await declareWorktrees(dormantRepo, dormantRepoName, { onDeck: 2, root: join(dormantRepo, ".worktrees") });
+
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => ({ [dormantRepoName]: dormantRepo }),
+      emit: () => {},
+      log: fakeLog(),
+    });
+
+    await reconciler.runOnce();
+
+    const trees = loadRegistry(dormantRepoName);
+    expect(trees.some((t) => t.kind === "main")).toBe(true); // read-only reconcile still ran
+    expect(trees.some((t) => t.kind === "ephemeral")).toBe(false); // replenish never ran
+  });
+
+  test("S077: a legacy parking-lot.json opts an otherwise-unowned machine in, and replenish builds", async () => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-legacy-home-")));
+    closeStateDb();
+    mkdirSync(rtDir(), { recursive: true });
+    writeFileSync(join(rtDir(), "parking-lot.json"), JSON.stringify({ enabled: true, killProcesses: false }));
+
+    const legacyRepo = makeRepo();
+    addBareOrigin(legacyRepo);
+    const legacyRepoName = "acme-legacy-owned";
+    await declareWorktrees(legacyRepo, legacyRepoName, { onDeck: 1, root: join(legacyRepo, ".worktrees") });
+
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => ({ [legacyRepoName]: legacyRepo }),
+      emit: () => {},
+      log: fakeLog(),
+    });
+
+    await reconciler.runOnce();
+
+    const trees = loadRegistry(legacyRepoName).filter((t) => t.kind === "ephemeral" && t.state === "on-deck");
+    expect(trees.length).toBe(1);
   });
 
   test("a legacy name-keyed registry is re-keyed onto the repo's identity on first reconcile", async () => {
@@ -1173,6 +1295,202 @@ describe("freshen", () => {
     expect(events.some((e) => e.data?.path === pathB)).toBe(false);
     expect(loadRegistry(repoName).find((t) => t.path === pathB)!.state).toBe("claimed");
   }, 10_000);
+
+  test("freshen: a failed stash push aborts without popping; a pre-existing stash is untouched", async () => {
+    // kind: ephemeral, not main: main's own blockers-after-fetch path aborts
+    // before ever attempting a stash (see the "main gained uncommitted work"
+    // test below), so this generic push-failure mechanic is exercised via an
+    // on-deck-shaped tree instead.
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "ephemeral", state: "on-deck", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    // A stash the user made themselves, unrelated to this pass, that must
+    // survive an aborted freshen untouched.
+    writeFileSync(join(repo, "unrelated.txt"), "mine\n");
+    sh(`git stash push -u -m "my own work"`, repo);
+    const stashListBefore = execSync("git stash list", { cwd: repo, encoding: "utf8" });
+
+    // This pass's own dirt: a blocker freshenOne must try (and fail) to stash.
+    writeFileSync(join(repo, "current.txt"), "dirty\n");
+
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+
+    const calls: string[][] = [];
+    const originalRunGit = gitAsync.runGit;
+    const runGitSpy = spyOn(gitAsync, "runGit").mockImplementation(async (cwd, args, opts) => {
+      calls.push(args);
+      return originalRunGit(cwd, args, opts);
+    });
+    const stashSpy = spyOn(gitAsync, "stashChangesAsync").mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "boom",
+    });
+
+    try {
+      const result = await __test__.freshenOne(
+        { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+        rec,
+      );
+
+      expect(result).toBe(false);
+      expect(calls.some((a) => a[0] === "stash" && a[1] === "pop")).toBe(false);
+
+      const after = loadRegistry(repoName).find((t) => t.path === repo)!;
+      expect(after.retryFailures).toBe(1);
+      expect(after.nextRetryAt).toBeDefined();
+
+      const stashListAfter = execSync("git stash list", { cwd: repo, encoding: "utf8" });
+      expect(stashListAfter).toBe(stashListBefore);
+      expect(existsSync(join(repo, "current.txt"))).toBe(true);
+    } finally {
+      runGitSpy.mockRestore();
+      stashSpy.mockRestore();
+    }
+  });
+
+  test("freshen: a successful stash push pops the resolved Desktop name, never a positional ref", async () => {
+    // kind: ephemeral, not main, for the same reason as the push-failure test above.
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "ephemeral", state: "on-deck", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    writeFileSync(join(repo, "current.txt"), "dirty\n");
+
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+
+    const calls: string[][] = [];
+    const originalRunGit = gitAsync.runGit;
+    const runGitSpy = spyOn(gitAsync, "runGit").mockImplementation(async (cwd, args, opts) => {
+      calls.push(args);
+      return originalRunGit(cwd, args, opts);
+    });
+    // The resolver returns a sentinel name deliberately unlike stash@{0}, so
+    // a pop call carrying it proves the code used the resolved name rather
+    // than a positional ref.
+    const resolvedSpy = spyOn(gitAsync, "findDesktopStashAsync").mockResolvedValue({ name: "stash@{7}" });
+
+    try {
+      await __test__.freshenOne(
+        { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+        rec,
+      );
+
+      const popCall = calls.find((a) => a[0] === "stash" && a[1] === "pop");
+      expect(popCall).toBeDefined();
+      expect(popCall![2]).toBe("stash@{7}");
+      expect(popCall![2]).not.toBe("stash@{0}");
+    } finally {
+      runGitSpy.mockRestore();
+      resolvedSpy.mockRestore();
+    }
+  });
+
+  test("freshen: main that gained uncommitted work during the fetch window aborts without stashing", async () => {
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    // Stands in for edits arriving during the (up to 5 minute) fetch window:
+    // by the time freshenOne re-checks, main is no longer idle.
+    writeFileSync(join(repo, "current.txt"), "dirty\n");
+
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+
+    const stashSpy = spyOn(gitAsync, "stashChangesAsync");
+
+    try {
+      const result = await __test__.freshenOne(
+        { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+        rec,
+      );
+
+      expect(result).toBe(false);
+      expect(stashSpy).not.toHaveBeenCalled();
+
+      // Not a failure to back off on: the user is editing, not a broken step.
+      const after = loadRegistry(repoName).find((t) => t.path === repo)!;
+      expect(after.retryFailures ?? 0).toBe(0);
+      expect(after.nextRetryAt).toBeUndefined();
+
+      expect(existsSync(join(repo, "current.txt"))).toBe(true);
+    } finally {
+      stashSpy.mockRestore();
+    }
+  });
+
+  test("freshen: a dormant machine (enabled: false) never treats idle main as a freshen candidate", async () => {
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: false, killProcesses: false });
+
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    const beforeSha = await headSha(repo);
+    const clone = cloneOrigin(repo);
+    pushFile(clone, "feature.txt", "hi\n");
+
+    const events: Array<{ type: string; data: any }> = [];
+    await __test__.freshenRepo({
+      repoName,
+      repoPath: repo,
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+
+    expect(await headSha(repo)).toBe(beforeSha);
+    expect(events.length).toBe(0);
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+    expect(rec.readyAt).toBeUndefined();
+  });
+
+  test("freshen: a failed stash pop is a hard failure that emits worktree:stash-conflict", async () => {
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "ephemeral", state: "on-deck", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    writeFileSync(join(repo, "current.txt"), "dirty\n");
+
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+
+    const originalRunGit = gitAsync.runGit;
+    const runGitSpy = spyOn(gitAsync, "runGit").mockImplementation(async (cwd, args, opts) => {
+      if (args[0] === "stash" && args[1] === "pop") {
+        return { exitCode: 1, stdout: "", stderr: "conflict" };
+      }
+      return originalRunGit(cwd, args, opts);
+    });
+
+    const events: Array<{ type: string; data: any }> = [];
+
+    try {
+      const result = await __test__.freshenOne(
+        { repoName, repoPath: repo, emit: (type: string, data: unknown) => events.push({ type, data }), log: fakeLog() },
+        rec,
+      );
+
+      expect(result).toBe(false);
+      const conflictEvent = events.find((e) => e.type === "worktree:stash-conflict");
+      expect(conflictEvent).toBeDefined();
+      expect(conflictEvent!.data.repo).toBe(repoName);
+      expect(conflictEvent!.data.path).toBe(repo);
+      expect(typeof conflictEvent!.data.stashName).toBe("string");
+
+      const after = loadRegistry(repoName).find((t) => t.path === repo)!;
+      expect(after.retryFailures).toBe(1);
+      expect(after.nextRetryAt).toBeDefined();
+    } finally {
+      runGitSpy.mockRestore();
+    }
+  });
+});
+
+describe("freshen stash discipline: no positional stash ref in source", () => {
+  test("worktree-reconciler.ts never references a positional stash@{0}", () => {
+    const source = readFileSync(join(dirname(new URL(import.meta.url).pathname), "..", "worktree-reconciler.ts"), "utf8");
+    expect(source.includes("stash@{0}")).toBe(false);
+  });
 });
 
 // ─── Replenish / shrink ───────────────────────────────────────────────────────
@@ -1191,6 +1509,59 @@ describe("replenish / shrink", () => {
     __test__.createBackoff.clear();
     repo = makeRepo();
     addBareOrigin(repo);
+  });
+
+  test("S077: a team onDeck above the ceiling is clamped to WORKTREE_ONDECK_CEILING", async () => {
+    await declareWorktrees(repo, repoName, {
+      onDeck: __test__.WORKTREE_ONDECK_CEILING + 3,
+      root: join(repo, ".worktrees"),
+    });
+
+    await __test__.replenishAndShrink(
+      { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+      new Map(),
+      fakeAppConfig(),
+    );
+
+    const trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral" && t.state === "on-deck");
+    expect(trees.length).toBe(__test__.WORKTREE_ONDECK_CEILING);
+  });
+
+  test("S077: free disk below the threshold on cfg.root skips create and warns, without charging a create failure", async () => {
+    // A pool root distinct from repoPath (the RT-52 default shape: the pool
+    // root lives off-repo and can be a different volume). The mock only
+    // starves THIS path; repoPath itself reports plenty of free space, so the
+    // test fails if the precheck ever queries repoPath instead of cfg.root.
+    const externalRoot = realpathSync(mkdtempSync(join(tmpdir(), "rtpool-root-")));
+    await declareWorktrees(repo, repoName, { onDeck: 2, root: externalRoot });
+
+    const statfsSpy = spyOn(fsNamespace, "statfsSync").mockImplementation((path: any) => {
+      if (path === externalRoot) return { bavail: 1, bsize: 1 } as any;
+      return { bavail: Number.MAX_SAFE_INTEGER, bsize: 1 } as any;
+    });
+    const warns: unknown[][] = [];
+    const log = {
+      info: () => {},
+      error: () => {},
+      debug: () => {},
+      warn: (...args: unknown[]) => warns.push(args),
+    } as unknown as Logger;
+
+    try {
+      await __test__.replenishAndShrink(
+        { repoName, repoPath: repo, emit: () => {}, log },
+        new Map(),
+        fakeAppConfig(),
+      );
+    } finally {
+      statfsSpy.mockRestore();
+    }
+
+    const trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral");
+    expect(trees.length).toBe(0);
+    expect(warns.some((w) => JSON.stringify(w).includes("free disk below threshold"))).toBe(true);
+    // A disk skip isn't a failing build: it must never charge the backoff.
+    expect(__test__.createBackoff.has(repoName)).toBe(false);
   });
 
   test("onDeck=2 with an empty registry creates 2, serially", async () => {
@@ -1337,6 +1708,8 @@ describe("detached trigger / latency", () => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick-home-")));
     closeStateDb();
     __test__.createBackoff.clear();
+    // S077 flipped the unowned default to disabled; replenish is gated on it.
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: true });
     const repoName = "acme";
     const repo = makeRepo();
     addBareOrigin(repo);
@@ -1380,6 +1753,8 @@ describe("detached trigger / latency", () => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick2-home-")));
     closeStateDb();
     __test__.createBackoff.clear();
+    // S077 flipped the unowned default to disabled; replenish is gated on it.
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: true });
     const repoName = "acme-kick2";
     const repo = makeRepo();
     addBareOrigin(repo);

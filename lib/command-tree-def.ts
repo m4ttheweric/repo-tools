@@ -121,6 +121,17 @@ const endpointSubcommands: Record<string, CommandNode> = {
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
     ],
   },
+  release: {
+    description: "Manually free a worktree's dev-endpoint claim(s) (escape hatch for a claim liveness can't clear)",
+    module: "./commands/endpoint.ts",
+    fn: "endpointRelease",
+    omitBehavior: "picker",
+    args: [
+      { name: "Worktree", type: "text", placeholder: "/path/to/worktree", hint: "Worktree whose claim(s) to release" },
+      { name: "Role", flag: "--role", type: "text", placeholder: "backend", hint: "Only release this role; omit to release every role for the worktree" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
+    ],
+  },
 };
 
 // Shared so `rt commit` and `rt git commit` are one node (enrich once, render once).
@@ -558,6 +569,18 @@ export const TREE: Record<string, CommandNode> = {
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
+      restore: {
+        description: "Restore a disposed worktree from its retained trash entry (no target + TTY → picker)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeRestore",
+        omitBehavior: "picker",
+        args: [
+          { name: "Tree", type: "text", optional: true, placeholder: "my-tree", hint: "Disposed tree name to restore; omit to pick interactively" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
+          { name: "List", flag: "--list", type: "boolean", default: false, hint: "List restorable entries instead of restoring one" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
       list: {
         description: "List worktrees",
         module: "./commands/worktree.ts",
@@ -584,6 +607,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "worktreeAdopt",
         args: [
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (required)" },
+          { name: "Claim", flag: "--claim", type: "boolean", default: false, hint: "Take ownership: adopt foreign worktrees as auto-disposing ephemerals (default: leave them unmanaged, untouched)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },

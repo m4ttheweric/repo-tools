@@ -456,6 +456,12 @@ export async function showStatus(args: string[] = []): Promise<void> {
     if (identity) {
       printFlavorInfo({ flavor: identity.flavor, version: identity.version, sourceRev: identity.sourceRev, pid: verdict.data.pid ?? null });
     }
+    // S077: a declared pool this machine has never opted into (unowned default
+    // is now disabled) would otherwise build nothing with no visible reason.
+    const worktreePool = verdict.data.worktreePool as { dormant: boolean; message?: string } | undefined;
+    if (worktreePool?.dormant) {
+      console.log(`    ${dim}${worktreePool.message}${reset}`);
+    }
   } else if (verdict.state === "degraded") {
     // `status` timed out or errored, but the daemon proved it's alive — the
     // flavor cross-check matters most right here, so it earns its own ping.

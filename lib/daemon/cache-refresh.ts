@@ -70,7 +70,7 @@ export interface CoalescerOptions {
  * GitLab socket that never rejects) cannot pin the latch forever. The wedged
  * run's frame still leaks until the OS reaps the socket; this only frees the
  * next tick. `maxOrphanCycles` bounds how many such wedged runs may be alive
- * at once (see CoalescerOptions) — the cap is the mitigation; it does not
+ * at once (see CoalescerOptions) ... the cap is the mitigation; it does not
  * cancel the wedged runs themselves.
  */
 export function makeCoalescer(

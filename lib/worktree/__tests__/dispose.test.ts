@@ -734,6 +734,34 @@ describe("disposeTree", () => {
     expect(result).toMatchObject({ disposed: true });
     expect(loadRegistry(repoName).length).toBe(0);
   });
+
+  test("a stale snapshot whose state changed under the lock is refused \"changed\"", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
+
+    // Simulate a concurrent claim flipping state after the caller collected
+    // this record but before disposeTree's own re-read under the lock.
+    const current = loadRegistry(repoName);
+    saveRegistry(
+      repoName,
+      current.map((t) => (t.path === path ? { ...t, state: "on-deck" as const } : t)),
+    );
+
+    const result = await disposeTree(makeDeps(), rec, {});
+    expect(result).toEqual({ disposed: false, refusal: "changed" });
+    expect(existsSync(path)).toBe(true);
+    expect(loadRegistry(repoName).length).toBe(1);
+  });
+
+  test("a snapshot matching the fresh registry record still disposes normally", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
+
+    const result = await disposeTree(makeDeps(), rec, {});
+    expect(result).toMatchObject({ disposed: true });
+    expect(existsSync(path)).toBe(false);
+    expect(loadRegistry(repoName).length).toBe(0);
+  });
 });
 
 describe("disposeTree against the real branch_cache store (identity-keyed)", () => {

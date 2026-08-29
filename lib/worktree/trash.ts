@@ -20,8 +20,8 @@
  * sweeps on a later pass — a crash costs disk, never correctness.
  */
 
-import { mkdir, readdir, rename } from "fs/promises";
-import { basename, dirname, join } from "path";
+import { mkdir, readdir, readFile, rename, writeFile } from "fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "path";
 import { ensureInfoExclude } from "./git-async.ts";
 
 /** Marks a directory as rt's to delete. Nothing without this prefix is ever reaped. */
@@ -29,10 +29,10 @@ export const TRASH_PREFIX = ".trash-";
 
 /**
  * The retention store: disposed trees live here (RT-51), stripped of
- * reinstallables, until the reconciler ages them out. Inside `.worktrees` so it
- * is per-repo and shares the repo's volume; the name deliberately lacks the
- * trailing dash so the crash-leftover sweep's `.trash-` prefix match never
- * descends into it.
+ * reinstallables, until the reconciler ages them out. A sibling of the pool
+ * root the tree itself lived in (see retainedTrashRoot), so it always shares
+ * the tree's volume; the name deliberately lacks the trailing dash so the
+ * crash-leftover sweep's `.trash-` prefix match never descends into it.
  */
 const RETAIN_DIR = ".trash";
 
@@ -100,8 +100,9 @@ export async function trashTree(path: string, name: string): Promise<TrashResult
   }
 }
 
-export function retainedTrashRoot(repoPath: string): string {
-  return join(repoPath, ".worktrees", RETAIN_DIR);
+/** The retention store for trees whose pool root is `poolRoot`: `<poolRoot>/.trash`. */
+export function retainedTrashRoot(poolRoot: string): string {
+  return join(poolRoot, RETAIN_DIR);
 }
 
 export type RetireResult =
@@ -109,12 +110,16 @@ export type RetireResult =
   | { ok: false; err: unknown };
 
 /**
- * Rename the tree into the repo's retention store,
- * `<repo>/.worktrees/.trash/<name>-<epoch>`, where it stays recoverable until
- * the reconciler ages it out. When the store can't be used (unwritable, or the
- * rename would cross a volume), falls back to the sibling `.trash-*` rename —
- * the caller sees `retained: false` and reaps it the old way, so disposal
- * never gets stuck behind the retention feature. Never throws.
+ * Rename the tree into a retention store beside the pool root it actually
+ * lives in (`dirname(path)`), `<poolRoot>/.trash/<name>-<epoch>`, where it
+ * stays recoverable until the reconciler ages it out. No `cfg.root` lookup:
+ * whatever root the tree sits in today is the root its trash rides on, so a
+ * legacy tree (pool root `<repo>/.worktrees`) retains under the old root and a
+ * tree on the new default pool root retains there, with no migration step.
+ * When the store can't be used (unwritable, or the rename would cross a
+ * volume), falls back to the sibling `.trash-*` rename... the caller sees
+ * `retained: false` and reaps it the old way, so disposal never gets stuck
+ * behind the retention feature. Never throws.
  */
 export async function retireTree(
   path: string,
@@ -126,14 +131,15 @@ export async function retireTree(
     if (!name || name.includes("/") || name.includes("\\")) {
       throw new Error(`worktree trash name must be a single path component: ${JSON.stringify(name)}`);
     }
-    // retainedTrashRoot is always <repoPath>/.worktrees/.trash regardless of
-    // cfg.root, so this exclude pattern is correct in every case — including
-    // a tree disposed without ever going through createTree first (e.g. `rt
-    // worktree adopt`'s disposals), whose repo may never have had
-    // ".worktrees/" excluded at all. Without it the retention store shows up
-    // as `?? .worktrees/` in the user's own `git status`.
-    await ensureInfoExclude(repoPath, ".worktrees/");
-    const root = retainedTrashRoot(repoPath);
+    const poolRoot = dirname(path);
+    // Only a pool root INSIDE the clone needs a git info/exclude entry; the
+    // default out-of-repo root never shows up in the user's own `git status`
+    // at all, so excluding it would be a no-op at best.
+    const rel = relative(repoPath, poolRoot);
+    if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) {
+      await ensureInfoExclude(repoPath, `${rel.split("/")[0]}/`);
+    }
+    const root = retainedTrashRoot(poolRoot);
     await mkdir(root, { recursive: true });
     trashPath = join(root, `${name}-${Date.now()}`);
   } catch {
@@ -155,6 +161,64 @@ export async function retireTree(
 /** Whether `path` is an entry of a `.trash` retention store. */
 function isRetainedEntry(path: string): boolean {
   return basename(dirname(path)) === RETAIN_DIR;
+}
+
+/**
+ * The durable record dispose writes inside a retained entry (RT-51): what the
+ * tree was, and how long it survives. It lives beside the tree's own content
+ * in the trash dir, not in state.db, so a restore is possible even after a
+ * quarantine of the db has erased the registry's memory of the tree ever
+ * existing.
+ */
+export interface DisposalManifest {
+  name: string;
+  originalPath: string;
+  branch: string | null;
+  headSha: string | null;
+  reason: string;
+  disposedAt: string;
+  keptUntil: string;
+}
+
+const MANIFEST_FILE = "manifest.json";
+
+/**
+ * Best-effort: by the time this runs, disposal has already renamed the tree
+ * to safety, so a manifest write failure must never fail the dispose call
+ * that's still in flight... it only means that entry falls back to the
+ * epoch-in-name reap rule instead of `keptUntil`.
+ */
+export async function writeDisposalManifest(
+  trashPath: string,
+  manifest: DisposalManifest,
+  log: TrashLog,
+): Promise<void> {
+  if (!isRetainedEntry(trashPath)) {
+    log.warn({ path: trashPath }, "worktree manifest write refused: not a retained trash entry");
+    return;
+  }
+  try {
+    await writeFile(join(trashPath, MANIFEST_FILE), JSON.stringify(manifest, null, 2));
+  } catch (err) {
+    log.warn({ err, path: trashPath }, "worktree manifest write failed");
+  }
+}
+
+/**
+ * The manifest inside a retained entry, or null when absent (a pre-RT-51
+ * entry, or a fallback sibling `.trash-*` rename that never got one) or
+ * corrupt. A shape missing `name`/`keptUntil` is treated the same as absent
+ * rather than trusted partially.
+ */
+export async function readDisposalManifest(trashPath: string): Promise<DisposalManifest | null> {
+  try {
+    const raw = await readFile(join(trashPath, MANIFEST_FILE), "utf8");
+    const parsed = JSON.parse(raw) as Partial<DisposalManifest> | null;
+    if (!parsed || typeof parsed.name !== "string" || typeof parsed.keptUntil !== "string") return null;
+    return parsed as DisposalManifest;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -193,37 +257,59 @@ export async function stripTrashDir(trashPath: string, log: TrashLog): Promise<v
 }
 
 /**
- * Age out the retention store: reap every `<name>-<epoch>` entry older than
- * RETENTION_MS. An entry whose name carries no epoch was not written by rt, so
- * it is kept and warned about rather than guessed at. A repo with no store yet
- * is normal. Returns how many were reaped.
+ * Age out every root's retention store: reap every `<name>-<epoch>` entry
+ * older than RETENTION_MS, under `<root>/.trash` for each root in `roots`.
+ * Sweeping every root (not just the tree's current default) is what lets a
+ * legacy `<repo>/.worktrees/.trash` and the new pool root's `.trash` both
+ * drain, so a repo mid-migration between the two loses nothing. An entry
+ * whose name carries no epoch was not written by rt, so it is kept and
+ * warned about rather than guessed at. A root with no store yet is normal.
+ * Returns how many were reaped, across every root.
  */
 export async function reapExpiredTrash(
-  repoPath: string,
+  roots: string[],
   log: TrashLog,
   now: number = Date.now(),
 ): Promise<number> {
-  const root = retainedTrashRoot(repoPath);
-  let entries: string[];
-  try {
-    entries = await readdir(root);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
-      log.warn({ err, root }, "worktree retention sweep could not read trash dir");
-    }
-    return 0;
-  }
-
   let reaped = 0;
-  for (const entry of entries) {
-    const epoch = /-(\d+)$/.exec(entry)?.[1];
-    if (!epoch || !looksLikeRtEpoch(epoch)) {
-      log.warn({ root, entry }, "worktree retention sweep skipped an entry it did not write");
+  for (const poolRoot of new Set(roots)) {
+    const root = retainedTrashRoot(poolRoot);
+    let entries: string[];
+    try {
+      entries = await readdir(root);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        log.warn({ err, root }, "worktree retention sweep could not read trash dir");
+      }
       continue;
     }
-    if (now - Number(epoch) <= RETENTION_MS) continue;
-    await reapTrashDir(join(root, entry), log);
-    reaped += 1;
+
+    for (const entry of entries) {
+      const entryPath = join(root, entry);
+
+      // A manifest's keptUntil is authoritative when present (restore extends
+      // or clears it); an unparseable value fails CLOSED (kept), never reaped
+      // on a guess. Only an entry with NO manifest falls back to the
+      // epoch-in-name rule below (pre-RT-51 entries, or a manifest write that
+      // itself failed).
+      const manifest = await readDisposalManifest(entryPath);
+      if (manifest) {
+        const keptUntilMs = Date.parse(manifest.keptUntil);
+        if (Number.isNaN(keptUntilMs) || now <= keptUntilMs) continue;
+        await reapTrashDir(entryPath, log);
+        reaped += 1;
+        continue;
+      }
+
+      const epoch = /-(\d+)$/.exec(entry)?.[1];
+      if (!epoch || !looksLikeRtEpoch(epoch)) {
+        log.warn({ root, entry }, "worktree retention sweep skipped an entry it did not write");
+        continue;
+      }
+      if (now - Number(epoch) <= RETENTION_MS) continue;
+      await reapTrashDir(entryPath, log);
+      reaped += 1;
+    }
   }
   return reaped;
 }

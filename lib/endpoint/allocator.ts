@@ -8,8 +8,11 @@
  * process table.
  *
  * These are the same lessons the old dev-ports shim learned the hard way:
- *  - no TTLs — a claim is live iff its pid is alive or its port is listening,
- *    regardless of how old the claim's timestamp is.
+ *  - no TTLs for a start-time-verified claim: live iff its pid is alive and
+ *    its process start-time still matches what was recorded at claim time
+ *    (S068: a pid whose start-time has changed was recycled after a reboot,
+ *    not the claim's owner). A legacy claim with no recorded start-time
+ *    falls back to trusting a live pid only within CLAIM_TRUST_TTL_MS.
  *  - boot window — a claim can be live (pid alive) before its port actually
  *    starts listening, so a competing worktree must still treat it as taken.
  *  - self-claim survival — a worktree's own claim is never pruned as dead,
@@ -30,14 +33,36 @@ import { runCapture } from "../subprocess.ts";
 export interface Probes {
   listeners: Set<number>; // ports currently LISTENing
   pidAlive(pid: number | undefined): boolean; // kill(0); EPERM counts alive
+  pidStartTime(pid: number | undefined): string | undefined; // S068: recycled-pid detection
   canBind(port: number): boolean; // bind-probe (DECK-9)
 }
 
 // ─── Liveness ────────────────────────────────────────────────────────────────
 
-/** A claim is live iff its port is listening or its recorded pid is alive. No TTLs. */
-export function isLiveClaim(c: EndpointClaim, probes: Probes): boolean {
-  return probes.listeners.has(c.port) || probes.pidAlive(c.pid);
+/**
+ * A legacy claim (written before S068's start_time column) has no start-time
+ * to compare, so a live pid is trusted only for this long after the claim's
+ * own timestamp: long enough to outlive any ordinary dev-server session,
+ * short enough that a reboot's pid recycling stops mattering once every
+ * legacy row has aged out.
+ */
+export const CLAIM_TRUST_TTL_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * A claim is live iff its port is listening, or its recorded pid is alive AND
+ * (for a start-time-bearing row) that pid's current start-time still matches
+ * what was recorded at claim time: a mismatch means the pid number was
+ * recycled by a different process after a reboot, which is not the claim's
+ * owner. A legacy row with no start-time falls back to CLAIM_TRUST_TTL_MS.
+ */
+export function isLiveClaim(c: EndpointClaim, probes: Probes, now: number = Date.now()): boolean {
+  if (probes.listeners.has(c.port)) return true;
+  if (!probes.pidAlive(c.pid)) return false;
+  if (c.startTime === undefined) {
+    const age = now - Date.parse(c.ts);
+    return Number.isFinite(age) && age < CLAIM_TRUST_TTL_MS;
+  }
+  return probes.pidStartTime(c.pid) === c.startTime;
 }
 
 /**
@@ -50,8 +75,9 @@ export function pruneDeadClaims(
   claims: EndpointClaim[],
   selfWorktree: string,
   probes: Probes,
+  now: number = Date.now(),
 ): { claims: EndpointClaim[]; pruned: boolean } {
-  const kept = claims.filter((c) => c.worktree === selfWorktree || isLiveClaim(c, probes));
+  const kept = claims.filter((c) => c.worktree === selfWorktree || isLiveClaim(c, probes, now));
   return { claims: kept, pruned: kept.length !== claims.length };
 }
 
@@ -115,9 +141,14 @@ export function resolveClaim(
   }
 
   const ts = new Date().toISOString();
+  // ps failing or timing out this round must never downgrade a claim that
+  // was already pid-recycle verified: a live-but-unproven pid falls back to
+  // the previous verified startTime rather than overwriting it with
+  // undefined (which would silently drop to CLAIM_TRUST_TTL_MS trust).
+  const startTime = pid !== undefined ? (probes.pidStartTime(pid) ?? selfClaim?.startTime) : undefined;
   const nextClaims = selfClaim
-    ? pruned.map((c) => (c === selfClaim ? { ...c, port: winningPort!, pid, ts } : c))
-    : [...pruned, { worktree, role, port: winningPort!, pid, ts }];
+    ? pruned.map((c) => (c === selfClaim ? { ...c, port: winningPort!, pid, ts, startTime } : c))
+    : [...pruned, { worktree, role, port: winningPort!, pid, ts, startTime }];
 
   return { port: winningPort!, claims: nextClaims, changed: true };
 }
@@ -146,9 +177,34 @@ export function releaseWorktree(
  * runs on the daemon thread), pid liveness via `kill(pid, 0)`, and bind
  * ability via an actual `Bun.listen` attempt immediately torn down.
  */
+
+/**
+ * Parses `ps -axo pid=,lstart=` output into pid → start-time string. `lstart`
+ * is a multi-word date (`Thu Aug 28 10:23:45 2026`), so only the FIRST
+ * whitespace run separates the pid column from it: splitting on all
+ * whitespace would shred the date itself.
+ */
+function parsePidStartTimes(psOutput: string): Map<number, string> {
+  const startTimes = new Map<number, string>();
+  for (const line of psOutput.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const spaceIdx = trimmed.indexOf(" ");
+    if (spaceIdx === -1) continue;
+    const pid = Number(trimmed.slice(0, spaceIdx));
+    if (!Number.isInteger(pid)) continue;
+    startTimes.set(pid, trimmed.slice(spaceIdx + 1).trim());
+  }
+  return startTimes;
+}
+
 export async function defaultProbes(): Promise<Probes> {
-  const res = await runCapture(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], { timeoutMs: 5000 });
-  const listeners = new Set(parseListeningLsof(res.stdout).map((l) => l.port));
+  const [lsofRes, psRes] = await Promise.all([
+    runCapture(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], { timeoutMs: 5000 }),
+    runCapture(["ps", "-axo", "pid=,lstart="], { timeoutMs: 5000 }),
+  ]);
+  const listeners = new Set(parseListeningLsof(lsofRes.stdout).map((l) => l.port));
+  const startTimes = parsePidStartTimes(psRes.stdout);
 
   return {
     listeners,
@@ -160,6 +216,9 @@ export async function defaultProbes(): Promise<Probes> {
       } catch (err) {
         return (err as NodeJS.ErrnoException).code === "EPERM";
       }
+    },
+    pidStartTime(pid) {
+      return pid === undefined ? undefined : startTimes.get(pid);
     },
     canBind(port) {
       try {

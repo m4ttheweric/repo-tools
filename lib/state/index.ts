@@ -81,11 +81,12 @@ export {
 
 export { createCursorStore, type CursorStore } from "./cursors-store.ts";
 
-export { getKvValue, setKvValue, deleteKvValue, listKvValues, listKvEntries, hasKvValue, type KvEntry } from "./kv-blob.ts";
+export { getKvValue, setKvValue, setKvValueCritical, deleteKvValue, listKvValues, listKvEntries, hasKvValue, type KvEntry } from "./kv-blob.ts";
 
 export {
   listEndpointClaims,
   replaceEndpointClaims,
+  replaceEndpointClaimsCritical,
   hasEndpointClaims,
   type EndpointClaim,
 } from "./endpoint-claims-store.ts";

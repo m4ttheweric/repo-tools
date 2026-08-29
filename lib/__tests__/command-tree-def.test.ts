@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { TREE } from "../command-tree-def.ts";
+import { renderUsage } from "../../scripts/lib/docs-render.ts";
 
 test("TREE is importable without side effects and has expected roots", () => {
   expect(typeof TREE).toBe("object");
@@ -34,4 +35,12 @@ test("sdm connect carries the agent flags", () => {
   const flags = TREE.sdm!.subcommands!.connect!.args!.map(a => a.flag);
   expect(flags).toContain("--json");
   expect(flags).toContain("--confirm-production");
+});
+
+test("worktree restore's Tree arg is marked optional, matching its picker/--list omission", () => {
+  const restore = TREE.worktree!.subcommands!.restore!;
+  expect(restore.omitBehavior).toBe("picker");
+  const treeArg = restore.args!.find(a => a.name === "Tree")!;
+  expect(treeArg.optional).toBe(true);
+  expect(renderUsage(["worktree", "restore"], restore.args)).toContain("rt worktree restore [<tree>] [flags]");
 });

@@ -146,7 +146,7 @@ export function loadRepoIndex(): RepoIndex {
 function headBranch(gitDir: string): string {
   try {
     const m = readFileSync(join(gitDir, "HEAD"), "utf8").trim().match(/^ref: refs\/heads\/(.+)$/);
-    return m ? m[1] : "";
+    return m?.[1] ?? "";
   } catch {
     return "";
   }
@@ -175,15 +175,24 @@ function singleWorktree(dir: string): { path: string; branch: string; isBare: fa
   try {
     if (readdirSync(join(dotgit, "worktrees")).length > 0) return null;
   } catch { /* absent worktrees dir == single worktree */ }
-  return { path: dir, branch: headBranch(dotgit), isBare: false };
+  // `git worktree list --porcelain` reports the canonical, symlink-resolved
+  // path, so this fast path must match it — a caller that reaches a repo
+  // through a symlinked ancestor (a stale index row, an app-bundle alias)
+  // must not see the two spellings as different repos.
+  return { path: safeRealpath(dir), branch: headBranch(dotgit), isBare: false };
 }
 
 /** The repo's MAIN worktree path as git reports it, degrading to `repoRoot`. */
 function observedMainPath(repoRoot: string): string {
-  // A single-worktree repo's main worktree IS repoRoot (both are git's
-  // `--show-toplevel`), so the git spawn only earns its cost when linked
-  // worktrees exist and repoRoot might be one of them rather than the main.
-  if (singleWorktree(repoRoot)) return repoRoot;
+  // A single-worktree repo's main worktree IS repoRoot modulo symlinks (both
+  // are git's `--show-toplevel`), so the git spawn only earns its cost when
+  // linked worktrees exist and repoRoot might be one of them rather than the
+  // main. `.path` (not `repoRoot`) is what's returned: singleWorktree
+  // resolves symlinks the same way `git worktree list --porcelain` does, and
+  // a caller reaching this repo through a symlinked ancestor must land on the
+  // same canonical spelling as the git fallback below would give it.
+  const single = singleWorktree(repoRoot);
+  if (single) return single.path;
   try {
     const listed = execSync("git worktree list --porcelain", {
       cwd: repoRoot,

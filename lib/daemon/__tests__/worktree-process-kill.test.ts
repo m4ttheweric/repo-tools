@@ -1,7 +1,14 @@
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync } from "fs";
+import { tmpdir } from "os";
+import { join, resolve } from "path";
 import { describe, expect, test } from "bun:test";
-import { selectKillTargets, type KillCandidate } from "../worktree-process-kill.ts";
+import {
+  attributeCwds,
+  nestedExcludes,
+  safeRealpath,
+  selectKillTargets,
+  type KillCandidate,
+} from "../worktree-process-kill.ts";
 
 function row(pid: number, ppid: number, command: string, fullCommand: string): KillCandidate {
   return { pid, ppid, command, fullCommand };
@@ -83,5 +90,118 @@ describe("selectKillTargets", () => {
 
     expect(selectKillTargets(rows).map(t => t.pid)).toEqual([70]);
     expect(selectKillTargets(rows, { aiAgentNames: ["my-agent"] })).toEqual([]);
+  });
+
+  test("multiplexers, remote shells, and editors are spared", () => {
+    const rows = [
+      row(10, 1, "tmux", "tmux"),
+      row(11, 1, "ssh", "ssh host"),
+      row(12, 1, "nvim", "nvim file.ts"),
+      row(13, 1, "node", "node server.js"),
+    ];
+
+    const targets = selectKillTargets(rows);
+
+    expect(targets.map(t => t.pid)).toEqual([13]);
+  });
+
+  test("caller pid and its descendants are spared", () => {
+    const rows = [
+      row(100, 1, "rt", "rt worktree dispose"),
+      row(101, 100, "node", "node x"),
+      row(200, 1, "node", "node dev"),
+    ];
+
+    const targets = selectKillTargets(rows, { protectedPids: [100] });
+
+    expect(targets.map(t => t.pid)).toEqual([200]);
+  });
+});
+
+describe("attributeCwds", () => {
+  test("keeps only cwds inside the target", () => {
+    const cwdMap = new Map([
+      [1, "/repo"],
+      [2, "/repo/sub"],
+      [3, "/repo-sibling"],
+      [4, "/elsewhere"],
+    ]);
+
+    const attributed = attributeCwds("/repo", [], cwdMap);
+
+    expect([...attributed.keys()].sort()).toEqual([1, 2]);
+  });
+
+  test("drops cwds owned by a more-specific nested exclude", () => {
+    const cwdMap = new Map([
+      [1, "/repo"],
+      [2, "/repo/.worktrees/other"],
+      [3, "/repo/.worktrees/other/src"],
+      [4, "/repo/main-work"],
+    ]);
+
+    const attributed = attributeCwds("/repo", ["/repo/.worktrees/other"], cwdMap);
+
+    expect([...attributed.keys()].sort()).toEqual([1, 4]);
+  });
+
+  test("SYMLINKED-PREFIX: target given via a symlink whose realpath differs still excludes a nested tree", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "rt-kill-test-"));
+    const realRootRaw = join(scratch, "real-root");
+    const nestedRaw = join(realRootRaw, ".worktrees", "other");
+    const symlinkedHome = join(scratch, "symlinked-home");
+
+    mkdirSync(nestedRaw, { recursive: true });
+    symlinkSync(realRootRaw, symlinkedHome);
+
+    // `scratch` itself may sit under an ambient OS symlink (macOS /var ->
+    // /private/var), so resolve the raw creation paths once to get the true
+    // canonical form the test compares against.
+    const realRoot = safeRealpath(realRootRaw);
+    const nested = safeRealpath(nestedRaw);
+
+    // Caller passes the worktree path through the extra symlink hop;
+    // safeRealpath must still land both target and exclude on the same
+    // canonical prefix as the directly-resolved paths above.
+    const target = safeRealpath(symlinkedHome);
+    const excludes = [safeRealpath(join(symlinkedHome, ".worktrees", "other"))];
+    expect(target).toBe(realRoot);
+    expect(excludes[0]).toBe(nested);
+
+    const cwdMap = new Map([
+      [1, join(realRoot, "main-work")],
+      [2, join(nested, "src")], // lives under the realpath'd nested tree
+    ]);
+
+    const attributed = attributeCwds(target, excludes, cwdMap);
+
+    expect([...attributed.keys()]).toEqual([1]);
+  });
+
+  test("safeRealpath falls back to the literal path when the target doesn't exist", () => {
+    const missing = "/no/such/path/rt-kill-test";
+    expect(safeRealpath(missing)).toBe(missing);
+  });
+});
+
+describe("nestedExcludes", () => {
+  test("drops an exclude equal to the target itself", () => {
+    expect(nestedExcludes("/repo", ["/repo"])).toEqual([]);
+  });
+
+  test("keeps excludes strictly nested under the target", () => {
+    expect(nestedExcludes("/repo", ["/repo/sub"])).toEqual(["/repo/sub"]);
+  });
+
+  test("a target-equal exclude does not zero out attributeCwds' kill set", () => {
+    const cwdMap = new Map([
+      [1, "/repo"],
+      [2, "/repo/sub"],
+    ]);
+
+    const excludes = nestedExcludes("/repo", ["/repo"]);
+    const attributed = attributeCwds("/repo", excludes, cwdMap);
+
+    expect([...attributed.keys()].sort()).toEqual([1, 2]);
   });
 });

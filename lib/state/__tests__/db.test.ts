@@ -13,6 +13,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
   closeStateDb,
+  ensureEndpointClaimsStartTimeColumn,
   getStateDb,
   LEGACY_IMPORTS,
   openStateDb,
@@ -90,6 +91,8 @@ describe("openStateDb — fresh open", () => {
     expect(cols).toContain("archived_at");
     const agentCols = (db.query("PRAGMA table_info(agents);").all() as { name: string }[]).map(c => c.name);
     expect(agentCols).toContain("handle");
+    const claimCols = (db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    expect(claimCols).toContain("start_time");
     db.close();
   });
 
@@ -163,6 +166,71 @@ describe("openStateDb — replay over an older user_version", () => {
     migrated.close();
 
     expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
+  });
+
+  test("a machine already at v9 gains endpoint_claims.start_time on open (S068, added outside the version gate)", () => {
+    const dbPath = join(dir, "state.db");
+    const db1 = openStateDb(dbPath, "cli");
+    expect(userVersion(db1)).toBe(SCHEMA_VERSION);
+    // Simulate a real v9 machine that predates the start_time column: it
+    // never re-enters runMigrations' `user_version < SCHEMA_VERSION` gate,
+    // so ensureEndpointClaimsStartTimeColumn must run unconditionally.
+    db1.exec("ALTER TABLE endpoint_claims DROP COLUMN start_time;");
+    db1.close();
+
+    const beforeDb = new Database(dbPath);
+    const columnsBefore = (beforeDb.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    beforeDb.close();
+    expect(columnsBefore).not.toContain("start_time");
+
+    const db2 = openStateDb(dbPath, "cli");
+    expect(userVersion(db2)).toBe(SCHEMA_VERSION); // unchanged: not a schema-version bump
+    const columnsAfter = (db2.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    expect(columnsAfter).toContain("start_time");
+    db2.close();
+  });
+
+  test("ensureEndpointClaimsStartTimeColumn treats a concurrent winner's duplicate-column error as success", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli"); // already has start_time (v9+)
+    expect((db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name)).toContain(
+      "start_time",
+    );
+
+    // Simulate the race: this process's own PRAGMA read reports the column
+    // missing (a snapshot taken before a concurrent winner's ALTER landed),
+    // so its own ALTER runs into the real column that already exists.
+    const originalQuery = db.query.bind(db) as (...a: unknown[]) => unknown;
+    let pragmaCalls = 0;
+    const spy = spyOn(db, "query").mockImplementation(((sql: string, ...rest: unknown[]) => {
+      if (sql === "PRAGMA table_info(endpoint_claims);" && pragmaCalls++ === 0) {
+        return { all: () => [] };
+      }
+      return originalQuery(sql, ...rest);
+    }) as Database["query"]);
+
+    try {
+      expect(() => ensureEndpointClaimsStartTimeColumn(db)).not.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect((db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name)).toContain(
+      "start_time",
+    );
+    db.close();
+  });
+
+  test("ensureEndpointClaimsStartTimeColumn still propagates an unrelated ALTER failure", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.exec("DROP TABLE endpoint_claims;");
+
+    // The PRAGMA read on a dropped table returns no columns (missing,
+    // correctly), but the ALTER itself now fails for a genuine reason (no
+    // such table) that a duplicate-column re-check can never paper over.
+    expect(() => ensureEndpointClaimsStartTimeColumn(db)).toThrow(/no such table/);
+    db.close();
   });
 });
 

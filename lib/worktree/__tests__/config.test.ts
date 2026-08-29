@@ -9,7 +9,9 @@ import {
   rtDir,
   teamSettingsPath,
   userSettingsPath,
+  worktreePoolRoot,
 } from "../../rt-paths.ts";
+import { deriveRepoIdentity, serializeIdentity } from "../../settings/identity.ts";
 import {
   loadWorktreeRepoConfig,
   resolveImplicitInstall,
@@ -17,8 +19,14 @@ import {
   stripEnvPrefix,
   loadWorktreeAppConfig,
   worktreeSettingsDeclared,
+  worktreePoolDormant,
   type WorktreeRepoConfig,
 } from "../config.ts";
+
+/** The out-of-repo pool root (RT-52) `sanitizeRoot` defaults to for `repoPath`. */
+async function defaultRoot(repoPath: string): Promise<string> {
+  return worktreePoolRoot(serializeIdentity(await deriveRepoIdentity(repoPath)));
+}
 
 function tmpRepoPath(prefix: string): string {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -60,7 +68,7 @@ describe("worktree config", () => {
       const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg).toEqual({
         onDeck: 0,
-        root: join(repoPath, ".worktrees"),
+        root: await defaultRoot(repoPath),
         branchFormat: "<ticket>-<slug>",
         ready: [],
       });
@@ -138,7 +146,7 @@ describe("worktree config", () => {
       expect(cfg.onDeck).toBe(2);
       expect(cfg.namePool).toEqual(["luna"]);
       // computed default still lives in the reader, not the registry
-      expect(cfg.root).toBe(join(repoPath, ".worktrees"));
+      expect(cfg.root).toBe(await defaultRoot(repoPath));
       expect(cfg.branchFormat).toBe("<ticket>-<slug>");
     });
 
@@ -201,7 +209,7 @@ describe("worktree config", () => {
       const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
       expect(cfg).toEqual({
         onDeck: 0,
-        root: join(repoPath, ".worktrees"),
+        root: await defaultRoot(repoPath),
         branchFormat: "<ticket>-<slug>",
         ready: [],
       });
@@ -239,6 +247,33 @@ describe("worktree config", () => {
         repos: { [IDENTITY]: { "rt.roles": { web: { pool: [3000] } } } },
       });
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(false);
+    });
+  });
+
+  describe("worktreePoolDormant (S077)", () => {
+    const IDENTITY = "gitlab.com/acme/dormant-only";
+    const REMOTE = "git@gitlab.com:acme/dormant-only.git";
+
+    test("declared pool, unowned machine (default disabled): dormant", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-dormant-team-", REMOTE);
+      writeStore(teamSettingsPath("acme"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2 } } },
+      });
+      expect(await worktreePoolDormant("dormant-only", repoPath)).toBe(true);
+    });
+
+    test("declared pool, machine explicitly enabled: not dormant", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-dormant-owned-", REMOTE);
+      writeStore(teamSettingsPath("acme"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2 } } },
+      });
+      writeStore(machineSettingsPath(), { "rt.worktreeApp": { enabled: true } });
+      expect(await worktreePoolDormant("dormant-only", repoPath)).toBe(false);
+    });
+
+    test("nothing declared, unowned machine: not dormant (nothing to be dormant about)", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-dormant-none-", REMOTE);
+      expect(await worktreePoolDormant("dormant-only", repoPath)).toBe(false);
     });
   });
 
@@ -481,8 +516,8 @@ describe("worktree config", () => {
   });
 
   describe("loadWorktreeAppConfig", () => {
-    test("neither file nor store: defaults", () => {
-      expect(loadWorktreeAppConfig()).toEqual({ enabled: true, killProcesses: true });
+    test("neither file nor store: an unowned machine defaults to disabled (S077)", () => {
+      expect(loadWorktreeAppConfig()).toEqual({ enabled: false, killProcesses: true });
     });
 
     test("file only (store unowned): seeds from parking-lot.json once, then reads the new file thereafter", () => {

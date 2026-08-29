@@ -117,7 +117,19 @@ describe("createTree", () => {
     expect(events.some((e) => e.type === "worktree:created")).toBe(true);
   });
 
-  test("in-repo default root writes .git/info/exclude", async () => {
+  test("out-of-repo default root leaves .git/info/exclude untouched", async () => {
+    const deps = makeDeps(repoName, repo, events);
+    const result = await createTree(deps);
+
+    expect(result.ok).toBe(true);
+    const excludePath = join(repo, ".git", "info", "exclude");
+    const content = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
+    expect(content).not.toContain(".worktrees/");
+  });
+
+  test("an in-repo root override writes .git/info/exclude", async () => {
+    await declareWorktrees(repo, repoName, { root: join(repo, ".worktrees") });
+
     const deps = makeDeps(repoName, repo, events);
     const result = await createTree(deps);
 
@@ -235,5 +247,29 @@ describe("scrapTree", () => {
 
     expect(existsSync(path)).toBe(false);
     expect(loadRegistry(repoName).length).toBe(0);
+  });
+
+  test("refuses to trash a path with no .git entry (a desynced registry row)", async () => {
+    // Nothing about this directory was ever created by rt's own worktree add...
+    // the shape a stale/corrupted registry row pointing at an unrelated
+    // directory would have.
+    const path = join(repo, ".worktrees", "not-a-worktree");
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, "important.txt"), "keep me\n");
+    const rec: TreeRecord = {
+      name: "not-a-worktree",
+      path,
+      kind: "ephemeral",
+      state: "creating",
+      branch: "on-deck/not-a-worktree",
+      createdAt: new Date().toISOString(),
+    };
+    saveRegistry(repoName, [rec]);
+
+    await scrapTree(makeDeps(repoName, repo, events), rec);
+
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(join(path, "important.txt"))).toBe(true);
+    expect(loadRegistry(repoName)).toEqual([rec]);
   });
 });

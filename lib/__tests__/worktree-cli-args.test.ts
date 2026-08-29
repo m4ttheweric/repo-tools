@@ -106,11 +106,14 @@ describe("parseFreshenArgs", () => {
 });
 
 describe("parseAdoptArgs", () => {
-  test("--repo required, --json optional", () => {
-    expect(parseAdoptArgs(["--repo", "repo-tools"])).toEqual({ repoName: "repo-tools", json: false });
-    expect(parseAdoptArgs(["--repo", "repo-tools", "--json"])).toEqual({ repoName: "repo-tools", json: true });
+  test("--repo required, --json and --claim optional", () => {
+    expect(parseAdoptArgs(["--repo", "repo-tools"])).toEqual({ repoName: "repo-tools", json: false, claim: false });
+    expect(parseAdoptArgs(["--repo", "repo-tools", "--json"])).toEqual({ repoName: "repo-tools", json: true, claim: false });
   });
   test("no --repo → repoName undefined (caller decides how to fail)", () => {
-    expect(parseAdoptArgs([])).toEqual({ repoName: undefined, json: false });
+    expect(parseAdoptArgs([])).toEqual({ repoName: undefined, json: false, claim: false });
+  });
+  test("--claim opts a foreign tree into ephemeral ownership", () => {
+    expect(parseAdoptArgs(["--repo", "repo-tools", "--claim"])).toEqual({ repoName: "repo-tools", json: false, claim: true });
   });
 });

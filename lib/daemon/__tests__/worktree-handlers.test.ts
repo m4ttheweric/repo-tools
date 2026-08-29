@@ -532,6 +532,28 @@ describe("worktree:dispose", () => {
   });
 });
 
+describe("worktree:restore", () => {
+  test.each(["..", ".", "a/b", "../evil", "a\\b", "..\\evil"])(
+    "rejects treeName %j before locking or calling restoreTree",
+    async (bad) => {
+      const repo = makeRepo();
+      const { h } = makeHandlers({ [repoName]: repo });
+      const res: any = await h["worktree:restore"]!({ repoName, tree: bad });
+      expect(res).toMatchObject({ ok: false, error: "no-target" });
+    },
+  );
+
+  test("a normal treeName is not rejected by validation (reaches restoreTree)", async () => {
+    const repo = makeRepo();
+    const { h } = makeHandlers({ [repoName]: repo });
+    // No retained entry exists for "alpha", so a treeName that clears
+    // validation surfaces restoreTree's own not-found, proving the guard
+    // did not swallow a legitimate name.
+    const res: any = await h["worktree:restore"]!({ repoName, tree: "alpha" });
+    expect(res).toMatchObject({ ok: false, error: "not-found" });
+  });
+});
+
 describe("worktree:list", () => {
   test("flags duplicate branches and joins MRs on (repoName, branch)", async () => {
     const repo = makeRepo();
@@ -559,6 +581,31 @@ describe("worktree:list", () => {
     // repoName mismatch means "no MR", never another repo's MR.
     expect(byName.d.mr).toBeNull();
   });
+
+  test("S077: a declared pool on a dormant (app-disabled) machine surfaces dormant + the enable command", async () => {
+    const repo = makeRepo();
+    await declareWorktrees(repo, repoName, { onDeck: 1 });
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: false, killProcesses: false });
+    const { h } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:list"]!({ repoName });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.dormant).toBe(true);
+    expect(res.data.dormantRepos).toEqual([repoName]);
+    expect(res.data.message).toContain('rt settings set rt.worktreeApp \'{"enabled":true}\' --scope machine');
+  });
+
+  test("an owned machine with a declared pool never reports dormant", async () => {
+    const repo = makeRepo();
+    await declareWorktrees(repo, repoName, { onDeck: 1 });
+    const { h } = makeHandlers({ [repoName]: repo }); // top-level beforeEach already writes enabled: true
+
+    const res: any = await h["worktree:list"]!({ repoName });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.dormant).toBeUndefined();
+  });
 });
 
 describe("worktree:freshen", () => {
@@ -578,7 +625,7 @@ describe("worktree:freshen", () => {
 });
 
 describe("worktree:adopt", () => {
-  test("registers main, disposes a clean parking-lot tree, claims the feature tree", async () => {
+  test("registers main, disposes a clean parking-lot tree, leaves the foreign feature tree unmanaged", async () => {
     const repo = makeRepo();
     const parked = join(repo, ".worktrees", "parked");
     const feature = join(repo, ".worktrees", "feature");
@@ -596,7 +643,8 @@ describe("worktree:adopt", () => {
     expect(res.ok).toBe(true);
     expect(res.data.main).toBe(basename(repo));
     expect(res.data.disposed).toEqual(["parked"]);
-    expect(res.data.claimed).toEqual(["feature"]);
+    expect(res.data.claimed).toEqual([]);
+    expect(res.data.unmanaged).toEqual(["feature"]);
     expect(res.data.refused).toEqual([]);
 
     expect(existsSync(parked)).toBe(false);
@@ -606,13 +654,31 @@ describe("worktree:adopt", () => {
     expect(trees.find((t) => t.path === repo)!.kind).toBe("main");
     expect(trees.find((t) => t.name === "parked")).toBeUndefined();
     const feat = trees.find((t) => t.name === "feature")!;
-    expect(feat.kind).toBe("ephemeral");
-    expect(feat.state).toBe("claimed");
-    expect(feat.disposal).toBe("merge");
+    expect(feat.kind).toBe("unmanaged");
     expect(feat.branch).toBe("acme-1-feature");
 
     expect(existsSync(repoIndexPath)).toBe(false);
     expect(existsSync(appStatePath)).toBe(false);
+  });
+
+  test("claims the foreign feature tree as ephemeral when --claim is passed", async () => {
+    const repo = makeRepo();
+    const feature = join(repo, ".worktrees", "feature");
+    sh(`git worktree add -b acme-1-feature ${feature} origin/main`, repo);
+
+    const { h } = makeHandlers({ [repoName]: repo });
+    const res: any = await h["worktree:adopt"]!({ repoName, claim: true });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.claimed).toEqual(["feature"]);
+    expect(res.data.unmanaged).toEqual([]);
+
+    const trees = loadRegistry(repoName);
+    const feat = trees.find((t) => t.name === "feature")!;
+    expect(feat.kind).toBe("ephemeral");
+    expect(feat.state).toBe("claimed");
+    expect(feat.disposal).toBe("merge");
+    expect(feat.branch).toBe("acme-1-feature");
   });
 });
 

@@ -311,6 +311,31 @@ function addHandleColumnIfMissing(db: Database): void {
   db.exec("ALTER TABLE agents ADD COLUMN handle TEXT;");
 }
 
+/**
+ * endpoint_claims.start_time (S068): the claiming pid's start-time, so a
+ * recycled pid across a reboot reads as dead rather than pinning a port
+ * forever. Called unconditionally from `openStateDb`, NOT from inside
+ * `runMigrations`'s `user_version < SCHEMA_VERSION` gate: a machine already
+ * at SCHEMA_VERSION never enters that gate, so a call placed there would
+ * never add the column on such a machine. No SCHEMA_VERSION bump: this
+ * column ships out-of-band of the versioned schema, like `sections`,
+ * `archived_at`, and `handle` above.
+ */
+export function ensureEndpointClaimsStartTimeColumn(db: Database): void {
+  const columns = db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[];
+  if (columns.some((c) => c.name === "start_time")) return;
+  try {
+    db.exec("ALTER TABLE endpoint_claims ADD COLUMN start_time TEXT;");
+  } catch (err) {
+    // This runs outside runMigrations' BEGIN IMMEDIATE transaction (see the
+    // doc comment above), so a daemon and a CLI process opening the same
+    // fresh file can both read the column missing and both attempt the
+    // ALTER. The loser's failure only matters if the column still isn't there.
+    const after = db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[];
+    if (!after.some((c) => c.name === "start_time")) throw err;
+  }
+}
+
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
 export function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code;
@@ -521,6 +546,9 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
   }
 
   runMigrations(db, dirname(path));
+  // Unconditional, outside runMigrations' version gate: see
+  // ensureEndpointClaimsStartTimeColumn's own comment for why.
+  ensureEndpointClaimsStartTimeColumn(db);
   // Migration is done: drop from the startup budget to the flavor's
   // steady-state serve-time policy (daemon = 250ms warn-and-defer).
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS[flavor]};`);

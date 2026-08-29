@@ -10,7 +10,7 @@
  */
 
 import { existsSync } from "fs";
-import { join } from "path";
+import { isAbsolute, join, relative } from "path";
 import {
   loadRegistry,
   saveRegistry,
@@ -54,9 +54,12 @@ export async function createTree(deps: CreateDeps): Promise<CreateResult> {
   const name = pickName(cfg.namePool, usedNames(existing));
   const path = join(cfg.root, name);
 
-  const defaultRoot = join(repoPath, ".worktrees");
-  if (cfg.root === defaultRoot) {
-    await ensureInfoExclude(repoPath, ".worktrees/");
+  // The default pool root (RT-52) lives outside the clone, so info/exclude is
+  // only needed when a user override points root back inside the repo.
+  const rel = relative(repoPath, cfg.root);
+  const rootInsideRepo = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  if (rootInsideRepo) {
+    await ensureInfoExclude(repoPath, `${rel.split("/")[0]}/`);
   }
 
   const outcome = await withTreeLock(path, () => runCreate(deps, cfg, name, path));
@@ -144,7 +147,13 @@ async function runCreate(
   };
 
   const finalTrees = loadRegistry(repoName).map((t) => (t.path === path ? updated : t));
-  saveRegistry(repoName, finalTrees);
+  if (!saveRegistry(repoName, finalTrees)) {
+    log.warn(
+      { repo: repoName, tree: name, path },
+      "worktree create: final registry flip dropped; leaving row creating",
+    );
+    return { ok: false, error: "create-failed", failedStep: "registry-flip" };
+  }
 
   emit("worktree:created", { repo: repoName, tree: name, path });
   log.info({ repo: repoName, tree: name, path }, "worktree created");
@@ -161,7 +170,20 @@ async function runCreate(
  * rather than asking git to unlink, it returns instantly however far the
  * install got before the create failed.
  */
+/** Whether `path` has a `.git` entry, the one cheap signal a git worktree (or repo) always carries. A desynced registry row pointing at a directory rt never created must fail this, or scrap's rm -rf would trash arbitrary content. */
+function looksLikeWorktreeDir(path: string): boolean {
+  return existsSync(join(path, ".git"));
+}
+
 export async function scrapTree(deps: CreateDeps, rec: TreeRecord): Promise<void> {
+  if (existsSync(rec.path) && !looksLikeWorktreeDir(rec.path)) {
+    deps.log.warn(
+      { repo: deps.repoName, tree: rec.name, path: rec.path },
+      "worktree scrap: path exists with no .git entry; refusing to trash a directory rt did not create",
+    );
+    return;
+  }
+
   const trashed = await trashTree(rec.path, rec.name);
   if (trashed.ok) {
     void reapTrashDir(trashed.trashPath, deps.log);

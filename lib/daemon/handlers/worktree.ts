@@ -44,6 +44,7 @@ import {
 import { disambiguate, slugifyTicketTitle } from "../../worktree/branch-name.ts";
 import { createTree } from "../../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree, type DisposeDeps } from "../../worktree/dispose.ts";
+import { restoreTree } from "../../worktree/restore.ts";
 import { branchOf, composeKey } from "../../state/branch-cache.ts";
 import { isTreeLocked, withTreeLock } from "../../worktree/locks.ts";
 import {
@@ -57,6 +58,8 @@ import {
   loadWorktreeAppConfig,
   loadWorktreeRepoConfig,
   resolveReadySteps,
+  worktreePoolDormant,
+  WORKTREE_APP_ENABLE_COMMAND,
 } from "../../worktree/config.ts";
 import { changedSince, runReadySteps, stepsToRun } from "../../worktree/ready.ts";
 import { freshenRepo, reconcileRepoRegistry, withCreateLock } from "../worktree-reconciler.ts";
@@ -94,12 +97,13 @@ function canon(path: string): string {
   }
 }
 
-function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): void {
+/** Returns whether the save landed... false means the mutation is only in the caller's discarded `trees` snapshot, never on disk. */
+function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): boolean {
   const trees = loadRegistry(repoName);
   const rec = trees.find((t) => t.path === path);
-  if (!rec) return;
+  if (!rec) return false;
   patch(rec);
-  saveRegistry(repoName, trees);
+  return saveRegistry(repoName, trees);
 }
 
 /**
@@ -172,6 +176,7 @@ function disposeDeps(
   opts: WorktreeHandlerOpts,
   repoName: string,
   repoPath: string,
+  callerPids?: number[],
 ): DisposeDeps {
   // disposeTree's joinedMr looks up by the BARE branch: hand it a
   // bare-keyed, this-repo-only view of the (now composite-keyed) cache map
@@ -188,6 +193,7 @@ function disposeDeps(
     emit: opts.emit,
     log: ctx.log,
     killProcesses: loadWorktreeAppConfig().killProcesses,
+    callerPids,
   };
 }
 
@@ -366,12 +372,16 @@ export function createWorktreeHandlers(
         // second checkout fails with "already checked out", which rolls that
         // caller back rather than handing two trees the same branch.
         const disposal: DisposalMode = payload.disposal === "job" ? "job" : "merge";
-        patchTree(repoName, tree.path, (r) => {
+        const claimWritten = patchTree(repoName, tree.path, (r) => {
           r.state = "claimed";
           r.disposal = disposal;
           r.claimedAt = new Date().toISOString();
           if (typeof payload.owner === "string" && payload.owner.length > 0) r.owner = payload.owner;
         });
+        // A dropped write leaves the tree genuinely on-deck on disk... acting
+        // as though this caller owns it would double-hand it to whoever
+        // claims it for real next.
+        if (!claimWritten) return { ok: false, error: "claim-write-failed" };
         opts.emit("worktree:claimed", {
           repo: repoName, tree: tree.name, branch, owner: payload.owner ?? null,
         });
@@ -510,6 +520,8 @@ export function createWorktreeHandlers(
       const owner: string | undefined = typeof payload?.owner === "string" ? payload.owner : undefined;
       const treeName: string | undefined = typeof payload?.tree === "string" ? payload.tree : undefined;
       const force = payload?.force === true;
+      const callerPids: number[] | undefined =
+        typeof payload?.callerPid === "number" ? [payload.callerPid] : undefined;
 
       // `--owner` sweeps globally by default (a run may span repos); `--repo`
       // narrows it. A named tree always needs its repo.
@@ -533,7 +545,7 @@ export function createWorktreeHandlers(
       const recoverable: Array<{ tree: string; path: string; until: string }> = [];
 
       for (const { repoName, repoPath, rec } of targets) {
-        const deps = disposeDeps(ctx, opts, repoName, repoPath);
+        const deps = disposeDeps(ctx, opts, repoName, repoPath, callerPids);
         const outcome = await withTreeLock(rec.path, () =>
           disposeTree(deps, rec, { force, auto: false }),
         );
@@ -558,8 +570,10 @@ export function createWorktreeHandlers(
 
       const entries = ctx.cache.entries;
       const rows: Array<Record<string, unknown>> = [];
+      const dormantRepos: string[] = [];
 
-      for (const [repoName] of repos) {
+      for (const [repoName, repoPath] of repos) {
+        if (await worktreePoolDormant(repoName, repoPath)) dormantRepos.push(repoName);
         const trees = loadRegistry(repoName);
         const branchCounts = new Map<string, number>();
         for (const t of trees) {
@@ -586,7 +600,43 @@ export function createWorktreeHandlers(
         }
       }
 
-      return { ok: true, data: { trees: rows } };
+      const data: Record<string, unknown> = { trees: rows };
+      if (dormantRepos.length > 0) {
+        data.dormant = true;
+        data.dormantRepos = dormantRepos;
+        data.message = `worktree pool declared but dormant on this machine... enable with: ${WORKTREE_APP_ENABLE_COMMAND}`;
+      }
+      return { ok: true, data };
+    },
+
+    "worktree:restore": async (payload: any) => {
+      const repoName: string | undefined = payload?.repoName;
+      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
+      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const treeName: string | undefined = typeof payload?.tree === "string" ? payload.tree : undefined;
+      if (!treeName || treeName === "." || treeName === ".." || treeName.includes("/") || treeName.includes("\\")) {
+        return { ok: false, error: "no-target" };
+      }
+
+      // Synthetic key: the restored tree's eventual path isn't known until
+      // restoreTree resolves the pool root, so this locks the (repo, name)
+      // pair rather than a filesystem path (same idiom as adopt's repo-wide lock).
+      const outcome = await withTreeLock(`${repoPath}#restore#${treeName}`, () =>
+        restoreTree({ repoName, repoPath, emit: opts.emit, log: ctx.log }, treeName),
+      );
+      if (outcome === "busy") return { ok: false, error: "busy" };
+      if (!outcome.ok) return { ok: false, error: outcome.reason };
+
+      opts.kick();
+      return {
+        ok: true,
+        data: {
+          restored: true,
+          path: outcome.path,
+          tree: outcome.tree.name,
+          ...(outcome.readyFailed ? { readyFailed: true, failedStep: outcome.failedStep } : {}),
+        },
+      };
     },
 
     "worktree:freshen": async (payload: any) => {
@@ -627,6 +677,7 @@ export function createWorktreeHandlers(
 
         let main = "";
         const claimed: string[] = [];
+        const unmanaged: string[] = [];
         const disposed: string[] = [];
         const refused: Array<{ tree: string; reason: string }> = [];
 
@@ -665,16 +716,22 @@ export function createWorktreeHandlers(
             continue;
           }
 
-          patchTree(repoName, rec.path, (r) => {
-            r.kind = "ephemeral";
-            r.state = "claimed";
-            r.disposal = "merge";
-            r.claimedAt = new Date().toISOString();
-          });
-          claimed.push(rec.name);
+          if (payload?.claim === true) {
+            patchTree(repoName, rec.path, (r) => {
+              r.kind = "ephemeral";
+              r.state = "claimed";
+              r.disposal = "merge";
+              r.claimedAt = new Date().toISOString();
+            });
+            claimed.push(rec.name);
+          } else {
+            // Left exactly as reconcileRepoRegistry stamped it: kind
+            // "unmanaged", never auto-disposed, until a caller passes --claim.
+            unmanaged.push(rec.name);
+          }
         }
 
-        return { ok: true as const, data: { main, claimed, disposed, refused } };
+        return { ok: true as const, data: { main, claimed, unmanaged, disposed, refused } };
       });
 
       if (result === "busy") return { ok: false, error: "busy" };

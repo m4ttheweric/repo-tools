@@ -12,6 +12,7 @@
  * the caller — parking proceeds while stragglers wind down.
  */
 
+import { realpathSync } from "fs";
 import { lazyChildLogger } from "../daemon-logger.ts";
 import { runCapture } from "../subprocess.ts";
 import { parseLsofCwdMap, parsePackageScripts } from "./system-process-scanner.ts";
@@ -25,6 +26,8 @@ const INTERPRETER_BINS = new Set(["node", "bun", "deno", "python", "python3"]);
 const DEFAULT_AI_AGENT_NAMES = new Set([
   "claude", "codex", "gemini", "aider", "cursor-agent", "copilot",
 ]);
+/** Multiplexers, remote shells, and editors: never workload, always the user's. */
+const SPARED_BINS = new Set(["tmux", "screen", "ssh", "mosh", "vim", "nvim", "emacs", "less", "man"]);
 
 export interface KillCandidate {
   pid: number;
@@ -42,6 +45,15 @@ export interface KillTargetOptions {
 
 function basename(path: string): string {
   return path.split("/").pop() ?? path;
+}
+
+/** realpathSync, falling back to the literal path when it fails (already gone, no permission). */
+export function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /** The names a process answers to: comm, argv0 basename, and — when argv0 is
@@ -103,8 +115,31 @@ export function selectKillTargets(
     if (protectedPids.has(proc.pid)) return false;
     if (proc.fullCommand.includes(".app/Contents/")) return false;
     if (SHELL_BINS.has(proc.command) || SHELL_BINS.has(basename(proc.fullCommand.split(" ")[0] ?? ""))) return false;
+    if (SPARED_BINS.has(proc.command) || SPARED_BINS.has(basename(proc.fullCommand.split(" ")[0] ?? ""))) return false;
     return true;
   });
+}
+
+/**
+ * Drops any cwd not inside the (already realpath'd) target, and any cwd owned
+ * by a more-specific nested exclude path (a sibling/nested worktree's
+ * processes belong to that tree, not this one). Pure: callers realpath every
+ * input first so a symlinked home resolves the same way on both sides.
+ */
+export function attributeCwds(
+  target: string,
+  excludes: string[],
+  cwdMap: Map<number, string>,
+): Map<number, string> {
+  const attributed = new Map<number, string>();
+  for (const [pid, cwd] of cwdMap) {
+    const insideTarget = cwd === target || cwd.startsWith(target + "/");
+    if (!insideTarget) continue;
+    const ownedByNested = excludes.some(e => cwd === e || cwd.startsWith(e + "/"));
+    if (ownedByNested) continue;
+    attributed.set(pid, cwd);
+  }
+  return attributed;
 }
 
 function isAlive(pid: number): boolean {
@@ -120,24 +155,48 @@ export interface WorktreeKillResult {
   terminated: { pid: number; label: string }[];
 }
 
+export interface KillWorktreeOptions {
+  /** Pids to spare (with their descendants), e.g. the calling CLI process. */
+  callerPids?: number[];
+  /** Other registered trees' paths: their processes are never this tree's to kill,
+   *  even when a nested checkout puts their cwd underneath this one. */
+  excludePaths?: string[];
+}
+
+/**
+ * Keeps only excludes strictly nested under target. An exclude equal to
+ * target itself must be dropped here: attributeCwds' ownedByNested check
+ * matches on `cwd === e`, so a target-equal exclude would mark every cwd in
+ * the target as owned by a "nested" tree and silently zero out the kill set.
+ */
+export function nestedExcludes(target: string, excludePaths: string[]): string[] {
+  return excludePaths.filter(e => e !== target && e.startsWith(target + "/"));
+}
+
 /**
  * Find and terminate the workload processes whose cwd is inside the worktree.
  * Discovery is done fresh (not from the scanner's 10s-old snapshot) so we act
  * on ground truth at park time.
  */
-export async function killWorktreeProcesses(worktreePath: string): Promise<WorktreeKillResult> {
+export async function killWorktreeProcesses(
+  worktreePath: string,
+  opts: KillWorktreeOptions = {},
+): Promise<WorktreeKillResult> {
+  const target = safeRealpath(worktreePath);
+  const excludes = nestedExcludes(target, (opts.excludePaths ?? []).map(safeRealpath));
+
   const lsof = await runCapture(["lsof", "-d", "cwd", "-Fpn"], { timeoutMs: 10_000 });
   if (lsof.exitCode !== 0 && !lsof.stdout) {
     log.warn({ exitCode: lsof.exitCode, worktreePath }, "lsof failed; skipping worktree process kill");
     return { terminated: [] };
   }
 
-  const cwdMap = parseLsofCwdMap(lsof.stdout, [worktreePath]);
-  // Drop close-parent matches (parseLsofCwdMap keeps them for scanner display;
-  // a process merely *above* the worktree must not be killed).
-  for (const [pid, cwd] of cwdMap) {
-    if (cwd !== worktreePath && !cwd.startsWith(worktreePath + "/")) cwdMap.delete(pid);
-  }
+  // Pass the realpath'd target to parseLsofCwdMap too, so its own prefix
+  // match agrees with attributeCwds below on a symlinked home.
+  const rawCwdMap = parseLsofCwdMap(lsof.stdout, [target]);
+  const resolvedCwdMap = new Map<number, string>();
+  for (const [pid, raw] of rawCwdMap) resolvedCwdMap.set(pid, safeRealpath(raw));
+  const cwdMap = attributeCwds(target, excludes, resolvedCwdMap);
   if (cwdMap.size === 0) return { terminated: [] };
 
   const pidList = [...cwdMap.keys()].join(",");
@@ -159,7 +218,7 @@ export async function killWorktreeProcesses(worktreePath: string): Promise<Workt
   }
 
   const targets = selectKillTargets(rows, {
-    protectedPids: [process.pid, process.ppid],
+    protectedPids: [process.pid, process.ppid, ...(opts.callerPids ?? [])],
   });
   if (targets.length === 0) return { terminated: [] };
 
@@ -172,11 +231,21 @@ export async function killWorktreeProcesses(worktreePath: string): Promise<Workt
   );
   if (eww.exitCode === 0 || eww.stdout) scripts = parsePackageScripts(eww.stdout);
 
+  // Package-script kills (recognized "pnpm start:lite:watch" etc.) are routine;
+  // anything without that label is the riskier, unrecognized case worth a warn.
+  const unlabeled = targets.filter(t => !scripts.has(t.pid));
+  if (unlabeled.length > 0) {
+    log.warn(
+      { worktreePath, targets: unlabeled.map(t => ({ pid: t.pid, comm: t.command })) },
+      "worktree process kill: SIGTERM targets",
+    );
+  }
+
   const terminated: { pid: number; label: string }[] = [];
-  for (const target of targets) {
+  for (const killTarget of targets) {
     try {
-      process.kill(target.pid, "SIGTERM");
-      terminated.push({ pid: target.pid, label: scripts.get(target.pid) ?? target.command });
+      process.kill(killTarget.pid, "SIGTERM");
+      terminated.push({ pid: killTarget.pid, label: scripts.get(killTarget.pid) ?? killTarget.command });
     } catch { /* already gone */ }
   }
 

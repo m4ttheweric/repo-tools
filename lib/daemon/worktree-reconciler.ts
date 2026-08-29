@@ -8,8 +8,8 @@
  * `creationInFlight`).
  */
 
-import { basename, isAbsolute, join, relative, resolve } from "path";
-import { realpathSync } from "fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
+import { existsSync, realpathSync, statfsSync } from "fs";
 import type { Logger } from "pino";
 import { rtDir } from "../rt-paths.ts";
 import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
@@ -88,17 +88,23 @@ type PassResult = { trees: TreeRecord[] } | { conflict: true };
 /** Attempts before a contended pass gives up and leaves the work to the next tick. */
 const RECONCILE_MAX_ATTEMPTS = 3;
 
+/** Consecutive misses before a registry path absent from git ground truth is dropped: ~15 min at the 5-min cadence rides out a transient unmount, and still cleans up a real removal within a cache window. */
+const MISSING_PRUNE_PASSES = 3;
+
 /**
  * Reconcile one repo's worktree registry against git ground truth (spec §4).
  *
  * Order matters:
  *  1. `git worktree prune` FIRST — an `rm -rf`'d tree otherwise leaves git's
  *     stale worktree registration holding the path/branch, which blocks a
- *     later create from reusing the same name.
+ *     later create from reusing the same name. Skipped for this pass when any
+ *     registered tree's parent directory is currently unreadable (S063: a
+ *     network-mount blip must not be read as a mass removal).
  *  2. (d) orphaned `creating` entries (no held lock) are scrapped before (a)
  *     evaluates existence, since an in-flight (locked) `creating` entry has
  *     no git worktree yet and must not be pruned out from under the create.
- *  3. (a) registry entries with no matching git/disk worktree are pruned.
+ *  3. (a) registry entries with no matching git/disk worktree are held for
+ *     `MISSING_PRUNE_PASSES` consecutive passes (S063), then pruned.
  *  4. (b) git worktrees unknown to the registry are adopted (main/unmanaged).
  *  5. (c) every remaining registered tree's `branch` is set to git ground
  *     truth; kind/state/owner are left untouched.
@@ -136,7 +142,18 @@ export async function reconcileRepoRegistry(deps: ReconcileDeps): Promise<TreeRe
 async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<PassResult> {
   const { repoName, repoPath, emit, log } = deps;
 
-  await runGit(repoPath, ["worktree", "prune"]);
+  // A `creating` row has no git worktree yet, so it never counts against
+  // readability; any other row whose parent dir can't be listed right now is
+  // a transient mount blip, not evidence its worktree was removed, so the
+  // sweep that would otherwise register that removal is skipped this pass.
+  const rootsReadable = loadRegistry(repoName).every(
+    (t) => t.state === "creating" || existsSync(dirname(t.path)),
+  );
+  if (rootsReadable) {
+    await runGit(repoPath, ["worktree", "prune"]);
+  } else {
+    log.info({ repo: repoName }, "reconcile: a pool root is unreadable this pass; skipping git worktree prune");
+  }
 
   let trees = loadRegistry(repoName);
   let epoch = registryEpoch(repoName);
@@ -191,8 +208,10 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
     gitByCanon.set(canon(entry.path), entry);
   }
 
-  // (a) registry paths missing from git/disk -> prune entry. `creating`
-  // entries are exempt: they legitimately have no git worktree yet.
+  // (a) registry paths missing from git/disk -> held for MISSING_PRUNE_PASSES
+  // consecutive passes (S063: a transiently missing directory, e.g. a network
+  // mount blip, must not orphan the row and poison its name), then pruned.
+  // `creating` entries are exempt: they legitimately have no git worktree yet.
   const afterPrune: TreeRecord[] = [];
   for (const rec of trees) {
     if (rec.state === "creating") {
@@ -200,10 +219,22 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
       continue;
     }
     if (gitByCanon.has(canon(rec.path))) {
+      if (rec.missCount) {
+        delete rec.missCount;
+        changed = true;
+      }
       afterPrune.push(rec);
     } else {
-      log.info({ repo: repoName, tree: rec.name, path: rec.path }, "reconcile: pruning registry entry with no matching worktree");
-      changed = true;
+      const misses = (rec.missCount ?? 0) + 1;
+      if (misses < MISSING_PRUNE_PASSES) {
+        rec.missCount = misses;
+        changed = true;
+        afterPrune.push(rec);
+        log.info({ repo: repoName, tree: rec.name, path: rec.path, misses }, "reconcile: worktree path missing, holding");
+      } else {
+        log.info({ repo: repoName, tree: rec.name, path: rec.path }, "reconcile: pruning registry entry after sustained absence");
+        changed = true;
+      }
     }
   }
   trees = afterPrune;
@@ -445,7 +476,12 @@ async function autoReturnMain(
   if (appConfig.killProcesses) {
     // A failure here never blocks the return.
     try {
-      const { terminated } = await killWorktreeProcesses(rec.path);
+      // Sibling trees' paths never belong to this kill, even a nested checkout
+      // whose cwd sits underneath rec.path.
+      const siblings = loadRegistry(repoName)
+        .filter((t) => t.path !== rec.path)
+        .map((t) => t.path);
+      const { terminated } = await killWorktreeProcesses(rec.path, { excludePaths: siblings });
       if (terminated.length > 0) log.info({ ...fields, count: terminated.length }, "worktree processes terminated");
     } catch (err) {
       log.warn({ err, ...fields }, "auto-return: process kill failed; returning anyway");
@@ -689,6 +725,9 @@ export interface FreshenDeps {
 async function freshenCandidate(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> {
   if (rec.kind === "ephemeral") return rec.state === "on-deck";
   if (rec.kind !== "main") return false;
+  // Idle-main freshen touches the user's own checkout, so it stays opt-in
+  // even when ephemeral on-deck freshen is running.
+  if (!loadWorktreeAppConfig().enabled) return false;
 
   const defaultRef = await remoteDefaultRef(rec.path);
   const defaultBranchName = defaultRef.replace(/^origin\//, "");
@@ -739,31 +778,71 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     await runGit(rec.path, ["checkout", "--", ...classify.discard], { timeoutMs: MUTATING_TIMEOUT_MS });
   }
 
-  // Blockers stashed under the tree's own branch name (Desktop-compatible
-  // marker), harvested from parking-lot.ts's ff-sweep. On-deck trees are
-  // expected to be clean by construction; the idle-main case can legitimately
-  // have generated-only dirt left after the discard reset above.
-  let stashName: string | null = null;
-  const label = rec.branch ?? rec.name;
-  if (classify.blockers.length > 0) {
-    await stashChangesAsync(rec.path, label);
-    // A pushed stash whose name we then fail to resolve must still get a
-    // restore attempt, not be silently abandoned — "stash@{0}" is the entry
-    // we just pushed absent a race with something else stashing concurrently
-    // (harvested fallback from parking-lot.ts's ff-sweep).
-    stashName = (await findDesktopStashAsync(rec.path, label))?.name ?? "stash@{0}";
+  // Main can gain real edits any time during the fetch's (up to 5 minute)
+  // window; a blocker here means the user is mid-edit, not a broken step, so
+  // this leaves the tree untouched rather than stashing it out from under them.
+  if (rec.kind === "main") {
+    const recheck = await classifyDirtyAsync(rec.path);
+    if (recheck.blockers.length > 0) {
+      log.info({ ...fields }, "freshen: main gained uncommitted work during the fetch window; leaving it untouched");
+      return false;
+    }
   }
 
-  const popStash = async (): Promise<void> => {
-    if (!stashName) return;
+  let stashName: string | null = null;
+  const popStash = async (): Promise<boolean> => {
+    if (!stashName) return true;
     const pop = await runGit(rec.path, ["stash", "pop", stashName], { timeoutMs: MUTATING_TIMEOUT_MS });
     if (pop.exitCode !== 0) {
       log.warn(
         { ...fields, stashName },
         `freshen: stash ${stashName} did not reapply cleanly in ${rec.path}... it is preserved, restore it with: git stash pop ${stashName}`,
       );
+      emit("worktree:stash-conflict", { repo: repoName, tree: rec.name, path: rec.path, stashName });
+      return false;
     }
+    return true;
   };
+
+  // Blockers stashed under the tree's own branch name (Desktop-compatible
+  // marker), harvested from parking-lot.ts's ff-sweep. On-deck trees are
+  // expected to be clean by construction; the idle-main case can legitimately
+  // have generated-only dirt left after the discard reset above.
+  const label = rec.branch ?? rec.name;
+  if (classify.blockers.length > 0) {
+    const push = await stashChangesAsync(rec.path, label);
+    if (push.exitCode !== 0) {
+      log.warn(
+        { ...fields, output: push.stderr.trim() },
+        "freshen: stash push failed; leaving tree and stash untouched",
+      );
+      fail();
+      return false;
+    }
+    // A resolved marker is required before any pop ... a positional index
+    // guess can target an entry this pass never pushed if anything else
+    // stashed concurrently, so an unresolved marker aborts rather than guesses.
+    const resolved = await findDesktopStashAsync(rec.path, label);
+    if (!resolved) {
+      log.warn(
+        { ...fields },
+        "freshen: stash push succeeded but its marker could not be resolved; aborting without a pop",
+      );
+      fail();
+      return false;
+    }
+    stashName = resolved.name;
+
+    // Mirrors autoReturnMain's re-check: confirm the push actually cleared
+    // the tree before the ff runs on top of it.
+    const after = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
+    if (after.exitCode !== 0 || after.stdout.trim().length > 0) {
+      log.warn({ ...fields }, "freshen: stash did not clear the worktree; aborting");
+      await popStash();
+      fail();
+      return false;
+    }
+  }
 
   const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (ff.exitCode !== 0) {
@@ -772,7 +851,10 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     fail();
     return false;
   }
-  await popStash();
+  if (!(await popStash())) {
+    fail();
+    return false;
+  }
 
   const cfg = await loadWorktreeRepoConfig(repoName, deps.repoPath);
   const readySteps = resolveReadySteps(cfg, deps.repoPath);
@@ -887,6 +969,25 @@ export function withCreateLock<T>(repoPath: string, fn: () => Promise<T>): Promi
   return result;
 }
 
+// Machine-side clamp (S077): no team declaration builds more than this on one laptop.
+const WORKTREE_ONDECK_CEILING = 5;
+// Room for one tree plus a multi-GB monorepo install's transient peak (2026-08-21 wedge profile).
+const WORKTREE_MIN_FREE_DISK_GB = 5;
+
+/**
+ * Free disk under `path`, in gigabytes, via statfs. A probe failure (path not
+ * yet resolvable, permission) degrades to "enough disk" rather than blocking
+ * replenish on a signal that was never meant to gate anything on its own.
+ */
+async function hasFreeDiskGb(path: string, gb: number): Promise<boolean> {
+  try {
+    const stats = statfsSync(path);
+    return stats.bavail * stats.bsize >= gb * 1024 ** 3;
+  } catch {
+    return true;
+  }
+}
+
 /** The active backoff deadline for a repo, or null when creates may run now. */
 function createBlockedUntil(repoName: string): string | null {
   const entry = createBackoff.get(repoName);
@@ -939,11 +1040,14 @@ async function replenishAndShrink(
 ): Promise<void> {
   const { repoName, repoPath, emit, log } = deps;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  if (cfg.onDeck <= 0) return;
+  // A store rung's onDeck is a team declaration; the ceiling is this machine's
+  // own limit and always wins, so it clamps here rather than in the sanitizer.
+  const onDeck = Math.min(cfg.onDeck, WORKTREE_ONDECK_CEILING);
+  if (onDeck <= 0) return;
 
   let { ready, totalUnclaimed } = poolCounts(repoName);
-  let budget = Math.max(0, cfg.onDeck - totalUnclaimed);
-  while (budget > 0 && ready < cfg.onDeck && totalUnclaimed < cfg.onDeck) {
+  let budget = Math.max(0, onDeck - totalUnclaimed);
+  while (budget > 0 && ready < onDeck && totalUnclaimed < onDeck) {
     // Checked per iteration, not once per pass: a failure recorded by the
     // attempt above must end this pass's replenish too, or the pass still
     // burns `onDeck` full builds on the same broken step.
@@ -953,6 +1057,13 @@ async function replenishAndShrink(
         { repo: repoName, nextRetryAt: blockedUntil },
         "replenish: skipped — create backoff in effect",
       );
+      break;
+    }
+    // cfg.root, not repoPath: createTree writes under cfg.root, and the RT-52
+    // default root lives off-repo (~/.mattstack/rt/worktrees/<identity>), which
+    // can be a different volume than the repo's own filesystem.
+    if (!(await hasFreeDiskGb(cfg.root, WORKTREE_MIN_FREE_DISK_GB))) {
+      log.warn({ repo: repoName }, "replenish: skipped, free disk below threshold");
       break;
     }
     budget--;
@@ -991,7 +1102,7 @@ async function replenishAndShrink(
   // pass; a refusal just leaves it for the next pass rather than looping here.
   let counts = poolCounts(repoName);
   const attempted = new Set<string>();
-  while (counts.ready > cfg.onDeck) {
+  while (counts.ready > onDeck) {
     const now = Date.now();
     const eligible = counts.onDeckEntries.filter(
       (t) => !attempted.has(t.path) && (!t.nextRetryAt || Date.parse(t.nextRetryAt) <= now),
@@ -1034,9 +1145,11 @@ async function replenishAndShrink(
  * declares, because a root that changed after a disposal still has the old
  * root's leftovers in it.
  *
- * Retained trees — `.worktrees/.trash/<name>-<epoch>` entries, where disposal
- * parks trees stripped-but-recoverable (RT-51) — are reaped only past the
- * retention window.
+ * Retained trees (`<root>/.trash/<name>-<epoch>` entries under each of the
+ * same two roots, where disposal parks trees stripped-but-recoverable
+ * (RT-51)) are reaped only past the retention window. Sweeping both roots,
+ * not just the tree's current default, is what lets a legacy pool root and
+ * the new default pool root both drain during migration.
  */
 /**
  * Whether `root` is repoPath itself or a strict ancestor of it —
@@ -1063,7 +1176,7 @@ async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Lo
   }
   const reaped = await reapTrashInRoots(roots, log);
   if (reaped > 0) log.info({ repo: repoName, count: reaped }, "worktree trash reaped");
-  const expired = await reapExpiredTrash(repoPath, log);
+  const expired = await reapExpiredTrash(roots, log);
   if (expired > 0) log.info({ repo: repoName, count: expired }, "worktree retention trash reaped");
 }
 
@@ -1255,8 +1368,13 @@ export const __test__ = {
   loadReactorState,
   saveReactorState,
   freshenRepo,
+  freshenOne,
   replenishAndShrink,
   poolCounts,
   backoffDelayMs,
   createBackoff,
+  MISSING_PRUNE_PASSES,
+  hasFreeDiskGb,
+  WORKTREE_ONDECK_CEILING,
+  WORKTREE_MIN_FREE_DISK_GB,
 };
