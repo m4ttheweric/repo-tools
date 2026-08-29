@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { resolveIntendedMode } from "../dev-mode.ts";
+import { resolveIntendedMode, DEV_MODE_TAG } from "../dev-mode.ts";
 import { setSetting } from "../settings/write.ts";
 
 let home: string;
@@ -27,7 +27,7 @@ describe("resolveIntendedMode", () => {
 
   test("unset: derives from wrapper — script at ~/.local/bin/rt means dev", () => {
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(home, ".local", "bin", "rt"), "#!/bin/sh\necho dev\n");
+    writeFileSync(join(home, ".local", "bin", "rt"), `#!/bin/sh\n${DEV_MODE_TAG}\necho dev\n`);
     expect(resolveIntendedMode()).toEqual({ mode: "dev", provenance: "derived-from-wrapper" });
   });
 

@@ -10,11 +10,15 @@
  */
 
 import type { BranchCacheStore, CacheEntry } from "../../state/index.ts";
+import { composeKey } from "../../state/branch-cache.ts";
 
 export function fakeStore(entries: Record<string, CacheEntry> = {}): BranchCacheStore {
   return {
     entries,
-    put(branch, entry) { entries[branch] = entry; },
+    // Mirrors the real store's put (Task 10): keyed by composeKey(entry.repoName,
+    // branch), not the bare branch, so a fixture pre-seeded under a composite
+    // key stays addressable at the same key after a consumer writes through it.
+    put(branch, entry) { entries[composeKey(entry.repoName, branch)] = entry; },
     delete(branch) { delete entries[branch]; },
     reload() { /* no db behind this fake — the map is the whole store */ },
     gc() { /* GC is exercised against a real store, not here */ },

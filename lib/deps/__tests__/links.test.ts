@@ -201,8 +201,12 @@ describe("tagged PATH links", () => {
   });
 
   test("link(rt) refuses dev-mode-owns-rt when ~/.local/bin/rt is the dev-mode wrapper script", () => {
+    // isDevModeWrapper reads through p.readPrefix (Probes-routed, bounded),
+    // so the fake in-memory files map is enough -- no real fs write, and the
+    // content must be genuinely recognized (RT_LAUNCH_CWD tell) rather than
+    // any bare "#!" script, matching the shared detector's real rule.
     const path = linkPath(home, "rt");
-    const p = bundleProbe({ files: { [path]: "#!/bin/sh\nexec bun run cli.ts \"$@\"\n" } });
+    const p = bundleProbe({ files: { [path]: "#!/bin/sh\nexport RT_LAUNCH_CWD=\"$PWD\"\nexec bun run cli.ts \"$@\"\n" } });
 
     const outcome = link(p, "rt");
     expect(outcome).toEqual({ ok: false, reason: "dev-mode-owns-rt", detail: expect.any(String) });

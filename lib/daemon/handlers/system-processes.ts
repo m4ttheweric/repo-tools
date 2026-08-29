@@ -1,6 +1,7 @@
 import type { HandlerMap, HandlerContext } from "./types.ts";
 import type { SystemProcessScanner, SystemProcess } from "../system-process-scanner.ts";
 import { repoLabel } from "../../repo-arg.ts";
+import { composeKey } from "../../state/branch-cache.ts";
 
 function shortName(proc: SystemProcess): string {
   // Use fullCommand (complete argv) to get the real binary name,
@@ -95,7 +96,9 @@ export function createSystemProcessHandlers(
       const processes = scanner.getProcesses().map(proc => {
         let linearTicket: string | null = null;
         if (proc.branch) {
-          const cacheEntry = ctx.cache.entries[proc.branch];
+          // proc.repo is already the serialized identity (scanner tags rows
+          // with it post-rekey), so an exact composeKey lookup is safe here.
+          const cacheEntry = ctx.cache.entries[composeKey(proc.repo, proc.branch)];
           if (cacheEntry?.ticket) {
             linearTicket = `${cacheEntry.ticket.identifier}: ${cacheEntry.ticket.title}`;
           }

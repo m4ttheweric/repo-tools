@@ -6,6 +6,7 @@ import { basename, dirname, join } from "path";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../../json-store.ts";
 import { closeStateDb, listKvValues, setKvValue } from "../../state/index.ts";
+import { composeKey } from "../../state/branch-cache.ts";
 import { machineSettingsPath, rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { deriveRepoIdentity, parseIdentity } from "../../settings/identity.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
@@ -922,6 +923,27 @@ describe("merge reactor (detectTransitions)", () => {
 
     expect(existsSync(rec.path)).toBe(true);
     expect(tracked(rec.path)!.state).toBe("claimed");
+  });
+
+  test("S069/Task 10: mrState is built only from the reconciled repo's composite-keyed entries", async () => {
+    const rec = ephemeralTree("kilo", "feat-kilo");
+    const sameBranchInThisRepo = (state: string) => ({
+      [composeKey(repoName, "feat-kilo")]: { repoName, mr: { iid: 42, state }, fetchedAt: Date.now() },
+      // Same bare branch name, a DIFFERENT repo's composite key: must never
+      // be read as this repo's opened->merged edge, nor advance its snapshot.
+      [composeKey("beta-repo", "feat-kilo")]: { repoName: "beta-repo", mr: { iid: 99, state: "merged" }, fetchedAt: Date.now() },
+    });
+
+    await detect(sameBranchInThisRepo("opened"));
+    expect(reactorState().mrState[`${repoName}:feat-kilo`]).toBe("opened");
+    expect(reactorState().mrState["beta-repo:feat-kilo"]).toBeUndefined();
+
+    await detect(sameBranchInThisRepo("merged"));
+
+    expect(existsSync(rec.path)).toBe(false); // this repo's tree disposed
+    expect(reactorState().fired).toContain(`disposed:${repoName}:42:merged`);
+    // beta-repo's own MR (99) never fired through this repo's pass.
+    expect(reactorState().fired).not.toContain("disposed:beta-repo:99:merged");
   });
 
   test("runOnce runs the reactor after the reconcile pass", async () => {

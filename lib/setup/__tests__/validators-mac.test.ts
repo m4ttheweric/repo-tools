@@ -75,6 +75,28 @@ describe("macRows — tool.clt", () => {
   });
 });
 
+describe("macRows: tool.arch", () => {
+  test("arm64 -> ready", async () => {
+    const execScript: ExecScript = (argv) => (argv[0] === "uname" ? ok("arm64\n") : ok());
+    const r = await pickRow(macRows(fakeProbes({ exec: execScript })), "tool.arch");
+    expect(r.status).toBe("ready");
+    expect(r.detail).toContain("arm64");
+    expect(r.required).toBe(true);
+  });
+
+  test("x86_64 -> invalid, unsupported architecture", async () => {
+    const execScript: ExecScript = (argv) => (argv[0] === "uname" ? ok("x86_64\n") : ok());
+    const r = await pickRow(macRows(fakeProbes({ exec: execScript })), "tool.arch");
+    expect(r.status).toBe("invalid");
+  });
+
+  test("uname unreachable -> error, never invalid (couldn't determine, not a failed determination)", async () => {
+    const execScript: ExecScript = (argv) => (argv[0] === "uname" ? missing("uname") : ok());
+    const r = await pickRow(macRows(fakeProbes({ exec: execScript })), "tool.arch");
+    expect(r.status).toBe("error");
+  });
+});
+
 describe("macRows — tool.path", () => {
   test("~/.local/bin first on PATH and the precedence marker present -> ready", async () => {
     const p = fakeProbes({

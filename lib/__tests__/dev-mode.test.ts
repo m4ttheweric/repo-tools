@@ -7,9 +7,9 @@
  * activeLaunchdLabel() (which depends on it) rests on a verified foundation.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { currentMode, installRtBinary } from "../dev-mode.ts";
+import { currentMode, DEV_MODE_TAG, installRtBinary, isDevModeWrapperContent } from "../dev-mode.ts";
 
 // The dev-mode wrapper path is resolved at CALL time from process.env.HOME
 // (mirrors lib/rt-paths.ts's home()), so this constant only needs to match
@@ -30,7 +30,7 @@ describe("currentMode", () => {
 
   test("reports dev when the wrapper exists at ~/.local/bin/rt", () => {
     mkdirSync(join(process.env.HOME!, ".local", "bin"), { recursive: true });
-    writeFileSync(WRAPPER_PATH, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(WRAPPER_PATH, `#!/bin/sh\n${DEV_MODE_TAG}\nexit 0\n`, { mode: 0o755 });
     expect(currentMode()).toBe("dev");
   });
 
@@ -45,13 +45,51 @@ describe("currentMode", () => {
       expect(currentMode()).toBe("prod"); // fakeHome/.local/bin/rt doesn't exist yet
 
       mkdirSync(join(fakeHome, ".local", "bin"), { recursive: true });
-      writeFileSync(join(fakeHome, ".local", "bin", "rt"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      writeFileSync(join(fakeHome, ".local", "bin", "rt"), `#!/bin/sh\n${DEV_MODE_TAG}\nexit 0\n`, { mode: 0o755 });
       expect(currentMode()).toBe("dev");
 
       rmSync(fakeHome, { recursive: true, force: true });
     } finally {
       process.env.HOME = realHome;
     }
+  });
+});
+
+describe("isDevModeWrapperContent", () => {
+  test("new marked wrapper is recognized", () => {
+    expect(isDevModeWrapperContent(`#!/bin/zsh\n${DEV_MODE_TAG}\nexport PATH=...\n`)).toBe(true);
+  });
+  test("legacy markerless wrapper (RT_LAUNCH_CWD tell) is recognized", () => {
+    expect(isDevModeWrapperContent(`#!/bin/zsh\nexport PATH="x"\nexport RT_LAUNCH_CWD="$PWD"\n`)).toBe(true);
+  });
+  test("foreign #! script is not a dev wrapper", () => {
+    expect(isDevModeWrapperContent(`#!/bin/sh\necho hi\n`)).toBe(false);
+  });
+  test("a mattstack-link file is not a dev wrapper", () => {
+    expect(isDevModeWrapperContent(`#!/bin/sh\n# mattstack-link: rt\nexec ...\n`)).toBe(false);
+  });
+  test("non-shebang content is not a dev wrapper", () => {
+    expect(isDevModeWrapperContent(`ELF\x00binary`)).toBe(false);
+  });
+});
+
+describe("currentMode bounded read", () => {
+  afterEach(() => {
+    try { rmSync(WRAPPER_PATH); } catch { /* already absent */ }
+  });
+
+  test("a symlink to a >4KB binary-shaped file classifies as prod without reading the whole file", () => {
+    mkdirSync(join(process.env.HOME!, ".local", "bin"), { recursive: true });
+    const bigBinaryPath = join(process.env.HOME!, "big-binary");
+    // Mach-O-ish header followed by >4KB of non-marker filler, so a
+    // whole-file read (rather than a bounded prefix read) would still
+    // correctly classify this as prod -- the real proof is that this
+    // doesn't throw/hang and stays fast even against a multi-MB target.
+    const filler = Buffer.alloc(8192, 0x41);
+    writeFileSync(bigBinaryPath, Buffer.concat([Buffer.from([0xcf, 0xfa, 0xed, 0xfe]), filler]));
+    symlinkSync(bigBinaryPath, WRAPPER_PATH);
+
+    expect(currentMode()).toBe("prod");
   });
 });
 
@@ -84,7 +122,7 @@ describe("installRtBinary", () => {
 
   test("currentMode reads through the link: a link to a script is dev, to a Mach-O is prod", () => {
     const script = join(process.env.HOME!, "wrapper.sh");
-    writeFileSync(script, "#!/bin/zsh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(script, `#!/bin/zsh\n${DEV_MODE_TAG}\nexit 0\n`, { mode: 0o755 });
     installRtBinary(script);
     expect(currentMode()).toBe("dev");
   });

@@ -23,6 +23,8 @@ import {
   type BranchCacheStore,
   type CacheEntry,
 } from "./state/index.ts";
+import { composeKey } from "./state/branch-cache.ts";
+import { identityFromRemote, serializeIdentity } from "./settings/identity.ts";
 import {
   GitLabProvider,
   type PullRequest,
@@ -35,6 +37,13 @@ import {
   extractLinearId,
   type LinearTicket,
 } from "./linear.ts";
+
+/** Best-effort serialized identity for a remote URL; undefined with no remote. */
+function identityForRemote(remoteUrl: string | undefined): string | undefined {
+  if (!remoteUrl) return undefined;
+  const parsed = identityFromRemote(remoteUrl);
+  return parsed ? serializeIdentity(parsed) : undefined;
+}
 
 // ─── Remote URL parser ───────────────────────────────────────────────────────
 
@@ -232,8 +241,10 @@ export async function enrichBranches(
   if (!options?.silent) {
     try {
       const { daemonQuery } = await import("./daemon-client.ts");
+      const identity = identityForRemote(remoteUrl);
       const response = await daemonQuery("cache:read", {
         branches: branches.map(b => b.branch),
+        repoIdentity: identity,
       });
 
       if (response?.ok && response.data) {
@@ -263,12 +274,14 @@ export async function enrichBranches(
   const secrets = await loadSecrets();
   const willFetch = !!(secrets.linearApiKey || secrets.gitlabToken);
   const store = getBranchCacheStore();
+  const identity = identityForRemote(remoteUrl);
 
-  const allCached = !options?.forceRefresh && willFetch && branches.every((b) => b.branch in store.entries);
+  const allCached = !options?.forceRefresh && willFetch
+    && branches.every((b) => composeKey(identity, b.branch) in store.entries);
 
   if (allCached) {
     const cachedResults = branches.map((b) => {
-      const entry = store.entries[b.branch]!;
+      const entry = store.entries[composeKey(identity, b.branch)]!;
       return {
         path: b.path,
         dirName: b.path.split("/").pop() || b.path,
@@ -297,6 +310,7 @@ async function fetchAndCache(
 ): Promise<EnrichedBranch[]> {
   const secrets = await loadSecrets();
   const willFetch = !!(secrets.linearApiKey || secrets.gitlabToken);
+  const identity = identityForRemote(remoteUrl);
 
   let showSpinner = false;
   if (!silent && willFetch && process.stderr.isTTY) {
@@ -362,7 +376,7 @@ async function fetchAndCache(
   const results: EnrichedBranch[] = branches.map((b, idx) => {
     const dirName = b.path.split("/").pop() || b.path;
     const { linearId } = branchLinearIds[idx]!;
-    const existing = store.entries[b.branch];
+    const existing = store.entries[composeKey(identity, b.branch)];
 
     const pr = mrMap.get(b.branch) ?? null;
     const mr = mrFetchSucceeded ? (pr ? toMRInfo(pr) : null) : (existing?.mr ?? null);
@@ -376,7 +390,7 @@ async function fetchAndCache(
       linearId: linearId || existing?.linearId || "",
       mr,
       fetchedAt: mrFetchSucceeded ? Date.now() : (existing?.fetchedAt ?? Date.now()),
-      repoName: existing?.repoName,
+      repoName: identity,
     }]);
 
     return { path: b.path, dirName, branch: b.branch, linearId, ticket, mr };
@@ -492,7 +506,7 @@ export async function refreshAllMRs(
       // preserve the existing entry to avoid overwriting good enrichment data that was
       // previously resolved via a full enrich (e.g., from an older/renamed MR title).
       if (!mr && !linearId) {
-        const existing = store.entries[b.branch];
+        const existing = store.entries[composeKey(repoName, b.branch)];
         if (existing?.linearId || existing?.ticket) {
           // Keep existing enrichment — we have nothing better to replace it with
           enriched.push([b.branch, { ...existing, fetchedAt: now, repoName }]);
@@ -511,7 +525,7 @@ export async function refreshAllMRs(
       // GitLab API failed entirely — preserve existing MR data to avoid false transitions.
       // If we also couldn't resolve a linearId (non-standard branch name, no MR title to fall
       // back on), preserve existing ticket/linearId too — we have nothing better to substitute.
-      const existing = store.entries[b.branch];
+      const existing = store.entries[composeKey(repoName, b.branch)];
       enriched.push([b.branch, {
         ticket:    linearId ? ticket : (existing?.ticket ?? null),
         linearId:  linearId || existing?.linearId || "",

@@ -74,6 +74,15 @@ describe("settings/registry", () => {
       expect(def?.default).toBe(14);
     });
 
+    test("rt.daemonPath is a machine-scoped string key with no default", () => {
+      const def = getDef("rt.daemonPath");
+      expect(def).toBeDefined();
+      expect(def!.type).toBe("string");
+      expect(def!.scopes).toEqual(["machine"]);
+      expect(def!.default).toBeUndefined();
+      expect(def!.pathGuardFields).toBeUndefined();
+    });
+
     test("rt.worktreeApp is a machine-only field-bag object with no default (ownership latch)", () => {
       const def = getDef("rt.worktreeApp");
 
@@ -251,8 +260,9 @@ describe("settings/registry", () => {
         "agent.account",
         "agent.extraArgs",
         "rt.trustedBrowserOrigins",
+        "rt.daemonPath",
       ];
-      expect(suiteKeys).toHaveLength(43);
+      expect(suiteKeys).toHaveLength(44);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),

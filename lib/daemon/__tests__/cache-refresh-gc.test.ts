@@ -40,6 +40,7 @@ import { createCacheRefresher } from "../cache-refresh.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import { createDiscussionsFileStore } from "../discussions-file-store.ts";
 import { getBranchCacheStore, openStateDb, getNotifierStateBlob, setNotifierStateBlob, type CacheEntry } from "../../state/index.ts";
+import { composeKey } from "../../state/branch-cache.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLEAN = "gcwire-clean";
@@ -158,11 +159,11 @@ describe("cache-refresh cycle: branch-cache GC", () => {
     await runCycle();
 
     // Clean repo: aged out. Fresh row of the same repo: kept.
-    expect(cache.entries["gcwire-clean-stale"]).toBeUndefined();
-    expect(cache.entries["gcwire-clean-fresh"]).toBeDefined();
+    expect(cache.entries[composeKey(CLEAN, "gcwire-clean-stale")]).toBeUndefined();
+    expect(cache.entries[composeKey(CLEAN, "gcwire-clean-fresh")]).toBeDefined();
     // Flaky repo: `onError` fired, so the repo never entered succeededRepos
     // and NOTHING of its rows may be aged out this cycle.
-    expect(cache.entries["gcwire-flaky-stale"]).toBeDefined();
+    expect(cache.entries[composeKey(FLAKY, "gcwire-flaky-stale")]).toBeDefined();
     // NULL-repo rows are unattributable: prunable by age alone.
     expect(cache.entries["gcwire-orphan-stale"]).toBeUndefined();
   }, 20_000);
@@ -205,7 +206,7 @@ describe("cache-refresh cycle: branch-cache GC", () => {
 
     await runCycle();
 
-    expect(cache.entries["gcwire-clean-stale"]).toBeUndefined();
+    expect(cache.entries[composeKey(CLEAN, "gcwire-clean-stale")]).toBeUndefined();
     const after = getNotifierStateBlob<{ fired: string[] }>({ fired: [] });
     expect(after.fired).not.toContain(evictedKey);
   }, 20_000);

@@ -8,6 +8,7 @@
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { daemonSocketQuery, trayRequest, type DaemonResponse, type TrayClient } from "../daemon-client.ts";
+import { readWrapperPrefix } from "../dev-mode.ts";
 import { UserActionableError } from "./errors.ts";
 
 export interface ExecResult {
@@ -23,6 +24,13 @@ export interface Probes {
   /** Byte size, following symlinks, only for a REGULAR file (a directory, a symlink to one, or anything missing/unreadable is null) — the cheap "is this actually a file worth reading" check callers need before decoding one. */
   fileSize(path: string): number | null;
   readFile(path: string): string | null;
+  /**
+   * A bounded 4096-byte prefix of `path`, following symlinks -- never a
+   * whole-file read. Exists for callers that must classify a file by its
+   * head (e.g. dev-mode wrapper detection) where the target may be a symlink
+   * to a multi-MB binary; `readFile` would read the whole thing.
+   */
+  readPrefix(path: string): string | null;
   readDir(path: string): string[];
   readlink(path: string): string | null;
   writeFile(path: string, content: string, mode?: number): void;
@@ -171,6 +179,10 @@ export function createRealProbes(): Probes {
       } catch {
         return null;
       }
+    },
+
+    readPrefix(path) {
+      return readWrapperPrefix(path);
     },
 
     readDir(path) {

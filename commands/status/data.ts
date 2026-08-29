@@ -10,6 +10,7 @@
 
 import type { CacheEntry, StatusData } from "./types.ts";
 import type { PortEntry } from "../../lib/port-scanner.ts";
+import { branchOf } from "../../lib/state/branch-cache.ts";
 
 interface BranchCacheRow {
   branch: string;
@@ -56,7 +57,7 @@ async function readBranchesFromStateDb(): Promise<Record<string, CacheEntry>> {
         // with looser optionality on the ticket fields (`stateName?: string`
         // vs `string | null`). Same data that used to arrive here as parsed
         // JSON out of branch-cache.json.
-        branches[row.branch] = {
+        branches[branchOf(row.branch)] = {
           ticket: row.ticket !== null ? (JSON.parse(row.ticket) as CacheEntry["ticket"]) : null,
           linearId: row.linear_id,
           mr: row.mr !== null ? (JSON.parse(row.mr) as CacheEntry["mr"]) : null,

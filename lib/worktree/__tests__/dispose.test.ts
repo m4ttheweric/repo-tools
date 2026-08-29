@@ -6,6 +6,7 @@ import { basename, dirname, join } from "path";
 import { teamSettingsPath } from "../../rt-paths.ts";
 import { setSetting } from "../../settings/write.ts";
 import { closeStateDb, getBranchCacheStore, type CacheEntry } from "../../state/index.ts";
+import { branchOf } from "../../state/branch-cache.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
 import { branchExistsLocalAsync, listWorktreesAsync, remoteRefExists } from "../git-async.ts";
 import { hasFreshAttendantLease } from "../lease.ts";
@@ -761,7 +762,10 @@ describe("disposeTree against the real branch_cache store (identity-keyed)", () 
     }));
 
     // Seeded exactly as cache-refresh.ts writes it: repoName is the same
-    // identity the daemon iterates the repo index under.
+    // identity the daemon iterates the repo index under. The store now keys
+    // its own map by composeKey(repoName, branch); the daemon's caller
+    // (worktree-reconciler.ts actOnTree) hands disposeTree a bare-keyed,
+    // this-repo-only view; reproduce that same remap here.
     const store = getBranchCacheStore();
     store.put("feature-a", {
       ticket: null,
@@ -770,11 +774,14 @@ describe("disposeTree against the real branch_cache store (identity-keyed)", () 
       mr: { iid: 42, sha, state: "merged" } as unknown as CacheEntry["mr"],
       repoName: identityRepoName,
     });
+    const cacheEntries = Object.fromEntries(
+      Object.entries(store.entries).map(([key, entry]) => [branchOf(key), entry]),
+    );
 
     const deps: DisposeDeps = {
       repoName: identityRepoName,
       repoPath: repo,
-      cacheEntries: store.entries,
+      cacheEntries,
       emit: (type, data) => events.push({ type, data }),
       log: { info: () => {}, warn: () => {} },
       killProcesses: false,
@@ -801,11 +808,14 @@ describe("disposeTree against the real branch_cache store (identity-keyed)", () 
       mr: { iid: 42, sha, state: "merged" } as unknown as CacheEntry["mr"],
       repoName: "acme", // pre-rekey legacy display name
     });
+    const cacheEntries = Object.fromEntries(
+      Object.entries(store.entries).map(([key, entry]) => [branchOf(key), entry]),
+    );
 
     const deps: DisposeDeps = {
       repoName: identityRepoName,
       repoPath: repo,
-      cacheEntries: store.entries,
+      cacheEntries,
       emit: (type, data) => events.push({ type, data }),
       log: { info: () => {}, warn: () => {} },
       killProcesses: false,

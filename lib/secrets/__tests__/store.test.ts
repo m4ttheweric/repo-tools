@@ -8,8 +8,10 @@ import {
   resetSecretsMemo,
   formatDebugLine,
   buildSecretsSpawnOptions,
+  createRealSecretsExecSeam,
   NoAgeKeyError,
   InvalidSecretsSegmentError,
+  SecretsTimeoutError,
   type SecretsExecResult,
   type SecretsExecSeam,
   type SecretsSeams,
@@ -571,6 +573,22 @@ describe("real seam spawn options — cwd pin", () => {
     const opts = buildSecretsSpawnOptions({ cwd: "/tmp/some/team/clone" });
     expect(opts.cwd).toBe("/tmp/some/team/clone");
   });
+});
+
+describe("real seam spawn timeout", () => {
+  test("a hanging sops spawn times out with SecretsTimeoutError, does not hang", async () => {
+    let resolveExit: (code: number) => void = () => {};
+    const fakeProc = {
+      pid: 1,
+      stdout: new Response("").body,
+      stderr: new Response("").body,
+      exited: new Promise<number>((r) => { resolveExit = r; }),
+      kill: () => resolveExit(143), // killable: kill resolves exit, no real process
+    };
+    const seam = createRealSecretsExecSeam(undefined, () => fakeProc as any);
+    await expect(seam.run(["sops", "-d", "x"], { timeoutMs: 50 } as any))
+      .rejects.toBeInstanceOf(SecretsTimeoutError);
+  }, 2_000);
 });
 
 describe("formatDebugLine (the debugLog path)", () => {
