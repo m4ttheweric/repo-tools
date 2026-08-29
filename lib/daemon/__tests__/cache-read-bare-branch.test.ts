@@ -25,7 +25,7 @@ describe("cache:read: bare-branch output", () => {
     };
     const handlers = makeCtx(entries);
 
-    const res = await handlers["cache:read"]!({});
+    const res = await handlers["cache:read"]!({}) as any;
 
     expect(Object.keys(res.data)).toEqual(["main"]);
     expect(res.data.main.linearId).toBe("A");
@@ -37,7 +37,7 @@ describe("cache:read: bare-branch output", () => {
     };
     const handlers = makeCtx(entries);
 
-    const res = await handlers["cache:read"]!({ branches: ["main"] });
+    const res = await handlers["cache:read"]!({ branches: ["main"] }) as any;
 
     expect(Object.keys(res.data)).toEqual(["main"]);
     expect(res.data.main.linearId).toBe("A");
@@ -50,7 +50,7 @@ describe("cache:read: bare-branch output", () => {
     };
     const handlers = makeCtx(entries);
 
-    const res = await handlers["cache:read"]!({ branches: ["main"] });
+    const res = await handlers["cache:read"]!({ branches: ["main"] }) as any;
 
     expect(Object.keys(res.data)).toEqual(["main"]);
     expect(["A", "B"]).toContain(res.data.main.linearId);
@@ -63,7 +63,7 @@ describe("cache:read: bare-branch output", () => {
     };
     const handlers = makeCtx(entries);
 
-    const res = await handlers["cache:read"]!({ branches: ["main"], repoIdentity: "remote:host%2Fb" });
+    const res = await handlers["cache:read"]!({ branches: ["main"], repoIdentity: "remote:host%2Fb" }) as any;
 
     expect(res.data.main.linearId).toBe("B");
   });

@@ -81,7 +81,7 @@ export interface HandlerContext {
   getLogLevel:             () => string;
 }
 
-export type Handler    = (payload: any, signal?: AbortSignal) => Promise<any>;
+export type Handler    = (payload: unknown, signal?: AbortSignal) => Promise<unknown>;
 export type HandlerMap = Record<string, Handler>;
 
 // ── Typed command surface (MAT-31) ───────────────────────────────────────────

@@ -72,10 +72,11 @@ export function createMRHandlers(
 
   return {
     "mr:action": async (payload) => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
-      const action   = payload?.action   as ActionName | undefined;
-      const args     = (payload?.args as any[] | undefined) ?? [];
+      const p = payload as { repoName?: string; iid?: number; action?: ActionName; args?: any[] } | undefined;
+      const repoName = p?.repoName;
+      const iid      = p?.iid;
+      const action   = p?.action;
+      const args     = p?.args ?? [];
 
       if (!repoName || typeof iid !== "number" || !action) {
         return { ok: false, error: "missing repoName/iid/action" };
@@ -145,10 +146,11 @@ export function createMRHandlers(
     },
 
     "mr:fetch-job-detail": async (payload) => {
-      const repoName   = payload?.repoName   as string | undefined;
-      const iid        = payload?.iid        as number | undefined;
-      const jobId      = payload?.jobId      as number | undefined;
-      const pipelineId = payload?.pipelineId as number | undefined;
+      const p = payload as { repoName?: string; iid?: number; jobId?: number; pipelineId?: number } | undefined;
+      const repoName   = p?.repoName;
+      const iid        = p?.iid;
+      const jobId      = p?.jobId;
+      const pipelineId = p?.pipelineId;
 
       if (!repoName || typeof iid !== "number" || typeof jobId !== "number") {
         return { ok: false, error: "missing repoName/iid/jobId" };
@@ -164,9 +166,10 @@ export function createMRHandlers(
     },
 
     "mr:fetch-job-trace": async (payload) => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
-      const jobId    = payload?.jobId    as number | undefined;
+      const p = payload as { repoName?: string; iid?: number; jobId?: number } | undefined;
+      const repoName = p?.repoName;
+      const iid      = p?.iid;
+      const jobId    = p?.jobId;
 
       if (!repoName || typeof iid !== "number" || typeof jobId !== "number") {
         return { ok: false, error: "missing repoName/iid/jobId" };

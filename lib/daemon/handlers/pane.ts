@@ -16,7 +16,7 @@ import { branchForCwd, repoForCwd } from "../../repo-for-cwd.ts";
 import { listBuddies, listRooms, type PresenceRow, type RegistryDeps } from "../../state/index.ts";
 import { runCapture } from "../../subprocess.ts";
 import { loadRegistry } from "../../worktree/registry.ts";
-import type { CommandResult, TypedHandlers } from "./types.ts";
+import type { CommandResult } from "./types.ts";
 
 export interface HerdrPane {
   pane_id: string;
@@ -126,8 +126,22 @@ export function createPaneHandlers(opts: {
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
   /** The registry probe behind buddyStatus, fakeable the same way lib/daemon/handlers/chat.ts's registryDeps is. */
   registryDeps?: RegistryDeps;
-}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:send" | "pane:focus">
-  & { "pane:spawn": (payload: Commands["pane:spawn"]["payload"], signal?: AbortSignal) => Promise<CommandResult<"pane:spawn">> }
+}):
+  // Declared as direct `unknown`-payload members (not `Pick<TypedHandlers, ...>`)
+  // rather than the narrower per-command payload types the catalog would
+  // otherwise force: this factory also exposes `db` for test isolation, and
+  // `db: Database` cannot itself satisfy a `HandlerMap` index signature
+  // intersected here, so the escape from Handler's `unknown` param has to be
+  // per-member instead. A wider `unknown` param still satisfies
+  // TypedHandlers' narrower one at the command-router.ts assembly site
+  // (function parameter contravariance).
+  & { "pane:list": (payload: unknown) => Promise<CommandResult<"pane:list">> }
+  & { "pane:peek": (payload: unknown) => Promise<CommandResult<"pane:peek">> }
+  & { "pane:accounts": (payload: unknown) => Promise<CommandResult<"pane:accounts">> }
+  & { "pane:directories": (payload: unknown) => Promise<CommandResult<"pane:directories">> }
+  & { "pane:send": (payload: unknown) => Promise<CommandResult<"pane:send">> }
+  & { "pane:focus": (payload: unknown) => Promise<CommandResult<"pane:focus">> }
+  & { "pane:spawn": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"pane:spawn">> }
   & { db: Database } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
@@ -144,7 +158,7 @@ export function createPaneHandlers(opts: {
   return {
     db,
 
-    "pane:list": async (): Promise<CommandResult<"pane:list">> => {
+    "pane:list": async (_payload: unknown): Promise<CommandResult<"pane:list">> => {
       const snap = await snapshot();
       if (!snap.ok) return herdrError(snap);
       const ctx: PaneRowContext = {
@@ -157,7 +171,8 @@ export function createPaneHandlers(opts: {
       return { ok: true, data: { panes: sortPanes(rows) } };
     },
 
-    "pane:peek": async (payload: Commands["pane:peek"]["payload"]): Promise<CommandResult<"pane:peek">> => {
+    "pane:peek": async (rawPayload: unknown): Promise<CommandResult<"pane:peek">> => {
+      const payload = rawPayload as Commands["pane:peek"]["payload"];
       const params: Record<string, unknown> = { pane_id: payload.paneId, source: "visible" };
       if (payload.lines !== undefined) params.lines = payload.lines;
       const res = await herdr<{ read: { text: string } }>("pane.read", params);
@@ -167,11 +182,12 @@ export function createPaneHandlers(opts: {
       return { ok: true, data: { paneId: payload.paneId, lines } };
     },
 
-    "pane:accounts": async (): Promise<CommandResult<"pane:accounts">> => {
+    "pane:accounts": async (_payload: unknown): Promise<CommandResult<"pane:accounts">> => {
       return { ok: true, data: { accounts: await listCswapAccounts(exec) } };
     },
 
-    "pane:directories": async (payload: Commands["pane:directories"]["payload"]): Promise<CommandResult<"pane:directories">> => {
+    "pane:directories": async (rawPayload: unknown): Promise<CommandResult<"pane:directories">> => {
+      const payload = rawPayload as Commands["pane:directories"]["payload"];
       const q = payload.q?.toLowerCase();
       const seen = new Set<string>();
       const out: PaneDirectory[] = [];
@@ -196,7 +212,8 @@ export function createPaneHandlers(opts: {
       return { ok: true, data: { directories: out } };
     },
 
-    "pane:spawn": async (payload: Commands["pane:spawn"]["payload"], signal?: AbortSignal): Promise<CommandResult<"pane:spawn">> => {
+    "pane:spawn": async (rawPayload: unknown, signal?: AbortSignal): Promise<CommandResult<"pane:spawn">> => {
+      const payload = rawPayload as Commands["pane:spawn"]["payload"];
       const { cwd, account, model, effort, prompt } = payload;
       if (!cwd || !cwd.startsWith("/")) return { ok: false, error: "cwd must be an absolute path" };
       if (account) {
@@ -284,14 +301,17 @@ export function createPaneHandlers(opts: {
       return { ok: true, data: { pane, ready } };
     },
 
-    "pane:send": async (payload: Commands["pane:send"]["payload"]): Promise<CommandResult<"pane:send">> =>
-      injectIntoPane({ paneId: payload.paneId, text: payload.text, callerPane: payload.callerPane, herdr }),
+    "pane:send": async (rawPayload: unknown): Promise<CommandResult<"pane:send">> => {
+      const payload = rawPayload as Commands["pane:send"]["payload"];
+      return injectIntoPane({ paneId: payload.paneId, text: payload.text, callerPane: payload.callerPane, herdr });
+    },
 
     // The tray owns focusing: herdr's socket has no `pane focus`, and raising
     // the hosting terminal window is native macOS the daemon cannot do. The
     // daemon and tray always ship together, so this just routes the id over
     // tray.sock; a down tray is a clean error, never a degraded fallback.
-    "pane:focus": async (payload: Commands["pane:focus"]["payload"]): Promise<CommandResult<"pane:focus">> => {
+    "pane:focus": async (rawPayload: unknown): Promise<CommandResult<"pane:focus">> => {
+      const payload = rawPayload as Commands["pane:focus"]["payload"];
       // The tray does four sequential herdr spawns (list + process-info +
       // workspace/tab focus) behind this call, so trayRequest's 2s default
       // would misreport a slow-but-working tray as down; sit under paneFocus's

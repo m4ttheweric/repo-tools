@@ -15,7 +15,7 @@ import type { HandlerContext, HandlerMap } from "./types.ts";
 export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
   return {
     "hooks:status": async (payload) => {
-      const repoName = payload?.repo;
+      const repoName = (payload as { repo?: string } | undefined)?.repo;
       if (!repoName) return { ok: false, error: "missing repo" };
       // The index is identity-keyed now — a bare legacy name resolves nothing.
       if (parseIdentity(repoName) === null) return { ok: true, data: null };
@@ -24,7 +24,7 @@ export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
     },
 
     "hooks:repair": async (payload) => {
-      const repoName = payload?.repo;
+      const repoName = (payload as { repo?: string } | undefined)?.repo;
       if (!repoName) return { ok: false, error: "missing repo" };
       if (parseIdentity(repoName) === null) return { ok: true, repaired: false };
       const repos = ctx.repoIndex();
@@ -35,7 +35,7 @@ export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
     },
 
     "hooks:watch": async (payload) => {
-      const repoName = payload?.repo;
+      const repoName = (payload as { repo?: string } | undefined)?.repo;
       if (!repoName) return { ok: false, error: "missing repo" };
       if (parseIdentity(repoName) === null) return { ok: true };
       const repos = ctx.repoIndex();

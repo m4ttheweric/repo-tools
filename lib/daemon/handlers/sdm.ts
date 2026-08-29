@@ -53,14 +53,16 @@ function serializeSnapshot(snapshot: SdmSnapshot) {
 
 export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = realDeps): HandlerMap {
   return {
-    "sdm:catalog": async (payload: { refresh?: boolean } = {}) => {
-      const result = await deps.scan({ refresh: payload.refresh });
+    "sdm:catalog": async (payload) => {
+      const p = (payload as { refresh?: boolean } | undefined) ?? {};
+      const result = await deps.scan({ refresh: p.refresh });
       if (result.error) ctx.log.warn({ err: result.error }, "sdm scan failed");
       return { ok: true, resources: result.resources, fromCache: result.fromCache, error: result.error };
     },
 
-    "sdm:snapshot": async (payload: { force?: boolean } = {}) => {
-      const snapshot = await deps.getSnapshot(payload.force);
+    "sdm:snapshot": async (payload) => {
+      const p = (payload as { force?: boolean } | undefined) ?? {};
+      const snapshot = await deps.getSnapshot(p.force);
       return { ok: true, ...serializeSnapshot(snapshot) };
     },
 
@@ -75,8 +77,9 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
       return { ok: true, health: snapshot.health, recents };
     },
 
-    "sdm:reconnect": async (payload: { key?: string } = {}) => {
-      const key = payload.key ?? "";
+    "sdm:reconnect": async (payload) => {
+      const p = (payload as { key?: string } | undefined) ?? {};
+      const key = p.key ?? "";
       const entry = deps.loadState().recents.find(r => r.key === key);
       if (!entry) return { ok: false, error: `unknown recents key: ${key}` };
       if (await deps.needsAccessRequest(entry.sdmResource)) {

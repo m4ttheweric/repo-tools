@@ -19,7 +19,7 @@ describe("cache:read maxAgeMs", () => {
   test("absent maxAgeMs never refreshes", async () => {
     const { ctx, state } = makeCtx({ a: { fetchedAt: 1 } });
     const handlers = createCacheHandlers(ctx);
-    const res = await handlers["cache:read"]!({});
+    const res = await handlers["cache:read"]!({}) as any;
     expect(res.ok).toBe(true);
     expect(state.refreshes).toBe(0);
   });
@@ -34,7 +34,7 @@ describe("cache:read maxAgeMs", () => {
   test("a stale entry triggers an awaited refresh before answering", async () => {
     const { ctx, state } = makeCtx({ a: { fetchedAt: Date.now() - 120_000 } });
     const handlers = createCacheHandlers(ctx);
-    const res = await handlers["cache:read"]!({ maxAgeMs: 60_000 });
+    const res = await handlers["cache:read"]!({ maxAgeMs: 60_000 }) as any;
     expect(state.refreshes).toBe(1);
     expect(res.data.a.fetchedAt).toBeGreaterThan(Date.now() - 5_000); // answered post-refresh
   });

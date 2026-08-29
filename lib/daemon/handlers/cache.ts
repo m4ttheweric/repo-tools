@@ -35,11 +35,12 @@ function isIncomplete(entry: CacheEntry, now: number = Date.now()): boolean {
 export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
   return {
     "cache:read": async (payload) => {
-      const branches = payload?.branches as string[] | undefined;
-      const maxAgeMs = payload?.maxAgeMs as number | undefined;
+      const p = payload as { branches?: string[]; maxAgeMs?: number; repoIdentity?: string } | undefined;
+      const branches = p?.branches;
+      const maxAgeMs = p?.maxAgeMs;
       // Optional exact scoping: an absent repoIdentity falls back to a
       // suffix match across repos (today's callers never pass this yet).
-      const repoIdentity = payload?.repoIdentity as string | undefined;
+      const repoIdentity = p?.repoIdentity;
 
       const lookup = (b: string): CacheEntry | undefined =>
         repoIdentity ? ctx.cache.entries[composeKey(repoIdentity, b)] : getByBranch(ctx.cache.entries, b);
@@ -81,14 +82,19 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
     },
 
     "branch:enrich": async (payload) => {
-      const branch      = payload?.branch      as string;
-      const repoPath    = payload?.repoPath    as string;
-      const remoteUrl   = payload?.remoteUrl   as string | undefined;
-      const repoIdentity = payload?.repoIdentity as string | undefined;
+      const p = payload as {
+        branch?: string;
+        repoPath?: string;
+        remoteUrl?: string;
+        repoIdentity?: string;
+        enrich?: (b: unknown, r: unknown, o: unknown) => Promise<void>;
+      } | undefined;
+      const branch      = p?.branch;
+      const repoPath    = p?.repoPath;
+      const remoteUrl   = p?.remoteUrl;
+      const repoIdentity = p?.repoIdentity;
       // Test seam: the enricher, so a test never reaches Linear or the forge.
-      const inject    = payload?.enrich    as
-        | ((b: unknown, r: unknown, o: unknown) => Promise<void>)
-        | undefined;
+      const inject    = p?.enrich;
 
       if (!branch) return { ok: false, error: "missing branch" };
 

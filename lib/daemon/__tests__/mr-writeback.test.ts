@@ -23,7 +23,7 @@ function harness(provider: Record<string, unknown>) {
 describe("mr:action write-back", () => {
   test("merge uses the returned PR: writeback once, zero fetchSingle", async () => {
     const { handlers, writebacks, singles } = harness({ mergePullRequest: async () => prOf(7, "merged") });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 7, action: "merge", args: [] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 7, action: "merge", args: [] }) as any;
     expect(res.ok).toBe(true);
     expect(writebacks).toEqual([{ repo: "repo", pp: "g/p", iid: 7, state: "merged" }]);
     expect(singles).toEqual([]);
@@ -31,7 +31,7 @@ describe("mr:action write-back", () => {
 
   test("toggleDraft uses updatePullRequest's returned PR", async () => {
     const { handlers, writebacks, singles } = harness({ updatePullRequest: async () => prOf(8) });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 8, action: "toggleDraft", args: [true] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 8, action: "toggleDraft", args: [true] }) as any;
     expect(res.ok).toBe(true);
     expect(writebacks.length).toBe(1);
     expect(singles).toEqual([]);
@@ -39,7 +39,7 @@ describe("mr:action write-back", () => {
 
   test("void action (approve): exactly one immediate follow-up fetch then writeback", async () => {
     const { handlers, writebacks, singles } = harness({ approvePullRequest: async () => {} });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 9, action: "approve", args: [] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 9, action: "approve", args: [] }) as any;
     expect(res.ok).toBe(true);
     expect(singles).toEqual([9]);
     expect(writebacks.length).toBe(1);
@@ -47,7 +47,7 @@ describe("mr:action write-back", () => {
 
   test("retry action: delayed single follow-up", async () => {
     const { handlers, writebacks, singles } = harness({ retryPipeline: async () => {} });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 3, action: "retryPipeline", args: [555] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 3, action: "retryPipeline", args: [555] }) as any;
     expect(res.ok).toBe(true);
     expect(singles).toEqual([]);          // not yet
     const start = Date.now();
@@ -63,7 +63,7 @@ describe("mr:action write-back", () => {
       writeback: (r, p, pr) => writebacks.push(pr),
       fetchSingle: async () => { throw new Error("fetch broke"); },
     });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 1, action: "approve", args: [] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 1, action: "approve", args: [] }) as any;
     expect(res.ok).toBe(true);
     expect(writebacks).toEqual([]);
   });
@@ -85,7 +85,7 @@ describe("mr:action read-back failures", () => {
     const { handlers, writebacks, singles } = harness({
       updatePullRequest: async () => { throw readBackFailed("updatePullRequest", 8); },
     });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 8, action: "toggleDraft", args: [true] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 8, action: "toggleDraft", args: [true] }) as any;
     expect(res.ok).toBe(true);
     // No returned PR to write back, so it falls through to the follow-up fetch
     // the void actions use -- the stores still end up with a fresh shape.
@@ -97,7 +97,7 @@ describe("mr:action read-back failures", () => {
     const { handlers, singles } = harness({
       mergePullRequest: async () => { throw readBackFailed("mergePullRequest", 7); },
     });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 7, action: "merge", args: [] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 7, action: "merge", args: [] }) as any;
     expect(res.ok).toBe(true);
     expect(singles).toEqual([7]);
   });
@@ -108,7 +108,7 @@ describe("mr:action read-back failures", () => {
     const { handlers, singles } = harness({
       mergePullRequest: async () => { throw new Error("405 method not allowed"); },
     });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 7, action: "merge", args: [] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 7, action: "merge", args: [] }) as any;
     expect(res.ok).toBe(false);
     expect(res.error).toContain("405");
     expect(singles).toEqual([]);
@@ -122,7 +122,7 @@ describe("mr:action read-back failures", () => {
         });
       },
     });
-    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 7, action: "merge", args: [] });
+    const res = await handlers["mr:action"]!({ repoName: "repo", iid: 7, action: "merge", args: [] }) as any;
     expect(res.ok).toBe(false);
   });
 });

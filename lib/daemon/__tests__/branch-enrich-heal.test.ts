@@ -14,7 +14,7 @@ describe("branch:enrich heals an entry whose ticket never resolved", () => {
     const ctx = makeCtx({
       b: { linearId: "ACME-1", ticket: { identifier: "ACME-1" }, mr: null, fetchedAt: Date.now() - HOUR },
     });
-    const res = await createCacheHandlers(ctx)["branch:enrich"]!({ branch: "b", repoPath: "/tmp/x" });
+    const res = await createCacheHandlers(ctx)["branch:enrich"]!({ branch: "b", repoPath: "/tmp/x" }) as any;
     expect(res.ok).toBe(true);
     expect(res.source).toBe("cache");
   });
@@ -22,7 +22,7 @@ describe("branch:enrich heals an entry whose ticket never resolved", () => {
   test("an entry with no linear id at all stays a cache hit", async () => {
     // Nothing to resolve: re-enriching would spend a lookup per read forever.
     const ctx = makeCtx({ b: { linearId: null, ticket: null, mr: null, fetchedAt: 1 } });
-    const res = await createCacheHandlers(ctx)["branch:enrich"]!({ branch: "b", repoPath: "/tmp/x" });
+    const res = await createCacheHandlers(ctx)["branch:enrich"]!({ branch: "b", repoPath: "/tmp/x" }) as any;
     expect(res.source).toBe("cache");
   });
 
@@ -53,7 +53,7 @@ describe("branch:enrich heals an entry whose ticket never resolved", () => {
       enrich: async () => {
         ctx.cache.entries.b.ticket = { identifier: "ACME-1", title: "t", url: "u" };
       },
-    });
+    }) as any;
     expect(res.source).toBe("fresh");
     expect(res.data.ticket.identifier).toBe("ACME-1");
   });
@@ -69,7 +69,7 @@ describe("branch:enrich heals an entry whose ticket never resolved", () => {
       enrich: async () => {
         calls++;
       },
-    });
+    }) as any;
     expect(calls).toBe(0);
     expect(res.source).toBe("cache");
   });

@@ -22,7 +22,7 @@ import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking
 import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
 import { syncProjectMRs, backfillAuthors, backfillSections } from "../project-sync.ts";
 import { getRepoContext } from "../freshness.ts";
-import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
+import type { HandlerContext } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
 /** Shape of the `demand` request field once validated. */
@@ -77,7 +77,8 @@ export function createProjectMRsHandlers(
   ctx: HandlerContext,
   broadcast: (type: string, data: unknown) => void,
   overrides: ProjectMRsHandlerOverrides = {},
-): Pick<TypedHandlers, "project-mrs:read" | "mr:by-branch"> & HandlerMap {
+): { "project-mrs:read": (payload: unknown) => Promise<{ ok: true; data: Commands["project-mrs:read"]["data"] } | { ok: false; error: string }> }
+  & { "mr:by-branch": (payload: unknown) => Promise<{ ok: true; data: Commands["mr:by-branch"]["data"] } | { ok: false; error: string }> } {
   const store = () => overrides.store ?? getProjectMRs();
   const sync = overrides.sync
     ?? ((repoName: string) => syncProjectMRs({ repoIndex: ctx.repoIndex, broadcast }, repoName));
@@ -88,10 +89,11 @@ export function createProjectMRsHandlers(
     ?? ((repoName: string, sections: string[]) => backfillSections({ repoIndex: ctx.repoIndex, broadcast }, repoName, sections));
   return {
     "project-mrs:read": async (
-      payload: Commands["project-mrs:read"]["payload"],
+      rawPayload: unknown,
     ): Promise<{ ok: true; data: Commands["project-mrs:read"]["data"] } | { ok: false; error: string }> => {
-      const repoName = payload?.repoName as string | undefined;
-      const maxAgeMs = payload?.maxAgeMs as number | undefined;
+      const payload = rawPayload as Commands["project-mrs:read"]["payload"] | undefined;
+      const repoName = payload?.repoName;
+      const maxAgeMs = payload?.maxAgeMs;
       const rawDemand = payload?.demand;
       if (!repoName) return { ok: false, error: "missing repoName" };
       // Hard cutover: the store is identity-keyed now, so a bare
@@ -198,9 +200,10 @@ export function createProjectMRsHandlers(
     },
 
     "mr:by-branch": async (
-      payload: Commands["mr:by-branch"]["payload"],
+      rawPayload: unknown,
     ): Promise<{ ok: true; data: Commands["mr:by-branch"]["data"] } | { ok: false; error: string }> => {
-      const repoName = payload?.repoName as string | undefined;
+      const payload = rawPayload as Commands["mr:by-branch"]["payload"] | undefined;
+      const repoName = payload?.repoName;
       const branches = payload?.branches;
       if (!repoName || !isValidBranches(branches)) {
         return { ok: false, error: "malformed by-branch request" };

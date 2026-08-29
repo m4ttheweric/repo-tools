@@ -25,7 +25,7 @@ import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
 import { getDiscussionsFileStore } from "../discussions-file-store.ts";
 import { grants, loadRepoTracking } from "../../repo-tracking.ts";
-import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
+import type { HandlerContext, HandlerMap } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
 /** Discussions are stable per push; 2min TTL keeps reads fast without going stale. */
@@ -68,7 +68,8 @@ export async function fetchMrDiffs(
 export function createDiscussionHandlers(
   ctx: HandlerContext,
   broadcast: BroadcastFn,
-): Pick<TypedHandlers, "discussions:read"> & HandlerMap {
+): { "discussions:read": (payload: unknown) => Promise<{ ok: true; data: Commands["discussions:read"]["data"] } | { ok: false; error: string }> }
+  & HandlerMap {
   const deps = { ctx, broadcast };
 
   return {
@@ -77,10 +78,11 @@ export function createDiscussionHandlers(
     // payload type rather than added to Commands so the public contract
     // stays what rt-client actually sends.
     "discussions:read": async (
-      payload: Commands["discussions:read"]["payload"] & { force?: boolean },
+      rawPayload: unknown,
     ): Promise<{ ok: true; data: Commands["discussions:read"]["data"] } | { ok: false; error: string }> => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
+      const payload = rawPayload as (Commands["discussions:read"]["payload"] & { force?: boolean }) | undefined;
+      const repoName = payload?.repoName;
+      const iid      = payload?.iid;
       const force    = payload?.force === true;
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
@@ -112,8 +114,9 @@ export function createDiscussionHandlers(
     },
 
     "discussions:refresh": async (payload) => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
+      const p = payload as { repoName?: string; iid?: number } | undefined;
+      const repoName = p?.repoName;
+      const iid      = p?.iid;
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
@@ -129,10 +132,11 @@ export function createDiscussionHandlers(
     },
 
     "discussions:resolve": async (payload) => {
-      const repoName      = payload?.repoName      as string | undefined;
-      const iid           = payload?.iid           as number | undefined;
-      const discussionId  = payload?.discussionId  as string | undefined;
-      const resolved      = payload?.resolved !== false; // default: mark resolved
+      const p = payload as { repoName?: string; iid?: number; discussionId?: string; resolved?: boolean } | undefined;
+      const repoName      = p?.repoName;
+      const iid           = p?.iid;
+      const discussionId  = p?.discussionId;
+      const resolved      = p?.resolved !== false; // default: mark resolved
 
       if (!repoName || typeof iid !== "number" || !discussionId) {
         return { ok: false, error: "missing repoName/iid/discussionId" };
@@ -157,8 +161,9 @@ export function createDiscussionHandlers(
     },
 
     "discussions:diffs": async (payload, signal) => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
+      const p = payload as { repoName?: string; iid?: number } | undefined;
+      const repoName = p?.repoName;
+      const iid      = p?.iid;
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
@@ -186,10 +191,11 @@ export function createDiscussionHandlers(
     },
 
     "discussions:reply": async (payload) => {
-      const repoName     = payload?.repoName     as string | undefined;
-      const iid          = payload?.iid          as number | undefined;
-      const discussionId = payload?.discussionId as string | undefined;
-      const body         = payload?.body         as string | undefined;
+      const p = payload as { repoName?: string; iid?: number; discussionId?: string; body?: string } | undefined;
+      const repoName     = p?.repoName;
+      const iid          = p?.iid;
+      const discussionId = p?.discussionId;
+      const body         = p?.body;
 
       if (!repoName || typeof iid !== "number" || !discussionId || !body?.trim()) {
         return { ok: false, error: "missing repoName/iid/discussionId/body" };

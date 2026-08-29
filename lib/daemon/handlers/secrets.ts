@@ -50,7 +50,7 @@ import { getApiToken, tokenOk } from "../api-auth.ts";
 import { readSecret, createRealSecretsExecSeam, type SecretsSeams } from "../../secrets/store.ts";
 import { createRealAgeKeySeam } from "../../home/age-key.ts";
 import type { Commands, ForgeSlug } from "../../../packages/rt-client/src/commands.ts";
-import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
+import type { CommandResult, HandlerContext } from "./types.ts";
 
 const DECK_SECRET_DOMAIN = "deck";
 const DECK_SECRET_KEYS = ["cfApiToken", "cfZoneId"] as const;
@@ -132,7 +132,8 @@ export interface SecretsHandlerOverrides {
 export function createSecretsHandlers(
   ctx: HandlerContext,
   overrides: SecretsHandlerOverrides = {},
-): Pick<TypedHandlers, "secrets:forge-token" | "secrets:read"> & HandlerMap {
+): { "secrets:forge-token": (payload: unknown) => Promise<CommandResult<"secrets:forge-token">> }
+  & { "secrets:read": (payload: unknown) => Promise<CommandResult<"secrets:read">> } {
   // Machine-only, deliberately: mattstack.tracking is a SHARED team file, and
   // a team-declared repo must not be enough on its own to unlock a token
   // read — that consent has to be local (a machine rt.repoTracking grant),
@@ -145,7 +146,8 @@ export function createSecretsHandlers(
   const apiToken = overrides.apiToken ?? (() => getApiToken());
 
   return {
-    "secrets:forge-token": async (payload: Commands["secrets:forge-token"]["payload"]) => {
+    "secrets:forge-token": async (rawPayload: unknown) => {
+      const payload = rawPayload as Commands["secrets:forge-token"]["payload"] | undefined;
       const repoName = payload?.repoName;
       const forge = payload?.forge;
       if (!repoName) return { ok: false as const, error: "missing repoName" };
@@ -177,7 +179,8 @@ export function createSecretsHandlers(
       return { ok: true as const, data: { token } };
     },
 
-    "secrets:read": async (payload: Commands["secrets:read"]["payload"]) => {
+    "secrets:read": async (rawPayload: unknown) => {
+      const payload = rawPayload as Commands["secrets:read"]["payload"] | undefined;
       const provided = payload?.token;
       if (!provided) {
         return { ok: false as const, error: "missing-token" };
