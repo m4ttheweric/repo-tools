@@ -50,28 +50,58 @@ const BRANCH_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** Below the 5-min tick, above the slowest legitimate deep sync. */
 const REFRESH_CYCLE_DEADLINE_MS = 4 * 60 * 1000;
 
+export interface CoalescerOptions {
+  /**
+   * Cap on cycles still running in the background after their own deadline
+   * fired ("orphans"). `run` is never cancelled at the deadline (no
+   * AbortSignal threads through the GitLab/git calls it makes), so without a
+   * cap, repeated stalls could pile up half-open sockets and pending work
+   * without bound. Once the cap is hit, a new cycle is refused (not
+   * started) until an orphan settles.
+   */
+  maxOrphanCycles?: number;
+  /** Called when a cycle is refused because the orphan cap is at capacity. */
+  onRefused?: () => void;
+}
+
 /**
  * Coalesce concurrent callers onto one in-flight run, but clear the latch after
  * `deadlineMs` even if the run never settles, so a wedged cycle (a half-open
  * GitLab socket that never rejects) cannot pin the latch forever. The wedged
  * run's frame still leaks until the OS reaps the socket; this only frees the
- * next tick.
+ * next tick. `maxOrphanCycles` bounds how many such wedged runs may be alive
+ * at once (see CoalescerOptions) — the cap is the mitigation; it does not
+ * cancel the wedged runs themselves.
  */
 export function makeCoalescer(
   run: () => Promise<void>,
   deadlineMs: number,
   onTimeout: () => void,
+  { maxOrphanCycles = 2, onRefused = () => {} }: CoalescerOptions = {},
 ): () => Promise<void> {
   let inFlight: Promise<void> | null = null;
+  let orphanCycles = 0;
   return () => {
     if (inFlight) return inFlight;
-    const impl = run().catch(() => {}); // a rejected cycle still clears the latch
+    if (orphanCycles >= maxOrphanCycles) {
+      onRefused();
+      return Promise.resolve();
+    }
+    let timedOut = false;
+    const impl = run()
+      .catch(() => {}) // a rejected cycle still clears the latch
+      .finally(() => { if (timedOut) orphanCycles--; });
     // Promise.race never cancels the losing branch, so the deadline timer must be
     // captured and cleared on every settle path or a fast success still fires
     // onTimeout deadlineMs later, misreported as a wedge.
     let deadlineTimer: ReturnType<typeof setTimeout>;
     const deadline = new Promise<void>((resolve) => {
-      deadlineTimer = setTimeout(() => { onTimeout(); resolve(); }, deadlineMs);
+      deadlineTimer = setTimeout(() => {
+        timedOut = true;
+        orphanCycles++;
+        onTimeout();
+        resolve();
+      }, deadlineMs);
     });
     const guarded = Promise.race([impl, deadline]).finally(() => {
       clearTimeout(deadlineTimer);
@@ -89,6 +119,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
     refreshCacheImpl,
     REFRESH_CYCLE_DEADLINE_MS,
     () => log.warn("cache refresh timed out; cleared in-flight latch for next tick"),
+    { onRefused: () => log.warn("cache refresh skipped; too many stalled cycles already running") },
   );
 
   async function refreshCacheImpl(): Promise<void> {
