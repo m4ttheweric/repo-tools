@@ -90,6 +90,8 @@ describe("openStateDb — fresh open", () => {
     expect(cols).toContain("archived_at");
     const agentCols = (db.query("PRAGMA table_info(agents);").all() as { name: string }[]).map(c => c.name);
     expect(agentCols).toContain("handle");
+    const claimCols = (db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    expect(claimCols).toContain("start_time");
     db.close();
   });
 
@@ -163,6 +165,26 @@ describe("openStateDb — replay over an older user_version", () => {
     migrated.close();
 
     expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
+  });
+
+  test("a machine already at v9 gains endpoint_claims.start_time on open (S068, added outside the version gate)", () => {
+    const dbPath = join(dir, "state.db");
+    const db1 = openStateDb(dbPath, "cli");
+    expect(userVersion(db1)).toBe(SCHEMA_VERSION);
+    // Simulate a real v9 machine that predates the start_time column: it
+    // never re-enters runMigrations' `user_version < SCHEMA_VERSION` gate,
+    // so ensureEndpointClaimsStartTimeColumn must run unconditionally.
+    db1.exec("ALTER TABLE endpoint_claims DROP COLUMN start_time;");
+    db1.close();
+
+    const columnsBefore = (new Database(dbPath).query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    expect(columnsBefore).not.toContain("start_time");
+
+    const db2 = openStateDb(dbPath, "cli");
+    expect(userVersion(db2)).toBe(SCHEMA_VERSION); // unchanged: not a schema-version bump
+    const columnsAfter = (db2.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    expect(columnsAfter).toContain("start_time");
+    db2.close();
   });
 });
 

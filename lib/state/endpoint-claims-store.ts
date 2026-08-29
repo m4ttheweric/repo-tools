@@ -19,6 +19,9 @@ export interface EndpointClaim {
   port: number;
   pid?: number;
   ts: string;
+  /** Claiming pid's process start-time (S068 liveness); absent on a legacy
+      row written before this column existed. */
+  startTime?: string;
 }
 
 interface ClaimRow {
@@ -27,17 +30,19 @@ interface ClaimRow {
   port: number;
   pid: number | null;
   ts: string;
+  start_time: string | null;
 }
 
 function rowToClaim(row: ClaimRow): EndpointClaim {
   const claim: EndpointClaim = { worktree: row.worktree, role: row.role, port: row.port, ts: row.ts };
   if (row.pid !== null) claim.pid = row.pid;
+  if (row.start_time !== null) claim.startTime = row.start_time;
   return claim;
 }
 
-const SELECT_REPO_SQL = `SELECT worktree, role, port, pid, ts FROM endpoint_claims WHERE repo = ? ORDER BY worktree, role;`;
+const SELECT_REPO_SQL = `SELECT worktree, role, port, pid, ts, start_time FROM endpoint_claims WHERE repo = ? ORDER BY worktree, role;`;
 const DELETE_REPO_SQL = `DELETE FROM endpoint_claims WHERE repo = ?;`;
-const INSERT_SQL = `INSERT INTO endpoint_claims (repo, worktree, role, port, pid, ts) VALUES (?, ?, ?, ?, ?, ?);`;
+const INSERT_SQL = `INSERT INTO endpoint_claims (repo, worktree, role, port, pid, ts, start_time) VALUES (?, ?, ?, ?, ?, ?, ?);`;
 
 export function listEndpointClaims(repo: string, db: Database = getStateDb()): EndpointClaim[] {
   const rows = db.query(SELECT_REPO_SQL).all(repo) as ClaimRow[];
@@ -58,7 +63,7 @@ export function replaceEndpointClaims(repo: string, claims: EndpointClaim[], db:
   const run = db.transaction((entries: EndpointClaim[]) => {
     db.query(DELETE_REPO_SQL).run(repo);
     const insert = db.query(INSERT_SQL);
-    for (const c of entries) insert.run(repo, c.worktree, c.role, c.port, c.pid ?? null, c.ts);
+    for (const c of entries) insert.run(repo, c.worktree, c.role, c.port, c.pid ?? null, c.ts, c.startTime ?? null);
   });
   persistOrWarn("endpoint-claims", () => run(claims), { repo, op: "replace", count: claims.length });
 }
@@ -71,7 +76,7 @@ export function replaceEndpointClaimsCritical(repo: string, claims: EndpointClai
   const run = db.transaction((entries: EndpointClaim[]) => {
     db.query(DELETE_REPO_SQL).run(repo);
     const insert = db.query(INSERT_SQL);
-    for (const c of entries) insert.run(repo, c.worktree, c.role, c.port, c.pid ?? null, c.ts);
+    for (const c of entries) insert.run(repo, c.worktree, c.role, c.port, c.pid ?? null, c.ts, c.startTime ?? null);
   });
   const done = runCriticalWrite(
     "endpoint-claims",

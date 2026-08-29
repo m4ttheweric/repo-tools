@@ -19,7 +19,7 @@ import type { HandlerContext } from "../handlers/types.ts";
  */
 let repoIndex: RepoIndex = {};
 let ctx: HandlerContext;
-const fakeProbes = async () => ({ listeners: new Set<number>(), pidAlive: () => true, canBind: () => true });
+const fakeProbes = async () => ({ listeners: new Set<number>(), pidAlive: () => true, pidStartTime: () => undefined, canBind: () => true });
 
 const DEFAULT_ROLES = {
   backend: { pool: [{ from: 10400, to: 10402 }], env: { PORT: "${port}" } },

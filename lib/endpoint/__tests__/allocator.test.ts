@@ -1,16 +1,19 @@
 // lib/endpoint/__tests__/allocator.test.ts
 import { describe, expect, test } from "bun:test";
 import type { EndpointClaim } from "../store.ts";
-import { defaultProbes, isLiveClaim, pruneDeadClaims, releaseWorktree, resolveClaim } from "../allocator.ts";
+import { CLAIM_TRUST_TTL_MS, defaultProbes, isLiveClaim, pruneDeadClaims, releaseWorktree, resolveClaim } from "../allocator.ts";
 
 const role = { pool: [4001, 5001, 6001], needs: [], preserveEnv: [], env: {} };
-const probes = (over: Partial<{ listeners: number[]; alive: number[]; unbindable: number[] }> = {}) => ({
+const probes = (
+  over: Partial<{ listeners: number[]; alive: number[]; unbindable: number[]; startTimes: Record<number, string> }> = {},
+) => ({
   listeners: new Set(over.listeners ?? []),
   pidAlive: (pid?: number) => (over.alive ?? []).includes(pid ?? -1),
+  pidStartTime: (pid?: number) => (pid === undefined ? undefined : (over.startTimes ?? {})[pid]),
   canBind: (p: number) => !(over.unbindable ?? []).includes(p),
 });
-const claim = (worktree: string, port: number, pid?: number): EndpointClaim =>
-  ({ worktree, role: "portal", port, pid, ts: "2026-08-19T00:00:00Z" });
+const claim = (worktree: string, port: number, pid?: number, startTime?: string): EndpointClaim =>
+  ({ worktree, role: "portal", port, pid, ts: "2026-08-19T00:00:00Z", startTime });
 
 describe("resolveClaim", () => {
   test("first worktree gets the lowest bindable pool port", () => {
@@ -29,8 +32,8 @@ describe("resolveClaim", () => {
   });
 
   test("second worktree skips a port owned by a LIVE claim (boot window: pid alive, port not listening yet)", () => {
-    const existing = [claim("/wt/a", 4001, 111)];
-    const r = resolveClaim(existing, "portal", role, "/wt/b", 222, probes({ alive: [111] }));
+    const existing = [claim("/wt/a", 4001, 111, "Thu Aug 27 00:00:00 2026")];
+    const r = resolveClaim(existing, "portal", role, "/wt/b", 222, probes({ alive: [111], startTimes: { 111: "Thu Aug 27 00:00:00 2026" } }));
     if ("error" in r) throw new Error(r.error);
     expect(r.port).toBe(5001);
   });
@@ -100,9 +103,31 @@ describe("releaseWorktree", () => {
 });
 
 describe("liveness (verbatim lessons)", () => {
-  test("no TTLs: an ancient claim with a live pid is live", () => {
-    expect(isLiveClaim({ ...claim("/wt/a", 4001, 111), ts: "2020-01-01T00:00:00Z" }, probes({ alive: [111] }))).toBe(true);
+  test("no TTLs for a start-time-verified claim: an ancient claim with a live pid and matching start-time is live", () => {
+    const c = { ...claim("/wt/a", 4001, 111, "Thu Jan  1 00:00:00 2020"), ts: "2020-01-01T00:00:00Z" };
+    expect(isLiveClaim(c, probes({ alive: [111], startTimes: { 111: "Thu Jan  1 00:00:00 2020" } }))).toBe(true);
   });
+
+  test("recycled pid: a live pid whose current start-time no longer matches the claim reads dead", () => {
+    const c = claim("/wt/a", 4001, 111, "Thu Jan  1 00:00:00 2020");
+    // Same pid number, different (later) start-time = a different process reused it after a reboot.
+    expect(isLiveClaim(c, probes({ alive: [111], startTimes: { 111: "Fri Aug 28 09:00:00 2026" } }))).toBe(false);
+  });
+
+  test("legacy claim (no start-time recorded): a live pid is live within CLAIM_TRUST_TTL_MS of the claim's own ts", () => {
+    const now = Date.parse("2026-08-28T00:00:00Z");
+    const c = claim("/wt/a", 4001, 111); // startTime undefined
+    const ts = new Date(now - (CLAIM_TRUST_TTL_MS - 1000)).toISOString();
+    expect(isLiveClaim({ ...c, ts }, probes({ alive: [111] }), now)).toBe(true);
+  });
+
+  test("legacy claim (no start-time recorded): a live pid beyond CLAIM_TRUST_TTL_MS reads dead", () => {
+    const now = Date.parse("2026-08-28T00:00:00Z");
+    const c = claim("/wt/a", 4001, 111); // startTime undefined
+    const ts = new Date(now - (CLAIM_TRUST_TTL_MS + 1000)).toISOString();
+    expect(isLiveClaim({ ...c, ts }, probes({ alive: [111] }), now)).toBe(false);
+  });
+
   test("pruneDeadClaims spares self even when dead-looking", () => {
     const { claims } = pruneDeadClaims([claim("/wt/a", 4001)], "/wt/a", probes());
     expect(claims).toHaveLength(1);

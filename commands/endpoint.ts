@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
 
 /**
- * rt endpoint — read-only surface over dev-endpoint claims (RT-28 Task 7).
+ * rt endpoint: surface over dev-endpoint claims (RT-28 Task 7; `release`
+ * added in S068 as the manual escape hatch for a claim liveness can't clear
+ * on its own).
  *
- *   rt endpoint lookup <role> [--json]   does this worktree hold a claim?
+ *   rt endpoint lookup <role> [--json]        does this worktree hold a claim?
+ *   rt endpoint release <worktree> [--role]   free a claim by hand
  *
  * Repo identification mirrors the pattern already used by `rt worktree each`
  * (commands/worktree.ts): derive the repo identity from the cwd's git
@@ -123,4 +126,75 @@ export async function endpointLookup(args: string[]): Promise<void> {
   }
   const statusColor = data.running ? green : yellow;
   console.log(`\n  ${statusColor}${data.url}${reset} ${dim}(${data.running ? "running" : "claimed, not running"})${reset}\n`);
+}
+
+interface ReleaseData {
+  released: number;
+}
+
+/** Lists the worktrees this repo currently has claims for, over the daemon's own `endpoint:status` (a picker source, not a state read). */
+async function pickWorktree(identity: string): Promise<string | null> {
+  const res = await daemonQuery("endpoint:status", { repo: identity }, 10_000);
+  if (!res?.ok) return null;
+  const data = res.data as { repos: Record<string, Array<{ worktree: string }>> };
+  const worktrees = [...new Set((data.repos[identity] ?? []).map((c) => c.worktree))];
+  if (worktrees.length === 0) fail("no claims to release");
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  return filterableSelect({
+    message: "worktree to release",
+    options: worktrees.map((w) => ({ value: w, label: w })),
+  });
+}
+
+/**
+ * Manual escape hatch (S068): frees a worktree's endpoint claim(s) directly,
+ * for the case a recycled pid or a wedged process leaves a claim liveness
+ * can't clear on its own. Repo identity is always the cwd's; `<worktree>` is
+ * the claim to drop and need not be the cwd itself (that is the whole point
+ * of a manual release).
+ */
+export async function endpointRelease(args: string[]): Promise<void> {
+  const json = args.includes("--json");
+  const roleFlagIdx = args.indexOf("--role");
+  const role = roleFlagIdx !== -1 ? args[roleFlagIdx + 1] : undefined;
+  const worktreeArgs = args.filter((a, i) => i !== roleFlagIdx && i !== roleFlagIdx + 1 && !a.startsWith("--"));
+  let worktree = worktreeArgs[0];
+
+  const cwd = process.cwd();
+  const toplevel = await gitToplevel(cwd);
+  if (!toplevel) fail("not in a git repo");
+
+  const remote = await gitRemote(toplevel);
+  const repoName = remote ? deriveRepoName(remote) : basename(toplevel);
+  const identity = serializeIdentity(await deriveRepoIdentity(toplevel));
+
+  if ((await resolveIndexPathForIdentity(identity)) === null) {
+    fail(`repo "${repoName}" is not registered... visit it with rt first (repos.json is a derived mirror, not the source of truth)`);
+  }
+
+  if (!worktree) {
+    if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
+      worktree = (await pickWorktree(identity)) ?? undefined;
+      if (!worktree) process.exit(0);
+    } else {
+      fail("usage: rt endpoint release <worktree> [--role <role>] [--json]");
+    }
+  }
+
+  const res = await daemonQuery("endpoint:release", { repo: identity, worktree, role }, 10_000);
+  if (!res) fail("daemon unavailable... rt endpoint release needs the rt daemon (rt daemon start)");
+  if (!res.ok) fail(res.error ?? "release failed");
+
+  const data = res.data as ReleaseData;
+
+  if (json) {
+    console.log(JSON.stringify({ ok: true, ...data }));
+    return;
+  }
+
+  if (data.released === 0) {
+    console.log(`\n  ${dim}no claim(s) to release for ${worktree}${role ? ` (role "${role}")` : ""} in ${repoName}${reset}\n`);
+    return;
+  }
+  console.log(`\n  ${green}released ${data.released} claim${data.released === 1 ? "" : "s"}${reset} ${dim}for ${worktree} in ${repoName}${reset}\n`);
 }

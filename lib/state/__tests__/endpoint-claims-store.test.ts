@@ -54,6 +54,22 @@ describe("listEndpointClaims / replaceEndpointClaims", () => {
     expect("pid" in got!).toBe(false);
   });
 
+  test("startTime round-trips when present", () => {
+    const db = openDb();
+    const c = claim({ pid: 4242, startTime: "Thu Aug 27 00:00:00 2026" });
+    replaceEndpointClaims("repo-a", [c], db);
+    expect(listEndpointClaims("repo-a", db)).toEqual([c]);
+  });
+
+  test("a claim with no startTime round-trips without one (legacy row, not null)", () => {
+    const db = openDb();
+    const c = claim();
+    replaceEndpointClaims("repo-a", [c], db);
+    const [got] = listEndpointClaims("repo-a", db);
+    expect(got).toEqual(c);
+    expect("startTime" in got!).toBe(false);
+  });
+
   test("replace fully swaps the set: an old claim not in the new list is gone", () => {
     const db = openDb();
     replaceEndpointClaims("repo-a", [claim({ worktree: "/repo/wt1", role: "web", port: 3000 })], db);

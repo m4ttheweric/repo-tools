@@ -121,6 +121,17 @@ const endpointSubcommands: Record<string, CommandNode> = {
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
     ],
   },
+  release: {
+    description: "Manually free a worktree's dev-endpoint claim(s) (escape hatch for a claim liveness can't clear)",
+    module: "./commands/endpoint.ts",
+    fn: "endpointRelease",
+    omitBehavior: "picker",
+    args: [
+      { name: "Worktree", type: "text", placeholder: "/path/to/worktree", hint: "Worktree whose claim(s) to release" },
+      { name: "Role", flag: "--role", type: "text", placeholder: "backend", hint: "Only release this role; omit to release every role for the worktree" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
+    ],
+  },
 };
 
 // Shared so `rt commit` and `rt git commit` are one node (enrich once, render once).
