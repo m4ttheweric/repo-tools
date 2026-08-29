@@ -16,7 +16,7 @@
  * Structure: `buildUnits(ctx)` assembles the ordered `DaemonUnit[]` that IS
  * the boot order (spec §5.1). Each unit's `start()` both constructs and arms
  * its subsystem and writes any shared handle onto the `BootContext`; `stop()`
- * runs in reverse. Nothing arms at import — only the `import.meta.main` call
+ * runs in reverse. Nothing arms at import; only the `import.meta.main` call
  * to `startDaemon()` at the bottom does. The 12-entry order and reverse-stop
  * teardown are covered by `__tests__/boot-order.test.ts`.
  */
@@ -102,7 +102,7 @@ import { runUnits, stopUnits, type DaemonUnit } from "./daemon/lifecycle.ts";
 
 // Legacy state migration (RT-46). Must run BEFORE the logger's first write can
 // create the new rt dir and turn a clean rename of a real legacy tree into a
-// conflict — so it is the first thing unit 1 does, above redirectNativeStderr.
+// conflict, so it is the first thing unit 1 does, above redirectNativeStderr.
 // Idempotent: the CLI entry (cli.ts) also runs it, but `bun run lib/daemon.ts`
 // skips cli.ts.
 import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, logsDir } from "./rt-paths.ts";
@@ -192,7 +192,7 @@ export function makeBootContext(seamOverrides: Partial<BootSeams> = {}): BootCon
 }
 
 /**
- * Builds the ordered `DaemonUnit[]` — the single source of truth for boot
+ * Builds the ordered `DaemonUnit[]`: the single source of truth for boot
  * order (spec §5.1). Every subsystem the daemon used to arm at module scope
  * is constructed inside the `start()` of its unit; shared handles are held in
  * this function's closure and mirrored onto `ctx` where the test or the
@@ -233,7 +233,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   const systemProcessScanner = new SystemProcessScanner();
 
   // The branch-cache store, opened LAZILY: everything below is wired before the
-  // state.db unit opens it, so it gets this façade — same BranchCacheStore
+  // state.db unit opens it, so it gets this façade: same BranchCacheStore
   // surface, resolved on first use. `entries` is a getter, never a captured
   // value, so it always yields the store's own live map object.
   let branchCacheStore: BranchCacheStore | null = null;
@@ -279,14 +279,14 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   };
 
   // Injected at compile time via `bun build --define RT_VERSION=...` (see
-  // cli.ts) — undefined when running from source, which is also how
+  // cli.ts): undefined when running from source, which is also how
   // daemonFlavor() tells dev from prod.
   const rtVersion = (): string => (typeof RT_VERSION !== "undefined" ? RT_VERSION : "source");
 
   // ─── Serving-core closures (defined once, invoked once units are wired) ────
 
   // Both fan-out reactions (cron, worktree:disposed) fire off eventsBus.fanOut,
-  // keyed on the real (type, data) pair — not a wrapped "event" frame — so the
+  // keyed on the real (type, data) pair (not a wrapped "event" frame), so the
   // cron trigger match and the type check see exactly what they did as inline
   // branches. fanOut does NOT persist (only command-router's emitEvent path
   // writes rows), so emit() still writes zero rows to events.db.
@@ -315,7 +315,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         // 100ms window must see this flag already true, or the signal handler
         // treats an intentional stop as a crash (exit 1, launchd respawns).
         shuttingDownViaVerb = true;
-        // Delay teardown so this response is written first — stopUnits
+        // Delay teardown so this response is written first, then stopUnits
         // force-closes all in-flight connections, including the one that
         // carried the shutdown request.
         setTimeout(() => {
@@ -409,7 +409,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   // ─── The ordered unit list ─────────────────────────────────────────────────
 
   units = [
-    // 1 — stderr redirect + logger + crash handlers, first so any later throw
+    // 1: stderr redirect + logger + crash handlers, first so any later throw
     // is captured; depends on nothing but paths.
     {
       name: "logger",
@@ -438,9 +438,9 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       stop() {},
     },
 
-    // 2 — flavor/park gate. MUST precede every subsystem that arms: below it
+    // 2: flavor/park gate. MUST precede every subsystem that arms: below it
     // arm cron, the home-snapshot auto-committer and sweeps, and shutdown
-    // SIGTERMs the shared rt.pid — a wrong-flavor daemon past this line would
+    // SIGTERMs the shared rt.pid: a wrong-flavor daemon past this line would
     // kill the serving daemon and double-commit the home repo.
     {
       name: "park-gate",
@@ -450,7 +450,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       stop() {},
     },
 
-    // 3 — PATH resolution, before any unit that spawns git or herdr. Phase 6
+    // 3: PATH resolution, before any unit that spawns git or herdr. Phase 6
     // made resolveUserPath async; this unit awaits it.
     {
       name: "path-resolution",
@@ -475,7 +475,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       stop() {},
     },
 
-    // 4 — events.db (createEventsBus, with the quarantine guard).
+    // 4: events.db (createEventsBus, with the quarantine guard).
     {
       name: "events-db",
       start() {
@@ -490,7 +490,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       },
     },
 
-    // 5 — state.db (open + migrate) before serving, per the state.db spec's
+    // 5: state.db (open + migrate) before serving, per the state.db spec's
     // contention rule. The one long transaction is the legacy-JSON import; it
     // must never land inside the event loop, so a mid-import CLI blocks here.
     {
@@ -504,7 +504,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         // One-shot re-key of every legacy NAME-keyed store row onto its
         // serialized repo identity. Fire-and-forget: it must be on the boot
         // path (before anything prunes the repo index) but not block the
-        // socket bind — a prune only arrives as a command to a running daemon.
+        // socket bind: a prune only arrives as a command to a running daemon.
         runBootIdentityMigration(log).catch((err) => {
           log.warn({ err }, "boot identity migration failed");
         });
@@ -519,7 +519,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       },
     },
 
-    // 6 — background subsystems: hooks guard, cron, reconciler, home-snapshot,
+    // 6: background subsystems: hooks guard, cron, reconciler, home-snapshot,
     // agent-status poller, health sampler, loop monitor, and the sweep units.
     {
       name: "background-subsystems",
@@ -643,7 +643,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       },
     },
 
-    // 7 — handlers (buildRoutedHandlers over the started subsystems).
+    // 7: handlers (buildRoutedHandlers over the started subsystems).
     {
       name: "handlers",
       start() {
@@ -685,7 +685,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       stop() {},
     },
 
-    // 8 — API server. A failed bind exits fatally (fatal-boot handler), and
+    // 8: API server. A failed bind exits fatally (fatal-boot handler), and
     // binding API before the unix socket means that exit never strands a
     // socket-bound zombie. evictStaleDaemon first, so an orphan holding the
     // socket/port is gone before either bind.
@@ -714,7 +714,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       },
     },
 
-    // 9 — socket server.
+    // 9: socket server.
     {
       name: "socket-server",
       start() {
@@ -726,7 +726,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       },
     },
 
-    // 10 — rt.pid, written only after both servers are bound: a boot that fails
+    // 10: rt.pid, written only after both servers are bound: a boot that fails
     // before this point must never leave a live-pid file with no servers.
     {
       name: "rt-pid",
@@ -734,11 +734,13 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         seams.writePid(process.pid);
       },
       stop() {
+        // Reverse-stop runs this before the server units stop; the ownership
+        // check keeps that safe (unlinks only if rt.pid still names this pid).
         removeRuntimeFiles({ log });
       },
     },
 
-    // 11 — pollers, freshness, discussions poller (plus the serving-startup
+    // 11: pollers, freshness, discussions poller (plus the serving-startup
     // kicks that follow the pid write today).
     {
       name: "pollers",
@@ -785,7 +787,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       },
     },
 
-    // 12 — signal handlers, then the ready breadcrumb.
+    // 12: signal handlers, then the ready breadcrumb.
     {
       name: "ready",
       start() {

@@ -12,8 +12,7 @@ import { recordCleanExit } from "./supervision-state.ts";
  * Remove rt.pid and rt.sock, but only if rt.pid still names THIS process.
  * A shutting-down old daemon that unlinks unconditionally can delete a new
  * daemon's rt.sock/rt.pid out from under it (S012/S044). This is the rt-pid
- * unit's stop step; every other subsystem's teardown now lives in its own
- * unit's stop().
+ * unit's stop step.
  */
 export function removeRuntimeFiles(opts: { pid?: number; log: Logger }): void {
   const pid = opts.pid ?? process.pid;

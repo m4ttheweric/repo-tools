@@ -135,7 +135,7 @@ export function createDiscussionsPoller(env: PollerEnv): DiscussionsPoller {
     log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
     // Kick off a first sweep after a short delay so the daemon finishes
     // initializing freshness watchers before we start hitting GitLab. Captured
-    // so stop() clears it too — an uncleared boot timer would fire a sweep
+    // so stop() clears it too: an uncleared boot timer would fire a sweep
     // after the poller was torn down.
     bootTimer = setTimeout(() => { bootTimer = null; sweep(); }, 10_000);
     timer = setInterval(() => { sweep(); }, POLL_INTERVAL_MS);
@@ -149,23 +149,4 @@ export function createDiscussionsPoller(env: PollerEnv): DiscussionsPoller {
   }
 
   return { start, stop };
-}
-
-let defaultPoller: DiscussionsPoller | null = null;
-
-export function startDiscussionsPoller(env: PollerEnv): void {
-  // Matches the original module-scope-timer behavior: the first call's `env`
-  // is the one that's used for every subsequent sweep (the timer guard makes
-  // later calls no-ops), so a later call with a different `env` is ignored
-  // exactly as it was before.
-  defaultPoller ??= createDiscussionsPoller(env);
-  defaultPoller.start();
-}
-
-export function stopDiscussionsPoller(): void {
-  defaultPoller?.stop();
-  // Cleared (not just stopped) so a later startDiscussionsPoller(env) call
-  // rebuilds against the new env, matching the original module-scope-timer
-  // behavior where stop cleared the timer variable outright.
-  defaultPoller = null;
 }

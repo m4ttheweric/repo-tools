@@ -120,7 +120,7 @@ describe("daemon startup opens state.db before serving", () => {
 });
 
 describe("boot failure is fatal for both fire-and-forget callers", () => {
-  test("runDaemon is gone — startDaemon is the only entry point", () => {
+  test("runDaemon is gone, startDaemon is the only entry point", () => {
     const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
     expect(src).not.toContain("function runDaemon");
     expect(src).toContain("export async function startDaemon(");

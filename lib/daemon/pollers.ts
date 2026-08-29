@@ -34,7 +34,7 @@ export interface PollerDeps {
 
 export interface PollersHandle {
   /** Clears every timer this armed, so the pollers unit's reverse-stop leaves
-   *  no interval running (these were never cleared before the lifecycle seam). */
+   *  no interval or pending initial-scan timeout running. */
   stop(): void;
 }
 
