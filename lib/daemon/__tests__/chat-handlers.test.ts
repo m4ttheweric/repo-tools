@@ -1,14 +1,34 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { execSync } from "child_process";
+import { mkdtempSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb, postMessage } from "../../state/index.ts";
-import { createChatHandlers, inviteText } from "../handlers/chat.ts";
+import { createChatHandlers, inviteText, renderWelcome, type InboxDeps } from "../handlers/chat.ts";
 import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
+import { deriveRoomForCwd } from "../../chat-room.ts";
+import { runCapture } from "../../subprocess.ts";
 import { drainNotifications, loadNotificationPrefs, peekNotifications, saveNotificationPrefs } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
 import { AGENT_NAMES } from "../../chat-names.ts";
+
+/** A real local git repo, no remote: the daemon's `deriveRoomForCwdAsync` (via deriveRepoIdentity) needs a real toplevel and a real `git worktree list`/`config --get` to resolve against, not a stub `.git/worktrees` dir. */
+function initRepo(dir: string): void {
+  execSync("git init -q", { cwd: dir });
+  execSync("git config user.email t@example.com", { cwd: dir });
+  execSync("git config user.name t", { cwd: dir });
+  execSync("git commit --allow-empty -q -m init", { cwd: dir });
+}
+
+/** inboxAlive checks process.kill(pid,0) and existsSync(socketPath) for real; a live pid and a real (empty) file satisfy both without a listener. */
+function fakeSocketPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), "chat-h-sock-"));
+  const p = join(dir, "s.sock");
+  writeFileSync(p, "");
+  return p;
+}
 
 const stops: Array<() => void> = [];
 afterEach(() => {
@@ -60,7 +80,7 @@ test("chat:join rejects a wakeOn value outside mention/all/none, naming the allo
   expect(res.error).toContain("none");
 });
 
-test("chat:post returns the recipients and emits one wake event per recipient", async () => {
+test("chat:post returns the recipients and emits only the room's msg event", async () => {
   const emitted: string[] = [];
   const h = freshHandlers((topic) => { emitted.push(topic); return 0; });
   await h["chat:join"]({ room: "r", handle: "a" });
@@ -69,7 +89,7 @@ test("chat:post returns the recipients and emits one wake event per recipient", 
   expect(res.ok).toBe(true);
   if (!res.ok) throw new Error("unreachable");
   expect(res.data).toMatchObject({ recipients: ["b"] });
-  expect(emitted).toEqual(["chat/r/msg", "chat/wake/b"]);
+  expect(emitted).toEqual(["chat/r/msg"]);
 });
 
 test("chat:post still reports success when emitEvent throws after the message is durable", async () => {
@@ -79,23 +99,6 @@ test("chat:post still reports success when emitEvent throws after the message is
   expect(res.ok).toBe(true);
   if (!res.ok) throw new Error("unreachable");
   expect(res.data.id).toBeGreaterThan(0);
-});
-
-test("chat:post continues waking the rest of the recipients when one recipient's emit throws", async () => {
-  const emitted: string[] = [];
-  const h = freshHandlers((topic) => {
-    emitted.push(topic);
-    if (topic === "chat/wake/a") throw new Error("boom for a");
-    return 0;
-  });
-  await h["chat:join"]({ room: "r", handle: "a" });
-  await h["chat:join"]({ room: "r", handle: "b" });
-  await h["chat:join"]({ room: "r", handle: "c" });
-  const res = await h["chat:post"]({ room: "r", handle: "poster", body: "@a @b @c hi" });
-  expect(res.ok).toBe(true);
-  expect(emitted).toContain("chat/wake/a");
-  expect(emitted).toContain("chat/wake/b");
-  expect(emitted).toContain("chat/wake/c");
 });
 
 test("chat:dm still reports success when emitEvent throws after the message is durable", async () => {
@@ -171,23 +174,6 @@ test("chat:dm rejects a missing or empty body", async () => {
   expect(empty.ok).toBe(false);
 });
 
-test("chat:unread-waking reports what would wake a handle without advancing its cursor", async () => {
-  const h = freshHandlers();
-  await h["chat:join"]({ room: "r", handle: "a" });
-  await h["chat:join"]({ room: "r", handle: "b" });
-  await h["chat:post"]({ room: "r", handle: "a", body: "@b hi" });
-  const res1 = await h["chat:unread-waking"]({ handle: "b" });
-  if (!res1.ok) throw new Error("unreachable");
-  const first = res1.data;
-  expect(first).toMatchObject({ rooms: [{ room: "r", count: 1, mentions: 1 }] });
-  // maxId is the watermark the tail's stream loop skips at or below; without
-  // it the tail cannot tell which wakes the catch-up already covered.
-  expect(first.rooms[0]!.maxId).toBeGreaterThan(0);
-  const res2 = await h["chat:unread-waking"]({ handle: "b" });
-  if (!res2.ok) throw new Error("unreachable");
-  expect(res2.data).toEqual(first);
-});
-
 // R034: `limit: -1` reaches `ORDER BY id ASC LIMIT ?`, where SQLite treats a
 // negative LIMIT as unlimited, so a viewer/agent bug returns and
 // JSON-serializes an entire (100k-row) room on the event loop.
@@ -237,7 +223,6 @@ test("the read-only handlers mutate nothing", async () => {
   await h["chat:rooms"]({ handle: "b" });
   await h["chat:who"]({ room: "r" });
   await h["chat:messages"]({ room: "r", limit: 20 });
-  await h["chat:unread-waking"]({ handle: "b" });
   expect(snapshotChatTables(h.db)).toEqual(before);
 });
 
@@ -333,6 +318,281 @@ test("sign-in without a baseHandle draws a first name from the pool", async () =
   expect(res.data.handle).toBe(res.data.baseHandle);
 });
 
+test("renderWelcome carries the handle, room list, the automatic-delivery sentence, the two-line reply contract, the read/skill pointers, and catch-up capped at 10 lines per room", () => {
+  const manyLines = Array.from({ length: 12 }, (_, i) => `agent: msg ${i}`);
+  const text = renderWelcome("kai", ["build", "general"], [
+    { room: "build", lines: manyLines },
+    { room: "general", lines: [] },
+  ]);
+  expect(text).toContain("kai");
+  expect(text).toContain("#build");
+  expect(text).toContain("#general");
+  expect(text).toContain("Messages will arrive in your context automatically; you never need to poll or arm anything.");
+  expect(text).toContain('Reply in a room with: rt chat post <room> "..."');
+  expect(text).toContain('Reply privately with: rt chat dm <handle> "..."');
+  expect(text).toContain("rt chat read shows a room's history.");
+  expect(text).toContain("rt:chat skill");
+  expect(text.split("\n").filter((l) => l.includes("msg "))).toHaveLength(10);
+});
+
+function paneSnapshotHandler(paneId: string, sessionId: string, cwd?: string): FakeHerdrHandler {
+  return (method) => {
+    if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+    return {
+      snapshot: {
+        workspaces: [],
+        panes: [
+          {
+            pane_id: paneId,
+            workspace_id: "w1",
+            tab_id: "w1:t1",
+            agent: "claude",
+            agent_status: "idle",
+            cwd,
+            agent_session: { source: "claude", agent: "claude", kind: "id", value: sessionId },
+          },
+        ],
+      },
+    };
+  };
+}
+
+test("chat:sign-in viaPane resolves the pane's Claude session via herdr, signs it in under that session id, and sends a welcome frame", async () => {
+  const uuid = "11111111-1111-1111-1111-111111111111";
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
+  stops.push(stop);
+
+  const inboxSock = fakeSocketPath();
+  const calls: Array<[string, string]> = [];
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === uuid ? { pid: process.pid, socketPath: inboxSock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+
+  const db = openStateDb(join(tmpdir(), `chat-viapane-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr, inboxDeps });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.sessionId).toBe(uuid);
+  expect(res.data.room).toBeNull(); // no cwd on this pane: nothing to derive a room from
+
+  const presence = db.query("SELECT session_id, handle FROM chat_presence WHERE session_id = ?").get(uuid) as
+    | { session_id: string; handle: string }
+    | null;
+  expect(presence).toMatchObject({ session_id: uuid, handle: res.data.handle });
+
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]![0]).toBe(inboxSock);
+  expect(calls[0]![1]).toContain(res.data.handle);
+  expect(calls[0]![1]).toContain('Reply in a room with: rt chat post <room> "..."');
+});
+
+test("chat:sign-in viaPane joins the SAME room the CLI's own codec would derive for that repo (parity fix), independent of the repos.json index label", async () => {
+  const uuid = "33333333-3333-3333-3333-333333333333";
+  const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "chat-viapane-repo-")));
+  initRepo(repoDir);
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
+  stops.push(stop);
+
+  const db = openStateDb(join(tmpdir(), `chat-viapane-repo-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  // The repos.json index label is display-only (presence.repo) now: it must
+  // NOT double as the room source, so this fixture deliberately names
+  // something OTHER than what the git identity slugifies to -- if the room
+  // ever came from this label again, the parity assertion below would catch it.
+  const repoIndex = () => ({ "remote:gitlab.com%2Facme%2FRepo-Tools": repoDir });
+  // Stubs ONLY the branch read (deterministic output, no checked-out feature
+  // branch needed); the room derivation's own git calls (rev-parse
+  // --show-toplevel, and everything deriveRepoIdentity itself spawns) reach
+  // the real repo initRepo() created, through the real runCapture.
+  const exec: typeof runCapture = async (argv, opts) =>
+    argv.includes("--abbrev-ref") ? { stdout: "feat/pane-sign-in\n", stderr: "", exitCode: 0 } : runCapture(argv, opts);
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr, repoIndex, exec });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  const expectedRoom = deriveRoomForCwd(repoDir);
+  expect(expectedRoom).not.toBeNull();
+  expect(res.data.room).toBe(expectedRoom);
+  expect(res.data.room).not.toBe("repo-tools"); // the old, now-wrong, index-label-derived room
+
+  const presence = db.query("SELECT repo, branch FROM chat_presence WHERE session_id = ?").get(uuid) as
+    | { repo: string; branch: string }
+    | null;
+  expect(presence).toMatchObject({ repo: "Repo-Tools", branch: "feat/pane-sign-in" }); // display label: unaffected
+
+  const who = await h["chat:who"]({ room: expectedRoom! });
+  if (!who.ok) throw new Error("unreachable");
+  expect(who.data.members.map((m) => m.handle)).toEqual(["kai"]);
+});
+
+test("chat:sign-in viaPane degrades to no room, without failing sign-in, when room derivation throws (e.g. a read-only HOME)", async () => {
+  const uuid = "10101010-1010-1010-1010-101010101010";
+  const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "chat-viapane-throws-")));
+  initRepo(repoDir);
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
+  stops.push(stop);
+
+  const db = openStateDb(join(tmpdir(), `chat-viapane-throws-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  // Only the room-derivation call (rev-parse --show-toplevel) throws; the
+  // branch read must keep working normally, same as `runCapture`'s real
+  // "never throws" contract everywhere except the one seam under test.
+  const exec: typeof runCapture = async (argv) => {
+    if (argv.includes("--abbrev-ref")) return { stdout: "main\n", stderr: "", exitCode: 0 };
+    throw new Error("EACCES: permission denied, mkdir '/read-only-home/.mattstack'");
+  };
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr, exec });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBeNull();
+
+  const rooms = await h["chat:rooms"]({ handle: "kai" });
+  if (!rooms.ok) throw new Error("unreachable");
+  expect(rooms.data.rooms).toEqual([]);
+});
+
+test("chat:sign-in viaPane with a cwd that isn't a git work tree at all joins nothing", async () => {
+  const uuid = "44444444-4444-4444-4444-444444444444";
+  const strayDir = mkdtempSync(join(tmpdir(), "chat-viapane-stray-"));
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, strayDir));
+  stops.push(stop);
+
+  const db = openStateDb(join(tmpdir(), `chat-viapane-stray-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBeNull();
+
+  const rooms = await h["chat:rooms"]({ handle: "kai" });
+  if (!rooms.ok) throw new Error("unreachable");
+  expect(rooms.data.rooms).toEqual([]);
+});
+
+test("chat:sign-in viaPane --no-room skips the join even with a real repo cwd", async () => {
+  const uuid = "77777777-7777-7777-7777-777777777777";
+  const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "chat-viapane-noroom-")));
+  initRepo(repoDir);
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
+  stops.push(stop);
+  const db = openStateDb(join(tmpdir(), `chat-viapane-noroom-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai", noRoom: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBeNull();
+  const rooms = await h["chat:rooms"]({ handle: "kai" });
+  if (!rooms.ok) throw new Error("unreachable");
+  expect(rooms.data.rooms).toEqual([]);
+});
+
+test("chat:sign-in viaPane --room overrides the derived room with the explicit one", async () => {
+  const uuid = "88888888-8888-8888-8888-888888888888";
+  const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "chat-viapane-explicit-")));
+  initRepo(repoDir);
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid, repoDir));
+  stops.push(stop);
+  const db = openStateDb(join(tmpdir(), `chat-viapane-explicit-${process.pid}-${n++}.db`));
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, baseHandle: "kai", room: "warroom" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.room).toBe("warroom");
+  const who = await h["chat:who"]({ room: "warroom" });
+  if (!who.ok) throw new Error("unreachable");
+  expect(who.data.members.map((m) => m.handle)).toEqual(["kai"]);
+});
+
+test("chat:sign-in viaPane rejects an invalid explicit --room with a reason", async () => {
+  const uuid = "99999999-9999-9999-9999-999999999999";
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-badroom-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr });
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true, room: "Bad Room" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("room");
+});
+
+test("chat:sign-in viaPane refuses a pane herdr has no Claude session for, distinctly from herdr being unreachable", async () => {
+  const { sock: herdrSock, stop } = fakeHerdr(() => ({ snapshot: { workspaces: [], panes: [] } }));
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  // A tiny budget/poll: this fake herdr never reports a session, so the
+  // re-poll loop (below) would otherwise burn the full production budget
+  // for a genuinely-no-session pane.
+  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-miss-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr, paneSessionBudgetMs: 20, paneSessionPollMs: 5 });
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("w1:p1");
+
+  const unreachableHerdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: join(tmpdir(), "absent-herdr.sock") });
+  const h2 = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-down-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr: unreachableHerdr });
+  const res2 = await h2["chat:sign-in"]({ pane: "w1:p1", viaPane: true });
+  expect(res2.ok).toBe(false);
+  if (res2.ok) throw new Error("unreachable");
+  expect(res2.error).toContain("herdr unavailable");
+  expect(res2.error).not.toBe(res.error);
+});
+
+test("chat:sign-in viaPane re-polls the snapshot when herdr has not yet reported the pane's agent_session, and succeeds once it does", async () => {
+  const uuid = "33333333-3333-3333-3333-333333333333";
+  let calls = 0;
+  const { sock: herdrSock, stop } = fakeHerdr((method) => {
+    if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+    calls++;
+    // Misses on the first two calls (the pane exists but herdr has not yet
+    // attached its agent_session), reports it on the third.
+    const panes = calls < 3
+      ? [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "claude", agent_status: "idle" }]
+      : [{ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: "claude", agent_status: "idle", agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid } }];
+    return { snapshot: { workspaces: [], panes } };
+  });
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({
+    db: openStateDb(join(tmpdir(), `chat-viapane-repoll-${process.pid}-${n++}.db`)),
+    emitEvent: () => 0,
+    herdr,
+    paneSessionBudgetMs: 2000,
+    paneSessionPollMs: 20,
+  });
+
+  const res = await h["chat:sign-in"]({ pane: "w1:p1", viaPane: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.sessionId).toBe(uuid);
+  expect(calls).toBeGreaterThanOrEqual(3);
+});
+
+test("chat:sign-in draws baseHandle from the inbox registry's own name when none is given explicitly", async () => {
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "s1" ? { pid: process.pid, socketPath: fakeSocketPath(), status: "idle", name: "kai" } : null),
+    deliver: async () => ({ ok: true }),
+  };
+  const db = openStateDb(join(tmpdir(), `chat-h-reg-${process.pid}-${n++}.db`));
+  const h = createChatHandlers({ db, emitEvent: () => 0, inboxDeps });
+  const res = await h["chat:sign-in"]({ sessionId: "s1" });
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data).toMatchObject({ handle: "kai", baseHandle: "kai" });
+});
+
 test("sign-in rejects an invalid baseHandle with a reason rather than normalizing it", async () => {
   const h = freshHandlers();
   const res = await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "remote:host%2Fx" });
@@ -370,50 +630,6 @@ test("a rejected sign-in never wedges the next sign-in under the same base handl
   expect(ok.data).toMatchObject({ handle: "x" });
 });
 
-test("a reclaimed handle refuses the old session's pulse with the reason", async () => {
-  const h = freshHandlers();
-  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
-  h.db.run("UPDATE chat_presence SET last_seen_at = last_seen_at - 7200000");
-  await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "x" });
-  const res = await h["chat:pulse"]({ sessionId: "s1" });
-  expect(res.ok).toBe(false);
-  if (res.ok) throw new Error("unreachable");
-  expect(res.error).toContain("handle reclaimed");
-});
-
-test("chat:pulse partitions unread into disjoint dms/mentions/rooms buckets", async () => {
-  const h = freshHandlers();
-  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "me" });
-  await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "other" });
-  await h["chat:join"]({ room: "r", handle: "me" });
-  await h["chat:post"]({ room: "r", handle: "other", body: "@me hi" }); // one non-dm mention
-  await h["chat:dm"]({ from: "other", to: "me", body: "ping" }); // one dm
-
-  const res = await h["chat:pulse"]({ sessionId: "s1" });
-  if (!res.ok) throw new Error("unreachable");
-  expect(res.data.unread).toEqual({ dms: 1, mentions: 1, rooms: 0 });
-});
-
-test("chat:touch refuses a reclaimed handle's old session but succeeds for the new owner", async () => {
-  const h = freshHandlers();
-  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
-  h.db.run("UPDATE chat_presence SET last_seen_at = last_seen_at - 7200000");
-  await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "x" });
-  const refused = await h["chat:touch"]({ handle: "x", sessionId: "s1" });
-  expect(refused.ok).toBe(false);
-  if (refused.ok) throw new Error("unreachable");
-  expect(refused.error).toContain("handle reclaimed");
-  const allowed = await h["chat:touch"]({ handle: "x", sessionId: "s2" });
-  expect(allowed.ok).toBe(true);
-});
-
-test("chat:touch with no sessionId stays unenforced (the unsigned plan-1 path)", async () => {
-  const h = freshHandlers();
-  await h["chat:join"]({ room: "r", handle: "a" });
-  const res = await h["chat:touch"]({ handle: "a" });
-  expect(res.ok).toBe(true);
-});
-
 test("chat:sign-out is a no-op success for a session that never signed in", async () => {
   const h = freshHandlers();
   const res = await h["chat:sign-out"]({ sessionId: "never-signed-in" });
@@ -427,6 +643,38 @@ test("chat:sign-out is a no-op success once the session's presence row was recla
   await h["chat:sign-in"]({ sessionId: "s2", baseHandle: "x" });
   const res = await h["chat:sign-out"]({ sessionId: "s1" });
   expect(res.ok).toBe(true);
+});
+
+test("chat:sign-out viaPane resolves the pane's Claude session via herdr (the same findPaneSession path sign-in uses) and signs that session out", async () => {
+  const uuid = "22222222-2222-2222-2222-222222222222";
+  const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-out-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr });
+
+  await h["chat:sign-in"]({ sessionId: uuid, baseHandle: "x" });
+
+  const res = await h["chat:sign-out"]({ pane: "w1:p1", viaPane: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.sessionId).toBe(uuid);
+
+  const row = h.db.query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?").get(uuid) as
+    | { signed_out_at: number | null }
+    | null;
+  expect(row?.signed_out_at).not.toBeNull();
+});
+
+test("chat:sign-out viaPane refuses a pane herdr has no Claude session for", async () => {
+  const { sock: herdrSock, stop } = fakeHerdr(() => ({ snapshot: { workspaces: [], panes: [] } }));
+  stops.push(stop);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
+  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-out-miss-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr });
+
+  const res = await h["chat:sign-out"]({ pane: "w1:p1", viaPane: true });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("w1:p1");
 });
 
 test("chat:away sets status_text and chat:back clears it, both refusing an unsigned session", async () => {
@@ -452,15 +700,10 @@ test("chat:away sets status_text and chat:back clears it, both refusing an unsig
   expect(backRefused.error).toContain("handle reclaimed");
 });
 
-test("a signed-out session refuses pulse/away/back without the reclaimed wording", async () => {
+test("a signed-out session refuses away/back without the reclaimed wording", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
   await h["chat:sign-out"]({ sessionId: "s1" });
-
-  const pulse = await h["chat:pulse"]({ sessionId: "s1" });
-  expect(pulse.ok).toBe(false);
-  if (pulse.ok) throw new Error("unreachable");
-  expect(pulse.error).not.toMatch(/handle reclaimed/);
 
   const away = await h["chat:away"]({ sessionId: "s1", text: "x" });
   expect(away.ok).toBe(false);
@@ -473,13 +716,32 @@ test("a signed-out session refuses pulse/away/back without the reclaimed wording
   expect(back.error).not.toMatch(/handle reclaimed/);
 });
 
-test("chat:buddies reports the roster with a status per row", async () => {
+test("chat:buddies reports the roster with a status per row, offline with no resolvable registry binding", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
   const res = await h["chat:buddies"]({});
   if (!res.ok) throw new Error("unreachable");
   expect(res.data.buddies).toHaveLength(1);
-  expect(res.data.buddies[0]).toMatchObject({ handle: "x", status: "idle" });
+  // No fake registryDeps here: the default resolver finds nothing for this
+  // test session id, which now reads offline (unresolvable), not idle.
+  expect(res.data.buddies[0]).toMatchObject({ handle: "x", status: "offline" });
+});
+
+test("chat:buddies and chat:who read the registry mirror through the injected registryDeps seam", async () => {
+  const db = openStateDb(join(tmpdir(), `chat-h-registry-${process.pid}-${n++}.db`));
+  const busyBinding = { pid: process.pid, socketPath: fakeSocketPath(), status: "busy" as const };
+  const registryDeps = { resolve: () => busyBinding, alive: () => true, resolveAll: () => new Map([["s1", busyBinding]]) };
+  const h = createChatHandlers({ db, emitEvent: () => 0, registryDeps });
+
+  await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
+  const buddies = await h["chat:buddies"]({});
+  if (!buddies.ok) throw new Error("unreachable");
+  expect(buddies.data.buddies[0]).toMatchObject({ handle: "x", status: "live" });
+
+  await h["chat:join"]({ room: "r", handle: "x" });
+  const who = await h["chat:who"]({ room: "r" });
+  if (!who.ok) throw new Error("unreachable");
+  expect(who.data.members.find((m) => m.handle === "x")?.status).toBe("live");
 });
 
 test("chat:dm creates once, posts with the recipient in mentions, and reports recipients", async () => {
@@ -562,7 +824,9 @@ test("chat:rooms marks a dm and chat:who carries presence statuses", async () =>
   const who = await h["chat:who"]({ room: dm.data.room });
   if (!who.ok) throw new Error("unreachable");
   const memberA = who.data.members.find((m) => m.handle === "a");
-  expect(memberA?.status).toBe("idle");
+  // No fake registryDeps: the default resolver finds nothing for this test
+  // session id, which reads offline (unresolvable), not idle.
+  expect(memberA?.status).toBe("offline");
 });
 
 test("chat:rooms carries a room's stamped default wake mode, and leaves it undefined when never stamped", async () => {
@@ -600,25 +864,13 @@ test("chat:who on a human dm room still lists the human as a participant", async
   expect(who.data.members.map((m) => m.handle).sort()).toEqual(["agent", "matt"]);
 });
 
-test("chat:who falls back to member columns for an unsigned plan-1 member", async () => {
+test("chat:who reports offline for a member with no presence row (the unsigned plan-1 path)", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "a" });
-  await h["chat:touch"]({ handle: "a" });
   const who = await h["chat:who"]({ room: "r" });
   if (!who.ok) throw new Error("unreachable");
   const memberA = who.data.members.find((m) => m.handle === "a");
-  expect(memberA?.status).toBe("live"); // a touch is an armed tail's heartbeat, so it arms
-});
-
-test("chat:who reads an unsigned member as live right after arming, even joined well over the tail-stale window ago", async () => {
-  const h = freshHandlers();
-  await h["chat:join"]({ room: "r", handle: "a" });
-  h.db.run("UPDATE chat_members SET joined_at = joined_at - 700000 WHERE room = 'r' AND handle = 'a'");
-  await h["chat:arm"]({ room: "r", handle: "a" });
-  const who = await h["chat:who"]({ room: "r" });
-  if (!who.ok) throw new Error("unreachable");
-  const memberA = who.data.members.find((m) => m.handle === "a");
-  expect(memberA?.status).toBe("live");
+  expect(memberA?.status).toBe("offline"); // status is a presence-only concept now
 });
 
 // ─── chat:invite ──────────────────────────────────────────────────────────
