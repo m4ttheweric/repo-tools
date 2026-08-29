@@ -87,6 +87,12 @@ describe("worktree trash", () => {
     });
   });
 
+  describe("retainedTrashRoot", () => {
+    test("is a .trash sibling of the pool root", () => {
+      expect(retainedTrashRoot("/somewhere/pool")).toBe(join("/somewhere/pool", ".trash"));
+    });
+  });
+
   describe("reapTrashDir", () => {
     test("deletes the trash directory and everything under it", async () => {
       const tree = makeTree(root, "hotel");
@@ -120,7 +126,7 @@ describe("worktree trash", () => {
       repo = realpathSync(mkdtempSync(join(tmpdir(), "rttrash-repo-")));
     });
 
-    test("moves the tree into <repo>/.worktrees/.trash/<name>-<epoch>, contents intact", async () => {
+    test("retires into a .trash beside the tree's own pool root (dirname(path)), contents intact", async () => {
       const tree = makeTree(root, "hotel");
       mkdirSync(join(tree, ".local-dev"), { recursive: true });
       writeFileSync(join(tree, ".local-dev", "spec.md"), "the plan\n");
@@ -131,7 +137,9 @@ describe("worktree trash", () => {
 
       expect(result.retained).toBe(true);
       expect(existsSync(tree)).toBe(false);
-      expect(dirname(result.trashPath)).toBe(retainedTrashRoot(repo));
+      // root plays the pool root here: the tree lives at join(root, "hotel"),
+      // so dirname(path) is root, unrelated to repo.
+      expect(dirname(result.trashPath)).toBe(retainedTrashRoot(root));
       expect(basename(result.trashPath)).toMatch(/^hotel-\d+$/);
       expect(readFileSync(join(result.trashPath, ".local-dev", "spec.md"), "utf8")).toBe(
         "the plan\n",
@@ -140,8 +148,8 @@ describe("worktree trash", () => {
 
     test("falls back to a sibling trash rename when the retention root is unusable", async () => {
       const tree = makeTree(root, "hotel");
-      // A file where the .worktrees dir should be makes mkdir fail.
-      writeFileSync(join(repo, ".worktrees"), "");
+      // A file where the pool root's .trash dir should be makes mkdir fail.
+      writeFileSync(join(root, ".trash"), "");
 
       const result = await retireTree(tree, "hotel", repo);
       expect(result.ok).toBe(true);
@@ -168,10 +176,10 @@ describe("worktree trash", () => {
     // S078: `.worktrees/` was never added to info/exclude unless the tree
     // went through createTree first (e.g. `rt worktree adopt`'s disposals,
     // or any repo whose worktrees root differs from the default, skip that
-    // call entirely) — the retention store then shows up as `?? .worktrees/`
-    // in the user's own `git status`, and `git add -A` stages a whole second
-    // copy of the source tree into it.
-    test("retireTree excludes .worktrees/ from the repo's own git status, even without going through createTree first", async () => {
+    // call entirely). Without it the retention store shows up as
+    // `?? .worktrees/` in the user's own `git status`, and `git add -A`
+    // stages a whole second copy of the source tree into it.
+    test("a legacy pool root inside the repo excludes it from the repo's own git status, even without going through createTree first", async () => {
       Bun.spawnSync(["git", "init", "-q", repo]);
       Bun.spawnSync(["git", "-C", repo, "config", "user.email", "test@example.com"]);
       Bun.spawnSync(["git", "-C", repo, "config", "user.name", "Test"]);
@@ -179,15 +187,39 @@ describe("worktree trash", () => {
       Bun.spawnSync(["git", "-C", repo, "add", "README.md"]);
       Bun.spawnSync(["git", "-C", repo, "commit", "-q", "-m", "init"]);
 
-      const tree = makeTree(root, "hotel");
+      const legacyRoot = join(repo, ".worktrees");
+      const tree = makeTree(legacyRoot, "hotel");
       const result = await retireTree(tree, "hotel", repo);
       expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(result.retained).toBe(true);
+      expect(dirname(result.trashPath)).toBe(retainedTrashRoot(legacyRoot));
 
       const exclude = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
       expect(exclude).toContain(".worktrees/");
 
       const status = Bun.spawnSync(["git", "-C", repo, "status", "--porcelain"]).stdout.toString();
       expect(status).not.toContain(".worktrees");
+    });
+
+    // A pool root outside the repo (the new default under ~/.mattstack) never
+    // shows up in the repo's own git status, so excluding it would be a
+    // no-op at best; this confirms retireTree does not even try.
+    test("a pool root outside the repo does not touch the repo's info/exclude", async () => {
+      Bun.spawnSync(["git", "init", "-q", repo]);
+      Bun.spawnSync(["git", "-C", repo, "config", "user.email", "test@example.com"]);
+      Bun.spawnSync(["git", "-C", repo, "config", "user.name", "Test"]);
+      // git init seeds info/exclude with its own commented-out template;
+      // capture it so the assertion below is about whether retireTree wrote
+      // anything, not whether the file exists at all.
+      const before = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
+
+      const tree = makeTree(root, "hotel");
+      const result = await retireTree(tree, "hotel", repo);
+      expect(result.ok).toBe(true);
+
+      const after = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
+      expect(after).toBe(before);
     });
   });
 
@@ -246,7 +278,7 @@ describe("worktree trash", () => {
       const fresh = makeTree(trashRoot, `india-${now - 1000}`);
 
       const { log, warns } = capturingLog();
-      const reaped = await reapExpiredTrash(repo, log, now);
+      const reaped = await reapExpiredTrash([repo], log, now);
 
       expect(reaped).toBe(1);
       expect(existsSync(old)).toBe(false);
@@ -254,29 +286,56 @@ describe("worktree trash", () => {
       expect(warns.length).toBe(0);
     });
 
-    test("a repo with no retention dir yet reaps nothing quietly", async () => {
+    test("sweeps every root in the array, keeping each root's fresh entries", async () => {
+      const now = 1_700_000_000_000;
+      const legacyRoot = join(repo, ".worktrees");
+      const otherRoot = realpathSync(mkdtempSync(join(tmpdir(), "rttrash-pool-")));
+      const oldLegacy = makeTree(retainedTrashRoot(legacyRoot), `hotel-${now - RETENTION_MS - 1}`);
+      const oldOther = makeTree(retainedTrashRoot(otherRoot), `india-${now - RETENTION_MS - 1}`);
+      const freshOther = makeTree(retainedTrashRoot(otherRoot), `juliet-${now - 1000}`);
+
       const { log, warns } = capturingLog();
-      expect(await reapExpiredTrash(repo, log)).toBe(0);
+      const reaped = await reapExpiredTrash([legacyRoot, otherRoot], log, now);
+
+      expect(reaped).toBe(2);
+      expect(existsSync(oldLegacy)).toBe(false);
+      expect(existsSync(oldOther)).toBe(false);
+      expect(existsSync(freshOther)).toBe(true);
+      expect(warns.length).toBe(0);
+    });
+
+    test("the same root listed twice is swept once", async () => {
+      const now = 1_700_000_000_000;
+      const trashRoot = retainedTrashRoot(repo);
+      makeTree(trashRoot, `hotel-${now - RETENTION_MS - 1}`);
+
+      const { log } = capturingLog();
+      expect(await reapExpiredTrash([repo, repo], log, now)).toBe(1);
+    });
+
+    test("a root with no retention dir yet reaps nothing quietly", async () => {
+      const { log, warns } = capturingLog();
+      expect(await reapExpiredTrash([repo], log)).toBe(0);
       expect(warns.length).toBe(0);
     });
 
     test("an entry without a parseable epoch is kept and warned about", async () => {
       const stray = makeTree(retainedTrashRoot(repo), "not-rt-made");
       const { log, warns } = capturingLog();
-      expect(await reapExpiredTrash(repo, log, Date.now())).toBe(0);
+      expect(await reapExpiredTrash([repo], log, Date.now())).toBe(0);
       expect(existsSync(stray)).toBe(true);
       expect(warns.length).toBe(1);
     });
 
     // S079: a trailing small integer (a manual "backup-3", "notes-42" dropped
     // "with the other trash") parses as a number just fine and, taken at face
-    // value as a ms-epoch, is always ancient — rm -rf'd on the very next pass
+    // value as a ms-epoch, is always ancient... rm -rf'd on the very next pass
     // despite the doc comment promising non-rt entries are kept. This is a
     // distinct failure shape from "not-rt-made" above (no digits at all).
     test("an entry whose trailing digits are not a plausible rt epoch is kept and warned about", async () => {
       const stray = makeTree(retainedTrashRoot(repo), "backup-3");
       const { log, warns } = capturingLog();
-      expect(await reapExpiredTrash(repo, log, Date.now())).toBe(0);
+      expect(await reapExpiredTrash([repo], log, Date.now())).toBe(0);
       expect(existsSync(stray)).toBe(true);
       expect(warns.length).toBe(1);
     });

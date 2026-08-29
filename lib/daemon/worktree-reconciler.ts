@@ -1034,9 +1034,11 @@ async function replenishAndShrink(
  * declares, because a root that changed after a disposal still has the old
  * root's leftovers in it.
  *
- * Retained trees — `.worktrees/.trash/<name>-<epoch>` entries, where disposal
- * parks trees stripped-but-recoverable (RT-51) — are reaped only past the
- * retention window.
+ * Retained trees (`<root>/.trash/<name>-<epoch>` entries under each of the
+ * same two roots, where disposal parks trees stripped-but-recoverable
+ * (RT-51)) are reaped only past the retention window. Sweeping both roots,
+ * not just the tree's current default, is what lets a legacy pool root and
+ * the new default pool root both drain during migration.
  */
 /**
  * Whether `root` is repoPath itself or a strict ancestor of it —
@@ -1063,7 +1065,7 @@ async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Lo
   }
   const reaped = await reapTrashInRoots(roots, log);
   if (reaped > 0) log.info({ repo: repoName, count: reaped }, "worktree trash reaped");
-  const expired = await reapExpiredTrash(repoPath, log);
+  const expired = await reapExpiredTrash(roots, log);
   if (expired > 0) log.info({ repo: repoName, count: expired }, "worktree retention trash reaped");
 }
 
