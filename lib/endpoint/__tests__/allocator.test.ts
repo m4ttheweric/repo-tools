@@ -82,6 +82,20 @@ describe("resolveClaim", () => {
     expect(r).toEqual({ error: 'no free port in pool for role "portal" (2 declared, 0 free)' });
   });
 
+  test("renewal preserves the previously verified startTime when pidStartTime is unavailable (ps failed/timed out)", () => {
+    const existing = [claim("/wt/a", 4001, 111, "Thu Aug 27 00:00:00 2026")];
+    // pid 222 is alive, but startTimes carries no entry for it: ps failed or
+    // timed out this round, not "pid genuinely has no start time".
+    const r = resolveClaim(existing, "portal", role, "/wt/a", 222, probes({ alive: [111] }));
+    if ("error" in r) throw new Error(r.error);
+    expect(r.port).toBe(4001);
+    const renewed = r.claims.find((c) => c.worktree === "/wt/a");
+    expect(renewed?.pid).toBe(222);
+    // The verified identity from the prior claim survives instead of being
+    // silently downgraded to legacy TTL trust.
+    expect(renewed?.startTime).toBe("Thu Aug 27 00:00:00 2026");
+  });
+
   test("fixedPort role allocates nothing and returns the fixed port", () => {
     const r = resolveClaim([], "frontend", { pool: [], fixedPort: 4002, needs: [], preserveEnv: [], env: {} }, "/wt/a", 1, probes());
     if ("error" in r) throw new Error(r.error);

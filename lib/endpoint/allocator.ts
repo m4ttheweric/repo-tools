@@ -141,7 +141,11 @@ export function resolveClaim(
   }
 
   const ts = new Date().toISOString();
-  const startTime = pid !== undefined ? probes.pidStartTime(pid) : undefined;
+  // ps failing or timing out this round must never downgrade a claim that
+  // was already pid-recycle verified: a live-but-unproven pid falls back to
+  // the previous verified startTime rather than overwriting it with
+  // undefined (which would silently drop to CLAIM_TRUST_TTL_MS trust).
+  const startTime = pid !== undefined ? (probes.pidStartTime(pid) ?? selfClaim?.startTime) : undefined;
   const nextClaims = selfClaim
     ? pruned.map((c) => (c === selfClaim ? { ...c, port: winningPort!, pid, ts, startTime } : c))
     : [...pruned, { worktree, role, port: winningPort!, pid, ts, startTime }];
