@@ -27,21 +27,28 @@ export interface EventsBus {
    */
   emitAt(topic: string, payload: unknown, emittedAt: number): number;
   /**
-   * The single owner of "persist + broadcast" (R020): builds the frame,
-   * persists it via emitAt, and fans out (topic, payload) to every
-   * onBroadcast subscriber. Replaces the copies formerly duplicated in
-   * command-router.ts and the inline reactions formerly living in
-   * daemon.ts's `emit()`.
+   * The single owner of the persisted-event-frame idiom (R020): builds
+   * {id, topic, payload, emittedAt}, persists it via emitAt, and returns it.
+   * Replaces the copy formerly duplicated in command-router.ts. Deliberately
+   * does NOT fan out to onBroadcast subscribers -- before this refactor,
+   * command-router's persisted events never reached cron or the
+   * worktree:disposed reaction, and that stays true (see fanOut).
    */
   emitEvent(topic: string, payload: unknown): BusEvent;
   /**
-   * Subscribe to every emitEvent call, in registration order. Subscribers
-   * see the same (topic, payload) the caller passed to emitEvent -- not a
-   * wrapped "event" frame -- so a subscriber can match on the real topic
-   * (e.g. a cron trigger's `event`, or `type === "worktree:disposed"`).
-   * Returns an unsubscribe.
+   * Subscribe to every fanOut call, in registration order. Returns an
+   * unsubscribe.
    */
   onBroadcast(fn: (type: string, data: unknown) => void): () => void;
+  /**
+   * Notify onBroadcast subscribers of (type, data) with NO persistence --
+   * the non-journaled counterpart to emitEvent. This is what daemon.ts's
+   * `emit()` calls on every broadcast so the cron and worktree:disposed
+   * reactions keep firing exactly as they did as inline branches, without
+   * writing every broadcast (including high-frequency ones like the
+   * system-process scan) into events.db.
+   */
+  fanOut(type: string, data: unknown): void;
   list(opts: { pattern: string; after?: number; limit?: number }): WaitResult;
   head(): number;
   wait(opts: { pattern: string; after?: number; waitMs?: number; signal?: AbortSignal }): Promise<WaitResult>;
@@ -215,13 +222,16 @@ export function createEventsBus(opts: {
     emitEvent(topic, payload) {
       const emittedAt = Date.now();
       const id = insertAndWake(topic, payload, emittedAt);
-      for (const fn of [...broadcastSubscribers]) fn(topic, payload);
       return { id, topic, payload, emittedAt };
     },
 
     onBroadcast(fn) {
       broadcastSubscribers.add(fn);
       return () => { broadcastSubscribers.delete(fn); };
+    },
+
+    fanOut(type, data) {
+      for (const fn of [...broadcastSubscribers]) fn(type, data);
     },
 
     list({ pattern, after, limit }) {

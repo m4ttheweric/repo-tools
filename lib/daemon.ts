@@ -301,9 +301,12 @@ sweepHandles.push(scheduleSweep(
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
 const cron = startCron(loadCronConfig(log), { log });
 // Former inline `emit()` reactions (R020), now owned by the bus: both fire
-// off eventsBus.emitEvent's fan-out, keyed on the real (type, data) pair --
-// not a wrapped "event" frame -- so cron's trigger.event match and this
-// type check see exactly what they did before.
+// off eventsBus.fanOut, keyed on the real (type, data) pair -- not a
+// wrapped "event" frame -- so cron's trigger.event match and this type
+// check see exactly what they did before. fanOut does NOT persist, so
+// emit() still writes zero rows to events.db (only command-router's
+// emitEvent path does that) -- unlike emitEvent, whose persisted events
+// never reached these two reactions before this refactor and still don't.
 eventsBus.onBroadcast((type, data) => cron.onBroadcast(type, data));
 eventsBus.onBroadcast((type, data) => {
   if (type !== "worktree:disposed") return;
@@ -312,7 +315,7 @@ eventsBus.onBroadcast((type, data) => {
 });
 const emit: typeof broadcast = (type, data) => {
   broadcast(type, data);
-  eventsBus.emitEvent(type, data);
+  eventsBus.fanOut(type, data);
 };
 
 // Worktree lifecycle reconciler: reconcile → merge reactor → freshen →
