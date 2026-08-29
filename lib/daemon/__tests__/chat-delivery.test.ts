@@ -12,7 +12,9 @@ import { fakeHerdr, type FakeHerdrHandler } from "../../herdr/__tests__/fake-her
 let n = 0;
 function freshHandlers(inboxDeps?: InboxDeps, herdr?: typeof herdrRequest) {
   const db = openStateDb(join(tmpdir(), `chat-deliv-${process.pid}-${n++}.db`));
-  return createChatHandlers({ db, emitEvent: () => 0, inboxDeps, herdr });
+  // Handlers no longer expose `db` (R028); tests that need to reach the
+  // underlying table directly get it back alongside the handler map.
+  return Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps, herdr }), { db });
 }
 
 /** Points a real `herdrRequest` at a fake unix-socket herdr server for the duration of one test. */

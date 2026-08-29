@@ -67,17 +67,13 @@ export function createAgentHandlers(opts: {
   spawnHeadless?: (argv: string[], cwd: string) => HeadlessChild;
   insertAgentFn?: typeof insertAgent;
 }):
-  // Direct `unknown`-payload members, not `Pick<TypedHandlers, ...>`: this
-  // factory also exposes `db` for test isolation, and `db: Database` cannot
-  // itself satisfy a `HandlerMap` index signature intersected here, so the
-  // escape from Handler's `unknown` param is per-member instead. A wider
+  // Direct `unknown`-payload members, not `Pick<TypedHandlers, ...>`: a wider
   // `unknown` param still satisfies TypedHandlers' narrower one at the
   // command-router.ts assembly site (function parameter contravariance).
   & { "agent:start": (payload: unknown) => Promise<CommandResult<"agent:start">> }
   & { "agent:resume": (payload: unknown) => Promise<CommandResult<"agent:resume">> }
   & { "agent:get": (payload: unknown) => Promise<CommandResult<"agent:get">> }
-  & { "agent:list": (payload: unknown) => Promise<CommandResult<"agent:list">> }
-  & { db: Database } {
+  & { "agent:list": (payload: unknown) => Promise<CommandResult<"agent:list">> } {
   const { db, emitEvent } = opts;
   const log = opts.log ?? lazyChildLogger("agent");
   const spawnHeadless = opts.spawnHeadless ?? defaultSpawnHeadless;
@@ -142,8 +138,6 @@ export function createAgentHandlers(opts: {
   }
 
   return {
-    db,
-
     "agent:start": async (rawPayload: unknown): Promise<CommandResult<"agent:start">> => {
       const payload = rawPayload as Commands["agent:start"]["payload"];
       const { repo, cwd } = payload;

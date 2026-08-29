@@ -39,7 +39,9 @@ afterEach(() => {
 let n = 0;
 function freshHandlers(emitEvent: (topic: string, payload?: unknown) => number = () => 0) {
   const db = openStateDb(join(tmpdir(), `chat-h-${process.pid}-${n++}.db`));
-  return createChatHandlers({ db, emitEvent });
+  // Handlers no longer expose `db` (R028); tests that need to reach the
+  // underlying table directly get it back alongside the handler map.
+  return Object.assign(createChatHandlers({ db, emitEvent }), { db });
 }
 
 function snapshotChatTables(db: Database) {
@@ -650,7 +652,8 @@ test("chat:sign-out viaPane resolves the pane's Claude session via herdr (the sa
   const { sock: herdrSock, stop } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
   stops.push(stop);
   const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: herdrSock });
-  const h = createChatHandlers({ db: openStateDb(join(tmpdir(), `chat-viapane-out-${process.pid}-${n++}.db`)), emitEvent: () => 0, herdr });
+  const db = openStateDb(join(tmpdir(), `chat-viapane-out-${process.pid}-${n++}.db`));
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr });
 
   await h["chat:sign-in"]({ sessionId: uuid, baseHandle: "x" });
 
@@ -659,7 +662,7 @@ test("chat:sign-out viaPane resolves the pane's Claude session via herdr (the sa
   if (!res.ok) throw new Error("unreachable");
   expect(res.data.sessionId).toBe(uuid);
 
-  const row = h.db.query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?").get(uuid) as
+  const row = db.query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?").get(uuid) as
     | { signed_out_at: number | null }
     | null;
   expect(row?.signed_out_at).not.toBeNull();

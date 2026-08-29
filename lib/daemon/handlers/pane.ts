@@ -129,20 +129,16 @@ export function createPaneHandlers(opts: {
 }):
   // Declared as direct `unknown`-payload members (not `Pick<TypedHandlers, ...>`)
   // rather than the narrower per-command payload types the catalog would
-  // otherwise force: this factory also exposes `db` for test isolation, and
-  // `db: Database` cannot itself satisfy a `HandlerMap` index signature
-  // intersected here, so the escape from Handler's `unknown` param has to be
-  // per-member instead. A wider `unknown` param still satisfies
-  // TypedHandlers' narrower one at the command-router.ts assembly site
-  // (function parameter contravariance).
+  // otherwise force: a wider `unknown` param still satisfies TypedHandlers'
+  // narrower one at the command-router.ts assembly site (function parameter
+  // contravariance).
   & { "pane:list": (payload: unknown) => Promise<CommandResult<"pane:list">> }
   & { "pane:peek": (payload: unknown) => Promise<CommandResult<"pane:peek">> }
   & { "pane:accounts": (payload: unknown) => Promise<CommandResult<"pane:accounts">> }
   & { "pane:directories": (payload: unknown) => Promise<CommandResult<"pane:directories">> }
   & { "pane:send": (payload: unknown) => Promise<CommandResult<"pane:send">> }
   & { "pane:focus": (payload: unknown) => Promise<CommandResult<"pane:focus">> }
-  & { "pane:spawn": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"pane:spawn">> }
-  & { db: Database } {
+  & { "pane:spawn": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"pane:spawn">> } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const tray = opts.tray ?? trayRequest;
@@ -156,8 +152,6 @@ export function createPaneHandlers(opts: {
   }
 
   return {
-    db,
-
     "pane:list": async (_payload: unknown): Promise<CommandResult<"pane:list">> => {
       const snap = await snapshot();
       if (!snap.ok) return herdrError(snap);

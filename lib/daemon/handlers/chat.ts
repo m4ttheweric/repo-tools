@@ -452,15 +452,13 @@ export function createChatHandlers(opts: {
   paneSessionPollMs?: number;
   /** Request logger; wired from ctx.log by command-router.ts. */
   log?: Logger;
-}):
+}): {
   // A mapped type over CHAT_COMMANDS with a direct `unknown` payload, not
-  // `Pick<TypedHandlers, ...>`: this factory also exposes `db` for test
-  // isolation, and `db: Database` cannot itself satisfy a `HandlerMap` index
-  // signature intersected here, so the escape from Handler's `unknown` param
-  // has to be per-member instead. A wider `unknown` param still satisfies
+  // `Pick<TypedHandlers, ...>`: a wider `unknown` param still satisfies
   // TypedHandlers' narrower one at the command-router.ts assembly site
   // (function parameter contravariance).
-  { [K in (typeof CHAT_COMMANDS)[number]]: (payload: unknown) => Promise<CommandResult<K>> } & { db: Database } {
+  [K in (typeof CHAT_COMMANDS)[number]]: (payload: unknown) => Promise<CommandResult<K>>;
+} {
   const { db, emitEvent } = opts;
   const log = opts.log ?? defaultLog;
   const herdr = opts.herdr ?? herdrRequest;
@@ -475,8 +473,6 @@ export function createChatHandlers(opts: {
   const deliveryChains = new Map<string, Promise<void>>();
 
   return {
-    db,
-
     "chat:join": async (rawPayload: unknown): Promise<CommandResult<"chat:join">> => {
       const payload = rawPayload as Commands["chat:join"]["payload"];
       const { room, handle, wakeOn, cwd, pane } = payload;
