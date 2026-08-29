@@ -188,9 +188,9 @@ export async function stashChangesAsync(
   cwd: string,
   label: string,
   opts: { timeoutMs?: number } = {},
-): Promise<void> {
+): Promise<GitResult> {
   const message = `!!GitHub_Desktop<${label}>`;
-  await runGit(cwd, ["stash", "push", "-u", "-m", message], {
+  return runGit(cwd, ["stash", "push", "-u", "-m", message], {
     timeoutMs: opts.timeoutMs ?? MUTATING_TIMEOUT_MS,
   });
 }

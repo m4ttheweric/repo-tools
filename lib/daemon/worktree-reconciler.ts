@@ -744,21 +744,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     await runGit(rec.path, ["checkout", "--", ...classify.discard], { timeoutMs: MUTATING_TIMEOUT_MS });
   }
 
-  // Blockers stashed under the tree's own branch name (Desktop-compatible
-  // marker), harvested from parking-lot.ts's ff-sweep. On-deck trees are
-  // expected to be clean by construction; the idle-main case can legitimately
-  // have generated-only dirt left after the discard reset above.
   let stashName: string | null = null;
-  const label = rec.branch ?? rec.name;
-  if (classify.blockers.length > 0) {
-    await stashChangesAsync(rec.path, label);
-    // A pushed stash whose name we then fail to resolve must still get a
-    // restore attempt, not be silently abandoned — "stash@{0}" is the entry
-    // we just pushed absent a race with something else stashing concurrently
-    // (harvested fallback from parking-lot.ts's ff-sweep).
-    stashName = (await findDesktopStashAsync(rec.path, label))?.name ?? "stash@{0}";
-  }
-
   const popStash = async (): Promise<void> => {
     if (!stashName) return;
     const pop = await runGit(rec.path, ["stash", "pop", stashName], { timeoutMs: MUTATING_TIMEOUT_MS });
@@ -769,6 +755,46 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
       );
     }
   };
+
+  // Blockers stashed under the tree's own branch name (Desktop-compatible
+  // marker), harvested from parking-lot.ts's ff-sweep. On-deck trees are
+  // expected to be clean by construction; the idle-main case can legitimately
+  // have generated-only dirt left after the discard reset above.
+  const label = rec.branch ?? rec.name;
+  if (classify.blockers.length > 0) {
+    const push = await stashChangesAsync(rec.path, label);
+    if (push.exitCode !== 0) {
+      log.warn(
+        { ...fields, output: push.stderr.trim() },
+        "freshen: stash push failed; leaving tree and stash untouched",
+      );
+      fail();
+      return false;
+    }
+    // A resolved marker is required before any pop ... a positional index
+    // guess can target an entry this pass never pushed if anything else
+    // stashed concurrently, so an unresolved marker aborts rather than guesses.
+    const resolved = await findDesktopStashAsync(rec.path, label);
+    if (!resolved) {
+      log.warn(
+        { ...fields },
+        "freshen: stash push succeeded but its marker could not be resolved; aborting without a pop",
+      );
+      fail();
+      return false;
+    }
+    stashName = resolved.name;
+
+    // Mirrors autoReturnMain's re-check: confirm the push actually cleared
+    // the tree before the ff runs on top of it.
+    const after = await runGit(rec.path, ["status", "--porcelain"], { timeoutMs: MUTATING_TIMEOUT_MS });
+    if (after.exitCode !== 0 || after.stdout.trim().length > 0) {
+      log.warn({ ...fields }, "freshen: stash did not clear the worktree; aborting");
+      await popStash();
+      fail();
+      return false;
+    }
+  }
 
   const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef], { timeoutMs: MUTATING_TIMEOUT_MS });
   if (ff.exitCode !== 0) {
@@ -1262,6 +1288,7 @@ export const __test__ = {
   loadReactorState,
   saveReactorState,
   freshenRepo,
+  freshenOne,
   replenishAndShrink,
   poolCounts,
   backoffDelayMs,

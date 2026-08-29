@@ -10,6 +10,7 @@ import { composeKey } from "../../state/branch-cache.ts";
 import { machineSettingsPath, rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { deriveRepoIdentity, parseIdentity } from "../../settings/identity.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
+import * as gitAsync from "../../worktree/git-async.ts";
 import {
   branchExistsLocalAsync,
   currentBranchAsync,
@@ -1175,6 +1176,99 @@ describe("freshen", () => {
     expect(events.some((e) => e.data?.path === pathB)).toBe(false);
     expect(loadRegistry(repoName).find((t) => t.path === pathB)!.state).toBe("claimed");
   }, 10_000);
+
+  test("freshen: a failed stash push aborts without popping; a pre-existing stash is untouched", async () => {
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    // A stash the user made themselves, unrelated to this pass, that must
+    // survive an aborted freshen untouched.
+    writeFileSync(join(repo, "unrelated.txt"), "mine\n");
+    sh(`git stash push -u -m "my own work"`, repo);
+    const stashListBefore = execSync("git stash list", { cwd: repo, encoding: "utf8" });
+
+    // This pass's own dirt: a blocker freshenOne must try (and fail) to stash.
+    writeFileSync(join(repo, "current.txt"), "dirty\n");
+
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+
+    const calls: string[][] = [];
+    const originalRunGit = gitAsync.runGit;
+    const runGitSpy = spyOn(gitAsync, "runGit").mockImplementation(async (cwd, args, opts) => {
+      calls.push(args);
+      return originalRunGit(cwd, args, opts);
+    });
+    const stashSpy = spyOn(gitAsync, "stashChangesAsync").mockResolvedValue({
+      exitCode: 1,
+      stdout: "",
+      stderr: "boom",
+    });
+
+    try {
+      const result = await __test__.freshenOne(
+        { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+        rec,
+      );
+
+      expect(result).toBe(false);
+      expect(calls.some((a) => a[0] === "stash" && a[1] === "pop")).toBe(false);
+
+      const after = loadRegistry(repoName).find((t) => t.path === repo)!;
+      expect(after.retryFailures).toBe(1);
+      expect(after.nextRetryAt).toBeDefined();
+
+      const stashListAfter = execSync("git stash list", { cwd: repo, encoding: "utf8" });
+      expect(stashListAfter).toBe(stashListBefore);
+      expect(existsSync(join(repo, "current.txt"))).toBe(true);
+    } finally {
+      runGitSpy.mockRestore();
+      stashSpy.mockRestore();
+    }
+  });
+
+  test("freshen: a successful stash push pops the resolved Desktop name, never a positional ref", async () => {
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    writeFileSync(join(repo, "current.txt"), "dirty\n");
+
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+
+    const calls: string[][] = [];
+    const originalRunGit = gitAsync.runGit;
+    const runGitSpy = spyOn(gitAsync, "runGit").mockImplementation(async (cwd, args, opts) => {
+      calls.push(args);
+      return originalRunGit(cwd, args, opts);
+    });
+    // The resolver returns a sentinel name deliberately unlike stash@{0}, so
+    // a pop call carrying it proves the code used the resolved name rather
+    // than a positional ref.
+    const resolvedSpy = spyOn(gitAsync, "findDesktopStashAsync").mockResolvedValue({ name: "stash@{7}" });
+
+    try {
+      await __test__.freshenOne(
+        { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+        rec,
+      );
+
+      const popCall = calls.find((a) => a[0] === "stash" && a[1] === "pop");
+      expect(popCall).toBeDefined();
+      expect(popCall![2]).toBe("stash@{7}");
+      expect(popCall![2]).not.toBe("stash@{0}");
+    } finally {
+      runGitSpy.mockRestore();
+      resolvedSpy.mockRestore();
+    }
+  });
+});
+
+describe("freshen stash discipline: no positional stash ref in source", () => {
+  test("worktree-reconciler.ts never references a positional stash@{0}", () => {
+    const source = readFileSync(join(dirname(new URL(import.meta.url).pathname), "..", "worktree-reconciler.ts"), "utf8");
+    expect(source.includes("stash@{0}")).toBe(false);
+  });
 });
 
 // ─── Replenish / shrink ───────────────────────────────────────────────────────
