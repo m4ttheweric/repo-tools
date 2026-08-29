@@ -1178,8 +1178,12 @@ describe("freshen", () => {
   }, 10_000);
 
   test("freshen: a failed stash push aborts without popping; a pre-existing stash is untouched", async () => {
+    // kind: ephemeral, not main: main's own blockers-after-fetch path aborts
+    // before ever attempting a stash (see the "main gained uncommitted work"
+    // test below), so this generic push-failure mechanic is exercised via an
+    // on-deck-shaped tree instead.
     saveRegistry(repoName, [
-      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+      { name: basename(repo), path: repo, kind: "ephemeral", state: "on-deck", branch: "main", createdAt: new Date().toISOString() },
     ]);
 
     // A stash the user made themselves, unrelated to this pass, that must
@@ -1228,8 +1232,9 @@ describe("freshen", () => {
   });
 
   test("freshen: a successful stash push pops the resolved Desktop name, never a positional ref", async () => {
+    // kind: ephemeral, not main, for the same reason as the push-failure test above.
     saveRegistry(repoName, [
-      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+      { name: basename(repo), path: repo, kind: "ephemeral", state: "on-deck", branch: "main", createdAt: new Date().toISOString() },
     ]);
 
     writeFileSync(join(repo, "current.txt"), "dirty\n");
@@ -1260,6 +1265,104 @@ describe("freshen", () => {
     } finally {
       runGitSpy.mockRestore();
       resolvedSpy.mockRestore();
+    }
+  });
+
+  test("freshen: main that gained uncommitted work during the fetch window aborts without stashing", async () => {
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    // Stands in for edits arriving during the (up to 5 minute) fetch window:
+    // by the time freshenOne re-checks, main is no longer idle.
+    writeFileSync(join(repo, "current.txt"), "dirty\n");
+
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+
+    const stashSpy = spyOn(gitAsync, "stashChangesAsync");
+
+    try {
+      const result = await __test__.freshenOne(
+        { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+        rec,
+      );
+
+      expect(result).toBe(false);
+      expect(stashSpy).not.toHaveBeenCalled();
+
+      // Not a failure to back off on: the user is editing, not a broken step.
+      const after = loadRegistry(repoName).find((t) => t.path === repo)!;
+      expect(after.retryFailures ?? 0).toBe(0);
+      expect(after.nextRetryAt).toBeUndefined();
+
+      expect(existsSync(join(repo, "current.txt"))).toBe(true);
+    } finally {
+      stashSpy.mockRestore();
+    }
+  });
+
+  test("freshen: a dormant machine (enabled: false) never treats idle main as a freshen candidate", async () => {
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: false, killProcesses: false });
+
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    const beforeSha = await headSha(repo);
+    const clone = cloneOrigin(repo);
+    pushFile(clone, "feature.txt", "hi\n");
+
+    const events: Array<{ type: string; data: any }> = [];
+    await __test__.freshenRepo({
+      repoName,
+      repoPath: repo,
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+
+    expect(await headSha(repo)).toBe(beforeSha);
+    expect(events.length).toBe(0);
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+    expect(rec.readyAt).toBeUndefined();
+  });
+
+  test("freshen: a failed stash pop is a hard failure that emits worktree:stash-conflict", async () => {
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "ephemeral", state: "on-deck", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    writeFileSync(join(repo, "current.txt"), "dirty\n");
+
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+
+    const originalRunGit = gitAsync.runGit;
+    const runGitSpy = spyOn(gitAsync, "runGit").mockImplementation(async (cwd, args, opts) => {
+      if (args[0] === "stash" && args[1] === "pop") {
+        return { exitCode: 1, stdout: "", stderr: "conflict" };
+      }
+      return originalRunGit(cwd, args, opts);
+    });
+
+    const events: Array<{ type: string; data: any }> = [];
+
+    try {
+      const result = await __test__.freshenOne(
+        { repoName, repoPath: repo, emit: (type: string, data: unknown) => events.push({ type, data }), log: fakeLog() },
+        rec,
+      );
+
+      expect(result).toBe(false);
+      const conflictEvent = events.find((e) => e.type === "worktree:stash-conflict");
+      expect(conflictEvent).toBeDefined();
+      expect(conflictEvent!.data.repo).toBe(repoName);
+      expect(conflictEvent!.data.path).toBe(repo);
+      expect(typeof conflictEvent!.data.stashName).toBe("string");
+
+      const after = loadRegistry(repoName).find((t) => t.path === repo)!;
+      expect(after.retryFailures).toBe(1);
+      expect(after.nextRetryAt).toBeDefined();
+    } finally {
+      runGitSpy.mockRestore();
     }
   });
 });

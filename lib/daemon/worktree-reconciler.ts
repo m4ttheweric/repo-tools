@@ -694,6 +694,9 @@ export interface FreshenDeps {
 async function freshenCandidate(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> {
   if (rec.kind === "ephemeral") return rec.state === "on-deck";
   if (rec.kind !== "main") return false;
+  // Idle-main freshen touches the user's own checkout, so it stays opt-in
+  // even when ephemeral on-deck freshen is running.
+  if (!loadWorktreeAppConfig().enabled) return false;
 
   const defaultRef = await remoteDefaultRef(rec.path);
   const defaultBranchName = defaultRef.replace(/^origin\//, "");
@@ -744,16 +747,30 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     await runGit(rec.path, ["checkout", "--", ...classify.discard], { timeoutMs: MUTATING_TIMEOUT_MS });
   }
 
+  // Main can gain real edits any time during the fetch's (up to 5 minute)
+  // window; a blocker here means the user is mid-edit, not a broken step, so
+  // this leaves the tree untouched rather than stashing it out from under them.
+  if (rec.kind === "main") {
+    const recheck = await classifyDirtyAsync(rec.path);
+    if (recheck.blockers.length > 0) {
+      log.info({ ...fields }, "freshen: main gained uncommitted work during the fetch window; leaving it untouched");
+      return false;
+    }
+  }
+
   let stashName: string | null = null;
-  const popStash = async (): Promise<void> => {
-    if (!stashName) return;
+  const popStash = async (): Promise<boolean> => {
+    if (!stashName) return true;
     const pop = await runGit(rec.path, ["stash", "pop", stashName], { timeoutMs: MUTATING_TIMEOUT_MS });
     if (pop.exitCode !== 0) {
       log.warn(
         { ...fields, stashName },
         `freshen: stash ${stashName} did not reapply cleanly in ${rec.path}... it is preserved, restore it with: git stash pop ${stashName}`,
       );
+      emit("worktree:stash-conflict", { repo: repoName, tree: rec.name, path: rec.path, stashName });
+      return false;
     }
+    return true;
   };
 
   // Blockers stashed under the tree's own branch name (Desktop-compatible
@@ -803,7 +820,10 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     fail();
     return false;
   }
-  await popStash();
+  if (!(await popStash())) {
+    fail();
+    return false;
+  }
 
   const cfg = await loadWorktreeRepoConfig(repoName, deps.repoPath);
   const readySteps = resolveReadySteps(cfg, deps.repoPath);
