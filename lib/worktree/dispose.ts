@@ -124,6 +124,8 @@ export interface DisposeDeps {
     debug?: (...args: unknown[]) => void;
   };
   killProcesses: boolean;
+  /** The calling CLI process (and its descendants) to spare from the kill. */
+  callerPids?: number[];
 }
 
 export type DisposeOutcome =
@@ -235,7 +237,7 @@ export async function disposeTree(
   }
 
   if (deps.killProcesses) {
-    const { terminated } = await killWorktreeProcesses(rec.path);
+    const { terminated } = await killWorktreeProcesses(rec.path, { callerPids: deps.callerPids });
     if (terminated.length > 0) {
       log.info(
         { repo: repoName, tree: rec.name, count: terminated.length },

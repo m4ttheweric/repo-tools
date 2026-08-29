@@ -445,7 +445,12 @@ async function autoReturnMain(
   if (appConfig.killProcesses) {
     // A failure here never blocks the return.
     try {
-      const { terminated } = await killWorktreeProcesses(rec.path);
+      // Sibling trees' paths never belong to this kill, even a nested checkout
+      // whose cwd sits underneath rec.path.
+      const siblings = loadRegistry(repoName)
+        .filter((t) => t.path !== rec.path)
+        .map((t) => t.path);
+      const { terminated } = await killWorktreeProcesses(rec.path, { excludePaths: siblings });
       if (terminated.length > 0) log.info({ ...fields, count: terminated.length }, "worktree processes terminated");
     } catch (err) {
       log.warn({ err, ...fields }, "auto-return: process kill failed; returning anyway");

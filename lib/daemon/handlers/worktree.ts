@@ -173,6 +173,7 @@ function disposeDeps(
   opts: WorktreeHandlerOpts,
   repoName: string,
   repoPath: string,
+  callerPids?: number[],
 ): DisposeDeps {
   // disposeTree's joinedMr looks up by the BARE branch: hand it a
   // bare-keyed, this-repo-only view of the (now composite-keyed) cache map
@@ -189,6 +190,7 @@ function disposeDeps(
     emit: opts.emit,
     log: ctx.log,
     killProcesses: loadWorktreeAppConfig().killProcesses,
+    callerPids,
   };
 }
 
@@ -515,6 +517,8 @@ export function createWorktreeHandlers(
       const owner: string | undefined = typeof payload?.owner === "string" ? payload.owner : undefined;
       const treeName: string | undefined = typeof payload?.tree === "string" ? payload.tree : undefined;
       const force = payload?.force === true;
+      const callerPids: number[] | undefined =
+        typeof payload?.callerPid === "number" ? [payload.callerPid] : undefined;
 
       // `--owner` sweeps globally by default (a run may span repos); `--repo`
       // narrows it. A named tree always needs its repo.
@@ -538,7 +542,7 @@ export function createWorktreeHandlers(
       const recoverable: Array<{ tree: string; path: string; until: string }> = [];
 
       for (const { repoName, repoPath, rec } of targets) {
-        const deps = disposeDeps(ctx, opts, repoName, repoPath);
+        const deps = disposeDeps(ctx, opts, repoName, repoPath, callerPids);
         const outcome = await withTreeLock(rec.path, () =>
           disposeTree(deps, rec, { force, auto: false }),
         );

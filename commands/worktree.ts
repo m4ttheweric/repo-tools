@@ -386,7 +386,7 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
     repoName = picked.repoName;
   }
 
-  const payload: Record<string, unknown> = { force: parsed.force };
+  const payload: Record<string, unknown> = { force: parsed.force, callerPid: process.pid };
   if (repoName) payload.repoName = repoName;
   if (parsed.owner) payload.owner = parsed.owner;
   if (treeName) payload.tree = treeName;
