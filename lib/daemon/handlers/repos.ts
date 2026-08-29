@@ -7,7 +7,7 @@
  * then mints replacement trees for a pool that never lost anything.
  */
 
-import { parseIdentity } from "../../settings/identity.ts";
+import { decodeRepo } from "../identity-decoder.ts";
 import { applyLocate, isRefusal, planLocate } from "../../repo-locate.ts";
 import type { HandlerMap } from "./types.ts";
 
@@ -32,9 +32,11 @@ export function createReposHandlers(
       if (typeof newPath !== "string" || newPath.length === 0) return { ok: false, error: "newPath-required" };
       // A supplied-but-unusable `repo` must not degrade to "unscoped": planLocate
       // would then relocate whichever lost row matches newPath.
-      const repo = payload?.repo;
-      if (repo !== undefined && (typeof repo !== "string" || parseIdentity(repo) === null)) {
-        return { ok: false, error: "repo-unknown" };
+      let repo: string | undefined;
+      if (payload?.repo !== undefined) {
+        const decoded = decodeRepo(payload);
+        if (!decoded.ok) return decoded;
+        repo = decoded.repo;
       }
 
       return opts.withReconcilerHeld(async () => {
