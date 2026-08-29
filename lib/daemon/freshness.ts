@@ -477,7 +477,7 @@ function createFreshnessCore() {
     // Provider not yet built — construct from git remote.
     if (!provider) {
       if (!repoPath) {
-        throw new Error(`repo "${repoName}" not in ~/.mattstack/rt/repos.json (run rt repo add)`);
+        throw new Error(`repo "${repoName}" not in the repo index (run rt repos register)`);
       }
       const secrets = await loadSecrets();
       if (!secrets.gitlabToken) {

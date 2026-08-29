@@ -51,8 +51,9 @@ export interface KnownRepo {
 
 // ─── Index CRUD ──────────────────────────────────────────────────────────────
 
-interface RepoIndex {
-  [repoName: string]: string; // repoName → primary repo root path
+/** Repo index: repoName -> primary repo root path, sourced from state.db's kv store (ns='repo-index'). */
+export interface RepoIndex {
+  [repoName: string]: string;
 }
 
 export const REPO_INDEX_NS = "repo-index";

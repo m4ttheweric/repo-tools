@@ -11,6 +11,7 @@ import type { Logger } from "pino";
 import type { PortEntry } from "../../port-scanner.ts";
 import type { BranchCacheStore } from "../../state/index.ts";
 import type { HealthSnapshot } from "../health.ts";
+import type { RepoIndex } from "../../repo-index.ts";
 
 /**
  * RT-48: `CacheEntry` used to be DECLARED here — a third copy of the same
@@ -20,10 +21,8 @@ import type { HealthSnapshot } from "../health.ts";
  */
 export type { CacheEntry } from "../../state/index.ts";
 
-/** Repo index (name → absolute path) as loaded from ~/.mattstack/rt/repos.json. */
-export interface RepoIndex {
-  [repoName: string]: string;
-}
+/** Re-export so modules importing `RepoIndex` from this path keep compiling unchanged; `lib/repo-index.ts` is the single owner. */
+export type { RepoIndex };
 
 /**
  * Live ref to the daemon's port-scan cache. Mutated in-place by refreshPortCache
