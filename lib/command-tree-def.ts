@@ -575,7 +575,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "worktreeRestore",
         omitBehavior: "picker",
         args: [
-          { name: "Tree", type: "text", placeholder: "my-tree", hint: "Disposed tree name to restore; omit to pick interactively" },
+          { name: "Tree", type: "text", optional: true, placeholder: "my-tree", hint: "Disposed tree name to restore; omit to pick interactively" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
           { name: "List", flag: "--list", type: "boolean", default: false, hint: "List restorable entries instead of restoring one" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
