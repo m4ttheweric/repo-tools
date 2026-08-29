@@ -332,7 +332,7 @@ Expected: FAIL, `setKvValueCritical` not exported.
 - [ ] **Step 3: Add `setKvValueCritical`**
 
 ```ts
-// kv-blob.ts
+// kv-blob.ts — the file already imports persistOrWarn; add runCriticalWrite to that existing import line:
 import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 
 /** Critical write: retries, and reports whether the row actually landed so a
@@ -445,7 +445,7 @@ test("caller pid and its descendants are spared", () => {
 - [ ] **Step 2: Run to verify failure** (`tmux`/`ssh`/`nvim` currently killed)
 
 Run: `bun test lib/daemon/__tests__/worktree-process-kill.test.ts -t "spared"`
-Expected: FAIL.
+Expected: only the "spared" test goes RED. The caller-pid test already passes today (`agentSessionPids`' BFS spares a `protectedPids` root and its descendants), so it is a confirmation, not a RED-then-GREEN.
 
 - [ ] **Step 3: Add the spared set to `selectKillTargets`**
 
@@ -472,7 +472,10 @@ export async function killWorktreeProcesses(
   const target = safeRealpath(worktreePath);
   const excludes = (opts.excludePaths ?? []).map(safeRealpath)
     .filter((e) => e === target || e.startsWith(target + "/")); // only nested trees matter
-  // ... lsof unchanged, then when filtering cwdMap:
+  // Pass the realpath'd target to parseLsofCwdMap too, so its own prefix match
+  // agrees with the attribution below on a symlinked home:
+  const cwdMap = parseLsofCwdMap(lsof.stdout, [target]);
+  // ... then when filtering cwdMap:
   for (const [pid, raw] of cwdMap) {
     const cwd = safeRealpath(raw);
     const insideTarget = cwd === target || cwd.startsWith(target + "/");
@@ -511,6 +514,9 @@ Add `callerPids?: number[]` to `DisposeDeps`, set it in `disposeDeps(...)` from 
 // worktree-process-kill.test.ts — since killWorktreeProcesses spawns lsof/ps,
 // extract the cwd-attribution filter into a pure helper attributeCwds(target, excludes, cwdMap)
 // and unit-test it: a cwd under <target>/.worktrees/other is excluded when other is in excludes.
+// Include a symlinked-prefix fixture: target given via a symlink whose realpath
+// differs, and a cwd under the realpath'd nested tree, asserting attribution
+// still excludes it (this is what the realpath discipline buys).
 ```
 
 - [ ] **Step 7: Run and commit**
@@ -803,7 +809,7 @@ export function parseAdoptArgs(args: string[]): AdoptArgs {
 
 - [ ] **Step 4: Adopt handler leaves foreign trees unmanaged unless `claim`**
 
-Replace the final foreign-promotion `patchTree` block (worktree.ts:683-690) with:
+There are two promotion blocks in the adopt loop: the parking-lot branch (which stays, it is rt's own parked trees) and the foreign hand-made block (~handlers/worktree.ts:669-671, the final `patchTree` before `claimed.push`). Confirm which block the existing `worktree-handlers.test.ts` assertion pins BEFORE editing (grep the test for `kind: "ephemeral"` and match its fixture to the foreign, non-parking-lot path). Replace only the foreign-promotion `patchTree` block with:
 
 ```ts
 if (payload?.claim === true) {
@@ -957,6 +963,8 @@ export function isLiveClaim(c: EndpointClaim, probes: Probes, now: number = Date
 ```
 
 `defaultProbes` scrapes all process start times once (`ps -axo pid=,lstart=`) into a `Map<number,string>`; `pidStartTime(pid) = map.get(pid)`. `resolveClaim` captures `startTime: pid !== undefined ? probes.pidStartTime(pid) : undefined` alongside `ts` (allocator.ts:117-120).
+
+Because `pidStartTime` becomes a REQUIRED member of `Probes`, update every `Probes` object literal in `lib/endpoint/__tests__/allocator.test.ts` in this same task (add a `pidStartTime: () => undefined` or a fixture value) or the suite will not type-check.
 
 - [ ] **Step 7: Add `endpoint release`**
 
