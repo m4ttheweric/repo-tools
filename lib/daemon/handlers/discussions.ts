@@ -25,7 +25,7 @@ import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
 import { getDiscussionsFileStore } from "../discussions-file-store.ts";
 import { grants, loadRepoTracking } from "../../repo-tracking.ts";
-import type { HandlerContext, HandlerMap } from "./types.ts";
+import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
 /** Discussions are stable per push; 2min TTL keeps reads fast without going stale. */
@@ -69,6 +69,10 @@ export function createDiscussionHandlers(
   ctx: HandlerContext,
   broadcast: BroadcastFn,
 ): { "discussions:read": (payload: unknown) => Promise<{ ok: true; data: Commands["discussions:read"]["data"] } | { ok: false; error: string }> }
+  & { "discussions:refresh": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:refresh">> }
+  & { "discussions:resolve": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:resolve">> }
+  & { "discussions:diffs": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:diffs">> }
+  & { "discussions:reply": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:reply">> }
   & HandlerMap {
   const deps = { ctx, broadcast };
 

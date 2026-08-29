@@ -12,7 +12,14 @@ import { readJson } from "../../json-store.ts";
 import { parseIdentity } from "../../settings/identity.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
-export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
+// "hooks:repair"/"hooks:watch" are shipped rt-client commands (RT-28's CLI +
+// the REST hooks-repair route); "hooks:status" has no known out-of-process
+// caller and stays off the catalog (see types.ts's InternalCommands). The
+// two shipped ones keep their existing flat wire replies (no `data` field)
+// verbatim via the loose `Promise<any>` escape hatch, same as endpoint.ts.
+export function createHooksHandlers(
+  ctx: HandlerContext,
+): Record<"hooks:repair" | "hooks:watch", (payload: any, signal?: AbortSignal) => Promise<any>> & HandlerMap {
   return {
     "hooks:status": async (payload) => {
       const repoName = (payload as { repo?: string } | undefined)?.repo;

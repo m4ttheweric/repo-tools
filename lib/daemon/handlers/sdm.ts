@@ -51,7 +51,14 @@ function serializeSnapshot(snapshot: SdmSnapshot) {
   return { health: snapshot.health, resources: Object.fromEntries(snapshot.resources) };
 }
 
-export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = realDeps): HandlerMap {
+// All four keep their pre-existing flat, ad-hoc wire replies (no `data`
+// envelope, `sdm:reconnect`'s failure branches even carry extra fields
+// alongside `error`) verbatim, so they stay on the loose `Promise<any>`
+// escape hatch (same trick as endpoint.ts/repos.ts).
+export function createSdmHandlers(
+  ctx: HandlerContext,
+  deps: SdmHandlerDeps = realDeps,
+): Record<"sdm:catalog" | "sdm:snapshot" | "sdm:recents" | "sdm:reconnect", (payload: any, signal?: AbortSignal) => Promise<any>> & HandlerMap {
   return {
     "sdm:catalog": async (payload) => {
       const p = (payload as { refresh?: boolean } | undefined) ?? {};

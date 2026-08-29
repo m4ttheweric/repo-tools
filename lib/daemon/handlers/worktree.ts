@@ -246,10 +246,19 @@ export function isClaimable(rec: TreeRecord | undefined): boolean {
   return rec !== undefined && rec.kind === "ephemeral" && rec.state === "on-deck";
 }
 
+// Named-key return type (not a bare HandlerMap), same trick as
+// endpoint.ts/repos.ts: keeps every command's compile-time proof (it exists,
+// for TypedHandlers) without narrowing this factory's `payload: any` reads,
+// which stays out of scope per the B2 ruling (worktree.ts, repos.ts,
+// endpoint.ts, home.ts, settings.ts all keep loose payload handling).
 export function createWorktreeHandlers(
   ctx: HandlerContext,
   opts: WorktreeHandlerOpts,
-): HandlerMap {
+): Record<
+    "worktree:provision" | "worktree:create" | "worktree:dispose" | "worktree:list"
+    | "worktree:restore" | "worktree:freshen" | "worktree:adopt",
+    (payload: any, signal?: AbortSignal) => Promise<any>
+  > & HandlerMap {
   /**
    * Undo a claim that could not be completed. Still on its `on-deck/<name>`
    * branch → the tree is untouched and goes back in the pool; already moved

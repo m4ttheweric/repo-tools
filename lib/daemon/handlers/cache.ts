@@ -9,7 +9,7 @@
  * captured variable, so disk reloads performed elsewhere remain visible.
  */
 
-import type { HandlerContext, HandlerMap, CacheEntry } from "./types.ts";
+import type { HandlerContext, HandlerMap, CacheEntry, CommandResult } from "./types.ts";
 import { branchOf, composeKey, getByBranch } from "../../state/branch-cache.ts";
 
 /** How long an entry that resolved a ticket id but never got the ticket is
@@ -32,7 +32,16 @@ function isIncomplete(entry: CacheEntry, now: number = Date.now()): boolean {
   return now - (entry.fetchedAt ?? 0) >= INCOMPLETE_RETRY_MS;
 }
 
-export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
+// "cache:read" gets the standard {ok,data} carve-out; "cache:refresh" and
+// "branch:enrich" keep their pre-existing flat/extra-field wire shapes
+// (fire-and-forget message, a `source` field beside `data`) verbatim, so
+// they stay on the loose `Promise<any>` escape hatch instead (same trick as
+// endpoint.ts/repos.ts) rather than reshaping a real consumer's response.
+export function createCacheHandlers(
+  ctx: HandlerContext,
+): { "cache:read": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"cache:read">> }
+  & Record<"cache:refresh" | "branch:enrich", (payload: any, signal?: AbortSignal) => Promise<any>>
+  & HandlerMap {
   return {
     "cache:read": async (payload) => {
       const p = payload as { branches?: string[]; maxAgeMs?: number; repoIdentity?: string } | undefined;

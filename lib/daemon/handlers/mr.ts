@@ -29,7 +29,7 @@ import { applyMRWriteback, getCurrentUserId, getRepoContext } from "../freshness
 import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { PullRequest } from "@mattstack/glance";
 import { ReadBackFailedError } from "@mattstack/glance";
-import type { HandlerContext, HandlerMap } from "./types.ts";
+import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
 
 const log = lazyChildLogger("mr");
 
@@ -51,11 +51,18 @@ export interface MRHandlerOverrides {
   retryDelayMs?: number;
 }
 
+// "mr:action" keeps its pre-existing flat `{ok:true}` wire reply (no `data`)
+// verbatim, so it stays on the loose `Promise<any>` escape hatch (same trick
+// as endpoint.ts/repos.ts); the two job-detail verbs already envelope as
+// {ok,data} and get the standard CommandResult carve-out.
 export function createMRHandlers(
   ctx: HandlerContext,
   broadcast: (type: string, data: any) => void,
   overrides: MRHandlerOverrides = {},
-): HandlerMap {
+): { "mr:action": (payload: any, signal?: AbortSignal) => Promise<any> }
+  & { "mr:fetch-job-detail": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"mr:fetch-job-detail">> }
+  & { "mr:fetch-job-trace": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"mr:fetch-job-trace">> }
+  & HandlerMap {
   const getContext = overrides.getContext
     ?? ((repoName: string) => getRepoContext(repoName, ctx.repoIndex()[repoName]));
   const writeback = overrides.writeback

@@ -13,7 +13,7 @@
  */
 
 import { existsSync, readdirSync } from "fs";
-import type { HandlerContext, HandlerMap } from "./types.ts";
+import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
 import type { PortEntry } from "../../port-scanner.ts";
 import { listWorktreesAsync } from "../../worktree/git-async.ts";
 import { worktreePoolDormant, WORKTREE_APP_ENABLE_COMMAND } from "../../worktree/config.ts";
@@ -30,7 +30,20 @@ async function dormantWorktreeRepos(ctx: HandlerContext): Promise<string[]> {
   return dormant;
 }
 
-export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
+// "ping" and "daemon:log-level" keep their pre-existing flat wire replies
+// (no `data` field) verbatim, so they stay on the loose `Promise<any>`
+// escape hatch (same trick as endpoint.ts/repos.ts); the other six already
+// envelope as {ok,data} and get the standard CommandResult carve-out.
+export function createStatusHandlers(
+  ctx: HandlerContext,
+): { "status": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"status">> }
+  & { "tray:status": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"tray:status">> }
+  & { "tcc:check": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"tcc:check">> }
+  & { "repos": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"repos">> }
+  & { "ports": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"ports">> }
+  & { "notifications": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"notifications">> }
+  & Record<"ping" | "daemon:log-level", (payload: any, signal?: AbortSignal) => Promise<any>>
+  & HandlerMap {
   return {
     "ping": async () => {
       // Read here (not once at ctx build time): a status/status.ts request
