@@ -38,6 +38,7 @@ export {
   paneDirectories,
   chatInvite,
   paneSend,
+  paneFocus,
 } from "./client.ts";
 
 export { COMMAND_NAMES } from "./commands.ts";
@@ -75,6 +76,7 @@ export type {
   InviteResult,
   PaneDelivery,
   PaneSendResult,
+  PaneFocusResult,
 } from "./commands.ts";
 
 export { subscribe, createRelay, DEFAULT_WS_URL } from "./relay.ts";
