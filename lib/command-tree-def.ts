@@ -844,12 +844,13 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
       restore: {
-        description: "Restore state.db from a stamped backup copy (stop the daemon first)",
+        description: "Restore state.db from a stamped backup copy (refuses while the daemon is running unless --force)",
         module: "./commands/state.ts",
         fn: "stateRestore",
         omitBehavior: "picker",
         args: [
           { name: "Copy", type: "text", placeholder: "state-2026-08-29T12-00-00-000Z.db", hint: "Backup filename (under rt state's backups dir) or an absolute path" },
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Override the running-daemon refusal (state.db is shared and WAL-mode; stop the daemon instead when possible)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
         ],
       },

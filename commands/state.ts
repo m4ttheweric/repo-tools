@@ -14,6 +14,7 @@ import { Database } from "bun:sqlite";
 import { copyFileSync, existsSync, mkdirSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
+import { isDaemonRunning } from "../lib/daemon-client.ts";
 import {
   backupTo,
   closeStateDb,
@@ -73,6 +74,17 @@ export async function stateBackup(args: string[], _ctx: CommandContext = {}): Pr
 
 export async function stateRestore(args: string[], _ctx: CommandContext = {}): Promise<void> {
   const json = args.includes("--json");
+  const force = args.includes("--force");
+
+  // state.db is WAL-mode and shared live with the daemon: copyFileSync over
+  // it plus deleting its -wal/-shm sidecars while the daemon holds it open
+  // can corrupt the live db, not just this CLI's view of it. A deterministic
+  // refusal, never an interactive prompt, so non-TTY/agent callers get a
+  // clean nonzero exit instead of a hang.
+  if (!force && (await isDaemonRunning())) {
+    fail("the daemon is running; state.db is shared with it. Stop it first (rt daemon stop) or pass --force to override");
+  }
+
   const copy = await requireCopy(args, "usage: rt state restore <copy> [--json]");
 
   const source = existsSync(copy) ? copy : join(stateBackupsDir(), copy);

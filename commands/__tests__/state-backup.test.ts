@@ -2,9 +2,10 @@
  * commands/state.ts -- rt state backup/restore CLI coverage (R055).
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
+import { DAEMON_SOCK_PATH } from "../../lib/daemon-config.ts";
 import { closeStateDb, getStateDb, listStateBackups, stateDbPath } from "../../lib/state/index.ts";
 import { stateBackup, stateRestore } from "../state.ts";
 
@@ -100,5 +101,49 @@ describe("rt state backup/restore", () => {
     const row = restored.query("SELECT v FROM kv WHERE ns = ? AND k = ?").get("marker", "value") as { v: string } | null;
     expect(row?.v).toBe("\"before\"");
     expect(stateDbPath()).toContain(home);
+  });
+});
+
+// DAEMON_SOCK_PATH is baked at module load from the bunfig-preload test HOME
+// (see lib/daemon-config.ts), not from this file's per-test HOME swap, so a
+// real listening socket there is what isDaemonRunning() actually sees --
+// matching the seam lib/__tests__/daemon-client-attribution.test.ts already
+// uses to simulate a live daemon.
+describe("rt state restore -- live daemon guard", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-state-guard-home-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+    closeStateDb();
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("refuses to restore while the daemon is running, and --force overrides it", async () => {
+    getStateDb();
+    await runCapturingExit(() => stateBackup([]));
+    const [name] = listStateBackups();
+    expect(name).toBeDefined();
+
+    mkdirSync(dirname(DAEMON_SOCK_PATH), { recursive: true });
+    server = Bun.serve({
+      unix: DAEMON_SOCK_PATH,
+      fetch: () => Response.json({ ok: true }),
+    });
+
+    const refused = await runCapturingExit(() => stateRestore([name!]));
+    expect(refused.exitCode).toBe(1);
+    expect(refused.errors.join("\n")).toContain("daemon is running");
+
+    const forced = await runCapturingExit(() => stateRestore([name!, "--force"]));
+    expect(forced.exitCode).toBeUndefined();
   });
 });
