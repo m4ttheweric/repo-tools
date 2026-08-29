@@ -258,6 +258,11 @@ function persistPushRecord(db: Database, record: HomePushRecord, log: Logger): v
 export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle {
   const repoDir = rawDeps.repoDir ?? join(mattstackHome(), "user");
   const rawReadSettings = rawDeps.readSettings ?? (() => getSetting<HomeSnapshotSettings>("rt.homeSnapshot").value);
+  // Thunk, not a resolved value: module-scope construction (lib/daemon.ts)
+  // must not open state.db before startDaemon() has opened it daemon-flavored
+  // via openBranchCacheStore; see loadState's call site inside init() below,
+  // which is the first place this ever actually gets invoked.
+  const resolveDb = rawDeps.db ? (() => rawDeps.db!) : (() => getStateDb("daemon"));
   const deps = {
     log: rawDeps.log,
     broadcast: rawDeps.broadcast,
@@ -269,7 +274,6 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     now: rawDeps.now ?? (() => Date.now()),
     readSettings: () => clampSettings(rawReadSettings()),
     readOwners: rawDeps.readOwners ?? readOwnersReal,
-    db: rawDeps.db ?? getStateDb(),
   };
 
   const ownersPath = ownersPathFor(deps.repoDir);
@@ -296,7 +300,8 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let lastPushError: string | null = null;
   /** True once `home:push-failed` has been broadcast for the CURRENT unbroken run of push failures — reset to false the moment a push succeeds, so a retry storm broadcasts once, not on every attempt. */
   let pushFailureBroadcast = false;
-  let firstSeenDirty: Record<string, number> = loadState(deps.db, deps.log);
+  /** Populated in init(), after the is-inside-work-tree check; see resolveDb's comment for why this can't happen at construction time. */
+  let firstSeenDirty: Record<string, number> = {};
   let lastLoggedOwnersError: string | null = null;
   /** Shared dedup key for every "deps.readSettings() itself threw" warn (armWatcher's debounce read, status()) — a settings store that broke after boot and stays broken must warn once, not on every fs event or every `rt home snapshot --status` poll. */
   let lastLoggedSettingsError: string | null = null;
@@ -370,6 +375,10 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: repoDir is not a git repository; inert");
         return;
       }
+      // First real db touch: this await already put us past the daemon's
+      // synchronous boot pass, so by now startDaemon() has opened state.db
+      // daemon-flavored via openBranchCacheStore (see resolveDb above).
+      firstSeenDirty = loadState(resolveDb(), deps.log);
       if (deps.readSettings().enabled !== false) {
         tryArm();
       }
@@ -525,7 +534,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       pushFailureBroadcast = false;
       lastPushAt = deps.now();
       lastPushError = null;
-      persistPushRecord(deps.db, { at: lastPushAt, ok: true }, deps.log);
+      persistPushRecord(resolveDb(), { at: lastPushAt, ok: true }, deps.log);
       if (pushRetryTimer) {
         deps.clearTimeout(pushRetryTimer);
         pushRetryTimer = null;
@@ -538,7 +547,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       const redactedStderr = redactCredentials(result.stderr);
       pushPending = true;
       lastPushError = redactedStderr;
-      persistPushRecord(deps.db, { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
+      persistPushRecord(resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
       deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
       // Only the FIRST failure of an unbroken streak broadcasts — a retry
       // storm (schedulePushRetry firing every pushDelaySec*5) would
@@ -642,7 +651,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     });
 
     firstSeenDirty = plan.nextFirstSeenDirty;
-    persistState(deps.db, firstSeenDirty, deps.log);
+    persistState(resolveDb(), firstSeenDirty, deps.log);
 
     let committed = false;
     let sha: string | null = null;

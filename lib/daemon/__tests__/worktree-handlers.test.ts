@@ -235,6 +235,17 @@ describe("worktree:provision", () => {
     expect(res.error).toBe("repo-unknown");
   });
 
+  test("S010: refuses a branch that git would parse as an option, before any git call", async () => {
+    const repo = makeRepo();
+    const { h, events } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:provision"]!({ repoName, branch: "--upload-pack=touch /tmp/x" });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("unsafe git ref");
+    expect(events.length).toBe(0);
+  });
+
   test("Hard cutover: a bare legacy name refuses even when it IS a registered repoIndex key", async () => {
     const repo = makeRepo();
     // Registered under a non-identity key on purpose — proves the rejection

@@ -16,6 +16,8 @@ import type { RunLiveness } from "../runs/attention.ts";
 import { listRuns } from "../runs/store.ts";
 
 const POLL_MS = 10_000;
+const FAILURE_THRESHOLD = 3;   // consecutive null probes before backing off
+const BACKOFF_TICKS = 6;       // then probe once every 6 ticks (~60s at 10s cadence)
 
 interface Log {
   info(obj: unknown, msg?: string): void;
@@ -39,10 +41,17 @@ export function startAgentStatusPoller(opts: {
   const list = opts.list ?? ((liveness: RunLiveness) => listRuns(undefined, liveness));
   const last = new Map<string, string | null>();
   let seeded = false;
+  let consecutiveFailures = 0;
+  let ticksSkipped = 0;
 
   const tick = async (): Promise<void> => {
+    if (consecutiveFailures >= FAILURE_THRESHOLD) {
+      if (++ticksSkipped < BACKOFF_TICKS) return;
+      ticksSkipped = 0;
+    }
     const entries = await probe();
-    if (entries === null) return;
+    if (entries === null) { consecutiveFailures++; return; }
+    consecutiveFailures = 0;
     primeLivenessCache(entries);
     let runs: RunSummary[];
     try {

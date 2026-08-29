@@ -494,6 +494,35 @@ describe("project-mrs:read handler", async () => {
     expect(forgeCalls).toBe(1);
   });
 
+  // S088: mr:by-branch's forge write-back upserted unconditionally, bypassing
+  // the same scope/tagged gate upsertProject (lib/daemon/freshness.ts)
+  // enforces for every other write path — a demand-scoped repo could pick up
+  // a stranger's MR that the next delta sync filters right back out, then
+  // reappears on the next by-branch call. The caller still gets the PR (it
+  // asked for this exact branch); it just must not land in the store.
+  test("by-branch: forge write-back respects the same demand scope the sync path enforces", async () => {
+    const store = tmpStore();
+    store.fullSync("remote:repo", "g/p", [], Date.now());
+    store.setScope("remote:repo", { authors: ["alice"], windowDays: 30 });
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
+      fetchByBranch: async (_r, branch) => ({ pr: pr(9, { sourceBranch: branch, author: { id: 2, username: "stranger" } as any }), projectPath: "g/p" }) });
+    const res = await h["mr:by-branch"]!({ repoName: "remote:repo", branches: ["feat-x"] });
+    expect(res.ok).toBe(true);
+    expect((dataOf(res) as any).byBranch["feat-x"]).toMatchObject({ source: "forge", pr: { iid: 9 } });
+    expect(store.read("remote:repo")!.mrs[9]).toBeUndefined();
+  });
+
+  test("by-branch: forge write-back still stores an in-scope author's MR", async () => {
+    const store = tmpStore();
+    store.fullSync("remote:repo", "g/p", [], Date.now());
+    store.setScope("remote:repo", { authors: ["alice"], windowDays: 30 });
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
+      fetchByBranch: async (_r, branch) => ({ pr: pr(10, { sourceBranch: branch, author: { id: 1, username: "alice" } as any }), projectPath: "g/p" }) });
+    const res = await h["mr:by-branch"]!({ repoName: "remote:repo", branches: ["feat-y"] });
+    expect(res.ok).toBe(true);
+    expect(store.read("remote:repo")!.mrs[10]).toBeDefined();
+  });
+
   test("by-branch: no MR anywhere is null; a per-branch forge failure is null with a warn, not a batch failure", async () => {
     const store = tmpStore();
     store.fullSync("remote:repo", "g/p", [pr(1, { sourceBranch: "ok" })], Date.now());

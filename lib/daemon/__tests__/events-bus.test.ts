@@ -1,11 +1,42 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import pino from "pino";
 import { createEventsBus, matchTopic, type EventsBus } from "../events-bus.ts";
 
 const log = pino({ level: "silent" });
+
+describe("events bus corruption + pragmas", () => {
+  test("createEventsBus quarantines and recreates a corrupt events.db instead of throwing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "events-corrupt-"));
+    try {
+      const dbPath = join(dir, "events.db");
+      writeFileSync(dbPath, "garbage not sqlite");
+      const bus = createEventsBus({ dbPath, log });
+      expect(readdirSync(dir).some((f) => f.startsWith("events.db.corrupt-"))).toBe(true);
+      // fresh db works:
+      bus.emit("test", { hi: 1 });
+      expect(bus.list({ pattern: "**" }).events.length).toBe(1);
+      bus.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("createEventsBus sets busy_timeout and synchronous=NORMAL", () => {
+    const dir = mkdtempSync(join(tmpdir(), "events-pragma-"));
+    try {
+      const bus = createEventsBus({ dbPath: join(dir, "events.db"), log });
+      const handle = bus.__db!;
+      expect(handle.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 250 });
+      expect(handle.query("PRAGMA synchronous").get()).toEqual({ synchronous: 1 }); // NORMAL
+      bus.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("matchTopic", () => {
   test("bare topic matches itself only", () => {

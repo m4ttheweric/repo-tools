@@ -108,7 +108,7 @@ export function drainNotificationQueue(db: Database = getStateDb()): Notificatio
     db.exec(`DELETE FROM notify_queue;`);
     return rows.map(rowToEvent);
   });
-  return runCriticalWrite("drain", () => run(), {}) ?? [];
+  return runCriticalWrite("drain", () => run.immediate(), {}) ?? [];
 }
 
 /** Peek reads without deleting — diagnostics, no mutation, no retry needed. */

@@ -31,7 +31,7 @@ import { join } from "path";
 import type { Logger } from "pino";
 
 import * as enrichModule from "../../enrich.ts";
-import * as gitWorktreesModule from "../../git-worktrees.ts";
+import * as gitAsync from "../../worktree/git-async.ts";
 import * as notifierModule from "../../notifier.ts";
 import * as repoTrackingModule from "../../repo-tracking.ts";
 import * as discussionsModule from "../discussions-file-store.ts";
@@ -101,11 +101,13 @@ function wireCycle(): Wiring {
   });
 
   // A real git tree is irrelevant to the GC claim; one branch per repo is
-  // enough to make the loop reach the enrichment call.
-  spyOn(gitWorktreesModule, "listWorktrees").mockImplementation((repoPath: string) => [
-    { path: repoPath, branch: `wt-${repoPath}` } as any,
+  // enough to make the loop reach the enrichment call and let FLAKY's onError
+  // fire (an empty branch list would short-circuit refreshAllMRs entirely and
+  // make FLAKY look clean, defeating the test).
+  spyOn(gitAsync, "listWorktreesAsync").mockImplementation(async (repoPath: string) => [
+    { path: repoPath, branch: `wt-${repoPath}` },
   ]);
-  spyOn(gitWorktreesModule, "listWorktreeRoots").mockReturnValue([]);
+  spyOn(gitAsync, "listWorktreeRootsAsync").mockResolvedValue([]);
 
   spyOn(enrichModule, "refreshAllMRs").mockImplementation(
     async (_branches, _remoteUrl, onError, repoName) => {

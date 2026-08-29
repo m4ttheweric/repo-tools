@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../../json-store.ts";
 import { closeStateDb, listKvValues, setKvValue } from "../../state/index.ts";
@@ -19,7 +19,7 @@ import {
 import { createTree } from "../../worktree/create.ts";
 import type { WorktreeAppConfig } from "../../worktree/config.ts";
 import { RETENTION_MS } from "../../worktree/trash.ts";
-import { reconcileRepoRegistry, createWorktreeReconciler, __test__ } from "../worktree-reconciler.ts";
+import { reconcileRepoRegistry, createWorktreeReconciler, withCreateLock, __test__ } from "../worktree-reconciler.ts";
 
 function makeRepo(): string {
   // realpathSync: git canonicalizes /var -> /private/var on macOS (Global Constraints)
@@ -1348,6 +1348,40 @@ describe("detached trigger / latency", () => {
 
     expect(events.filter((e) => e.type === "worktree:created").length).toBe(1);
   }, 10_000);
+
+  // S065: a kick() during an in-flight pass, once the pass has started
+  // working (its per-repo loop has begun — this repo's replenish may
+  // already have run), must not be silently dropped. Observed here via
+  // repoIndex() call count: it's read fresh once per runOnce() invocation,
+  // so a queued follow-up pass is externally visible as a second call.
+  test("a kick() arriving after the pass has started work triggers a follow-up pass, not a silent drop (S065)", async () => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick2-home-")));
+    closeStateDb();
+    __test__.createBackoff.clear();
+    const repoName = "acme-kick2";
+    const repo = makeRepo();
+    addBareOrigin(repo);
+    writeFileSync(join(repo, "wip.txt"), "not idle\n");
+    await declareWorktrees(repo, repoName, { onDeck: 1, root: join(repo, ".worktrees"), ready: [{ run: "sleep 2" }] });
+
+    let repoIndexCalls = 0;
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => { repoIndexCalls++; return { [repoName]: repo }; },
+      emit: () => {},
+      log: fakeLog(),
+    });
+
+    reconciler.kick();
+    await waitFor(() => reconciler.creationInFlight(repoName) !== null, 2000);
+    // Mid-pass: this repo's replenish step is already running, so this kick
+    // must queue a follow-up rather than being dropped.
+    reconciler.kick();
+
+    await waitFor(() => reconciler.creationInFlight(repoName) === null, 6000);
+    await waitFor(() => repoIndexCalls >= 2, 6000); // the queued follow-up pass actually ran
+    expect(repoIndexCalls).toBeGreaterThanOrEqual(2);
+  }, 15_000);
 });
 
 describe("reapRepoTrash", () => {
@@ -1380,4 +1414,75 @@ describe("reapRepoTrash", () => {
     await waitFor(() => !existsSync(leftover) && !existsSync(expired));
     expect(existsSync(fresh)).toBe(true);
   });
+
+  // S079: sanitizeRoot (lib/worktree/config.ts) has no ancestor check, so a
+  // repo configured with e.g. `root: "${repoRoot}/.."` makes the crash sweep
+  // walk the parent directory of every sibling repo for `.trash-*` names.
+  test("refuses a configured root outside the repo and warns instead of sweeping it", async () => {
+    const parent = dirname(repo);
+    const siblingLeftover = join(parent, ".trash-should-survive-123");
+    mkdirSync(siblingLeftover, { recursive: true });
+    await declareWorktrees(repo, "acme", { root: parent });
+
+    const warns: unknown[][] = [];
+    const log = { info: () => {}, warn: (...a: unknown[]) => warns.push(a), error: () => {}, debug: () => {} } as unknown as Logger;
+
+    await __test__.reapRepoTrash({ repoName: "acme", repoPath: repo, log });
+    await new Promise((r) => setTimeout(r, 300)); // give a wrongly-spawned detached rm time to run
+
+    expect(existsSync(siblingLeftover)).toBe(true);
+    expect(warns.some((w) => JSON.stringify(w).includes(parent))).toBe(true);
+  });
+});
+
+// S089: a provision's cold createTree and the reconciler's own replenish
+// createTree can run concurrently for the same repo, both `git fetch origin
+// <branch>` against the same repoPath — the loser fails to lock
+// refs/remotes/origin/<branch>, and that failure gets charged to
+// createBackoff (a 5-to-30-minute replenish hold) for what was really just
+// contention, not a genuine failure. Serializing createTree per repoPath
+// closes the race at its root.
+describe("withCreateLock", () => {
+  test("serializes concurrent calls for the same repoPath — never two holders at once", async () => {
+    const order: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const run = (id: string) => withCreateLock("/repo/a", async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      order.push(`start-${id}`);
+      await new Promise((r) => setTimeout(r, 10));
+      order.push(`end-${id}`);
+      active--;
+    });
+    await Promise.all([run("1"), run("2"), run("3")]);
+    expect(maxActive).toBe(1);
+    expect(order).toEqual(["start-1", "end-1", "start-2", "end-2", "start-3", "end-3"]);
+  });
+
+  test("different repoPaths are not serialized against each other", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const run = (path: string) => withCreateLock(path, async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 10));
+      active--;
+    });
+    await Promise.all([run("/repo/b"), run("/repo/c")]);
+    expect(maxActive).toBe(2);
+  });
+
+  test("a holder that throws still releases the lock for the next caller", async () => {
+    await expect(withCreateLock("/repo/d", async () => { throw new Error("boom"); })).rejects.toThrow("boom");
+    let ran = false;
+    await withCreateLock("/repo/d", async () => { ran = true; });
+    expect(ran).toBe(true);
+  });
+});
+
+test("both cold-create call sites in handlers/worktree.ts serialize createTree through the shared per-repo lock (S089)", () => {
+  const source = readFileSync(new URL("../handlers/worktree.ts", import.meta.url), "utf8");
+  const matches = source.match(/withCreateLock\(/g) ?? [];
+  expect(matches.length).toBeGreaterThanOrEqual(2);
 });

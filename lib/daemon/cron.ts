@@ -75,7 +75,13 @@ function defaultRunCommand(argv: string[], trigger: CronTrigger, log: CronLog): 
     // so a daemon restart kills an in-flight command. Accepted (spec section
     // 5): invoked programs must be idempotent one-shot passes, and the next
     // matching event simply re-runs them.
-    const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    // Bun.spawn ignores assignments made to process.env after startup unless
+    // `env` is passed explicitly (mirrors lib/subprocess.ts's runCapture and
+    // lib/daemon/handlers/agent.ts's defaultSpawnHeadless) — omitting it here
+    // strands the PATH the daemon overlays onto process.env at boot
+    // (lib/daemon.ts resolveUserPath) and leaves any non-absolute argv[0]
+    // (a "#!/usr/bin/env node" shebang, "pnpm", ...) unresolvable.
+    const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore", env: { ...process.env } });
     log.info(`cron ${trigger.name}: spawned "${argv.join(" ")}" (pid ${proc.pid})`);
     void proc.exited.then((code) => log.info(`cron ${trigger.name}: exited ${code}`));
   } catch (err) {

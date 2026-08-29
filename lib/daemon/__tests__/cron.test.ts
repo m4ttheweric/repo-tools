@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { setSetting } from "../../settings/write.ts";
@@ -120,5 +120,37 @@ describe("startCron", () => {
     cron.dispose();
     await sleep(40);
     expect(runs).toHaveLength(0);
+  });
+
+  // The real (non-overridden) spawn path: Bun.spawn without an explicit
+  // `env` key gives the child the env snapshot from when THIS bun process
+  // started, not process.env as mutated at runtime (verified directly:
+  // omitting `env` leaves a child reading a var reassigned post-startup at
+  // its ORIGINAL value; `env: { ...process.env }` gives it the live one).
+  // That is exactly what the daemon's boot-time PATH overlay does to
+  // process.env.PATH, so this exercises the same shape with a plain var —
+  // an absolute argv[0] sidesteps unrelated PATH-search mechanics.
+  test("cron spawns with the live process.env, not the frozen start snapshot", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-cron-env-")));
+    const marker = join(dir, "ran.txt");
+    const script = join(dir, "marker.sh");
+    writeFileSync(script, `#!/bin/sh\necho "$CRON_TEST_VALUE" > "${marker}"\n`, { mode: 0o755 });
+
+    const varName = "CRON_TEST_VALUE";
+    delete process.env[varName]; // absent at this bun process's own startup
+    process.env[varName] = "live-value"; // set only after startup, like resolveUserPath does to PATH
+    try {
+      const cron = startCron(
+        { triggers: [{ name: "t", event: "tick", run: [script], debounceMs: 5 }] },
+        { log },
+      );
+      cron.onBroadcast("tick", null);
+      await sleep(500); // real process spawn + exit, not a mocked runCommand
+      cron.dispose();
+      expect(readFileSync(marker, "utf8").trim()).toBe("live-value");
+    } finally {
+      delete process.env[varName];
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

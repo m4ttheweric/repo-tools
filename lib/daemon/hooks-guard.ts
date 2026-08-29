@@ -12,6 +12,7 @@ import type { Logger } from "pino";
 import { repoDataDir } from "../rt-paths.ts";
 import { runCapture } from "../subprocess.ts";
 import { loadRepoIndex, resolveGitConfigPath } from "./repo-index.ts";
+import type { RepoIndex } from "./handlers/types.ts";
 
 export interface HooksGuard {
   /** Live map of repo git-config watchers (configPath → FSWatcher). */
@@ -26,7 +27,11 @@ export interface HooksGuard {
   closeAll(): void;
 }
 
-export function createHooksGuard(log: Logger): HooksGuard {
+export function createHooksGuard(
+  log: Logger,
+  deps: { loadRepoIndexFn?: () => RepoIndex } = {},
+): HooksGuard {
+  const loadRepoIndexFn = deps.loadRepoIndexFn ?? loadRepoIndex;
   const watchedConfigs = new Map<string, FSWatcher>();
 
   async function checkAndRepairHooksPath(repoName: string, repoPath: string): Promise<boolean> {
@@ -90,6 +95,16 @@ export function createHooksGuard(log: Logger): HooksGuard {
       }, 100); // slightly longer debounce: rename events can cluster
     });
 
+    // FSWatcher is an EventEmitter: an 'error' with no listener is an
+    // uncaught exception, which installCrashHandlers turns into a daemon
+    // exit(1) and a launchd relaunch that re-arms the same watchers and
+    // hits the same limit (EMFILE, a watched dir unlinked, ...).
+    watcher.on("error", (err) => {
+      log.warn({ err, repo: repoName, configPath }, "hooks-guard watcher error; dropping this watch");
+      watchedConfigs.delete(configPath);
+      try { watcher.close(); } catch { /* already gone */ }
+    });
+
     watchedConfigs.set(configPath, watcher);
     log.debug({ repo: repoName, file: `${gitDir}/${configFile}` }, "watching repo");
 
@@ -98,10 +113,21 @@ export function createHooksGuard(log: Logger): HooksGuard {
   }
 
   function refreshWatchedRepos(): void {
-    const repos = loadRepoIndex();
+    const repos = loadRepoIndexFn();
+    const liveConfigPaths = new Set<string>();
     for (const [repoName, repoPath] of Object.entries(repos)) {
       if (!existsSync(repoPath)) continue;
+      const configPath = resolveGitConfigPath(repoPath);
+      if (configPath) liveConfigPaths.add(configPath);
       startWatchingRepo(repoName, repoPath);
+    }
+    // Reconcile, not just add: a repo relocated (rt repos locate) or removed
+    // from the index leaves its old watcher pointed at a dead .git dir, and
+    // status().watchedRepos over-reports forever without this.
+    for (const [configPath, watcher] of watchedConfigs) {
+      if (liveConfigPaths.has(configPath)) continue;
+      try { watcher.close(); } catch { /* already gone */ }
+      watchedConfigs.delete(configPath);
     }
   }
 

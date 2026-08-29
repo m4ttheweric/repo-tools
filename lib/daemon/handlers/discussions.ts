@@ -31,6 +31,40 @@ import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 /** Discussions are stable per push; 2min TTL keeps reads fast without going stale. */
 const DISCUSSIONS_TTL_MS = 2 * 60 * 1000;
 
+/** GitLab's page size for this endpoint; a full page means there may be more. */
+const DIFFS_PAGE_SIZE = 100;
+const DIFFS_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Every other outbound fetch in the daemon carries a bound (linear.ts,
+ * notifier.ts, park.ts); this one previously had none, so a stalled GitLab
+ * connection left the promise (and the sops-decrypted token in its closure)
+ * pending indefinitely. `reqSignal` is the client's own request signal
+ * (handlers/types.ts's Handler(payload, signal?)) so a client giving up
+ * actually cancels the in-flight GitLab request instead of orphaning it.
+ * `truncated` reports a full page rather than silently dropping files past it.
+ */
+export async function fetchMrDiffs(
+  baseURL: string,
+  projectPath: string,
+  iid: number,
+  token: string,
+  opts: { reqSignal?: AbortSignal; fetchFn?: typeof fetch } = {},
+): Promise<{ diffs: Array<{ newPath: string; diff: string }>; truncated: boolean }> {
+  const fetchFn = opts.fetchFn ?? fetch;
+  const encoded = encodeURIComponent(projectPath);
+  const url = `${baseURL}/api/v4/projects/${encoded}/merge_requests/${iid}/diffs?per_page=${DIFFS_PAGE_SIZE}`;
+  const timeout = AbortSignal.timeout(DIFFS_FETCH_TIMEOUT_MS);
+  const signal = opts.reqSignal ? AbortSignal.any([timeout, opts.reqSignal]) : timeout;
+  const res = await fetchFn(url, { headers: { "PRIVATE-TOKEN": token }, signal });
+  if (!res.ok) throw new Error(`GitLab diffs API: ${res.status}`);
+  const raw = (await res.json()) as Array<{ new_path: string; diff: string }>;
+  return {
+    diffs: raw.map((d) => ({ newPath: d.new_path, diff: d.diff })),
+    truncated: raw.length >= DIFFS_PAGE_SIZE,
+  };
+}
+
 export function createDiscussionHandlers(
   ctx: HandlerContext,
   broadcast: BroadcastFn,
@@ -122,7 +156,7 @@ export function createDiscussionHandlers(
       }
     },
 
-    "discussions:diffs": async (payload) => {
+    "discussions:diffs": async (payload, signal) => {
       const repoName = payload?.repoName as string | undefined;
       const iid      = payload?.iid      as number | undefined;
       if (!repoName || typeof iid !== "number") {
@@ -138,14 +172,14 @@ export function createDiscussionHandlers(
         const secrets = await loadSecrets();
         if (!secrets.gitlabToken) return { ok: false, error: "no gitlabToken in secrets" };
 
-        const encoded = encodeURIComponent(repoCtx.projectPath);
-        const url = `${repoCtx.provider.baseURL}/api/v4/projects/${encoded}/merge_requests/${iid}/diffs?per_page=100`;
-        const res = await fetch(url, { headers: { "PRIVATE-TOKEN": secrets.gitlabToken } });
-        if (!res.ok) return { ok: false, error: `GitLab diffs API: ${res.status}` };
-
-        const raw = await res.json() as Array<{ new_path: string; diff: string }>;
-        const diffs = raw.map((d) => ({ newPath: d.new_path, diff: d.diff }));
-        return { ok: true, data: { diffs } };
+        const { diffs, truncated } = await fetchMrDiffs(
+          repoCtx.provider.baseURL,
+          repoCtx.projectPath,
+          iid,
+          secrets.gitlabToken,
+          { reqSignal: signal },
+        );
+        return { ok: true, data: { diffs, truncated } };
       } catch (err) {
         return { ok: false, error: String(err) };
       }
