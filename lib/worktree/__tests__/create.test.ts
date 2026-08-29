@@ -248,4 +248,28 @@ describe("scrapTree", () => {
     expect(existsSync(path)).toBe(false);
     expect(loadRegistry(repoName).length).toBe(0);
   });
+
+  test("refuses to trash a path with no .git entry (a desynced registry row)", async () => {
+    // Nothing about this directory was ever created by rt's own worktree add...
+    // the shape a stale/corrupted registry row pointing at an unrelated
+    // directory would have.
+    const path = join(repo, ".worktrees", "not-a-worktree");
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, "important.txt"), "keep me\n");
+    const rec: TreeRecord = {
+      name: "not-a-worktree",
+      path,
+      kind: "ephemeral",
+      state: "creating",
+      branch: "on-deck/not-a-worktree",
+      createdAt: new Date().toISOString(),
+    };
+    saveRegistry(repoName, [rec]);
+
+    await scrapTree(makeDeps(repoName, repo, events), rec);
+
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(join(path, "important.txt"))).toBe(true);
+    expect(loadRegistry(repoName)).toEqual([rec]);
+  });
 });

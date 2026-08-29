@@ -170,7 +170,20 @@ async function runCreate(
  * rather than asking git to unlink, it returns instantly however far the
  * install got before the create failed.
  */
+/** Whether `path` has a `.git` entry, the one cheap signal a git worktree (or repo) always carries. A desynced registry row pointing at a directory rt never created must fail this, or scrap's rm -rf would trash arbitrary content. */
+function looksLikeWorktreeDir(path: string): boolean {
+  return existsSync(join(path, ".git"));
+}
+
 export async function scrapTree(deps: CreateDeps, rec: TreeRecord): Promise<void> {
+  if (existsSync(rec.path) && !looksLikeWorktreeDir(rec.path)) {
+    deps.log.warn(
+      { repo: deps.repoName, tree: rec.name, path: rec.path },
+      "worktree scrap: path exists with no .git entry; refusing to trash a directory rt did not create",
+    );
+    return;
+  }
+
   const trashed = await trashTree(rec.path, rec.name);
   if (trashed.ok) {
     void reapTrashDir(trashed.trashPath, deps.log);

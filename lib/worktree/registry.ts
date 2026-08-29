@@ -22,6 +22,7 @@ export interface TreeRecord {
   disposableReason?: string;
   retryFailures?: number; // shared backoff counter (create/freshen)
   nextRetryAt?: string; // ISO; skip mutating work until then
+  missCount?: number; // consecutive reconcile passes the path was absent from git ground truth (S063 hold)
 }
 
 const WORKTREE_REGISTRY_NS = "worktree-registry";

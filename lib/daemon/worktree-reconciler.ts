@@ -8,8 +8,8 @@
  * `creationInFlight`).
  */
 
-import { basename, isAbsolute, join, relative, resolve } from "path";
-import { realpathSync } from "fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
+import { existsSync, realpathSync } from "fs";
 import type { Logger } from "pino";
 import { rtDir } from "../rt-paths.ts";
 import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
@@ -88,17 +88,23 @@ type PassResult = { trees: TreeRecord[] } | { conflict: true };
 /** Attempts before a contended pass gives up and leaves the work to the next tick. */
 const RECONCILE_MAX_ATTEMPTS = 3;
 
+/** Consecutive misses before a registry path absent from git ground truth is dropped: ~15 min at the 5-min cadence rides out a transient unmount, and still cleans up a real removal within a cache window. */
+const MISSING_PRUNE_PASSES = 3;
+
 /**
  * Reconcile one repo's worktree registry against git ground truth (spec §4).
  *
  * Order matters:
  *  1. `git worktree prune` FIRST — an `rm -rf`'d tree otherwise leaves git's
  *     stale worktree registration holding the path/branch, which blocks a
- *     later create from reusing the same name.
+ *     later create from reusing the same name. Skipped for this pass when any
+ *     registered tree's parent directory is currently unreadable (S063: a
+ *     network-mount blip must not be read as a mass removal).
  *  2. (d) orphaned `creating` entries (no held lock) are scrapped before (a)
  *     evaluates existence, since an in-flight (locked) `creating` entry has
  *     no git worktree yet and must not be pruned out from under the create.
- *  3. (a) registry entries with no matching git/disk worktree are pruned.
+ *  3. (a) registry entries with no matching git/disk worktree are held for
+ *     `MISSING_PRUNE_PASSES` consecutive passes (S063), then pruned.
  *  4. (b) git worktrees unknown to the registry are adopted (main/unmanaged).
  *  5. (c) every remaining registered tree's `branch` is set to git ground
  *     truth; kind/state/owner are left untouched.
@@ -136,7 +142,18 @@ export async function reconcileRepoRegistry(deps: ReconcileDeps): Promise<TreeRe
 async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<PassResult> {
   const { repoName, repoPath, emit, log } = deps;
 
-  await runGit(repoPath, ["worktree", "prune"]);
+  // A `creating` row has no git worktree yet, so it never counts against
+  // readability; any other row whose parent dir can't be listed right now is
+  // a transient mount blip, not evidence its worktree was removed, so the
+  // sweep that would otherwise register that removal is skipped this pass.
+  const rootsReadable = loadRegistry(repoName).every(
+    (t) => t.state === "creating" || existsSync(dirname(t.path)),
+  );
+  if (rootsReadable) {
+    await runGit(repoPath, ["worktree", "prune"]);
+  } else {
+    log.info({ repo: repoName }, "reconcile: a pool root is unreadable this pass; skipping git worktree prune");
+  }
 
   let trees = loadRegistry(repoName);
   let epoch = registryEpoch(repoName);
@@ -191,8 +208,10 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
     gitByCanon.set(canon(entry.path), entry);
   }
 
-  // (a) registry paths missing from git/disk -> prune entry. `creating`
-  // entries are exempt: they legitimately have no git worktree yet.
+  // (a) registry paths missing from git/disk -> held for MISSING_PRUNE_PASSES
+  // consecutive passes (S063: a transiently missing directory, e.g. a network
+  // mount blip, must not orphan the row and poison its name), then pruned.
+  // `creating` entries are exempt: they legitimately have no git worktree yet.
   const afterPrune: TreeRecord[] = [];
   for (const rec of trees) {
     if (rec.state === "creating") {
@@ -200,10 +219,22 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
       continue;
     }
     if (gitByCanon.has(canon(rec.path))) {
+      if (rec.missCount) {
+        delete rec.missCount;
+        changed = true;
+      }
       afterPrune.push(rec);
     } else {
-      log.info({ repo: repoName, tree: rec.name, path: rec.path }, "reconcile: pruning registry entry with no matching worktree");
-      changed = true;
+      const misses = (rec.missCount ?? 0) + 1;
+      if (misses < MISSING_PRUNE_PASSES) {
+        rec.missCount = misses;
+        changed = true;
+        afterPrune.push(rec);
+        log.info({ repo: repoName, tree: rec.name, path: rec.path, misses }, "reconcile: worktree path missing, holding");
+      } else {
+        log.info({ repo: repoName, tree: rec.name, path: rec.path }, "reconcile: pruning registry entry after sustained absence");
+        changed = true;
+      }
     }
   }
   trees = afterPrune;
@@ -1313,4 +1344,5 @@ export const __test__ = {
   poolCounts,
   backoffDelayMs,
   createBackoff,
+  MISSING_PRUNE_PASSES,
 };

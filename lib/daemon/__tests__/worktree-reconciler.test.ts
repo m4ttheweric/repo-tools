@@ -166,7 +166,7 @@ describe("reconcileRepoRegistry", () => {
     expect(registry.length).toBe(2);
   });
 
-  test("rm -rf'd manual tree is pruned, and prune lets the name be reused by createTree", async () => {
+  test("a missing path is held for MISSING_PRUNE_PASSES, then pruned and the name reusable by createTree", async () => {
     addBareOrigin(repo);
     const name = "reuseme";
     const manualPath = join(repo, ".worktrees", name);
@@ -179,14 +179,24 @@ describe("reconcileRepoRegistry", () => {
     // registration (and the registry entry) stale.
     rmSync(manualPath, { recursive: true, force: true });
 
+    // S063: held (missCount climbing), not pruned, for the first
+    // MISSING_PRUNE_PASSES - 1 consecutive misses.
+    for (let i = 1; i < __test__.MISSING_PRUNE_PASSES; i++) {
+      const trees = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+      const rec = findByPath(trees, manualPath);
+      expect(rec).toBeDefined();
+      expect(rec!.missCount).toBe(i);
+    }
+
+    // The MISSING_PRUNE_PASSES'th consecutive miss drops the row.
     const trees = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
     expect(findByPath(trees, manualPath)).toBeUndefined();
     expect(findByPath(loadRegistry(repoName), manualPath)).toBeUndefined();
 
-    // Reusing the same name must succeed now that `git worktree prune` ran;
-    // without it git still holds the stale worktree registration at manualPath.
-    // root pins the pool back at manualPath's directory, matching the manually
-    // added worktree above.
+    // Reusing the same name must succeed now that `git worktree prune` ran
+    // (it runs every one of the passes above, since the parent dir stays
+    // readable throughout) and the registry row is gone. root pins the pool
+    // back at manualPath's directory, matching the manually added worktree.
     await declareWorktrees(repo, repoName, { namePool: [name], root: join(repo, ".worktrees") });
 
     const result = await createTree({
@@ -200,6 +210,57 @@ describe("reconcileRepoRegistry", () => {
     if (!result.ok) return;
     expect(result.tree.name).toBe(name);
     expect(result.tree.path).toBe(manualPath);
+  });
+
+  test("a path that reappears after a miss clears missCount", async () => {
+    const manualPath = join(repo, ".worktrees", "reappear");
+    execSync(`git worktree add -b reappear-branch ${manualPath}`, { cwd: repo, shell: "/bin/zsh" });
+    await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    expect(findByPath(loadRegistry(repoName), manualPath)).toBeDefined();
+
+    rmSync(manualPath, { recursive: true, force: true });
+    const afterMiss = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    expect(findByPath(afterMiss, manualPath)!.missCount).toBe(1);
+
+    // The mount (or whatever removed it) comes back: re-add the same branch
+    // at the same path.
+    execSync(`git worktree add ${manualPath} reappear-branch`, { cwd: repo, shell: "/bin/zsh" });
+    const afterReappear = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    const rec = findByPath(afterReappear, manualPath);
+    expect(rec).toBeDefined();
+    expect(rec!.missCount).toBeUndefined();
+  });
+
+  test("git worktree prune is skipped when a registered tree's parent dir is unreadable", async () => {
+    // A registered path whose parent directory does not exist at all: the
+    // shape a network-mount blip leaves behind, distinct from a path merely
+    // absent from git's own worktree list.
+    const unreadableParent = join(tmpdir(), `rtrecon-unreadable-${Date.now()}`);
+    saveRegistry(repoName, [
+      {
+        name: "ghost",
+        path: join(unreadableParent, "ghost-tree"),
+        kind: "ephemeral",
+        state: "on-deck",
+        branch: "on-deck/ghost",
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+
+    const calls: string[][] = [];
+    const originalRunGit = gitAsync.runGit;
+    const runGitSpy = spyOn(gitAsync, "runGit").mockImplementation(async (cwd, args, opts) => {
+      calls.push(args);
+      return originalRunGit(cwd, args, opts);
+    });
+
+    try {
+      await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    } finally {
+      runGitSpy.mockRestore();
+    }
+
+    expect(calls.some((a) => a[0] === "worktree" && a[1] === "prune")).toBe(false);
   });
 
   test("branch rename updates the registry's ground-truth branch field", async () => {
