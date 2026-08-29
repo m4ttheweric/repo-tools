@@ -13,7 +13,7 @@
 
 import { existsSync } from "fs";
 import { gitOk, isAncestorAsync, remoteDefaultRef, remoteRefExists, runGit } from "./git-async.ts";
-import { loadRegistry, saveRegistry, type TreeRecord } from "./registry.ts";
+import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "./registry.ts";
 import { hasFreshAttendantLease } from "./lease.ts";
 import { loadSyncConfig, matchRule } from "../sync-config.ts";
 import { deriveRepoIdentity } from "../settings/identity.ts";
@@ -196,6 +196,21 @@ export async function disposeTree(
     else log.info(fields, "worktree dispose refused");
     return { disposed: false, refusal };
   };
+
+  // All three callers hold the tree lock, but their record was collected
+  // before it: a re-read here catches a dispose-then-recreate race at the
+  // same path (RT-40) and acts on the lock-scoped truth from here down.
+  const fresh = findByPath(loadRegistry(repoName), rec.path);
+  if (
+    !fresh ||
+    fresh.kind !== rec.kind ||
+    fresh.state !== rec.state ||
+    fresh.branch !== rec.branch ||
+    fresh.owner !== rec.owner
+  ) {
+    return refuse("changed");
+  }
+  rec = fresh;
 
   // 1. Categorical: only rt-built ephemeral trees are rt's to delete. No force.
   if (rec.kind !== "ephemeral") return refuse(`kind-${rec.kind}`);
