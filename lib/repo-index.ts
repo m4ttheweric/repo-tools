@@ -146,7 +146,7 @@ export function loadRepoIndex(): RepoIndex {
 function headBranch(gitDir: string): string {
   try {
     const m = readFileSync(join(gitDir, "HEAD"), "utf8").trim().match(/^ref: refs\/heads\/(.+)$/);
-    return m ? m[1] : "";
+    return m?.[1] ?? "";
   } catch {
     return "";
   }
