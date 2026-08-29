@@ -10,6 +10,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { activeLaunchdLabel, resolveApiPort } from "../daemon-config.ts";
+import { DEV_MODE_TAG } from "../dev-mode.ts";
 
 const WRAPPER_PATH = join(process.env.HOME!, ".local", "bin", "rt");
 
@@ -24,7 +25,7 @@ describe("activeLaunchdLabel", () => {
 
   test("resolves to com.mattstack.daemon.dev in dev mode (wrapper present)", () => {
     mkdirSync(join(process.env.HOME!, ".local", "bin"), { recursive: true });
-    writeFileSync(WRAPPER_PATH, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(WRAPPER_PATH, `#!/bin/sh\n${DEV_MODE_TAG}\nexit 0\n`, { mode: 0o755 });
     expect(activeLaunchdLabel()).toBe("com.mattstack.daemon.dev");
   });
 });
