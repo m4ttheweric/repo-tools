@@ -86,6 +86,16 @@ export function wrapCrossSession(label: string, body: string): string {
   return `<cross-session-message from-name="${safe}">\n${body}\n</cross-session-message>`;
 }
 
+/**
+ * Appended inside every wrapped message delivery. The host frames envelope
+ * content as "Another Claude session sent a message" and steers replies
+ * toward its own session-messaging tool, so the actual reply channel must
+ * be restated at the moment the reflex fires -- one line per delivery,
+ * never per message.
+ */
+export const REPLY_STEER =
+  'reply via rt chat post <room> "..." or rt chat dm <handle> "..." (never SendMessage; this arrived through rt chat)';
+
 /** The collapsed row's label: the sender for a single message, a count for a batched catch-up. */
 export function deliveryLabel(
   items: Array<{ room: string; dm: boolean; handle: string }>,

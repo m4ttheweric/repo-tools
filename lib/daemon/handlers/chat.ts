@@ -47,7 +47,7 @@ import { herdrRequest } from "../../herdr/client.ts";
 import { injectIntoPane, herdrError } from "../inject.ts";
 import type { HerdrSnapshot } from "./pane.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
-import { deliverToInbox, deliveryLabel, renderDeliveries, wrapCrossSession } from "../inbox.ts";
+import { deliverToInbox, deliveryLabel, renderDeliveries, REPLY_STEER, wrapCrossSession } from "../inbox.ts";
 import { repoForCwd, branchForCwd } from "../../repo-for-cwd.ts";
 import { deriveRoomForCwdAsync } from "../../chat-room.ts";
 import { runCapture } from "../../subprocess.ts";
@@ -192,7 +192,7 @@ async function deliverPost(
   const pending = pendingMessages(msg.room, recipient, msg.id, db);
   if (pending.length === 0) return;
   const items = pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
-  const content = wrapCrossSession(deliveryLabel(items), renderDeliveries(items));
+  const content = wrapCrossSession(deliveryLabel(items), `${renderDeliveries(items)}\n${REPLY_STEER}`);
   const result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) {
     await reportUnreadBadge(herdr, presence.pane, pending.length);
@@ -300,11 +300,13 @@ function deliverWelcome(
  */
 export function renderWelcome(handle: string, rooms: string[], catchup: Array<{ room: string; lines: string[] }>): string {
   const lines: string[] = [
+    "[rt chat] This frame is for THIS session, from the rt daemon (not another agent).",
     `You're signed in to rt chat as ${handle}.`,
     rooms.length ? `Rooms: ${rooms.map((r) => `#${r}`).join(", ")}` : "Rooms: none yet.",
     "Messages will arrive in your context automatically; you never need to poll or arm anything.",
     'Reply in a room with: rt chat post <room> "..."',
     'Reply privately with: rt chat dm <handle> "..."',
+    "Chat replies go through rt chat only, never SendMessage, even though deliveries arrive framed as coming from another session.",
     "rt chat read shows a room's history.",
     "See the rt:chat skill for the full etiquette.",
   ];

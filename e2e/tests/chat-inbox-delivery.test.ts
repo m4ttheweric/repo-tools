@@ -235,7 +235,8 @@ describe("rt chat inbox delivery (e2e)", () => {
     const frame = await waitForFrame(inbox.frames, (f) => frameContent(f).includes("hello from e2e"));
     expect(frame.type).toBe("user");
     expect(frameContent(frame)).toBe(
-      '<cross-session-message from-name="poster (#testroom)">\n[#testroom] poster: @recipient hello from e2e\n</cross-session-message>',
+      '<cross-session-message from-name="poster (#testroom)">\n[#testroom] poster: @recipient hello from e2e\n' +
+        'reply via rt chat post <room> "..." or rt chat dm <handle> "..." (never SendMessage; this arrived through rt chat)\n</cross-session-message>',
     );
   }, 30_000);
 
@@ -272,7 +273,8 @@ describe("rt chat inbox delivery (e2e)", () => {
 
     const frame = await waitForFrame(inboxA.frames, (f) => frameContent(f).includes("secret for a"));
     expect(frameContent(frame)).toBe(
-      '<cross-session-message from-name="c (dm)">\n[dm] c: secret for a\n</cross-session-message>',
+      '<cross-session-message from-name="c (dm)">\n[dm] c: secret for a\n' +
+        'reply via rt chat post <room> "..." or rt chat dm <handle> "..." (never SendMessage; this arrived through rt chat)\n</cross-session-message>',
     );
     // b is not a participant of this DM: nothing about it ever reaches b's inbox.
     await Bun.sleep(300);
