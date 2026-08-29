@@ -285,7 +285,7 @@ test("units start in spec order and stop in reverse, state.db closed on stop", a
 **Interfaces:**
 - Consumes: `COMMAND_NAMES`.
 
-- [ ] **Step 1:** Write the failing test: grep `packages/rt-client/src/**` for `rtCommand("<name>"` / `rtCommand<...>("<name>"` string literals, assert each name is in `COMMAND_NAMES`. Seed it so `cache:read` would have failed before B2.
+- [ ] **Step 1:** Write the failing test: scan `packages/rt-client/src/**` for `rtCommand` call sites and assert each command-name literal is in `COMMAND_NAMES`. Use a **multi-line-aware** match, because several call sites (`cache:read` included) put the command literal on the line after `rtCommand(` / `rtCommand<...>(`): read each file whole and match across newlines, e.g. `/rtCommand\s*(?:<[^>]*>)?\s*\(\s*["']([^"']+)["']/g`. Seed it so `cache:read` would have failed before B2.
 - [ ] **Step 2:** Run to verify it passes now (B2 cataloged `cache:read`); temporarily remove `cache:read` from the catalog to confirm the test catches it, then restore.
 - [ ] **Step 3: Commit** ... `git commit -m "rt-client: guard that every call-site command name is cataloged (R016)"`.
 
@@ -326,7 +326,7 @@ test("a thrown handler yields an additive failure envelope, not a rethrow", asyn
 
 - [ ] **Step 1:** Write the failing test asserting the freshness "repo not in index" error names `rt repos register` (not `rt repo add`) and does not mention `repos.json`.
 - [ ] **Step 2:** Run to verify it fails.
-- [ ] **Step 3:** Delete the `RepoIndex` re-declaration in `handlers/types.ts` (import the type from `lib/repo-index.ts`); fix the doc comment (source is state.db kv, not `repos.json`); fix the freshness error text.
+- [ ] **Step 3:** In `lib/repo-index.ts`, add `export` to the `RepoIndex` interface (line ~54 is module-private today). Delete the `RepoIndex` re-declaration in `handlers/types.ts` and import the type from `lib/repo-index.ts`; fix the doc comment (source is state.db kv, not `repos.json`); fix the freshness error text.
 - [ ] **Step 4:** `bunx tsc --noEmit`; run the test.
 - [ ] **Step 5: Commit** ... `git commit -m "repo-index: one RepoIndex declaration; fix stale repos.json doc + rt repos register message (R037)"`.
 
@@ -354,6 +354,8 @@ test("a thrown handler yields an additive failure envelope, not a rethrow", asyn
 - Modify: `lib/port-scanner.ts`, `lib/repo-locate.ts`, `lib/daemon/worktree-reconciler.ts`, `lib/daemon/handlers/worktree.ts`, `lib/runs/prune.ts`
 - Test: `lib/__tests__/fs-canon.test.ts`
 
+**Note:** the `worktree-reconciler.ts` call sites are grep-discovered against the merged Phase 4 file; the copy counts here are indicative (Phase 4 may move or add sites).
+
 **Interfaces:**
 - Produces: `canon(path: string): string`. **Chosen semantics:** realpath when it resolves, else the input path unchanged (the four non-recursive copies' behavior). The recursive `runs/prune.ts` variant is dropped; the test documents why (a parent-walking canon changes prune's match set).
 
@@ -370,6 +372,8 @@ test("a thrown handler yields an additive failure envelope, not a rethrow", asyn
 - Modify: `lib/daemon/worktree-reconciler.ts`, `lib/daemon/handlers/worktree.ts`
 - Test: `lib/worktree/__tests__/patch.test.ts`
 
+**Note:** the `worktree-reconciler.ts` call sites are grep-discovered against the merged Phase 4 file; the copy counts here are indicative (Phase 4 may move or add sites).
+
 - [ ] **Step 1:** Write the failing test for the single `patchTree(load, mutate, save)` (load-mutate-save) covering the epoch check both copies should share.
 - [ ] **Step 2:** Run to verify it fails.
 - [ ] **Step 3:** Extract to `lib/worktree/patch.ts`; replace both call sites.
@@ -381,6 +385,8 @@ test("a thrown handler yields an additive failure envelope, not a rethrow", asyn
 **Files:**
 - Modify: `lib/notifier.ts`, `lib/daemon/discussions-store.ts`, `lib/daemon/discussions-poller.ts`, `lib/daemon/worktree-reconciler.ts`, `lib/enrich.ts`
 - Test: `lib/__tests__/numeric-user-id.test.ts`
+
+**Note:** the `worktree-reconciler.ts` and other call sites are grep-discovered against the merged Phase 4 file; the copy counts here are indicative (Phase 4 may move or add sites).
 
 **Interfaces:**
 - Produces: one `numericUserId(id: string | null | undefined): number | null`. **Chosen semantics:** split on `:`, `parseInt` the tail, `Number.isFinite` gate (the discussions-store form), so `gitlab:user:12a` yields `12` consistently; the notifier's self-author null-means-suppress rule is applied at its own call site, not inside the helper. `MR_TERMINAL_STATES` exported from `enrich.ts`.
@@ -424,7 +430,7 @@ test("a thrown handler yields an additive failure envelope, not a rethrow", asyn
 - Modify: `lib/__tests__/no-eager-tui.test.ts`
 - Test: same file.
 
-- [ ] **Step 1: Write the failing test:** extend `no-eager-tui.test.ts` with a case that scans `lib/daemon/**` (transitively, via the existing import-walk) for a static import of `repo-arg.ts`, `repo.ts`, `fzf.ts`, `rt-render`, or `ink`, asserting none. It fails today (notifier/agent/system-processes route through `repo-arg.ts`).
+- [ ] **Step 1: Write the failing test:** `no-eager-tui.test.ts` today is a filesystem walk over `commands/` that parses direct imports only, so it does not cover the daemon graph and never reaches `lib/notifier.ts` (which lives outside `lib/daemon/**`). Add a new test that builds a **transitive resolver walk** from the daemon entry set (`lib/daemon.ts`): follow each relative `import` / `export ... from` to its resolved file, recurse, and assert no reachable module statically imports `repo-arg.ts`, `repo.ts`, `fzf.ts`, `rt-render`, or `ink`. If a full resolver walk is too much, the fallback is an explicit scanned set: `lib/daemon.ts`, every `lib/daemon/**` file, and the daemon-imported top-level modules (`lib/notifier.ts`, `lib/enrich.ts`, and any other non-`lib/daemon/` module the daemon reaches). It fails today because `notifier.ts`, `handlers/agent.ts`, and `handlers/system-processes.ts` reach `repo-arg.ts`.
 - [ ] **Step 2:** Run to verify it fails.
 - [ ] **Step 3:** Change the three imports to `repo-label.ts`.
 - [ ] **Step 4:** Run `bun test lib/__tests__/no-eager-tui.test.ts` and `bunx tsc --noEmit`.
@@ -643,7 +649,7 @@ test("every CREATE TABLE in db.ts source exists in sqlite_master", () => {
 
 ## Self-review (completed by the plan author)
 
-- **Spec coverage:** 5.1 -> A1-A6; 5.2 -> B1-B4; 5.3 -> B5-B11; 5.4 -> B12; 5.5 -> C1-C5; 5.6 -> D1-D3; 5.7 -> E0-E5. The retired findings (R010/R033/R034/S085/S102/R026/R018/R023/S065) have no tasks by design.
+- **Spec coverage:** 5.1 -> A1-A5; 5.2 -> B1-B4; 5.3 -> B5-B11; 5.4 -> B12; 5.5 -> C1-C5; 5.6 -> D1-D3; 5.7 -> E0-E5. The retired findings (R010/R033/R034/S085/S102/R026/R018/R023/S065) have no tasks by design.
 - **SCHEMA_VERSION:** C1 makes retention indexes idempotent-on-open; no task bumps the version. Constraint satisfied.
 - **Re-base gates:** A5 (Phase 2 + 6), E0 (Phase 4), B6 (RT-62) are called out where they land.
 - **Type consistency:** `SerializedIdentity`/`decodeRepo` (B6) are the decoder B1 references; `failure` envelope (B4) is asserted by D1/D2; `scheduleSweep` (A2) is the retention sweep host in C2/C3/C5; `DaemonUnit` (A1) is consumed by A5 and the seam tests.
