@@ -56,7 +56,7 @@ const baseSnapshot = {
   pipelineStatus: null,
   mrState: "opened",
   approved: false,
-  approvedByUserIds: [] as string[],
+  approvedByUserIds: [] as number[],
   conflicts: false,
   conflictFreeStreak: 1,
   needsRebase: false,
@@ -71,7 +71,7 @@ describe("approval transition notifications", () => {
     const now = {
       ...baseSnapshot,
       approved: true,
-      approvedByUserIds: ["123"],
+      approvedByUserIds: [123],
     };
 
     expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("self-approved");
@@ -80,12 +80,12 @@ describe("approval transition notifications", () => {
   test("notifies when another approval completes an MR I had already approved", () => {
     const was = {
       ...baseSnapshot,
-      approvedByUserIds: ["123"],
+      approvedByUserIds: [123],
     };
     const now = {
       ...baseSnapshot,
       approved: true,
-      approvedByUserIds: ["123", "456"],
+      approvedByUserIds: [123, 456],
     };
 
     expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("notify");
@@ -96,15 +96,15 @@ describe("approval transition notifications", () => {
     const now = {
       ...baseSnapshot,
       approved: true,
-      approvedByUserIds: ["123"],
+      approvedByUserIds: [123],
     };
 
     expect(__test__.shouldNotifyApprovalTransition(was, now, null)).toBe("notify");
   });
 
   test("does not notify when approved flips with no new approver", () => {
-    const was = { ...baseSnapshot, approvedByUserIds: ["456"] };
-    const now = { ...baseSnapshot, approved: true, approvedByUserIds: ["456"] };
+    const was = { ...baseSnapshot, approvedByUserIds: [456] };
+    const now = { ...baseSnapshot, approved: true, approvedByUserIds: [456] };
     expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("no-new-approver");
   });
 

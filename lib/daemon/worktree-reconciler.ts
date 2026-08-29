@@ -24,6 +24,7 @@ import {
   type TreeRecord,
 } from "../worktree/registry.ts";
 import { patchTree } from "../worktree/patch.ts";
+import { MR_TERMINAL_STATES } from "../enrich.ts";
 import {
   branchExistsLocalAsync,
   currentBranchAsync,
@@ -352,8 +353,6 @@ export interface ReactorDeps {
   log: Logger;
 }
 
-const TERMINAL_STATES = new Set(["merged", "closed"]);
-
 /**
  * What one tree's reaction did, which is also what the snapshot is allowed to
  * do afterwards:
@@ -647,7 +646,7 @@ export async function detectTransitions(deps: ReactorDeps): Promise<void> {
 
     nextMrState[mrKey] = cur;
     if (prev !== "opened") continue; // cold-boot safety: unknown prev never fires
-    if (!cur || !TERMINAL_STATES.has(cur)) continue;
+    if (!cur || !MR_TERMINAL_STATES.has(cur)) continue;
 
     const fireKey = `disposed:${repoName}:${iid}:${cur}`;
     if (fired.has(fireKey)) continue;
@@ -1361,4 +1360,5 @@ export const __test__ = {
   hasFreeDiskGb,
   WORKTREE_ONDECK_CEILING,
   WORKTREE_MIN_FREE_DISK_GB,
+  MR_TERMINAL_STATES,
 };

@@ -69,6 +69,22 @@ export function isGitLabRemote(url: string | undefined): boolean {
   return !!url && /gitlab\./i.test(url);
 }
 
+/**
+ * Scoped provider IDs arrive as "gitlab:42" or "gitlab:user:42"; extract the
+ * trailing numeric segment. Single source of truth for the notifier's
+ * self-author check and the discussions store's author/participant matching,
+ * which previously carried disagreeing copies (one gated on a trailing-digit
+ * regex, the other on parseInt).
+ */
+export function numericUserId(id: string | null | undefined): number | null {
+  const tail = id?.split(":").pop();
+  const n = tail ? parseInt(tail, 10) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+/** MR/PR states past which no further transition (merge, approval, discussion) can occur. */
+export const MR_TERMINAL_STATES = new Set(["merged", "closed"]);
+
 // ─── EnrichedBranch type ─────────────────────────────────────────────────────
 
 /** Re-export for downstream consumers */

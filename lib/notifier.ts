@@ -35,6 +35,7 @@ import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
 import { lazyChildLogger } from "./daemon-logger.ts";
 import { repoLabel } from "./repo-arg.ts";
 import { branchOf } from "./state/branch-cache.ts";
+import { numericUserId } from "./enrich.ts";
 import {
   getNotifierStateBlob,
   setNotifierStateBlob,
@@ -53,7 +54,7 @@ interface BranchSnapshot {
   pipelineStatus: string | null;
   mrState: string | null;
   approved: boolean;
-  approvedByUserIds: string[];
+  approvedByUserIds: number[];
   conflicts: boolean;
   /**
    * Consecutive observations that reported no conflict, carried forward from
@@ -261,18 +262,12 @@ interface CacheEntry {
   fetchedAt: number;
 }
 
-function numericUserId(id: unknown): string | null {
-  if (typeof id !== "string" && typeof id !== "number") return null;
-  const match = String(id).match(/(\d+)$/);
-  return match ? match[1]! : null;
-}
-
-function approvedByUserIds(entry: CacheEntry): string[] {
+function approvedByUserIds(entry: CacheEntry): number[] {
   const approvers = entry.mr?.reviews?.approvedBy;
   if (!Array.isArray(approvers)) return [];
   return approvers
     .map((u) => numericUserId(u?.id))
-    .filter((id): id is string => id !== null);
+    .filter((id): id is number => id !== null);
 }
 
 /**
@@ -283,10 +278,9 @@ function approvedByUserIds(entry: CacheEntry): string[] {
  * rather than risk resurfacing other people's alerts.
  */
 function isSelfAuthored(entry: CacheEntry, currentUserId: number | null): boolean {
-  const selfId = numericUserId(currentUserId);
-  if (!selfId) return false;
+  if (currentUserId === null) return false;
   const authorId = numericUserId(entry.mr?.author?.id);
-  return authorId !== null && authorId === selfId;
+  return authorId !== null && authorId === currentUserId;
 }
 
 /**
@@ -372,11 +366,10 @@ function shouldNotifyApprovalTransition(
   const grew = (now.approvedByUserIds ?? []).some((id) => !previousApprovers.has(id));
   if (!grew) return "no-new-approver";
 
-  const selfId = numericUserId(currentUserId);
-  if (!selfId) return "notify";
+  if (currentUserId === null) return "notify";
 
-  const selfNewlyApproved = (now.approvedByUserIds ?? []).includes(selfId)
-    && !previousApprovers.has(selfId);
+  const selfNewlyApproved = (now.approvedByUserIds ?? []).includes(currentUserId)
+    && !previousApprovers.has(currentUserId);
 
   return selfNewlyApproved ? "self-approved" : "notify";
 }

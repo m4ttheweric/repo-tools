@@ -30,11 +30,10 @@ import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { loadRepoTracking, grants, type RepoTracking } from "../repo-tracking.ts";
 import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
 import { lazyChildLogger } from "../daemon-logger.ts";
+import { MR_TERMINAL_STATES } from "../enrich.ts";
 const log = lazyChildLogger("discussions");
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
-
-const TERMINAL_STATES = new Set(["merged", "closed"]);
 
 export interface PollerEnv {
   ctx:       HandlerContext;
@@ -75,7 +74,7 @@ export function collectSweepTargets(
     const mr = entry.mr;
     const iid = mr?.iid;
     if (!mr || typeof iid !== "number") continue;
-    if (TERMINAL_STATES.has(mr.status)) continue;
+    if (MR_TERMINAL_STATES.has(mr.status)) continue;
     add(entry.repoName, iid);
   }
 
@@ -150,3 +149,5 @@ export function createDiscussionsPoller(env: PollerEnv): DiscussionsPoller {
 
   return { start, stop };
 }
+
+export const __test__ = { MR_TERMINAL_STATES };
