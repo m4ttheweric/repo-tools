@@ -56,7 +56,7 @@ function serializeSnapshot(snapshot: SdmSnapshot) {
 // alongside `error`) verbatim, so they stay on the loose `Promise<any>`
 // escape hatch (same trick as endpoint.ts/repos.ts).
 export function createSdmHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "log">,
   deps: SdmHandlerDeps = realDeps,
 ): Record<"sdm:catalog" | "sdm:snapshot" | "sdm:recents" | "sdm:reconnect", (payload: any, signal?: AbortSignal) => Promise<any>> & HandlerMap {
   return {

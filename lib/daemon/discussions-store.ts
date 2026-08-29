@@ -32,7 +32,7 @@ import { numericUserId, MR_TERMINAL_STATES } from "../enrich.ts";
 export type BroadcastFn = (type: string, data: any) => void;
 
 export interface RefreshDeps {
-  ctx:       HandlerContext;
+  ctx:       Pick<HandlerContext, "cache" | "repoIndex">;
   broadcast: BroadcastFn;
 }
 
@@ -67,7 +67,7 @@ const isBot = (n: Note) => BOT_USERNAME.test(n.author.username ?? "");
  * refuse rather than blind-fetch, so ungranted repos can't leak API calls.
  */
 export function resolveMRMeta(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "cache">,
   repoName: string,
   iid: number,
   projectStore: ProjectMRs = getProjectMRs(),

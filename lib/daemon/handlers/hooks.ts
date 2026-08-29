@@ -18,7 +18,7 @@ import type { HandlerContext, HandlerMap } from "./types.ts";
 // two shipped ones keep their existing flat wire replies (no `data` field)
 // verbatim via the loose `Promise<any>` escape hatch, same as endpoint.ts.
 export function createHooksHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "repoIndex" | "checkAndRepairHooksPath" | "startWatchingRepo">,
 ): Record<"hooks:repair" | "hooks:watch", (payload: any, signal?: AbortSignal) => Promise<any>> & HandlerMap {
   return {
     "hooks:status": async (payload) => {

@@ -15,7 +15,7 @@ type RunsHandlers = { "runs:list": (payload: unknown) => Promise<CommandResult<"
   & { "runs:abandon": (payload: unknown) => Promise<CommandResult<"runs:abandon">> };
 
 export function createRunsHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "log">,
   emitEvent: (topic: string, payload: unknown) => void,
 ): RunsHandlers {
   const handlers: RunsHandlers = {

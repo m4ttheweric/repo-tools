@@ -56,7 +56,7 @@ export interface MRHandlerOverrides {
 // as endpoint.ts/repos.ts); the two job-detail verbs already envelope as
 // {ok,data} and get the standard CommandResult carve-out.
 export function createMRHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "repoIndex" | "cache">,
   broadcast: (type: string, data: any) => void,
   overrides: MRHandlerOverrides = {},
 ): { "mr:action": (payload: any, signal?: AbortSignal) => Promise<any> }

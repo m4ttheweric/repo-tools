@@ -74,7 +74,7 @@ export interface ProjectMRsHandlerOverrides {
 }
 
 export function createProjectMRsHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "repoIndex" | "log">,
   broadcast: (type: string, data: unknown) => void,
   overrides: ProjectMRsHandlerOverrides = {},
 ): { "project-mrs:read": (payload: unknown) => Promise<{ ok: true; data: Commands["project-mrs:read"]["data"] } | { ok: false; error: string }> }

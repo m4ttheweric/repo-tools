@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createMRHandlers, RETRY_WRITEBACK_DELAY_MS } from "../handlers/mr.ts";
 import { ReadBackFailedError } from "@mattstack/glance";
-import type { HandlerContext } from "../handlers/types.ts";
 import { fakeStore } from "./fake-cache-store.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const fakeCtx = () => ({ cache: fakeStore({}), repoIndex: () => ({ repo: "/tmp/repo" }) }) as unknown as HandlerContext;
+const fakeCtx = () => ({ cache: fakeStore({}), repoIndex: () => ({ repo: "/tmp/repo" }) });
 const prOf = (iid: number, state = "opened") => ({ iid, state, sourceBranch: `b${iid}` }) as any;
 
 function harness(provider: Record<string, unknown>) {

@@ -22,7 +22,7 @@ import { getFreshnessSnapshot } from "../freshness.ts";
 import { readSupervisionState } from "../supervision-state.ts";
 
 /** Repos with a declared pool that this machine's app-level toggle leaves dormant (S077). */
-async function dormantWorktreeRepos(ctx: HandlerContext): Promise<string[]> {
+async function dormantWorktreeRepos(ctx: Pick<HandlerContext, "repoIndex">): Promise<string[]> {
   const dormant: string[] = [];
   for (const [repoName, repoPath] of Object.entries(ctx.repoIndex())) {
     if (await worktreePoolDormant(repoName, repoPath)) dormant.push(repoName);
@@ -35,7 +35,11 @@ async function dormantWorktreeRepos(ctx: HandlerContext): Promise<string[]> {
 // escape hatch (same trick as endpoint.ts/repos.ts); the other six already
 // envelope as {ok,data} and get the standard CommandResult carve-out.
 export function createStatusHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext,
+    | "getHealth" | "startedAt" | "identity" | "heartbeatSeq"
+    | "repoIndex" | "watchedConfigs" | "cache" | "portCacheRef"
+    | "refreshStatusRef" | "log" | "setLogLevel" | "getLogLevel"
+  >,
 ): { "status": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"status">> }
   & { "tray:status": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"tray:status">> }
   & { "tcc:check": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"tcc:check">> }

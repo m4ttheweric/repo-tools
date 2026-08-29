@@ -130,7 +130,7 @@ export interface SecretsHandlerOverrides {
 }
 
 export function createSecretsHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "log">,
   overrides: SecretsHandlerOverrides = {},
 ): { "secrets:forge-token": (payload: unknown) => Promise<CommandResult<"secrets:forge-token">> }
   & { "secrets:read": (payload: unknown) => Promise<CommandResult<"secrets:read">> } {

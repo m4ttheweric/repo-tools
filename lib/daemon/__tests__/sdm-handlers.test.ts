@@ -4,7 +4,7 @@ import type { HandlerContext } from "../handlers/types.ts";
 import type { SdmSnapshot } from "../../sdm/core.ts";
 import type { SdmResource } from "../../sdm/scan.ts";
 
-const ctx = { log: { info: () => {}, warn: () => {}, debug: () => {} } } as unknown as HandlerContext;
+const ctx = { log: { info: () => {}, warn: () => {}, debug: () => {} } } as unknown as Pick<HandlerContext, "log">;
 
 function okSnapshot(): SdmSnapshot {
   return {

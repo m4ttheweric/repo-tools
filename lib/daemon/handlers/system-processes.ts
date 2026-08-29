@@ -83,7 +83,7 @@ function buildProcessTree(flat: SystemProcess[]): SystemProcess[] {
 // type would have to mirror exactly to type-check as a CommandResult.
 export function createSystemProcessHandlers(
   scanner: SystemProcessScanner,
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "portCacheRef" | "cache">,
 ): Record<"system-processes", (payload: any, signal?: AbortSignal) => Promise<any>> & HandlerMap {
   // The background scanner refreshes every 10s; the tray polls far faster
   // while its panel is open. Re-discover on read when the cache is older than

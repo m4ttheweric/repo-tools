@@ -42,7 +42,7 @@ const url = (port: number): string => `http://localhost:${port}`;
  * A real failure is logged (never silently swallowed) per the repo's catch
  * policy.
  */
-async function repoIdentityFor(ctx: HandlerContext, repo: string): Promise<string | null> {
+async function repoIdentityFor(ctx: Pick<HandlerContext, "log" | "repoIndex">, repo: string): Promise<string | null> {
   try {
     // Legacy-tolerant on purpose: right after the identity cutover the index
     // rows still carry name keys until something re-keys them, and a claim
@@ -111,7 +111,7 @@ function resolveRoleAndNeeds(
 // commands as named members keeps direct access typed while the `& HandlerMap`
 // intersection still satisfies the router's spread.
 export function createEndpointHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "log" | "repoIndex">,
   deps?: { probes?: () => Promise<Probes> },
 ): Record<"endpoint:claim" | "endpoint:lookup" | "endpoint:release" | "endpoint:status", (payload: any) => Promise<any>> & HandlerMap {
   const probesFn = deps?.probes ?? defaultProbes;

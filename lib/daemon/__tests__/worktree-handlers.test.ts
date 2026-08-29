@@ -98,12 +98,11 @@ function makeHandlers(
 ): Harness {
   const events: Array<{ type: string; data: any }> = [];
   const state = { kicks: 0 };
-  const ctx = {
+  const ctx: Pick<HandlerContext, "repoIndex" | "cache" | "log"> = {
     cache: fakeStore(entries),
     repoIndex: () => repos,
     log: fakeLog(),
-    refreshCache: async () => {},
-  } as unknown as HandlerContext;
+  };
   const h = createWorktreeHandlers(ctx, {
     emit: (type: string, data: unknown) => events.push({ type, data: data as any }),
     kick: () => { state.kicks++; },

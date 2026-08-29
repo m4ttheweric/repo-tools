@@ -145,7 +145,7 @@ async function localBranchNames(repoPath: string): Promise<Set<string>> {
  * bare legacy name would otherwise start a fresh registry under a key
  * nothing else reads, silently reintroducing legacy-keyed rows post-migration.
  */
-function targetRepos(ctx: HandlerContext, repoName?: string): Array<[string, string]> {
+function targetRepos(ctx: Pick<HandlerContext, "repoIndex">, repoName?: string): Array<[string, string]> {
   const index = ctx.repoIndex();
   if (repoName) {
     const decoded = decodeRepo({ repoName });
@@ -157,7 +157,7 @@ function targetRepos(ctx: HandlerContext, repoName?: string): Array<[string, str
 }
 
 function disposeDeps(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "cache" | "log">,
   opts: WorktreeHandlerOpts,
   repoName: string,
   repoPath: string,
@@ -237,7 +237,7 @@ export function isClaimable(rec: TreeRecord | undefined): boolean {
 // which stays out of scope per the B2 ruling (worktree.ts, repos.ts,
 // endpoint.ts, home.ts, settings.ts all keep loose payload handling).
 export function createWorktreeHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "repoIndex" | "cache" | "log">,
   opts: WorktreeHandlerOpts,
 ): Record<
     "worktree:provision" | "worktree:create" | "worktree:dispose" | "worktree:list"

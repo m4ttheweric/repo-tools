@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { createHooksHandlers } from "../handlers/hooks.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 
-function fakeCtx(repos: Record<string, string> = {}): HandlerContext {
+function fakeCtx(
+  repos: Record<string, string> = {},
+): Pick<HandlerContext, "repoIndex" | "checkAndRepairHooksPath" | "startWatchingRepo"> {
   return {
     repoIndex: () => repos,
     checkAndRepairHooksPath: async () => true,
     startWatchingRepo: () => {},
-  } as unknown as HandlerContext;
+  };
 }
 
 describe("hooks handlers — identity-only guard", () => {

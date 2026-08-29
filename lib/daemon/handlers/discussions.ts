@@ -66,7 +66,7 @@ export async function fetchMrDiffs(
 }
 
 export function createDiscussionHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "cache" | "repoIndex">,
   broadcast: BroadcastFn,
 ): { "discussions:read": (payload: unknown) => Promise<{ ok: true; data: Commands["discussions:read"]["data"] } | { ok: false; error: string }> }
   & { "discussions:refresh": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:refresh">> }

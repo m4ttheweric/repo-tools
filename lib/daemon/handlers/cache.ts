@@ -38,7 +38,7 @@ function isIncomplete(entry: CacheEntry, now: number = Date.now()): boolean {
 // they stay on the loose `Promise<any>` escape hatch instead (same trick as
 // endpoint.ts/repos.ts) rather than reshaping a real consumer's response.
 export function createCacheHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "cache" | "refreshCache">,
 ): { "cache:read": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"cache:read">> }
   & Record<"cache:refresh" | "branch:enrich", (payload: any, signal?: AbortSignal) => Promise<any>>
   & HandlerMap {

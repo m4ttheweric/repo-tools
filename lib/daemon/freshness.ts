@@ -53,7 +53,7 @@ const log = lazyChildLogger("freshness");
 // ─── Env bundle (passed in from daemon.ts to avoid circular imports) ────────
 
 export interface FreshnessEnv {
-  ctx:       HandlerContext;
+  ctx:       Pick<HandlerContext, "cache" | "repoIndex">;
   broadcast: (type: string, data: any) => void;
 }
 

@@ -10,9 +10,9 @@ import { join } from "path";
 import { closeStateDb } from "../../state/index.ts";
 import { getDiscussionsFileStore } from "../discussions-file-store.ts";
 import { createDiscussionHandlers } from "../handlers/discussions.ts";
-import type { HandlerContext } from "../handlers/types.ts";
+import { fakeStore } from "./fake-cache-store.ts";
 
-const fakeCtx = { repoIndex: () => ({}), log: { warn: () => {} } } as unknown as HandlerContext;
+const fakeCtx = { repoIndex: () => ({}), cache: fakeStore({}) };
 
 describe("discussions:read", () => {
   const origHome = process.env.HOME;
