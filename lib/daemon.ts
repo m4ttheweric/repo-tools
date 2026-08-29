@@ -266,7 +266,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let shuttingDownViaVerb = false;
 
   // Reverse-order teardown; the shutdown verb and the signal handlers both
-  // route through this (the old cleanup() + cleanupCore).
+  // route through this.
   let units: DaemonUnit[] = [];
   const stopAll = (): Promise<void> => stopUnits(units, log);
 

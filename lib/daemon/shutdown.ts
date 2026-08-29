@@ -27,7 +27,7 @@ export function removeRuntimeFiles(opts: { pid?: number; log: Logger }): void {
 
 export interface GracefulExitDeps {
   /** Reverse-order unit teardown (`stopUnits`); awaited so every unit's stop
-   *  completes before the process exits (the stops are the old cleanupCore). */
+   *  completes before the process exits. */
   cleanup: () => void | Promise<void>;
   flushLogs: () => void;
   log: Logger;
@@ -54,8 +54,7 @@ export function makeGracefulExit(deps: GracefulExitDeps): (signal: NodeJS.Signal
     deps.log.info({ signal }, "received signal; shutting down");
     // Await the reverse-order stop: the unit stops force-close the servers and
     // unlink runtime files, and a sync exit here would run only the first of
-    // them (stopUnits yields to microtasks between units) before the process
-    // dies. This is why cleanup is async now, unlike the old sync cleanupCore.
+    // them, because stopUnits yields to microtasks between units.
     await deps.cleanup();
     deps.flushLogs();
     if (deps.wasVerbShutdown()) {
