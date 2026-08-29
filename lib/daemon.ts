@@ -52,7 +52,7 @@ import { unknownCommandReply } from "./daemon/unknown-command.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, snapshotRegistryDeps, type BranchCacheStore } from "./state/index.ts";
+import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, snapshotRegistryDeps, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -600,6 +600,15 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
             const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now(),
               (phase, err, file) => log.warn({ err, phase, file }, "log prune step failed"));
             if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
+          },
+          { bootDelayMs: 60_000, intervalMs: 24 * 60 * 60 * 1000 },
+          log,
+        ));
+        sweepHandles.push(scheduleSweep(
+          "chat-prune",
+          () => {
+            const { removed } = pruneMessages(getStateDb("daemon"));
+            if (removed > 0) log.info({ removed }, "pruned old chat messages");
           },
           { bootDelayMs: 60_000, intervalMs: 24 * 60 * 60 * 1000 },
           log,

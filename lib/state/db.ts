@@ -187,6 +187,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   posted_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_messages_room_id ON chat_messages(room, id);
+-- (room, posted_at): pruneMessages' age cutoff filters on posted_at per
+-- room, and listRooms' SELECT_ROOM_LAST_POSTED_SQL (MAX(posted_at) WHERE
+-- room = ?) turns into an index-only scan instead of a per-room table scan.
+CREATE INDEX IF NOT EXISTS chat_messages_room_posted ON chat_messages(room, posted_at);
 CREATE TABLE IF NOT EXISTS chat_members (
   room          TEXT NOT NULL,
   handle        TEXT NOT NULL,
