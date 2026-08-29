@@ -156,16 +156,46 @@ export function createEventsBus(opts: {
   const insertStmt = db.prepare(
     "INSERT INTO events (topic, payload, emittedAt) VALUES (?, ?, ?) RETURNING id",
   );
-  const afterStmt = db.prepare("SELECT id, topic, payload, emittedAt FROM events WHERE id > ? ORDER BY id");
+  // A negative LIMIT is SQLite's documented spelling of "no limit", so one
+  // statement covers both the unbounded scan (wait's wake-up check) and the
+  // bounded page (list's client-supplied limit).
+  const afterStmt = db.prepare(
+    "SELECT id, topic, payload, emittedAt FROM events WHERE id > ? ORDER BY id LIMIT ?",
+  );
   const maxIdStmt = db.prepare("SELECT COALESCE(MAX(id), 0) AS maxId FROM events");
 
   const maxId = (): number => (maxIdStmt.get() as { maxId: number }).maxId;
 
-  /** Matching events with id > after (glob filtered in JS — see matchTopic). */
+  const UNBOUNDED = -1;
+
+  /**
+   * Matching events with id > after (glob filtered in JS, see matchTopic).
+   * With no limit, one unbounded SQL read is fine (used only by wait's
+   * catch-up/wake-up checks, which scan a cursor close to the journal head).
+   * With a limit, pages the journal forward in id order reading limit + 1
+   * rows per call: a full page means more may remain (keep paging), a short
+   * page means the journal is exhausted. Bounds every single SQL read to
+   * limit + 1 rows even when matches are sparse (e.g. a narrow glob near
+   * the end of a long journal).
+   */
   const eventsAfter = (pattern: string, after: number, limit?: number): BusEvent[] => {
-    const rows = afterStmt.all(after) as EventRow[];
-    const matched = rows.filter(r => matchTopic(pattern, r.topic)).map(rowToEvent);
-    return limit != null ? matched.slice(0, limit) : matched;
+    if (limit == null) {
+      const rows = afterStmt.all(after, UNBOUNDED) as EventRow[];
+      return rows.filter(r => matchTopic(pattern, r.topic)).map(rowToEvent);
+    }
+    const pageSize = limit + 1;
+    const matched: BusEvent[] = [];
+    let cursor = after;
+    for (;;) {
+      const rows = afterStmt.all(cursor, pageSize) as EventRow[];
+      for (const r of rows) {
+        if (!matchTopic(pattern, r.topic)) continue;
+        matched.push(rowToEvent(r));
+        if (matched.length >= limit) return matched;
+      }
+      if (rows.length < pageSize) return matched;
+      cursor = rows[rows.length - 1]!.id;
+    }
   };
 
   const MAX_WAIT_MS = 240_000; // under the 255s socket idle timeout; the daemon clamp, not the client's
@@ -268,7 +298,11 @@ export function createEventsBus(opts: {
       return new Promise<WaitResult>((resolve) => {
         const w: Waiter = {
           pattern,
-          afterId: effAfter,
+          // head, not effAfter: the catch-up read above already covered
+          // every id up to head, so registering here misses nothing.
+          // Keeping effAfter would make every non-matching emit rescan
+          // the whole gap between a stale caller cursor and head forever.
+          afterId: head,
           resolve,
           signal,
           timer: setTimeout(() => settle(w, { events: [], cursor: head }), capMs),

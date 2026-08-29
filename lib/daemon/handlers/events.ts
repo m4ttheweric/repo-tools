@@ -14,6 +14,11 @@ const num = (v: unknown): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
+// events.db is a shared journal (S047, R030): a client that omits `limit`
+// must not be able to force a full-table read. 500 rows covers any
+// realistic catch-up page; a paginating client still gets more via cursor.
+const DEFAULT_LIST_LIMIT = 500;
+
 // Every member takes a direct `unknown` payload rather than
 // `Pick<TypedHandlers, ...>`'s per-command type: a wider `unknown` param
 // still satisfies TypedHandlers' narrower one at the command-router.ts
@@ -43,7 +48,11 @@ export function createEventsHandlers(
       const payload = rawPayload as Commands["events:list"]["payload"] | undefined;
       const pattern = typeof payload?.pattern === "string" ? payload.pattern.trim() : "";
       if (!pattern) return { ok: false as const, error: "missing pattern" };
-      const { events, cursor } = bus.list({ pattern, after: num(payload?.after), limit: num(payload?.limit) });
+      const { events, cursor } = bus.list({
+        pattern,
+        after: num(payload?.after),
+        limit: num(payload?.limit) ?? DEFAULT_LIST_LIMIT,
+      });
       return { ok: true as const, data: { events, cursor } };
     },
 
