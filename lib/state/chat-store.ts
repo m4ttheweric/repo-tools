@@ -2,19 +2,15 @@
  * lib/state/chat-store.ts — rooms, members, and (Task 3+) messages for
  * `rt chat`.
  *
- * The only module that touches chat_rooms/chat_members/chat_messages:
- * rooms, members, and messages live in one file because posting a message
- * reads membership inside the same transaction that writes it. It also
- * clears `chat_presence.armed_at` alongside `chat_members.armed_at` in
- * `clearAllArmed`, in the same transaction — the two flags must commit
- * together, since presence-store.ts's dual-write functions (imported below)
- * assume they never diverge.
+ * The only module that touches chat_rooms/chat_members/chat_messages: rooms,
+ * members, and messages live in one file because posting a message reads
+ * membership inside the same transaction that writes it.
  */
 
 import { Database } from "bun:sqlite";
 import { getStateDb } from "./db.ts";
-import { persistOrWarn, runCriticalWrite } from "./busy.ts";
-import { armPresenceByHandle, disarmPresenceByHandle, presenceForHandle, touchPresenceByHandle } from "./presence-store.ts";
+import { runCriticalWrite } from "./busy.ts";
+import { presenceForHandle } from "./presence-store.ts";
 // Intra-lib/state exception (see presence-store.ts's note on the same
 // pattern): dm-store.ts is the only module that touches chat_dms, so
 // joinRoom asks it directly rather than duplicating a chat_dms query here.
@@ -28,8 +24,6 @@ export interface ChatMember {
   joinedAt: number;
   lastReadId: number;
   wakeOn: WakeMode;
-  lastSeenAt?: number;
-  armedAt?: number;
   cwd?: string;
   pane?: string;
 }
@@ -60,8 +54,6 @@ interface MemberRow {
   joined_at: number;
   last_read_id: number;
   wake_on: WakeMode;
-  last_seen_at: number | null;
-  armed_at: number | null;
   cwd: string | null;
   pane: string | null;
 }
@@ -78,8 +70,6 @@ function rowToMember(row: MemberRow): ChatMember {
     lastReadId: row.last_read_id,
     wakeOn: row.wake_on,
   };
-  if (row.last_seen_at !== null) member.lastSeenAt = row.last_seen_at;
-  if (row.armed_at !== null) member.armedAt = row.armed_at;
   if (row.cwd !== null) member.cwd = row.cwd;
   if (row.pane !== null) member.pane = row.pane;
   return member;
@@ -113,7 +103,7 @@ function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, "\\$&");
 }
 
-const MEMBER_COLUMNS = "room, handle, joined_at, last_read_id, wake_on, last_seen_at, armed_at, cwd, pane";
+const MEMBER_COLUMNS = "room, handle, joined_at, last_read_id, wake_on, cwd, pane";
 const SELECT_ROOM_MEMBER_SQL = `SELECT ${MEMBER_COLUMNS} FROM chat_members WHERE room = ? AND handle = ?;`;
 const SELECT_ROOM_MEMBERS_SQL = `SELECT ${MEMBER_COLUMNS} FROM chat_members WHERE room = ? ORDER BY handle;`;
 const SELECT_HANDLE_MEMBERSHIPS_SQL = `SELECT ${MEMBER_COLUMNS} FROM chat_members WHERE handle = ? ORDER BY room;`;
@@ -132,25 +122,22 @@ const INSERT_ROOM_DEFAULT_WAKE_SQL = `INSERT INTO chat_room_defaults (room, wake
 const INSERT_MEMBER_SQL = `INSERT INTO chat_members (room, handle, joined_at, last_read_id, wake_on, cwd, pane) VALUES (?, ?, ?, ?, ?, ?, ?);`;
 const DELETE_MEMBER_SQL = `DELETE FROM chat_members WHERE room = ? AND handle = ?;`;
 const UPDATE_LAST_READ_SQL = `UPDATE chat_members SET last_read_id = ? WHERE room = ? AND handle = ?;`;
-const UPDATE_ARMED_BY_ROOM_SQL = `UPDATE chat_members SET armed_at = ? WHERE room = ? AND handle = ?;`;
-const UPDATE_ARMED_BY_HANDLE_SQL = `UPDATE chat_members SET armed_at = ? WHERE handle = ?;`;
-const UPDATE_LAST_SEEN_SQL = `UPDATE chat_members SET last_seen_at = ? WHERE handle = ?;`;
-const REARM_BY_ROOM_SQL = `UPDATE chat_members SET armed_at = COALESCE(armed_at, ?) WHERE room = ? AND handle = ?;`;
-const REARM_BY_HANDLE_SQL = `UPDATE chat_members SET armed_at = COALESCE(armed_at, ?) WHERE handle = ?;`;
-const CLEAR_ALL_ARMED_SQL = `UPDATE chat_members SET armed_at = NULL WHERE armed_at IS NOT NULL;`;
-const CLEAR_ALL_PRESENCE_ARMED_SQL = `UPDATE chat_presence SET armed_at = NULL WHERE armed_at IS NOT NULL;`;
 
 const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at";
 const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at) VALUES (?, ?, ?, ?, ?, ?);`;
 const SELECT_UNREAD_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? ORDER BY id ASC LIMIT ?;`;
 const SELECT_SINCE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND posted_at >= ? ORDER BY id ASC LIMIT ?;`;
-const SELECT_UNREAD_ALL_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? ORDER BY id ASC;`;
 const SELECT_MESSAGES_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? ORDER BY id DESC LIMIT ?;`;
 const SELECT_MESSAGES_BEFORE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id < ? ORDER BY id DESC LIMIT ?;`;
+const SELECT_PENDING_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? AND id <= ? ORDER BY id ASC;`;
+const UPDATE_LAST_READ_CLAMPED_SQL = `UPDATE chat_members SET last_read_id = MAX(last_read_id, ?) WHERE room = ? AND handle = ?;`;
 
-// `@` is strictly the mention sigil and `/` would reshape chat/wake/<handle>
-// into a nested topic glob, so both are excluded even though the rest of
-// [a-z0-9._-] is otherwise permissive.
+// `@` is strictly the mention sigil, and `/` would reshape the
+// `chat/<room>/msg` event topic (lib/daemon/handlers/chat.ts's
+// postAndNotify) into extra segments -- so both are excluded even though
+// the rest of [a-z0-9._-] is otherwise permissive. Delivery chain keys
+// ("<room>:<handle>", also chat.ts) rely on the same charset to keep each
+// half free of the other's ":" separator.
 export function isValidChatName(name: string): boolean {
   return /^[a-z0-9._-]+$/.test(name);
 }
@@ -167,10 +154,10 @@ export function ensureRoomRow(room: string, now: number, db: Database = getState
 
 /**
  * Refuses a colliding handle rather than suffixing it. The suffix is only
- * reachable from inside this function, while `tail`/`post`/`read` each
- * resolve the same handle independently and can only produce the
- * unsuffixed base — a suffixed join would desync the joined handle from
- * the one its tail arms on and its posts travel as.
+ * reachable from inside this function, while `post`/`read`/`join` each
+ * resolve the same handle independently and can only produce the unsuffixed
+ * base, so a suffixed join would desync the joined handle from the one every
+ * other verb resolves and posts travel as.
  */
 export function joinRoom(
   args: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string },
@@ -194,14 +181,14 @@ export function joinRoom(
 
     const maxId = (db.query(SELECT_ROOM_MAX_ID_SQL).get(room) as { maxId: number }).maxId;
 
-    // The wake topic (chat/wake/<handle>) and the tail pidfile are keyed on the
-    // handle ALONE, across every room — so a handle must map to one cwd
-    // everywhere, not just within this room. A row for this handle in any room
-    // from a different cwd is a collision: two directories sharing a handle
-    // would share one wake stream and one pidfile. Once a presence row exists
-    // for the handle, presence owns uniqueness instead (spec "The shipped
-    // joinRoom cwd guard is scoped to unsigned handles") — memberships from an
-    // earlier cwd are just that session's history.
+    // An unsigned handle has no presence row to establish identity, so this
+    // guard is what stands in: a handle must map to one cwd across every
+    // room, or two different directories could silently share one identity.
+    // A row for this handle in any room from a different cwd is a collision.
+    // Once a presence row exists for the handle, presence owns uniqueness
+    // instead (spec "The shipped joinRoom cwd guard is scoped to unsigned
+    // handles"); memberships from an earlier cwd are just that session's
+    // history.
     const priorRows = db.query(SELECT_HANDLE_MEMBERSHIPS_SQL).all(handle) as MemberRow[];
     const collision = priorRows.find((r) => r.cwd !== argCwd);
     if (collision && !presenceForHandle(handle, db)) {
@@ -242,8 +229,8 @@ export function leaveRoom(room: string, handle: string, db: Database = getStateD
 }
 
 /** A handle's memberships in rooms that are not archived: the rows every
-    room-less walk (rooms, read, the tail's catch-up, the pulse line) is
-    allowed to see. An explicit room bypasses this on purpose. */
+    room-less walk (rooms, read, mark) is allowed to see. An explicit room
+    bypasses this on purpose. */
 function openMembershipsFor(handle: string, db: Database): MembershipRow[] {
   const rows = db.query(SELECT_HANDLE_MEMBERSHIPS_WITH_ROOM_SQL).all(handle) as MembershipRow[];
   return rows.filter((r) => r.archived_at === null);
@@ -305,82 +292,6 @@ export function roomDefaultWake(room: string, db: Database = getStateDb()): Wake
 export function listMembers(room: string, db: Database = getStateDb()): ChatMember[] {
   const rows = db.query(SELECT_ROOM_MEMBERS_SQL).all(room) as MemberRow[];
   return rows.map(rowToMember);
-}
-
-/**
- * Presence uses `persistOrWarn`, not `runCriticalWrite`: a lost arm/touch/
- * disarm write is regenerated by the next poll cycle, so it belongs to the
- * cache class, not the no-recovery-path class. Each also dual-writes the
- * presence row when `presenceForHandle` hits (spec "chat_members keeps its
- * presence columns, and the two tables are dual-written"), wrapped in one
- * transaction so both tables commit together or neither does.
- */
-export function armMember(room: string | undefined, handle: string, db: Database = getStateDb()): void {
-  const now = Date.now();
-  const run = db.transaction(() => {
-    if (room) db.query(UPDATE_ARMED_BY_ROOM_SQL).run(now, room, handle);
-    else db.query(UPDATE_ARMED_BY_HANDLE_SQL).run(now, handle);
-    // Arming starts a new tail epoch: clearing tail_seen_at here is what
-    // keeps a re-arm reading live from the moment it arms rather than deaf
-    // until its first touch (spec "chat:arm starts a new tail epoch").
-    if (presenceForHandle(handle, db)) armPresenceByHandle(handle, now, db);
-  });
-  persistOrWarn("chat-store", run, { op: "armMember", room, handle });
-}
-
-/**
- * A touch is proof of an armed tail: only `rt chat tail` sends one, and only
- * after its own arm. So a touch re-asserts `armed_at` wherever it is NULL,
- * with the same room scope the arm used. That is what heals a tail that
- * outlived a daemon restart: `clearAllArmed` at boot disarms it, the tail
- * reconnects and keeps touching, and without this it would read idle for
- * the rest of its life. An existing `armed_at` is never moved, so the arm
- * epoch a re-arm started stays the one that counts.
- */
-export function touchMember(room: string | undefined, handle: string, db: Database = getStateDb()): void {
-  const now = Date.now();
-  const run = db.transaction(() => {
-    db.query(UPDATE_LAST_SEEN_SQL).run(now, handle);
-    if (room) db.query(REARM_BY_ROOM_SQL).run(now, room, handle);
-    else db.query(REARM_BY_HANDLE_SQL).run(now, handle);
-    if (presenceForHandle(handle, db)) touchPresenceByHandle(handle, now, db);
-  });
-  persistOrWarn("chat-store", run, { op: "touchMember", room, handle });
-}
-
-export function disarmMember(handle: string, db: Database = getStateDb()): void {
-  const run = db.transaction(() => {
-    db.query(UPDATE_ARMED_BY_HANDLE_SQL).run(null, handle);
-    if (presenceForHandle(handle, db)) disarmPresenceByHandle(handle, db);
-  });
-  persistOrWarn("chat-store", run, { op: "disarmMember", handle });
-}
-
-/**
- * No waiter outlives the daemon, so every `armed_at` still set at boot is
- * stale by definition — called once at daemon startup, before serving. A
- * TAIL can outlive the daemon, though: it reconnects and its next touch
- * re-arms it (see `touchMember`), so this clear only sticks for tails that
- * really died. The
- * return value is member rows cleared only: `chat_presence` is cleared
- * alongside for the same reason, but a presence row shadows a member row
- * rather than adding a distinct waiter, so counting both would double-count.
- */
-export function clearAllArmed(db: Database = getStateDb()): number {
-  // A single db.transaction()-wrapped write, per persistOrWarn's contract:
-  // both clears commit or neither does, and `cleared` is only assigned from
-  // the transaction's return value, so a swallowed SQLITE_BUSY on the second
-  // statement leaves it at 0 rather than reporting a count that never landed.
-  const run = db.transaction((): number => {
-    const n = db.query(CLEAR_ALL_ARMED_SQL).run().changes;
-    db.query(CLEAR_ALL_PRESENCE_ARMED_SQL).run();
-    return n;
-  });
-  let cleared = 0;
-  persistOrWarn("chat-store", () => { cleared = run(); }, {
-    op: "clearAllArmed",
-  });
-  return cleared;
 }
 
 function getRoomMaxId(room: string, db: Database): number {
@@ -487,10 +398,11 @@ export function readUnread(
       const maxId = getRoomMaxId(member.room, db);
       const cursor = clampCursor(member, maxId, db);
       // A sinceMs read is a time window over the room, read or not: the only
-      // way back to a message once the cursor has passed it (a tail line
-      // truncates, and the viewer may be unreachable). The cursor-bound read
-      // is contiguous, so advancing to the highest id returned marks exactly
-      // what was shown; the window is not contiguous and never advances.
+      // way back to a message once the cursor has passed it (a delivery that
+      // never landed, or a viewer that was unreachable at the time). The
+      // cursor-bound read is contiguous, so advancing to the highest id
+      // returned marks exactly what was shown; the window is not contiguous
+      // and never advances.
       const rows = (
         sinceMs !== undefined
           ? db.query(SELECT_SINCE_SQL).all(member.room, sinceMs, limit)
@@ -509,6 +421,31 @@ export function readUnread(
   });
 
   return run();
+}
+
+/**
+ * Same shape as `readUnread`'s cursor-bound branch, minus the write: never
+ * advances `last_read_id`. For a caller that must preview what a member
+ * would see (the sign-in welcome frame) before committing to having shown
+ * it -- delivery can still fail after the preview is built, and only a
+ * caller that confirms delivery (via `markDelivered`) may advance the
+ * cursor, or a failed send permanently loses whatever this returned.
+ */
+export function peekUnread(
+  args: { handle: string; room?: string; limit: number },
+  db: Database = getStateDb(),
+): { room: string; messages: ChatMessage[] }[] {
+  const { handle, room, limit } = args;
+  const members = membershipsFor(handle, room, db);
+  const results: { room: string; messages: ChatMessage[] }[] = [];
+  for (const member of members) {
+    const maxId = getRoomMaxId(member.room, db);
+    const cursor = member.last_read_id <= maxId ? member.last_read_id : maxId;
+    const rows = db.query(SELECT_UNREAD_SQL).all(member.room, cursor, limit) as MessageRow[];
+    if (rows.length === 0) continue;
+    results.push({ room: member.room, messages: rows.map(rowToMessage) });
+  }
+  return results;
 }
 
 export function listMessages(
@@ -532,37 +469,29 @@ export function markRead(handle: string, room?: string, db: Database = getStateD
   }
 }
 
-export function unreadWakingCount(
-  handle: string,
-  db: Database = getStateDb(),
-): { room: string; count: number; mentions: number; maxId: number }[] {
-  const members = openMembershipsFor(handle, db);
-  const results: { room: string; count: number; mentions: number; maxId: number }[] = [];
+/**
+ * A delivered body is the read surface: the daemon calls this in place of
+ * markRead once a Claude inbox socket confirms the frame landed, bounded to
+ * the id actually delivered rather than the room's current max. The MAX
+ * clamp is required, not defensive: two deliveries for the same recipient
+ * can be in flight at once (a slow send racing a fast one for a later
+ * message), and the slower one completing second must never walk the cursor
+ * backwards past what the faster one already confirmed delivered.
+ */
+export function markDelivered(room: string, handle: string, upToId: number, db: Database = getStateDb()): void {
+  db.query(UPDATE_LAST_READ_CLAMPED_SQL).run(upToId, room, handle);
+}
 
-  for (const member of members) {
-    if (member.wake_on === "none") continue;
-
-    const maxId = getRoomMaxId(member.room, db);
-    const cursor = clampCursor(member, maxId, db);
-    if (cursor >= maxId) continue;
-
-    const rows = db.query(SELECT_UNREAD_ALL_SQL).all(member.room, cursor) as MessageRow[];
-    // Same recipient rule the post path used, so the two never diverge. The
-    // room's member set is constant across these rows, so fetch it once and
-    // reuse it rather than re-querying inside recipientsFor for every row.
-    const roomMembers = db.query(SELECT_ROOM_MEMBERS_SQL).all(member.room) as MemberRow[];
-    let count = 0;
-    for (const row of rows) {
-      const rowMentions: string[] = row.mentions ? (JSON.parse(row.mentions) as string[]) : [];
-      if (recipientsFromMembers(roomMembers, row.handle, rowMentions).includes(handle)) count++;
-    }
-    if (count === 0) continue;
-
-    const mentionsCount = (
-      db.query(SELECT_ROOM_UNREAD_MENTIONS_SQL).get(member.room, cursor, `%"${escapeLike(handle)}"%`) as { n: number }
-    ).n;
-    results.push({ room: member.room, count, mentions: mentionsCount, maxId });
-  }
-
-  return results;
+/**
+ * A recipient's undelivered backlog in one room, bounded above by upToId. A
+ * failed delivery leaves the cursor behind; the next successful one must
+ * catch up everything since, not just the message that triggered it, or the
+ * skipped ones are gone from the recipient's inbox for good once the cursor
+ * advances past them.
+ */
+export function pendingMessages(room: string, handle: string, upToId: number, db: Database = getStateDb()): ChatMessage[] {
+  const member = db.query(SELECT_ROOM_MEMBER_SQL).get(room, handle) as MemberRow | null;
+  if (!member) return [];
+  const rows = db.query(SELECT_PENDING_SQL).all(room, member.last_read_id, upToId) as MessageRow[];
+  return rows.map(rowToMessage);
 }

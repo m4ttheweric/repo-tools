@@ -69,7 +69,7 @@ export function buildRoutedHandlers(opts: {
   };
   // createChatHandlers also exposes `db` (its test-isolation seam); dropped
   // here so it never lands as a bogus "db" entry in the command map below.
-  const { db: _chatDb, ...chatHandlers } = createChatHandlers({ db: opts.stateDb, emitEvent });
+  const { db: _chatDb, ...chatHandlers } = createChatHandlers({ db: opts.stateDb, emitEvent, repoIndex: ctx.repoIndex });
   const { db: _paneDb, ...paneHandlers } = createPaneHandlers({ db: opts.stateDb, repoIndex: ctx.repoIndex });
   // Same seam as chatHandlers above: createAgentHandlers exposes `db` for
   // test isolation only.

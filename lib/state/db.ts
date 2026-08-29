@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8). */
-export const SCHEMA_VERSION = 8;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8 + v9). */
+export const SCHEMA_VERSION = 9;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -193,8 +193,8 @@ CREATE TABLE IF NOT EXISTS chat_members (
   joined_at     INTEGER NOT NULL,
   last_read_id  INTEGER NOT NULL DEFAULT 0,
   wake_on       TEXT NOT NULL DEFAULT 'mention',
-  last_seen_at  INTEGER,
-  armed_at      INTEGER,
+  last_seen_at  INTEGER,                 -- vestigial (delivery-v2 hard cutover): no code reads or writes this column; kept for schema stability, never migrated away
+  armed_at      INTEGER,                 -- vestigial (delivery-v2 hard cutover): no code reads or writes this column; kept for schema stability, never migrated away
   cwd           TEXT,
   pane          TEXT,
   PRIMARY KEY (room, handle)
@@ -216,9 +216,9 @@ CREATE TABLE IF NOT EXISTS chat_presence (
   pane           TEXT,                   -- HERDR_PANE_ID when known
   status_text    TEXT,                   -- the away message; NULL when back
   signed_in_at   INTEGER NOT NULL,
-  last_seen_at   INTEGER NOT NULL,       -- SESSION heartbeat: written by pulse (and sign-in)
-  tail_seen_at   INTEGER,                -- TAIL heartbeat: written ONLY by chat:touch from the tail loop
-  armed_at       INTEGER,                -- set while a tail is live, cleared on exit
+  last_seen_at   INTEGER NOT NULL,       -- set at sign-in; prune's staleness leg reads it
+  tail_seen_at   INTEGER,                -- vestigial (delivery-v2 hard cutover): no code reads or writes this column; kept for schema stability, never migrated away
+  armed_at       INTEGER,                -- vestigial (delivery-v2 hard cutover): no code reads or writes this column; kept for schema stability, never migrated away
   signed_out_at  INTEGER                 -- NULL while signed in
 );
 CREATE INDEX IF NOT EXISTS chat_presence_handle ON chat_presence(handle);
@@ -301,6 +301,14 @@ function addArchivedAtColumnIfMissing(db: Database): void {
   const columns = db.query("PRAGMA table_info(chat_rooms);").all() as { name: string }[];
   if (columns.some((c) => c.name === "archived_at")) return;
   db.exec("ALTER TABLE chat_rooms ADD COLUMN archived_at INTEGER;");
+}
+
+/** agents.handle (v9): the chat handle reserved at agent:start. Same
+    conditional-exec rule as `sections` and `archived_at` above. */
+function addHandleColumnIfMissing(db: Database): void {
+  const columns = db.query("PRAGMA table_info(agents);").all() as { name: string }[];
+  if (columns.some((c) => c.name === "handle")) return;
+  db.exec("ALTER TABLE agents ADD COLUMN handle TEXT;");
 }
 
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
@@ -440,6 +448,7 @@ function runMigrations(db: Database, dir: string): void {
       db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA + V7_SCHEMA);
       addSectionsColumnIfMissing(db);
       addArchivedAtColumnIfMissing(db);
+      addHandleColumnIfMissing(db);
       // Legacy-JSON import is single-shot and only correct from a true
       // v0 (never-migrated) database: branch-cache's UPSERT would silently
       // overwrite current rows with stale ones, and project-mrs-store's

@@ -142,6 +142,7 @@ function renderRecord(r: AgentRecord): string {
   const bits = [
     `${r.id}  ${repoLabel(r.repo)}  ${r.surface}`,
     `session ${r.sessionId}`,
+    r.handle && `handle ${r.handle}`,
     r.model && `model ${r.model}`,
     r.account && `account ${r.account}`,
     r.paneId && `pane ${r.paneId}`,
