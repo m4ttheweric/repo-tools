@@ -36,6 +36,8 @@ import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
 import { parkUntilIntended, probeSocketHolder, daemonFlavor } from "./daemon/park.ts";
 import { evictStaleDaemon } from "./daemon/boot-reconcile.ts";
 import { resolveUserPath } from "./daemon/user-path.ts";
+import { shortReqId, makeSuppressor } from "./daemon/command-attribution.ts";
+import { unknownCommandReply } from "./daemon/unknown-command.ts";
 // Every state.db API is reached through the lib/state barrel, never through
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
@@ -50,7 +52,7 @@ import { runBootIdentityMigration } from "./daemon/boot-migrate.ts";
 import { runCapture } from "./subprocess.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
-import { startApiServer, withApiPortParkRetry, broadcast } from "./daemon/api-server.ts";
+import { startApiServer, withApiPortParkRetry, broadcast, apiWsClientCount } from "./daemon/api-server.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
@@ -58,8 +60,15 @@ import { startAgentStatusPoller } from "./daemon/agent-status-poller.ts";
 import {
   initFreshness,
   reconcileFreshness,
+  getFreshnessSnapshot,
   type FreshnessEnv,
 } from "./daemon/freshness.ts";
+import { startLoopMonitor } from "./daemon/loop-monitor.ts";
+import { createHealthSampler } from "./daemon/health-sampler.ts";
+import { writeHeartbeat } from "./daemon/heartbeat-file.ts";
+import { computeHealth } from "./daemon/health.ts";
+import { isCrashLooping, readSupervisionState } from "./daemon/supervision-state.ts";
+import { setSettingsWarnSink } from "./settings/resolve.ts";
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import { createEventsBus } from "./daemon/events-bus.ts";
@@ -118,6 +127,11 @@ redirectNativeStderr();
 
 const loggerHandle = await getDaemonLogger();
 const log = loggerHandle.logger;
+
+// Route the settings resolver's dedup'd warn sink into structured daemon
+// logging, so a hot-path getSetting on a disallowed-scope key surfaces once
+// in the daemon log instead of the resolver's own console fallback.
+setSettingsWarnSink((m) => log.warn({ src: "settings" }, m));
 
 // Wire uncaughtException + unhandledRejection through pino as early as the
 // logger allows: every module-scope side effect below this point
@@ -205,9 +219,9 @@ const cache: BranchCacheStore = {
 // Port scan cache, held as a single mutable ref so handler modules can read
 // fresh values without getters. The port poller mutates it in place.
 const portCacheRef = { ports: [] as PortEntry[], updatedAt: 0 };
-// Refresh-cycle status ref (last successful cache refresh), also mutated in
-// place so status handlers read a live value.
-const refreshStatusRef = { lastRefreshAt: 0 };
+// Refresh-cycle status ref (last cycle's outcome), also mutated in place so
+// status handlers read a live value.
+const refreshStatusRef = { lastRefreshAt: 0, lastSuccessAt: 0, failedRepos: 0, enrichErrors: 0 };
 const startedAt = Date.now();
 
 // Injected at compile time via `bun build --define RT_VERSION='"v1.x.x"'` (see cli.ts) —
@@ -276,7 +290,8 @@ function logRetentionDays(): number {
 }
 setInterval(() => {
   try {
-    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now());
+    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now(),
+      (phase, err, file) => log.warn({ err, phase, file }, "log prune step failed"));
     if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
   } catch (err) {
     log.warn({ err }, "log prune failed");
@@ -285,7 +300,8 @@ setInterval(() => {
 // Boot-time sweep to handle frequent daemon restarts that would otherwise starve the daily interval.
 setTimeout(() => {
   try {
-    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now());
+    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now(),
+      (phase, err, file) => log.warn({ err, phase, file }, "log prune step failed"));
     if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
   } catch (err) {
     log.warn({ err }, "log prune failed");
@@ -348,6 +364,63 @@ const agentStatusPoller = startAgentStatusPoller({
   log: loggerHandle.childLogger("agent-status"),
 });
 
+// In-flight command name, polled by the loop monitor to spot a handler that
+// never returns. Declared before the monitor so its `currentCmd` closure
+// captures this same mutable ref, not a stale one.
+const currentCmd: { cmd: string | null } = { cmd: null };
+
+// 5-min metrics log + the two cached signals health needs but is too costly
+// to compute per call: the 1h rss-growth baseline and free disk under RT_DIR.
+const healthSampler = createHealthSampler({
+  log,
+  rtDir: RT_DIR,
+  wsClients: apiWsClientCount,
+  // Sourced exactly as handlerCtx.watchedConfigs is below... there is no bare
+  // `watchedConfigs` alias at this scope.
+  watchers: () => hooksGuard.watchedConfigs.size,
+  startedAt,
+});
+healthSampler.sample(); // seed baseline/free immediately, don't wait 5min for the first reading
+safeInterval(() => healthSampler.sample(), 5 * 60_000, "health-sample", log);
+
+// 250ms event-loop drift monitor; also writes the cross-process liveness
+// heartbeat file every ~2s. Both timers are unref'd and db-free internally.
+const loopMon = startLoopMonitor({
+  log,
+  currentCmd: () => currentCmd.cmd,
+  onHeartbeat: (at, seq) => writeHeartbeat(RT_DIR, { at, seq }),
+});
+
+/** Not cached: computeHealth is pure/cheap, and every input it reads is
+ *  already either a live ref or a fast getter, so recomputing per call keeps
+ *  the snapshot honest without a staleness window to reason about. */
+function buildHealthSnapshot() {
+  const now = Date.now();
+  const sup = readSupervisionState();
+  const failuresLastHour = sup.recentFailures.filter((f) => f.at > now - 60 * 60_000).length;
+  return computeHealth({
+    now,
+    uptimeMs: now - startedAt,
+    mem: process.memoryUsage(),
+    rssBaseline: healthSampler.rssBaseline(),
+    wsClients: apiWsClientCount(),
+    watchers: hooksGuard.watchedConfigs.size,
+    freshness: getFreshnessSnapshot(),
+    refresh: {
+      lastSuccessAt: refreshStatusRef.lastSuccessAt,
+      failedRepos: refreshStatusRef.failedRepos,
+      enrichErrors: refreshStatusRef.enrichErrors,
+    },
+    refreshIntervalMs: 5 * 60_000,
+    eventLoop: { ...loopMon.stats },
+    supervisionFailuresLastHour: failuresLastHour,
+    crashLooping: isCrashLooping(sup, now),
+    loggerDegraded: loggerHandle.loggerDegraded?.() ?? false,
+    recoveredErrorRateLastWindow: loggerHandle.recoveredErrorCount?.() ?? 0,
+    freeBytes: healthSampler.freeBytes(),
+  });
+}
+
 // ─── Handler context + command routing ───────────────────────────────────────
 
 const handlerCtx: HandlerContext = {
@@ -361,6 +434,10 @@ const handlerCtx: HandlerContext = {
   checkAndRepairHooksPath: hooksGuard.checkAndRepairHooksPath,
   startWatchingRepo: hooksGuard.startWatchingRepo,
   refreshStatusRef,
+  getHealth: buildHealthSnapshot,
+  heartbeatSeq: loopMon.seq,
+  setLogLevel: (l) => { log.level = l; log.info({ level: l }, "log level changed"); },
+  getLogLevel: () => log.level,
 };
 
 /** Env bundle for the live-freshness subsystem. */
@@ -376,20 +453,49 @@ let routedHandlers: ReturnType<typeof buildRoutedHandlers> | undefined;
 // policy: docs/daemon-supervision-design.md).
 let shuttingDownViaVerb = false;
 
+const rejectSuppressor = makeSuppressor(60_000);
+const SLOW_COMMAND_MS = 2000;
+
 async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
   const t0 = Date.now();
+  const reqId = shortReqId();
+  const caller = payload && typeof payload._client === "string" ? payload._client : "unknown";
+  currentCmd.cmd = cmd;
   try {
     const result = await routeCommand(cmd, payload, signal);
+    const durationMs = Date.now() - t0;
     if (result && result.ok === false) {
-      log.warn({ cmd, error: result.error, durationMs: Date.now() - t0 }, "command rejected");
+      const key = `${cmd}|${result.error ?? ""}`;
+      const { emit, suppressed } = rejectSuppressor.check(key, Date.now());
+      if (emit) {
+        log.warn(
+          { reqId, cmd, caller, error: result.error, durationMs, digest: redactDigest(payload), ...(suppressed ? { suppressed } : {}) },
+          "command rejected",
+        );
+      }
+      return { ...result, reqId };
+    }
+    if (durationMs > SLOW_COMMAND_MS) {
+      log.info({ reqId, cmd, caller, durationMs }, "command handled (slow)");
     } else {
-      log.debug({ cmd, durationMs: Date.now() - t0 }, "command handled");
+      log.debug({ reqId, cmd, caller, durationMs }, "command handled");
     }
     return result;
   } catch (err) {
-    log.error({ err, cmd, durationMs: Date.now() - t0 }, "command failed");
+    log.error({ err, reqId, cmd, caller, durationMs: Date.now() - t0, digest: redactDigest(payload) }, "command failed");
     throw err;
+  } finally {
+    currentCmd.cmd = null;
   }
+}
+
+/** Loggable, secret-free summary of a command payload: top-level key names
+ *  plus a whitelist of identifying fields safe to echo into logs. */
+function redactDigest(payload: any): Record<string, unknown> {
+  if (!payload || typeof payload !== "object") return {};
+  const keys = Object.keys(payload);
+  const pick = (k: string): Record<string, unknown> => (payload[k] !== undefined ? { [k]: payload[k] } : {});
+  return { keys, ...pick("repo"), ...pick("repoName"), ...pick("branch"), ...pick("iid"), ...pick("room") };
 }
 
 async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
@@ -416,7 +522,7 @@ async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Pr
       return { ok: true, message: "shutting down" };
 
     default:
-      return { ok: false, error: `unknown command: ${cmd}` };
+      return unknownCommandReply(cmd, typeof RT_VERSION !== "undefined" ? RT_VERSION : "source");
   }
 }
 
@@ -433,6 +539,7 @@ const cleanup = (): void => {
   eventsBus.close();
   homeSnapshot.stop();
   agentStatusPoller.stop();
+  loopMon.stop();
   cleanupCore();
 };
 

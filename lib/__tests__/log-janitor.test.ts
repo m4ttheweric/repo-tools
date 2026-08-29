@@ -81,4 +81,11 @@ describe("pruneLogs", () => {
     const { removed } = pruneLogs(dir, 14, now);
     expect(removed).toEqual(["tray.2026-08-01.log"]);
   });
+
+  test("readdir failure reports via onError instead of swallowing", () => {
+    const calls: string[] = [];
+    const bogus = join("/nonexistent-xyz", "rt", "logs");
+    pruneLogs(bogus, 14, Date.now(), (phase) => calls.push(phase));
+    expect(calls).toContain("readdir");
+  });
 });

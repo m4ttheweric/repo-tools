@@ -8,6 +8,13 @@ function fakeCtx(): any {
     watchedConfigs: new Map(),
     cache: { entries: {} },
     portCacheRef: { ports: [], updatedAt: null },
+    getHealth: () => ({
+      level: "ok",
+      reasons: [],
+      metrics: { rss: 0, heapUsed: 0, external: 0, uptimeMs: 0, wsClients: 0, watchers: 0 },
+      eventLoop: { maxLagMs: 0, lastStallAt: null, lastStallCmd: null, stalls: 0 },
+    }),
+    heartbeatSeq: () => 0,
   };
 }
 

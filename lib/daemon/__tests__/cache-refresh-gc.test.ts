@@ -133,7 +133,7 @@ function wireCycle(): Wiring {
   const refresh = createCacheRefresher({
     log: silentLog,
     cache,
-    refreshStatusRef: { lastRefreshAt: 0 },
+    refreshStatusRef: { lastRefreshAt: 0, lastSuccessAt: 0, failedRepos: 0, enrichErrors: 0 },
     portCacheRef: { ports: [], updatedAt: 0 },
     repoIndex: () => ({ [CLEAN]: tempDir("rt-gcwire-clean-"), [FLAKY]: tempDir("rt-gcwire-flaky-") }),
     broadcast: () => {},
