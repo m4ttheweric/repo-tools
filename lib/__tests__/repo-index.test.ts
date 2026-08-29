@@ -65,6 +65,14 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
     return dir;
   }
 
+  /** A marker repo whose `.git/HEAD` names a branch, so the fs-read branch
+   *  label (getKnownRepos' single-worktree fast path) resolves without a spawn. */
+  function headedMarkerRepo(parent: string, name: string): string {
+    const dir = markerRepo(parent, name);
+    writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    return dir;
+  }
+
   /** A real, minimal git repo — used for "already indexed" fixtures so
    *  `git worktree list --porcelain` (the pre-existing, untouched call in
    *  getKnownRepos) resolves cleanly instead of falling into its catch. */
@@ -398,18 +406,19 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
       }
     });
 
-    test("under the cap: branch hints populated, one spawn per candidate", () => {
+    test("under the cap: branch hints populated from HEAD, no git spawns", () => {
       const { callsLog, restore } = fakeGit();
       try {
         const root = mkdtempSync(join(tmpdir(), "rt-cap-under-root-"));
-        for (let i = 0; i < 3; i++) markerRepo(root, `repo-${i}`);
+        for (let i = 0; i < 3; i++) headedMarkerRepo(root, `repo-${i}`);
         setRepoRoots([root]);
 
         const repos = getKnownRepos();
         const unregistered = repos.filter((r) => r.registered === false);
         expect(unregistered.length).toBe(3);
         expect(unregistered.every((r) => r.worktrees[0]?.branch === "main")).toBe(true);
-        expect(callCount(callsLog)).toBe(3);
+        // Single-worktree branch labels are read from .git/HEAD, not spawned.
+        expect(callCount(callsLog)).toBe(0);
 
         rmSync(root, { recursive: true, force: true });
       } finally {
