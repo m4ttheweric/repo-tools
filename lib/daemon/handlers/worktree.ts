@@ -614,7 +614,9 @@ export function createWorktreeHandlers(
       const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
       if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
       const treeName: string | undefined = typeof payload?.tree === "string" ? payload.tree : undefined;
-      if (!treeName) return { ok: false, error: "no-target" };
+      if (!treeName || treeName === "." || treeName === ".." || treeName.includes("/") || treeName.includes("\\")) {
+        return { ok: false, error: "no-target" };
+      }
 
       // Synthetic key: the restored tree's eventual path isn't known until
       // restoreTree resolves the pool root, so this locks the (repo, name)

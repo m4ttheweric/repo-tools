@@ -532,6 +532,28 @@ describe("worktree:dispose", () => {
   });
 });
 
+describe("worktree:restore", () => {
+  test.each(["..", ".", "a/b", "../evil", "a\\b", "..\\evil"])(
+    "rejects treeName %j before locking or calling restoreTree",
+    async (bad) => {
+      const repo = makeRepo();
+      const { h } = makeHandlers({ [repoName]: repo });
+      const res: any = await h["worktree:restore"]!({ repoName, tree: bad });
+      expect(res).toMatchObject({ ok: false, error: "no-target" });
+    },
+  );
+
+  test("a normal treeName is not rejected by validation (reaches restoreTree)", async () => {
+    const repo = makeRepo();
+    const { h } = makeHandlers({ [repoName]: repo });
+    // No retained entry exists for "alpha", so a treeName that clears
+    // validation surfaces restoreTree's own not-found, proving the guard
+    // did not swallow a legitimate name.
+    const res: any = await h["worktree:restore"]!({ repoName, tree: "alpha" });
+    expect(res).toMatchObject({ ok: false, error: "not-found" });
+  });
+});
+
 describe("worktree:list", () => {
   test("flags duplicate branches and joins MRs on (repoName, branch)", async () => {
     const repo = makeRepo();
