@@ -1,6 +1,6 @@
 import { describe, test, expect, mock } from "bun:test";
 import pino from "pino";
-import { safeInterval, safeTimeout } from "../safe-timers.ts";
+import { safeInterval, safeTimeout, scheduleSweep } from "../safe-timers.ts";
 
 const silentLog = pino({ level: "silent" });
 
@@ -52,4 +52,14 @@ describe("safeInterval / safeTimeout", () => {
     expect(ticks).toBeGreaterThan(0);
     expect(warn).not.toHaveBeenCalled();
   });
+});
+
+test("scheduleSweep fires boot + interval, catches throws, stops", async () => {
+  let fires = 0; const warns: unknown[] = [];
+  const log = { warn: (o: unknown) => warns.push(o) } as any;
+  const h = scheduleSweep("t", () => { fires++; if (fires === 1) throw new Error("x"); },
+    { bootDelayMs: 5, intervalMs: 10 }, log);
+  await Bun.sleep(8);   expect(fires).toBe(1); expect(warns.length).toBe(1); // boot fire threw, warned
+  await Bun.sleep(12);  expect(fires).toBeGreaterThanOrEqual(2);
+  h.stop(); const n = fires; await Bun.sleep(15); expect(fires).toBe(n);
 });

@@ -40,3 +40,33 @@ export function safeTimeout(
     }
   }, ms);
 }
+
+/**
+ * One boot-delay fire plus a repeating interval on the same tick, for the
+ * daemon's periodic sweeps (events, pruneRuns, pruneLogs). Both timers are
+ * unref'd so a sweep alone never keeps the process alive, and stop() clears
+ * both from one handle.
+ */
+export function scheduleSweep(
+  name: string,
+  fn: () => void | Promise<void>,
+  opts: { bootDelayMs: number; intervalMs: number },
+  log: Logger,
+): { stop(): void } {
+  const tick = () => {
+    const result = fn();
+    if (result instanceof Promise) {
+      result.catch((err) => log.warn({ err, label: name }, "timer tick failed"));
+    }
+  };
+  const boot = safeTimeout(tick, opts.bootDelayMs, `${name}-boot`, log);
+  const interval = safeInterval(tick, opts.intervalMs, name, log);
+  boot.unref();
+  interval.unref();
+  return {
+    stop() {
+      clearTimeout(boot);
+      clearInterval(interval);
+    },
+  };
+}

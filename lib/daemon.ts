@@ -80,7 +80,7 @@ import {
   recordCleanExit,
   type BootPhase,
 } from "./daemon/supervision-state.ts";
-import { safeInterval, safeTimeout } from "./daemon/safe-timers.ts";
+import { safeInterval, scheduleSweep } from "./daemon/safe-timers.ts";
 import { pruneRuns } from "./runs/prune.ts";
 import { pruneLogs } from "./log-janitor.ts";
 import { getSetting } from "./settings/resolve.ts";
@@ -246,33 +246,32 @@ const hooksGuard = createHooksGuard(log);
 // Pane-communication events bus (RT-44): SQLite journal + in-memory waiters.
 const eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
 setPhase("events-db");
+// Periodic sweeps (events retention, run prune, log prune): each gets a
+// boot-time fire (frequent daemon restarts would otherwise starve the daily/
+// hourly interval) plus the recurring interval, via scheduleSweep. Handles
+// are captured here for now; A5 moves them into daemon units.
+const sweepHandles: Array<{ stop(): void }> = [];
+
 // Hourly retention sweep — cheap; rides its own interval rather than pollers
-// because it needs no poller deps. safeInterval/safeTimeout: a sync sqlite
-// throw here (e.g. SQLITE_FULL) must warn, not become an uncaughtException
-// that exits the daemon.
-safeInterval(() => eventsBus.sweep(), 60 * 60 * 1000, "events-sweep", log);
-// Boot-time sweep to handle frequent daemon restarts that would otherwise starve the hourly interval.
-safeTimeout(() => eventsBus.sweep(), 30_000, "events-sweep-boot", log);
+// because it needs no poller deps.
+sweepHandles.push(scheduleSweep(
+  "events-sweep",
+  () => { eventsBus.sweep(); },
+  { bootDelayMs: 30_000, intervalMs: 60 * 60 * 1000 },
+  log,
+));
 
 // Age-floor prune of pipeline run dirs — daily; assertPrunable in prune.ts
 // guards every deletion against the runs root.
-setInterval(() => {
-  try {
+sweepHandles.push(scheduleSweep(
+  "runs-prune",
+  () => {
     const { removed } = pruneRuns();
     if (removed.length > 0) log.info({ removed: removed.length }, "pruned old pipeline runs");
-  } catch (err) {
-    log.warn({ err }, "runs prune failed");
-  }
-}, 24 * 60 * 60 * 1000);
-// Boot-time prune to handle frequent daemon restarts that would otherwise starve the daily interval.
-setTimeout(() => {
-  try {
-    const { removed } = pruneRuns();
-    if (removed.length > 0) log.info({ removed: removed.length }, "pruned old pipeline runs");
-  } catch (err) {
-    log.warn({ err }, "runs prune failed");
-  }
-}, 60_000);
+  },
+  { bootDelayMs: 60_000, intervalMs: 24 * 60 * 60 * 1000 },
+  log,
+));
 
 // Age-floor prune of every surface's rotated log files — daily; generalizes
 // cli-logger.ts's own age sweep (which stays as-is for the cli surface) to
@@ -288,25 +287,16 @@ function logRetentionDays(): number {
     return 14;
   }
 }
-setInterval(() => {
-  try {
+sweepHandles.push(scheduleSweep(
+  "logs-prune",
+  () => {
     const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now(),
       (phase, err, file) => log.warn({ err, phase, file }, "log prune step failed"));
     if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
-  } catch (err) {
-    log.warn({ err }, "log prune failed");
-  }
-}, 24 * 60 * 60 * 1000);
-// Boot-time sweep to handle frequent daemon restarts that would otherwise starve the daily interval.
-setTimeout(() => {
-  try {
-    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now(),
-      (phase, err, file) => log.warn({ err, phase, file }, "log prune step failed"));
-    if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
-  } catch (err) {
-    log.warn({ err }, "log prune failed");
-  }
-}, 60_000);
+  },
+  { bootDelayMs: 60_000, intervalMs: 24 * 60 * 60 * 1000 },
+  log,
+));
 
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
 const cron = startCron(loadCronConfig(log), { log });
