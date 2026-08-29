@@ -92,8 +92,6 @@ export interface ChatMember {
   joinedAt: number;
   lastReadId: number;
   wakeOn: WakeMode;
-  lastSeenAt?: number;
-  armedAt?: number;
   cwd?: string;
   pane?: string;
   /** Presence-joined by chat:who's handler — the only place this type is ever returned, and it always attaches one. */
@@ -130,7 +128,7 @@ export interface RoomSummary {
  * above: mirrors lib/state/presence-store.ts's types, which rt-client
  * cannot import.
  */
-export type BuddyStatus = "live" | "idle" | "deaf" | "offline";
+export type BuddyStatus = "live" | "idle" | "offline";
 
 export interface PresenceRow {
   sessionId: string;
@@ -143,8 +141,6 @@ export interface PresenceRow {
   statusText?: string;
   signedInAt: number;
   lastSeenAt: number;
-  tailSeenAt?: number;
-  armedAt?: number;
   signedOutAt?: number;
 }
 
@@ -223,7 +219,7 @@ export interface AgentRecord {
   id: string; repo: string; cwd: string; provider: string;
   surface: AgentSurface; sessionId: string;
   model?: string; effort?: string; account?: string;
-  label?: string; caller?: string;
+  label?: string; caller?: string; handle?: string;
   paneId?: string; tabId?: string; workspaceId?: string;
   extraArgs?: string; exitCode?: number; resultPath?: string;
   createdAt: number; lastResumedAt?: number; finishedAt?: number;
@@ -293,27 +289,51 @@ export interface Commands {
   "chat:who": { payload: { room: string }; data: { members: ChatMember[] } };
   "chat:mark": { payload: { handle: string; room?: string }; data: Record<string, never> };
   "chat:messages": { payload: { room: string; before?: number; limit?: number }; data: { messages: ChatMessage[] } };
-  "chat:arm": { payload: { handle: string; room?: string; sessionId?: string }; data: Record<string, never> };
-  "chat:touch": { payload: { handle: string; room?: string; sessionId?: string }; data: Record<string, never> };
-  "chat:disarm": { payload: { handle: string; sessionId?: string }; data: Record<string, never> };
-  "chat:unread-waking": { payload: { handle: string; room?: string }; data: { rooms: { room: string; count: number; mentions: number; maxId: number }[] } };
 
   // A session id keys these to one signed-in handle, not a room-membership
   // handle string.
-  /** No `baseHandle` means "draw me a first name": the daemon picks the least recently used pool name no live session holds. */
+  /**
+   * No `baseHandle` means "draw me a first name": the daemon picks the least
+   * recently used pool name no live session holds. `viaPane` resolves
+   * `sessionId` daemon-side from herdr's `session.snapshot` for the pane id
+   * in `pane`, rather than trusting a caller-supplied id -- the caller may
+   * have none of its own (a human or another agent signing a target pane in
+   * on its behalf); the response's `sessionId` and `room` are then the only
+   * way that caller learns what got signed in and joined, since it has
+   * nothing local to derive either from.
+   */
   "chat:sign-in": {
-    payload: { sessionId: string; baseHandle?: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string };
-    data: { handle: string; baseHandle: string; reclaimed: boolean };
+    payload: {
+      sessionId?: string;
+      baseHandle?: string;
+      cwd?: string;
+      repo?: string;
+      branch?: string;
+      pane?: string;
+      statusText?: string;
+      viaPane?: boolean;
+      /** `viaPane` only: overrides the pane-cwd-derived room outright. */
+      room?: string;
+      /** `viaPane` only: skip room derivation/join entirely, same as --no-room on the non-pane path. */
+      noRoom?: boolean;
+    };
+    data: { handle: string; baseHandle: string; reclaimed: boolean; sessionId: string; room: string | null };
   };
-  "chat:sign-out": { payload: { sessionId: string }; data: Record<string, never> };
+  /**
+   * `viaPane` mirrors `chat:sign-in`'s: the daemon resolves `pane` to a
+   * session id via herdr's `session.snapshot` rather than trusting a
+   * caller-supplied one, so a process signing another pane out (herdr-chat,
+   * or a human invoking a target pane) needs neither that pane's session id
+   * nor its own. The response's `sessionId` is the RESOLVED id, the only way
+   * such a caller learns which session file to delete locally.
+   */
+  "chat:sign-out": {
+    payload: { sessionId?: string; pane?: string; viaPane?: boolean };
+    data: { sessionId: string };
+  };
   "chat:away": { payload: { sessionId: string; text: string }; data: Record<string, never> };
   "chat:back": { payload: { sessionId: string }; data: Record<string, never> };
   "chat:buddies": { payload: Record<string, never>; data: { buddies: Array<PresenceRow & { status: BuddyStatus }> } };
-  /** `unread`'s three fields are disjoint and sum to the true total: `dms` is DM-room waking count; `mentions` is non-DM waking mentions; `rooms` is non-DM waking count minus those mentions (never negative). */
-  "chat:pulse": {
-    payload: { sessionId: string; cwd?: string; repo?: string; branch?: string; pane?: string };
-    data: { unread: { dms: number; mentions: number; rooms: number }; status: BuddyStatus };
-  };
   "chat:dm": { payload: { from: string; to: string; body: string; sessionId?: string }; data: { room: string; id: number; recipients: string[] } };
   "chat:archive": { payload: { room: string; handle: string; archived: boolean }; data: { room: string; archivedAt: number | null } };
   "chat:dm-open": { payload: { from: string; to: string; sessionId?: string }; data: { room: string; created: boolean } };
@@ -358,16 +378,11 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "chat:who",
   "chat:mark",
   "chat:messages",
-  "chat:arm",
-  "chat:touch",
-  "chat:disarm",
-  "chat:unread-waking",
   "chat:sign-in",
   "chat:sign-out",
   "chat:away",
   "chat:back",
   "chat:buddies",
-  "chat:pulse",
   "chat:dm",
   "chat:archive",
   "chat:dm-open",

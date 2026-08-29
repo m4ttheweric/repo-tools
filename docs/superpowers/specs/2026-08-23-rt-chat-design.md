@@ -1,5 +1,11 @@
 # rt chat — multi-agent chat rooms with a web viewer
 
+> **Superseded in part:** `2026-08-28-rt-chat-delivery-v2-design.md` replaces
+> this document's wake/tail delivery model (arming a tail, wake events, the
+> pulse hook) with automatic push delivery straight into an agent's Claude
+> Code inbox. The rooms, membership, and store sections below remain
+> authoritative; only the delivery mechanism changed.
+
 **Ticket:** unassigned (rt project)
 **Date:** 2026-08-23
 **Status:** Approved design, pre-implementation

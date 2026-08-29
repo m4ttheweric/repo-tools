@@ -13,7 +13,7 @@ import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
 import {
   deleteAgent, finishAgent, getAgent, insertAgent, listAgents, markAgentResumed,
-  newAgentId, updateAgentPane, type AgentRecord, type AgentSurface,
+  newAgentId, reserveAgentHandle, updateAgentPane, type AgentRecord, type AgentSurface,
 } from "../../state/index.ts";
 import { buildClaudeArgv, buildPaneCommand, type ClaudeInvocation } from "../../agent-argv.ts";
 import { defaultHerdrRunner, launchInWorkspace, type HerdrRunner } from "../../agent-herdr.ts";
@@ -85,6 +85,7 @@ export function createAgentHandlers(opts: {
       ...(rec.account !== undefined && { account: rec.account }),
       ...(rec.model !== undefined && { model: rec.model }),
       ...(rec.effort !== undefined && { effort: rec.effort }),
+      ...(rec.handle !== undefined && { name: rec.handle }),
       ...(rec.extraArgs !== undefined && { extraArgs: rec.extraArgs }),
       ...(prompt !== undefined && { prompt }),
     };
@@ -159,7 +160,13 @@ export function createAgentHandlers(opts: {
       if (extraArgs !== undefined) rec.extraArgs = extraArgs;
       if (payload.label !== undefined) rec.label = payload.label;
       if (payload.caller !== undefined) rec.caller = payload.caller;
-      if (surface === "headless") rec.resultPath = agentResultPath(rec.id);
+      if (surface === "headless") {
+        rec.resultPath = agentResultPath(rec.id);
+      } else {
+        // Headless never signs into chat (see claudeArgs), so reserving a
+        // handle for it would only burn an LRU pool slot no one adopts.
+        rec.handle = reserveAgentHandle(db);
+      }
 
       const tabLabel = payload.tab ?? rec.label ?? rec.id;
       const workspaceLabel = payload.workspace ?? repoLabel(repo);

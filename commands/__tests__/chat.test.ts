@@ -18,11 +18,9 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -30,11 +28,13 @@ import { join } from "path";
 
 import { chat, __test__ } from "../chat.ts";
 import { createChatHandlers } from "../../lib/daemon/handlers/chat.ts";
-import { getStateDb, closeStateDb } from "../../lib/state/index.ts";
+import { getStateDb, closeStateDb, type RegistryDeps } from "../../lib/state/index.ts";
+import type { InboxBinding } from "../../lib/claude-registry.ts";
 import { sessionFilePath } from "../../lib/chat-session.ts";
 import { AGENT_NAMES } from "../../lib/chat-names.ts";
 import { setSetting } from "../../packages/rt-client/src/settings/write.ts";
 import { drainNotifications, peekNotifications } from "../../lib/notifier.ts";
+import { fakeHerdr, HerdrFakeError } from "../../lib/herdr/__tests__/fake-herdr.ts";
 
 // ─── in-process CLI + fake daemon harness ───────────────────────────────────
 
@@ -44,8 +44,8 @@ let origPaneId: string | undefined;
 let origSessionId: string | undefined;
 let origBackoff: string | undefined;
 let server: ReturnType<typeof Bun.serve> | null = null;
-// Real child processes (spawnChat); reaped in afterEach so a stray tail can't
-// outlive its test.
+// Real child processes spawned by a test (e.g. a stdin-fed `post`); reaped in
+// afterEach so a stray one can't outlive its test.
 const children: Array<ReturnType<typeof Bun.spawn>> = [];
 // Scripted replies for a command, consulted before the real handlers (for
 // commands whose real handler has side effects a unit test must not trigger:
@@ -54,6 +54,12 @@ let canned: Record<string, unknown> = {};
 // Every command this fake daemon dispatched, in order, for asserting exactly
 // what a verb sent the daemon.
 let seen: Array<{ cmd: string; payload: unknown }> = [];
+// Overrides the registry probe behind buddyStatus for one test at a time
+// (undefined uses the real resolver). Bun's os.homedir() does not follow a
+// runtime process.env.HOME change, so a fake ~/.claude/sessions file is not
+// reachable from here — this seam is the only way a CLI-level test can make
+// a handle read "live".
+let registryDeps: RegistryDeps | undefined;
 
 beforeEach(() => {
   origHome = process.env.HOME;
@@ -76,6 +82,7 @@ beforeEach(() => {
 
   canned = {};
   seen = [];
+  registryDeps = undefined;
 
   server = Bun.serve({
     unix: join(sockDir, "rt.sock"),
@@ -83,15 +90,8 @@ beforeEach(() => {
       const cmd = new URL(req.url).pathname.slice(1);
       const payload = req.method === "POST" ? await req.json() : {};
       seen.push({ cmd, payload });
-      // The tail drives the events bus directly; the CLI-verb harness has no
-      // real bus, so stub just enough for a spawned tail to arm and block.
-      if (cmd === "events:head") return Response.json({ ok: true, data: { cursor: 0 } });
-      if (cmd === "events:wait") {
-        await Bun.sleep(300); // empty long-poll round; the tail loops and stays alive
-        return Response.json({ ok: true, data: { events: [], cursor: 0 } });
-      }
       if (cmd in canned) return Response.json(canned[cmd]);
-      const handlers = createChatHandlers({ db: getStateDb(), emitEvent: () => 0 }) as unknown as Record<string, (p: unknown) => Promise<unknown>>;
+      const handlers = createChatHandlers({ db: getStateDb(), emitEvent: () => 0, registryDeps }) as unknown as Record<string, (p: unknown) => Promise<unknown>>;
       const handler = handlers[cmd];
       if (!handler) return Response.json({ ok: false, error: `unknown command: ${cmd}` });
       return Response.json(await handler(payload));
@@ -118,37 +118,6 @@ afterEach(async () => {
   else process.env.RT_CHAT_BACKOFF_MS = origBackoff;
 });
 
-/**
- * A REAL `rt chat …` process against the same temp HOME, so its pidfile lands
- * in the same rt dir and its `ps args` identify it as an rt chat tail (the
- * liveness+identity check the double-arm guard relies on). Runs cli.ts under
- * bun — there is no compiled binary in unit tests.
- */
-function spawnChat(args: string[]): ReturnType<typeof Bun.spawn> {
-  const cliPath = join(import.meta.dir, "..", "..", "cli.ts");
-  const proc = Bun.spawn(["bun", "run", cliPath, "chat", ...args], {
-    env: {
-      HOME: home,
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-      RT_SKIP_SETUP: "1",
-      CI: "true",
-      RT_CHAT_BACKOFF_MS: "150",
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  children.push(proc);
-  return proc;
-}
-
-/** Poll a predicate to a deadline (no daemon, no env — a pure wait). */
-async function until(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!pred()) {
-    if (Date.now() > deadline) throw new Error("until: predicate never became true");
-    await Bun.sleep(25);
-  }
-}
 
 /**
  * Mirrors commands/__tests__/runs.test.ts's runExpectingCleanExit: mocks
@@ -444,12 +413,10 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     }
   });
 
-  test("sign-in prints the identity line and the arm instruction; --no-room and --room work", async () => {
+  test("sign-in prints the identity line; --no-room and --room work", async () => {
     const out = await runChat(["sign-in", "--as", "x", "--room", "warroom", "--session", "s1"]);
     expect(out).toMatch(/signed in as x/);
     expect(out).toMatch(/#warroom/);
-    expect(out).toMatch(/rt chat tail/); // bare — no --as in the arm line
-    expect(out).not.toMatch(/rt chat tail --as/);
   });
 
   test("sign-in without --as draws a first name from the pool and keeps it on a repeat sign-in", async () => {
@@ -470,9 +437,146 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     }
   });
 
-  test("sign-in --json reports whether the session was renamed; never from a foreign --session", async () => {
+  test("sign-in --json reports the handle and room, with no rename-related fields", async () => {
     const out = await runChat(["sign-in", "--no-room", "--session", "s10", "--json"]);
-    expect(JSON.parse(out)).toMatchObject({ ok: true, renamed: null });
+    const parsed = JSON.parse(out);
+    expect(parsed).toMatchObject({ ok: true, room: null });
+    expect(parsed).not.toHaveProperty("renamed");
+    expect(parsed).not.toHaveProperty("title");
+  });
+
+  test("the session-rename module is gone: sign-in never spawns a rename subprocess", () => {
+    expect(existsSync(join(import.meta.dir, "..", "..", "lib", "chat-rename.ts"))).toBe(false);
+  });
+
+  test("sign-in --pane works with no CLAUDE_CODE_SESSION_ID or --session, skipping git derivation", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false, sessionId: "pane-sess-1", room: null } };
+    const out = await runChat(["sign-in", "--pane", "w1:p1"]);
+    expect(out).toMatch(/signed in as kai/);
+    const call = seen.find((s) => s.cmd === "chat:sign-in");
+    expect(call?.payload).toMatchObject({ pane: "w1:p1", viaPane: true });
+    const payload = call?.payload as Record<string, unknown>;
+    expect(payload.sessionId).toBeUndefined();
+    expect(payload.cwd).toBeUndefined();
+    expect(payload.repo).toBeUndefined();
+    expect(payload.branch).toBeUndefined();
+  });
+
+  test("sign-in --pane --json reports the handle and room from the response, and writes the session file under the daemon-resolved sessionId", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false, sessionId: "pane-sess-2", room: "build" } };
+    const out = await runChat(["sign-in", "--pane", "w1:p1", "--json"]);
+    expect(JSON.parse(out)).toEqual({ ok: true, handle: "kai", room: "build" });
+    expect(existsSync(sessionFilePath("pane-sess-2"))).toBe(true);
+    expect(JSON.parse(readFileSync(sessionFilePath("pane-sess-2"), "utf8"))).toMatchObject({
+      sessionId: "pane-sess-2",
+      handle: "kai",
+      baseHandle: "kai",
+      room: "build",
+    });
+  });
+
+  test("sign-in --pane resolves the pane's Claude session via herdr, and that session's own later commands then resolve the daemon-assigned handle (finding g)", async () => {
+    const uuid = "55555555-5555-5555-5555-555555555555";
+    const { sock: herdrSock, stop } = fakeHerdr((method) => {
+      if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+      return {
+        snapshot: {
+          workspaces: [],
+          panes: [
+            {
+              pane_id: "w1:p1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              agent: "claude",
+              agent_status: "idle",
+              agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid },
+            },
+          ],
+        },
+      };
+    });
+    const origSock = process.env.HERDR_SOCKET_PATH;
+    process.env.HERDR_SOCKET_PATH = herdrSock;
+    try {
+      const out = await runChat(["sign-in", "--pane", "w1:p1"]);
+      const handle = /signed in as (\S+)/.exec(out)?.[1] ?? "";
+      expect(handle).not.toBe("");
+      expect(existsSync(sessionFilePath(uuid))).toBe(true);
+
+      // The pane's OWN later commands (its CLAUDE_CODE_SESSION_ID is the
+      // uuid the daemon resolved) must resolve position 0 to that handle,
+      // not fall through resolveBaseHandle's cwd/pane fallbacks.
+      process.env.CLAUDE_CODE_SESSION_ID = uuid;
+      await runChat(["join", "r"]);
+      expect(await runChat(["who", "r"])).toContain(handle);
+    } finally {
+      stop();
+      if (origSock === undefined) delete process.env.HERDR_SOCKET_PATH;
+      else process.env.HERDR_SOCKET_PATH = origSock;
+    }
+  });
+
+  test("sign-in --pane never draws baseHandle from chat.handle: with the setting pinned, the daemon still draws from the pool", async () => {
+    const uuid = "66666666-6666-6666-6666-666666666666";
+    const { sock: herdrSock, stop } = fakeHerdr((method) => {
+      if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+      return {
+        snapshot: {
+          workspaces: [],
+          panes: [
+            {
+              pane_id: "w1:p1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              agent: "claude",
+              agent_status: "idle",
+              agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid },
+            },
+          ],
+        },
+      };
+    });
+    const origSock = process.env.HERDR_SOCKET_PATH;
+    process.env.HERDR_SOCKET_PATH = herdrSock;
+    setSetting("chat.handle", "invoker-name", "user");
+    try {
+      const out = await runChat(["sign-in", "--pane", "w1:p1"]);
+      const handle = /signed in as (\S+)/.exec(out)?.[1] ?? "";
+      expect(handle).not.toBe("invoker-name");
+      expect(AGENT_NAMES).toContain(handle);
+      const call = seen.find((s) => s.cmd === "chat:sign-in");
+      expect((call?.payload as Record<string, unknown>).baseHandle).toBeUndefined();
+    } finally {
+      stop();
+      setSetting("chat.handle", "", "user");
+      if (origSock === undefined) delete process.env.HERDR_SOCKET_PATH;
+      else process.env.HERDR_SOCKET_PATH = origSock;
+    }
+  });
+
+  test("sign-in --pane --no-room forwards noRoom rather than silently ignoring it", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false, sessionId: "pane-sess-4", room: null } };
+    const out = await runChat(["sign-in", "--pane", "w1:p1", "--no-room"]);
+    expect(out).toMatch(/no room joined/);
+    const call = seen.find((s) => s.cmd === "chat:sign-in");
+    expect((call?.payload as Record<string, unknown>).noRoom).toBe(true);
+    expect((call?.payload as Record<string, unknown>).room).toBeUndefined();
+  });
+
+  test("sign-in --pane --room forwards the explicit room rather than silently ignoring it", async () => {
+    canned["chat:sign-in"] = { ok: true, data: { handle: "kai", baseHandle: "kai", reclaimed: false, sessionId: "pane-sess-5", room: "warroom" } };
+    const out = await runChat(["sign-in", "--pane", "w1:p1", "--room", "warroom"]);
+    expect(out).toMatch(/joined #warroom/);
+    const call = seen.find((s) => s.cmd === "chat:sign-in");
+    expect((call?.payload as Record<string, unknown>).room).toBe("warroom");
+    expect((call?.payload as Record<string, unknown>).noRoom).toBe(false);
+  });
+
+  test("sign-in --pane --room rejects an invalid room name locally, before contacting the daemon", async () => {
+    const { code, stderr } = await runChatRaw(["sign-in", "--pane", "w1:p1", "--room", "Bad Room"]);
+    expect(code).not.toBe(0);
+    expect(stderr).toContain("[a-z0-9._-]");
+    expect(seen.find((s) => s.cmd === "chat:sign-in")).toBeUndefined();
   });
 
   test("--no-room signs in without joining any room", async () => {
@@ -494,18 +598,6 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
       .get("s1") as { signed_out_at: number | null } | null;
     expect(row?.signed_out_at).not.toBeNull();
   });
-
-  test("sign-out disarms: an armed tail is killed and its pidfile removed", async () => {
-    const { handle } = await signInInProcess({ as: "x", session: "s1", noRoom: true });
-    const pidPath = join(home, ".mattstack", "rt", `chat-tail-${handle}.pid`);
-    const tail = spawnChat(["tail", "--session", "s1"]);
-    await until(() => existsSync(pidPath));
-
-    await runChat(["sign-out", "--session", "s1"]);
-    expect(existsSync(pidPath)).toBe(false);
-
-    await tail.exited;
-  }, 15_000);
 
   test("sign-out with the daemon unreachable still cleans up locally and exits 0", async () => {
     await signInInProcess({ as: "x", session: "s1", noRoom: true });
@@ -562,37 +654,104 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     expect(stdout).toBe("");
     expect(stderr).toBe("");
   });
+
+  test("sign-out --pane with an inherited foreign CLAUDE_CODE_SESSION_ID signs out the pane's session, not the env one", async () => {
+    const uuid = "77777777-7777-7777-7777-777777777777";
+    const { sock: herdrSock, stop } = fakeHerdr((method) => {
+      if (method !== "session.snapshot") return new HerdrFakeError("invalid_request", method);
+      return {
+        snapshot: {
+          workspaces: [],
+          panes: [
+            {
+              pane_id: "w1:p1",
+              workspace_id: "w1",
+              tab_id: "w1:t1",
+              agent: "claude",
+              agent_status: "idle",
+              agent_session: { source: "claude", agent: "claude", kind: "id", value: uuid },
+            },
+          ],
+        },
+      };
+    });
+    const origSock = process.env.HERDR_SOCKET_PATH;
+    process.env.HERDR_SOCKET_PATH = herdrSock;
+    try {
+      // The target pane's own session, signed in for real so it has a
+      // session file and a live presence row to tear down.
+      await signInInProcess({ as: "pane-agent", session: uuid, noRoom: true });
+      const paneSessionPath = join(home, ".mattstack", "rt", "chat", "sessions", `${uuid}.json`);
+      expect(existsSync(paneSessionPath)).toBe(true);
+
+      // This process inherits a DIFFERENT session id -- the exact hazard
+      // --pane sign-out must ignore rather than sign out.
+      await signInInProcess({ as: "foreign", session: "foreign-sess", noRoom: true });
+      const foreignSessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "foreign-sess.json");
+      expect(existsSync(foreignSessionPath)).toBe(true);
+      expect(process.env.CLAUDE_CODE_SESSION_ID).toBe("foreign-sess");
+
+      await runChat(["sign-out", "--pane", "w1:p1"]);
+
+      expect(existsSync(paneSessionPath)).toBe(false);
+      expect(existsSync(foreignSessionPath)).toBe(true);
+
+      const paneRow = getStateDb()
+        .query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?")
+        .get(uuid) as { signed_out_at: number | null } | null;
+      expect(paneRow?.signed_out_at).not.toBeNull();
+
+      const foreignRow = getStateDb()
+        .query("SELECT signed_out_at FROM chat_presence WHERE session_id = ?")
+        .get("foreign-sess") as { signed_out_at: number | null } | null;
+      expect(foreignRow?.signed_out_at).toBeNull();
+    } finally {
+      stop();
+      if (origSock === undefined) delete process.env.HERDR_SOCKET_PATH;
+      else process.env.HERDR_SOCKET_PATH = origSock;
+    }
+  });
+
+  test("sign-out --pane against an old daemon (no sessionId in the reply) fails loudly rather than reporting a false success", async () => {
+    canned["chat:sign-out"] = { ok: true, data: {} };
+    const { code, stdout, stderr } = await runChatRaw(["sign-out", "--pane", "w1:p1"]);
+    expect(code).not.toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("sign-out --pane needs a daemon that supports it");
+  });
 });
 
 // ─── buddies, away/back, dm, pulse ──────────────────────────────────────────
 
-describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
-  test("buddies renders sections listening → idle → deaf → offline and names the away text", async () => {
-    await signInInProcess({ as: "idle1", session: "sid", noRoom: true });
+describe("rt chat CLI — buddies, away, back, dm", () => {
+  test("buddies renders sections listening → idle → offline and names the away text", async () => {
     await signInInProcess({ as: "live1", session: "slv", noRoom: true });
-    await signInInProcess({ as: "deaf1", session: "sdf", noRoom: true });
+    await signInInProcess({ as: "idle1", session: "sid", noRoom: true });
     await signInInProcess({ as: "off1", session: "soff", noRoom: true });
 
     const now = Date.now();
     const db = getStateDb();
     db.run("UPDATE chat_presence SET status_text = ? WHERE handle = ?", ["rebasing #67", "idle1"]);
-    db.run("UPDATE chat_presence SET armed_at = ?, tail_seen_at = ? WHERE handle = ?", [now, now, "live1"]);
-    db.run("UPDATE chat_presence SET armed_at = ? WHERE handle = ?", [now - 20 * 60_000, "deaf1"]);
     db.run("UPDATE chat_presence SET signed_out_at = ? WHERE handle = ?", [now, "off1"]);
+
+    // live1's session (sessionId "slv") resolves alive+busy; idle1's
+    // (sessionId "sid") resolves alive but not busy. off1 gets no binding
+    // at all, but its row is already signed out, which alone reads offline.
+    const busyBinding: InboxBinding = { pid: process.pid, socketPath: "/fake.sock", status: "busy" };
+    const idleBinding: InboxBinding = { pid: process.pid, socketPath: "/fake.sock", status: "idle" };
+    const bindings = new Map<string, InboxBinding>([["slv", busyBinding], ["sid", idleBinding]]);
+    registryDeps = { resolve: (sessionId) => bindings.get(sessionId) ?? null, alive: () => true, resolveAll: () => bindings };
 
     const out = await runChat(["buddies"]);
 
     const liveIdx = out.indexOf("live1");
     const idleIdx = out.indexOf("idle1");
-    const deafIdx = out.indexOf("deaf1");
     const offIdx = out.indexOf("off1");
     expect(liveIdx).toBeGreaterThanOrEqual(0);
     expect(idleIdx).toBeGreaterThan(liveIdx);
-    expect(deafIdx).toBeGreaterThan(idleIdx);
-    expect(offIdx).toBeGreaterThan(deafIdx);
+    expect(offIdx).toBeGreaterThan(idleIdx);
 
     expect(out).toMatch(/listening/); // live1
-    expect(out).toMatch(/deaf/); // deaf1
     expect(out).toMatch(/idle/); // idle1
     expect(out).toContain("rebasing #67"); // the away text
     // offline is collapsed to one line, however many offline buddies exist.
@@ -603,7 +762,9 @@ describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
     await signInInProcess({ as: "x", session: "s1", noRoom: true });
     const out = await runChat(["who"]);
     expect(out).toContain("x");
-    expect(out).toMatch(/idle/);
+    // No fake registryDeps: the default resolver finds nothing for this
+    // test session id, which reads offline (unresolvable), not idle.
+    expect(out).toMatch(/offline/);
   });
 
   test("away sets the status text (visible on buddies) and back clears it", async () => {
@@ -702,179 +863,6 @@ describe("rt chat CLI — buddies, away, back, dm, pulse", () => {
     const out = await runChat(["read", "--session", "s2"]);
     expect(out).toContain("a ↔ b");
     expect(out).not.toContain("dm-");
-  });
-
-  test("pulse --json returns the unread summary and never writes the tail heartbeat", async () => {
-    await signInInProcess({ as: "x", session: "s1", noRoom: true });
-
-    const before = JSON.parse(await runChat(["buddies", "--json"]));
-    expect(before.buddies[0]).toMatchObject({ status: "idle" });
-    expect(before.buddies[0].armedAt).toBeUndefined();
-
-    const out = await runChat(["pulse", "--json", "--session", "s1"]);
-    expect(JSON.parse(out)).toMatchObject({ ok: true, unread: { dms: 0, mentions: 0, rooms: 0 } });
-
-    // If pulse had called chat:touch/chat:arm, armed_at/tail_seen_at would
-    // now be set and the status would read "live" instead of "idle".
-    const after = JSON.parse(await runChat(["buddies", "--json"]));
-    expect(after.buddies[0]).toMatchObject({ status: "idle" });
-    expect(after.buddies[0].armedAt).toBeUndefined();
-  });
-
-  test("pulse on a reclaimed handle deletes the session file and reports it", async () => {
-    await signInInProcess({ as: "x", session: "s1" });
-    await reclaimViaHandlers("x", "s2");
-    const out = await runChat(["pulse", "--json", "--session", "s1"]);
-    expect(JSON.parse(out)).toMatchObject({ reclaimed: true });
-    expect(existsSync(sessionFilePath("s1"))).toBe(false);
-  });
-
-  test("pulse's plain reclaim notice matches the reclaimed case, not the deliberately-signed-out case", async () => {
-    await signInInProcess({ as: "x", session: "s1" });
-    await reclaimViaHandlers("x", "s2");
-    const out = await runChat(["pulse", "--session", "s1"]);
-    expect(out).toMatch(/reclaimed/);
-  });
-
-  test("pulse exits 0 with no output for a session that deliberately signed out (not a reclaim)", async () => {
-    await signInInProcess({ as: "x", session: "s1", noRoom: true });
-    await runChat(["sign-out", "--session", "s1"]);
-    const { code, stdout, stderr } = await runChatRaw(["pulse", "--session", "s1"]);
-    expect(code).toBe(0);
-    expect(stdout).toBe("");
-    expect(stderr).toBe("");
-  });
-
-  test("pulse exits 0 silently when the daemon is unreachable", async () => {
-    await signInInProcess({ as: "x", session: "s1", noRoom: true });
-    server?.stop(true);
-    server = null;
-
-    const plain = await runChatRaw(["pulse", "--session", "s1"]);
-    expect(plain.code).toBe(0);
-    expect(plain.stdout).toBe("");
-    expect(plain.stderr).toBe("");
-
-    const json = await runChatRaw(["pulse", "--json", "--session", "s1"]);
-    expect(json.code).toBe(0);
-    expect(json.stdout).toBe("");
-  });
-
-  test("pulse with no session id is a silent no-op, never a crash", async () => {
-    const { code, stdout, stderr } = await runChatRaw(["pulse"]);
-    expect(code).toBe(0);
-    expect(stdout).toBe("");
-    expect(stderr).toBe("");
-  });
-
-  test("a stale (first-time) branch cache still completes pulse well under the hook budget", async () => {
-    // No prior pulse means no lastBranchReadAt to gate on, so this exercises
-    // the real git-spawning path — and it must still land well inside the
-    // 800ms daemon budget plus slack for the git spawn itself.
-    await signInInProcess({ as: "x", session: "s1", noRoom: true });
-    const start = Date.now();
-    const out = await runChat(["pulse", "--json", "--session", "s1"]);
-    const elapsed = Date.now() - start;
-    expect(JSON.parse(out)).toMatchObject({ ok: true });
-    // 800ms daemon bound plus headroom for the git spawn itself — measured
-    // locally at 96-120ms, so this is a real guard, not a rubber stamp.
-    expect(elapsed).toBeLessThan(1_500);
-  });
-
-  test("pulse re-reads branch/repo only when the cwd changed or the cache is over a minute old", async () => {
-    const fixture = realpathSync(mkdtempSync(join(tmpdir(), "rt-chat-pulse-branch-")));
-    const origCwd = process.cwd();
-    try {
-      execSync("git init -q", { cwd: fixture });
-      execSync("git config user.email test@example.com", { cwd: fixture });
-      execSync("git config user.name test", { cwd: fixture });
-      writeFileSync(join(fixture, "f.txt"), "1");
-      execSync("git add f.txt && git commit -q -m init", { cwd: fixture });
-      execSync("git checkout -q -b branch-one", { cwd: fixture });
-
-      process.chdir(fixture);
-      await signInInProcess({ as: "x", session: "s1", noRoom: true });
-
-      // First pulse: no cache yet, so it reads the real (git-spawned) branch.
-      await runChat(["pulse", "--json", "--session", "s1"]);
-      let buddies = JSON.parse(await runChat(["buddies", "--json"]));
-      expect(buddies.buddies[0].branch).toBe("branch-one");
-
-      // Same cwd, well within the minute: the checked-out branch changes on
-      // disk, but the cached value must NOT be re-read.
-      execSync("git checkout -q -b branch-two", { cwd: fixture });
-      await runChat(["pulse", "--json", "--session", "s1"]);
-      buddies = JSON.parse(await runChat(["buddies", "--json"]));
-      expect(buddies.buddies[0].branch).toBe("branch-one");
-
-      // Age the cache past a minute — the next pulse must re-read and pick
-      // up the branch that actually changed on disk in between.
-      const sessionPath = join(home, ".mattstack", "rt", "chat", "sessions", "s1.json");
-      const session = JSON.parse(readFileSync(sessionPath, "utf8"));
-      session.lastBranchReadAt = Date.now() - 61_000;
-      writeFileSync(sessionPath, JSON.stringify(session));
-
-      await runChat(["pulse", "--json", "--session", "s1"]);
-      buddies = JSON.parse(await runChat(["buddies", "--json"]));
-      expect(buddies.buddies[0].branch).toBe("branch-two");
-    } finally {
-      process.chdir(origCwd);
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
-});
-
-// ─── Task 8: the tail (wake protocol) ───────────────────────────────────────
-
-describe("rt chat tail", () => {
-  const rtDir = () => join(home, ".mattstack", "rt");
-  const hasTailPidfile = () =>
-    existsSync(rtDir()) && readdirSync(rtDir()).some((f) => f.startsWith("chat-tail-"));
-
-  test("tail exits 69 when the daemon is unreachable, rather than hanging", async () => {
-    const { code } = await runChatRaw(["tail"], { sock: "/nonexistent.sock" });
-    expect(code).toBe(69);
-  });
-
-  test("tail takes no --timeout", async () => {
-    // Monitor owns the lifetime via persistent: true. A tail that could time
-    // out would end its own stream and look like a dead feed.
-    const { code, stderr } = await runChatRaw(["tail", "--timeout", "1s"]);
-    expect(code).not.toBe(0);
-    expect(stderr).toContain("--timeout");
-  });
-
-  test("tail refuses to double-arm", async () => {
-    await runChat(["join", "r"]);
-    const first = spawnChat(["tail"]);
-    // Wait for the spawned tail to actually claim its pidfile; without this the
-    // second invocation would race past the (not-yet-written) lock and block.
-    await until(hasTailPidfile);
-    const { code, stderr } = await runChatRaw(["tail"]);
-    expect(code).not.toBe(0);
-    expect(stderr).toContain("already armed");
-    first.kill();
-  }, 15_000);
-
-  test("arming from a session whose handle was reclaimed exits clean, matching the touch-loop reclaim exit", async () => {
-    await signInInProcess({ as: "x", session: "s1" });
-    await reclaimViaHandlers("x", "s2");
-
-    const { code, stdout, stderr } = await runChatRaw(["tail", "--session", "s1"]);
-    expect(code).toBe(0);
-    expect(stdout).toBe("handle reclaimed — sign in again");
-    expect(stderr).toBe("");
-    expect(existsSync(sessionFilePath("s1"))).toBe(false);
-    expect(hasTailPidfile()).toBe(false);
-  });
-
-  test("every stdout write in the tail path is exactly one line", async () => {
-    // Under Monitor each stdout line is one notification, so a multi-line write
-    // floods the agent's context. Diagnostics must go to stderr.
-    const src = await Bun.file(join(import.meta.dir, "..", "chat.ts")).text();
-    const tailFn = src.slice(src.indexOf("async function chatTail"));
-    const logs = tailFn.match(/console\.log\([^)]*\)/g) ?? [];
-    expect(logs.every((l) => !l.includes("\\n"))).toBe(true);
   });
 });
 
@@ -1002,63 +990,6 @@ describe("chat handle derivation — worktree fixtures", () => {
   test("slugify never produces a name outside ^[a-z0-9._-]+$", () => {
     expect(__test__.slugify("Acme/Dev Gamma!!")).toMatch(/^[a-z0-9._-]+$/);
     expect(__test__.slugify("   ")).toMatch(/^[a-z0-9._-]+$/);
-  });
-});
-
-describe("pidfile claim — exclusive create, reclaim only a stale regular file", () => {
-  // A pid no process can hold (macOS caps at 99998, Linux defaults to 4194304
-  // but the claim also requires `ps args` to read as an rt chat tail).
-  const DEAD_PID = 2_147_483_646;
-  let dir = "";
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "rt-chat-pidclaim-")); });
-  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
-
-  test("claims a free path with this process's pid", () => {
-    const pidPath = join(dir, "sub", "chat-tail-x.pid");
-    expect(__test__.claimTailPidfile(pidPath)).toBeNull();
-    expect(readFileSync(pidPath, "utf8")).toBe(String(process.pid));
-  });
-
-  test("reclaims a stale pidfile", () => {
-    const pidPath = join(dir, "chat-tail-x.pid");
-    writeFileSync(pidPath, String(DEAD_PID));
-    expect(__test__.claimTailPidfile(pidPath)).toBeNull();
-    expect(readFileSync(pidPath, "utf8")).toBe(String(process.pid));
-  });
-
-  test("refuses a symlink at the pidfile path and never writes through it", () => {
-    // The reclaim must not become "overwrite whatever the path points at": a
-    // link planted here would otherwise get its target clobbered with a pid.
-    const victim = join(dir, "victim");
-    writeFileSync(victim, "keep");
-    const pidPath = join(dir, "chat-tail-x.pid");
-    symlinkSync(victim, pidPath);
-    expect(() => __test__.claimTailPidfile(pidPath)).toThrow(/not a regular file/);
-    expect(readFileSync(victim, "utf8")).toBe("keep");
-    expect(readFileSync(pidPath, "utf8")).toBe("keep");
-  });
-
-  test("refuses a directory at the pidfile path", () => {
-    const pidPath = join(dir, "chat-tail-x.pid");
-    mkdirSync(pidPath);
-    expect(() => __test__.claimTailPidfile(pidPath)).toThrow(/not a regular file/);
-    expect(existsSync(pidPath)).toBe(true);
-  });
-});
-
-describe("pidfile identity — only a real rt chat tail reads as live", () => {
-  test("matches rt and dev cli.ts invocations of `chat tail`", () => {
-    expect(__test__.looksLikeRtChatTail("/Users/m/.mattstack/rt/bin/rt chat tail --as listener")).toBe(true);
-    expect(__test__.looksLikeRtChatTail("bun run /repo/cli.ts chat tail")).toBe(true);
-  });
-
-  test("does not match a recycled PID whose unrelated args merely mention both words", () => {
-    // The failure this guards: a false-positive here refuses an agent's re-arm
-    // with "already armed" and leaves it permanently deaf.
-    expect(__test__.looksLikeRtChatTail("/usr/bin/some-tool --mode chat --action tail")).toBe(false);
-    expect(__test__.looksLikeRtChatTail("/opt/chat-tail-daemon --serve")).toBe(false);
-    expect(__test__.looksLikeRtChatTail("rt chat read")).toBe(false);
-    expect(__test__.looksLikeRtChatTail("vim tail-of-a-chat.log")).toBe(false);
   });
 });
 
