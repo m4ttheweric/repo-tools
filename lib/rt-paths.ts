@@ -79,7 +79,7 @@ export function repoDataDir(repoName: string): string {
 }
 
 /**
- * ~/.mattstack/rt/worktrees — the pool root container. A repo's ephemeral and
+ * ~/.mattstack/rt/worktrees (the pool root container). A repo's ephemeral and
  * on-deck trees live at worktrees/<serialized identity>/ so they stay OUT of
  * the user's clone (repo-stealth) and no sibling tree's cwd is ever nested
  * under the main clone (retires S017's collateral-kill root cause).
@@ -88,7 +88,7 @@ export function worktreesDir(): string {
   return join(rtDir(), "worktrees");
 }
 
-/** worktrees/<serialized identity> — one repo's pool root. */
+/** worktrees/<serialized identity> (one repo's pool root). */
 export function worktreePoolRoot(serializedIdentity: string): string {
   return join(worktreesDir(), serializedIdentity);
 }
