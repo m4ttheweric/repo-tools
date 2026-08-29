@@ -20,7 +20,7 @@
  * sweeps on a later pass — a crash costs disk, never correctness.
  */
 
-import { mkdir, readdir, rename } from "fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "path";
 import { ensureInfoExclude } from "./git-async.ts";
 
@@ -164,6 +164,64 @@ function isRetainedEntry(path: string): boolean {
 }
 
 /**
+ * The durable record dispose writes inside a retained entry (RT-51): what the
+ * tree was, and how long it survives. It lives beside the tree's own content
+ * in the trash dir, not in state.db, so a restore is possible even after a
+ * quarantine of the db has erased the registry's memory of the tree ever
+ * existing.
+ */
+export interface DisposalManifest {
+  name: string;
+  originalPath: string;
+  branch: string | null;
+  headSha: string | null;
+  reason: string;
+  disposedAt: string;
+  keptUntil: string;
+}
+
+const MANIFEST_FILE = "manifest.json";
+
+/**
+ * Best-effort: by the time this runs, disposal has already renamed the tree
+ * to safety, so a manifest write failure must never fail the dispose call
+ * that's still in flight... it only means that entry falls back to the
+ * epoch-in-name reap rule instead of `keptUntil`.
+ */
+export async function writeDisposalManifest(
+  trashPath: string,
+  manifest: DisposalManifest,
+  log: TrashLog,
+): Promise<void> {
+  if (!isRetainedEntry(trashPath)) {
+    log.warn({ path: trashPath }, "worktree manifest write refused: not a retained trash entry");
+    return;
+  }
+  try {
+    await writeFile(join(trashPath, MANIFEST_FILE), JSON.stringify(manifest, null, 2));
+  } catch (err) {
+    log.warn({ err, path: trashPath }, "worktree manifest write failed");
+  }
+}
+
+/**
+ * The manifest inside a retained entry, or null when absent (a pre-RT-51
+ * entry, or a fallback sibling `.trash-*` rename that never got one) or
+ * corrupt. A shape missing `name`/`keptUntil` is treated the same as absent
+ * rather than trusted partially.
+ */
+export async function readDisposalManifest(trashPath: string): Promise<DisposalManifest | null> {
+  try {
+    const raw = await readFile(join(trashPath, MANIFEST_FILE), "utf8");
+    const parsed = JSON.parse(raw) as Partial<DisposalManifest> | null;
+    if (!parsed || typeof parsed.name !== "string" || typeof parsed.keptUntil !== "string") return null;
+    return parsed as DisposalManifest;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Delete the reinstallable dirs inside a retained tree in one detached
  * `rm -rf`, leaving everything human-touched in place. Same no-timeout,
  * nobody-waits contract as reapTrashDir; refuses any path that is not inside a
@@ -227,13 +285,29 @@ export async function reapExpiredTrash(
     }
 
     for (const entry of entries) {
+      const entryPath = join(root, entry);
+
+      // A manifest's keptUntil is authoritative when present (restore extends
+      // or clears it); an unparseable value fails CLOSED (kept), never reaped
+      // on a guess. Only an entry with NO manifest falls back to the
+      // epoch-in-name rule below (pre-RT-51 entries, or a manifest write that
+      // itself failed).
+      const manifest = await readDisposalManifest(entryPath);
+      if (manifest) {
+        const keptUntilMs = Date.parse(manifest.keptUntil);
+        if (Number.isNaN(keptUntilMs) || now <= keptUntilMs) continue;
+        await reapTrashDir(entryPath, log);
+        reaped += 1;
+        continue;
+      }
+
       const epoch = /-(\d+)$/.exec(entry)?.[1];
       if (!epoch || !looksLikeRtEpoch(epoch)) {
         log.warn({ root, entry }, "worktree retention sweep skipped an entry it did not write");
         continue;
       }
       if (now - Number(epoch) <= RETENTION_MS) continue;
-      await reapTrashDir(join(root, entry), log);
+      await reapTrashDir(entryPath, log);
       reaped += 1;
     }
   }

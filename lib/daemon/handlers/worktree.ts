@@ -44,6 +44,7 @@ import {
 import { disambiguate, slugifyTicketTitle } from "../../worktree/branch-name.ts";
 import { createTree } from "../../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree, type DisposeDeps } from "../../worktree/dispose.ts";
+import { restoreTree } from "../../worktree/restore.ts";
 import { branchOf, composeKey } from "../../state/branch-cache.ts";
 import { isTreeLocked, withTreeLock } from "../../worktree/locks.ts";
 import {
@@ -606,6 +607,34 @@ export function createWorktreeHandlers(
         data.message = `worktree pool declared but dormant on this machine... enable with: ${WORKTREE_APP_ENABLE_COMMAND}`;
       }
       return { ok: true, data };
+    },
+
+    "worktree:restore": async (payload: any) => {
+      const repoName: string | undefined = payload?.repoName;
+      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
+      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const treeName: string | undefined = typeof payload?.tree === "string" ? payload.tree : undefined;
+      if (!treeName) return { ok: false, error: "no-target" };
+
+      // Synthetic key: the restored tree's eventual path isn't known until
+      // restoreTree resolves the pool root, so this locks the (repo, name)
+      // pair rather than a filesystem path (same idiom as adopt's repo-wide lock).
+      const outcome = await withTreeLock(`${repoPath}#restore#${treeName}`, () =>
+        restoreTree({ repoName, repoPath, emit: opts.emit, log: ctx.log }, treeName),
+      );
+      if (outcome === "busy") return { ok: false, error: "busy" };
+      if (!outcome.ok) return { ok: false, error: outcome.reason };
+
+      opts.kick();
+      return {
+        ok: true,
+        data: {
+          restored: true,
+          path: outcome.path,
+          tree: outcome.tree.name,
+          ...(outcome.readyFailed ? { readyFailed: true, failedStep: outcome.failedStep } : {}),
+        },
+      };
     },
 
     "worktree:freshen": async (payload: any) => {

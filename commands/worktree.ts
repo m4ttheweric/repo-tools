@@ -44,6 +44,9 @@ const PROVISION_TIMEOUT_MS = 6 * 60_000;
 const DISPOSE_TIMEOUT_MS = 2 * 60_000;
 const FRESHEN_TIMEOUT_MS = 10 * 60_000;
 const ADOPT_TIMEOUT_MS = 2 * 60_000;
+// Restore recreates the worktree AND re-runs ready steps (an install), so it
+// gets provision's budget rather than dispose's.
+const RESTORE_TIMEOUT_MS = 6 * 60_000;
 
 // ─── Arg parsing (pure — unit tested in lib/__tests__/worktree-cli-args.test.ts) ──
 
@@ -128,6 +131,22 @@ export function parseDisposeArgs(args: string[]): DisposeArgs {
   return { tree, owner: owner.value, repoName: repo.value, force: force.present, json: json.present };
 }
 
+export interface RestoreArgs {
+  tree?: string;
+  repoName?: string;
+  list: boolean;
+  json: boolean;
+}
+
+export function parseRestoreArgs(args: string[]): RestoreArgs {
+  let rest = args;
+  const json = takeBoolFlag(rest, "--json"); rest = json.rest;
+  const list = takeBoolFlag(rest, "--list"); rest = list.rest;
+  const repo = takeFlag(rest, "--repo"); rest = repo.rest;
+  const tree = rest.find((a) => !a.startsWith("--"));
+  return { tree, repoName: repo.value, list: list.present, json: json.present };
+}
+
 export interface ListArgs {
   repoName?: string;
   json: boolean;
@@ -204,6 +223,15 @@ function explainError(error: string): string {
   }
   if (error.startsWith("checkout-failed:")) return `checkout failed: ${error.slice("checkout-failed:".length)}`;
   if (error.startsWith("create-failed:")) return `worktree creation failed at step "${error.slice("create-failed:".length)}"`;
+  if (error === "no-target") return "need a tree name to restore";
+  if (error === "not-found") return "no retained trash entry with that name";
+  if (error === "no-manifest") return "that entry has no disposal manifest (disposed before RT-51, or the write failed) and cannot be restored";
+  if (error === "branch-elsewhere") return "that branch already exists again... restore refuses to clobber it";
+  if (error === "no-head-sha") return "the disposal manifest has no recorded commit to restore from";
+  if (error === "path-exists") return "the pool root already has a tree at that name";
+  if (error === "worktree-add-failed") return "git worktree add failed while restoring";
+  if (error === "copy-failed") return "copying the retained tree's gitignored content back failed";
+  if (error === "register-failed") return "worktree add succeeded but the registry write did not land... retry the restore";
   return error;
 }
 
@@ -417,6 +445,79 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
     console.log(`  ${red}✗${reset} ${r.tree} ${dim}(${r.reason}${hint})${reset}`);
   }
   if (disposed.length === 0 && refused.length === 0) console.log(`  ${dim}nothing to dispose${reset}`);
+  console.log("");
+}
+
+// ─── restore ─────────────────────────────────────────────────────────────────
+
+/** Restorable trash entries for `repoName`, straight from disk (read-only, so like `each` this skips the daemon round trip). */
+async function fetchRestorableEntries(repoName: string, repoPath: string) {
+  const { listRestorableEntries } = await import("../lib/worktree/restore.ts");
+  return listRestorableEntries(repoName, repoPath);
+}
+
+function printRestorableEntries(entries: Awaited<ReturnType<typeof fetchRestorableEntries>>): void {
+  if (entries.length === 0) { console.log(`\n  ${dim}nothing recoverable${reset}\n`); return; }
+  console.log("");
+  for (const e of entries) {
+    console.log(
+      `  ${bold}${e.name}${reset}  ${cyan}${e.branch ?? "(detached)"}${reset}  ${dim}disposed ${e.disposedAt.slice(0, 10)} (${e.reason}), kept until ${e.keptUntil.slice(0, 10)}${reset}`,
+    );
+  }
+  console.log("");
+}
+
+async function pickRestorableEntry(entries: Awaited<ReturnType<typeof fetchRestorableEntries>>): Promise<string | null> {
+  if (entries.length === 0) return null;
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const nameWidth = Math.max(...entries.map((e) => e.name.length));
+  const options = entries.map((e) => ({
+    value: e.name,
+    label: e.name.padEnd(nameWidth),
+    hint: `${e.branch ?? "(detached)"}  disposed ${e.disposedAt.slice(0, 10)} (${e.reason}), kept until ${e.keptUntil.slice(0, 10)}`,
+  }));
+  return filterableSelect({ message: "Restore which worktree?", options, stderr: true });
+}
+
+export async function worktreeRestore(args: string[], _ctx: unknown): Promise<void> {
+  const parsed = parseRestoreArgs(args);
+  const repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m)) : currentRepoIdentity();
+  if (!repoName) failText(parsed.json, "no repo... pass --repo <name> or run from inside a registered repo");
+
+  const repoIndex = loadRepoIndex();
+  const repoPath = repoIndex[repoName];
+  if (!repoPath) failText(parsed.json, `repo "${repoName}" not registered in ~/.mattstack/rt/repos.json`);
+
+  if (parsed.list) {
+    const entries = await fetchRestorableEntries(repoName, repoPath);
+    if (parsed.json) { console.log(JSON.stringify({ entries }, null, 2)); return; }
+    printRestorableEntries(entries);
+    return;
+  }
+
+  let treeName = parsed.tree;
+  if (!treeName) {
+    if (process.stdin.isTTY && !parsed.json && !process.env.RT_BATCH) {
+      const entries = await fetchRestorableEntries(repoName, repoPath);
+      const picked = await pickRestorableEntry(entries);
+      if (!picked) { console.log(`\n  ${dim}nothing selected${reset}\n`); return; }
+      treeName = picked;
+    } else {
+      failText(parsed.json, "no target... pass a tree name (no TTY for the picker)");
+    }
+  }
+
+  const res = await daemonQuery("worktree:restore", { repoName, tree: treeName }, RESTORE_TIMEOUT_MS);
+  const ok = requireQueryResult(parsed.json, res);
+
+  if (parsed.json) { console.log(JSON.stringify(ok.data, null, 2)); return; }
+
+  const d = ok.data as { restored: boolean; path: string; tree: string; readyFailed?: boolean; failedStep?: string };
+  console.log("");
+  console.log(`  ${green}✓${reset} ${bold}${d.tree}${reset} restored  ${dim}${d.path}${reset}`);
+  if (d.readyFailed) {
+    console.log(`  ${yellow}⚠${reset} ready step "${d.failedStep}" failed... tree is usable but dependencies may be stale`);
+  }
   console.log("");
 }
 

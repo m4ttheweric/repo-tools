@@ -12,13 +12,13 @@
  */
 
 import { existsSync } from "fs";
-import { gitOk, isAncestorAsync, remoteDefaultRef, remoteRefExists, runGit } from "./git-async.ts";
+import { gitOk, headSha, isAncestorAsync, remoteDefaultRef, remoteRefExists, runGit } from "./git-async.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "./registry.ts";
 import { hasFreshAttendantLease } from "./lease.ts";
 import { loadSyncConfig, matchRule } from "../sync-config.ts";
 import { deriveRepoIdentity } from "../settings/identity.ts";
 import { killWorktreeProcesses } from "../daemon/worktree-process-kill.ts";
-import { RETENTION_MS, reapTrashDir, retireTree, stripTrashDir } from "./trash.ts";
+import { RETENTION_MS, reapTrashDir, retireTree, stripTrashDir, writeDisposalManifest } from "./trash.ts";
 
 /** Merge-reactor disposals ignore claims younger than this (stale-event protection). */
 const GRACE_MS = 10 * 60_000;
@@ -261,6 +261,10 @@ export async function disposeTree(
     }
   }
 
+  // Captured before the rename below: once the tree is retired, rec.path is
+  // no longer a working git checkout and this call would fail.
+  const headBeforeRetire = await headSha(rec.path);
+
   // One atomic rename, not a recursive unlink: see trash.ts. Everything below
   // is fast, so the verb returns in seconds however large the tree was.
   const trashed = await retireTree(rec.path, rec.name, repoPath);
@@ -312,13 +316,27 @@ export async function disposeTree(
   // reconciler's sweep duties collect.
   if (trashed.ok) {
     if (trashed.retained) {
+      const keptUntil = new Date(Date.now() + RETENTION_MS).toISOString();
+      // Written before stripTrashDir fires: the manifest is a plain file at
+      // the entry's top level, so the two never race over the same path, but
+      // a restore reading the entry must always find it there.
+      await writeDisposalManifest(
+        trashed.trashPath,
+        {
+          name: rec.name,
+          originalPath: rec.path,
+          branch: rec.branch,
+          headSha: headBeforeRetire,
+          reason: force ? "force" : auto ? "auto" : "manual",
+          disposedAt: new Date().toISOString(),
+          keptUntil,
+        },
+        log,
+      );
       void stripTrashDir(trashed.trashPath, log);
       return {
         disposed: true,
-        trash: {
-          path: trashed.trashPath,
-          keptUntil: new Date(Date.now() + RETENTION_MS).toISOString(),
-        },
+        trash: { path: trashed.trashPath, keptUntil },
       };
     }
     void reapTrashDir(trashed.trashPath, log);
