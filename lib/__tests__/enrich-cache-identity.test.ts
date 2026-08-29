@@ -15,6 +15,14 @@ import * as linearModule from "../linear.ts";
 import { enrichBranches } from "../enrich.ts";
 import { closeStateDb, getBranchCacheStore } from "../state/index.ts";
 import { composeKey } from "../state/branch-cache.ts";
+import { createCacheHandlers } from "../daemon/handlers/cache.ts";
+import { fakeStore } from "../daemon/__tests__/fake-cache-store.ts";
+
+// Captured before any mock.module call... mock.module mutates the live
+// namespace object in place, so restoring with the ORIGINAL binding (not a
+// re-import) is what undoes it for every other test file sharing this process.
+const realDaemonClient = await import("../daemon-client.ts");
+const realDaemonQuery = realDaemonClient.daemonQuery;
 
 let home: string;
 let realHome: string | undefined;
@@ -27,6 +35,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mock.module("../daemon-client.ts", () => ({
+    ...realDaemonClient,
+    daemonQuery: realDaemonQuery,
+  }));
   mock.restore();
   closeStateDb();
   process.env.HOME = realHome;
@@ -78,5 +90,41 @@ describe("enrichBranches cold-start: repoName/key is the serialized remote ident
     const entries = getBranchCacheStore().entries;
     expect(entries["scratch"]).toBeDefined();
     expect(entries["scratch"]?.repoName).toBeUndefined();
+  });
+});
+
+describe("enrichBranches daemon-first path: cache:read is repo-scoped", () => {
+  test("two tracked repos both have branch 'main': a repoIdentity-scoped read returns repo A's entry, never repo B's", async () => {
+    const identityA = "remote:gitlab.com%2Facme%2Frepo-a";
+    const identityB = "remote:gitlab.com%2Facme%2Frepo-b";
+    const entries: Record<string, any> = {
+      [composeKey(identityA, "main")]: {
+        linearId: "A-1", ticket: null, mr: null, fetchedAt: Date.now(), repoName: identityA,
+      },
+      [composeKey(identityB, "main")]: {
+        linearId: "B-1", ticket: null, mr: null, fetchedAt: Date.now(), repoName: identityB,
+      },
+    };
+    // The real cache:read handler over an in-memory store: this exercises the
+    // actual scoping logic, not a stand-in for it.
+    const handlers = createCacheHandlers({
+      cache: fakeStore(entries),
+      refreshCache: async () => {},
+    } as any);
+
+    mock.module("../daemon-client.ts", () => ({
+      ...realDaemonClient,
+      daemonQuery: async (cmd: string, payload: any) => {
+        if (cmd !== "cache:read") throw new Error(`unexpected daemon command: ${cmd}`);
+        return handlers["cache:read"]!(payload);
+      },
+    }));
+
+    const result = await enrichBranches(
+      [{ path: "/tmp/repo-a", branch: "main" }],
+      "git@gitlab.com:acme/repo-a.git",
+    );
+
+    expect(result[0]?.linearId).toBe("A-1");
   });
 });

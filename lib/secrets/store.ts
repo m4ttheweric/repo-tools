@@ -140,7 +140,12 @@ export function validateSlug(slug: string): void {
 }
 
 /** Thrown when a sops/keychain spawn does not exit in time (a locked keychain pops a GUI dialog and blocks until clicked). */
-export class SecretsTimeoutError extends Error {}
+export class SecretsTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SecretsTimeoutError";
+  }
+}
 
 const DEFAULT_SECRETS_TIMEOUT_MS = 30_000;
 

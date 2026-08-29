@@ -241,8 +241,10 @@ export async function enrichBranches(
   if (!options?.silent) {
     try {
       const { daemonQuery } = await import("./daemon-client.ts");
+      const identity = identityForRemote(remoteUrl);
       const response = await daemonQuery("cache:read", {
         branches: branches.map(b => b.branch),
+        repoIdentity: identity,
       });
 
       if (response?.ok && response.data) {
