@@ -200,14 +200,14 @@ describe("openStateDb — replay over an older user_version", () => {
     // Simulate the race: this process's own PRAGMA read reports the column
     // missing (a snapshot taken before a concurrent winner's ALTER landed),
     // so its own ALTER runs into the real column that already exists.
-    const originalQuery = db.query.bind(db);
+    const originalQuery = db.query.bind(db) as (...a: unknown[]) => unknown;
     let pragmaCalls = 0;
-    const spy = spyOn(db, "query").mockImplementation((sql: string, ...rest: unknown[]) => {
+    const spy = spyOn(db, "query").mockImplementation(((sql: string, ...rest: unknown[]) => {
       if (sql === "PRAGMA table_info(endpoint_claims);" && pragmaCalls++ === 0) {
-        return { all: () => [] } as unknown as ReturnType<Database["query"]>;
+        return { all: () => [] };
       }
-      return (originalQuery as (...a: unknown[]) => unknown)(sql, ...rest) as ReturnType<Database["query"]>;
-    });
+      return originalQuery(sql, ...rest);
+    }) as Database["query"]);
 
     try {
       expect(() => ensureEndpointClaimsStartTimeColumn(db)).not.toThrow();
