@@ -147,21 +147,26 @@ function createStore(db: Database): BranchCacheStore {
   }
 
   function put(branch: string, entry: CacheEntry): void {
+    // Keyed by composeKey(entry.repoName, branch), not the bare branch: two
+    // repos with a same-named branch must land in different rows/map slots,
+    // never overwrite each other (the collision Task 10 fixes). The row's
+    // `branch` column and the map key are always the same composite string.
+    const key = composeKey(entry.repoName, branch);
     // The map update sits OUTSIDE the wrapper on purpose: it is this cycle's
     // freshly enriched truth and the thing handlers serve, so it must land
     // even when the row defers. (gc/delete keep the two together instead —
     // see below.)
     persistOrWarn("branch-cache", () => {
       db.query(UPSERT_SQL).run(
-        branch,
+        key,
         entry.repoName ?? null,
         entry.ticket !== null ? JSON.stringify(entry.ticket) : null,
         entry.linearId,
         entry.mr !== null ? JSON.stringify(entry.mr) : null,
         entry.fetchedAt,
       );
-    }, { op: "put", branch });
-    entries[branch] = entry;
+    }, { op: "put", branch: key });
+    entries[key] = entry;
   }
 
   function del(branch: string): void {

@@ -2,6 +2,7 @@
 import { describe, test, expect } from "bun:test";
 import { createSystemProcessHandlers } from "../handlers/system-processes.ts";
 import type { SystemProcess } from "../system-process-scanner.ts";
+import { composeKey } from "../../state/branch-cache.ts";
 
 function makeProcess(overrides: Partial<SystemProcess> = {}): SystemProcess {
   return {
@@ -53,9 +54,9 @@ describe("system-processes handler", () => {
   });
 
   test("enriches processes with Linear ticket from branch cache", async () => {
-    const proc = makeProcess({ branch: "feature/foo" });
+    const proc = makeProcess({ branch: "feature/foo", repo: "myrepo" });
     const handlers = setup([proc], {
-      "feature/foo": {
+      [composeKey("myrepo", "feature/foo")]: {
         ticket: { identifier: "ENG-123", title: "Do the thing" },
       },
     });
@@ -75,8 +76,8 @@ describe("system-processes handler", () => {
   });
 
   test("leaves linearTicket null when cache entry has no ticket", async () => {
-    const proc = makeProcess({ branch: "feature/foo" });
-    const handlers = setup([proc], { "feature/foo": { ticket: null } });
+    const proc = makeProcess({ branch: "feature/foo", repo: "myrepo" });
+    const handlers = setup([proc], { [composeKey("myrepo", "feature/foo")]: { ticket: null } });
 
     const res = await handlers["system-processes"]!({});
 

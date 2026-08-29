@@ -6,6 +6,7 @@ import { createDiscussionsFileStore, pruneDiscussionsStore } from "../discussion
 import { collectSweepTargets } from "../discussions-poller.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import { openStateDb, getBranchCacheStore } from "../../state/index.ts";
+import { composeKey } from "../../state/branch-cache.ts";
 
 const tmp = (n: string) => join(mkdtempSync(join(tmpdir(), "rt-dsem-")), n);
 const tmpDb = () => openStateDb(tmp("state.db"), "cli");
@@ -97,7 +98,7 @@ describe("pruneDiscussionsStore", () => {
     // GC runs (repo "r" refreshed cleanly this cycle — gating per spec
     // "New: branch-cache GC"), evicting the stale row.
     cache.gc(new Set(["r"]), 30 * DAY_MS);
-    expect(cache.entries["stale-branch"]).toBeUndefined();
+    expect(cache.entries[composeKey("r", "stale-branch")]).toBeUndefined();
 
     // The union's branch-cache leg just shrank; the discussion is now a
     // true orphan and prunes — intended cleanup, not a regression.

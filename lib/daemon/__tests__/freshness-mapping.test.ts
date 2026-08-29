@@ -12,6 +12,11 @@ import { createProjectMRs } from "../project-mrs-store.ts";
 import type { InvalidationKey } from "@mattstack/glance";
 import { fakeStore } from "./fake-cache-store.ts";
 import { getBranchCacheStore, openStateDb } from "../../state/index.ts";
+import { composeKey } from "../../state/branch-cache.ts";
+
+/** Composite key for a repo-x-attributed entry, matching what a real
+ *  composeKey(entry.repoName, branch) put would produce. */
+const K = (branch: string) => composeKey("repo-x", branch);
 
 function tmpStorePath(): string {
   return join(mkdtempSync(join(tmpdir(), "rt-freshness-mapping-")), "state.db");
@@ -115,7 +120,7 @@ function key(kind: InvalidationKey["kind"], ref: string): InvalidationKey {
 describe("applyInvalidationBatch", () => {
   test("mr key with cached iid refetches that MR and updates the entry", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 42 }, ticket: { id: "T-1" }, linearId: "T-1", fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 42 }, ticket: { id: "T-1" }, linearId: "T-1", fetchedAt: 1, repoName: "repo-x" },
     };
     const { env, broadcasts, puts } = makeEnv(entries);
     const calls: any[] = [];
@@ -132,18 +137,18 @@ describe("applyInvalidationBatch", () => {
     await applyInvalidationBatch(env, target, makeRunner(), [key("mr", "42")], noNotify);
 
     expect(calls).toEqual([["single", "g/p", 42]]);
-    expect(entries["feat-a"].mr.iid).toBe(42);
-    expect(entries["feat-a"].fetchedAt).toBeGreaterThan(1);
-    expect(entries["feat-a"].ticket).toEqual({ id: "T-1" });   // enrichment preserved
-    expect(entries["feat-a"].linearId).toBe("T-1");
-    expect(puts).toEqual(["feat-a"]);
+    expect(entries[K("feat-a")].mr.iid).toBe(42);
+    expect(entries[K("feat-a")].fetchedAt).toBeGreaterThan(1);
+    expect(entries[K("feat-a")].ticket).toEqual({ id: "T-1" });   // enrichment preserved
+    expect(entries[K("feat-a")].linearId).toBe("T-1");
+    expect(puts).toEqual(["feat-a"]);        // store.put is still called with the BARE branch
     expect(broadcasts.filter((b) => b.type === "mr:update").length).toBe(1);
-    expect(broadcasts[0]!.data).toEqual({ repoName: "repo-x", mrs: { 42: entries["feat-a"].mr } });
+    expect(broadcasts[0]!.data).toEqual({ repoName: "repo-x", mrs: { 42: entries[K("feat-a")].mr } });
   });
 
   test("mr key for another repo's iid is ignored", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "other-repo" },
+      [composeKey("other-repo", "feat-a")]: { mr: { iid: 42 }, fetchedAt: 1, repoName: "other-repo" },
     };
     const { env, puts } = makeEnv(entries);
     let called = false;
@@ -166,8 +171,8 @@ describe("applyInvalidationBatch", () => {
 
   test("unknown mr key gap-fills null-mr branches after debounce", async () => {
     const entries: Record<string, any> = {
-      "no-mr-branch": { mr: null, fetchedAt: 1, repoName: "repo-x" },
-      "has-mr":       { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("no-mr-branch")]: { mr: null, fetchedAt: 1, repoName: "repo-x" },
+      [K("has-mr")]:       { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     const batchCalls: string[][] = [];
@@ -186,13 +191,13 @@ describe("applyInvalidationBatch", () => {
     await applyInvalidationBatch(env, target, runner, [key("mr", "999")], noNotify);
     expect(batchCalls.length).toBe(0);                       // debounced, not immediate
     await new Promise((r) => setTimeout(r, 40));             // > gapFillDebounceMs (10)
-    expect(batchCalls).toEqual([["no-mr-branch"]]);          // only null-mr branches
-    expect(entries["no-mr-branch"].mr.iid).toBe(99);
+    expect(batchCalls).toEqual([["no-mr-branch"]]);          // only null-mr branches (bare)
+    expect(entries[K("no-mr-branch")].mr.iid).toBe(99);
   });
 
   test("disposed runner never arms gapFillTimer for an unknown mr key", async () => {
     const entries: Record<string, any> = {
-      "no-mr-branch": { mr: null, fetchedAt: 1, repoName: "repo-x" },
+      [K("no-mr-branch")]: { mr: null, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     let batchCalled = false;
@@ -213,7 +218,7 @@ describe("applyInvalidationBatch", () => {
 
   test("unknown mr key with no null-mr branches skips the batch fetch entirely", async () => {
     const entries: Record<string, any> = {
-      "has-mr": { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("has-mr")]: { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     let batchCalled = false;
@@ -233,7 +238,7 @@ describe("applyInvalidationBatch", () => {
 
   test("notes key routes through refreshDiscussions override for cached iids only", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     const refreshed: Array<[string, number]> = [];
@@ -263,7 +268,7 @@ describe("applyInvalidationBatch", () => {
 
   test("branch key refetches by branch; unknown branch and pipelines are ignored", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     const calls: any[] = [];
@@ -290,7 +295,7 @@ describe("applyInvalidationBatch", () => {
 
   test("branch refetch returning null writes mr: null (MR deleted/never existed)", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 42 }, ticket: null, linearId: "", fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 42 }, ticket: null, linearId: "", fetchedAt: 1, repoName: "repo-x" },
     };
     const { env, puts } = makeEnv(entries);
     const target: RepoTarget = {
@@ -302,14 +307,14 @@ describe("applyInvalidationBatch", () => {
       } as any,
     };
     await applyInvalidationBatch(env, target, makeRunner(), [key("branch", "feat-a")], noNotify);
-    expect(entries["feat-a"].mr).toBeNull();
+    expect(entries[K("feat-a")].mr).toBeNull();
     expect(puts).toEqual(["feat-a"]);
   });
 
   test("concurrent batch merges into pending and processes after current run", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 1 }, fetchedAt: 1, repoName: "repo-x" },
-      "feat-b": { mr: { iid: 2 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 1 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-b")]: { mr: { iid: 2 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     const fetched: number[] = [];
@@ -339,7 +344,7 @@ describe("applyInvalidationBatch", () => {
 
   test("duplicate keys within a batch are processed once", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     let count = 0;
@@ -357,8 +362,8 @@ describe("applyInvalidationBatch", () => {
 
   test("a throwing fetch drops that key and continues with the rest", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 1 }, fetchedAt: 1, repoName: "repo-x" },
-      "feat-b": { mr: { iid: 2 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 1 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-b")]: { mr: { iid: 2 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     const target: RepoTarget = {
@@ -373,14 +378,14 @@ describe("applyInvalidationBatch", () => {
       } as any,
     };
     await applyInvalidationBatch(env, target, makeRunner(), [key("mr", "1"), key("mr", "2")], noNotify);
-    expect(entries["feat-a"].mr.iid).toBe(1);         // untouched
-    expect(entries["feat-b"].mr.iid).toBe(2);         // still updated
+    expect(entries[K("feat-a")].mr.iid).toBe(1);         // untouched
+    expect(entries[K("feat-b")].mr.iid).toBe(2);         // still updated
   });
 
   test("notify fires once per mutating batch with current userId", async () => {
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 1 }, fetchedAt: 1, repoName: "repo-x" },
-      "feat-b": { mr: { iid: 2 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 1 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-b")]: { mr: { iid: 2 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     let notifyCount = 0;
@@ -428,7 +433,7 @@ describe("applyInvalidationBatch", () => {
   test("mr event, iid on a local branch: ONE fetch feeds branch entry AND project store", async () => {
     const store = pmrsStore();
     const entries: Record<string, any> = {
-      feat: { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat")]: { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     const calls: number[] = [];
@@ -444,14 +449,14 @@ describe("applyInvalidationBatch", () => {
       ...noNotify, grantsFor: projectGrants, projectStore: store,
     });
     expect(calls).toEqual([7]);                               // exactly one fetch, not two
-    expect(entries.feat.fetchedAt).toBeGreaterThan(1);        // branch entry refreshed
+    expect(entries[K("feat")].fetchedAt).toBeGreaterThan(1);  // branch entry refreshed
     expect(store.read("repo-x")!.mrs[7]).toBeDefined();       // project store also fed
   });
 
   test("mr event, iid NOT in branchByIid but entry keyed by PR's sourceBranch has mr: null: ONE fetch feeds branch entry AND project store", async () => {
     const store = pmrsStore();
     const entries: Record<string, any> = {
-      "branch-42": { mr: null, fetchedAt: 1, repoName: "repo-x" },
+      [K("branch-42")]: { mr: null, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     const calls: number[] = [];
@@ -468,16 +473,16 @@ describe("applyInvalidationBatch", () => {
       ...noNotify, grantsFor: projectGrants, projectStore: store,
     });
     expect(calls).toEqual([42]);                                // exactly one fetch
-    expect(entries["branch-42"].mr).not.toBeNull();              // branch entry filled via sourceBranch feed
-    expect(entries["branch-42"].mr.iid).toBe(42);
-    expect(entries["branch-42"].fetchedAt).toBeGreaterThan(1);
+    expect(entries[K("branch-42")].mr).not.toBeNull();           // branch entry filled via sourceBranch feed
+    expect(entries[K("branch-42")].mr.iid).toBe(42);
+    expect(entries[K("branch-42")].fetchedAt).toBeGreaterThan(1);
     expect(store.read("repo-x")!.mrs[42]).toBeDefined();         // project store also fed
   });
 
   test("branch push with local entry + project grant: fetchPullRequestByBranch result reused, NO fetchSingleMR", async () => {
     const store = pmrsStore();
     const entries: Record<string, any> = {
-      "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
+      [K("feat-a")]: { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
     };
     const { env } = makeEnv(entries);
     let singleCalled = false;
@@ -740,6 +745,33 @@ describe("applyInvalidationBatch", () => {
   });
 });
 
+// ─── S069/Task 10: composite-key collision safety ────────────────────────────
+
+describe("freshness composite-key scoping (S069/Task 10)", () => {
+  test("a branch in two repos resolves to the right repo's entry", async () => {
+    const entries: Record<string, any> = {
+      [composeKey("repo-a", "main")]: { mr: { iid: 1 }, fetchedAt: 1, repoName: "repo-a" },
+      [composeKey("repo-b", "main")]: { mr: { iid: 2 }, fetchedAt: 1, repoName: "repo-b" },
+    };
+    const { env } = makeEnv(entries);
+    const target: RepoTarget = {
+      repoName: "repo-a", projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async () => null,
+        fetchPullRequestByBranch: async () => fakePR(1, { sourceBranch: "main" }),
+        fetchPullRequestsByBranches: async () => new Map(),
+      } as any,
+    };
+
+    await applyInvalidationBatch(env, target, makeRunner(), [key("branch", "main")], noNotify);
+
+    expect(entries[composeKey("repo-a", "main")].mr.iid).toBe(1);
+    // repo-b's same-named branch is a different composite key entirely,
+    // untouched by a refresh scoped to repo-a.
+    expect(entries[composeKey("repo-b", "main")].mr.iid).toBe(2);
+  });
+});
+
 // ─── RT-48 write-through (spec test 4) ───────────────────────────────────────
 
 /**
@@ -792,13 +824,13 @@ describe("write-through at updateEntry (RT-48)", () => {
     db.close(); // the daemon dies here — no flush, no shutdown hook, nothing
 
     const rebuilt = rebuildFromDb(dbPath);
-    expect(rebuilt["feat-a"]).toBeDefined();
-    expect(rebuilt["feat-a"].mr.iid).toBe(42);
-    expect(rebuilt["feat-a"].fetchedAt).toBeGreaterThan(1);
+    expect(rebuilt[K("feat-a")]).toBeDefined();
+    expect(rebuilt[K("feat-a")].mr.iid).toBe(42);
+    expect(rebuilt[K("feat-a")].fetchedAt).toBeGreaterThan(1);
     // Enrichment the events path never touches is preserved through the row.
-    expect(rebuilt["feat-a"].ticket).toEqual({ id: "T-1" });
-    expect(rebuilt["feat-a"].linearId).toBe("T-1");
-    expect(rebuilt["feat-a"].repoName).toBe("repo-x");
+    expect(rebuilt[K("feat-a")].ticket).toEqual({ id: "T-1" });
+    expect(rebuilt[K("feat-a")].linearId).toBe("T-1");
+    expect(rebuilt[K("feat-a")].repoName).toBe("repo-x");
   });
 
   test("a refresh that clears an MR persists the null, not the stale MR", async () => {
@@ -819,7 +851,7 @@ describe("write-through at updateEntry (RT-48)", () => {
     await applyInvalidationBatch(env, target, makeRunner(), [key("branch", "feat-b")], noNotify);
     db.close();
 
-    expect(rebuildFromDb(dbPath)["feat-b"].mr).toBeNull();
+    expect(rebuildFromDb(dbPath)[K("feat-b")].mr).toBeNull();
   });
 
   test("the store exposes no flush of any kind — persistence is not optional", () => {
