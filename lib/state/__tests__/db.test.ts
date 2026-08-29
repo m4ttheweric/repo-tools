@@ -13,6 +13,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
   closeStateDb,
+  ensureEndpointClaimsStartTimeColumn,
   getStateDb,
   LEGACY_IMPORTS,
   openStateDb,
@@ -177,7 +178,9 @@ describe("openStateDb — replay over an older user_version", () => {
     db1.exec("ALTER TABLE endpoint_claims DROP COLUMN start_time;");
     db1.close();
 
-    const columnsBefore = (new Database(dbPath).query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    const beforeDb = new Database(dbPath);
+    const columnsBefore = (beforeDb.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    beforeDb.close();
     expect(columnsBefore).not.toContain("start_time");
 
     const db2 = openStateDb(dbPath, "cli");
@@ -185,6 +188,49 @@ describe("openStateDb — replay over an older user_version", () => {
     const columnsAfter = (db2.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
     expect(columnsAfter).toContain("start_time");
     db2.close();
+  });
+
+  test("ensureEndpointClaimsStartTimeColumn treats a concurrent winner's duplicate-column error as success", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli"); // already has start_time (v9+)
+    expect((db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name)).toContain(
+      "start_time",
+    );
+
+    // Simulate the race: this process's own PRAGMA read reports the column
+    // missing (a snapshot taken before a concurrent winner's ALTER landed),
+    // so its own ALTER runs into the real column that already exists.
+    const originalQuery = db.query.bind(db);
+    let pragmaCalls = 0;
+    const spy = spyOn(db, "query").mockImplementation((sql: string, ...rest: unknown[]) => {
+      if (sql === "PRAGMA table_info(endpoint_claims);" && pragmaCalls++ === 0) {
+        return { all: () => [] } as unknown as ReturnType<Database["query"]>;
+      }
+      return (originalQuery as (...a: unknown[]) => unknown)(sql, ...rest) as ReturnType<Database["query"]>;
+    });
+
+    try {
+      expect(() => ensureEndpointClaimsStartTimeColumn(db)).not.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect((db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name)).toContain(
+      "start_time",
+    );
+    db.close();
+  });
+
+  test("ensureEndpointClaimsStartTimeColumn still propagates an unrelated ALTER failure", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.exec("DROP TABLE endpoint_claims;");
+
+    // The PRAGMA read on a dropped table returns no columns (missing,
+    // correctly), but the ALTER itself now fails for a genuine reason (no
+    // such table) that a duplicate-column re-check can never paper over.
+    expect(() => ensureEndpointClaimsStartTimeColumn(db)).toThrow(/no such table/);
+    db.close();
   });
 });
 

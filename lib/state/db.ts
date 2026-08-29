@@ -321,10 +321,19 @@ function addHandleColumnIfMissing(db: Database): void {
  * column ships out-of-band of the versioned schema, like `sections`,
  * `archived_at`, and `handle` above.
  */
-function ensureEndpointClaimsStartTimeColumn(db: Database): void {
+export function ensureEndpointClaimsStartTimeColumn(db: Database): void {
   const columns = db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[];
   if (columns.some((c) => c.name === "start_time")) return;
-  db.exec("ALTER TABLE endpoint_claims ADD COLUMN start_time TEXT;");
+  try {
+    db.exec("ALTER TABLE endpoint_claims ADD COLUMN start_time TEXT;");
+  } catch (err) {
+    // This runs outside runMigrations' BEGIN IMMEDIATE transaction (see the
+    // doc comment above), so a daemon and a CLI process opening the same
+    // fresh file can both read the column missing and both attempt the
+    // ALTER. The loser's failure only matters if the column still isn't there.
+    const after = db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[];
+    if (!after.some((c) => c.name === "start_time")) throw err;
+  }
 }
 
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
