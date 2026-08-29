@@ -321,26 +321,44 @@ function createRawAgeKeySeam(): AgeKeySeam {
       proc.stdin.end();
 
       const timeoutMs = opts?.timeoutMs ?? DEFAULT_AGE_KEY_TIMEOUT_MS;
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        try { proc.kill(); } catch { /* already exited */ }
-      }, timeoutMs);
 
-      try {
+      // A child that ignores SIGTERM (or a locked-keychain dialog that never
+      // closes) would otherwise keep `proc.exited` pending forever, so the
+      // deadline is raced against the read independently rather than
+      // discovered only after Promise.all settles — mirrors lib/subprocess.ts.
+      const captured: Promise<AgeExecResult> = (async () => {
         const [stdout, stderr, code] = await Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),
           proc.exited,
         ]);
-        if (timedOut) {
-          throw new AgeKeyTimeoutError(
-            `${redactArgv(cmd).join(" ")}: did not exit within ${timeoutMs}ms (keychain prompt pending?)`,
-          );
-        }
         return { code, stdout, stderr };
+      })();
+
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let deadlineTimer!: ReturnType<typeof setTimeout>;
+      const deadline: Promise<AgeExecResult> = new Promise((_, reject) => {
+        deadlineTimer = setTimeout(() => {
+          try { proc.kill("SIGTERM"); } catch { /* already exited */ }
+          // SIGTERM alone is not guaranteed (a trapped or hung child can
+          // ignore it); escalate to SIGKILL after a short grace, unref'd so
+          // it never holds this process open past the caller's own use of it.
+          killTimer = setTimeout(() => {
+            try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+          }, 2000);
+          killTimer.unref?.();
+          reject(new AgeKeyTimeoutError(
+            `${redactArgv(cmd).join(" ")}: did not exit within ${timeoutMs}ms (keychain prompt pending?)`,
+          ));
+        }, timeoutMs);
+      });
+
+      try {
+        return await Promise.race([captured, deadline]);
       } finally {
-        clearTimeout(timer);
+        clearTimeout(deadlineTimer);
+        // killTimer intentionally NOT cleared here: on the timeout path it
+        // must survive to fire SIGKILL against a child that ignored SIGTERM.
       }
     },
   };

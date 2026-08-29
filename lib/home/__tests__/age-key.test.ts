@@ -412,4 +412,15 @@ describe("createRealAgeKeySeam timeout (S070)", () => {
     expect(res.code).toBe(0);
     expect(res.stdout.trim()).toBe("hi");
   });
+
+  test("a child that ignores SIGTERM still rejects promptly with AgeKeyTimeoutError (C7: the deadline settles independently of proc.exited)", async () => {
+    const seam = createRealAgeKeySeam();
+    const start = Date.now();
+    await expect(
+      seam.run(["bash", "-c", "trap '' TERM; sleep 30"], { timeoutMs: 50 }),
+    ).rejects.toThrow(AgeKeyTimeoutError);
+    // Must settle on the timeout deadline (plus the SIGKILL escalation grace),
+    // not wait out proc.exited for a child that never dies from SIGTERM alone.
+    expect(Date.now() - start).toBeLessThan(4000);
+  });
 });

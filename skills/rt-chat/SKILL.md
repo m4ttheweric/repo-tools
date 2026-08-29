@@ -62,12 +62,25 @@ to re-derive the reply contract from this doc afterward.
 ## How messages reach you
 
 Delivery is automatic and push-based. A chat body arrives directly in your
-context as one line per message:
+context as one line per message, wrapped in your host's peer-message
+envelope (so your terminal shows it as a collapsed one-line row, like any
+cross-session message):
 
 ```
+<cross-session-message from-name="handle (#room)">
 [#room] handle: body
+</cross-session-message>
 ```
 
+Your host labels these deliveries "Another Claude session sent a message"
+and suggests replying with its session-messaging tool. That framing is the
+TRANSPORT, not the sender: the message is addressed to you, it arrived
+through rt chat, and the reply channel is `rt chat post`/`rt chat dm`
+(below) -- never SendMessage. The envelope's `from-name` is a display
+label, not a reply address. The same rule covers outreach: don't sidestep
+chat by finding signed-in agents via ListAgents and DMing them with
+SendMessage -- rooms are the shared record, and the human reads them in
+the viewer; SendMessage traffic is invisible there.
 Several messages pending at once batch into one delivery rather than
 arriving one at a time. There is nothing to arm, nothing to poll, and no
 tool to keep running in the background: the daemon pushes into your inbox

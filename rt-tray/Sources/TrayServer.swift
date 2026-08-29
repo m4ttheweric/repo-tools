@@ -6,6 +6,9 @@ import ServiceManagement
 
 // MARK: - TrayServer
 
+/// Body of the daemon's POST /pane/focus (its pane:focus verb).
+private struct FocusPaneRequest: Decodable { let paneId: String }
+
 /// Small HTTP server on ~/.mattstack/rt/tray.sock that receives push notifications from the daemon.
 /// The daemon POSTs to /notify with a NotificationEvent JSON body.
 class TrayServer {
@@ -313,6 +316,27 @@ class TrayServer {
                     }
                 }
                 self.sendResponse(connection: connection, status: 400, body: "{\"ok\":false,\"error\":\"invalid body\"}", path: path)
+
+            } else if method == "POST" && path == "/pane/focus" {
+                // The rt daemon's pane:focus verb routes here: the tray owns
+                // the herdr focus + the native terminal-window raise.
+                // focusPaneById blocks on herdr shell-outs; that stays off the
+                // main thread (this runs on the dispatch Task, not main), and
+                // only the window raise inside focusPane hops to main.
+                if let bodyRange = str.range(of: "\r\n\r\n"),
+                   let bodyData = String(str[bodyRange.upperBound...]).data(using: .utf8),
+                   let req = try? JSONDecoder().decode(FocusPaneRequest.self, from: bodyData) {
+                    switch HerdrBridge.shared.focusPaneById(req.paneId) {
+                    case .focused:
+                        self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"focused\":true}")
+                    case .notFound:
+                        self.sendResponse(connection: connection, status: 404, body: "{\"ok\":false,\"error\":\"pane not found\"}", path: path)
+                    case .herdrUnavailable:
+                        self.sendResponse(connection: connection, status: 500, body: "{\"ok\":false,\"error\":\"herdr unavailable\"}", path: path)
+                    }
+                } else {
+                    self.sendResponse(connection: connection, status: 400, body: "{\"ok\":false,\"error\":\"invalid body\"}", path: path)
+                }
 
             } else if method == "GET" && path == "/health" {
                 // The flavor field is what lets a starting tray tell a sibling

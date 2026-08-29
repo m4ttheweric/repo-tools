@@ -308,9 +308,10 @@ export async function getRepoContext(
   const cachedForToken = providers.get(repoName);
   if (cachedForToken) {
     const currentSecrets = await loadSecrets();
-    if (currentSecrets.gitlabToken && cachedForToken.token !== currentSecrets.gitlabToken) {
+    if (cachedForToken.token !== currentSecrets.gitlabToken) {
       stopWatch(repoName);
       userIdResolved = false;
+      selfUsername = null;
       providers.delete(repoName);
     }
   }

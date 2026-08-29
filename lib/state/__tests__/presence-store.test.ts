@@ -196,6 +196,15 @@ test("S073: signIn's read-then-write transaction uses .immediate() (BEGIN IMMEDI
   expect(src.indexOf("return run.immediate();", runIndex)).toBeGreaterThan(runIndex);
 });
 
+test("C9: reserveAgentHandle's read-then-write transaction also uses .immediate(), same reason as signIn's S073 fix", () => {
+  const src = readFileSync(resolve(import.meta.dir, "..", "presence-store.ts"), "utf8");
+  const fnIndex = src.indexOf("export function reserveAgentHandle(");
+  expect(fnIndex).toBeGreaterThan(-1);
+  const runIndex = src.indexOf("const run = db.transaction(", fnIndex);
+  expect(runIndex).toBeGreaterThan(fnIndex);
+  expect(src.indexOf("return run.immediate();", runIndex)).toBeGreaterThan(runIndex);
+});
+
 test("assertSessionSignedIn throws when the session's row is gone", () => {
   const db = fresh();
   expect(() => assertSessionSignedIn("ghost", db)).toThrow(/handle reclaimed/);
@@ -236,6 +245,16 @@ test("prune: a never-signed-out row past 24h with no live binding is deleted", (
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
   expect(prunePresence(now + 25 * HOUR, db, NO_BINDING)).toBe(1);
   expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 0 });
+});
+
+test("prune: a signed-out row within its 24h offline window survives even when last_seen_at is stale (C9: PRUNABLE_SQL must not let a signed-out row's last_seen_at leg bypass its own signed_out_at age bound)", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // last_seen_at pinned at `now`, no touches
+  signOut("s1", now + 30 * HOUR, db); // signed out well after last_seen_at went stale
+  // 1h after signing out: signed_out_at leg is nowhere near its 24h bound,
+  // but last_seen_at (still `now`, 31h stale) trips the OTHER leg.
+  expect(prunePresence(now + 31 * HOUR, db)).toBe(0);
+  expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
 });
 
 test("touchLastSeen refreshes only last_seen_at -- the sole remaining route to it now that chat:pulse is gone", () => {

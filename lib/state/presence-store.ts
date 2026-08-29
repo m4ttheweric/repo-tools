@@ -111,7 +111,7 @@ function isReclaimable(row: PresenceRawRow, sessionStaleCutoff: number, deps: Re
  * SQL only narrows to "old enough to be worth a registry check", never the
  * final delete decision. Bind params in order: dayAgo, dayAgo (both legs).
  */
-const PRUNABLE_SQL = `(signed_out_at IS NOT NULL AND signed_out_at < ?) OR last_seen_at < ?`;
+const PRUNABLE_SQL = `(signed_out_at IS NOT NULL AND signed_out_at < ?) OR (signed_out_at IS NULL AND last_seen_at < ?)`;
 
 const SELECT_PRESENCE_BY_HANDLE_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE handle = ?;`;
 const SELECT_PRESENCE_BY_SESSION_SQL = `SELECT ${PRESENCE_COLUMNS} FROM chat_presence WHERE session_id = ?;`;
@@ -359,7 +359,9 @@ export function reserveAgentHandle(db: Database = getStateDb(), now: number = Da
     recordPoolNameUse(name, now, db);
     return name;
   });
-  return run();
+  // BEGIN IMMEDIATE: read-then-write must lock up front or SQLITE_BUSY_SNAPSHOT
+  // bypasses busy_timeout (same reason as signIn's S073 fix above).
+  return run.immediate();
 }
 
 export function signOut(sessionId: string, now: number = Date.now(), db: Database = getStateDb()): void {
