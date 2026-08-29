@@ -22,6 +22,16 @@ test("getRepoContext drops a stale-token provider before serving the cached one 
   expect(tokenCheckMatch!.index!).toBeLessThan(fastPathIndex);
 });
 
+test("getRepoContext invalidates the cached provider when gitlabToken is removed, not just rotated (C5)", () => {
+  const src = readFileSync(resolve(import.meta.dir, "..", "freshness.ts"), "utf8");
+  // The buggy gate: invalidation only ran when a NEW token was present, so a
+  // caller whose secrets lost gitlabToken entirely kept getting served the
+  // stale authenticated provider. It must be gone.
+  expect(src).not.toMatch(/if \(currentSecrets\.gitlabToken && cachedForToken\.token !== currentSecrets\.gitlabToken\)/);
+  // The fixed condition must still invalidate on a plain mismatch, absent value included.
+  expect(src).toMatch(/if \(cachedForToken\.token !== currentSecrets\.gitlabToken\)/);
+});
+
 test("reconcileFreshnessImpl drops a stale-token watch before skipping already-watched repos (S048/S049 fix 2)", () => {
   const src = readFileSync(resolve(import.meta.dir, "..", "freshness.ts"), "utf8");
   const staleWatchDrop = src.match(/existing\.token !== secrets\.gitlabToken\)\s*stopWatch\(repoName\);/);
