@@ -578,7 +578,7 @@ describe("worktree:freshen", () => {
 });
 
 describe("worktree:adopt", () => {
-  test("registers main, disposes a clean parking-lot tree, claims the feature tree", async () => {
+  test("registers main, disposes a clean parking-lot tree, leaves the foreign feature tree unmanaged", async () => {
     const repo = makeRepo();
     const parked = join(repo, ".worktrees", "parked");
     const feature = join(repo, ".worktrees", "feature");
@@ -596,7 +596,8 @@ describe("worktree:adopt", () => {
     expect(res.ok).toBe(true);
     expect(res.data.main).toBe(basename(repo));
     expect(res.data.disposed).toEqual(["parked"]);
-    expect(res.data.claimed).toEqual(["feature"]);
+    expect(res.data.claimed).toEqual([]);
+    expect(res.data.unmanaged).toEqual(["feature"]);
     expect(res.data.refused).toEqual([]);
 
     expect(existsSync(parked)).toBe(false);
@@ -606,13 +607,31 @@ describe("worktree:adopt", () => {
     expect(trees.find((t) => t.path === repo)!.kind).toBe("main");
     expect(trees.find((t) => t.name === "parked")).toBeUndefined();
     const feat = trees.find((t) => t.name === "feature")!;
-    expect(feat.kind).toBe("ephemeral");
-    expect(feat.state).toBe("claimed");
-    expect(feat.disposal).toBe("merge");
+    expect(feat.kind).toBe("unmanaged");
     expect(feat.branch).toBe("acme-1-feature");
 
     expect(existsSync(repoIndexPath)).toBe(false);
     expect(existsSync(appStatePath)).toBe(false);
+  });
+
+  test("claims the foreign feature tree as ephemeral when --claim is passed", async () => {
+    const repo = makeRepo();
+    const feature = join(repo, ".worktrees", "feature");
+    sh(`git worktree add -b acme-1-feature ${feature} origin/main`, repo);
+
+    const { h } = makeHandlers({ [repoName]: repo });
+    const res: any = await h["worktree:adopt"]!({ repoName, claim: true });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.claimed).toEqual(["feature"]);
+    expect(res.data.unmanaged).toEqual([]);
+
+    const trees = loadRegistry(repoName);
+    const feat = trees.find((t) => t.name === "feature")!;
+    expect(feat.kind).toBe("ephemeral");
+    expect(feat.state).toBe("claimed");
+    expect(feat.disposal).toBe("merge");
+    expect(feat.branch).toBe("acme-1-feature");
   });
 });
 

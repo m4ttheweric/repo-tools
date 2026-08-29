@@ -157,13 +157,15 @@ export function parseFreshenArgs(args: string[]): FreshenArgs {
 export interface AdoptArgs {
   repoName?: string;
   json: boolean;
+  claim: boolean;
 }
 
 export function parseAdoptArgs(args: string[]): AdoptArgs {
   let rest = args;
   const json = takeBoolFlag(rest, "--json"); rest = json.rest;
+  const claim = takeBoolFlag(rest, "--claim"); rest = claim.rest;
   const repo = takeFlag(rest, "--repo"); rest = repo.rest;
-  return { repoName: repo.value, json: json.present };
+  return { repoName: repo.value, json: json.present, claim: claim.present };
 }
 
 // ─── Shared IO helpers ───────────────────────────────────────────────────────
@@ -493,14 +495,25 @@ export async function worktreeAdopt(args: string[], _ctx: unknown): Promise<void
   if (!parsed.repoName) failText(parsed.json, "--repo <name> is required for adopt");
   const repoName = await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m));
 
-  const res = await daemonQuery("worktree:adopt", { repoName }, ADOPT_TIMEOUT_MS);
+  const res = await daemonQuery("worktree:adopt", { repoName, claim: parsed.claim }, ADOPT_TIMEOUT_MS);
   const ok = requireQueryResult(parsed.json, res);
 
   if (parsed.json) { console.log(JSON.stringify(ok.data, null, 2)); return; }
 
-  const d = ok.data as { main: string; claimed: string[]; disposed: string[]; refused: Array<{ tree: string; reason: string }> };
+  const d = ok.data as {
+    main: string;
+    claimed: string[];
+    unmanaged: string[];
+    disposed: string[];
+    refused: Array<{ tree: string; reason: string }>;
+  };
   console.log("");
-  console.log(`  ${green}✓${reset} adopted ${d.main ? `main=${d.main}, ` : ""}${d.claimed.length} claimed, ${d.disposed.length} disposed`);
+  console.log(
+    `  ${green}✓${reset} adopted ${d.main ? `main=${d.main}, ` : ""}${d.claimed.length} claimed, ` +
+      `${d.unmanaged.length} unmanaged, ${d.disposed.length} disposed`,
+  );
+  for (const name of d.claimed) console.log(`  ${green}✓${reset} ${name} ${dim}(kind: ephemeral, claimed)${reset}`);
+  for (const name of d.unmanaged) console.log(`  ${dim}·${reset} ${name} ${dim}(kind: unmanaged, untouched)${reset}`);
   for (const r of d.refused) console.log(`  ${yellow}⚠${reset} ${r.tree} not disposed: ${r.reason}`);
   console.log("");
 }

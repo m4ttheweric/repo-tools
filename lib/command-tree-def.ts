@@ -584,6 +584,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "worktreeAdopt",
         args: [
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (required)" },
+          { name: "Claim", flag: "--claim", type: "boolean", default: false, hint: "Take ownership: adopt foreign worktrees as auto-disposing ephemerals (default: leave them unmanaged, untouched)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },

@@ -636,6 +636,7 @@ export function createWorktreeHandlers(
 
         let main = "";
         const claimed: string[] = [];
+        const unmanaged: string[] = [];
         const disposed: string[] = [];
         const refused: Array<{ tree: string; reason: string }> = [];
 
@@ -674,16 +675,22 @@ export function createWorktreeHandlers(
             continue;
           }
 
-          patchTree(repoName, rec.path, (r) => {
-            r.kind = "ephemeral";
-            r.state = "claimed";
-            r.disposal = "merge";
-            r.claimedAt = new Date().toISOString();
-          });
-          claimed.push(rec.name);
+          if (payload?.claim === true) {
+            patchTree(repoName, rec.path, (r) => {
+              r.kind = "ephemeral";
+              r.state = "claimed";
+              r.disposal = "merge";
+              r.claimedAt = new Date().toISOString();
+            });
+            claimed.push(rec.name);
+          } else {
+            // Left exactly as reconcileRepoRegistry stamped it: kind
+            // "unmanaged", never auto-disposed, until a caller passes --claim.
+            unmanaged.push(rec.name);
+          }
         }
 
-        return { ok: true as const, data: { main, claimed, disposed, refused } };
+        return { ok: true as const, data: { main, claimed, unmanaged, disposed, refused } };
       });
 
       if (result === "busy") return { ok: false, error: "busy" };
