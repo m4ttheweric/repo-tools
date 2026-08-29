@@ -45,7 +45,7 @@ import { herdrRequest } from "../../herdr/client.ts";
 import { injectIntoPane, herdrError } from "../inject.ts";
 import type { HerdrSnapshot } from "./pane.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
-import { deliverToInbox, renderDeliveries } from "../inbox.ts";
+import { deliverToInbox, deliveryLabel, renderDeliveries, wrapCrossSession } from "../inbox.ts";
 import { repoForCwd, branchForCwd } from "../../repo-for-cwd.ts";
 import { deriveRoomForCwdAsync } from "../../chat-room.ts";
 import { runCapture } from "../../subprocess.ts";
@@ -152,7 +152,8 @@ async function deliverPost(
   if (!binding || !inboxAlive(binding)) return;
   const pending = pendingMessages(msg.room, recipient, msg.id, db);
   if (pending.length === 0) return;
-  const content = renderDeliveries(pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body })));
+  const items = pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
+  const content = wrapCrossSession(deliveryLabel(items), renderDeliveries(items));
   const result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) {
     await reportUnreadBadge(herdr, presence.pane, pending.length);
@@ -575,7 +576,7 @@ export function createChatHandlers(opts: {
       const peeked = peekUnread({ handle: data.handle, limit: WELCOME_CATCHUP_LIMIT }, db);
       const catchup = peeked.map((r) => ({ room: r.room, lines: r.messages.map((m) => `${m.handle}: ${m.body}`) }));
       const catchupCursors = peeked.map((r) => ({ room: r.room, upToId: r.messages[r.messages.length - 1]!.id }));
-      const welcomeContent = renderWelcome(data.handle, rooms, catchup);
+      const welcomeContent = wrapCrossSession("rt chat", renderWelcome(data.handle, rooms, catchup));
       const welcomeSessionId = sessionId;
       queueMicrotask(() => {
         deliverWelcome(db, deliveryChains, inboxDeps, welcomeSessionId, data.handle, welcomeContent, catchupCursors).catch((err) => {
