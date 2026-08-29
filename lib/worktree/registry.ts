@@ -1,5 +1,5 @@
-import { realpathSync } from "fs";
 import { join } from "path";
+import { canon } from "../fs-canon.ts";
 import { repoDataDir } from "../rt-paths.ts";
 import { deleteKvValue, getKvValue, hasKvValue, importLegacyJsonFile, setKvValue, setKvValueCritical } from "../state/index.ts";
 
@@ -163,15 +163,6 @@ export function usedNames(trees: TreeRecord[]): Set<string> {
   return new Set(trees.map((t) => t.name));
 }
 
-/** Canonical path key: a tree that no longer exists compares by its own spelling rather than throwing. */
-function canonPath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
 const MANAGED_KINDS: ReadonlySet<TreeKind> = new Set<TreeKind>(["main", "ephemeral"]);
 
 /**
@@ -198,7 +189,7 @@ export function mergeRegistries(winner: TreeRecord[], loser: TreeRecord[]): Tree
   const byPath = new Map<string, TreeRecord>();
   const order: string[] = [];
   for (const rec of [...winner, ...loser]) {
-    const key = canonPath(rec.path);
+    const key = canon(rec.path);
     const held = byPath.get(key);
     if (!held) {
       byPath.set(key, rec);
