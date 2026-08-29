@@ -75,12 +75,10 @@ principle: rt state belongs under `~/.mattstack`, never inside a target repo.
   `lib/settings/identity.ts` (never `@mattstack/rt-client`, which does not
   resolve here). The serialized wire form is slash-free by construction and a
   legal single path segment.
-- **Async wrinkle:** identity derivation is async, but `sanitizeRoot` /
-  `loadWorktreeRepoConfig` are sync today. The default-root derivation moves to
-  the async call sites that actually create trees (create, replenish) rather
-  than the sync config loader, or is seeded from a per-repo identity cache at
-  the async seam. The plan resolves the exact shape; the constraint is that no
-  sync path is forced to `await`.
+- **No async wrinkle:** `loadWorktreeRepoConfig` is already async and already
+  awaits `deriveRepoIdentity`, and `sanitizeRoot` is its only caller. The
+  derived identity is passed into `sanitizeRoot` so it can build the default
+  root directly. No new async seam and no identity cache are needed.
 
 ### Realpath discipline
 
@@ -157,7 +155,12 @@ Two independent fixes for the two call sites.
   `SHELL_BINS` to include multiplexers (`tmux`, `screen`), remote shells
   (`ssh`, `mosh`), and terminal editors/pagers (`vim`, `nvim`, `emacs`, `less`,
   `man`). The full list of non-package-script targets is logged at `warn`
-  before SIGTERM so an unexpected kill is diagnosable.
+  before SIGTERM so an unexpected kill is diagnosable. A widened spared-set is
+  chosen over the audit's positive allowlist of workload signatures because
+  S018's fixer notes sanction it as the "at minimum" fix: an allowlist that
+  fails to recognize a real workload silently declines to kill a runaway,
+  whereas a spared-set that misses a bystander is the rarer and less damaging
+  error given the bystander classes are now enumerated.
 
 Test: `killWorktreeProcesses` protects a caller pid passed end to end (the
 current suite only exercises `selectKillTargets` with a hand-supplied pid).
@@ -246,8 +249,12 @@ handlers/worktree.ts).
   the registry-side fix is required regardless).
 - A registry row whose path is absent for a pass is marked with a hold
   (`missingSince` / a miss counter on `TreeRecord`, a free JSON field) rather
-  than deleted, and is only pruned after N consecutive missing passes. When the
-  path returns, the hold clears.
+  than deleted, and is only pruned after `MISSING_PRUNE_PASSES = 3` consecutive
+  missing passes. When the path returns, the hold clears. Rationale: reconcile
+  runs about every 5 minutes, so three misses is roughly 15 minutes of
+  sustained absence... long enough to ride out a transient unmount or NFS blip,
+  short enough that a genuinely removed tree is still cleaned within a cache
+  window.
 - `scrapTree`'s collision-cleanup path gains a guard: it refuses to `rm -rf` a
   directory it did not create unless it is confirmed to be a git worktree with
   no unexpected extra content, closing the data-loss vector once the registry
@@ -308,9 +315,15 @@ a directory scan; the manifest is authoritative and the index is a convenience.
 ### S068 endpoint claim liveness
 
 - A nullable `start_time` column is added to `endpoint_claims` by a
-  `PRAGMA table_info` guard that runs from the shared db open path (the
-  `addSectionsColumnIfMissing` precedent), so both the daemon and CLI writers
-  see it, with no SCHEMA_VERSION bump.
+  `PRAGMA table_info` guard. **It must run unconditionally on every open, not
+  inside the version gate.** `addSectionsColumnIfMissing` and its siblings run
+  *inside* `runMigrations`' `user_version` gate (db.ts ~462-481), so on a
+  machine already at the current version... which takes no bump here... that gate
+  is never entered and the column would never be added. Cite that helper only
+  for the `PRAGMA table_info` guard *shape*. The guarded add lives in its own
+  helper called from `openStateDb` right after `runMigrations`, unconditionally
+  and regardless of `user_version`, from the shared open path so both the daemon
+  and CLI writers apply it. No SCHEMA_VERSION bump is taken.
 - The signal is the process start-time (captured at claim time via a small
   `ps`/sysctl probe), which catches pid reuse with and without a reboot.
   `isLiveClaim` treats a claim as live when the port is listening, or the pid
@@ -348,7 +361,10 @@ a directory scan; the manifest is authoritative and the index is a convenience.
   machine that never opted in does not build a team-declared pool.
 - `replenishAndShrink` gains a machine-scope onDeck ceiling that clamps
   `cfg.onDeck`, and a free-disk precheck before each `createTree`. The disk
-  threshold is a named constant with a one-line rationale.
+  threshold is `WORKTREE_MIN_FREE_DISK_GB = 5`. Rationale: the spawn-env spec
+  describes multi-GB monorepo installs, and 5 GB leaves room for one tree plus
+  the install's transient peak without risking a full disk on a laptop with
+  ~10 GB free (the exact profile in the 2026-08-21 wedge incident).
 - Dormant surfacing: when a team store declares a pool the machine has not
   opted into, `rt daemon status` and `rt worktree list` say the pool is dormant
   and print the exact `rt settings` command that enables it, so a new member is
