@@ -60,6 +60,26 @@ describe("events bus bounded reads (S047, R030)", () => {
     expect(Math.max(...spy.rowCounts)).toBeLessThan(40);
   });
 
+  for (const limit of [0, -1, -5]) {
+    test(`list({ limit: ${limit} }) clamps instead of forcing an unbounded read or throwing`, () => {
+      for (let i = 0; i < 40; i++) bus.emit("job/x/" + i);
+      spy.rowCounts.length = 0;
+
+      let threw = false;
+      try {
+        bus.list({ pattern: "**", after: 0, limit });
+      } catch {
+        threw = true;
+      }
+
+      expect(threw).toBe(false);
+      // Clamped to the minimum positive limit (1), so pages are tiny, not
+      // SQLite's unbounded-LIMIT reading of a non-positive value.
+      for (const count of spy.rowCounts) expect(count).toBeLessThanOrEqual(2); // clamped limit (1) + 1
+      expect(Math.max(...spy.rowCounts)).toBeLessThan(40);
+    });
+  }
+
   test("a narrow pattern still pages forward instead of reading the whole journal in one call", () => {
     // 30 rows that never match, one match near the end.
     for (let i = 0; i < 30; i++) bus.emit("noise/" + i);

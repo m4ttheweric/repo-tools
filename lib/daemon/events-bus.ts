@@ -183,7 +183,13 @@ export function createEventsBus(opts: {
       const rows = afterStmt.all(after, UNBOUNDED) as EventRow[];
       return rows.filter(r => matchTopic(pattern, r.topic)).map(rowToEvent);
     }
-    const pageSize = limit + 1;
+    // A non-positive or fractional limit would defeat the paging below: a
+    // negative pageSize is SQLite's "unbounded" spelling (the exact full
+    // scan this function exists to avoid), and pageSize 0 returns no rows,
+    // leaving nothing to advance cursor from. Clamp so eventsAfter is safe
+    // even called directly with a bad limit, not just through events:list.
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const pageSize = safeLimit + 1;
     const matched: BusEvent[] = [];
     let cursor = after;
     for (;;) {
@@ -191,7 +197,7 @@ export function createEventsBus(opts: {
       for (const r of rows) {
         if (!matchTopic(pattern, r.topic)) continue;
         matched.push(rowToEvent(r));
-        if (matched.length >= limit) return matched;
+        if (matched.length >= safeLimit) return matched;
       }
       if (rows.length < pageSize) return matched;
       cursor = rows[rows.length - 1]!.id;

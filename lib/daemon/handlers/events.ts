@@ -19,6 +19,12 @@ const num = (v: unknown): number | undefined => {
 // realistic catch-up page; a paginating client still gets more via cursor.
 const DEFAULT_LIST_LIMIT = 500;
 
+// payload is cast, not schema-validated, so limit <= 0 or fractional must
+// not reach eventsAfter's paging math (0/negative breaks it; see
+// events-bus.ts). A supplied positive limit passes through unshrunk, even
+// above DEFAULT_LIST_LIMIT: the default only covers an omitted limit.
+const clampListLimit = (n: number | undefined): number => Math.max(1, Math.floor(n ?? DEFAULT_LIST_LIMIT));
+
 // Every member takes a direct `unknown` payload rather than
 // `Pick<TypedHandlers, ...>`'s per-command type: a wider `unknown` param
 // still satisfies TypedHandlers' narrower one at the command-router.ts
@@ -51,7 +57,7 @@ export function createEventsHandlers(
       const { events, cursor } = bus.list({
         pattern,
         after: num(payload?.after),
-        limit: num(payload?.limit) ?? DEFAULT_LIST_LIMIT,
+        limit: clampListLimit(num(payload?.limit)),
       });
       return { ok: true as const, data: { events, cursor } };
     },
