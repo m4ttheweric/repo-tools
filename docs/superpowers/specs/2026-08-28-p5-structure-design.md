@@ -144,7 +144,10 @@ Wave 2 built a `TypedHandlers` catalog in `@mattstack/rt-client`
 (`tray:status`, `system-processes`, `notifications`, `ports`, `repos`,
 `repos:locate`, `worktree:*`, `endpoint:*`, `mr:action`, and the
 `discussions:*` writes), and `cache:read` is called by rt-client but is
-in no catalog at all (R013, R016). Handler error shapes still diverge:
+in no catalog at all (R013, R016). The re-verified count of 42 untyped
+commands supersedes the roadmap's 48: wave 2 typed 39 of the 81 commands,
+and `cache:read` is one of the 42 (not a separate item). Handler error
+shapes still diverge:
 `handleCommand` rethrows on a throw (a stack-stringed 500 to the client),
 `sdm:*` and `cache:*` spread fields at the top level instead of under
 `data`, and no structured `{code, message}` error object exists anywhere
@@ -153,9 +156,9 @@ in no catalog at all (R013, R016). Handler error shapes still diverge:
 ### Typed catalog (decision)
 
 Extend wave 2's rt-client `Commands` catalog to every command with an
-out-of-process consumer (the 42, tray-facing included, plus `cache:read`),
-and add it to `COMMAND_NAMES` so the existing exhaustiveness guard covers
-it. The one-directional drift guard gains its missing half: a test that
+out-of-process consumer (the 42, tray-facing and `cache:read` included),
+and add them to `COMMAND_NAMES` so the existing exhaustiveness guard
+covers them. The one-directional drift guard gains its missing half: a test that
 walks rt-client's own call sites (`client.ts`) and asserts each string it
 passes to `rtCommand` is a cataloged name, closing the `cache:read` gap.
 Any verb that is genuinely daemon-internal (no external caller) goes in a
@@ -185,12 +188,16 @@ not a schema engine.
 ### Error envelope (decision)
 
 **Option A (recommended): additive convergence.** `handleCommand` catches
-a throw and returns `{ ok: false, error: { code, message }, reqId }`
-(`reqId` already added by Phase 2) instead of rethrowing a 500;
-`ok: false` results everywhere gain the structured `{ code, message }`
-object; new consumers read `error.code`. Existing `ok: true` top-level
-fields (`sdm` resources, `cache` source) are kept for back-compat so no
-current consumer breaks, and rt-client types the shape additively.
+a throw and returns an `ok: false` envelope instead of rethrowing a 500.
+The existing `error` field stays a plain **string**, because every
+rt-client wrapper, mr-board and console display it verbatim today; the
+structured object lands under a new additive key `failure: { code,
+message }`, and the throw-to-envelope path fills **both** (`error` set to
+the message, `failure` to `{ code, message }`, alongside the `reqId`
+Phase 2 already adds). New consumers read `failure.code`; no current
+consumer adapts. Existing `ok: true` top-level fields (`sdm` resources,
+`cache` source) are kept for back-compat, and rt-client types the added
+`failure` key additively.
 Consistent with Phase 2's discipline: rt-client source plus a `dist`
 rebuild, no version bump, no publish (publishing is release-class, from
 `main`); the estate reads the tightened shape on the next release.
@@ -315,7 +322,16 @@ so a stale cursor stops forcing a full-journal rescan on every emit
 Add `rt state backup` (`VACUUM INTO` a stamped copy) and `rt state
 restore`; run `PRAGMA quick_check` at daemon boot and warn (do not block)
 on a bad result; take a daily rotating copy from the retention sweep unit
-(R055). All new commands and a boot step, no schema change.
+(R055). This is a new command module `commands/state.ts` (no `state`
+command exists today), so the plan must register its thunk in
+`lib/module-registry.ts` (`() => import("../commands/state.ts")`) or the
+compiled binary cannot bundle it. `rt state restore`'s required positional
+(which stamped copy to restore) declares `omitBehavior` on its node in
+`command-tree-def.ts` (a `"picker"` over the existing stamped copies), and
+its leaf picker gates `process.stdin.isTTY && !json &&
+!process.env.RT_BATCH`, leaving the non-TTY and `--json` paths exactly as
+they were; `rt state backup` takes no required positional. No schema
+change.
 
 ## 5.6 Seam tests
 
@@ -347,11 +363,15 @@ eleven internals exported for tests (R014). Written against the reconciler's
 **intent**, not its current lines, because Phase 4 is rewriting the
 reconcile/dispose/reap paths concurrently:
 
-- Split the five duties into units behind the 5.1 seam:
-  `reconciler/reconcile.ts` (registry), `reactor.ts` (merge detection and
-  the fired-ledger), `freshen.ts`, `replenish.ts` (replenish and shrink),
-  `reap.ts`, each exporting a per-repo step with its own test file; the
-  eleven `__test__` exports move to their home modules.
+- Split the five duties (reconcile, reactor, freshen, replenish, shrink)
+  into units behind the 5.1 seam: `reconciler/reconcile.ts` (registry),
+  `reactor.ts` (merge detection and the fired-ledger), `freshen.ts`, and
+  `replenish.ts`. Shrink co-locates with replenish in `replenish.ts` (they
+  share `replenishAndShrink` today); that is a file-layout choice, not a
+  sixth duty. Worktree-trash reaping (`reapRepoTrash`) is not one of the
+  five: it belongs to Phase 4's retention work and is re-based here, not
+  designed in this spec. Each unit exports a per-repo step with its own
+  test file; the eleven `__test__` exports move to their home modules.
 - Schedule per-repo steps as independent promises with a concurrency cap
   instead of one serial loop, so one repo's multi-minute install no longer
   delays every other repo's merge reactor, and a long pass no longer
