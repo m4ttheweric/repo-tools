@@ -397,3 +397,19 @@ test("pane:focus surfaces the tray's error body on a non-2xx reply", async () =>
   const res = await pane["pane:focus"]({ paneId: "w9:p9" });
   expect(res).toEqual({ ok: false, error: "pane not found" });
 });
+
+test("pane:focus treats a 2xx reply that says ok:false as a failure", async () => {
+  const db = freshDb();
+  const tray = fakeTray({ status: 200, json: { ok: false, error: "herdr unavailable" } });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w1:p1" });
+  expect(res).toEqual({ ok: false, error: "herdr unavailable" });
+});
+
+test("pane:focus falls back to a status message when a non-2xx reply has no body", async () => {
+  const db = freshDb();
+  const tray = fakeTray({ status: 500, json: null });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w1:p1" });
+  expect(res).toEqual({ ok: false, error: "tray focus failed (500)" });
+});

@@ -1096,6 +1096,16 @@ export const TREE: Record<string, CommandNode> = {
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the delivery result as JSON instead of the plain line" },
         ],
       },
+      focus: {
+        description: "Bring a herdr pane to the front (via the tray: workspace + tab focus and terminal window raise)",
+        module: "./commands/pane.ts",
+        fn: "paneFocus",
+        omitBehavior: { exempt: "agent-facing; the pane id is passed explicitly (discover panes with rt pane list)" },
+        args: [
+          { name: "Pane", type: "text", placeholder: "w7A:pY", hint: "herdr pane id to focus" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the focus result as JSON instead of the plain line" },
+        ],
+      },
       accounts: {
         description: "cswap accounts with rate-limit headroom, for spawn --account",
         module: "./commands/pane.ts",

@@ -319,9 +319,10 @@ class TrayServer {
 
             } else if method == "POST" && path == "/pane/focus" {
                 // The rt daemon's pane:focus verb routes here: the tray owns
-                // the herdr focus + the native terminal-window raise. Runs on
-                // the connection queue (herdr shell-outs block briefly), same
-                // as /flavor/retire's synchronous work.
+                // the herdr focus + the native terminal-window raise.
+                // focusPaneById blocks on herdr shell-outs; that stays off the
+                // main thread (this runs on the dispatch Task, not main), and
+                // only the window raise inside focusPane hops to main.
                 if let bodyRange = str.range(of: "\r\n\r\n"),
                    let bodyData = String(str[bodyRange.upperBound...]).data(using: .utf8),
                    let req = try? JSONDecoder().decode(FocusPaneRequest.self, from: bodyData) {

@@ -271,9 +271,14 @@ export function createPaneHandlers(opts: {
     // daemon and tray always ship together, so this just routes the id over
     // tray.sock; a down tray is a clean error, never a degraded fallback.
     "pane:focus": async (payload: Commands["pane:focus"]["payload"]): Promise<CommandResult<"pane:focus">> => {
+      // The tray does four sequential herdr spawns (list + process-info +
+      // workspace/tab focus) behind this call, so trayRequest's 2s default
+      // would misreport a slow-but-working tray as down; sit under paneFocus's
+      // 10s rt-client budget.
       const reply = await tray<{ ok?: boolean; focused?: boolean; error?: string }>("/pane/focus", {
         method: "POST",
         body: { paneId: payload.paneId },
+        timeoutMs: 8_000,
       });
       if (reply.status === 0) return { ok: false, error: "tray unavailable" };
       if (reply.status < 200 || reply.status >= 300 || reply.json?.ok === false)
