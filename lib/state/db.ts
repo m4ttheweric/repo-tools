@@ -15,7 +15,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 import { rtDir } from "../rt-paths.ts";
 
@@ -590,6 +590,77 @@ export function openStateDbGuarded(path: string): Database {
     }
   }
   return openStateDb(path, "cli");
+}
+
+/**
+ * Writes a standalone, fully-vacuumed copy of `db` to `path` via `VACUUM
+ * INTO` (R055): unlike a raw file copy, this is safe against a concurrent
+ * writer mid-transaction and against WAL sidecars, since sqlite produces the
+ * destination from a read-consistent snapshot in one statement.
+ */
+export function backupTo(db: Database, path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  db.query("VACUUM INTO ?").run(path);
+}
+
+/**
+ * `PRAGMA quick_check` wrapper: `[]` when the db reports "ok", otherwise the
+ * problem lines. A quick_check severe enough to throw outright (observed as
+ * SQLITE_CORRUPT on some corruption shapes, rather than a diagnostic row) is
+ * folded into the same nonempty-list contract instead of propagating.
+ */
+export function quickCheck(db: Database): string[] {
+  try {
+    const rows = db.query("PRAGMA quick_check;").all() as { quick_check: string }[];
+    const lines = rows.map((r) => r.quick_check);
+    return lines.length === 1 && lines[0] === "ok" ? [] : lines;
+  } catch (err) {
+    return [(err as Error).message];
+  }
+}
+
+/** ~/.mattstack/rt/backups: stamped state.db copies from `rt state backup` and the daily sweep. */
+export function stateBackupsDir(): string {
+  return join(dirname(stateDbPath()), "backups");
+}
+
+const STATE_BACKUP_PREFIX = "state-";
+const STATE_BACKUP_SUFFIX = ".db";
+const STATE_BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** A fresh stamped path under stateBackupsDir(); the stamp format matches quarantine()'s. */
+export function stampedBackupPath(now: Date = new Date()): string {
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  return join(stateBackupsDir(), `${STATE_BACKUP_PREFIX}${stamp}${STATE_BACKUP_SUFFIX}`);
+}
+
+/** Stamped backup filenames under stateBackupsDir(), newest first. `[]` when the dir doesn't exist yet. */
+export function listStateBackups(): string[] {
+  const dir = stateBackupsDir();
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.startsWith(STATE_BACKUP_PREFIX) && name.endsWith(STATE_BACKUP_SUFFIX))
+    .sort()
+    .reverse();
+}
+
+/** Removes stamped backups older than the retention window; returns the removed filenames. */
+export function pruneStateBackups(now: number = Date.now()): { removed: string[] } {
+  const dir = stateBackupsDir();
+  const removed: string[] = [];
+  for (const name of listStateBackups()) {
+    const iso = name.slice(STATE_BACKUP_PREFIX.length, -STATE_BACKUP_SUFFIX.length)
+      .replace(/^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "$1:$2:$3.$4Z");
+    const at = Date.parse(iso);
+    if (Number.isNaN(at) || now - at <= STATE_BACKUP_RETENTION_MS) continue;
+    try {
+      unlinkSync(join(dir, name));
+      removed.push(name);
+    } catch {
+      // a concurrent sweep or manual cleanup already removed it
+    }
+  }
+  return { removed };
 }
 
 let singleton: Database | null = null;

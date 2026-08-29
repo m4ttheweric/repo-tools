@@ -56,6 +56,12 @@ export {
   getStateDb,
   stateDbPath,
   closeStateDb,
+  backupTo,
+  quickCheck,
+  stateBackupsDir,
+  stampedBackupPath,
+  listStateBackups,
+  pruneStateBackups,
   type DbFlavor,
   type LegacyImport,
 } from "./db.ts";

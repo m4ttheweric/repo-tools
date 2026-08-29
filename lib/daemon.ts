@@ -52,7 +52,7 @@ import { unknownCommandReply } from "./daemon/unknown-command.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, pruneAgents, snapshotRegistryDeps, type BranchCacheStore } from "./state/index.ts";
+import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, pruneAgents, snapshotRegistryDeps, quickCheck, backupTo, stampedBackupPath, pruneStateBackups, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -540,6 +540,12 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         ctx.stateDb = getStateDb("daemon");
         recordBootAttempt();
         log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
+        // Integrity check, not a boot gate (R055): a state.db that fails
+        // quick_check should be loud, not fatal -- the daemon still has a
+        // repo-index-backed cache path and rt state restore is the recovery,
+        // not a crash loop.
+        const problems = quickCheck(ctx.stateDb);
+        if (problems.length > 0) log.warn({ problems }, "state.db failed PRAGMA quick_check");
         // One-shot re-key of every legacy NAME-keyed store row onto its
         // serialized repo identity. Fire-and-forget: it must be on the boot
         // path (before anything prunes the repo index) but not block the
@@ -618,6 +624,16 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           () => {
             const { removed } = pruneAgents(getStateDb("daemon"));
             if (removed > 0) log.info({ removed }, "pruned old agent records");
+          },
+          { bootDelayMs: 60_000, intervalMs: 24 * 60 * 60 * 1000 },
+          log,
+        ));
+        sweepHandles.push(scheduleSweep(
+          "state-backup",
+          () => {
+            backupTo(getStateDb("daemon"), stampedBackupPath());
+            const { removed } = pruneStateBackups();
+            if (removed.length > 0) log.info({ removed: removed.length }, "pruned old state.db backups");
           },
           { bootDelayMs: 60_000, intervalMs: 24 * 60 * 60 * 1000 },
           log,

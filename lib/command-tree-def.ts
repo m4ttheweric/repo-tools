@@ -832,6 +832,30 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  state: {
+    description: "rt's own state.db: backup, restore, and integrity",
+    subcommands: {
+      backup: {
+        description: "Write a stamped state.db backup (VACUUM INTO) and prune backups past retention",
+        module: "./commands/state.ts",
+        fn: "stateBackup",
+        args: [
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+      restore: {
+        description: "Restore state.db from a stamped backup copy (stop the daemon first)",
+        module: "./commands/state.ts",
+        fn: "stateRestore",
+        omitBehavior: "picker",
+        args: [
+          { name: "Copy", type: "text", placeholder: "state-2026-08-29T12-00-00-000Z.db", hint: "Backup filename (under rt state's backups dir) or an absolute path" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+    },
+  },
+
   settings: {
     description: "Configure tokens, team, and repo data",
     subcommands: {
