@@ -9,8 +9,9 @@
  */
 
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
-import { existsSync, realpathSync, statfsSync } from "fs";
+import { existsSync, statfsSync } from "fs";
 import type { Logger } from "pino";
+import { canon } from "../fs-canon.ts";
 import { rtDir } from "../rt-paths.ts";
 import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
 import {
@@ -57,15 +58,6 @@ export interface ReconcilerDeps {
   repoIndex: () => Record<string, string>;
   emit: (type: string, data: unknown) => void;
   log: Logger;
-}
-
-/** realpathSync defensively; a path that doesn't (yet) exist compares as-is. */
-function canon(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
 }
 
 export interface ReconcileDeps {

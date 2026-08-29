@@ -28,9 +28,10 @@
  * sides now key on that same identity string.
  */
 
-import { realpathSync, rmSync } from "fs";
+import { rmSync } from "fs";
 import { join } from "path";
 
+import { canon } from "../../fs-canon.ts";
 import { decodeRepo, type SerializedIdentity } from "../identity-decoder.ts";
 import { validateGitRef } from "../git-ref-validation.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
@@ -87,15 +88,6 @@ export interface WorktreeHandlerOpts {
 }
 
 // ─── Small shared helpers ────────────────────────────────────────────────────
-
-/** realpathSync defensively; a path that doesn't exist compares as-is. */
-function canon(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
 
 /** Returns whether the save landed... false means the mutation is only in the caller's discarded `trees` snapshot, never on disk. */
 function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): boolean {

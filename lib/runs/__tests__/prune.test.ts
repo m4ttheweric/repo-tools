@@ -108,6 +108,13 @@ describe("pruneRuns", () => {
     expect(() => assertPrunable("/", dir)).toThrow();
     expect(() => assertPrunable(dir, dir)).toThrow();
     expect(() => assertPrunable(join(dir, "alpha"), dir)).toThrow();
+    // pruneRuns' only real caller passes a dir that already exists (found via
+    // readdirSync), so create it here too rather than pass a literal path --
+    // canon() does not parent-walk a missing path's existing prefix, so an
+    // unresolved candidate compared against a resolved root (e.g. macOS's
+    // /var -> /private/var tmpdir symlink) would fail this prefix check for
+    // a reason that never occurs in real pruning.
+    mkdirSync(join(dir, "alpha", "run-1"), { recursive: true });
     expect(() => assertPrunable(join(dir, "alpha", "run-1"), dir)).not.toThrow();
   });
 
