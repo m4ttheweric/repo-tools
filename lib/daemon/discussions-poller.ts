@@ -41,9 +41,6 @@ export interface PollerEnv {
   broadcast: BroadcastFn;
 }
 
-let timer: ReturnType<typeof setInterval> | null = null;
-let sweeping = false;
-
 /**
  * Sweep targets = branch-cache MRs (any status not yet terminal) for granted
  * repos, PLUS project-store MRs whose discussions are already cached
@@ -97,38 +94,74 @@ export function collectSweepTargets(
   return out;
 }
 
-async function sweep(env: PollerEnv): Promise<void> {
-  if (sweeping) return;
-  sweeping = true;
-  try {
-    const tracking = loadRepoTracking();
-    const targets = collectSweepTargets(env.ctx.cache.entries, tracking, getProjectMRs(), getDiscussionsFileStore());
-
-    for (const { repoName, iid } of targets) {
-      try {
-        await refreshDiscussions({ ctx: env.ctx, broadcast: env.broadcast }, repoName, iid);
-      } catch (err) {
-        // Expected for a repo context that can't be resolved yet, or a
-        // transient fetch failure — keep going.
-        log.warn({ err }, `${repoName}#${iid} refresh failed`);
-      }
-    }
-  } finally {
-    sweeping = false;
-  }
+export interface DiscussionsPoller {
+  start(): void;
+  stop(): void;
 }
 
+/**
+ * R031: `timer`/`sweeping` used to be bare module-scope `let`s. Wraps them in
+ * a closure so a second createDiscussionsPoller(env) can coexist without
+ * sharing a timer handle or in-flight-sweep flag with the first.
+ */
+export function createDiscussionsPoller(env: PollerEnv): DiscussionsPoller {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let sweeping = false;
+
+  async function sweep(): Promise<void> {
+    if (sweeping) return;
+    sweeping = true;
+    try {
+      const tracking = loadRepoTracking();
+      const targets = collectSweepTargets(env.ctx.cache.entries, tracking, getProjectMRs(), getDiscussionsFileStore());
+
+      for (const { repoName, iid } of targets) {
+        try {
+          await refreshDiscussions({ ctx: env.ctx, broadcast: env.broadcast }, repoName, iid);
+        } catch (err) {
+          // Expected for a repo context that can't be resolved yet, or a
+          // transient fetch failure — keep going.
+          log.warn({ err }, `${repoName}#${iid} refresh failed`);
+        }
+      }
+    } finally {
+      sweeping = false;
+    }
+  }
+
+  function start(): void {
+    if (timer) return;
+    log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
+    // Kick off a first sweep after a short delay so the daemon finishes
+    // initializing freshness watchers before we start hitting GitLab.
+    setTimeout(() => { sweep(); }, 10_000);
+    timer = setInterval(() => { sweep(); }, POLL_INTERVAL_MS);
+  }
+
+  function stop(): void {
+    if (!timer) return;
+    clearInterval(timer);
+    timer = null;
+  }
+
+  return { start, stop };
+}
+
+let defaultPoller: DiscussionsPoller | null = null;
+
 export function startDiscussionsPoller(env: PollerEnv): void {
-  if (timer) return;
-  log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
-  // Kick off a first sweep after a short delay so the daemon finishes
-  // initializing freshness watchers before we start hitting GitLab.
-  setTimeout(() => { sweep(env); }, 10_000);
-  timer = setInterval(() => { sweep(env); }, POLL_INTERVAL_MS);
+  // Matches the original module-scope-timer behavior: the first call's `env`
+  // is the one that's used for every subsequent sweep (the timer guard makes
+  // later calls no-ops), so a later call with a different `env` is ignored
+  // exactly as it was before.
+  defaultPoller ??= createDiscussionsPoller(env);
+  defaultPoller.start();
 }
 
 export function stopDiscussionsPoller(): void {
-  if (!timer) return;
-  clearInterval(timer);
-  timer = null;
+  defaultPoller?.stop();
+  // Cleared (not just stopped) so a later startDiscussionsPoller(env) call
+  // rebuilds against the new env, matching the original module-scope-timer
+  // behavior where stop cleared the timer variable outright.
+  defaultPoller = null;
 }
