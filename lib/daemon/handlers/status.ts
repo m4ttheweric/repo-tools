@@ -16,9 +16,19 @@ import { existsSync, readdirSync } from "fs";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import type { PortEntry } from "../../port-scanner.ts";
 import { listWorktreesAsync } from "../../worktree/git-async.ts";
+import { worktreePoolDormant, WORKTREE_APP_ENABLE_COMMAND } from "../../worktree/config.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { getFreshnessSnapshot } from "../freshness.ts";
 import { readSupervisionState } from "../supervision-state.ts";
+
+/** Repos with a declared pool that this machine's app-level toggle leaves dormant (S077). */
+async function dormantWorktreeRepos(ctx: HandlerContext): Promise<string[]> {
+  const dormant: string[] = [];
+  for (const [repoName, repoPath] of Object.entries(ctx.repoIndex())) {
+    if (await worktreePoolDormant(repoName, repoPath)) dormant.push(repoName);
+  }
+  return dormant;
+}
 
 export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
   return {
@@ -42,6 +52,15 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
 
     "status": async () => {
       const h = ctx.getHealth();
+      const dormantRepos = await dormantWorktreeRepos(ctx);
+      const worktreePool =
+        dormantRepos.length > 0
+          ? {
+              dormant: true as const,
+              repos: dormantRepos,
+              message: `worktree pool declared but dormant on this machine... enable with: ${WORKTREE_APP_ENABLE_COMMAND}`,
+            }
+          : { dormant: false as const };
       return {
         ok: true,
         data: {
@@ -56,6 +75,7 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
           health: { level: h.level, reasons: h.reasons },
           metrics: h.metrics,
           eventLoop: h.eventLoop,
+          worktreePool,
         },
       };
     },

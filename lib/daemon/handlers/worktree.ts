@@ -57,6 +57,8 @@ import {
   loadWorktreeAppConfig,
   loadWorktreeRepoConfig,
   resolveReadySteps,
+  worktreePoolDormant,
+  WORKTREE_APP_ENABLE_COMMAND,
 } from "../../worktree/config.ts";
 import { changedSince, runReadySteps, stepsToRun } from "../../worktree/ready.ts";
 import { freshenRepo, reconcileRepoRegistry, withCreateLock } from "../worktree-reconciler.ts";
@@ -567,8 +569,10 @@ export function createWorktreeHandlers(
 
       const entries = ctx.cache.entries;
       const rows: Array<Record<string, unknown>> = [];
+      const dormantRepos: string[] = [];
 
-      for (const [repoName] of repos) {
+      for (const [repoName, repoPath] of repos) {
+        if (await worktreePoolDormant(repoName, repoPath)) dormantRepos.push(repoName);
         const trees = loadRegistry(repoName);
         const branchCounts = new Map<string, number>();
         for (const t of trees) {
@@ -595,7 +599,13 @@ export function createWorktreeHandlers(
         }
       }
 
-      return { ok: true, data: { trees: rows } };
+      const data: Record<string, unknown> = { trees: rows };
+      if (dormantRepos.length > 0) {
+        data.dormant = true;
+        data.dormantRepos = dormantRepos;
+        data.message = `worktree pool declared but dormant on this machine... enable with: ${WORKTREE_APP_ENABLE_COMMAND}`;
+      }
+      return { ok: true, data };
     },
 
     "worktree:freshen": async (payload: any) => {

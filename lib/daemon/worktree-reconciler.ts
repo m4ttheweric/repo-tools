@@ -9,7 +9,7 @@
  */
 
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
-import { existsSync, realpathSync } from "fs";
+import { existsSync, realpathSync, statfsSync } from "fs";
 import type { Logger } from "pino";
 import { rtDir } from "../rt-paths.ts";
 import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
@@ -969,6 +969,25 @@ export function withCreateLock<T>(repoPath: string, fn: () => Promise<T>): Promi
   return result;
 }
 
+// Machine-side clamp (S077): no team declaration builds more than this on one laptop.
+const WORKTREE_ONDECK_CEILING = 5;
+// Room for one tree plus a multi-GB monorepo install's transient peak (2026-08-21 wedge profile).
+const WORKTREE_MIN_FREE_DISK_GB = 5;
+
+/**
+ * Free disk under `path`, in gigabytes, via statfs. A probe failure (path not
+ * yet resolvable, permission) degrades to "enough disk" rather than blocking
+ * replenish on a signal that was never meant to gate anything on its own.
+ */
+async function hasFreeDiskGb(path: string, gb: number): Promise<boolean> {
+  try {
+    const stats = statfsSync(path);
+    return stats.bavail * stats.bsize >= gb * 1024 ** 3;
+  } catch {
+    return true;
+  }
+}
+
 /** The active backoff deadline for a repo, or null when creates may run now. */
 function createBlockedUntil(repoName: string): string | null {
   const entry = createBackoff.get(repoName);
@@ -1021,11 +1040,14 @@ async function replenishAndShrink(
 ): Promise<void> {
   const { repoName, repoPath, emit, log } = deps;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  if (cfg.onDeck <= 0) return;
+  // A store rung's onDeck is a team declaration; the ceiling is this machine's
+  // own limit and always wins, so it clamps here rather than in the sanitizer.
+  const onDeck = Math.min(cfg.onDeck, WORKTREE_ONDECK_CEILING);
+  if (onDeck <= 0) return;
 
   let { ready, totalUnclaimed } = poolCounts(repoName);
-  let budget = Math.max(0, cfg.onDeck - totalUnclaimed);
-  while (budget > 0 && ready < cfg.onDeck && totalUnclaimed < cfg.onDeck) {
+  let budget = Math.max(0, onDeck - totalUnclaimed);
+  while (budget > 0 && ready < onDeck && totalUnclaimed < onDeck) {
     // Checked per iteration, not once per pass: a failure recorded by the
     // attempt above must end this pass's replenish too, or the pass still
     // burns `onDeck` full builds on the same broken step.
@@ -1035,6 +1057,10 @@ async function replenishAndShrink(
         { repo: repoName, nextRetryAt: blockedUntil },
         "replenish: skipped — create backoff in effect",
       );
+      break;
+    }
+    if (!(await hasFreeDiskGb(repoPath, WORKTREE_MIN_FREE_DISK_GB))) {
+      log.warn({ repo: repoName }, "replenish: skipped, free disk below threshold");
       break;
     }
     budget--;
@@ -1073,7 +1099,7 @@ async function replenishAndShrink(
   // pass; a refusal just leaves it for the next pass rather than looping here.
   let counts = poolCounts(repoName);
   const attempted = new Set<string>();
-  while (counts.ready > cfg.onDeck) {
+  while (counts.ready > onDeck) {
     const now = Date.now();
     const eligible = counts.onDeckEntries.filter(
       (t) => !attempted.has(t.path) && (!t.nextRetryAt || Date.parse(t.nextRetryAt) <= now),
@@ -1345,4 +1371,7 @@ export const __test__ = {
   backoffDelayMs,
   createBackoff,
   MISSING_PRUNE_PASSES,
+  hasFreeDiskGb,
+  WORKTREE_ONDECK_CEILING,
+  WORKTREE_MIN_FREE_DISK_GB,
 };

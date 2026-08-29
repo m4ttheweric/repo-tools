@@ -19,6 +19,7 @@ import {
   stripEnvPrefix,
   loadWorktreeAppConfig,
   worktreeSettingsDeclared,
+  worktreePoolDormant,
   type WorktreeRepoConfig,
 } from "../config.ts";
 
@@ -246,6 +247,33 @@ describe("worktree config", () => {
         repos: { [IDENTITY]: { "rt.roles": { web: { pool: [3000] } } } },
       });
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(false);
+    });
+  });
+
+  describe("worktreePoolDormant (S077)", () => {
+    const IDENTITY = "gitlab.com/acme/dormant-only";
+    const REMOTE = "git@gitlab.com:acme/dormant-only.git";
+
+    test("declared pool, unowned machine (default disabled): dormant", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-dormant-team-", REMOTE);
+      writeStore(teamSettingsPath("acme"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2 } } },
+      });
+      expect(await worktreePoolDormant("dormant-only", repoPath)).toBe(true);
+    });
+
+    test("declared pool, machine explicitly enabled: not dormant", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-dormant-owned-", REMOTE);
+      writeStore(teamSettingsPath("acme"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2 } } },
+      });
+      writeStore(machineSettingsPath(), { "rt.worktreeApp": { enabled: true } });
+      expect(await worktreePoolDormant("dormant-only", repoPath)).toBe(false);
+    });
+
+    test("nothing declared, unowned machine: not dormant (nothing to be dormant about)", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-dormant-none-", REMOTE);
+      expect(await worktreePoolDormant("dormant-only", repoPath)).toBe(false);
     });
   });
 
@@ -488,8 +516,8 @@ describe("worktree config", () => {
   });
 
   describe("loadWorktreeAppConfig", () => {
-    test("neither file nor store: defaults", () => {
-      expect(loadWorktreeAppConfig()).toEqual({ enabled: true, killProcesses: true });
+    test("neither file nor store: an unowned machine defaults to disabled (S077)", () => {
+      expect(loadWorktreeAppConfig()).toEqual({ enabled: false, killProcesses: true });
     });
 
     test("file only (store unowned): seeds from parking-lot.json once, then reads the new file thereafter", () => {

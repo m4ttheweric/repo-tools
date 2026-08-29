@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import * as fsNamespace from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import type { Logger } from "pino";
@@ -145,6 +146,10 @@ describe("reconcileRepoRegistry", () => {
     repo = makeRepo();
     repoName = "acme";
     events = [];
+    // S077 flipped the unowned default to disabled; reconcileRepoRegistry's
+    // creating-entry scrap is itself gated on this flag, so this suite's
+    // fixtures opt in explicitly instead of riding the old implicit default.
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: true });
   });
 
   test("adopts main and a manually-added worktree as unmanaged", async () => {
@@ -423,6 +428,10 @@ describe("createWorktreeReconciler", () => {
     __test__.createBackoff.clear();
     repo = makeRepo();
     repoName = "acme";
+    // S077 flipped the unowned default to disabled; runOnce gates freshen/
+    // replenish/reap on it, so this suite opts in explicitly (the "app
+    // disabled" test below overrides this with its own write).
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: true });
   });
 
   test("runOnce reconciles only repos with registry entries or a worktrees config", async () => {
@@ -581,6 +590,55 @@ describe("createWorktreeReconciler", () => {
     // Reap skipped: it deletes directories, so it is gated like every other
     // mutating duty.
     expect(existsSync(seededTrash)).toBe(true);
+  });
+
+  test("S077: an unowned machine with a team-only onDeck declaration stays dormant, replenish never creates", async () => {
+    // Fresh HOME, deliberately bypassing this describe's beforeEach write: the
+    // app-level toggle here is genuinely unowned (no file, no store), not
+    // merely disabled.
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-dormant-home-")));
+    closeStateDb();
+    const dormantRepo = makeRepo();
+    addBareOrigin(dormantRepo);
+    const dormantRepoName = "acme-dormant";
+    await declareWorktrees(dormantRepo, dormantRepoName, { onDeck: 2, root: join(dormantRepo, ".worktrees") });
+
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => ({ [dormantRepoName]: dormantRepo }),
+      emit: () => {},
+      log: fakeLog(),
+    });
+
+    await reconciler.runOnce();
+
+    const trees = loadRegistry(dormantRepoName);
+    expect(trees.some((t) => t.kind === "main")).toBe(true); // read-only reconcile still ran
+    expect(trees.some((t) => t.kind === "ephemeral")).toBe(false); // replenish never ran
+  });
+
+  test("S077: a legacy parking-lot.json opts an otherwise-unowned machine in, and replenish builds", async () => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-legacy-home-")));
+    closeStateDb();
+    mkdirSync(rtDir(), { recursive: true });
+    writeFileSync(join(rtDir(), "parking-lot.json"), JSON.stringify({ enabled: true, killProcesses: false }));
+
+    const legacyRepo = makeRepo();
+    addBareOrigin(legacyRepo);
+    const legacyRepoName = "acme-legacy-owned";
+    await declareWorktrees(legacyRepo, legacyRepoName, { onDeck: 1, root: join(legacyRepo, ".worktrees") });
+
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => ({ [legacyRepoName]: legacyRepo }),
+      emit: () => {},
+      log: fakeLog(),
+    });
+
+    await reconciler.runOnce();
+
+    const trees = loadRegistry(legacyRepoName).filter((t) => t.kind === "ephemeral" && t.state === "on-deck");
+    expect(trees.length).toBe(1);
   });
 
   test("a legacy name-keyed registry is re-keyed onto the repo's identity on first reconcile", async () => {
@@ -1453,6 +1511,51 @@ describe("replenish / shrink", () => {
     addBareOrigin(repo);
   });
 
+  test("S077: a team onDeck above the ceiling is clamped to WORKTREE_ONDECK_CEILING", async () => {
+    await declareWorktrees(repo, repoName, {
+      onDeck: __test__.WORKTREE_ONDECK_CEILING + 3,
+      root: join(repo, ".worktrees"),
+    });
+
+    await __test__.replenishAndShrink(
+      { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+      new Map(),
+      fakeAppConfig(),
+    );
+
+    const trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral" && t.state === "on-deck");
+    expect(trees.length).toBe(__test__.WORKTREE_ONDECK_CEILING);
+  });
+
+  test("S077: free disk below the threshold skips create and warns, without charging a create failure", async () => {
+    await declareWorktrees(repo, repoName, { onDeck: 2, root: join(repo, ".worktrees") });
+
+    const statfsSpy = spyOn(fsNamespace, "statfsSync").mockReturnValue({ bavail: 1, bsize: 1 } as any);
+    const warns: unknown[][] = [];
+    const log = {
+      info: () => {},
+      error: () => {},
+      debug: () => {},
+      warn: (...args: unknown[]) => warns.push(args),
+    } as unknown as Logger;
+
+    try {
+      await __test__.replenishAndShrink(
+        { repoName, repoPath: repo, emit: () => {}, log },
+        new Map(),
+        fakeAppConfig(),
+      );
+    } finally {
+      statfsSpy.mockRestore();
+    }
+
+    const trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral");
+    expect(trees.length).toBe(0);
+    expect(warns.some((w) => JSON.stringify(w).includes("free disk below threshold"))).toBe(true);
+    // A disk skip isn't a failing build: it must never charge the backoff.
+    expect(__test__.createBackoff.has(repoName)).toBe(false);
+  });
+
   test("onDeck=2 with an empty registry creates 2, serially", async () => {
     await declareWorktrees(repo, repoName, { onDeck: 2, root: join(repo, ".worktrees") });
 
@@ -1597,6 +1700,8 @@ describe("detached trigger / latency", () => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick-home-")));
     closeStateDb();
     __test__.createBackoff.clear();
+    // S077 flipped the unowned default to disabled; replenish is gated on it.
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: true });
     const repoName = "acme";
     const repo = makeRepo();
     addBareOrigin(repo);
@@ -1640,6 +1745,8 @@ describe("detached trigger / latency", () => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick2-home-")));
     closeStateDb();
     __test__.createBackoff.clear();
+    // S077 flipped the unowned default to disabled; replenish is gated on it.
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: true });
     const repoName = "acme-kick2";
     const repo = makeRepo();
     addBareOrigin(repo);

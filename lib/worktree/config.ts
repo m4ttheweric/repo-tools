@@ -364,8 +364,15 @@ export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): Re
 
 // ─── App-level config ────────────────────────────────────────────────────────
 
-const APP_CONFIG_DEFAULTS: WorktreeAppConfig = { enabled: true, killProcesses: true };
+// Unowned machines start disabled (S077): a team-declared pool must never build
+// multi-GB worktrees on a laptop that never opted in. A machine that explicitly
+// set rt.worktreeApp, or has a legacy parking-lot.json, keeps its own value via
+// the ownership latch below... this default only reaches the no-store-no-legacy case.
+const APP_CONFIG_DEFAULTS: WorktreeAppConfig = { enabled: false, killProcesses: true };
 const APP_SETTING_KEY = "rt.worktreeApp";
+
+/** The exact command a dormant machine's operator runs to opt in. */
+export const WORKTREE_APP_ENABLE_COMMAND = 'rt settings set rt.worktreeApp \'{"enabled":true}\' --scope machine';
 
 /**
  * The ownership-latch probe: `undefined` means `rt.worktreeApp` is unowned
@@ -417,4 +424,14 @@ export function loadWorktreeAppConfig(): WorktreeAppConfig {
     };
   }
   return loadFromLegacyFile();
+}
+
+/**
+ * True when a team (or a repo's own store rung) has declared a worktree pool
+ * for this repo but the app-level toggle is off on this machine: the S077
+ * dormant state callers (worktree:list, daemon status) surface to the operator.
+ */
+export async function worktreePoolDormant(repoName: string, repoPath: string): Promise<boolean> {
+  if (loadWorktreeAppConfig().enabled) return false;
+  return worktreeSettingsDeclared(repoName, repoPath);
 }

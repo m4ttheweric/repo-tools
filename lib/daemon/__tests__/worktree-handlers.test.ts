@@ -559,6 +559,31 @@ describe("worktree:list", () => {
     // repoName mismatch means "no MR", never another repo's MR.
     expect(byName.d.mr).toBeNull();
   });
+
+  test("S077: a declared pool on a dormant (app-disabled) machine surfaces dormant + the enable command", async () => {
+    const repo = makeRepo();
+    await declareWorktrees(repo, repoName, { onDeck: 1 });
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: false, killProcesses: false });
+    const { h } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:list"]!({ repoName });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.dormant).toBe(true);
+    expect(res.data.dormantRepos).toEqual([repoName]);
+    expect(res.data.message).toContain('rt settings set rt.worktreeApp \'{"enabled":true}\' --scope machine');
+  });
+
+  test("an owned machine with a declared pool never reports dormant", async () => {
+    const repo = makeRepo();
+    await declareWorktrees(repo, repoName, { onDeck: 1 });
+    const { h } = makeHandlers({ [repoName]: repo }); // top-level beforeEach already writes enabled: true
+
+    const res: any = await h["worktree:list"]!({ repoName });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.dormant).toBeUndefined();
+  });
 });
 
 describe("worktree:freshen", () => {
