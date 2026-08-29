@@ -1051,3 +1051,21 @@ test("chat:dm-open refuses a reclaimed sender the same way chat:dm does", async 
   const res = await h["chat:dm-open"]({ from: "a", to: "b", sessionId: "s1" });
   expect(res.ok).toBe(false);
 });
+
+test("chat:post warns through the injected logger (ctx.log), not a module-private lazyChildLogger (C6)", async () => {
+  const db = openStateDb(join(tmpdir(), `chat-h-log-${process.pid}-${n++}.db`));
+  const warnCalls: unknown[] = [];
+  const log = {
+    info: () => {}, debug: () => {}, error: () => {},
+    warn: (...args: unknown[]) => { warnCalls.push(args); },
+  } as any;
+  const h = createChatHandlers({
+    db,
+    emitEvent: () => { throw new Error("emit boom"); }, // postAndNotify's own warn path
+    log,
+  });
+  await h["chat:join"]({ room: "r", handle: "a" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "hi" });
+  expect(res.ok).toBe(true);
+  expect(warnCalls.length).toBeGreaterThan(0);
+});

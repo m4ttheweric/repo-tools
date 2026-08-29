@@ -77,7 +77,9 @@ test("posting to a room delivers the body to a signed-in recipient's inbox and a
   const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
   if (!posted.ok) throw new Error("unreachable");
   await Bun.sleep(0);
-  expect(calls).toEqual([[sock, "[#general] a: @b hi"]]);
+  expect(calls).toEqual([
+    [sock, '<cross-session-message from-name="a (#general)">\n[#general] a: @b hi\n</cross-session-message>'],
+  ]);
   expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
 });
 
@@ -276,7 +278,9 @@ test("a failed delivery batches with the next successful one, catching up the wh
   if (!second.ok) throw new Error("unreachable");
   await Bun.sleep(0);
   expect(calls).toHaveLength(2);
-  expect(calls[1]![1]).toBe("[#general] a: one\n[#general] a: two");
+  expect(calls[1]![1]).toBe(
+    '<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: one\n[#general] a: two\n</cross-session-message>',
+  );
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
 });
 
@@ -320,8 +324,8 @@ test("concurrent posts to the same recipient serialize delivery so a held first 
   await Bun.sleep(0);
 
   expect(calls).toHaveLength(2);
-  expect(calls[0]![1]).toBe("[#general] a: one");
-  expect(calls[1]![1]).toBe("[#general] a: two");
+  expect(calls[0]![1]).toBe('<cross-session-message from-name="a (#general)">\n[#general] a: one\n</cross-session-message>');
+  expect(calls[1]![1]).toBe('<cross-session-message from-name="a (#general)">\n[#general] a: two\n</cross-session-message>');
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
 });
 
@@ -364,7 +368,9 @@ test("a held first delivery that ultimately fails still lets the second carry bo
   await Bun.sleep(0);
 
   expect(calls).toHaveLength(2);
-  expect(calls[1]![1]).toBe("[#general] a: one\n[#general] a: two");
+  expect(calls[1]![1]).toBe(
+    '<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: one\n[#general] a: two\n</cross-session-message>',
+  );
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
 });
 
@@ -438,7 +444,7 @@ test("a dm post renders with the [dm] tag, not the room hash", async () => {
   await settleWelcome(calls);
   await h["chat:dm"]({ from: "a", to: "b", body: "hi" });
   await Bun.sleep(0);
-  expect(calls).toEqual([[sock, "[dm] a: hi"]]);
+  expect(calls).toEqual([[sock, '<cross-session-message from-name="a (dm)">\n[dm] a: hi\n</cross-session-message>']]);
 });
 
 test("the desk-notification path still fires on a mention, independent of inbox delivery", async () => {

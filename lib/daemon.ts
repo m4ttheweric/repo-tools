@@ -576,8 +576,8 @@ async function runDaemon(): Promise<void> {
     // (spec "Migration & contention"): the one long transaction is the
     // legacy-JSON import, and it must never land inside the event loop. If a
     // CLI process is mid-import right now, we block here, in startup.
-    openBranchCacheStore();
     setPhase("state-db");
+    openBranchCacheStore();
     recordBootAttempt();
     log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
 
@@ -691,7 +691,7 @@ async function runDaemon(): Promise<void> {
   } catch (err) {
     log.fatal({ err }, "daemon boot failed");
     recordBootFailure(currentPhase, String(err));
-    try { loggerHandle.flush?.(); } catch { /* */ }
+    try { loggerHandle.flush?.(); } catch (flushErr) { log.warn({ err: flushErr }, "daemon boot log flush failed"); }
     process.exit(1);
   }
 }

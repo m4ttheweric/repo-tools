@@ -2,7 +2,8 @@ import { describe, test, expect, afterEach } from "bun:test";
 import type { Server } from "bun";
 import { bindApiServerWithRetry, BIND_RETRY_ATTEMPTS, BIND_RETRY_DELAY_MS, startApiServer, type BindRetryDeps } from "../api-server.ts";
 import { ApiPortInUseError } from "../api-server.ts";
-import { setSetting } from "../../settings/write.ts";
+import { setSetting, unsetSetting } from "../../settings/write.ts";
+import { getSetting } from "../../settings/resolve.ts";
 
 function eaddrinuse(): Error {
   return Object.assign(new Error("EADDRINUSE"), { code: "EADDRINUSE" });
@@ -130,14 +131,21 @@ describe("bindApiServerWithRetry — exhausted retries (S043)", () => {
 
 describe("startApiServer — binds via resolveApiPort() (S043 caller-side wiring)", () => {
   let server: Server<any> | undefined;
+  let prevEnv: string | undefined;
 
   afterEach(() => {
     server?.stop(true);
     server = undefined;
+    // Runs even when an assertion above threw — restore both regardless of
+    // pass/fail, and regardless of test HOME being shared across the whole
+    // `bun test` run (test-setup.ts preloads it once, not per file).
+    if (prevEnv !== undefined) process.env.RT_API_PORT = prevEnv;
+    else delete process.env.RT_API_PORT;
+    unsetSetting("rt.apiPort", "user");
   });
 
   test("binds to the rt.apiPort setting value, not the hardcoded 9401 default", async () => {
-    const prevEnv = process.env.RT_API_PORT;
+    prevEnv = process.env.RT_API_PORT;
     delete process.env.RT_API_PORT;
 
     // Measure a free port rather than hardcoding one, then release it
@@ -152,7 +160,11 @@ describe("startApiServer — binds via resolveApiPort() (S043 caller-side wiring
     server = await startApiServer({ handleCommand: async () => ({ ok: true }), log });
 
     expect(server.port).toBe(port);
+  });
 
-    if (prevEnv !== undefined) process.env.RT_API_PORT = prevEnv;
+  test("the rt.apiPort setting from the previous test does not leak into later tests (C8)", () => {
+    // 9401 is the registry default — proof the "user" scope value was
+    // actually removed, not just that some value happens to be present.
+    expect(getSetting<number>("rt.apiPort").value).toBe(9401);
   });
 });

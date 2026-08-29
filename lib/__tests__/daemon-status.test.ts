@@ -186,6 +186,7 @@ describe("classifyDaemonStatus", () => {
     expect(v.state).toBe("not-running");
   });
 
+
   // ── Task 4: heartbeat-stale "stalled" detail + degraded eventLoop ──
 
   test("alive + ping-fail + ready + stale heartbeat => alive-not-serving 'stalled'", () => {

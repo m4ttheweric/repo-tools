@@ -166,6 +166,7 @@ export interface InviteResult { paneId: string; delivered: "accepted" | "queued"
 /** Duplicated shape on purpose: mirrors lib/daemon/inject.ts's InjectResult. */
 export type PaneDelivery = "accepted" | "queued" | "refused";
 export interface PaneSendResult { paneId: string; delivered: PaneDelivery; reason?: string }
+export interface PaneFocusResult { paneId: string; focused: boolean }
 
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
@@ -353,6 +354,7 @@ export interface Commands {
     data: { pane: ChatPane; ready: boolean };
   };
   "pane:send": { payload: { paneId: string; text: string; callerPane?: string }; data: PaneSendResult };
+  "pane:focus": { payload: { paneId: string }; data: PaneFocusResult };
 }
 
 export type CommandName = keyof Commands;
@@ -397,4 +399,5 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "pane:directories",
   "pane:spawn",
   "pane:send",
+  "pane:focus",
 ];

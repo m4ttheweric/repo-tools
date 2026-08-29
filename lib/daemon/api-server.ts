@@ -10,16 +10,17 @@
 import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "pino";
 import { API_PORT, resolveApiPort } from "../daemon-config.ts";
-import { needsToken, tokenOk, getApiToken, resolveOriginTrust } from "./api-auth.ts";
+import { needsToken, tokenOk, getApiToken, resolveOriginTrust, isTokenPreflight } from "./api-auth.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
 import { runCapture } from "../subprocess.ts";
 
-const API_INDEX = {
+function buildApiIndex(port: number) {
+  return {
   name: "rt daemon",
   version: "1.0.0",
-  docs: `http://localhost:${API_PORT}/`,
-  websocket: `ws://localhost:${API_PORT}/ws`,
+  docs: `http://localhost:${port}/`,
+  websocket: `ws://localhost:${port}/ws`,
   endpoints: [
     { method: "GET",  path: "/api/status",        description: "Daemon health, uptime, memory, cache stats" },
     { method: "GET",  path: "/api/ports",          description: "Listening ports grouped by repo/worktree" },
@@ -50,7 +51,8 @@ const API_INDEX = {
     header: "X-RT-Token",
     description: "Required on mutating routes (shutdown, sdm reconnect, events emit) and /api/secrets. Token at ~/.mattstack/rt/api-token.",
   },
-};
+  };
+}
 
 const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
   "/api/status":        { cmd: "tray:status", method: "GET" },
@@ -83,6 +85,7 @@ const wsClients = new Set<ServerWebSocket<ApiWSData>>();
 export function apiWsClientCount(): number {
   return wsClients.size;
 }
+
 
 let apiServerLog: { warn: (o: unknown, m: string) => void } = { warn: () => {} };
 
@@ -359,7 +362,8 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
       // at all, so a malicious page's own JS cannot read the response.
       // resolveOriginTrust only resolves the allowlist when origin is set,
       // since the settings read behind it is synchronous disk I/O.
-      const trusted = resolveOriginTrust(origin, req.headers.get("x-rt-token"), apiToken);
+      const trusted = resolveOriginTrust(origin, req.headers.get("x-rt-token"), apiToken)
+        || isTokenPreflight(req.method, req.headers.get("access-control-request-headers"));
       const corsHeaders = buildCorsHeaders(origin, trusted);
 
       if (req.method === "OPTIONS") {
@@ -377,7 +381,7 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
       try {
         // Self-describing root
         if (url.pathname === "/" || url.pathname === "") {
-          return Response.json(API_INDEX, { headers: corsHeaders });
+          return Response.json(buildApiIndex(port), { headers: corsHeaders });
         }
 
         // Single branch lookup: /api/cache/:branch
@@ -426,7 +430,7 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
         // Static routes
         const route = REST_ROUTES[url.pathname];
         if (!route) {
-          return Response.json({ ok: false, error: "not found", docs: `http://localhost:${API_PORT}/` }, { status: 404, headers: corsHeaders });
+          return Response.json({ ok: false, error: "not found", docs: `http://localhost:${port}/` }, { status: 404, headers: corsHeaders });
         }
 
         if (req.method !== route.method && req.method !== "OPTIONS") {

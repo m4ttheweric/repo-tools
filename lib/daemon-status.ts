@@ -55,6 +55,7 @@ export interface StatusEventLoop {
   stalls: number;
 }
 
+
 /** The boot breadcrumb (`daemon-boot.json`), as classifyDaemonStatus needs it. Not
  *  imported from supervision-state.ts, since that module's `Breadcrumb` interface is
  *  intentionally unexported, and this shape only needs to be structurally

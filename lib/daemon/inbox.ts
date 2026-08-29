@@ -70,3 +70,29 @@ export function renderDeliveries(
     .map((item) => `${item.dm ? "[dm]" : `[#${item.room}]`} ${item.handle}: ${item.body}`)
     .join("\n");
 }
+
+/**
+ * Claude Code's terminal renders an inbound peer message collapsed (one
+ * labeled row, body hidden until expanded) ONLY when the content opens with
+ * its `<cross-session-message ...>` envelope; bare text renders in full.
+ * `from-name` is the collapsed row's label. No `from` attribute: that is a
+ * SendMessage reply address, and rt recipients reply via `rt chat post/dm`
+ * (taught in the body), so advertising an unreachable address would misteach
+ * the reply path. The envelope changes presentation only -- the model always
+ * receives the full body.
+ */
+export function wrapCrossSession(label: string, body: string): string {
+  const safe = label.replace(/["<>]/g, "'");
+  return `<cross-session-message from-name="${safe}">\n${body}\n</cross-session-message>`;
+}
+
+/** The collapsed row's label: the sender for a single message, a count for a batched catch-up. */
+export function deliveryLabel(
+  items: Array<{ room: string; dm: boolean; handle: string }>,
+): string {
+  if (items.length === 1) {
+    const item = items[0]!;
+    return `${item.handle} (${item.dm ? "dm" : `#${item.room}`})`;
+  }
+  return `rt chat (${items.length} messages)`;
+}

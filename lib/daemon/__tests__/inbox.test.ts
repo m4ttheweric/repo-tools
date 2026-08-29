@@ -2,13 +2,36 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { deliverToInbox, renderDeliveries } from "../inbox.ts";
+import { deliverToInbox, deliveryLabel, renderDeliveries, wrapCrossSession } from "../inbox.ts";
 
 test("renderDeliveries formats room and dm lines", () => {
   expect(renderDeliveries([
     { room: "general", dm: false, handle: "max", body: "hello" },
     { room: "dm-1", dm: true, handle: "eli", body: "hi" },
   ])).toBe("[#general] max: hello\n[dm] eli: hi");
+});
+
+test("wrapCrossSession produces the exact envelope Claude Code collapses on", () => {
+  expect(wrapCrossSession("max (#general)", "[#general] max: hello")).toBe(
+    '<cross-session-message from-name="max (#general)">\n[#general] max: hello\n</cross-session-message>',
+  );
+});
+
+test("wrapCrossSession neutralizes attribute-breaking characters in the label", () => {
+  const wrapped = wrapCrossSession('x" bad="<y>', "body");
+  expect(wrapped.startsWith("<cross-session-message from-name=\"x' bad='")).toBe(true);
+  expect(wrapped).not.toContain('""');
+  expect(wrapped.split("\n")[0]).not.toContain("<y>");
+});
+
+test("deliveryLabel names the sender for one message and counts a batch", () => {
+  expect(deliveryLabel([{ room: "general", dm: false, handle: "max" }])).toBe("max (#general)");
+  expect(deliveryLabel([{ room: "dm-1", dm: true, handle: "eli" }])).toBe("eli (dm)");
+  expect(deliveryLabel([
+    { room: "general", dm: false, handle: "max" },
+    { room: "general", dm: false, handle: "eli" },
+    { room: "general", dm: false, handle: "kai" },
+  ])).toBe("rt chat (3 messages)");
 });
 
 test("deliverToInbox writes exactly one msgV:1 user frame line", async () => {

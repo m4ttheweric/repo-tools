@@ -7,6 +7,7 @@ import { dirname, resolve } from "path";
 // A regression that reintroduces sync-exec into any OTHER daemon-reachable
 // module fails this gate (the rule has been re-broken twice).
 const ALLOWLIST = new Set<string>([
+  "lib/daemon/user-path.ts",        // Phase 6 PATH rebuild (S013/S014/S062)
   "lib/daemon/boot-reconcile.ts",   // Phase 0.6 / S044 (Bun.sleepSync)
   "lib/state/db.ts",                // Phase 0.7 / S072-S073 busy-retry
   "lib/state/busy.ts",              // Phase 0.7 / S072-S073 busy-retry

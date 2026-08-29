@@ -388,3 +388,12 @@ export function paneSend(
   if (a.callerPane !== undefined) payload.callerPane = a.callerPane;
   return rtCommand<Commands["pane:send"]["data"]>("pane:send", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
+
+/** Brings a herdr pane to the front. The daemon routes this to the tray, which
+    owns the herdr focus and the native terminal-window raise. */
+export function paneFocus(
+  a: Commands["pane:focus"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["pane:focus"]["data"]>> {
+  return rtCommand<Commands["pane:focus"]["data"]>("pane:focus", { paneId: a.paneId }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}

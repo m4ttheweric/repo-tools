@@ -5,6 +5,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import type { Logger } from "pino";
 import {
   isValidChatName,
   joinRoom,
@@ -46,7 +47,7 @@ import { herdrRequest } from "../../herdr/client.ts";
 import { injectIntoPane, herdrError } from "../inject.ts";
 import type { HerdrSnapshot } from "./pane.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
-import { deliverToInbox, renderDeliveries } from "../inbox.ts";
+import { deliverToInbox, deliveryLabel, renderDeliveries, wrapCrossSession } from "../inbox.ts";
 import { repoForCwd, branchForCwd } from "../../repo-for-cwd.ts";
 import { deriveRoomForCwdAsync } from "../../chat-room.ts";
 import { runCapture } from "../../subprocess.ts";
@@ -56,7 +57,8 @@ import type { CommandResult, TypedHandlers } from "./types.ts";
 
 export type InboxDeps = { resolve: typeof resolveInbox; deliver: typeof deliverToInbox };
 const defaultInboxDeps: InboxDeps = { resolve: resolveInbox, deliver: deliverToInbox };
-const log = lazyChildLogger("chat");
+// Fallback only: real wiring threads ctx.log in from command-router.ts.
+const defaultLog = lazyChildLogger("chat");
 
 const CHAT_COMMANDS = [
   "chat:join",
@@ -189,7 +191,8 @@ async function deliverPost(
   if (!binding || !inboxAlive(binding)) return;
   const pending = pendingMessages(msg.room, recipient, msg.id, db);
   if (pending.length === 0) return;
-  const content = renderDeliveries(pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body })));
+  const items = pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
+  const content = wrapCrossSession(deliveryLabel(items), renderDeliveries(items));
   const result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) {
     await reportUnreadBadge(herdr, presence.pane, pending.length);
@@ -378,6 +381,7 @@ function postAndNotify(
   inboxDeps: InboxDeps,
   herdr: typeof herdrRequest,
   deliveryChains: Map<string, Promise<void>>,
+  log: Logger,
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body, mentions } = args;
   const posted = postMessage({ room, handle, body, mentions }, db);
@@ -444,8 +448,11 @@ export function createChatHandlers(opts: {
   /** `findPaneSessionRetrying`'s wall-clock budget/poll; overridable so a test whose fake herdr never resolves does not have to wait out the real production budget. */
   paneSessionBudgetMs?: number;
   paneSessionPollMs?: number;
+  /** Request logger; wired from ctx.log by command-router.ts. */
+  log?: Logger;
 }): Pick<TypedHandlers, (typeof CHAT_COMMANDS)[number]> & { db: Database } {
   const { db, emitEvent } = opts;
+  const log = opts.log ?? defaultLog;
   const herdr = opts.herdr ?? herdrRequest;
   const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
   const registryDeps = opts.registryDeps;
@@ -495,7 +502,7 @@ export function createChatHandlers(opts: {
         const nearby = closestRoomNames(room, handle, db);
         return { ok: false, error: `unknown room "${room}"${nearby.length ? ` — did you mean: ${nearby.join(", ")}` : ""}` };
       }
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains);
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains, log);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
     },
@@ -638,7 +645,7 @@ export function createChatHandlers(opts: {
       const peeked = peekUnread({ handle: data.handle, limit: WELCOME_CATCHUP_LIMIT }, db);
       const catchup = peeked.map((r) => ({ room: r.room, lines: r.messages.map((m) => `${m.handle}: ${m.body}`) }));
       const catchupCursors = peeked.map((r) => ({ room: r.room, upToId: r.messages[r.messages.length - 1]!.id }));
-      const welcomeContent = renderWelcome(data.handle, rooms, catchup);
+      const welcomeContent = wrapCrossSession("rt chat", renderWelcome(data.handle, rooms, catchup));
       const welcomeSessionId = sessionId;
       queueMicrotask(() => {
         deliverWelcome(db, deliveryChains, inboxDeps, welcomeSessionId, data.handle, welcomeContent, catchupCursors).catch((err) => {
@@ -710,7 +717,7 @@ export function createChatHandlers(opts: {
       // Recipient travels in `mentions`, not the body, so the transcript
       // shows the text as typed and the desk still notifies when `to` is
       // the human.
-      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains);
+      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains, log);
       if (!posted) return { ok: false, error: "chat: dm failed (retry budget exhausted)" };
       return { ok: true, data: { room, id: posted.id, recipients: posted.recipients } };
     },
