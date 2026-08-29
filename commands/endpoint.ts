@@ -146,6 +146,25 @@ async function pickWorktree(identity: string): Promise<string | null> {
   });
 }
 
+export interface ParsedEndpointReleaseArgs {
+  worktree: string | undefined;
+  role: string | undefined;
+}
+
+/**
+ * Pure arg parse for `rt endpoint release`, split out so the --role-absent
+ * case (roleFlagIdx === -1) is unit-testable without a git repo or daemon.
+ * roleFlagIdx + 1 must only be excluded from worktreeArgs when --role is
+ * actually present, or index 0 (the worktree itself) gets filtered out.
+ */
+export function parseEndpointReleaseArgs(args: string[]): ParsedEndpointReleaseArgs {
+  const roleFlagIdx = args.indexOf("--role");
+  const roleValueIdx = roleFlagIdx === -1 ? -1 : roleFlagIdx + 1;
+  const role = roleFlagIdx !== -1 ? args[roleValueIdx] : undefined;
+  const worktreeArgs = args.filter((a, i) => i !== roleFlagIdx && i !== roleValueIdx && !a.startsWith("--"));
+  return { worktree: worktreeArgs[0], role };
+}
+
 /**
  * Manual escape hatch (S068): frees a worktree's endpoint claim(s) directly,
  * for the case a recycled pid or a wedged process leaves a claim liveness
@@ -155,10 +174,9 @@ async function pickWorktree(identity: string): Promise<string | null> {
  */
 export async function endpointRelease(args: string[]): Promise<void> {
   const json = args.includes("--json");
-  const roleFlagIdx = args.indexOf("--role");
-  const role = roleFlagIdx !== -1 ? args[roleFlagIdx + 1] : undefined;
-  const worktreeArgs = args.filter((a, i) => i !== roleFlagIdx && i !== roleFlagIdx + 1 && !a.startsWith("--"));
-  let worktree = worktreeArgs[0];
+  const parsed = parseEndpointReleaseArgs(args);
+  const role = parsed.role;
+  let worktree = parsed.worktree;
 
   const cwd = process.cwd();
   const toplevel = await gitToplevel(cwd);
