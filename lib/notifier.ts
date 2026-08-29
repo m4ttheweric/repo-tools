@@ -454,12 +454,38 @@ export interface Notifier {
   peekNotifications(): NotificationEvent[];
 }
 
+/** Shape `notify` and every function that calls it (through `api.notify`) share. */
+type NotifyFn = (
+  title: string,
+  message: string,
+  url?: string,
+  category?: string,
+  pids?: number[],
+  id?: string,
+) => void;
+
 /**
- * R031: builds one independent notification engine. The only state isolated
- * per instance is the broadcast hook and the (test-only) fallback-notifier
- * executable path — every other input (prefs, branch/port snapshots, the
- * durable queue) already lives in state.db, shared across the whole process
- * regardless of which instance reads it.
+ * R031 fix round 1: `checkAndNotify`/`checkRunawayProcesses`/`notifyEnabled`
+ * used to be top-level functions calling the module-level `notify` export
+ * directly — so a `createNotifier({broadcast: X})` instance's own methods
+ * silently routed notifications through whichever hook the DEFAULT instance
+ * happened to have, not `X`. Fixed by building a self-referencing `api`
+ * object: these three methods call `api.notify(...)` (a property lookup at
+ * CALL time, not the value `notify` had when the closure was created), and
+ * `detectBranchTransitions`/`detectStalePortTransitions` take that same
+ * `api.notify` in as an explicit `notifyFn` parameter rather than reaching
+ * for a shared identifier. So every method on one `createNotifier(deps)`
+ * instance is now genuinely bound to that instance's own `broadcastHook`/
+ * `fallbackNotifierPath` — see the isolation test in
+ * `lib/__tests__/notifier.test.ts` ("two instances route ... through their
+ * own broadcast hook").
+ *
+ * The only state isolated per instance is the broadcast hook and the
+ * (test-only) fallback-notifier executable path — every other *input*
+ * (prefs, branch/port snapshots, the durable queue) already lives in
+ * state.db, shared across the whole process regardless of which instance
+ * reads it; but which hook a given instance's own notify() call fires is now
+ * fully isolated.
  */
 export function createNotifier(deps: NotifierDeps = {}): Notifier {
   let broadcastHook: ((type: string, data: any) => void) | null = deps.broadcast ?? null;
@@ -564,7 +590,123 @@ export function createNotifier(deps: NotifierDeps = {}): Notifier {
     }
   }
 
-  return {
+  /**
+   * notify() gated on the user's preference for `category`, loading prefs per
+   * call. For emitters outside the transition loop (which loads prefs once per
+   * cycle). Every notification rt delivers goes through notify(), so it lands in
+   * the durable queue, reaches the tray socket, and falls back to the CLI
+   * notifier — a bare broadcast reaches WebSocket clients only.
+   */
+  function notifyEnabled(
+    category: string,
+    title: string,
+    message: string,
+    url?: string,
+    pids?: number[],
+    id?: string,
+  ): void {
+    if (!isEnabled(loadNotificationPrefs(), category)) return;
+    api.notify(title, message, url, category, pids, id);
+  }
+
+  function checkAndNotify(
+    cacheEntries: Record<string, CacheEntry>,
+    ports?: PortEntry[],
+    currentUserId: number | null = null,
+  ): void {
+    const state = loadState();
+    const prefs = loadNotificationPrefs();
+    const fired = new Set(state.fired);
+
+    // Branch transitions
+    detectBranchTransitions(state.branches, cacheEntries, fired, prefs, currentUserId, api.notify);
+
+    // Port staleness (skipped when called from real-time MR update path)
+    if (ports) {
+      detectStalePortTransitions(state.ports, ports, prefs, api.notify);
+    }
+
+    // Update state with current snapshots.
+    // When entry.mr is null (API failure or branch has no MR), keep the
+    // previous snapshot so we don't wipe conflict/approval state that the
+    // dedup logic depends on.
+    const newBranches: Record<string, BranchSnapshot> = {};
+    for (const [branch, entry] of Object.entries(cacheEntries)) {
+      if (!entry.mr && state.branches[branch]) {
+        newBranches[branch] = state.branches[branch]!;
+      } else {
+        newBranches[branch] = snapshotBranch(entry, state.branches[branch]);
+      }
+    }
+
+    // fired-ledger hygiene: drop keys for branches the branch-cache no longer
+    // carries an entry for (evicted by GC, or never present this cycle) — see
+    // pruneFiredForEvictedBranches.
+    pruneFiredForEvictedBranches(fired, Object.keys(cacheEntries));
+
+    state.branches = newBranches;
+    state.fired = [...fired];
+    saveState(state);
+  }
+
+  function checkRunawayProcesses(
+    processes: SystemProcess[],
+    markNotified: (pid: number) => void,
+    isNotified: (pid: number) => boolean,
+  ): void {
+    const prefs = loadNotificationPrefs();
+    if (!isEnabled(prefs, "runaway_process")) return;
+
+    // AI agent sessions and their live subprocesses burn CPU as part of normal
+    // work — never worth an alert. Deliberately not marked notified: if the
+    // agent exits and the orphan is still runaway, it surfaces then.
+    const agentPids = agentSessionPids(processes.map(p => ({
+      pid: p.pid, ppid: p.ppid, command: p.command, fullCommand: p.fullCommand,
+    })));
+
+    const fresh = processes.filter(p =>
+      p.isRunaway && !isNotified(p.pid) && !agentPids.has(p.pid),
+    );
+    if (fresh.length === 0) return;
+
+    if (fresh.length === 1) {
+      const proc = fresh[0]!;
+      const durationMin = proc.runawayDurationMs
+        ? Math.round(proc.runawayDurationMs / 60_000)
+        : 0;
+      const branchInfo = proc.branch ? ` (branch: ${proc.branch})` : "";
+
+      api.notify(
+        "Runaway Process",
+        `${proc.packageScript ?? proc.command} in ${repoLabel(proc.repo)}${branchInfo} at ${Math.round(proc.cpuPercent)}% CPU for ${durationMin || "<1"} minutes`,
+        undefined,
+        "runaway_process",
+        [proc.pid],
+      );
+    } else {
+      // A burst of runaways in one tick collapses into a single summary so the
+      // user gets one actionable notification instead of a pile.
+      const shown = fresh.slice(0, 2).map(p =>
+        `${p.packageScript ?? p.command} (${repoLabel(p.repo)} ${Math.round(p.cpuPercent)}%)`,
+      );
+      const rest = fresh.length - shown.length;
+      const summary = rest > 0 ? `${shown.join(", ")}, +${rest} more` : shown.join(", ");
+
+      api.notify(
+        `${fresh.length} Runaway Processes`,
+        summary,
+        undefined,
+        "runaway_process",
+        fresh.map(p => p.pid),
+      );
+    }
+
+    for (const proc of fresh) {
+      markNotified(proc.pid);
+    }
+  }
+
+  const api: Notifier & { __setFallbackNotifier(path: string | null): void; __notifyFallback: typeof notifyFallback } = {
     onNotification,
     notify,
     notifyEnabled,
@@ -578,39 +720,21 @@ export function createNotifier(deps: NotifierDeps = {}): Notifier {
     },
     /** Test-only seam; see __test__ below. */
     __notifyFallback: notifyFallback,
-  } as Notifier & { __setFallbackNotifier(path: string | null): void; __notifyFallback: typeof notifyFallback };
+  };
+
+  return api;
 }
 
-// ─── Branch/port transition detection + public dispatch ─────────────────────
+// ─── Branch/port transition detection (pure; take the caller's own notify) ──
 //
-// R031: these stay top-level (not inside createNotifier's closure) rather
-// than each taking a `notify` callback, specifically so `spyOn(notifierModule,
-// "notify")` keeps intercepting the calls they make — they call the *exported*
-// `notify` binding below, which every existing test mocks. None of them hold
-// state of their own (branch/port snapshots and the fired-key ledger are
-// threaded through as parameters or read from state.db), so there is nothing
-// here that a second createNotifier() instance would need isolated; only
-// notify()/onNotification() (inside the factory above) carry real per-instance
-// state (the broadcast hook and the fallback-notifier path).
-
-/**
- * notify() gated on the user's preference for `category`, loading prefs per
- * call. For emitters outside the transition loop (which loads prefs once per
- * cycle). Every notification rt delivers goes through notify(), so it lands in
- * the durable queue, reaches the tray socket, and falls back to the CLI
- * notifier — a bare broadcast reaches WebSocket clients only.
- */
-export function notifyEnabled(
-  category: string,
-  title: string,
-  message: string,
-  url?: string,
-  pids?: number[],
-  id?: string,
-): void {
-  if (!isEnabled(loadNotificationPrefs(), category)) return;
-  notify(title, message, url, category, pids, id);
-}
+// Neither function holds state of its own (branch/port snapshots and the
+// fired-key ledger are threaded through as parameters or read from
+// state.db), so they stay top-level and shared across every createNotifier()
+// instance. Each takes the CALLING instance's own `notify` (its `api.notify`,
+// looked up at call time) as an explicit parameter instead of reaching for a
+// shared identifier — that parameterization is what makes checkAndNotify's
+// per-instance routing (see the fix-round-1 comment above createNotifier)
+// actually isolated.
 
 function detectBranchTransitions(
   prev: Record<string, BranchSnapshot>,
@@ -618,6 +742,7 @@ function detectBranchTransitions(
   fired: Set<string>,
   prefs: NotificationPrefs,
   currentUserId: number | null,
+  notify: NotifyFn,
 ): void {
   // `branch` is the branch-cache map key (composite `${identity}:${branch}`
   // when attributed, bare otherwise), kept as-is here rather than unwrapped
@@ -810,6 +935,7 @@ function detectStalePortTransitions(
   portState: Record<string, PortSnapshot>,
   currentPorts: PortEntry[],
   prefs: NotificationPrefs,
+  notify: NotifyFn,
 ): void {
   const now = Date.now();
   const currentKeys = new Set<string>();
@@ -861,61 +987,20 @@ function detectStalePortTransitions(
   }
 }
 
+// ─── Default instance + free-function wrappers (unchanged call surface) ────
+
+let defaultNotifier: ReturnType<typeof createNotifier> | null = null;
+
+function getDefaultNotifier() {
+  return defaultNotifier ??= createNotifier();
+}
+
 export function checkRunawayProcesses(
   processes: SystemProcess[],
   markNotified: (pid: number) => void,
   isNotified: (pid: number) => boolean,
 ): void {
-  const prefs = loadNotificationPrefs();
-  if (!isEnabled(prefs, "runaway_process")) return;
-
-  // AI agent sessions and their live subprocesses burn CPU as part of normal
-  // work — never worth an alert. Deliberately not marked notified: if the
-  // agent exits and the orphan is still runaway, it surfaces then.
-  const agentPids = agentSessionPids(processes.map(p => ({
-    pid: p.pid, ppid: p.ppid, command: p.command, fullCommand: p.fullCommand,
-  })));
-
-  const fresh = processes.filter(p =>
-    p.isRunaway && !isNotified(p.pid) && !agentPids.has(p.pid),
-  );
-  if (fresh.length === 0) return;
-
-  if (fresh.length === 1) {
-    const proc = fresh[0]!;
-    const durationMin = proc.runawayDurationMs
-      ? Math.round(proc.runawayDurationMs / 60_000)
-      : 0;
-    const branchInfo = proc.branch ? ` (branch: ${proc.branch})` : "";
-
-    notify(
-      "Runaway Process",
-      `${proc.packageScript ?? proc.command} in ${repoLabel(proc.repo)}${branchInfo} at ${Math.round(proc.cpuPercent)}% CPU for ${durationMin || "<1"} minutes`,
-      undefined,
-      "runaway_process",
-      [proc.pid],
-    );
-  } else {
-    // A burst of runaways in one tick collapses into a single summary so the
-    // user gets one actionable notification instead of a pile.
-    const shown = fresh.slice(0, 2).map(p =>
-      `${p.packageScript ?? p.command} (${repoLabel(p.repo)} ${Math.round(p.cpuPercent)}%)`,
-    );
-    const rest = fresh.length - shown.length;
-    const summary = rest > 0 ? `${shown.join(", ")}, +${rest} more` : shown.join(", ");
-
-    notify(
-      `${fresh.length} Runaway Processes`,
-      summary,
-      undefined,
-      "runaway_process",
-      fresh.map(p => p.pid),
-    );
-  }
-
-  for (const proc of fresh) {
-    markNotified(proc.pid);
-  }
+  getDefaultNotifier().checkRunawayProcesses(processes, markNotified, isNotified);
 }
 
 export function checkAndNotify(
@@ -923,47 +1008,7 @@ export function checkAndNotify(
   ports?: PortEntry[],
   currentUserId: number | null = null,
 ): void {
-  const state = loadState();
-  const prefs = loadNotificationPrefs();
-  const fired = new Set(state.fired);
-
-  // Branch transitions
-  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, currentUserId);
-
-  // Port staleness (skipped when called from real-time MR update path)
-  if (ports) {
-    detectStalePortTransitions(state.ports, ports, prefs);
-  }
-
-  // Update state with current snapshots.
-  // When entry.mr is null (API failure or branch has no MR), keep the
-  // previous snapshot so we don't wipe conflict/approval state that the
-  // dedup logic depends on.
-  const newBranches: Record<string, BranchSnapshot> = {};
-  for (const [branch, entry] of Object.entries(cacheEntries)) {
-    if (!entry.mr && state.branches[branch]) {
-      newBranches[branch] = state.branches[branch]!;
-    } else {
-      newBranches[branch] = snapshotBranch(entry, state.branches[branch]);
-    }
-  }
-
-  // fired-ledger hygiene: drop keys for branches the branch-cache no longer
-  // carries an entry for (evicted by GC, or never present this cycle) — see
-  // pruneFiredForEvictedBranches.
-  pruneFiredForEvictedBranches(fired, Object.keys(cacheEntries));
-
-  state.branches = newBranches;
-  state.fired = [...fired];
-  saveState(state);
-}
-
-// ─── Default instance + free-function wrappers (unchanged call surface) ────
-
-let defaultNotifier: ReturnType<typeof createNotifier> | null = null;
-
-function getDefaultNotifier() {
-  return defaultNotifier ??= createNotifier();
+  getDefaultNotifier().checkAndNotify(cacheEntries, ports, currentUserId);
 }
 
 /** Register a callback to broadcast notification events (e.g. to WebSocket clients) */
@@ -986,6 +1031,24 @@ export function notify(
   getDefaultNotifier().notify(title, message, url, category, pids, id);
 }
 
+/**
+ * notify() gated on the user's preference for `category`, loading prefs per
+ * call. For emitters outside the transition loop (which loads prefs once per
+ * cycle). Every notification rt delivers goes through notify(), so it lands in
+ * the durable queue, reaches the tray socket, and falls back to the CLI
+ * notifier — a bare broadcast reaches WebSocket clients only.
+ */
+export function notifyEnabled(
+  category: string,
+  title: string,
+  message: string,
+  url?: string,
+  pids?: number[],
+  id?: string,
+): void {
+  getDefaultNotifier().notifyEnabled(category, title, message, url, pids, id);
+}
+
 export const __test__ = {
   shouldNotifyApprovalTransition,
   snapshotBranch,
@@ -1001,4 +1064,12 @@ export const __test__ = {
   setFallbackNotifier(path: string | null): void {
     (getDefaultNotifier() as any).__setFallbackNotifier(path);
   },
+  /**
+   * The lazily-created default Notifier instance, for tests that need to
+   * spy on its `notify` (or another method) directly. Spying on the
+   * top-level `export function notify` would only replace that export's
+   * own binding — checkAndNotify/checkRunawayProcesses call `api.notify`
+   * on THIS object, so this is the thing to spy on to intercept them.
+   */
+  getDefaultNotifier,
 };

@@ -57,7 +57,7 @@ afterEach(() => {
 
 describe("checkAndNotify fired-ledger hygiene", () => {
   test("an evicted branch's fired key is dropped from persisted state", () => {
-    spyOn(notifierModule, "notify").mockImplementation(() => {});
+    spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     // Cycle 1: baseline (branch-a's pipeline running).
     notifierModule.checkAndNotify({ "branch-a": mrEntry("running") }, undefined, 123);
@@ -77,7 +77,7 @@ describe("checkAndNotify fired-ledger hygiene", () => {
   });
 
   test("a returning branch can re-notify: the stale key from before eviction no longer suppresses it", () => {
-    const notifySpy = spyOn(notifierModule, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     notifierModule.checkAndNotify({ "branch-a": mrEntry("running") }, undefined, 123);
     notifierModule.checkAndNotify({ "branch-a": mrEntry("failed") }, undefined, 123);
@@ -105,7 +105,7 @@ describe("checkAndNotify fired-ledger hygiene", () => {
 
 describe("checkAndNotify: composite-key repo scoping (S069/Task 10)", () => {
   test("evicting one repo's branch does not prune the other repo's fired key", () => {
-    spyOn(notifierModule, "notify").mockImplementation(() => {});
+    spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const keyA = composeKey("repo-a", "main");
     const keyB = composeKey("repo-b", "main");
