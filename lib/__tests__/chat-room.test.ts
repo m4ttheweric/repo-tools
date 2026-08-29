@@ -14,7 +14,8 @@ import { mkdtempSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { expect, test } from "bun:test";
-import { deriveRoomForCwd, deriveRoomForCwdAsync, roomForIdentity } from "../chat-room.ts";
+import { deriveRoomForCwdAsync, roomForIdentity } from "../chat-room.ts";
+import { deriveRoomForCwd } from "../chat-room-cli.ts";
 
 function initRepo(dir: string): void {
   execSync("git init -q", { cwd: dir });

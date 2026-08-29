@@ -41,7 +41,8 @@ import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
 import { findGitRoot, repoAliasForPath, resolveMainWorktreePath } from "../lib/repo-for-cwd.ts";
 import { slugifyChatName as slugify } from "../lib/chat-room-name.ts";
-import { roomForIdentity, deriveRoomForCwd } from "../lib/chat-room.ts";
+import { roomForIdentity } from "../lib/chat-room.ts";
+import { deriveRoomForCwd } from "../lib/chat-room-cli.ts";
 import { getCurrentBranch, getRepoRoot } from "../lib/git.ts";
 import { getRepoIdentityForRoot } from "../lib/repo.ts";
 import { parseIdentity } from "../lib/settings/identity.ts";
@@ -928,9 +929,10 @@ async function runSignIn(args: string[]): Promise<void> {
  * never consulted. The daemon still derives cwd/repo/branch/room and joins a
  * room, just from the TARGET pane's cwd (via herdr), not from this one, and
  * through the SAME deriveRoomForCwd/roomForIdentity codec this file's own
- * sign-in uses (lib/chat-room.ts) -- so the room a pane-signed-in agent
- * lands in never diverges from the one a normally-signed-in agent for the
- * same repo would. `--room`/`--no-room` still work: they travel through
+ * sign-in uses (lib/chat-room-cli.ts / lib/chat-room.ts) -- so the room a
+ * pane-signed-in agent lands in never diverges from the one a
+ * normally-signed-in agent for the same repo would. `--room`/`--no-room`
+ * still work: they travel through
  * unchanged and the daemon honors them the same way it honors its own
  * derivation. The resolved sessionId and room travel back in the response
  * so this process can write the session file for the pane it just signed

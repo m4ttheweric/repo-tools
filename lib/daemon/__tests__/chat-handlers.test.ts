@@ -8,7 +8,7 @@ import { openStateDb, postMessage } from "../../state/index.ts";
 import { createChatHandlers, inviteText, renderWelcome, type InboxDeps } from "../handlers/chat.ts";
 import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
-import { deriveRoomForCwd } from "../../chat-room.ts";
+import { deriveRoomForCwd } from "../../chat-room-cli.ts";
 import { runCapture } from "../../subprocess.ts";
 import { drainNotifications, loadNotificationPrefs, peekNotifications, saveNotificationPrefs } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";

@@ -33,7 +33,7 @@ import { parseEtimeMs, type PortEntry } from "./port-scanner.ts";
 import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
 import { lazyChildLogger } from "./daemon-logger.ts";
-import { repoLabel } from "./repo-arg.ts";
+import { repoLabel } from "./repo-label.ts";
 import { branchOf } from "./state/branch-cache.ts";
 import { numericUserId } from "./enrich.ts";
 import {

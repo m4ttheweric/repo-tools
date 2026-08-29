@@ -17,7 +17,7 @@ import {
 } from "../../state/index.ts";
 import { buildClaudeArgv, buildPaneCommand, type ClaudeInvocation } from "../../agent-argv.ts";
 import { defaultHerdrRunner, launchInWorkspace, type HerdrRunner } from "../../agent-herdr.ts";
-import { repoLabel } from "../../repo-arg.ts";
+import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { rtDir } from "../../rt-paths.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";

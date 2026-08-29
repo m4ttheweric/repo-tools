@@ -1,6 +1,6 @@
 import type { HandlerMap, HandlerContext } from "./types.ts";
 import type { SystemProcessScanner, SystemProcess } from "../system-process-scanner.ts";
-import { repoLabel } from "../../repo-arg.ts";
+import { repoLabel } from "../../repo-label.ts";
 import { composeKey } from "../../state/branch-cache.ts";
 
 function shortName(proc: SystemProcess): string {
