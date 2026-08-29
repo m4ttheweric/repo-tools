@@ -44,7 +44,14 @@ export async function evictStaleDaemon(log: Logger): Promise<void> {
   const previousPid = readDaemonPid();
   if (!previousPid || previousPid === process.pid) return;
   if (!isAlive(previousPid)) return;
-  process.kill(previousPid, "SIGTERM");
+  try {
+    process.kill(previousPid, "SIGTERM");
+  } catch (err) {
+    // Exited between the liveness probe and this send (ESRCH), or is not
+    // ours (EPERM). Nothing left to evict either way.
+    log.warn({ err, pid: previousPid }, "stale daemon SIGTERM skipped");
+    return;
+  }
   log.warn({ pid: previousPid }, "evicted stale daemon process");
   if (await waitForDeath(previousPid, 2500)) return;
   try {

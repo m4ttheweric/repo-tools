@@ -26,3 +26,25 @@ test("evictStaleDaemon waits for the old pid to die, escalating to SIGKILL", asy
   expect(Date.now() - start).toBeLessThan(5000);
   child.kill();
 });
+
+test("evictStaleDaemon does not throw when the pid exits between the liveness check and the SIGTERM send (ESRCH)", async () => {
+  writeFileSync(DAEMON_PID_PATH, "999999");
+  const originalKill = process.kill;
+  let sigtermSent = false;
+  (process as any).kill = (pid: number, signal?: string | number) => {
+    if (pid !== 999999) return originalKill(pid, signal as any);
+    if (signal === 0) return true; // liveness check still sees it alive
+    if (signal === "SIGTERM") {
+      sigtermSent = true;
+      const err = Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+      throw err;
+    }
+    throw new Error(`unexpected signal in test: ${String(signal)}`);
+  };
+  try {
+    await expect(evictStaleDaemon(silentLog)).resolves.toBeUndefined();
+  } finally {
+    process.kill = originalKill;
+  }
+  expect(sigtermSent).toBe(true);
+});
