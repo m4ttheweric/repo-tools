@@ -4,6 +4,7 @@ import { join, resolve } from "path";
 import { describe, expect, test } from "bun:test";
 import {
   attributeCwds,
+  nestedExcludes,
   safeRealpath,
   selectKillTargets,
   type KillCandidate,
@@ -180,5 +181,27 @@ describe("attributeCwds", () => {
   test("safeRealpath falls back to the literal path when the target doesn't exist", () => {
     const missing = "/no/such/path/rt-kill-test";
     expect(safeRealpath(missing)).toBe(missing);
+  });
+});
+
+describe("nestedExcludes", () => {
+  test("drops an exclude equal to the target itself", () => {
+    expect(nestedExcludes("/repo", ["/repo"])).toEqual([]);
+  });
+
+  test("keeps excludes strictly nested under the target", () => {
+    expect(nestedExcludes("/repo", ["/repo/sub"])).toEqual(["/repo/sub"]);
+  });
+
+  test("a target-equal exclude does not zero out attributeCwds' kill set", () => {
+    const cwdMap = new Map([
+      [1, "/repo"],
+      [2, "/repo/sub"],
+    ]);
+
+    const excludes = nestedExcludes("/repo", ["/repo"]);
+    const attributed = attributeCwds("/repo", excludes, cwdMap);
+
+    expect([...attributed.keys()].sort()).toEqual([1, 2]);
   });
 });

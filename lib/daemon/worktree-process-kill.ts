@@ -164,6 +164,16 @@ export interface KillWorktreeOptions {
 }
 
 /**
+ * Keeps only excludes strictly nested under target. An exclude equal to
+ * target itself must be dropped here: attributeCwds' ownedByNested check
+ * matches on `cwd === e`, so a target-equal exclude would mark every cwd in
+ * the target as owned by a "nested" tree and silently zero out the kill set.
+ */
+export function nestedExcludes(target: string, excludePaths: string[]): string[] {
+  return excludePaths.filter(e => e !== target && e.startsWith(target + "/"));
+}
+
+/**
  * Find and terminate the workload processes whose cwd is inside the worktree.
  * Discovery is done fresh (not from the scanner's 10s-old snapshot) so we act
  * on ground truth at park time.
@@ -173,9 +183,7 @@ export async function killWorktreeProcesses(
   opts: KillWorktreeOptions = {},
 ): Promise<WorktreeKillResult> {
   const target = safeRealpath(worktreePath);
-  const excludes = (opts.excludePaths ?? [])
-    .map(safeRealpath)
-    .filter(e => e === target || e.startsWith(target + "/")); // only nested trees matter
+  const excludes = nestedExcludes(target, (opts.excludePaths ?? []).map(safeRealpath));
 
   const lsof = await runCapture(["lsof", "-d", "cwd", "-Fpn"], { timeoutMs: 10_000 });
   if (lsof.exitCode !== 0 && !lsof.stdout) {
