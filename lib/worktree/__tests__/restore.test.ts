@@ -1,5 +1,6 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { execSync } from "child_process";
+import * as fsSync from "fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -7,7 +8,9 @@ import { teamSettingsPath } from "../../rt-paths.ts";
 import { setSetting } from "../../settings/write.ts";
 import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
+import * as registryModule from "../registry.ts";
 import { retainedTrashRoot } from "../trash.ts";
+import { loadWorktreeRepoConfig } from "../config.ts";
 import { disposeTree, type DisposeDeps } from "../dispose.ts";
 import { listRestorableEntries, restoreTree, type RestoreDeps } from "../restore.ts";
 import { branchExistsLocalAsync } from "../git-async.ts";
@@ -183,6 +186,64 @@ describe("restoreTree", () => {
 
     const restorable = await listRestorableEntries(repoName, repo);
     expect(restorable.some((e) => e.name === "legacy")).toBe(false);
+  });
+
+  test("copy-failed rolls back the newly created worktree and branch so a retry can succeed", async () => {
+    const { trashPath, headSha } = await disposeATree();
+    await waitFor(() => !existsSync(join(trashPath, "node_modules")));
+
+    const cfg = await loadWorktreeRepoConfig(repoName, repo);
+    const expectedPath = join(cfg.root, "tree-a");
+
+    const cpSpy = spyOn(fsSync, "cpSync").mockImplementation(() => {
+      throw new Error("forced copy failure");
+    });
+    let result;
+    try {
+      result = await restoreTree(restoreDeps(), "tree-a");
+    } finally {
+      cpSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({ ok: false, reason: "copy-failed" });
+    // The worktree git worktree add created is gone, and so is the branch it
+    // checked out, so nothing is left behind to block a retry.
+    expect(existsSync(expectedPath)).toBe(false);
+    expect(await branchExistsLocalAsync(repo, "feature-a")).toBe(false);
+    // The retained entry itself is untouched: nothing is lost until a
+    // restore fully succeeds.
+    expect(existsSync(trashPath)).toBe(true);
+    expect(loadRegistry(repoName).length).toBe(0);
+
+    const retry = await restoreTree(restoreDeps(), "tree-a");
+    expect(retry.ok).toBe(true);
+    if (!retry.ok) throw new Error(`expected retry ok, got ${retry.reason}`);
+    expect(execSync(`git -C ${retry.path} rev-parse HEAD`, { encoding: "utf8" }).trim()).toBe(headSha);
+  });
+
+  test("register-failed rolls back the newly created worktree and branch so a retry can succeed", async () => {
+    const { trashPath } = await disposeATree();
+    await waitFor(() => !existsSync(join(trashPath, "node_modules")));
+
+    const cfg = await loadWorktreeRepoConfig(repoName, repo);
+    const expectedPath = join(cfg.root, "tree-a");
+
+    const saveSpy = spyOn(registryModule, "saveRegistry").mockReturnValue(false);
+    let result;
+    try {
+      result = await restoreTree(restoreDeps(), "tree-a");
+    } finally {
+      saveSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({ ok: false, reason: "register-failed" });
+    expect(existsSync(expectedPath)).toBe(false);
+    expect(await branchExistsLocalAsync(repo, "feature-a")).toBe(false);
+    expect(existsSync(trashPath)).toBe(true);
+    expect(loadRegistry(repoName).length).toBe(0);
+
+    const retry = await restoreTree(restoreDeps(), "tree-a");
+    expect(retry.ok).toBe(true);
   });
 
   test("listRestorableEntries surfaces the manifest's keptUntil for the picker", async () => {

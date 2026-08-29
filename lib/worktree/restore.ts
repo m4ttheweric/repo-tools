@@ -150,6 +150,38 @@ async function addWorktreeFromManifest(
 }
 
 /**
+ * Undo `addWorktreeFromManifest` when a later restore step fails: without
+ * this, the branch-elsewhere / path-exists guards above refuse every retry
+ * forever, since `git worktree add` already recreated both the tree and the
+ * branch the retained entry is keyed on.
+ */
+async function removeCreatedWorktree(
+  repoPath: string,
+  path: string,
+  branch: string | null,
+  log: RestoreDeps["log"],
+): Promise<void> {
+  const removed = await runGit(repoPath, ["worktree", "remove", "--force", path], {
+    timeoutMs: MUTATING_TIMEOUT_MS,
+  });
+  if (removed.exitCode !== 0) {
+    log.warn(
+      { repoPath, path, output: removed.stdout + removed.stderr },
+      "worktree restore: rollback of the created worktree failed",
+    );
+  }
+  if (branch) {
+    const branchRemoved = await runGit(repoPath, ["branch", "-D", branch], { timeoutMs: MUTATING_TIMEOUT_MS });
+    if (branchRemoved.exitCode !== 0) {
+      log.warn(
+        { repoPath, branch, output: branchRemoved.stdout + branchRemoved.stderr },
+        "worktree restore: rollback of the created branch failed",
+      );
+    }
+  }
+}
+
+/**
  * Layers the retained copy's non-git content back over the fresh checkout:
  * `git worktree add` already recreated every tracked file from `headSha`, so
  * only the retained copy's gitignored/untracked files need to move:
@@ -207,6 +239,7 @@ export async function restoreTree(deps: RestoreDeps, treeName: string): Promise<
       { repo: repoName, tree: treeName, path, err: copied.err },
       "worktree restore: copying retained content failed",
     );
+    await removeCreatedWorktree(repoPath, path, manifest.branch, log);
     return { ok: false, reason: "copy-failed", detail: copied.err };
   }
 
@@ -222,6 +255,7 @@ export async function restoreTree(deps: RestoreDeps, treeName: string): Promise<
   const trees = loadRegistry(repoName);
   trees.push(rec);
   if (!saveRegistry(repoName, trees)) {
+    await removeCreatedWorktree(repoPath, path, manifest.branch, log);
     return { ok: false, reason: "register-failed" };
   }
 
