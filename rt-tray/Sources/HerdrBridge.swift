@@ -221,6 +221,22 @@ class HerdrBridge {
         }
     }
 
+    enum FocusOutcome { case focused, notFound, herdrUnavailable }
+
+    /// Focuses a pane addressed by its herdr pane id. The tray callers that
+    /// reach `focusPane(_:)` start from a PID (`findPane`); the rt daemon has
+    /// only the pane id (from presence), so this resolves the tab/workspace
+    /// straight from `pane list` and the host pid from `process-info`, then
+    /// focuses + raises like `focusPane`. A missing shell pid still focuses
+    /// the workspace/tab; only the window raise is skipped.
+    func focusPaneById(_ paneId: String) -> FocusOutcome {
+        guard isAvailable else { return .herdrUnavailable }
+        guard let entry = listPanes().first(where: { $0.paneId == paneId }) else { return .notFound }
+        let hostPid = processInfo(forPane: paneId)?.shellPid ?? 0
+        focusPane(HerdrPane(paneId: entry.paneId, tabId: entry.tabId, workspaceId: entry.workspaceId, hostPid: hostPid))
+        return .focused
+    }
+
     /// Bundle-path fragments for terminal emulators known to host herdr.
     private static let terminalBundleMarkers = [
         "/Ghostty.app/", "/iTerm.app/", "/Terminal.app/",
