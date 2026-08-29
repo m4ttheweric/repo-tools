@@ -34,6 +34,14 @@ const UPDATE_RESUMED_SQL = `UPDATE agents SET last_resumed_at = ? WHERE id = ?;`
 const UPDATE_FINISH_SQL = `UPDATE agents SET exit_code = ?, result_path = ?, finished_at = ? WHERE id = ?;`;
 const DELETE_SQL = `DELETE FROM agents WHERE id = ?;`;
 
+/** How long a finished agent record survives before it's eligible for pruning (R054). */
+export const AGENTS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+// finished_at IS NOT NULL excludes every running row (finished_at IS NULL)
+// from the delete set unconditionally -- a running agent must never be
+// pruned regardless of how old its created_at is.
+const PRUNE_AGENTS_SQL = `DELETE FROM agents WHERE finished_at IS NOT NULL AND finished_at < ?;`;
+
 interface AgentRow {
   id: string; repo: string; cwd: string; provider: string; surface: string;
   session_id: string; model: string | null; effort: string | null;
@@ -115,4 +123,11 @@ export function finishAgent(
 
 export function deleteAgent(id: string, db: Database = getStateDb()): void {
   runCriticalWrite("deleteAgent", () => db.query(DELETE_SQL).run(id), { id });
+}
+
+/** The daily retention sweep (R054): deletes finished agent records older than `finishedBeforeMs`, never a running row (`finished_at IS NULL`). */
+export function pruneAgents(db: Database, opts: { finishedBeforeMs?: number } = {}): { removed: number } {
+  const cutoff = Date.now() - (opts.finishedBeforeMs ?? AGENTS_RETENTION_MS);
+  const result = db.query(PRUNE_AGENTS_SQL).run(cutoff);
+  return { removed: result.changes };
 }

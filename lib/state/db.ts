@@ -282,6 +282,10 @@ CREATE TABLE IF NOT EXISTS agents (
   finished_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS agents_repo_created ON agents(repo, created_at);
+-- created_at alone: SELECT_ALL_SQL orders the whole table by created_at DESC
+-- with no repo filter, which agents_repo_created (repo, created_at) cannot
+-- serve as an index-only scan.
+CREATE INDEX IF NOT EXISTS agents_created ON agents(created_at);
 `;
 
 /**
