@@ -12,8 +12,14 @@ Show daemon status
 ## Usage
 
 ```bash
-rt daemon status
+rt daemon status [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| [`--json`](/guides/common-flags) | boolean | `false` | Emit the verdict as JSON instead of the formatted lines |
 
 _See code: [commands/daemon.ts › showStatus](https://github.com/m4ttstack/rt/blob/main/commands/daemon.ts)_
 

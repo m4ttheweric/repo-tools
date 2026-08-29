@@ -5,6 +5,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import type { Logger } from "pino";
 import {
   isValidChatName,
   joinRoom,
@@ -19,6 +20,7 @@ import {
   pendingMessages,
   listRooms,
   archiveRoom,
+  roomArchivedAt,
   roomDefaultWake,
   listMembers,
   dmRoomFor,
@@ -55,7 +57,8 @@ import type { CommandResult, TypedHandlers } from "./types.ts";
 
 export type InboxDeps = { resolve: typeof resolveInbox; deliver: typeof deliverToInbox };
 const defaultInboxDeps: InboxDeps = { resolve: resolveInbox, deliver: deliverToInbox };
-const log = lazyChildLogger("chat");
+// Fallback only: real wiring threads ctx.log in from command-router.ts.
+const defaultLog = lazyChildLogger("chat");
 
 const CHAT_COMMANDS = [
   "chat:join",
@@ -85,6 +88,42 @@ function assertionError(fn: () => void): string | null {
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
   }
+}
+
+/** Generous, not tight: bounds a single message body without constraining any real conversation. */
+const MAX_BODY_BYTES = 64 * 1024;
+
+function isValidBody(body: unknown): body is string {
+  return typeof body === "string" && body.length > 0 && Buffer.byteLength(body, "utf8") <= MAX_BODY_BYTES;
+}
+
+/** Rooms `handle` already belongs to whose name is a prefix/suffix of the typo'd one — the common shape of a "deck" vs "deck-main" miss. */
+function closestRoomNames(typo: string, handle: string, db: Database): string[] {
+  const known = listRooms(handle, db, { includeArchived: true }).map((r) => r.room);
+  return known.filter((r) => r.startsWith(typo) || typo.startsWith(r)).slice(0, 3);
+}
+
+/**
+ * `limit: -1` reaches `ORDER BY id ASC LIMIT ?`, where SQLite treats a
+ * negative LIMIT as unlimited, so a viewer/agent bug returns and
+ * JSON-serializes an entire (100k-row) room on the event loop; a
+ * non-numeric limit hits a datatype-mismatch SQLite error instead.
+ * Mirrors the events handler's `num()` coercion pattern.
+ */
+const MAX_CHAT_LIMIT = 500;
+
+function clampLimit(v: unknown, fallback: number): number {
+  if (v == null || v === "") return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.trunc(n), 1), MAX_CHAT_LIMIT);
+}
+
+/** An unchecked value here lands on chat_members (and, on a join-creates, chat_room_defaults for every future joiner) and is silently treated as mention-only — never "none", never "all", never reported. */
+const VALID_WAKE_ON = ["mention", "all", "none"] as const;
+
+function isValidWakeOn(v: unknown): v is (typeof VALID_WAKE_ON)[number] {
+  return typeof v === "string" && (VALID_WAKE_ON as readonly string[]).includes(v);
 }
 
 // herdr's report_metadata schema types `seq` as a uint64 INTEGER: a
@@ -342,11 +381,20 @@ function postAndNotify(
   inboxDeps: InboxDeps,
   herdr: typeof herdrRequest,
   deliveryChains: Map<string, Promise<void>>,
+  log: Logger,
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body, mentions } = args;
   const posted = postMessage({ room, handle, body, mentions }, db);
   if (!posted) return undefined;
-  emitEvent(`chat/${room}/msg`, { id: posted.id });
+  // The row is durable at this point. The msg emit is best-effort: a throw
+  // here (a full disk, an orphan daemon holding an events.db lock) must
+  // never surface as a failed post — the caller would retry and post the
+  // message twice.
+  try {
+    emitEvent(`chat/${room}/msg`, { id: posted.id });
+  } catch (err) {
+    log.warn({ err, id: posted.id, room }, "chat: emit for the posted message threw; message is durable, this emit was not");
+  }
   const dm = dmParticipants(room, db);
   for (const recipient of posted.recipients) {
     queueMicrotask(() => {
@@ -361,17 +409,21 @@ function postAndNotify(
   const humanHandle = getSetting<string>("chat.humanHandle").value;
   const allMentions = mergeMentions(body, mentions);
   if (humanHandle && allMentions.includes(humanHandle)) {
-    const title = dm ? `DM from ${handle}` : `#${room}`;
-    // The click target: the viewer at this exact message, when the viewer is
-    // configured. The tray opens `url` on a default click for any category.
-    notifyEnabled(
-      CHAT_NOTIFICATION_CATEGORY,
-      title,
-      `${handle}: ${body}`,
-      chatViewerUrl(readChatViewerUrlSetting(), room, posted.id),
-      undefined,
-      `chat:${posted.id}`,
-    );
+    try {
+      const title = dm ? `DM from ${handle}` : `#${room}`;
+      // The click target: the viewer at this exact message, when the viewer is
+      // configured. The tray opens `url` on a default click for any category.
+      notifyEnabled(
+        CHAT_NOTIFICATION_CATEGORY,
+        title,
+        `${handle}: ${body}`,
+        chatViewerUrl(readChatViewerUrlSetting(), room, posted.id),
+        undefined,
+        `chat:${posted.id}`,
+      );
+    } catch (err) {
+      log.warn({ err, id: posted.id, room }, "chat: desk notify threw after a successful post");
+    }
   }
   return posted;
 }
@@ -396,8 +448,11 @@ export function createChatHandlers(opts: {
   /** `findPaneSessionRetrying`'s wall-clock budget/poll; overridable so a test whose fake herdr never resolves does not have to wait out the real production budget. */
   paneSessionBudgetMs?: number;
   paneSessionPollMs?: number;
+  /** Request logger; wired from ctx.log by command-router.ts. */
+  log?: Logger;
 }): Pick<TypedHandlers, (typeof CHAT_COMMANDS)[number]> & { db: Database } {
   const { db, emitEvent } = opts;
+  const log = opts.log ?? defaultLog;
   const herdr = opts.herdr ?? herdrRequest;
   const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
   const registryDeps = opts.registryDeps;
@@ -416,6 +471,9 @@ export function createChatHandlers(opts: {
       const { room, handle, wakeOn, cwd, pane } = payload;
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
+      if (wakeOn !== undefined && !isValidWakeOn(wakeOn)) {
+        return { ok: false, error: `invalid wakeOn "${wakeOn}"; must be one of ${VALID_WAKE_ON.join(", ")}` };
+      }
       try {
         const data = joinRoom({ room, handle, wakeOn, cwd, pane }, db);
         return { ok: true, data };
@@ -431,16 +489,27 @@ export function createChatHandlers(opts: {
 
     "chat:post": async (payload: Commands["chat:post"]["payload"]): Promise<CommandResult<"chat:post">> => {
       const { room, handle, body, mentions } = payload;
+      if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!isValidBody(body)) return { ok: false, error: `body must be a non-empty string under ${MAX_BODY_BYTES} bytes` };
+      if (mentions !== undefined && !Array.isArray(mentions)) return { ok: false, error: "mentions must be an array of handles" };
       const invalidMention = mentions?.find((m) => !isValidChatName(m));
       if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains);
+      // A typo'd room previously no-op'd through postMessage's REVIVE (a
+      // no-op for a room with no chat_rooms row) and returned ok with no
+      // recipients — unreachable except by the exact typo'd name.
+      if (roomArchivedAt(room, db) === undefined) {
+        const nearby = closestRoomNames(room, handle, db);
+        return { ok: false, error: `unknown room "${room}"${nearby.length ? ` — did you mean: ${nearby.join(", ")}` : ""}` };
+      }
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains, log);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
     },
 
     "chat:read": async (payload: Commands["chat:read"]["payload"]): Promise<CommandResult<"chat:read">> => {
       const { handle, room, limit, sinceMs } = payload;
-      const rooms = readUnread({ handle, room, limit: limit ?? 20, sinceMs }, db);
+      const rooms = readUnread({ handle, room, limit: clampLimit(limit, 20), sinceMs }, db);
       return { ok: true, data: { rooms } };
     },
 
@@ -489,7 +558,7 @@ export function createChatHandlers(opts: {
 
     "chat:messages": async (payload: Commands["chat:messages"]["payload"]): Promise<CommandResult<"chat:messages">> => {
       const { room, before, limit } = payload;
-      const messages = listMessages({ room, before, limit: limit ?? 50 }, db);
+      const messages = listMessages({ room, before, limit: clampLimit(limit, 50) }, db);
       return { ok: true, data: { messages } };
     },
 
@@ -632,6 +701,7 @@ export function createChatHandlers(opts: {
       const { from, to, body, sessionId } = payload;
       if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
       if (!isValidChatName(to)) return { ok: false, error: `invalid handle "${to}"` };
+      if (!isValidBody(body)) return { ok: false, error: `body must be a non-empty string under ${MAX_BODY_BYTES} bytes` };
       const err = assertionError(() => assertSessionOwnsHandle(from, sessionId, db));
       if (err) return { ok: false, error: err };
       const humanHandle = getSetting<string>("chat.humanHandle").value;
@@ -647,7 +717,7 @@ export function createChatHandlers(opts: {
       // Recipient travels in `mentions`, not the body, so the transcript
       // shows the text as typed and the desk still notifies when `to` is
       // the human.
-      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains);
+      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains, log);
       if (!posted) return { ok: false, error: "chat: dm failed (retry budget exhausted)" };
       return { ok: true, data: { room, id: posted.id, recipients: posted.recipients } };
     },

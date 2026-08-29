@@ -126,7 +126,9 @@ export function createPaneHandlers(opts: {
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
   /** The registry probe behind buddyStatus, fakeable the same way lib/daemon/handlers/chat.ts's registryDeps is. */
   registryDeps?: RegistryDeps;
-}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn" | "pane:send" | "pane:focus"> & { db: Database } {
+}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:send" | "pane:focus">
+  & { "pane:spawn": (payload: Commands["pane:spawn"]["payload"], signal?: AbortSignal) => Promise<CommandResult<"pane:spawn">> }
+  & { db: Database } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const tray = opts.tray ?? trayRequest;
@@ -194,7 +196,7 @@ export function createPaneHandlers(opts: {
       return { ok: true, data: { directories: out } };
     },
 
-    "pane:spawn": async (payload: Commands["pane:spawn"]["payload"]): Promise<CommandResult<"pane:spawn">> => {
+    "pane:spawn": async (payload: Commands["pane:spawn"]["payload"], signal?: AbortSignal): Promise<CommandResult<"pane:spawn">> => {
       const { cwd, account, model, effort, prompt } = payload;
       if (!cwd || !cwd.startsWith("/")) return { ok: false, error: "cwd must be an absolute path" };
       if (account) {
@@ -217,8 +219,23 @@ export function createPaneHandlers(opts: {
       if (!tab.ok) return herdrError(tab);
       const paneId = tab.result.root_pane.pane_id;
 
+      // pane:spawn's summed worst-case budget (register + idle wait + a
+      // blocked-trust retry + the opening prompt) can run longer than
+      // rt-client's own client-side timeout for this call. Once the caller
+      // has given up, continuing to spend the daemon's budget only risks a
+      // retry racing a second claude pane into the same cwd — so every step
+      // past tab creation checks the signal first and returns the pane
+      // already created (not-ready) rather than pressing on for a client
+      // that is no longer listening.
+      const earlyReturn = async (status: AgentStatus): Promise<CommandResult<"pane:spawn">> => {
+        const ctx: PaneRowContext = { db, repoIndex, exec, now, workspaces: new Map([[workspaceId!, label]]), ...presenceMaps(db, now(), registryDeps) };
+        const pane = await paneRow({ ...tab.result.root_pane, agent: "claude", agent_status: status }, ctx);
+        return { ok: true, data: { pane, ready: false } };
+      };
+
       const sent = await herdr("pane.send_input", { pane_id: paneId, text: launchCommand({ cwd, account, model, effort }), keys: ["enter"] });
       if (!sent.ok) return herdrError(sent);
+      if (signal?.aborted) return earlyReturn("unknown");
 
       // herdr registers the agent a few hundred ms after the shell starts claude.
       // Bound the wait by wall-clock, not a fixed attempt count: a slow-but-alive
@@ -227,7 +244,7 @@ export function createPaneHandlers(opts: {
       // holds its caller.
       let registered = false;
       const registerDeadline = now() + REGISTER_BUDGET_MS;
-      while (now() < registerDeadline) {
+      while (now() < registerDeadline && !signal?.aborted) {
         const got = await herdr("agent.get", { target: paneId });
         if (got.ok) {
           registered = true;
@@ -235,22 +252,26 @@ export function createPaneHandlers(opts: {
         }
         await Bun.sleep(REGISTER_POLL_MS);
       }
+      if (signal?.aborted) return earlyReturn("unknown");
 
       let status: AgentStatus = "unknown";
       let ready = false;
       if (registered) {
         const settled = await herdr<{ agent: HerdrAgent }>("agent.wait", { target: paneId, until: SETTLED, timeout_ms: IDLE_BUDGET_MS }, { timeoutMs: waitTimeout(IDLE_BUDGET_MS) });
         if (settled.ok) status = settled.result.agent.agent_status;
+        if (signal?.aborted) return earlyReturn(status);
         if (status === "blocked") {
           const screen = await herdr<{ read: { text: string } }>("pane.read", { pane_id: paneId, source: "visible" });
           if (screen.ok && /trust/i.test(screen.result.read.text)) {
             await herdr("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
+            if (signal?.aborted) return earlyReturn(status);
             const again = await herdr<{ agent: HerdrAgent }>("agent.wait", { target: paneId, until: SETTLED, timeout_ms: TRUST_BUDGET_MS }, { timeoutMs: waitTimeout(TRUST_BUDGET_MS) });
             if (again.ok) status = again.result.agent.agent_status;
           }
         }
         ready = status === "idle" || status === "done";
       }
+      if (signal?.aborted) return earlyReturn(status);
 
       if (ready && prompt) {
         await herdr("agent.prompt", { target: paneId, text: prompt, wait: { until: ["working"], timeout_ms: PROMPT_BUDGET_MS } }, { timeoutMs: waitTimeout(PROMPT_BUDGET_MS) });

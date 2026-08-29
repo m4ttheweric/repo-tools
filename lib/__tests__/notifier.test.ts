@@ -280,3 +280,33 @@ describe("conflict-free streak", () => {
     expect(__test__.shouldRearmConflicts(conflicted, snap)).toBe(false);
   });
 });
+
+describe("removeFromQueueWithRetry (busy-swallowed post-push removal)", () => {
+  test("succeeds on the first attempt when the removal actually took", async () => {
+    let queued = true;
+    const removeFn = () => { queued = false; };
+    const isQueuedFn = () => queued;
+    const ok = await __test__.removeFromQueueWithRetry("evt-1", 3, 1, removeFn, isQueuedFn);
+    expect(ok).toBe(true);
+  });
+
+  test("retries when the removal is busy-swallowed, then succeeds", async () => {
+    let queued = true;
+    let calls = 0;
+    const removeFn = () => {
+      calls++;
+      if (calls >= 3) queued = false; // the first two deletes are swallowed by SQLITE_BUSY
+    };
+    const isQueuedFn = () => queued;
+    const ok = await __test__.removeFromQueueWithRetry("evt-2", 5, 1, removeFn, isQueuedFn);
+    expect(ok).toBe(true);
+    expect(calls).toBe(3);
+  });
+
+  test("gives up after the attempt budget and reports failure instead of hanging", async () => {
+    const removeFn = () => {}; // never actually removes it
+    const isQueuedFn = () => true;
+    const ok = await __test__.removeFromQueueWithRetry("evt-3", 3, 1, removeFn, isQueuedFn);
+    expect(ok).toBe(false);
+  });
+});

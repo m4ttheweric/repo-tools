@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
   parseListeningLsof,
   parsePidValueMap,
   parseCwdMap,
   parseWorktreePorcelain,
   parseEtimeMs,
+  matchCwdToRepo,
+  canonicalizeRepoIndex,
+  canonicalizeWorktreeMap,
 } from "../port-scanner.ts";
 
 describe("parseListeningLsof", () => {
@@ -118,5 +124,63 @@ describe("parseEtimeMs", () => {
   test("the scanner's placeholder is unknown, not zero", () => {
     expect(parseEtimeMs("unknown")).toBeNull();
     expect(parseEtimeMs("")).toBeNull();
+  });
+});
+
+// S097: lsof reports the kernel's resolved (real) cwd; the repo index and
+// worktree map carry whatever path the user cd'd through when registering
+// a repo. A symlinked repo root (~/code -> /Volumes/Dev/code) previously
+// matched nothing at all — no ports, no runaway detection, and stale dev
+// servers kept running past dispose because killWorktreeProcesses found
+// nothing either.
+describe("canonicalizeRepoIndex / canonicalizeWorktreeMap (S097)", () => {
+  let dir: string;
+  let real: string;
+  let link: string;
+
+  const setup = () => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-port-scanner-")));
+    real = join(dir, "real-repo");
+    link = join(dir, "linked-repo");
+    mkdirSync(real, { recursive: true });
+    symlinkSync(real, link);
+  };
+  const teardown = () => { rmSync(dir, { recursive: true, force: true }); };
+
+  test("a symlinked repo root resolves to the real path lsof would report", () => {
+    setup();
+    try {
+      const repos = canonicalizeRepoIndex({ acme: link });
+      expect(repos.acme).toBe(realpathSync(real));
+    } finally {
+      teardown();
+    }
+  });
+
+  test("a nonexistent path (deleted mid-scan) falls back to the literal rather than throwing", () => {
+    const repos = canonicalizeRepoIndex({ acme: "/does/not/exist/anywhere" });
+    expect(repos.acme).toBe("/does/not/exist/anywhere");
+  });
+
+  test("worktree map keys are canonicalized the same way", () => {
+    setup();
+    try {
+      const wt = canonicalizeWorktreeMap(new Map([[link, { repo: "acme", branch: "main" }]]));
+      expect([...wt.keys()]).toEqual([realpathSync(real)]);
+    } finally {
+      teardown();
+    }
+  });
+
+  test("end-to-end: matchCwdToRepo finds a repo registered under a symlinked root once canonicalized", () => {
+    setup();
+    try {
+      const cwd = realpathSync(real); // what lsof would report
+      const repos = canonicalizeRepoIndex({ acme: link }); // what the index has
+      const match = matchCwdToRepo(cwd, repos, new Map());
+      expect(match.repo).toBe("acme");
+    } finally {
+      teardown();
+    }
   });
 });

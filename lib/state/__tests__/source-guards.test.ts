@@ -92,9 +92,10 @@ describe("legacy JSON state files are retired", () => {
 describe("daemon startup opens state.db before serving", () => {
   test("openBranchCacheStore() precedes both server binds in runDaemon", () => {
     const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
-    // startDaemon() itself is now a thin catch-and-exit wrapper (see
-    // "startDaemon exits on any runDaemon failure" below); the real ordered
-    // startup sequence this test asserts on lives in runDaemon().
+    // startDaemon() itself is now just `await runDaemon()` (see "boot
+    // failure is fatal" below; the catch-and-exit lives in runDaemon
+    // itself); the real ordered startup sequence this test asserts on
+    // lives in runDaemon() too.
     const start = src.indexOf("async function runDaemon(");
     expect(start).toBeGreaterThan(-1);
 
@@ -122,26 +123,33 @@ describe("daemon startup opens state.db before serving", () => {
   });
 });
 
-describe("startDaemon exits on any runDaemon failure", () => {
+describe("boot failure is fatal for both fire-and-forget callers", () => {
   test("runDaemon is not exported — startDaemon is the only safe entry point", () => {
     const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
     expect(src).not.toContain("export async function runDaemon(");
     expect(src).not.toContain("export function runDaemon(");
   });
 
-  test("startDaemon wraps runDaemon in try/catch and exits nonzero on failure", () => {
+  test("runDaemon wraps its own body in try/catch and exits nonzero on failure; startDaemon just awaits it", () => {
     const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
-    const start = src.indexOf("export async function startDaemon(");
-    expect(start).toBeGreaterThan(-1);
+    const runStart = src.indexOf("async function runDaemon(");
+    const startDaemonStart = src.indexOf("export async function startDaemon(");
+    expect(runStart).toBeGreaterThan(-1);
+    expect(startDaemonStart).toBeGreaterThan(runStart);
 
     // Both real callers (cli.ts's --daemon entry, this file's own
-    // import.meta.main guard) invoke startDaemon() fire-and-forget — the
-    // catch-and-exit MUST live inside startDaemon itself, not at either
-    // call site, or an unhandledRejection silently leaves the daemon
-    // half-up (rt.sock possibly bound, nothing past the failure ever wired).
-    const body = src.slice(start, start + 400);
-    expect(body).toContain("await runDaemon()");
-    expect(body).toContain("catch");
-    expect(body).toContain("process.exit(1)");
+    // import.meta.main guard) invoke startDaemon() fire-and-forget, and
+    // startDaemon() is now just `await runDaemon()`, so the catch-and-exit
+    // MUST live inside runDaemon() itself, or an unhandledRejection could
+    // silently leave the daemon half-up (rt.sock possibly bound, nothing
+    // past the failure ever wired). The booting-gated unhandledRejection
+    // handler (installCrashHandlers) is only the backstop for whatever
+    // still manages to slip past this try/catch.
+    const runBody = src.slice(runStart, startDaemonStart);
+    expect(runBody).toContain("catch");
+    expect(runBody).toContain("process.exit(1)");
+
+    const startDaemonBody = src.slice(startDaemonStart, startDaemonStart + 200);
+    expect(startDaemonBody).toContain("await runDaemon()");
   });
 });

@@ -147,11 +147,20 @@ export function unlink(p: Probes, tool: string): { removed: boolean } {
 export function reconcile(p: Probes): { removed: string[]; kept: string[] } {
   const dir = join(p.home, ".local", "bin");
   const forced = new Set(readSetupState(p).forcedLinks);
+  const defaultExposed = new Set<string>(DEFAULT_EXPOSED);
   const removed: string[] = [];
   const kept: string[] = [];
   for (const tool of p.readDir(dir)) {
     if (!isOurLink(p, tool)) continue; // not one of ours — nothing to reconcile
-    if (forced.has(tool) || !userCopyOnPath(p, tool)) {
+    // DEFAULT_EXPOSED (rt, fast-browser, gitq, deck) is mattstack's own
+    // product surface, not a vendored third-party tool like the bundled
+    // "gh" — userCopyOnPath matches by name only, so a same-named PATH
+    // entry is at least as likely to be an unrelated namesake (Kong's own
+    // "deck") as a genuine second copy of ours, and shadow-removing our own
+    // "rt" this way breaks every command. Only a vendored tool's step-aside
+    // (deferring to a real system copy the user installed) is safe to
+    // decide by name alone.
+    if (defaultExposed.has(tool) || forced.has(tool) || !userCopyOnPath(p, tool)) {
       kept.push(tool);
     } else {
       p.removeFile(linkPath(p.home, tool));

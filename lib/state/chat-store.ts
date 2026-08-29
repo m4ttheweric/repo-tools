@@ -221,7 +221,8 @@ export function joinRoom(
     return { handle, memberCount, unread: Math.max(0, maxId - lastReadId) };
   });
 
-  return run();
+  // BEGIN IMMEDIATE: read-then-write must lock up front or SQLITE_BUSY_SNAPSHOT bypasses busy_timeout.
+  return run.immediate();
 }
 
 export function leaveRoom(room: string, handle: string, db: Database = getStateDb()): void {
@@ -280,7 +281,7 @@ export function archiveRoom(
     if (current === null) db.query(UPDATE_ROOM_ARCHIVED_SQL).run(archivedAt, room);
     return { room, archivedAt };
   });
-  return run();
+  return run.immediate();
 }
 
 /** The wake mode stamped by whichever join created `room`; undefined for a room never stamped (including every DM room — dmRoomFor never stamps one). */
@@ -420,7 +421,7 @@ export function readUnread(
     return results;
   });
 
-  return run();
+  return run.immediate();
 }
 
 /**

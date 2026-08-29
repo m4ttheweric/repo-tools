@@ -329,6 +329,28 @@ test("pane:spawn stops polling for registration at the wall-clock budget, not a 
   expect(calls.filter((c) => c === "agent.get").length).toBeLessThanOrEqual(2);
 });
 
+// S087: pane:spawn's worst-case daemon budget (register + idle wait + trust
+// retry + prompt) exceeds rt-client's client-side timeout — the client
+// gives up and reports failure while the daemon keeps working, so a retry
+// spawns a second claude pane in the same cwd. Once the caller's own
+// AbortSignal fires, the handler must stop spending further budget and
+// return the pane it already created instead of continuing the full flow.
+test("pane:spawn stops after tab creation once the caller's AbortSignal fires, returning the pane already created", async () => {
+  const controller = new AbortController();
+  const { handler, calls } = spawnFake({ statuses: ["idle"] });
+  const abortingHandler: typeof handler = (method, params) => {
+    if (method === "pane.send_input") controller.abort();
+    return handler(method, params);
+  };
+  const { pane } = harness(abortingHandler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/chat" }, controller.signal);
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.pane.paneId).toBe("w2:p7");
+  expect(res.data.ready).toBe(false);
+  expect(calls).not.toContain("agent.get");
+  expect(calls).not.toContain("agent.wait");
+});
+
 test("pane:spawn refuses an unknown cswap account before touching herdr", async () => {
   const { handler, calls } = spawnFake({ statuses: ["idle"] });
   const { pane } = harness(handler);

@@ -32,6 +32,7 @@ import { realpathSync, rmSync } from "fs";
 import { join } from "path";
 
 import { parseIdentity } from "../../settings/identity.ts";
+import { validateGitRef } from "../git-ref-validation.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import {
   findByBranch,
@@ -57,7 +58,7 @@ import {
   resolveReadySteps,
 } from "../../worktree/config.ts";
 import { changedSince, runReadySteps, stepsToRun } from "../../worktree/ready.ts";
-import { freshenRepo, reconcileRepoRegistry } from "../worktree-reconciler.ts";
+import { freshenRepo, reconcileRepoRegistry, withCreateLock } from "../worktree-reconciler.ts";
 import { repoDataDir, rtDir } from "../../rt-paths.ts";
 
 const PROVISION_FETCH_TIMEOUT_MS = 5 * 60_000;
@@ -295,6 +296,12 @@ export function createWorktreeHandlers(
         return { ok: false, error: "branch-unresolved" };
       }
 
+      // S010: a branch that git would parse as an option (e.g.
+      // "--upload-pack=...") must never reach a runGit call, including
+      // divergence()'s below — both read this same `branch`.
+      const refCheck = validateGitRef(branch);
+      if (!refCheck.ok) return { ok: false, error: refCheck.error };
+
       const attached = findByBranch(trees, branch);
       if (attached.length > 1) return { ok: false, error: "branch-duplicated" };
       if (attached.length === 1) return { ok: false, error: `branch-attached:${attached[0]!.name}` };
@@ -313,9 +320,13 @@ export function createWorktreeHandlers(
         }
       }
       if (!rec) {
-        const created = await createTree({
+        // Serialized against the reconciler's own replenish createTree for
+        // this repo (S089): both `git fetch origin <branch>` against the
+        // same repoPath, and an unserialized race charges the loser's
+        // ref-lock failure to createBackoff for what was just contention.
+        const created = await withCreateLock(repoPath, () => createTree({
           repoName, repoPath, emit: opts.emit, log: ctx.log,
-        });
+        }));
         if (!created.ok) {
           if (created.error === "busy") return { ok: false, error: "busy" };
           return {
@@ -467,7 +478,7 @@ export function createWorktreeHandlers(
       const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
       if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
 
-      const created = await createTree({ repoName, repoPath, emit: opts.emit, log: ctx.log });
+      const created = await withCreateLock(repoPath, () => createTree({ repoName, repoPath, emit: opts.emit, log: ctx.log }));
       if (!created.ok) {
         if (created.error === "busy") return { ok: false, error: "busy" };
         return { ok: false, error: createFailedError(created) };

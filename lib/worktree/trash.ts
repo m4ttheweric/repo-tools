@@ -22,6 +22,7 @@
 
 import { mkdir, readdir, rename } from "fs/promises";
 import { basename, dirname, join } from "path";
+import { ensureInfoExclude } from "./git-async.ts";
 
 /** Marks a directory as rt's to delete. Nothing without this prefix is ever reaped. */
 export const TRASH_PREFIX = ".trash-";
@@ -37,6 +38,21 @@ const RETAIN_DIR = ".trash";
 
 /** How long a retained tree survives before the reconciler reaps it. */
 export const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * A ms-epoch rt actually wrote (`${name}-${Date.now()}`) is always after
+ * this. A trailing small integer — a manual "backup-3" or "notes-42"
+ * dropped "with the other trash" — parses as a number just fine and, taken
+ * at face value as an epoch, is always ancient; without this floor it gets
+ * reaped on the very next pass despite not being rt's to delete.
+ */
+const EPOCH_FLOOR_MS = Date.UTC(2020, 0, 1);
+
+/** Whether `raw` looks like an epoch rt itself would have written, not merely any integer. */
+function looksLikeRtEpoch(raw: string): boolean {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= EPOCH_FLOOR_MS;
+}
 
 /**
  * Top-level dirs inside a retained tree that are reinstallable and deleted at
@@ -110,6 +126,13 @@ export async function retireTree(
     if (!name || name.includes("/") || name.includes("\\")) {
       throw new Error(`worktree trash name must be a single path component: ${JSON.stringify(name)}`);
     }
+    // retainedTrashRoot is always <repoPath>/.worktrees/.trash regardless of
+    // cfg.root, so this exclude pattern is correct in every case — including
+    // a tree disposed without ever going through createTree first (e.g. `rt
+    // worktree adopt`'s disposals), whose repo may never have had
+    // ".worktrees/" excluded at all. Without it the retention store shows up
+    // as `?? .worktrees/` in the user's own `git status`.
+    await ensureInfoExclude(repoPath, ".worktrees/");
     const root = retainedTrashRoot(repoPath);
     await mkdir(root, { recursive: true });
     trashPath = join(root, `${name}-${Date.now()}`);
@@ -194,7 +217,7 @@ export async function reapExpiredTrash(
   let reaped = 0;
   for (const entry of entries) {
     const epoch = /-(\d+)$/.exec(entry)?.[1];
-    if (!epoch) {
+    if (!epoch || !looksLikeRtEpoch(epoch)) {
       log.warn({ root, entry }, "worktree retention sweep skipped an entry it did not write");
       continue;
     }

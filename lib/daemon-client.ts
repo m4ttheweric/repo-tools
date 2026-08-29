@@ -30,19 +30,32 @@ export interface DaemonResponse {
 
 const REQUEST_TIMEOUT_MS = 2000;
 
+// Deprecated shim state (see lastQueryTimedOut's doc): kept in sync so an
+// external caller still reading it via the module-level accessor keeps
+// working, but nothing in this file reads these two vars anymore — every
+// internal caller carries its own attribution on its own return value
+// instead, which a concurrent query can never clobber.
 let _lastQueryWasRefused = false;
 let _lastQueryTimedOut   = false;
+
+interface SocketQueryAttempt {
+  response: DaemonResponse | null;
+  /** True on ECONNREFUSED — the socket is stale, not merely slow. */
+  refused: boolean;
+  /** True when the request itself exceeded timeoutMs. */
+  timedOut: boolean;
+}
 
 async function trySocketQuery(
   cmd: string,
   payload?: Record<string, any>,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
-): Promise<DaemonResponse | null> {
-  // Reset per-query flags up front so a missing-socket early return doesn't
-  // leave a previous query's timeout/refused state visible to callers.
-  _lastQueryWasRefused = false;
-  _lastQueryTimedOut   = false;
-  if (!existsSync(DAEMON_SOCK_PATH)) return null;
+): Promise<SocketQueryAttempt> {
+  if (!existsSync(DAEMON_SOCK_PATH)) {
+    _lastQueryWasRefused = false;
+    _lastQueryTimedOut   = false;
+    return { response: null, refused: false, timedOut: false };
+  }
 
   try {
     const hasBody = payload && Object.keys(payload).length > 0;
@@ -57,14 +70,16 @@ async function trySocketQuery(
 
     _lastQueryWasRefused = false;
     _lastQueryTimedOut   = false;
-    return (await response.json()) as DaemonResponse;
+    return { response: (await response.json()) as DaemonResponse, refused: false, timedOut: false };
   } catch (err) {
     const code = (err as any)?.code ?? "";
     const name = (err as any)?.name ?? "";
     const msg  = err instanceof Error ? err.message : "";
-    _lastQueryWasRefused = code === "ECONNREFUSED" || msg.includes("ECONNREFUSED") || msg.includes("Connection refused");
-    _lastQueryTimedOut   = name === "TimeoutError" || name === "AbortError" || msg.includes("timed out");
-    return null;
+    const refused  = code === "ECONNREFUSED" || msg.includes("ECONNREFUSED") || msg.includes("Connection refused");
+    const timedOut = name === "TimeoutError" || name === "AbortError" || msg.includes("timed out");
+    _lastQueryWasRefused = refused;
+    _lastQueryTimedOut   = timedOut;
+    return { response: null, refused, timedOut };
   }
 }
 
@@ -102,7 +117,7 @@ export async function daemonSocketQuery(
   payload?: Record<string, any>,
   timeoutMs?: number,
 ): Promise<DaemonResponse | null> {
-  return trySocketQuery(cmd, payload, timeoutMs);
+  return (await trySocketQuery(cmd, payload, timeoutMs)).response;
 }
 
 // ─── Tray request client (MAT-383 setup verbs) ───────────────────────────────
@@ -178,10 +193,46 @@ async function attemptRestart(): Promise<boolean> {
     // null response (tray socket absent / request failed) means no restart
     // actually happened.
     const res = await trayQuery("/daemon/start", "POST");
-    return res !== null;
+    if (res === null) return false;
+
+    // The tray ack only proves the request was received, not that the
+    // daemon actually came up, so re-probe rt.sock before reporting success,
+    // so daemonQuery's caller isn't told "restarted" while the daemon is
+    // still mid-boot and then misdirected into warnDaemonDown() on the very
+    // next query instead of actually waiting for it.
+    for (let i = 0; i < 12; i++) {
+      await Bun.sleep(250);
+      if (await isDaemonRunning()) return true;
+    }
+    return false;
   } catch {
     return false;
   }
+}
+
+const SOCKET_POLL_TOTAL_MS = 3_000;
+const SOCKET_POLL_INTERVAL_MS = 150;
+
+/**
+ * Polls for rt.sock to exist and answer for up to ~3s after a restart
+ * request. parkUntilIntended's own socket probe, state.db open, and the
+ * identity migration routinely take longer than a single fixed delay, so a
+ * start that genuinely succeeds must not be reported as "installed but not
+ * running" just because the retry landed too early.
+ */
+async function waitForSocket(
+  totalMs: number = SOCKET_POLL_TOTAL_MS,
+  intervalMs: number = SOCKET_POLL_INTERVAL_MS,
+): Promise<boolean> {
+  const deadline = Date.now() + totalMs;
+  while (Date.now() < deadline) {
+    if (existsSync(DAEMON_SOCK_PATH)) {
+      const ping = await trySocketQuery("ping", {}, Math.min(intervalMs * 2, 1000));
+      if (ping.response !== null) return true;
+    }
+    await Bun.sleep(intervalMs);
+  }
+  return existsSync(DAEMON_SOCK_PATH);
 }
 
 function warnDaemonDown(): void {
@@ -205,6 +256,51 @@ export function suppressDaemonDownWarning(): void {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
+ * Same contract as `daemonQuery`, but the failure kind travels on the
+ * return value instead of the module-level `_lastQuery*` flags — so a
+ * concurrent query (a 30s mr:action merge racing a 2s status poll, say)
+ * can never clobber this call's own attribution between its trySocketQuery
+ * resolving and its caller reading it. Prefer this over
+ * `daemonQuery` + `lastQueryTimedOut()` for any new caller.
+ */
+export async function daemonQueryAttributed(
+  cmd: string,
+  payload?: Record<string, any>,
+  timeoutMs?: number,
+): Promise<SocketQueryAttempt> {
+  // 1. Try HTTP request over Unix socket
+  const first = await trySocketQuery(cmd, payload, timeoutMs);
+  if (first.response !== null) return first;
+
+  // 2. Check if user opted in
+  if (!isDaemonInstalled()) return { response: null, refused: false, timedOut: false }; // not installed → silent fallback
+
+  // 3. If the socket file still exists AND the connection wasn't refused,
+  //    the daemon IS running — this query timed out or hit a transient error.
+  //    Return null silently. But if the connection was refused, the socket is
+  //    stale (daemon died without cleaning up) — fall through to attempt restart.
+  if (existsSync(DAEMON_SOCK_PATH) && !first.refused) return first;
+
+  // 4. Socket is gone → daemon is genuinely not running. Attempt restart.
+  const restarted = await attemptRestart();
+  let last = first;
+  if (restarted) {
+    // Bounded poll, not one fixed-delay retry: parkUntilIntended's own
+    // socket probe, state.db open, and the identity migration routinely
+    // take longer than 300ms, and a successful start must not be reported
+    // as "installed but not running" just because the retry landed early.
+    await waitForSocket();
+    const retry = await trySocketQuery(cmd, payload, timeoutMs);
+    if (retry.response !== null) return retry;
+    last = retry;
+  }
+
+  // 5. Restart failed → warn (once per session)
+  warnDaemonDown();
+  return last;
+}
+
+/**
  * Send a command to the daemon and return the response.
  *
  * Returns null if daemon is not available (either not installed or not running
@@ -215,38 +311,16 @@ export async function daemonQuery(
   payload?: Record<string, any>,
   timeoutMs?: number,
 ): Promise<DaemonResponse | null> {
-  // 1. Try HTTP request over Unix socket
-  const result = await trySocketQuery(cmd, payload, timeoutMs);
-  if (result !== null) return result;
-
-  // 2. Check if user opted in
-  if (!isDaemonInstalled()) return null; // not installed → silent fallback
-
-  // 3. If the socket file still exists AND the connection wasn't refused,
-  //    the daemon IS running — this query timed out or hit a transient error.
-  //    Return null silently. But if the connection was refused, the socket is
-  //    stale (daemon died without cleaning up) — fall through to attempt restart.
-  if (existsSync(DAEMON_SOCK_PATH) && !_lastQueryWasRefused) return null;
-
-  // 4. Socket is gone → daemon is genuinely not running. Attempt restart.
-  const restarted = await attemptRestart();
-  if (restarted) {
-    // Retry once after short delay
-    await Bun.sleep(300);
-    const retryResult = await trySocketQuery(cmd, payload, timeoutMs);
-    if (retryResult !== null) return retryResult;
-  }
-
-  // 5. Restart failed → warn (once per session)
-  warnDaemonDown();
-  return null;
+  return (await daemonQueryAttributed(cmd, payload, timeoutMs)).response;
 }
 
 /**
  * True if the last `daemonQuery` returned null because the request timed out
- * (as opposed to the daemon being genuinely down). Used by action callers so
- * they can surface "timed out — verify on GitLab" instead of the misleading
- * "daemon unavailable".
+ * (as opposed to the daemon being genuinely down). Deprecated: still backed
+ * by shared module state, so it remains vulnerable to the exact
+ * cross-query attribution race `daemonQueryAttributed` closes — kept only
+ * for callers that predate that function. New callers should use
+ * `daemonQueryAttributed` and read `.timedOut` off their own result.
  */
 export function lastQueryTimedOut(): boolean {
   return _lastQueryTimedOut;
@@ -256,7 +330,7 @@ export function lastQueryTimedOut(): boolean {
  * Quick check: is the daemon reachable right now?
  */
 export async function isDaemonRunning(): Promise<boolean> {
-  const response = await trySocketQuery("ping");
+  const { response } = await trySocketQuery("ping");
   return response?.ok === true;
 }
 
@@ -294,8 +368,8 @@ const MR_ACTION_TIMEOUT_MS = 30_000;
 
 export function mrActions(repoName: string, iid: number): DaemonMRActions {
   const fire = async (action: string, args: any[] = []): Promise<void> => {
-    const res = await daemonQuery("mr:action", { repoName, iid, action, args }, MR_ACTION_TIMEOUT_MS);
-    if (!res) throw new Error(lastQueryTimedOut() ? `${action} timed out — verify on GitLab` : "daemon unavailable");
+    const { response: res, timedOut } = await daemonQueryAttributed("mr:action", { repoName, iid, action, args }, MR_ACTION_TIMEOUT_MS);
+    if (!res) throw new Error(timedOut ? `${action} timed out — verify on GitLab` : "daemon unavailable");
     if (!res.ok) throw new Error(res.error || `${action} failed`);
   };
 
@@ -312,14 +386,14 @@ export function mrActions(repoName: string, iid: number): DaemonMRActions {
     requestReReview:  (uid)  => fire("requestReReview", [uid]),
 
     fetchJobDetail: async (jobId, pipelineId) => {
-      const res = await daemonQuery("mr:fetch-job-detail", { repoName, iid, jobId, pipelineId }, MR_ACTION_TIMEOUT_MS);
-      if (!res) throw new Error(lastQueryTimedOut() ? "fetchJobDetail timed out" : "daemon unavailable");
+      const { response: res, timedOut } = await daemonQueryAttributed("mr:fetch-job-detail", { repoName, iid, jobId, pipelineId }, MR_ACTION_TIMEOUT_MS);
+      if (!res) throw new Error(timedOut ? "fetchJobDetail timed out" : "daemon unavailable");
       if (!res.ok) throw new Error(res.error || "fetchJobDetail failed");
       return res.data;
     },
     fetchJobTrace: async (jobId) => {
-      const res = await daemonQuery("mr:fetch-job-trace", { repoName, iid, jobId }, MR_ACTION_TIMEOUT_MS);
-      if (!res) throw new Error(lastQueryTimedOut() ? "fetchJobTrace timed out" : "daemon unavailable");
+      const { response: res, timedOut } = await daemonQueryAttributed("mr:fetch-job-trace", { repoName, iid, jobId }, MR_ACTION_TIMEOUT_MS);
+      if (!res) throw new Error(timedOut ? "fetchJobTrace timed out" : "daemon unavailable");
       if (!res.ok) throw new Error(res.error || "fetchJobTrace failed");
       return res.data as string;
     },
@@ -352,12 +426,12 @@ export async function fetchDiscussions(
   iid: number,
   opts?: { force?: boolean },
 ): Promise<DiscussionsSnapshot> {
-  const res = await daemonQuery(
+  const { response: res, timedOut } = await daemonQueryAttributed(
     "discussions:read",
     { repoName, iid, force: opts?.force === true },
     DISCUSSIONS_TIMEOUT_MS,
   );
-  if (!res) throw new Error(lastQueryTimedOut() ? "discussions timed out" : "daemon unavailable");
+  if (!res) throw new Error(timedOut ? "discussions timed out" : "daemon unavailable");
   if (!res.ok) throw new Error(res.error || "discussions:read failed");
   return res.data as DiscussionsSnapshot;
 }
@@ -369,12 +443,12 @@ export async function setDiscussionResolved(
   discussionId: string,
   resolved: boolean,
 ): Promise<DiscussionsSnapshot> {
-  const res = await daemonQuery(
+  const { response: res, timedOut } = await daemonQueryAttributed(
     "discussions:resolve",
     { repoName, iid, discussionId, resolved },
     DISCUSSIONS_TIMEOUT_MS,
   );
-  if (!res) throw new Error(lastQueryTimedOut() ? "resolve timed out" : "daemon unavailable");
+  if (!res) throw new Error(timedOut ? "resolve timed out" : "daemon unavailable");
   if (!res.ok) throw new Error(res.error || "discussions:resolve failed");
   return res.data as DiscussionsSnapshot;
 }
@@ -384,12 +458,12 @@ export async function fetchMRDiffs(
   repoName: string,
   iid: number,
 ): Promise<Array<{ newPath: string; diff: string }>> {
-  const res = await daemonQuery(
+  const { response: res, timedOut } = await daemonQueryAttributed(
     "discussions:diffs",
     { repoName, iid },
     DISCUSSIONS_TIMEOUT_MS,
   );
-  if (!res) throw new Error(lastQueryTimedOut() ? "diffs timed out" : "daemon unavailable");
+  if (!res) throw new Error(timedOut ? "diffs timed out" : "daemon unavailable");
   if (!res.ok) throw new Error(res.error || "discussions:diffs failed");
   return (res.data as { diffs: Array<{ newPath: string; diff: string }> }).diffs;
 }
@@ -401,12 +475,12 @@ export async function replyToDiscussion(
   discussionId: string,
   body: string,
 ): Promise<DiscussionsSnapshot> {
-  const res = await daemonQuery(
+  const { response: res, timedOut } = await daemonQueryAttributed(
     "discussions:reply",
     { repoName, iid, discussionId, body },
     DISCUSSIONS_TIMEOUT_MS,
   );
-  if (!res) throw new Error(lastQueryTimedOut() ? "reply timed out" : "daemon unavailable");
+  if (!res) throw new Error(timedOut ? "reply timed out" : "daemon unavailable");
   if (!res.ok) throw new Error(res.error || "discussions:reply failed");
   return res.data as DiscussionsSnapshot;
 }

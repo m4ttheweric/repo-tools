@@ -6,7 +6,7 @@
  * HOME isolation is handled by the repo-wide bun test preload
  * (test-setup.ts) — never removed here.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -18,6 +18,12 @@ import {
   openStateDb,
   SCHEMA_VERSION,
 } from "../db.ts";
+// Side-effect imports: registering the REAL project-mrs and discussions
+// importers (module-load LEGACY_IMPORTS.push), not fakes, so the isolation
+// test below exercises a genuine throw (duplicate-iid UNIQUE violation)
+// and a genuine benign import, not a hand-rolled stand-in for either.
+import "../../daemon/project-mrs-store.ts";
+import "../../daemon/discussions-file-store.ts";
 
 const DB_TS_PATH = join(import.meta.dir, "..", "db.ts");
 
@@ -342,6 +348,62 @@ describe("legacy import seam", () => {
     });
     expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
   });
+
+  test("a throwing legacy importer is isolated: db reaches SCHEMA_VERSION, the other importer's rows land, and the offending file is still renamed", () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const dbPath = join(dir, "state.db");
+
+      // project-mrs-store's real importer: keys "5" and "05" both bind
+      // Number(iidStr) === 5, so the second INSERT hits project_mrs's
+      // (repo, iid) PRIMARY KEY and throws mid-transaction.
+      const projectMrsPath = join(dir, "project-mrs.json");
+      writeFileSync(
+        projectMrsPath,
+        JSON.stringify({
+          "host/repo": {
+            mrs: {
+              "5": { pr: { iid: 5, title: "first" }, fetchedAt: 111 },
+              "05": { pr: { iid: 5, title: "duplicate" }, fetchedAt: 222 },
+            },
+          },
+        }),
+      );
+
+      // discussions-file-store's real importer: a benign, unrelated file
+      // that must still land even though the importer above throws.
+      const discussionsPath = join(dir, "discussions.json");
+      writeFileSync(
+        discussionsPath,
+        JSON.stringify({
+          "host/repo:7": { discussions: [{ id: "d1" }], fetchedAt: 333 },
+        }),
+      );
+
+      const db = openStateDb(dbPath, "cli");
+
+      expect(db.query("PRAGMA user_version;").get()).toEqual({ user_version: SCHEMA_VERSION });
+
+      const discussionsRow = db
+        .query("SELECT repo, iid, fetched_at FROM discussions WHERE repo = ? AND iid = ?;")
+        .get("host/repo", 7);
+      expect(discussionsRow).toEqual({ repo: "host/repo", iid: 7, fetched_at: 333 });
+
+      expect(existsSync(projectMrsPath)).toBe(false);
+      expect(existsSync(`${projectMrsPath}.migrated`)).toBe(true);
+      expect(existsSync(discussionsPath)).toBe(false);
+      expect(existsSync(`${discussionsPath}.migrated`)).toBe(true);
+
+      const warnedAboutOffender = warnSpy.mock.calls.some((call) =>
+        call.some((arg) => typeof arg === "string" && arg.includes("project-mrs.json")),
+      );
+      expect(warnedAboutOffender).toBe(true);
+
+      db.close();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 describe("pragma values per flavor", () => {
@@ -374,6 +436,13 @@ describe("pragma values per flavor", () => {
     const { timeout } = db.query("PRAGMA busy_timeout;").get() as { timeout: number };
     expect(timeout).toBe(5000);
     db.close();
+  });
+
+  test("getStateDb('daemon') reports busy_timeout 250 even after a default open", () => {
+    const cli = getStateDb(); // opens singleton, cli flavor
+    expect(cli.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
+    const daemon = getStateDb("daemon"); // same singleton, must not stay at 5000
+    expect(daemon.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 250 });
   });
 });
 
