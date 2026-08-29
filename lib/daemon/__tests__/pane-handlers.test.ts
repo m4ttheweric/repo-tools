@@ -7,6 +7,7 @@ import { openStateDb, type RegistryDeps } from "../../state/index.ts";
 import type { InboxBinding } from "../../claude-registry.ts";
 import { createChatHandlers } from "../handlers/chat.ts";
 import { createPaneHandlers } from "../handlers/pane.ts";
+import type { TrayClient, TrayReply } from "../../daemon-client.ts";
 
 /** A resolvable, alive binding for each named session id -- buddyStatus now reads offline for anything not covered here, so a test whose point is a live/idle join must supply one. */
 function fakeRegistryDeps(bindings: Record<string, InboxBinding["status"]>): RegistryDeps {
@@ -360,4 +361,39 @@ test("pane:send is herdr unavailable when the socket is missing", async () => {
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error.startsWith(HERDR_UNAVAILABLE)).toBe(true);
+});
+
+// pane:focus routes to the tray (which owns the herdr focus + native window
+// raise), never to herdr directly, so these fake the tray, not herdr.
+function fakeTray(reply: TrayReply, seen?: Array<{ path: string; method: string; body: unknown }>): TrayClient {
+  return (async (path, init) => {
+    seen?.push({ path, method: init?.method ?? "GET", body: init?.body });
+    return reply;
+  }) as TrayClient;
+}
+
+test("pane:focus posts the pane id to the tray and reports focused", async () => {
+  const db = freshDb();
+  const seen: Array<{ path: string; method: string; body: unknown }> = [];
+  const tray = fakeTray({ status: 200, json: { ok: true, paneId: "w1:p1", focused: true } }, seen);
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w1:p1" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", focused: true } });
+  expect(seen).toEqual([{ path: "/pane/focus", method: "POST", body: { paneId: "w1:p1" } }]);
+});
+
+test("pane:focus is tray unavailable when the tray socket is down", async () => {
+  const db = freshDb();
+  const tray = fakeTray({ status: 0, json: null });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w1:p1" });
+  expect(res).toEqual({ ok: false, error: "tray unavailable" });
+});
+
+test("pane:focus surfaces the tray's error body on a non-2xx reply", async () => {
+  const db = freshDb();
+  const tray = fakeTray({ status: 404, json: { ok: false, error: "pane not found" } });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w9:p9" });
+  expect(res).toEqual({ ok: false, error: "pane not found" });
 });

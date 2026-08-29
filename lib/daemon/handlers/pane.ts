@@ -7,6 +7,7 @@ import { basename } from "path";
 import type { AgentStatus, BuddyStatus, ChatPane, Commands, PaneDirectory } from "../../../packages/rt-client/src/commands.ts";
 import { listCswapAccounts } from "../../cswap.ts";
 import { herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
+import { trayRequest } from "../../daemon-client.ts";
 import { herdrError, injectIntoPane } from "../inject.ts";
 import { shellQuote } from "../../herdr-launch.ts";
 import { repoLabel } from "../../repo-label.ts";
@@ -119,14 +120,16 @@ export function createPaneHandlers(opts: {
   db: Database;
   repoIndex: () => Record<string, string>;
   herdr?: typeof herdrRequest;
+  tray?: typeof trayRequest;
   exec?: typeof runCapture;
   now?: () => number;
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
   /** The registry probe behind buddyStatus, fakeable the same way lib/daemon/handlers/chat.ts's registryDeps is. */
   registryDeps?: RegistryDeps;
-}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn" | "pane:send"> & { db: Database } {
+}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn" | "pane:send" | "pane:focus"> & { db: Database } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
+  const tray = opts.tray ?? trayRequest;
   const exec = opts.exec ?? runCapture;
   const now = opts.now ?? Date.now;
   const registry = opts.registry ?? ((name: string) => loadRegistry(name));
@@ -262,5 +265,20 @@ export function createPaneHandlers(opts: {
 
     "pane:send": async (payload: Commands["pane:send"]["payload"]): Promise<CommandResult<"pane:send">> =>
       injectIntoPane({ paneId: payload.paneId, text: payload.text, callerPane: payload.callerPane, herdr }),
+
+    // The tray owns focusing: herdr's socket has no `pane focus`, and raising
+    // the hosting terminal window is native macOS the daemon cannot do. The
+    // daemon and tray always ship together, so this just routes the id over
+    // tray.sock; a down tray is a clean error, never a degraded fallback.
+    "pane:focus": async (payload: Commands["pane:focus"]["payload"]): Promise<CommandResult<"pane:focus">> => {
+      const reply = await tray<{ ok?: boolean; focused?: boolean; error?: string }>("/pane/focus", {
+        method: "POST",
+        body: { paneId: payload.paneId },
+      });
+      if (reply.status === 0) return { ok: false, error: "tray unavailable" };
+      if (reply.status < 200 || reply.status >= 300 || reply.json?.ok === false)
+        return { ok: false, error: reply.json?.error ?? `tray focus failed (${reply.status})` };
+      return { ok: true, data: { paneId: payload.paneId, focused: reply.json?.focused ?? true } };
+    },
   };
 }
