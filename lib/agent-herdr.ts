@@ -53,7 +53,7 @@ export function defaultHerdrRunner(env: NodeJS.ProcessEnv = process.env): HerdrR
     const r = await runCapture([bin, ...args], {
       timeoutMs: 15_000,
       stderr: "pipe",
-      env: { ...process.env, HERDR_SOCKET_PATH: socket },
+      env: { ...env, HERDR_SOCKET_PATH: socket },
     });
     return { stdout: r.stdout || r.stderr, exitCode: r.exitCode };
   };
