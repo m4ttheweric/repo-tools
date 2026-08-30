@@ -1,0 +1,490 @@
+import { beforeEach, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { openStateDb, presenceForSession } from "../../state/index.ts";
+import { createChatHandlers, type InboxDeps } from "../handlers/chat.ts";
+import { drainNotifications, peekNotifications } from "../../notifier.ts";
+import { setSetting } from "../../settings/write.ts";
+import { herdrRequest } from "../../herdr/client.ts";
+import { fakeHerdr, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
+
+let n = 0;
+function freshHandlers(inboxDeps?: InboxDeps, herdr?: typeof herdrRequest) {
+  const db = openStateDb(join(tmpdir(), `chat-deliv-${process.pid}-${n++}.db`));
+  // Handlers no longer expose `db` (R028); tests that need to reach the
+  // underlying table directly get it back alongside the handler map.
+  return Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps, herdr }), { db });
+}
+
+/** Points a real `herdrRequest` at a fake unix-socket herdr server for the duration of one test. */
+function fakeHerdrClient(handler: FakeHerdrHandler) {
+  const { sock, seen, stop } = fakeHerdr(handler);
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: sock });
+  return { herdr, seen, stop };
+}
+
+/** The badge call is a real unix-socket round trip past the queued delivery microtask, so a bare `Bun.sleep(0)` isn't enough; poll instead of guessing a fixed delay. */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor: timed out");
+    await Bun.sleep(5);
+  }
+}
+
+/** inboxAlive checks process.kill(pid,0) and existsSync(socketPath) for real; a live pid and a real (empty) file satisfy both without a listener, since `deliver` itself is faked. */
+function fakeSocketPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), "chat-deliv-sock-"));
+  const p = join(dir, "s.sock");
+  writeFileSync(p, "");
+  return p;
+}
+
+function lastReadId(db: ReturnType<typeof openStateDb>, room: string, handle: string): number {
+  return (db.query("SELECT last_read_id FROM chat_members WHERE room = ? AND handle = ?;").get(room, handle) as { last_read_id: number }).last_read_id;
+}
+
+/**
+ * chat:sign-in now fires a welcome delivery through the same queued
+ * microtask + InboxDeps seam as a post: a test whose resolve/deliver mocks
+ * happen to answer for the just-signed-in session (most of this file's do,
+ * since that is exactly what they are testing) sees that delivery land in
+ * `calls` too. Awaiting the microtask then clearing the log is the seam
+ * between "sign-in settled" and "now assert only the deliveries the test
+ * actually cares about".
+ */
+async function settleWelcome(calls: unknown[]): Promise<void> {
+  await Bun.sleep(0);
+  calls.length = 0;
+}
+
+// Kept as a literal (not imported from inbox.ts) so an accidental change to
+// the shipped steer line fails these assertions instead of vanishing into a
+// tautology.
+const STEER =
+  'reply via rt chat post <room> "..." or rt chat dm <handle> "..." (never SendMessage; this arrived through rt chat)';
+
+beforeEach(() => {
+  drainNotifications();
+  setSetting("chat.humanHandle", "matt", "user");
+});
+
+test("posting to a room delivers the body to a signed-in recipient's inbox and advances their cursor", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toEqual([
+    [sock, `<cross-session-message from-name="a (#general)">\n[#general] a: @b hi\n${STEER}\n</cross-session-message>`],
+  ]);
+  expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
+});
+
+test("a successful delivery refreshes the recipient's last_seen_at -- the only remaining route to it now that chat:pulse is gone", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const before = presenceForSession("sess-b", h.db)!.lastSeenAt;
+  await Bun.sleep(2); // last_seen_at is a millisecond Date.now() stamp; the post must land strictly after sign-in's own stamp
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(1);
+  expect(presenceForSession("sess-b", h.db)!.lastSeenAt).toBeGreaterThan(before);
+});
+
+test("a successful welcome delivery also refreshes last_seen_at", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  // Held until the test explicitly releases it, so the sentinel write below
+  // is guaranteed to land strictly BEFORE touchLastSeen's own write, rather
+  // than racing the queued welcome-delivery microtask against a clock tick
+  // (a millisecond stamp and a bare Bun.sleep were flaky here).
+  let releaseDeliver: () => void = () => {};
+  const deliverGate = new Promise<void>((resolve) => { releaseDeliver = resolve; });
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-c" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => {
+      await deliverGate;
+      calls.push([socketPath, content]);
+      return { ok: true };
+    },
+  };
+  const h = freshHandlers(inboxDeps);
+  const signedIn = await h["chat:sign-in"]({ sessionId: "sess-c", baseHandle: "c" });
+  if (!signedIn.ok) throw new Error("unreachable");
+
+  // Let the queued welcome delivery run up to (and block on) the gate.
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(0); // still held -- proves the gate is doing its job, not skipping delivery
+
+  const SENTINEL = 0;
+  h.db.run("UPDATE chat_presence SET last_seen_at = ? WHERE session_id = ?", [SENTINEL, "sess-c"]);
+  expect(presenceForSession("sess-c", h.db)!.lastSeenAt).toBe(SENTINEL);
+
+  releaseDeliver();
+  await Bun.sleep(0); // drain: deliver() resolves, markDelivered + touchLastSeen run
+
+  expect(calls).toHaveLength(1); // the welcome frame landed
+  expect(presenceForSession("sess-c", h.db)!.lastSeenAt).toBeGreaterThan(SENTINEL);
+});
+
+test("a recipient whose resolver misses gets no deliver call and keeps unread", async () => {
+  const calls: Array<[string, string]> = [];
+  const inboxDeps: InboxDeps = {
+    resolve: () => null,
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const before = lastReadId(h.db, "general", "b");
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+  expect(lastReadId(h.db, "general", "b")).toBe(before);
+});
+
+test("a delivery failure paints the recipient's pane with an unread badge over herdr", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: false, error: "timeout" }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const h = freshHandlers(inboxDeps, herdr);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b", pane: "w1:p1" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  await waitFor(() => seen.some((r) => r.method === "pane.report_metadata"));
+  const badge = seen.find((r) => r.method === "pane.report_metadata");
+  expect(badge?.params).toMatchObject({ pane_id: "w1:p1", source: "rt-chat", tokens: { chat_unread: "1" }, ttl_ms: 600_000 });
+  // herdr's report_metadata schema types `seq` as a uint64 INTEGER -- a
+  // number, never a bigint-derived string (which herdr would reject as
+  // invalid_request and drop the badge silently).
+  const params = badge?.params as { seq?: unknown } | undefined;
+  expect(typeof params?.seq).toBe("number");
+  expect(Number.isInteger(params?.seq)).toBe(true);
+  stop();
+});
+
+test("two badges in the same delivery chain get strictly increasing seq numbers", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: false, error: "timeout" }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const h = freshHandlers(inboxDeps, herdr);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b", pane: "w1:p1" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b one" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b two" });
+  await waitFor(() => seen.filter((r) => r.method === "pane.report_metadata").length >= 2);
+  const badges = seen.filter((r) => r.method === "pane.report_metadata").map((r) => (r.params as { seq: number }).seq);
+  expect(badges.length).toBeGreaterThanOrEqual(2);
+  for (let i = 1; i < badges.length; i++) expect(badges[i]).toBeGreaterThan(badges[i - 1]!);
+  stop();
+});
+
+test("a successful delivery never paints an unread badge", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: true }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const h = freshHandlers(inboxDeps, herdr);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b", pane: "w1:p1" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  await Bun.sleep(50); // give a stray badge call, if any, time to land before asserting its absence
+  expect(seen.find((r) => r.method === "pane.report_metadata")).toBeUndefined();
+  stop();
+});
+
+test("a delivery failure with no pane on presence skips the badge call entirely", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: false, error: "timeout" }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const h = freshHandlers(inboxDeps, herdr);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" }); // no pane
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  expect(posted.ok).toBe(true);
+  await Bun.sleep(50); // give a stray badge call, if any, time to land before asserting its absence
+  expect(seen.find((r) => r.method === "pane.report_metadata")).toBeUndefined();
+  stop();
+});
+
+test("a delivery failure leaves the recipient's cursor untouched", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: false, error: "timeout" }),
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const before = lastReadId(h.db, "general", "b");
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  await Bun.sleep(0);
+  expect(lastReadId(h.db, "general", "b")).toBe(before);
+});
+
+test("a failed delivery batches with the next successful one, catching up the whole pending range", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let attempt = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => {
+      attempt++;
+      calls.push([socketPath, content]);
+      return attempt === 1 ? { ok: false, error: "timeout" } : { ok: true };
+    },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  attempt = 0;
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  const first = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
+  if (!first.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  const second = await h["chat:post"]({ room: "general", handle: "a", body: "two" });
+  if (!second.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(2);
+  expect(calls[1]![1]).toBe(
+    `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: one\n[#general] a: two\n${STEER}\n</cross-session-message>`,
+  );
+  expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
+});
+
+test("concurrent posts to the same recipient serialize delivery so a held first send never duplicates the backlog", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let releaseFirst: (() => void) | undefined;
+  let deliverCount = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => {
+      deliverCount++;
+      calls.push([socketPath, content]);
+      if (deliverCount === 1) {
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      }
+      return { ok: true };
+    },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  deliverCount = 0;
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+
+  const first = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
+  if (!first.ok) throw new Error("unreachable");
+  await Bun.sleep(0); // let the first delivery's synchronous prefix run and start blocking on deliver()
+
+  const second = await h["chat:post"]({ room: "general", handle: "a", body: "two" });
+  if (!second.ok) throw new Error("unreachable");
+  await Bun.sleep(0); // let the second delivery register behind the first in the chain
+
+  // The second delivery must not have started yet: it is chained behind the
+  // first, which is still awaiting release.
+  expect(calls).toHaveLength(1);
+
+  releaseFirst?.();
+  await Bun.sleep(0);
+  await Bun.sleep(0);
+
+  expect(calls).toHaveLength(2);
+  expect(calls[0]![1]).toBe(`<cross-session-message from-name="a (#general)">\n[#general] a: one\n${STEER}\n</cross-session-message>`);
+  expect(calls[1]![1]).toBe(`<cross-session-message from-name="a (#general)">\n[#general] a: two\n${STEER}\n</cross-session-message>`);
+  expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
+});
+
+test("a held first delivery that ultimately fails still lets the second carry both bodies once released", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let releaseFirst: (() => void) | undefined;
+  let attempt = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => {
+      attempt++;
+      calls.push([socketPath, content]);
+      if (attempt === 1) {
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+        return { ok: false, error: "timeout" };
+      }
+      return { ok: true };
+    },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  attempt = 0;
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+
+  const first = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
+  if (!first.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+
+  const second = await h["chat:post"]({ room: "general", handle: "a", body: "two" });
+  if (!second.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+
+  expect(calls).toHaveLength(1); // second still chained behind the held first
+
+  releaseFirst?.();
+  await Bun.sleep(0);
+  await Bun.sleep(0);
+
+  expect(calls).toHaveLength(2);
+  expect(calls[1]![1]).toBe(
+    `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: one\n[#general] a: two\n${STEER}\n</cross-session-message>`,
+  );
+  expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
+});
+
+test("a resolver that throws is caught, leaving chat:post ok and no unhandled rejection", async () => {
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown) => rejections.push(reason);
+  process.on("unhandledRejection", onRejection);
+  try {
+    const inboxDeps: InboxDeps = {
+      resolve: () => { throw new Error("registry scan exploded"); },
+      deliver: async () => ({ ok: true }),
+    };
+    const h = freshHandlers(inboxDeps);
+    await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+    await h["chat:join"]({ room: "general", handle: "a" });
+    await h["chat:join"]({ room: "general", handle: "b" });
+    const posted = await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+    expect(posted.ok).toBe(true);
+    await Bun.sleep(0);
+    expect(rejections).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+});
+
+test("a signed-out recipient's inbox is never delivered to", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:sign-out"]({ sessionId: "sess-b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+});
+
+test("a wake_on none member is never delivered even when signed in", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-c", baseHandle: "c" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "c", wakeOn: "none" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "hello" });
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+});
+
+test("a dm post renders with the [dm] tag, not the room hash", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-a", baseHandle: "a" });
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:dm"]({ from: "a", to: "b", body: "hi" });
+  await Bun.sleep(0);
+  expect(calls).toEqual([[sock, `<cross-session-message from-name="a (dm)">\n[dm] a: hi\n${STEER}\n</cross-session-message>`]]);
+});
+
+test("the desk-notification path still fires on a mention, independent of inbox delivery", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@matt look" });
+  await Bun.sleep(0);
+  expect(peekNotifications()).toHaveLength(1);
+});
+
+test("a failed welcome delivery leaves the catch-up cursor untouched; the same message re-batches into a later successful welcome", async () => {
+  const sock = fakeSocketPath();
+  let deliverOk = false;
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async () => (deliverOk ? { ok: true } : { ok: false, error: "boom" }),
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  await h["chat:post"]({ room: "r", handle: "a", body: "hello" });
+  await Bun.sleep(0);
+
+  const before = lastReadId(h.db, "r", "b");
+
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await Bun.sleep(0);
+  expect(lastReadId(h.db, "r", "b")).toBe(before); // welcome delivery failed: cursor must not move
+
+  await h["chat:sign-out"]({ sessionId: "sess-b" });
+  deliverOk = true;
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await Bun.sleep(0);
+  expect(lastReadId(h.db, "r", "b")).toBeGreaterThan(before); // same unread, now shown and confirmed: cursor advances
+});

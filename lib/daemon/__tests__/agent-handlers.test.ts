@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
-import { openStateDb } from "../../state/index.ts";
+import { AGENT_NAMES } from "../../chat-names.ts";
+import { openStateDb, signIn } from "../../state/index.ts";
 import { createAgentHandlers, type HeadlessChild } from "../handlers/agent.ts";
 import type { HerdrRunner } from "../../agent-herdr.ts";
+import { repoLabel } from "../../repo-arg.ts";
 
 let n = 0;
 const REPO = "remote:example.com%2Fa%2Fb";
@@ -25,14 +27,22 @@ function fresh(over: {
   insertAgentFn?: (...args: unknown[]) => void;
 } = {}) {
   const db = openStateDb(join(tmpdir(), `agent-h-${process.pid}-${n++}.db`));
-  return createAgentHandlers({
+  // Handlers no longer expose `db` (R028); tests that need to reach the
+  // underlying table directly get it back alongside the handler map.
+  return Object.assign(createAgentHandlers({
     db,
     emitEvent: over.emit ?? (() => 0),
     herdrRunner: over.runner,
     spawnHeadless: over.spawn,
     insertAgentFn: over.insertAgentFn as typeof import("../../state/index.ts").insertAgent | undefined,
-  });
+  }), { db });
 }
+
+test("agent:start returns ok:false for a null payload instead of throwing on destructure", async () => {
+  const h = fresh();
+  const res = await h["agent:start"](null as unknown as never);
+  expect(res.ok).toBe(false);
+});
 
 test("agent:start herdr records pane ids and a minted session uuid", async () => {
   const calls: string[][] = [];
@@ -56,6 +66,34 @@ test("agent:start herdr rolls back the inserted record when launch fails", async
   const h = fresh({ runner: throwingRunner });
   const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
   expect(res.ok).toBe(false);
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
+});
+
+// Pins S051: a tab-label dedup must never report success with a phantom
+// record nothing is listening on (rt agent resume on it would run
+// `claude --resume` for a session that never started).
+test("agent:start herdr returns ok:false and rolls back when herdr dedups the tab label", async () => {
+  const label = "!7";
+  const focusCalls: string[][] = [];
+  const runner: HerdrRunner = async (args) => {
+    focusCalls.push(args);
+    if (args[0] === "workspace" && args[1] === "list") {
+      return { stdout: JSON.stringify({ result: { workspaces: [{ workspace_id: "w1", label: repoLabel(REPO) }] } }), exitCode: 0 };
+    }
+    if (args[0] === "tab" && args[1] === "list") {
+      return { stdout: JSON.stringify({ result: { tabs: [{ tab_id: "w1:t9", label } ] } }), exitCode: 0 };
+    }
+    return { stdout: "{}", exitCode: 0 };
+  };
+  const h = fresh({ runner });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", tab: label });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toMatch(/already open/);
+  expect(focusCalls.some((c) => c[0] === "tab" && c[1] === "focus")).toBe(true);
+  expect(focusCalls.some((c) => c[0] === "pane" && c[1] === "run")).toBe(false);
   const list = await h["agent:list"]({});
   if (!list.ok) throw new Error("unreachable");
   expect(list.data.agents).toHaveLength(0);
@@ -88,6 +126,22 @@ test("agent:start headless refuses a missing prompt", async () => {
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toMatch(/prompt/);
+});
+
+// R033: an unchecked surface value falls through to the headless spawn path
+// with headless=false, spawning an interactive claude with stdin ignored
+// and recording surface "bogus" — never a caller-visible error.
+test("agent:start rejects a surface outside herdr/headless, naming the allowed values", async () => {
+  const h = fresh();
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "bogus" as any });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("surface");
+  expect(res.error).toContain("herdr");
+  expect(res.error).toContain("headless");
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
 });
 
 test("agent:start headless finishes the record and emits agent/done", async () => {
@@ -157,6 +211,66 @@ test("agent:resume headless without prompt is refused; unknown id errors", async
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toMatch(/prompt/);
+});
+
+test("agent:resume honors workspace and tab overrides", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const started = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", label: "L" });
+  if (!started.ok) throw new Error("unreachable");
+  calls.length = 0;
+  const resumed = await h["agent:resume"]({ id: started.data.id, workspace: "reviews", tab: "⟲ !5" });
+  expect(resumed.ok).toBe(true);
+  expect(calls.find((c) => c[0] === "workspace" && c[1] === "create")?.[3]).toBe("reviews");
+  const tabArg = calls.find((c) => c[0] === "tab" && c[1] === "rename")?.[3]
+    ?? calls.find((c) => c[0] === "tab" && c[1] === "create")?.[5];
+  expect(tabArg).toBe("⟲ !5");
+});
+
+test("agent:start herdr reserves a handle not held by live presence, passes it as --name, and stamps AgentRecord.handle", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const held = AGENT_NAMES[0]!;
+  signIn({ sessionId: "s-held", baseHandle: held, cwd: "/tmp/held" }, h.db);
+
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.handle).toBeTruthy();
+  expect(AGENT_NAMES).toContain(res.data.handle!);
+  expect(res.data.handle).not.toBe(held);
+
+  const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
+  expect(paneRun?.[3]).toContain(`'--name' '${res.data.handle}'`);
+  expect(paneRun?.[3]).toContain(`'--settings' '{"crossSessionInbound":"accept"}'`);
+});
+
+test("agent:start headless never reserves a handle or passes --name/--settings", async () => {
+  let argv: string[] = [];
+  const h = fresh({
+    spawn: (a) => {
+      argv = a;
+      return { exited: Promise.resolve(0), stdout: async () => "{}" };
+    },
+  });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", surface: "headless", prompt: "go" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.handle).toBeUndefined();
+  expect(argv).not.toContain("--name");
+  expect(argv).not.toContain("--settings");
+});
+
+test("agent:resume threads the reserved handle back into --name", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const started = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
+  if (!started.ok) throw new Error("unreachable");
+  calls.length = 0;
+  const resumed = await h["agent:resume"]({ id: started.data.id });
+  expect(resumed.ok).toBe(true);
+  const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
+  expect(paneRun?.[3]).toContain(`'--name' '${started.data.handle}'`);
 });
 
 test("agent:list filters by repo", async () => {

@@ -78,6 +78,21 @@ export function repoDataDir(repoName: string): string {
   return join(reposDir(), repoName);
 }
 
+/**
+ * ~/.mattstack/rt/worktrees (the pool root container). A repo's ephemeral and
+ * on-deck trees live at worktrees/<serialized identity>/ so they stay OUT of
+ * the user's clone (repo-stealth) and no sibling tree's cwd is ever nested
+ * under the main clone (retires S017's collateral-kill root cause).
+ */
+export function worktreesDir(): string {
+  return join(rtDir(), "worktrees");
+}
+
+/** worktrees/<serialized identity> (one repo's pool root). */
+export function worktreePoolRoot(serializedIdentity: string): string {
+  return join(worktreesDir(), serializedIdentity);
+}
+
 // ─── Settings stores (RT-47, re-rooted under the home repo's user/ zone) ──────
 //
 // These paths live under ~/.mattstack directly, NOT under rtDir() — they are
@@ -281,15 +296,32 @@ export const LEGACY_RT_LABEL = "~/.rt";
 export const RT_DIR_LABEL = "~/.mattstack/rt";
 
 /**
+ * Entries whose presence at the top of ~/.rt proves rt itself wrote it —
+ * not merely that something happens to live at that path. A new user who
+ * has never run an old rt but has an unrelated tool using ~/.rt as ITS
+ * config dir must never have that directory silently annexed as rt state
+ * (renamed, then parsed/quarantined as daemon.json/repos.json/state.db).
+ */
+const RT_SIGNATURE_ENTRIES = ["state.db", "logs", "repos.json"];
+
+/** Whether `dir` carries an actual rt signature, not merely a directory of the same name. */
+function hasRtSignature(dir: string): boolean {
+  return RT_SIGNATURE_ENTRIES.some((name) => existsSync(join(dir, name)));
+}
+
+/**
  * One-shot migration of a real legacy ~/.rt directory to ~/.mattstack/rt.
  * Called early from the CLI entry and daemon boot — BEFORE anything (loggers
  * included) can create ~/.mattstack/rt, or a machine that still has a real
  * ~/.rt would land in "conflict" instead of migrating.
  *
  *  - ~/.rt absent, or a symlink (the RT-33 compat shim): "none", untouched.
- *  - real ~/.rt, no ~/.mattstack/rt: rename it into place → "migrated".
- *  - real ~/.rt AND ~/.mattstack/rt both exist: "conflict" — state is split
- *    and a human must merge; nothing is touched.
+ *  - ~/.rt real but carries no rt signature (another tool's config dir of
+ *    the same name): "none", untouched — never renamed, parsed, or reported
+ *    as a conflict against ~/.mattstack/rt.
+ *  - real ~/.rt (rt's), no ~/.mattstack/rt: rename it into place → "migrated".
+ *  - real ~/.rt (rt's) AND ~/.mattstack/rt both exist: "conflict" — state is
+ *    split and a human must merge; nothing is touched.
  */
 export function migrateLegacyRtDir(): LegacyMigrationResult {
   const legacy = legacyRtDir();
@@ -300,6 +332,7 @@ export function migrateLegacyRtDir(): LegacyMigrationResult {
     return "none"; // no ~/.rt at all
   }
   if (legacyStat.isSymbolicLink() || !legacyStat.isDirectory()) return "none";
+  if (!hasRtSignature(legacy)) return "none"; // real directory, but not rt's — never touch it
 
   const target = rtDir();
   try {

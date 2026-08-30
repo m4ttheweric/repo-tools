@@ -6,15 +6,17 @@ import type { Database } from "bun:sqlite";
 import { basename } from "path";
 import type { AgentStatus, BuddyStatus, ChatPane, Commands, PaneDirectory } from "../../../packages/rt-client/src/commands.ts";
 import { listCswapAccounts } from "../../cswap.ts";
-import { HERDR_UNAVAILABLE, herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
+import { herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
+import { trayRequest } from "../../daemon-client.ts";
+import { herdrError, injectIntoPane } from "../inject.ts";
 import { shellQuote } from "../../herdr-launch.ts";
 import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { branchForCwd, repoForCwd } from "../../repo-for-cwd.ts";
-import { listBuddies, listRooms, type PresenceRow } from "../../state/index.ts";
+import { listBuddies, listRooms, type PresenceRow, type RegistryDeps } from "../../state/index.ts";
 import { runCapture } from "../../subprocess.ts";
 import { loadRegistry } from "../../worktree/registry.ts";
-import type { CommandResult, TypedHandlers } from "./types.ts";
+import type { CommandResult } from "./types.ts";
 
 export interface HerdrPane {
   pane_id: string;
@@ -53,7 +55,7 @@ export interface PaneRowContext {
   byPane: Map<string, PresenceRow & { status: BuddyStatus }>;
 }
 
-const STATUS_ORDER: Record<BuddyStatus | "none", number> = { live: 0, idle: 1, deaf: 2, offline: 3, none: 3 };
+const STATUS_ORDER: Record<BuddyStatus | "none", number> = { live: 0, idle: 1, offline: 2, none: 2 };
 
 const REGISTER_BUDGET_MS = 10_000;
 const REGISTER_POLL_MS = 250;
@@ -68,16 +70,13 @@ export function launchCommand(a: { cwd: string; account?: string; model?: string
   return `cd ${shellQuote(a.cwd)} && ${launch}`;
 }
 
-export function herdrError(res: { ok: false; code: string; message: string }): { ok: false; error: string } {
-  if (res.code === "unreachable" || res.code === "timeout") return { ok: false, error: res.message.startsWith(HERDR_UNAVAILABLE) ? res.message : `${HERDR_UNAVAILABLE}: ${res.message}` };
-  return { ok: false, error: `${res.code}: ${res.message}` };
-}
+export { herdrError } from "../inject.ts";
 
 /** Presence maps built once per verb call; offline rows are not presence. */
-export function presenceMaps(db: Database, now: number): Pick<PaneRowContext, "bySession" | "byPane"> {
+export function presenceMaps(db: Database, now: number, deps?: RegistryDeps): Pick<PaneRowContext, "bySession" | "byPane"> {
   const bySession = new Map<string, PresenceRow & { status: BuddyStatus }>();
   const byPane = new Map<string, PresenceRow & { status: BuddyStatus }>();
-  for (const row of listBuddies(now, db)) {
+  for (const row of listBuddies(now, db, deps)) {
     if (row.status === "offline") continue;
     bySession.set(row.sessionId, row);
     if (row.pane) byPane.set(row.pane, row);
@@ -121,37 +120,53 @@ export function createPaneHandlers(opts: {
   db: Database;
   repoIndex: () => Record<string, string>;
   herdr?: typeof herdrRequest;
+  tray?: typeof trayRequest;
   exec?: typeof runCapture;
   now?: () => number;
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
-}): Pick<TypedHandlers, "pane:list" | "pane:peek" | "pane:accounts" | "pane:directories" | "pane:spawn"> & { db: Database } {
+  /** The registry probe behind buddyStatus, fakeable the same way lib/daemon/handlers/chat.ts's registryDeps is. */
+  registryDeps?: RegistryDeps;
+}):
+  // Declared as direct `unknown`-payload members (not `Pick<TypedHandlers, ...>`)
+  // rather than the narrower per-command payload types the catalog would
+  // otherwise force: a wider `unknown` param still satisfies TypedHandlers'
+  // narrower one at the command-router.ts assembly site (function parameter
+  // contravariance).
+  & { "pane:list": (payload: unknown) => Promise<CommandResult<"pane:list">> }
+  & { "pane:peek": (payload: unknown) => Promise<CommandResult<"pane:peek">> }
+  & { "pane:accounts": (payload: unknown) => Promise<CommandResult<"pane:accounts">> }
+  & { "pane:directories": (payload: unknown) => Promise<CommandResult<"pane:directories">> }
+  & { "pane:send": (payload: unknown) => Promise<CommandResult<"pane:send">> }
+  & { "pane:focus": (payload: unknown) => Promise<CommandResult<"pane:focus">> }
+  & { "pane:spawn": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"pane:spawn">> } {
   const { db, repoIndex } = opts;
   const herdr = opts.herdr ?? herdrRequest;
+  const tray = opts.tray ?? trayRequest;
   const exec = opts.exec ?? runCapture;
   const now = opts.now ?? Date.now;
   const registry = opts.registry ?? ((name: string) => loadRegistry(name));
+  const registryDeps = opts.registryDeps;
 
   async function snapshot(): Promise<HerdrResult<{ snapshot: HerdrSnapshot }>> {
     return herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
   }
 
   return {
-    db,
-
-    "pane:list": async (): Promise<CommandResult<"pane:list">> => {
+    "pane:list": async (_payload: unknown): Promise<CommandResult<"pane:list">> => {
       const snap = await snapshot();
       if (!snap.ok) return herdrError(snap);
       const ctx: PaneRowContext = {
         db, repoIndex, exec, now,
         workspaces: new Map(snap.result.snapshot.workspaces.map((w) => [w.workspace_id, w.label])),
-        ...presenceMaps(db, now()),
+        ...presenceMaps(db, now(), registryDeps),
       };
       const claude = snap.result.snapshot.panes.filter((p) => p.agent === "claude");
       const rows = await Promise.all(claude.map((p) => paneRow(p, ctx)));
       return { ok: true, data: { panes: sortPanes(rows) } };
     },
 
-    "pane:peek": async (payload: Commands["pane:peek"]["payload"]): Promise<CommandResult<"pane:peek">> => {
+    "pane:peek": async (rawPayload: unknown): Promise<CommandResult<"pane:peek">> => {
+      const payload = rawPayload as Commands["pane:peek"]["payload"];
       const params: Record<string, unknown> = { pane_id: payload.paneId, source: "visible" };
       if (payload.lines !== undefined) params.lines = payload.lines;
       const res = await herdr<{ read: { text: string } }>("pane.read", params);
@@ -161,11 +176,12 @@ export function createPaneHandlers(opts: {
       return { ok: true, data: { paneId: payload.paneId, lines } };
     },
 
-    "pane:accounts": async (): Promise<CommandResult<"pane:accounts">> => {
+    "pane:accounts": async (_payload: unknown): Promise<CommandResult<"pane:accounts">> => {
       return { ok: true, data: { accounts: await listCswapAccounts(exec) } };
     },
 
-    "pane:directories": async (payload: Commands["pane:directories"]["payload"]): Promise<CommandResult<"pane:directories">> => {
+    "pane:directories": async (rawPayload: unknown): Promise<CommandResult<"pane:directories">> => {
+      const payload = rawPayload as Commands["pane:directories"]["payload"];
       const q = payload.q?.toLowerCase();
       const seen = new Set<string>();
       const out: PaneDirectory[] = [];
@@ -190,7 +206,8 @@ export function createPaneHandlers(opts: {
       return { ok: true, data: { directories: out } };
     },
 
-    "pane:spawn": async (payload: Commands["pane:spawn"]["payload"]): Promise<CommandResult<"pane:spawn">> => {
+    "pane:spawn": async (rawPayload: unknown, signal?: AbortSignal): Promise<CommandResult<"pane:spawn">> => {
+      const payload = rawPayload as Commands["pane:spawn"]["payload"];
       const { cwd, account, model, effort, prompt } = payload;
       if (!cwd || !cwd.startsWith("/")) return { ok: false, error: "cwd must be an absolute path" };
       if (account) {
@@ -213,8 +230,23 @@ export function createPaneHandlers(opts: {
       if (!tab.ok) return herdrError(tab);
       const paneId = tab.result.root_pane.pane_id;
 
+      // pane:spawn's summed worst-case budget (register + idle wait + a
+      // blocked-trust retry + the opening prompt) can run longer than
+      // rt-client's own client-side timeout for this call. Once the caller
+      // has given up, continuing to spend the daemon's budget only risks a
+      // retry racing a second claude pane into the same cwd — so every step
+      // past tab creation checks the signal first and returns the pane
+      // already created (not-ready) rather than pressing on for a client
+      // that is no longer listening.
+      const earlyReturn = async (status: AgentStatus): Promise<CommandResult<"pane:spawn">> => {
+        const ctx: PaneRowContext = { db, repoIndex, exec, now, workspaces: new Map([[workspaceId!, label]]), ...presenceMaps(db, now(), registryDeps) };
+        const pane = await paneRow({ ...tab.result.root_pane, agent: "claude", agent_status: status }, ctx);
+        return { ok: true, data: { pane, ready: false } };
+      };
+
       const sent = await herdr("pane.send_input", { pane_id: paneId, text: launchCommand({ cwd, account, model, effort }), keys: ["enter"] });
       if (!sent.ok) return herdrError(sent);
+      if (signal?.aborted) return earlyReturn("unknown");
 
       // herdr registers the agent a few hundred ms after the shell starts claude.
       // Bound the wait by wall-clock, not a fixed attempt count: a slow-but-alive
@@ -223,7 +255,7 @@ export function createPaneHandlers(opts: {
       // holds its caller.
       let registered = false;
       const registerDeadline = now() + REGISTER_BUDGET_MS;
-      while (now() < registerDeadline) {
+      while (now() < registerDeadline && !signal?.aborted) {
         const got = await herdr("agent.get", { target: paneId });
         if (got.ok) {
           registered = true;
@@ -231,22 +263,26 @@ export function createPaneHandlers(opts: {
         }
         await Bun.sleep(REGISTER_POLL_MS);
       }
+      if (signal?.aborted) return earlyReturn("unknown");
 
       let status: AgentStatus = "unknown";
       let ready = false;
       if (registered) {
         const settled = await herdr<{ agent: HerdrAgent }>("agent.wait", { target: paneId, until: SETTLED, timeout_ms: IDLE_BUDGET_MS }, { timeoutMs: waitTimeout(IDLE_BUDGET_MS) });
         if (settled.ok) status = settled.result.agent.agent_status;
+        if (signal?.aborted) return earlyReturn(status);
         if (status === "blocked") {
           const screen = await herdr<{ read: { text: string } }>("pane.read", { pane_id: paneId, source: "visible" });
           if (screen.ok && /trust/i.test(screen.result.read.text)) {
             await herdr("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
+            if (signal?.aborted) return earlyReturn(status);
             const again = await herdr<{ agent: HerdrAgent }>("agent.wait", { target: paneId, until: SETTLED, timeout_ms: TRUST_BUDGET_MS }, { timeoutMs: waitTimeout(TRUST_BUDGET_MS) });
             if (again.ok) status = again.result.agent.agent_status;
           }
         }
         ready = status === "idle" || status === "done";
       }
+      if (signal?.aborted) return earlyReturn(status);
 
       if (ready && prompt) {
         await herdr("agent.prompt", { target: paneId, text: prompt, wait: { until: ["working"], timeout_ms: PROMPT_BUDGET_MS } }, { timeoutMs: waitTimeout(PROMPT_BUDGET_MS) });
@@ -254,9 +290,35 @@ export function createPaneHandlers(opts: {
 
       const info = await herdr<{ pane: HerdrPane }>("pane.get", { pane_id: paneId });
       const raw: HerdrPane = info.ok ? info.result.pane : { ...tab.result.root_pane, agent: "claude", agent_status: status };
-      const ctx: PaneRowContext = { db, repoIndex, exec, now, workspaces: new Map([[workspaceId, label]]), ...presenceMaps(db, now()) };
+      const ctx: PaneRowContext = { db, repoIndex, exec, now, workspaces: new Map([[workspaceId, label]]), ...presenceMaps(db, now(), registryDeps) };
       const pane = await paneRow(raw, ctx);
       return { ok: true, data: { pane, ready } };
+    },
+
+    "pane:send": async (rawPayload: unknown): Promise<CommandResult<"pane:send">> => {
+      const payload = rawPayload as Commands["pane:send"]["payload"];
+      return injectIntoPane({ paneId: payload.paneId, text: payload.text, callerPane: payload.callerPane, herdr });
+    },
+
+    // The tray owns focusing: herdr's socket has no `pane focus`, and raising
+    // the hosting terminal window is native macOS the daemon cannot do. The
+    // daemon and tray always ship together, so this just routes the id over
+    // tray.sock; a down tray is a clean error, never a degraded fallback.
+    "pane:focus": async (rawPayload: unknown): Promise<CommandResult<"pane:focus">> => {
+      const payload = rawPayload as Commands["pane:focus"]["payload"];
+      // The tray does four sequential herdr spawns (list + process-info +
+      // workspace/tab focus) behind this call, so trayRequest's 2s default
+      // would misreport a slow-but-working tray as down; sit under paneFocus's
+      // 10s rt-client budget.
+      const reply = await tray<{ ok?: boolean; focused?: boolean; error?: string }>("/pane/focus", {
+        method: "POST",
+        body: { paneId: payload.paneId },
+        timeoutMs: 8_000,
+      });
+      if (reply.status === 0) return { ok: false, error: "tray unavailable" };
+      if (reply.status < 200 || reply.status >= 300 || reply.json?.ok === false)
+        return { ok: false, error: reply.json?.error ?? `tray focus failed (${reply.status})` };
+      return { ok: true, data: { paneId: payload.paneId, focused: reply.json?.focused ?? true } };
     },
   };
 }

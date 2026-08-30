@@ -52,9 +52,16 @@ export {
   SCHEMA_VERSION,
   LEGACY_IMPORTS,
   openStateDb,
+  openStateDbGuarded,
   getStateDb,
   stateDbPath,
   closeStateDb,
+  backupTo,
+  quickCheck,
+  stateBackupsDir,
+  stampedBackupPath,
+  listStateBackups,
+  pruneStateBackups,
   type DbFlavor,
   type LegacyImport,
 } from "./db.ts";
@@ -80,11 +87,12 @@ export {
 
 export { createCursorStore, type CursorStore } from "./cursors-store.ts";
 
-export { getKvValue, setKvValue, deleteKvValue, listKvValues, listKvEntries, hasKvValue, type KvEntry } from "./kv-blob.ts";
+export { getKvValue, setKvValue, setKvValueCritical, deleteKvValue, listKvValues, listKvEntries, hasKvValue, type KvEntry } from "./kv-blob.ts";
 
 export {
   listEndpointClaims,
   replaceEndpointClaims,
+  replaceEndpointClaimsCritical,
   hasEndpointClaims,
   type EndpointClaim,
 } from "./endpoint-claims-store.ts";
@@ -104,18 +112,19 @@ export {
   mergeMentions,
   postMessage,
   readUnread,
+  peekUnread,
   listMessages,
   markRead,
-  unreadWakingCount,
+  markDelivered,
+  pendingMessages,
   listRooms,
   archiveRoom,
   roomArchivedAt,
   roomDefaultWake,
   listMembers,
-  armMember,
-  touchMember,
-  disarmMember,
-  clearAllArmed,
+  pruneMessages,
+  CHAT_RETENTION_MS,
+  CHAT_ROOM_FLOOR,
   type ChatMember,
   type ChatMessage,
   type WakeMode,
@@ -124,7 +133,7 @@ export {
 
 export {
   insertAgent, getAgent, listAgents, updateAgentPane, markAgentResumed,
-  finishAgent, deleteAgent, newAgentId,
+  finishAgent, deleteAgent, newAgentId, pruneAgents, AGENTS_RETENTION_MS,
   type AgentRecord, type AgentSurface,
 } from "./agents-store.ts";
 
@@ -134,7 +143,7 @@ export {
   signIn,
   signOut,
   setAway,
-  pulseSession,
+  touchLastSeen,
   buddyStatus,
   presenceThresholds,
   listBuddies,
@@ -143,9 +152,12 @@ export {
   assertSessionOwnsHandle,
   assertSessionSignedIn,
   prunePresence,
+  reserveAgentHandle,
+  snapshotRegistryDeps,
   type BuddyStatus,
   type PresenceRow,
   type PresenceThresholds,
+  type RegistryDeps,
 } from "./presence-store.ts";
 
 export {

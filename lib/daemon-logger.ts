@@ -18,23 +18,79 @@ import pino, { type Logger } from "pino";
 // @ts-ignore — no types shipped; the JS API is well-tested.
 import roll from "pino-roll";
 import { dlopen, suffix, FFIType } from "bun:ffi";
-import { mkdirSync, openSync, closeSync } from "fs";
+import { mkdirSync, openSync, closeSync, existsSync, statSync, renameSync, writeSync } from "fs";
 import { join } from "path";
 import { logsDir } from "./rt-paths.ts";
+import { getSetting } from "./settings/resolve.ts";
+
+/** Last-resort write straight to fd 2, bypassing pino entirely. Used only when the logger itself has failed or can't be trusted. */
+function rawStderr(text: string): void {
+  try {
+    writeSync(2, text);
+  } catch {
+    // Nothing left to do... even fd 2 is gone.
+  }
+}
 
 export interface DaemonLoggerHandle {
   /** Root logger — use when no specific module scope applies. */
   logger: Logger;
+  /** Underlying pino-roll write stream. Exposed as a test seam for simulating write errors. */
+  stream: NodeJS.WritableStream;
   /** Returns a child logger that stamps `module: <name>` on every line. */
   childLogger: (module: string) => Logger;
   /** Force a flush (best-effort; pino-roll's stream is sync but exposes flushSync). */
   flush?: () => void;
+  /** True once the underlying stream has emitted an 'error' (e.g. ENOSPC); writes since then were swallowed, not lost silently. */
+  loggerDegraded: () => boolean;
+  /** Count of errors that were observed and handled without crashing the daemon: demoted stderr noise plus steady-state recovered unhandledRejections. */
+  recoveredErrorCount: () => number;
 }
 
 export interface CreateOptions {
   logDir: string;
   level?: pino.LevelWithSilent;
 }
+
+const VALID_LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
+
+/**
+ * Resolves the daemon's pino level: RT_LOG_LEVEL env, then the `rt.logLevel`
+ * setting, then "info". The setting read is try/catch-guarded because the
+ * `rt.logLevel` registry key may not exist yet (added in a later task), and
+ * the resolver may also run pre-boot; this must never throw. The resolved
+ * value is validated against pino's level set: an unrecognized value (a typo
+ * like "warning") must not reach pino's constructor, which throws on it.
+ */
+export function resolveDaemonLogLevel(
+  env: string | undefined,
+  fromSetting: () => string | undefined,
+): string {
+  let resolved = env;
+  if (!resolved) {
+    try {
+      resolved = fromSetting();
+    } catch {
+      // Setting unavailable (unknown key pre-registration, or resolver not
+      // ready yet)... fall through to the "info" default below.
+    }
+  }
+  if (!resolved || !VALID_LOG_LEVELS.has(resolved)) return "info";
+  return resolved;
+}
+
+const PANIC_PREFIXES = ["panic:", "fatal error:", "Uncaught ", "UnhandledPromiseRejection"];
+
+/** True for stderr text that looks like a native/runtime panic, not ordinary noise (warnings, CLI messages). */
+export function isPanicLine(text: string): boolean {
+  return PANIC_PREFIXES.some((p) => text.startsWith(p));
+}
+
+// Counts errors observed and handled without crashing the daemon: demoted
+// stderr lines (installCrashHandlers) plus steady-state recovered
+// unhandledRejections. Module-scoped (one daemon process, one counter) rather
+// than per-handle, matching the process-wide handlers that increment it.
+let recovered = 0;
 
 /**
  * Async factory — call once at daemon startup OR in each test.
@@ -52,8 +108,20 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
     frequency: "daily",
     dateFormat: "yyyy-MM-dd",
     mkdir: true,
+    size: "50m",
     limit: { count: 14 },
     sync: true,
+  });
+
+  // A write failure (e.g. ENOSPC) on the underlying stream otherwise throws
+  // out of the next log.*() call, and every call site would need its own
+  // guard. One listener here flips a flag instead, so callers keep calling
+  // log.*() without throwing, and the raw write means the failure itself is
+  // still visible somewhere even though the JSON log can't take it.
+  let degraded = false;
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    degraded = true;
+    rawStderr(`daemon-logger: stream error ${err?.code ?? ""} ${err?.message ?? err}\n`);
   });
 
   const logger = pino(
@@ -74,11 +142,14 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
 
   return {
     logger,
+    stream,
     childLogger: (module: string) => logger.child({ module }),
     flush: () => {
       // pino's flushSync drains any buffered writes; safe to call repeatedly.
       try { logger.flush(); } catch { /* */ }
     },
+    loggerDegraded: () => degraded,
+    recoveredErrorCount: () => recovered,
   };
 }
 
@@ -99,7 +170,10 @@ export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
   if (!cachedPromise) {
     cachedPromise = createDaemonLogger({
       logDir: logsDir(),
-      level: (process.env.RT_LOG_LEVEL as pino.LevelWithSilent | undefined) ?? "info",
+      level: resolveDaemonLogLevel(
+        process.env.RT_LOG_LEVEL,
+        () => getSetting<string>("rt.logLevel").value,
+      ) as pino.LevelWithSilent,
     }).catch((err) => {
       // Clear the cache on failure — a transient cause (log dir momentarily
       // unwritable) may not recur, so a later call should retry rather than
@@ -192,6 +266,26 @@ export const __test__ = {
 
 // ─── Native stderr capture ───────────────────────────────────────────────────
 
+/** Local `yyyy-MM-dd`, matching the janitor's dated-file convention (lib/cli-logger.ts's `today()`). */
+function todayDate(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Picks the rotation target for `daemon-stderr.log`: `daemon-stderr.<date>.log`,
+ * or `.<N>.log` if that name is already taken (e.g. two boots same day); both
+ * shapes match log-janitor's LOG_FILE_PATTERN, so pruneLogs sweeps them for free.
+ */
+function nextRotatedStderrPath(dir: string, date: string): string {
+  const base = join(dir, `daemon-stderr.${date}.log`);
+  if (!existsSync(base)) return base;
+  for (let n = 1; ; n++) {
+    const candidate = join(dir, `daemon-stderr.${date}.${n}.log`);
+    if (!existsSync(candidate)) return candidate;
+  }
+}
+
 /**
  * Point fd 2 at ~/.mattstack/rt/logs/daemon-stderr.log so native output that bypasses
  * JS entirely (bun panics, segfault reports, runtime asserts) is captured no
@@ -206,7 +300,14 @@ export function redirectNativeStderr(): void {
   try {
     const dir = logsDir();
     mkdirSync(dir, { recursive: true });
-    const fd = openSync(join(dir, "daemon-stderr.log"), "a");
+    const stderrPath = join(dir, "daemon-stderr.log");
+    // Rotate any leftover content from a previous crash before reopening,
+    // otherwise `rt daemon logs` keeps showing yesterday's panic as "most
+    // recent". A rename here can never lose data (unlike truncation).
+    if (existsSync(stderrPath) && statSync(stderrPath).size > 0) {
+      renameSync(stderrPath, nextRotatedStderrPath(dir, todayDate()));
+    }
+    const fd = openSync(stderrPath, "a");
     const libc = dlopen(`libSystem.${suffix}`, {
       dup2: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
     });
@@ -225,22 +326,54 @@ export function redirectNativeStderr(): void {
  * logger before exit. Call ONCE during daemon startup, AFTER logger init.
  *
  * - uncaughtException: log as fatal (sync), exit 1
- * - unhandledRejection: log as error, do NOT exit (let the daemon recover)
+ * - unhandledRejection: fatal + exit 1 while `opts.booting()` is true (no
+ *   socket/API bound yet, nothing worth staying up for); log as error and
+ *   stay alive once booted, so a stray steady-state rejection doesn't kill a
+ *   daemon that's already serving. No `booting` given preserves the old
+ *   always-log, never-exit behavior.
  * - process.stderr.write: intercept so console.error / anything writing to
- *   stderr lands in the JSON log instead of vanishing.
+ *   stderr lands in the JSON log instead of vanishing, at `warn` (ordinary
+ *   noise) or `error` (a panic-looking line per isPanicLine); demoted lines
+ *   also count toward recoveredErrorCount().
  */
-export function installCrashHandlers(handle: DaemonLoggerHandle): void {
+export function installCrashHandlers(
+  handle: DaemonLoggerHandle,
+  opts: { booting?: () => boolean } = {},
+): void {
   const { logger } = handle;
 
   // Because the pino-roll stream is opened with sync:true, logger.fatal()
   // flushes immediately to the fd — no need for pino.final() here.
+  //
+  // The logger.*() calls below are wrapped in try/catch: a logging failure
+  // (e.g. the stream is degraded from ENOSPC) must not itself abort a crash
+  // handler and skip the exit it's here to guarantee. Only the logging is
+  // guarded, never the exit decision.
   process.on("uncaughtException", (err) => {
-    logger.fatal({ err }, "uncaughtException");
+    try {
+      logger.fatal({ err }, "uncaughtException");
+    } catch {
+      rawStderr(`uncaughtException (logger failed): ${err?.stack ?? err}\n`);
+    }
     process.exit(1);
   });
 
   process.on("unhandledRejection", (reason) => {
-    logger.error({ err: reason }, "unhandledRejection");
+    if (opts.booting?.()) {
+      try {
+        logger.fatal({ err: reason }, "unhandledRejection during boot");
+      } catch {
+        rawStderr(`unhandledRejection during boot (logger failed): ${reason}\n`);
+      }
+      process.exit(1);
+      return;
+    }
+    recovered += 1;
+    try {
+      logger.error({ err: reason }, "unhandledRejection");
+    } catch {
+      rawStderr(`unhandledRejection (logger failed): ${reason}\n`);
+    }
   });
 
   // Intercept process.stderr.write so JS-side stderr writes land in the log.
@@ -250,7 +383,14 @@ export function installCrashHandlers(handle: DaemonLoggerHandle): void {
     try {
       const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
       const trimmed = text.replace(/\n+$/, "");
-      if (trimmed.length > 0) logger.error({ source: "stderr" }, trimmed);
+      if (trimmed.length > 0) {
+        if (isPanicLine(trimmed)) {
+          logger.error({ source: "stderr" }, trimmed);
+        } else {
+          recovered += 1;
+          logger.warn({ source: "stderr" }, trimmed);
+        }
+      }
     } catch {
       // If anything in the logger fails, fall back to the original stderr.
       return origWrite(chunk, ...rest);

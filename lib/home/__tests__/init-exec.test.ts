@@ -26,6 +26,8 @@ class FakeExecSeam implements ExecSeam {
       failRun?: (cmd: string[]) => string | undefined;
       exists?: (path: string) => boolean;
       blocksSymlink?: (path: string) => boolean;
+      /** git config user.name/user.email answers for commitInitialUserRepo's identity check. Defaults to a fully-configured identity so every other test's commit step doesn't have to opt in. */
+      identity?: { name?: string; email?: string };
     } = {},
   ) {}
 
@@ -33,6 +35,12 @@ class FakeExecSeam implements ExecSeam {
     this.calls.push({ kind: "run", cmd, cwd: runOpts?.cwd });
     const failure = this.opts.failRun?.(cmd);
     if (failure) return { code: 1, stdout: "", stderr: failure };
+    const configKey = cmd[cmd.length - 2] === "config" ? cmd[cmd.length - 1] : undefined;
+    if (configKey === "user.name" || configKey === "user.email") {
+      const identity = this.opts.identity ?? { name: "rt test", email: "rt@example.test" };
+      const value = configKey === "user.name" ? identity.name : identity.email;
+      return value ? { code: 0, stdout: `${value}\n`, stderr: "" } : { code: 1, stdout: "", stderr: "" };
+    }
     return { code: 0, stdout: "", stderr: "" };
   }
 
@@ -119,6 +127,21 @@ describe("executeInitPlan", () => {
 
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.failedStep).toBe("commitInitialUserRepo");
+    });
+
+    test("R043: no git identity fails with an actionable message, never attempts the commit", async () => {
+      const seam = new FakeExecSeam({ identity: { name: "", email: "" } });
+
+      const result = await executeInitPlan([{ kind: "commitInitialUserRepo" }], seam, noopLog);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.failedStep).toBe("commitInitialUserRepo");
+        expect(result.stderr).toContain("git config --global user.name");
+        expect(result.stderr).toContain("git config --global user.email");
+        expect(result.stderr).toContain("rt home init");
+      }
+      expect(seam.calls.some((c) => c.kind === "run" && c.cmd.includes("commit"))).toBe(false);
     });
   });
 

@@ -121,6 +121,17 @@ const endpointSubcommands: Record<string, CommandNode> = {
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
     ],
   },
+  release: {
+    description: "Manually free a worktree's dev-endpoint claim(s) (escape hatch for a claim liveness can't clear)",
+    module: "./commands/endpoint.ts",
+    fn: "endpointRelease",
+    omitBehavior: "picker",
+    args: [
+      { name: "Worktree", type: "text", placeholder: "/path/to/worktree", hint: "Worktree whose claim(s) to release" },
+      { name: "Role", flag: "--role", type: "text", placeholder: "backend", hint: "Only release this role; omit to release every role for the worktree" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
+    ],
+  },
 };
 
 // Shared so `rt commit` and `rt git commit` are one node (enrich once, render once).
@@ -558,6 +569,18 @@ export const TREE: Record<string, CommandNode> = {
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
+      restore: {
+        description: "Restore a disposed worktree from its retained trash entry (no target + TTY → picker)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeRestore",
+        omitBehavior: "picker",
+        args: [
+          { name: "Tree", type: "text", optional: true, placeholder: "my-tree", hint: "Disposed tree name to restore; omit to pick interactively" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
+          { name: "List", flag: "--list", type: "boolean", default: false, hint: "List restorable entries instead of restoring one" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
       list: {
         description: "List worktrees",
         module: "./commands/worktree.ts",
@@ -584,6 +607,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "worktreeAdopt",
         args: [
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (required)" },
+          { name: "Claim", flag: "--claim", type: "boolean", default: false, hint: "Take ownership: adopt foreign worktrees as auto-disposing ephemerals (default: leave them unmanaged, untouched)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
@@ -640,7 +664,9 @@ export const TREE: Record<string, CommandNode> = {
         description: "Show daemon status",
         module: "./commands/daemon.ts",
         fn: "showStatus",
-        args: [],
+        args: [
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the verdict as JSON instead of the formatted lines" },
+        ],
       },
       track: {
         description: "Per-repo background tracking (live/poll/off)",
@@ -660,6 +686,20 @@ export const TREE: Record<string, CommandNode> = {
         fn: "showLogs",
         args: [
           { name: "Terminal", flag: "--terminal", type: "boolean", default: false, hint: "Tail logs in terminal via lnav or pino-pretty instead of opening the web viewer (alias -t)" },
+        ],
+      },
+      "log-level": {
+        description: "Show or set the daemon's live log level",
+        module: "./commands/daemon.ts",
+        fn: "setLogLevel",
+        omitBehavior: "list",
+        args: [
+          { name: "Level", type: "select", hint: "Omit to show the current level",
+            options: [
+              { value: "trace", label: "trace" }, { value: "debug", label: "debug" },
+              { value: "info", label: "info" }, { value: "warn", label: "warn" },
+              { value: "error", label: "error" },
+            ] },
         ],
       },
     },
@@ -696,7 +736,7 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   // Self-dispatching leaf: chat() routes its own verbs (join/leave/archive/
-  // post/read/rooms/who/mark/tail/sign-in/sign-out/away/back/buddies/dm/pulse/invite),
+  // post/read/rooms/who/mark/prune/sign-in/sign-out/away/back/buddies/dm/invite),
   // so all args flow through rather than a subcommand map.
   chat: {
     description: "Group chat for agents and their human, over the rt daemon",
@@ -704,26 +744,26 @@ export const TREE: Record<string, CommandNode> = {
     fn: "chat",
     omitBehavior: "picker",
     args: [
-      { name: "Verb", type: "text", placeholder: "join | leave | archive | post | read | rooms | who | mark | tail | sign-in | sign-out | away | back | buddies | dm | pulse | invite", hint: "The chat action to run" },
-      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; omit on read/rooms/who to span everything, and on sign-in/sign-out/buddies/pulse/back/away, which take no room" },
+      { name: "Verb", type: "text", placeholder: "join | leave | archive | post | read | rooms | who | mark | prune | sign-in | sign-out | away | back | buddies | dm | invite", hint: "The chat action to run" },
+      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; omit on read/rooms/who to span everything, and on prune/sign-in/sign-out/buddies/back/away, which take no room" },
       { name: "Text", type: "text", optional: true, placeholder: "@handle message", hint: "A one-line message body (every word after the room/handle) — post, dm; leave it out and feed the body on stdin (a heredoc) so paragraphs and lists survive; away takes this directly, with no room before it" },
       { name: "As handle", flag: "--as", type: "text", placeholder: "repo-tools-main", hint: "Override the derived handle for this invocation; refused while signed in (sign out first)" },
-      { name: "Wake on", flag: "--wake-on", type: "text", placeholder: "mention | all | none", hint: "For join: when this handle's tail wakes (default mention)" },
+      { name: "Wake on", flag: "--wake-on", type: "text", placeholder: "mention | all | none", hint: "For join: when this handle gets delivered a message (default mention)" },
       { name: "Reopen", flag: "--reopen", type: "boolean", default: false, hint: "For archive: clear the archive instead of setting it" },
       { name: "Limit", flag: "--limit", type: "text", placeholder: "20", hint: "For read: max messages (default 20)" },
       { name: "Since", flag: "--since", type: "text", placeholder: "5m", hint: "For read: a non-advancing peek at messages newer than this duration" },
       { name: "Last", flag: "--last", type: "text", optional: true, placeholder: "10", hint: "read: the newest N messages regardless of your cursor, then mark read" },
       { name: "Full", flag: "--full", type: "boolean", default: false, hint: "For read: uncapped message bodies" },
-      { name: "Room filter", flag: "--room", type: "text", placeholder: "build", hint: "For tail: only emit wakes from this room; for sign-in: override the derived repository room; for invite: the room to join the invited pane into" },
+      { name: "Room filter", flag: "--room", type: "text", placeholder: "build", hint: "For sign-in: override the derived repository room; for invite: the room to join the invited pane into" },
       { name: "Note", flag: "--note", type: "text", optional: true, placeholder: "you own the vite side", hint: "invite: a one-line note appended to the /chat:join command" },
-      { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb, and is required by away/back/pulse" },
+      { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Session id override (default: CLAUDE_CODE_SESSION_ID); resolves position 0 handle for every verb, and is required by away/back" },
       { name: "Status", flag: "--status", type: "text", placeholder: "rebasing #67", hint: "For sign-in: an away/status message to set on the presence row" },
       { name: "No room", flag: "--no-room", type: "boolean", default: false, hint: "For sign-in: skip joining the derived repository room" },
-      { name: "No rename", flag: "--no-rename", type: "boolean", default: false, hint: "For sign-in: leave the Claude Code session title alone instead of renaming it to the assigned handle" },
+      { name: "Pane", flag: "--pane", type: "text", placeholder: "w1:p1", hint: "For sign-in/sign-out: target this herdr pane's Claude session daemon-side (resolved via herdr), no CLAUDE_CODE_SESSION_ID needed" },
       { name: "Body file", flag: "--file", type: "text", placeholder: "post.md", hint: "For post/dm: read the body from a file instead of stdin or the text" },
       { name: "As is", flag: "--as-is", type: "boolean", default: false, hint: "For post/dm: post a long single-line body anyway (500+ characters with no line break is refused by default)" },
       { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For sign-out: suppress output (the SessionEnd hook's flag)" },
-      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/archive/post/read/rooms/who/mark/buddies/dm/pulse/away/back/sign-in/sign-out/invite)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/archive/post/read/rooms/who/mark/prune/buddies/dm/away/back/sign-in/sign-out/invite)" },
     ],
   },
 
@@ -786,6 +826,31 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/deps.ts",
         fn: "depsReconcile",
         args: [
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+    },
+  },
+
+  state: {
+    description: "rt's own state.db: backup, restore, and integrity",
+    subcommands: {
+      backup: {
+        description: "Write a stamped state.db backup (VACUUM INTO) and prune backups past retention",
+        module: "./commands/state.ts",
+        fn: "stateBackup",
+        args: [
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+      restore: {
+        description: "Restore state.db from a stamped backup copy (refuses while the daemon is running unless --force)",
+        module: "./commands/state.ts",
+        fn: "stateRestore",
+        omitBehavior: "picker",
+        args: [
+          { name: "Copy", type: "text", placeholder: "state-2026-08-29T12-00-00-000Z.db", hint: "Backup filename (under rt state's backups dir) or an absolute path" },
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Override the running-daemon refusal (state.db is shared and WAL-mode; stop the daemon instead when possible)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
         ],
       },
@@ -1083,6 +1148,27 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Prompt", flag: "--prompt", type: "text", optional: true, placeholder: "read AGENTS.md", hint: "Typed once claude is idle" },
           { name: "Workspace", flag: "--workspace", type: "text", optional: true, placeholder: "chat", hint: "herdr workspace label; default chat.herdrWorkspace" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit JSON" },
+        ],
+      },
+      send: {
+        description: "Inject text into a pane as if typed and submitted (--text - reads stdin)",
+        module: "./commands/pane.ts",
+        fn: "paneSend",
+        omitBehavior: { exempt: "agent-facing; the pane id is passed explicitly (discover panes with rt pane list)" },
+        args: [
+          { name: "Pane", type: "text", placeholder: "w7A:pY", hint: "herdr pane id to send to" },
+          { name: "Text", flag: "--text", type: "text", placeholder: "standup in 5", hint: "Body to inject; pass - to read the body from stdin" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the delivery result as JSON instead of the plain line" },
+        ],
+      },
+      focus: {
+        description: "Bring a herdr pane to the front (via the tray: workspace + tab focus and terminal window raise)",
+        module: "./commands/pane.ts",
+        fn: "paneFocus",
+        omitBehavior: { exempt: "agent-facing; the pane id is passed explicitly (discover panes with rt pane list)" },
+        args: [
+          { name: "Pane", type: "text", placeholder: "w7A:pY", hint: "herdr pane id to focus" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the focus result as JSON instead of the plain line" },
         ],
       },
       accounts: {

@@ -5,7 +5,7 @@ import { parseWorktreePorcelain } from '../worktreeParse';
 // detached worktrees (warm-pool entries), and a bare main repo. The old
 // human-readable regex parser silently dropped every detached entry because
 // it required a trailing `[branch]`.
-const PORCELAIN = `worktree /Users/matt/Documents/GitHub/acme/api
+const PORCELAIN = `worktree /Users/matt/Documents/GitHub/acme/harry
 HEAD fbf2aad438e26403d984c2fbc52702bc6eb46efc
 branch refs/heads/feature/acme-2137-darkness-factor-headlight-source
 

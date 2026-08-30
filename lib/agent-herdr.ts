@@ -16,6 +16,7 @@
  * visible pane, rt verifies the result from real state afterward.
  */
 
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { runCapture } from "./subprocess.ts";
@@ -23,15 +24,36 @@ import { runCapture } from "./subprocess.ts";
 export interface HerdrResult { stdout: string; exitCode: number }
 export type HerdrRunner = (args: string[]) => Promise<HerdrResult>;
 
-export function defaultHerdrRunner(): HerdrRunner {
-  const home = process.env.HOME ?? homedir();
-  const bin = process.env.HERDR_BIN ?? join(home, ".local", "bin", "herdr");
-  const socket = process.env.HERDR_SOCKET_PATH ?? join(home, ".config", "herdr", "herdr.sock");
+/**
+ * Mirrors lib/cswap.ts's cswapBin(): Bun.which reads process.env.PATH at
+ * call time, and the daemon overlays the user's full login PATH onto
+ * process.env.PATH at boot (lib/daemon.ts resolveUserPath), so this resolves
+ * a brew-installed herdr even though the daemon's start-env PATH does not
+ * carry it. The ~/.local/bin fallback preserves the vendor-script install.
+ */
+export function resolveHerdrBin(
+  env: NodeJS.ProcessEnv = process.env,
+  which: (cmd: string) => string | null = (cmd) => Bun.which(cmd),
+): string {
+  if (env.HERDR_BIN) return env.HERDR_BIN;
+  const onPath = which("herdr");
+  if (onPath) return onPath;
+  const home = env.HOME ?? homedir();
+  return join(home, ".local", "bin", "herdr");
+}
+
+export function defaultHerdrRunner(env: NodeJS.ProcessEnv = process.env): HerdrRunner {
+  const home = env.HOME ?? homedir();
+  const bin = resolveHerdrBin(env);
+  const socket = env.HERDR_SOCKET_PATH ?? join(home, ".config", "herdr", "herdr.sock");
   return async (args) => {
+    if (!existsSync(bin)) {
+      throw new Error(`herdr not found at ${bin} (install via \`rt setup\` / brew)`);
+    }
     const r = await runCapture([bin, ...args], {
       timeoutMs: 15_000,
       stderr: "pipe",
-      env: { ...process.env, HERDR_SOCKET_PATH: socket },
+      env: { ...env, HERDR_SOCKET_PATH: socket },
     });
     return { stdout: r.stdout || r.stderr, exitCode: r.exitCode };
   };

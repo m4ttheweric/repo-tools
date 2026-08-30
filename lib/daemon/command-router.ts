@@ -7,7 +7,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import type { HandlerContext, HandlerMap, TypedHandlers } from "./handlers/types.ts";
+import type { Handler, HandlerContext, HandlerMap, TypedHandlers } from "./handlers/types.ts";
 import { createCacheHandlers }     from "./handlers/cache.ts";
 import { createHooksHandlers }     from "./handlers/hooks.ts";
 import { createStatusHandlers }    from "./handlers/status.ts";
@@ -28,15 +28,18 @@ import { createSettingsHandlers } from "./handlers/settings.ts";
 import { createHomeHandlers } from "./handlers/home.ts";
 import { createReposHandlers } from "./handlers/repos.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
+import { wrapWithDemand } from "./demand-tracker.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
 import type { HomeSnapshotHandle } from "./home-snapshot.ts";
 
-// `TypedHandlers & HandlerMap`, not plain HandlerMap: the intersection makes
-// this function the compile-time proof that every command in the rt-client
-// catalog has a daemon handler. A catalog entry whose factory stops
-// declaring it fails here, before the runtime exhaustiveness test in
-// __tests__/rt-client-commands.test.ts ever runs (MAT-31).
+// The exported return type is the plain `Record<string, Handler>` a router
+// lookup needs; the exhaustiveness proof against the rt-client catalog
+// (MAT-31) still runs on the `handlers` local below, typed `TypedHandlers &
+// HandlerMap`: that intersection's index signature is also what rejects a
+// non-function value (e.g. a factory that erroneously returns `db`) as a
+// compile error, before the runtime exhaustiveness test in
+// __tests__/rt-client-commands.test.ts ever runs.
 export function buildRoutedHandlers(opts: {
   ctx: HandlerContext;
   broadcast: (type: string, data: any) => void;
@@ -60,37 +63,45 @@ export function buildRoutedHandlers(opts: {
    * facade comment).
    */
   stateDb: Database;
-}): TypedHandlers & HandlerMap {
+}): Record<string, Handler> {
   const { ctx, broadcast, systemProcessScanner } = opts;
-  const emitEvent = (topic: string, payload: unknown) => {
-    const emittedAt = Date.now();
-    const id = opts.eventsBus.emitAt(topic, payload, emittedAt);
-    broadcast("event", { id, topic, payload, emittedAt });
+  // The bus owns frame-building + persistence (R020, events-bus.ts); this
+  // just keeps the "event"-wrapped WS broadcast contract rt-client's relay
+  // depends on (packages/rt-client/src/relay.ts: `type === "event"`, topic
+  // in `data.topic`).
+  const emitEvent = (topic: string, payload: unknown): number => {
+    const frame = opts.eventsBus.emitEvent(topic, payload);
+    broadcast("event", frame);
+    return frame.id;
   };
-  // createChatHandlers also exposes `db` (its test-isolation seam); dropped
-  // here so it never lands as a bogus "db" entry in the command map below.
-  const { db: _chatDb, ...chatHandlers } = createChatHandlers({ db: opts.stateDb, emitEvent });
-  const { db: _paneDb, ...paneHandlers } = createPaneHandlers({ db: opts.stateDb, repoIndex: ctx.repoIndex });
-  // Same seam as chatHandlers above: createAgentHandlers exposes `db` for
-  // test isolation only.
-  const { db: _agentDb, ...agentHandlers } = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
-  return {
-    ...createCacheHandlers(ctx),
-    ...createHooksHandlers(ctx),
-    ...createStatusHandlers(ctx),
-    ...createMRHandlers(ctx, broadcast),
-    ...createWorktreeHandlers(ctx, opts.worktree),
-    ...createDiscussionHandlers(ctx, broadcast),
-    ...createSystemProcessHandlers(systemProcessScanner, ctx),
-    ...createSdmHandlers(ctx),
-    ...createRunsHandlers(ctx, emitEvent),
-    ...createSecretsHandlers(ctx),
-    ...createProjectMRsHandlers(ctx, broadcast),
+  const chatHandlers = createChatHandlers({ db: opts.stateDb, emitEvent, repoIndex: ctx.repoIndex, log: ctx.log });
+  const paneHandlers = createPaneHandlers({ db: opts.stateDb, repoIndex: ctx.repoIndex });
+  const agentHandlers = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
+  const handlers: TypedHandlers & HandlerMap = {
+    ...createCacheHandlers({ cache: ctx.cache, refreshCache: ctx.refreshCache }),
+    ...createHooksHandlers({
+      repoIndex: ctx.repoIndex,
+      checkAndRepairHooksPath: ctx.checkAndRepairHooksPath,
+      startWatchingRepo: ctx.startWatchingRepo,
+    }),
+    ...createStatusHandlers({
+      getHealth: ctx.getHealth, startedAt: ctx.startedAt, identity: ctx.identity, heartbeatSeq: ctx.heartbeatSeq,
+      repoIndex: ctx.repoIndex, watchedConfigs: ctx.watchedConfigs, cache: ctx.cache, portCacheRef: ctx.portCacheRef,
+      refreshStatusRef: ctx.refreshStatusRef, log: ctx.log, setLogLevel: ctx.setLogLevel, getLogLevel: ctx.getLogLevel,
+    }),
+    ...createMRHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, broadcast),
+    ...createWorktreeHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, opts.worktree),
+    ...createDiscussionHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache }, broadcast),
+    ...createSystemProcessHandlers(systemProcessScanner, { portCacheRef: ctx.portCacheRef, cache: ctx.cache }),
+    ...createSdmHandlers({ log: ctx.log }),
+    ...createRunsHandlers({ log: ctx.log }, emitEvent),
+    ...createSecretsHandlers({ log: ctx.log }),
+    ...createProjectMRsHandlers({ repoIndex: ctx.repoIndex, log: ctx.log }, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
     ...chatHandlers,
     ...agentHandlers,
     ...paneHandlers,
-    ...createEndpointHandlers(ctx),
+    ...createEndpointHandlers({ log: ctx.log, repoIndex: ctx.repoIndex }),
     ...createSettingsHandlers(),
     ...createHomeHandlers(opts.homeSnapshot),
     ...createReposHandlers({ ...opts.repos, emitEvent }),
@@ -102,4 +113,7 @@ export function buildRoutedHandlers(opts: {
       return { ok: true, data: getFreshnessSnapshot() };
     },
   };
+  // A tray/CLI/console read of any scan-backed command means "someone is
+  // watching", which un-gates the background scans (see pollers.ts, S058/S093).
+  return wrapWithDemand(handlers, ["ports", "system-processes", "tray:status"]);
 }

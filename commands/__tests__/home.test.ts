@@ -172,6 +172,16 @@ class FakeSeam implements ExecSeam {
   async run(cmd: string[]): Promise<ExecResult> {
     this.calls.push({ kind: "run", arg: cmd });
     if (this.opts.failRun?.(cmd)) return { code: 1, stdout: "", stderr: "boom" };
+    // commitInitialUserRepo probes identity before committing; default to
+    // "configured" so fixtures not exercising the no-identity path stay
+    // green, mirroring lib/daemon/__tests__/home-snapshot.test.ts's
+    // defaultResponders.
+    if (cmd[cmd.length - 2] === "config" && cmd[cmd.length - 1] === "user.name") {
+      return { code: 0, stdout: "rt test\n", stderr: "" };
+    }
+    if (cmd[cmd.length - 2] === "config" && cmd[cmd.length - 1] === "user.email") {
+      return { code: 0, stdout: "rt@example.test\n", stderr: "" };
+    }
     return { code: 0, stdout: "", stderr: "" };
   }
   async writeFile(path: string, content: string): Promise<void> {

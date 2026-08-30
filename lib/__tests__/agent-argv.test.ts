@@ -52,6 +52,31 @@ describe("buildClaudeArgv", () => {
     expect(argv.slice(0, 4)).toEqual(["/abs/cswap", "run", "a@b.c", "--"]);
     expect(argv).not.toContain("/abs/claude");
   });
+
+  test("interactive start with a reserved handle passes --name and the inbound-accept settings", () => {
+    const argv = buildClaudeArgv({
+      name: "kai",
+      session: { kind: "start", sessionId: UUID }, headless: false,
+    }, bins);
+    expect(argv).toEqual([
+      "/abs/claude", "--name", "kai", "--settings", '{"crossSessionInbound":"accept"}', "--session-id", UUID,
+    ]);
+  });
+
+  test("headless start with a reserved handle emits neither --name nor --settings", () => {
+    const argv = buildClaudeArgv({
+      name: "kai",
+      session: { kind: "start", sessionId: UUID }, headless: true, prompt: "go",
+    }, bins);
+    expect(argv).not.toContain("--name");
+    expect(argv).not.toContain("--settings");
+  });
+
+  test("no reserved handle emits neither flag", () => {
+    const argv = buildClaudeArgv({ session: { kind: "start", sessionId: UUID }, headless: false }, bins);
+    expect(argv).not.toContain("--name");
+    expect(argv).not.toContain("--settings");
+  });
 });
 
 describe("buildPaneCommand", () => {
@@ -71,6 +96,14 @@ describe("buildPaneCommand", () => {
   test("account prefixes cswap run in the pane string", () => {
     const cmd = buildPaneCommand("/r", { account: "a@b.c", session: { kind: "start", sessionId: UUID }, headless: false });
     expect(cmd).toBe(`cd '/r' && cswap run 'a@b.c' -- '--session-id' '${UUID}'`);
+  });
+
+  test("single-quotes --name and the JSON --settings value", () => {
+    const cmd = buildPaneCommand("/r", {
+      name: "kai",
+      session: { kind: "start", sessionId: UUID }, headless: false,
+    });
+    expect(cmd).toBe(`cd '/r' && claude '--name' 'kai' '--settings' '{"crossSessionInbound":"accept"}' '--session-id' '${UUID}'`);
   });
 });
 

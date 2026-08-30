@@ -66,3 +66,33 @@ test("herdrAvailable probes session.snapshot", async () => {
 test("waitTimeout adds the 5s margin herdr needs to answer at its own budget", () => {
   expect(waitTimeout(60_000)).toBe(65_000);
 });
+
+// S095: herdrRequest decoded each socket chunk independently — a multibyte
+// character (box-drawing, emoji, ...) split across a chunk boundary became
+// two partial byte sequences, each decoding to U+FFFD, corrupting the reply
+// even though JSON.parse still succeeded on the well-formed-but-wrong text.
+test("a multibyte character split across two socket chunks decodes correctly", async () => {
+  const sock = join(tmpdir(), `herdr-split-${process.pid}.sock`);
+  const text = "a─b"; // U+2500 BOX DRAWINGS LIGHT HORIZONTAL: E2 94 80, 3 bytes
+  const payload = JSON.stringify({ id: "x", result: { text } }) + "\n";
+  const bytes = Buffer.from(payload, "utf8");
+  const charStart = bytes.indexOf(Buffer.from("─", "utf8"));
+  const splitAt = charStart + 1; // split inside the multibyte sequence, after its first byte
+
+  const server = Bun.listen({
+    unix: sock,
+    socket: {
+      open(socket) {
+        socket.write(bytes.subarray(0, splitAt));
+        setTimeout(() => socket.write(bytes.subarray(splitAt)), 20);
+      },
+      data() {},
+      close() {},
+      error() {},
+    },
+  });
+  stops.push(() => server.stop(true));
+
+  const res = await herdrRequest<{ text: string }>("whatever", {}, { sockPath: sock });
+  expect(res).toEqual({ ok: true, result: { text: "a─b" } });
+});

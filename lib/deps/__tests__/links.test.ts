@@ -201,8 +201,12 @@ describe("tagged PATH links", () => {
   });
 
   test("link(rt) refuses dev-mode-owns-rt when ~/.local/bin/rt is the dev-mode wrapper script", () => {
+    // isDevModeWrapper reads through p.readPrefix (Probes-routed, bounded),
+    // so the fake in-memory files map is enough -- no real fs write, and the
+    // content must be genuinely recognized (RT_LAUNCH_CWD tell) rather than
+    // any bare "#!" script, matching the shared detector's real rule.
     const path = linkPath(home, "rt");
-    const p = bundleProbe({ files: { [path]: "#!/bin/sh\nexec bun run cli.ts \"$@\"\n" } });
+    const p = bundleProbe({ files: { [path]: "#!/bin/sh\nexport RT_LAUNCH_CWD=\"$PWD\"\nexec bun run cli.ts \"$@\"\n" } });
 
     const outcome = link(p, "rt");
     expect(outcome).toEqual({ ok: false, reason: "dev-mode-owns-rt", detail: expect.any(String) });
@@ -287,6 +291,26 @@ describe("tagged PATH links", () => {
     p.symlink(ghPath, linkPath(home, "gh")); // a fresh our-link, placed without going through force this time
     const result = reconcile(p);
     expect(result).toEqual({ removed: ["gh"], kept: [] });
+  });
+
+  // S066: a DEFAULT_EXPOSED tool (rt's own product surface, not a vendored
+  // third-party tool like "gh") is never auto-unlinked by a same-named PATH
+  // collision — an unrelated foreign tool of the same name (e.g. Kong's own
+  // "deck") must never shadow-remove mattstack's.
+  test("reconcile never auto-unlinks deck/gitq/rt even when a same-named binary appears elsewhere on PATH (S066)", () => {
+    const p = bundleProbe({ env: { PATH: "/opt/homebrew/bin" } });
+    p.symlink(join(appRoot, HELPERS_DIR, "deck"), linkPath(home, "deck"));
+    p.symlink(join(appRoot, HELPERS_DIR, "gitq"), linkPath(home, "gitq"));
+    link(p, "rt", {}, { installRtBinary: (src, dest) => { p.symlink(src, dest); return dest; } });
+
+    // An unrelated foreign binary happens to share each name.
+    p.writeFile("/opt/homebrew/bin/deck", "kongs-deck-binary");
+    p.writeFile("/opt/homebrew/bin/gitq", "some-other-gitq-binary");
+    p.writeFile("/opt/homebrew/bin/rt", "some-other-rt-binary");
+
+    const result = reconcile(p);
+    expect(result.removed).toEqual([]);
+    expect(result.kept.sort()).toEqual(["deck", "gitq", "rt"]);
   });
 
   test("real-fs repro (F1): after the daemon's boot-time PATH prepend, reconcile removes nothing", () => {

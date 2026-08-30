@@ -28,10 +28,12 @@
  * sides now key on that same identity string.
  */
 
-import { realpathSync, rmSync } from "fs";
+import { rmSync } from "fs";
 import { join } from "path";
 
-import { parseIdentity } from "../../settings/identity.ts";
+import { canon } from "../../fs-canon.ts";
+import { decodeRepo, type SerializedIdentity } from "../identity-decoder.ts";
+import { validateGitRef } from "../git-ref-validation.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import {
   findByBranch,
@@ -40,9 +42,12 @@ import {
   type DisposalMode,
   type TreeRecord,
 } from "../../worktree/registry.ts";
+import { patchTree } from "../../worktree/patch.ts";
 import { disambiguate, slugifyTicketTitle } from "../../worktree/branch-name.ts";
 import { createTree } from "../../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree, type DisposeDeps } from "../../worktree/dispose.ts";
+import { restoreTree } from "../../worktree/restore.ts";
+import { branchOf, composeKey } from "../../state/branch-cache.ts";
 import { isTreeLocked, withTreeLock } from "../../worktree/locks.ts";
 import {
   branchExistsLocalAsync,
@@ -55,9 +60,11 @@ import {
   loadWorktreeAppConfig,
   loadWorktreeRepoConfig,
   resolveReadySteps,
+  worktreePoolDormant,
+  WORKTREE_APP_ENABLE_COMMAND,
 } from "../../worktree/config.ts";
 import { changedSince, runReadySteps, stepsToRun } from "../../worktree/ready.ts";
-import { freshenRepo, reconcileRepoRegistry } from "../worktree-reconciler.ts";
+import { freshenRepo, reconcileRepoRegistry, withCreateLock } from "../worktree-reconciler.ts";
 import { repoDataDir, rtDir } from "../../rt-paths.ts";
 
 const PROVISION_FETCH_TIMEOUT_MS = 5 * 60_000;
@@ -79,26 +86,11 @@ export interface WorktreeHandlerOpts {
   kick: () => void;
   /** The live replenish create for a repo, or null; provision joins it rather than racing it. */
   creationInFlight: (repoName: string) => Promise<void> | null;
+  /** Excludes reconciler passes -- not other registry writers -- for the duration of `fn`. */
+  withReconcilerHeld: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 // ─── Small shared helpers ────────────────────────────────────────────────────
-
-/** realpathSync defensively; a path that doesn't exist compares as-is. */
-function canon(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
-function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): void {
-  const trees = loadRegistry(repoName);
-  const rec = trees.find((t) => t.path === path);
-  if (!rec) return;
-  patch(rec);
-  saveRegistry(repoName, trees);
-}
 
 /**
  * `create-failed:<step>` carrying the tail of that step's output, same shape as
@@ -155,29 +147,40 @@ async function localBranchNames(repoPath: string): Promise<Set<string>> {
  * bare legacy name would otherwise start a fresh registry under a key
  * nothing else reads, silently reintroducing legacy-keyed rows post-migration.
  */
-function targetRepos(ctx: HandlerContext, repoName?: string): Array<[string, string]> {
+function targetRepos(ctx: Pick<HandlerContext, "repoIndex">, repoName?: string): Array<[string, string]> {
   const index = ctx.repoIndex();
   if (repoName) {
-    if (parseIdentity(repoName) === null) return [];
-    const path = index[repoName];
-    return path ? [[repoName, path]] : [];
+    const decoded = decodeRepo({ repoName });
+    if (!decoded.ok) return [];
+    const path = index[decoded.repo];
+    return path ? [[decoded.repo, path]] : [];
   }
   return Object.entries(index);
 }
 
 function disposeDeps(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "cache" | "log">,
   opts: WorktreeHandlerOpts,
   repoName: string,
   repoPath: string,
+  callerPids?: number[],
 ): DisposeDeps {
+  // disposeTree's joinedMr looks up by the BARE branch: hand it a
+  // bare-keyed, this-repo-only view of the (now composite-keyed) cache map
+  // so a same-named branch in another repo can never shadow the real entry.
+  const cacheEntries: DisposeDeps["cacheEntries"] = {};
+  for (const [key, entry] of Object.entries(ctx.cache.entries)) {
+    if (entry.repoName && entry.repoName !== repoName) continue;
+    cacheEntries[branchOf(key)] = entry;
+  }
   return {
     repoName,
     repoPath,
-    cacheEntries: ctx.cache.entries as DisposeDeps["cacheEntries"],
+    cacheEntries,
     emit: opts.emit,
     log: ctx.log,
     killProcesses: loadWorktreeAppConfig().killProcesses,
+    callerPids,
   };
 }
 
@@ -230,10 +233,19 @@ export function isClaimable(rec: TreeRecord | undefined): boolean {
   return rec !== undefined && rec.kind === "ephemeral" && rec.state === "on-deck";
 }
 
+// Named-key return type (not a bare HandlerMap), same trick as
+// endpoint.ts/repos.ts: keeps every command's compile-time proof (it exists,
+// for TypedHandlers) without narrowing this factory's `payload: any` reads,
+// which stays out of scope per the B2 ruling (worktree.ts, repos.ts,
+// endpoint.ts, home.ts, settings.ts all keep loose payload handling).
 export function createWorktreeHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "repoIndex" | "cache" | "log">,
   opts: WorktreeHandlerOpts,
-): HandlerMap {
+): Record<
+    "worktree:provision" | "worktree:create" | "worktree:dispose" | "worktree:list"
+    | "worktree:restore" | "worktree:freshen" | "worktree:adopt",
+    (payload: any, signal?: AbortSignal) => Promise<any>
+  > & HandlerMap {
   /**
    * Undo a claim that could not be completed. Still on its `on-deck/<name>`
    * branch → the tree is untouched and goes back in the pool; already moved
@@ -269,9 +281,11 @@ export function createWorktreeHandlers(
 
   return {
     "worktree:provision": async (payload: any) => {
-      const repoName: string | undefined = payload?.repoName;
-      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
 
       const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
       const trees = loadRegistry(repoName);
@@ -295,6 +309,12 @@ export function createWorktreeHandlers(
         return { ok: false, error: "branch-unresolved" };
       }
 
+      // S010: a branch that git would parse as an option (e.g.
+      // "--upload-pack=...") must never reach a runGit call, including
+      // divergence()'s below — both read this same `branch`.
+      const refCheck = validateGitRef(branch);
+      if (!refCheck.ok) return { ok: false, error: refCheck.error };
+
       const attached = findByBranch(trees, branch);
       if (attached.length > 1) return { ok: false, error: "branch-duplicated" };
       if (attached.length === 1) return { ok: false, error: `branch-attached:${attached[0]!.name}` };
@@ -313,9 +333,13 @@ export function createWorktreeHandlers(
         }
       }
       if (!rec) {
-        const created = await createTree({
+        // Serialized against the reconciler's own replenish createTree for
+        // this repo (S089): both `git fetch origin <branch>` against the
+        // same repoPath, and an unserialized race charges the loser's
+        // ref-lock failure to createBackoff for what was just contention.
+        const created = await withCreateLock(repoPath, () => createTree({
           repoName, repoPath, emit: opts.emit, log: ctx.log,
-        });
+        }));
         if (!created.ok) {
           if (created.error === "busy") return { ok: false, error: "busy" };
           return {
@@ -346,12 +370,16 @@ export function createWorktreeHandlers(
         // second checkout fails with "already checked out", which rolls that
         // caller back rather than handing two trees the same branch.
         const disposal: DisposalMode = payload.disposal === "job" ? "job" : "merge";
-        patchTree(repoName, tree.path, (r) => {
+        const claimWritten = patchTree(repoName, tree.path, (r) => {
           r.state = "claimed";
           r.disposal = disposal;
           r.claimedAt = new Date().toISOString();
           if (typeof payload.owner === "string" && payload.owner.length > 0) r.owner = payload.owner;
         });
+        // A dropped write leaves the tree genuinely on-deck on disk... acting
+        // as though this caller owns it would double-hand it to whoever
+        // claims it for real next.
+        if (!claimWritten) return { ok: false, error: "claim-write-failed" };
         opts.emit("worktree:claimed", {
           repo: repoName, tree: tree.name, branch, owner: payload.owner ?? null,
         });
@@ -463,11 +491,13 @@ export function createWorktreeHandlers(
     },
 
     "worktree:create": async (payload: any) => {
-      const repoName: string | undefined = payload?.repoName;
-      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
 
-      const created = await createTree({ repoName, repoPath, emit: opts.emit, log: ctx.log });
+      const created = await withCreateLock(repoPath, () => createTree({ repoName, repoPath, emit: opts.emit, log: ctx.log }));
       if (!created.ok) {
         if (created.error === "busy") return { ok: false, error: "busy" };
         return { ok: false, error: createFailedError(created) };
@@ -490,6 +520,8 @@ export function createWorktreeHandlers(
       const owner: string | undefined = typeof payload?.owner === "string" ? payload.owner : undefined;
       const treeName: string | undefined = typeof payload?.tree === "string" ? payload.tree : undefined;
       const force = payload?.force === true;
+      const callerPids: number[] | undefined =
+        typeof payload?.callerPid === "number" ? [payload.callerPid] : undefined;
 
       // `--owner` sweeps globally by default (a run may span repos); `--repo`
       // narrows it. A named tree always needs its repo.
@@ -513,7 +545,7 @@ export function createWorktreeHandlers(
       const recoverable: Array<{ tree: string; path: string; until: string }> = [];
 
       for (const { repoName, repoPath, rec } of targets) {
-        const deps = disposeDeps(ctx, opts, repoName, repoPath);
+        const deps = disposeDeps(ctx, opts, repoName, repoPath, callerPids);
         const outcome = await withTreeLock(rec.path, () =>
           disposeTree(deps, rec, { force, auto: false }),
         );
@@ -538,8 +570,10 @@ export function createWorktreeHandlers(
 
       const entries = ctx.cache.entries;
       const rows: Array<Record<string, unknown>> = [];
+      const dormantRepos: string[] = [];
 
-      for (const [repoName] of repos) {
+      for (const [repoName, repoPath] of repos) {
+        if (await worktreePoolDormant(repoName, repoPath)) dormantRepos.push(repoName);
         const trees = loadRegistry(repoName);
         const branchCounts = new Map<string, number>();
         for (const t of trees) {
@@ -547,9 +581,12 @@ export function createWorktreeHandlers(
         }
 
         for (const t of trees) {
-          // The join key is (repoName, branch): a bare-branch join would hand
-          // a tree another repo's MR when both repos use the same name.
-          const entry = t.branch ? entries[t.branch] : undefined;
+          // The join key is composeKey(repoName, branch): an exact hit scopes
+          // to this repo so a same-named branch elsewhere can never join here.
+          // The bare-key fallback only ever matches an unattributed entry
+          // (older caches predate repoName), never another repo's, since
+          // every attributed write now composes under its own identity.
+          const entry = t.branch ? (entries[composeKey(repoName, t.branch)] ?? entries[t.branch]) : undefined;
           const mr =
             entry?.mr && (!entry.repoName || entry.repoName === repoName)
               ? { iid: entry.mr.iid, state: entry.mr.state, title: entry.mr.title }
@@ -563,7 +600,45 @@ export function createWorktreeHandlers(
         }
       }
 
-      return { ok: true, data: { trees: rows } };
+      const data: Record<string, unknown> = { trees: rows };
+      if (dormantRepos.length > 0) {
+        data.dormant = true;
+        data.dormantRepos = dormantRepos;
+        data.message = `worktree pool declared but dormant on this machine... enable with: ${WORKTREE_APP_ENABLE_COMMAND}`;
+      }
+      return { ok: true, data };
+    },
+
+    "worktree:restore": async (payload: any) => {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
+      const treeName: string | undefined = typeof payload?.tree === "string" ? payload.tree : undefined;
+      if (!treeName || treeName === "." || treeName === ".." || treeName.includes("/") || treeName.includes("\\")) {
+        return { ok: false, error: "no-target" };
+      }
+
+      // Synthetic key: the restored tree's eventual path isn't known until
+      // restoreTree resolves the pool root, so this locks the (repo, name)
+      // pair rather than a filesystem path (same idiom as adopt's repo-wide lock).
+      const outcome = await withTreeLock(`${repoPath}#restore#${treeName}`, () =>
+        restoreTree({ repoName, repoPath, emit: opts.emit, log: ctx.log }, treeName),
+      );
+      if (outcome === "busy") return { ok: false, error: "busy" };
+      if (!outcome.ok) return { ok: false, error: outcome.reason };
+
+      opts.kick();
+      return {
+        ok: true,
+        data: {
+          restored: true,
+          path: outcome.path,
+          tree: outcome.tree.name,
+          ...(outcome.readyFailed ? { readyFailed: true, failedStep: outcome.failedStep } : {}),
+        },
+      };
     },
 
     "worktree:freshen": async (payload: any) => {
@@ -571,15 +646,20 @@ export function createWorktreeHandlers(
       const repos = targetRepos(ctx, payload?.repoName);
       if (repos.length === 0) return { ok: false, error: "repo-unknown" };
 
-      const ran: string[] = [];
-      for (const [repoName, repoPath] of repos) {
-        const names = await freshenRepo(
-          { repoName, repoPath, emit: opts.emit, log: ctx.log },
-          treeName ? { only: treeName } : {},
-        );
-        ran.push(...names);
-      }
-      return { ok: true, data: { ran } };
+      // Runs under the reconciler hold: a concurrent reconciler pass runs this
+      // same freshen duty per repo, and an interleaved run would double-freshen
+      // or race the same tree's checkout against itself.
+      return opts.withReconcilerHeld(async () => {
+        const ran: string[] = [];
+        for (const [repoName, repoPath] of repos) {
+          const names = await freshenRepo(
+            { repoName, repoPath, emit: opts.emit, log: ctx.log },
+            treeName ? { only: treeName } : {},
+          );
+          ran.push(...names);
+        }
+        return { ok: true, data: { ran } };
+      });
     },
 
     /**
@@ -591,19 +671,23 @@ export function createWorktreeHandlers(
      * branch it is already sitting on.
      */
     "worktree:adopt": async (payload: any) => {
-      const repoName: string | undefined = payload?.repoName;
-      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
 
-      // Repo-wide lock: adopt rewrites every entry, so no per-tree operation
-      // may interleave with it. Synthetic key (no tree lives at this path).
-      const result = await withTreeLock(`${repoPath}#adopt`, async () => {
+      // Runs under the reconciler hold: adopt rewrites every entry, and a
+      // concurrent reconciler pass reading the same rows mid-rewrite would
+      // prune or reclassify trees adopt has not gotten to yet.
+      const result = await opts.withReconcilerHeld(async () => {
         const trees = await reconcileRepoRegistry({
           repoName, repoPath, emit: opts.emit, log: ctx.log,
         });
 
         let main = "";
         const claimed: string[] = [];
+        const unmanaged: string[] = [];
         const disposed: string[] = [];
         const refused: Array<{ tree: string; reason: string }> = [];
 
@@ -642,19 +726,24 @@ export function createWorktreeHandlers(
             continue;
           }
 
-          patchTree(repoName, rec.path, (r) => {
-            r.kind = "ephemeral";
-            r.state = "claimed";
-            r.disposal = "merge";
-            r.claimedAt = new Date().toISOString();
-          });
-          claimed.push(rec.name);
+          if (payload?.claim === true) {
+            patchTree(repoName, rec.path, (r) => {
+              r.kind = "ephemeral";
+              r.state = "claimed";
+              r.disposal = "merge";
+              r.claimedAt = new Date().toISOString();
+            });
+            claimed.push(rec.name);
+          } else {
+            // Left exactly as reconcileRepoRegistry stamped it: kind
+            // "unmanaged", never auto-disposed, until a caller passes --claim.
+            unmanaged.push(rec.name);
+          }
         }
 
-        return { ok: true as const, data: { main, claimed, disposed, refused } };
+        return { ok: true as const, data: { main, claimed, unmanaged, disposed, refused } };
       });
 
-      if (result === "busy") return { ok: false, error: "busy" };
       if (result.ok) {
         // Adopt supersedes the parking lot: its per-repo index and app-level
         // transition state are dead once every tree is registry-tracked. The

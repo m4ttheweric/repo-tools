@@ -1,16 +1,55 @@
 /**
- * lib/state/presence-store.ts — sign-in, two heartbeats, one reclaim
- * predicate (RT-48).
+ * lib/state/presence-store.ts — sign-in, presence, and the one reclaim
+ * predicate (RT-48, delivery-v2 hard cutover).
  *
- * armMember/touchMember/joinRoom/listMembers come from chat-store.ts to
- * exercise the dual-write and room-default wiring those tests cover.
+ * joinRoom/listMembers come from chat-store.ts to exercise the room-default
+ * wiring those tests cover.
  */
 import { expect, test } from "bun:test";
+import { readFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { openStateDb } from "../db.ts";
-import { armMember, clearAllArmed, disarmMember, joinRoom, listMembers, touchMember } from "../chat-store.ts";
-import { assertSessionOwnsHandle, assertSessionSignedIn, buddyStatus, presenceForSession, presenceThresholds, prunePresence, pulseSession, signIn, signOut } from "../presence-store.ts";
+import { joinRoom, listMembers } from "../chat-store.ts";
+import {
+  assertSessionOwnsHandle,
+  assertSessionSignedIn,
+  buddyStatus,
+  listBuddies,
+  presenceForSession,
+  presenceThresholds,
+  prunePresence,
+  signIn,
+  signOut,
+  touchLastSeen,
+  type RegistryDeps,
+} from "../presence-store.ts";
+import type { InboxBinding } from "../../claude-registry.ts";
+import { AGENT_NAMES } from "../../chat-names.ts";
+import { getKvValue } from "../kv-blob.ts";
+
+/** No binding for any session id: the default in every test that doesn't care about the registry (matches the real resolver's behavior for a fake test session id it will never find on disk). */
+const NO_BINDING: RegistryDeps = { resolve: () => null, alive: () => false, resolveAll: () => new Map() };
+
+/** Resolves ONLY `sessionId` (default "s1", matching every test's own session id) -- `resolveAll` must carry the same entry, since callers with more than one lookup go through it instead of `resolve` directly. */
+function fakeBinding(status: InboxBinding["status"], sessionId = "s1"): RegistryDeps {
+  const binding: InboxBinding = { pid: 1, socketPath: "/fake.sock", status };
+  return {
+    resolve: (id) => (id === sessionId ? binding : null),
+    alive: () => true,
+    resolveAll: () => new Map([[sessionId, binding]]),
+  };
+}
+
+/** A registry entry that resolves but whose process is gone (dead pid, or a socket that no longer exists). */
+function deadPidBinding(sessionId = "s1"): RegistryDeps {
+  const binding: InboxBinding = { pid: 1, socketPath: "/fake.sock", status: "busy" };
+  return {
+    resolve: (id) => (id === sessionId ? binding : null),
+    alive: () => false,
+    resolveAll: () => new Map([[sessionId, binding]]),
+  };
+}
 
 let n = 0;
 function fresh() {
@@ -27,9 +66,9 @@ test("a base held by a live row is suffixed; the suffix is stable", () => {
   expect(signIn({ sessionId: "s3", baseHandle: "x", now }, db).handle).toBe("x-3");
 });
 
-test("an idle holder is never reclaimed, even before it arms", () => {
+test("a session-stale holder with no live binding is never reclaimed inside the session-stale window", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", cwd: "/w", now }, db); // signed in, not armed
+  signIn({ sessionId: "s1", baseHandle: "x", cwd: "/w", now }, db);
   const r = signIn({ sessionId: "s2", baseHandle: "x", cwd: "/w", now: now + MIN }, db);
   expect(r).toMatchObject({ handle: "x-2", reclaimed: false });
 });
@@ -42,29 +81,95 @@ test("a stale same-seat row is reclaimed by deletion and the handle comes back",
   expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
 });
 
-test("a live tail blocks reclaim even when the session heartbeat is hours old", () => {
+test("a live registry binding blocks reclaim even when the session heartbeat is hours old", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
-  db.run("UPDATE chat_presence SET armed_at = ?, tail_seen_at = ? WHERE session_id = 's1'", [now + 3 * HOUR, now + 3 * HOUR]);
-  expect(signIn({ sessionId: "s2", baseHandle: "x", now: now + 3 * HOUR + MIN }, db).handle).toBe("x-2");
+  const deps = fakeBinding("idle");
+  expect(signIn({ sessionId: "s2", baseHandle: "x", now: now + 3 * HOUR + MIN }, db, deps).handle).toBe("x-2");
 });
 
-test("buddyStatus: table order, first match wins, tail heartbeat is COALESCE(tail_seen_at, armed_at)", () => {
+test("a dead registry binding does not block reclaim once session-stale", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  const r = signIn({ sessionId: "s2", baseHandle: "x", now: now + 3 * HOUR + MIN }, db, NO_BINDING);
+  expect(r).toMatchObject({ handle: "x", reclaimed: true });
+});
+
+test("buddyStatus: offline beats everything (signed out, unresolvable, or a dead pid); otherwise the registry mirror decides live vs idle, regardless of how stale last_seen_at is", () => {
   expect(buddyStatus({ signedOutAt: now }, now)).toBe("offline");
+  // No sessionId at all: offline, independent of lastSeenAt.
   expect(buddyStatus({ lastSeenAt: now - 25 * HOUR }, now)).toBe("offline");
-  expect(buddyStatus({ lastSeenAt: now, armedAt: now - 20 * MIN }, now)).toBe("deaf"); // armed, no touch, 20m
-  expect(buddyStatus({ lastSeenAt: now - 2 * HOUR, armedAt: now, tailSeenAt: now }, now)).toBe("live"); // prompt-starved but touching
-  expect(buddyStatus({ lastSeenAt: now, armedAt: now }, now)).toBe("live"); // just armed, tail_seen_at NULL
-  expect(buddyStatus({ lastSeenAt: now - 2 * HOUR }, now)).toBe("deaf"); // unarmed, session stale
-  expect(buddyStatus({ lastSeenAt: now }, now)).toBe("idle");
+  expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("busy"))).toBe("live");
+  expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("idle"))).toBe("idle");
+  expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("shell"))).toBe("idle");
+  // A last_seen_at well past pruneMs never turns this offline on its own:
+  // an alive, busy binding still vouches for the session. prunePresence,
+  // not buddyStatus, is what retires a truly dead row.
+  expect(buddyStatus({ lastSeenAt: now - 25 * HOUR, sessionId: "s1" }, now, presenceThresholds(), fakeBinding("busy"))).toBe("live");
+  // No resolvable registry entry at all (a session id the registry has never
+  // heard of): offline, per spec ("pid dead, or socket gone" -- unresolvable
+  // is the same "nothing to vouch for this session" case).
+  expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), NO_BINDING)).toBe("offline");
+  expect(buddyStatus({ lastSeenAt: now }, now, presenceThresholds(), NO_BINDING)).toBe("offline");
+  // A registry file resolves, but the pid is dead (or the socket is gone): offline too.
+  expect(buddyStatus({ lastSeenAt: now, sessionId: "s1" }, now, presenceThresholds(), deadPidBinding())).toBe("offline");
 });
 
-test("pulse writes last_seen_at and deets only", () => {
+/** Counts `resolveAll()` calls; `resolve`/`alive` are unused once a caller batches through `resolveAll`, so they throw if anything still calls them directly. */
+function countingRegistryDeps(): RegistryDeps & { scans: number } {
+  const state = {
+    scans: 0,
+    resolve: (): InboxBinding | null => {
+      throw new Error("resolve() called directly -- the caller under test should batch through resolveAll() instead");
+    },
+    alive: () => true,
+    resolveAll: (): Map<string, InboxBinding> => {
+      state.scans++;
+      return new Map();
+    },
+  };
+  return state;
+}
+
+test("listBuddies scans the registry exactly once regardless of buddy count", () => {
   const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "a", now }, db);
+  signIn({ sessionId: "s2", baseHandle: "b", now }, db);
+  signIn({ sessionId: "s3", baseHandle: "c", now }, db);
+  const deps = countingRegistryDeps();
+  const buddies = listBuddies(now, db, deps);
+  expect(buddies).toHaveLength(3);
+  expect(deps.scans).toBe(1);
+});
+
+test("listBuddies: a live-binding row with a 25h-old stamp still appears, classified by the registry; a dead-binding stale row reads offline but still appears", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "live-stale", now }, db);
+  signIn({ sessionId: "s2", baseHandle: "dead-stale", now }, db);
+  db.run("UPDATE chat_presence SET last_seen_at = ? WHERE session_id IN ('s1', 's2')", [now - 25 * HOUR]);
+
+  const deps = fakeBinding("busy", "s1"); // only s1 resolves; s2 has no registry entry
+  const buddies = listBuddies(now, db, deps);
+
+  const live = buddies.find((b) => b.handle === "live-stale");
+  const dead = buddies.find((b) => b.handle === "dead-stale");
+  expect(live?.status).toBe("live");
+  expect(dead?.status).toBe("offline");
+});
+
+test("signIn scans the registry exactly once per call, even while probing several suffix candidates", () => {
+  const db = fresh();
+  // Three existing "x" rows (x, x-2, x-3) so the incoming sign-in's own
+  // family scan, plus findOpenSuffix's fallback walk if it reaches that far,
+  // both have several rows to check reclaimability for -- all against the
+  // one map a single signIn call is allowed to build.
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
-  pulseSession({ sessionId: "s1", branch: "feat", now: now + MIN }, db);
-  expect(db.query("SELECT last_seen_at, tail_seen_at, branch FROM chat_presence").get())
-    .toMatchObject({ last_seen_at: now + MIN, tail_seen_at: null, branch: "feat" });
+  signIn({ sessionId: "s2", baseHandle: "x", now }, db);
+  signIn({ sessionId: "s3", baseHandle: "x", now }, db);
+  const deps = countingRegistryDeps();
+  const r = signIn({ sessionId: "s4", baseHandle: "x", now }, db, deps);
+  expect(r.handle).toBe("x-4");
+  expect(deps.scans).toBe(1);
 });
 
 test("assertSessionOwnsHandle throws only on a mismatched signed handle", () => {
@@ -74,6 +179,30 @@ test("assertSessionOwnsHandle throws only on a mismatched signed handle", () => 
   expect(() => assertSessionOwnsHandle("x", "s2", db)).toThrow(/handle reclaimed/);
   expect(() => assertSessionOwnsHandle("unsigned", "s2", db)).not.toThrow(); // plan-1 path: no presence row, no enforcement
   expect(() => assertSessionOwnsHandle("x", undefined, db)).not.toThrow(); // no session id offered, no enforcement
+});
+
+test("S073: signIn's read-then-write transaction uses .immediate() (BEGIN IMMEDIATE), not a deferred BEGIN", () => {
+  // A plain db.transaction()'s deferred BEGIN lets signIn's own reads
+  // (prunePresence, SELECT_PRESENCE_BY_SESSION_SQL) open a snapshot before
+  // any write; a commit by another connection in that window turns the
+  // eventual write into an unretryable SQLITE_BUSY_SNAPSHOT that the
+  // flavor's busy_timeout cannot absorb. .immediate() takes the write lock
+  // at BEGIN, so contention surfaces as an ordinary, retryable SQLITE_BUSY
+  // instead (matching the chat-store.ts/dm-store.ts/notifier-store.ts
+  // siblings already converted for the same reason).
+  const src = readFileSync(resolve(import.meta.dir, "..", "presence-store.ts"), "utf8");
+  const runIndex = src.indexOf("const run = db.transaction(");
+  expect(runIndex).toBeGreaterThan(-1);
+  expect(src.indexOf("return run.immediate();", runIndex)).toBeGreaterThan(runIndex);
+});
+
+test("C9: reserveAgentHandle's read-then-write transaction also uses .immediate(), same reason as signIn's S073 fix", () => {
+  const src = readFileSync(resolve(import.meta.dir, "..", "presence-store.ts"), "utf8");
+  const fnIndex = src.indexOf("export function reserveAgentHandle(");
+  expect(fnIndex).toBeGreaterThan(-1);
+  const runIndex = src.indexOf("const run = db.transaction(", fnIndex);
+  expect(runIndex).toBeGreaterThan(fnIndex);
+  expect(src.indexOf("return run.immediate();", runIndex)).toBeGreaterThan(runIndex);
 });
 
 test("assertSessionSignedIn throws when the session's row is gone", () => {
@@ -104,44 +233,38 @@ test("prune: the signed-out path keeps the offline window", () => {
   expect(prunePresence(now + 25 * HOUR, db)).toBe(1); // signed_out_at leg
 });
 
-test("arm starts a new tail epoch: sets armed_at and CLEARS tail_seen_at", () => {
+test("prune: a never-signed-out row past 24h survives when the registry still vouches for its session", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
-  db.run("UPDATE chat_presence SET tail_seen_at = ?", [now - 20 * MIN]); // a dead predecessor's last touch
-  joinRoom({ room: "r", handle: "x" }, db);
-  armMember(undefined, "x", db);
-  const row = db.query("SELECT tail_seen_at FROM chat_presence WHERE handle = 'x'").get() as { tail_seen_at: number | null };
-  expect(row.tail_seen_at).toBeNull(); // COALESCE falls to the fresh armed_at → live, not deaf
+  expect(prunePresence(now + 25 * HOUR, db, fakeBinding("busy"))).toBe(0);
+  expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
 });
 
-test("arm/touch/disarm dual-write when a presence row exists, and still work without one", () => {
+test("prune: a never-signed-out row past 24h with no live binding is deleted", () => {
   const db = fresh();
   signIn({ sessionId: "s1", baseHandle: "x", now }, db);
-  joinRoom({ room: "r", handle: "x" }, db);
+  expect(prunePresence(now + 25 * HOUR, db, NO_BINDING)).toBe(1);
+  expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 0 });
+});
 
-  armMember(undefined, "x", db);
-  const armedRow = db.query("SELECT armed_at, tail_seen_at FROM chat_presence WHERE handle = 'x'").get() as {
-    armed_at: number | null;
-    tail_seen_at: number | null;
-  };
-  expect(armedRow.armed_at).toBeTruthy();
-  expect(armedRow.tail_seen_at).toBeNull(); // new tail epoch
+test("prune: a signed-out row within its 24h offline window survives even when last_seen_at is stale (C9: PRUNABLE_SQL must not let a signed-out row's last_seen_at leg bypass its own signed_out_at age bound)", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // last_seen_at pinned at `now`, no touches
+  signOut("s1", now + 30 * HOUR, db); // signed out well after last_seen_at went stale
+  // 1h after signing out: signed_out_at leg is nowhere near its 24h bound,
+  // but last_seen_at (still `now`, 31h stale) trips the OTHER leg.
+  expect(prunePresence(now + 31 * HOUR, db)).toBe(0);
+  expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
+});
 
-  touchMember(undefined, "x", db);
-  const touchedRow = db.query("SELECT tail_seen_at FROM chat_presence WHERE handle = 'x'").get() as { tail_seen_at: number | null };
-  expect(touchedRow.tail_seen_at).toBeTruthy();
-
-  disarmMember("x", db);
-  const disarmedPresence = db.query("SELECT armed_at FROM chat_presence WHERE handle = 'x'").get() as { armed_at: number | null };
-  const disarmedMember = db.query("SELECT armed_at FROM chat_members WHERE room = 'r' AND handle = 'x'").get() as {
-    armed_at: number | null;
-  };
-  expect(disarmedPresence.armed_at).toBeNull(); // both tables, per the dual-write
-  expect(disarmedMember.armed_at).toBeNull();
-
-  joinRoom({ room: "r", handle: "unsigned" }, db);
-  expect(() => armMember(undefined, "unsigned", db)).not.toThrow(); // member columns as in plan 1
-  expect(() => disarmMember("unsigned", db)).not.toThrow();
+test("touchLastSeen refreshes only last_seen_at -- the sole remaining route to it now that chat:pulse is gone", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  touchLastSeen("s1", now + HOUR, db);
+  expect(presenceForSession("s1", db)?.lastSeenAt).toBe(now + HOUR);
+  // A row delivery keeps touching never goes stale enough for prune to
+  // consider it, even with no registry binding at all.
+  expect(prunePresence(now + HOUR + 23 * HOUR, db, NO_BINDING)).toBe(0);
 });
 
 test("a creating join with wake-on stamps the room default and later joins inherit it", () => {
@@ -153,7 +276,7 @@ test("a creating join with wake-on stamps the room default and later joins inher
   expect(byHandle).toEqual({ a: "all", b: "all", c: "mention" });
   joinRoom({ room: "calm", handle: "a" }, db); // creating join WITHOUT a flag stamps nothing
   joinRoom({ room: "calm", handle: "b" }, db);
-  expect(listMembers("calm", db).map((m) => m.wakeOn)).toEqual(["mention", "mention"]);
+  expect(listMembers("calm", db).map((m) => m.wakeOn)).toEqual(["all", "all"]);
 });
 
 test("a repeat sign-in from the same session, same base, retakes its own seat", () => {
@@ -238,34 +361,61 @@ test("the joinRoom cwd guard is scoped to unsigned handles", () => {
 // env-driven defaults.
 test("presenceThresholds returns the documented defaults with no env set", () => {
   const saved = {
-    tail: process.env.RT_CHAT_TAIL_STALE_MS,
     session: process.env.RT_CHAT_SESSION_STALE_MS,
     prune: process.env.RT_CHAT_PRUNE_MS,
   };
-  delete process.env.RT_CHAT_TAIL_STALE_MS;
   delete process.env.RT_CHAT_SESSION_STALE_MS;
   delete process.env.RT_CHAT_PRUNE_MS;
   try {
-    expect(presenceThresholds()).toEqual({ tailStaleMs: 10 * MIN, sessionStaleMs: HOUR, pruneMs: 24 * HOUR });
+    expect(presenceThresholds()).toEqual({ sessionStaleMs: HOUR, pruneMs: 24 * HOUR });
   } finally {
-    if (saved.tail !== undefined) process.env.RT_CHAT_TAIL_STALE_MS = saved.tail;
     if (saved.session !== undefined) process.env.RT_CHAT_SESSION_STALE_MS = saved.session;
     if (saved.prune !== undefined) process.env.RT_CHAT_PRUNE_MS = saved.prune;
   }
 });
 
-test("a tail that outlives a daemon restart reads live again on its next touch", () => {
+// ─── The pool draw (no baseHandle) ──────────────────────────────────────────
+
+const DAY = 24 * HOUR;
+
+test("signIn without a base draws a pool name that no live session holds", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now: Date.now() }, db);
-  joinRoom({ room: "r", handle: "x" }, db);
-  armMember(undefined, "x", db);
-  expect(buddyStatus(presenceForSession("s1", db)!, Date.now())).toBe("live");
+  const a = signIn({ sessionId: "s1", now }, db);
+  const b = signIn({ sessionId: "s2", now }, db);
+  expect(AGENT_NAMES).toContain(a.baseHandle);
+  expect(AGENT_NAMES).toContain(b.baseHandle);
+  expect(a.handle).toBe(a.baseHandle);
+  expect(b.baseHandle).not.toBe(a.baseHandle);
+});
 
-  clearAllArmed(db); // daemon boot, tail still running
-  expect(buddyStatus(presenceForSession("s1", db)!, Date.now())).toBe("idle"); // the reported bug
+test("the draw is least-recently-used: every name goes once before any comes back", () => {
+  const db = fresh();
+  const drawn: string[] = [];
+  // Each sign-in lands two days after the last, so the previous row is
+  // pruned and only the ledger keeps the name from coming back.
+  for (let i = 0; i <= AGENT_NAMES.length; i++) {
+    const t = now + i * 2 * DAY;
+    const { baseHandle } = signIn({ sessionId: `s${i}`, now: t }, db);
+    signOut(`s${i}`, t, db);
+    drawn.push(baseHandle);
+  }
+  expect(new Set(drawn.slice(0, AGENT_NAMES.length)).size).toBe(AGENT_NAMES.length);
+  expect(drawn[AGENT_NAMES.length]).toBe(drawn[0]);
+});
 
-  touchMember(undefined, "x", db); // the reconnected tail's next heartbeat
-  const row = presenceForSession("s1", db)!;
-  expect(row.armedAt).toBeGreaterThan(0);
-  expect(buddyStatus(row, Date.now())).toBe("live");
+test("a repeat sign-in with no base keeps the name the session already holds", () => {
+  const db = fresh();
+  const first = signIn({ sessionId: "s1", now }, db);
+  const again = signIn({ sessionId: "s1", now: now + MIN }, db);
+  expect(again.baseHandle).toBe(first.baseHandle);
+  expect(again.handle).toBe(first.handle);
+});
+
+test("an explicitly named pool name counts as used; a non-pool base is not recorded", () => {
+  const db = fresh();
+  signIn({ sessionId: "s1", baseHandle: "kai", now }, db);
+  signIn({ sessionId: "s2", baseHandle: "mr-board", now }, db);
+  const ledger = getKvValue<Record<string, number>>("chat", "names", {}, db);
+  expect(ledger.kai).toBe(now);
+  expect(ledger["mr-board"]).toBeUndefined();
 });

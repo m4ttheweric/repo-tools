@@ -29,8 +29,26 @@ export interface AgeKeySeam {
    * the private key this way, keeping it out of argv).
    * `sensitive` marks a call whose argv or stdin carries key material, so a
    * logging wrapper (withArgvRedaction) knows to redact it.
+   * `timeoutMs` overrides the default kill-and-reject deadline (see
+   * AgeKeyTimeoutError) — a locked keychain or an unexpected access-control
+   * dialog otherwise blocks this call, and every caller behind it, forever.
    */
-  run(cmd: string[], opts?: { input?: string; sensitive?: boolean }): Promise<AgeExecResult>;
+  run(cmd: string[], opts?: { input?: string; sensitive?: boolean; timeoutMs?: number }): Promise<AgeExecResult>;
+}
+
+/**
+ * Thrown instead of resolving when the spawn outlives its timeout — a
+ * distinct class (not a generic Error, and never a resolved AgeExecResult)
+ * so a caller like loadSecrets's domainMemo can recognize "the keychain is
+ * probably showing a dialog right now" and avoid caching it as a permanent
+ * decrypt failure that would poison every later retry, including the one
+ * after the user dismisses the dialog.
+ */
+export class AgeKeyTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgeKeyTimeoutError";
+  }
 }
 
 const KEYCHAIN_ACCOUNT = "mattstack";
@@ -277,6 +295,9 @@ function debugLog(cmd: string[]): void {
   if (CLI_DEBUG) console.error(`[age-key] ${cmd.join(" ")}`);
 }
 
+/** A locked keychain (screen-lock, or a keychain item whose ACL belongs to a different signed binary) pops a GUI dialog and blocks until clicked; this bounds every spawn against that. */
+const DEFAULT_AGE_KEY_TIMEOUT_MS = 30_000;
+
 /** Bun.spawn-based capture, env passed live (PATH-snapshot gotcha). Unexported: only reachable wrapped, via createRealAgeKeySeam. */
 function createRawAgeKeySeam(): AgeKeySeam {
   return {
@@ -298,12 +319,47 @@ function createRawAgeKeySeam(): AgeKeySeam {
       // read it ignore the close, but age-keygen -y blocks on EOF otherwise.
       if (opts?.input !== undefined) proc.stdin.write(opts.input);
       proc.stdin.end();
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      return { code, stdout, stderr };
+
+      const timeoutMs = opts?.timeoutMs ?? DEFAULT_AGE_KEY_TIMEOUT_MS;
+
+      // A child that ignores SIGTERM (or a locked-keychain dialog that never
+      // closes) would otherwise keep `proc.exited` pending forever, so the
+      // deadline is raced against the read independently rather than
+      // discovered only after Promise.all settles — mirrors lib/subprocess.ts.
+      const captured: Promise<AgeExecResult> = (async () => {
+        const [stdout, stderr, code] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        return { code, stdout, stderr };
+      })();
+
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let deadlineTimer!: ReturnType<typeof setTimeout>;
+      const deadline: Promise<AgeExecResult> = new Promise((_, reject) => {
+        deadlineTimer = setTimeout(() => {
+          try { proc.kill("SIGTERM"); } catch { /* already exited */ }
+          // SIGTERM alone is not guaranteed (a trapped or hung child can
+          // ignore it); escalate to SIGKILL after a short grace, unref'd so
+          // it never holds this process open past the caller's own use of it.
+          killTimer = setTimeout(() => {
+            try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+          }, 2000);
+          killTimer.unref?.();
+          reject(new AgeKeyTimeoutError(
+            `${redactArgv(cmd).join(" ")}: did not exit within ${timeoutMs}ms (keychain prompt pending?)`,
+          ));
+        }, timeoutMs);
+      });
+
+      try {
+        return await Promise.race([captured, deadline]);
+      } finally {
+        clearTimeout(deadlineTimer);
+        // killTimer intentionally NOT cleared here: on the timeout path it
+        // must survive to fire SIGKILL against a child that ignored SIGTERM.
+      }
     },
   };
 }

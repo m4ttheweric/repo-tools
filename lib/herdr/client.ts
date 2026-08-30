@@ -37,7 +37,12 @@ export function herdrRequest<T = unknown>(
 
   return new Promise((resolve) => {
     let settled = false;
-    let buf = "";
+    // A multibyte UTF-8 character (box-drawing, emoji, ...) can straddle a
+    // socket chunk boundary; decoding each chunk independently turns each
+    // half into its own U+FFFD replacement character, corrupting the reply
+    // (JSON.parse still succeeds — the text is just wrong). Accumulating raw
+    // bytes and decoding the whole buffer together avoids that entirely.
+    const chunks: Buffer[] = [];
     let conn: { end(): void } | undefined;
     const finish = (r: HerdrResult<T>) => {
       if (settled) return;
@@ -55,6 +60,7 @@ export function herdrRequest<T = unknown>(
     }
 
     const tryParseBuffered = (): HerdrResult<T> | undefined => {
+      const buf = Buffer.concat(chunks).toString("utf8");
       const nl = buf.indexOf("\n");
       if (nl < 0) return undefined;
       const text = buf.slice(0, nl);
@@ -81,7 +87,7 @@ export function herdrRequest<T = unknown>(
           socket.write(line);
         },
         data(_socket, chunk) {
-          buf += chunk.toString();
+          chunks.push(chunk);
           const parsed = tryParseBuffered();
           if (parsed) finish(parsed);
         },

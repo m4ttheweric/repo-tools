@@ -34,7 +34,12 @@ function assertLogsDir(dir: string): void {
  * directories) whose name matches the surface log pattern and whose mtime is
  * older than `retentionDays` back from `now`. Returns the basenames removed.
  */
-export function pruneLogs(dir: string, retentionDays: number, now: number): { removed: string[] } {
+export function pruneLogs(
+  dir: string,
+  retentionDays: number,
+  now: number,
+  onError?: (phase: "readdir" | "unlink", err: unknown, file?: string) => void,
+): { removed: string[] } {
   assertLogsDir(dir);
 
   const cutoff = now - retentionDays * DAY;
@@ -43,7 +48,8 @@ export function pruneLogs(dir: string, retentionDays: number, now: number): { re
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    onError?.("readdir", err);
     return { removed };
   }
 
@@ -62,8 +68,9 @@ export function pruneLogs(dir: string, retentionDays: number, now: number): { re
     try {
       unlinkSync(full);
       removed.push(entry.name);
-    } catch {
-      // best-effort — a file gone or unreadable between stat and unlink is not fatal
+    } catch (err) {
+      // best-effort: a file gone or unreadable between stat and unlink is not fatal
+      onError?.("unlink", err, entry.name);
     }
   }
 

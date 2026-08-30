@@ -44,13 +44,13 @@
  */
 
 import { loadSecrets } from "../../linear.ts";
-import { parseIdentity } from "../../settings/identity.ts";
+import { decodeRepo } from "../identity-decoder.ts";
 import { loadMachineRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
-import { loadOrCreateApiToken, tokenOk } from "../api-auth.ts";
+import { getApiToken, tokenOk } from "../api-auth.ts";
 import { readSecret, createRealSecretsExecSeam, type SecretsSeams } from "../../secrets/store.ts";
 import { createRealAgeKeySeam } from "../../home/age-key.ts";
 import type { Commands, ForgeSlug } from "../../../packages/rt-client/src/commands.ts";
-import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
+import type { CommandResult, HandlerContext } from "./types.ts";
 
 const DECK_SECRET_DOMAIN = "deck";
 const DECK_SECRET_KEYS = ["cfApiToken", "cfZoneId"] as const;
@@ -125,14 +125,15 @@ export interface SecretsHandlerOverrides {
   deckSecrets?: () => Promise<{ cfApiToken?: string; cfZoneId?: string }>;
   /** Defaults to `loadBoardSecrets` (cross-domain: `board` + `rt`) for secrets:read's "board" scope. */
   boardSecrets?: () => Promise<BoardSecretsData>;
-  /** Defaults to `loadOrCreateApiToken` (the real ~/.mattstack/rt/api-token, shared with api-auth.ts). */
+  /** Defaults to `getApiToken` (the real ~/.mattstack/rt/api-token, shared with api-auth.ts and api-server.ts). */
   apiToken?: () => string;
 }
 
 export function createSecretsHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "log">,
   overrides: SecretsHandlerOverrides = {},
-): Pick<TypedHandlers, "secrets:forge-token" | "secrets:read"> & HandlerMap {
+): { "secrets:forge-token": (payload: unknown) => Promise<CommandResult<"secrets:forge-token">> }
+  & { "secrets:read": (payload: unknown) => Promise<CommandResult<"secrets:read">> } {
   // Machine-only, deliberately: mattstack.tracking is a SHARED team file, and
   // a team-declared repo must not be enough on its own to unlock a token
   // read — that consent has to be local (a machine rt.repoTracking grant),
@@ -142,21 +143,24 @@ export function createSecretsHandlers(
   const extensionSecrets = overrides.extensionSecrets ?? loadSecrets;
   const deckSecrets = overrides.deckSecrets ?? loadDeckSecrets;
   const boardSecrets = overrides.boardSecrets ?? loadBoardSecrets;
-  const apiToken = overrides.apiToken ?? (() => loadOrCreateApiToken());
+  const apiToken = overrides.apiToken ?? (() => getApiToken());
 
   return {
-    "secrets:forge-token": async (payload: Commands["secrets:forge-token"]["payload"]) => {
-      const repoName = payload?.repoName;
+    "secrets:forge-token": async (rawPayload: unknown) => {
+      const payload = rawPayload as Commands["secrets:forge-token"]["payload"] | undefined;
       const forge = payload?.forge;
-      if (!repoName) return { ok: false as const, error: "missing repoName" };
+      if (!payload?.repoName) return { ok: false as const, error: "missing repoName" };
       if (forge !== "gitlab" && forge !== "github") {
         return { ok: false as const, error: `unknown forge "${String(forge)}"; expected gitlab or github` };
       }
       // Hard cutover: grants() keys on identity now; a bare legacy
       // name is refused before it can be read as "not tracked".
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
+        const repoName = payload.repoName;
         return { ok: false as const, error: `repo ${repoName} is not tracked by rt; run: rt daemon track ${repoName} live branches` };
       }
+      const repoName = decoded.repo;
 
       // The grant gate, and the whole point of the verb: an untracked repo
       // gets nothing, where the old direct file read handed every caller
@@ -177,7 +181,8 @@ export function createSecretsHandlers(
       return { ok: true as const, data: { token } };
     },
 
-    "secrets:read": async (payload: Commands["secrets:read"]["payload"]) => {
+    "secrets:read": async (rawPayload: unknown) => {
+      const payload = rawPayload as Commands["secrets:read"]["payload"] | undefined;
       const provided = payload?.token;
       if (!provided) {
         return { ok: false as const, error: "missing-token" };

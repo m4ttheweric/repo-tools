@@ -9,24 +9,33 @@
 import { join } from "path";
 import { repoDataDir } from "../../rt-paths.ts";
 import { readJson } from "../../json-store.ts";
-import { parseIdentity } from "../../settings/identity.ts";
+import { decodeRepo } from "../identity-decoder.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
-export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
+// "hooks:repair"/"hooks:watch" are shipped rt-client commands (RT-28's CLI +
+// the REST hooks-repair route); "hooks:status" has no known out-of-process
+// caller and stays off the catalog (see types.ts's InternalCommands). The
+// two shipped ones keep their existing flat wire replies (no `data` field)
+// verbatim via the loose `Promise<any>` escape hatch, same as endpoint.ts.
+export function createHooksHandlers(
+  ctx: Pick<HandlerContext, "repoIndex" | "checkAndRepairHooksPath" | "startWatchingRepo">,
+): Record<"hooks:repair" | "hooks:watch", (payload: any, signal?: AbortSignal) => Promise<any>> & HandlerMap {
   return {
     "hooks:status": async (payload) => {
-      const repoName = payload?.repo;
-      if (!repoName) return { ok: false, error: "missing repo" };
+      if (!(payload as { repo?: string } | undefined)?.repo) return { ok: false, error: "missing repo" };
       // The index is identity-keyed now — a bare legacy name resolves nothing.
-      if (parseIdentity(repoName) === null) return { ok: true, data: null };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return { ok: true, data: null };
+      const repoName = decoded.repo;
       const hooksJson = join(repoDataDir(repoName), "hooks.json");
       return { ok: true, data: readJson<unknown>(hooksJson, null) };
     },
 
     "hooks:repair": async (payload) => {
-      const repoName = payload?.repo;
-      if (!repoName) return { ok: false, error: "missing repo" };
-      if (parseIdentity(repoName) === null) return { ok: true, repaired: false };
+      if (!(payload as { repo?: string } | undefined)?.repo) return { ok: false, error: "missing repo" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return { ok: true, repaired: false };
+      const repoName = decoded.repo;
       const repos = ctx.repoIndex();
       const repoPath = repos[repoName];
       if (!repoPath) return { ok: false, error: "unknown repo" };
@@ -35,9 +44,10 @@ export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
     },
 
     "hooks:watch": async (payload) => {
-      const repoName = payload?.repo;
-      if (!repoName) return { ok: false, error: "missing repo" };
-      if (parseIdentity(repoName) === null) return { ok: true };
+      if (!(payload as { repo?: string } | undefined)?.repo) return { ok: false, error: "missing repo" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return { ok: true };
+      const repoName = decoded.repo;
       const repos = ctx.repoIndex();
       const repoPath = repos[repoName];
       if (repoPath) ctx.startWatchingRepo(repoName, repoPath);

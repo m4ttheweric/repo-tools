@@ -9,6 +9,23 @@ import { existsSync, unlinkSync } from "fs";
 import type { Server } from "bun";
 import type { Logger } from "pino";
 import { DAEMON_SOCK_PATH } from "../daemon-config.ts";
+import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
+
+/**
+ * Same code/message derivation as api-server.ts's outer-catch failure and
+ * createHandleCommand's throw-to-envelope path (lib/daemon.ts, R035).
+ * Duplicated rather than imported: this guards fetch()'s own routing/dispatch
+ * bugs, a different failure class than a handleCommand throw (createHandleCommand
+ * already catches those and never lets them reach this far).
+ */
+function deriveFailure(err: unknown): { code: string; message: string } {
+  const message = err instanceof Error ? err.message : String(err);
+  const code =
+    err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
+      ? (err as { code: string }).code
+      : "handler-threw";
+  return { code, message };
+}
 
 export function startSocketServer(opts: {
   handleCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
@@ -33,6 +50,7 @@ export function startSocketServer(opts: {
     // on how long an idle connection may sit before Bun kills it — it never
     // holds connections open on its own.
     idleTimeout: 255,
+    maxRequestBodySize: MAX_REQUEST_BODY_SIZE,
     async fetch(req) {
       try {
         const url = new URL(req.url);
@@ -43,11 +61,16 @@ export function startSocketServer(opts: {
           try { payload = await req.json(); } catch { /* empty body is fine */ }
         }
 
+        const client = req.headers.get("x-rt-client");
+        if (client) (payload as any)._client = client;
         const result = await handleCommand(cmd, payload, req.signal);
         return Response.json(result);
       } catch (err) {
         log.error({ err, url: req.url }, "socket request failed");
-        return Response.json({ ok: false, error: String(err) }, { status: 500 });
+        return Response.json(
+          { ok: false, error: String(err), failure: deriveFailure(err) },
+          { status: 500 },
+        );
       }
     },
   });

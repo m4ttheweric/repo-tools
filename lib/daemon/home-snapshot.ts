@@ -46,6 +46,8 @@ export type SnapshotReason = "manual" | "watch" | "janitor";
 export type SkipReason =
   | "disabled"
   | "not-a-repo"
+  | "not-provisioned"
+  | "no-git-identity"
   | "init-failed"
   | "detached"
   | "merge-in-progress"
@@ -258,6 +260,11 @@ function persistPushRecord(db: Database, record: HomePushRecord, log: Logger): v
 export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle {
   const repoDir = rawDeps.repoDir ?? join(mattstackHome(), "user");
   const rawReadSettings = rawDeps.readSettings ?? (() => getSetting<HomeSnapshotSettings>("rt.homeSnapshot").value);
+  // Thunk, not a resolved value: module-scope construction (lib/daemon.ts)
+  // must not open state.db before startDaemon() has opened it daemon-flavored
+  // via openBranchCacheStore; see loadState's call site inside init() below,
+  // which is the first place this ever actually gets invoked.
+  const resolveDb = rawDeps.db ? (() => rawDeps.db!) : (() => getStateDb("daemon"));
   const deps = {
     log: rawDeps.log,
     broadcast: rawDeps.broadcast,
@@ -269,12 +276,11 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     now: rawDeps.now ?? (() => Date.now()),
     readSettings: () => clampSettings(rawReadSettings()),
     readOwners: rawDeps.readOwners ?? readOwnersReal,
-    db: rawDeps.db ?? getStateDb(),
   };
 
   const ownersPath = ownersPathFor(deps.repoDir);
 
-  let disabledReason: "not-a-repo" | "init-failed" | null = null;
+  let disabledReason: SkipReason | null = null;
   let stopped = false;
   let watcher: { close(): void } | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -296,7 +302,8 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let lastPushError: string | null = null;
   /** True once `home:push-failed` has been broadcast for the CURRENT unbroken run of push failures — reset to false the moment a push succeeds, so a retry storm broadcasts once, not on every attempt. */
   let pushFailureBroadcast = false;
-  let firstSeenDirty: Record<string, number> = loadState(deps.db, deps.log);
+  /** Populated in init(), after the is-inside-work-tree check; see resolveDb's comment for why this can't happen at construction time. */
+  let firstSeenDirty: Record<string, number> = {};
   let lastLoggedOwnersError: string | null = null;
   /** Shared dedup key for every "deps.readSettings() itself threw" warn (armWatcher's debounce read, status()) — a settings store that broke after boot and stays broken must warn once, not on every fs event or every `rt home snapshot --status` poll. */
   let lastLoggedSettingsError: string | null = null;
@@ -351,6 +358,15 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
   async function init(): Promise<void> {
     try {
+      // Checked before spawning git at all: a missing repoDir (never `rt
+      // home init`'d) otherwise reaches the same exitCode === -1 branch as a
+      // genuinely missing git binary, misdiagnosing "not provisioned" as
+      // "could not run git".
+      if (!existsSync(deps.repoDir)) {
+        disabledReason = "not-provisioned";
+        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: home repo not provisioned; run `rt home init`; inert");
+        return;
+      }
       const check = await deps.exec(["git", "rev-parse", "--is-inside-work-tree"], {
         cwd: deps.repoDir,
         timeoutMs: GIT_TIMEOUT_MS,
@@ -370,6 +386,10 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: repoDir is not a git repository; inert");
         return;
       }
+      // First real db touch: this await already put us past the daemon's
+      // synchronous boot pass, so by now startDaemon() has opened state.db
+      // daemon-flavored via openBranchCacheStore (see resolveDb above).
+      firstSeenDirty = loadState(resolveDb(), deps.log);
       if (deps.readSettings().enabled !== false) {
         tryArm();
       }
@@ -525,7 +545,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       pushFailureBroadcast = false;
       lastPushAt = deps.now();
       lastPushError = null;
-      persistPushRecord(deps.db, { at: lastPushAt, ok: true }, deps.log);
+      persistPushRecord(resolveDb(), { at: lastPushAt, ok: true }, deps.log);
       if (pushRetryTimer) {
         deps.clearTimeout(pushRetryTimer);
         pushRetryTimer = null;
@@ -538,7 +558,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       const redactedStderr = redactCredentials(result.stderr);
       pushPending = true;
       lastPushError = redactedStderr;
-      persistPushRecord(deps.db, { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
+      persistPushRecord(resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
       deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
       // Only the FIRST failure of an unbroken streak broadcasts — a retry
       // storm (schedulePushRetry firing every pushDelaySec*5) would
@@ -642,12 +662,33 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     });
 
     firstSeenDirty = plan.nextFirstSeenDirty;
-    persistState(deps.db, firstSeenDirty, deps.log);
+    persistState(resolveDb(), firstSeenDirty, deps.log);
 
     let committed = false;
     let sha: string | null = null;
 
-    if (plan.autoPaths.length > 0 && plan.message !== null) {
+    // Two independent commit sites below (the auto commit and the
+    // janitor-zone loop) can each attempt a commit this cycle; both fail the
+    // same doomed way (exit 128, "empty ident name") against an unconfigured
+    // identity. Checked once, up front, whenever EITHER would run, so a
+    // janitor-only cycle (no auto paths, one dirty claimed zone) is covered
+    // too, not just the auto-commit path.
+    const willAutoCommit = plan.autoPaths.length > 0 && plan.message !== null;
+    const willJanitorCommit = (reason === "janitor" || reason === "manual") && plan.janitorZones.length > 0;
+    if (willAutoCommit || willJanitorCommit) {
+      const name = await deps.exec(["git", "config", "user.name"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      const email = await deps.exec(["git", "config", "user.email"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      if (name.exitCode !== 0 || !name.stdout.trim() || email.exitCode !== 0 || !email.stdout.trim()) {
+        disabledReason = "no-git-identity";
+        if (lastLoggedCommitError !== "no-git-identity") {
+          deps.log.warn("home-snapshot: no git identity; run `git config --global user.name` and `git config --global user.email`; snapshots inert");
+          lastLoggedCommitError = "no-git-identity";
+        }
+        return { committed: false, sha: null, paths: [], reason, skipped: "no-git-identity" };
+      }
+    }
+
+    if (willAutoCommit) {
       // `plan.autoPaths` describes what the STATUS SNAPSHOT at the top of
       // this run looked like — a purely descriptive record of intent. The
       // exclude pathspec built from `plan.excludedZones` (identical on both
@@ -678,8 +719,9 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       //
       // `-c commit.gpgsign=false`: a global signing config with an unusable
       // key fails every snapshot commit outright (exit 128), and nothing
-      // about an unattended backup commit needs a signature.
-      const message = reason === "manual" ? plan.message.replace(/^snapshot:/, "snapshot (manual):") : plan.message;
+      // about an unattended backup commit needs a signature. (Git identity
+      // is confirmed once, above, before either commit site runs.)
+      const message = reason === "manual" ? plan.message!.replace(/^snapshot:/, "snapshot (manual):") : plan.message!;
       const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
         cwd: deps.repoDir,
         timeoutMs: GIT_TIMEOUT_MS,
@@ -702,7 +744,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       }
     }
 
-    if ((reason === "janitor" || reason === "manual") && plan.janitorZones.length > 0) {
+    if (willJanitorCommit) {
       for (const jz of plan.janitorZones) {
         const dirtyHours = Math.floor((deps.now() - jz.dirtySinceMs) / (60 * 60 * 1000));
         const message = `snapshot (janitor): ${jz.zone} dirty >${dirtyHours}h, owner ${jz.owner}`;

@@ -9,22 +9,75 @@
  *   ports                 — cached port-scan data, optionally filtered by repo
  *   notifications         — drain the notification queue
  *   notifications:peek    — peek at the notification queue (diagnostics)
+ *   daemon:log-level      - show or set the live pino log level
  */
 
 import { existsSync, readdirSync } from "fs";
-import type { HandlerContext, HandlerMap } from "./types.ts";
+import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
 import type { PortEntry } from "../../port-scanner.ts";
-import { listWorktrees } from "../../git-worktrees.ts";
+import { listWorktreesAsync } from "../../worktree/git-async.ts";
+import { worktreePoolDormant, WORKTREE_APP_ENABLE_COMMAND } from "../../worktree/config.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { getFreshnessSnapshot } from "../freshness.ts";
+import { readSupervisionState } from "../supervision-state.ts";
 
-export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
+/** Repos with a declared pool that this machine's app-level toggle leaves dormant (S077). */
+async function dormantWorktreeRepos(ctx: Pick<HandlerContext, "repoIndex">): Promise<string[]> {
+  const dormant: string[] = [];
+  for (const [repoName, repoPath] of Object.entries(ctx.repoIndex())) {
+    if (await worktreePoolDormant(repoName, repoPath)) dormant.push(repoName);
+  }
+  return dormant;
+}
+
+// "ping" and "daemon:log-level" keep their pre-existing flat wire replies
+// (no `data` field) verbatim, so they stay on the loose `Promise<any>`
+// escape hatch (same trick as endpoint.ts/repos.ts); the other six already
+// envelope as {ok,data} and get the standard CommandResult carve-out.
+export function createStatusHandlers(
+  ctx: Pick<HandlerContext,
+    | "getHealth" | "startedAt" | "identity" | "heartbeatSeq"
+    | "repoIndex" | "watchedConfigs" | "cache" | "portCacheRef"
+    | "refreshStatusRef" | "log" | "setLogLevel" | "getLogLevel"
+  >,
+): { "status": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"status">> }
+  & { "tray:status": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"tray:status">> }
+  & { "tcc:check": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"tcc:check">> }
+  & { "repos": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"repos">> }
+  & { "ports": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"ports">> }
+  & { "notifications": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"notifications">> }
+  & Record<"ping" | "daemon:log-level", (payload: any, signal?: AbortSignal) => Promise<any>>
+  & HandlerMap {
   return {
     "ping": async () => {
-      return { ok: true, uptime: Date.now() - ctx.startedAt, pid: process.pid, ...ctx.identity };
+      // Read here (not once at ctx build time): a status/status.ts request
+      // must see this run's own boot-attempt/failure counters, not whatever
+      // they were when the daemon started.
+      const { bootAttempts, lastReadyAt, recentFailures, lastExit } = readSupervisionState();
+      const h = ctx.getHealth();
+      return {
+        ok: true,
+        uptime: Date.now() - ctx.startedAt,
+        pid: process.pid,
+        ...ctx.identity,
+        health: h.level,
+        eventLoop: h.eventLoop,
+        heartbeatSeq: ctx.heartbeatSeq(),
+        supervision: { bootAttempts, lastReadyAt, recentFailures: recentFailures.slice(-3), lastExit },
+      };
     },
 
     "status": async () => {
+      const h = ctx.getHealth();
+      const dormantRepos = await dormantWorktreeRepos(ctx);
+      const worktreePool =
+        dormantRepos.length > 0
+          ? {
+              dormant: true as const,
+              repos: dormantRepos,
+              message: `worktree pool declared but dormant on this machine... enable with: ${WORKTREE_APP_ENABLE_COMMAND}`,
+            }
+          : { dormant: false as const };
       return {
         ok: true,
         data: {
@@ -36,6 +89,10 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
           portCacheAge: ctx.portCacheRef.updatedAt ? Date.now() - ctx.portCacheRef.updatedAt : null,
           freshness: getFreshnessSnapshot(),
           identity: ctx.identity,
+          health: { level: h.level, reasons: h.reasons },
+          metrics: h.metrics,
+          eventLoop: h.eventLoop,
+          worktreePool,
         },
       };
     },
@@ -47,6 +104,7 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
         const repo = p.repo || "unknown";
         portsByRepo[repo] = (portsByRepo[repo] || 0) + 1;
       }
+      const h = ctx.getHealth();
 
       return {
         ok: true,
@@ -61,6 +119,9 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
           lastRefresh: ctx.refreshStatusRef.lastRefreshAt || null,
           portsByRepo,
           pendingNotifications: peekNotifications().length,
+          health: { level: h.level, reasons: h.reasons },
+          metrics: h.metrics,
+          eventLoop: h.eventLoop,
         },
       };
     },
@@ -104,7 +165,9 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
         // Detached worktrees have no branch — omit them from the listing.
-        const worktrees = listWorktrees(repoPath).filter((w) => w.branch);
+        const worktrees = ((await listWorktreesAsync(repoPath)) ?? []).filter(
+          (w): w is { path: string; branch: string } => Boolean(w.branch),
+        );
         detailed[repoName] = { path: repoPath, worktrees };
       }
 
@@ -115,8 +178,9 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
       // Return cached port data, optionally filtered by repo.
       // `refresh: true` forces a fresh scan first (used by `rt port` so the
       // CLI never shows the 30s-stale cache).
-      const repoFilter = payload?.repo as string | undefined;
-      const shouldRefresh = payload?.refresh === true;
+      const p = payload as { repo?: string; refresh?: boolean } | undefined;
+      const repoFilter = p?.repo;
+      const shouldRefresh = p?.refresh === true;
       if (shouldRefresh) {
         const { scanListeningPorts } = await import("../../port-scanner.ts");
         ctx.portCacheRef.ports = await scanListeningPorts();
@@ -158,6 +222,16 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
     "notifications:peek": async () => {
       // Peek without draining — for diagnostics
       return { ok: true, data: peekNotifications() };
+    },
+
+    "daemon:log-level": async (payload) => {
+      const level = (payload as { level?: string } | undefined)?.level;
+      const VALID = ["trace", "debug", "info", "warn", "error"];
+      if (level) {
+        if (!VALID.includes(level)) return { ok: false, error: `invalid level: ${level}` };
+        ctx.setLogLevel(level);
+      }
+      return { ok: true, level: ctx.getLogLevel() };
     },
   };
 }

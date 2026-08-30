@@ -11,6 +11,7 @@ import { setSetting } from "../../settings/write.ts";
 import { closeStateDb, setKvValue } from "../../state/index.ts";
 import { serializeIdentity } from "../../settings/identity.ts";
 import { linkPath } from "../../deps/links.ts";
+import { DEV_MODE_TAG } from "../../dev-mode.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { SecretsExecResult, SecretsExecSeam, SecretsSeams } from "../../secrets/store.ts";
 import { readTeamSecret, teamSopsYamlPath } from "../../secrets/team-store.ts";
@@ -668,7 +669,16 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
   }
 
   test("path.link: links fast-browser/gitq/deck, skips rt when the dev-mode wrapper owns ~/.local/bin/rt, installs shell + zshenv precedence", async () => {
-    const p = bundleProbe({ files: { [linkPath(home, "rt")]: "#!/bin/sh\nexec bun run cli.ts \"$@\"\n" } });
+    // isDevModeWrapper reads through p.readPrefix (Probes-routed, bounded),
+    // so the fake in-memory files map is enough -- no real fs write needed.
+    // (A real write here would also flip the REAL currentMode(), which this
+    // describe block's `home` is real HOME for: appBundleRoot() would then
+    // hunt for the dev-flavor bundle name and miss this fixture's prod-named
+    // appRoot entirely, skipping fast-browser/gitq/deck too.) Content must be
+    // genuinely recognized (the marker), not any bare "#!" script.
+    const rtLinkPath = linkPath(home, "rt");
+    const wrapperContent = `#!/bin/sh\n${DEV_MODE_TAG}\nexec bun run cli.ts "$@"\n`;
+    const p = bundleProbe({ files: { [rtLinkPath]: wrapperContent } });
     const { ctx, logs } = makeCtx(p);
 
     const outcome = await pathLinkStep.run(ctx);

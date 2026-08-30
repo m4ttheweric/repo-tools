@@ -20,8 +20,9 @@
  * visible from here.
  */
 
-import { existsSync, realpathSync, statSync } from "fs";
+import { existsSync, statSync } from "fs";
 import { join, resolve as resolvePath } from "path";
+import { canon } from "./fs-canon.ts";
 import {
   getKnownRepos,
   loadRepoIndexEntries,
@@ -116,15 +117,6 @@ export function isRefusal(x: LocatePlan | LocateRefusal): x is LocateRefusal {
 
 function refuse(refusal: LocateRefusalCode, message: string): LocateRefusal {
   return { refusal, message };
-}
-
-/** realpathSync, degrading to the literal spelling — a gone path must compare, not throw. */
-function canon(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
 }
 
 /** `path` re-rooted onto `newPath`, or null when it lives outside the moved tree (an external worktree keeps its own path). */

@@ -10,6 +10,8 @@ import type { FSWatcher } from "fs";
 import type { Logger } from "pino";
 import type { PortEntry } from "../../port-scanner.ts";
 import type { BranchCacheStore } from "../../state/index.ts";
+import type { HealthSnapshot } from "../health.ts";
+import type { RepoIndex } from "../../repo-index.ts";
 
 /**
  * RT-48: `CacheEntry` used to be DECLARED here — a third copy of the same
@@ -19,10 +21,8 @@ import type { BranchCacheStore } from "../../state/index.ts";
  */
 export type { CacheEntry } from "../../state/index.ts";
 
-/** Repo index (name → absolute path) as loaded from ~/.mattstack/rt/repos.json. */
-export interface RepoIndex {
-  [repoName: string]: string;
-}
+/** Re-export so modules importing `RepoIndex` from this path keep compiling unchanged; `lib/repo-index.ts` is the single owner. */
+export type { RepoIndex };
 
 /**
  * Live ref to the daemon's port-scan cache. Mutated in-place by refreshPortCache
@@ -68,11 +68,19 @@ export interface HandlerContext {
   checkAndRepairHooksPath: (repoName: string, repoPath: string) => Promise<boolean>;
   /** Start a directory watch over a repo's .git/config and run an initial check. */
   startWatchingRepo:       (repoName: string, repoPath: string) => void;
-  /** Holder for the last cache-refresh timestamp (0 = never). */
-  refreshStatusRef:        { lastRefreshAt: number };
+  /** Holder for the last cache-refresh cycle's outcome (0s = never run). */
+  refreshStatusRef:        { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number };
+  /** Computes the current health verdict (level/reasons/metrics/eventLoop) on demand; not cached, cheap enough per call. */
+  getHealth:               () => HealthSnapshot;
+  /** Current loop-monitor heartbeat sequence number, echoed by `ping`. */
+  heartbeatSeq:            () => number;
+  /** Sets the daemon logger's live level (trace/debug/info/warn/error). */
+  setLogLevel:             (l: string) => void;
+  /** Reads the daemon logger's current live level. */
+  getLogLevel:             () => string;
 }
 
-export type Handler    = (payload: any, signal?: AbortSignal) => Promise<any>;
+export type Handler    = (payload: unknown, signal?: AbortSignal) => Promise<unknown>;
 export type HandlerMap = Record<string, Handler>;
 
 // ── Typed command surface (MAT-31) ───────────────────────────────────────────
@@ -94,3 +102,28 @@ export type CommandResult<K extends CommandName> =
 export type TypedHandlers = {
   [K in CommandName]: (payload: Commands[K]["payload"]) => Promise<CommandResult<K>>;
 };
+
+// ── Daemon-internal command surface (R016) ────────────────────────────────
+// Verbs with no out-of-process consumer found anywhere in this repo (no REST
+// route, no rt CLI call, no tray/VS Code caller) stay off the shipped
+// rt-client catalog -- that surface is meant to be exactly the cross-process
+// contract, not every daemon command that happens to be reachable over the
+// socket. Typed here for the same reason the shipped catalog is typed: a
+// payload/data drift is a compile error for this repo's own tests, not a
+// silent mismatch. settings:get/settings:list and home:snapshot* already
+// carried this "not part of the catalog" posture in their own handler files
+// before this map existed; hooks:status and notifications:peek join them
+// here because no caller for either was found.
+import type { Resolved, ListedSetting } from "../../../packages/rt-client/src/settings/resolve.ts";
+import type { SnapshotResult, SnapshotStatus } from "../home-snapshot.ts";
+
+export interface InternalCommands {
+  "settings:get": { payload: { key?: string; repoIdentity?: string }; data: Resolved<unknown> };
+  "settings:list": { payload: { repoIdentity?: string }; data: { settings: ListedSetting[] } };
+  /** Diagnostics only, by its own doc comment (status.ts) -- never drained. */
+  "notifications:peek": { payload: Record<string, never>; data: unknown[] };
+  "home:snapshot": { payload: Record<string, never>; data: SnapshotResult };
+  "home:snapshot-status": { payload: Record<string, never>; data: SnapshotStatus };
+  "hooks:status": { payload: { repo?: string }; data: unknown };
+}
+export type InternalCommandName = keyof InternalCommands;

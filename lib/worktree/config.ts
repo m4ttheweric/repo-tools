@@ -22,8 +22,9 @@
  * Honest degrade, not an error.
  *
  * ── Computed defaults and sanitizers stay HERE ────────────────────────────
- * The registry only carries `{ onDeck: 0 }`; `root` (= `<repoPath>/.worktrees`)
- * and `branchFormat` cannot live there because they depend on the repo being
+ * The registry only carries `{ onDeck: 0 }`; `root` (= the pool root under
+ * `~/.mattstack/rt/worktrees/<serialized identity>`, RT-52) and `branchFormat`
+ * cannot live there because they depend on the repo being
  * read. And the resolver only type-checks the TOP level of a value (an
  * object), so the sanitizers below are what actually guarantee the
  * `WorktreeRepoConfig` shape, from whichever rung a field arrived on. That
@@ -51,19 +52,23 @@
  * means the store does not own the key yet: the file stays authoritative,
  * INCLUDING the one-time seed from the legacy `~/.mattstack/rt/parking-lot.json`
  * when the new file is absent and the old one exists. Once the store owns the
- * key it wins PER-FIELD (`rt.worktreeApp` is a field-bag object, not a map) —
- * a store value carrying only `killProcesses` still gets `enabled`'s default.
- * Both fields default to true either way, matching the legacy
- * `raw?.enabled !== false` semantics. A probe failure (thrown by getSetting)
- * counts as unowned plus one warning that never echoes the store's value.
+ * key it wins PER-FIELD (`rt.worktreeApp` is a field-bag object, not a map);
+ * a store value carrying only `killProcesses` still gets `enabled`'s per-field
+ * default, which stays `true` on that path (the store branch's own
+ * `!== false` semantics, matching the legacy `raw?.enabled !== false` reading
+ * of an owned value). The machine-wide DEFAULT for a genuinely unowned
+ * machine (no store rung, no legacy file) is different (S077): `enabled`
+ * defaults to `false` there, `killProcesses` still defaults to `true`. A
+ * probe failure (thrown by getSetting) counts as unowned plus one warning
+ * that never echoes the store's value.
  */
 
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { readJson, writeJson } from "../json-store.ts";
-import { rtDir } from "../rt-paths.ts";
-import { deriveRepoIdentity } from "../settings/identity.ts";
+import { rtDir, worktreePoolRoot } from "../rt-paths.ts";
+import { deriveRepoIdentity, serializeIdentity } from "../settings/identity.ts";
 import { explainSetting, getSetting, type ResolveOpts } from "../settings/resolve.ts";
 
 /**
@@ -88,7 +93,7 @@ export interface ReadyStep {
 export interface WorktreeRepoConfig {
   onDeck: number; // default 0
   namePool?: string[];
-  root: string; // default join(repoPath, ".worktrees")
+  root: string; // default worktreePoolRoot(serializedIdentity), out of the clone (RT-52)
   branchFormat: string; // default "<ticket>-<slug>"
   ready: ReadyStep[]; // declared domain steps ONLY (implicit install prepended at resolve time)
 }
@@ -149,11 +154,12 @@ function sanitizeOnDeck(raw: unknown): number {
 
 /**
  * Worktree root, with the reader's computed default. `expandHome` is applied
- * after the resolver's own variable expansion — see the module header for why
- * a bare `~` still has to work.
+ * after the resolver's own variable expansion (module header: a bare `~` still
+ * has to work). The default is the out-of-repo pool root (RT-52) keyed by the
+ * repo's serialized identity, not a directory inside the clone.
  */
-function sanitizeRoot(raw: unknown, repoPath: string): string {
-  return typeof raw === "string" && raw.length > 0 ? expandHome(raw) : join(repoPath, ".worktrees");
+function sanitizeRoot(raw: unknown, serializedIdentity: string): string {
+  return typeof raw === "string" && raw.length > 0 ? expandHome(raw) : worktreePoolRoot(serializedIdentity);
 }
 
 function sanitizeBranchFormat(raw: unknown): string {
@@ -193,11 +199,12 @@ export async function loadWorktreeRepoConfig(
 ): Promise<WorktreeRepoConfig> {
   const derived = await deriveRepoIdentity(repoPath);
   const identity = derived.kind === "remote" ? derived.id : null;
+  const serialized = serializeIdentity(derived);
   const declared = resolveDeclared(repoName, identity, repoPath);
 
   const cfg: WorktreeRepoConfig = {
     onDeck: sanitizeOnDeck(declared.onDeck),
-    root: sanitizeRoot(declared.root, repoPath),
+    root: sanitizeRoot(declared.root, serialized),
     branchFormat: sanitizeBranchFormat(declared.branchFormat),
     ready: sanitizeReady(declared.ready),
   };
@@ -361,8 +368,15 @@ export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): Re
 
 // ─── App-level config ────────────────────────────────────────────────────────
 
-const APP_CONFIG_DEFAULTS: WorktreeAppConfig = { enabled: true, killProcesses: true };
+// Unowned machines start disabled (S077): a team-declared pool must never build
+// multi-GB worktrees on a laptop that never opted in. A machine that explicitly
+// set rt.worktreeApp, or has a legacy parking-lot.json, keeps its own value via
+// the ownership latch below... this default only reaches the no-store-no-legacy case.
+const APP_CONFIG_DEFAULTS: WorktreeAppConfig = { enabled: false, killProcesses: true };
 const APP_SETTING_KEY = "rt.worktreeApp";
+
+/** The exact command a dormant machine's operator runs to opt in. */
+export const WORKTREE_APP_ENABLE_COMMAND = 'rt settings set rt.worktreeApp \'{"enabled":true}\' --scope machine';
 
 /**
  * The ownership-latch probe: `undefined` means `rt.worktreeApp` is unowned
@@ -414,4 +428,14 @@ export function loadWorktreeAppConfig(): WorktreeAppConfig {
     };
   }
   return loadFromLegacyFile();
+}
+
+/**
+ * True when a team (or a repo's own store rung) has declared a worktree pool
+ * for this repo but the app-level toggle is off on this machine: the S077
+ * dormant state callers (worktree:list, daemon status) surface to the operator.
+ */
+export async function worktreePoolDormant(repoName: string, repoPath: string): Promise<boolean> {
+  if (loadWorktreeAppConfig().enabled) return false;
+  return worktreeSettingsDeclared(repoName, repoPath);
 }

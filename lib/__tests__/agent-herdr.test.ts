@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { herdrAgentWait, launchInWorkspace, type HerdrRunner } from "../agent-herdr.ts";
+import { mkdtempSync, writeFileSync, chmodSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { defaultHerdrRunner, herdrAgentWait, launchInWorkspace, resolveHerdrBin, type HerdrRunner } from "../agent-herdr.ts";
 
 function scripted(responses: Record<string, { stdout: string; exitCode?: number }>) {
   const calls: string[][] = [];
@@ -89,4 +92,35 @@ test("herdrAgentWait builds the current verb (agent wait --until)", async () => 
   const { calls, runner } = scripted({ "agent wait": { stdout: "" } });
   await herdrAgentWait("wA:p1", ["idle", "done"], 45000, runner);
   expect(calls[0]).toEqual(["agent", "wait", "wA:p1", "--until", "idle", "--until", "done", "--timeout", "45000"]);
+});
+
+test("resolveHerdrBin prefers HERDR_BIN over everything else", () => {
+  const bin = resolveHerdrBin({ HERDR_BIN: "/custom/herdr", HOME: "/home/x" }, () => "/opt/homebrew/bin/herdr");
+  expect(bin).toBe("/custom/herdr");
+});
+
+test("resolveHerdrBin prefers a PATH-resolved herdr over the ~/.local/bin fallback", () => {
+  const bin = resolveHerdrBin({ HOME: "/home/x" }, () => "/opt/homebrew/bin/herdr");
+  expect(bin).toBe("/opt/homebrew/bin/herdr");
+});
+
+test("resolveHerdrBin falls back to ~/.local/bin/herdr when PATH resolution fails", () => {
+  const bin = resolveHerdrBin({ HOME: "/home/x" }, () => null);
+  expect(bin).toBe("/home/x/.local/bin/herdr");
+});
+
+test("defaultHerdrRunner throws a clear error when the resolved bin does not exist", async () => {
+  const runner = defaultHerdrRunner({ HERDR_BIN: "/nonexistent/herdr", HOME: "/home/x" });
+  await expect(runner(["workspace", "list"])).rejects.toThrow(/herdr not found/);
+});
+
+test("defaultHerdrRunner passes the supplied env through to the child (C9: it must not fall back to bare process.env)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agent-herdr-env-"));
+  const fakeHerdr = join(dir, "herdr");
+  writeFileSync(fakeHerdr, "#!/bin/sh\necho \"$SENTINEL_VAR\"\n");
+  chmodSync(fakeHerdr, 0o755);
+
+  const runner = defaultHerdrRunner({ HERDR_BIN: fakeHerdr, HOME: dir, SENTINEL_VAR: "from-supplied-env" });
+  const result = await runner(["workspace", "list"]);
+  expect(result.stdout.trim()).toBe("from-supplied-env");
 });

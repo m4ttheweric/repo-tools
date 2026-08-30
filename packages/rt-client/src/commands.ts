@@ -4,7 +4,7 @@
  * its functions against this map so a new command only needs an entry here
  * plus one function, never a change to the transport itself.
  */
-import type { PullRequest, MRDetail } from "@mattstack/glance";
+import type { PullRequest, MRDetail, Pipeline } from "@mattstack/glance";
 
 export type Discussion = MRDetail["discussions"][number];
 
@@ -92,8 +92,6 @@ export interface ChatMember {
   joinedAt: number;
   lastReadId: number;
   wakeOn: WakeMode;
-  lastSeenAt?: number;
-  armedAt?: number;
   cwd?: string;
   pane?: string;
   /** Presence-joined by chat:who's handler — the only place this type is ever returned, and it always attaches one. */
@@ -130,7 +128,7 @@ export interface RoomSummary {
  * above: mirrors lib/state/presence-store.ts's types, which rt-client
  * cannot import.
  */
-export type BuddyStatus = "live" | "idle" | "deaf" | "offline";
+export type BuddyStatus = "live" | "idle" | "offline";
 
 export interface PresenceRow {
   sessionId: string;
@@ -143,8 +141,6 @@ export interface PresenceRow {
   statusText?: string;
   signedInAt: number;
   lastSeenAt: number;
-  tailSeenAt?: number;
-  armedAt?: number;
   signedOutAt?: number;
 }
 
@@ -166,6 +162,11 @@ export interface ChatPane {
 export interface PaneAccount { slot: number; email: string; alias?: string; headroom?: string }
 export interface PaneDirectory { path: string; repo: string; branch?: string }
 export interface InviteResult { paneId: string; delivered: "accepted" | "queued" | "refused"; reason?: string }
+
+/** Duplicated shape on purpose: mirrors lib/daemon/inject.ts's InjectResult. */
+export type PaneDelivery = "accepted" | "queued" | "refused";
+export interface PaneSendResult { paneId: string; delivered: PaneDelivery; reason?: string }
+export interface PaneFocusResult { paneId: string; focused: boolean }
 
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
@@ -219,11 +220,131 @@ export interface AgentRecord {
   id: string; repo: string; cwd: string; provider: string;
   surface: AgentSurface; sessionId: string;
   model?: string; effort?: string; account?: string;
-  label?: string; caller?: string;
+  label?: string; caller?: string; handle?: string;
   paneId?: string; tabId?: string; workspaceId?: string;
   extraArgs?: string; exitCode?: number; resultPath?: string;
   createdAt: number; lastResumedAt?: number; finishedAt?: number;
 }
+
+// ─── The daemon's remaining out-of-process commands (R013/R016) ──
+// rt CLI <-> daemon, tray <-> daemon, and VS Code extension <-> daemon are
+// all separate OS processes, so any command reachable from one counts as
+// "external" here even when the only known caller today is rt's own CLI.
+
+/** Duplicated shape on purpose (see EventsBusEvent above): mirrors lib/daemon/health.ts's HealthSnapshot. */
+export type HealthLevel = "ok" | "degraded" | "unhealthy";
+export interface HealthMetrics { rss: number; heapUsed: number; external: number; uptimeMs: number; wsClients: number; watchers: number }
+export interface HealthEventLoop { maxLagMs: number; lastStallAt: number | null; lastStallCmd: string | null; stalls: number }
+export interface DaemonIdentity { flavor: "dev" | "prod"; version: string; sourceRev: string | null; startedAt: number }
+
+export interface PingData extends DaemonIdentity {
+  uptime: number;
+  pid: number;
+  health: HealthLevel;
+  eventLoop: HealthEventLoop;
+  heartbeatSeq: number;
+  supervision: { bootAttempts: number; lastReadyAt: number | null; recentFailures: unknown[]; lastExit: unknown };
+}
+
+export interface StatusData {
+  pid: number; uptime: number; watchedRepos: number; cacheEntries: number;
+  portsCached: number; portCacheAge: number | null;
+  freshness: unknown; identity: DaemonIdentity;
+  health: { level: HealthLevel; reasons: string[] }; metrics: HealthMetrics; eventLoop: HealthEventLoop;
+  worktreePool: { dormant: true; repos: string[]; message: string } | { dormant: false };
+}
+
+export interface TrayStatusData {
+  pid: number; uptime: number; memoryUsage: number; watchedRepos: number; cacheEntries: number;
+  portsCached: number; portCacheAge: number | null; lastRefresh: number | null;
+  portsByRepo: Record<string, number>; pendingNotifications: number;
+  health: { level: HealthLevel; reasons: string[] }; metrics: HealthMetrics; eventLoop: HealthEventLoop;
+}
+
+/** Duplicated shape on purpose: mirrors lib/port-scanner.ts's PortEntry. */
+export interface PortEntry {
+  port: number; pid: number; command: string; cwd: string;
+  repo: string | null; worktree: string | null; branch: string | null;
+  relativeDir: string; uptime: string;
+}
+
+export interface PortsData {
+  ports: PortEntry[];
+  grouped: Record<string, Record<string, PortEntry[]>>;
+  updatedAt: number;
+  age: number | null;
+}
+
+/** Duplicated shape on purpose: mirrors lib/state/notifier-store.ts's NotificationEvent. */
+export interface RtNotificationEvent {
+  id: string; title: string; message: string; url?: string;
+  category: string; timestamp: number; pids?: number[];
+}
+
+export interface ReposData {
+  repos: Record<string, { path: string; worktrees: Array<{ path: string; branch: string }> }>;
+  watched: string[];
+}
+
+export interface TccCheckData {
+  blocked: Array<{ name: string; path: string; error: string }>;
+  accessible: string[];
+  totalRepos: number;
+  daemonPid: number;
+}
+
+export interface WorktreeTreeRow {
+  name: string; kind: string; state: string; path: string; branch: string | null;
+  repoName: string; mr: { iid: number; state: string; title: string } | null;
+  duplicateBranch?: true;
+  [extra: string]: unknown;
+}
+export interface WorktreeListData {
+  trees: WorktreeTreeRow[];
+  dormant?: true; dormantRepos?: string[]; message?: string;
+}
+export interface WorktreeProvisionData {
+  tree: string; path: string; branch: string; wasOnDeck: boolean;
+  readyAt: string | null; branchState: "new" | "tracking-remote" | "existing-clean" | "diverged" | "behind";
+  readyFailed?: true; failedStep?: string;
+}
+export interface WorktreeCreateData { tree: string; path: string }
+export interface WorktreeDisposeData {
+  disposed: string[];
+  refused: Array<{ tree: string; reason: string }>;
+  recoverable: Array<{ tree: string; path: string; until: string }>;
+}
+export interface WorktreeRestoreData {
+  restored: true; path: string; tree: string; readyFailed?: true; failedStep?: string;
+}
+export interface WorktreeFreshenData { ran: string[] }
+export interface WorktreeAdoptData {
+  main: string; claimed: string[]; unmanaged: string[]; disposed: string[];
+  refused: Array<{ tree: string; reason: string }>;
+}
+
+/** Duplicated shape on purpose: mirrors lib/endpoint/store.ts's EndpointClaim. */
+export interface EndpointClaim { worktree: string; role: string; port: number; ts: number }
+export interface EndpointRoleRef { port: number; url: string; running: boolean }
+export interface EndpointClaimData { role: string; port: number; url: string; refs: Record<string, EndpointRoleRef> }
+export interface EndpointLookupData { claimed: boolean; port: number | null; url: string | null; running: boolean }
+export interface EndpointReleaseData { released: number }
+export interface EndpointStatusData { repos: Record<string, Array<EndpointClaim & { running: boolean }>> }
+
+/**
+ * Duplicated shape on purpose: mirrors @mattstack/glance's `JobDetail`
+ * (types.ts), which the package does not re-export from its index.
+ */
+export type MrJobDetail = { type: "trace"; content: string } | { type: "bridge"; downstreamPipeline: Pipeline };
+
+export interface DiscussionsWriteData { discussions: Discussion[]; fetchedAt: number }
+export interface DiscussionsDiffsData { diffs: Array<{ newPath: string; diff: string }>; truncated: boolean }
+
+export type MRActionName =
+  | "merge" | "rebase" | "approve" | "unapprove"
+  | "setAutoMerge" | "cancelAutoMerge"
+  | "retryJob" | "retryPipeline"
+  | "toggleDraft" | "requestReReview";
 
 export interface Commands {
   "project-mrs:read": { payload: { repoName: string; maxAgeMs?: number; demand?: DemandDecl }; data: ProjectMRsData };
@@ -289,33 +410,58 @@ export interface Commands {
   "chat:who": { payload: { room: string }; data: { members: ChatMember[] } };
   "chat:mark": { payload: { handle: string; room?: string }; data: Record<string, never> };
   "chat:messages": { payload: { room: string; before?: number; limit?: number }; data: { messages: ChatMessage[] } };
-  "chat:arm": { payload: { handle: string; room?: string; sessionId?: string }; data: Record<string, never> };
-  "chat:touch": { payload: { handle: string; room?: string; sessionId?: string }; data: Record<string, never> };
-  "chat:disarm": { payload: { handle: string; sessionId?: string }; data: Record<string, never> };
-  "chat:unread-waking": { payload: { handle: string; room?: string }; data: { rooms: { room: string; count: number; mentions: number; maxId: number }[] } };
 
   // A session id keys these to one signed-in handle, not a room-membership
   // handle string.
+  /**
+   * No `baseHandle` means "draw me a first name": the daemon picks the least
+   * recently used pool name no live session holds. `viaPane` resolves
+   * `sessionId` daemon-side from herdr's `session.snapshot` for the pane id
+   * in `pane`, rather than trusting a caller-supplied id -- the caller may
+   * have none of its own (a human or another agent signing a target pane in
+   * on its behalf); the response's `sessionId` and `room` are then the only
+   * way that caller learns what got signed in and joined, since it has
+   * nothing local to derive either from.
+   */
   "chat:sign-in": {
-    payload: { sessionId: string; baseHandle: string; cwd?: string; repo?: string; branch?: string; pane?: string; statusText?: string };
-    data: { handle: string; reclaimed: boolean };
+    payload: {
+      sessionId?: string;
+      baseHandle?: string;
+      cwd?: string;
+      repo?: string;
+      branch?: string;
+      pane?: string;
+      statusText?: string;
+      viaPane?: boolean;
+      /** `viaPane` only: overrides the pane-cwd-derived room outright. */
+      room?: string;
+      /** `viaPane` only: skip room derivation/join entirely, same as --no-room on the non-pane path. */
+      noRoom?: boolean;
+    };
+    data: { handle: string; baseHandle: string; reclaimed: boolean; sessionId: string; room: string | null };
   };
-  "chat:sign-out": { payload: { sessionId: string }; data: Record<string, never> };
+  /**
+   * `viaPane` mirrors `chat:sign-in`'s: the daemon resolves `pane` to a
+   * session id via herdr's `session.snapshot` rather than trusting a
+   * caller-supplied one, so a process signing another pane out (herdr-chat,
+   * or a human invoking a target pane) needs neither that pane's session id
+   * nor its own. The response's `sessionId` is the RESOLVED id, the only way
+   * such a caller learns which session file to delete locally.
+   */
+  "chat:sign-out": {
+    payload: { sessionId?: string; pane?: string; viaPane?: boolean };
+    data: { sessionId: string };
+  };
   "chat:away": { payload: { sessionId: string; text: string }; data: Record<string, never> };
   "chat:back": { payload: { sessionId: string }; data: Record<string, never> };
   "chat:buddies": { payload: Record<string, never>; data: { buddies: Array<PresenceRow & { status: BuddyStatus }> } };
-  /** `unread`'s three fields are disjoint and sum to the true total: `dms` is DM-room waking count; `mentions` is non-DM waking mentions; `rooms` is non-DM waking count minus those mentions (never negative). */
-  "chat:pulse": {
-    payload: { sessionId: string; cwd?: string; repo?: string; branch?: string; pane?: string };
-    data: { unread: { dms: number; mentions: number; rooms: number }; status: BuddyStatus };
-  };
   "chat:dm": { payload: { from: string; to: string; body: string; sessionId?: string }; data: { room: string; id: number; recipients: string[] } };
   "chat:archive": { payload: { room: string; handle: string; archived: boolean }; data: { room: string; archivedAt: number | null } };
   "chat:dm-open": { payload: { from: string; to: string; sessionId?: string }; data: { room: string; created: boolean } };
 
   // ─── Agent handoff (rt agent) ────────────────────────────────────────────
   "agent:start": { payload: { repo: string; cwd: string; prompt?: string; surface?: AgentSurface; model?: string; effort?: string; account?: string; label?: string; caller?: string; workspace?: string; tab?: string; extraArgs?: string }; data: AgentRecord };
-  "agent:resume": { payload: { id: string; prompt?: string; surface?: AgentSurface }; data: AgentRecord };
+  "agent:resume": { payload: { id: string; prompt?: string; surface?: AgentSurface; workspace?: string; tab?: string }; data: AgentRecord };
   "agent:get": { payload: { id: string }; data: AgentRecord };
   "agent:list": { payload: { repo?: string }; data: { agents: AgentRecord[] } };
   "chat:invite": { payload: { paneId: string; room: string; note?: string; from: string; callerPane?: string }; data: InviteResult };
@@ -327,6 +473,60 @@ export interface Commands {
     payload: { cwd: string; account?: string; model?: string; effort?: string; prompt?: string; workspace?: string };
     data: { pane: ChatPane; ready: boolean };
   };
+  "pane:send": { payload: { paneId: string; text: string; callerPane?: string }; data: PaneSendResult };
+  "pane:focus": { payload: { paneId: string }; data: PaneFocusResult };
+
+  // ─── R013/R016 ────────────────────────────────────────────────
+  "cache:read": { payload: { branches?: string[]; maxAgeMs?: number; repoIdentity?: string }; data: Record<string, BranchEnrichment> };
+  /** `source` ("cache"|"fresh"|"empty") rides alongside `data` on the wire, not nested under it. */
+  "branch:enrich": { payload: { branch: string; repoPath?: string; remoteUrl?: string; repoIdentity?: string }; data: BranchEnrichment | null };
+  /** Fire-and-forget kickoff; wire reply is `{ok, message}`, not `{ok,data}`. */
+  "cache:refresh": { payload: Record<string, never>; data: { message: string } };
+  "daemon:log-level": { payload: { level?: "trace" | "debug" | "info" | "warn" | "error" }; data: { level: string } };
+  "ping": { payload: Record<string, never>; data: PingData };
+  "status": { payload: Record<string, never>; data: StatusData };
+  "tray:status": { payload: Record<string, never>; data: TrayStatusData };
+  "tcc:check": { payload: Record<string, never>; data: TccCheckData };
+  "repos": { payload: Record<string, never>; data: ReposData };
+  "ports": { payload: { repo?: string; refresh?: boolean }; data: PortsData };
+  "notifications": { payload: Record<string, never>; data: RtNotificationEvent[] };
+
+  "discussions:refresh": { payload: { repoName: string; iid: number }; data: DiscussionsWriteData };
+  "discussions:resolve": { payload: { repoName: string; iid: number; discussionId: string; resolved?: boolean }; data: DiscussionsWriteData };
+  "discussions:reply": { payload: { repoName: string; iid: number; discussionId: string; body: string }; data: DiscussionsWriteData };
+  "discussions:diffs": { payload: { repoName: string; iid: number }; data: DiscussionsDiffsData };
+
+  /** Wire reply is `{ok:true}` on success (no `data`); a failure is `{ok:false,error}`. */
+  "mr:action": { payload: { repoName: string; iid: number; action: MRActionName; args?: unknown[] }; data: Record<string, never> };
+  "mr:fetch-job-detail": { payload: { repoName: string; iid: number; jobId: number; pipelineId?: number }; data: MrJobDetail };
+  "mr:fetch-job-trace": { payload: { repoName: string; iid: number; jobId: number }; data: string };
+
+  "endpoint:claim": { payload: { repo: string; worktree: string; role: string; pid?: number }; data: EndpointClaimData };
+  "endpoint:lookup": { payload: { repo: string; worktree: string; role: string }; data: EndpointLookupData };
+  "endpoint:release": { payload: { repo: string; worktree: string; role?: string }; data: EndpointReleaseData };
+  "endpoint:status": { payload: { repo?: string }; data: EndpointStatusData };
+
+  "repos:locate": { payload: { newPath: string; repo?: string; dryRun?: boolean }; data: unknown };
+  "freshness:reconcile": { payload: Record<string, never>; data: unknown };
+
+  /** Wire reply on success is `{ok:true, repaired}` / `{ok:true}` (no `data`). */
+  "hooks:repair": { payload: { repo: string }; data: Record<string, never> };
+  "hooks:watch": { payload: { repo: string }; data: Record<string, never> };
+
+  "sdm:catalog": { payload: { refresh?: boolean }; data: unknown };
+  "sdm:snapshot": { payload: { force?: boolean }; data: unknown };
+  "sdm:recents": { payload: Record<string, never>; data: unknown };
+  "sdm:reconnect": { payload: { key: string }; data: unknown };
+
+  "system-processes": { payload: Record<string, never>; data: unknown };
+
+  "worktree:provision": { payload: { repoName: string; branch?: string; ticket?: string; ticketTitle?: string; disposal?: "job" | "merge"; owner?: string }; data: WorktreeProvisionData };
+  "worktree:create": { payload: { repoName: string; onDeck?: boolean }; data: WorktreeCreateData };
+  "worktree:dispose": { payload: { repoName?: string; owner?: string; tree?: string; force?: boolean; callerPid?: number }; data: WorktreeDisposeData };
+  "worktree:list": { payload: { repoName?: string }; data: WorktreeListData };
+  "worktree:restore": { payload: { repoName: string; tree: string }; data: WorktreeRestoreData };
+  "worktree:freshen": { payload: { repoName?: string; tree?: string }; data: WorktreeFreshenData };
+  "worktree:adopt": { payload: { repoName: string; claim?: boolean }; data: WorktreeAdoptData };
 }
 
 export type CommandName = keyof Commands;
@@ -352,16 +552,11 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "chat:who",
   "chat:mark",
   "chat:messages",
-  "chat:arm",
-  "chat:touch",
-  "chat:disarm",
-  "chat:unread-waking",
   "chat:sign-in",
   "chat:sign-out",
   "chat:away",
   "chat:back",
   "chat:buddies",
-  "chat:pulse",
   "chat:dm",
   "chat:archive",
   "chat:dm-open",
@@ -375,4 +570,46 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "pane:accounts",
   "pane:directories",
   "pane:spawn",
+  "pane:send",
+  "pane:focus",
+
+  // ─── R013/R016 ────────────────────────────────────────────────
+  "cache:read",
+  "branch:enrich",
+  "cache:refresh",
+  "daemon:log-level",
+  "ping",
+  "status",
+  "tray:status",
+  "tcc:check",
+  "repos",
+  "ports",
+  "notifications",
+  "discussions:refresh",
+  "discussions:resolve",
+  "discussions:reply",
+  "discussions:diffs",
+  "mr:action",
+  "mr:fetch-job-detail",
+  "mr:fetch-job-trace",
+  "endpoint:claim",
+  "endpoint:lookup",
+  "endpoint:release",
+  "endpoint:status",
+  "repos:locate",
+  "freshness:reconcile",
+  "hooks:repair",
+  "hooks:watch",
+  "sdm:catalog",
+  "sdm:snapshot",
+  "sdm:recents",
+  "sdm:reconnect",
+  "system-processes",
+  "worktree:provision",
+  "worktree:create",
+  "worktree:dispose",
+  "worktree:list",
+  "worktree:restore",
+  "worktree:freshen",
+  "worktree:adopt",
 ];

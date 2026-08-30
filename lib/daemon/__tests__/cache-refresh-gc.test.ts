@@ -31,7 +31,7 @@ import { join } from "path";
 import type { Logger } from "pino";
 
 import * as enrichModule from "../../enrich.ts";
-import * as gitWorktreesModule from "../../git-worktrees.ts";
+import * as gitAsync from "../../worktree/git-async.ts";
 import * as notifierModule from "../../notifier.ts";
 import * as repoTrackingModule from "../../repo-tracking.ts";
 import * as discussionsModule from "../discussions-file-store.ts";
@@ -40,6 +40,7 @@ import { createCacheRefresher } from "../cache-refresh.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import { createDiscussionsFileStore } from "../discussions-file-store.ts";
 import { getBranchCacheStore, openStateDb, getNotifierStateBlob, setNotifierStateBlob, type CacheEntry } from "../../state/index.ts";
+import { composeKey } from "../../state/branch-cache.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CLEAN = "gcwire-clean";
@@ -101,11 +102,13 @@ function wireCycle(): Wiring {
   });
 
   // A real git tree is irrelevant to the GC claim; one branch per repo is
-  // enough to make the loop reach the enrichment call.
-  spyOn(gitWorktreesModule, "listWorktrees").mockImplementation((repoPath: string) => [
-    { path: repoPath, branch: `wt-${repoPath}` } as any,
+  // enough to make the loop reach the enrichment call and let FLAKY's onError
+  // fire (an empty branch list would short-circuit refreshAllMRs entirely and
+  // make FLAKY look clean, defeating the test).
+  spyOn(gitAsync, "listWorktreesAsync").mockImplementation(async (repoPath: string) => [
+    { path: repoPath, branch: `wt-${repoPath}` },
   ]);
-  spyOn(gitWorktreesModule, "listWorktreeRoots").mockReturnValue([]);
+  spyOn(gitAsync, "listWorktreeRootsAsync").mockResolvedValue([]);
 
   spyOn(enrichModule, "refreshAllMRs").mockImplementation(
     async (_branches, _remoteUrl, onError, repoName) => {
@@ -116,7 +119,7 @@ function wireCycle(): Wiring {
 
   // Notifications must never reach the tray from a unit test; the fired
   // ledger itself is still real (kv state under the preload HOME).
-  spyOn(notifierModule, "notify").mockImplementation(() => {});
+  spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
   // Call-order probe: the two prunes, in the order the cycle runs them.
   const calls: string[] = [];
@@ -131,7 +134,7 @@ function wireCycle(): Wiring {
   const refresh = createCacheRefresher({
     log: silentLog,
     cache,
-    refreshStatusRef: { lastRefreshAt: 0 },
+    refreshStatusRef: { lastRefreshAt: 0, lastSuccessAt: 0, failedRepos: 0, enrichErrors: 0 },
     portCacheRef: { ports: [], updatedAt: 0 },
     repoIndex: () => ({ [CLEAN]: tempDir("rt-gcwire-clean-"), [FLAKY]: tempDir("rt-gcwire-flaky-") }),
     broadcast: () => {},
@@ -156,11 +159,11 @@ describe("cache-refresh cycle: branch-cache GC", () => {
     await runCycle();
 
     // Clean repo: aged out. Fresh row of the same repo: kept.
-    expect(cache.entries["gcwire-clean-stale"]).toBeUndefined();
-    expect(cache.entries["gcwire-clean-fresh"]).toBeDefined();
+    expect(cache.entries[composeKey(CLEAN, "gcwire-clean-stale")]).toBeUndefined();
+    expect(cache.entries[composeKey(CLEAN, "gcwire-clean-fresh")]).toBeDefined();
     // Flaky repo: `onError` fired, so the repo never entered succeededRepos
     // and NOTHING of its rows may be aged out this cycle.
-    expect(cache.entries["gcwire-flaky-stale"]).toBeDefined();
+    expect(cache.entries[composeKey(FLAKY, "gcwire-flaky-stale")]).toBeDefined();
     // NULL-repo rows are unattributable: prunable by age alone.
     expect(cache.entries["gcwire-orphan-stale"]).toBeUndefined();
   }, 20_000);
@@ -203,7 +206,7 @@ describe("cache-refresh cycle: branch-cache GC", () => {
 
     await runCycle();
 
-    expect(cache.entries["gcwire-clean-stale"]).toBeUndefined();
+    expect(cache.entries[composeKey(CLEAN, "gcwire-clean-stale")]).toBeUndefined();
     const after = getNotifierStateBlob<{ fired: string[] }>({ fired: [] });
     expect(after.fired).not.toContain(evictedKey);
   }, 20_000);

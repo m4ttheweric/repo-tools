@@ -9,7 +9,7 @@ import { findMergeManifests, materializeSkills, MERGE_MANIFESTS_MISSING_CODE } f
 import { UserActionableError } from "../errors.ts";
 
 const VERSIONS_DIR = "/fake-home/.claude/plugins/cache/mattstack/mattstack";
-const SCRIPT_TAIL = ["plugin", "skills", "parameterized-skills", "scripts", "merge-manifests.sh"];
+const SCRIPT_TAIL = ["attachments", "parameterized-skills", "scripts", "merge-manifests.sh"];
 
 function scriptPath(version: string): string {
   return join(VERSIONS_DIR, version, ...SCRIPT_TAIL);

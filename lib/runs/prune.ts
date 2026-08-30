@@ -5,34 +5,21 @@
  * and must stay in front of every rmSync.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, realpathSync, rmSync, statSync, type Dirent } from "fs";
-import { basename, dirname, join, sep } from "path";
+import { existsSync, readdirSync, statSync, type Dirent } from "fs";
+import { join, sep } from "path";
+import { canon } from "../fs-canon.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { runsRoot } from "./store.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-// realpathSync resolves symlinks (worktree.ts's `canon` precedent), but a
-// plain try/catch->resolve() fallback would compare a canonicalized root
-// against a non-canonicalized candidate whenever the candidate (or a
-// component of it) doesn't exist yet — e.g. macOS's /var -> /private/var,
-// which breaks the prefix check even with no symlink attack involved. Walk
-// up to the deepest existing ancestor, canonicalize THAT, and reattach the
-// missing tail lexically, so both sides always go through the same scheme.
-function canon(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    const parent = dirname(path);
-    if (parent === path) return path;
-    return join(canon(parent), basename(path));
-  }
-}
-
 // Both sides are canonicalized (not just resolve()'d) so a symlinked
 // intermediate component — e.g. <root>/<repo> pointed outside the runs
 // root — resolves to its real target before the prefix check, rather than
-// passing on the pre-symlink spelling.
+// passing on the pre-symlink spelling. `dir` always exists here (pruneRuns
+// only calls this with a path returned by realDirNames), so the shared
+// canon()'s realpath-or-unchanged fallback never has to compare a resolved
+// root against an unresolved candidate.
 export function assertPrunable(dir: string, root: string): void {
   const canonical = canon(dir);
   const canonicalRoot = canon(root);
@@ -53,6 +40,26 @@ function realDirNames(path: string): string[] {
       .map((d: Dirent) => d.name);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Detached, unawaited `rm -rf` — mirrors lib/worktree/trash.ts's reap
+ * pattern. A recursive unlink of a large run tree must never block the
+ * daemon's single event-loop thread: a sync rmSync here froze every
+ * concurrent tray poll and chat post for the sweep's full duration.
+ */
+function reapAsync(path: string): void {
+  try {
+    const proc = Bun.spawn(["rm", "-rf", "--", path], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      detached: true,
+    });
+    proc.unref();
+  } catch {
+    // Best-effort: a run tree that survives a failed spawn costs disk, never correctness.
   }
 }
 
@@ -98,7 +105,7 @@ export function pruneRuns(now: number = Date.now()): { removed: string[] } {
       }
       if (stamp < cutoff) {
         assertPrunable(runDir, root);
-        rmSync(runDir, { recursive: true, force: true });
+        reapAsync(runDir);
         removed.push(runDir);
       }
     }

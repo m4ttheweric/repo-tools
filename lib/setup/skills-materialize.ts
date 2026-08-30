@@ -23,7 +23,7 @@ import { UserActionableError } from "./errors.ts";
 import type { Probes } from "./probes.ts";
 
 const CACHE_DIR_SEGMENTS = ["plugins", "cache", "mattstack", "mattstack"];
-const SCRIPT_SEGMENTS = ["plugin", "skills", "parameterized-skills", "scripts", "merge-manifests.sh"];
+const SCRIPT_SEGMENTS = ["attachments", "parameterized-skills", "scripts", "merge-manifests.sh"];
 
 /** Bounds the per-repo `merge-manifests.sh` call — it does real git work, so a wedged remote/auth prompt must time out (124) rather than hang the whole apply run. */
 const MATERIALIZE_TIMEOUT_MS = 60_000;

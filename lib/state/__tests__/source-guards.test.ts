@@ -90,37 +90,57 @@ describe("legacy JSON state files are retired", () => {
 });
 
 describe("daemon startup opens state.db before serving", () => {
-  test("openBranchCacheStore() precedes both server binds in startDaemon", () => {
+  test("the state-db unit precedes the handlers and both server-bind units", () => {
     const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
-    const start = src.indexOf("export function startDaemon(");
-    expect(start).toBeGreaterThan(-1);
+    // The ordered DaemonUnit[] in buildUnits IS the boot order (spec §5.1).
+    const stateDbUnit = src.indexOf('name: "state-db"');
+    const handlersUnit = src.indexOf('name: "handlers"');
+    const apiUnit = src.indexOf('name: "api-server"');
+    const socketUnit = src.indexOf('name: "socket-server"');
+    for (const i of [stateDbUnit, handlersUnit, apiUnit, socketUnit]) expect(i).toBeGreaterThan(-1);
 
-    const body = src.slice(start);
-    const open = body.indexOf("openBranchCacheStore()");
-    const clearArmed = body.indexOf("clearAllArmed()");
-    const routed = body.indexOf("routedHandlers = buildRoutedHandlers(");
-    const socket = body.indexOf("startSocketServer(");
-    const api = body.indexOf("startApiServer(");
+    // Spec "Migration & contention": state.db opens (the one long legacy-import
+    // transaction) in startup, before anything serves, so the block never lands
+    // in the serving event loop. Handlers build over the opened store; both
+    // servers bind after handlers exist, or a command could arrive while
+    // routedHandlers is still undefined.
+    expect(stateDbUnit).toBeLessThan(handlersUnit);
+    expect(handlersUnit).toBeLessThan(apiUnit);
+    expect(apiUnit).toBeLessThan(socketUnit);
 
+    const open = src.indexOf("openBranchCacheStore();", stateDbUnit);
+    const bindApi = src.indexOf("seams.bindApiServer(", apiUnit);
+    const bindSocket = src.indexOf("seams.bindSocketServer(", socketUnit);
     expect(open).toBeGreaterThan(-1);
-    expect(clearArmed).toBeGreaterThan(-1);
-    expect(routed).toBeGreaterThan(-1);
-    expect(socket).toBeGreaterThan(-1);
-    expect(api).toBeGreaterThan(-1);
-    // Spec "Migration & contention": the legacy import is the one long
-    // transaction, so it blocks startup, never the serving event loop.
-    expect(open).toBeLessThan(socket);
-    expect(open).toBeLessThan(api);
-    // No waiter outlives the daemon, so a stale armed_at must be cleared
-    // before the socket listens, or an agent arming in the gap loses it.
-    expect(clearArmed).toBeLessThan(socket);
-    expect(clearArmed).toBeLessThan(api);
-    // routedHandlers builds the chat handlers, which call getStateDb — so it
-    // must land after the store opens; and before the binds, or a command can
-    // arrive while routedHandlers is still undefined and fall through to the
-    // switch that no longer owns it.
-    expect(routed).toBeGreaterThan(open);
-    expect(routed).toBeLessThan(socket);
-    expect(routed).toBeLessThan(api);
+    expect(bindApi).toBeGreaterThan(-1);
+    expect(bindSocket).toBeGreaterThan(-1);
+    expect(open).toBeLessThan(bindApi);
+    expect(open).toBeLessThan(bindSocket);
+  });
+});
+
+describe("boot failure is fatal for both fire-and-forget callers", () => {
+  test("runDaemon is gone, startDaemon is the only entry point", () => {
+    const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
+    expect(src).not.toContain("function runDaemon");
+    expect(src).toContain("export async function startDaemon(");
+  });
+
+  test("startDaemon wraps runUnits in try/catch and exits nonzero on failure", () => {
+    const src = readFileSync(join(REPO_ROOT, "lib", "daemon.ts"), "utf8");
+    const startDaemonStart = src.indexOf("export async function startDaemon(");
+    expect(startDaemonStart).toBeGreaterThan(-1);
+
+    // Both real callers (cli.ts's --daemon entry, this file's import.meta.main
+    // guard) invoke startDaemon() fire-and-forget, so the catch-and-exit MUST
+    // live inside startDaemon() itself, or an unhandledRejection could silently
+    // leave the daemon half-up (a server possibly bound, nothing past the
+    // failure ever wired). The booting-gated unhandledRejection handler
+    // (installCrashHandlers) is only the backstop for whatever slips past it.
+    const end = src.indexOf("if (import.meta.main)", startDaemonStart);
+    const body = src.slice(startDaemonStart, end > startDaemonStart ? end : startDaemonStart + 800);
+    expect(body).toContain("await runUnits(");
+    expect(body).toContain("catch");
+    expect(body).toContain("process.exit(1)");
   });
 });

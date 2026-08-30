@@ -12,6 +12,7 @@
 
 import { existsSync } from "fs";
 import { homedir } from "os";
+import { canon } from "./fs-canon.ts";
 import { loadRepoIndex as loadRepoIndexFromStore } from "./repo-index.ts";
 import { runCapture } from "./subprocess.ts";
 
@@ -167,6 +168,22 @@ export async function buildWorktreeMap(
   return new Map(perRepo.flat());
 }
 
+/** Canonicalizes every path in the repo index once per scan (not once per matched port). */
+export function canonicalizeRepoIndex(repos: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, path] of Object.entries(repos)) out[name] = canon(path);
+  return out;
+}
+
+/** Canonicalizes every worktree path's key once per scan (not once per matched port). */
+export function canonicalizeWorktreeMap(
+  worktreeMap: Map<string, { repo: string; branch: string }>,
+): Map<string, { repo: string; branch: string }> {
+  const out = new Map<string, { repo: string; branch: string }>();
+  for (const [path, info] of worktreeMap) out.set(canon(path), info);
+  return out;
+}
+
 export function matchCwdToRepo(
   cwd: string,
   repos: Record<string, string>,
@@ -215,13 +232,17 @@ export function matchCwdToRepo(
  * ports whose process CWD matches a known repo.
  */
 export async function scanListeningPorts(): Promise<PortEntry[]> {
-  const repos = loadRepoIndex();
-  if (Object.keys(repos).length === 0) return [];
+  const rawRepos = loadRepoIndex();
+  if (Object.keys(rawRepos).length === 0) return [];
 
-  const [worktreeMap, listenersRes] = await Promise.all([
-    buildWorktreeMap(repos),
+  const [rawWorktreeMap, listenersRes] = await Promise.all([
+    buildWorktreeMap(rawRepos),
     runCapture(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"], { timeoutMs: 10_000 }),
   ]);
+  // Once per scan, not once per matched port: lsof's cwd is already real,
+  // so the index/worktree side is what needs canonicalizing to match it.
+  const repos = canonicalizeRepoIndex(rawRepos);
+  const worktreeMap = canonicalizeWorktreeMap(rawWorktreeMap);
 
   const listeners = parseListeningLsof(listenersRes.stdout);
   if (listeners.length === 0) return [];

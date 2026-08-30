@@ -21,7 +21,7 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, type Dirent } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
@@ -32,6 +32,7 @@ import { repoLabel, repoLabelFull, repoLabelQualified } from "./repo-label.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 import { mergeRegistries, type TreeRecord } from "./worktree/registry.ts";
+import { listWorktreesAsync } from "./worktree/git-async.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -50,8 +51,9 @@ export interface KnownRepo {
 
 // ─── Index CRUD ──────────────────────────────────────────────────────────────
 
-interface RepoIndex {
-  [repoName: string]: string; // repoName → primary repo root path
+/** Repo index: repoName -> primary repo root path, sourced from state.db's kv store (ns='repo-index'). */
+export interface RepoIndex {
+  [repoName: string]: string;
 }
 
 export const REPO_INDEX_NS = "repo-index";
@@ -137,8 +139,61 @@ export function loadRepoIndex(): RepoIndex {
   return Object.keys(imported).length > 0 ? imported : existing;
 }
 
+/**
+ * Branch name from a git dir's HEAD file. "" for a detached HEAD (HEAD holds a
+ * raw SHA, not a ref) or an unreadable/absent HEAD — matching what a `branch`
+ * line's absence in `git worktree list --porcelain` yields.
+ */
+function headBranch(gitDir: string): string {
+  try {
+    const m = readFileSync(join(gitDir, "HEAD"), "utf8").trim().match(/^ref: refs\/heads\/(.+)$/);
+    return m?.[1] ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Fast path for the overwhelmingly common single-worktree repo, avoiding a
+ * `git worktree list` subprocess per repo (the picker's dominant startup cost).
+ * Git creates `.git/worktrees/<name>/` for every LINKED worktree and for none
+ * of the main one, so a `.git` that is a real directory with an empty (or
+ * absent) `.git/worktrees/` has exactly one worktree, rooted at `dir` — git's
+ * own spelling of it, since `dir` is already `git rev-parse --show-toplevel`.
+ * Returns null for any other shape (`.git` a file = a linked worktree or
+ * submodule; a non-empty `.git/worktrees/`; a bare repo with no `.git`), and
+ * the caller falls back to the authoritative `git worktree list`.
+ */
+function singleWorktree(dir: string): { path: string; branch: string; isBare: false } | null {
+  const dotgit = join(dir, ".git");
+  let isDir = false;
+  try {
+    isDir = statSync(dotgit).isDirectory();
+  } catch {
+    return null;
+  }
+  if (!isDir) return null;
+  try {
+    if (readdirSync(join(dotgit, "worktrees")).length > 0) return null;
+  } catch { /* absent worktrees dir == single worktree */ }
+  // `git worktree list --porcelain` reports the canonical, symlink-resolved
+  // path, so this fast path must match it — a caller that reaches a repo
+  // through a symlinked ancestor (a stale index row, an app-bundle alias)
+  // must not see the two spellings as different repos.
+  return { path: safeRealpath(dir), branch: headBranch(dotgit), isBare: false };
+}
+
 /** The repo's MAIN worktree path as git reports it, degrading to `repoRoot`. */
 function observedMainPath(repoRoot: string): string {
+  // A single-worktree repo's main worktree IS repoRoot modulo symlinks (both
+  // are git's `--show-toplevel`), so the git spawn only earns its cost when
+  // linked worktrees exist and repoRoot might be one of them rather than the
+  // main. `.path` (not `repoRoot`) is what's returned: singleWorktree
+  // resolves symlinks the same way `git worktree list --porcelain` does, and
+  // a caller reaching this repo through a symlinked ancestor must land on the
+  // same canonical spelling as the git fallback below would give it.
+  const single = singleWorktree(repoRoot);
+  if (single) return single.path;
   try {
     const listed = execSync("git worktree list --porcelain", {
       cwd: repoRoot,
@@ -149,6 +204,13 @@ function observedMainPath(repoRoot: string): string {
   } catch {
     return repoRoot;
   }
+}
+
+/** Async twin of observedMainPath: the repo's MAIN worktree path as git
+ *  reports it, degrading to repoRoot. Safe on the daemon thread. */
+async function observedMainPathAsync(repoRoot: string): Promise<string> {
+  const wts = await listWorktreesAsync(repoRoot);
+  return wts?.[0]?.path ?? repoRoot;
 }
 
 /**
@@ -274,7 +336,7 @@ export async function resolveIndexPathForIdentity(serialized: string): Promise<s
     } catch {
       continue;
     }
-    updateRepoIndex(serialized, path);
+    writeIndexRow(serialized, await observedMainPathAsync(path));
     return path;
   }
   return null;
@@ -818,7 +880,13 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
 
   for (const { repoName, path: mainPath } of keep) {
     const worktrees: KnownRepo["worktrees"] = [];
-    try {
+    // Single-worktree repos (the vast majority) skip the git subprocess and
+    // synthesize the one worktree from disk; only repos with linked worktrees
+    // pay for the authoritative porcelain parse below.
+    const single = singleWorktree(mainPath);
+    if (single) {
+      worktrees.push(single);
+    } else try {
       const output = execSync("git worktree list --porcelain", {
         cwd: mainPath,
         encoding: "utf8",
@@ -1005,13 +1073,21 @@ function candidateDataDirName(name: string, composite: boolean): string {
  * performs (spec: branch-label cap).
  */
 function branchOf(repoPath: string): string {
+  const dotgit = join(repoPath, ".git");
+  // A plain repo (.git is a directory) reads its branch straight from HEAD, no
+  // subprocess. A linked worktree (.git is a file) has no local HEAD ref file
+  // to parse, so it keeps the authoritative git spawn.
   try {
-    return execSync("git rev-parse --abbrev-ref HEAD", {
+    if (statSync(dotgit).isDirectory()) return headBranch(dotgit);
+  } catch { /* fall through to the git spawn */ }
+  try {
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
       cwd: repoPath,
       encoding: "utf8",
       stdio: "pipe",
       env: process.env,
     }).trim();
+    return branch === "HEAD" ? "" : branch; // "HEAD" is git's detached-HEAD sentinel
   } catch {
     return ""; // detached HEAD or other edge case — leave blank
   }

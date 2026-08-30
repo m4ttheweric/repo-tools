@@ -1,6 +1,7 @@
 import type { HandlerMap, HandlerContext } from "./types.ts";
 import type { SystemProcessScanner, SystemProcess } from "../system-process-scanner.ts";
-import { repoLabel } from "../../repo-arg.ts";
+import { repoLabel } from "../../repo-label.ts";
+import { composeKey } from "../../state/branch-cache.ts";
 
 function shortName(proc: SystemProcess): string {
   // Use fullCommand (complete argv) to get the real binary name,
@@ -76,10 +77,14 @@ function buildProcessTree(flat: SystemProcess[]): SystemProcess[] {
   return flattened;
 }
 
+// Loose `Promise<any>` carve-out (same trick as endpoint.ts/repos.ts): the
+// tree-building above mutates rows with recursive `children`/`chainPids`/
+// `totalCpuPercent`/`totalRssKb` fields, which a precise Commands["data"]
+// type would have to mirror exactly to type-check as a CommandResult.
 export function createSystemProcessHandlers(
   scanner: SystemProcessScanner,
-  ctx: HandlerContext,
-): HandlerMap {
+  ctx: Pick<HandlerContext, "portCacheRef" | "cache">,
+): Record<"system-processes", (payload: any, signal?: AbortSignal) => Promise<any>> & HandlerMap {
   // The background scanner refreshes every 10s; the tray polls far faster
   // while its panel is open. Re-discover on read when the cache is older than
   // this so a poll reflects current reality (new/dead processes) instead of
@@ -95,7 +100,9 @@ export function createSystemProcessHandlers(
       const processes = scanner.getProcesses().map(proc => {
         let linearTicket: string | null = null;
         if (proc.branch) {
-          const cacheEntry = ctx.cache.entries[proc.branch];
+          // proc.repo is already the serialized identity (scanner tags rows
+          // with it post-rekey), so an exact composeKey lookup is safe here.
+          const cacheEntry = ctx.cache.entries[composeKey(proc.repo, proc.branch)];
           if (cacheEntry?.ticket) {
             linearTicket = `${cacheEntry.ticket.identifier}: ${cacheEntry.ticket.title}`;
           }

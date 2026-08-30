@@ -14,6 +14,10 @@ export interface RtResponse<T = unknown> {
   ok: boolean;
   data?: T;
   error?: string;
+  /** Structured form of `error` on a handler throw (R035): `code` defaults
+   *  to "handler-threw" when the thrown error carries none. Additive; older
+   *  daemons and the reject path never set this. */
+  failure?: { code: string; message: string };
 }
 
 export interface RtClientOptions {
@@ -57,7 +61,7 @@ export async function rtCommand<T = unknown>(
     const res = await fetch(`http://localhost/${cmd}`, {
       unix: sockPath,
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-RT-Client": `rt-client/${process.pid}` },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
       // Bun's `unix` fetch option isn't in the standard RequestInit type.

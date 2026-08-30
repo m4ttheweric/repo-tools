@@ -12,6 +12,8 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** Set true only when the deadline fired before the child settled. */
+  timedOut?: boolean;
 }
 
 /**
@@ -47,21 +49,53 @@ export async function runCapture(
     return { stdout: "", stderr: "", exitCode: -1 };
   }
 
-  const timer = setTimeout(() => {
-    try { proc.kill(); } catch { /* already exited */ }
-  }, opts.timeoutMs ?? 10_000);
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  // SIGTERM at the deadline, SIGKILL a short grace later. A child that ignores
+  // SIGTERM (or a D-state descendant) cannot be reaped in-band, so the read is
+  // raced against the deadline below rather than awaited unconditionally: that
+  // is what lets runCapture settle while a grandchild still holds the pipe.
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const term = setTimeout(() => {
+    try { proc.kill("SIGTERM"); } catch { /* already exited */ }
+    killTimer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+    }, 2000);
+    // unref: a short-lived CLI process must not be held open by a timed-out
+    // call waiting on this timer; the daemon stays alive regardless, so its
+    // SIGKILL still fires.
+    killTimer.unref?.();
+  }, timeoutMs);
+
+  const captured: Promise<RunResult> = (async () => {
+    try {
+      const stdoutPromise = new Response(proc.stdout as ReadableStream).text();
+      const stderrPromise = captureStderr
+        ? new Response(proc.stderr as ReadableStream).text()
+        : Promise.resolve("");
+      const [stdout, stderr, exitCode] = await Promise.all([
+        stdoutPromise,
+        stderrPromise,
+        proc.exited,
+      ]);
+      return { stdout, stderr, exitCode };
+    } catch {
+      return { stdout: "", stderr: "", exitCode: -1 };
+    }
+  })();
+
+  let deadlineTimer: ReturnType<typeof setTimeout>;
+  const deadline: Promise<RunResult> = new Promise((resolve) => {
+    deadlineTimer = setTimeout(() => resolve({ stdout: "", stderr: "", exitCode: -1, timedOut: true }), timeoutMs);
+  });
 
   try {
-    const stdoutPromise = new Response(proc.stdout as ReadableStream).text();
-    const stderrPromise = captureStderr
-      ? new Response(proc.stderr as ReadableStream).text()
-      : Promise.resolve("");
-    const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-    const exitCode = await proc.exited;
-    return { stdout, stderr, exitCode };
-  } catch {
-    return { stdout: "", stderr: "", exitCode: -1 };
+    return await Promise.race([captured, deadline]);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(term);
+    clearTimeout(deadlineTimer!);
+    // killTimer intentionally NOT cleared here: on the timeout path it must
+    // survive this finally to fire SIGKILL against a child that ignored
+    // SIGTERM. proc.kill is already try/catch guarded, so it is a harmless
+    // no-op if the child exited before the 2s grace elapses.
   }
 }

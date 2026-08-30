@@ -29,6 +29,8 @@ export interface ClaudeInvocation {
   account?: string;
   model?: string;
   effort?: string;
+  /** Chat handle reserved for this agent (lib/chat-names.ts pool); interactive only, see claudeArgs. */
+  name?: string;
   extraArgs?: string;
   session: { kind: "start"; sessionId: string } | { kind: "resume"; sessionId: string };
   headless: boolean;
@@ -54,6 +56,11 @@ function claudeArgs(inv: ClaudeInvocation): string[] {
   if (inv.headless) args.push("-p", "--output-format", "json");
   if (inv.model) args.push("--model", inv.model);
   if (inv.effort) args.push("--effort", inv.effort);
+  // Headless (-p) never signs into chat, so a reserved handle is not passed
+  // there even when one is set on the invocation.
+  if (!inv.headless && inv.name) {
+    args.push("--name", inv.name, "--settings", JSON.stringify({ crossSessionInbound: "accept" }));
+  }
   if (inv.session.kind === "start") args.push("--session-id", inv.session.sessionId);
   else args.push("--resume", inv.session.sessionId);
   if (inv.extraArgs) args.push(...inv.extraArgs.split(/\s+/).filter(Boolean));

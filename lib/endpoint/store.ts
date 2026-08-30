@@ -5,6 +5,7 @@ import {
   importLegacyJsonFile,
   listEndpointClaims,
   replaceEndpointClaims,
+  replaceEndpointClaimsCritical,
   type EndpointClaim,
 } from "../state/index.ts";
 import { rekeyTableColumn, type RekeyReport } from "../state/identity-migrate.ts";
@@ -69,10 +70,10 @@ export function loadClaims(repoName: string): EndpointClaim[] {
   return result.imported ? result.value! : [];
 }
 
-export function saveClaims(repoName: string, claims: EndpointClaim[]): void {
+export function saveClaims(repoName: string, claims: EndpointClaim[]): boolean {
   // Folds in (and safely imports/renames) any legacy endpoints.json first —
   // see worktree/registry.ts's saveRegistry for the same reasoning: a save
   // reached without a prior load must not strand an unread legacy file.
   loadClaims(repoName);
-  replaceEndpointClaims(repoName, claims);
+  return replaceEndpointClaimsCritical(repoName, claims);
 }

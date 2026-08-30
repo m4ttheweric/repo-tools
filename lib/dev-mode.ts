@@ -64,30 +64,57 @@ export function installRtBinary(src: string): string {
   return dest;
 }
 
+export const DEV_MODE_TAG = "# mattstack-dev-mode";
+
+/**
+ * A recognized dev-mode wrapper: our marker on line 2, OR a legacy
+ * markerless wrapper (its RT_LAUNCH_CWD export line is our unique tell,
+ * predating the marker). A foreign #! script -- including our own tagged
+ * PATH-link wrapper from lib/deps/links.ts, which carries LINK_TAG instead
+ * -- has neither, so it correctly falls through to false. `prefix` is a
+ * bounded head of the file, never the whole file: in prod this path is a
+ * symlink to the compiled binary.
+ */
+export function isDevModeWrapperContent(prefix: string): boolean {
+  if (!prefix.startsWith("#!")) return false;
+  const line2 = prefix.split("\n")[1] ?? "";
+  return line2.startsWith(DEV_MODE_TAG) || prefix.includes("RT_LAUNCH_CWD");
+}
+
+/**
+ * A bounded head of `path` (never the whole file): in prod this path is a
+ * symlink to the multi-MB compiled binary, and a whole-file read there would
+ * be needless I/O on every mode check. Exported so lib/deps/links.ts shares
+ * this same real bounded read instead of re-implementing it.
+ */
+export function readWrapperPrefix(path: string): string | null {
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(4096);
+      const n = readSync(fd, buf, 0, 4096, 0);
+      return buf.toString("latin1", 0, n);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Dev mode is signalled by the dev-mode WRAPPER SCRIPT at ~/.local/bin/rt --
  * not by any file existing there. Prod mode installs the compiled binary at
  * that same path (MAT-383: leaving dev mode must leave a working rt behind),
  * so presence alone can no longer tell the modes apart: the smoke showed a
  * machine with the prod binary installed still reporting "dev", which made
- * the flavor toggle a permanent no-op. A script starts with "#!"; a Mach-O
- * binary never does.
+ * the flavor toggle a permanent no-op.
  */
 export function currentMode(): "dev" | "prod" {
   const path = devModeWrapperPath();
   if (!existsSync(path)) return "prod";
-  try {
-    const fd = openSync(path, "r");
-    try {
-      const head = Buffer.alloc(2);
-      readSync(fd, head, 0, 2, 0);
-      return head.toString("latin1") === "#!" ? "dev" : "prod";
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return "prod";
-  }
+  const prefix = readWrapperPrefix(path);
+  return prefix !== null && isDevModeWrapperContent(prefix) ? "dev" : "prod";
 }
 
 export interface IntendedMode {

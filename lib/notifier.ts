@@ -13,6 +13,14 @@
  *  5. Tray app can drain pending queue via drainNotifications() on startup
  *
  * Called at the end of each daemon cache refresh cycle.
+ *
+ * R031: the only real module-scope singleton state here is the broadcast
+ * hook and the (test-only) fallback-notifier path: everything else
+ * (branch/port snapshots, the fired-key ledger, the notification queue)
+ * already lives in state.db, not in this module. Both are held by
+ * `createNotifier(deps)`; the free functions below delegate to one
+ * lazily-created default instance, so every existing caller keeps sharing
+ * the state it always has.
  */
 
 import { existsSync } from "fs";
@@ -25,7 +33,9 @@ import { parseEtimeMs, type PortEntry } from "./port-scanner.ts";
 import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
 import { lazyChildLogger } from "./daemon-logger.ts";
-import { repoLabel } from "./repo-arg.ts";
+import { repoLabel } from "./repo-label.ts";
+import { branchOf } from "./state/branch-cache.ts";
+import { numericUserId } from "./enrich.ts";
 import {
   getNotifierStateBlob,
   setNotifierStateBlob,
@@ -44,7 +54,7 @@ interface BranchSnapshot {
   pipelineStatus: string | null;
   mrState: string | null;
   approved: boolean;
-  approvedByUserIds: string[];
+  approvedByUserIds: number[];
   conflicts: boolean;
   /**
    * Consecutive observations that reported no conflict, carried forward from
@@ -85,14 +95,6 @@ export type { NotificationEvent };
 
 const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
 
-// ─── Broadcast hook (set by daemon.ts to push to WebSocket clients) ──────────
-
-let _broadcastHook: ((type: string, data: any) => void) | null = null;
-
-/** Register a callback to broadcast notification events (e.g. to WebSocket clients) */
-export function onNotification(hook: (type: string, data: any) => void): void {
-  _broadcastHook = hook;
-}
 const STALE_PORT_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 // ─── Notification type registry ──────────────────────────────────────────────
@@ -146,25 +148,6 @@ export function saveNotificationPrefs(prefs: NotificationPrefs): void {
   setSetting("rt.notifications", prefs, "user");
 }
 
-/**
- * notify() gated on the user's preference for `category`, loading prefs per
- * call. For emitters outside the transition loop (which loads prefs once per
- * cycle). Every notification rt delivers goes through notify(), so it lands in
- * the durable queue, reaches the tray socket, and falls back to the CLI
- * notifier — a bare broadcast reaches WebSocket clients only.
- */
-export function notifyEnabled(
-  category: string,
-  title: string,
-  message: string,
-  url?: string,
-  pids?: number[],
-  id?: string,
-): void {
-  if (!isEnabled(loadNotificationPrefs(), category)) return;
-  notify(title, message, url, category, pids, id);
-}
-
 function isEnabled(prefs: NotificationPrefs, key: string): boolean {
   return prefs[key] !== false; // default to enabled if not set
 }
@@ -211,6 +194,29 @@ export function peekNotifications(): NotificationEvent[] {
 // ─── Push to tray app ────────────────────────────────────────────────────────
 
 /**
+ * removeQueuedNotification's own write already retries on SQLITE_BUSY (3 x
+ * 20ms, lib/state/notifier-store.ts) and gives up silently. When that
+ * happens after a successful tray push, the row stays queued and the next
+ * drainNotifications()/peekNotifications() redelivers it as a duplicate.
+ * Retry the removal at this layer, bounded, before reporting success.
+ */
+async function removeFromQueueWithRetry(
+  eventId: string,
+  attempts = 3,
+  delayMs = 50,
+  removeFn: (id: string) => void = removeQueuedNotification,
+  isQueuedFn: (id: string) => boolean = isNotificationQueued,
+): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    removeFn(eventId);
+    if (!isQueuedFn(eventId)) return true;
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  log.warn({ eventId }, "notification queue removal kept failing after a successful push; it may redeliver on the next drain");
+  return false;
+}
+
+/**
  * Attempt to push a notification event to the tray app via its Unix socket.
  * Returns true if the push succeeded, false if tray is unavailable.
  */
@@ -227,8 +233,7 @@ async function pushToTray(event: NotificationEvent): Promise<boolean> {
     } as any);
 
     if (response.ok) {
-      // Push succeeded — remove from queue
-      removeQueuedNotification(event.id);
+      await removeFromQueueWithRetry(event.id);
       return true;
     }
     return false;
@@ -248,110 +253,7 @@ function escapeAppleScript(s: string): string {
 const FALLBACK_TERM_MS = 5000;
 const FALLBACK_KILL_MS = 7000;
 
-/** Fallback notifier executable; replaceable in tests with a fake that hangs. */
-let fallbackNotifier = "osascript";
-
-/** Direct notification via osascript (no queue).
- *  argv-array spawning — message content includes branch names and error
- *  text, which must never pass through a shell ($, backticks, quotes).
- *
- *  Fire-and-forget async spawn, never a sync exec: this runs on the daemon's
- *  main thread, and a hung notifier child (osascript blocked on Notification
- *  Center/TCC from the launchd context) must not block the event loop.
- *  Bun's sync-exec `timeout` only SIGTERMs and then waits the child out, so
- *  a SIGTERM-immune child wedged every API/socket surface for the child's
- *  lifetime (MAT-222). The kill escalation here is the bound the sync
- *  timeout could not provide. */
-function notifyFallback(title: string, message: string, _url?: string): void {
-  const body = `${title}: ${message}`;
-  const argv = [fallbackNotifier, "-e", `display notification "${escapeAppleScript(body)}" with title "rt"`];
-  try {
-    const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-    const term = setTimeout(() => { try { proc.kill("SIGTERM"); } catch { /* already exited */ } }, FALLBACK_TERM_MS);
-    const kill = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already exited */ } }, FALLBACK_KILL_MS);
-    void proc.exited.finally(() => { clearTimeout(term); clearTimeout(kill); });
-  } catch { /* notification is best-effort */ }
-}
-
-// ─── Main notification dispatch ──────────────────────────────────────────────
-
-/**
- * Queue a notification, persist it, and attempt to push to the tray app.
- * Falls back to osascript if no tray app is available.
- */
-export function notify(
-  title: string,
-  message: string,
-  url?: string,
-  category: string = "general",
-  pids?: number[],
-  id?: string,
-): void {
-  const event: NotificationEvent = {
-    id: id ?? crypto.randomUUID(),
-    title,
-    message,
-    url,
-    category,
-    timestamp: Date.now(),
-    pids,
-  };
-
-  // 1. Queue + persist
-  enqueueNotification(event);
-
-  // 1b. Broadcast to WebSocket clients
-  if (_broadcastHook) _broadcastHook("notification", event);
-
-  // 2. Try to push to tray app (async, fire-and-forget)
-  pushToTray(event).then(pushed => {
-    if (!pushed) {
-      // Tray unavailable — if no tray.sock exists at all, this is likely
-      // a setup without the tray app. Use the CLI fallback after a short delay
-      // to give the tray a chance to come online.
-      setTimeout(() => {
-        if (isNotificationQueued(event.id)) {
-          // Still not drained — remove from queue and use fallback
-          removeQueuedNotification(event.id);
-          notifyFallback(title, message, url);
-        }
-      }, 10_000);
-    }
-  });
-  // (No .catch needed: pushToTray's body is fully wrapped in try/catch and
-  // resolves false on failure — it can never reject.)
-
-  // 3. Optional push to a phone for chat mentions (off by default; v1 is
-  // ntfy-only — Pushover needs token/user credentials chat.push.target has
-  // nowhere to hold). Fire-and-forget: the desk notification above already
-  // queued successfully, so a rejected fetch here must not undo that.
-  if (category === CHAT_NOTIFICATION_CATEGORY) {
-    // Optional push is best-effort: nothing under here may sink the desk
-    // notification already queued above. The try spans the getSetting() reads
-    // (which can throw on an unexpandable stored value) and the synchronous
-    // fetch() throw a malformed target URL raises before the promise exists.
-    try {
-      const provider = getSetting<string>("chat.push.provider").value;
-      if (provider === "ntfy") {
-        const target = getSetting<string>("chat.push.target").value;
-        if (target) {
-          // Bound the request so an unresponsive ntfy can't leak a pending
-          // fetch forever (the Fetch API has no default timeout).
-          const headers: Record<string, string> = { Title: title };
-          if (url) headers.Click = url;
-          fetch(target, { method: "POST", headers, body: message, signal: AbortSignal.timeout(10_000) })
-            .catch(err => log.warn({ err }, "chat push failed"));
-        }
-      } else if (provider) {
-        log.warn(`chat.push.provider "${provider}" is not supported (only "ntfy" is)`);
-      }
-    } catch (err) {
-      log.warn({ err }, "chat push failed");
-    }
-  }
-}
-
-// ─── Branch transition detection ─────────────────────────────────────────────
+// ─── Branch transition detection (pure helpers) ──────────────────────────────
 
 interface CacheEntry {
   ticket: any;
@@ -360,18 +262,12 @@ interface CacheEntry {
   fetchedAt: number;
 }
 
-function numericUserId(id: unknown): string | null {
-  if (typeof id !== "string" && typeof id !== "number") return null;
-  const match = String(id).match(/(\d+)$/);
-  return match ? match[1]! : null;
-}
-
-function approvedByUserIds(entry: CacheEntry): string[] {
+function approvedByUserIds(entry: CacheEntry): number[] {
   const approvers = entry.mr?.reviews?.approvedBy;
   if (!Array.isArray(approvers)) return [];
   return approvers
     .map((u) => numericUserId(u?.id))
-    .filter((id): id is string => id !== null);
+    .filter((id): id is number => id !== null);
 }
 
 /**
@@ -382,10 +278,9 @@ function approvedByUserIds(entry: CacheEntry): string[] {
  * rather than risk resurfacing other people's alerts.
  */
 function isSelfAuthored(entry: CacheEntry, currentUserId: number | null): boolean {
-  const selfId = numericUserId(currentUserId);
-  if (!selfId) return false;
+  if (currentUserId === null) return false;
   const authorId = numericUserId(entry.mr?.author?.id);
-  return authorId !== null && authorId === selfId;
+  return authorId !== null && authorId === currentUserId;
 }
 
 /**
@@ -471,11 +366,10 @@ function shouldNotifyApprovalTransition(
   const grew = (now.approvedByUserIds ?? []).some((id) => !previousApprovers.has(id));
   if (!grew) return "no-new-approver";
 
-  const selfId = numericUserId(currentUserId);
-  if (!selfId) return "notify";
+  if (currentUserId === null) return "notify";
 
-  const selfNewlyApproved = (now.approvedByUserIds ?? []).includes(selfId)
-    && !previousApprovers.has(selfId);
+  const selfNewlyApproved = (now.approvedByUserIds ?? []).includes(currentUserId)
+    && !previousApprovers.has(currentUserId);
 
   return selfNewlyApproved ? "self-approved" : "notify";
 }
@@ -523,13 +417,326 @@ function pruneFiredForEvictedBranches(fired: Set<string>, liveBranches: Iterable
   }
 }
 
+// ─── Notifier factory (R031: the module-scope singleton, isolated) ──────────
+
+export interface NotifierDeps {
+  /** Registered up front instead of via a later onNotification() call, if known at construction time. */
+  broadcast?: (type: string, data: any) => void;
+}
+
+export interface Notifier {
+  /** Register a callback to broadcast notification events (e.g. to WebSocket clients) */
+  onNotification(hook: (type: string, data: any) => void): void;
+  /** Queue a notification, persist it, and attempt to push to the tray app. Falls back to osascript if no tray app is available. */
+  notify(title: string, message: string, url?: string, category?: string, pids?: number[], id?: string): void;
+  /**
+   * notify() gated on the user's preference for `category`, loading prefs per
+   * call. For emitters outside the transition loop (which loads prefs once per
+   * cycle). Every notification rt delivers goes through notify(), so it lands in
+   * the durable queue, reaches the tray socket, and falls back to the CLI
+   * notifier — a bare broadcast reaches WebSocket clients only.
+   */
+  notifyEnabled(category: string, title: string, message: string, url?: string, pids?: number[], id?: string): void;
+  checkAndNotify(cacheEntries: Record<string, CacheEntry>, ports?: PortEntry[], currentUserId?: number | null): void;
+  checkRunawayProcesses(
+    processes: SystemProcess[],
+    markNotified: (pid: number) => void,
+    isNotified: (pid: number) => boolean,
+  ): void;
+  drainNotifications(): NotificationEvent[];
+  peekNotifications(): NotificationEvent[];
+}
+
+/** Shape `notify` and every function that calls it (through `api.notify`) share. */
+type NotifyFn = (
+  title: string,
+  message: string,
+  url?: string,
+  category?: string,
+  pids?: number[],
+  id?: string,
+) => void;
+
+/**
+ * R031: `checkAndNotify`/`checkRunawayProcesses`/`notifyEnabled` call
+ * `api.notify(...)`, a property lookup on this instance's own `api` object
+ * at call time, and `detectBranchTransitions`/`detectStalePortTransitions`
+ * take that same `api.notify` in as an explicit `notifyFn` parameter rather
+ * than reaching for a shared identifier. So every method on one
+ * `createNotifier(deps)` instance is bound to that instance's own
+ * `broadcastHook`/`fallbackNotifierPath`: see the isolation test in
+ * `lib/__tests__/notifier.test.ts` ("two instances route ... through their
+ * own broadcast hook").
+ *
+ * The only state isolated per instance is the broadcast hook and the
+ * (test-only) fallback-notifier executable path: every other *input*
+ * (prefs, branch/port snapshots, the durable queue) already lives in
+ * state.db, shared across the whole process regardless of which instance
+ * reads it; but which hook a given instance's own notify() call fires is
+ * fully isolated.
+ */
+export function createNotifier(deps: NotifierDeps = {}): Notifier {
+  let broadcastHook: ((type: string, data: any) => void) | null = deps.broadcast ?? null;
+  /** Fallback notifier executable; replaceable in tests with a fake that hangs. */
+  let fallbackNotifierPath = "osascript";
+
+  function onNotification(hook: (type: string, data: any) => void): void {
+    broadcastHook = hook;
+  }
+
+  /** Direct notification via osascript (no queue).
+   *  argv-array spawning — message content includes branch names and error
+   *  text, which must never pass through a shell ($, backticks, quotes).
+   *
+   *  Fire-and-forget async spawn, never a sync exec: this runs on the daemon's
+   *  main thread, and a hung notifier child (osascript blocked on Notification
+   *  Center/TCC from the launchd context) must not block the event loop.
+   *  Bun's sync-exec `timeout` only SIGTERMs and then waits the child out, so
+   *  a SIGTERM-immune child wedged every API/socket surface for the child's
+   *  lifetime (MAT-222). The kill escalation here is the bound the sync
+   *  timeout could not provide. */
+  function notifyFallback(title: string, message: string, _url?: string): void {
+    const body = `${title}: ${message}`;
+    const argv = [fallbackNotifierPath, "-e", `display notification "${escapeAppleScript(body)}" with title "rt"`];
+    try {
+      const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+      const term = setTimeout(() => { try { proc.kill("SIGTERM"); } catch { /* already exited */ } }, FALLBACK_TERM_MS);
+      const kill = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already exited */ } }, FALLBACK_KILL_MS);
+      void proc.exited.finally(() => { clearTimeout(term); clearTimeout(kill); });
+    } catch { /* notification is best-effort */ }
+  }
+
+  function notify(
+    title: string,
+    message: string,
+    url?: string,
+    category: string = "general",
+    pids?: number[],
+    id?: string,
+  ): void {
+    const event: NotificationEvent = {
+      id: id ?? crypto.randomUUID(),
+      title,
+      message,
+      url,
+      category,
+      timestamp: Date.now(),
+      pids,
+    };
+
+    // 1. Queue + persist
+    enqueueNotification(event);
+
+    // 1b. Broadcast to WebSocket clients
+    if (broadcastHook) broadcastHook("notification", event);
+
+    // 2. Try to push to tray app (async, fire-and-forget)
+    pushToTray(event).then(pushed => {
+      if (!pushed) {
+        // Tray unavailable — if no tray.sock exists at all, this is likely
+        // a setup without the tray app. Use the CLI fallback after a short delay
+        // to give the tray a chance to come online.
+        setTimeout(() => {
+          if (isNotificationQueued(event.id)) {
+            // Still not drained — remove from queue and use fallback
+            removeQueuedNotification(event.id);
+            notifyFallback(title, message, url);
+          }
+        }, 10_000);
+      }
+    });
+    // (No .catch needed: pushToTray's body is fully wrapped in try/catch and
+    // resolves false on failure — it can never reject.)
+
+    // 3. Optional push to a phone for chat mentions (off by default; v1 is
+    // ntfy-only — Pushover needs token/user credentials chat.push.target has
+    // nowhere to hold). Fire-and-forget: the desk notification above already
+    // queued successfully, so a rejected fetch here must not undo that.
+    if (category === CHAT_NOTIFICATION_CATEGORY) {
+      // Optional push is best-effort: nothing under here may sink the desk
+      // notification already queued above. The try spans the getSetting() reads
+      // (which can throw on an unexpandable stored value) and the synchronous
+      // fetch() throw a malformed target URL raises before the promise exists.
+      try {
+        const provider = getSetting<string>("chat.push.provider").value;
+        if (provider === "ntfy") {
+          const target = getSetting<string>("chat.push.target").value;
+          if (target) {
+            // Bound the request so an unresponsive ntfy can't leak a pending
+            // fetch forever (the Fetch API has no default timeout).
+            const headers: Record<string, string> = { Title: title };
+            if (url) headers.Click = url;
+            fetch(target, { method: "POST", headers, body: message, signal: AbortSignal.timeout(10_000) })
+              .catch(err => log.warn({ err }, "chat push failed"));
+          }
+        } else if (provider) {
+          log.warn(`chat.push.provider "${provider}" is not supported (only "ntfy" is)`);
+        }
+      } catch (err) {
+        log.warn({ err }, "chat push failed");
+      }
+    }
+  }
+
+  /**
+   * notify() gated on the user's preference for `category`, loading prefs per
+   * call. For emitters outside the transition loop (which loads prefs once per
+   * cycle). Every notification rt delivers goes through notify(), so it lands in
+   * the durable queue, reaches the tray socket, and falls back to the CLI
+   * notifier — a bare broadcast reaches WebSocket clients only.
+   */
+  function notifyEnabled(
+    category: string,
+    title: string,
+    message: string,
+    url?: string,
+    pids?: number[],
+    id?: string,
+  ): void {
+    if (!isEnabled(loadNotificationPrefs(), category)) return;
+    api.notify(title, message, url, category, pids, id);
+  }
+
+  function checkAndNotify(
+    cacheEntries: Record<string, CacheEntry>,
+    ports?: PortEntry[],
+    currentUserId: number | null = null,
+  ): void {
+    const state = loadState();
+    const prefs = loadNotificationPrefs();
+    const fired = new Set(state.fired);
+
+    // Branch transitions
+    detectBranchTransitions(state.branches, cacheEntries, fired, prefs, currentUserId, api.notify);
+
+    // Port staleness (skipped when called from real-time MR update path)
+    if (ports) {
+      detectStalePortTransitions(state.ports, ports, prefs, api.notify);
+    }
+
+    // Update state with current snapshots.
+    // When entry.mr is null (API failure or branch has no MR), keep the
+    // previous snapshot so we don't wipe conflict/approval state that the
+    // dedup logic depends on.
+    const newBranches: Record<string, BranchSnapshot> = {};
+    for (const [branch, entry] of Object.entries(cacheEntries)) {
+      if (!entry.mr && state.branches[branch]) {
+        newBranches[branch] = state.branches[branch]!;
+      } else {
+        newBranches[branch] = snapshotBranch(entry, state.branches[branch]);
+      }
+    }
+
+    // fired-ledger hygiene: drop keys for branches the branch-cache no longer
+    // carries an entry for (evicted by GC, or never present this cycle) — see
+    // pruneFiredForEvictedBranches.
+    pruneFiredForEvictedBranches(fired, Object.keys(cacheEntries));
+
+    state.branches = newBranches;
+    state.fired = [...fired];
+    saveState(state);
+  }
+
+  function checkRunawayProcesses(
+    processes: SystemProcess[],
+    markNotified: (pid: number) => void,
+    isNotified: (pid: number) => boolean,
+  ): void {
+    const prefs = loadNotificationPrefs();
+    if (!isEnabled(prefs, "runaway_process")) return;
+
+    // AI agent sessions and their live subprocesses burn CPU as part of normal
+    // work — never worth an alert. Deliberately not marked notified: if the
+    // agent exits and the orphan is still runaway, it surfaces then.
+    const agentPids = agentSessionPids(processes.map(p => ({
+      pid: p.pid, ppid: p.ppid, command: p.command, fullCommand: p.fullCommand,
+    })));
+
+    const fresh = processes.filter(p =>
+      p.isRunaway && !isNotified(p.pid) && !agentPids.has(p.pid),
+    );
+    if (fresh.length === 0) return;
+
+    if (fresh.length === 1) {
+      const proc = fresh[0]!;
+      const durationMin = proc.runawayDurationMs
+        ? Math.round(proc.runawayDurationMs / 60_000)
+        : 0;
+      const branchInfo = proc.branch ? ` (branch: ${proc.branch})` : "";
+
+      api.notify(
+        "Runaway Process",
+        `${proc.packageScript ?? proc.command} in ${repoLabel(proc.repo)}${branchInfo} at ${Math.round(proc.cpuPercent)}% CPU for ${durationMin || "<1"} minutes`,
+        undefined,
+        "runaway_process",
+        [proc.pid],
+      );
+    } else {
+      // A burst of runaways in one tick collapses into a single summary so the
+      // user gets one actionable notification instead of a pile.
+      const shown = fresh.slice(0, 2).map(p =>
+        `${p.packageScript ?? p.command} (${repoLabel(p.repo)} ${Math.round(p.cpuPercent)}%)`,
+      );
+      const rest = fresh.length - shown.length;
+      const summary = rest > 0 ? `${shown.join(", ")}, +${rest} more` : shown.join(", ");
+
+      api.notify(
+        `${fresh.length} Runaway Processes`,
+        summary,
+        undefined,
+        "runaway_process",
+        fresh.map(p => p.pid),
+      );
+    }
+
+    for (const proc of fresh) {
+      markNotified(proc.pid);
+    }
+  }
+
+  const api: Notifier & { __setFallbackNotifier(path: string | null): void; __notifyFallback: typeof notifyFallback } = {
+    onNotification,
+    notify,
+    notifyEnabled,
+    checkAndNotify,
+    checkRunawayProcesses,
+    drainNotifications,
+    peekNotifications,
+    /** Test-only seam; see __test__ below. */
+    __setFallbackNotifier(path: string | null): void {
+      fallbackNotifierPath = path ?? "osascript";
+    },
+    /** Test-only seam; see __test__ below. */
+    __notifyFallback: notifyFallback,
+  };
+
+  return api;
+}
+
+// ─── Branch/port transition detection (pure; take the caller's own notify) ──
+//
+// Neither function holds state of its own (branch/port snapshots and the
+// fired-key ledger are threaded through as parameters or read from
+// state.db), so they stay top-level and shared across every createNotifier()
+// instance. Each takes the CALLING instance's own `notify` (its `api.notify`,
+// looked up at call time) as an explicit parameter instead of reaching for a
+// shared identifier: that parameterization is what keeps checkAndNotify's
+// per-instance routing (see the isolation comment above createNotifier)
+// actually isolated.
+
 function detectBranchTransitions(
   prev: Record<string, BranchSnapshot>,
   current: Record<string, CacheEntry>,
   fired: Set<string>,
   prefs: NotificationPrefs,
   currentUserId: number | null,
+  notify: NotifyFn,
 ): void {
+  // `branch` is the branch-cache map key (composite `${identity}:${branch}`
+  // when attributed, bare otherwise), kept as-is here rather than unwrapped
+  // to the bare branch, so `firedKey` and the snapshot map come out
+  // repo-scoped for free. `branchOf(branch)` is used only for the
+  // human-readable notification text.
   for (const [branch, entry] of Object.entries(current)) {
     // If the MR slot is null we have no fresh data — skipping prevents
     // false "transition" detection that would clear the fired key set.
@@ -544,7 +751,8 @@ function detectBranchTransitions(
     if (!was) continue; // First time seeing this branch — no transition
     const now = snapshotBranch(entry, was);
 
-    const branchShort = branch.length > 40 ? branch.slice(0, 39) + "…" : branch;
+    const displayBranch = branchOf(branch);
+    const branchShort = displayBranch.length > 40 ? displayBranch.slice(0, 39) + "…" : displayBranch;
     const mrUrl = entry.mr?.webUrl ?? undefined;
 
     // MR merged (opened → merged) — check BEFORE skipping merged MRs
@@ -711,12 +919,11 @@ function detectBranchTransitions(
   }
 }
 
-// ─── Port staleness detection ────────────────────────────────────────────────
-
 function detectStalePortTransitions(
   portState: Record<string, PortSnapshot>,
   currentPorts: PortEntry[],
   prefs: NotificationPrefs,
+  notify: NotifyFn,
 ): void {
   const now = Date.now();
   const currentKeys = new Set<string>();
@@ -768,105 +975,66 @@ function detectStalePortTransitions(
   }
 }
 
-// ─── Runaway process detection ──────────────────────────────────────────────
+// ─── Default instance + free-function wrappers (unchanged call surface) ────
+
+let defaultNotifier: ReturnType<typeof createNotifier> | null = null;
+
+function getDefaultNotifier() {
+  return defaultNotifier ??= createNotifier();
+}
 
 export function checkRunawayProcesses(
   processes: SystemProcess[],
   markNotified: (pid: number) => void,
   isNotified: (pid: number) => boolean,
 ): void {
-  const prefs = loadNotificationPrefs();
-  if (!isEnabled(prefs, "runaway_process")) return;
-
-  // AI agent sessions and their live subprocesses burn CPU as part of normal
-  // work — never worth an alert. Deliberately not marked notified: if the
-  // agent exits and the orphan is still runaway, it surfaces then.
-  const agentPids = agentSessionPids(processes.map(p => ({
-    pid: p.pid, ppid: p.ppid, command: p.command, fullCommand: p.fullCommand,
-  })));
-
-  const fresh = processes.filter(p =>
-    p.isRunaway && !isNotified(p.pid) && !agentPids.has(p.pid),
-  );
-  if (fresh.length === 0) return;
-
-  if (fresh.length === 1) {
-    const proc = fresh[0]!;
-    const durationMin = proc.runawayDurationMs
-      ? Math.round(proc.runawayDurationMs / 60_000)
-      : 0;
-    const branchInfo = proc.branch ? ` (branch: ${proc.branch})` : "";
-
-    notify(
-      "Runaway Process",
-      `${proc.packageScript ?? proc.command} in ${repoLabel(proc.repo)}${branchInfo} at ${Math.round(proc.cpuPercent)}% CPU for ${durationMin || "<1"} minutes`,
-      undefined,
-      "runaway_process",
-      [proc.pid],
-    );
-  } else {
-    // A burst of runaways in one tick collapses into a single summary so the
-    // user gets one actionable notification instead of a pile.
-    const shown = fresh.slice(0, 2).map(p =>
-      `${p.packageScript ?? p.command} (${repoLabel(p.repo)} ${Math.round(p.cpuPercent)}%)`,
-    );
-    const rest = fresh.length - shown.length;
-    const summary = rest > 0 ? `${shown.join(", ")}, +${rest} more` : shown.join(", ");
-
-    notify(
-      `${fresh.length} Runaway Processes`,
-      summary,
-      undefined,
-      "runaway_process",
-      fresh.map(p => p.pid),
-    );
-  }
-
-  for (const proc of fresh) {
-    markNotified(proc.pid);
-  }
+  getDefaultNotifier().checkRunawayProcesses(processes, markNotified, isNotified);
 }
-
-// ─── Public API (called by daemon after each refresh) ────────────────────────
 
 export function checkAndNotify(
   cacheEntries: Record<string, CacheEntry>,
   ports?: PortEntry[],
   currentUserId: number | null = null,
 ): void {
-  const state = loadState();
-  const prefs = loadNotificationPrefs();
-  const fired = new Set(state.fired);
+  getDefaultNotifier().checkAndNotify(cacheEntries, ports, currentUserId);
+}
 
-  // Branch transitions
-  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, currentUserId);
+/** Register a callback to broadcast notification events (e.g. to WebSocket clients) */
+export function onNotification(hook: (type: string, data: any) => void): void {
+  getDefaultNotifier().onNotification(hook);
+}
 
-  // Port staleness (skipped when called from real-time MR update path)
-  if (ports) {
-    detectStalePortTransitions(state.ports, ports, prefs);
-  }
+/**
+ * Queue a notification, persist it, and attempt to push to the tray app.
+ * Falls back to osascript if no tray app is available.
+ */
+export function notify(
+  title: string,
+  message: string,
+  url?: string,
+  category: string = "general",
+  pids?: number[],
+  id?: string,
+): void {
+  getDefaultNotifier().notify(title, message, url, category, pids, id);
+}
 
-  // Update state with current snapshots.
-  // When entry.mr is null (API failure or branch has no MR), keep the
-  // previous snapshot so we don't wipe conflict/approval state that the
-  // dedup logic depends on.
-  const newBranches: Record<string, BranchSnapshot> = {};
-  for (const [branch, entry] of Object.entries(cacheEntries)) {
-    if (!entry.mr && state.branches[branch]) {
-      newBranches[branch] = state.branches[branch]!;
-    } else {
-      newBranches[branch] = snapshotBranch(entry, state.branches[branch]);
-    }
-  }
-
-  // fired-ledger hygiene: drop keys for branches the branch-cache no longer
-  // carries an entry for (evicted by GC, or never present this cycle) — see
-  // pruneFiredForEvictedBranches.
-  pruneFiredForEvictedBranches(fired, Object.keys(cacheEntries));
-
-  state.branches = newBranches;
-  state.fired = [...fired];
-  saveState(state);
+/**
+ * notify() gated on the user's preference for `category`, loading prefs per
+ * call. For emitters outside the transition loop (which loads prefs once per
+ * cycle). Every notification rt delivers goes through notify(), so it lands in
+ * the durable queue, reaches the tray socket, and falls back to the CLI
+ * notifier — a bare broadcast reaches WebSocket clients only.
+ */
+export function notifyEnabled(
+  category: string,
+  title: string,
+  message: string,
+  url?: string,
+  pids?: number[],
+  id?: string,
+): void {
+  getDefaultNotifier().notifyEnabled(category, title, message, url, pids, id);
 }
 
 export const __test__ = {
@@ -875,10 +1043,21 @@ export const __test__ = {
   shouldRearmReady,
   shouldRearmConflicts,
   isSelfAuthored,
-  notifyFallback,
+  notifyFallback(title: string, message: string, url?: string): void {
+    (getDefaultNotifier() as any).__notifyFallback(title, message, url);
+  },
   firedKey,
   pruneFiredForEvictedBranches,
+  removeFromQueueWithRetry,
   setFallbackNotifier(path: string | null): void {
-    fallbackNotifier = path ?? "osascript";
+    (getDefaultNotifier() as any).__setFallbackNotifier(path);
   },
+  /**
+   * The lazily-created default Notifier instance, for tests that need to
+   * spy on its `notify` (or another method) directly. Spying on the
+   * top-level `export function notify` would only replace that export's
+   * own binding: checkAndNotify/checkRunawayProcesses call `api.notify`
+   * on THIS object, so this is the thing to spy on to intercept them.
+   */
+  getDefaultNotifier,
 };

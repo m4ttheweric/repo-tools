@@ -16,23 +16,20 @@ import { join } from "path";
 import { openStateDb } from "../db.ts";
 import {
   archiveRoom,
-  armMember,
-  clearAllArmed,
-  disarmMember,
   isValidChatName,
   joinRoom,
   leaveRoom,
   listMembers,
   listMessages,
   listRooms,
+  markDelivered,
   markRead,
   parseMentions,
+  pendingMessages,
   postMessage,
   readUnread,
   recipientsFor,
   roomArchivedAt,
-  touchMember,
-  unreadWakingCount,
 } from "../chat-store.ts";
 
 let n = 0;
@@ -60,7 +57,7 @@ test("join creates the room and reports being alone", () => {
 test("a colliding handle from a different cwd is refused, not suffixed", () => {
   // Suffixing is unreachable from local resolution: every other verb would
   // still produce the unsuffixed base, so the agent would join as "a-2" while
-  // its tail armed on chat/wake/a.
+  // post/read/join keep resolving plain "a" for it.
   const db = freshDb();
   joinRoom({ room: "build", handle: "a", cwd: "/one" }, db);
   expect(() => joinRoom({ room: "build", handle: "a", cwd: "/two" }, db)).toThrow(/--as/);
@@ -68,8 +65,8 @@ test("a colliding handle from a different cwd is refused, not suffixed", () => {
 });
 
 test("a colliding handle from a different cwd is refused across DIFFERENT rooms", () => {
-  // The wake topic and pidfile are per-handle across every room, so the
-  // collision check spans all rooms — not just the one being joined.
+  // An unsigned handle has no presence row to establish identity, so it must
+  // map to one cwd across every room, not just the one being joined here.
   const db = freshDb();
   joinRoom({ room: "a", handle: "agent", cwd: "/one" }, db);
   expect(() => joinRoom({ room: "b", handle: "agent", cwd: "/two" }, db)).toThrow(/--as/);
@@ -91,12 +88,12 @@ test("rejoining from the same cwd keeps the handle rather than refusing", () => 
   expect(listMembers("build", db)).toHaveLength(1);
 });
 
-test("wakeOn defaults to mention and round-trips when set", () => {
+test("wakeOn defaults to all and round-trips when set", () => {
   const db = freshDb();
   joinRoom({ room: "build", handle: "a" }, db);
-  joinRoom({ room: "build", handle: "b", wakeOn: "all" }, db);
+  joinRoom({ room: "build", handle: "b", wakeOn: "mention" }, db);
   const byHandle = Object.fromEntries(listMembers("build", db).map(m => [m.handle, m.wakeOn]));
-  expect(byHandle).toEqual({ a: "mention", b: "all" });
+  expect(byHandle).toEqual({ a: "all", b: "mention" });
 });
 
 test("leave drops membership", () => {
@@ -114,8 +111,8 @@ test("parses mentions and ignores an email-shaped token", () => {
 
 test("recipients: mention mode wakes only on being named, and never the author", () => {
   const db = freshDb();
-  joinRoom({ room: "r", handle: "a" }, db);
-  joinRoom({ room: "r", handle: "b" }, db);
+  joinRoom({ room: "r", handle: "a", wakeOn: "mention" }, db);
+  joinRoom({ room: "r", handle: "b", wakeOn: "mention" }, db);
   expect(recipientsFor("r", "a", [], db)).toEqual([]);
   expect(recipientsFor("r", "a", ["b"], db)).toEqual(["b"]);
   expect(recipientsFor("r", "a", ["a"], db)).toEqual([]);
@@ -128,7 +125,7 @@ test("recipients: wakeOn all wakes without a mention; none never wakes", () => {
   joinRoom({ room: "r", handle: "c", wakeOn: "none" }, db);
   expect(recipientsFor("r", "a", [], db)).toEqual(["b"]);
   // c (none) is excluded even when directly mentioned; b (all) still wakes,
-  // because all-mode is unconditional and does not go deaf on a directed message.
+  // because all-mode is unconditional and does not silence on a directed message.
   expect(recipientsFor("r", "a", ["c"], db)).toEqual(["b"]);
 });
 
@@ -195,9 +192,10 @@ test("a last_read_id ahead of MAX(id) is clamped rather than hanging", () => {
   joinRoom({ room: "r", handle: "b" }, db);
   postMessage({ room: "r", handle: "a", body: "@b one" }, db);
   db.run("UPDATE chat_members SET last_read_id = 999999 WHERE handle = 'b';");
-  expect(unreadWakingCount("b", db)).toEqual([]);
+  expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
   postMessage({ room: "r", handle: "a", body: "@b two" }, db);
-  expect(unreadWakingCount("b", db)[0]!.count).toBe(1);
+  const after = readUnread({ handle: "b", limit: 20 }, db);
+  expect(after[0]!.messages.map((m) => m.body)).toEqual(["@b two"]);
 });
 
 test("mark advances without returning messages", () => {
@@ -209,55 +207,28 @@ test("mark advances without returning messages", () => {
   expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
 });
 
-test("arm sets armed_at, disarm clears it, touch updates last_seen_at", () => {
-  const db = freshDb();
-  joinRoom({ room: "r", handle: "a" }, db);
-  armMember(undefined, "a", db);
-  expect(listMembers("r", db)[0]!.armedAt).toBeGreaterThan(0);
-  touchMember(undefined, "a", db);
-  expect(listMembers("r", db)[0]!.lastSeenAt).toBeGreaterThan(0);
-  disarmMember("a", db);
-  expect(listMembers("r", db)[0]!.armedAt).toBeUndefined();
-});
-
-test("clearAllArmed clears every row and reports how many it cleared", () => {
+test("markDelivered clamps the cursor: a slower delivery completing after a newer one never moves it backwards", () => {
   const db = freshDb();
   joinRoom({ room: "r", handle: "a" }, db);
   joinRoom({ room: "r", handle: "b" }, db);
-  armMember(undefined, "a", db);
-  armMember(undefined, "b", db);
-  expect(clearAllArmed(db)).toBe(2);
-  expect(listMembers("r", db).every(m => m.armedAt === undefined)).toBe(true);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  postMessage({ room: "r", handle: "a", body: "two" }, db);
+  markDelivered("r", "b", 2, db);
+  markDelivered("r", "b", 1, db); // a slow send for the older message settling second
+  expect(listMembers("r", db).find((m) => m.handle === "b")!.lastReadId).toBe(2);
 });
 
-test("touch re-arms what the boot clear disarmed, scoped like arm, and never moves a live armed_at", () => {
+test("pendingMessages returns the recipient's unread backlog bounded above by the given id, in order", () => {
   const db = freshDb();
-  joinRoom({ room: "r1", handle: "a" }, db);
-  joinRoom({ room: "r2", handle: "a" }, db);
-  armMember(undefined, "a", db);
-  const armedAt = listMembers("r1", db)[0]!.armedAt!;
-
-  touchMember(undefined, "a", db);
-  expect(listMembers("r1", db)[0]!.armedAt).toBe(armedAt); // touch keeps the arm epoch
-
-  clearAllArmed(db); // the daemon restarted under a tail that is still running
-  touchMember("r1", "a", db); // a --room r1 tail touches
-  expect(listMembers("r1", db)[0]!.armedAt).toBeGreaterThan(0);
-  expect(listMembers("r2", db)[0]!.armedAt).toBeUndefined(); // arm scope respected
-
-  clearAllArmed(db);
-  touchMember(undefined, "a", db); // an unscoped tail touches
-  expect(listMembers("r1", db)[0]!.armedAt).toBeGreaterThan(0);
-  expect(listMembers("r2", db)[0]!.armedAt).toBeGreaterThan(0);
-});
-
-test("startup clear covers presence arming", () => {
-  const db = freshDb();
-  db.query(
-    "INSERT INTO chat_presence (session_id, handle, base_handle, signed_in_at, last_seen_at, armed_at) VALUES ('s1','a','a',1,1,1)",
-  ).run();
-  clearAllArmed(db);
-  expect(db.query("SELECT armed_at FROM chat_presence").get()).toMatchObject({ armed_at: null });
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  const one = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  const two = postMessage({ room: "r", handle: "a", body: "two" }, db)!;
+  postMessage({ room: "r", handle: "a", body: "three" }, db);
+  expect(pendingMessages("r", "b", two.id, db).map((m) => m.body)).toEqual(["one", "two"]);
+  markDelivered("r", "b", one.id, db);
+  expect(pendingMessages("r", "b", two.id, db).map((m) => m.body)).toEqual(["two"]);
+  expect(pendingMessages("r", "nobody", two.id, db)).toEqual([]);
 });
 
 test("archive hides a room from every membership walk and keeps the member rows", () => {
@@ -274,7 +245,6 @@ test("archive hides a room from every membership walk and keeps the member rows"
 
   expect(listRooms("b", db).map(r => r.room)).toEqual(["other"]);
   expect(listRooms("b", db, { includeArchived: true }).map(r => [r.room, r.archivedAt !== undefined])).toEqual([["build", true], ["other", false]]);
-  expect(unreadWakingCount("b", db)).toEqual([]);
   expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
   expect(listMembers("build", db).map(m => m.handle)).toEqual(["a", "b"]);
 });

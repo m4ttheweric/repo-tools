@@ -54,6 +54,33 @@ export function rekeyBranchCacheTable(): Promise<RekeyReport> {
   return rekeyTableColumn("branch_cache", "repo");
 }
 
+/** state.db keys the branch cache on `${serializedIdentity}:${branch}`. Split
+ *  on the LAST colon: git branch names contain none, serialized identities
+ *  always carry their own (remote:/path:), so this is unambiguous. */
+export function composeKey(identity: string | undefined, branch: string): string {
+  return identity ? `${identity}:${branch}` : branch;
+}
+export function branchOf(key: string): string {
+  const i = key.lastIndexOf(":");
+  return i < 0 ? key : key.slice(i + 1);
+}
+export function identityOf(key: string): string | undefined {
+  const i = key.lastIndexOf(":");
+  return i < 0 ? undefined : key.slice(0, i);
+}
+
+/**
+ * Free function, not a store method, on purpose: `BranchCacheStore` is a
+ * structural interface with implementers outside this module's ownership
+ * (lib/daemon.ts's facade), so growing the interface forces edits there too.
+ * Scans for any key ending in `:${branch}` (or the bare branch itself).
+ */
+export function getByBranch(entries: Record<string, CacheEntry>, branch: string): CacheEntry | undefined {
+  const suffix = `:${branch}`;
+  for (const [k, v] of Object.entries(entries)) if (k === branch || k.endsWith(suffix)) return v;
+  return undefined;
+}
+
 export interface BranchCacheStore {
   /** The live map — ctx.cache-compatible. Same object identity across reload(). */
   entries: Record<string, CacheEntry>;
@@ -120,21 +147,26 @@ function createStore(db: Database): BranchCacheStore {
   }
 
   function put(branch: string, entry: CacheEntry): void {
+    // Keyed by composeKey(entry.repoName, branch), not the bare branch: two
+    // repos with a same-named branch must land in different rows/map slots,
+    // never overwrite each other (the collision Task 10 fixes). The row's
+    // `branch` column and the map key are always the same composite string.
+    const key = composeKey(entry.repoName, branch);
     // The map update sits OUTSIDE the wrapper on purpose: it is this cycle's
     // freshly enriched truth and the thing handlers serve, so it must land
     // even when the row defers. (gc/delete keep the two together instead —
     // see below.)
     persistOrWarn("branch-cache", () => {
       db.query(UPSERT_SQL).run(
-        branch,
+        key,
         entry.repoName ?? null,
         entry.ticket !== null ? JSON.stringify(entry.ticket) : null,
         entry.linearId,
         entry.mr !== null ? JSON.stringify(entry.mr) : null,
         entry.fetchedAt,
       );
-    }, { op: "put", branch });
-    entries[branch] = entry;
+    }, { op: "put", branch: key });
+    entries[key] = entry;
   }
 
   function del(branch: string): void {

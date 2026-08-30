@@ -6,18 +6,25 @@
  * HOME isolation is handled by the repo-wide bun test preload
  * (test-setup.ts) — never removed here.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
   closeStateDb,
+  ensureEndpointClaimsStartTimeColumn,
   getStateDb,
   LEGACY_IMPORTS,
   openStateDb,
   SCHEMA_VERSION,
 } from "../db.ts";
+// Side-effect imports: registering the REAL project-mrs and discussions
+// importers (module-load LEGACY_IMPORTS.push), not fakes, so the isolation
+// test below exercises a genuine throw (duplicate-iid UNIQUE violation)
+// and a genuine benign import, not a hand-rolled stand-in for either.
+import "../../daemon/project-mrs-store.ts";
+import "../../daemon/discussions-file-store.ts";
 
 const DB_TS_PATH = join(import.meta.dir, "..", "db.ts");
 
@@ -47,41 +54,21 @@ function userVersion(db: Database): number {
   return (db.query("PRAGMA user_version;").get() as { user_version: number }).user_version;
 }
 
-function tableNames(db: Database): string[] {
-  const rows = db.query("SELECT name FROM sqlite_master WHERE type = 'table';").all() as { name: string }[];
-  return rows.map(r => r.name).sort();
-}
-
-const ALL_TABLE_NAMES = [
-  "agents",
-  "branch_cache",
-  "chat_dms",
-  "chat_members",
-  "chat_messages",
-  "chat_presence",
-  "chat_room_defaults",
-  "chat_rooms",
-  "discussions",
-  "endpoint_claims",
-  "kv",
-  "notify_queue",
-  "project_mr_demands",
-  "project_mr_sections",
-  "project_mrs",
-  "project_mrs_meta",
-  "run_history",
-  "sqlite_sequence", // AUTOINCREMENT bookkeeping table (notify_queue.id, run_history.id, chat_messages.id)
-];
-
 describe("openStateDb — fresh open", () => {
-  test("a fresh database reaches v8 directly, gaining every v1, v2, v3, v4, v6, v7, and v8 change", () => {
+  test("a fresh database reaches v10 directly, gaining every v1, v2, v3, v4, v6, v7, v8, v9, and v10 change", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
-    expect(SCHEMA_VERSION).toBe(8);
+    expect(SCHEMA_VERSION).toBe(10);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
-    expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
+    // Full table-list coverage lives in db-schema-convergence.test.ts's
+    // dynamic presence test, derived from db.ts's own CREATE TABLE
+    // statements rather than a hand-maintained list here.
     const cols = (db.query("PRAGMA table_info(chat_rooms);").all() as { name: string }[]).map(c => c.name);
     expect(cols).toContain("archived_at");
+    const agentCols = (db.query("PRAGMA table_info(agents);").all() as { name: string }[]).map(c => c.name);
+    expect(agentCols).toContain("handle");
+    const claimCols = (db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    expect(claimCols).toContain("start_time");
     db.close();
   });
 
@@ -98,8 +85,27 @@ describe("openStateDb — fresh open", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms','chat_room_defaults')").all(),
     ).toHaveLength(3);
-    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 8 });
+    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 10 });
     db.close();
+  });
+
+  test("v10 moves mention-gated wake rows to all, keeping an explicit none", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.exec("INSERT INTO chat_rooms (name, created_at) VALUES ('r', 1);");
+    db.exec("INSERT INTO chat_members (room, handle, joined_at, last_read_id, wake_on) VALUES ('r','a',1,0,'mention'), ('r','b',1,0,'none'), ('r','c',1,0,'all');");
+    db.exec("INSERT INTO chat_room_defaults (room, wake_on) VALUES ('r','mention');");
+    db.exec("PRAGMA user_version = 9;");
+    db.close();
+    const re = openStateDb(dbPath, "cli");
+    const modes = re.query("SELECT handle, wake_on FROM chat_members ORDER BY handle;").all();
+    expect(modes).toEqual([
+      { handle: "a", wake_on: "all" },
+      { handle: "b", wake_on: "none" },
+      { handle: "c", wake_on: "all" },
+    ]);
+    expect(re.query("SELECT wake_on FROM chat_room_defaults WHERE room='r';").get()).toMatchObject({ wake_on: "all" });
+    re.close();
   });
 });
 
@@ -126,13 +132,100 @@ describe("openStateDb — replay over an older user_version", () => {
     db.close();
 
     const migrated = openStateDb(dbPath, "cli");
-    expect(userVersion(migrated)).toBe(8);
+    expect(userVersion(migrated)).toBe(SCHEMA_VERSION);
     const columns = (migrated.query("PRAGMA table_info(chat_rooms);").all() as { name: string }[]).map(c => c.name);
     expect(columns).toContain("archived_at");
     expect(migrated.query("SELECT name, archived_at FROM chat_rooms;").all()).toEqual([{ name: "build", archived_at: null }]);
     migrated.close();
 
     expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
+  });
+
+  test("v9 adds agents.handle to a v7 database without touching its rows", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.exec(
+      "INSERT INTO agents (id, repo, cwd, provider, surface, session_id, created_at) VALUES ('ag-1', 'r', '/c', 'claude', 'herdr', 's-1', 1);",
+    );
+    // A real v7 file has no such column; SQLite >= 3.35 can drop one, which is
+    // what makes this fixture honest rather than a fresh v8 relabelled.
+    db.exec("ALTER TABLE agents DROP COLUMN handle;");
+    db.exec("PRAGMA user_version = 7;");
+    db.close();
+
+    const migrated = openStateDb(dbPath, "cli");
+    expect(userVersion(migrated)).toBe(SCHEMA_VERSION);
+    const columns = (migrated.query("PRAGMA table_info(agents);").all() as { name: string }[]).map(c => c.name);
+    expect(columns).toContain("handle");
+    expect(migrated.query("SELECT id, handle FROM agents;").all()).toEqual([{ id: "ag-1", handle: null }]);
+    migrated.close();
+
+    expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
+  });
+
+  test("a machine already at v9 gains endpoint_claims.start_time on open (S068, added outside runMigrations' transaction)", () => {
+    const dbPath = join(dir, "state.db");
+    const db1 = openStateDb(dbPath, "cli");
+    expect(userVersion(db1)).toBe(SCHEMA_VERSION);
+    // Simulate a real v9 machine that predates the start_time column: only
+    // ensureEndpointClaimsStartTimeColumn's own table_info guard, called
+    // unconditionally from openStateDb, can add it back.
+    db1.exec("ALTER TABLE endpoint_claims DROP COLUMN start_time;");
+    db1.close();
+
+    const beforeDb = new Database(dbPath);
+    const columnsBefore = (beforeDb.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    beforeDb.close();
+    expect(columnsBefore).not.toContain("start_time");
+
+    const db2 = openStateDb(dbPath, "cli");
+    expect(userVersion(db2)).toBe(SCHEMA_VERSION); // unchanged: not a schema-version bump
+    const columnsAfter = (db2.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name);
+    expect(columnsAfter).toContain("start_time");
+    db2.close();
+  });
+
+  test("ensureEndpointClaimsStartTimeColumn treats a concurrent winner's duplicate-column error as success", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli"); // already has start_time (v9+)
+    expect((db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name)).toContain(
+      "start_time",
+    );
+
+    // Simulate the race: this process's own PRAGMA read reports the column
+    // missing (a snapshot taken before a concurrent winner's ALTER landed),
+    // so its own ALTER runs into the real column that already exists.
+    const originalQuery = db.query.bind(db) as (...a: unknown[]) => unknown;
+    let pragmaCalls = 0;
+    const spy = spyOn(db, "query").mockImplementation(((sql: string, ...rest: unknown[]) => {
+      if (sql === "PRAGMA table_info(endpoint_claims);" && pragmaCalls++ === 0) {
+        return { all: () => [] };
+      }
+      return originalQuery(sql, ...rest);
+    }) as Database["query"]);
+
+    try {
+      expect(() => ensureEndpointClaimsStartTimeColumn(db)).not.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect((db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[]).map(c => c.name)).toContain(
+      "start_time",
+    );
+    db.close();
+  });
+
+  test("ensureEndpointClaimsStartTimeColumn still propagates an unrelated ALTER failure", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.exec("DROP TABLE endpoint_claims;");
+
+    // The PRAGMA read on a dropped table returns no columns (missing,
+    // correctly), but the ALTER itself now fails for a genuine reason (no
+    // such table) that a duplicate-column re-check can never paper over.
+    expect(() => ensureEndpointClaimsStartTimeColumn(db)).toThrow(/no such table/);
+    db.close();
   });
 });
 
@@ -178,14 +271,13 @@ function buildV1Fixture(path: string): Database {
   return db;
 }
 
-describe("openStateDb: v1 database migrates to v8", () => {
-  test("existing v1 rows survive, and v2's, v3's, v4's, v6's, v7's, and v8's new tables and columns appear alongside them", () => {
+describe("openStateDb: v1 database migrates to v9", () => {
+  test("existing v1 rows survive, and v2's, v3's, v4's, v6's, v7's, v8's, and v9's new tables and columns appear alongside them", () => {
     const dbPath = join(dir, "state.db");
     buildV1Fixture(dbPath);
 
     const db = openStateDb(dbPath, "cli");
-    expect(userVersion(db)).toBe(8);
-    expect(tableNames(db)).toEqual(ALL_TABLE_NAMES);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
 
     const branchRow = db.query("SELECT branch, repo, linear_id, fetched_at FROM branch_cache WHERE branch = ?;").get("main");
     expect(branchRow).toEqual({ branch: "main", repo: "repo-a", linear_id: "RT-1", fetched_at: 1000 });
@@ -318,6 +410,62 @@ describe("legacy import seam", () => {
     });
     expect(() => openStateDb(dbPath, "cli").close()).not.toThrow();
   });
+
+  test("a throwing legacy importer is isolated: db reaches SCHEMA_VERSION, the other importer's rows land, and the offending file is still renamed", () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const dbPath = join(dir, "state.db");
+
+      // project-mrs-store's real importer: keys "5" and "05" both bind
+      // Number(iidStr) === 5, so the second INSERT hits project_mrs's
+      // (repo, iid) PRIMARY KEY and throws mid-transaction.
+      const projectMrsPath = join(dir, "project-mrs.json");
+      writeFileSync(
+        projectMrsPath,
+        JSON.stringify({
+          "host/repo": {
+            mrs: {
+              "5": { pr: { iid: 5, title: "first" }, fetchedAt: 111 },
+              "05": { pr: { iid: 5, title: "duplicate" }, fetchedAt: 222 },
+            },
+          },
+        }),
+      );
+
+      // discussions-file-store's real importer: a benign, unrelated file
+      // that must still land even though the importer above throws.
+      const discussionsPath = join(dir, "discussions.json");
+      writeFileSync(
+        discussionsPath,
+        JSON.stringify({
+          "host/repo:7": { discussions: [{ id: "d1" }], fetchedAt: 333 },
+        }),
+      );
+
+      const db = openStateDb(dbPath, "cli");
+
+      expect(db.query("PRAGMA user_version;").get()).toEqual({ user_version: SCHEMA_VERSION });
+
+      const discussionsRow = db
+        .query("SELECT repo, iid, fetched_at FROM discussions WHERE repo = ? AND iid = ?;")
+        .get("host/repo", 7);
+      expect(discussionsRow).toEqual({ repo: "host/repo", iid: 7, fetched_at: 333 });
+
+      expect(existsSync(projectMrsPath)).toBe(false);
+      expect(existsSync(`${projectMrsPath}.migrated`)).toBe(true);
+      expect(existsSync(discussionsPath)).toBe(false);
+      expect(existsSync(`${discussionsPath}.migrated`)).toBe(true);
+
+      const warnedAboutOffender = warnSpy.mock.calls.some((call) =>
+        call.some((arg) => typeof arg === "string" && arg.includes("project-mrs.json")),
+      );
+      expect(warnedAboutOffender).toBe(true);
+
+      db.close();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 describe("pragma values per flavor", () => {
@@ -350,6 +498,13 @@ describe("pragma values per flavor", () => {
     const { timeout } = db.query("PRAGMA busy_timeout;").get() as { timeout: number };
     expect(timeout).toBe(5000);
     db.close();
+  });
+
+  test("getStateDb('daemon') reports busy_timeout 250 even after a default open", () => {
+    const cli = getStateDb(); // opens singleton, cli flavor
+    expect(cli.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
+    const daemon = getStateDb("daemon"); // same singleton, must not stay at 5000
+    expect(daemon.query("PRAGMA busy_timeout").get()).toEqual({ timeout: 250 });
   });
 });
 
@@ -441,7 +596,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     // unrelated exports (reading SCHEMA_VERSION, pushing to LEGACY_IMPORTS)
     // never opens or creates a db file on its own.
     const before = SCHEMA_VERSION;
-    expect(before).toBe(8);
+    expect(before).toBe(10);
     LEGACY_IMPORTS.push({ file: "x.json", import: () => {} });
     LEGACY_IMPORTS.length = 0;
     // No db.ts function that touches disk was called above; nothing to assert

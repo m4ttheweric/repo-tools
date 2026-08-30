@@ -18,6 +18,7 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as notifierModule from "../notifier.ts";
 import { closeStateDb, getNotifierStateBlob } from "../state/index.ts";
+import { composeKey } from "../state/branch-cache.ts";
 
 interface NotifierStateShape {
   branches: Record<string, unknown>;
@@ -56,7 +57,7 @@ afterEach(() => {
 
 describe("checkAndNotify fired-ledger hygiene", () => {
   test("an evicted branch's fired key is dropped from persisted state", () => {
-    spyOn(notifierModule, "notify").mockImplementation(() => {});
+    spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     // Cycle 1: baseline (branch-a's pipeline running).
     notifierModule.checkAndNotify({ "branch-a": mrEntry("running") }, undefined, 123);
@@ -76,7 +77,7 @@ describe("checkAndNotify fired-ledger hygiene", () => {
   });
 
   test("a returning branch can re-notify: the stale key from before eviction no longer suppresses it", () => {
-    const notifySpy = spyOn(notifierModule, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     notifierModule.checkAndNotify({ "branch-a": mrEntry("running") }, undefined, 123);
     notifierModule.checkAndNotify({ "branch-a": mrEntry("failed") }, undefined, 123);
@@ -99,6 +100,34 @@ describe("checkAndNotify fired-ledger hygiene", () => {
 
     const key = notifierModule.__test__.firedKey("pipeline:failed", "branch-a");
     expect(readState().fired).toContain(key);
+  });
+});
+
+describe("checkAndNotify: composite-key repo scoping (S069/Task 10)", () => {
+  test("evicting one repo's branch does not prune the other repo's fired key", () => {
+    spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
+
+    const keyA = composeKey("repo-a", "main");
+    const keyB = composeKey("repo-b", "main");
+
+    // Cycle 1: both repos' "main" baseline (same bare branch, distinct
+    // composite keys...the collision this task fixes).
+    notifierModule.checkAndNotify({ [keyA]: mrEntry("running"), [keyB]: mrEntry("running") }, undefined, 123);
+    // Cycle 2: repo-a's pipeline fails; repo-b's stays running. Fires and
+    // persists repo-a's pipeline:failed key, keyed by the FULL composite key.
+    notifierModule.checkAndNotify({ [keyA]: mrEntry("failed"), [keyB]: mrEntry("running") }, undefined, 123);
+
+    const firedKeyA = notifierModule.__test__.firedKey("pipeline:failed", keyA);
+    expect(readState().fired).toContain(firedKeyA);
+
+    // Cycle 3: repo-a's branch is evicted (GC, or just absent this cycle);
+    // repo-b's "main" is still present under its own composite key.
+    notifierModule.checkAndNotify({ [keyB]: mrEntry("running") }, undefined, 123);
+
+    const state = readState();
+    expect(state.fired).not.toContain(firedKeyA);
+    // repo-b's own baseline snapshot survives untouched by repo-a's eviction.
+    expect(state.branches[keyB]).toBeDefined();
   });
 });
 

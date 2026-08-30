@@ -19,22 +19,61 @@
  */
 
 import { NoteMutator } from "@mattstack/glance";
-import { parseIdentity } from "../../settings/identity.ts";
+import { decodeRepo } from "../identity-decoder.ts";
 import { getRepoContext, providerRequestHook } from "../freshness.ts";
 import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
 import { getDiscussionsFileStore } from "../discussions-file-store.ts";
 import { grants, loadRepoTracking } from "../../repo-tracking.ts";
-import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
+import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
 /** Discussions are stable per push; 2min TTL keeps reads fast without going stale. */
 const DISCUSSIONS_TTL_MS = 2 * 60 * 1000;
 
+/** GitLab's page size for this endpoint; a full page means there may be more. */
+const DIFFS_PAGE_SIZE = 100;
+const DIFFS_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Every other outbound fetch in the daemon carries a bound (linear.ts,
+ * notifier.ts, park.ts); this one previously had none, so a stalled GitLab
+ * connection left the promise (and the sops-decrypted token in its closure)
+ * pending indefinitely. `reqSignal` is the client's own request signal
+ * (handlers/types.ts's Handler(payload, signal?)) so a client giving up
+ * actually cancels the in-flight GitLab request instead of orphaning it.
+ * `truncated` reports a full page rather than silently dropping files past it.
+ */
+export async function fetchMrDiffs(
+  baseURL: string,
+  projectPath: string,
+  iid: number,
+  token: string,
+  opts: { reqSignal?: AbortSignal; fetchFn?: typeof fetch } = {},
+): Promise<{ diffs: Array<{ newPath: string; diff: string }>; truncated: boolean }> {
+  const fetchFn = opts.fetchFn ?? fetch;
+  const encoded = encodeURIComponent(projectPath);
+  const url = `${baseURL}/api/v4/projects/${encoded}/merge_requests/${iid}/diffs?per_page=${DIFFS_PAGE_SIZE}`;
+  const timeout = AbortSignal.timeout(DIFFS_FETCH_TIMEOUT_MS);
+  const signal = opts.reqSignal ? AbortSignal.any([timeout, opts.reqSignal]) : timeout;
+  const res = await fetchFn(url, { headers: { "PRIVATE-TOKEN": token }, signal });
+  if (!res.ok) throw new Error(`GitLab diffs API: ${res.status}`);
+  const raw = (await res.json()) as Array<{ new_path: string; diff: string }>;
+  return {
+    diffs: raw.map((d) => ({ newPath: d.new_path, diff: d.diff })),
+    truncated: raw.length >= DIFFS_PAGE_SIZE,
+  };
+}
+
 export function createDiscussionHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "cache" | "repoIndex">,
   broadcast: BroadcastFn,
-): Pick<TypedHandlers, "discussions:read"> & HandlerMap {
+): { "discussions:read": (payload: unknown) => Promise<{ ok: true; data: Commands["discussions:read"]["data"] } | { ok: false; error: string }> }
+  & { "discussions:refresh": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:refresh">> }
+  & { "discussions:resolve": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:resolve">> }
+  & { "discussions:diffs": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:diffs">> }
+  & { "discussions:reply": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"discussions:reply">> }
+  & HandlerMap {
   const deps = { ctx, broadcast };
 
   return {
@@ -43,20 +82,22 @@ export function createDiscussionHandlers(
     // payload type rather than added to Commands so the public contract
     // stays what rt-client actually sends.
     "discussions:read": async (
-      payload: Commands["discussions:read"]["payload"] & { force?: boolean },
+      rawPayload: unknown,
     ): Promise<{ ok: true; data: Commands["discussions:read"]["data"] } | { ok: false; error: string }> => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
-      const force    = payload?.force === true;
-      if (!repoName || typeof iid !== "number") {
+      const payload = rawPayload as (Commands["discussions:read"]["payload"] & { force?: boolean }) | undefined;
+      const iid   = payload?.iid;
+      const force = payload?.force === true;
+      if (!payload?.repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
       // Hard cutover: the discussions table is identity-keyed now;
       // a bare legacy name resolves nothing rather than reading a row that
       // no longer exists under that key.
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: true, data: { discussions: [], fetchedAt: 0, stale: true } };
       }
+      const repoName = decoded.repo;
 
       const granted = grants(loadRepoTracking(), repoName).caches.has("discussions");
       const cached = getDiscussionsFileStore().read(repoName, iid);
@@ -78,14 +119,16 @@ export function createDiscussionHandlers(
     },
 
     "discussions:refresh": async (payload) => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
-      if (!repoName || typeof iid !== "number") {
+      const p = payload as { repoName?: string; iid?: number } | undefined;
+      const iid = p?.iid;
+      if (!p?.repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: false, error: "repo must be a serialized identity" };
       }
+      const repoName = decoded.repo;
       try {
         const res = await refreshDiscussions(deps, repoName, iid);
         return { ok: true, data: { discussions: res.discussions, fetchedAt: res.fetchedAt } };
@@ -95,17 +138,19 @@ export function createDiscussionHandlers(
     },
 
     "discussions:resolve": async (payload) => {
-      const repoName      = payload?.repoName      as string | undefined;
-      const iid           = payload?.iid           as number | undefined;
-      const discussionId  = payload?.discussionId  as string | undefined;
-      const resolved      = payload?.resolved !== false; // default: mark resolved
+      const p = payload as { repoName?: string; iid?: number; discussionId?: string; resolved?: boolean } | undefined;
+      const iid          = p?.iid;
+      const discussionId = p?.discussionId;
+      const resolved     = p?.resolved !== false; // default: mark resolved
 
-      if (!repoName || typeof iid !== "number" || !discussionId) {
+      if (!p?.repoName || typeof iid !== "number" || !discussionId) {
         return { ok: false, error: "missing repoName/iid/discussionId" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: false, error: "repo must be a serialized identity" };
       }
+      const repoName = decoded.repo;
 
       const repoPath = ctx.repoIndex()[repoName];
       try {
@@ -122,15 +167,17 @@ export function createDiscussionHandlers(
       }
     },
 
-    "discussions:diffs": async (payload) => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
-      if (!repoName || typeof iid !== "number") {
+    "discussions:diffs": async (payload, signal) => {
+      const p = payload as { repoName?: string; iid?: number } | undefined;
+      const iid = p?.iid;
+      if (!p?.repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: false, error: "repo must be a serialized identity" };
       }
+      const repoName = decoded.repo;
 
       const repoPath = ctx.repoIndex()[repoName];
       try {
@@ -138,31 +185,33 @@ export function createDiscussionHandlers(
         const secrets = await loadSecrets();
         if (!secrets.gitlabToken) return { ok: false, error: "no gitlabToken in secrets" };
 
-        const encoded = encodeURIComponent(repoCtx.projectPath);
-        const url = `${repoCtx.provider.baseURL}/api/v4/projects/${encoded}/merge_requests/${iid}/diffs?per_page=100`;
-        const res = await fetch(url, { headers: { "PRIVATE-TOKEN": secrets.gitlabToken } });
-        if (!res.ok) return { ok: false, error: `GitLab diffs API: ${res.status}` };
-
-        const raw = await res.json() as Array<{ new_path: string; diff: string }>;
-        const diffs = raw.map((d) => ({ newPath: d.new_path, diff: d.diff }));
-        return { ok: true, data: { diffs } };
+        const { diffs, truncated } = await fetchMrDiffs(
+          repoCtx.provider.baseURL,
+          repoCtx.projectPath,
+          iid,
+          secrets.gitlabToken,
+          { reqSignal: signal },
+        );
+        return { ok: true, data: { diffs, truncated } };
       } catch (err) {
         return { ok: false, error: String(err) };
       }
     },
 
     "discussions:reply": async (payload) => {
-      const repoName     = payload?.repoName     as string | undefined;
-      const iid          = payload?.iid          as number | undefined;
-      const discussionId = payload?.discussionId as string | undefined;
-      const body         = payload?.body         as string | undefined;
+      const p = payload as { repoName?: string; iid?: number; discussionId?: string; body?: string } | undefined;
+      const iid          = p?.iid;
+      const discussionId = p?.discussionId;
+      const body         = p?.body;
 
-      if (!repoName || typeof iid !== "number" || !discussionId || !body?.trim()) {
+      if (!p?.repoName || typeof iid !== "number" || !discussionId || typeof body !== "string" || !body.trim()) {
         return { ok: false, error: "missing repoName/iid/discussionId/body" };
       }
-      if (parseIdentity(repoName) === null) {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) {
         return { ok: false, error: "repo must be a serialized identity" };
       }
+      const repoName = decoded.repo;
 
       const repoPath = ctx.repoIndex()[repoName];
       try {

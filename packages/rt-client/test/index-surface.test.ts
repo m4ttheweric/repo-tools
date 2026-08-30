@@ -50,5 +50,7 @@ describe("index.ts pane and invite surface", () => {
     expect(typeof rtClient.paneAccounts).toBe("function");
     expect(typeof rtClient.paneDirectories).toBe("function");
     expect(typeof rtClient.chatInvite).toBe("function");
+    expect(typeof rtClient.paneSend).toBe("function");
+    expect(typeof rtClient.paneFocus).toBe("function");
   });
 });

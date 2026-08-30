@@ -35,7 +35,7 @@ describe("checkRunawayProcesses", () => {
 
   test("notifies and marks notified for a newly-detected runaway process", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const marked: number[] = [];
     const proc = makeProcess();
@@ -62,7 +62,7 @@ describe("checkRunawayProcesses", () => {
 
   test("skips non-runaway processes", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const proc = makeProcess({ isRunaway: false });
     const marked: number[] = [];
@@ -78,7 +78,7 @@ describe("checkRunawayProcesses", () => {
 
   test("does not re-notify a process already marked as notified", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const proc = makeProcess();
     const marked: number[] = [];
@@ -94,7 +94,7 @@ describe("checkRunawayProcesses", () => {
 
   test("respects the runaway_process notification preference toggle", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: false });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const proc = makeProcess();
     const marked: number[] = [];
@@ -110,7 +110,7 @@ describe("checkRunawayProcesses", () => {
 
   test("prefers packageScript over command in the notification message", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const proc = makeProcess({ packageScript: "pnpm start:lite:watch" });
 
@@ -125,7 +125,7 @@ describe("checkRunawayProcesses", () => {
 
   test("collapses multiple new runaways into one summary notification", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const marked: number[] = [];
     const procs = [
@@ -150,7 +150,7 @@ describe("checkRunawayProcesses", () => {
 
   test("already-notified runaways do not count toward the summary", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const marked: number[] = [];
     const procs = [
@@ -172,7 +172,7 @@ describe("checkRunawayProcesses", () => {
 
   test("reports <1 minute for a runaway with no accumulated duration yet", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const proc = makeProcess({ runawayDurationMs: null });
 
@@ -193,7 +193,7 @@ describe("checkRunawayProcesses kill payload", () => {
 
   test("notification carries the pids so the tray can offer Kill", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     notifier.checkRunawayProcesses(
       [makeProcess({ pid: 7 }), makeProcess({ pid: 8 })],
@@ -216,7 +216,7 @@ describe("checkRunawayProcesses agent exclusion", () => {
 
   test("stays silent for a runaway AI agent process and its descendants", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     const marked: number[] = [];
     notifier.checkRunawayProcesses(
@@ -242,7 +242,7 @@ describe("checkRunawayProcesses agent exclusion", () => {
 
   test("still notifies for a runaway orphaned by a dead agent session", () => {
     const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
+    const notifySpy = spyOn(notifier.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
     // No claude ancestor in the list — the orphan was reparented to pid 1
     notifier.checkRunawayProcesses(

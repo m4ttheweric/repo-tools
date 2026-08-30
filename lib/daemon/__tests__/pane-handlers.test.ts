@@ -3,9 +3,19 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { HERDR_UNAVAILABLE, herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
-import { openStateDb } from "../../state/index.ts";
+import { openStateDb, type RegistryDeps } from "../../state/index.ts";
+import type { InboxBinding } from "../../claude-registry.ts";
 import { createChatHandlers } from "../handlers/chat.ts";
 import { createPaneHandlers } from "../handlers/pane.ts";
+import type { TrayClient, TrayReply } from "../../daemon-client.ts";
+
+/** A resolvable, alive binding for each named session id -- buddyStatus now reads offline for anything not covered here, so a test whose point is a live/idle join must supply one. */
+function fakeRegistryDeps(bindings: Record<string, InboxBinding["status"]>): RegistryDeps {
+  const map = new Map<string, InboxBinding>(
+    Object.entries(bindings).map(([sessionId, status]) => [sessionId, { pid: process.pid, socketPath: "/fake.sock", status }]),
+  );
+  return { resolve: (sessionId) => map.get(sessionId) ?? null, alive: () => true, resolveAll: () => map };
+}
 
 const stops: Array<() => void> = [];
 afterEach(() => {
@@ -38,19 +48,25 @@ const SNAPSHOT = {
 const CSWAP_EXEC = async (argv: [string, ...string[]]) =>
   argv[1] === "list" ? { stdout: "Accounts:\n  1: me@x.y [Me]\n", stderr: "", exitCode: 0 } : { stdout: "main\n", stderr: "", exitCode: 0 };
 
-function harness(handler: FakeHerdrHandler, extra: { repoIndex?: Record<string, string>; now?: () => number } = {}) {
+function harness(
+  handler: FakeHerdrHandler,
+  extra: { repoIndex?: Record<string, string>; now?: () => number; registryDeps?: RegistryDeps } = {},
+) {
   const { sock, seen, stop } = fakeHerdr(handler);
   stops.push(stop);
   const db = freshDb();
   const herdr: typeof herdrRequest = (method, params, opts) => herdrRequest(method, params, { ...opts, sockPath: sock });
   const exec = CSWAP_EXEC;
   const chat = createChatHandlers({ db, emitEvent: () => 0 });
-  const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: extra.now ?? Date.now });
+  const pane = createPaneHandlers({ db, repoIndex: () => extra.repoIndex ?? {}, herdr, exec, now: extra.now ?? Date.now, registryDeps: extra.registryDeps });
   return { db, seen, chat, pane };
 }
 
 test("pane:list lists only claude panes, joined to presence by session id, with rooms", async () => {
-  const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
+  const { chat, pane } = harness(
+    (method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)),
+    { registryDeps: fakeRegistryDeps({ "sess-signed": "busy" }) },
+  );
   const signed = await chat["chat:sign-in"]({ sessionId: "sess-signed", baseHandle: "meg", cwd: "/tmp/acme", repo: "acme", branch: "main", pane: "w1:p1" });
   if (!signed.ok) throw new Error(signed.error);
   await chat["chat:join"]({ room: "build", handle: signed.data.handle });
@@ -61,12 +77,14 @@ test("pane:list lists only claude panes, joined to presence by session id, with 
   expect(res.data.panes.map((p) => p.paneId)).toEqual(["w1:p1", "w1:p2"]);
   const first = res.data.panes[0]!;
   expect(first).toMatchObject({ workspace: "acme", title: "Evaluate codegen", cwd: "/tmp/acme", repo: "acme", branch: "main", agentStatus: "idle", sessionId: "sess-signed" });
-  expect(first.presence).toMatchObject({ handle: "meg", rooms: ["build"] });
-  expect(first.presence!.status).not.toBe("offline");
+  expect(first.presence).toMatchObject({ handle: "meg", rooms: ["build"], status: "live" });
 });
 
 test("pane:list falls back to the presence row's pane id when herdr has no session id", async () => {
-  const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
+  const { chat, pane } = harness(
+    (method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)),
+    { registryDeps: fakeRegistryDeps({ "sess-by-pane": "idle" }) },
+  );
   const signed = await chat["chat:sign-in"]({ sessionId: "sess-by-pane", baseHandle: "fred", cwd: "/tmp/other", pane: "w1:p2" });
   if (!signed.ok) throw new Error(signed.error);
   const res = await pane["pane:list"]({});
@@ -84,13 +102,45 @@ test("pane:list derives repo and branch for an unsigned pane without touching th
   expect(unsigned.repo).toBeUndefined();
 });
 
-test("pane:list sorts listening, idle, deaf, then not signed in", async () => {
+test("pane:list drops the presence join for a signed-in session with no resolvable registry binding", async () => {
+  // No registryDeps override: the default resolver finds nothing for this
+  // test session id, so the row reads offline and presenceMaps excludes it
+  // -- the pane falls back to the unsigned repo/branch derivation, same as
+  // a pane nobody ever signed in on.
   const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
+  const signed = await chat["chat:sign-in"]({ sessionId: "sess-dead", baseHandle: "ghost", pane: "w1:p1" });
+  if (!signed.ok) throw new Error(signed.error);
+  const res = await pane["pane:list"]({});
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.panes.find((p) => p.paneId === "w1:p1")!.presence).toBeUndefined();
+});
+
+test("pane:list sorts listening, idle, then not signed in", async () => {
+  const { chat, pane } = harness(
+    (method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)),
+    { registryDeps: fakeRegistryDeps({ "sess-p2": "idle" }) },
+  );
   const signed = await chat["chat:sign-in"]({ sessionId: "sess-p2", baseHandle: "fred", pane: "w1:p2" });
   if (!signed.ok) throw new Error(signed.error);
   const res = await pane["pane:list"]({});
   if (!res.ok) throw new Error(res.error);
   expect(res.data.panes.map((p) => p.paneId)).toEqual(["w1:p2", "w1:p1"]);
+});
+
+test("pane:list threads registryDeps through to presence status", async () => {
+  const { sock, stop } = fakeHerdr((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
+  stops.push(stop);
+  const db = freshDb();
+  const herdr: typeof herdrRequest = (method, params, opts) => herdrRequest(method, params, { ...opts, sockPath: sock });
+  const chat = createChatHandlers({ db, emitEvent: () => 0 });
+  const registryDeps = fakeRegistryDeps({ "sess-signed": "busy" });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr, exec: CSWAP_EXEC, registryDeps });
+
+  const signed = await chat["chat:sign-in"]({ sessionId: "sess-signed", baseHandle: "meg", pane: "w1:p1" });
+  if (!signed.ok) throw new Error(signed.error);
+  const res = await pane["pane:list"]({});
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.panes.find((p) => p.paneId === "w1:p1")!.presence?.status).toBe("live");
 });
 
 test("pane:list is herdr unavailable when the socket is missing", async () => {
@@ -279,10 +329,109 @@ test("pane:spawn stops polling for registration at the wall-clock budget, not a 
   expect(calls.filter((c) => c === "agent.get").length).toBeLessThanOrEqual(2);
 });
 
+// S087: pane:spawn's worst-case daemon budget (register + idle wait + trust
+// retry + prompt) exceeds rt-client's client-side timeout — the client
+// gives up and reports failure while the daemon keeps working, so a retry
+// spawns a second claude pane in the same cwd. Once the caller's own
+// AbortSignal fires, the handler must stop spending further budget and
+// return the pane it already created instead of continuing the full flow.
+test("pane:spawn stops after tab creation once the caller's AbortSignal fires, returning the pane already created", async () => {
+  const controller = new AbortController();
+  const { handler, calls } = spawnFake({ statuses: ["idle"] });
+  const abortingHandler: typeof handler = (method, params) => {
+    if (method === "pane.send_input") controller.abort();
+    return handler(method, params);
+  };
+  const { pane } = harness(abortingHandler);
+  const res = await pane["pane:spawn"]({ cwd: "/repos/chat" }, controller.signal);
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.pane.paneId).toBe("w2:p7");
+  expect(res.data.ready).toBe(false);
+  expect(calls).not.toContain("agent.get");
+  expect(calls).not.toContain("agent.wait");
+});
+
 test("pane:spawn refuses an unknown cswap account before touching herdr", async () => {
   const { handler, calls } = spawnFake({ statuses: ["idle"] });
   const { pane } = harness(handler);
   const res = await pane["pane:spawn"]({ cwd: "/repos/chat", account: "nobody" });
   expect(res).toEqual({ ok: false, error: 'unknown cswap account "nobody"' });
   expect(calls).toHaveLength(0);
+});
+
+test("pane:send delivers caller text and returns accepted", async () => {
+  const claude = (status: string) => ({ type: "agent_info", agent: { pane_id: "w1:p1", agent: "claude", agent_status: status } });
+  const { pane } = harness((method, params) =>
+    method === "agent.get" ? claude("idle")
+    : method === "agent.prompt" ? { type: "agent_prompted", agent: { ...claude("working").agent, text: params.text } }
+    : new HerdrFakeError("invalid_request", method));
+  const res = await pane["pane:send"]({ paneId: "w1:p1", text: "broadcast: standup in 5" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "accepted" } });
+});
+
+test("pane:send refuses the caller's own pane", async () => {
+  const { pane } = harness(() => new HerdrFakeError("invalid_request", "unused"));
+  const res = await pane["pane:send"]({ paneId: "w1:p1", text: "x", callerPane: "w1:p1" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "that is this pane" } });
+});
+
+test("pane:send is herdr unavailable when the socket is missing", async () => {
+  const db = freshDb();
+  const herdr: typeof herdrRequest = (m, p, o) => herdrRequest(m, p, { ...o, sockPath: join(tmpdir(), "absent-herdr.sock") });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr });
+  const res = await pane["pane:send"]({ paneId: "w1:p1", text: "x" });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error.startsWith(HERDR_UNAVAILABLE)).toBe(true);
+});
+
+// pane:focus routes to the tray (which owns the herdr focus + native window
+// raise), never to herdr directly, so these fake the tray, not herdr.
+function fakeTray(reply: TrayReply, seen?: Array<{ path: string; method: string; body: unknown }>): TrayClient {
+  return (async (path, init) => {
+    seen?.push({ path, method: init?.method ?? "GET", body: init?.body });
+    return reply;
+  }) as TrayClient;
+}
+
+test("pane:focus posts the pane id to the tray and reports focused", async () => {
+  const db = freshDb();
+  const seen: Array<{ path: string; method: string; body: unknown }> = [];
+  const tray = fakeTray({ status: 200, json: { ok: true, paneId: "w1:p1", focused: true } }, seen);
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w1:p1" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", focused: true } });
+  expect(seen).toEqual([{ path: "/pane/focus", method: "POST", body: { paneId: "w1:p1" } }]);
+});
+
+test("pane:focus is tray unavailable when the tray socket is down", async () => {
+  const db = freshDb();
+  const tray = fakeTray({ status: 0, json: null });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w1:p1" });
+  expect(res).toEqual({ ok: false, error: "tray unavailable" });
+});
+
+test("pane:focus surfaces the tray's error body on a non-2xx reply", async () => {
+  const db = freshDb();
+  const tray = fakeTray({ status: 404, json: { ok: false, error: "pane not found" } });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w9:p9" });
+  expect(res).toEqual({ ok: false, error: "pane not found" });
+});
+
+test("pane:focus treats a 2xx reply that says ok:false as a failure", async () => {
+  const db = freshDb();
+  const tray = fakeTray({ status: 200, json: { ok: false, error: "herdr unavailable" } });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w1:p1" });
+  expect(res).toEqual({ ok: false, error: "herdr unavailable" });
+});
+
+test("pane:focus falls back to a status message when a non-2xx reply has no body", async () => {
+  const db = freshDb();
+  const tray = fakeTray({ status: 500, json: null });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
+  const res = await pane["pane:focus"]({ paneId: "w1:p1" });
+  expect(res).toEqual({ ok: false, error: "tray focus failed (500)" });
 });

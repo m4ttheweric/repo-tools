@@ -6,31 +6,30 @@
  *
  * Concurrent callers are coalesced: the 5-minute timer and `cache:refresh` IPC
  * both fire-and-forget into the returned function. Without a guard they stack
- * up, each running execSync across every repo + a batch GraphQL. If a refresh
+ * up, each running async git across every repo + a batch GraphQL. If a refresh
  * is already in flight, callers await the existing run instead of starting a
  * second one.
  */
 
 import { existsSync } from "fs";
-import { execSync } from "child_process";
 import type { Logger } from "pino";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 import type { BranchCacheStore } from "../state/index.ts";
 import { checkAndNotify } from "../notifier.ts";
-import { getCurrentUserId } from "./freshness.ts";
+import { getCurrentUserId, resolveUserIdAcrossTracking } from "./freshness.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import { syncProjectMRs } from "./project-sync.ts";
 import { getProjectMRs } from "./project-mrs-store.ts";
 import { pruneDiscussionsStore } from "./discussions-file-store.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { deriveRepoIdentity } from "../settings/identity.ts";
-import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
+import { listWorktreesAsync, listWorktreeRootsAsync, runGit } from "../worktree/git-async.ts";
 
 export interface CacheRefresherDeps {
   log: Logger;
   /** The process-wide branch-cache store; `cache.reload()` replaces the old read-from-disk. */
   cache: BranchCacheStore;
-  refreshStatusRef: { lastRefreshAt: number };
+  refreshStatusRef: { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number };
   portCacheRef: PortCacheRef;
   repoIndex: () => RepoIndex;
   broadcast: (type: string, data: any) => void;
@@ -48,16 +47,98 @@ export interface CacheRefresherDeps {
  */
 const BRANCH_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** Below the 5-min tick, above the slowest legitimate deep sync. */
+const REFRESH_CYCLE_DEADLINE_MS = 4 * 60 * 1000;
+
+export interface CoalescerOptions {
+  /**
+   * Cap on cycles still running in the background after their own deadline
+   * fired ("orphans"). `run` is never cancelled at the deadline (no
+   * AbortSignal threads through the GitLab/git calls it makes), so without a
+   * cap, repeated stalls could pile up half-open sockets and pending work
+   * without bound. Once the cap is hit, a new cycle is refused (not
+   * started) until an orphan settles.
+   */
+  maxOrphanCycles?: number;
+  /** Called when a cycle is refused because the orphan cap is at capacity. */
+  onRefused?: () => void;
+}
+
+/**
+ * Coalesce concurrent callers onto one in-flight run, but clear the latch after
+ * `deadlineMs` even if the run never settles, so a wedged cycle (a half-open
+ * GitLab socket that never rejects) cannot pin the latch forever. The wedged
+ * run's frame still leaks until the OS reaps the socket; this only frees the
+ * next tick. `maxOrphanCycles` bounds how many such wedged runs may be alive
+ * at once (see CoalescerOptions) ... the cap is the mitigation; it does not
+ * cancel the wedged runs themselves.
+ */
+export function makeCoalescer(
+  run: () => Promise<void>,
+  deadlineMs: number,
+  onTimeout: () => void,
+  { maxOrphanCycles = 2, onRefused = () => {} }: CoalescerOptions = {},
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+  let orphanCycles = 0;
+  return () => {
+    if (inFlight) return inFlight;
+    if (orphanCycles >= maxOrphanCycles) {
+      onRefused();
+      return Promise.resolve();
+    }
+    let timedOut = false;
+    const impl = run()
+      .catch(() => {}) // a rejected cycle still clears the latch
+      .finally(() => { if (timedOut) orphanCycles--; });
+    // Promise.race never cancels the losing branch, so the deadline timer must be
+    // captured and cleared on every settle path or a fast success still fires
+    // onTimeout deadlineMs later, misreported as a wedge.
+    let deadlineTimer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<void>((resolve) => {
+      deadlineTimer = setTimeout(() => {
+        timedOut = true;
+        orphanCycles++;
+        onTimeout();
+        resolve();
+      }, deadlineMs);
+    });
+    const guarded = Promise.race([impl, deadline]).finally(() => {
+      clearTimeout(deadlineTimer);
+      inFlight = null;
+    });
+    inFlight = guarded;
+    return guarded;
+  };
+}
+
+/**
+ * Records one refresh cycle's outcome onto the shared ref. `lastSuccessAt`
+ * only advances when the cycle was clean (no failed repos, no enrich
+ * errors). Downstream health reporting must be able to trust it as "refresh
+ * is actually working", not just "a cycle ran".
+ */
+export function applyRefreshOutcome(
+  ref: { lastRefreshAt: number; lastSuccessAt: number; failedRepos: number; enrichErrors: number },
+  at: number,
+  failedReposCount: number,
+  enrichErrorsCount: number,
+): void {
+  ref.lastRefreshAt = at;
+  ref.failedRepos = failedReposCount;
+  ref.enrichErrors = enrichErrorsCount;
+  if (failedReposCount === 0 && enrichErrorsCount === 0) ref.lastSuccessAt = at;
+}
+
 export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<void> {
   const { log, cache, refreshStatusRef, portCacheRef, repoIndex, broadcast } = deps;
 
-  let refreshInFlight: Promise<void> | null = null;
-
-  function refreshCache(): Promise<void> {
-    if (refreshInFlight) return refreshInFlight;
-    refreshInFlight = refreshCacheImpl().finally(() => { refreshInFlight = null; });
-    return refreshInFlight;
-  }
+  const refreshCache = makeCoalescer(
+    refreshCacheImpl,
+    REFRESH_CYCLE_DEADLINE_MS,
+    () => log.warn("cache refresh timed out; cleared in-flight latch for next tick"),
+    { onRefused: () => log.warn("cache refresh skipped; too many stalled cycles already running") },
+  );
 
   async function refreshCacheImpl(): Promise<void> {
     log.debug("cache: starting background refresh");
@@ -75,6 +156,10 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // "branches" grant, missing path — never enters this set, so its rows
       // are never pruned on a cycle that did not refresh them.
       const succeededRepos = new Set<string>();
+      // Cycle-wide total; the per-repo `enrichErrors` below is scoped to one
+      // iteration and resets each repo, so this is the only place the total
+      // for the whole cycle (fed to applyRefreshOutcome below) accumulates.
+      let totalEnrichErrors = 0;
 
       // `repos` keys on the serialized repo identity (repo-index.ts), so every
       // `repoName` below — passed on into refreshAllMRs, project-sync, and the
@@ -109,37 +194,29 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           // 1. Discover worktree branches (detached worktrees have no branch).
           // on-deck/* branches are pool plumbing, not feature work — never
           // worth MR/Linear enrichment.
-          const branches: Array<{ path: string; branch: string }> = listWorktrees(repoPath).filter(
-            (w) => w.branch && !w.branch.startsWith("on-deck/"),
-          );
+          const branches: Array<{ path: string; branch: string }> = ((await listWorktreesAsync(repoPath)) ?? [])
+            .filter((w): w is { path: string; branch: string } => !!w.branch && !w.branch.startsWith("on-deck/"));
 
           // 2. Discover local branches (not just worktrees)
           const worktreeBranchSet = new Set(branches.map(b => b.branch));
-          try {
-            const localBranchOutput = execSync(
-              "git for-each-ref --format='%(refname:short)' refs/heads/",
-              { cwd: repoPath, encoding: "utf8", stdio: "pipe" },
-            );
-
-            for (const name of localBranchOutput.split("\n")) {
-              const trimmed = name.trim().replace(/^'|'$/g, "");
+          const localBranches = await runGit(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads/"]);
+          if (localBranches.exitCode === 0) {
+            for (const name of localBranches.stdout.split("\n")) {
+              const trimmed = name.trim();
               if (!trimmed || worktreeBranchSet.has(trimmed) || trimmed.startsWith("on-deck/")) continue;
               if (extractLinearId(trimmed)) {
                 branches.push({ path: repoPath, branch: trimmed });
               }
             }
-          } catch (err) {
-            log.warn({ err, repo: repoPath }, "local branch listing failed");
+          } else {
+            log.warn({ repo: repoPath }, "local branch listing failed");
           }
 
           if (branches.length > 0) {
             // Get remote URL
             let remoteUrl: string | undefined;
-            try {
-              remoteUrl = execSync("git config --get remote.origin.url", {
-                cwd: repoPath, encoding: "utf8", stdio: "pipe",
-              }).trim();
-            } catch { /* no remote */ }
+            const remote = await runGit(repoPath, ["config", "--get", "remote.origin.url"]);
+            if (remote.exitCode === 0) remoteUrl = remote.stdout.trim() || undefined;
 
             // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch.
             // The onError callback fires on per-MR enrich failures (GitLab,
@@ -157,6 +234,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           // repo too — a cycle that went wrong anywhere for a repo is not the
           // cycle to delete its rows on.
           if (enrichErrors === 0 && !failedRepos.has(repoName)) succeededRepos.add(repoName);
+          totalEnrichErrors += enrichErrors;
         } catch (err) {
           log.warn({ err, repo: repoName }, "cache refresh skipped repo");
           failedRepos.add(repoName);
@@ -168,7 +246,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // but a CLI `rt run` enrichment may have upserted rows concurrently —
       // this is where those become visible (spec "In-memory ownership").
       cache.reload();
-      refreshStatusRef.lastRefreshAt = Date.now();
+      applyRefreshOutcome(refreshStatusRef, Date.now(), failedRepos.size, totalEnrichErrors);
       log.debug({ count: Object.keys(cache.entries).length }, "cache refresh complete");
 
       // Branch-cache GC: age out rows the succeeded repos no longer refresh.
@@ -197,6 +275,16 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
         log.warn({ err }, "discussions prune failed");
       }
 
+      // S022: resolve userId for any branches/project-mrs tracked repo,
+      // regardless of mode, BEFORE checkAndNotify — reconcileSubscriptions
+      // (below) only ever reaches live-mode repos and only runs after this,
+      // so a poll-only user's first cycle would otherwise still pass null.
+      try {
+        await resolveUserIdAcrossTracking(repos, tracking);
+      } catch (err) {
+        log.warn({ err }, "S022: userId resolution across tracked repos failed");
+      }
+
       // Check for state transitions and fire notifications
       checkAndNotify(cache.entries, portCacheRef.ports, getCurrentUserId());
 
@@ -205,8 +293,9 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // never overwrites existing entries.
       for (const [repoName, repoPath] of Object.entries(repoIndex())) {
         if (!existsSync(repoPath)) continue;
+        if (grants(tracking, repoName).caches.size === 0) continue; // off = zero background work
         try {
-          const worktreeRoots = listWorktreeRoots(repoPath);
+          const worktreeRoots = await listWorktreeRootsAsync(repoPath);
           const derivedIdentity = await deriveRepoIdentity(repoPath);
           const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
           const summary = await reconcileForRepo({ repoIdentity, worktreeRoots });
