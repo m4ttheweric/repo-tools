@@ -2,10 +2,6 @@
  * UTILS: Text formatting helpers
  *
  * Pure string utilities shared across all dashboard views.
- *
- * Source:
- *   - commands/runner.tsx entryCommandLabel, rowBg (lines 1027-1032, 1055)
- *   - commands/status truncate, rpad, lpad, timeAgo
  */
 
 // ─── String formatting ────────────────────────────────────────────────────────

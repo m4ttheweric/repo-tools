@@ -385,7 +385,7 @@ async function fetchAndCache(
   // ── Step 4: Assemble results ──
   // Mirrors refreshAllMRs: a failed (or skipped — missing secrets) fetch must
   // preserve existing cache entries, not clobber them with nulls; and entries
-  // must keep their repoName, which rt status needs to bind MR actions.
+  // must keep their repoName, which composes the key they are stored under.
   const enriched: Array<[string, CacheEntry]> = [];
   const results: EnrichedBranch[] = branches.map((b, idx) => {
     const dirName = b.path.split("/").pop() || b.path;
@@ -458,9 +458,9 @@ export async function refreshAllMRs(
         const branchNames = branches.map(b => b.branch).filter(b => b !== "");
         if (branchNames.length > 0) {
           // Fetch all states in one query. The cache keeps whatever state
-          // the SDK returns (opened/merged/closed); rt status hides closed
-          // and recently-merged-only, and the notifier uses the state to
-          // fire distinct merged vs closed transitions.
+          // the SDK returns (opened/merged/closed); the notifier uses it to
+          // fire distinct merged vs closed transitions, and readers filter
+          // on it themselves.
           mrsByBranch = await provider.fetchPullRequestsByBranches(remote.projectPath, branchNames, 'all');
           mrFetchSucceeded = true;
         }

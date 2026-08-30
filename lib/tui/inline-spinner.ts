@@ -5,7 +5,7 @@
  * the line so the caller can render its real output cleanly.
  *
  * Use this when:
- *   - You're in a one-shot CLI command (not Ink/Rezi)
+ *   - You want no helper process alive for the duration (rt-ui steps spawns one)
  *   - You want the spinner to vanish silently on completion (no "✓ done" line)
  */
 
