@@ -1003,6 +1003,9 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
  */
 export function getKnownReposCached(opts?: { includeMissing?: boolean }): KnownRepo[] {
   const cached = readRepoCache();
+  // A cache HIT returns the cached rows verbatim, so opts.includeMissing only
+  // takes effect on a MISS. Safe: the only writers (daemon poll, rt cd
+  // --emit-rows) and the only caller (cd.ts) all pass includeMissing: true.
   if (cached) return cached.repos;
   return getKnownRepos(opts);
 }
