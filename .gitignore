@@ -31,3 +31,5 @@ rt-tray/deps/
 rt-tray/out/
 rt-tray/.build-xcode/
 .lane-b-status.md
+
+ui/dist/
