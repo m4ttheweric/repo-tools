@@ -142,11 +142,15 @@ async function runCreate(
     await reconcileForRepo({ repoIdentity, worktreeRoots });
   }
 
-  const readyStamp = await headSha(path);
+  // A held team ladder means the excluded steps never ran — stamping
+  // readyAt/readyStamp here anyway would let a later freshen's
+  // changedSince(readyStamp, HEAD) diff look clean and skip a
+  // changed:<glob> step that never actually ran, even once approved.
+  const readyStamp = held ? null : await headSha(path);
   const updated: TreeRecord = {
     ...rec,
     state: "on-deck",
-    readyAt: new Date().toISOString(),
+    ...(held ? {} : { readyAt: new Date().toISOString() }),
     ...(readyStamp ? { readyStamp } : {}),
   };
 
