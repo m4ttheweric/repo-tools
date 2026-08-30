@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { execSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -126,10 +126,16 @@ describe("replenish.ts: withCreateLock", () => {
 
 describe("replenish.ts: poolCounts", () => {
   const repoName = "acme";
+  let priorHome: string | undefined;
 
   beforeEach(() => {
+    priorHome = process.env.HOME;
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtreplenish-home-")));
     closeStateDb();
+  });
+  afterEach(() => {
+    closeStateDb();
+    if (priorHome !== undefined) process.env.HOME = priorHome;
   });
 
   test("counts on-deck and creating entries, ready gated on nextRetryAt", () => {
@@ -156,13 +162,19 @@ describe("replenish.ts: hasFreeDiskGb", () => {
 describe("replenish.ts: per-instance backoff", () => {
   const repoName = "acme";
   let repo: string;
+  let priorHome: string | undefined;
 
   beforeEach(() => {
+    priorHome = process.env.HOME;
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtbackoff-home-")));
     closeStateDb();
     createBackoff.clear();
     repo = makeRepo();
     addBareOrigin(repo);
+  });
+  afterEach(() => {
+    closeStateDb();
+    if (priorHome !== undefined) process.env.HOME = priorHome;
   });
 
   test("a create failure lands on the backoff map threaded via deps.backoff, not the module-scope default", async () => {
