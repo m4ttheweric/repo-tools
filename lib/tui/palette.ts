@@ -1,11 +1,9 @@
 /**
  * Raw brand palette — RGB tuples only. No runtime deps.
  *
- * theme.ts composes these with @rezi-ui's rgb() helper to build the
- * runner's semantic color roles. CLI pickers (lib/rt-render.tsx, etc.)
- * import them directly to stay free of the Rezi UI runtime.
+ * CLI pickers (lib/rt-render.tsx, etc.) import them directly.
  *
- * To re-theme rt: edit this file. theme.ts derives from it.
+ * To re-theme rt: edit this file.
  */
 
 /** Raw RGB tuples — one place to edit per color. */
