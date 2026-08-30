@@ -44,6 +44,32 @@ test("a fast success does not fire onTimeout after the deadline elapses", async 
   expect(timedOut).toBe(0); // the deadline timer must have been cleared, not just outraced
 });
 
+test("aborts the cycle's signal when the deadline fires", async () => {
+  let sig: AbortSignal | undefined;
+  const coalesce = makeCoalescer(
+    (signal) => { sig = signal; return new Promise<void>(() => {}); }, // never settles
+    50,
+    () => {},
+  );
+  await coalesce(); // resolves at the deadline
+  expect(sig).toBeDefined();
+  expect(sig!.aborted).toBe(true);
+});
+
+test("a fresh cycle receives its own un-aborted signal", async () => {
+  const seen: boolean[] = [];
+  let settle!: () => void;
+  const coalesce = makeCoalescer(
+    (signal) => { seen.push(signal.aborted); return new Promise<void>((r) => { settle = r; }); },
+    10_000,
+    () => {},
+  );
+  const p = coalesce();
+  expect(seen).toEqual([false]);
+  settle();
+  await p;
+});
+
 test("refuses to admit a replacement cycle once maxOrphanCycles stalled runs are already stuck in the background", async () => {
   let starts = 0;
   let refused = 0;

@@ -92,6 +92,24 @@ describe("runCapture timeout enforcement", () => {
   });
 });
 
+describe("runCapture abort signal", () => {
+  test("an already-aborted signal returns failure without waiting", async () => {
+    const t0 = Date.now();
+    const r = await runCapture(["/bin/sleep", "20"], { timeoutMs: 10_000, signal: AbortSignal.abort() });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(r.exitCode).toBe(-1);
+  });
+
+  test("aborting mid-run kills the child and settles early", async () => {
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 100);
+    const t0 = Date.now();
+    const r = await runCapture(["/bin/sleep", "20"], { timeoutMs: 10_000, signal: ctrl.signal });
+    expect(Date.now() - t0).toBeLessThan(4000); // aborted well before the 10s deadline
+    expect(r.exitCode).toBe(-1);
+  });
+});
+
 describe("outputTail", () => {
   test("passes short output through, trimmed", () => {
     expect(outputTail("  env: node: No such file or directory\n", 2000))
