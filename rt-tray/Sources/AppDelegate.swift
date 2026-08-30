@@ -33,6 +33,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     // ── State ───────────────────────────────────────────────────────────────
     private var currentHealth: DaemonHealth = .unknown
+    /// This process's own start time -- the freshness cutoff for tray-crash.log,
+    /// mirroring how lastKnownDaemonStartedAt gates daemon-stderr.log (S029).
+    private let appLaunchedAt = Date()
     // `lazy`: constructing it starts Sparkle (when enabled). A translocated
     // or DMG-mounted launch returns before `buildServices()` (the first
     // touch) ever runs, so Sparkle never spins up on a copy that's about to
@@ -115,6 +118,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             self, selector: #selector(stopDaemon), name: .rtStopDaemon, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(viewDaemonLogs), name: .rtViewDaemonLogs, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openCrashLog), name: .rtOpenCrashLog, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(checkForUpdates), name: .rtCheckUpdates, object: nil)
         NotificationCenter.default.addObserver(
@@ -726,6 +731,46 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             TrayLog.warn("no rt binary found in known locations; falling back to PATH lookup")
         }
         TrayLog.spawnLoggedDetached(task, label: "rt daemon logs")
+    }
+
+    /// Open whichever crash/panic log is actually current (S029). Neither
+    /// `daemon-stderr.log` (native panic capture, written by the TS daemon
+    /// and the dev-mode shim) nor `tray-crash.log` (this app's own signal
+    /// handler, `installTrayCrashHandlers`) is date-rotated on the writer
+    /// side within this job's write fence, so a months-old panic can sit in
+    /// either file forever. Reading `resolveCurrentCrashLogPath` gates each
+    /// candidate on its mtime being newer than the relevant process's start
+    /// time, so a stale leftover never passes for "the current crash" --
+    /// falling back to Finder on the logs directory when neither qualifies.
+    @objc private func openCrashLog() {
+        guard let path = resolveCurrentCrashLogPath() else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: AppHome.current + "/.mattstack/rt/logs"))
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    private func resolveCurrentCrashLogPath() -> String? {
+        let logDir = AppHome.current + "/.mattstack/rt/logs"
+        let fm = FileManager.default
+
+        func freshMtime(_ path: String, after cutoff: Date?) -> Date? {
+            guard let attrs = try? fm.attributesOfItem(atPath: path),
+                  let mtime = attrs[.modificationDate] as? Date else { return nil }
+            if let cutoff, mtime <= cutoff { return nil }
+            return mtime
+        }
+
+        var candidates: [(path: String, mtime: Date)] = []
+        let daemonStderr = logDir + "/daemon-stderr.log"
+        if let mtime = freshMtime(daemonStderr, after: lastKnownDaemonStartedAt) {
+            candidates.append((daemonStderr, mtime))
+        }
+        let trayCrash = logDir + "/tray-crash.log"
+        if let mtime = freshMtime(trayCrash, after: appLaunchedAt) {
+            candidates.append((trayCrash, mtime))
+        }
+        return candidates.max(by: { $0.mtime < $1.mtime })?.path
     }
 
     @objc private func checkForUpdates() {
