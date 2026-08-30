@@ -9,6 +9,11 @@ import { resolveRtUi } from "./resolve.ts";
 type ExitFn = (code: number) => never;
 let exitFn: ExitFn = (code) => process.exit(code);
 
+/** The process-exit seam a cancelled prompt leaves through; tests swap it. */
+export function exit(code: number): never {
+  return exitFn(code);
+}
+
 const live = new Set<ReturnType<typeof Bun.spawn>>();
 let exitHookInstalled = false;
 
@@ -39,7 +44,7 @@ function spawnVerb(verb: "prompt" | "steps") {
 function fail(bin: string, code: number, stderr: string): never {
   const detail = stderr.trim() || `exit ${code}`;
   process.stderr.write(`\n  rt-ui failed (${detail})\n  binary: ${bin}\n\n`);
-  return exitFn(1);
+  return exit(1);
 }
 
 export async function runPrompt(spec: PromptSpec): Promise<PromptResult> {
@@ -56,7 +61,7 @@ export async function runPrompt(spec: PromptSpec): Promise<PromptResult> {
     case 0:
       return parsePromptResult(stdout);
     case 130:
-      return exitFn(130);
+      return exit(130);
     case 131:
       throw new BackNavigation();
     default:

@@ -6,21 +6,12 @@
  * printed plainly, so every non-interactive path keeps its output.
  */
 import { T, toAnsiFg } from "../tui/palette.ts";
+import { interactive } from "./gate.ts";
 import { openStep, type StepHandle } from "./spawn.ts";
 
+export { __test__ } from "./gate.ts";
+
 type StepStyle = "info" | "warn" | "error" | "success";
-
-function realInteractive(): boolean {
-  return Boolean(process.stdin.isTTY) && !process.env.RT_BATCH;
-}
-let interactive: () => boolean = realInteractive;
-
-export const __test__ = {
-  setInteractive(fn: (() => boolean) | undefined): void {
-    interactive = fn ?? realInteractive;
-  },
-  interactive: () => interactive(),
-};
 
 export interface StepRunner {
   /** Run an async step with spinner then done/error transition. */

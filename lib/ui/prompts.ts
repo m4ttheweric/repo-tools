@@ -4,11 +4,21 @@
  * compatibility and ignored: /dev/tty rendering keeps stdout clean by itself.
  */
 import type { SelectOption } from "../fzf-select.ts";
+import { interactive } from "./gate.ts";
 import { PROTOCOL_VERSION, type PromptOption } from "./protocol.ts";
-import { runPrompt } from "./spawn.ts";
+import { exit, runPrompt } from "./spawn.ts";
 
 function wireOptions(options: SelectOption[]): PromptOption[] {
   return options.map((o) => (o.hint ? { value: o.value, label: o.label, hint: o.hint } : { value: o.value, label: o.label }));
+}
+
+// A prompt reads keys from /dev/tty, so off an interactive terminal there is
+// nobody to answer it: spawning would paint on a terminal this process does not
+// own and then die on the helper's EOF path. One line and exit 1 instead.
+function requireInteractive(): void {
+  if (interactive()) return;
+  process.stderr.write("rt: this prompt needs an interactive terminal (set RT_BATCH to skip prompts in scripts)\n");
+  exit(1);
 }
 
 export async function select(opts: {
@@ -17,6 +27,7 @@ export async function select(opts: {
   stderr?: boolean;
   backLabel?: string;
 }): Promise<string> {
+  requireInteractive();
   const r = await runPrompt({
     t: "prompt",
     protocol: PROTOCOL_VERSION,
@@ -36,6 +47,7 @@ export async function multiselect(opts: {
   required?: boolean;
   stderr?: boolean;
 }): Promise<string[]> {
+  requireInteractive();
   const r = await runPrompt({
     t: "prompt",
     protocol: PROTOCOL_VERSION,
@@ -55,6 +67,7 @@ export async function confirm(opts: {
   stderr?: boolean;
   destructive?: boolean;
 }): Promise<boolean> {
+  requireInteractive();
   const r = await runPrompt({
     t: "prompt",
     protocol: PROTOCOL_VERSION,
@@ -73,6 +86,7 @@ export async function textInput(opts: {
   defaultValue?: string;
   stderr?: boolean;
 }): Promise<string> {
+  requireInteractive();
   const r = await runPrompt({
     t: "prompt",
     protocol: PROTOCOL_VERSION,

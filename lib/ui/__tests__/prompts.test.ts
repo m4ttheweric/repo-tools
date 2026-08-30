@@ -3,18 +3,31 @@ import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { select, multiselect, confirm, textInput } from "../prompts.ts";
+import { __test__ as gate } from "../gate.ts";
+import { __test__ as spawn } from "../spawn.ts";
 import { BackNavigation } from "../../back-navigation.ts";
 
 const FAKE = resolve(import.meta.dir, "fake-rt-ui.ts");
 let dir: string;
 let record: string;
+const exits: number[] = [];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "rt-ui-prompts-"));
   record = join(dir, "record.ndjson");
   process.env.RT_UI_BIN = FAKE;
+  // bun test's stdin is not a TTY, so the real gate would refuse every prompt;
+  // force it open here and closed only in the test that is about the gate.
+  gate.setInteractive(() => true);
+  exits.length = 0;
+  spawn.setExit((code) => {
+    exits.push(code);
+    throw new Error(`exit ${code}`);
+  });
 });
 afterEach(() => {
+  gate.setInteractive(undefined);
+  spawn.setExit(undefined);
   delete process.env.RT_UI_BIN;
   delete process.env.RT_UI_FAKE;
   rmSync(dir, { recursive: true, force: true });
@@ -56,6 +69,24 @@ test("confirm maps initialValue to default and exposes destructive", async () =>
   const ok = await confirm({ message: "Locate repo?", initialValue: false, destructive: true });
   expect(ok).toBe(false);
   expect(sent()).toEqual({ t: "prompt", protocol: 1, kind: "confirm", message: "Locate repo?", default: false, destructive: true });
+});
+
+test("with the gate closed no helper is spawned and the prompt exits 1 with a message", async () => {
+  process.env.RT_UI_FAKE = JSON.stringify({ answer: { value: "x" }, record });
+  gate.setInteractive(undefined);
+  process.env.RT_BATCH = "1";
+  const errOut: string[] = [];
+  const realErr = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => { errOut.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    await expect(select({ message: "m", options: [{ value: "x", label: "X" }] })).rejects.toThrow("exit 1");
+  } finally {
+    process.stderr.write = realErr;
+    delete process.env.RT_BATCH;
+  }
+  expect(() => readFileSync(record)).toThrow();
+  expect(errOut.join("")).toContain("interactive terminal");
+  expect(exits).toEqual([1]);
 });
 
 test("textInput sends placeholder and initial, returns the text", async () => {
