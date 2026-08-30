@@ -500,7 +500,11 @@ export const TREE: Record<string, CommandNode> = {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
     fn: "worktreePicker",
-    requiresTTY: true,
+    // The hidden --emit-rows reload path (commands/cd.ts) is deliberately
+    // non-interactive, so it must clear the TTY gate on a plain pipe even
+    // without RT_BATCH set. It is not declared in `args` below, so it never
+    // shows up in help or a picker.
+    requiresTTY: (args) => !args.includes("--emit-rows"),
     args: [
       { name: "Repo picker", flag: "--repo", type: "boolean", default: false, hint: "Always show the repo picker instead of the current repo's worktree list" },
       { name: "Package picker", flag: "--package", type: "boolean", default: false, hint: "Opt into the monorepo package picker, one level deeper than the worktree root (alias --packages)" },

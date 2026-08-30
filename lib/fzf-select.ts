@@ -106,6 +106,31 @@ export async function filterableMultiselect(opts: {
 }
 
 /**
+ * Builds the tab-delimited fzf input rows for a single-select list: `value\t
+ * <styled label>\t<hint>` per line. Shared by `filterableSelect` and the
+ * hidden `rt cd --emit-rows` reload path, so its output must stay
+ * byte-identical to what fzf's own `--delimiter`/`--with-nth`/`--nth` parsing
+ * expects.
+ */
+export function buildFzfRows(options: SelectOption[]): string {
+  const labelWidth = Math.max(...options.map((o) => o.label.length));
+  return options
+    .map((o) => {
+      const pad = " ".repeat(labelWidth - o.label.length);
+      const open = o.color ?? "";
+      const close = o.color ? "\x1b[0m" : "";
+      const hint = o.hint
+        ? (o.color ? o.hint : `\x1b[2m${o.hint}\x1b[22m`)
+        : "";
+      // \x1b[22m cancels bold AND dim (both are "intensity" in SGR), so a
+      // dim `open` color would otherwise vanish right after the label —
+      // reapply it before the hint so the whole row stays dimmed.
+      return `${o.value}\t${open}\x1b[1m${o.label}\x1b[22m${open}${pad}\t  ${hint}${close}`;
+    })
+    .join("\n");
+}
+
+/**
  * Show a filterable single-select using fzf.
  * fzf is a hard dependency — exits with an install hint if it's missing.
  */
@@ -123,22 +148,7 @@ export async function filterableSelect(opts: {
   ensureFzf();
 
   const options = opts.options;
-
-  const labelWidth = Math.max(...options.map((o) => o.label.length));
-  const input = options
-    .map((o) => {
-      const pad = " ".repeat(labelWidth - o.label.length);
-      const open = o.color ?? "";
-      const close = o.color ? "\x1b[0m" : "";
-      const hint = o.hint
-        ? (o.color ? o.hint : `\x1b[2m${o.hint}\x1b[22m`)
-        : "";
-      // \x1b[22m cancels bold AND dim (both are "intensity" in SGR), so a
-      // dim `open` color would otherwise vanish right after the label —
-      // reapply it before the hint so the whole row stays dimmed.
-      return `${o.value}\t${open}\x1b[1m${o.label}\x1b[22m${open}${pad}\t  ${hint}${close}`;
-    })
-    .join("\n");
+  const input = buildFzfRows(options);
 
   const header = opts.backLabel
     ? "enter: select  |: OR  !: exclude  ctrl-up: back"

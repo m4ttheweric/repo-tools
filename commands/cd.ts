@@ -23,6 +23,8 @@ import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
 import { getRepoIdentity, getKnownRepos, getKnownReposCached, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
+import { buildFzfRows } from "../lib/fzf-select.ts";
+import { writeRepoCache } from "../lib/repo-cache.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -184,7 +186,34 @@ export function resolveReposForIdentity(
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
+/**
+ * Hidden, agent/reload-facing flag: not in command-tree-def.ts, so it never
+ * appears in help or any picker. Task 6's `ctrl-r:reload(rt cd --emit-rows)`
+ * fzf binding execs exactly this to refresh the visible row list, so its
+ * stdout must stay byte-identical to what the interactive picker itself
+ * would show fzf.
+ *
+ * Gated to the non-interactive path: a TTY invocation falls through to
+ * normal cd behavior instead, since --emit-rows has no meaning as a picker
+ * action.
+ */
+function shouldEmitRows(args: string[]): boolean {
+  return args.includes("--emit-rows") && (!process.stdin.isTTY || !!process.env.RT_BATCH);
+}
+
+/** Live-scanned rows + a cache refresh, for --emit-rows. Never launches a picker. */
+function emitRows(): void {
+  const repos = getKnownRepos({ includeMissing: true });
+  const rows = buildFzfRows(repoOptions(repos));
+  process.stdout.write(rows + "\n");
+  writeRepoCache(repos);
+}
+
 export async function worktreePicker(args: string[]): Promise<void> {
+  if (shouldEmitRows(args)) {
+    emitRows();
+    process.exit(0);
+  }
 
   await ensureShellFunction();
 
