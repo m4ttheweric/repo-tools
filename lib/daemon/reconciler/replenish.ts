@@ -48,18 +48,25 @@ export function withCreateLock<T>(repoPath: string, fn: () => Promise<T>): Promi
   return result;
 }
 
+/** Per-repo create-backoff state: failure count and the next retry deadline. */
+export type CreateBackoffMap = Map<string, { failures: number; nextRetryAt: string }>;
+
 /**
- * Per-repo create backoff (spec §6.4): failure N waits one pass doubled N-1
+ * Default create backoff (spec §6.4): failure N waits one pass doubled N-1
  * times, capped at 30 minutes.
  *
  * A failed `createTree` scraps its own registry row, so there is no on-disk row
  * left to hang retry bookkeeping off... without this, a persistently failing
  * ready step (a broken install costing minutes per attempt) is retried on every
- * cache tick, forever. The state is deliberately in-memory, same as the
- * create-lock map above it: a daemon restart clearing the backoff costs one
- * wasted attempt, which is cheaper than persisting a transient.
+ * cache tick, forever. The state is in-memory, same as the create-lock map
+ * above it: a daemon restart clearing the backoff costs one wasted attempt,
+ * which is cheaper than persisting a transient.
+ *
+ * A reconciler instance threads its OWN map through `deps.backoff` so two
+ * instances never charge each other's failures; this module-scope map is the
+ * fallback for a caller that omits one.
  */
-export const createBackoff = new Map<string, { failures: number; nextRetryAt: string }>();
+export const createBackoff: CreateBackoffMap = new Map();
 
 /**
  * Free disk under `path`, in gigabytes, via statfs. A probe failure (path not
@@ -76,19 +83,19 @@ export async function hasFreeDiskGb(path: string, gb: number): Promise<boolean> 
 }
 
 /** The active backoff deadline for a repo, or null when creates may run now. */
-function createBlockedUntil(repoName: string): string | null {
-  const entry = createBackoff.get(repoName);
+function createBlockedUntil(backoff: CreateBackoffMap, repoName: string): string | null {
+  const entry = backoff.get(repoName);
   if (!entry) return null;
   return Date.parse(entry.nextRetryAt) > Date.now() ? entry.nextRetryAt : null;
 }
 
-function noteCreateFailure(repoName: string): { failures: number; nextRetryAt: string } {
-  const failures = (createBackoff.get(repoName)?.failures ?? 0) + 1;
+function noteCreateFailure(backoff: CreateBackoffMap, repoName: string): { failures: number; nextRetryAt: string } {
+  const failures = (backoff.get(repoName)?.failures ?? 0) + 1;
   const entry = {
     failures,
     nextRetryAt: new Date(Date.now() + backoffDelayMs(failures)).toISOString(),
   };
-  createBackoff.set(repoName, entry);
+  backoff.set(repoName, entry);
   return entry;
 }
 
@@ -121,11 +128,14 @@ export function poolCounts(repoName: string): {
  * attempt per window instead of `onDeck` attempts per cache tick.
  */
 export async function replenishAndShrink(
-  deps: FreshenDeps,
+  deps: FreshenDeps & { backoff?: CreateBackoffMap },
   creationPromises: Map<string, Promise<void>>,
   appConfig: WorktreeAppConfig,
 ): Promise<void> {
   const { repoName, repoPath, emit, log } = deps;
+  // The reconciler instance threads its own map; a direct caller that omits
+  // one lands on the module-scope default.
+  const backoff = deps.backoff ?? createBackoff;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
   // A store rung's onDeck is a team declaration; the ceiling is this machine's
   // own limit and always wins, so it clamps here rather than in the sanitizer.
@@ -138,7 +148,7 @@ export async function replenishAndShrink(
     // Checked per iteration, not once per pass: a failure recorded by the
     // attempt above must end this pass's replenish too, or the pass still
     // burns `onDeck` full builds on the same broken step.
-    const blockedUntil = createBlockedUntil(repoName);
+    const blockedUntil = createBlockedUntil(backoff, repoName);
     if (blockedUntil) {
       log.debug?.(
         { repo: repoName, nextRetryAt: blockedUntil },
@@ -157,20 +167,20 @@ export async function replenishAndShrink(
     const p: Promise<void> = withCreateLock(repoPath, () => createTree({ repoName, repoPath, emit, log }))
       .then((result) => {
         if (result.ok) {
-          createBackoff.delete(repoName);
+          backoff.delete(repoName);
           return;
         }
         // "busy" is another holder of the tree lock, not a failing build: it
         // neither earns a backoff nor clears one.
         if (result.error === "busy") return;
-        const { failures, nextRetryAt } = noteCreateFailure(repoName);
+        const { failures, nextRetryAt } = noteCreateFailure(backoff, repoName);
         log.warn(
           { repo: repoName, error: result.error, failedStep: result.failedStep, failures, nextRetryAt },
           "worktree reconciler: replenish create failed",
         );
       })
       .catch((err) => {
-        const { failures, nextRetryAt } = noteCreateFailure(repoName);
+        const { failures, nextRetryAt } = noteCreateFailure(backoff, repoName);
         log.warn(
           { err, repo: repoName, failures, nextRetryAt },
           "worktree reconciler: replenish create threw",

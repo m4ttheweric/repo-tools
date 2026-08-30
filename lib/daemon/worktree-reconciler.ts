@@ -17,6 +17,7 @@ import {
   loadWorktreeAppConfig,
   loadWorktreeRepoConfig,
   worktreeSettingsDeclared,
+  type WorktreeAppConfig,
 } from "../worktree/config.ts";
 import { reapExpiredTrash, reapTrashInRoots } from "../worktree/trash.ts";
 import {
@@ -42,6 +43,7 @@ import {
   hasFreeDiskGb,
   WORKTREE_ONDECK_CEILING,
   WORKTREE_MIN_FREE_DISK_GB,
+  type CreateBackoffMap,
 } from "./reconciler/replenish.ts";
 
 export type { ReconcileDeps } from "./reconciler/reconcile.ts";
@@ -55,6 +57,15 @@ export interface ReconcilerDeps {
   emit: (type: string, data: unknown) => void;
   log: Logger;
 }
+
+/**
+ * How many repos a single pass processes at once. Above one so a repo's
+ * multi-minute install (freshen ready steps, replenish's createTree) stops
+ * holding every other repo's merge reactor and `repos:locate` hostage; bounded
+ * so a many-repo estate can't fan out into unbounded concurrent git and
+ * install subprocesses.
+ */
+export const RECONCILER_CONCURRENCY = 4;
 
 // Freshen (spec §6.3) lives in ./reconciler/freshen.ts; replenish and shrink
 // (spec §6.4) live in ./reconciler/replenish.ts, imported above.
@@ -120,9 +131,12 @@ async function repoHasWorktreeActivity(repoName: string, repoPath: string): Prom
 }
 
 /**
- * Assembles the worktree reconciler. `runOnce` runs reconcile then the merge
- * reactor per qualifying repo; Task 12 extends it in place with the freshen
- * and replenish/shrink passes.
+ * Assembles the worktree reconciler. `runOnce` runs each qualifying repo's
+ * duties (reconcile, merge reactor, freshen, replenish/shrink, trash reap) as
+ * an independent unit, up to `RECONCILER_CONCURRENCY` repos at once, so one
+ * repo's slow install can't stall the rest. The whole pass is still one
+ * `inFlight`-guarded run: `kick()`'s coalescing and `withReconcilerHeld`'s
+ * drain see it as a single boundary regardless of the fan-out inside.
  */
 export function createWorktreeReconciler(deps: ReconcilerDeps): {
   kick: () => void;
@@ -161,6 +175,73 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
    */
   let passStartedWork = false;
   const creationPromises = new Map<string, Promise<void>>();
+  /** This instance's create backoff, threaded into replenish via deps so two
+   *  reconcilers never charge each other's create failures. */
+  const backoff: CreateBackoffMap = new Map();
+
+  /**
+   * The merge reactor's mrState/fired ledger is one shared KV row spanning
+   * every repo, so two repos' `detectTransitions` read-modify-writing it at
+   * once would clobber each other's transitions (a lost fired key re-fires a
+   * dispose next pass). With per-repo work now concurrent, this chain runs the
+   * reactor step one repo at a time; the slow duties (freshen, replenish) stay
+   * fully concurrent, so serializing this fast step costs nothing that matters.
+   */
+  let reactorTail: Promise<void> = Promise.resolve();
+  function serializeReactor(fn: () => Promise<void>): Promise<void> {
+    const result = reactorTail.then(fn);
+    reactorTail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  async function processRepo(repoName: string, repoPath: string, appConfig: WorktreeAppConfig): Promise<void> {
+    // Flips on the first repo a worker picks up; a kick landing after this is
+    // about state a concurrent step may already have passed, so it queues.
+    passStartedWork = true;
+    if (!(await repoHasWorktreeActivity(repoName, repoPath))) return;
+    try {
+      await reconcileRepoRegistry({ repoName, repoPath, emit: deps.emit, log: deps.log });
+    } catch (err) {
+      deps.log.warn({ err, repo: repoName }, "worktree reconciler: reconcile pass failed");
+    }
+    // Separate catches throughout: any one duty throwing must not cost the
+    // next duty (or another repo) its own pass.
+    try {
+      await serializeReactor(() =>
+        detectTransitions({
+          repoName,
+          repoPath,
+          cacheEntries: deps.cache.entries,
+          emit: deps.emit,
+          log: deps.log,
+        }),
+      );
+    } catch (err) {
+      deps.log.warn({ err, repo: repoName }, "worktree reconciler: merge reactor pass failed");
+    }
+
+    if (!appConfig.enabled) return;
+
+    try {
+      await freshenRepo({ repoName, repoPath, emit: deps.emit, log: deps.log });
+    } catch (err) {
+      deps.log.warn({ err, repo: repoName }, "worktree reconciler: freshen pass failed");
+    }
+    try {
+      await replenishAndShrink(
+        { repoName, repoPath, emit: deps.emit, log: deps.log, backoff },
+        creationPromises,
+        appConfig,
+      );
+    } catch (err) {
+      deps.log.warn({ err, repo: repoName }, "worktree reconciler: replenish/shrink pass failed");
+    }
+    try {
+      await reapRepoTrash({ repoName, repoPath, log: deps.log });
+    } catch (err) {
+      deps.log.warn({ err, repo: repoName }, "worktree reconciler: trash reap pass failed");
+    }
+  }
 
   async function runOnce(): Promise<void> {
     // Legacy-named registry rows predate identity-keyed indices and must be
@@ -172,54 +253,30 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
       deps.log.warn({ err }, "worktree reconciler: legacy registry re-key failed");
     }
 
-    const repos = deps.repoIndex();
+    const repos = Object.entries(deps.repoIndex());
     // One read for the whole pass: every repo shares the same app-level file.
     const appConfig = loadWorktreeAppConfig();
 
-    for (const [repoName, repoPath] of Object.entries(repos)) {
-      passStartedWork = true;
-      if (!(await repoHasWorktreeActivity(repoName, repoPath))) continue;
-      try {
-        await reconcileRepoRegistry({ repoName, repoPath, emit: deps.emit, log: deps.log });
-      } catch (err) {
-        deps.log.warn({ err, repo: repoName }, "worktree reconciler: reconcile pass failed");
+    // Bounded worker pool: a fixed set of workers draw repos off a shared
+    // cursor until it's exhausted, so at most RECONCILER_CONCURRENCY repos are
+    // in flight at once. `runOnce` awaits every worker, so `inFlight` (and thus
+    // the hold's drain) resolves only once all per-repo work has settled. The
+    // per-repo catch keeps one repo's unexpected throw from rejecting its
+    // worker early and stranding its siblings' promises past pass end.
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < repos.length) {
+        const [repoName, repoPath] = repos[cursor++]!;
+        try {
+          await processRepo(repoName, repoPath, appConfig);
+        } catch (err) {
+          deps.log.warn({ err, repo: repoName }, "worktree reconciler: repo pass failed");
+        }
       }
-      // Separate catches throughout: any one duty throwing must not cost the
-      // next repo (or the next duty) its own pass.
-      try {
-        await detectTransitions({
-          repoName,
-          repoPath,
-          cacheEntries: deps.cache.entries,
-          emit: deps.emit,
-          log: deps.log,
-        });
-      } catch (err) {
-        deps.log.warn({ err, repo: repoName }, "worktree reconciler: merge reactor pass failed");
-      }
-
-      if (!appConfig.enabled) continue;
-
-      try {
-        await freshenRepo({ repoName, repoPath, emit: deps.emit, log: deps.log });
-      } catch (err) {
-        deps.log.warn({ err, repo: repoName }, "worktree reconciler: freshen pass failed");
-      }
-      try {
-        await replenishAndShrink(
-          { repoName, repoPath, emit: deps.emit, log: deps.log },
-          creationPromises,
-          appConfig,
-        );
-      } catch (err) {
-        deps.log.warn({ err, repo: repoName }, "worktree reconciler: replenish/shrink pass failed");
-      }
-      try {
-        await reapRepoTrash({ repoName, repoPath, log: deps.log });
-      } catch (err) {
-        deps.log.warn({ err, repo: repoName }, "worktree reconciler: trash reap pass failed");
-      }
-    }
+    };
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < Math.min(RECONCILER_CONCURRENCY, repos.length); i++) workers.push(worker());
+    await Promise.all(workers);
   }
 
   function kick(): void {
