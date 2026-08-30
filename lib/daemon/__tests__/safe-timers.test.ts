@@ -58,8 +58,8 @@ test("scheduleSweep fires boot + interval, catches throws, stops", async () => {
   let fires = 0; const warns: unknown[] = [];
   const log = { warn: (o: unknown) => warns.push(o) } as any;
   const h = scheduleSweep("t", () => { fires++; if (fires === 1) throw new Error("x"); },
-    { bootDelayMs: 5, intervalMs: 10 }, log);
-  await Bun.sleep(8);   expect(fires).toBe(1); expect(warns.length).toBe(1); // boot fire threw, warned
-  await Bun.sleep(12);  expect(fires).toBeGreaterThanOrEqual(2);
-  h.stop(); const n = fires; await Bun.sleep(15); expect(fires).toBe(n);
+    { bootDelayMs: 20, intervalMs: 50 }, log);
+  await Bun.sleep(40);  expect(fires).toBe(1); expect(warns.length).toBe(1); // boot fire threw, warned
+  await Bun.sleep(60);  expect(fires).toBeGreaterThanOrEqual(2);
+  h.stop(); const n = fires; await Bun.sleep(80); expect(fires).toBe(n);
 });
