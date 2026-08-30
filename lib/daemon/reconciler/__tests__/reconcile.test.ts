@@ -6,7 +6,7 @@ import { join } from "path";
 import type { Logger } from "pino";
 import { closeStateDb } from "../../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../../worktree/registry.ts";
-import { reconcileRepo } from "../reconcile.ts";
+import { reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
 
 function fakeLog(): Logger {
   return { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as Logger;
@@ -55,5 +55,28 @@ describe("reconcile.ts: reconcileRepo", () => {
     }
 
     expect(loadRegistry(repoName).find((t) => t.name === "ghost")).toBeUndefined();
+  });
+
+  test("holds a tree whose pool root AND root-parent are both unreadable (mount blip), never pruning it", async () => {
+    // Both `dirname(path)` (the pool root) and `dirname(dirname(path))` (the
+    // root's parent, the mount point) are absent: a vanished mount, not a
+    // removed pool dir. The row must survive well past MISSING_PRUNE_PASSES.
+    const blip: TreeRecord = {
+      name: "amber",
+      path: join("/rt-nonexistent-mount-xyz", "wt", "amber"),
+      kind: "ephemeral",
+      state: "on-deck",
+      branch: "feat-amber",
+      createdAt: new Date().toISOString(),
+    };
+    saveRegistry(repoName, [blip]);
+
+    for (let i = 0; i < MISSING_PRUNE_PASSES + 2; i++) {
+      await reconcileRepo({ repoName, repoPath: repo, emit: () => {}, log: fakeLog() });
+    }
+
+    const held = loadRegistry(repoName).find((t) => t.name === "amber");
+    expect(held).toBeDefined();
+    expect(held?.missCount ?? 0).toBe(0); // a held pass never accrues a miss
   });
 });

@@ -37,6 +37,18 @@ export interface ReconcileDeps {
 /** One attempt's outcome: its trees, or "a concurrent write invalidated me". */
 type PassResult = { trees: TreeRecord[] } | { conflict: true };
 
+/**
+ * A tree missing from git is a vanished mount (hold), not a removal (sweep),
+ * when its pool root AND the root's parent are both unreadable: an unmount
+ * takes its mount point with it, while a removed pool dir (`.worktrees`) leaves
+ * its parent clone present (RT-87). Held rows never accrue a miss, so a long
+ * outage cannot prune live claim state.
+ */
+function isHeldByUnreadableMount(treePath: string): boolean {
+  const root = dirname(treePath);
+  return !existsSync(root) && !existsSync(dirname(root));
+}
+
 /** Attempts before a contended pass gives up and leaves the work to the next tick. */
 const RECONCILE_MAX_ATTEMPTS = 3;
 
@@ -168,6 +180,13 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
   // consecutive passes (S063: a transiently missing directory, e.g. a network
   // mount blip, must not orphan the row and poison its name), then pruned.
   // `creating` entries are exempt: they legitimately have no git worktree yet.
+  //
+  // A pool root that unmounted takes its own parent (the mount point) with it,
+  // while a genuinely removed pool dir leaves its parent present (RT-87). So a
+  // missing tree whose pool root AND the root's parent are both unreadable is a
+  // vanished mount, not a removal: hold the row without counting a miss, so a
+  // long outage never prunes live claim/owner/state. A removed `.worktrees`
+  // (parent repo present) sweeps normally.
   const afterPrune: TreeRecord[] = [];
   for (const rec of trees) {
     if (rec.state === "creating") {
@@ -179,6 +198,10 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
         delete rec.missCount;
         changed = true;
       }
+      afterPrune.push(rec);
+    } else if (isHeldByUnreadableMount(rec.path)) {
+      const root = dirname(rec.path);
+      log.warn({ repo: repoName, tree: rec.name, root }, "reconcile: pool root and its parent are unreadable (mount blip); holding registry row without counting a miss");
       afterPrune.push(rec);
     } else {
       const misses = (rec.missCount ?? 0) + 1;
