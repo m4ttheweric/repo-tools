@@ -118,8 +118,11 @@ is open, **whatever its state**. A crashed entry's tail is the case that
 matters most (it shows why it died), so `pane read` runs for it as readily
 as for a running one. Go emits `{ "t": "intent", "name": "tail",
 "entryId": "e1", "open": true|false }` on toggle and on selection change
-while open; TS starts or stops the tail poll for that entry and nulls the
-previous one.
+while open; TS runs the first `pane.read` **immediately** on that intent
+(never waiting for the next tick, so a `j`/`k` with the panel open never
+shows a blank peek), then every 1 s, and nulls the previous entry's tail.
+The `__rt_exit` sentinel line and the trailing shell prompt are filtered
+out of what is pushed.
 
 **Intents** (all carry `entryId` except `add` and `quit`):
 

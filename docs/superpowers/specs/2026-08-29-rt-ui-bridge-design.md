@@ -179,9 +179,13 @@ the step resolves. No stdout.
 - If the pipe write fails mid-step (the child died), TS logs at `warn`
   through the CLI logging seam, finishes the task, and prints the final
   line itself in plain text. Never a hang, never a lost result.
-- `log()` between steps (no step active) is a plain TS line using the
-  existing `lib/tui.ts` colors, unchanged from today. Static lines are the
-  one presentation TS keeps; there is no spawn per log line.
+- `log()` between steps (no step active) is a plain TS line. Static lines
+  are the one presentation TS keeps, and they use `lib/tui/palette.ts`
+  truecolor (mint/coral/peach), not `lib/tui.ts`'s 16-color ANSI, so one
+  theme survives across the seam. There is no spawn per log line.
+- A `done`/`fail` that arrives before Go has painted (a task shorter than
+  the spawn) prints the final line only, never a spinner frame first, so a
+  fast step cannot flash.
 - **While a step is active, TS must not write to stdout or stderr.** Ink's
   `patchConsole` hid this today; Go on `/dev/tty` will not. Phase 1 greps
   every `createStepRunner`/`withSpinner` caller for writes inside a task
@@ -208,7 +212,7 @@ never a blank alt screen waiting for a model.
 | how the session ends | Go sends | Go exits | TS does |
 |---|---|---|---|
 | user chose quit in the view (the board's `y`) | `closed{quit}` | 0 | runs the view's teardown, continues |
-| user cancelled a view that has no confirm layer (Ctrl-C/Esc where the view defines that as cancel) | `closed{cancel}` | 130 | same as quit for the board; other views define their own meaning |
+| user cancelled a view that defines Ctrl-C/Esc as cancel (no confirm layer) | `closed{cancel}` | 130 | the owning view's spec defines the reaction (the board never emits this; see the runner spec) |
 | TS sent `close` | `closed{closed}` | 0 | **awaits child exit** before touching the tty again |
 | protocol mismatch / unknown view | `closed{error}` | 2 | plain message, exit 1 |
 | Go internal failure | `closed{error}` if it can | 70 | plain message, exit 1 |
@@ -283,13 +287,16 @@ Rules that keep the seam honest:
 - New modules:
   - `lib/ui/resolve.ts`: finds the binary (below).
   - `lib/ui/protocol.ts`: the message types, shared by the fixture tests.
-  - `lib/ui/spawn.ts`: `runPrompt(spec)`, `runStep(events)`,
-    `openSession(view, model)`; each keeps stdin open until exit, returns
-    typed results, and maps exit codes: `130 → process.exit(130)` (today's
-    Ctrl-C behavior), `131 → throw BackNavigation`, `2`/`70`/anything else
-    → a plain one-line error naming the failure and the binary path, then
-    `process.exit(1)`. Never a hung prompt, never a silent fallback to a
-    different picker (the `FZF_MISSING_MESSAGE` policy).
+  - `lib/ui/spawn.ts`: `runPrompt(spec)`, `openStep(title)` (a live
+    handle: `{ log, done, fail }`, matching the streaming protocol), and
+    `openSession(view, model)`; each keeps stdin open until exit and
+    returns typed results. `runPrompt` maps exit codes: `130 →
+    process.exit(130)` (today's Ctrl-C behavior), `131 → throw
+    BackNavigation`, `2`/`70`/anything else → a plain one-line error naming
+    the failure and the binary path, then `process.exit(1)`. Steps treat
+    `130` as "already handled" (above); sessions follow their end table.
+    Never a hung prompt, never a silent fallback to a different picker (the
+    `FZF_MISSING_MESSAGE` policy).
   - TS's `exit` hook (already installed by `installCliLogging`) kills any
     live `rt-ui` child so a `process.exit()` mid-prompt cannot orphan one.
 - A session's `intent` stream is an async iterator; the owning command runs
@@ -360,14 +367,18 @@ like `rt` itself rather than like fzf:
   locally.
 - **Resolution** (`lib/ui/resolve.ts`), in order:
   1. `RT_UI_BIN` (an executable path; tests and power users).
-  2. **Running from a source checkout** (`bundleRootFromExec()` is null,
-     which is every `bun run cli.ts` and the dev-mode shim):
-     `<repo>/ui/dist/rt-ui`, else a one-line "run `bun run ui:build`".
+  2. **Running from a source checkout** (`bundleRootFromExec()` is null
+     AND `import.meta.dir` is a real directory on disk, which is every
+     `bun run cli.ts` and the dev-mode shim): `<repo>/ui/dist/rt-ui` where
+     `<repo>` is derived from `import.meta.dir`; if that file is missing,
+     fall through (the final error names `bun run ui:build` as the fix).
      Source must win here: in dev mode `appBundleRoot()` resolves to the
      blessed `mattstack-dev.app`, which is never rebuilt, so a bundle-first
      order would pin every source run to a permanently stale helper.
   3. Running from a bundle: `<bundle>/Contents/Helpers/rt-ui`.
-  4. `rt-ui` on PATH.
+  4. `rt-ui` on PATH. (A bare compiled `dist/rt` run outside a bundle, as
+     the e2e suite does, lands here: `import.meta.dir` is a virtual path in
+     a compiled binary, so step 2 is skipped.)
   5. A one-line error listing every path tried.
 - **Version drift** is the failure class rt has been burned by three times
   (`packages/rt-client/dist/`): `hello` carries `protocol` and `version`,
@@ -420,8 +431,11 @@ blocks on 2.
 - **Exit-code mapping**: unit tests on `lib/ui/spawn.ts` for 0/130/131/2/70
   against the fake, and the table above for sessions.
 - **Bench**: `bench.py` from the spike, pointed at the real `rt-ui`, is
-  re-run in phase 1 and its numbers recorded in the plan. The release job
-  does not gate on it.
+  re-run in phase 1 and its numbers recorded in the plan. The harness
+  needs two small changes first: the prompt spec goes down a stdin pipe
+  while `/dev/tty` is the pty, and an env-gated hook (`RT_UI_BENCH=1`)
+  exempts the single `first-paint` stderr line from the "nothing else on
+  stderr" rule. The release job does not gate on it.
 
 ## Risks
 
