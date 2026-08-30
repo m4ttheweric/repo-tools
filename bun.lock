@@ -33,9 +33,12 @@
     },
     "packages/rt-client": {
       "name": "@mattstack/rt-client",
-      "version": "0.9.0",
+      "version": "0.10.1",
       "dependencies": {
         "jsonc-parser": "^3.3.1",
+      },
+      "devDependencies": {
+        "typescript": "^5.9.2",
       },
       "peerDependencies": {
         "@mattstack/glance": ">=0.13.0",
@@ -43,7 +46,7 @@
     },
     "packages/settings-kit": {
       "name": "@mattstack/settings-kit",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "devDependencies": {
         "@types/react": "^18.3.0",
         "react": "^18.3.0",
