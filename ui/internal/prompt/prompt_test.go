@@ -160,7 +160,7 @@ func TestConfirmYAndNAndCollapse(t *testing.T) {
 }
 
 func TestConfirmDestructiveDefaultsNoAndPaintsPeach(t *testing.T) {
-	destructive := `{"t":"prompt","protocol":1,"kind":"confirm","message":"Locate assured-dev at ~/x? This moves 3 worktrees.","destructive":true}`
+	destructive := `{"t":"prompt","protocol":1,"kind":"confirm","message":"Locate acme at ~/x? This moves 3 worktrees.","destructive":true}`
 	stdout, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{destructive}, []string{keyEnter}, nil, false)
 	if exit != 0 || !strings.Contains(stdout, `"ok":false`) {
 		t.Fatalf("destructive confirm must default to no: exit %d stdout %q", exit, stdout)

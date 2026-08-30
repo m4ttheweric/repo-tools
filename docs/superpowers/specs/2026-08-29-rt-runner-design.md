@@ -85,7 +85,7 @@ stopped and crashed can be told apart.
 
 ## Architecture
 
-```
+```text
 commands/runner.ts (TS)                rt-ui session --view board (Go)
   entries[] + herdr calls   ──model──▶   renders the board
   runs the intent loop      ◀─intent──   j/k/t handled locally; a/s/x/f/q emitted
@@ -104,7 +104,7 @@ only domain state down and user actions up.
 ```jsonc
 { "workspace": "rt-runner-a3f9",
   "entries": [
-    { "id": "e1", "name": "dev", "command": "bun run dev", "pkg": "web", "repo": "assured-dev",
+    { "id": "e1", "name": "dev", "command": "bun run dev", "pkg": "web", "repo": "acme",
       "state": "running" | "stopped" | "crashed" | "starting" | "stopping",
       "startedAt": "2026-08-29T22:38:26.000Z",   // Go derives m:ss on its own 1 s tick; TS never pushes a counter
       "exitCode": null,                          // set once the sentinel is read
