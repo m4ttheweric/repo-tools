@@ -49,12 +49,23 @@ export interface GracefulExitDeps {
  * exiting non-zero on a bare signal never fights an intended stop.
  */
 export function makeGracefulExit(deps: GracefulExitDeps): (signal: NodeJS.Signals) => Promise<void> {
+  // A second signal during an in-flight teardown is a no-op: overlapping
+  // cleanups would race the same unit stops.
+  let exiting = false;
   return async (signal: NodeJS.Signals) => {
     deps.log.info({ signal }, "received signal; shutting down");
+    if (exiting) return;
+    exiting = true;
     // Await the reverse-order stop: the unit stops force-close the servers and
     // unlink runtime files, and a sync exit here would run only the first of
-    // them, because stopUnits yields to microtasks between units.
-    await deps.cleanup();
+    // them, because stopUnits yields to microtasks between units. A cleanup
+    // rejection must not strand the process: the exit path below still runs,
+    // or launchd would have to escalate to SIGKILL.
+    try {
+      await deps.cleanup();
+    } catch (err) {
+      deps.log.warn({ err }, "shutdown cleanup failed; exiting anyway");
+    }
     deps.flushLogs();
     if (deps.wasVerbShutdown()) {
       deps.recordCleanExit("shutdown", 0);

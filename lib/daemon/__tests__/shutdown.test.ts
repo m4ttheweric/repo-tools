@@ -9,14 +9,43 @@ const silentLog = { info: () => {}, warn: () => {}, error: () => {}, debug: () =
 test("gracefulExit exits 0 after the shutdown verb, 1 on a bare signal", async () => {
   const exits: number[] = [];
   const exit = (c?: number) => { exits.push(c ?? 0); };
-  let viaVerb = false;
-  const handlers = makeGracefulExit({ cleanup: () => {}, flushLogs: () => {}, log: silentLog,
+  // A fresh handler per scenario: one signal handler fires once (re-entry guard).
+  const mk = (viaVerb: boolean) => makeGracefulExit({ cleanup: () => {}, flushLogs: () => {}, log: silentLog,
     wasVerbShutdown: () => viaVerb, exit, recordCleanExit: () => {} });
-  await handlers("SIGTERM");
+  await mk(false)("SIGTERM");
   expect(exits).toEqual([1]);
-  viaVerb = true;
-  await handlers("SIGTERM");
+  await mk(true)("SIGTERM");
   expect(exits).toEqual([1, 0]);
+});
+
+test("gracefulExit still flushes and exits when cleanup rejects", async () => {
+  const order: string[] = [];
+  const handlers = makeGracefulExit({
+    cleanup: async () => { throw new Error("boom"); },
+    flushLogs: () => { order.push("flush"); },
+    log: silentLog,
+    wasVerbShutdown: () => false,
+    exit: () => { order.push("exit"); },
+    recordCleanExit: () => {},
+  });
+  await handlers("SIGTERM");
+  expect(order).toEqual(["flush", "exit"]); // a rejecting cleanup does not strand the process
+});
+
+test("gracefulExit ignores a second signal during an in-flight teardown", async () => {
+  let cleanups = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => { release = r; });
+  const handlers = makeGracefulExit({
+    cleanup: async () => { cleanups++; await gate; },
+    flushLogs: () => {}, log: silentLog,
+    wasVerbShutdown: () => false, exit: () => {}, recordCleanExit: () => {},
+  });
+  const first = handlers("SIGTERM");
+  await handlers("SIGINT"); // arrives while the first teardown is still awaiting gate
+  release();
+  await first;
+  expect(cleanups).toBe(1); // the second signal did not start an overlapping cleanup
 });
 
 test("gracefulExit awaits cleanup before flushing and exiting", async () => {
@@ -35,8 +64,8 @@ test("gracefulExit awaits cleanup before flushing and exiting", async () => {
 
 test("gracefulExit records the exit kind and code via recordCleanExit", async () => {
   const recorded: Array<{ kind: string; code: number }> = [];
-  let viaVerb = false;
-  const handlers = makeGracefulExit({
+  // A fresh handler per scenario: one signal handler fires once (re-entry guard).
+  const mk = (viaVerb: boolean) => makeGracefulExit({
     cleanup: () => {},
     flushLogs: () => {},
     log: silentLog,
@@ -44,10 +73,9 @@ test("gracefulExit records the exit kind and code via recordCleanExit", async ()
     exit: () => {},
     recordCleanExit: (kind, code) => { recorded.push({ kind, code }); },
   });
-  await handlers("SIGINT");
+  await mk(false)("SIGINT");
   expect(recorded).toEqual([{ kind: "signal", code: 1 }]);
-  viaVerb = true;
-  await handlers("SIGHUP");
+  await mk(true)("SIGHUP");
   expect(recorded).toEqual([{ kind: "signal", code: 1 }, { kind: "shutdown", code: 0 }]);
 });
 
