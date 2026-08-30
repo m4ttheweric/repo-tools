@@ -1,4 +1,4 @@
-# rt runner — design
+# rt runner: design
 
 A slick full-screen board that manages long-running commands as headless
 herdr panes. The first (and V1's only) `session` view of the rt-ui bridge:
@@ -177,7 +177,7 @@ are async (`runCapture`); the intent loop never blocks on one.
 
 ## Wiring
 
-- `commands/runner.ts`: `runnerCommand` — herdr probe (`herdrAvailable`
+- `commands/runner.ts`: `runnerCommand`: herdr probe (`herdrAvailable`
   from `lib/herdr/client.ts`; on failure print how to start herdr and exit
   non-zero before any UI), then the session loop above.
 - `lib/command-tree-def.ts`: a `runner` node, `module:

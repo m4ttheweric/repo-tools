@@ -1,4 +1,4 @@
-# rt-ui bridge — design
+# rt-ui bridge: design
 
 rt's UI moves into a Go TUI layer. Brains stay in TypeScript. One bundled
 helper binary, `rt-ui` (Bubble Tea v2 + Lip Gloss v2 + huh), renders every
@@ -284,7 +284,7 @@ like `rt` itself rather than like fzf:
 |---|---|---|
 | **0** | delete `commands/status/`, `lib/tui/`, their tree node + registry entry + tests; drop `@rezi-ui/*` | rt status, the rezi kit |
 | **1** | `ui/` module with theme, `prompt`, `steps`; `lib/ui/*`; re-point the six facade functions; fake-rt-ui tests; release + checks wiring; then delete Ink | `ink`, `react`, `@inkjs/ui`, `lib/rt-render.tsx` |
-| **2** | `session` verb + `board` view; `rt runner` as the first consumer (its own spec) | — |
+| **2** | `session` verb + `board` view; `rt runner` as the first consumer (its own spec) | nothing |
 | **3** (optional) | `rt-ui pick`: fzf spawned by Go instead of TS, so TS has one UI dependency | nothing; fzf stays the matcher |
 
 Phases 0 and 1 ship together as one PR series; 2 follows on the runner
