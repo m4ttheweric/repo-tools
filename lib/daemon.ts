@@ -52,7 +52,7 @@ import { unknownCommandReply } from "./daemon/unknown-command.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, pruneAgents, snapshotRegistryDeps, quickCheck, backupTo, stampedBackupPath, pruneStateBackups, type BranchCacheStore } from "./state/index.ts";
+import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, pruneAgents, snapshotRegistryDeps, quickCheck, backupTo, stampedBackupPath, pruneStateBackups, setBusyLogSink, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -63,6 +63,7 @@ import { runCapture } from "./subprocess.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, withApiPortParkRetry, broadcast, apiWsClientCount, clearWsClients } from "./daemon/api-server.ts";
+import { deriveFailure } from "./daemon/failure.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
@@ -160,11 +161,7 @@ export function createHandleCommand(deps: HandleCommandDeps): HandleCommand {
       return result;
     } catch (err) {
       ctx.log.error({ err, reqId, cmd, caller, durationMs: Date.now() - t0, digest: redactDigest(payload) }, "command failed");
-      const message = err instanceof Error ? err.message : String(err);
-      const code =
-        err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
-          ? (err as { code: string }).code
-          : "handler-threw";
+      const { code, message } = deriveFailure(err);
       return { ok: false, error: message, failure: { code, message }, reqId };
     } finally {
       currentCmd.cmd = null;
@@ -459,6 +456,15 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         log = loggerHandle.logger;
         ctx.loggerHandle = loggerHandle;
         ctx.log = log;
+        // R052: route lib/state/busy.ts's busy-write warn/error lines onto
+        // this process's own daemon surface, via the same childLogger a
+        // handler's ctx.log would use — not the module's own dynamic
+        // getDaemonLogger() default, which a CLI process sharing this code
+        // would also fall into.
+        setBusyLogSink({
+          warn: (module, context, message) => loggerHandle!.childLogger(module).warn(context, message),
+          error: (module, context, message) => loggerHandle!.childLogger(module).error(context, message),
+        });
         // Route the settings resolver's dedup'd warn sink into structured
         // logging so a hot-path getSetting on a disallowed-scope key surfaces
         // once here instead of the resolver's console fallback.

@@ -59,8 +59,9 @@ import {
 import {
   loadWorktreeAppConfig,
   loadWorktreeRepoConfig,
-  resolveReadySteps,
+  evaluateReadyGate,
   worktreePoolDormant,
+  worktreeReadyHeld,
   WORKTREE_APP_ENABLE_COMMAND,
 } from "../../worktree/config.ts";
 import { changedSince, runReadySteps, stepsToRun } from "../../worktree/ready.ts";
@@ -448,7 +449,11 @@ export function createWorktreeHandlers(
         // default branch that moved (or a teammate branch just checked out)
         // runs the delta. A failing step does NOT destroy the claimed tree —
         // the caller has it and can fix it; readyAt simply doesn't advance.
-        const readySteps = resolveReadySteps(cfg, repoPath);
+        const { steps: readySteps, held } = await evaluateReadyGate(cfg, repoName, repoPath);
+        if (held) {
+          ctx.log.warn({ repo: repoName, tree: tree.name }, "provision: team `ready` steps held pending approval; run `rt worktree ready-approve`");
+          opts.emit("worktree:ready-held", { repo: repoName, tree: tree.name });
+        }
         const stamp = loadRegistry(repoName).find((t) => t.path === tree.path)?.readyStamp;
         const changed = stamp ? await changedSince(tree.path, stamp) : null;
         const toRun = stepsToRun(readySteps, changed);
@@ -571,9 +576,11 @@ export function createWorktreeHandlers(
       const entries = ctx.cache.entries;
       const rows: Array<Record<string, unknown>> = [];
       const dormantRepos: string[] = [];
+      const readyHeldRepos: string[] = [];
 
       for (const [repoName, repoPath] of repos) {
         if (await worktreePoolDormant(repoName, repoPath)) dormantRepos.push(repoName);
+        if (await worktreeReadyHeld(repoName, repoPath)) readyHeldRepos.push(repoName);
         const trees = loadRegistry(repoName);
         const branchCounts = new Map<string, number>();
         for (const t of trees) {
@@ -605,6 +612,10 @@ export function createWorktreeHandlers(
         data.dormant = true;
         data.dormantRepos = dormantRepos;
         data.message = `worktree pool declared but dormant on this machine... enable with: ${WORKTREE_APP_ENABLE_COMMAND}`;
+      }
+      if (readyHeldRepos.length > 0) {
+        data.readyHeld = true;
+        data.readyHeldRepos = readyHeldRepos;
       }
       return { ok: true, data };
     },

@@ -11,6 +11,7 @@ import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "pino";
 import { API_PORT, resolveApiPort } from "../daemon-config.ts";
 import { needsToken, tokenOk, getApiToken, resolveOriginTrust, isTokenPreflight } from "./api-auth.ts";
+import { deriveFailure } from "./failure.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
 import { runCapture } from "../subprocess.ts";
@@ -323,22 +324,6 @@ export async function withApiPortParkRetry<T>(start: () => Promise<T>, deps: Par
       await deps.sleep(delayMs);
     }
   }
-}
-
-/**
- * Same code/message derivation as createHandleCommand's throw-to-envelope
- * path (lib/daemon.ts, R035). Duplicated rather than imported: this guards
- * fetch()'s own routing/dispatch bugs, a different failure class than a
- * handleCommand throw (createHandleCommand already catches those and never
- * lets them reach this far).
- */
-function deriveFailure(err: unknown): { code: string; message: string } {
-  const message = err instanceof Error ? err.message : String(err);
-  const code =
-    err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
-      ? (err as { code: string }).code
-      : "handler-threw";
-  return { code, message };
 }
 
 export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> {

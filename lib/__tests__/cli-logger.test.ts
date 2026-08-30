@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { logCommand } from "../cli-logger.ts";
+import { installCliLogging, logCommand } from "../cli-logger.ts";
 import { logsDir } from "../rt-paths.ts";
 import { encodeCode } from "../team/invite-crypto.ts";
+import { persistOrWarn, setBusyLogSink } from "../state/busy.ts";
 
 /**
  * Exercises the REAL logCommand write path (fake HOME, from test-setup.ts's
@@ -92,5 +93,28 @@ describe("logCommand: an rt team join invite code never reaches disk, even thoug
     const line = lines.at(-1)!;
     expect(line).not.toContain(CANARY);
     expect(JSON.parse(line).args).toEqual(["[redacted]", "--dry-run"]);
+  });
+});
+
+describe("R052: installCliLogging routes lib/state/busy.ts's warnings onto the cli surface", () => {
+  test("a busy write inside this process lands in cli.<date>.log, not the daemon surface", () => {
+    installCliLogging(["rt", "some-command"]);
+
+    try {
+      persistOrWarn("mymodule", () => {
+        const e = new Error("database is locked");
+        (e as { code?: string }).code = "SQLITE_BUSY";
+        throw e;
+      }, { canary: "cli-busy-sink-canary" });
+
+      const lines = readTodaysCliLogLines();
+      const line = lines.at(-1)!;
+      const parsed = JSON.parse(line);
+      expect(parsed.level).toBe("warn");
+      expect(parsed.module).toBe("mymodule");
+      expect(parsed.canary).toBe("cli-busy-sink-canary");
+    } finally {
+      setBusyLogSink(null); // don't leak this sink into later test files in the same process, even on assertion failure
+    }
   });
 });

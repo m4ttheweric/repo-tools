@@ -156,6 +156,37 @@ describe("worktree CLI identity plumbing", () => {
     expect(calls.find((c) => c.cmd === "worktree:list")).toBeUndefined();
     expect(logs.some((l) => l.includes("no-such-repo-anywhere"))).toBe(true);
   });
+
+  test("JSON output includes readyHeldRepos alongside trees", async () => {
+    installFakeDaemon({ ok: true, data: { trees: [], readyHeldRepos: ["path:/foo"] } });
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...parts: unknown[]) => { logs.push(parts.map(String).join(" ")); };
+
+    try {
+      await worktreeList(["--json"], {});
+    } finally {
+      console.log = originalLog;
+    }
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.readyHeldRepos).toEqual(["path:/foo"]);
+  });
+
+  test("held-repo notice prints even when there are no worktrees", async () => {
+    installFakeDaemon({ ok: true, data: { trees: [], readyHeldRepos: ["path:/foo"] } });
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...parts: unknown[]) => { logs.push(parts.map(String).join(" ")); };
+
+    try {
+      await worktreeList([], {});
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(logs.some((l) => l.includes("held pending approval"))).toBe(true);
+  });
 });
 
 describe("repoLabel", () => {

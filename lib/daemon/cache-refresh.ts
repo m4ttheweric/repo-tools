@@ -39,6 +39,8 @@ export interface CacheRefresherDeps {
   reconcileSubscriptions: () => Promise<void>;
   /** Fire-and-forget kick of the worktree reconciler after each refresh. */
   worktreeKick?: () => void;
+  /** Test seam: overrides REFRESH_CYCLE_DEADLINE_MS for the coalescer. */
+  cycleDeadlineMs?: number;
 }
 
 /**
@@ -53,11 +55,11 @@ const REFRESH_CYCLE_DEADLINE_MS = 4 * 60 * 1000;
 export interface CoalescerOptions {
   /**
    * Cap on cycles still running in the background after their own deadline
-   * fired ("orphans"). `run` is never cancelled at the deadline (no
-   * AbortSignal threads through the GitLab/git calls it makes), so without a
-   * cap, repeated stalls could pile up half-open sockets and pending work
-   * without bound. Once the cap is hit, a new cycle is refused (not
-   * started) until an orphan settles.
+   * fired ("orphans"). The deadline aborts `run`'s signal, but a wedge deeper
+   * than the signal reaches (a half-open GitLab socket in a call that does not
+   * yet honor it) keeps its frame alive, so without a cap repeated stalls could
+   * still pile up without bound. Once the cap is hit, a new cycle is refused
+   * (not started) until an orphan settles.
    */
   maxOrphanCycles?: number;
   /** Called when a cycle is refused because the orphan cap is at capacity. */
@@ -66,15 +68,14 @@ export interface CoalescerOptions {
 
 /**
  * Coalesce concurrent callers onto one in-flight run, but clear the latch after
- * `deadlineMs` even if the run never settles, so a wedged cycle (a half-open
- * GitLab socket that never rejects) cannot pin the latch forever. The wedged
- * run's frame still leaks until the OS reaps the socket; this only frees the
- * next tick. `maxOrphanCycles` bounds how many such wedged runs may be alive
- * at once (see CoalescerOptions) ... the cap is the mitigation; it does not
- * cancel the wedged runs themselves.
+ * `deadlineMs` even if the run never settles, so a wedged cycle cannot pin the
+ * latch forever. At the deadline the cycle's `AbortSignal` is aborted so `run`
+ * can stop advancing and kill any subprocess it owns; a wedge beyond the
+ * signal's reach still leaks its frame until the OS reaps it, and
+ * `maxOrphanCycles` bounds how many such runs may be alive at once.
  */
 export function makeCoalescer(
-  run: () => Promise<void>,
+  run: (signal: AbortSignal) => Promise<void>,
   deadlineMs: number,
   onTimeout: () => void,
   { maxOrphanCycles = 2, onRefused = () => {} }: CoalescerOptions = {},
@@ -88,7 +89,8 @@ export function makeCoalescer(
       return Promise.resolve();
     }
     let timedOut = false;
-    const impl = run()
+    const controller = new AbortController();
+    const impl = run(controller.signal)
       .catch(() => {}) // a rejected cycle still clears the latch
       .finally(() => { if (timedOut) orphanCycles--; });
     // Promise.race never cancels the losing branch, so the deadline timer must be
@@ -99,6 +101,7 @@ export function makeCoalescer(
       deadlineTimer = setTimeout(() => {
         timedOut = true;
         orphanCycles++;
+        controller.abort();
         onTimeout();
         resolve();
       }, deadlineMs);
@@ -135,12 +138,12 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
 
   const refreshCache = makeCoalescer(
     refreshCacheImpl,
-    REFRESH_CYCLE_DEADLINE_MS,
+    deps.cycleDeadlineMs ?? REFRESH_CYCLE_DEADLINE_MS,
     () => log.warn("cache refresh timed out; cleared in-flight latch for next tick"),
     { onRefused: () => log.warn("cache refresh skipped; too many stalled cycles already running") },
   );
 
-  async function refreshCacheImpl(): Promise<void> {
+  async function refreshCacheImpl(signal: AbortSignal): Promise<void> {
     log.debug("cache: starting background refresh");
 
     try {
@@ -165,6 +168,10 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // `repoName` below — passed on into refreshAllMRs, project-sync, and the
       // branch_cache/project_mrs rows those write — is that same identity.
       for (const [repoName, repoPath] of Object.entries(repos)) {
+        // Deadline reached: stop advancing rather than walking every remaining
+        // repo in the background (RT-91). The orphan cap bounds the wedged call
+        // still in flight; this bounds the work the cycle keeps starting.
+        if (signal.aborted) break;
         if (!existsSync(repoPath)) continue;
 
         const g = grants(tracking, repoName);
@@ -194,12 +201,12 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           // 1. Discover worktree branches (detached worktrees have no branch).
           // on-deck/* branches are pool plumbing, not feature work — never
           // worth MR/Linear enrichment.
-          const branches: Array<{ path: string; branch: string }> = ((await listWorktreesAsync(repoPath)) ?? [])
+          const branches: Array<{ path: string; branch: string }> = ((await listWorktreesAsync(repoPath, signal)) ?? [])
             .filter((w): w is { path: string; branch: string } => !!w.branch && !w.branch.startsWith("on-deck/"));
 
           // 2. Discover local branches (not just worktrees)
           const worktreeBranchSet = new Set(branches.map(b => b.branch));
-          const localBranches = await runGit(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads/"]);
+          const localBranches = await runGit(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads/"], { signal });
           if (localBranches.exitCode === 0) {
             for (const name of localBranches.stdout.split("\n")) {
               const trimmed = name.trim();
@@ -215,16 +222,19 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           if (branches.length > 0) {
             // Get remote URL
             let remoteUrl: string | undefined;
-            const remote = await runGit(repoPath, ["config", "--get", "remote.origin.url"]);
+            const remote = await runGit(repoPath, ["config", "--get", "remote.origin.url"], { signal });
             if (remote.exitCode === 0) remoteUrl = remote.stdout.trim() || undefined;
 
             // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch.
             // The onError callback fires on per-MR enrich failures (GitLab,
-            // Linear) — recoverable, belongs at warn level.
+            // Linear) — recoverable, belongs at warn level. `signal` only
+            // guards entry (the GitLab/Linear SDK calls have no cancellation
+            // of their own): a deadline reached while listing branches above
+            // skips this round trip instead of starting one to discard.
             await refreshAllMRs(branches, remoteUrl, (msg) => {
               enrichErrors++;
               log.warn({ repo: repoName }, msg);
-            }, repoName);
+            }, repoName, signal);
           }
 
           // Clean pass. `branches.length === 0` counts as clean on purpose:
@@ -239,6 +249,14 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           log.warn({ err, repo: repoName }, "cache refresh skipped repo");
           failedRepos.add(repoName);
         }
+      }
+
+      // Deadline reached mid-loop: skip the post-loop work (reload, GC, prune,
+      // doppler, broadcast) entirely rather than acting on a half-walked cycle;
+      // the next tick runs a complete one.
+      if (signal.aborted) {
+        log.warn("cache refresh aborted at deadline; skipping post-loop work");
+        return;
       }
 
       // Rebuild the in-memory map from state.db in one SELECT. refreshAllMRs

@@ -581,6 +581,16 @@ export const TREE: Record<string, CommandNode> = {
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
+      "ready-approve": {
+        description: "Approve a repo's team-authored `ready` shell before it runs (no repo + TTY → picker)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeReadyApprove",
+        omitBehavior: "picker",
+        args: [
+          { name: "Repo", type: "text", optional: true, placeholder: "repo-tools", hint: "Repo whose team `ready` ladder to approve; omit to pick interactively" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
       list: {
         description: "List worktrees",
         module: "./commands/worktree.ts",

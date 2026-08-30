@@ -17,11 +17,29 @@ class TrayState: ObservableObject {
     /// "Check for Updates…" item independently of an already-found update.
     @Published var canCheckForUpdates: Bool = false
 
+    // ── Boot/crash diagnostics (S026/S028/S029) ─────────────────────────────
+    /// `supervision.bootAttempts` from the daemon's `ping` reply, nil until
+    /// the first successful supervision query.
+    @Published var restartCount: Int? = nil
+    /// Human-readable reason for the most recent recorded boot failure or
+    /// crash-loop, nil when there is none on record.
+    @Published var lastCrashReason: String? = nil
+    /// One of "crash-looping" / "boot-failed" / "alive but not serving",
+    /// nil when the daemon isn't in any of those states.
+    @Published var bootVerdict: String? = nil
+
+    // ── Degraded-health cause (phase 2) ─────────────────────────────────────
+    /// The daemon's own `health.reasons` (or `.level` as a fallback), set
+    /// whenever `health == .degraded` — the red-flicker class becomes a
+    /// named cause instead of an unexplained color change.
+    @Published var failingSubsystem: String? = nil
+
     var healthColor: Color {
         switch health {
         case .healthy:  return .green
         case .starting: return .yellow
         case .warning:  return .orange
+        case .degraded: return .pink
         case .down:     return .red
         case .unknown:  return .secondary
         }
@@ -34,6 +52,7 @@ extension Notification.Name {
     static let rtRestartDaemon  = Notification.Name("rtRestartDaemon")
     static let rtStopDaemon     = Notification.Name("rtStopDaemon")
     static let rtViewDaemonLogs = Notification.Name("rtViewDaemonLogs")
+    static let rtOpenCrashLog   = Notification.Name("rtOpenCrashLog")
     static let rtCheckUpdates   = Notification.Name("rtCheckUpdates")
     static let rtShowSetupStatus = Notification.Name("rtShowSetupStatus")
     static let rtShowSettings    = Notification.Name("rtShowSettings")

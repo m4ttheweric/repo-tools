@@ -33,6 +33,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     // ── State ───────────────────────────────────────────────────────────────
     private var currentHealth: DaemonHealth = .unknown
+    /// This process's own start time -- the freshness cutoff for tray-crash.log,
+    /// mirroring how lastKnownDaemonStartedAt gates daemon-stderr.log (S029).
+    private let appLaunchedAt = Date()
     // `lazy`: constructing it starts Sparkle (when enabled). A translocated
     // or DMG-mounted launch returns before `buildServices()` (the first
     // touch) ever runs, so Sparkle never spins up on a copy that's about to
@@ -115,6 +118,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             self, selector: #selector(stopDaemon), name: .rtStopDaemon, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(viewDaemonLogs), name: .rtViewDaemonLogs, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openCrashLog), name: .rtOpenCrashLog, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(checkForUpdates), name: .rtCheckUpdates, object: nil)
         NotificationCenter.default.addObserver(
@@ -512,6 +517,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             dotColor = .systemYellow
         case .warning:
             dotColor = .systemOrange
+        case .degraded:
+            dotColor = .systemPink
         case .down:
             dotColor = .systemRed
         case .unknown:
@@ -576,16 +583,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         TrayState.shared.health = health
         switch health {
         case .starting:
+            startingSince = Date()
             TrayState.shared.statusText = "Daemon: starting…"
             TrayState.shared.needsApproval = false
         case .down:
             switch daemonLifecycle.status {
             case .requiresApproval:
                 TrayState.shared.statusText = "Daemon: needs approval in Login Items"
+                TrayState.shared.bootVerdict = nil
             case .notRegistered, .notFound:
                 TrayState.shared.statusText = "Daemon: not registered"
+                TrayState.shared.bootVerdict = nil
+            case .enabled:
+                // launchd considers the job registered and enabled, yet
+                // `ping` isn't answering — alive but not serving, the third
+                // named verdict (S026), distinct from "not registered".
+                TrayState.shared.statusText = "Daemon: alive but not serving"
+                TrayState.shared.bootVerdict = "alive but not serving"
             default:
                 TrayState.shared.statusText = "Daemon: not running"
+                TrayState.shared.bootVerdict = nil
             }
             TrayState.shared.needsApproval = needsLoginItemApproval()
         default:
@@ -632,15 +649,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     }
 
     /// Open the logdy-based daemon log viewer in the user's default browser.
-    /// If logdy is already serving on :5544 (e.g. previous click), just opens
-    /// the URL. Otherwise spawns `rt daemon logs` via a login shell so it
-    /// picks up the user's PATH (rt-tray inherits launchd's minimal PATH).
+    /// If logdy is already serving on :5544 AND we know it's still current
+    /// (see `isLogdyStale`), just opens the URL. Otherwise kills whatever
+    /// holds :5544 (a foreign or stale instance) and spawns `rt daemon logs`
+    /// fresh via a login shell so it picks up the user's PATH (rt-tray
+    /// inherits launchd's minimal PATH).
     @objc private func viewDaemonLogs() {
         let url = URL(string: "http://localhost:5544")!
         Task { @MainActor in
-            if await self.isLogdyUp() {
+            let up = await self.isLogdyUp()
+            if up && !self.isLogdyStale() {
                 NSWorkspace.shared.open(url)
                 return
+            }
+            if up {
+                TrayLog.info("logdy on :5544 is stale or foreign; killing and respawning")
+                self.killLogdy()
+                // Give the port a moment to free before respawning.
+                try? await Task.sleep(nanoseconds: 300_000_000)
             }
             self.spawnRtDaemonLogs()
             // Poll until logdy answers, up to ~4s, then open.
@@ -655,6 +681,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             // logdy never came up (e.g. logdy not installed).
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// True when the logdy this tray believes is running on :5544 can no
+    /// longer be trusted to be tailing current files (S080): we never
+    /// spawned it (a leftover from a previous tray process, or logdy started
+    /// by hand), the daemon has restarted since we spawned it (its old log
+    /// file set may be gone), or a day boundary has passed since we spawned
+    /// it (logdy was launched against yesterday's dated log files and never
+    /// picks up today's -- the exact "week-old logs" footgun on record).
+    private func isLogdyStale() -> Bool {
+        guard let spawnedAt = logdySpawnedAt, let spawnedDay = logdySpawnedDay else { return true }
+        if let daemonStartedAt = lastKnownDaemonStartedAt, daemonStartedAt > spawnedAt { return true }
+        if spawnedDay != Self.dayString(for: Date()) { return true }
+        return false
+    }
+
+    /// Kill whatever holds :5544 -- port 5544 exists only for this logdy
+    /// viewer, so anything bound there is fair game to replace. Scoped to
+    /// the TCP listener only (`-sTCP:LISTEN`): a bare `-ti:5544` also
+    /// matches any client with an open connection TO that listener (e.g. a
+    /// browser tab left on the logdy page), and `kill` on that PID would
+    /// take out an unrelated process.
+    private func killLogdy() {
+        let script = "pids=$(/usr/sbin/lsof -nP -tiTCP:5544 -sTCP:LISTEN 2>/dev/null); if [ -n \"$pids\" ]; then kill $pids; fi"
+        _ = TrayLog.runLogged("/bin/sh", ["-c", script], label: "kill stale logdy on :5544")
+        logdySpawnedAt = nil
+        logdySpawnedDay = nil
+    }
+
+    private static func dayString(for date: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        df.timeZone = TimeZone.current
+        return df.string(from: date)
     }
 
     /// Probe localhost:5544 with a short TCP connect.
@@ -715,6 +775,55 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             TrayLog.warn("no rt binary found in known locations; falling back to PATH lookup")
         }
         TrayLog.spawnLoggedDetached(task, label: "rt daemon logs")
+        let now = Date()
+        logdySpawnedAt = now
+        logdySpawnedDay = Self.dayString(for: now)
+    }
+
+    /// Open whichever crash/panic log is actually current (S029). Neither
+    /// `daemon-stderr.log` (native panic capture, written by the TS daemon
+    /// and the dev-mode shim) nor `tray-crash.log` (this app's own signal
+    /// handler, `installTrayCrashHandlers`) is date-rotated on the writer
+    /// side within this job's write fence, so a months-old panic can sit in
+    /// either file forever. Reading `resolveCurrentCrashLogPath` gates each
+    /// candidate on its mtime being newer than the relevant process's start
+    /// time, so a stale leftover never passes for "the current crash" --
+    /// falling back to Finder on the logs directory when neither qualifies.
+    @objc private func openCrashLog() {
+        guard let path = resolveCurrentCrashLogPath() else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: AppHome.current + "/.mattstack/rt/logs"))
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    private func resolveCurrentCrashLogPath() -> String? {
+        let logDir = AppHome.current + "/.mattstack/rt/logs"
+        let fm = FileManager.default
+
+        func freshMtime(_ path: String, after cutoff: Date?) -> Date? {
+            guard let attrs = try? fm.attributesOfItem(atPath: path),
+                  let mtime = attrs[.modificationDate] as? Date else { return nil }
+            if let cutoff, mtime <= cutoff { return nil }
+            return mtime
+        }
+
+        var candidates: [(path: String, mtime: Date)] = []
+        let daemonStderr = logDir + "/daemon-stderr.log"
+        // freshMtime's `after` cutoff is a no-op when nil (nothing to compare
+        // against), so without a known daemon-start time it would accept ANY
+        // existing daemon-stderr.log -- including a stale crash left over
+        // from a much earlier daemon run. Require the cutoff before this
+        // candidate is even considered.
+        if let daemonStartedAt = lastKnownDaemonStartedAt,
+           let mtime = freshMtime(daemonStderr, after: daemonStartedAt) {
+            candidates.append((daemonStderr, mtime))
+        }
+        let trayCrash = logDir + "/tray-crash.log"
+        if let mtime = freshMtime(trayCrash, after: appLaunchedAt) {
+            candidates.append((trayCrash, mtime))
+        }
+        return candidates.max(by: { $0.mtime < $1.mtime })?.path
     }
 
     @objc private func checkForUpdates() {
@@ -793,6 +902,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     private var isRefreshing = false
     private var consecutiveStatusFailures = 0
+    /// Stamped whenever `setHealth(.starting)` runs. `.starting` has no
+    /// natural "it failed" signal of its own -- unlike `.down`, which the
+    /// failed-poll count already demotes into -- so this is what lets
+    /// `refreshStatus` recognize a launch or restart that never came back
+    /// (S026) instead of leaving the tray yellow forever.
+    private var startingSince: Date?
+    /// Derived from the last successful poll's `uptime`; used to tell a
+    /// stale crash/log artifact from a current one (S029) without needing
+    /// to touch the daemon-side writer.
+    private var lastKnownDaemonStartedAt: Date?
+    /// When this tray last spawned `rt daemon logs`, and the calendar day it
+    /// did so on -- nil whenever logdy wasn't spawned by this tray instance
+    /// (see `isLogdyStale`, S080).
+    private var logdySpawnedAt: Date?
+    private var logdySpawnedDay: String?
 
     /// Main-actor so `isRefreshing` and all menu/UI mutations are serialized;
     /// the daemon queries themselves still run off-main across the awaits.
@@ -804,10 +928,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
         guard let status = await daemonClient.queryTrayStatus() else {
             consecutiveStatusFailures += 1
+
+            if currentHealth == .starting {
+                // `.starting` has no bounded fallback of its own (S026): a
+                // daemon that's crash-looping, parked on a flavor mismatch,
+                // or stuck in Login Items "requiresApproval" would otherwise
+                // never demote out of the yellow "starting…" state, since
+                // every poll failure short-circuited here unconditionally.
+                // Expire it after ~30s (or 3 failed polls, whichever comes
+                // first at the 10s poll interval) and fall through to the
+                // normal down-state handling below, which also recomputes
+                // needsApproval.
+                let elapsed = startingSince.map { Date().timeIntervalSince($0) } ?? .infinity
+                guard elapsed >= 30 || consecutiveStatusFailures >= 3 else { return }
+                TrayLog.warn("daemon still unreachable after starting; marking down", [
+                    "elapsedSeconds": Int(elapsed), "failures": consecutiveStatusFailures,
+                    "smStatus": String(describing: daemonLifecycle.status),
+                ])
+                setHealth(.down)
+                return
+            }
+
             // A single missed poll is usually a transient daemon stall, not an
             // outage — hold the last known state and only go red on the second
             // consecutive miss.
-            guard consecutiveStatusFailures >= 2, currentHealth != .starting else { return }
+            guard consecutiveStatusFailures >= 2 else { return }
             if currentHealth != .down {
                 TrayLog.warn("daemon unreachable, marking down", ["failures": consecutiveStatusFailures])
             }
@@ -827,13 +972,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             }
         }
 
+        // Phase 2 health level: a degraded/unhealthy daemon-reported level
+        // outranks the local heuristics above — it names the actual failing
+        // subsystem instead of leaving the operator to guess from a color.
+        var failingSubsystem: String?
+        if let level = status.healthLevel, level != "ok" {
+            health = .degraded
+            failingSubsystem = status.healthReasons.first ?? level
+        }
+
+        lastKnownDaemonStartedAt = Date().addingTimeInterval(-Double(status.uptime) / 1000)
+
         currentHealth = health
         updateMenuBarTitle(status: health)
         TrayState.shared.health = health
-        TrayState.shared.statusText = "Daemon: running · pid \(status.pid) · \(formatUptime(status.uptime))"
+        TrayState.shared.failingSubsystem = failingSubsystem
+        if let failingSubsystem {
+            TrayState.shared.statusText = "Daemon: degraded — \(failingSubsystem)"
+        } else {
+            TrayState.shared.statusText = "Daemon: running · pid \(status.pid) · \(formatUptime(status.uptime))"
+        }
         // The daemon being reachable only proves the daemon's own agent is
         // approved — another registered agent (deck) can still be pending.
         TrayState.shared.needsApproval = needsLoginItemApproval()
+
+        await refreshBootDiagnostics()
+    }
+
+    /// Restart count, last-crash reason, and boot verdict (S026) — a separate
+    /// query from the main status poll since this data only lives on the
+    /// `ping` reply (see `DaemonClient.querySupervision`), not `tray:status`.
+    /// Best-effort: a nil result just means the gear menu shows no boot info,
+    /// same as before this feature existed.
+    private func refreshBootDiagnostics() async {
+        guard let supervision = await daemonClient.querySupervision() else { return }
+        TrayState.shared.restartCount = supervision.bootAttempts
+        let now = Date()
+        if let (verdict, reason) = bootVerdict(from: supervision, now: now) {
+            TrayState.shared.bootVerdict = verdict
+            TrayState.shared.lastCrashReason = reason
+        } else {
+            TrayState.shared.bootVerdict = nil
+            TrayState.shared.lastCrashReason = supervision.lastExit?.reason
+        }
     }
 
     private func drainPendingNotifications() async {
@@ -956,8 +1137,34 @@ enum DaemonHealth {
     case healthy    // Green dot — daemon running, all good
     case starting   // Yellow dot — daemon is starting/restarting
     case warning    // Orange dot — running but has pending notifications
+    case degraded   // Pink dot — daemon reports health.level != "ok" (a named subsystem cause, not a guess)
     case down       // Red dot — daemon not reachable
     case unknown    // Grey dot — initial state before first poll
+}
+
+/// Classifies a `SupervisionInfo` reading into one of the two verdicts
+/// observable while the daemon is still answering `ping` (a successful
+/// `querySupervision` already proves it's alive and serving) -- mirrors
+/// `classifyDaemonStatus`'s crash-looping/boot-failed branches in
+/// `lib/daemon-status.ts` at the same n=3-within-5-minutes threshold as
+/// `isCrashLooping` (`lib/daemon/supervision-state.ts`). The third named
+/// verdict, "alive but not serving", only applies once `ping` itself fails
+/// (see `setHealth`'s `.down` branch) and so can't be reached here.
+private func bootVerdict(from info: SupervisionInfo, now: Date) -> (verdict: String, reason: String)? {
+    let windowMs: Double = 5 * 60_000
+    let floorMs = now.timeIntervalSince1970 * 1000 - windowMs
+    let recentCount = info.recentFailures.filter { Double($0.at) > floorMs }.count
+
+    if recentCount >= 3 {
+        let reason = info.lastExit?.kind == "boot-failed"
+            ? (info.lastExit?.reason ?? "unknown")
+            : (info.recentFailures.last?.reason ?? "unknown")
+        return ("crash-looping", reason)
+    }
+    if info.lastExit?.kind == "boot-failed" {
+        return ("boot-failed", info.lastExit?.reason ?? "unknown")
+    }
+    return nil
 }
 
 struct DaemonStatus {
@@ -970,4 +1177,7 @@ struct DaemonStatus {
     let portsByRepo: [String: Int]
     let pendingNotifications: Int
     let lastRefresh: Int?
+    /// "ok" / "degraded" / "unhealthy", nil if the daemon didn't report one.
+    let healthLevel: String?
+    let healthReasons: [String]
 }

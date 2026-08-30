@@ -69,7 +69,8 @@ import { join } from "path";
 import { readJson, writeJson } from "../json-store.ts";
 import { rtDir, worktreePoolRoot } from "../rt-paths.ts";
 import { deriveRepoIdentity, serializeIdentity } from "../settings/identity.ts";
-import { explainSetting, getSetting, type ResolveOpts } from "../settings/resolve.ts";
+import { explainSetting, getSetting, SCOPE_ORDER, type ResolveOpts, type Scope } from "../settings/resolve.ts";
+import { readReadyApproval, readyLadderHash } from "./ready-approval.ts";
 
 /**
  * Expand a leading `~` against call-time HOME (matching rt-paths convention:
@@ -364,6 +365,82 @@ export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): Re
   if (alreadyDeclared) return cfg.ready;
 
   return [MANAGER_STEP[manager], ...cfg.ready];
+}
+
+// ─── Team ready-shell gate (RT-89) ───────────────────────────────────────────
+
+/** Precedence for resolving which scope owns an atomically-replaced array. */
+const SCOPE_STRONGEST_FIRST: Scope[] = [...SCOPE_ORDER].reverse();
+
+/**
+ * Which settings scope owns the resolved `ready` array. Arrays replace
+ * atomically at one winning rung (module header), so the strongest scope whose
+ * authored `rt.worktrees` carries a `ready` array owns the whole ladder.
+ */
+function readyLadderOwner(repoIdentity: string | null, repoPath: string): Scope | null {
+  let rows;
+  try {
+    rows = explainSetting(SETTING_KEY, resolveOpts(repoIdentity, repoPath));
+  } catch {
+    return null;
+  }
+  const byScope = new Map(rows.map((r) => [r.scope, r]));
+  for (const scope of SCOPE_STRONGEST_FIRST) {
+    const row = byScope.get(scope);
+    if (row?.present && isPlainObject(row.value) && Array.isArray((row.value as Record<string, unknown>).ready)) {
+      return scope;
+    }
+  }
+  return null;
+}
+
+export interface ReadyGateInfo {
+  /** Whether the winning `ready` ladder is team-authored (team / team.repo). */
+  teamOwned: boolean;
+  /** Whether a team-owned ladder matches the user's recorded approval. */
+  approved: boolean;
+  /** Content hash of the current ladder... the id an approval pins. */
+  hash: string;
+  /** The declared domain steps (rt's implicit install is not included). */
+  ladder: ReadyStep[];
+  /** The repo's remote identity, or null (approval keys on it). */
+  identity: string | null;
+}
+
+/** Read-only view of the ready gate for one repo (the approve command's input). */
+export async function inspectReadyGate(cfg: WorktreeRepoConfig, repoPath: string): Promise<ReadyGateInfo> {
+  const derived = await deriveRepoIdentity(repoPath);
+  const identity = derived.kind === "remote" ? derived.id : null;
+  const owner = readyLadderOwner(identity, repoPath);
+  const teamOwned = owner === "team" || owner === "team.repo";
+  const hash = readyLadderHash(cfg.ready);
+  const approved = teamOwned && readReadyApproval(identity) === hash;
+  return { teamOwned, approved, hash, ladder: cfg.ready, identity };
+}
+
+/**
+ * The ready steps to actually run, and whether a team-authored ladder is being
+ * held pending approval. Fail-closed: a team-owned ladder (team / team.repo)
+ * with no matching user-scope approval is dropped, leaving only rt's own
+ * implicit install; user/machine-authored ladders and the implicit install are
+ * never gated (RT-89). The daemon never prompts... approval is recorded out of
+ * band by `rt worktree ready-approve` and only checked here.
+ */
+export async function evaluateReadyGate(
+  cfg: WorktreeRepoConfig,
+  _repoName: string,
+  repoPath: string,
+): Promise<{ steps: ReadyStep[]; held: boolean }> {
+  const info = await inspectReadyGate(cfg, repoPath);
+  if (!info.teamOwned || info.approved) return { steps: resolveReadySteps(cfg, repoPath), held: false };
+  return { steps: resolveReadySteps({ ...cfg, ready: [] }, repoPath), held: true };
+}
+
+/** Surface signal: a team-authored ready ladder is held pending approval. */
+export async function worktreeReadyHeld(repoName: string, repoPath: string): Promise<boolean> {
+  const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
+  const info = await inspectReadyGate(cfg, repoPath);
+  return info.teamOwned && !info.approved;
 }
 
 // ─── App-level config ────────────────────────────────────────────────────────

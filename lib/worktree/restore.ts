@@ -13,7 +13,7 @@ import { cpSync, existsSync } from "fs";
 import { readdir } from "fs/promises";
 import { join } from "path";
 import { loadRegistry, saveRegistry, type TreeRecord } from "./registry.ts";
-import { loadWorktreeRepoConfig, resolveReadySteps, type WorktreeRepoConfig } from "./config.ts";
+import { loadWorktreeRepoConfig, evaluateReadyGate, type WorktreeRepoConfig } from "./config.ts";
 import { runReadySteps } from "./ready.ts";
 import { branchExistsLocalAsync, runGit, MUTATING_TIMEOUT_MS } from "./git-async.ts";
 import {
@@ -263,7 +263,11 @@ export async function restoreTree(deps: RestoreDeps, treeName: string): Promise<
   // clearing its retention immediately rather than waiting on RETENTION_MS.
   await reapTrashDir(found.path, log);
 
-  const readySteps = resolveReadySteps(cfg, repoPath);
+  const { steps: readySteps, held } = await evaluateReadyGate(cfg, repoName, repoPath);
+  if (held) {
+    log.warn({ repo: repoName, tree: treeName }, "worktree restore: team `ready` steps held pending approval; run `rt worktree ready-approve`");
+    emit("worktree:ready-held", { repo: repoName, tree: treeName, path });
+  }
   const readyResult = await runReadySteps(path, readySteps);
 
   emit("worktree:restored", { repo: repoName, tree: treeName, path, branch: manifest.branch });

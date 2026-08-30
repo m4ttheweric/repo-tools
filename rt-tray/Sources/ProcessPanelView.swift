@@ -71,6 +71,12 @@ struct ProcessPanelView: View {
         // target has no validateMenuItem — that would silently override the
         // Check for Updates item's explicit isEnabled below.
         menu.autoenablesItems = false
+        for line in bootDiagnosticsLines() {
+            menu.addItem(infoMenuItem(line))
+        }
+        if !bootDiagnosticsLines().isEmpty {
+            menu.addItem(.separator())
+        }
         menu.addItem(ActionMenuItem("Restart Daemon", axid: AXID.menuGearRestartDaemon) {
             NotificationCenter.default.post(name: .rtRestartDaemon, object: nil)
         })
@@ -80,6 +86,9 @@ struct ProcessPanelView: View {
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("View Logs…", axid: AXID.menuGearViewLogs) {
             NotificationCenter.default.post(name: .rtViewDaemonLogs, object: nil)
+        })
+        menu.addItem(ActionMenuItem("Open Crash Log", axid: AXID.menuGearOpenCrashLog) {
+            NotificationCenter.default.post(name: .rtOpenCrashLog, object: nil)
         })
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Setup status…", axid: AXID.menuGearSetupStatus) {
@@ -107,6 +116,34 @@ struct ProcessPanelView: View {
             NSApplication.shared.terminate(nil)
         })
         return menu
+    }
+
+    /// Restart count, last-crash reason, and boot verdict (S026), plus the
+    /// phase-2 degraded-health cause -- shown only when there's something to
+    /// report, so a healthy daemon's gear menu stays uncluttered.
+    private func bootDiagnosticsLines() -> [String] {
+        var lines: [String] = []
+        if let count = trayState.restartCount, count > 0 {
+            lines.append("Restarts: \(count)")
+        }
+        if let verdict = trayState.bootVerdict {
+            lines.append("Status: \(verdict)")
+        }
+        if let reason = trayState.lastCrashReason {
+            lines.append("Last crash: \(reason)")
+        }
+        if let subsystem = trayState.failingSubsystem {
+            lines.append("Degraded: \(subsystem)")
+        }
+        return lines
+    }
+
+    /// A non-actionable label row (no target/action) for read-only status
+    /// lines in an otherwise all-verbs menu.
+    private func infoMenuItem(_ title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
     }
 
     /// The user's start-at-login switch — and the authority on it.

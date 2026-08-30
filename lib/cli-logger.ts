@@ -11,6 +11,7 @@
 import { openSync, writeSync, closeSync, readdirSync, unlinkSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { logsDir } from "./rt-paths.ts";
+import { setBusyLogSink } from "./state/busy.ts";
 
 const RETENTION_DAYS = 14;
 
@@ -193,6 +194,26 @@ export function logCommand(entry: CommandLog): void {
 let current: { command: string; args: string[]; t0: number } | null = null;
 let finalized = false;
 
+/**
+ * A single structured log line on the cli surface, outside the per-command
+ * CommandLog shape logCommand() writes (R052: lib/state/busy.ts's injected
+ * sink, for a busy-write warning hit inside a CLI process rather than the
+ * daemon).
+ */
+function writeCliLogLine(level: "warn" | "error", module: string, message: string, context: Record<string, unknown>): void {
+  try {
+    const dir = logsDir();
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({ time: new Date().toISOString(), level, module, msg: message, ...context }) + "\n";
+    const fd = openSync(logPath(), "a");
+    try {
+      writeSync(fd, line);
+    } finally {
+      closeSync(fd);
+    }
+  } catch { /* logging must never break a command */ }
+}
+
 /** Called by dispatch() once the command label is resolved. */
 export function beginCommand(command: string, args: string[]): void {
   if (current) {
@@ -208,6 +229,14 @@ export function beginCommand(command: string, args: string[]): void {
  * never for the --daemon path (the daemon has its own pino crash handlers).
  */
 export function installCliLogging(argv: string[]): void {
+  // R052: a busy write inside this CLI process (rt run enrichment, rt repos
+  // locate) now lands on THIS surface (cli.<date>.log), not the daemon's --
+  // lib/state/busy.ts otherwise defaults every caller to getDaemonLogger().
+  setBusyLogSink({
+    warn: (module, context, message) => writeCliLogLine("warn", module, message, context),
+    error: (module, context, message) => writeCliLogLine("error", module, message, context),
+  });
+
   // Redact before joining: this seeds `current.command` for the window before
   // beginCommand() runs, so a crash in that window must not bake --reason
   // text into the on-disk log via the joined command string.

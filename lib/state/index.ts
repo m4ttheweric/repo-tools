@@ -72,7 +72,7 @@ export {
   type CacheEntry,
 } from "./branch-cache.ts";
 
-export { isBusyError, persistOrWarn } from "./busy.ts";
+export { isBusyError, persistOrWarn, setBusyLogSink, type BusyLogSink } from "./busy.ts";
 
 export {
   getNotifierStateBlob,

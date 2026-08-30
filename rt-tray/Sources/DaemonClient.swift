@@ -31,7 +31,9 @@ class DaemonClient {
             portsCached: data.portsCached,
             portsByRepo: data.portsByRepo,
             pendingNotifications: data.pendingNotifications,
-            lastRefresh: data.lastRefresh
+            lastRefresh: data.lastRefresh,
+            healthLevel: data.health?.level,
+            healthReasons: data.health?.reasons ?? []
         )
     }
 
@@ -44,6 +46,19 @@ class DaemonClient {
     func querySystemProcesses() async -> SystemProcessData? {
         guard let response: SystemProcessResponse = await query("system-processes") else { return nil }
         return response.ok ? response.data : nil
+    }
+
+    /// Restart count, last-crash reason, and boot-failure history (S026).
+    /// Goes straight to the Unix socket rather than `query(_:)`: the TCP
+    /// `:9401` REST surface only maps fixed paths (`/api/status` -> the
+    /// `tray:status` command), with no route for `ping`, so `queryHTTP`
+    /// aliases "ping" to `/api/status` for reachability checks and never
+    /// reaches the `ping` handler that actually carries `supervision`. The
+    /// raw socket server dispatches any pathname as a literal command name,
+    /// so `querySocket("ping")` reaches it directly.
+    func querySupervision() async -> SupervisionInfo? {
+        guard let response: SupervisionPingResponse = await querySocket("ping") else { return nil }
+        return response.ok ? response.supervision : nil
     }
 
     // MARK: - Query (HTTP API with Unix socket fallback)
@@ -220,6 +235,50 @@ struct TrayStatusData: Decodable {
     let portsByRepo: [String: Int]
     let pendingNotifications: Int
     let lastRefresh: Int?
+    let health: HealthData?
+}
+
+/// Daemon-computed health level + human-readable reasons (phase 2). `level`
+/// is a free-form string ("ok" / "degraded" / "unhealthy") rather than an
+/// enum: the tray only needs to know "not ok" plus a reason to display, and
+/// decoding it loosely means a new level the daemon adds later still shows
+/// up instead of silently failing to decode.
+struct HealthData: Decodable {
+    let level: String
+    let reasons: [String]
+}
+
+// MARK: - Supervision (S026/S028/S029)
+
+/// Mirrors `lib/daemon/supervision-state.ts`'s `SupervisionState`, as carried
+/// on the `ping` command's reply (not `tray:status` -- see `querySupervision`).
+struct SupervisionInfo: Decodable {
+    let bootAttempts: Int
+    let lastReadyAt: Int?
+    let recentFailures: [BootFailureInfo]
+    let lastExit: LastExitInfo?
+}
+
+struct BootFailureInfo: Decodable {
+    let at: Int
+    let phase: String
+    let reason: String
+}
+
+/// Mirrors the TS `LastExit` union (`{kind:"boot-failed", reason, code}` or
+/// `{kind:"shutdown"|"signal", code}`); `reason` is simply absent on the
+/// clean-exit variants, so it decodes as optional here rather than as two
+/// separate types.
+struct LastExitInfo: Decodable {
+    let at: Int
+    let kind: String
+    let code: Int?
+    let reason: String?
+}
+
+struct SupervisionPingResponse: Decodable {
+    let ok: Bool
+    let supervision: SupervisionInfo?
 }
 
 struct NotificationsResponse: Decodable {

@@ -8,6 +8,7 @@
 import { Database } from "bun:sqlite";
 import { AGENT_NAMES, pickAgentName } from "../chat-names.ts";
 import { resolveAllInboxes, resolveInbox, inboxAlive } from "../claude-registry.ts";
+import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 import { getStateDb } from "./db.ts";
 import { getKvValue, setKvValue } from "./kv-blob.ts";
 
@@ -238,7 +239,7 @@ export function signIn(
   },
   db: Database = getStateDb(),
   deps: RegistryDeps = defaultRegistryDeps,
-): { handle: string; baseHandle: string; reclaimed: boolean } {
+): { handle: string; baseHandle: string; reclaimed: boolean } | undefined {
   const { sessionId, statusText } = args;
   // Defense in depth: the handler (lib/daemon/handlers/chat.ts) is the
   // root-cause guard, but session_id is a bare TEXT PRIMARY KEY with no
@@ -326,7 +327,10 @@ export function signIn(
     return { handle, baseHandle, reclaimed: winnerRow !== null };
   });
 
-  return run.immediate();
+  // A signed-in identity is not re-derivable from anything else (R057): a
+  // busy connection here must retry, not warn-and-drop the way a cache-class
+  // write can.
+  return runCriticalWrite("signIn", () => run.immediate(), { sessionId });
 }
 
 const NAMES_KV_NS = "chat";
@@ -365,11 +369,15 @@ export function reserveAgentHandle(db: Database = getStateDb(), now: number = Da
 }
 
 export function signOut(sessionId: string, now: number = Date.now(), db: Database = getStateDb()): void {
-  db.query(UPDATE_SIGN_OUT_SQL).run(now, sessionId);
+  // A sign-out lost to a busy write is not re-derivable later the way a
+  // cache-class status write is (R057): retry rather than warn-and-drop.
+  runCriticalWrite("signOut", () => { db.query(UPDATE_SIGN_OUT_SQL).run(now, sessionId); }, { sessionId });
 }
 
 export function setAway(sessionId: string, text: string | null, db: Database = getStateDb()): void {
-  db.query(UPDATE_STATUS_TEXT_SQL).run(text, sessionId);
+  // Cache-class (R057): the next away/back toggle overwrites this row
+  // regardless, so a busy write here warns and defers rather than throwing.
+  persistOrWarn("presence", () => { db.query(UPDATE_STATUS_TEXT_SQL).run(text, sessionId); }, { op: "setAway", sessionId });
 }
 
 /**
@@ -380,7 +388,9 @@ export function setAway(sessionId: string, text: string | null, db: Database = g
  * stale enough for prune to consider it, let alone delete it.
  */
 export function touchLastSeen(sessionId: string, now: number, db: Database = getStateDb()): void {
-  db.query(UPDATE_LAST_SEEN_SQL).run(now, sessionId);
+  // Cache-class (R057): the next delivery's touch supersedes a dropped one,
+  // so a busy write here warns and defers rather than throwing.
+  persistOrWarn("presence", () => { db.query(UPDATE_LAST_SEEN_SQL).run(now, sessionId); }, { op: "touchLastSeen", sessionId });
 }
 
 export function listBuddies(

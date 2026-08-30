@@ -139,6 +139,29 @@ extension TrayLog {
 /// so fatal signals write a fixed-format line with write(2) only.
 private var crashFd: Int32 = -1
 
+/// Rename a non-empty fixed-name log to a dated file (matching the
+/// `<surface>.<date>[.N].log` convention `rt daemon logs` already scans for)
+/// before it is reopened fresh, so a crash from a previous run never shows
+/// up as "the most recent crash" (S029) just because the file never rotates.
+private func rotateFixedLogIfNonEmpty(_ path: String, surface: String, in dir: String) {
+    let fm = FileManager.default
+    guard let attrs = try? fm.attributesOfItem(atPath: path),
+          let size = attrs[.size] as? Int, size > 0 else { return }
+
+    let df = DateFormatter()
+    df.dateFormat = "yyyy-MM-dd"
+    df.timeZone = TimeZone.current
+    let datePart = df.string(from: Date())
+
+    var suffix = 0
+    var dest = "\(dir)/\(surface).\(datePart).log"
+    while fm.fileExists(atPath: dest) {
+        suffix += 1
+        dest = "\(dir)/\(surface).\(datePart).\(suffix).log"
+    }
+    try? fm.moveItem(atPath: path, toPath: dest)
+}
+
 /// Install uncaught-exception + fatal-signal handlers. Call once at launch.
 func installTrayCrashHandlers() {
     NSSetUncaughtExceptionHandler { exception in
@@ -149,6 +172,7 @@ func installTrayCrashHandlers() {
     let logDir = AppHome.current + "/.mattstack/rt/logs"
     try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
     let crashPath = logDir + "/tray-crash.log"
+    rotateFixedLogIfNonEmpty(crashPath, surface: "tray-crash", in: logDir)
     crashFd = open(crashPath, O_WRONLY | O_APPEND | O_CREAT, 0o644)
 
     for sig in [SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE] {

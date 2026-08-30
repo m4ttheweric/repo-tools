@@ -6,6 +6,7 @@
  * wiring those tests cover.
  */
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
@@ -19,6 +20,7 @@ import {
   presenceForSession,
   presenceThresholds,
   prunePresence,
+  setAway,
   signIn,
   signOut,
   touchLastSeen,
@@ -56,42 +58,51 @@ function fresh() {
   return openStateDb(join(tmpdir(), `presence-test-${process.pid}-${n++}.db`));
 }
 
+/** signIn(), asserted non-undefined: every ordinary (non-contention) test
+ *  call is expected to succeed, so this narrows the R057 `| undefined`
+ *  return without repeating a non-null assertion at every call site. */
+function mustSignIn(...args: Parameters<typeof signIn>): { handle: string; baseHandle: string; reclaimed: boolean } {
+  const result = signIn(...args);
+  if (!result) throw new Error("mustSignIn: signIn() unexpectedly returned undefined");
+  return result;
+}
+
 const now = 1_700_000_000_000;
 const MIN = 60_000, HOUR = 3_600_000;
 
 test("a base held by a live row is suffixed; the suffix is stable", () => {
   const db = fresh();
-  expect(signIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x");
-  expect(signIn({ sessionId: "s2", baseHandle: "x", now }, db).handle).toBe("x-2");
-  expect(signIn({ sessionId: "s3", baseHandle: "x", now }, db).handle).toBe("x-3");
+  expect(mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x");
+  expect(mustSignIn({ sessionId: "s2", baseHandle: "x", now }, db).handle).toBe("x-2");
+  expect(mustSignIn({ sessionId: "s3", baseHandle: "x", now }, db).handle).toBe("x-3");
 });
 
 test("a session-stale holder with no live binding is never reclaimed inside the session-stale window", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", cwd: "/w", now }, db);
-  const r = signIn({ sessionId: "s2", baseHandle: "x", cwd: "/w", now: now + MIN }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", cwd: "/w", now }, db);
+  const r = mustSignIn({ sessionId: "s2", baseHandle: "x", cwd: "/w", now: now + MIN }, db);
   expect(r).toMatchObject({ handle: "x-2", reclaimed: false });
 });
 
 test("a stale same-seat row is reclaimed by deletion and the handle comes back", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", cwd: "/w", pane: "3", now }, db);
-  const r = signIn({ sessionId: "s2", baseHandle: "x", cwd: "/w", pane: "3", now: now + 2 * HOUR }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", cwd: "/w", pane: "3", now }, db);
+  const r = mustSignIn({ sessionId: "s2", baseHandle: "x", cwd: "/w", pane: "3", now: now + 2 * HOUR }, db);
   expect(r).toMatchObject({ handle: "x", reclaimed: true });
   expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
 });
 
 test("a live registry binding blocks reclaim even when the session heartbeat is hours old", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db);
   const deps = fakeBinding("idle");
-  expect(signIn({ sessionId: "s2", baseHandle: "x", now: now + 3 * HOUR + MIN }, db, deps).handle).toBe("x-2");
+  expect(mustSignIn({ sessionId: "s2", baseHandle: "x", now: now + 3 * HOUR + MIN }, db, deps).handle).toBe("x-2");
 });
 
 test("a dead registry binding does not block reclaim once session-stale", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
-  const r = signIn({ sessionId: "s2", baseHandle: "x", now: now + 3 * HOUR + MIN }, db, NO_BINDING);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  const r = mustSignIn({ sessionId: "s2", baseHandle: "x", now: now + 3 * HOUR + MIN }, db, NO_BINDING);
   expect(r).toMatchObject({ handle: "x", reclaimed: true });
 });
 
@@ -133,9 +144,9 @@ function countingRegistryDeps(): RegistryDeps & { scans: number } {
 
 test("listBuddies scans the registry exactly once regardless of buddy count", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "a", now }, db);
-  signIn({ sessionId: "s2", baseHandle: "b", now }, db);
-  signIn({ sessionId: "s3", baseHandle: "c", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "a", now }, db);
+  mustSignIn({ sessionId: "s2", baseHandle: "b", now }, db);
+  mustSignIn({ sessionId: "s3", baseHandle: "c", now }, db);
   const deps = countingRegistryDeps();
   const buddies = listBuddies(now, db, deps);
   expect(buddies).toHaveLength(3);
@@ -144,8 +155,8 @@ test("listBuddies scans the registry exactly once regardless of buddy count", ()
 
 test("listBuddies: a live-binding row with a 25h-old stamp still appears, classified by the registry; a dead-binding stale row reads offline but still appears", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "live-stale", now }, db);
-  signIn({ sessionId: "s2", baseHandle: "dead-stale", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "live-stale", now }, db);
+  mustSignIn({ sessionId: "s2", baseHandle: "dead-stale", now }, db);
   db.run("UPDATE chat_presence SET last_seen_at = ? WHERE session_id IN ('s1', 's2')", [now - 25 * HOUR]);
 
   const deps = fakeBinding("busy", "s1"); // only s1 resolves; s2 has no registry entry
@@ -163,18 +174,18 @@ test("signIn scans the registry exactly once per call, even while probing severa
   // family scan, plus findOpenSuffix's fallback walk if it reaches that far,
   // both have several rows to check reclaimability for -- all against the
   // one map a single signIn call is allowed to build.
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
-  signIn({ sessionId: "s2", baseHandle: "x", now }, db);
-  signIn({ sessionId: "s3", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s2", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s3", baseHandle: "x", now }, db);
   const deps = countingRegistryDeps();
-  const r = signIn({ sessionId: "s4", baseHandle: "x", now }, db, deps);
+  const r = mustSignIn({ sessionId: "s4", baseHandle: "x", now }, db, deps);
   expect(r.handle).toBe("x-4");
   expect(deps.scans).toBe(1);
 });
 
 test("assertSessionOwnsHandle throws only on a mismatched signed handle", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db);
   expect(() => assertSessionOwnsHandle("x", "s1", db)).not.toThrow();
   expect(() => assertSessionOwnsHandle("x", "s2", db)).toThrow(/handle reclaimed/);
   expect(() => assertSessionOwnsHandle("unsigned", "s2", db)).not.toThrow(); // plan-1 path: no presence row, no enforcement
@@ -212,7 +223,7 @@ test("assertSessionSignedIn throws when the session's row is gone", () => {
 
 test("assertSessionSignedIn refuses a signed-out session without the reclaimed wording", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db);
   signOut("s1", now, db);
   expect(() => assertSessionSignedIn("s1", db)).toThrow(/not signed in/);
   expect(() => assertSessionSignedIn("s1", db)).not.toThrow(/handle reclaimed/);
@@ -220,14 +231,14 @@ test("assertSessionSignedIn refuses a signed-out session without the reclaimed w
 
 test("prune: the ghost path — a never-signed-out row goes after 24h of silence", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // never signs out
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db); // never signs out
   expect(prunePresence(now + 2 * HOUR, db)).toBe(0);
   expect(prunePresence(now + 25 * HOUR, db)).toBe(1); // last_seen_at leg, signed_out_at NULL
 });
 
 test("prune: the signed-out path keeps the offline window", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db);
   signOut("s1", now, db);
   expect(prunePresence(now + 2 * HOUR, db)).toBe(0); // offline (last 24h) still shows it
   expect(prunePresence(now + 25 * HOUR, db)).toBe(1); // signed_out_at leg
@@ -235,27 +246,88 @@ test("prune: the signed-out path keeps the offline window", () => {
 
 test("prune: a never-signed-out row past 24h survives when the registry still vouches for its session", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db);
   expect(prunePresence(now + 25 * HOUR, db, fakeBinding("busy"))).toBe(0);
   expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
 });
 
 test("prune: a never-signed-out row past 24h with no live binding is deleted", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db);
   expect(prunePresence(now + 25 * HOUR, db, NO_BINDING)).toBe(1);
   expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 0 });
 });
 
 test("prune: a signed-out row within its 24h offline window survives even when last_seen_at is stale (C9: PRUNABLE_SQL must not let a signed-out row's last_seen_at leg bypass its own signed_out_at age bound)", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // last_seen_at pinned at `now`, no touches
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db); // last_seen_at pinned at `now`, no touches
   signOut("s1", now + 30 * HOUR, db); // signed out well after last_seen_at went stale
   // 1h after signing out: signed_out_at leg is nowhere near its 24h bound,
   // but last_seen_at (still `now`, 31h stale) trips the OTHER leg.
   expect(prunePresence(now + 31 * HOUR, db)).toBe(0);
   expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
 });
+
+// R057: presence writes bypassed both busy wrappers, so a write racing a
+// held lock past the daemon's 250ms busy_timeout surfaced as a raw thrown
+// error to the caller (a chat:sign-in 500, a pulse hook error) instead of
+// the policy table in busy.ts's warn-and-defer / bounded-retry treatment.
+// `locker` pins a real BEGIN IMMEDIATE write lock on a second connection to
+// the same file so `db`'s own write genuinely blocks out its busy_timeout
+// and throws SQLITE_BUSY -- the same conflict shape production hits, not a
+// fabricated error code.
+function heldWriteLock(path: string): { locker: Database; release: () => void } {
+  const locker = new Database(path);
+  locker.exec("BEGIN IMMEDIATE;");
+  return { locker, release: () => { try { locker.exec("ROLLBACK;"); } catch {} locker.close(); } };
+}
+
+test("R057: signIn does not throw when the write races a held lock past busy_timeout", () => {
+  const path = join(tmpdir(), `presence-busy-signin-${process.pid}-${n++}.db`);
+  const db = openStateDb(path, "daemon");
+  const { release } = heldWriteLock(path);
+  try {
+    expect(() => signIn({ sessionId: "s1", baseHandle: "x", now }, db)).not.toThrow();
+  } finally {
+    release();
+  }
+}, 5000);
+
+test("R057: signOut does not throw when the write races a held lock past busy_timeout", () => {
+  const path = join(tmpdir(), `presence-busy-signout-${process.pid}-${n++}.db`);
+  const db = openStateDb(path, "daemon");
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  const { release } = heldWriteLock(path);
+  try {
+    expect(() => signOut("s1", now, db)).not.toThrow();
+  } finally {
+    release();
+  }
+}, 5000);
+
+test("R057: setAway does not throw when the write races a held lock past busy_timeout", () => {
+  const path = join(tmpdir(), `presence-busy-setaway-${process.pid}-${n++}.db`);
+  const db = openStateDb(path, "daemon");
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  const { release } = heldWriteLock(path);
+  try {
+    expect(() => setAway("s1", "afk", db)).not.toThrow();
+  } finally {
+    release();
+  }
+}, 5000);
+
+test("R057: touchLastSeen does not throw when the write races a held lock past busy_timeout", () => {
+  const path = join(tmpdir(), `presence-busy-touch-${process.pid}-${n++}.db`);
+  const db = openStateDb(path, "daemon");
+  signIn({ sessionId: "s1", baseHandle: "x", now }, db);
+  const { release } = heldWriteLock(path);
+  try {
+    expect(() => touchLastSeen("s1", now + 1000, db)).not.toThrow();
+  } finally {
+    release();
+  }
+}, 5000);
 
 test("touchLastSeen refreshes only last_seen_at -- the sole remaining route to it now that chat:pulse is gone", () => {
   const db = fresh();
@@ -281,65 +353,65 @@ test("a creating join with wake-on stamps the room default and later joins inher
 
 test("a repeat sign-in from the same session, same base, retakes its own seat", () => {
   const db = fresh();
-  expect(signIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x");
+  expect(mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x");
   // Before the fix this threw a raw UNIQUE violation on "x": the scan found
   // s1's own (non-reclaimable, fresh) row still holding it.
-  const r = signIn({ sessionId: "s1", baseHandle: "x", now: now + MIN }, db);
+  const r = mustSignIn({ sessionId: "s1", baseHandle: "x", now: now + MIN }, db);
   expect(r.handle).toBe("x");
   expect(db.query("SELECT COUNT(*) c FROM chat_presence").get()).toMatchObject({ c: 1 });
 });
 
 test("a repeat sign-in from the same session comes back to its own higher suffix rather than filling a lower gap", () => {
   const db = fresh();
-  signIn({ sessionId: "s0", baseHandle: "x", now }, db); // holds "x", stays live throughout
-  signIn({ sessionId: "s-mid", baseHandle: "x", now }, db); // holds "x-2"
-  expect(signIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x-3");
+  mustSignIn({ sessionId: "s0", baseHandle: "x", now }, db); // holds "x", stays live throughout
+  mustSignIn({ sessionId: "s-mid", baseHandle: "x", now }, db); // holds "x-2"
+  expect(mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x-3");
   db.run("DELETE FROM chat_presence WHERE session_id = 's-mid'"); // "x-2" is now a genuine gap
   // Without the same-seat rule this would refill the gap at "x-2" — the
   // suffix churn the reclaim predicate exists to prevent.
-  const r = signIn({ sessionId: "s1", baseHandle: "x", now: now + MIN }, db);
+  const r = mustSignIn({ sessionId: "s1", baseHandle: "x", now: now + MIN }, db);
   expect(r.handle).toBe("x-3");
 });
 
 test("a repeat sign-in with a different base releases the old seat and takes a fresh one", () => {
   const db = fresh();
-  expect(signIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x");
-  expect(signIn({ sessionId: "s1", baseHandle: "y", now: now + MIN }, db).handle).toBe("y");
+  expect(mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db).handle).toBe("x");
+  expect(mustSignIn({ sessionId: "s1", baseHandle: "y", now: now + MIN }, db).handle).toBe("y");
   // the old base's slot was released outright, not left behind as a ghost
-  expect(signIn({ sessionId: "s2", baseHandle: "x", now: now + 2 * MIN }, db)).toMatchObject({ handle: "x", reclaimed: false });
+  expect(mustSignIn({ sessionId: "s2", baseHandle: "x", now: now + 2 * MIN }, db)).toMatchObject({ handle: "x", reclaimed: false });
 });
 
 test("signIn skips a candidate handle that's globally held by an unrelated base family", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
-  signIn({ sessionId: "s2", baseHandle: "x", now }, db); // "x-2" — base_handle "x", live
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
+  mustSignIn({ sessionId: "s2", baseHandle: "x", now }, db); // "x-2" — base_handle "x", live
   // s3's OWN derived base happens to be the literal string "x-2" (e.g. a
   // worktree dir named "2"). Scoping seat selection to base_handle="x-2"
   // alone would see no rows at all and hand out "x-2" — already taken.
-  const r = signIn({ sessionId: "s3", baseHandle: "x-2", now }, db);
+  const r = mustSignIn({ sessionId: "s3", baseHandle: "x-2", now }, db);
   expect(r.handle).toBe("x-2-2");
 });
 
 test("signIn reclaims a globally-held candidate rather than just skipping it", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
-  signIn({ sessionId: "s2", baseHandle: "x-2", now }, db); // base_handle "x-2", handle "x-2"
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
+  mustSignIn({ sessionId: "s2", baseHandle: "x-2", now }, db); // base_handle "x-2", handle "x-2"
   // s2 goes silent for 2h with no tail — reclaimable by the time s3 arrives.
   const later = now + 2 * HOUR;
-  const r = signIn({ sessionId: "s3", baseHandle: "x-2", now: later }, db);
+  const r = mustSignIn({ sessionId: "s3", baseHandle: "x-2", now: later }, db);
   expect(r).toMatchObject({ handle: "x-2", reclaimed: true });
 });
 
 test("own-seat preference: a reclaimable row with matching cwd+pane wins over an earlier lower-suffix reclaimable row", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
-  signIn({ sessionId: "s2", baseHandle: "x", cwd: "/other", now }, db); // "x-2"
-  signIn({ sessionId: "s3", baseHandle: "x", cwd: "/mine", pane: "7", now }, db); // "x-3"
+  mustSignIn({ sessionId: "s1", baseHandle: "x", now }, db); // "x"
+  mustSignIn({ sessionId: "s2", baseHandle: "x", cwd: "/other", now }, db); // "x-2"
+  mustSignIn({ sessionId: "s3", baseHandle: "x", cwd: "/mine", pane: "7", now }, db); // "x-3"
   const later = now + 2 * HOUR;
   db.run("UPDATE chat_presence SET last_seen_at = ? WHERE handle = 'x'", [later]); // "x" stays live
   // "x-2" and "x-3" are both stale (untouched last_seen_at) and reclaimable
   // by `later`; only "x-3"'s cwd+pane matches the incoming session.
-  const r = signIn({ sessionId: "s4", baseHandle: "x", cwd: "/mine", pane: "7", now: later }, db);
+  const r = mustSignIn({ sessionId: "s4", baseHandle: "x", cwd: "/mine", pane: "7", now: later }, db);
   expect(r).toMatchObject({ handle: "x-3", reclaimed: true });
   // "x-2" — the lower-suffix reclaimable row a plain first-by-suffix scan
   // would have picked — is left completely untouched.
@@ -351,7 +423,7 @@ test("the joinRoom cwd guard is scoped to unsigned handles", () => {
   joinRoom({ room: "a", handle: "x", cwd: "/one" }, db);
   expect(() => joinRoom({ room: "b", handle: "x", cwd: "/two" }, db)).toThrow(/--as/); // unsigned: as shipped
   const db2 = fresh();
-  signIn({ sessionId: "s1", baseHandle: "y", now }, db2);
+  mustSignIn({ sessionId: "s1", baseHandle: "y", now }, db2);
   joinRoom({ room: "a", handle: "y", cwd: "/one" }, db2);
   expect(() => joinRoom({ room: "b", handle: "y", cwd: "/two" }, db2)).not.toThrow(); // signed: presence owns uniqueness
 });
@@ -380,8 +452,8 @@ const DAY = 24 * HOUR;
 
 test("signIn without a base draws a pool name that no live session holds", () => {
   const db = fresh();
-  const a = signIn({ sessionId: "s1", now }, db);
-  const b = signIn({ sessionId: "s2", now }, db);
+  const a = mustSignIn({ sessionId: "s1", now }, db);
+  const b = mustSignIn({ sessionId: "s2", now }, db);
   expect(AGENT_NAMES).toContain(a.baseHandle);
   expect(AGENT_NAMES).toContain(b.baseHandle);
   expect(a.handle).toBe(a.baseHandle);
@@ -395,7 +467,7 @@ test("the draw is least-recently-used: every name goes once before any comes bac
   // pruned and only the ledger keeps the name from coming back.
   for (let i = 0; i <= AGENT_NAMES.length; i++) {
     const t = now + i * 2 * DAY;
-    const { baseHandle } = signIn({ sessionId: `s${i}`, now: t }, db);
+    const { baseHandle } = mustSignIn({ sessionId: `s${i}`, now: t }, db);
     signOut(`s${i}`, t, db);
     drawn.push(baseHandle);
   }
@@ -405,16 +477,16 @@ test("the draw is least-recently-used: every name goes once before any comes bac
 
 test("a repeat sign-in with no base keeps the name the session already holds", () => {
   const db = fresh();
-  const first = signIn({ sessionId: "s1", now }, db);
-  const again = signIn({ sessionId: "s1", now: now + MIN }, db);
+  const first = mustSignIn({ sessionId: "s1", now }, db);
+  const again = mustSignIn({ sessionId: "s1", now: now + MIN }, db);
   expect(again.baseHandle).toBe(first.baseHandle);
   expect(again.handle).toBe(first.handle);
 });
 
 test("an explicitly named pool name counts as used; a non-pool base is not recorded", () => {
   const db = fresh();
-  signIn({ sessionId: "s1", baseHandle: "kai", now }, db);
-  signIn({ sessionId: "s2", baseHandle: "mr-board", now }, db);
+  mustSignIn({ sessionId: "s1", baseHandle: "kai", now }, db);
+  mustSignIn({ sessionId: "s2", baseHandle: "mr-board", now }, db);
   const ledger = getKvValue<Record<string, number>>("chat", "names", {}, db);
   expect(ledger.kai).toBe(now);
   expect(ledger["mr-board"]).toBeUndefined();

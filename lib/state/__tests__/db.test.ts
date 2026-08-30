@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import * as fsModule from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
@@ -571,6 +572,63 @@ describe("corruption escape", () => {
     // The quarantined file still holds the original garbage bytes.
     const quarantined = readFileSync(join(dir, survivors[0]!), "utf8");
     expect(quarantined).toBe("definitely not a sqlite database, just bytes");
+  });
+
+  test("S103: a corrupt-but-openable handle is closed before quarantine renames it away", () => {
+    const dbPath = join(dir, "state-corrupt.db");
+    const seed = new Database(dbPath);
+    seed.exec("PRAGMA journal_mode=DELETE;");
+    seed.exec("CREATE TABLE t(id INTEGER PRIMARY KEY);");
+    seed.close();
+    // Truncated to just the 100-byte file header: `new Database()` still
+    // opens (the header alone is a valid signature), but any page read --
+    // including openStateDb's own PRAGMA user_version probe -- throws
+    // SQLITE_CORRUPT. This is the one corruption shape where openStateDb's
+    // catch holds a live, OPEN handle rather than never having constructed
+    // one (unlike the SQLITE_NOTADB garbage-bytes case above, where `new
+    // Database()` itself throws and there is nothing to close).
+    writeFileSync(dbPath, readFileSync(dbPath).subarray(0, 100));
+
+    const closeSpy = spyOn(Database.prototype, "close");
+    const db = openStateDb(dbPath, "cli");
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+    // The failed handle's close() must run as part of recovering from it --
+    // distinct from the explicit db.close() below, which hasn't run yet.
+    expect(closeSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+    closeSpy.mockRestore();
+    db.close();
+
+    const survivors = Array.from(new Bun.Glob("state-corrupt.db.corrupt-*").scanSync({ cwd: dir }));
+    expect(survivors.length).toBe(1);
+  });
+
+  test("CodeRabbit (PR #137): a sidecar rename failure other than ENOENT stops before renaming the main database", () => {
+    const dbPath = join(dir, "state-eacces.db");
+    writeFileSync(dbPath, "definitely not a sqlite database, just bytes");
+    const walPath = `${dbPath}-wal`;
+
+    const realRenameSync = fsModule.renameSync;
+    const renameSpy = spyOn(fsModule, "renameSync").mockImplementation(((from: string, to: string) => {
+      if (from === walPath) {
+        const err = new Error("EACCES: permission denied, rename") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return realRenameSync(from, to);
+    }) as typeof fsModule.renameSync);
+
+    try {
+      expect(() => openStateDb(dbPath, "cli")).toThrow();
+      // Main file must still be at its original path — the code must stop
+      // before reaching the main-file rename, not just fail the sidecar
+      // and press on.
+      expect(existsSync(dbPath)).toBe(true);
+      expect(readFileSync(dbPath, "utf8")).toBe("definitely not a sqlite database, just bytes");
+      const survivors = Array.from(new Bun.Glob("state-eacces.db.corrupt-*").scanSync({ cwd: dir }));
+      expect(survivors.length).toBe(0);
+    } finally {
+      renameSpy.mockRestore();
+    }
   });
 });
 

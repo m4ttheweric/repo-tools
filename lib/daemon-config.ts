@@ -79,8 +79,13 @@ export const API_PORT = Number(process.env.RT_API_PORT) || 9401;
  * getSetting() reads the settings stores off ambient HOME.
  */
 export function resolveApiPort(): number {
-  const env = Number(process.env.RT_API_PORT);
-  if (env) return env;
+  // process.env.RT_API_PORT === "0" is a deliberate override, not "unset" —
+  // `Number(env) || ...` treats 0 as falsy and silently falls through to the
+  // setting/default instead of honoring it (R2).
+  if (process.env.RT_API_PORT !== undefined) {
+    const env = Number(process.env.RT_API_PORT);
+    if (!Number.isNaN(env)) return env;
+  }
   try {
     return getSetting<number>("rt.apiPort").value || 9401;
   } catch {

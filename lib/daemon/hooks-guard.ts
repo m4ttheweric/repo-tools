@@ -7,12 +7,19 @@
  */
 
 import { existsSync, watch, type FSWatcher } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve, sep } from "path";
 import type { Logger } from "pino";
-import { repoDataDir } from "../rt-paths.ts";
+import { repoDataDir, rtDir } from "../rt-paths.ts";
 import { runCapture } from "../subprocess.ts";
 import { loadRepoIndex, resolveGitConfigPath } from "./repo-index.ts";
 import type { RepoIndex } from "./handlers/types.ts";
+
+/** True for rt's current shims layout and any legacy one, all of which live under rtDir(). */
+function isRtOwnedPath(p: string): boolean {
+  const resolvedRt = resolve(rtDir());
+  const resolvedP = resolve(p);
+  return resolvedP === resolvedRt || resolvedP.startsWith(resolvedRt + sep);
+}
 
 export interface HooksGuard {
   /** Live map of repo git-config watchers (configPath → FSWatcher). */
@@ -29,10 +36,15 @@ export interface HooksGuard {
 
 export function createHooksGuard(
   log: Logger,
-  deps: { loadRepoIndexFn?: () => RepoIndex } = {},
+  deps: { loadRepoIndexFn?: () => RepoIndex; watchFn?: typeof watch } = {},
 ): HooksGuard {
   const loadRepoIndexFn = deps.loadRepoIndexFn ?? loadRepoIndex;
+  const watchFn = deps.watchFn ?? watch;
   const watchedConfigs = new Map<string, FSWatcher>();
+  // Repos where another tool has taken over core.hooksPath (R044). Tracked
+  // so the "rt hooks disabled" warning fires once per takeover, not on
+  // every watcher tick or 60s poll sweep.
+  const takenOverRepos = new Set<string>();
 
   async function checkAndRepairHooksPath(repoName: string, repoPath: string): Promise<boolean> {
     const dataDir = repoDataDir(repoName);
@@ -51,9 +63,28 @@ export function createHooksGuard(
       // never repaired a stale-but-rt-owned path — e.g. the pre-repos/ location
       // <rtDir>/<repo>/hooks after the move to <rtDir>/repos/<repo>/hooks.
       // Compare resolved paths.
-      if (resolve(currentHooksPath) === resolve(shimsDir)) return false;
+      if (resolve(currentHooksPath) === resolve(shimsDir)) {
+        takenOverRepos.delete(repoName);
+        return false;
+      }
 
-      // Hooks path was clobbered — re-apply
+      // Anything not under rtDir() was set by another tool (husky, lefthook,
+      // a manual `git config`), not left over from an old rt shims layout.
+      // Reverting it would silently break that tool with no visible cause.
+      // Stop guarding this repo instead (R044), and say so once.
+      if (!isRtOwnedPath(currentHooksPath)) {
+        if (!takenOverRepos.has(repoName)) {
+          takenOverRepos.add(repoName);
+          log.warn(
+            { repo: repoName, hooksPath: currentHooksPath },
+            "rt hooks disabled for this repo: core.hooksPath is now set by another tool",
+          );
+        }
+        return false;
+      }
+
+      // Hooks path was clobbered by a stale rt-owned location; re-apply
+      takenOverRepos.delete(repoName);
       const set = await runCapture(["git", "config", "core.hooksPath", shimsDir], { cwd: repoPath, timeoutMs: 5000 });
       if (set.exitCode !== 0) return false;
       log.warn({ repo: repoName, was: currentHooksPath }, "hooks-guard repaired core.hooksPath");
@@ -61,6 +92,7 @@ export function createHooksGuard(
     }
 
     // git config core.hooksPath not set — set it
+    takenOverRepos.delete(repoName);
     const set = await runCapture(["git", "config", "core.hooksPath", shimsDir], { cwd: repoPath, timeoutMs: 5000 });
     if (set.exitCode !== 0) return false;
     log.info({ repo: repoName }, "hooks-guard set core.hooksPath");
@@ -86,14 +118,24 @@ export function createHooksGuard(
 
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const watcher = watch(gitDir, (_event, filename) => {
-      // Only act on the config file — ignore refs, COMMIT_EDITMSG, etc.
-      if (filename !== configFile) return;
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        void checkAndRepairHooksPath(repoName, repoPath);
-      }, 100); // slightly longer debounce: rename events can cluster
-    });
+    // fs.watch() throws SYNCHRONOUSLY on EMFILE/ENOSPC/ENOENT at creation
+    // time, not just asynchronously via 'error' below. Uncaught here at boot
+    // (before signal handlers are installed) this kills startDaemon() itself
+    // (R045), so it needs its own try/catch distinct from the 'error' listener.
+    let watcher: FSWatcher;
+    try {
+      watcher = watchFn(gitDir, (_event, filename) => {
+        // Only act on the config file — ignore refs, COMMIT_EDITMSG, etc.
+        if (filename !== configFile) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          void checkAndRepairHooksPath(repoName, repoPath);
+        }, 100); // slightly longer debounce: rename events can cluster
+      });
+    } catch (err) {
+      log.warn({ err, repo: repoName, configPath }, "hooks-guard: fs.watch threw at creation; skipping this watch");
+      return;
+    }
 
     // FSWatcher is an EventEmitter: an 'error' with no listener is an
     // uncaught exception, which installCrashHandlers turns into a daemon

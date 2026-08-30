@@ -3,7 +3,7 @@ import { execSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { machineSettingsPath } from "../../rt-paths.ts";
+import { machineSettingsPath, teamSettingsPath } from "../../rt-paths.ts";
 import { deriveRepoIdentity } from "../../settings/identity.ts";
 import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
@@ -161,6 +161,34 @@ describe("createTree", () => {
 
     const registry = loadRegistry(repoName);
     expect(registry.length).toBe(0);
+  });
+
+  // CodeRabbit (PR #137): a held team `ready` ladder must not advance
+  // readyAt/readyStamp — otherwise a later freshen's changedSince(readyStamp,
+  // HEAD) diff can look clean and skip a changed:<glob> step that never
+  // actually ran, even once the ladder is approved.
+  test("a held team ready ladder leaves readyAt and readyStamp unset", async () => {
+    const identity = await ensureIdentity(repo, repoName);
+    const teamFile = teamSettingsPath("acme");
+    mkdirSync(join(teamFile, ".."), { recursive: true });
+    writeFileSync(
+      teamFile,
+      JSON.stringify({ repos: { [identity]: { "rt.worktrees": { ready: [{ run: "echo team-step" }] } } } }, null, 2),
+    );
+
+    const deps = makeDeps(repoName, repo, events);
+    const result = await createTree(deps);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(events.some((e) => e.type === "worktree:ready-held")).toBe(true);
+    expect(result.tree.readyAt).toBeUndefined();
+    expect(result.tree.readyStamp).toBeUndefined();
+
+    const registry = loadRegistry(repoName);
+    expect(registry[0]!.readyAt).toBeUndefined();
+    expect(registry[0]!.readyStamp).toBeUndefined();
   });
 });
 

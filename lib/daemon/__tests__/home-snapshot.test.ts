@@ -838,6 +838,32 @@ describe("startHomeSnapshot — push", () => {
     expect(JSON.stringify(warnCall?.args)).not.toContain("s3cr3t-token");
   });
 
+  test("R042: an unchanged push failure error does not repeat the warn log or the kv persist, and the retry backs off past the flat pushDelaySec*5 window", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1, pushStderr: "connection refused" }));
+    const { deps, timers, log } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    const warnAfterFirst = log.calls.filter((c) => c.level === "warn" && c.args[1] === "home-snapshot: push failed").length;
+    expect(warnAfterFirst).toBe(1);
+    const firstRetry = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000);
+    expect(firstRetry).toBeDefined();
+
+    // Fire the retry itself -- same error, same stderr text.
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000);
+    await flushAsync();
+
+    const warnAfterSecond = log.calls.filter((c) => c.level === "warn" && c.args[1] === "home-snapshot: push failed").length;
+    expect(warnAfterSecond).toBe(1); // unchanged error text: not re-logged
+
+    const secondRetry = [...timers.pending.values()].find((t) => t.ms > DEFAULT_SETTINGS.pushDelaySec * 5 * 1000);
+    expect(secondRetry).toBeDefined(); // backed off past the flat window
+  });
+
   test("a pending push is retried on the next run even though that run commits nothing new", async () => {
     const switchable = makeSwitchableExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1 }));
     const { deps, timers } = baseDeps({ exec: switchable.fn });
@@ -1486,6 +1512,35 @@ describe("startHomeSnapshot — kill switch cancels pending push", () => {
 
     expect(execCalls.some((c) => c[1] === "push")).toBe(false);
   });
+
+  // CodeRabbit (PR #137): safeReadSettings()'s catch fallback hardcoded
+  // enabled:true, so a settings-read failure that hits AFTER the store has
+  // already been observed disabled resurrected the kill switch's "enabled"
+  // view and let a scheduled push through anyway.
+  test("a settings-read failure after the store was observed disabled falls back to disabled, not enabled:true", async () => {
+    let mode: "enabled" | "disabled" | "throw" = "enabled";
+    const readSettings = () => {
+      if (mode === "throw") throw new Error("settings store corrupt");
+      return { ...DEFAULT_SETTINGS, enabled: mode === "enabled" };
+    };
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 0 }));
+    const { deps, timers } = baseDeps({ exec: execFn, readSettings });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    const pushEntry = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    expect(pushEntry).toBeDefined();
+
+    mode = "disabled";
+    handle.status(); // a successful read observes disabled, updating the last-known state
+
+    mode = "throw"; // the settings store breaks while the last-known state is still disabled
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(execCalls.some((c) => c[1] === "push")).toBe(false);
+  });
 });
 
 // ─── home:push-failed broadcasts once per failure streak ────────────────────
@@ -1701,6 +1756,49 @@ describe("startHomeSnapshot — settings-read resilience", () => {
 
     const warnLine = "home-snapshot: failed to read settings in status(); using the last-known value";
     expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === warnLine).length).toBe(1);
+  });
+
+  test("S091: a readSettings throw during doRun falls back to defaults instead of rejecting the run", async () => {
+    let broken = false;
+    const readSettings = () => {
+      if (broken) throw new Error("settings store corrupt");
+      return DEFAULT_SETTINGS;
+    };
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, log } = baseDeps({ exec: execFn, readSettings });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    broken = true;
+    const result = await handle.runNow("manual");
+
+    expect(result.committed).toBe(true); // did not reject; fell back to defaults and still ran
+    expect(log.calls.some((c) => c.level === "warn" && c.args[1] === "home-snapshot: failed to read settings; using the last-known enabled state")).toBe(true);
+  });
+
+  test("S091: a readSettings throw while re-arming the janitor after a run still re-arms it", async () => {
+    let broken = false;
+    const readSettings = () => {
+      if (broken) throw new Error("settings store corrupt");
+      return DEFAULT_SETTINGS;
+    };
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "" })); // nothing dirty: a fast, uneventful janitor run
+    const { deps, timers } = baseDeps({ exec: execFn, readSettings });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const firstJanitor = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.janitorIntervalMin * 60_000);
+    expect(firstJanitor).toBeDefined();
+
+    broken = true;
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.janitorIntervalMin * 60_000);
+    await flushAsync();
+
+    // Re-armed on the registry-default interval (30min), not dropped forever
+    // -- readSettings is broken, so the re-arm can't see the test's own
+    // 15min DEFAULT_SETTINGS override.
+    const secondJanitor = [...timers.pending.values()].find((t) => t.ms === 30 * 60_000);
+    expect(secondJanitor).toBeDefined();
   });
 });
 

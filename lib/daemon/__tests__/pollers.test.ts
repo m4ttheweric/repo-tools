@@ -137,3 +137,23 @@ test("a never-settling process scan is abandoned via the deadline so a later tic
   await h.tickProcesses(); // latch cleared -> a later tick runs
   expect(calls).toBe(2);
 });
+
+test("a port scan refused at the orphan cap is logged, not silent", async () => {
+  const warns: unknown[][] = [];
+  const recordingLog = {
+    debug: () => {}, info: () => {}, error: () => {},
+    warn: (...a: unknown[]) => { warns.push(a); },
+  } as unknown as PollerDeps["log"];
+  const h = poller({
+    log: recordingLog,
+    scanPorts: () => new Promise<PortEntry[]>(() => {}), // hangs -> every scan orphans
+    scanDeadlineMs: 20,
+  });
+
+  await h.tickPorts(); // orphan 1
+  await h.tickPorts(); // orphan 2
+  await h.tickPorts(); // cap hit -> refused
+  await new Promise((r) => setTimeout(r, 10));
+
+  expect(warns.some((w) => String(w[0] ?? "").includes("too many stalled"))).toBe(true);
+});

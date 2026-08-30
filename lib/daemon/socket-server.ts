@@ -9,23 +9,8 @@ import { existsSync, unlinkSync } from "fs";
 import type { Server } from "bun";
 import type { Logger } from "pino";
 import { DAEMON_SOCK_PATH } from "../daemon-config.ts";
+import { deriveFailure } from "./failure.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
-
-/**
- * Same code/message derivation as api-server.ts's outer-catch failure and
- * createHandleCommand's throw-to-envelope path (lib/daemon.ts, R035).
- * Duplicated rather than imported: this guards fetch()'s own routing/dispatch
- * bugs, a different failure class than a handleCommand throw (createHandleCommand
- * already catches those and never lets them reach this far).
- */
-function deriveFailure(err: unknown): { code: string; message: string } {
-  const message = err instanceof Error ? err.message : String(err);
-  const code =
-    err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
-      ? (err as { code: string }).code
-      : "handler-threw";
-  return { code, message };
-}
 
 export function startSocketServer(opts: {
   handleCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
@@ -38,11 +23,13 @@ export function startSocketServer(opts: {
     try { unlinkSync(DAEMON_SOCK_PATH); } catch { /* */ }
   }
 
-  // @ts-expect-error bun-types (1.3.10) doesn't declare `idleTimeout` on the
-  // unix-socket Options variant (typed `never` there via the
-  // HostnamePortServeOptions/UnixServeOptions XOR) even though Bun accepts it
-  // at runtime for unix sockets too — verified empirically. Remove this
-  // suppression once bun-types catches up.
+  // R048: bun-types (1.3.10) doesn't declare `idleTimeout` on the unix-socket
+  // Options variant (typed `never` there via the HostnamePortServeOptions/
+  // UnixServeOptions XOR) even though Bun accepts it at runtime for unix
+  // sockets too — verified empirically. A cast rather than `@ts-expect-error`:
+  // the directive form breaks `tsc --noEmit` outright (TS2578, "unused
+  // directive") the day bun-types adds the property, since `@types/bun` is
+  // pinned to "latest"; this stays correct either way.
   const server = Bun.serve({
     unix: DAEMON_SOCK_PATH,
     // Raise Bun's implicit 10s idle-request timeout so long-poll requests
@@ -51,7 +38,7 @@ export function startSocketServer(opts: {
     // holds connections open on its own.
     idleTimeout: 255,
     maxRequestBodySize: MAX_REQUEST_BODY_SIZE,
-    async fetch(req) {
+    async fetch(req: Request) {
       try {
         const url = new URL(req.url);
         const cmd = url.pathname.slice(1); // "/cache:read" → "cache:read"
@@ -73,7 +60,7 @@ export function startSocketServer(opts: {
         );
       }
     },
-  });
+  } as unknown as Parameters<typeof Bun.serve>[0]);
 
   log.info({ path: DAEMON_SOCK_PATH }, "socket server listening");
   return server;

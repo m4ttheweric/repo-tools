@@ -25,7 +25,7 @@ import {
   listWorktreesAsync,
 } from "./git-async.ts";
 import { pickName } from "./names.ts";
-import { loadWorktreeRepoConfig, resolveReadySteps, type WorktreeRepoConfig } from "./config.ts";
+import { loadWorktreeRepoConfig, evaluateReadyGate, type WorktreeRepoConfig } from "./config.ts";
 import { runReadySteps } from "./ready.ts";
 import { withTreeLock } from "./locks.ts";
 import { reapTrashDir, trashTree } from "./trash.ts";
@@ -122,7 +122,11 @@ async function runCreate(
     return fail(`git worktree add -b ${branch} ${path} ${defaultRef}`, addResult.stdout + addResult.stderr);
   }
 
-  const readySteps = resolveReadySteps(cfg, repoPath);
+  const { steps: readySteps, held } = await evaluateReadyGate(cfg, repoName, repoPath);
+  if (held) {
+    log.warn({ repo: repoName, tree: name }, "worktree create: team `ready` steps held pending approval; run `rt worktree ready-approve`");
+    emit("worktree:ready-held", { repo: repoName, tree: name });
+  }
   const readyResult = await runReadySteps(path, readySteps);
   if (!readyResult.ok) {
     return fail(readyResult.failedStep, readyResult.output);
@@ -138,11 +142,15 @@ async function runCreate(
     await reconcileForRepo({ repoIdentity, worktreeRoots });
   }
 
-  const readyStamp = await headSha(path);
+  // A held team ladder means the excluded steps never ran — stamping
+  // readyAt/readyStamp here anyway would let a later freshen's
+  // changedSince(readyStamp, HEAD) diff look clean and skip a
+  // changed:<glob> step that never actually ran, even once approved.
+  const readyStamp = held ? null : await headSha(path);
   const updated: TreeRecord = {
     ...rec,
     state: "on-deck",
-    readyAt: new Date().toISOString(),
+    ...(held ? {} : { readyAt: new Date().toISOString() }),
     ...(readyStamp ? { readyStamp } : {}),
   };
 

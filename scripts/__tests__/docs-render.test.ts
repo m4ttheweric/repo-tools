@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { renderUsage, renderArgsTable, slugArg, escapeMdxText } from "../lib/docs-render.ts";
 import type { CommandArg } from "../../lib/command-tree.ts";
+import { TREE } from "../../lib/command-tree-def.ts";
 
 const NO_COMMON = { flags: new Set<string>(), href: "/guides/common-flags" };
 
@@ -23,6 +24,17 @@ test("renderUsage includes positionals and a [flags] marker", () => {
   ];
   const out = renderUsage(["sdm", "connect"], args);
   expect(out).toContain("rt sdm connect <key> [flags]");
+});
+
+// CodeRabbit (PR #137): `rt worktree ready-approve` supports the no-repo TTY
+// picker (omitBehavior: "picker" on its tree node), but its Repo arg lacked
+// `optional: true`, so the generated usage line showed `<repo>` as required.
+test("worktree ready-approve's Repo arg is optional, matching its omitBehavior:\"picker\" node", () => {
+  const node = TREE.worktree!.subcommands!["ready-approve"]!;
+  expect(node.omitBehavior).toBe("picker");
+  const repoArg = node.args!.find((a) => a.name === "Repo")!;
+  expect(repoArg.optional).toBe(true);
+  expect(renderUsage(["worktree", "ready-approve"], node.args)).toContain("rt worktree ready-approve [<repo>] [flags]");
 });
 
 test("renderArgsTable renders a row per arg with flag, type, default, hint", () => {

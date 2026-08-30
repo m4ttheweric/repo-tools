@@ -38,17 +38,19 @@ export const MUTATING_TIMEOUT_MS = 5 * 60_000;
 
 const DESKTOP_STASH_RE = /!!GitHub_Desktop<(.+)>$/;
 
-/** Run a git command with hooks suppressed, capturing stdout+stderr. Never throws. */
+/** Run a git command with hooks suppressed, capturing stdout+stderr. Never
+ *  throws. `signal` cancels the child (see runCapture). */
 export async function runGit(
   cwd: string,
   args: string[],
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<GitResult> {
   const argv: [string, ...string[]] = ["git", ...NO_HOOKS, ...args];
   const result = await runCapture(argv, {
     cwd,
     timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     stderr: "pipe",
+    signal: opts.signal,
   });
   return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
 }
@@ -121,8 +123,8 @@ export async function headSha(cwd: string): Promise<string | null> {
  * tmpdirs); callers comparing against stored paths rely on the
  * canonical-fixtures rule in Global Constraints.
  */
-export async function listWorktreesAsync(repoPath: string): Promise<WorktreeEntry[] | null> {
-  const r = await runGit(repoPath, ["worktree", "list", "--porcelain"]);
+export async function listWorktreesAsync(repoPath: string, signal?: AbortSignal): Promise<WorktreeEntry[] | null> {
+  const r = await runGit(repoPath, ["worktree", "list", "--porcelain"], { signal });
   if (r.exitCode !== 0) return null;
   const results: WorktreeEntry[] = [];
   let curPath: string | null = null;

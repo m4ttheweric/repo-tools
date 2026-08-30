@@ -31,6 +31,11 @@ export function outputTail(output: string, maxChars: number): string {
  * `"pipe"` to capture it for callers that need failure detail (e.g. git).
  *
  * Children inherit the caller's live `process.env` unless `opts.env` overrides it.
+ *
+ * `opts.signal` cancels the run: an already-aborted signal returns failure
+ * without spawning, and an abort mid-run kills the child (SIGTERM then a SIGKILL
+ * grace) and settles as a failure, so a caller past its deadline stops paying
+ * for a hung git child.
  */
 export async function runCapture(
   argv: [string, ...string[]],
@@ -39,8 +44,10 @@ export async function runCapture(
     timeoutMs?: number;
     stderr?: "ignore" | "pipe";
     env?: Record<string, string | undefined>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<RunResult> {
+  if (opts.signal?.aborted) return { stdout: "", stderr: "", exitCode: -1 };
   const captureStderr = opts.stderr === "pipe";
   let proc: ReturnType<typeof Bun.spawn>;
   try {
@@ -98,11 +105,29 @@ export async function runCapture(
     deadlineTimer = setTimeout(() => resolve({ stdout: "", stderr: "", exitCode: -1, timedOut: true }), timeoutMs);
   });
 
+  // Abort path: kill the child now (same SIGTERM -> SIGKILL escalation the
+  // deadline uses) and settle as a failure, so a cancelled caller does not wait
+  // out the full timeout. A missing signal makes this a promise that never wins.
+  let onAbort: (() => void) | undefined;
+  const aborted: Promise<RunResult> = new Promise((resolve) => {
+    if (!opts.signal) return;
+    onAbort = () => {
+      try { proc.kill("SIGTERM"); } catch { /* already exited */ }
+      const abortKill = setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch { /* already exited */ }
+      }, 2000);
+      abortKill.unref?.();
+      resolve({ stdout: "", stderr: "", exitCode: -1 });
+    };
+    opts.signal.addEventListener("abort", onAbort, { once: true });
+  });
+
   try {
-    return await Promise.race([captured, deadline]);
+    return await Promise.race([captured, deadline, aborted]);
   } finally {
     clearTimeout(term);
     clearTimeout(deadlineTimer!);
+    if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
     // killTimer intentionally NOT cleared here: on the timeout path it must
     // survive this finally to fire SIGKILL against a child that ignored
     // SIGTERM. proc.kill is already try/catch guarded, so it is a harmless
