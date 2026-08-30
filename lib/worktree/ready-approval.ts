@@ -11,11 +11,20 @@
  */
 
 import { createHash } from "crypto";
-import { getSetting } from "../settings/resolve.ts";
+import { explainSetting, SCOPE_ORDER } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
 import type { ReadyStep } from "./config.ts";
 
 export const READY_APPROVAL_KEY = "rt.worktreeReadyApproval";
+
+/**
+ * The scopes an approval may come from. The key allows all three (a repoScoped
+ * invariant), but a team-authored approval is never trusted... otherwise a team
+ * store could approve its own shell, defeating the gate. So the read ignores
+ * team / team.repo and honors only the user's and this machine's own rungs.
+ */
+const TRUSTED_APPROVAL_SCOPES = new Set(["machine.repo", "machine", "user.repo", "user"]);
+const SCOPE_STRONGEST_FIRST = [...SCOPE_ORDER].reverse();
 
 /** Order-sensitive content hash of a ready ladder; a stable id for approval. */
 export function readyLadderHash(steps: ReadyStep[]): string {
@@ -23,15 +32,27 @@ export function readyLadderHash(steps: ReadyStep[]): string {
   return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
 }
 
-/** The user-approved hash for this repo, or undefined when none is recorded. */
+/**
+ * The approved hash for this repo from a trusted (user/machine) scope, or
+ * undefined. Read via explainSetting rather than getSetting so a team-scope
+ * value can be skipped explicitly: the merged resolution would let a stronger
+ * team.repo rung win.
+ */
 export function readReadyApproval(repoIdentity: string | null): string | undefined {
   if (!repoIdentity) return undefined;
+  let rows;
   try {
-    const { value } = getSetting<string>(READY_APPROVAL_KEY, { repoIdentity });
-    return typeof value === "string" && value.length > 0 ? value : undefined;
+    rows = explainSetting(READY_APPROVAL_KEY, { repoIdentity });
   } catch {
     return undefined;
   }
+  const byScope = new Map(rows.map((r) => [r.scope, r]));
+  for (const scope of SCOPE_STRONGEST_FIRST) {
+    if (!TRUSTED_APPROVAL_SCOPES.has(scope)) continue;
+    const row = byScope.get(scope);
+    if (row?.present && typeof row.value === "string" && row.value.length > 0) return row.value;
+  }
+  return undefined;
 }
 
 /** Record the user's approval of `hash` for this repo (user scope). */

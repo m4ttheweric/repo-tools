@@ -47,10 +47,11 @@ export const REGISTRY: readonly SettingDef[] = [
   {
     key: "rt.worktreeReadyApproval",
     type: "string",
-    scopes: ["user"],
+    scopes: ALL_SCOPES,
     merge: "replace",
     repoScoped: true,
-    description: "Per-repo user approval of a team-authored `ready` shell ladder, as its content hash (RT-89). User scope only so a team store can never approve its own shell; a hash mismatch after a team edit re-holds the ladder until `rt worktree ready-approve` records the new one.",
+    migrated: true,
+    description: "Per-repo user approval of a team-authored `ready` shell ladder, as its content hash (RT-89). The reader trusts only user/machine scopes so a team store can never approve its own shell; a hash mismatch after a team edit re-holds the ladder until `rt worktree ready-approve` records the new one.",
   },
   {
     key: "rt.repoIdentityOverrides",
