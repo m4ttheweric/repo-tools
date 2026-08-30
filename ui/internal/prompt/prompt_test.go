@@ -3,8 +3,11 @@ package prompt_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -207,7 +210,47 @@ func TestParentDeathRestoresTerminal(t *testing.T) {
 	if exit != 70 {
 		t.Fatalf("exit %d, want 70", exit)
 	}
-	if !strings.Contains(tty, "\x1b[J") || !strings.Contains(tty, "\x1b[?25h") {
-		t.Fatalf("Bubble Tea's inline close (erase below + cursor show) never ran: %q", tty)
+	// rt-ui writes its own erase on every exit, so an erase proves nothing here.
+	// Each of these comes only from Bubble Tea's close, undoing an input mode it
+	// turned on at start... the same path that restores termios.
+	for _, seq := range []string{"\x1b[?25h", "\x1b[?2004l", "\x1b[?1004l", "\x1b[>4m"} {
+		if !strings.Contains(tty, seq) {
+			t.Fatalf("Bubble Tea's close never ran, %q missing: %q", seq, tty)
+		}
+	}
+	assertCardGone(t, tty)
+}
+
+// cursorUp matches the parameterized form only; a bare ESC[A is one row and
+// cannot overshoot.
+var cursorUp = regexp.MustCompile(`\x1b\[(\d+)A`)
+
+func TestTallCardIsErasedWithoutClimbingPastTheScreen(t *testing.T) {
+	// huh caps a group at the window height and the card's border sits outside
+	// that, so a long option list makes a frame taller than the terminal. Only
+	// the bottom rows of it are ever painted; a teardown that climbs the whole
+	// frame walks into rows above the card, which belong to the user.
+	opts := make([]string, 0, 40)
+	for i := range 40 {
+		opts = append(opts, fmt.Sprintf(`{"value":"v%d","label":"option %d"}`, i, i))
+	}
+	tall := `{"t":"prompt","protocol":1,"kind":"select","title":"Tall pick","options":[` +
+		strings.Join(opts, ",") + `],"initial":"v0"}`
+	stdout, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{tall}, []string{keyEnter}, nil, false)
+	if exit != 0 || !strings.Contains(stdout, `"value":"v0"`) {
+		t.Fatalf("exit %d stdout %q", exit, stdout)
+	}
+	if screen := testutil.Screen(tty); strings.Contains(screen, "╭") ||
+		strings.Contains(screen, "Tall pick") || strings.Contains(screen, "option ") {
+		t.Fatalf("tall card still on screen after exit:\n%s", screen)
+	}
+	for _, m := range cursorUp.FindAllStringSubmatch(tty, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n > 30 {
+			t.Fatalf("cursor climbed %d rows on a 30-row screen: %q", n, tty)
+		}
 	}
 }

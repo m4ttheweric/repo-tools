@@ -182,8 +182,14 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 	}
 
 	var backRequested bool
+	// huh caps a group at the window height, so a frame can be taller than the
+	// screen. eraseCard needs the screen's row count to know how far up the
+	// card actually reaches.
+	screenRows := 0
 	filter := func(_ tea.Model, msg tea.Msg) tea.Msg {
 		switch m := msg.(type) {
+		case tea.WindowSizeMsg:
+			screenRows = m.Height
 		case tea.KeyPressMsg:
 			// Back leaves by the same door cancel does, so huh marks itself
 			// aborted either way and the exit path stays single.
@@ -220,7 +226,7 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 
 	tty.FirstPaint()
 	err := form.RunWithContext(ctx)
-	eraseCard(term, cardHeight)
+	eraseCard(term, cardHeight, screenRows)
 	switch {
 	case ctx.Err() != nil:
 		return result, Answered, ctx.Err()
@@ -251,12 +257,18 @@ func optionLabel(o protocol.Option) string {
 // eraseCard removes the prompt card from the terminal. Bubble Tea's inline
 // renderer clamps its cursor model to the new frame height whenever a frame
 // shrinks, so the empty view it flushes on quit erases only the card's last
-// row, wherever the cursor already sat. Every remaining row is torn down here,
-// leaving the cursor where the card began: whatever rt prints next takes the
-// card's place instead of pushing the user's scrollback around.
-func eraseCard(term *os.File, height int) {
+// row, wherever the cursor already sat. Every visible row is torn down here,
+// leaving the cursor on the card's first on-screen row: whatever rt prints next
+// takes the card's place instead of pushing the user's scrollback around.
+func eraseCard(term *os.File, height, screenRows int) {
 	if height == 0 {
 		return
+	}
+	// A frame taller than the screen is drawn from its bottom rows up, so only
+	// screenRows of it are ever on screen. Climbing the frame's full height
+	// would walk into rows the prompt never painted.
+	if screenRows > 0 && height > screenRows {
+		height = screenRows
 	}
 	if height > 1 {
 		fmt.Fprintf(term, "\x1b[%dA", height-1)
