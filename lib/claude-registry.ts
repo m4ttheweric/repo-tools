@@ -13,6 +13,9 @@ export interface InboxBinding {
   socketPath: string;
   status: "busy" | "idle" | "shell" | undefined;
   name?: string;
+  /** How the session got its name: "user" (someone chose it: --name, /rename)
+      or "derived" (Claude Code's own dir-plus-suffix fallback, chat-c6 style). */
+  nameSource?: "user" | "derived";
 }
 
 export function registryRoots(): string[] {
@@ -53,7 +56,8 @@ export function resolveAllInboxes(opts?: { roots?: string[] }): Map<string, Inbo
       if (typeof entry.pid !== "number" || typeof entry.messagingSocketPath !== "string") continue;
       if (map.has(entry.sessionId)) continue;
       const status = typeof entry.status === "string" && STATUSES.has(entry.status) ? (entry.status as InboxBinding["status"]) : undefined;
-      map.set(entry.sessionId, { pid: entry.pid, socketPath: entry.messagingSocketPath, status, name: typeof entry.name === "string" ? entry.name : undefined });
+      const nameSource = entry.nameSource === "user" || entry.nameSource === "derived" ? entry.nameSource : undefined;
+      map.set(entry.sessionId, { pid: entry.pid, socketPath: entry.messagingSocketPath, status, name: typeof entry.name === "string" ? entry.name : undefined, nameSource });
     }
   }
   return map;

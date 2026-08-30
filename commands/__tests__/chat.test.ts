@@ -202,9 +202,11 @@ describe("rt chat CLI", () => {
     expect(out).toContain("you are alone here");
   });
 
-  test("post prints nothing on success", async () => {
+  test("post reports who was woken; a room with only the author says nobody", async () => {
     await runChat(["join", "r"]);
-    expect(await runChat(["post", "r", "hello"])).toBe("");
+    expect(await runChat(["post", "r", "hello"])).toBe(
+      "delivered to nobody (no member was woken; rt chat who <room> shows who is listening)",
+    );
   });
 
   test("an invalid room name is rejected with the reason", async () => {
@@ -240,7 +242,7 @@ describe("rt chat CLI — additional verb behavior", () => {
     setSetting("chat.viewerUrl", "https://chat.example/", "user");
     await runChat(["join", "r", "--as", "a"]);
     const out = await runChat(["post", "r", "hello", "--as", "a"]);
-    expect(out).toMatch(/^posted → https:\/\/chat\.example\/r\/r#m-\d+$/);
+    expect(out).toMatch(/\nposted → https:\/\/chat\.example\/r\/r#m-\d+$/);
     const json = JSON.parse(await runChat(["post", "r", "again", "--as", "a", "--json"]));
     expect(json).toMatchObject({ ok: true, recipients: expect.any(Array) });
     expect(json.url).toBe(`https://chat.example/r/r#m-${json.id}`);
@@ -254,7 +256,7 @@ describe("rt chat CLI — additional verb behavior", () => {
   test("post's body is every word after the room, joined back with spaces", async () => {
     await runChat(["join", "r", "--as", "a"]);
     await runChat(["join", "r", "--as", "b"]);
-    expect(await runChat(["post", "r", "hello", "world"])).toBe(""); // prints nothing — Global Constraint
+    expect(await runChat(["post", "r", "hello", "world"])).toBe("delivered to a, b"); // wake-on all: both members woken
     const read = JSON.parse(await runChat(["read", "r", "--as", "b", "--json"]));
     expect(read.rooms[0].messages[0].body).toBe("hello world");
   });
@@ -321,9 +323,13 @@ describe("rt chat CLI — additional verb behavior", () => {
     expect(code).not.toBe(0);
     expect(stderr).toContain("no line breaks");
     expect(stderr).toContain("<<'EOF'");
-    expect(await runChat(["post", "r", wall, "--as", "a", "--as-is"])).toBe("");
+    expect(await runChat(["post", "r", wall, "--as", "a", "--as-is"])).toBe(
+      "delivered to nobody (no member was woken; rt chat who <room> shows who is listening)",
+    );
     const long = "y".repeat(300) + "\n" + "z".repeat(300);
-    expect(await runChat(["post", "r", long, "--as", "a"])).toBe("");
+    expect(await runChat(["post", "r", long, "--as", "a"])).toBe(
+      "delivered to nobody (no member was woken; rt chat who <room> shows who is listening)",
+    );
   });
 
   test("post with --as consumes the flag as the handle, not into the body", async () => {
@@ -331,7 +337,7 @@ describe("rt chat CLI — additional verb behavior", () => {
     // the same way, or the flag is spliced into the posted message text.
     await runChat(["join", "r", "--as", "poster"]);
     await runChat(["join", "r", "--as", "listener"]);
-    expect(await runChat(["post", "r", "@listener", "ping", "--as", "poster"])).toBe("");
+    expect(await runChat(["post", "r", "@listener", "ping", "--as", "poster"])).toBe("delivered to listener");
     const read = JSON.parse(await runChat(["read", "r", "--as", "listener", "--json"]));
     expect(read.rooms[0].messages[0].body).toBe("@listener ping");
     expect(read.rooms[0].messages[0].handle).toBe("poster");

@@ -230,7 +230,12 @@ export function joinRoom(
         if (creatingRoom) db.query(INSERT_ROOM_DEFAULT_WAKE_SQL).run(room, wakeOn);
       } else {
         const defaultRow = db.query(SELECT_ROOM_DEFAULT_WAKE_SQL).get(room) as { wake_on: WakeMode } | null;
-        wakeOn = defaultRow ? defaultRow.wake_on : "mention";
+        // "all": a plain room post reaches every member. The old
+        // mention-gated default delivered un-mentioned posts to nobody,
+        // invisibly to the poster; members opt down per join
+        // (--wake-on mention|none), and db.ts's v10 migration moved
+        // existing "mention" rows accordingly.
+        wakeOn = defaultRow ? defaultRow.wake_on : "all";
       }
       db.query(INSERT_MEMBER_SQL).run(room, handle, now, lastReadId, wakeOn, argCwd, pane ?? null);
     }

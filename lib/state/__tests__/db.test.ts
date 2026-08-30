@@ -55,10 +55,10 @@ function userVersion(db: Database): number {
 }
 
 describe("openStateDb — fresh open", () => {
-  test("a fresh database reaches v9 directly, gaining every v1, v2, v3, v4, v6, v7, v8, and v9 change", () => {
+  test("a fresh database reaches v10 directly, gaining every v1, v2, v3, v4, v6, v7, v8, v9, and v10 change", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
-    expect(SCHEMA_VERSION).toBe(9);
+    expect(SCHEMA_VERSION).toBe(10);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
     // Full table-list coverage lives in db-schema-convergence.test.ts's
     // dynamic presence test, derived from db.ts's own CREATE TABLE
@@ -85,8 +85,27 @@ describe("openStateDb — fresh open", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms','chat_room_defaults')").all(),
     ).toHaveLength(3);
-    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 9 });
+    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 10 });
     db.close();
+  });
+
+  test("v10 moves mention-gated wake rows to all, keeping an explicit none", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.exec("INSERT INTO chat_rooms (name, created_at) VALUES ('r', 1);");
+    db.exec("INSERT INTO chat_members (room, handle, joined_at, last_read_id, wake_on) VALUES ('r','a',1,0,'mention'), ('r','b',1,0,'none'), ('r','c',1,0,'all');");
+    db.exec("INSERT INTO chat_room_defaults (room, wake_on) VALUES ('r','mention');");
+    db.exec("PRAGMA user_version = 9;");
+    db.close();
+    const re = openStateDb(dbPath, "cli");
+    const modes = re.query("SELECT handle, wake_on FROM chat_members ORDER BY handle;").all();
+    expect(modes).toEqual([
+      { handle: "a", wake_on: "all" },
+      { handle: "b", wake_on: "none" },
+      { handle: "c", wake_on: "all" },
+    ]);
+    expect(re.query("SELECT wake_on FROM chat_room_defaults WHERE room='r';").get()).toMatchObject({ wake_on: "all" });
+    re.close();
   });
 });
 
@@ -577,7 +596,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     // unrelated exports (reading SCHEMA_VERSION, pushing to LEGACY_IMPORTS)
     // never opens or creates a db file on its own.
     const before = SCHEMA_VERSION;
-    expect(before).toBe(9);
+    expect(before).toBe(10);
     LEGACY_IMPORTS.push({ file: "x.json", import: () => {} });
     LEGACY_IMPORTS.length = 0;
     // No db.ts function that touches disk was called above; nothing to assert

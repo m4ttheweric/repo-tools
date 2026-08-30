@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8 + v9). */
-export const SCHEMA_VERSION = 9;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8 + v9 + v10). */
+export const SCHEMA_VERSION = 10;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -518,6 +518,15 @@ function runMigrations(db: Database, dir: string): void {
     // migration, and make every later openStateDb call throw.
     if (user_version === 0) {
       toRename = importLegacyStores(db, dir);
+    }
+    // A room post wakes every member by default: rows on the old
+    // mention-gated default move to "all" once. An explicit "none" is a
+    // choice and stays. Runs after the legacy import so imported rows are
+    // covered; gated on the stored version (not unconditional, unlike the
+    // DDL above) so a later explicit choice is never re-flipped.
+    if (user_version < 10) {
+      db.exec("UPDATE chat_members SET wake_on = 'all' WHERE wake_on = 'mention';");
+      db.exec("UPDATE chat_room_defaults SET wake_on = 'all' WHERE wake_on = 'mention';");
     }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
     db.exec("COMMIT;");

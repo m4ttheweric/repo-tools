@@ -630,13 +630,15 @@ export function createChatHandlers(opts: {
       }
       if (!sessionId) return { ok: false, error: "chat: sign-in requires a sessionId or --pane" };
 
-      // No explicit baseHandle: prefer the name Claude Code's own registry
-      // already knows this session by over drawing a fresh pool name, so a
-      // repeat sign-in (or one resolved via --pane) lands on a familiar handle.
+      // No explicit baseHandle: prefer a name someone CHOSE for this session
+      // (registry nameSource "user": --name at launch, /rename) so chat and
+      // SendMessage identities match. Claude Code's auto-derived fallback
+      // names (nameSource "derived", chat-c6 style) are not names anyone
+      // picked: skip them and let the pool draw a real first name instead.
       let resolvedBase = baseHandle;
       if (resolvedBase === undefined) {
         const binding = inboxDeps.resolve(sessionId);
-        if (binding?.name && isValidChatName(binding.name)) resolvedBase = binding.name;
+        if (binding?.name && binding.nameSource === "user" && isValidChatName(binding.name)) resolvedBase = binding.name;
       }
 
       const data = signIn({ sessionId, baseHandle: resolvedBase, cwd: signInCwd, repo: signInRepo, branch: signInBranch, pane, statusText }, db, registryDeps);
