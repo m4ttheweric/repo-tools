@@ -50,3 +50,6 @@ export function toAnsiFg(rgb: Rgb): string {
 export function toAnsiBg(rgb: Rgb): string {
   return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
 }
+
+/** Braille spinner frames; advance every 80 ms. Shared by the inline spinner and the rt-ui theme. */
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"] as const;

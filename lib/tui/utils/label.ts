@@ -8,8 +8,6 @@
  *   - commands/status truncate, rpad, lpad, timeAgo
  */
 
-import { C } from "../theme.ts";
-
 // ─── String formatting ────────────────────────────────────────────────────────
 
 /**
@@ -51,33 +49,6 @@ export function timeAgo(ms: number | string): string {
   if (hrs < 24)  return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
   return `${days}d ago`;
-}
-
-// ─── Row background ───────────────────────────────────────────────────────────
-
-/**
- * Returns the correct background color for a row based on its selection state.
- * In Rezi, background color must be applied to EVERY `<text>` element in the row —
- * not just the container. Pass the result to each `<text style={{ ..., bg }}>`.
- *
- * @param selected - Whether the row is currently selected.
- * @returns `C.selBg` (the selection highlight color) or `undefined` (transparent).
- *
- * @example
- * ```tsx
- * const bg = rowBg(isSelected);
- * return (
- *   <row gap={1}>
- *     <text style={{ fg: C.pink, bg }}>❯</text>
- *     <text style={{ fg: C.white, bg }}>label</text>
- *     <spacer flex={1} />
- *     <text style={{ fg: C.dim, bg }}>:4001</text>
- *   </row>
- * );
- * ```
- */
-export function rowBg(selected: boolean): number | undefined {
-  return selected ? C.selBg : undefined;
 }
 
 // ─── Command label formatting ─────────────────────────────────────────────────
