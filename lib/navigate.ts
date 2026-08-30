@@ -166,9 +166,6 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[]
     "--nth=1",
     "--delimiter=\t",
     "--tabstop=1",
-    // Fill the terminal: "~100%" sizes the box to the content and leaves dead
-    // space below on a tall terminal. "100%" uses the full height either way.
-    "--height=100%",
     "--layout=reverse",
     // Up at the top wraps to the bottom and down at the bottom wraps to the
     // top, so a long list has no dead ends at either edge.

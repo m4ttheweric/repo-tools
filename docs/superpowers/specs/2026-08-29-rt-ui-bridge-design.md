@@ -97,7 +97,7 @@ terminal" and exits 1 when that gate is closed.
 
 | verb | lifetime | direction | tty mode | screen | used by |
 |---|---|---|---|---|---|
-| `rt-ui prompt` | one call | JSON spec in, JSON result out, exit code carries cancel | raw, input + output | inline card | `select`, `multiselect`, `confirm`, `textInput` |
+| `rt-ui prompt` | one call | JSON spec in, JSON result out, exit code carries cancel | raw, input + output | alt-screen card | `select`, `multiselect`, `confirm`, `textInput` |
 | `rt-ui steps` | one step | write-only stream of events | **cooked, write-only, reads nothing** | inline lines | `createStepRunner().run()`, `withSpinner` |
 | `rt-ui session --view <kind>` | while a board is open | bidirectional: models down, intents up | raw, alt-screen | full screen | `rt runner` (V1's only kind: `board`) |
 
@@ -245,12 +245,18 @@ Rules that keep the seam honest:
 
 ## Rendering contract
 
-- **Inline for prompts and steps, alt-screen for sessions.** Ratified from the
-  canvas. Inline cards clear themselves fully on exit (the answered confirm
-  collapses to one `✓ question  answer` line); nothing is left in
-  scrollback but that line. The spike got this collapse from a v1 renderer
-  quirk (an empty `View()` rewritten to a space); on v2 it is pinned by a
-  `teatest` byte assertion, not assumed.
+- **Alt-screen for prompts and sessions, inline for steps.** The canvas
+  ratified inline cards; the first test drive overturned that for prompts. An
+  inline card is a row the terminal rewraps mid-resize, and the wrapped
+  remnant lands outside the rows the renderer knows it painted, so a drag
+  leaves a stack of stale borders (fzf's `--height` mode has the same defect
+  on short lists; its pickers drop `--height` for the same reason). The
+  alternate screen is never reflowed and comes down leaving the user's screen
+  exactly as it was; the card is drawn top-left on it at `theme.CardWidth`
+  (88 columns). The answered confirm still collapses to one
+  `✓ question  answer` line, written after the screen is restored, so nothing
+  is left in scrollback but that line. Steps stay inline: they are single
+  lines, and a spinner must not hide the output it narrates.
 - **Theme = the Tokens artboard**, byte for byte, in `theme.go`: the plum
   palette from `lib/tui/palette.ts`, the glyph vocabulary
   (`● ○ ✗ ▌ ❯ ◉ ✓ ⚠ ↩`, braille spinner at 80 ms), and the family rules:
