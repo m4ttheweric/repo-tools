@@ -92,6 +92,7 @@ import {
   type BootPhase,
 } from "./daemon/supervision-state.ts";
 import { safeInterval, safeTimeout, scheduleSweep } from "./daemon/safe-timers.ts";
+import { BOOT_DELAY_MS as CD_CACHE_BOOT_DELAY_MS, REFRESH_MS as CD_CACHE_REFRESH_MS, refreshCdCache } from "./daemon/cd-cache-refresh.ts";
 import { pruneRuns } from "./runs/prune.ts";
 import { pruneLogs } from "./log-janitor.ts";
 import { getSetting } from "./settings/resolve.ts";
@@ -636,6 +637,14 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
             if (removed.length > 0) log.info({ removed: removed.length }, "pruned old state.db backups");
           },
           { bootDelayMs: 60_000, intervalMs: 24 * 60 * 60 * 1000 },
+          log,
+        ));
+        // Keeps cd-cache.json warm for `rt cd`; uses the async repo-index
+        // builder, never execSync, since this runs on the daemon thread.
+        sweepHandles.push(scheduleSweep(
+          "cd-cache-refresh",
+          () => refreshCdCache(loggerHandle.childLogger("cd-cache")),
+          { bootDelayMs: CD_CACHE_BOOT_DELAY_MS, intervalMs: CD_CACHE_REFRESH_MS },
           log,
         ));
 

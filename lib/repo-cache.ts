@@ -25,11 +25,16 @@ interface RepoCachePayload {
  * Writes the cache atomically: temp file + renameSync over the real path, so
  * a concurrent reader never observes a partially written file. Best-effort
  * (a stale cache is safe) - failures are swallowed rather than thrown.
+ *
+ * The temp file name carries the pid and a random suffix: the daemon's poll
+ * loop and a CLI `rt cd` write can race, and a shared fixed temp name would
+ * let one writer's in-progress file get overwritten by the other before
+ * either renameSync runs.
  */
 export function writeRepoCache(repos: KnownRepo[]): void {
   try {
     const path = cdCachePath();
-    const tmpPath = path + ".tmp";
+    const tmpPath = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     const payload: RepoCachePayload = { version: CACHE_VERSION, builtAt: Date.now(), repos };
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(tmpPath, JSON.stringify(payload));

@@ -5,10 +5,11 @@
  * partial file a concurrent reader could observe.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { cdCachePath } from "../rt-paths.ts";
 import { readRepoCache, writeRepoCache } from "../repo-cache.ts";
 import type { KnownRepo } from "../repo-index.ts";
@@ -62,13 +63,50 @@ describe("repo-cache", () => {
   test("write is atomic: no readable partial file survives (temp write + rename)", () => {
     writeRepoCache(sampleRepos);
 
-    // The temp file must never be left behind after a successful write.
-    expect(existsSync(cdCachePath() + ".tmp")).toBe(false);
+    // No temp file (fixed-name or the new per-call random-suffixed name)
+    // survives a successful write.
+    const dir = dirname(cdCachePath());
+    const leftoverTmp = readdirSync(dir).filter((f) => f.includes(".tmp"));
+    expect(leftoverTmp).toEqual([]);
     // The real path must always parse as a complete, valid payload.
     const raw = readFileSync(cdCachePath(), "utf8");
     const parsed = JSON.parse(raw);
     expect(parsed.version).toBe(1);
     expect(parsed.repos).toEqual(sampleRepos);
+  });
+
+  test("temp file name is per-call, not a fixed shared path (concurrent writers can't clobber each other)", () => {
+    const renamedFrom: string[] = [];
+    const spy = spyOn(fs, "renameSync").mockImplementation((from: unknown) => {
+      renamedFrom.push(String(from));
+    });
+
+    writeRepoCache(sampleRepos);
+    writeRepoCache(sampleRepos);
+
+    spy.mockRestore();
+    expect(renamedFrom).toHaveLength(2);
+    // Distinct per call, so two writers racing never share a temp path.
+    expect(renamedFrom[0]).not.toBe(renamedFrom[1]);
+    for (const tmpPath of renamedFrom) {
+      expect(tmpPath.startsWith(cdCachePath())).toBe(true);
+      expect(tmpPath).toContain(String(process.pid));
+      expect(tmpPath.endsWith(".tmp")).toBe(true);
+    }
+  });
+
+  test("a stale fixed-name temp file from the old naming scheme is left untouched", () => {
+    // Pre-hardening, every writer raced on this exact path. A leftover file
+    // there (from another process, or a crash) must not be read, written,
+    // or removed by a write using the new per-call naming.
+    const foreignTmp = `${cdCachePath()}.tmp`;
+    mkdirSync(dirname(cdCachePath()), { recursive: true });
+    writeFileSync(foreignTmp, "not touched by this writer");
+
+    writeRepoCache(sampleRepos);
+
+    expect(readFileSync(foreignTmp, "utf8")).toBe("not touched by this writer");
+    expect(readRepoCache()?.repos).toEqual(sampleRepos);
   });
 
   test("writeRepoCache never throws even when the target directory cannot be created", () => {
