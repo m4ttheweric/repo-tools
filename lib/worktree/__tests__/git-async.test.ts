@@ -58,7 +58,7 @@ describe("git-async", () => {
     execSync(`git -C ${repo} worktree add ${repo}-wt -b side`, { shell: "/bin/zsh" });
     const trees = (await listWorktreesAsync(repo))!;
     expect(trees.length).toBe(2);
-    expect(trees[1]).toEqual({ path: `${repo}-wt`, branch: "side" });
+    expect(trees[1]).toEqual({ path: `${repo}-wt`, branch: "side", isBare: false });
   });
 
   test("listWorktreesAsync returns null on a nonzero git exit", async () => {

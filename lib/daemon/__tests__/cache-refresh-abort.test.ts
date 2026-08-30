@@ -45,7 +45,7 @@ test("a cycle that hits the deadline stops before the next repo", async () => {
     [B]: { mode: "poll", caches: ["branches"] },
   });
   spyOn(gitAsync, "listWorktreesAsync").mockImplementation(async (repoPath: string) => [
-    { path: repoPath, branch: `wt-${repoPath}` },
+    { path: repoPath, branch: `wt-${repoPath}`, isBare: false },
   ]);
   spyOn(gitAsync, "listWorktreeRootsAsync").mockResolvedValue([]);
   spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});

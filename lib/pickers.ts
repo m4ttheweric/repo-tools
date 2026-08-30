@@ -7,7 +7,7 @@
 
 import { execSync } from "child_process";
 import { join } from "path";
-import { getRepoIdentity, getKnownRepos, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
+import { getRepoIdentity, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchLabel } from "./enrich.ts";
 
 const SWITCH_REPO     = "__switch_repo__"     as const;
@@ -49,7 +49,7 @@ function repoOptionsFromList(repos: KnownRepo[]) {
 export async function pickWorktreeWithSwitch(
   repo: KnownRepo,
   currentPath: string,
-  opts?: { stderr?: boolean },
+  opts?: { stderr?: boolean; reloadCommand?: string },
 ): Promise<string | typeof SWITCH_REPO> {
   const { filterableSelect, BackNavigation } = await import("./fzf-select.ts");
 
@@ -69,6 +69,7 @@ export async function pickWorktreeWithSwitch(
       options,
       backLabel: "Switch to a different repo",
       ...(opts?.stderr ? { stderr: true } : {}),
+      ...(opts?.reloadCommand ? { reloadCommand: opts.reloadCommand } : {}),
     });
     // Esc/Ctrl-C → null; exit cleanly rather than leaking null through the
     // string return type (callers do selectedPath.split(...) etc.).
@@ -86,7 +87,7 @@ export async function pickWorktreeWithSwitch(
  */
 export async function pickFromAllRepos(
   repos: KnownRepo[],
-  opts?: { stderr?: boolean; errorMessage?: string; includePackages?: boolean },
+  opts?: { stderr?: boolean; errorMessage?: string; includePackages?: boolean; reloadCommand?: string },
 ): Promise<string> {
   const writer = opts?.stderr ? console.error : console.log;
 
@@ -116,6 +117,7 @@ export async function pickFromAllRepos(
         message: "Pick a repo",
         options: repoOptionsFromList(repos),
         ...(opts?.stderr ? { stderr: true } : {}),
+        ...(opts?.reloadCommand ? { reloadCommand: opts.reloadCommand } : {}),
       });
       if (!picked) process.exit(1);
       selectedRepo = repoFromOptionValue(repos, picked)!;

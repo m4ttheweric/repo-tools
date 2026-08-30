@@ -18,11 +18,13 @@
  *   rtcd() { local dir; dir="$(rt cd "$@")" && [ -n "$dir" ] && cd "$dir"; }
  */
 
-import { readFileSync, writeFileSync, appendFileSync } from "fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, getKnownReposCached, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
+import { buildFzfRows } from "../lib/fzf-select.ts";
+import { writeRepoCache } from "../lib/repo-cache.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -163,9 +165,63 @@ async function ensureShellFunction(): Promise<void> {
   process.stdout.write = origWrite;
 }
 
+// ─── Cache read path ─────────────────────────────────────────────────────────
+
+/**
+ * The cd cache can predate the repo you are standing in right now (never yet
+ * written back since this repo was created or first registered), so a
+ * resolved identity the cached list doesn't carry forces one live
+ * `getKnownRepos` scan for this invocation - correctness over speed, and only
+ * ever the one extra scan, since a repo that's genuinely absent from the live
+ * list won't retrigger it on the next call either.
+ */
+export function resolveReposForIdentity(
+  identity: { repoName: string } | null,
+  cachedRepos: KnownRepo[],
+): KnownRepo[] {
+  if (!identity) return cachedRepos;
+  if (cachedRepos.some((r) => r.repoName === identity.repoName)) return cachedRepos;
+  return getKnownRepos({ includeMissing: true });
+}
+
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
+/**
+ * Hidden, agent/reload-facing flag: not in command-tree-def.ts, so it never
+ * appears in help or any picker. Task 6's `ctrl-r:reload(rt cd --emit-rows)`
+ * fzf binding execs exactly this to refresh the visible row list, so its
+ * stdout must stay byte-identical to what the interactive picker itself
+ * would show fzf.
+ *
+ * Gated to the non-interactive path: a TTY invocation falls through to
+ * normal cd behavior instead, since --emit-rows has no meaning as a picker
+ * action.
+ */
+function shouldEmitRows(args: string[]): boolean {
+  return args.includes("--emit-rows") && (!process.stdin.isTTY || !!process.env.RT_BATCH);
+}
+
+/**
+ * The ctrl-r reload command for cd's fzf pickers. fzf execs reloads via
+ * `sh -c`, which resolves `rt` from PATH only (the installed binary) -- the
+ * dev-mode shell-function wrapper is not visible there, which is acceptable
+ * since --emit-rows is a plain data path with no shell-integration behavior.
+ */
+const CD_RELOAD_COMMAND = "rt cd --emit-rows";
+
+/** Live-scanned rows + a cache refresh, for --emit-rows. Never launches a picker. */
+function emitRows(): void {
+  const repos = getKnownRepos({ includeMissing: true });
+  const rows = buildFzfRows(repoOptions(repos));
+  process.stdout.write(rows + "\n");
+  writeRepoCache(repos);
+}
+
 export async function worktreePicker(args: string[]): Promise<void> {
+  if (shouldEmitRows(args)) {
+    emitRows();
+    process.exit(0);
+  }
 
   await ensureShellFunction();
 
@@ -191,17 +247,22 @@ export async function worktreePicker(args: string[]): Promise<void> {
   const wtBranch     = wtIdx !== -1 ? args[wtIdx + 1] : undefined;
 
   // getRepoIdentity() registers the current repo in the index (via
-  // updateRepoIndex) as a side effect, so it MUST run before getKnownRepos().
-  // Otherwise a repo you just entered — especially a local-only repo seen for
-  // the first time — is absent from `repos`, currentRepo resolves to null, and
-  // rt cd wrongly falls through to the global all-repos picker instead of
-  // recognizing where you are.
+  // updateRepoIndex) as a side effect, so it MUST run before the repo list is
+  // read. Otherwise a repo you just entered (especially a local-only repo
+  // seen for the first time) is absent from `repos`, currentRepo resolves to
+  // null, and rt cd wrongly falls through to the global all-repos picker
+  // instead of recognizing where you are.
   //
   // includeMissing: true so a lost repo still renders (dimmed, via repoOption)
   // in every picker built from `repos` — pickFromAllRepos's missing guard is
   // otherwise dead code, since a bare getKnownRepos() never hands it one.
+  //
+  // `repos` reads the cd cache (fast path). resolveReposForIdentity re-reads
+  // live when the cache predates the repo the identity just resolved, so the
+  // repo you are standing in is never invisible to its own cd invocation.
   const identity     = getRepoIdentity();
-  const repos        = getKnownRepos({ includeMissing: true });
+  const cachedRepos  = getKnownReposCached({ includeMissing: true });
+  const repos        = resolveReposForIdentity(identity, cachedRepos);
   const currentRepo  = identity
     ? repos.find((r) => r.repoName === identity.repoName) ?? null
     : null;
@@ -218,7 +279,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
       const { filterableSelect } = await import("../lib/fzf-select.ts");
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
-        : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true });
+        : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true, reloadCommand: CD_RELOAD_COMMAND });
       if (!pickedRepoName) process.exit(0); // Esc on repo picker
       const pickedRepo = repoFromOptionValue(repos, pickedRepoName)!;
       if (pickedRepo.missing) {
@@ -235,7 +296,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
         selectedPath = await resolveWorktreeByBranch(wtBranch, [pickedRepo], { stderr: true });
       }
     } else {
-      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages });
+      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND });
     }
 
   // ── --worktree flag only: resolve branch in current repo (then all repos) ──
@@ -256,15 +317,24 @@ export async function worktreePicker(args: string[]): Promise<void> {
     const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
     if (!result) process.exit(0);
     selectedPath = isSwitchRepo(result)
-      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages })
+      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND })
       : result;
 
   // ── Not in a tracked repo or single-worktree: repo picker ───────────────
   } else {
-    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages });
+    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND });
   }
 
   // Restore stdout and print just the path
   process.stdout.write = realStdoutWrite;
+
+  // Ghost guard: the cache (or a picker built from it) can hand back a path
+  // that no longer exists on disk. Refuse rather than print a dead path...
+  // the shell wrapper `cd`s into whatever stdout prints, no questions asked.
+  if (!existsSync(selectedPath)) {
+    console.error(`\n  ${ghostPathRefusal(selectedPath)}\n`);
+    process.exit(1);
+  }
+
   realStdoutWrite(selectedPath + "\n");
 }

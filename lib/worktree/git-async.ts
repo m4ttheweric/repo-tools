@@ -21,6 +21,9 @@ export interface GitResult {
 export interface WorktreeEntry {
   path: string;
   branch: string | null;
+  /** True for the container-repo row a `bare` porcelain repo reports for
+   *  itself (no working tree of its own) -- never a real, usable worktree. */
+  isBare: boolean;
 }
 
 // rt drives git inside target repos but must never fire their hooks (repo
@@ -129,10 +132,11 @@ export async function listWorktreesAsync(repoPath: string, signal?: AbortSignal)
   const results: WorktreeEntry[] = [];
   let curPath: string | null = null;
   let curBranch: string | null = null;
+  let curBare = false;
 
   const flush = () => {
     if (curPath && existsSync(curPath)) {
-      results.push({ path: curPath, branch: curBranch });
+      results.push({ path: curPath, branch: curBranch, isBare: curBare });
     }
   };
 
@@ -141,8 +145,11 @@ export async function listWorktreesAsync(repoPath: string, signal?: AbortSignal)
       flush();
       curPath = line.slice("worktree ".length).trim();
       curBranch = null;
+      curBare = false;
     } else if (line.startsWith("branch ")) {
       curBranch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    } else if (line === "bare") {
+      curBare = true;
     }
   }
   flush();
