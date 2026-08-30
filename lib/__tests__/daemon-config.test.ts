@@ -40,4 +40,15 @@ describe("resolveApiPort", () => {
     if (prev !== undefined) process.env.RT_API_PORT = prev;
     else delete process.env.RT_API_PORT;
   });
+
+  // R2: RT_API_PORT="0" is a deliberate override (bind an OS-assigned
+  // ephemeral port), not "unset" — `Number("0") || 9401`-style falsy checks
+  // silently drop it and fall through to the setting/default instead.
+  test("RT_API_PORT=0 is honored, not treated as unset", () => {
+    const prev = process.env.RT_API_PORT;
+    process.env.RT_API_PORT = "0";
+    expect(resolveApiPort()).toBe(0);
+    if (prev !== undefined) process.env.RT_API_PORT = prev;
+    else delete process.env.RT_API_PORT;
+  });
 });
