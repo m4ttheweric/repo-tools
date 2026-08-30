@@ -1512,6 +1512,35 @@ describe("startHomeSnapshot — kill switch cancels pending push", () => {
 
     expect(execCalls.some((c) => c[1] === "push")).toBe(false);
   });
+
+  // CodeRabbit (PR #137): safeReadSettings()'s catch fallback hardcoded
+  // enabled:true, so a settings-read failure that hits AFTER the store has
+  // already been observed disabled resurrected the kill switch's "enabled"
+  // view and let a scheduled push through anyway.
+  test("a settings-read failure after the store was observed disabled falls back to disabled, not enabled:true", async () => {
+    let mode: "enabled" | "disabled" | "throw" = "enabled";
+    const readSettings = () => {
+      if (mode === "throw") throw new Error("settings store corrupt");
+      return { ...DEFAULT_SETTINGS, enabled: mode === "enabled" };
+    };
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 0 }));
+    const { deps, timers } = baseDeps({ exec: execFn, readSettings });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    const pushEntry = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    expect(pushEntry).toBeDefined();
+
+    mode = "disabled";
+    handle.status(); // a successful read observes disabled, updating the last-known state
+
+    mode = "throw"; // the settings store breaks while the last-known state is still disabled
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(execCalls.some((c) => c[1] === "push")).toBe(false);
+  });
 });
 
 // ─── home:push-failed broadcasts once per failure streak ────────────────────
@@ -1744,7 +1773,7 @@ describe("startHomeSnapshot — settings-read resilience", () => {
     const result = await handle.runNow("manual");
 
     expect(result.committed).toBe(true); // did not reject; fell back to defaults and still ran
-    expect(log.calls.some((c) => c.level === "warn" && c.args[1] === "home-snapshot: failed to read settings; using the default")).toBe(true);
+    expect(log.calls.some((c) => c.level === "warn" && c.args[1] === "home-snapshot: failed to read settings; using the last-known enabled state")).toBe(true);
   });
 
   test("S091: a readSettings throw while re-arming the janitor after a run still re-arms it", async () => {

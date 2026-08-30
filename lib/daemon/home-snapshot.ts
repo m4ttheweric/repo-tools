@@ -334,14 +334,16 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
    */
   function safeReadSettings(): HomeSnapshotSettings {
     try {
-      return deps.readSettings();
+      const settings = deps.readSettings();
+      lastKnownEnabled = settings.enabled !== false;
+      return settings;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message !== lastLoggedSettingsError) {
-        deps.log.warn({ err }, "home-snapshot: failed to read settings; using the default");
+        deps.log.warn({ err }, "home-snapshot: failed to read settings; using the last-known enabled state");
         lastLoggedSettingsError = message;
       }
-      return { enabled: true, ...SETTINGS_FALLBACK };
+      return { enabled: lastKnownEnabled, ...SETTINGS_FALLBACK };
     }
   }
 
