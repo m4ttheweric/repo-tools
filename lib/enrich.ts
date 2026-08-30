@@ -239,14 +239,42 @@ export function formatBranchLabel(eb: EnrichedBranch): string {
 
 // ─── Public enrichment API ───────────────────────────────────────────────────
 
+/** Trivial enrichment for a branch that never carries MR/Linear data. */
+function localOnly(b: { path: string; branch: string }): EnrichedBranch {
+  return {
+    path: b.path,
+    dirName: b.path.split("/").pop() || b.path,
+    branch: b.branch,
+    linearId: null,
+    ticket: null,
+    mr: null,
+  };
+}
+
 /**
  * Enrich a list of branches with Linear ticket + GitLab MR data.
  *
- * Cache strategy:
- *  - If cached data exists → serve instantly, always revalidate in background
- *  - If no cached data → fetch with spinner (cold start)
+ * `on-deck/*` branches are worktree-pool plumbing: they never have an MR or a
+ * ticket, and the daemon's cache-refresh deliberately never caches them. Gating
+ * the real enrichment on `branches.every(cached)` would therefore always miss
+ * for any repo with on-deck worktrees and force a cold fetch (the spinner) every
+ * time. So they are enriched trivially as Local Only, kept out of the cache-hit
+ * gate and the fetch, and only the real branches go through `enrichRealBranches`.
  */
 export async function enrichBranches(
+  branches: Array<{ path: string; branch: string }>,
+  remoteUrl?: string,
+  options?: { silent?: boolean; forceRefresh?: boolean },
+): Promise<EnrichedBranch[]> {
+  const real = branches.filter((b) => !b.branch.startsWith("on-deck/"));
+  const enrichedReal = real.length > 0
+    ? await enrichRealBranches(real, remoteUrl, options)
+    : [];
+  const byPath = new Map(enrichedReal.map((e) => [e.path, e]));
+  return branches.map((b) => byPath.get(b.path) ?? localOnly(b));
+}
+
+async function enrichRealBranches(
   branches: Array<{ path: string; branch: string }>,
   remoteUrl?: string,
   options?: { silent?: boolean; forceRefresh?: boolean },
