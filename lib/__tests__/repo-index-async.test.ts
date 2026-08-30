@@ -90,7 +90,7 @@ describe("getKnownReposAsync parity", () => {
 
     // Unregistered markerRepo candidate, surfaced via a configured root.
     // `.git` here is a directory, so both builders take the headBranch fast
-    // path — branchOfAsync's spawn fallback is exercised by the linked
+    // path... branchOfAsync's spawn fallback is exercised by the linked
     // candidate below instead.
     const scanRoot = mkdtempSync(join(tmpdir(), "rt-async-parity-scan-"));
     const candidate = markerRepo(scanRoot, "candidate-repo");

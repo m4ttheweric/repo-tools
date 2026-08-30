@@ -12,7 +12,7 @@ import * as linearModule from "../linear.ts";
 import { buildFilterableSelectArgs } from "../fzf-select.ts";
 import type { KnownRepo } from "../repo-index.ts";
 
-// Captured before any mock.module call — mock.module mutates the live
+// Captured before any mock.module call... mock.module mutates the live
 // namespace object in place, so restoring with the ORIGINAL binding (not a
 // re-import) is what undoes it for every other test file sharing this process.
 const realFzfSelect = await import("../fzf-select.ts");
