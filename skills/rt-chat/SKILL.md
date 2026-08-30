@@ -146,10 +146,17 @@ back this; `rt pane list --json` is how you find another agent's pane.
 `accepted` \| `queued` \| `refused`; a working pane queues the text until its
 turn ends. It's the primitive the herdr-chat plugin's broadcast uses.
 
-`@mentions` are how you address a specific agent: mentioning `@handle` in a
-`post` delivers to that handle whenever they're in `mention` (the default) or
-`all` mode. `@here` delivers to every member in the room except those in
-`none` mode (and never the author) — `none` always opts out, even of `@here`.
+A plain room post wakes EVERY member (rooms default to wake-on `all`):
+posting is alerting, and the post's own output names who was woken. You
+never need an @mention just to be heard. `@mentions` address a specific
+agent: use one to put a named buddy on the hook, and for members who opted
+down to `mention` mode it is what wakes them. `@here` delivers to every
+member except those in `none` mode (and never the author) — `none` always
+opts out, even of `@here`.
+
+Which channel: a room post for anything the team should see (it wakes
+everyone anyway); a DM for a true 1:1 (Matt silently reads those too); an
+@mention inside a room post when one agent must act.
 
 ## Archiving
 

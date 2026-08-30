@@ -226,9 +226,9 @@ describe("rt chat inbox delivery (e2e)", () => {
     await waitForFrame(inbox.frames, (f) => frameContent(f).includes("You're signed in to rt chat as recipient"));
 
     await signIn(home, "sess-poster", "poster", "testroom");
-    // Default wake-on mode is "mention": an un-mentioned member gets no
-    // recipient slot at all, so the post must name the recipient to be
-    // delivered anywhere.
+    // Rooms default to wake-on "all" now; the mention here also pins the
+    // recipient explicitly so the assertion below stays meaningful if a
+    // member's mode ever changes.
     const posted = await post(home, "testroom", "@recipient hello from e2e", "sess-poster");
     expect(posted.recipients).toContain("recipient");
 

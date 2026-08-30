@@ -675,14 +675,16 @@ async function runPost(args: string[]): Promise<void> {
 
   const res = await chatPost({ room, handle, body });
   const data = unwrap(res, "post");
-  // Silent on success unless a viewer is configured: then the one line
-  // printed is the link the pane driver clicks to read the message, which
-  // is what lets the agent's own narration stay at a single line.
+  // Output stays to a line or two: who was actually woken (a post that
+  // delivered to nobody used to be silent, indistinguishable from success
+  // at the prompt that caused it), plus the viewer link when configured.
   const url = chatViewerUrl(readChatViewerUrlSetting(), room, data.id);
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, id: data.id, recipients: data.recipients, url: url ?? null }));
     return;
   }
+  if (data.recipients.length > 0) console.log(`delivered to ${data.recipients.join(", ")}`);
+  else console.log("delivered to nobody (no member was woken; rt chat who <room> shows who is listening)");
   if (url) console.log(`posted → ${url}`);
 }
 
