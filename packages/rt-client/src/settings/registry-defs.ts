@@ -45,6 +45,14 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Per-repo worktree pool config (onDeck size, ready steps, name pool); root/branchFormat/ready computed-or-empty in the reader.",
   },
   {
+    key: "rt.worktreeReadyApproval",
+    type: "string",
+    scopes: ["user"],
+    merge: "replace",
+    repoScoped: true,
+    description: "Per-repo user approval of a team-authored `ready` shell ladder, as its content hash (RT-89). User scope only so a team store can never approve its own shell; a hash mismatch after a team edit re-holds the ladder until `rt worktree ready-approve` records the new one.",
+  },
+  {
     key: "rt.repoIdentityOverrides",
     type: "object",
     scopes: ["machine"],
