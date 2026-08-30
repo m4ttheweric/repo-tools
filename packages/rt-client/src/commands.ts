@@ -226,7 +226,7 @@ export interface AgentRecord {
   createdAt: number; lastResumedAt?: number; finishedAt?: number;
 }
 
-// ─── Wave 3 (B2/R013/R016): the daemon's remaining out-of-process commands ──
+// ─── The daemon's remaining out-of-process commands (R013/R016) ──
 // rt CLI <-> daemon, tray <-> daemon, and VS Code extension <-> daemon are
 // all separate OS processes, so any command reachable from one counts as
 // "external" here even when the only known caller today is rt's own CLI.
@@ -476,7 +476,7 @@ export interface Commands {
   "pane:send": { payload: { paneId: string; text: string; callerPane?: string }; data: PaneSendResult };
   "pane:focus": { payload: { paneId: string }; data: PaneFocusResult };
 
-  // ─── Wave 3 (B2/R013/R016) ────────────────────────────────────────────────
+  // ─── R013/R016 ────────────────────────────────────────────────
   "cache:read": { payload: { branches?: string[]; maxAgeMs?: number; repoIdentity?: string }; data: Record<string, BranchEnrichment> };
   /** `source` ("cache"|"fresh"|"empty") rides alongside `data` on the wire, not nested under it. */
   "branch:enrich": { payload: { branch: string; repoPath?: string; remoteUrl?: string; repoIdentity?: string }; data: BranchEnrichment | null };
@@ -573,7 +573,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "pane:send",
   "pane:focus",
 
-  // ─── Wave 3 (B2/R013/R016) ────────────────────────────────────────────────
+  // ─── R013/R016 ────────────────────────────────────────────────
   "cache:read",
   "branch:enrich",
   "cache:refresh",

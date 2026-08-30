@@ -36,7 +36,7 @@ import type { HomeSnapshotHandle } from "./home-snapshot.ts";
 // The exported return type is the plain `Record<string, Handler>` a router
 // lookup needs; the exhaustiveness proof against the rt-client catalog
 // (MAT-31) still runs on the `handlers` local below, typed `TypedHandlers &
-// HandlerMap` — that intersection's index signature is also what rejects a
+// HandlerMap`: that intersection's index signature is also what rejects a
 // non-function value (e.g. a factory that erroneously returns `db`) as a
 // compile error, before the runtime exhaustiveness test in
 // __tests__/rt-client-commands.test.ts ever runs.

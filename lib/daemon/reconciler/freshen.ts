@@ -1,8 +1,8 @@
 /**
  * Freshen duty (spec §6.3): fast-forwards on-deck ephemeral trees and opted-in
  * idle main clones onto the default branch, then reruns whatever ready steps
- * that advances. Extracted from worktree-reconciler.ts (R014); the step's
- * contract (`FreshenDeps` in, freshened tree names out) is unchanged.
+ * that advances. The step's contract (`FreshenDeps` in, freshened tree names
+ * out) is stable.
  */
 
 import type { Logger } from "pino";

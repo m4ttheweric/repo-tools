@@ -1,10 +1,10 @@
 /**
  * Merge reactor duty (spec §6.2): detects `opened -> merged|closed` MR
- * transitions and reacts (dispose, mark disposable, auto-return main).
- * Extracted from worktree-reconciler.ts (R014), plus the fired-ledger GC
- * (R049): a `disposed:<repo>:<iid>:*` key is dropped once its MR's cache
- * entry is gone (the branch-cache GC already bounds that set), so a reopened
- * MR under the same iid re-notifies instead of the ledger growing forever.
+ * transitions and reacts (dispose, mark disposable, auto-return main), plus
+ * the fired-ledger GC (R049): a `disposed:<repo>:<iid>:*` key is dropped once
+ * its MR's cache entry is gone (the branch-cache GC already bounds that set),
+ * so a reopened MR under the same iid re-notifies instead of the ledger
+ * growing forever.
  */
 
 import { join } from "path";

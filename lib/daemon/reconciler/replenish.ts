@@ -7,7 +7,6 @@
  */
 
 import { statfsSync } from "fs";
-import type { Logger } from "pino";
 import {
   findByPath,
   loadRegistry,

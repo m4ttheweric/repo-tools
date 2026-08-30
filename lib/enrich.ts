@@ -72,9 +72,7 @@ export function isGitLabRemote(url: string | undefined): boolean {
 /**
  * Scoped provider IDs arrive as "gitlab:42" or "gitlab:user:42"; extract the
  * trailing numeric segment. Single source of truth for the notifier's
- * self-author check and the discussions store's author/participant matching,
- * which previously carried disagreeing copies (one gated on a trailing-digit
- * regex, the other on parseInt).
+ * self-author check and the discussions store's author/participant matching.
  */
 export function numericUserId(id: string | null | undefined): number | null {
   const tail = id?.split(":").pop();

@@ -1,5 +1,5 @@
 /**
- * lib/state/db.ts — schema convergence on every open (R015, R056).
+ * lib/state/db.ts: schema convergence on every open (R015, R056).
  *
  * The schema DDL now applies on every `openStateDb`, not only while
  * `user_version < SCHEMA_VERSION`, so a db already stamped at SCHEMA_VERSION
@@ -7,7 +7,7 @@
  * write) self-heals on its next open instead of staying broken forever.
  *
  * HOME isolation is handled by the repo-wide bun test preload
- * (test-setup.ts) — never removed here.
+ * (test-setup.ts); never removed here.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
@@ -42,7 +42,7 @@ describe("self-heal: a db at SCHEMA_VERSION missing schema converges on reopen",
     const db = openStateDb(dbPath, "cli");
     expect((db.query("PRAGMA user_version;").get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION);
     expect(columnNames(db, "chat_rooms")).toContain("archived_at");
-    // SQLite >= 3.35 supports DROP COLUMN — fixture stays at SCHEMA_VERSION,
+    // SQLite >= 3.35 supports DROP COLUMN. Fixture stays at SCHEMA_VERSION,
     // the exact shape a self-heal (not a version migration) must repair.
     db.exec("ALTER TABLE chat_rooms DROP COLUMN archived_at;");
     expect(columnNames(db, "chat_rooms")).not.toContain("archived_at");

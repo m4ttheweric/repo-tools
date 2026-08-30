@@ -362,7 +362,7 @@ describe("createNotifier instance isolation (R031 fix round 1)", () => {
 
     expect(eventsA.length).toBe(1);
     // Two instances share the underlying state.db (branch/fired snapshots
-    // are process-wide by design — see the module doc comment), but the
+    // are process-wide by design, see the module doc comment), but the
     // BROADCAST is instance-scoped: notifierB never constructed and never
     // called checkAndNotify, so it must never see an event either way.
     expect(eventsB.length).toBe(0);

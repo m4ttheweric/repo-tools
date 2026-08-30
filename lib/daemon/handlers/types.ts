@@ -103,7 +103,7 @@ export type TypedHandlers = {
   [K in CommandName]: (payload: Commands[K]["payload"]) => Promise<CommandResult<K>>;
 };
 
-// ── Daemon-internal command surface (B2/R016) ────────────────────────────────
+// ── Daemon-internal command surface (R016) ────────────────────────────────
 // Verbs with no out-of-process consumer found anywhere in this repo (no REST
 // route, no rt CLI call, no tray/VS Code caller) stay off the shipped
 // rt-client catalog -- that surface is meant to be exactly the cross-process

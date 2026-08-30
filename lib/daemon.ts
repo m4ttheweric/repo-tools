@@ -469,7 +469,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           log.info(`migrated legacy ${LEGACY_RT_LABEL} state to ${RT_DIR_LABEL}`);
         } else if (rtMigration === "conflict") {
           log.warn(
-            `rt state is split between ${LEGACY_RT_LABEL} and ${RT_DIR_LABEL} — the daemon reads only ` +
+            `rt state is split between ${LEGACY_RT_LABEL} and ${RT_DIR_LABEL}: the daemon reads only ` +
             `${RT_DIR_LABEL}; merge the legacy ${LEGACY_RT_LABEL} directory into it by hand, then delete it`,
           );
         }

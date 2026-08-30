@@ -15,7 +15,7 @@
  * Called at the end of each daemon cache refresh cycle.
  *
  * R031: the only real module-scope singleton state here is the broadcast
- * hook and the (test-only) fallback-notifier path — everything else
+ * hook and the (test-only) fallback-notifier path: everything else
  * (branch/port snapshots, the fired-key ledger, the notification queue)
  * already lives in state.db, not in this module. Both are held by
  * `createNotifier(deps)`; the free functions below delegate to one
@@ -458,26 +458,21 @@ type NotifyFn = (
 ) => void;
 
 /**
- * R031 fix round 1: `checkAndNotify`/`checkRunawayProcesses`/`notifyEnabled`
- * used to be top-level functions calling the module-level `notify` export
- * directly — so a `createNotifier({broadcast: X})` instance's own methods
- * silently routed notifications through whichever hook the DEFAULT instance
- * happened to have, not `X`. Fixed by building a self-referencing `api`
- * object: these three methods call `api.notify(...)` (a property lookup at
- * CALL time, not the value `notify` had when the closure was created), and
- * `detectBranchTransitions`/`detectStalePortTransitions` take that same
- * `api.notify` in as an explicit `notifyFn` parameter rather than reaching
- * for a shared identifier. So every method on one `createNotifier(deps)`
- * instance is now genuinely bound to that instance's own `broadcastHook`/
- * `fallbackNotifierPath` — see the isolation test in
+ * R031: `checkAndNotify`/`checkRunawayProcesses`/`notifyEnabled` call
+ * `api.notify(...)`, a property lookup on this instance's own `api` object
+ * at call time, and `detectBranchTransitions`/`detectStalePortTransitions`
+ * take that same `api.notify` in as an explicit `notifyFn` parameter rather
+ * than reaching for a shared identifier. So every method on one
+ * `createNotifier(deps)` instance is bound to that instance's own
+ * `broadcastHook`/`fallbackNotifierPath`: see the isolation test in
  * `lib/__tests__/notifier.test.ts` ("two instances route ... through their
  * own broadcast hook").
  *
  * The only state isolated per instance is the broadcast hook and the
- * (test-only) fallback-notifier executable path — every other *input*
+ * (test-only) fallback-notifier executable path: every other *input*
  * (prefs, branch/port snapshots, the durable queue) already lives in
  * state.db, shared across the whole process regardless of which instance
- * reads it; but which hook a given instance's own notify() call fires is now
+ * reads it; but which hook a given instance's own notify() call fires is
  * fully isolated.
  */
 export function createNotifier(deps: NotifierDeps = {}): Notifier {
@@ -725,8 +720,8 @@ export function createNotifier(deps: NotifierDeps = {}): Notifier {
 // state.db), so they stay top-level and shared across every createNotifier()
 // instance. Each takes the CALLING instance's own `notify` (its `api.notify`,
 // looked up at call time) as an explicit parameter instead of reaching for a
-// shared identifier — that parameterization is what makes checkAndNotify's
-// per-instance routing (see the fix-round-1 comment above createNotifier)
+// shared identifier: that parameterization is what keeps checkAndNotify's
+// per-instance routing (see the isolation comment above createNotifier)
 // actually isolated.
 
 function detectBranchTransitions(
@@ -1061,7 +1056,7 @@ export const __test__ = {
    * The lazily-created default Notifier instance, for tests that need to
    * spy on its `notify` (or another method) directly. Spying on the
    * top-level `export function notify` would only replace that export's
-   * own binding — checkAndNotify/checkRunawayProcesses call `api.notify`
+   * own binding: checkAndNotify/checkRunawayProcesses call `api.notify`
    * on THIS object, so this is the thing to spy on to intercept them.
    */
   getDefaultNotifier,

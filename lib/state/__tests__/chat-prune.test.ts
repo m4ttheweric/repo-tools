@@ -1,5 +1,5 @@
 /**
- * lib/state/chat-store.ts — pruneMessages coverage (R053).
+ * lib/state/chat-store.ts: pruneMessages coverage (R053).
  */
 import { expect, test } from "bun:test";
 import { tmpdir } from "os";

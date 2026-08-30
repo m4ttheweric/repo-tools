@@ -44,7 +44,7 @@ export interface Registry {
  * R031: the epoch counter used to live as a bare module-scope `Map`. The
  * registry rows themselves are already durable (kv store / state.db), so the
  * only state a fresh instance needs to isolate is this in-process write
- * counter — two `createRegistry()` instances never see each other's bumps.
+ * counter: two `createRegistry()` instances never see each other's bumps.
  */
 export function createRegistry(): Registry {
   /**

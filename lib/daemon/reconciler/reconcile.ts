@@ -1,7 +1,7 @@
 /**
  * Reconcile duty: brings the on-disk worktree registry back in line with git
- * ground truth (spec §4). Extracted from worktree-reconciler.ts (R014); the
- * step's contract (`ReconcileDeps` in, `TreeRecord[]` out) is unchanged.
+ * ground truth (spec §4). The step's contract (`ReconcileDeps` in,
+ * `TreeRecord[]` out) is stable.
  */
 
 import { basename, dirname } from "path";

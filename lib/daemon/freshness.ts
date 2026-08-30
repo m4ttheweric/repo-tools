@@ -240,13 +240,13 @@ export interface MappingOverrides {
 /**
  * Builds one independent instance of every watcher/provider/user-id/cache
  * this module used to hold as bare module-scope `let`s. Two cores built from
- * this factory share nothing — a test can construct `createFreshnessCore()`
+ * this factory share nothing: a test can construct `createFreshnessCore()`
  * twice and mutate one without the other observing it.
  *
  * All the free functions exported below (`initFreshness`, `getRepoContext`,
  * `applyInvalidationBatch`, etc.) delegate to ONE lazily-created default
  * core, so every existing caller keeps operating against the same shared
- * state it always has — this factory only adds the *option* of a separate
+ * state it always has; this factory only adds the *option* of a separate
  * instance via `createFreshness`.
  */
 function createFreshnessCore() {
@@ -926,7 +926,7 @@ export interface FreshnessUnit {
 
 /**
  * Construct a fully independent freshness unit bound to `env`. Two units
- * built this way share no watcher map, provider cache, or resolved user id —
+ * built this way share no watcher map, provider cache, or resolved user id:
  * see `lib/daemon/__tests__/freshness-factory.test.ts`.
  */
 export function createFreshness(env: FreshnessEnv): FreshnessUnit {
@@ -943,7 +943,7 @@ export function createFreshness(env: FreshnessEnv): FreshnessUnit {
 }
 
 export const __test__ = {
-  /** The live watches Map backing a unit built by createFreshness — for R031 independence assertions only. */
+  /** The live watches Map backing a unit built by createFreshness, for R031 independence assertions only. */
   watchesOf(unit: FreshnessUnit): Map<string, unknown> {
     return (unit as unknown as { __watches: Map<string, unknown> }).__watches;
   },
