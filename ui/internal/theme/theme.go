@@ -54,20 +54,27 @@ func Hex(c color.Color) string {
 }
 
 // Huh returns the huh theme that makes its four fields paint with rt's tokens.
-// The group base is the prompt card: a rounded pink border, the same frame
-// rt's fzf pickers draw (--border=rounded). The group title is the prompt
+// The form base is the prompt card: a rounded pink border, the same frame rt's
+// fzf pickers draw (--border=rounded). It has to live there because huh renders
+// Group.Base around the group footer alone, which would frame an empty box
+// under the prompt instead of framing the prompt. The group title is the prompt
 // title and the group description is the key legend Go composes.
 func Huh() huh.Theme { return themed(Pink) }
 
 // HuhDestructive is the same card with peach accents: the default-no confirm.
 func HuhDestructive() huh.Theme { return themed(Peach) }
 
+// CardFrame is how many columns the card's border and padding occupy. huh sizes
+// its groups from the terminal width and knows nothing about the form base
+// wrapped around them, so a layout has to hand back this much less.
+func CardFrame() int { return themed(Pink).Theme(true).Form.Base.GetHorizontalFrameSize() }
+
 func themed(accent color.Color) huh.Theme {
 	return huh.ThemeFunc(func(isDark bool) *huh.Styles {
 		s := huh.ThemeBase(isDark)
 		base := lipgloss.NewStyle()
-		s.Form.Base = base
-		s.Group.Base = base.Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(0, 1)
+		s.Form.Base = base.Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(0, 1)
+		s.Group.Base = base
 		s.Group.Title = base.Foreground(accent)
 		s.Group.Description = base.Foreground(Faint)
 		s.Focused.Base = base

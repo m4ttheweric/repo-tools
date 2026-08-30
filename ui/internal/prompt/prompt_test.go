@@ -48,6 +48,17 @@ func TestSelectEnterReturnsInitialAndExitsZero(t *testing.T) {
 	if !strings.Contains(tty, "Access duration") || !strings.Contains(tty, "╭") {
 		t.Fatalf("card not painted: %q", tty)
 	}
+	// The card must frame the prompt, not sit under it: huh renders Group.Base
+	// around the group footer alone, so a border parked there paints an empty
+	// box below the options and the title never gets a top edge.
+	if open, title := strings.Index(tty, "╭"), strings.Index(tty, "Access duration"); open > title {
+		t.Fatalf("card opens after the title, so it is not framing it: %q", tty)
+	}
+	// A card wider than the terminal has its right edge dropped rather than
+	// wrapped, so the closing corners are the proof that the frame fits.
+	if !strings.Contains(tty, "╮") || !strings.Contains(tty, "╯") {
+		t.Fatalf("card's right edge never painted, so it overflows the screen: %q", tty)
+	}
 	if !strings.Contains(tty, "back to resources") {
 		t.Fatalf("back row missing: %q", tty)
 	}
