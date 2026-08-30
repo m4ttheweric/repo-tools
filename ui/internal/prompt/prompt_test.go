@@ -11,8 +11,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"unicode/utf8"
 
 	"rt-ui/internal/testutil"
+	"rt-ui/internal/theme"
 )
 
 // The fixtures are pretty-printed for humans; the wire is one JSON per line,
@@ -287,5 +289,32 @@ func TestTallCardIsErasedWithoutClimbingPastTheScreen(t *testing.T) {
 		if n > 30 {
 			t.Fatalf("cursor climbed %d rows on a 30-row screen: %q", n, tty)
 		}
+	}
+}
+
+// paintedScreen replays the tty up to rt-ui's own erase, so the card is still
+// on the emulated screen when the test measures it.
+func paintedScreen(tty string) string {
+	if i := strings.LastIndex(tty, "\r\x1b[J"); i >= 0 {
+		tty = tty[:i]
+	}
+	return testutil.Screen(tty)
+}
+
+func TestCardIsCappedNarrowerThanTheTerminal(t *testing.T) {
+	_, tty, _ := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyEnter}, nil, false)
+	widest := 0
+	for _, row := range strings.Split(paintedScreen(tty), "\n") {
+		if !strings.HasPrefix(strings.TrimLeft(row, " "), "╭") {
+			continue
+		}
+		if n := utf8.RuneCountInString(strings.TrimSpace(row)); n > widest {
+			widest = n
+		}
+	}
+	// The pty is 100 columns; a card that wide is a stripe the terminal
+	// rewraps on resize, so the top edge must stop at the shared card width.
+	if widest != theme.CardWidth {
+		t.Fatalf("card top edge spans %d columns, want %d:\n%s", widest, theme.CardWidth, paintedScreen(tty))
 	}
 }

@@ -47,6 +47,11 @@ const (
 
 var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"}
 
+// CardWidth caps the prompt card. A row as wide as the terminal is what a
+// reflowing terminal rewraps mid-resize, leaving remnants an inline program
+// cannot erase; lib/tui/palette.ts CARD_WIDTH mirrors it for the fzf pickers.
+const CardWidth = 88
+
 // Hex renders a palette color back as #RRGGBB; used by tests and the --version banner.
 func Hex(c color.Color) string {
 	r, g, b, _ := c.RGBA()

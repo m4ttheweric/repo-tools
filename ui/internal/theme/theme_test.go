@@ -54,3 +54,9 @@ func TestHuhDestructiveUsesPeachAccents(t *testing.T) {
 		t.Fatalf("destructive card border is not peach")
 	}
 }
+
+func TestCardWidthMatchesTokenSheet(t *testing.T) {
+	if CardWidth != 88 {
+		t.Fatalf("CardWidth = %d, want 88 (lib/tui/palette.ts CARD_WIDTH)", CardWidth)
+	}
+}

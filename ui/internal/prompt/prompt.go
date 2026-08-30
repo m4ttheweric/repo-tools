@@ -31,16 +31,17 @@ const (
 
 const backValue = "\x00rt-ui:back"
 
-// cardLayout is huh's default layout with the card's own border and padding
-// taken out of the group width. huh hands each group the full terminal width
-// and knows nothing about the form base wrapped around it, so without this the
-// card's right edge falls past the last column and never gets painted.
+// cardLayout is huh's default layout with the terminal width clamped to the
+// card width and the card's own border and padding taken out. huh hands each
+// group the full terminal width and knows nothing about the form base wrapped
+// around it, so without the frame the card's right edge falls past the last
+// column and never gets painted.
 type cardLayout struct{ frame int }
 
 func (cardLayout) View(f *huh.Form) string { return huh.LayoutDefault.View(f) }
 
 func (l cardLayout) GroupWidth(f *huh.Form, g *huh.Group, w int) int {
-	return max(1, huh.LayoutDefault.GroupWidth(f, g, w)-l.frame)
+	return max(1, huh.LayoutDefault.GroupWidth(f, g, min(w, theme.CardWidth))-l.frame)
 }
 
 // legend is the key line under the title. Go composes it from the kind and
