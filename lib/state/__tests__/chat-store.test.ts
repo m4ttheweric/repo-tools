@@ -11,6 +11,7 @@
  * handle resolution, not this store.
  */
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
@@ -313,3 +314,38 @@ test("join by name does not revive an archived room", () => {
   expect(roomArchivedAt("build", db)).not.toBeNull();
   expect(listRooms("c", db)).toEqual([]);
 });
+
+// R057: leaveRoom/markRead are cache-class membership writes (self-healing
+// on the next call) that bypassed persistOrWarn, so a write racing a held
+// lock past the daemon's 250ms busy_timeout threw a raw SQLITE_BUSY at the
+// caller instead of warning and deferring per busy.ts's policy table.
+function heldWriteLock(path: string): { release: () => void } {
+  const locker = new Database(path);
+  locker.exec("BEGIN IMMEDIATE;");
+  return { release: () => { try { locker.exec("ROLLBACK;"); } catch {} locker.close(); } };
+}
+
+test("R057: leaveRoom does not throw when the write races a held lock past busy_timeout", () => {
+  const path = join(tmpdir(), `chat-busy-leave-${process.pid}-${n++}.db`);
+  const db = openStateDb(path, "daemon");
+  joinRoom({ room: "build", handle: "a" }, db);
+  const { release } = heldWriteLock(path);
+  try {
+    expect(() => leaveRoom("build", "a", db)).not.toThrow();
+  } finally {
+    release();
+  }
+}, 5000);
+
+test("R057: markRead does not throw when the write races a held lock past busy_timeout", () => {
+  const path = join(tmpdir(), `chat-busy-markread-${process.pid}-${n++}.db`);
+  const db = openStateDb(path, "daemon");
+  joinRoom({ room: "build", handle: "a" }, db);
+  postMessage({ room: "build", handle: "a", body: "hi" }, db);
+  const { release } = heldWriteLock(path);
+  try {
+    expect(() => markRead("a", "build", db)).not.toThrow();
+  } finally {
+    release();
+  }
+}, 5000);

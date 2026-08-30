@@ -9,7 +9,7 @@
 
 import { Database } from "bun:sqlite";
 import { getStateDb } from "./db.ts";
-import { runCriticalWrite } from "./busy.ts";
+import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 import { presenceForHandle } from "./presence-store.ts";
 // Intra-lib/state exception (see presence-store.ts's note on the same
 // pattern): dm-store.ts is the only module that touches chat_dms, so
@@ -249,7 +249,9 @@ export function joinRoom(
 }
 
 export function leaveRoom(room: string, handle: string, db: Database = getStateDb()): void {
-  db.query(DELETE_MEMBER_SQL).run(room, handle);
+  // Cache-class (R057): re-issuing chat:leave is harmless, so a busy write
+  // here warns and defers rather than throwing.
+  persistOrWarn("chat", () => { db.query(DELETE_MEMBER_SQL).run(room, handle); }, { op: "leaveRoom", room, handle });
 }
 
 /** A handle's memberships in rooms that are not archived: the rows every
@@ -505,7 +507,12 @@ export function markRead(handle: string, room?: string, db: Database = getStateD
   const members = membershipsFor(handle, room, db);
   for (const member of members) {
     const maxId = getRoomMaxId(member.room, db);
-    db.query(UPDATE_LAST_READ_SQL).run(maxId, member.room, handle);
+    // Cache-class (R057): the next mark-read retries whatever this one drops.
+    persistOrWarn(
+      "chat",
+      () => { db.query(UPDATE_LAST_READ_SQL).run(maxId, member.room, handle); },
+      { op: "markRead", room: member.room, handle },
+    );
   }
 }
 

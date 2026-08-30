@@ -643,6 +643,9 @@ export function createChatHandlers(opts: {
       }
 
       const data = signIn({ sessionId, baseHandle: resolvedBase, cwd: signInCwd, repo: signInRepo, branch: signInBranch, pane, statusText }, db, registryDeps);
+      // R057: signIn now retries a busy write rather than throwing, but still
+      // reports undefined once its retry budget is exhausted.
+      if (!data) return { ok: false, error: "chat: sign-in failed, database busy" };
 
       if (derivedRoom) {
         try {
