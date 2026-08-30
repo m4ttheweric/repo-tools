@@ -56,7 +56,12 @@ describe("R028: db is not a handler-map entry", () => {
       ctx: stubCtx,
       broadcast: () => {},
       systemProcessScanner: {} as any,
-      worktree: { emit: () => {}, kick: () => {}, creationInFlight: () => null },
+      worktree: {
+        emit: () => {},
+        kick: () => {},
+        creationInFlight: () => null,
+        withReconcilerHeld: async (fn) => fn(),
+      },
       eventsBus: createEventsBus({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
       homeSnapshot: { stop: () => {}, runNow: async () => ({}) as any, status: () => ({}) as any, ready: Promise.resolve() },
       repos: { withReconcilerHeld: async (fn) => fn(), refreshWatchedRepos: () => {} },

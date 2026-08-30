@@ -745,6 +745,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
             emit,
             kick: worktreeReconciler.kick,
             creationInFlight: worktreeReconciler.creationInFlight,
+            withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
           },
           eventsBus,
           homeSnapshot,

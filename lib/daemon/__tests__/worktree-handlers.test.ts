@@ -107,6 +107,7 @@ function makeHandlers(
     emit: (type: string, data: unknown) => events.push({ type, data: data as any }),
     kick: () => { state.kicks++; },
     creationInFlight: () => null,
+    withReconcilerHeld: async (fn) => fn(),
   });
   return {
     h,

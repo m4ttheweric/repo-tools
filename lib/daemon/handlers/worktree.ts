@@ -86,6 +86,8 @@ export interface WorktreeHandlerOpts {
   kick: () => void;
   /** The live replenish create for a repo, or null; provision joins it rather than racing it. */
   creationInFlight: (repoName: string) => Promise<void> | null;
+  /** Excludes reconciler passes -- not other registry writers -- for the duration of `fn`. */
+  withReconcilerHeld: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 // ─── Small shared helpers ────────────────────────────────────────────────────
@@ -644,15 +646,20 @@ export function createWorktreeHandlers(
       const repos = targetRepos(ctx, payload?.repoName);
       if (repos.length === 0) return { ok: false, error: "repo-unknown" };
 
-      const ran: string[] = [];
-      for (const [repoName, repoPath] of repos) {
-        const names = await freshenRepo(
-          { repoName, repoPath, emit: opts.emit, log: ctx.log },
-          treeName ? { only: treeName } : {},
-        );
-        ran.push(...names);
-      }
-      return { ok: true, data: { ran } };
+      // Runs under the reconciler hold: a concurrent reconciler pass runs this
+      // same freshen duty per repo, and an interleaved run would double-freshen
+      // or race the same tree's checkout against itself.
+      return opts.withReconcilerHeld(async () => {
+        const ran: string[] = [];
+        for (const [repoName, repoPath] of repos) {
+          const names = await freshenRepo(
+            { repoName, repoPath, emit: opts.emit, log: ctx.log },
+            treeName ? { only: treeName } : {},
+          );
+          ran.push(...names);
+        }
+        return { ok: true, data: { ran } };
+      });
     },
 
     /**
@@ -670,9 +677,10 @@ export function createWorktreeHandlers(
       const repoPath = ctx.repoIndex()[repoName];
       if (!repoPath) return { ok: false, error: "repo-unknown" };
 
-      // Repo-wide lock: adopt rewrites every entry, so no per-tree operation
-      // may interleave with it. Synthetic key (no tree lives at this path).
-      const result = await withTreeLock(`${repoPath}#adopt`, async () => {
+      // Runs under the reconciler hold: adopt rewrites every entry, and a
+      // concurrent reconciler pass reading the same rows mid-rewrite would
+      // prune or reclassify trees adopt has not gotten to yet.
+      const result = await opts.withReconcilerHeld(async () => {
         const trees = await reconcileRepoRegistry({
           repoName, repoPath, emit: opts.emit, log: ctx.log,
         });
@@ -736,7 +744,6 @@ export function createWorktreeHandlers(
         return { ok: true as const, data: { main, claimed, unmanaged, disposed, refused } };
       });
 
-      if (result === "busy") return { ok: false, error: "busy" };
       if (result.ok) {
         // Adopt supersedes the parking lot: its per-repo index and app-level
         // transition state are dead once every tree is registry-tracked. The
