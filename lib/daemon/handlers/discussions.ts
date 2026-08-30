@@ -204,7 +204,7 @@ export function createDiscussionHandlers(
       const discussionId = p?.discussionId;
       const body         = p?.body;
 
-      if (!p?.repoName || typeof iid !== "number" || !discussionId || !body?.trim()) {
+      if (!p?.repoName || typeof iid !== "number" || !discussionId || typeof body !== "string" || !body.trim()) {
         return { ok: false, error: "missing repoName/iid/discussionId/body" };
       }
       const decoded = decodeRepo(payload);

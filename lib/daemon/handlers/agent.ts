@@ -139,6 +139,7 @@ export function createAgentHandlers(opts: {
 
   return {
     "agent:start": async (rawPayload: unknown): Promise<CommandResult<"agent:start">> => {
+      if (!rawPayload || typeof rawPayload !== "object") return { ok: false, error: "agent:start requires an object payload" };
       const payload = rawPayload as Commands["agent:start"]["payload"];
       const { repo, cwd } = payload;
       if (!repo || !cwd) return { ok: false, error: "agent:start requires repo (serialized identity) and cwd" };

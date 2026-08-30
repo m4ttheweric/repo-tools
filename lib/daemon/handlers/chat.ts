@@ -474,6 +474,7 @@ export function createChatHandlers(opts: {
 
   return {
     "chat:join": async (rawPayload: unknown): Promise<CommandResult<"chat:join">> => {
+      if (!rawPayload || typeof rawPayload !== "object") return { ok: false, error: "chat:join requires an object payload" };
       const payload = rawPayload as Commands["chat:join"]["payload"];
       const { room, handle, wakeOn, cwd, pane } = payload;
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };

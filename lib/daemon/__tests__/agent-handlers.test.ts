@@ -38,6 +38,12 @@ function fresh(over: {
   }), { db });
 }
 
+test("agent:start returns ok:false for a null payload instead of throwing on destructure", async () => {
+  const h = fresh();
+  const res = await h["agent:start"](null as unknown as never);
+  expect(res.ok).toBe(false);
+});
+
 test("agent:start herdr records pane ids and a minted session uuid", async () => {
   const calls: string[][] = [];
   const h = fresh({ runner: okRunner(calls) });

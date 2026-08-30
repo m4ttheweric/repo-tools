@@ -29,6 +29,12 @@ describe("discussions:read", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
+  test("discussions:reply returns ok:false for a non-string body instead of throwing at trim()", async () => {
+    const h = createDiscussionHandlers(fakeCtx, () => {});
+    const res = await h["discussions:reply"]!({ repoName: "x", iid: 1, discussionId: "d", body: 42 } as unknown as never);
+    expect(res.ok).toBe(false);
+  });
+
   test("a bare legacy name resolves nothing; the same read resolves under a serialized identity", async () => {
     const identity = "remote:gitlab.com%2Fg%2Frepo-tools";
     const store = getDiscussionsFileStore();

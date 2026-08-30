@@ -59,6 +59,12 @@ test("chat:join returns the resolved handle and member count", async () => {
   expect(res.data).toMatchObject({ handle: "a", memberCount: 1 });
 });
 
+test("chat:join returns ok:false for a null payload instead of throwing on destructure", async () => {
+  const h = freshHandlers();
+  const res = await h["chat:join"](null as unknown as never);
+  expect(res.ok).toBe(false);
+});
+
 test("chat:join rejects an invalid handle with a reason rather than normalizing it", async () => {
   const h = freshHandlers();
   const res = await h["chat:join"]({ room: "build", handle: "Has@Sigil" });
