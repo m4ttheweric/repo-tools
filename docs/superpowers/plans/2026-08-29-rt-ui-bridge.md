@@ -190,7 +190,9 @@ Append to `lib/tui/palette.ts`:
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"] as const;
 ```
 
-In `lib/tui/inline-spinner.ts`, change the import on line 16 from `import { SPINNER_FRAMES } from "./theme.ts";` to `import { SPINNER_FRAMES } from "./palette.ts";`, and in its doc comment delete the two sentences that point at `withSpinner` from `lib/rt-render.tsx` and `useSpinnerFrame` (they are being replaced; the comment must not name dead modules).
+In `lib/tui/inline-spinner.ts`, change the import on line 17 from `import { SPINNER_FRAMES } from "./theme.ts";` to `import { SPINNER_FRAMES } from "./palette.ts";`, and in its doc comment delete the two sentences that point at `withSpinner` from `lib/rt-render.tsx` and `useSpinnerFrame` (they are being replaced; the comment must not name dead modules).
+
+In `lib/tui/utils/label.ts` (kept: `commands/daemon.ts:50` imports `timeAgo` from it), delete the `import { C } from "../theme.ts";` line (line 11), the `rowBg()` function (lines 79-81) and its doc comment. `rowBg` returned a rezi role color and has no caller outside the kit being deleted; leaving it would drag `theme.ts` back in and break tsc.
 
 - [ ] **Step 4: Delete the Ink/rezi kit**
 
@@ -865,7 +867,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Create: `ui/internal/theme/theme.go`, `ui/internal/theme/theme_test.go`, `ui/internal/tty/tty.go`, `ui/internal/tty/tty_test.go`
 
 **Interfaces:**
-- Produces: `theme.Pink, Mint, Coral, Peach, Cyan, Lav, Text, TextSoft, Dim, Dimmer, Faint, Bg, BgSubtle, SelBg, WarnBg, Rule, Panel` (`color.Color`); glyph consts `GlyphRunning="●"` etc.; `theme.SpinnerFrames []string`; `theme.Huh() huh.Theme` (whose `Group.Base` carries the pink rounded card, so every huh form paints inside rt's card without a host program).
+- Produces: `theme.Pink, Mint, Coral, Peach, Cyan, Lav, Text, TextSoft, Dim, Dimmer, Faint, Bg, BgSubtle, SelBg, WarnBg, Rule, Panel` (`color.Color`); glyph consts `GlyphRunning="●"` etc.; `theme.SpinnerFrames []string`; `theme.Huh() huh.Theme` (whose `Group.Base` carries the pink rounded card, so every huh form paints inside rt's card without a host program); `theme.HuhDestructive() huh.Theme` (same card, peach accents for the destructive confirm).
 - Produces: `tty.Open(mode tty.Mode) (*os.File, error)` with `tty.ReadWrite | tty.WriteOnly`; `tty.WatchStdinEOF(onEOF func())`; `tty.FirstPaint()` (writes `first-paint <ms>` to stderr once when `RT_UI_BENCH=1`).
 
 - [ ] **Step 1: Write the failing theme test**
@@ -917,6 +919,16 @@ func TestHuhGroupBaseIsThePinkRoundedCard(t *testing.T) {
 	}
 	if lipgloss.Width(out) < 8 {
 		t.Fatalf("card too narrow: %q", out)
+	}
+}
+
+func TestHuhDestructiveUsesPeachAccents(t *testing.T) {
+	styles := HuhDestructive().Theme(true)
+	if !strings.Contains(styles.Focused.FocusedButton.Render("no"), "\x1b[48;2;255;183;122m") {
+		t.Fatalf("destructive button is not peach: %q", styles.Focused.FocusedButton.Render("no"))
+	}
+	if !strings.Contains(styles.Group.Base.Render("x"), "\x1b[38;2;255;183;122m") {
+		t.Fatalf("destructive card border is not peach")
 	}
 }
 ```
@@ -986,15 +998,20 @@ func Hex(c color.Color) string {
 
 // Huh returns the huh theme that makes its four fields paint with rt's tokens.
 // The group base is the prompt card: a rounded pink border, the same frame
-// rt's fzf pickers draw (--border=rounded), with the field title as its
-// first line and huh's own help line as the dim key legend.
-func Huh() huh.Theme {
+// rt's fzf pickers draw (--border=rounded). The group title is the prompt
+// title and the group description is the key legend Go composes.
+func Huh() huh.Theme { return themed(Pink) }
+
+// HuhDestructive is the same card with peach accents: the default-no confirm.
+func HuhDestructive() huh.Theme { return themed(Peach) }
+
+func themed(accent color.Color) huh.Theme {
 	return huh.ThemeFunc(func(isDark bool) *huh.Styles {
 		s := huh.ThemeBase(isDark)
 		base := lipgloss.NewStyle()
 		s.Form.Base = base
-		s.Group.Base = base.Border(lipgloss.RoundedBorder()).BorderForeground(Pink).Padding(0, 1)
-		s.Group.Title = base.Foreground(Pink)
+		s.Group.Base = base.Border(lipgloss.RoundedBorder()).BorderForeground(accent).Padding(0, 1)
+		s.Group.Title = base.Foreground(accent)
 		s.Group.Description = base.Foreground(Faint)
 		s.Focused.Base = base
 		s.Blurred.Base = base
@@ -1011,11 +1028,11 @@ func Huh() huh.Theme {
 		s.Focused.SelectedPrefix = base.Foreground(Mint).SetString(GlyphOn + " ")
 		s.Focused.UnselectedOption = base.Foreground(Text)
 		s.Focused.UnselectedPrefix = base.Foreground(Faint).SetString(GlyphStopped + " ")
-		s.Focused.FocusedButton = base.Foreground(Bg).Background(Pink).Bold(true).Padding(0, 1)
+		s.Focused.FocusedButton = base.Foreground(Bg).Background(accent).Bold(true).Padding(0, 1)
 		s.Focused.BlurredButton = base.Foreground(Dim).Padding(0, 1)
-		s.Focused.TextInput.Cursor = base.Foreground(Pink)
+		s.Focused.TextInput.Cursor = base.Foreground(accent)
 		s.Focused.TextInput.Placeholder = base.Foreground(Faint)
-		s.Focused.TextInput.Prompt = base.Foreground(Pink).SetString(GlyphChevron + " ")
+		s.Focused.TextInput.Prompt = base.Foreground(accent).SetString(GlyphChevron + " ")
 		s.Focused.TextInput.Text = base.Foreground(Text)
 		s.Help.ShortKey = base.Foreground(Faint)
 		s.Help.ShortDesc = base.Foreground(Dim)
@@ -1186,8 +1203,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `ui/cmd/rt-ui/verbs.go`
 
 **Interfaces:**
-- Produces: `prompt.Run(spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, error)` where `type Outcome int` with `Answered, Cancelled, Back`.
-- Produces (tests): `testutil.Binary(t) string` (builds `rt-ui` once per test run into a temp dir), `testutil.RunPTY(t, argv []string, stdinLines []string, keys []string, env map[string]string) (stdout string, tty string, exit int)`.
+- Produces: `prompt.Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, error)` where `type Outcome int` with `Answered, Cancelled, Back`; cancelling `ctx` shuts the form down through Bubble Tea (termios restored) and returns an error.
+- Produces (tests): `testutil.Binary(t) string` (builds `rt-ui` once per test run into a temp dir), `testutil.RunPTY(t, argv []string, stdinLines []string, keys []string, env map[string]string, closeStdin bool) (stdout string, tty string, exit int)`.
 
 - [ ] **Step 1: Write the test helpers**
 
@@ -1254,11 +1271,22 @@ import (
 	"github.com/creack/pty"
 )
 
-// RunPTY starts argv with a pty as its controlling terminal, a pipe as stdin
-// (kept open until exit unless closeStdin), stdout captured. stdinLines are
-// written first; keys are typed to the pty after the first tty paint.
+// RunPTY starts argv in a new session whose controlling terminal is a fresh
+// pty, with a pipe as stdin (kept open until exit unless closeStdin) and
+// stdout captured. The pty is NOT fd 0/1/2 (those are our pipes); it is only
+// the controlling tty, which is exactly what /dev/tty resolves to. stdinLines
+// are written first; keys are typed to the pty after the first tty paint.
 func RunPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env map[string]string, closeStdin bool) (stdout, tty string, exit int) {
 	t.Helper()
+	ptmx, pts, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ptmx.Close()
+	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: 30, Cols: 100}); err != nil {
+		t.Fatal(err)
+	}
+
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	for k, v := range env {
@@ -1271,19 +1299,38 @@ func RunPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
-
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 30, Cols: 100})
-	if err != nil {
+	// The slave becomes fd 3 in the child; Setctty/Ctty make it the
+	// controlling terminal of the child's new session.
+	cmd.ExtraFiles = []*os.File{pts}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 3}
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer ptmx.Close()
+	pts.Close()
 
+	var mu sync.Mutex
 	var ttyBuf bytes.Buffer
 	done := make(chan struct{})
 	go func() {
-		io.Copy(&ttyBuf, ptmx)
-		close(done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				mu.Lock()
+				ttyBuf.Write(buf[:n])
+				mu.Unlock()
+			}
+			if err != nil {
+				close(done)
+				return
+			}
+		}
 	}()
+	painted := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return ttyBuf.Len() > 0
+	}
 
 	for _, l := range stdinLines {
 		io.WriteString(stdinW, l+"\n")
@@ -1294,7 +1341,7 @@ func RunPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env
 
 	// Wait for the first paint before typing so keys are not swallowed.
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && ttyBuf.Len() == 0 {
+	for time.Now().Before(deadline) && !painted() {
 		time.Sleep(10 * time.Millisecond)
 	}
 	for _, k := range keys {
@@ -1315,11 +1362,14 @@ func RunPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env
 	} else if err != nil {
 		t.Fatalf("wait: %v", err)
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	return out.String(), strings.ToValidUTF8(ttyBuf.String(), ""), exit
 }
 ```
+(Imports for that file: `bytes`, `io`, `os`, `os/exec`, `strings`, `sync`, `syscall`, `testing`, `time`, `github.com/creack/pty`.)
 
-Note: `pty.StartWithSize` sets the pty as the process's controlling tty and as stdin/stdout/stderr; the `StdinPipe`/`Stdout` assignments above override stdin and stdout with our pipes, leaving only the controlling terminal on the pty. If `creack/pty` refuses that combination, use `pty.Open()` and build the `exec.Cmd` with `SysProcAttr{Setsid: true, Setctty: true, Ctty: <slave fd>}` and `ExtraFiles`; the observable contract stays the same.
+`pty.StartWithSize` is deliberately not used: it sets `Ctty: 0`, and fd 0 here is the stdin pipe, so `Start` fails with `ioctl TIOCSCTTY` on a pipe. The `ExtraFiles` + `Ctty: 3` shape is the one that works when the pty must be the controlling terminal without being stdio. `scripts/bench-rt-ui.py` (Task 14) does the same thing in Python.
 
 - [ ] **Step 2: Write the failing prompt tests**
 
@@ -1415,12 +1465,44 @@ func TestConfirmYAndNAndCollapse(t *testing.T) {
 	if exit != 0 || !strings.Contains(stdout, `"ok":true`) {
 		t.Fatalf("exit %d stdout %q", exit, stdout)
 	}
-	if !strings.Contains(tty, "✓") || !strings.Contains(tty, "Run sdm login now?") {
+	// Bubble Tea erases the inline card on exit (\x1b[J); the collapsed line
+	// is written after that erase and nothing may move the cursor up first.
+	checkAt := strings.LastIndex(tty, "✓")
+	if checkAt < 0 {
 		t.Fatalf("collapsed line missing: %q", tty)
+	}
+	if strings.LastIndex(tty[:checkAt], "\x1b[J") < 0 || !strings.Contains(tty[checkAt:], "Run sdm login now?") {
+		t.Fatalf("collapsed line must follow the card erase: %q", tty)
+	}
+	if strings.Contains(tty, "\x1b[1A") {
+		t.Fatalf("collapse must never move the cursor up (would eat the user's previous line): %q", tty)
 	}
 	stdout, _, exit = testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-confirm.json")}, []string{"n"}, nil, false)
 	if exit != 0 || !strings.Contains(stdout, `"ok":false`) {
 		t.Fatalf("exit %d stdout %q", exit, stdout)
+	}
+}
+
+func TestConfirmDestructiveDefaultsNoAndPaintsPeach(t *testing.T) {
+	destructive := `{"t":"prompt","protocol":1,"kind":"confirm","message":"Locate assured-dev at ~/x? This moves 3 worktrees.","destructive":true}`
+	stdout, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{destructive}, []string{keyEnter}, nil, false)
+	if exit != 0 || !strings.Contains(stdout, `"ok":false`) {
+		t.Fatalf("destructive confirm must default to no: exit %d stdout %q", exit, stdout)
+	}
+	if !strings.Contains(tty, "\x1b[38;2;255;183;122m") {
+		t.Fatalf("destructive confirm is not peach: %q", tty)
+	}
+}
+
+func TestSelectLegendNamesCtrlUpOnlyWhenBackIsOffered(t *testing.T) {
+	_, tty, _ := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyEnter}, nil, false)
+	if !strings.Contains(tty, "ctrl-up: back") || !strings.Contains(tty, "esc: cancel") {
+		t.Fatalf("legend missing ctrl-up/esc: %q", tty)
+	}
+	noBack := `{"t":"prompt","protocol":1,"kind":"select","title":"Pick","options":[{"value":"a","label":"A"}]}`
+	_, tty, _ = testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{noBack}, []string{keyEnter}, nil, false)
+	if strings.Contains(tty, "ctrl-up") {
+		t.Fatalf("legend advertises ctrl-up with no back row: %q", tty)
 	}
 }
 
@@ -1452,14 +1534,16 @@ func TestBadSpecExits2(t *testing.T) {
 }
 
 func TestParentDeathRestoresTerminal(t *testing.T) {
-	// Closing stdin while the card is up is "the brain died": rt-ui must leave
-	// raw mode (the tty stream ends with a cursor-show / reset sequence) and exit.
+	// Closing stdin while the card is up is "the brain died": rt-ui must shut
+	// the form down THROUGH Bubble Tea (which restores termios and erases the
+	// inline card) and exit 70. A raw os.Exit from the watcher would leave the
+	// shell in raw mode, which is the failure this test exists to catch.
 	_, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, nil, nil, true)
-	if exit == 0 {
-		t.Fatalf("exited 0 without an answer")
+	if exit != 70 {
+		t.Fatalf("exit %d, want 70", exit)
 	}
-	if !strings.Contains(tty, "\x1b[?25h") {
-		t.Fatalf("cursor never restored: %q", tty)
+	if !strings.Contains(tty, "\x1b[J") || !strings.Contains(tty, "\x1b[?25h") {
+		t.Fatalf("Bubble Tea's inline close (erase below + cursor show) never ran: %q", tty)
 	}
 }
 
@@ -1481,11 +1565,11 @@ Expected: every test fails with exit 70 (the stub) or a missing card.
 package prompt
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"regexp"
-	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -1508,13 +1592,33 @@ const (
 
 const backValue = "\x00rt-ui:back"
 
+// legend is the key line under the title. Go composes it from the kind and
+// whether a back row exists; TS never sends key text.
+func legend(spec protocol.PromptSpec) string {
+	switch spec.Kind {
+	case "multiselect":
+		return "space: toggle   enter: confirm   esc: cancel"
+	case "confirm":
+		return "y: yes   n: no   esc: cancel"
+	case "text":
+		return "enter: submit   esc: cancel"
+	}
+	if spec.Back != nil {
+		return "enter: select   ctrl-up: back   esc: cancel"
+	}
+	return "enter: select   esc: cancel"
+}
+
 // Run paints the prompt on term and returns the answer. Cancelled and Back
-// are outcomes, not errors; err is reserved for the terminal or huh failing.
-func Run(spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, error) {
+// are outcomes, not errors; err is reserved for the terminal or huh failing,
+// and for ctx being cancelled (the parent died: Bubble Tea shuts down and
+// restores the terminal before Run returns).
+func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, error) {
 	var (
 		result  protocol.Result
 		backHit bool
 		field   huh.Field
+		th      = theme.Huh()
 	)
 
 	switch spec.Kind {
@@ -1531,7 +1635,7 @@ func Run(spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, err
 		if v == "" && len(spec.Options) > 0 {
 			v = spec.Options[0].Value
 		}
-		field = huh.NewSelect[string]().Title(spec.Title).Description(spec.Hint).Options(opts...).Value(&v)
+		field = huh.NewSelect[string]().Description(spec.Hint).Options(opts...).Value(&v)
 		defer func() {
 			if v == backValue {
 				backHit = true
@@ -1551,7 +1655,7 @@ func Run(spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, err
 			}
 			opts = append(opts, opt)
 		}
-		ms := huh.NewMultiSelect[string]().Title(spec.Title).Description(spec.Hint).Options(opts...).Value(&v)
+		ms := huh.NewMultiSelect[string]().Description(spec.Hint).Options(opts...).Value(&v)
 		if spec.Max != nil {
 			ms = ms.Limit(*spec.Max)
 		}
@@ -1567,13 +1671,21 @@ func Run(spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, err
 		field = ms
 		defer func() { result.Values = v; if result.Values == nil { result.Values = []string{} } }()
 	case "confirm":
-		v := spec.Default == nil || *spec.Default
+		// A destructive confirm defaults to no unless the spec says yes outright.
+		destructive := spec.Destructive != nil && *spec.Destructive
+		v := spec.Default != nil && *spec.Default
+		if !destructive && spec.Default == nil {
+			v = true
+		}
+		if destructive {
+			th = theme.HuhDestructive()
+		}
 		c := huh.NewConfirm().Title(spec.Message).Description(spec.Hint).Affirmative("yes").Negative("no").Inline(true).Value(&v)
 		field = c
 		defer func() { result.OK = &v }()
 	case "text":
 		v := spec.Initial
-		in := huh.NewInput().Title(spec.Title).Description(spec.Hint).Placeholder(spec.Placeholder).Value(&v)
+		in := huh.NewInput().Description(spec.Hint).Placeholder(spec.Placeholder).Value(&v)
 		if spec.Validate != nil {
 			re, err := regexp.Compile(spec.Validate.Pattern)
 			if err != nil {
@@ -1596,32 +1708,45 @@ func Run(spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, err
 	km := huh.NewDefaultKeyMap()
 	km.Quit = key.NewBinding(key.WithKeys("ctrl+c", "esc"))
 
+	// ctrl-up is "back". Turning it into an InterruptMsg (not a QuitMsg) lets
+	// huh take its own abort path, which clears the card before exiting.
 	backRequested := false
 	filter := func(_ tea.Model, msg tea.Msg) tea.Msg {
 		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+up" && spec.Back != nil {
 			backRequested = true
-			return tea.QuitMsg{}
+			return tea.InterruptMsg{}
 		}
 		return msg
 	}
 
-	form := huh.NewForm(huh.NewGroup(field)).
-		WithTheme(theme.Huh()).
+	title := spec.Title
+	if spec.Kind == "confirm" {
+		title = spec.Message
+	}
+	group := huh.NewGroup(field).Title(title).Description(legend(spec)).WithShowHelp(false)
+	form := huh.NewForm(group).
+		WithTheme(th).
 		WithKeyMap(km).
-		WithShowHelp(true).
+		WithShowHelp(false).
 		WithInput(term).
 		WithOutput(term).
 		WithProgramOptions(tea.WithColorProfile(colorprofile.TrueColor), tea.WithFilter(filter))
 
 	tty.FirstPaint()
-	err := form.Run()
+	err := form.RunWithContext(ctx)
 	switch {
 	case backRequested:
 		return result, Back, nil
-	case errors.Is(err, huh.ErrUserAborted):
+	case errors.Is(err, huh.ErrUserAborted), errors.Is(err, tea.ErrInterrupted):
+		if ctx.Err() != nil {
+			return result, Answered, ctx.Err()
+		}
 		return result, Cancelled, nil
 	case err != nil:
 		return result, Answered, err
+	}
+	if ctx.Err() != nil {
+		return result, Answered, ctx.Err()
 	}
 	if backHit {
 		return result, Back, nil
@@ -1640,15 +1765,14 @@ func optionLabel(o protocol.Option) string {
 }
 
 // The answered confirm collapses to one line so scrollback keeps a record
-// without the prompt chrome. huh leaves its last frame on screen after Run;
-// erase that many rows first so only the collapsed line survives.
-func writeCollapsed(term *os.File, message string, ok bool, formHeight int) {
+// without the prompt chrome. Bubble Tea has already erased the inline card
+// by the time Run returns (huh's completed view is empty and the renderer
+// flushes that plus an erase-below on close), so this only writes the line;
+// moving the cursor up here would eat the user's previous output.
+func writeCollapsed(term *os.File, message string, ok bool) {
 	answer := "no"
 	if ok {
 		answer = "yes"
-	}
-	for i := 0; i < formHeight; i++ {
-		fmt.Fprint(term, "\x1b[1A\x1b[2K")
 	}
 	line := lipgloss.NewStyle().Foreground(theme.Mint).Render(theme.GlyphDone) + " " +
 		lipgloss.NewStyle().Foreground(theme.Dim).Render(message) + " " +
@@ -1657,16 +1781,6 @@ func writeCollapsed(term *os.File, message string, ok bool, formHeight int) {
 }
 ```
 
-In `Run`, capture the form's painted height right before `form.Run()` returns it (huh keeps `form.View()` valid after completion): replace the confirm branch at the end with
-
-```go
-	if spec.Kind == "confirm" {
-		writeCollapsed(term, spec.Message, result.OK != nil && *result.OK, lipgloss.Height(form.View()))
-	}
-```
-
-and drop the unused `strings` import from the file's import block.
-
 Then wire the verb in `ui/cmd/rt-ui/verbs.go`:
 
 ```go
@@ -1674,9 +1788,9 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 
 	"rt-ui/internal/prompt"
@@ -1704,13 +1818,15 @@ func runPrompt() int {
 	}
 	defer term.Close()
 
-	// The parent closing stdin is the only EOF we can ever see; restore and go.
-	tty.WatchStdinEOF(func() {
-		fmt.Fprint(term, "\x1b[?25h\x1b[0m\r\n")
-		os.Exit(ExitInternal)
-	})
+	// The parent closing stdin is the only EOF we can ever see. Cancelling the
+	// context shuts Bubble Tea down on its own thread, which is the only path
+	// that restores termios; os.Exit from this goroutine would skip it and
+	// leave the shell in raw mode.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tty.WatchStdinEOF(cancel)
 
-	result, outcome, err := prompt.Run(spec, term)
+	result, outcome, err := prompt.Run(ctx, spec, term)
 	if err != nil {
 		if errors.Is(err, protocol.ErrBadSpec) {
 			fmt.Fprintln(os.Stderr, "rt-ui prompt:", err)
@@ -1733,14 +1849,12 @@ func runPrompt() int {
 }
 
 func runSteps() int { return ExitInternal }
-
-var _ = io.EOF
 ```
 
 - [ ] **Step 5: Build and run the prompt tests**
 
 Run: `cd ui && go vet ./... && go test ./internal/prompt/ -count=1`
-Expected: PASS. Known places the installed huh API may differ from the code above; fix by `go doc`, never by weakening a test: `Option.Selected` (multiselect initial), `Confirm.Inline`, `Form.WithKeyMap` taking `*KeyMap`, `tea.QuitMsg` being the type `tea.Quit()` returns, `WithFilter`'s model parameter type. If `TestSelectBackRowExits131` fails because huh puts the cursor on the first option regardless of `Value`, set the initial by reordering: keep the back row first and accept that the cursor starts on it; then change the test's keys to `[]string{keyEnter}` and move the initial-selection assertion to `TestSelectDownEnterPicksSecond` (`keyDown` twice).
+Expected: PASS. Every huh/tea symbol above exists in the pinned versions (`Group.Title/Description/WithShowHelp`, `Form.RunWithContext/WithKeyMap(*KeyMap)`, `Option.Selected`, `Confirm.Inline`, `tea.InterruptMsg`, `tea.ErrInterrupted`, `tea.WithFilter`); if a signature still differs, `go doc` is the reference and the tests are the contract. `huh.Select.Value` places the cursor on the initial value, so the ↩ row (first option) sits one above the `1h` initial; that is what `TestSelectBackRowExits131`'s single up-arrow relies on.
 
 - [ ] **Step 6: Commit**
 
@@ -1833,6 +1947,20 @@ func TestBadHelloExits2(t *testing.T) {
 		t.Fatalf("exit %d", exit)
 	}
 }
+
+func TestCtrlCFinalizesInterruptedAndExits130(t *testing.T) {
+	// The tty is cooked, so ^C on the pty is a SIGINT to the process group,
+	// not a key: rt-ui must finalize the active line and exit 130 while the
+	// parent (who keeps stdin open here) handles its own SIGINT.
+	lines := []string{hello, `{"t":"start","title":"fetching origin…"}`}
+	_, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "steps"}, lines, []string{"\x03"}, nil, false)
+	if exit != 130 {
+		t.Fatalf("exit %d, want 130", exit)
+	}
+	if !strings.Contains(tty, "interrupted") || !strings.HasSuffix(strings.TrimRight(tty, "\r"), "\n") {
+		t.Fatalf("line not finalized with a newline: %q", tty)
+	}
+}
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1865,7 +1993,8 @@ type Outcome int
 const (
 	Done Outcome = iota
 	Failed
-	Interrupted
+	Interrupted // parent went away (stdin EOF)
+	Signalled   // SIGINT/SIGTERM/SIGHUP reached us
 )
 
 const frameEvery = 80 * time.Millisecond
@@ -1880,10 +2009,11 @@ var (
 	infoGlyph = lipgloss.NewStyle().Foreground(theme.Faint).Render("•")
 )
 
-// Run consumes events until done/fail or the channel closes (parent gone).
-// The spinner line is only ever painted once the first frame tick fires, so
-// a step that finishes inside 80 ms paints its final line and nothing else.
-func Run(events <-chan protocol.StepEvent, term *os.File) Outcome {
+// Run consumes events until done/fail, the channel closes (parent gone), or
+// a signal arrives. The spinner line is only ever painted once the first
+// frame tick fires, so a step that finishes inside 80 ms paints its final
+// line and nothing else.
+func Run(events <-chan protocol.StepEvent, signals <-chan os.Signal, term *os.File) Outcome {
 	var title string
 	painted := false
 	frame := 0
@@ -1917,6 +2047,11 @@ func Run(events <-chan protocol.StepEvent, term *os.File) Outcome {
 			f := theme.SpinnerFrames[frame%len(theme.SpinnerFrames)]
 			frame++
 			fmt.Fprint(term, "\r\x1b[2K  "+spinStyle.Render(f)+" "+textStyle.Render(title))
+		case <-signals:
+			if title != "" {
+				final(badGlyph, title, "interrupted")
+			}
+			return Signalled
 		case ev, ok := <-events:
 			if !ok {
 				if title != "" {
@@ -1997,11 +2132,18 @@ func runSteps() int {
 			events <- ev
 		}
 	}()
-	steps.Run(events, term)
+	// Cooked tty: ^C is a signal here, delivered to the whole group. Finalize
+	// the line ourselves so the cursor never dies mid-spinner.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	if steps.Run(events, signals, term) == steps.Signalled {
+		return ExitCancel
+	}
 	return ExitOK
 }
 ```
-(add `"rt-ui/internal/steps"` to that file's imports.)
+(add `"os/signal"`, `"syscall"`, and `"rt-ui/internal/steps"` to that file's imports.)
 
 - [ ] **Step 4: Run vet and the steps tests**
 
@@ -2192,8 +2334,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Create: `lib/ui/spawn.ts`, `lib/ui/__tests__/fake-rt-ui.ts`, `lib/ui/__tests__/spawn.test.ts`
 
 **Interfaces:**
-- Produces: `runPrompt(spec: PromptSpec): Promise<PromptResult>` (exits 130 on cancel, throws `BackNavigation` on back, exits 1 with a message on 2/70/other); `openStep(title: string): StepHandle` with `{ log(level, text), done(title?, hint?), fail(title?, hint?) }` where `done`/`fail` resolve when the child exits; `__test__.setSpawnForTests(fn)` is not used; injection is via `RT_UI_BIN`.
-- Produces (fake): `fake-rt-ui.ts` reads `RT_UI_FAKE` env: a JSON object `{ "answer": <result object> | "exit": <code>, "record": "<path>" }`; it appends every stdin line it receives to `record` and either prints the answer and exits 0 or exits with `exit`.
+- Produces: `runPrompt(spec: PromptSpec): Promise<PromptResult>` (exits 130 on cancel, throws `BackNavigation` on back, exits 1 with a message on 2/70/other); `openStep(title: string): StepHandle` with `{ log(level, text), done(title?, hint?): Promise<boolean>, fail(title?, hint?): Promise<boolean> }` where `done`/`fail` resolve when the child exits and resolve `false` when the child was already dead or exited non-zero (the final line was NOT painted). Injection is via `RT_UI_BIN`.
+- Produces (fake): `fake-rt-ui.ts` reads `RT_UI_FAKE` env: a JSON object `{ "answer": <result object> | "exit": <code>, "record": "<path>", "holdMs": <n>, "dieOn": "start" }`; it appends every stdin line it receives to `record` and either prints the answer and exits 0 or exits with `exit`; with `dieOn: "start"` the steps verb exits 70 right after reading the `start` event.
 
 - [ ] **Step 1: Write the fake**
 
@@ -2214,6 +2356,7 @@ const cfg = JSON.parse(process.env.RT_UI_FAKE ?? "{}") as {
   exit?: number;
   record?: string;
   holdMs?: number;
+  dieOn?: "start";
 };
 const verb = process.argv[2];
 
@@ -2256,6 +2399,10 @@ if (verb === "steps") {
       buf = buf.slice(nl + 1);
       lines.push(line);
       const t = (JSON.parse(line) as { t: string }).t;
+      if (t === "start" && cfg.dieOn === "start") {
+        if (cfg.record) appendFileSync(cfg.record, lines.join("\n") + "\n");
+        process.exit(70);
+      }
       if (t === "done" || t === "fail") {
         if (cfg.record) appendFileSync(cfg.record, lines.join("\n") + "\n");
         process.exit(cfg.exit ?? 0);
@@ -2359,11 +2506,18 @@ test("openStep streams hello, start, log, done and resolves on child exit", asyn
   ]);
 });
 
-test("openStep tolerates a child that died mid-step", async () => {
-  process.env.RT_UI_FAKE = JSON.stringify({ exit: 70 });
+test("openStep resolves true when the child painted the final line", async () => {
+  process.env.RT_UI_FAKE = JSON.stringify({ record });
+  const step = openStep("pushing…");
+  expect(await step.done("pushed")).toBe(true);
+});
+
+test("openStep resolves false, never throws or exits, when the child died mid-step", async () => {
+  process.env.RT_UI_FAKE = JSON.stringify({ dieOn: "start" });
   const step = openStep("pushing…");
   await Bun.sleep(150);
-  await step.done("pushed");
+  step.log("info", "still going");
+  expect(await step.done("pushed")).toBe(false);
   expect(exits).toEqual([]);
 });
 ```
@@ -2444,8 +2598,9 @@ export async function runPrompt(spec: PromptSpec): Promise<PromptResult> {
 
 export interface StepHandle {
   log(level: StepLevel, text: string): void;
-  done(title?: string, hint?: string): Promise<void>;
-  fail(title?: string, hint?: string): Promise<void>;
+  /** Resolves true when rt-ui painted the final line; false when it was dead (caller prints the line itself). */
+  done(title?: string, hint?: string): Promise<boolean>;
+  fail(title?: string, hint?: string): Promise<boolean>;
 }
 
 export function openStep(title: string): StepHandle {
@@ -2453,22 +2608,25 @@ export function openStep(title: string): StepHandle {
   let dead = false;
   proc.exited.then(() => { dead = true; });
 
-  const send = (msg: object): void => {
-    if (dead) return;
+  const send = (msg: object): boolean => {
+    if (dead) return false;
     try {
       proc.stdin.write(encodeLine(msg));
       proc.stdin.flush();
+      return true;
     } catch {
       dead = true;
+      return false;
     }
   };
   send({ t: "hello", protocol: PROTOCOL_VERSION });
   send({ t: "start", title });
 
-  const finish = async (t: "done" | "fail", finalTitle?: string, hint?: string): Promise<void> => {
-    send({ t, title: finalTitle ?? title, ...(hint ? { hint } : {}) });
+  const finish = async (t: "done" | "fail", finalTitle?: string, hint?: string): Promise<boolean> => {
+    const sent = send({ t, title: finalTitle ?? title, ...(hint ? { hint } : {}) });
     try { proc.stdin.end(); } catch { /* already closed */ }
-    await proc.exited;
+    const code = await proc.exited;
+    return sent && code === 0;
   };
 
   return {
@@ -2488,7 +2646,7 @@ export const __test__ = {
 - [ ] **Step 5: Run the tests**
 
 Run: `bun test lib/ui/__tests__/spawn.test.ts && bunx tsc --noEmit`
-Expected: PASS (7 tests), 0 errors. If `proc.stdin.flush` does not exist on the installed Bun, drop the `.flush()` calls; `write` on a piped stdin is unbuffered enough for one line.
+Expected: PASS (8 tests), 0 errors. If `proc.stdin.flush` does not exist on the installed Bun, drop the `.flush()` calls; `write` on a piped stdin is unbuffered enough for one line.
 
 - [ ] **Step 6: Commit**
 
@@ -2700,7 +2858,7 @@ export { select, multiselect, confirm, textInput } from "./ui/prompts.ts";
 export { createStepRunner, withSpinner, type StepRunner } from "./ui/steps.ts";
 ```
 
-This will not type-check until Task 11 provides `lib/ui/steps.ts`; the `prompt<T>()` JSX helper is dropped (no caller outside the deleted status dashboard used it; confirm with `grep -rn "prompt<" commands lib --include='*.ts' --include='*.tsx'`, which must return nothing).
+This will not type-check until Task 11 provides `lib/ui/steps.ts`; the `prompt<T>()` JSX helper is dropped (no caller outside the deleted status dashboard used it; after the shim is written, `grep -rn "prompt<" commands lib --include='*.ts' --include='*.tsx'` must return nothing).
 
 - [ ] **Step 6: Commit (tsc red is expected until Task 11)**
 
@@ -2789,7 +2947,41 @@ test("withSpinner maps doneLabel/failLabel", async () => {
   await withSpinner("fetching origin…", async () => 1, { doneLabel: "origin fetched" });
   expect(sent().at(-1)).toEqual({ t: "done", title: "origin fetched" });
 });
+
+test("with the gate closed (RT_BATCH) nothing is spawned and the plain final line is printed", async () => {
+  process.env.RT_BATCH = "1";
+  try {
+    const steps = createStepRunner();
+    await steps.run("fetching origin…", async () => 1, { done: "origin fetched", doneHint: "3 new commits" });
+  } finally {
+    delete process.env.RT_BATCH;
+  }
+  expect(() => readFileSync(record)).toThrow();
+  const text = out.join("");
+  expect(text).toContain("✓");
+  expect(text).toContain("origin fetched");
+  expect(text).toContain("3 new commits");
+});
+
+test("when the child dies mid-step the plain final line is printed and a warning is shown", async () => {
+  process.env.RT_UI_FAKE = JSON.stringify({ dieOn: "start" });
+  const errOut: string[] = [];
+  const realErr = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => { errOut.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    const steps = createStepRunner();
+    await Bun.sleep(100);
+    const r = await steps.run("pushing…", async () => { await Bun.sleep(150); return "ok"; }, { done: "pushed" });
+    expect(r).toBe("ok");
+  } finally {
+    process.stderr.write = realErr;
+  }
+  expect(out.join("")).toContain("pushed");
+  expect(errOut.join("")).toContain("rt-ui");
+});
 ```
+
+Note: these two tests run the gate with `process.stdin.isTTY` as it is under `bun test` (not a TTY), so the first test also passes without `RT_BATCH`; the env var is set anyway to document the intent, and the fake keeps the record path so the "nothing spawned" assertion is real.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -2802,12 +2994,18 @@ Expected: FAIL, cannot resolve `../steps.ts`.
 /**
  * Step runner: one rt-ui spawn per step so nothing is alive between steps.
  * Static log lines between steps are the one presentation TS keeps; they
- * use the palette's truecolor so they match the helper's theme.
+ * use the palette's truecolor so they match the helper's theme. Off a TTY
+ * (agents, pipes, RT_BATCH) nothing is spawned and the same final line is
+ * printed plainly, so every non-interactive path keeps its output.
  */
 import { T, toAnsiFg } from "../tui/palette.ts";
-import { openStep } from "./spawn.ts";
+import { openStep, type StepHandle } from "./spawn.ts";
 
 type StepStyle = "info" | "warn" | "error" | "success";
+
+function interactive(): boolean {
+  return Boolean(process.stdin.isTTY) && !process.env.RT_BATCH;
+}
 
 export interface StepRunner {
   /** Run an async step with spinner then done/error transition. */
@@ -2833,17 +3031,39 @@ function stripEllipsis(s: string): string {
   return s.replace(/…$/, "");
 }
 
+function plainLine(style: "success" | "error", title: string, hint?: string): string {
+  const h = hint ? `  ${toAnsiFg(T.faint)}${hint}${RESET}` : "";
+  return `  ${GLYPH[style]} ${toAnsiFg(T.textSoft)}${title}${RESET}${h}\n`;
+}
+
+// A dead helper must never cost the user the result line: print it plainly
+// and say why, then carry on.
+function fallback(style: "success" | "error", title: string, hint: string | undefined, why: string): void {
+  process.stdout.write(plainLine(style, title, hint));
+  process.stderr.write(`  ${GLYPH.warn} ${toAnsiFg(T.dimmer)}rt-ui ${why}; printed plainly${RESET}\n`);
+}
+
 export function createStepRunner(): StepRunner {
   return {
     async run<T>(pending, task, opts) {
-      const step = openStep(pending);
+      const step: StepHandle | null = interactive() ? openStep(pending) : null;
       try {
         const r = await task();
-        await step.done(opts?.done ?? stripEllipsis(pending), opts?.doneHint);
+        const title = opts?.done ?? stripEllipsis(pending);
+        if (!step) {
+          process.stdout.write(plainLine("success", title, opts?.doneHint));
+        } else if (!(await step.done(title, opts?.doneHint))) {
+          fallback("success", title, opts?.doneHint, "exited before the step finished");
+        }
         return r;
       } catch (e) {
         const hint = opts?.errorHint ?? (e instanceof Error ? e.message : undefined);
-        await step.fail(opts?.done ?? `${stripEllipsis(pending)} failed`, hint);
+        const title = opts?.done ?? `${stripEllipsis(pending)} failed`;
+        if (!step) {
+          process.stdout.write(plainLine("error", title, hint));
+        } else if (!(await step.fail(title, hint))) {
+          fallback("error", title, hint, "exited before the step finished");
+        }
         throw e;
       }
     },
@@ -2864,7 +3084,7 @@ export async function withSpinner<T>(
 }
 ```
 
-Note: `T.textSoft` does not exist in `palette.ts` yet; add it beside `muted`: `textSoft: [210, 205, 235] as const, // #D2CDEB`. (`muted` already has that value; keep both names, `textSoft` is the token-sheet name.)
+Note: `T.textSoft`, `T.dimmer`, and `T.faint` do not exist in `palette.ts` yet; add them beside `muted`: `textSoft: [210, 205, 235] as const, // #D2CDEB`, `dimmer: [139, 132, 168] as const, // #8B84A8`, `faint: [110, 102, 140] as const, // #6E668C`. (`muted` already equals `textSoft`; keep both names, `textSoft` is the token-sheet name.)
 
 - [ ] **Step 4: Grep callers for writes inside a task**
 
@@ -2874,7 +3094,7 @@ Expected: each task closure is a bare `gitAsync(...)` call (no `process.stdout.w
 - [ ] **Step 5: Run the tests and the whole TS gate**
 
 Run: `bun test lib/ui/__tests__/steps.test.ts && bunx tsc --noEmit && bun test lib commands packages scripts`
-Expected: PASS; tsc 0 errors (the shim now resolves). Any test that previously rendered an Ink prompt and now spawns rt-ui must set `RT_UI_BIN` to the fake; find them with the failure output and add the two env lines from `prompts.test.ts`'s `beforeEach`.
+Expected: PASS (7 tests in steps); tsc 0 errors (the shim now resolves). Any test that previously rendered an Ink prompt and now spawns rt-ui must set `RT_UI_BIN` to the fake; find them with the failure output and add the two env lines from `prompts.test.ts`'s `beforeEach`.
 
 - [ ] **Step 6: Commit**
 
@@ -2892,12 +3112,12 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Prove nothing imports Ink or React any more**
 
-Run: `grep -rln "from \"ink\"\|from \"react\"\|@inkjs/ui\|from \"react/" lib commands cli.ts scripts --include='*.ts' --include='*.tsx' | grep -v __tests__`
-Expected: no output. (If a file appears, it is a missed importer: re-point it at `lib/ui/prompts.ts` / `lib/ui/steps.ts` and re-run.)
+Run: `grep -rn "from \"ink\"\|from \"react\"\|@inkjs/ui\|from \"react/\|fullscreen-ink" lib commands cli.ts scripts --include='*.ts' --include='*.tsx' | grep -v __tests__`
+Expected: exactly one hit, the historical comment at `lib/fzf-select.ts:6` (`...alongside React+ink+@inkjs/ui`). Any import statement in the output is a missed importer: re-point it at `lib/ui/prompts.ts` / `lib/ui/steps.ts` and re-run.
 
 - [ ] **Step 2: Remove the dependencies**
 
-In `package.json`, delete from `dependencies`: `ink`, `react`, `@inkjs/ui`; from `devDependencies`: `@types/react`, `react-devtools-core`. Run `bun install`.
+In `package.json`, delete from `dependencies`: `ink`, `react`, `@inkjs/ui`, `fullscreen-ink`; from `devDependencies`: `@types/react`, `react-devtools-core`. Run `bun install`. `packages/settings-kit` keeps its own `react`/`@types/react` (^18) devDependencies and its `react` peer, so its `src/react.ts` still resolves after the root copies are gone; if `bunx tsc --noEmit` reports a missing `react` under `packages/settings-kit`, the fix is in that package's `package.json`, never a root dependency.
 
 - [ ] **Step 3: Extend the daemon-graph guard**
 
@@ -2962,7 +3182,7 @@ After the `Compile rt (arm64)` step add:
 
 - [ ] **Step 3: build.sh embeds and signs it**
 
-In `rt-tray/build.sh`, after the `Embed rt` block (after the `fi` that closes `if [ "$IS_DEV" = true ]`), add:
+In `rt-tray/build.sh`, immediately after the line that invokes `bundle_helpers` (the bare `bundle_helpers` call that closes the "Helpers from deps.lock" section, currently line 240) and before the signing section, add:
 
 ```bash
 # ─── Embed rt-ui (Contents/Helpers/rt-ui) ─────────────────────────────────────
@@ -2981,7 +3201,7 @@ if [ "$IS_DEV" != true ]; then
     fi
 fi
 ```
-`HELPER_ENTITLEMENTS` is declared before `bundle_helpers`; this block must sit after `bundle_helpers` has run (it does, since the Embed rt block is later in the file) and before the signing loop, which already iterates `HELPER_ENTITLEMENTS`.
+Placement matters: `HELPER_ENTITLEMENTS=()` is initialized at line 180, AFTER the "Embed rt" block (lines 154-176), so an append placed near the rt embed would be wiped by that initialization and the helper would ship unsigned. After the `bundle_helpers` call the array is live and the signing loop (near line 397) iterates it, which is what signs `rt-ui` with `com.mattstack.helper.rt-ui`.
 
 - [ ] **Step 4: check-bundle.sh asserts it**
 
@@ -3020,8 +3240,8 @@ source checkout outranks the installed bundle when resolving the binary.
 
 - [ ] **Step 6: Local dry run of the bundle path**
 
-Run: `bun run ui:build && RT_REQUIRE_DEPS=0 rt-tray/build.sh debug 2>&1 | grep -E 'rt-ui|Helpers' ; ls -la rt-tray/rt-tray.app/Contents/Helpers/ 2>/dev/null || ls -la rt-tray/mattstack.app/Contents/Helpers/`
-Expected: the log shows `✓ Embedded rt-ui` and `✓ Signed Helpers/rt-ui`, and the Helpers dir lists `rt-ui`. Never touch `/Applications/mattstack.app` or `rt-tray/mattstack-dev.app`; the `debug` mode builds into the scratch `rt-tray/` output only.
+Run: `bun run ui:build && bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile dist/rt && RT_REQUIRE_DEPS=0 rt-tray/build.sh release 2>&1 | grep -E 'rt-ui|Helpers|Embedded' ; ls -la rt-tray/mattstack.app/Contents/Helpers/`
+Expected: the log shows `✓ Embedded rt-ui` and `✓ Signed Helpers/rt-ui`, and the Helpers dir lists `rt-ui`. `release` mode assembles `rt-tray/mattstack.app` (gitignored, ad-hoc signed when no Developer ID is present) and never touches `/Applications`; only `install` mode does, and `debug` mode exits before any embed step, so neither is used here. The `dist/rt` build is needed or the script warns that the rt binary is missing. Do not run the assembled app.
 
 - [ ] **Step 7: Commit**
 
@@ -3141,10 +3361,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Topology, gate, EOF liveness, SIGPIPE: Tasks 6 (`WatchStdinEOF`, `signal.Ignore(SIGPIPE)` in main), 9 (stdin kept open, tested).
 - Three verbs: `prompt` Task 6, `steps` Task 7; `session` is phase 2 (out of scope, stated in header).
 - Protocol: Tasks 3/4 fixtures + both decoders; exit codes in `main.go` and `spawn.ts` mapping (Task 9 tests 0/130/131/2/70).
-- Rendering contract: card + header (theme.Card / KeybindHeader), collapse line (Task 6 `writeCollapsed`, asserted), inline for prompts/steps (no alt screen anywhere in this plan), truecolor via `WithColorProfile`.
-- TS side: facade signatures frozen (Task 10 tests), `destructive` added, `stderr` ignored, `rt-render.tsx` shim, `lib/ui/*` modules, exit hook kill (Task 9 `killLiveOnExit`), `openStep` handle name.
+- Rendering contract: card (the huh theme's `Group.Base`) with the Go-composed legend as the group description (Task 6 `legend`, asserted for ctrl-up), destructive confirm defaults to no in peach (Task 6 test), collapse line written only after Bubble Tea's own erase (Task 6 `writeCollapsed`, asserted), inline for prompts/steps (no alt screen anywhere in this plan), truecolor via `WithColorProfile`.
+- TS side: facade signatures frozen (Task 10 tests), `destructive` added, `stderr` ignored, `rt-render.tsx` shim, `lib/ui/*` modules, exit hook kill (Task 9 `killLiveOnExit`), `openStep` handle name; the steps gate and dead-child fallback (Task 11 tests) keep every non-TTY path printing its lines.
 - Go side layout: matches the spec's tree minus `session`/`views` (phase 2).
-- Lifecycle: restore on EOF/panic/signals (Bubble Tea handles panics/signals inside `form.Run`; EOF watcher restores cursor + resets attributes before exit); TS-dies test (Task 6 `TestParentDeathRestoresTerminal`).
+- Lifecycle: stdin EOF cancels the form's context so Bubble Tea restores termios (Task 6 `TestParentDeathRestoresTerminal` asserts the erase + cursor-show pair and exit 70); steps finalize on SIGINT/SIGTERM/SIGHUP and exit 130 (Task 7 test).
 - Distribution: first-party helper, `ui:build`, `.gitignore`, checks + release workflows, build.sh copy + sign, check-bundle assertion, resolution ladder with source-first (Task 8 tests), version banner (`--version`).
 - Performance budget: Task 14 bench with the 40 ms gate; fast-step no-flash (Task 7 test).
 - Migration table: phase 0 = Tasks 1-2, phase 1 = Tasks 3-14, deletions match the spec's "keep" list.
