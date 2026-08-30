@@ -6,10 +6,20 @@
  * back-compat; the latency-sensitive callers import them from here directly.
  */
 
-import { T, toHex } from "./tui/palette.ts";
+import { CARD_WIDTH, T, toHex } from "./tui/palette.ts";
 import { BackNavigation } from "./back-navigation.ts";
 
 export { BackNavigation } from "./back-navigation.ts";
+
+/**
+ * Caps the picker at the card width rt-ui's prompts share. fzf has no width
+ * option, so the cap is a right margin. A box narrower than the terminal is
+ * what keeps a reflowing terminal from rewrapping the border mid-resize.
+ */
+export function fzfWidthArgs(columns: number | undefined = process.stderr.columns ?? process.stdout.columns): string[] {
+  if (!columns || columns <= CARD_WIDTH) return [];
+  return [`--margin=0,${columns - CARD_WIDTH},0,0`];
+}
 
 // ─── Option type ─────────────────────────────────────────────────────────────
 
@@ -71,6 +81,7 @@ export async function filterableMultiselect(opts: {
     "--with-nth=2..",
     "--delimiter=\t",
     process.env.RT_FZF_ALT_SCREEN ? "--height=100%" : "--height=~100%",
+    ...fzfWidthArgs(),
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${opts.message} `,
@@ -149,6 +160,7 @@ export async function filterableSelect(opts: {
     "--delimiter=\t",
     "--tabstop=1",
     process.env.RT_FZF_ALT_SCREEN ? "--height=100%" : "--height=~100%",
+    ...fzfWidthArgs(),
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${opts.message} `,

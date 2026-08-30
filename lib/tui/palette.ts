@@ -52,5 +52,8 @@ export function toAnsiBg(rgb: Rgb): string {
   return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
 }
 
+/** Columns the fzf picker box and the rt-ui prompt card share; theme.go CardWidth mirrors it. */
+export const CARD_WIDTH = 88;
+
 /** Braille spinner frames; advance every 80 ms. Shared by the inline spinner and the rt-ui theme. */
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"] as const;
