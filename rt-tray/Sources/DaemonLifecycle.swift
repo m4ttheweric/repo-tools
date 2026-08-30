@@ -53,6 +53,15 @@ class DaemonLifecycle {
         for r in results where !r.ok {
             TrayLog.error("daemon register failed", ["label": label, "status": r.status, "err": r.error ?? ""])
         }
+        // register() is a no-op when the agent is already registered, so a job
+        // that previously exited 0 (shutdown, an external SIGTERM) stays
+        // registered but dead and KeepAlive never relaunches it (S028).
+        // Kickstart forces launchd to actually invoke the job either way.
+        if await services.restart(label: label) {
+            TrayLog.info("daemon kickstarted on start", ["label": label])
+        } else {
+            TrayLog.warn("kickstart on start failed", ["label": label])
+        }
     }
 
     // MARK: - Stop
