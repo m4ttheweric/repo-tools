@@ -462,7 +462,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 Run:
 ```bash
-mkdir -p ui/cmd/rt-ui ui/internal/protocol && cd ui && go mod init rt-ui && GOFLAGS=-mod=mod go get charm.land/bubbletea/v2@v2.0.9 charm.land/lipgloss/v2@v2.0.6 charm.land/bubbles/v2@v2.2.1 charm.land/huh/v2@v2.0.3 github.com/charmbracelet/colorprofile@v0.4.3 github.com/creack/pty@latest && cd ..
+mkdir -p ui/cmd/rt-ui ui/internal/protocol && cd ui && go mod init rt-ui && GOFLAGS=-mod=mod go get charm.land/bubbletea/v2@v2.0.9 charm.land/lipgloss/v2@v2.0.6 charm.land/bubbles/v2@v2.2.1 charm.land/huh/v2@v2.0.3 github.com/charmbracelet/colorprofile@v0.4.3 github.com/creack/pty@latest github.com/charmbracelet/x/vt@latest && cd ..
 ```
 Expected: `ui/go.mod` lists those modules; `go 1.26` line present.
 
@@ -1204,7 +1204,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Produces: `prompt.Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, error)` where `type Outcome int` with `Answered, Cancelled, Back`; cancelling `ctx` shuts the form down through Bubble Tea (termios restored) and returns an error.
-- Produces (tests): `testutil.Binary(t) string` (builds `rt-ui` once per test run into a temp dir), `testutil.RunPTY(t, argv []string, stdinLines []string, keys []string, env map[string]string, closeStdin bool) (stdout string, tty string, exit int)`.
+- Produces (tests): `testutil.Binary(t) string` (builds `rt-ui` once per test run into a temp dir), `testutil.RunPTY(t, argv []string, stdinLines []string, keys []string, env map[string]string, closeStdin bool) (stdout string, tty string, exit int)` (with `closeStdin`, stdin is closed after the first paint, i.e. "the parent died while the card was up"), and `testutil.Screen(tty string) string`: the visible text of a 100x30 terminal after replaying the raw tty bytes through `github.com/charmbracelet/x/vt`, which is the only deterministic way to assert what is left on screen (raw-byte grepping cannot tell an erase that happened from one that was skipped).
 
 - [ ] **Step 1: Write the test helpers**
 
@@ -1335,14 +1335,16 @@ func RunPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env
 	for _, l := range stdinLines {
 		io.WriteString(stdinW, l+"\n")
 	}
-	if closeStdin {
-		stdinW.Close()
-	}
 
-	// Wait for the first paint before typing so keys are not swallowed.
+	// Wait for the first paint before typing so keys are not swallowed, and
+	// before closing stdin so a "parent died" test sees a painted card die,
+	// not a program that never got to paint.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) && !painted() {
 		time.Sleep(10 * time.Millisecond)
+	}
+	if closeStdin {
+		stdinW.Close()
 	}
 	for _, k := range keys {
 		time.Sleep(30 * time.Millisecond)
@@ -1368,6 +1370,30 @@ func RunPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env
 }
 ```
 (Imports for that file: `bytes`, `io`, `os`, `os/exec`, `strings`, `sync`, `syscall`, `testing`, `time`, `github.com/creack/pty`.)
+
+`ui/internal/testutil/screen.go`:
+
+```go
+package testutil
+
+import (
+	"strings"
+
+	"github.com/charmbracelet/x/vt"
+)
+
+// Screen replays raw tty bytes through a terminal emulator sized like RunPTY's
+// pty and returns the visible text, trailing whitespace trimmed per line.
+func Screen(tty string) string {
+	em := vt.NewEmulator(100, 30)
+	em.Write([]byte(tty))
+	lines := strings.Split(em.String(), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " ")
+	}
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
+}
+```
 
 `pty.StartWithSize` is deliberately not used: it sets `Ctty: 0`, and fd 0 here is the stdin pipe, so `Start` fails with `ioctl TIOCSCTTY` on a pipe. The `ExtraFiles` + `Ctty: 3` shape is the one that works when the pty must be the controlling terminal without being stdio. `scripts/bench-rt-ui.py` (Task 14) does the same thing in Python.
 
@@ -1431,25 +1457,43 @@ func TestSelectDownEnterPicksSecond(t *testing.T) {
 	}
 }
 
-func TestSelectEscExits130WithNoStdout(t *testing.T) {
-	stdout, _, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyEsc}, nil, false)
+// Every exit must leave no card on screen: cancel and back go through the
+// same graceful Quit + empty-view path an answer takes, never an interrupt
+// (which skips Bubble Tea's final flush and strands the card).
+func assertCardGone(t *testing.T, tty string) {
+	t.Helper()
+	if screen := testutil.Screen(tty); strings.Contains(screen, "╭") || strings.Contains(screen, "Access duration") {
+		t.Fatalf("card still on screen after exit:\n%s", screen)
+	}
+}
+
+func TestSelectEscExits130WithNoStdoutAndClearsCard(t *testing.T) {
+	stdout, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyEsc}, nil, false)
 	if exit != 130 || stdout != "" {
 		t.Fatalf("exit %d stdout %q", exit, stdout)
 	}
+	assertCardGone(t, tty)
 }
 
 func TestSelectCtrlCExits130(t *testing.T) {
-	_, _, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyCtrlC}, nil, false)
+	_, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyCtrlC}, nil, false)
 	if exit != 130 {
 		t.Fatalf("exit %d", exit)
 	}
+	assertCardGone(t, tty)
 }
 
-func TestSelectCtrlUpExits131(t *testing.T) {
-	stdout, _, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyCtrlUp}, nil, false)
+func TestSelectCtrlUpExits131AndClearsCard(t *testing.T) {
+	stdout, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyCtrlUp}, nil, false)
 	if exit != 131 || stdout != "" {
 		t.Fatalf("exit %d stdout %q", exit, stdout)
 	}
+	assertCardGone(t, tty)
+}
+
+func TestSelectAnswerClearsCard(t *testing.T) {
+	_, tty, _ := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyEnter}, nil, false)
+	assertCardGone(t, tty)
 }
 
 func TestSelectBackRowExits131(t *testing.T) {
@@ -1471,11 +1515,18 @@ func TestConfirmYAndNAndCollapse(t *testing.T) {
 	if checkAt < 0 {
 		t.Fatalf("collapsed line missing: %q", tty)
 	}
-	if strings.LastIndex(tty[:checkAt], "\x1b[J") < 0 || !strings.Contains(tty[checkAt:], "Run sdm login now?") {
+	eraseAt := strings.LastIndex(tty[:checkAt], "\x1b[J")
+	if eraseAt < 0 || !strings.Contains(tty[checkAt:], "Run sdm login now?") {
 		t.Fatalf("collapsed line must follow the card erase: %q", tty)
 	}
-	if strings.Contains(tty, "\x1b[1A") {
-		t.Fatalf("collapse must never move the cursor up (would eat the user's previous line): %q", tty)
+	// Bubble Tea's own inline repaints may move the cursor up while the card is
+	// live; after its final erase, nothing may (that would eat the user's
+	// previous line).
+	if strings.Contains(tty[eraseAt:], "\x1b[1A") || strings.Contains(tty[eraseAt:], "\x1b[A") {
+		t.Fatalf("collapse moved the cursor up after the final erase: %q", tty[eraseAt:])
+	}
+	if screen := testutil.Screen(tty); !strings.Contains(screen, "✓") || strings.Contains(screen, "╭") {
+		t.Fatalf("final screen should be the collapsed line only:\n%s", screen)
 	}
 	stdout, _, exit = testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-confirm.json")}, []string{"n"}, nil, false)
 	if exit != 0 || !strings.Contains(stdout, `"ok":false`) {
@@ -1680,7 +1731,9 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 		if destructive {
 			th = theme.HuhDestructive()
 		}
-		c := huh.NewConfirm().Title(spec.Message).Description(spec.Hint).Affirmative("yes").Negative("no").Inline(true).Value(&v)
+		// The group title already carries the message; an inline confirm draws
+		// only its buttons beside it.
+		c := huh.NewConfirm().Description(spec.Hint).Affirmative("yes").Negative("no").Inline(true).Value(&v)
 		field = c
 		defer func() { result.OK = &v }()
 	case "text":
@@ -1705,18 +1758,37 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 		return result, Answered, fmt.Errorf("%w: kind %q", protocol.ErrBadSpec, spec.Kind)
 	}
 
+	// Cancel (esc, ctrl-c) and back (ctrl-up) both leave through the same
+	// graceful Quit an answer takes, with the view blanked so Bubble Tea's
+	// final flush erases the card. An InterruptMsg would skip that flush and
+	// strand the card on screen; huh's own Quit binding stays as a fallback
+	// and is mapped below.
 	km := huh.NewDefaultKeyMap()
 	km.Quit = key.NewBinding(key.WithKeys("ctrl+c", "esc"))
 
-	// ctrl-up is "back". Turning it into an InterruptMsg (not a QuitMsg) lets
-	// huh take its own abort path, which clears the card before exiting.
-	backRequested := false
+	var cancelled, backRequested bool
 	filter := func(_ tea.Model, msg tea.Msg) tea.Msg {
-		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "ctrl+up" && spec.Back != nil {
-			backRequested = true
-			return tea.InterruptMsg{}
+		k, ok := msg.(tea.KeyPressMsg)
+		if !ok {
+			return msg
+		}
+		switch k.String() {
+		case "esc", "ctrl+c":
+			cancelled = true
+			return tea.QuitMsg{}
+		case "ctrl+up":
+			if spec.Back != nil {
+				backRequested = true
+				return tea.QuitMsg{}
+			}
 		}
 		return msg
+	}
+	blankOnExit := func(v tea.View) tea.View {
+		if cancelled || backRequested {
+			v.Content = ""
+		}
+		return v
 	}
 
 	title := spec.Title
@@ -1728,6 +1800,7 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 		WithTheme(th).
 		WithKeyMap(km).
 		WithShowHelp(false).
+		WithViewHook(blankOnExit).
 		WithInput(term).
 		WithOutput(term).
 		WithProgramOptions(tea.WithColorProfile(colorprofile.TrueColor), tea.WithFilter(filter))
@@ -1735,18 +1808,14 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 	tty.FirstPaint()
 	err := form.RunWithContext(ctx)
 	switch {
+	case ctx.Err() != nil:
+		return result, Answered, ctx.Err()
 	case backRequested:
 		return result, Back, nil
-	case errors.Is(err, huh.ErrUserAborted), errors.Is(err, tea.ErrInterrupted):
-		if ctx.Err() != nil {
-			return result, Answered, ctx.Err()
-		}
+	case cancelled, errors.Is(err, huh.ErrUserAborted), errors.Is(err, tea.ErrInterrupted):
 		return result, Cancelled, nil
 	case err != nil:
 		return result, Answered, err
-	}
-	if ctx.Err() != nil {
-		return result, Answered, ctx.Err()
 	}
 	if backHit {
 		return result, Back, nil
@@ -1854,7 +1923,7 @@ func runSteps() int { return ExitInternal }
 - [ ] **Step 5: Build and run the prompt tests**
 
 Run: `cd ui && go vet ./... && go test ./internal/prompt/ -count=1`
-Expected: PASS. Every huh/tea symbol above exists in the pinned versions (`Group.Title/Description/WithShowHelp`, `Form.RunWithContext/WithKeyMap(*KeyMap)`, `Option.Selected`, `Confirm.Inline`, `tea.InterruptMsg`, `tea.ErrInterrupted`, `tea.WithFilter`); if a signature still differs, `go doc` is the reference and the tests are the contract. `huh.Select.Value` places the cursor on the initial value, so the ↩ row (first option) sits one above the `1h` initial; that is what `TestSelectBackRowExits131`'s single up-arrow relies on.
+Expected: PASS. Every huh/tea symbol above exists in the pinned versions (`Group.Title/Description/WithShowHelp`, `Form.RunWithContext/WithKeyMap(*KeyMap)/WithViewHook(func(tea.View) tea.View)`, `Option.Selected`, `Confirm.Inline`, `tea.QuitMsg`, `tea.ErrInterrupted`, `tea.WithFilter`, `vt.NewEmulator`); if a signature still differs, `go doc` is the reference and the tests are the contract. `huh.Select.Value` places the cursor on the initial value, so the ↩ row (first option) sits one above the `1h` initial; that is what `TestSelectBackRowExits131`'s single up-arrow relies on.
 
 - [ ] **Step 6: Commit**
 
@@ -1872,7 +1941,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `ui/cmd/rt-ui/verbs.go` (`runSteps`)
 
 **Interfaces:**
-- Produces: `steps.Run(events <-chan protocol.StepEvent, term *os.File) (Outcome)` with `Outcome` in `Done, Failed, Interrupted`.
+- Produces: `steps.Run(events <-chan protocol.StepEvent, signals <-chan os.Signal, term *os.File) Outcome` with `Outcome` in `Done, Failed, Interrupted` (parent gone), `Signalled` (SIGINT/SIGTERM/SIGHUP; `runSteps` maps it to exit 130).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2886,7 +2955,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
-import { createStepRunner, withSpinner } from "../steps.ts";
+import { createStepRunner, withSpinner, __test__ } from "../steps.ts";
 import { T, toAnsiFg } from "../../tui/palette.ts";
 
 const FAKE = resolve(import.meta.dir, "fake-rt-ui.ts");
@@ -2900,11 +2969,15 @@ beforeEach(() => {
   record = join(dir, "record.ndjson");
   process.env.RT_UI_BIN = FAKE;
   process.env.RT_UI_FAKE = JSON.stringify({ record });
+  // bun test's stdin is not a TTY, so the real gate would never spawn; force
+  // it open here and closed only in the test that is about the gate.
+  __test__.setInteractive(() => true);
   out = [];
   process.stdout.write = ((chunk: string | Uint8Array) => { out.push(String(chunk)); return true; }) as typeof process.stdout.write;
 });
 afterEach(() => {
   process.stdout.write = realWrite;
+  __test__.setInteractive(undefined);
   delete process.env.RT_UI_BIN;
   delete process.env.RT_UI_FAKE;
   rmSync(dir, { recursive: true, force: true });
@@ -2948,7 +3021,8 @@ test("withSpinner maps doneLabel/failLabel", async () => {
   expect(sent().at(-1)).toEqual({ t: "done", title: "origin fetched" });
 });
 
-test("with the gate closed (RT_BATCH) nothing is spawned and the plain final line is printed", async () => {
+test("with the gate closed nothing is spawned and the plain final line is printed", async () => {
+  __test__.setInteractive(undefined);
   process.env.RT_BATCH = "1";
   try {
     const steps = createStepRunner();
@@ -2961,6 +3035,17 @@ test("with the gate closed (RT_BATCH) nothing is spawned and the plain final lin
   expect(text).toContain("✓");
   expect(text).toContain("origin fetched");
   expect(text).toContain("3 new commits");
+});
+
+test("the real gate is closed off a TTY and under RT_BATCH", () => {
+  __test__.setInteractive(undefined);
+  expect(__test__.interactive()).toBe(Boolean(process.stdin.isTTY));
+  process.env.RT_BATCH = "1";
+  try {
+    expect(__test__.interactive()).toBe(false);
+  } finally {
+    delete process.env.RT_BATCH;
+  }
 });
 
 test("when the child dies mid-step the plain final line is printed and a warning is shown", async () => {
@@ -2981,7 +3066,7 @@ test("when the child dies mid-step the plain final line is printed and a warning
 });
 ```
 
-Note: these two tests run the gate with `process.stdin.isTTY` as it is under `bun test` (not a TTY), so the first test also passes without `RT_BATCH`; the env var is set anyway to document the intent, and the fake keeps the record path so the "nothing spawned" assertion is real.
+Note: `bun test` runs with a non-TTY stdin, so the real gate is closed for the whole suite. That is why `beforeEach` forces it open with `__test__.setInteractive(() => true)`: without that, none of the tests that expect the fake to record anything could pass. The two gate tests put the real gate back first.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -3003,9 +3088,17 @@ import { openStep, type StepHandle } from "./spawn.ts";
 
 type StepStyle = "info" | "warn" | "error" | "success";
 
-function interactive(): boolean {
+function realInteractive(): boolean {
   return Boolean(process.stdin.isTTY) && !process.env.RT_BATCH;
 }
+let interactive: () => boolean = realInteractive;
+
+export const __test__ = {
+  setInteractive(fn: (() => boolean) | undefined): void {
+    interactive = fn ?? realInteractive;
+  },
+  interactive: () => interactive(),
+};
 
 export interface StepRunner {
   /** Run an async step with spinner then done/error transition. */
@@ -3094,7 +3187,7 @@ Expected: each task closure is a bare `gitAsync(...)` call (no `process.stdout.w
 - [ ] **Step 5: Run the tests and the whole TS gate**
 
 Run: `bun test lib/ui/__tests__/steps.test.ts && bunx tsc --noEmit && bun test lib commands packages scripts`
-Expected: PASS (7 tests in steps); tsc 0 errors (the shim now resolves). Any test that previously rendered an Ink prompt and now spawns rt-ui must set `RT_UI_BIN` to the fake; find them with the failure output and add the two env lines from `prompts.test.ts`'s `beforeEach`.
+Expected: PASS (8 tests in steps); tsc 0 errors (the shim now resolves). Any test that previously rendered an Ink prompt and now spawns rt-ui must set `RT_UI_BIN` to the fake; find them with the failure output and add the two env lines from `prompts.test.ts`'s `beforeEach`.
 
 - [ ] **Step 6: Commit**
 
@@ -3144,7 +3237,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 13: Distribution wiring (checks, release, bundle, clean-room assertion)
 
 **Files:**
-- Modify: `.github/workflows/checks.yml`, `.github/workflows/release.yml`, `rt-tray/build.sh:154-175` and the signing loop near line 396, `rt-tray/check-bundle.sh` (after `check_helpers`), `CLAUDE.md`
+- Modify: `.github/workflows/checks.yml`, `.github/workflows/release.yml`, `rt-tray/build.sh` (insert after the `bundle_helpers` call at line 240; the signing loop near line 397 needs no change), `rt-tray/check-bundle.sh` (inside `check_helpers`), `CLAUDE.md`
 
 - [ ] **Step 1: checks.yml gains Go**
 
@@ -3284,9 +3377,14 @@ def run_once():
     err_r, err_w = os.pipe()
     env = dict(os.environ, RT_UI_BENCH="1", TERM="xterm-256color", COLORTERM="truecolor")
     t0 = time.monotonic_ns()
+    # New session with the pty slave as its controlling terminal: /dev/tty
+    # resolves to it while fds 0/1/2 stay our pipes (same shape as the Go
+    # test harness).
+    def make_ctty():
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
     proc = subprocess.Popen([BIN, "prompt"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err_w,
-                            env=env, close_fds=True, preexec_fn=os.setsid)
-    # the pty must be the controlling tty for /dev/tty to resolve
+                            env=env, close_fds=True, pass_fds=(slave,), preexec_fn=make_ctty)
     os.close(slave); os.close(err_w)
     proc.stdin.write(SPEC.encode()); proc.stdin.flush()
     first = None; errbuf = b""; deadline = time.monotonic() + 10
@@ -3318,7 +3416,7 @@ samples.sort()
 print(f"rt-ui prompt first-paint ms: min={samples[0]:.0f} median={samples[len(samples)//2]:.0f} max={samples[-1]:.0f} (n={len(samples)})")
 ```
 
-If `/dev/tty` cannot be opened because the child has no controlling terminal under `preexec_fn=os.setsid`, replace that line with `preexec_fn=lambda: (os.setsid(), fcntl.ioctl(slave, termios.TIOCSCTTY, 0))` and move `os.close(slave)` after `Popen` returns (it already is). The Go test helper in Task 6 solved the same problem with `creack/pty`; the two must agree on the answer.
+This is the Python twin of Task 6's Go harness (`pty.Open` + `ExtraFiles` + `Setctty`): the pty is the controlling terminal without being stdio, which is the only arrangement under which `/dev/tty` opens while the spec still travels down a pipe.
 
 - [ ] **Step 2: Run it and record**
 
