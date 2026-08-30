@@ -26,12 +26,9 @@
  */
 
 import { applyMRWriteback, getCurrentUserId, getRepoContext } from "../freshness.ts";
-import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { PullRequest } from "@mattstack/glance";
 import { ReadBackFailedError } from "@mattstack/glance";
 import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
-
-const log = lazyChildLogger("mr");
 
 type ActionName =
   | "merge" | "rebase" | "approve" | "unapprove"
@@ -56,7 +53,7 @@ export interface MRHandlerOverrides {
 // as endpoint.ts/repos.ts); the two job-detail verbs already envelope as
 // {ok,data} and get the standard CommandResult carve-out.
 export function createMRHandlers(
-  ctx: Pick<HandlerContext, "repoIndex" | "cache">,
+  ctx: Pick<HandlerContext, "repoIndex" | "cache" | "log">,
   broadcast: (type: string, data: any) => void,
   overrides: MRHandlerOverrides = {},
 ): { "mr:action": (payload: any, signal?: AbortSignal) => Promise<any> }
@@ -119,7 +116,7 @@ export function createMRHandlers(
           // `returnedPr` stays null, which drops through to the same follow-up
           // fetch the void actions use, so the stores still get a fresh shape.
           if (!(err instanceof ReadBackFailedError && err.writeApplied)) throw err;
-          log.warn({ err, repo: repoName, iid, action }, "action landed but its read-back failed; recovering via follow-up fetch");
+          ctx.log.warn({ err, repo: repoName, iid, action }, "action landed but its read-back failed; recovering via follow-up fetch");
         }
 
         const followUp = async () => {
@@ -127,7 +124,7 @@ export function createMRHandlers(
             const pr = await fetchSingle(provider, projectPath, iid);
             if (pr) writeback(repoName, projectPath, pr);
           } catch (err) {
-            log.warn({ err, repo: repoName, iid, action }, "write-back follow-up failed");
+            ctx.log.warn({ err, repo: repoName, iid, action }, "write-back follow-up failed");
           }
         };
 
@@ -137,7 +134,7 @@ export function createMRHandlers(
           try {
             writeback(repoName, projectPath, returnedPr);
           } catch (err) {
-            log.warn({ err, repo: repoName, iid, action }, "write-back failed");
+            ctx.log.warn({ err, repo: repoName, iid, action }, "write-back failed");
           }
         } else if (RETRY_ACTIONS.has(action)) {
           // Pipelines are the events blind spot: one delayed fetch catches

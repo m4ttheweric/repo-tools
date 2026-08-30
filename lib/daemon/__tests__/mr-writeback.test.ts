@@ -4,7 +4,7 @@ import { ReadBackFailedError } from "@mattstack/glance";
 import { fakeStore } from "./fake-cache-store.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const fakeCtx = () => ({ cache: fakeStore({}), repoIndex: () => ({ repo: "/tmp/repo" }) });
+const fakeCtx = () => ({ cache: fakeStore({}), repoIndex: () => ({ repo: "/tmp/repo" }), log: { warn() {}, info() {}, debug() {}, error() {} } as any });
 const prOf = (iid: number, state = "opened") => ({ iid, state, sourceBranch: `b${iid}` }) as any;
 
 function harness(provider: Record<string, unknown>) {

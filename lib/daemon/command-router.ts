@@ -89,7 +89,7 @@ export function buildRoutedHandlers(opts: {
       repoIndex: ctx.repoIndex, watchedConfigs: ctx.watchedConfigs, cache: ctx.cache, portCacheRef: ctx.portCacheRef,
       refreshStatusRef: ctx.refreshStatusRef, log: ctx.log, setLogLevel: ctx.setLogLevel, getLogLevel: ctx.getLogLevel,
     }),
-    ...createMRHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache }, broadcast),
+    ...createMRHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, broadcast),
     ...createWorktreeHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, opts.worktree),
     ...createDiscussionHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache }, broadcast),
     ...createSystemProcessHandlers(systemProcessScanner, { portCacheRef: ctx.portCacheRef, cache: ctx.cache }),
