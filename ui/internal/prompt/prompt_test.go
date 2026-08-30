@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"rt-ui/internal/testutil"
@@ -219,6 +220,40 @@ func TestParentDeathRestoresTerminal(t *testing.T) {
 		}
 	}
 	assertCardGone(t, tty)
+}
+
+// The signals that reach a prompt from outside the terminal are cancels, not
+// answers. Bubble Tea's own handling of them returns a clean run, so the bound
+// value would be reported as the user's choice; SIGHUP it does not watch at
+// all, which leaves the card stranded on a raw terminal.
+func TestExternalSignalCancelsAndRestoresTheTerminal(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(sig.String(), func(t *testing.T) {
+			stdout, tty, exit := testutil.RunPTYWithSignal(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, sig, nil)
+			if exit != 130 || stdout != "" {
+				t.Fatalf("exit %d stdout %q", exit, stdout)
+			}
+			// Only Bubble Tea's close writes these, undoing input modes it turned
+			// on at start... the same path that puts termios back in cooked mode.
+			for _, seq := range []string{"\x1b[?25h", "\x1b[?2004l"} {
+				if !strings.Contains(tty, seq) {
+					t.Fatalf("terminal left raw, %q missing: %q", seq, tty)
+				}
+			}
+			assertCardGone(t, tty)
+		})
+	}
+}
+
+func TestSignalledConfirmReportsNoAnswer(t *testing.T) {
+	stdout, tty, exit := testutil.RunPTYWithSignal(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-confirm.json")}, syscall.SIGTERM, nil)
+	if exit != 130 || stdout != "" {
+		t.Fatalf("exit %d stdout %q", exit, stdout)
+	}
+	// The collapsed line is the record of an answer; a cancel leaves none.
+	if screen := testutil.Screen(tty); strings.Contains(screen, "✓") || strings.Contains(screen, "╭") {
+		t.Fatalf("signalled confirm left an answer on screen:\n%s", screen)
+	}
 }
 
 // cursorUp matches the parameterized form only; a bare ESC[A is one row and

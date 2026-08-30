@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 
 	"rt-ui/internal/prompt"
@@ -43,11 +44,28 @@ func runPrompt() int {
 	defer cancel()
 	tty.WatchStdinEOF(cancel)
 
+	// Bubble Tea's signal handler is off (see prompt.Run), so every signal is
+	// ours: SIGHUP would otherwise take its default action and run no restore
+	// at all. Signals take the same cancel path a dead parent does, and the
+	// flag is what keeps a cancelled prompt's 130 apart from that parent's 70.
+	var signalled atomic.Bool
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	go func() {
+		<-signals
+		signalled.Store(true)
+		cancel()
+	}()
+
 	result, outcome, err := prompt.Run(ctx, spec, term)
 	if err != nil {
-		if errors.Is(err, protocol.ErrBadSpec) {
+		switch {
+		case errors.Is(err, protocol.ErrBadSpec):
 			fmt.Fprintln(os.Stderr, "rt-ui prompt:", err)
 			return ExitBadSpec
+		case signalled.Load():
+			return ExitCancel
 		}
 		fmt.Fprintln(os.Stderr, "rt-ui prompt:", err)
 		return ExitInternal

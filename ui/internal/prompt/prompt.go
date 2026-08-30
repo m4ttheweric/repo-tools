@@ -62,8 +62,8 @@ func legend(spec protocol.PromptSpec) string {
 
 // Run paints the prompt on term and returns the answer. Cancelled and Back
 // are outcomes, not errors; err is reserved for the terminal or huh failing,
-// and for ctx being cancelled (the parent died: Bubble Tea shuts down and
-// restores the terminal before Run returns).
+// and for ctx being cancelled (the parent died or a signal arrived: Bubble Tea
+// shuts down and restores the terminal before Run returns).
 func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol.Result, Outcome, error) {
 	var (
 		result  protocol.Result
@@ -181,7 +181,7 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 		return v
 	}
 
-	var backRequested bool
+	var backRequested, interrupted bool
 	// huh caps a group at the window height, so a frame can be taller than the
 	// screen. eraseCard needs the screen's row count to know how far up the
 	// card actually reaches.
@@ -201,6 +201,10 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 			// huh cancels with tea.Interrupt, which ends the program as
 			// killed and skips its final flush. QuitMsg keeps the graceful
 			// path, so the terminal is restored the same way an answer does it.
+			// An interrupt huh did not raise itself leaves Form.aborted false
+			// and so comes back as a clean run; the flag is the only thing that
+			// keeps the bound value from being reported as a chosen answer.
+			interrupted = true
 			return tea.QuitMsg{}
 		}
 		return msg
@@ -220,7 +224,11 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 		WithLayout(cardLayout{frame: theme.CardFrame()}).
 		WithShowHelp(false).
 		WithViewHook(viewHook).
-		WithProgramOptions(tea.WithColorProfile(colorprofile.TrueColor), tea.WithFilter(filter)).
+		// Bubble Tea's own SIGINT/SIGTERM watcher is off because its SIGTERM path
+		// pushes a bare QuitMsg that no filter sees and that returns as a clean
+		// run. rt-ui cancels ctx from its own handler instead, which is the one
+		// shutdown that stays distinguishable from an answer.
+		WithProgramOptions(tea.WithColorProfile(colorprofile.TrueColor), tea.WithFilter(filter), tea.WithoutSignalHandler()).
 		WithInput(term).
 		WithOutput(term)
 
@@ -231,7 +239,11 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 	case ctx.Err() != nil:
 		return result, Answered, ctx.Err()
 	case backRequested:
+		// Back leaves through huh's cancel keybinding, so it is also an
+		// interrupt; it is the more specific outcome and claims the exit first.
 		return result, Back, nil
+	case interrupted:
+		return result, Cancelled, nil
 	case errors.Is(err, huh.ErrUserAborted), errors.Is(err, tea.ErrInterrupted):
 		return result, Cancelled, nil
 	case err != nil:

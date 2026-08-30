@@ -21,6 +21,20 @@ import (
 // are written first; keys are typed to the pty after the first tty paint.
 func RunPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env map[string]string, closeStdin bool) (stdout, tty string, exit int) {
 	t.Helper()
+	return runPTY(t, argv, stdinLines, keys, env, closeStdin, 0)
+}
+
+// RunPTYWithSignal is RunPTY with sig delivered to the child process itself
+// after the first paint. The child has its own session, so the signal reaches
+// it alone and out of band, the way an external kill does, rather than through
+// the terminal as a key.
+func RunPTYWithSignal(t *testing.T, argv []string, stdinLines []string, sig syscall.Signal, env map[string]string) (stdout, tty string, exit int) {
+	t.Helper()
+	return runPTY(t, argv, stdinLines, nil, env, false, sig)
+}
+
+func runPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env map[string]string, closeStdin bool, sig syscall.Signal) (stdout, tty string, exit int) {
+	t.Helper()
 	ptmx, pts, err := pty.Open()
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +102,11 @@ func RunPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env
 	}
 	if closeStdin {
 		stdinW.Close()
+	}
+	if sig != 0 {
+		if err := syscall.Kill(cmd.Process.Pid, sig); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, k := range keys {
 		time.Sleep(30 * time.Millisecond)
