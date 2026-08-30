@@ -431,7 +431,10 @@ function quarantine(path: string): void {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const quarantinedPath = `${path}.corrupt-${stamp}`;
   console.warn(`rt: state db ${path} could not be opened (corrupt), quarantining to ${quarantinedPath} and recreating empty`);
-  renameSync(path, quarantinedPath);
+  // Sidecars before the main file (S103): if a sidecar rename fails partway
+  // through, the main file is still at `path` and the next attempt retries
+  // cleanly, instead of a -wal that belongs to the already-renamed main file
+  // being orphaned next to a fresh db at the live path.
   for (const sidecar of [`${path}-wal`, `${path}-shm`]) {
     try {
       renameSync(sidecar, `${sidecar}.corrupt-${stamp}`);
@@ -439,6 +442,7 @@ function quarantine(path: string): void {
       // sidecar absent — fine, WAL mode doesn't always leave one
     }
   }
+  renameSync(path, quarantinedPath);
 }
 
 /**
@@ -556,7 +560,7 @@ function runMigrations(db: Database, dir: string): void {
 export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
   mkdirSync(dirname(path), { recursive: true });
 
-  let db: Database;
+  let db: Database | undefined;
   try {
     db = new Database(path, { create: true });
     applyPragmas(db, MIGRATION_BUSY_TIMEOUT_MS);
@@ -565,6 +569,12 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
     db.query("PRAGMA user_version;").get();
   } catch (err) {
     if (!isCorruptionError(err)) throw err;
+    // S103: `db` may already be a live, open handle here (construction can
+    // succeed on a truncated/otherwise-corrupt file; only the later pragma
+    // or user_version read trips SQLITE_CORRUPT) -- close it before its
+    // backing file is renamed out from under it, so its fd/-wal/-shm don't
+    // outlive the rename.
+    try { db?.close(); } catch { /* already unusable; nothing to release */ }
     quarantine(path);
     db = new Database(path, { create: true });
     applyPragmas(db, MIGRATION_BUSY_TIMEOUT_MS);
