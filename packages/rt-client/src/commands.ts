@@ -302,6 +302,7 @@ export interface WorktreeTreeRow {
 export interface WorktreeListData {
   trees: WorktreeTreeRow[];
   dormant?: true; dormantRepos?: string[]; message?: string;
+  readyHeld?: true; readyHeldRepos?: string[];
 }
 export interface WorktreeProvisionData {
   tree: string; path: string; branch: string; wasOnDeck: boolean;
