@@ -55,8 +55,8 @@ func TestHuhDestructiveUsesPeachAccents(t *testing.T) {
 	}
 }
 
-func TestCardWidthMatchesTokenSheet(t *testing.T) {
+func TestCardWidthIsTheDesignCap(t *testing.T) {
 	if CardWidth != 88 {
-		t.Fatalf("CardWidth = %d, want 88 (lib/tui/palette.ts CARD_WIDTH)", CardWidth)
+		t.Fatalf("CardWidth = %d, want 88", CardWidth)
 	}
 }

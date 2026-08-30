@@ -49,7 +49,8 @@ var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 // CardWidth caps the prompt card. A row as wide as the terminal is what a
 // reflowing terminal rewraps mid-resize, leaving remnants an inline program
-// cannot erase; lib/tui/palette.ts CARD_WIDTH mirrors it for the fzf pickers.
+// cannot erase. The fzf pickers stay full width: fzf has no max-width, and a
+// fixed --margin collapses the box when the window narrows.
 const CardWidth = 88
 
 // Hex renders a palette color back as #RRGGBB; used by tests and the --version banner.
