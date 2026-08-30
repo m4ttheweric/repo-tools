@@ -425,7 +425,7 @@ parallel; **5.6** follows 5.1; **5.7** last, after the Phase 4 re-base.
 - **Never start a daemon or run `dist/rt` except under `env -i
   HOME=<temp dir>`.** Tests use the isolated HOME from the bunfig preload;
   never touch the real `~/.mattstack`.
-- **Do not edit Phase 4, Phase 6, or Phase 2 owned files ahead of their
+- **Do not edit Phase 4, Phase 6, or Phase 2-owned files ahead of their
   merge.** 5.1 and 5.7 re-base on their results rather than racing them.
 
 ## Non-goals
