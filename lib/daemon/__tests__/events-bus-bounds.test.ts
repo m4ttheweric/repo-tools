@@ -110,4 +110,19 @@ describe("events bus bounded reads (S047, R030)", () => {
     expect(Math.max(...spy.rowCounts)).toBeLessThan(31);
     expect(Math.max(...spy.rowCounts)).toBeLessThanOrEqual(2);
   });
+
+  test("list with a non-positive/fractional limit does not skip undelivered events", () => {
+    for (let i = 0; i < 10; i++) bus.emit("job/x/" + i);
+
+    // A direct caller passing limit=0 gets a bounded page (safeLimit=1), which
+    // is truncated (10 events exist). The cursor must point at the last
+    // DELIVERED event, not the journal head, or the resume below skips events.
+    const page = bus.list({ pattern: "**", after: 0, limit: 0 });
+    expect(page.events).toHaveLength(1);
+    expect(page.cursor).toBe(page.events[0]!.id); // NOT maxId()
+
+    const rest = bus.list({ pattern: "**", after: page.cursor });
+    const seen = [...page.events, ...rest.events].map((e) => e.id);
+    expect(seen).toHaveLength(10); // every event delivered exactly once, none skipped
+  });
 });

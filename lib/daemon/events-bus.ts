@@ -271,11 +271,17 @@ export function createEventsBus(opts: {
     },
 
     list({ pattern, after, limit }) {
-      const events = eventsAfter(pattern, after ?? 0, limit);
+      // Clamp once and reuse for both the query and the truncation check: a
+      // fractional or non-positive limit from a direct caller would otherwise
+      // make `events.length === limit` false on a truncated page, mislabel it
+      // untruncated, and skip undelivered events on the caller's next `after`.
+      // `undefined` stays unbounded (the handler default lives at its seam).
+      const safeLimit = limit == null ? undefined : Math.max(1, Math.floor(limit));
+      const events = eventsAfter(pattern, after ?? 0, safeLimit);
       // Truncated result: cursor points at the last DELIVERED event so the
       // caller's next `after` resumes exactly where this page ended.
       // Untruncated (or empty) result: cursor is the journal head.
-      const cursor = events.length && limit != null && events.length === limit
+      const cursor = events.length && safeLimit != null && events.length === safeLimit
         ? events[events.length - 1]!.id
         : maxId();
       return { events, cursor };
