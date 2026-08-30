@@ -95,6 +95,28 @@ test("the real gate is closed off a TTY and under RT_BATCH", () => {
   }
 });
 
+test("an unspawnable helper costs the spinner, not the work", async () => {
+  // The helper only narrates the step. Resolving or spawning it is the one
+  // failure that used to escape before the task ever ran.
+  process.env.RT_UI_BIN = join(dir, "does-not-exist", "rt-ui");
+  const errOut: string[] = [];
+  const realErr = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => { errOut.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  let ran = false;
+  try {
+    const steps = createStepRunner();
+    const r = await steps.run("fetching origin…", async () => { ran = true; return 42; }, { done: "origin fetched" });
+    expect(r).toBe(42);
+  } finally {
+    process.stderr.write = realErr;
+  }
+  expect(ran).toBe(true);
+  const text = out.join("");
+  expect(text).toContain("✓");
+  expect(text).toContain("origin fetched");
+  expect(errOut.join("")).toContain("rt-ui");
+});
+
 test("when the child dies mid-step the plain final line is printed and a warning is shown", async () => {
   process.env.RT_UI_FAKE = JSON.stringify({ dieOn: "start" });
   const errOut: string[] = [];

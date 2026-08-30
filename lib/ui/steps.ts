@@ -51,11 +51,27 @@ function plainLine(style: "success" | "error", title: string, hint?: string): st
   return `  ${GLYPH[style]} ${toAnsiFg(T.textSoft)}${title}${RESET}${h}\n`;
 }
 
+function warn(why: string): void {
+  process.stderr.write(`  ${GLYPH.warn} ${toAnsiFg(T.dimmer)}rt-ui ${why}; printed plainly${RESET}\n`);
+}
+
 // A dead helper must never cost the user the result line: print it plainly
 // and say why, then carry on.
 function fallback(style: "success" | "error", title: string, hint: string | undefined, why: string): void {
   process.stdout.write(plainLine(style, title, hint));
-  process.stderr.write(`  ${GLYPH.warn} ${toAnsiFg(T.dimmer)}rt-ui ${why}; printed plainly${RESET}\n`);
+  warn(why);
+}
+
+// The helper only narrates a step, so nothing about it may reach the caller as
+// a failure: an unresolvable or unspawnable rt-ui leaves no handle, and the
+// task then runs and reports itself on the plain path.
+function tryOpenStep(pending: string): StepHandle | null {
+  try {
+    return openStep(pending);
+  } catch (e) {
+    warn(`could not start: ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim()}`);
+    return null;
+  }
 }
 
 export function createStepRunner(): StepRunner {
@@ -65,7 +81,7 @@ export function createStepRunner(): StepRunner {
       task: () => Promise<T>,
       opts?: { done?: string; doneHint?: string; errorHint?: string },
     ) {
-      const step: StepHandle | null = interactive() ? openStep(pending) : null;
+      const step: StepHandle | null = interactive() ? tryOpenStep(pending) : null;
       try {
         const r = await task();
         const title = opts?.done ?? stripEllipsis(pending);
