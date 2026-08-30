@@ -1,11 +1,9 @@
 /**
  * Raw brand palette — RGB tuples only. No runtime deps.
  *
- * theme.ts composes these with @rezi-ui's rgb() helper to build the
- * runner's semantic color roles. CLI pickers (lib/rt-render.tsx, etc.)
- * import them directly to stay free of the Rezi UI runtime.
+ * The fzf pickers, the step runner and rt's plain ANSI output import them.
  *
- * To re-theme rt: edit this file. theme.ts derives from it.
+ * To re-theme rt: edit this file.
  */
 
 /** Raw RGB tuples — one place to edit per color. */
@@ -27,9 +25,12 @@ export const T = {
   cyan:  [ 90, 170, 255] as const,  // #5AAAFF electric blue — group headers / info
 
   // Neutrals
-  dim:   [168, 160, 198] as const,  // #A8A0C6 muted plum   — secondary text / borders
-  muted: [210, 205, 235] as const,  // #D2CDEB lilac-grey   — tertiary text
-  white: [230, 224, 255] as const,  // #E6E0FF lavender white — primary text
+  dim:     [168, 160, 198] as const,  // #A8A0C6 muted plum:   secondary text / borders
+  muted:   [210, 205, 235] as const,  // #D2CDEB lilac-grey:   tertiary text
+  textSoft:[210, 205, 235] as const,  // #D2CDEB same as muted, token-sheet name
+  dimmer:  [139, 132, 168] as const,  // #8B84A8
+  faint:   [110, 102, 140] as const,  // #6E668C
+  white:   [230, 224, 255] as const,  // #E6E0FF lavender white: primary text
 } as const;
 
 export type Rgb = readonly [number, number, number];
@@ -50,3 +51,6 @@ export function toAnsiFg(rgb: Rgb): string {
 export function toAnsiBg(rgb: Rgb): string {
   return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
 }
+
+/** Braille spinner frames; advance every 80 ms. Shared by the inline spinner and the rt-ui theme. */
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"] as const;

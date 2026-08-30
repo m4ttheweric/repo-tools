@@ -1,0 +1,7 @@
+{ "t": "prompt", "protocol": 1, "kind": "select", "title": "Access duration", "hint": "how long the grant lasts",
+  "options": [
+    { "value": "1h", "label": "1 hour", "hint": "default" },
+    { "value": "4h", "label": "4 hours" },
+    { "value": "24h", "label": "24 hours", "hint": "requires approval reason" }
+  ],
+  "initial": "1h", "back": { "label": "back to resources" } }

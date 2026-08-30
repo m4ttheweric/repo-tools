@@ -1,0 +1,1 @@
+{ "t": "prompt", "protocol": 1, "kind": "confirm", "message": "Run sdm login now?", "default": true, "destructive": false }

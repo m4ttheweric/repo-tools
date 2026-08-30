@@ -10,11 +10,11 @@
  *
  * Usage: bun scripts/bench-startup.ts [thresholdMs]
  *
- * Default threshold (86ms) is 20% above the ~71.5ms median achieved after
- * the lazy module registry (task 2) and the remaining eager-TUI cleanup
- * (task 3) — see .superpowers/sdd/2026-08-22-startup-and-substrate/task-3-report.md.
+ * Default threshold (60ms) is about 25% above the 47.2ms median measured for
+ * `rt --version` on this branch once Ink left the tree (Apple M5 Max; repeat
+ * runs land between 41 and 49ms). The headroom covers CI variance.
  * Wired into the release workflow so a reintroduced eager import (e.g. a
- * static rt-render/ink import in command-tree.ts or module-registry.ts)
+ * static rt-render import in command-tree.ts or module-registry.ts)
  * fails the build instead of shipping silently.
  *
  * ADVISORY on macos-15 (release.yml runs this step with continue-on-error)
@@ -41,7 +41,7 @@ const BENCH_HOME = mkdtempSync(join(tmpdir(), "rt-bench-home-"));
 process.on("exit", () => rmSync(BENCH_HOME, { recursive: true, force: true }));
 const WARMUP_RUNS = 2;
 const TIMED_RUNS = 10;
-const DEFAULT_THRESHOLD_MS = 86;
+const DEFAULT_THRESHOLD_MS = 60;
 const threshold = Number(process.argv[2] ?? DEFAULT_THRESHOLD_MS);
 
 function runOnce(): number {

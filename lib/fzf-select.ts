@@ -1,11 +1,9 @@
 /**
  * Filterable pickers backed by the native `fzf` binary.
  *
- * Deliberately ink/React-free: fzf does all the rendering, so a caller that
- * only needs a filterable picker (the `rt cd`/`rt run` hot path) must not pay
- * to parse React + ink + @inkjs/ui. Those live in rt-render.tsx, which
- * re-exports this module's functions for back-compat; the latency-sensitive
- * callers import them from here directly instead.
+ * fzf does all the rendering, so the `rt cd`/`rt run` hot path pays for no
+ * renderer of its own. rt-render.tsx re-exports these functions for
+ * back-compat; the latency-sensitive callers import them from here directly.
  */
 
 import { T, toHex } from "./tui/palette.ts";
@@ -72,7 +70,6 @@ export async function filterableMultiselect(opts: {
     "--ansi",
     "--with-nth=2..",
     "--delimiter=\t",
-    process.env.RT_FZF_ALT_SCREEN ? "--height=100%" : "--height=~100%",
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${opts.message} `,
@@ -154,7 +151,6 @@ export function buildFilterableSelectArgs(opts: {
     "--nth=1",
     "--delimiter=\t",
     "--tabstop=1",
-    process.env.RT_FZF_ALT_SCREEN ? "--height=100%" : "--height=~100%",
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${opts.message} `,

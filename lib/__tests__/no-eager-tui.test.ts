@@ -19,17 +19,14 @@ test("command-tree.ts has no static value import of rt-render or ink", () => {
   expect(findEagerTuiImports(source)).toEqual([]);
 });
 
-test("no command module (other than the status dashboard, which is an Ink app by nature) has a static value import of rt-render or ink", () => {
+test("no command module has a static value import of rt-render or ink", () => {
   const commandsDir = resolve(import.meta.dir, "..", "..", "commands");
 
   function collectFiles(dir: string): string[] {
     const entries = readdirSync(dir, { withFileTypes: true });
     return entries.flatMap((entry) => {
       const full = resolve(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === "status") return [];
-        return collectFiles(full);
-      }
+      if (entry.isDirectory()) return collectFiles(full);
       return /\.(ts|tsx)$/.test(entry.name) ? [full] : [];
     });
   }
@@ -47,7 +44,7 @@ test("daemon graph never transitively reaches the CLI picker chain (repo-arg, re
   // a new daemon module that reaches one of these transitively must fail
   // this test without anyone remembering to extend a scanned set by hand.
   const libDir = resolve(import.meta.dir, "..");
-  const bannedRelativeBasenames = new Set(["repo-arg.ts", "repo.ts", "fzf.ts", "fzf-select.ts", "rt-render.tsx"]);
+  const bannedRelativeBasenames = new Set(["repo-arg.ts", "repo.ts", "fzf.ts", "fzf-select.ts", "rt-render.tsx", "spawn.ts", "prompts.ts", "steps.ts"]);
   const bannedBareSpecifiers = ["ink"];
 
   function resolveRelativeImport(fromFile: string, specifier: string): string | null {

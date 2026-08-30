@@ -27,7 +27,6 @@ export async function collectArgs(
     "--ansi",
     "--with-nth=2..",
     "--delimiter=\t",
-    process.env.RT_FZF_ALT_SCREEN ? "--height=100%" : "--height=~100%",
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${label} args `,

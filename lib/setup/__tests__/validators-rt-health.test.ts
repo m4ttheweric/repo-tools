@@ -398,11 +398,10 @@ describe("rtHealthRows — tool.extension (checkRtContextExtension over p.home)"
 
 /**
  * DAEMON_CONFIG_PATH is a module-load const bound under the shared preload
- * HOME (see lib/daemon-config.ts's own comment on RT_DIR) — the SAME file
- * commands/status/__tests__/status-fallback.test.ts depends on being
- * absent. Save/restore whatever was there before this describe ran (finding
- * #13), rather than just deleting on afterEach, so this file can never leave
- * that fixture in a state a different test file didn't expect.
+ * HOME (see lib/daemon-config.ts's own comment on RT_DIR). Save/restore
+ * whatever was there before this describe ran rather than just deleting on
+ * afterEach, so this file can never leave that fixture in a state a
+ * different test file didn't expect.
  */
 describe("rtHealthRows — tool.daemon", () => {
   let preExisting: string | null = null;

@@ -115,6 +115,17 @@ jobs:
       - name: Compile rt (arm64)
         run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile dist/rt --define RT_VERSION='"${{ steps.meta.outputs.tag }}"'
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ui/go.mod
+          cache-dependency-path: ui/go.sum
+      - name: Build rt-ui (arm64)
+        run: bun run ui:build
+        env:
+          RT_VERSION: ${{ steps.meta.outputs.tag }}
+          GOOS: darwin
+          GOARCH: arm64
+
       # ADVISORY, not blocking: the 86ms threshold has never been calibrated
       # against macos-15 (this runner) — continue-on-error keeps a bad
       # calibration from blocking every release. The measured number still

@@ -45,6 +45,18 @@ The viewer is its own repo, `~/Documents/GitHub/chat` (`ARCHITECTURE.md`
 there). `lib/chat-viewer-url.ts` builds the `/r/<room>#m-<id>` links the CLI
 prints; that route shape is a contract with the viewer's route table.
 
+## rt-ui
+
+rt's prompts and step spinners render through a bundled Go helper
+(`ui/`, binary `rt-ui`, `Contents/Helpers/rt-ui`) driven over NDJSON on
+stdin/stdout with `/dev/tty` for the screen. Before touching `lib/ui/*`,
+`ui/`, or the prompt facade, read
+`docs/superpowers/specs/2026-08-29-rt-ui-bridge-design.md`: the protocol,
+the exit-code contract, the never-spawn-without-a-TTY gate, and why the
+source checkout outranks the installed bundle when resolving the binary.
+`bun run ui:build` after any change under `ui/`; the shared fixtures in
+`ui/fixtures/` are golden-tested from both languages.
+
 ## Release & distribution
 
 Before touching the release workflow, the app bundle, signing, Sparkle, the
