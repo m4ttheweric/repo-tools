@@ -583,6 +583,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         TrayState.shared.health = health
         switch health {
         case .starting:
+            startingSince = Date()
             TrayState.shared.statusText = "Daemon: starting…"
             TrayState.shared.needsApproval = false
         case .down:
@@ -891,6 +892,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     private var isRefreshing = false
     private var consecutiveStatusFailures = 0
+    /// Stamped whenever `setHealth(.starting)` runs. `.starting` has no
+    /// natural "it failed" signal of its own -- unlike `.down`, which the
+    /// failed-poll count already demotes into -- so this is what lets
+    /// `refreshStatus` recognize a launch or restart that never came back
+    /// (S026) instead of leaving the tray yellow forever.
+    private var startingSince: Date?
     /// Derived from the last successful poll's `uptime`; used to tell a
     /// stale crash/log artifact from a current one (S029) without needing
     /// to touch the daemon-side writer.
@@ -911,10 +918,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
         guard let status = await daemonClient.queryTrayStatus() else {
             consecutiveStatusFailures += 1
+
+            if currentHealth == .starting {
+                // `.starting` has no bounded fallback of its own (S026): a
+                // daemon that's crash-looping, parked on a flavor mismatch,
+                // or stuck in Login Items "requiresApproval" would otherwise
+                // never demote out of the yellow "starting…" state, since
+                // every poll failure short-circuited here unconditionally.
+                // Expire it after ~30s (or 3 failed polls, whichever comes
+                // first at the 10s poll interval) and fall through to the
+                // normal down-state handling below, which also recomputes
+                // needsApproval.
+                let elapsed = startingSince.map { Date().timeIntervalSince($0) } ?? .infinity
+                guard elapsed >= 30 || consecutiveStatusFailures >= 3 else { return }
+                TrayLog.warn("daemon still unreachable after starting; marking down", [
+                    "elapsedSeconds": Int(elapsed), "failures": consecutiveStatusFailures,
+                    "smStatus": String(describing: daemonLifecycle.status),
+                ])
+                setHealth(.down)
+                return
+            }
+
             // A single missed poll is usually a transient daemon stall, not an
             // outage — hold the last known state and only go red on the second
             // consecutive miss.
-            guard consecutiveStatusFailures >= 2, currentHealth != .starting else { return }
+            guard consecutiveStatusFailures >= 2 else { return }
             if currentHealth != .down {
                 TrayLog.warn("daemon unreachable, marking down", ["failures": consecutiveStatusFailures])
             }
