@@ -47,8 +47,11 @@ describe("resolveApiPort", () => {
   test("RT_API_PORT=0 is honored, not treated as unset", () => {
     const prev = process.env.RT_API_PORT;
     process.env.RT_API_PORT = "0";
-    expect(resolveApiPort()).toBe(0);
-    if (prev !== undefined) process.env.RT_API_PORT = prev;
-    else delete process.env.RT_API_PORT;
+    try {
+      expect(resolveApiPort()).toBe(0);
+    } finally {
+      if (prev !== undefined) process.env.RT_API_PORT = prev;
+      else delete process.env.RT_API_PORT;
+    }
   });
 });
