@@ -89,8 +89,22 @@ describe("getKnownReposAsync parity", () => {
     indexRepo("multi-repo", multiRoot);
 
     // Unregistered markerRepo candidate, surfaced via a configured root.
+    // `.git` here is a directory, so both builders take the headBranch fast
+    // path — branchOfAsync's spawn fallback is exercised by the linked
+    // candidate below instead.
     const scanRoot = mkdtempSync(join(tmpdir(), "rt-async-parity-scan-"));
     const candidate = markerRepo(scanRoot, "candidate-repo");
+
+    // Unregistered LINKED-WORKTREE candidate: `.git` is a file (points at the
+    // donor repo's `.git/worktrees/<name>`), so branchOf/branchOfAsync must
+    // fall through to a git spawn (sync execSync vs. currentBranchAsync) to
+    // read its branch. The donor's main worktree is never indexed, so only
+    // this scanned linked worktree becomes a candidate.
+    const donorMain = join(parent, "donor-main");
+    realRepo(donorMain);
+    const linkedCandidate = join(scanRoot, "linked-candidate");
+    execSync(`git worktree add -b linked-candidate-branch ${JSON.stringify(linkedCandidate)}`, { cwd: donorMain, stdio: "pipe" });
+
     setRepoRoots([scanRoot]);
 
     // Missing/lost row.
@@ -111,7 +125,10 @@ describe("getKnownReposAsync parity", () => {
     expect(names).toContain("single-repo");
     expect(names).toContain("multi-repo");
     expect(names).toContain("candidate-repo");
+    expect(names).toContain("linked-candidate");
     expect(names).toContain("gone-repo");
+    const linked = syncResult.find((r) => r.repoName === "linked-candidate");
+    expect(linked?.worktrees[0]?.branch).toBe("linked-candidate-branch");
     const multi = syncResult.find((r) => r.repoName === "multi-repo");
     expect(multi?.worktrees.length).toBe(2);
     const gone = syncResult.find((r) => r.repoName === "gone-repo");
