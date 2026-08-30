@@ -1,299 +1,219 @@
 # rt runner — design
 
-A slick full-screen TUI that manages long-running commands as headless
-herdr panes. Built as a standalone **Go + Bubble Tea** binary that ships
-inside the rt release and is launched by a thin `rt runner` command.
+A slick full-screen board that manages long-running commands as headless
+herdr panes. The first (and V1's only) `session` view of the rt-ui bridge:
+brains in `commands/runner.ts`, pixels in `rt-ui session --view board`.
 
-Visual reference (approved 2026-08-29):
-https://claude.ai/code/artifact/e7b3814f-7fc2-4526-aa03-b4f3203d24e4
-Artboard source: `.local-dev/design/rt-runner/` (gitignored scratch).
+Reads with `2026-08-29-rt-ui-bridge-design.md`, which owns the protocol,
+the binary, distribution, and testing seams. This spec owns the runner's
+behavior, the `board` view's model and intents, and the herdr engine.
+
+Approved screens (Runner board page):
+https://claude.ai/code/artifact/a3c48e8f-03a9-4be5-be17-84a3988f39bb
 
 ## Goal
 
-Give Matt one clean board to launch, watch, and control the
-long-running commands of a work session (dev servers, watchers,
-workers). Each command runs **headless** in its own herdr pane so its
-output never clutters the screen; the board lists them, and a keypress
-tails, focuses, restarts, stops, or adds one. The board is owned by the
-pane it runs in: quit the board and everything it launched dies with it.
+One clean board to launch, watch, and control the long-running commands of
+a work session (dev servers, watchers, workers). Each command runs
+**headless** in its own herdr pane so its output never clutters the screen;
+the board lists them, and a keypress tails, focuses, restarts, stops, or
+adds one. The board is owned by the pane it runs in: quit the board and
+everything it launched dies with it.
 
 ## Non-goals
 
 - **Not a persistent process manager.** No supervision, no restart-on-
   crash, no state that outlives the TUI. rt's daemon was deliberately
-  stripped of process supervision; this does not re-add it. herdr owns
-  the processes while the board is alive.
-- **Not the old runner.** The prior `commands/runner.tsx` was a
-  lanes + ports dashboard. This is a flat command list. The old runner's
-  widgets were extracted into `lib/tui/` and are not reused (that kit is
-  Ink/TS; this binary is Go).
-- **Not a `rt run` replacement.** `rt run` keeps its current one-shot
-  inline behavior unchanged. The runner reuses its `--resolve-only`
-  resolver to add commands.
+  stripped of process supervision; this does not re-add it. herdr owns the
+  processes while the board is alive.
+- **Not the old runner.** The prior `commands/runner.tsx` was a lanes +
+  ports dashboard. This is a flat command list.
+- **Not a `rt run` replacement.** `rt run` keeps its one-shot inline
+  behavior unchanged; the runner reuses its `--resolve-only` resolver.
 - **No inline/tmux fallback.** herdr is required.
+- **No standalone binary.** An earlier draft had the runner as its own Go
+  program shelling out to `rt run` and `herdr`. Superseded: the runner is
+  a TS command rendering through the shared `rt-ui` helper. herdr logic
+  stays in TS where `lib/agent-herdr.ts` and `lib/herdr-launch.ts` already
+  live.
 
 ## User-facing behavior
 
-`rt runner` opens a full-screen board in the current terminal. States
-shown in the reference:
+`rt runner` opens the board in the current terminal (alt-screen). States, as
+drawn:
 
-- **Populated board.** One row per command: status glyph, name, the
-  command string, `pkg · repo`, and uptime (or `exited <code>`). The
-  selected row carries a pink accent bar. An open **tail peek** shows
-  the selected command's last ~8 output lines, refreshed ~1s.
+- **Populated board.** One row per command: status glyph, name, the command
+  string, `pkg · repo`, and uptime (or `exited <code>`). The selected row
+  carries a pink bar. An open **tail peek** shows the selected command's
+  last ~8 output lines, refreshed ~1 s.
 - **Empty board.** `Nothing running. Press a to add a command.`
-- **Quit confirm.** Because quit tears everything down, a `y/n` guard
-  appears whenever at least one process is still running.
+- **Quit confirm.** A `y/n` layer whenever at least one process is still
+  running, because quit tears everything down.
 
-### Status states
+### States
 
-Reused vocabulary (glyph · color from rt's palette):
-
-| State | Glyph | Meaning |
-|-------|-------|---------|
+| state | glyph | meaning |
+|---|---|---|
 | running | ● mint | process alive |
 | stopped | ○ dim | user stopped it (Ctrl-C), shell idle |
 | crashed | ✗ coral | process exited non-zero |
-| starting | braille spinner | optimistic, spawn in flight |
-| stopping | braille spinner | optimistic, kill in flight |
+| starting / stopping | braille spinner mint / coral | optimistic, until the next liveness poll confirms |
 
-### Keybindings
+### Keys
 
-| Key | Action |
-|-----|--------|
-| `j`/`k`, ↑/↓ | move selection |
-| `a` | add a command (via the `rt run` picker) |
-| `s` | restart selected (Ctrl-C, then re-run in the same pane) |
-| `x` | stop selected (Ctrl-C) |
-| `f` | focus selected (jump herdr's view to its live pane) |
-| `t` | toggle inline tail peek for selected |
-| `q` / `Ctrl-C` | quit (confirm if anything running), then tear down |
+| key | action |
+|---|---|
+| `j`/`k`, ↑/↓ | move selection (Go-local, never crosses the pipe) |
+| `a` | add a command via the `rt run` picker |
+| `s` | restart selected: Ctrl-C, then re-run in the same pane |
+| `x` | stop selected: Ctrl-C |
+| `f` | focus selected: jump herdr's view to its live pane |
+| `t` | toggle the tail peek (Go-local) |
+| `q` / Ctrl-C | quit (confirm layer if anything is running), then tear down |
 
 ## Architecture
 
-### Two-binary shape
-
-repo-tools becomes polyglot. The runner is its own Go module in a
-`runner/` subdir; it compiles to a `rt-runner` binary bundled in the
-release tarball beside `rt`. The `rt runner` command is a thin Bun
-launcher that resolves and execs that binary with inherited stdio, then
-exits with its code.
-
 ```
-rt (Bun)  --exec-->  rt-runner (Go/Bubble Tea)
-                        |
-                        |-- shell: herdr <verb>          (pane control)
-                        `-- shell: rt run --resolve-only  (add a command)
+commands/runner.ts (TS)                rt-ui session --view board (Go)
+  entries[] + herdr calls   ──model──▶   renders the board
+  runs the intent loop      ◀─intent──   j/k/t handled locally; a/s/x/f/q emitted
+  polls liveness + tails
 ```
 
-The runner never imports rt-client, never touches the daemon, and never
-re-implements repo-identity or herdr-launch logic. It composes the `rt`
-and `herdr` CLIs as subprocesses. This is what keeps it thin in a second
-language.
+The TS command owns every entry, every herdr call, and the poll timers. Go
+owns the cursor, the open/closed tail panel, the spinner frame, and the
+quit-confirm layer. The wire carries only domain state down and user
+actions up.
 
-### Repo layout
+### The `board` view
 
+**Model** (full replacement on every push):
+
+```jsonc
+{ "workspace": "rt-runner-a3f9",
+  "entries": [
+    { "id": "e1", "name": "dev", "command": "bun run dev", "pkg": "web", "repo": "assured-dev",
+      "state": "running" | "stopped" | "crashed" | "starting" | "stopping",
+      "uptimeSec": 161, "exitCode": null,
+      "tail": [ { "ts": "22:41:07", "text": "VITE v5.4.2  ready in 412 ms" }, … ] }   // last 200 lines, running entries only
+  ] }
 ```
-runner/
-  go.mod
-  main.go              entrypoint: herdr probe, then Bubble Tea program
-  model.go             Model (board state) + Update (event loop) + View
-  entry.go             Entry struct + status derivation
-  herdr.go             herdr CLI client (workspace/tab/pane verbs)
-  rtrun.go             `rt run --resolve-only` bridge (suspend/resume)
-  theme.go             Lip Gloss styles ported from lib/tui/palette.ts
-  poll.go              periodic liveness/tail refresh (tea.Tick)
-  *_test.go
-```
 
-### Engine: the herdr CLI
+`uptimeSec` is computed in TS from `startedAt` and pushed with each poll;
+Go does not run its own clock for it (one source of truth, one tick).
+`tail` is pushed only for the selected entry when the peek is open: Go
+emits `{ "t": "intent", "name": "tail", "entryId": "e1", "open": true }` on
+toggle and on selection change while open, and TS starts or stops the
+`pane read` poll for that entry.
 
-Every process operation is a `herdr` subprocess call, exactly mirroring
-`lib/herdr-launch.ts` and `lib/agent-herdr.ts`, but in Go. herdr is
-invoked by absolute path with `HERDR_SOCKET_PATH` set (env inherited
-from the launcher; falls back to `~/.local/bin/herdr` and
-`~/.config/herdr/herdr.sock`, overridable by `HERDR_BIN` /
-`HERDR_SOCKET_PATH` for tests).
+**Intents** (all carry `entryId` except `add` and `quit`):
 
-| Runner action | herdr call |
+| intent | TS does |
 |---|---|
-| create the board's home | `workspace create --label rt-runner-<id> --no-focus` → `result.root_pane` |
-| add a command | `tab create --workspace <ws> --label <cmd> --no-focus` → `result.root_pane`, then `pane run <root_pane> <cmd>` |
-| first command | reuses the workspace's initial tab (rename it), like `launchInWorkspace` |
-| tail | `pane read <pane> --source recent --lines N` |
+| `add` | closes the session, runs the `rt run` picker, launches the result, re-opens the session with the full model |
+| `restart` | marks `starting`, `pane send-keys C-c`, then `pane run <cmd>` in the same pane |
+| `stop` | marks `stopping`, `pane send-keys C-c` |
+| `focus` | `tab focus <tabId>` |
+| `tail` | starts/stops the `pane read` poll for that entry |
+| `quit` | `workspace close`, exits 0 (Go has already shown the y/n layer and only emits `quit` on `y`) |
+
+The quit-confirm layer is Go-local: Go knows whether any entry is running
+from the model, shows the layer on `q`, and emits `quit` only on `y`. TS
+never sees `n`.
+
+### Add flow
+
+`a` is the one intent that needs the terminal for something other than the
+board: the `rt run` picker is fzf. Rather than a suspend/resume protocol,
+TS **closes the session** (Go leaves the alt screen and exits 0), runs
+`rt run --resolve-only` inline (its pickers draw to stderr, the resolved
+`RunResolveResult` JSON lands on stdout, already how `commands/run.ts`
+works), launches the result as a new headless tab, and **opens a fresh
+session** with the full model. Sessions cost ~25 ms; the board blinks once
+and comes back with the new row in `starting`. An empty stdout (Matt backed
+out) re-opens the board unchanged.
+
+### Engine: the herdr CLI, from TS
+
+Every process operation is a `herdr` subprocess call through the runner
+pattern in `lib/agent-herdr.ts` (absolute path, `HERDR_SOCKET_PATH` set, a
+non-zero exit fails the operation loudly).
+
+| runner action | herdr call |
+|---|---|
+| create the board's home (lazily, on first add) | `workspace create --label rt-runner-<id> --no-focus` → `result.root_pane` |
+| add a command | first: rename the fresh workspace's initial tab and `pane run` in its root pane; then `tab create --workspace <ws> --label <name> --no-focus` → `pane run <root_pane> <cmd>` |
+| tail | `pane read <pane> --source recent --lines 200` |
 | focus | `tab focus <tab>` |
 | stop | `pane send-keys <pane> C-c` |
 | restart | `pane send-keys <pane> C-c`, then `pane run <pane> <cmd>` |
 | liveness | `pane process-info --pane <pane>` |
-| remove one | `tab close <tab>` |
 | teardown | `workspace close <ws>` |
 
-Two herdr specifics to confirm against the live CLI during
-implementation (both verbs exist; only the exact tokens are unverified):
-
-- the send-keys token for Ctrl-C (assumed `C-c`);
-- the `pane process-info` JSON field that names the pane's foreground
-  process (used to distinguish running vs. exited).
-
-A non-zero herdr exit fails the operation loudly (row flips to an error
-state with the message), never a silent no-op ... same rule as
-`runHerdr` in `lib/agent-herdr.ts`.
-
-### Headless = a background workspace
+Two tokens to confirm against the live CLI during implementation (the verbs
+exist; the exact strings are unverified): the send-keys name for Ctrl-C
+(assumed `C-c`) and the `process-info` field that names the foreground
+process (running vs. exited, and the exit code for crashed).
 
 "Headless" is a `--no-focus` workspace: its tabs keep running while
-unfocused, so the command's output is off-screen until Matt asks for it.
-`focus` switches herdr's view to that tab; `tail` reads it into the board
-without switching. Each runner instance gets its own uniquely-labeled
-workspace (`rt-runner-<shortid>`), so several boards can run at once
-without colliding.
-
-### Add flow (suspend / resume)
-
-`a` reuses `rt run` untouched:
-
-1. The Bubble Tea program releases the terminal (`tea.ExecProcess`),
-   restoring cooked mode.
-2. Exec `rt run --resolve-only` with inherited stdio. Its picker chain
-   (repo → worktree → package → script) draws to **stderr**; the
-   resolved `RunResolveResult` JSON lands on **stdout** ... already how
-   `commands/run.ts` is built.
-3. The runner parses stdout JSON (`targetDir`, `packageLabel`,
-   `commandTemplate`) and re-acquires the terminal.
-4. Launch the resolved command as a new headless tab and add its Entry.
-
-An empty stdout (Matt backed out of the picker) is a no-op.
+unfocused. Each runner instance gets its own uniquely labeled workspace, so
+several boards can run at once.
 
 ### Lifecycle: die with the TUI
 
-The board is in-memory only. On quit ... `q`, `Ctrl-C`, `SIGINT`,
-`SIGTERM`, or a fatal render error ... the runner closes its whole
-workspace (`workspace close <ws>`), killing every tab and process at
-once. A `y/n` confirm precedes teardown when any Entry is running.
+The board is in-memory only. On quit (`quit` intent, Ctrl-C, SIGINT,
+SIGTERM, or the session dying), TS closes the whole workspace, killing every
+tab and process at once. The documented gap: `SIGKILL` runs no cleanup and
+orphans the workspace (recoverable by hand with `herdr workspace close`).
+Acceptable for a session-scoped tool.
 
-The one gap, documented not solved: `SIGKILL` can run no cleanup and
-would orphan the workspace (recoverable by hand with
-`herdr workspace close`). Acceptable for a session-scoped tool.
+### Polling
 
-### Status + tail polling
-
-A `tea.Tick` every ~1.5s issues `pane process-info` per Entry to derive
-running / stopped / crashed, and (when a tail peek is open)
-`pane read` for the selected Entry. Polls run as `tea.Cmd`s off the
-render loop so the UI never blocks on a subprocess. Optimistic
-`starting` / `stopping` states hold until the next poll confirms.
-
-## Data model
-
-```go
-type State int
-const ( Running State = iota; Stopped; Crashed; Starting; Stopping )
-
-type Entry struct {
-    ID       string   // stable local id
-    Label    string   // tab label / display name (from packageLabel)
-    Command  string   // the command string
-    Cwd      string   // targetDir
-    RepoName string   // display, for the pkg · repo column
-    TabID    string   // herdr tab id
-    PaneID   string   // herdr root pane id
-    State    State
-    ExitCode *int     // set when exited
-    Started  time.Time
-}
-
-type Model struct {
-    WorkspaceID string   // rt-runner-<id>, created lazily on first add
-    Entries     []Entry
-    Cursor      int
-    TailOpen    bool
-    Confirming  bool     // quit confirm layer active
-    // ... spinner frame, tail buffer, error line
-}
-```
-
-The workspace is created lazily on the first `add`, so an opened-then-
-quit empty board touches herdr zero times.
-
-## Binary path resolution (the Bun launcher)
-
-`commands/runner.ts` resolves `rt-runner` in this order:
-
-1. `RT_RUNNER_BIN` env override (tests, power users).
-2. A sibling of the rt executable: `dirname(process.execPath)/rt-runner`
-   (release tarball layout).
-3. Dev fallback: a locally built `runner/rt-runner`, else
-   `go run ./runner` from the repo root.
-
-It execs with `stdio: ["inherit","inherit","inherit"]` and exits with the
-child's code. It performs the herdr-availability probe first (reusing
-`herdrAvailable` from `lib/herdr/client.ts`) so the "herdr not running"
-message is a fast rt-side exit, not a Go panic. The launcher imports no
-Ink / `rt-render` ... it stays off the startup hot path and out of the
-no-eager-tui budget.
-
-## Error handling
-
-- **herdr down**: caught by the launcher probe; prints how to start
-  herdr and exits non-zero before the Go binary runs.
-- **herdr verb fails mid-session**: the affected Entry shows an error
-  state + the herdr message; the board stays usable.
-- **`rt run` add returns nothing / bad JSON**: no-op with a brief toast;
-  board unchanged.
-- **binary missing** (release packaging bug): launcher prints the
-  resolution paths it tried and exits non-zero.
-
-## Distribution
-
-Read `docs/release-and-distribution.md` before implementing this
-section. Concretely:
-
-- **Build**: `.github/workflows/release.yml` gains a Go build step
-  (`cd runner && go build -o ../dist/rt-runner`) for macOS arm64, and
-  bundles `rt-runner` into the release tarball beside `rt`.
-- **Signing / Gatekeeper**: the Go binary is unsigned by default and
-  will be Gatekeeper-blocked the same way the app bundle is. It must get
-  the same signing / de-quarantine treatment the release already applies
-  to `rt`. This is the biggest distribution risk and is verified in the
-  VM clean room, not just locally.
-- **Startup bench**: unaffected. `rt runner` is a tiny launcher; the Go
-  binary is never loaded at rt startup, so `scripts/bench-startup.ts`
-  and the no-eager-tui gates stay green.
+A TS timer every ~1.5 s issues `pane process-info` per entry, derives the
+state, recomputes `uptimeSec`, and pushes the full model. When a tail is
+open, a second ~1 s timer issues `pane read` for that one entry and pushes.
+Optimistic `starting`/`stopping` hold until a poll confirms. All herdr calls
+are async (`runCapture`); the intent loop never blocks on one.
 
 ## Wiring
 
-- `lib/command-tree-def.ts`: add a `runner` node ... `module:
-  "./commands/runner.ts"`, `fn: "runnerCommand"`, `requiresTTY: true`,
-  no required positional (it opens the board), so no `omitBehavior`.
-- `lib/module-registry.ts`: add
-  `"./commands/runner.ts": () => import("../commands/runner.ts")`
-  (required for the compiled binary to discover the module).
+- `commands/runner.ts`: `runnerCommand` — herdr probe (`herdrAvailable`
+  from `lib/herdr/client.ts`; on failure print how to start herdr and exit
+  non-zero before any UI), then the session loop above.
+- `lib/command-tree-def.ts`: a `runner` node, `module:
+  "./commands/runner.ts"`, `fn: "runnerCommand"`, `requiresTTY: true`, no
+  required positional (so no `omitBehavior`).
+- `lib/module-registry.ts`: `"./commands/runner.ts": () =>
+  import("../commands/runner.ts")`.
+- `ui/internal/views/board/`: the Go view, golden-tested against the three
+  artboards.
+
+## Error handling
+
+- **herdr down**: caught by the probe; plain message, exit non-zero, no UI.
+- **herdr verb fails mid-session**: the entry gets `state: "crashed"` with
+  the herdr message in `exitCode`-adjacent `error` text; the board stays
+  usable.
+- **`rt run` add returns nothing / bad JSON**: board re-opens unchanged.
+- **session dies**: TS runs teardown, prints a plain message, exits 1.
 
 ## Testing
 
-- **Go / herdr client**: exercise every verb against a fake `herdr`
-  binary injected via `HERDR_BIN` (a script emitting canned JSON),
-  mirroring `lib/herdr/__tests__/fake-herdr.ts`. Assert the exact argv
-  and JSON parsing (workspace/tab create → root_pane, process-info →
-  state).
-- **Go / add bridge**: fake `rt` via `RT_BIN` emitting a
-  `RunResolveResult`; assert an Entry + a new tab result.
-- **Go / model**: Bubble Tea `Update` unit tests (teatest) for
-  navigation, add, stop/restart optimistic states, quit-confirm gating,
-  and lazy workspace creation.
-- **Bun launcher**: unit-test the path-resolution ladder and the herdr
-  probe (fake `herdrAvailable`); assert inherited-stdio exec and exit
-  code passthrough.
+- **Command loop** against `fake-rt-ui` (scripted intents) and
+  `fake-herdr`-style herdr fakes (`HERDR_BIN`): add, stop/restart optimistic
+  states, tail toggle, quit teardown, lazy workspace creation, the
+  close-then-reopen add flow.
+- **Model assembly**: pure unit tests for `process-info` → state and
+  `uptimeSec`.
+- **Go view**: `teatest` golden output for populated + tail, empty, and
+  quit-confirm, matching the artboards; j/k/t/q behavior; `quit` emitted
+  only on `y`.
 
-## Follow-ups / open
+## Follow-ups
 
-- **"Add to runner" from `rt run`**: floated in brainstorming but does
-  not fit the ephemeral, pane-owned model (there is no persistent board
-  to target). Deferred; revisit only if boards ever gain a discoverable
-  handle.
-- **Rename / reorder rows**: intentionally omitted from V1 for
-  minimalism.
-- **Running outside a herdr client**: the runner only needs the herdr
-  *socket* reachable, but `focus` assumes a herdr UI is attached
-  somewhere. V1 assumes `rt runner` is run from within herdr (the normal
-  case).
+- "Add to runner" from `rt run`: does not fit the ephemeral, pane-owned
+  model (no persistent board to target). Deferred.
+- Rename / reorder rows: omitted from V1 for minimalism.
+- Running outside a herdr client: only the socket is needed, but `focus`
+  assumes a herdr UI is attached somewhere. V1 assumes `rt runner` runs from
+  within herdr.
