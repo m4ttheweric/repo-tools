@@ -314,7 +314,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
 
   // ── In a multi-worktree repo: worktree picker ────────────────────────────
   } else if (currentRepo && currentRepo.worktrees.length > 1) {
-    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true, reloadCommand: CD_RELOAD_COMMAND });
+    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
     if (!result) process.exit(0);
     selectedPath = isSwitchRepo(result)
       ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND })

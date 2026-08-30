@@ -7,7 +7,7 @@
 
 import { execSync } from "child_process";
 import { join } from "path";
-import { getRepoIdentity, getKnownRepos, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
+import { getRepoIdentity, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchLabel } from "./enrich.ts";
 
 const SWITCH_REPO     = "__switch_repo__"     as const;
