@@ -23,11 +23,13 @@ export function startSocketServer(opts: {
     try { unlinkSync(DAEMON_SOCK_PATH); } catch { /* */ }
   }
 
-  // @ts-expect-error bun-types (1.3.10) doesn't declare `idleTimeout` on the
-  // unix-socket Options variant (typed `never` there via the
-  // HostnamePortServeOptions/UnixServeOptions XOR) even though Bun accepts it
-  // at runtime for unix sockets too — verified empirically. Remove this
-  // suppression once bun-types catches up.
+  // R048: bun-types (1.3.10) doesn't declare `idleTimeout` on the unix-socket
+  // Options variant (typed `never` there via the HostnamePortServeOptions/
+  // UnixServeOptions XOR) even though Bun accepts it at runtime for unix
+  // sockets too — verified empirically. A cast rather than `@ts-expect-error`:
+  // the directive form breaks `tsc --noEmit` outright (TS2578, "unused
+  // directive") the day bun-types adds the property, since `@types/bun` is
+  // pinned to "latest"; this stays correct either way.
   const server = Bun.serve({
     unix: DAEMON_SOCK_PATH,
     // Raise Bun's implicit 10s idle-request timeout so long-poll requests
@@ -36,7 +38,7 @@ export function startSocketServer(opts: {
     // holds connections open on its own.
     idleTimeout: 255,
     maxRequestBodySize: MAX_REQUEST_BODY_SIZE,
-    async fetch(req) {
+    async fetch(req: Request) {
       try {
         const url = new URL(req.url);
         const cmd = url.pathname.slice(1); // "/cache:read" → "cache:read"
@@ -58,7 +60,7 @@ export function startSocketServer(opts: {
         );
       }
     },
-  });
+  } as unknown as Parameters<typeof Bun.serve>[0]);
 
   log.info({ path: DAEMON_SOCK_PATH }, "socket server listening");
   return server;

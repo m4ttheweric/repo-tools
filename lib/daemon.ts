@@ -52,7 +52,7 @@ import { unknownCommandReply } from "./daemon/unknown-command.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, pruneAgents, snapshotRegistryDeps, quickCheck, backupTo, stampedBackupPath, pruneStateBackups, type BranchCacheStore } from "./state/index.ts";
+import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, pruneAgents, snapshotRegistryDeps, quickCheck, backupTo, stampedBackupPath, pruneStateBackups, setBusyLogSink, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -456,6 +456,15 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         log = loggerHandle.logger;
         ctx.loggerHandle = loggerHandle;
         ctx.log = log;
+        // R052: route lib/state/busy.ts's busy-write warn/error lines onto
+        // this process's own daemon surface, via the same childLogger a
+        // handler's ctx.log would use — not the module's own dynamic
+        // getDaemonLogger() default, which a CLI process sharing this code
+        // would also fall into.
+        setBusyLogSink({
+          warn: (module, context, message) => loggerHandle!.childLogger(module).warn(context, message),
+          error: (module, context, message) => loggerHandle!.childLogger(module).error(context, message),
+        });
         // Route the settings resolver's dedup'd warn sink into structured
         // logging so a hot-path getSetting on a disallowed-scope key surfaces
         // once here instead of the resolver's console fallback.

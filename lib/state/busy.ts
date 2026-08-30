@@ -36,6 +36,35 @@ import type { DaemonLoggerHandle } from "../daemon-logger.ts";
 let logHandle: Promise<DaemonLoggerHandle> | null = null;
 
 /**
+ * R052: busy.ts's warn/error lines defaulted unconditionally to
+ * getDaemonLogger(), so a CLI process hitting a busy write (`rt run`
+ * enrichment, `rt repos locate`) appended a line carrying the CLI's own pid
+ * into the DAEMON's log surface — `rt daemon logs` then attributes it to the
+ * daemon, and two processes apply the 14-file retention independently
+ * against the same rolling set.
+ */
+export interface BusyLogSink {
+  warn(module: string, context: Record<string, unknown>, message: string): void;
+  error(module: string, context: Record<string, unknown>, message: string): void;
+}
+
+let sink: BusyLogSink | null = null;
+
+/**
+ * Lets whichever process this module runs in declare its own log surface
+ * for busy-write warn/error lines, instead of this module ever importing a
+ * concrete logger itself (daemon-logger.ts or cli-logger.ts) — the daemon
+ * calls this once at boot with a childLogger("state")-backed sink; the CLI
+ * calls it once at entry with one backed by its own cli.<date>.log surface.
+ * Unset (the default, and every existing test) falls back to the original
+ * getDaemonLogger() behavior, so nothing changes for a caller that never
+ * configures a sink.
+ */
+export function setBusyLogSink(newSink: BusyLogSink | null): void {
+  sink = newSink;
+}
+
+/**
  * True for the bun:sqlite error thrown when a write can't get the lock
  * inside busy_timeout, including the SNAPSHOT/RECOVERY variants a
  * deferred-BEGIN read-then-write transaction can throw, which busy_timeout
@@ -47,10 +76,10 @@ export function isBusyError(err: unknown): boolean {
 }
 
 function warnBusy(module: string, context: Record<string, unknown>): void {
+  const message = `${module} write skipped: db busy, converges next cycle`;
+  if (sink) { sink.warn(module, context, message); return; }
   logHandle ??= import("../daemon-logger.ts").then((m) => m.getDaemonLogger());
-  void logHandle.then((h) =>
-    h.childLogger(module).warn(context, `${module} write skipped: db busy, converges next cycle`),
-  );
+  void logHandle.then((h) => h.childLogger(module).warn(context, message));
 }
 
 /**
@@ -74,13 +103,11 @@ const CRITICAL_RETRY_ATTEMPTS = 3;
 const CRITICAL_RETRY_SLEEP_MS = 20;
 
 function logCriticalError(op: string, context: Record<string, unknown>, err: unknown): void {
+  const message = `${op} failed after ${CRITICAL_RETRY_ATTEMPTS} attempts: write may be lost`;
+  const fullContext = { ...context, err };
+  if (sink) { sink.error(op, fullContext, message); return; }
   logHandle ??= import("../daemon-logger.ts").then((m) => m.getDaemonLogger());
-  void logHandle.then((h) =>
-    h.childLogger("state").error(
-      { ...context, err },
-      `${op} failed after ${CRITICAL_RETRY_ATTEMPTS} attempts: write may be lost`,
-    ),
-  );
+  void logHandle.then((h) => h.childLogger("state").error(fullContext, message));
 }
 
 /**
