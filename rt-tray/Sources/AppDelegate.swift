@@ -648,15 +648,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     }
 
     /// Open the logdy-based daemon log viewer in the user's default browser.
-    /// If logdy is already serving on :5544 (e.g. previous click), just opens
-    /// the URL. Otherwise spawns `rt daemon logs` via a login shell so it
-    /// picks up the user's PATH (rt-tray inherits launchd's minimal PATH).
+    /// If logdy is already serving on :5544 AND we know it's still current
+    /// (see `isLogdyStale`), just opens the URL. Otherwise kills whatever
+    /// holds :5544 (a foreign or stale instance) and spawns `rt daemon logs`
+    /// fresh via a login shell so it picks up the user's PATH (rt-tray
+    /// inherits launchd's minimal PATH).
     @objc private func viewDaemonLogs() {
         let url = URL(string: "http://localhost:5544")!
         Task { @MainActor in
-            if await self.isLogdyUp() {
+            let up = await self.isLogdyUp()
+            if up && !self.isLogdyStale() {
                 NSWorkspace.shared.open(url)
                 return
+            }
+            if up {
+                TrayLog.info("logdy on :5544 is stale or foreign; killing and respawning")
+                self.killLogdy()
+                // Give the port a moment to free before respawning.
+                try? await Task.sleep(nanoseconds: 300_000_000)
             }
             self.spawnRtDaemonLogs()
             // Poll until logdy answers, up to ~4s, then open.
@@ -671,6 +680,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             // logdy never came up (e.g. logdy not installed).
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// True when the logdy this tray believes is running on :5544 can no
+    /// longer be trusted to be tailing current files (S080): we never
+    /// spawned it (a leftover from a previous tray process, or logdy started
+    /// by hand), the daemon has restarted since we spawned it (its old log
+    /// file set may be gone), or a day boundary has passed since we spawned
+    /// it (logdy was launched against yesterday's dated log files and never
+    /// picks up today's -- the exact "week-old logs" footgun on record).
+    private func isLogdyStale() -> Bool {
+        guard let spawnedAt = logdySpawnedAt, let spawnedDay = logdySpawnedDay else { return true }
+        if let daemonStartedAt = lastKnownDaemonStartedAt, daemonStartedAt > spawnedAt { return true }
+        if spawnedDay != Self.dayString(for: Date()) { return true }
+        return false
+    }
+
+    /// Kill whatever holds :5544 -- port 5544 exists only for this logdy
+    /// viewer, so anything bound there is fair game to replace.
+    private func killLogdy() {
+        let script = "pids=$(/usr/sbin/lsof -ti:5544 2>/dev/null); if [ -n \"$pids\" ]; then kill $pids; fi"
+        _ = TrayLog.runLogged("/bin/sh", ["-c", script], label: "kill stale logdy on :5544")
+        logdySpawnedAt = nil
+        logdySpawnedDay = nil
+    }
+
+    private static func dayString(for date: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        df.timeZone = TimeZone.current
+        return df.string(from: date)
     }
 
     /// Probe localhost:5544 with a short TCP connect.
@@ -731,6 +770,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             TrayLog.warn("no rt binary found in known locations; falling back to PATH lookup")
         }
         TrayLog.spawnLoggedDetached(task, label: "rt daemon logs")
+        let now = Date()
+        logdySpawnedAt = now
+        logdySpawnedDay = Self.dayString(for: now)
     }
 
     /// Open whichever crash/panic log is actually current (S029). Neither
@@ -853,6 +895,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     /// stale crash/log artifact from a current one (S029) without needing
     /// to touch the daemon-side writer.
     private var lastKnownDaemonStartedAt: Date?
+    /// When this tray last spawned `rt daemon logs`, and the calendar day it
+    /// did so on -- nil whenever logdy wasn't spawned by this tray instance
+    /// (see `isLogdyStale`, S080).
+    private var logdySpawnedAt: Date?
+    private var logdySpawnedDay: String?
 
     /// Main-actor so `isRefreshing` and all menu/UI mutations are serialized;
     /// the daemon queries themselves still run off-main across the awaits.
