@@ -50,9 +50,16 @@ class DaemonLifecycle {
             return
         }
         let results = await services.register(plists: [plistName])
+        var anyFailed = false
         for r in results where !r.ok {
+            anyFailed = true
             TrayLog.error("daemon register failed", ["label": label, "status": r.status, "err": r.error ?? ""])
         }
+        // A genuine registration failure (missing BundleProgram, SMAppService
+        // rejecting the plist) means there is nothing valid launchd knows
+        // about to kickstart -- forcing one here is exactly the respawn-loop
+        // the registrar's own BundleProgram guard exists to avoid.
+        if anyFailed { return }
         // register() is a no-op when the agent is already registered, so a job
         // that previously exited 0 (shutdown, an external SIGTERM) stays
         // registered but dead and KeepAlive never relaunches it (S028).
