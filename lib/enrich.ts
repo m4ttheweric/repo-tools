@@ -477,6 +477,12 @@ export async function refreshAllMRs(
     }
   }
 
+  // A deadline that fires while the GitLab await above was in flight must
+  // discard this cycle's result rather than let a slower, now-stale cycle
+  // overwrite a newer one's cache rows (the coalescer permits a new cycle
+  // the moment this one's deadline passes).
+  if (signal?.aborted) return;
+
   // ── Step 2: Collect Linear IDs from branches + MR titles ──────────────
   const branchLinearIds: Array<{ branch: string; linearId: string | null }> = branches.map(b => {
     let linearId = extractLinearId(b.branch);
@@ -509,6 +515,10 @@ export async function refreshAllMRs(
       onError?.(`Linear ticket fetch failed for [${uniqueIds.join(", ")}]: ${err}`);
     }
   }
+
+  // The Linear await above is the other non-cancellable gap this cycle can
+  // outlive its own deadline in.
+  if (signal?.aborted) return;
 
   // ── Step 4: Assemble and write cache ──────────────────────────────────
   const enriched: Array<[string, CacheEntry]> = [];
