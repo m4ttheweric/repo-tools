@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import * as fsModule from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
@@ -599,6 +600,35 @@ describe("corruption escape", () => {
 
     const survivors = Array.from(new Bun.Glob("state-corrupt.db.corrupt-*").scanSync({ cwd: dir }));
     expect(survivors.length).toBe(1);
+  });
+
+  test("CodeRabbit (PR #137): a sidecar rename failure other than ENOENT stops before renaming the main database", () => {
+    const dbPath = join(dir, "state-eacces.db");
+    writeFileSync(dbPath, "definitely not a sqlite database, just bytes");
+    const walPath = `${dbPath}-wal`;
+
+    const realRenameSync = fsModule.renameSync;
+    const renameSpy = spyOn(fsModule, "renameSync").mockImplementation(((from: string, to: string) => {
+      if (from === walPath) {
+        const err = new Error("EACCES: permission denied, rename") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      }
+      return realRenameSync(from, to);
+    }) as typeof fsModule.renameSync);
+
+    try {
+      expect(() => openStateDb(dbPath, "cli")).toThrow();
+      // Main file must still be at its original path — the code must stop
+      // before reaching the main-file rename, not just fail the sidecar
+      // and press on.
+      expect(existsSync(dbPath)).toBe(true);
+      expect(readFileSync(dbPath, "utf8")).toBe("definitely not a sqlite database, just bytes");
+      const survivors = Array.from(new Bun.Glob("state-eacces.db.corrupt-*").scanSync({ cwd: dir }));
+      expect(survivors.length).toBe(0);
+    } finally {
+      renameSpy.mockRestore();
+    }
   });
 });
 

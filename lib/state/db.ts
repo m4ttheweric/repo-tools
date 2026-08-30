@@ -438,8 +438,12 @@ function quarantine(path: string): void {
   for (const sidecar of [`${path}-wal`, `${path}-shm`]) {
     try {
       renameSync(sidecar, `${sidecar}.corrupt-${stamp}`);
-    } catch {
-      // sidecar absent — fine, WAL mode doesn't always leave one
+    } catch (err) {
+      // A sidecar simply not existing is fine — WAL mode doesn't always
+      // leave one. Anything else (EACCES, a sharing violation) means the
+      // sidecar is still at the live path; stop here rather than renaming
+      // the main file out from under it and recreating a fresh db beside it.
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
     }
   }
   renameSync(path, quarantinedPath);
