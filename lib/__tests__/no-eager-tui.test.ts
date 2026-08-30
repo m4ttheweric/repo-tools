@@ -67,7 +67,10 @@ test("daemon graph never transitively reaches the CLI picker chain (repo-arg, re
       .map((s) => s.trim())
       .filter((s) => /^(import|export)\b/.test(s))
       .flatMap((s) => {
-        const m = s.match(/from\s*["']([^"']+)["']/);
+        // Match `... from "x"` and bare side-effect `import "x"`: the latter
+        // has no `from` but still eagerly loads its module, so a daemon-side
+        // `import "./repo.ts";` must count as a violation.
+        const m = s.match(/(?:\bfrom\s*|^import\s*)["']([^"']+)["']/);
         return m ? [m[1]!] : [];
       });
   }
