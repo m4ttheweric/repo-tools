@@ -24,7 +24,7 @@ describe("smoke", () => {
     const output = result.stderr;
     const expectedCommands = [
       "git", "sync", "run", "commit",
-      "port", "status", "update", "version",
+      "port", "update", "version",
       "cd", "nav", "daemon", "settings", "hooks",
     ];
     for (const cmd of expectedCommands) {
