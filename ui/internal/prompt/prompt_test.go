@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -67,6 +65,14 @@ func TestSelectEnterReturnsInitialAndExitsZero(t *testing.T) {
 	}
 	if !strings.Contains(tty, "back to resources") {
 		t.Fatalf("back row missing: %q", tty)
+	}
+	// The card lives on the alternate screen: the terminal never reflows it
+	// mid-resize, and leaving it restores the user's screen byte for byte.
+	if enter := strings.Index(tty, "\x1b[?1049h"); enter < 0 || enter > strings.Index(tty, "╭") {
+		t.Fatalf("card painted before entering the alternate screen: %q", tty)
+	}
+	if !strings.Contains(tty, "\x1b[?1049l") {
+		t.Fatalf("alternate screen never left: %q", tty)
 	}
 }
 
@@ -129,21 +135,20 @@ func TestConfirmYAndNAndCollapse(t *testing.T) {
 	if exit != 0 || !strings.Contains(stdout, `"ok":true`) {
 		t.Fatalf("exit %d stdout %q", exit, stdout)
 	}
-	// Bubble Tea erases the inline card on exit (\x1b[J); the collapsed line
-	// is written after that erase and nothing may move the cursor up first.
+	// The collapsed line is written on the main screen, after the alternate
+	// screen is left, and nothing may move the cursor up first.
 	checkAt := strings.LastIndex(tty, "✓")
 	if checkAt < 0 {
 		t.Fatalf("collapsed line missing: %q", tty)
 	}
-	eraseAt := strings.LastIndex(tty[:checkAt], "\x1b[J")
-	if eraseAt < 0 || !strings.Contains(tty[checkAt:], "Run sdm login now?") {
-		t.Fatalf("collapsed line must follow the card erase: %q", tty)
+	leaveAt := strings.LastIndex(tty[:checkAt], "\x1b[?1049l")
+	if leaveAt < 0 || !strings.Contains(tty[checkAt:], "Run sdm login now?") {
+		t.Fatalf("collapsed line must follow leaving the alternate screen: %q", tty)
 	}
-	// Bubble Tea's own inline repaints may move the cursor up while the card is
-	// live; after its final erase, nothing may (that would eat the user's
-	// previous line).
-	if strings.Contains(tty[eraseAt:], "\x1b[1A") || strings.Contains(tty[eraseAt:], "\x1b[A") {
-		t.Fatalf("collapse moved the cursor up after the final erase: %q", tty[eraseAt:])
+	// Leaving the alternate screen puts the cursor back where rt left it; a
+	// cursor-up after that would eat the user's previous line.
+	if strings.Contains(tty[leaveAt:], "\x1b[1A") || strings.Contains(tty[leaveAt:], "\x1b[A") {
+		t.Fatalf("collapse moved the cursor up after leaving the alternate screen: %q", tty[leaveAt:])
 	}
 	if screen := testutil.Screen(tty); !strings.Contains(screen, "✓") || strings.Contains(screen, "╭") {
 		t.Fatalf("final screen should be the collapsed line only:\n%s", screen)
@@ -206,17 +211,16 @@ func TestBadSpecExits2(t *testing.T) {
 
 func TestParentDeathRestoresTerminal(t *testing.T) {
 	// Closing stdin while the card is up is "the brain died": rt-ui must shut
-	// the form down THROUGH Bubble Tea (which restores termios and erases the
-	// inline card) and exit 70. A raw os.Exit from the watcher would leave the
+	// the form down THROUGH Bubble Tea (which restores termios and leaves the
+	// alternate screen) and exit 70. A raw os.Exit from the watcher would leave the
 	// shell in raw mode, which is the failure this test exists to catch.
 	_, tty, exit := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, nil, nil, true)
 	if exit != 70 {
 		t.Fatalf("exit %d, want 70", exit)
 	}
-	// rt-ui writes its own erase on every exit, so an erase proves nothing here.
-	// Each of these comes only from Bubble Tea's close, undoing an input mode it
+	// Each of these comes only from Bubble Tea's close, undoing a mode it
 	// turned on at start... the same path that restores termios.
-	for _, seq := range []string{"\x1b[?25h", "\x1b[?2004l", "\x1b[?1004l", "\x1b[>4m"} {
+	for _, seq := range []string{"\x1b[?1049l", "\x1b[?25h", "\x1b[?2004l", "\x1b[?1004l", "\x1b[>4m"} {
 		if !strings.Contains(tty, seq) {
 			t.Fatalf("Bubble Tea's close never ran, %q missing: %q", seq, tty)
 		}
@@ -237,7 +241,7 @@ func TestExternalSignalCancelsAndRestoresTheTerminal(t *testing.T) {
 			}
 			// Only Bubble Tea's close writes these, undoing input modes it turned
 			// on at start... the same path that puts termios back in cooked mode.
-			for _, seq := range []string{"\x1b[?25h", "\x1b[?2004l"} {
+			for _, seq := range []string{"\x1b[?1049l", "\x1b[?25h", "\x1b[?2004l"} {
 				if !strings.Contains(tty, seq) {
 					t.Fatalf("terminal left raw, %q missing: %q", seq, tty)
 				}
@@ -258,15 +262,11 @@ func TestSignalledConfirmReportsNoAnswer(t *testing.T) {
 	}
 }
 
-// cursorUp matches the parameterized form only; a bare ESC[A is one row and
-// cannot overshoot.
-var cursorUp = regexp.MustCompile(`\x1b\[(\d+)A`)
-
-func TestTallCardIsErasedWithoutClimbingPastTheScreen(t *testing.T) {
+func TestTallCardNeverReachesTheMainScreen(t *testing.T) {
 	// huh caps a group at the window height and the card's border sits outside
-	// that, so a long option list makes a frame taller than the terminal. Only
-	// the bottom rows of it are ever painted; a teardown that climbs the whole
-	// frame walks into rows above the card, which belong to the user.
+	// that, so a long option list makes a frame taller than the terminal. On
+	// the alternate screen the overflow simply clips; the user's own rows
+	// underneath are never painted over or climbed into.
 	opts := make([]string, 0, 40)
 	for i := range 40 {
 		opts = append(opts, fmt.Sprintf(`{"value":"v%d","label":"option %d"}`, i, i))
@@ -279,24 +279,17 @@ func TestTallCardIsErasedWithoutClimbingPastTheScreen(t *testing.T) {
 	}
 	if screen := testutil.Screen(tty); strings.Contains(screen, "╭") ||
 		strings.Contains(screen, "Tall pick") || strings.Contains(screen, "option ") {
-		t.Fatalf("tall card still on screen after exit:\n%s", screen)
-	}
-	for _, m := range cursorUp.FindAllStringSubmatch(tty, -1) {
-		n, err := strconv.Atoi(m[1])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n > 30 {
-			t.Fatalf("cursor climbed %d rows on a 30-row screen: %q", n, tty)
-		}
+		t.Fatalf("tall card reached the main screen:\n%s", screen)
 	}
 }
 
-// paintedScreen replays the tty up to rt-ui's own erase, so the card is still
-// on the emulated screen when the test measures it.
+// paintedScreen replays the tty up to the card's last bottom-right corner, so
+// the card is still on the emulated screen when the test measures it. Bubble
+// Tea clears the alternate screen before leaving it, so a cut at the leave
+// sequence would replay an empty screen.
 func paintedScreen(tty string) string {
-	if i := strings.LastIndex(tty, "\r\x1b[J"); i >= 0 {
-		tty = tty[:i]
+	if i := strings.LastIndex(tty, "╯"); i >= 0 {
+		tty = tty[:i+len("╯")]
 	}
 	return testutil.Screen(tty)
 }

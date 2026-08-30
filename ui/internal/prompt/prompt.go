@@ -170,27 +170,9 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 	km := huh.NewDefaultKeyMap()
 	km.Quit = key.NewBinding(key.WithKeys("ctrl+c", "esc"))
 
-	// eraseCard needs the height of the last frame huh painted. The view hook
-	// runs on every render, before huh's content reaches the view, so it is the
-	// one place that height is knowable from the outside.
-	var form *huh.Form
-	cardHeight := 0
-	viewHook := func(v tea.View) tea.View {
-		if content := form.View(); content != "" {
-			cardHeight = lipgloss.Height(content)
-		}
-		return v
-	}
-
 	var backRequested, interrupted bool
-	// huh caps a group at the window height, so a frame can be taller than the
-	// screen. eraseCard needs the screen's row count to know how far up the
-	// card actually reaches.
-	screenRows := 0
 	filter := func(_ tea.Model, msg tea.Msg) tea.Msg {
 		switch m := msg.(type) {
-		case tea.WindowSizeMsg:
-			screenRows = m.Height
 		case tea.KeyPressMsg:
 			// Back leaves by the same door cancel does, so huh marks itself
 			// aborted either way and the exit path stays single.
@@ -219,12 +201,19 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 	// WithProgramOptions replaces huh's option slice rather than appending, so
 	// it has to precede WithInput/WithOutput or the UI silently lands on
 	// stdout, which the protocol owns.
-	form = huh.NewForm(group).
+	form := huh.NewForm(group).
 		WithTheme(th).
 		WithKeyMap(km).
 		WithLayout(cardLayout{frame: theme.CardFrame()}).
 		WithShowHelp(false).
-		WithViewHook(viewHook).
+		// The card lives on the alternate screen. An inline card is a row the
+		// terminal rewraps mid-resize, and the wrapped remnant lands outside
+		// the rows Bubble Tea knows it painted; the alternate screen is never
+		// reflowed and comes down leaving the user's screen exactly as it was.
+		WithViewHook(func(v tea.View) tea.View {
+			v.AltScreen = true
+			return v
+		}).
 		// Bubble Tea's own SIGINT/SIGTERM watcher is off because its SIGTERM path
 		// pushes a bare QuitMsg that no filter sees and that returns as a clean
 		// run. rt-ui cancels ctx from its own handler instead, which is the one
@@ -235,7 +224,6 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 
 	tty.FirstPaint()
 	err := form.RunWithContext(ctx)
-	eraseCard(term, cardHeight, screenRows)
 	switch {
 	case ctx.Err() != nil:
 		return result, Answered, ctx.Err()
@@ -267,32 +255,10 @@ func optionLabel(o protocol.Option) string {
 	return o.Label + "  " + lipgloss.NewStyle().Foreground(theme.Faint).Render(o.Hint)
 }
 
-// eraseCard removes the prompt card from the terminal. Bubble Tea's inline
-// renderer clamps its cursor model to the new frame height whenever a frame
-// shrinks, so the empty view it flushes on quit erases only the card's last
-// row, wherever the cursor already sat. Every visible row is torn down here,
-// leaving the cursor on the card's first on-screen row: whatever rt prints next
-// takes the card's place instead of pushing the user's scrollback around.
-func eraseCard(term *os.File, height, screenRows int) {
-	if height == 0 {
-		return
-	}
-	// A frame taller than the screen is drawn from its bottom rows up, so only
-	// screenRows of it are ever on screen. Climbing the frame's full height
-	// would walk into rows the prompt never painted.
-	if screenRows > 0 && height > screenRows {
-		height = screenRows
-	}
-	if height > 1 {
-		fmt.Fprintf(term, "\x1b[%dA", height-1)
-	}
-	fmt.Fprint(term, "\r\x1b[J")
-}
-
 // The answered confirm collapses to one line so scrollback keeps a record
-// without the prompt chrome. eraseCard has already put the cursor on the row
-// the card started at, so this only writes the line; moving the cursor up
-// here would eat the user's previous output.
+// without the prompt chrome. Leaving the alternate screen put the cursor back
+// where rt left it, so this only writes the line; moving the cursor up here
+// would eat the user's previous output.
 func writeCollapsed(term *os.File, message string, ok bool) {
 	answer := "no"
 	if ok {
