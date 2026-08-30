@@ -88,12 +88,12 @@ test("rejoining from the same cwd keeps the handle rather than refusing", () => 
   expect(listMembers("build", db)).toHaveLength(1);
 });
 
-test("wakeOn defaults to mention and round-trips when set", () => {
+test("wakeOn defaults to all and round-trips when set", () => {
   const db = freshDb();
   joinRoom({ room: "build", handle: "a" }, db);
-  joinRoom({ room: "build", handle: "b", wakeOn: "all" }, db);
+  joinRoom({ room: "build", handle: "b", wakeOn: "mention" }, db);
   const byHandle = Object.fromEntries(listMembers("build", db).map(m => [m.handle, m.wakeOn]));
-  expect(byHandle).toEqual({ a: "mention", b: "all" });
+  expect(byHandle).toEqual({ a: "all", b: "mention" });
 });
 
 test("leave drops membership", () => {
@@ -111,8 +111,8 @@ test("parses mentions and ignores an email-shaped token", () => {
 
 test("recipients: mention mode wakes only on being named, and never the author", () => {
   const db = freshDb();
-  joinRoom({ room: "r", handle: "a" }, db);
-  joinRoom({ room: "r", handle: "b" }, db);
+  joinRoom({ room: "r", handle: "a", wakeOn: "mention" }, db);
+  joinRoom({ room: "r", handle: "b", wakeOn: "mention" }, db);
   expect(recipientsFor("r", "a", [], db)).toEqual([]);
   expect(recipientsFor("r", "a", ["b"], db)).toEqual(["b"]);
   expect(recipientsFor("r", "a", ["a"], db)).toEqual([]);

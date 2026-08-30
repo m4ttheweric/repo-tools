@@ -581,9 +581,9 @@ test("chat:sign-in viaPane re-polls the snapshot when herdr has not yet reported
   expect(calls).toBeGreaterThanOrEqual(3);
 });
 
-test("chat:sign-in draws baseHandle from the inbox registry's own name when none is given explicitly", async () => {
+test("chat:sign-in draws baseHandle from the registry's USER-chosen name when none is given explicitly", async () => {
   const inboxDeps: InboxDeps = {
-    resolve: (sessionId) => (sessionId === "s1" ? { pid: process.pid, socketPath: fakeSocketPath(), status: "idle", name: "kai" } : null),
+    resolve: (sessionId) => (sessionId === "s1" ? { pid: process.pid, socketPath: fakeSocketPath(), status: "idle", name: "kai", nameSource: "user" } : null),
     deliver: async () => ({ ok: true }),
   };
   const db = openStateDb(join(tmpdir(), `chat-h-reg-${process.pid}-${n++}.db`));
@@ -591,6 +591,18 @@ test("chat:sign-in draws baseHandle from the inbox registry's own name when none
   const res = await h["chat:sign-in"]({ sessionId: "s1" });
   if (!res.ok) throw new Error("unreachable");
   expect(res.data).toMatchObject({ handle: "kai", baseHandle: "kai" });
+});
+
+test("chat:sign-in skips a DERIVED registry name (chat-c6 style) and draws from the pool instead", async () => {
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "s1" ? { pid: process.pid, socketPath: fakeSocketPath(), status: "idle", name: "chat-c6", nameSource: "derived" } : null),
+    deliver: async () => ({ ok: true }),
+  };
+  const db = openStateDb(join(tmpdir(), `chat-h-reg-${process.pid}-${n++}.db`));
+  const h = createChatHandlers({ db, emitEvent: () => 0, inboxDeps });
+  const res = await h["chat:sign-in"]({ sessionId: "s1" });
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.handle).not.toBe("chat-c6");
 });
 
 test("sign-in rejects an invalid baseHandle with a reason rather than normalizing it", async () => {
