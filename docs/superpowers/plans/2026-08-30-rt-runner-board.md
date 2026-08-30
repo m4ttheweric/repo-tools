@@ -1732,7 +1732,7 @@ and import `"rt-ui/internal/views/board"`.
 - [ ] **Step 7: Build, vet, run**
 
 Run: `cd ui && gofmt -l . && go vet ./... && go test ./internal/views/board/ -count=1 && go test ./... -count=1`
-Expected: PASS. If `lipgloss.WithWhitespaceBackground` or `Style.Width/Align` differ in v2, `go doc charm.land/lipgloss/v2 Place` and `Style` are the reference; the screen assertions are the contract.
+Expected: PASS. `lipgloss.WithWhitespaceStyle`, `Place`, `PlaceHorizontal`, and the `Style` setters used here exist in lipgloss v2.0.6; if a signature still differs, `go doc charm.land/lipgloss/v2 <Symbol>` is the reference and the screen assertions are the contract.
 
 - [ ] **Step 8: Commit**
 
