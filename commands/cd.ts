@@ -201,6 +201,14 @@ function shouldEmitRows(args: string[]): boolean {
   return args.includes("--emit-rows") && (!process.stdin.isTTY || !!process.env.RT_BATCH);
 }
 
+/**
+ * The ctrl-r reload command for cd's fzf pickers. fzf execs reloads via
+ * `sh -c`, which resolves `rt` from PATH only (the installed binary) -- the
+ * dev-mode shell-function wrapper is not visible there, which is acceptable
+ * since --emit-rows is a plain data path with no shell-integration behavior.
+ */
+const CD_RELOAD_COMMAND = "rt cd --emit-rows";
+
 /** Live-scanned rows + a cache refresh, for --emit-rows. Never launches a picker. */
 function emitRows(): void {
   const repos = getKnownRepos({ includeMissing: true });
@@ -271,7 +279,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
       const { filterableSelect } = await import("../lib/fzf-select.ts");
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
-        : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true });
+        : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true, reloadCommand: CD_RELOAD_COMMAND });
       if (!pickedRepoName) process.exit(0); // Esc on repo picker
       const pickedRepo = repoFromOptionValue(repos, pickedRepoName)!;
       if (pickedRepo.missing) {
@@ -288,7 +296,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
         selectedPath = await resolveWorktreeByBranch(wtBranch, [pickedRepo], { stderr: true });
       }
     } else {
-      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages });
+      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND });
     }
 
   // ── --worktree flag only: resolve branch in current repo (then all repos) ──
@@ -306,15 +314,15 @@ export async function worktreePicker(args: string[]): Promise<void> {
 
   // ── In a multi-worktree repo: worktree picker ────────────────────────────
   } else if (currentRepo && currentRepo.worktrees.length > 1) {
-    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
+    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true, reloadCommand: CD_RELOAD_COMMAND });
     if (!result) process.exit(0);
     selectedPath = isSwitchRepo(result)
-      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages })
+      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND })
       : result;
 
   // ── Not in a tracked repo or single-worktree: repo picker ───────────────
   } else {
-    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages });
+    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND });
   }
 
   // Restore stdout and print just the path

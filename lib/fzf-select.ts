@@ -131,30 +131,24 @@ export function buildFzfRows(options: SelectOption[]): string {
 }
 
 /**
- * Show a filterable single-select using fzf.
- * fzf is a hard dependency — exits with an install hint if it's missing.
+ * Builds the fzf argument list for `filterableSelect`. Extracted so the
+ * reload bind/header suffix are unit-testable without spawning fzf; must stay
+ * byte-identical to the pre-extraction inline array when `reloadCommand` is
+ * absent, since that is the only caller-visible knob.
  */
-export async function filterableSelect(opts: {
+export function buildFilterableSelectArgs(opts: {
   message: string;
-  options: SelectOption[];
-  stderr?: boolean;
-  /** When set, shows `ctrl-up: back` in the header and throws BackNavigation on ctrl-up. */
   backLabel?: string;
-  /** Use fzf's exact-match mode instead of fuzzy matching. */
   exact?: boolean;
-}): Promise<string | null> {
-  const { spawnSync } = await import("child_process");
-  const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
-
-  const options = opts.options;
-  const input = buildFzfRows(options);
-
+  /** When set, adds `ctrl-r:reload(<cmd>)` and its header hint. cd-only. */
+  reloadCommand?: string;
+}): string[] {
   const header = opts.backLabel
     ? "enter: select  |: OR  !: exclude  ctrl-up: back"
     : "enter: select  |: OR  !: exclude";
+  const headerWithReload = opts.reloadCommand ? `${header}  ctrl-r: refresh` : header;
 
-  const result = spawnSync("fzf", [
+  return [
     "--ansi",
     "--with-nth=2..",
     "--nth=1",
@@ -165,13 +159,39 @@ export async function filterableSelect(opts: {
     "--border=rounded",
     `--border-label= ${opts.message} `,
     "--prompt=filter: ",
-    `--header=${header}`,
+    `--header=${headerWithReload}`,
     "--no-mouse",
     "--print-query",
     "--expect=ctrl-up",
     `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
     ...(opts.exact ? ["--exact"] : []),
-  ], {
+    ...(opts.reloadCommand ? [`--bind=ctrl-r:reload(${opts.reloadCommand})`] : []),
+  ];
+}
+
+/**
+ * Show a filterable single-select using fzf.
+ * fzf is a hard dependency: exits with an install hint if it's missing.
+ */
+export async function filterableSelect(opts: {
+  message: string;
+  options: SelectOption[];
+  stderr?: boolean;
+  /** When set, shows `ctrl-up: back` in the header and throws BackNavigation on ctrl-up. */
+  backLabel?: string;
+  /** Use fzf's exact-match mode instead of fuzzy matching. */
+  exact?: boolean;
+  /** When set, wires `ctrl-r` to reload rows by running this shell command. cd-only. */
+  reloadCommand?: string;
+}): Promise<string | null> {
+  const { spawnSync } = await import("child_process");
+  const { ensureFzf } = await import("./fzf.ts");
+  ensureFzf();
+
+  const options = opts.options;
+  const input = buildFzfRows(options);
+
+  const result = spawnSync("fzf", buildFilterableSelectArgs(opts), {
     input,
     stdio: ["pipe", "pipe", "inherit"],
     encoding: "utf8",

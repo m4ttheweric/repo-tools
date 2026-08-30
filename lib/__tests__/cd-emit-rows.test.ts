@@ -95,7 +95,7 @@ describe("rt cd --emit-rows", () => {
       });
 
       expect(result.status).toBe(0);
-      // fzf's own chrome (border/prompt escape codes) never appears — no
+      // fzf's own chrome (border/prompt escape codes) never appears: no
       // picker process was spawned.
       expect(result.stderr ?? "").not.toContain("filter:");
     } finally {
