@@ -509,8 +509,10 @@ export interface Commands {
   "repos:locate": { payload: { newPath: string; repo?: string; dryRun?: boolean }; data: unknown };
   "freshness:reconcile": { payload: Record<string, never>; data: unknown };
 
-  /** Wire reply on success is `{ok:true, repaired}` / `{ok:true}` (no `data`). */
-  "hooks:repair": { payload: { repo: string }; data: Record<string, never> };
+  /** Wire reply on success is `{ok:true, repaired}` / `{ok:true}` (no `data`
+   *  wrapper) — `data` here documents the extra field the same way PingData
+   *  does for `ping`, not the literal wire nesting (R3). */
+  "hooks:repair": { payload: { repo: string }; data: { repaired: boolean } };
   "hooks:watch": { payload: { repo: string }; data: Record<string, never> };
 
   "sdm:catalog": { payload: { refresh?: boolean }; data: unknown };
