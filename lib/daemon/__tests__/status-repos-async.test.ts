@@ -52,6 +52,9 @@ describe("status handlers — repos (S055 async worktree listing)", () => {
     const worktrees = res.data.repos.myrepo.worktrees;
     expect(worktrees.map((w: any) => w.path).sort()).toEqual([linked, repo].sort());
     expect(worktrees.every((w: any) => typeof w.branch === "string" && w.branch.length > 0)).toBe(true);
+    // WorktreeEntry carries isBare internally; the wire payload must not.
+    expect(worktrees.every((w: any) => !("isBare" in w))).toBe(true);
+    expect(worktrees.every((w: any) => Object.keys(w).sort().join(",") === "branch,path")).toBe(true);
   });
 
   test("a repo whose git command fails (bad repoPath) yields no worktrees, not a throw", async () => {

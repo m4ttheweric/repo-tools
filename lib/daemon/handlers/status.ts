@@ -165,9 +165,11 @@ export function createStatusHandlers(
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
         // Detached worktrees have no branch — omit them from the listing.
-        const worktrees = ((await listWorktreesAsync(repoPath)) ?? []).filter(
-          (w): w is WorktreeEntry & { branch: string } => Boolean(w.branch),
-        );
+        // Map to { path, branch } explicitly: WorktreeEntry also carries
+        // isBare, which must not leak into this wire payload.
+        const worktrees = ((await listWorktreesAsync(repoPath)) ?? [])
+          .filter((w): w is WorktreeEntry & { branch: string } => Boolean(w.branch))
+          .map((w) => ({ path: w.path, branch: w.branch }));
         detailed[repoName] = { path: repoPath, worktrees };
       }
 
