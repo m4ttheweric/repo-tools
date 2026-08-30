@@ -540,9 +540,15 @@ export async function worktreeList(args: string[], _ctx: unknown): Promise<void>
   const rows = (ok.data?.trees ?? []) as TreeRow[];
   const readyHeldRepos = (ok.data?.readyHeldRepos ?? []) as string[];
 
-  if (parsed.json) { console.log(JSON.stringify({ trees: rows }, null, 2)); return; }
+  if (parsed.json) { console.log(JSON.stringify({ trees: rows, readyHeldRepos }, null, 2)); return; }
 
-  if (rows.length === 0) { console.log(`\n  ${dim}no worktrees${reset}\n`); return; }
+  if (rows.length === 0) {
+    if (readyHeldRepos.length > 0) {
+      console.log(`\n  ${yellow}team \`ready\` steps held pending approval${reset}  ${dim}${readyHeldRepos.map(repoLabel).join(", ")} ... run \`rt worktree ready-approve <repo>\`${reset}`);
+    }
+    console.log(`\n  ${dim}no worktrees${reset}\n`);
+    return;
+  }
 
   const trailingByPath = await enrichTrailingByPath(rows);
   console.log("");
