@@ -850,15 +850,6 @@ function buildRootSet(known: KnownRepo[]): RootEntry[] {
 // ─── Discovery ───────────────────────────────────────────────────────────────
 
 /**
- * Get all known repos from the global index, with worktree discovery.
- * Used when rt is run outside a git repo to offer a picker.
- *
- * `includeMissing` is opt-in: a caller that resolves a repo and then chdirs
- * or spawns against its worktree path must ask for `missing` rows explicitly
- * and refuse them (`missingRepoRefusal`) before acting, or leave the default
- * off and keep today's silent-exclusion behavior.
- */
-/**
  * Loads index entries and splits them into live (path still on disk) and
  * lost, deduping the live side by realpath. Shared by the sync and async
  * builders so they cannot see different rows for the same on-disk state.
@@ -885,7 +876,7 @@ function loadPartitionedEntries(): { keep: RepoIndexEntry[]; lostEntries: RepoIn
 
 /**
  * Lost rows as `KnownRepo`s, opt-in. A pair of rows for one gone directory is
- * one lost repo, not two — hence the partitionByRealpath pass here too.
+ * one lost repo, not two (hence the partitionByRealpath pass here too).
  */
 function buildLostRepos(lostEntries: RepoIndexEntry[], includeMissing: boolean | undefined): KnownRepo[] {
   return includeMissing
@@ -917,7 +908,7 @@ function buildDedupeSets(known: KnownRepo[]): { knownNames: Set<string>; knownPa
 
 /**
  * Worktrees for a repo whose `singleWorktree` fast path missed (linked
- * worktrees present) — the authoritative `git worktree list --porcelain`
+ * worktrees present): the authoritative `git worktree list --porcelain`
  * parse. Filtering (`!isBare && existsSync`) is the caller's job, matching
  * `multiWorktreesAsync`.
  */
@@ -959,18 +950,26 @@ function multiWorktrees(mainPath: string): KnownRepo["worktrees"] {
 
 /**
  * Async twin of `multiWorktrees`, via `listWorktreesAsync` instead of
- * `execSync`. `WorktreeEntry` carries no bare flag (unlike the porcelain
- * parse above), so every row here is `isBare: false` — harmless for the
- * `!isBare` filter the caller applies, since `listWorktreesAsync` already
- * drops paths that don't exist on disk, and a bare main worktree is not a
- * shape this repo index has ever indexed.
+ * `execSync`. `WorktreeEntry.isBare` (parsed from the porcelain `bare` line,
+ * same as `multiWorktrees` above) is carried through unchanged, so the
+ * caller's shared `!isBare && existsSync` filter drops a bare container row
+ * exactly as it does for the sync builder.
  */
 async function multiWorktreesAsync(mainPath: string): Promise<KnownRepo["worktrees"]> {
   const entries = await listWorktreesAsync(mainPath);
   if (entries === null) return [{ path: mainPath, branch: "", isBare: false }];
-  return entries.map((w) => ({ path: w.path, branch: w.branch ?? "", isBare: false }));
+  return entries.map((w) => ({ path: w.path, branch: w.branch ?? "", isBare: w.isBare }));
 }
 
+/**
+ * Get all known repos from the global index, with worktree discovery.
+ * Used when rt is run outside a git repo to offer a picker.
+ *
+ * `includeMissing` is opt-in: a caller that resolves a repo and then chdirs
+ * or spawns against its worktree path must ask for `missing` rows explicitly
+ * and refuse them (`missingRepoRefusal`) before acting, or leave the default
+ * off and keep today's silent-exclusion behavior.
+ */
 export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] {
   const { keep, lostEntries } = loadPartitionedEntries();
 
@@ -995,12 +994,13 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
 }
 
 /**
- * Async mirror of `getKnownRepos`, safe on the daemon thread: no `execSync`
- * anywhere in this path. Must produce output that deep-equals `getKnownRepos`
- * for the same on-disk state (rows, order, branches, missing/registered
- * flags) — see the parity test in `lib/__tests__/repo-index-async.test.ts`.
- * Only the two git-spawning spots (`multiWorktreesAsync`, `branchOfAsync`)
- * differ from the sync builder; everything else is the same shared helper.
+ * Async mirror of `getKnownRepos` (see its doc for the contract), safe on the
+ * daemon thread: no `execSync` anywhere in this path. Must produce output
+ * that deep-equals `getKnownRepos` for the same on-disk state (rows, order,
+ * branches, missing/registered flags) -- see the parity test in
+ * `lib/__tests__/repo-index-async.test.ts`. Only the two git-spawning spots
+ * (`multiWorktreesAsync`, `branchOfAsync`) differ from the sync builder;
+ * everything else is the same shared helper.
  */
 export async function getKnownReposAsync(opts?: { includeMissing?: boolean }): Promise<KnownRepo[]> {
   const { keep, lostEntries } = loadPartitionedEntries();
@@ -1183,8 +1183,8 @@ async function branchOfAsync(repoPath: string): Promise<string> {
  * time on a fresh machine altogether, once `rt.repoRoots` is seeded.
  *
  * Shared by the sync and async scanners: the candidate set (which roots,
- * which directories) is pure fs/readdir work, identical either way — only
- * the branch lookup below differs.
+ * which directories) is pure fs/readdir work, identical either way (only
+ * the branch lookup below differs).
  */
 function collectCandidates(
   known: KnownRepo[],

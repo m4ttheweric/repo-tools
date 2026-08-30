@@ -15,7 +15,7 @@
 import { existsSync, readdirSync } from "fs";
 import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
 import type { PortEntry } from "../../port-scanner.ts";
-import { listWorktreesAsync } from "../../worktree/git-async.ts";
+import { listWorktreesAsync, type WorktreeEntry } from "../../worktree/git-async.ts";
 import { worktreePoolDormant, WORKTREE_APP_ENABLE_COMMAND } from "../../worktree/config.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { getFreshnessSnapshot } from "../freshness.ts";
@@ -166,7 +166,7 @@ export function createStatusHandlers(
         if (!existsSync(repoPath)) continue;
         // Detached worktrees have no branch — omit them from the listing.
         const worktrees = ((await listWorktreesAsync(repoPath)) ?? []).filter(
-          (w): w is { path: string; branch: string } => Boolean(w.branch),
+          (w): w is WorktreeEntry & { branch: string } => Boolean(w.branch),
         );
         detailed[repoName] = { path: repoPath, worktrees };
       }

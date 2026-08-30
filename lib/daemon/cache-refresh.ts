@@ -23,7 +23,7 @@ import { getProjectMRs } from "./project-mrs-store.ts";
 import { pruneDiscussionsStore } from "./discussions-file-store.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { deriveRepoIdentity } from "../settings/identity.ts";
-import { listWorktreesAsync, listWorktreeRootsAsync, runGit } from "../worktree/git-async.ts";
+import { listWorktreesAsync, listWorktreeRootsAsync, runGit, type WorktreeEntry } from "../worktree/git-async.ts";
 
 export interface CacheRefresherDeps {
   log: Logger;
@@ -195,7 +195,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           // on-deck/* branches are pool plumbing, not feature work — never
           // worth MR/Linear enrichment.
           const branches: Array<{ path: string; branch: string }> = ((await listWorktreesAsync(repoPath)) ?? [])
-            .filter((w): w is { path: string; branch: string } => !!w.branch && !w.branch.startsWith("on-deck/"));
+            .filter((w): w is WorktreeEntry & { branch: string } => !!w.branch && !w.branch.startsWith("on-deck/"));
 
           // 2. Discover local branches (not just worktrees)
           const worktreeBranchSet = new Set(branches.map(b => b.branch));

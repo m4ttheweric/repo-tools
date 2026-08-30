@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { resolve, join } from "path";
 import { setSetting } from "../settings/write.ts";
@@ -39,7 +39,7 @@ describe("getKnownReposAsync parity", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  /** A directory with just a `.git` marker — enough for the scanner's
+  /** A directory with just a `.git` marker: enough for the scanner's
    *  `existsSync(join(path, ".git"))` probe; no real git repo needed. */
   function markerRepo(parent: string, name: string): string {
     const dir = join(parent, name);
@@ -60,6 +60,17 @@ describe("getKnownReposAsync parity", () => {
 
   function setRepoRoots(entries: unknown[]): void {
     setSetting("rt.repoRoots", entries, "machine");
+  }
+
+  /** A bare repo (no working tree of its own) with two linked worktrees.
+   *  `git worktree list --porcelain` reports the bare dir itself as a
+   *  worktree row with a `bare` line and no branch; the sync builder's
+   *  `!isBare` filter drops it, which is the parity gap this fixture pins. */
+  function bareRepoWithWorktrees(bareDir: string, wt1: string, wt2: string): void {
+    execSync(`git init -q --bare ${JSON.stringify(bareDir)}`, { stdio: "pipe" });
+    execSync(`git worktree add ${JSON.stringify(wt1)} -b main`, { cwd: bareDir, stdio: "pipe" });
+    execSync("git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init", { cwd: wt1, stdio: "pipe" });
+    execSync(`git worktree add ${JSON.stringify(wt2)} -b side`, { cwd: bareDir, stdio: "pipe" });
   }
 
   test("matches getKnownRepos for single-worktree, linked-worktree, unregistered, and missing rows", async () => {
@@ -120,6 +131,27 @@ describe("getKnownReposAsync parity", () => {
     const syncResult = getKnownRepos();
     const asyncResult = await getKnownReposAsync();
     expect(asyncResult).toEqual(syncResult);
+
+    rmSync(parent, { recursive: true, force: true });
+  });
+
+  test("matches getKnownRepos for a bare repo with linked worktrees (bare row dropped on both sides)", async () => {
+    // realpathSync: git canonicalizes /var -> /private/var on macOS, and
+    // `git worktree list --porcelain` reports the canonical spelling.
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-async-parity-bare-")));
+    const bareDir = join(parent, "bare-repo.git");
+    const wt1 = join(parent, "bare-repo-wt1");
+    const wt2 = join(parent, "bare-repo-wt2");
+    bareRepoWithWorktrees(bareDir, wt1, wt2);
+    indexRepo("bare-repo", bareDir);
+
+    const syncResult = getKnownRepos();
+    const asyncResult = await getKnownReposAsync();
+    expect(asyncResult).toEqual(syncResult);
+
+    const row = syncResult.find((r) => r.repoName === "bare-repo");
+    expect(row?.worktrees.map((w) => w.path).sort()).toEqual([wt1, wt2].sort());
+    expect(row?.worktrees.some((w) => w.path === bareDir)).toBe(false);
 
     rmSync(parent, { recursive: true, force: true });
   });
