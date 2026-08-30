@@ -153,3 +153,37 @@ describe("restart wait is not doubled (R5)", () => {
     expect(elapsed).toBeLessThan(220);
   }, 5000);
 });
+
+// CodeRabbit (PR #137): attemptRestart() treated any non-null tray response
+// as a successful restart, including { ok: false } — a tray-side rejection.
+// daemonQueryAttributed then ran the full ~3s waitForSocket() poll even
+// though the tray never agreed to start anything.
+describe("tray rejection is not treated as a successful restart", () => {
+  let trayServer: ReturnType<typeof Bun.serve> | undefined;
+
+  beforeEach(() => {
+    markDaemonInstalled();
+  });
+
+  afterEach(() => {
+    trayServer?.stop(true);
+    markDaemonUninstalled();
+  });
+
+  test("a tray response of { ok: false } skips the socket-wait budget instead of polling for 3s", async () => {
+    trayServer = Bun.serve({
+      unix: TRAY_SOCK_PATH,
+      fetch: () => new Response(JSON.stringify({ ok: false, error: "refused" }), { headers: { "Content-Type": "application/json" } }),
+    });
+    // No daemon socket ever appears — a genuine restart never happened.
+
+    const start = Date.now();
+    const result = await daemonQueryAttributed("ping", {}, 200);
+    const elapsed = Date.now() - start;
+
+    expect(result.response).toBeNull();
+    // The 3s waitForSocket() budget would dominate elapsed time if this
+    // still treated { ok: false } as success.
+    expect(elapsed).toBeLessThan(1000);
+  }, 5000);
+});

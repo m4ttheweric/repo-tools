@@ -205,7 +205,7 @@ async function attemptRestart(): Promise<boolean> {
     // sleep-before-check, could exhaust its own budget and skip
     // waitForSocket's window entirely on a restart landing just past it).
     const res = await trayQuery("/daemon/start", "POST");
-    return res !== null;
+    return res?.ok === true;
   } catch {
     return false;
   }
