@@ -355,6 +355,18 @@ check_helpers() { # app
     else
         fail "$exe Helpers/fast-browser package missing"
     fi
+    # First-party helper (built from ui/, not a deps.lock row). The dev bundle
+    # runs from source and resolves ui/dist/rt-ui directly, so it ships none.
+    if [ "$exe" = mattstack ]; then
+        local rtui="$app/Contents/Helpers/rt-ui"
+        if [ -f "$rtui" ]; then
+            pass "$exe ships Helpers/rt-ui"
+            assert_eq "$exe rt-ui codesign identifier" "Identifier=com.mattstack.helper.rt-ui" "$(codesign -dv "$rtui" 2>&1 | grep '^Identifier=' || true)"
+            "$rtui" --version 2>/dev/null | grep -q '^rt-ui .* protocol 1$' && pass "$exe rt-ui answers --version with protocol 1" || fail "$exe rt-ui --version did not report protocol 1"
+        else
+            fail "$exe missing Helpers/rt-ui"
+        fi
+    fi
 }
 check_helpers "$PROD"
 [ -n "$DEV" ] && check_helpers "$DEV"

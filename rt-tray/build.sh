@@ -239,6 +239,22 @@ bundle_helpers() {
 }
 bundle_helpers
 
+# ─── Embed rt-ui (Contents/Helpers/rt-ui) ─────────────────────────────────────
+# A first-party helper built from ui/, not a deps.lock row: same signing pass
+# as the downloaded helpers, no url/sha256. Dev bundles run from source and
+# resolve ui/dist/rt-ui directly, so they carry none.
+if [ "$IS_DEV" != true ]; then
+    RT_UI_SRC="${RT_UI_BIN:-$REPO_DIR/ui/dist/rt-ui}"
+    if [ -f "$RT_UI_SRC" ] && file -b "$RT_UI_SRC" | grep -q "Mach-O"; then
+        cp "$RT_UI_SRC" "$CONTENTS/Helpers/rt-ui"; chmod +x "$CONTENTS/Helpers/rt-ui"
+        xattr -cr "$CONTENTS/Helpers/rt-ui" 2>/dev/null || true
+        HELPER_ENTITLEMENTS+=("$CONTENTS/Helpers/rt-ui	none")
+        echo "  ✓ Embedded rt-ui from $RT_UI_SRC"
+    else
+        echo "  ✗ rt-ui not built at $RT_UI_SRC ... bun run ui:build (or set RT_UI_BIN)"; exit 1
+    fi
+fi
+
 # ─── Extension ───────────────────────────────────────────────────────────────
 if [ -n "${RT_VSIX:-}" ]; then
     [ -f "$RT_VSIX" ] || { echo "  ✗ RT_VSIX=$RT_VSIX not found"; exit 1; }
