@@ -71,6 +71,15 @@ export function tmpDir(): string {
 }
 
 /**
+ * ~/.mattstack/rt/cd-cache.json - the cached repo list `rt cd` reads from
+ * (lib/repo-cache.ts). Best-effort and disposable: a missing or stale file
+ * just means the next reader falls back to a live rebuild.
+ */
+export function cdCachePath(): string {
+  return join(rtDir(), "cd-cache.json");
+}
+
+/**
  * ~/.mattstack/rt/repos/<repoName> — a single repo's data directory (config,
  * hooks, scripts, run-history, etc.). This is `RepoIdentity.dataDir`.
  */
