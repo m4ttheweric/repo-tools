@@ -32,7 +32,7 @@ import { repoLabel, repoLabelFull, repoLabelQualified } from "./repo-label.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 import { mergeRegistries, type TreeRecord } from "./worktree/registry.ts";
-import { listWorktreesAsync } from "./worktree/git-async.ts";
+import { currentBranchAsync, listWorktreesAsync } from "./worktree/git-async.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -858,76 +858,37 @@ function buildRootSet(known: KnownRepo[]): RootEntry[] {
  * and refuse them (`missingRepoRefusal`) before acting, or leave the default
  * off and keep today's silent-exclusion behavior.
  */
-export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] {
-  // Same degrade-don't-crash rule as getRepoIdentity()'s index write: an
-  // unopenable state.db (root-owned after a `sudo rt …`) must not take down
-  // the `rt cd`/`rt run` picker — it falls back to the unregistered-scan
-  // results below, exactly like an empty index does.
+/**
+ * Loads index entries and splits them into live (path still on disk) and
+ * lost, deduping the live side by realpath. Shared by the sync and async
+ * builders so they cannot see different rows for the same on-disk state.
+ *
+ * Same degrade-don't-crash rule as getRepoIdentity()'s index write: an
+ * unopenable state.db (root-owned after a `sudo rt …`) must not take down
+ * the `rt cd`/`rt run` picker — it falls back to the unregistered-scan
+ * results, exactly like an empty index does.
+ */
+function loadPartitionedEntries(): { keep: RepoIndexEntry[]; lostEntries: RepoIndexEntry[] } {
   let entries: RepoIndexEntry[];
   try {
     entries = loadRepoIndexEntries();
   } catch {
     entries = [];
   }
-  const repos: KnownRepo[] = [];
-
   const liveEntries: RepoIndexEntry[] = [];
   const lostEntries: RepoIndexEntry[] = [];
   for (const e of entries) (existsSync(e.path) ? liveEntries : lostEntries).push(e);
-
   // Hidden here, not evicted — see partitionByRealpath.
   const { keep } = partitionByRealpath(liveEntries);
+  return { keep, lostEntries };
+}
 
-  for (const { repoName, path: mainPath } of keep) {
-    const worktrees: KnownRepo["worktrees"] = [];
-    // Single-worktree repos (the vast majority) skip the git subprocess and
-    // synthesize the one worktree from disk; only repos with linked worktrees
-    // pay for the authoritative porcelain parse below.
-    const single = singleWorktree(mainPath);
-    if (single) {
-      worktrees.push(single);
-    } else try {
-      const output = execSync("git worktree list --porcelain", {
-        cwd: mainPath,
-        encoding: "utf8",
-        stdio: "pipe",
-      });
-
-      let currentPath = "";
-      let currentBranch = "";
-      let isBare = false;
-
-      for (const line of output.split("\n")) {
-        if (line.startsWith("worktree ")) {
-          if (currentPath) {
-            worktrees.push({ path: currentPath, branch: currentBranch, isBare });
-          }
-          currentPath = line.replace("worktree ", "").trim();
-          currentBranch = "";
-          isBare = false;
-        } else if (line.startsWith("branch ")) {
-          currentBranch = line.replace("branch refs/heads/", "").trim();
-        } else if (line === "bare") {
-          isBare = true;
-        }
-      }
-      if (currentPath) {
-        worktrees.push({ path: currentPath, branch: currentBranch, isBare });
-      }
-    } catch {
-      worktrees.push({ path: mainPath, branch: "", isBare: false });
-    }
-
-    repos.push({
-      repoName,
-      worktrees: worktrees.filter(w => !w.isBare && existsSync(w.path)),
-      dataDir: repoDataDir(repoName),
-    });
-  }
-
-  const known = repos.filter(r => r.worktrees.length > 0);
-  // A pair of rows for one gone directory is one lost repo, not two.
-  const lost: KnownRepo[] = opts?.includeMissing
+/**
+ * Lost rows as `KnownRepo`s, opt-in. A pair of rows for one gone directory is
+ * one lost repo, not two — hence the partitionByRealpath pass here too.
+ */
+function buildLostRepos(lostEntries: RepoIndexEntry[], includeMissing: boolean | undefined): KnownRepo[] {
+  return includeMissing
     ? partitionByRealpath(lostEntries).keep.map((e) => ({
         repoName: e.repoName,
         worktrees: [{ path: e.path, branch: "", isBare: false }],
@@ -935,20 +896,131 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
         missing: true as const,
       }))
     : [];
-  // Lost names are excluded for the same reason lost paths are (below): a lost
-  // legacy-name row is named after the directory that moved, so counting it as
-  // known would shadow that directory's NEW location out of the scan — the one
-  // candidate `rt repos locate` exists to surface.
-  const knownNames = new Set(known.map(r => r.repoName));
-  // realpath'd for set-membership ONLY — a symlinked path component (macOS
-  // /tmp → /private/tmp being the canonical case) must not let the same
-  // directory double-emit under two spellings. `known` itself keeps its
-  // original, user-visible spellings (KnownRepo.worktrees[].path, repos.json,
-  // `rt cd` targets) untouched. Lost paths are deliberately absent: the scan
-  // must be free to surface the moved repo's NEW directory.
-  const knownPaths = new Set(known.flatMap(r => r.worktrees.map(w => safeRealpath(w.path))));
+}
+
+/**
+ * Dedupe sets for the unregistered scan, built from the known+lost rows.
+ * Lost names/paths are deliberately excluded: a lost legacy-name row is named
+ * after the directory that moved, so counting it as known would shadow that
+ * directory's NEW location out of the scan — the one candidate
+ * `rt repos locate` exists to surface. Paths are realpath'd for set-membership
+ * ONLY — a symlinked path component (macOS /tmp -> /private/tmp) must not let
+ * the same directory double-emit under two spellings; `known` itself keeps
+ * its original, user-visible spellings.
+ */
+function buildDedupeSets(known: KnownRepo[]): { knownNames: Set<string>; knownPaths: Set<string> } {
+  return {
+    knownNames: new Set(known.map(r => r.repoName)),
+    knownPaths: new Set(known.flatMap(r => r.worktrees.map(w => safeRealpath(w.path)))),
+  };
+}
+
+/**
+ * Worktrees for a repo whose `singleWorktree` fast path missed (linked
+ * worktrees present) — the authoritative `git worktree list --porcelain`
+ * parse. Filtering (`!isBare && existsSync`) is the caller's job, matching
+ * `multiWorktreesAsync`.
+ */
+function multiWorktrees(mainPath: string): KnownRepo["worktrees"] {
+  const worktrees: KnownRepo["worktrees"] = [];
+  try {
+    const output = execSync("git worktree list --porcelain", {
+      cwd: mainPath,
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+
+    let currentPath = "";
+    let currentBranch = "";
+    let isBare = false;
+
+    for (const line of output.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        if (currentPath) {
+          worktrees.push({ path: currentPath, branch: currentBranch, isBare });
+        }
+        currentPath = line.replace("worktree ", "").trim();
+        currentBranch = "";
+        isBare = false;
+      } else if (line.startsWith("branch ")) {
+        currentBranch = line.replace("branch refs/heads/", "").trim();
+      } else if (line === "bare") {
+        isBare = true;
+      }
+    }
+    if (currentPath) {
+      worktrees.push({ path: currentPath, branch: currentBranch, isBare });
+    }
+  } catch {
+    worktrees.push({ path: mainPath, branch: "", isBare: false });
+  }
+  return worktrees;
+}
+
+/**
+ * Async twin of `multiWorktrees`, via `listWorktreesAsync` instead of
+ * `execSync`. `WorktreeEntry` carries no bare flag (unlike the porcelain
+ * parse above), so every row here is `isBare: false` — harmless for the
+ * `!isBare` filter the caller applies, since `listWorktreesAsync` already
+ * drops paths that don't exist on disk, and a bare main worktree is not a
+ * shape this repo index has ever indexed.
+ */
+async function multiWorktreesAsync(mainPath: string): Promise<KnownRepo["worktrees"]> {
+  const entries = await listWorktreesAsync(mainPath);
+  if (entries === null) return [{ path: mainPath, branch: "", isBare: false }];
+  return entries.map((w) => ({ path: w.path, branch: w.branch ?? "", isBare: false }));
+}
+
+export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] {
+  const { keep, lostEntries } = loadPartitionedEntries();
+
+  const repos: KnownRepo[] = keep.map(({ repoName, path: mainPath }) => {
+    // Single-worktree repos (the vast majority) skip the git subprocess and
+    // synthesize the one worktree from disk; only repos with linked worktrees
+    // pay for the authoritative porcelain parse.
+    const single = singleWorktree(mainPath);
+    const worktrees = single ? [single] : multiWorktrees(mainPath);
+    return {
+      repoName,
+      worktrees: worktrees.filter(w => !w.isBare && existsSync(w.path)),
+      dataDir: repoDataDir(repoName),
+    };
+  });
+
+  const known = repos.filter(r => r.worktrees.length > 0);
+  const lost = buildLostRepos(lostEntries, opts?.includeMissing);
+  const { knownNames, knownPaths } = buildDedupeSets(known);
 
   return [...known, ...lost, ...scanUnregisteredRepos([...known, ...lost], knownNames, knownPaths)];
+}
+
+/**
+ * Async mirror of `getKnownRepos`, safe on the daemon thread: no `execSync`
+ * anywhere in this path. Must produce output that deep-equals `getKnownRepos`
+ * for the same on-disk state (rows, order, branches, missing/registered
+ * flags) — see the parity test in `lib/__tests__/repo-index-async.test.ts`.
+ * Only the two git-spawning spots (`multiWorktreesAsync`, `branchOfAsync`)
+ * differ from the sync builder; everything else is the same shared helper.
+ */
+export async function getKnownReposAsync(opts?: { includeMissing?: boolean }): Promise<KnownRepo[]> {
+  const { keep, lostEntries } = loadPartitionedEntries();
+
+  const repos: KnownRepo[] = await Promise.all(keep.map(async ({ repoName, path: mainPath }) => {
+    const single = singleWorktree(mainPath);
+    const worktrees = single ? [single] : await multiWorktreesAsync(mainPath);
+    return {
+      repoName,
+      worktrees: worktrees.filter(w => !w.isBare && existsSync(w.path)),
+      dataDir: repoDataDir(repoName),
+    };
+  }));
+
+  const known = repos.filter(r => r.worktrees.length > 0);
+  const lost = buildLostRepos(lostEntries, opts?.includeMissing);
+  const { knownNames, knownPaths } = buildDedupeSets(known);
+
+  const unregistered = await scanUnregisteredReposAsync([...known, ...lost], knownNames, knownPaths);
+  return [...known, ...lost, ...unregistered];
 }
 
 interface Candidate {
@@ -1093,6 +1165,16 @@ function branchOf(repoPath: string): string {
   }
 }
 
+/** Async twin of `branchOf`: the fs `.git/HEAD` read stays sync (fast, no
+ *  subprocess); only the linked-worktree fallback becomes an async spawn. */
+async function branchOfAsync(repoPath: string): Promise<string> {
+  const dotgit = join(repoPath, ".git");
+  try {
+    if (statSync(dotgit).isDirectory()) return headBranch(dotgit);
+  } catch { /* fall through to the async git call */ }
+  return (await currentBranchAsync(repoPath)) ?? ""; // null covers detached HEAD and a failed spawn alike
+}
+
 /**
  * Scan every configured (`rt.repoRoots`) and inferred (parents of indexed
  * repos) root for git repos rt has never been run in. This is what lets
@@ -1100,6 +1182,22 @@ function branchOf(repoPath: string): string {
  * requiring you to `cd` there manually first — and, since RT-49, the first
  * time on a fresh machine altogether, once `rt.repoRoots` is seeded.
  *
+ * Shared by the sync and async scanners: the candidate set (which roots,
+ * which directories) is pure fs/readdir work, identical either way — only
+ * the branch lookup below differs.
+ */
+function collectCandidates(
+  known: KnownRepo[],
+  knownNames: Set<string>,
+  knownPaths: Set<string>,
+): Candidate[] {
+  const roots = buildRootSet(known);
+  const candidates: Candidate[] = [];
+  for (const root of roots) scanRoot(root, knownNames, knownPaths, candidates);
+  return candidates;
+}
+
+/**
  * Candidates are collected across ALL roots before any branch lookup: if the
  * total exceeds `BRANCH_LABEL_CAP`, the per-candidate `git rev-parse` is
  * skipped for every candidate (all-or-nothing, uniform rows, no partial
@@ -1110,10 +1208,7 @@ function scanUnregisteredRepos(
   knownNames: Set<string>,
   knownPaths: Set<string>,
 ): KnownRepo[] {
-  const roots = buildRootSet(known);
-  const candidates: Candidate[] = [];
-  for (const root of roots) scanRoot(root, knownNames, knownPaths, candidates);
-
+  const candidates = collectCandidates(known, knownNames, knownPaths);
   const skipBranchLookup = candidates.length > BRANCH_LABEL_CAP;
 
   return candidates.map((c) => ({
@@ -1122,6 +1217,23 @@ function scanUnregisteredRepos(
     dataDir: repoDataDir(candidateDataDirName(c.name, c.composite)),
     registered: false,
   }));
+}
+
+/** Async twin of `scanUnregisteredRepos`, via `branchOfAsync`. */
+async function scanUnregisteredReposAsync(
+  known: KnownRepo[],
+  knownNames: Set<string>,
+  knownPaths: Set<string>,
+): Promise<KnownRepo[]> {
+  const candidates = collectCandidates(known, knownNames, knownPaths);
+  const skipBranchLookup = candidates.length > BRANCH_LABEL_CAP;
+
+  return Promise.all(candidates.map(async (c) => ({
+    repoName: c.name,
+    worktrees: [{ path: c.path, branch: skipBranchLookup ? "" : await branchOfAsync(c.path), isBare: false }],
+    dataDir: repoDataDir(candidateDataDirName(c.name, c.composite)),
+    registered: false,
+  })));
 }
 
 // ─── Picker option formatting ───────────────────────────────────────────────
