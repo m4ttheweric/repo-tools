@@ -20,6 +20,7 @@ export { updateRepoIndex, getKnownRepos, getKnownReposCached, repoOption, repoOp
 
 import { getRepoRoot, getRemoteUrl } from "./git.ts";
 import { updateRepoIndex, getKnownRepos, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
+import { repoLabel } from "./repo-label.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -330,7 +331,7 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opt
   }));
 
   return filterableSelect({
-    message: prompt || `${repo.repoName} worktrees`,
+    message: prompt || `${repoLabel(repo.repoName)} worktrees`,
     options,
     backLabel: opts?.backLabel,
   });
@@ -389,7 +390,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
     });
 
     const picked = await filterableSelect({
-      message: `${currentRepo.repoName} worktrees`,
+      message: `${repoLabel(currentRepo.repoName)} worktrees`,
       options,
     });
 

@@ -9,6 +9,7 @@ import { execSync } from "child_process";
 import { join } from "path";
 import { getRepoIdentity, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchLabel } from "./enrich.ts";
+import { repoLabel } from "./repo-label.ts";
 
 const SWITCH_REPO     = "__switch_repo__"     as const;
 
@@ -65,7 +66,7 @@ export async function pickWorktreeWithSwitch(
 
   try {
     const picked = await filterableSelect({
-      message: `${repo.repoName} worktrees`,
+      message: `${repoLabel(repo.repoName)} worktrees`,
       options,
       backLabel: "Switch to a different repo",
       ...(opts?.stderr ? { stderr: true } : {}),
@@ -132,7 +133,7 @@ export async function pickFromAllRepos(
       try {
         worktreePath = await pickWorktreeFromRepo(
           selectedRepo,
-          `${selectedRepo.repoName} worktrees`,
+          `${repoLabel(selectedRepo.repoName)} worktrees`,
           { backLabel: repos.length > 1 ? "Switch repo" : undefined },
         );
       } catch (err) {
@@ -207,7 +208,7 @@ export async function pickPackageWithEscape(
 
     try {
       const picked = await filterableSelect({
-        message: `${repo.repoName}`,
+        message: repoLabel(repo.repoName),
         options,
         backLabel,
         ...(opts?.stderr ? { stderr: true } : {}),
@@ -228,7 +229,7 @@ export async function pickPackageWithEscape(
             }
             worktreePath = wtResult;
           } else {
-            const newPath = await pickWorktreeFromRepo(repo, `${repo.repoName} worktrees`);
+            const newPath = await pickWorktreeFromRepo(repo, `${repoLabel(repo.repoName)} worktrees`);
             if (!newPath) process.exit(0); // esc
             worktreePath = newPath;
           }
