@@ -394,6 +394,30 @@ function readyLadderOwner(repoIdentity: string | null, repoPath: string): Scope 
   return null;
 }
 
+export interface ReadyGateInfo {
+  /** Whether the winning `ready` ladder is team-authored (team / team.repo). */
+  teamOwned: boolean;
+  /** Whether a team-owned ladder matches the user's recorded approval. */
+  approved: boolean;
+  /** Content hash of the current ladder... the id an approval pins. */
+  hash: string;
+  /** The declared domain steps (rt's implicit install is not included). */
+  ladder: ReadyStep[];
+  /** The repo's remote identity, or null (approval keys on it). */
+  identity: string | null;
+}
+
+/** Read-only view of the ready gate for one repo (the approve command's input). */
+export async function inspectReadyGate(cfg: WorktreeRepoConfig, repoPath: string): Promise<ReadyGateInfo> {
+  const derived = await deriveRepoIdentity(repoPath);
+  const identity = derived.kind === "remote" ? derived.id : null;
+  const owner = readyLadderOwner(identity, repoPath);
+  const teamOwned = owner === "team" || owner === "team.repo";
+  const hash = readyLadderHash(cfg.ready);
+  const approved = teamOwned && readReadyApproval(identity) === hash;
+  return { teamOwned, approved, hash, ladder: cfg.ready, identity };
+}
+
 /**
  * The ready steps to actually run, and whether a team-authored ladder is being
  * held pending approval. Fail-closed: a team-owned ladder (team / team.repo)
@@ -407,22 +431,16 @@ export async function evaluateReadyGate(
   _repoName: string,
   repoPath: string,
 ): Promise<{ steps: ReadyStep[]; held: boolean }> {
-  const derived = await deriveRepoIdentity(repoPath);
-  const identity = derived.kind === "remote" ? derived.id : null;
-  const owner = readyLadderOwner(identity, repoPath);
-  const teamOwned = owner === "team" || owner === "team.repo";
-  if (!teamOwned) return { steps: resolveReadySteps(cfg, repoPath), held: false };
-
-  if (readReadyApproval(identity) === readyLadderHash(cfg.ready)) {
-    return { steps: resolveReadySteps(cfg, repoPath), held: false };
-  }
+  const info = await inspectReadyGate(cfg, repoPath);
+  if (!info.teamOwned || info.approved) return { steps: resolveReadySteps(cfg, repoPath), held: false };
   return { steps: resolveReadySteps({ ...cfg, ready: [] }, repoPath), held: true };
 }
 
 /** Surface signal: a team-authored ready ladder is held pending approval. */
 export async function worktreeReadyHeld(repoName: string, repoPath: string): Promise<boolean> {
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  return (await evaluateReadyGate(cfg, repoName, repoPath)).held;
+  const info = await inspectReadyGate(cfg, repoPath);
+  return info.teamOwned && !info.approved;
 }
 
 // ─── App-level config ────────────────────────────────────────────────────────

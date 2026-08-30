@@ -25,7 +25,7 @@ import {
   listWorktreesAsync,
 } from "./git-async.ts";
 import { pickName } from "./names.ts";
-import { loadWorktreeRepoConfig, resolveReadySteps, type WorktreeRepoConfig } from "./config.ts";
+import { loadWorktreeRepoConfig, evaluateReadyGate, type WorktreeRepoConfig } from "./config.ts";
 import { runReadySteps } from "./ready.ts";
 import { withTreeLock } from "./locks.ts";
 import { reapTrashDir, trashTree } from "./trash.ts";
@@ -122,7 +122,11 @@ async function runCreate(
     return fail(`git worktree add -b ${branch} ${path} ${defaultRef}`, addResult.stdout + addResult.stderr);
   }
 
-  const readySteps = resolveReadySteps(cfg, repoPath);
+  const { steps: readySteps, held } = await evaluateReadyGate(cfg, repoName, repoPath);
+  if (held) {
+    log.warn({ repo: repoName, tree: name }, "worktree create: team `ready` steps held pending approval; run `rt worktree ready-approve`");
+    emit("worktree:ready-held", { repo: repoName, tree: name });
+  }
   const readyResult = await runReadySteps(path, readySteps);
   if (!readyResult.ok) {
     return fail(readyResult.failedStep, readyResult.output);

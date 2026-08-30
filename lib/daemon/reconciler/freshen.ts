@@ -27,7 +27,7 @@ import { MAX_LOGGED_OUTPUT, outputTail } from "../../subprocess.ts";
 import {
   loadWorktreeAppConfig,
   loadWorktreeRepoConfig,
-  resolveReadySteps,
+  evaluateReadyGate,
 } from "../../worktree/config.ts";
 
 const FRESHEN_FETCH_TIMEOUT_MS = 5 * 60_000;
@@ -197,7 +197,11 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
   }
 
   const cfg = await loadWorktreeRepoConfig(repoName, deps.repoPath);
-  const readySteps = resolveReadySteps(cfg, deps.repoPath);
+  const { steps: readySteps, held } = await evaluateReadyGate(cfg, repoName, deps.repoPath);
+  if (held) {
+    log.warn(fields, "freshen: team `ready` steps held pending approval; run `rt worktree ready-approve`");
+    emit("worktree:ready-held", { repo: repoName, tree: rec.name, path: rec.path });
+  }
   const changed = rec.readyStamp ? await changedSince(rec.path, rec.readyStamp) : null;
   const toRun = stepsToRun(readySteps, changed);
 

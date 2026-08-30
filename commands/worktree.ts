@@ -20,6 +20,8 @@ import { RT_DIR } from "../lib/daemon-config.ts";
 import { getRepoIdentity } from "../lib/repo.ts";
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { currentRepoIdentity, repoLabel, resolveRepoArg } from "../lib/repo-arg.ts";
+import { loadWorktreeRepoConfig, inspectReadyGate } from "../lib/worktree/config.ts";
+import { writeReadyApproval } from "../lib/worktree/ready-approval.ts";
 import { daemonQuery, lastQueryTimedOut, type DaemonResponse } from "../lib/daemon-client.ts";
 import { listWorktrees } from "../lib/git-worktrees.ts";
 import {
@@ -533,7 +535,10 @@ export async function worktreeRestore(args: string[], _ctx: unknown): Promise<vo
 export async function worktreeList(args: string[], _ctx: unknown): Promise<void> {
   const parsed = parseListArgs(args);
   const repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m)) : undefined;
-  const rows = await fetchTreeRows(parsed.json, repoName);
+  const res = await daemonQuery("worktree:list", repoName ? { repoName } : undefined);
+  const ok = requireQueryResult(parsed.json, res);
+  const rows = (ok.data?.trees ?? []) as TreeRow[];
+  const readyHeldRepos = (ok.data?.readyHeldRepos ?? []) as string[];
 
   if (parsed.json) { console.log(JSON.stringify({ trees: rows }, null, 2)); return; }
 
@@ -541,6 +546,9 @@ export async function worktreeList(args: string[], _ctx: unknown): Promise<void>
 
   const trailingByPath = await enrichTrailingByPath(rows);
   console.log("");
+  if (readyHeldRepos.length > 0) {
+    console.log(`  ${yellow}team \`ready\` steps held pending approval${reset}  ${dim}${readyHeldRepos.map(repoLabel).join(", ")} ... run \`rt worktree ready-approve <repo>\`${reset}`);
+  }
   for (const r of rows) {
     const trailing = trailingByPath.get(r.path);
     const mrPart = trailing
@@ -555,6 +563,93 @@ export async function worktreeList(args: string[], _ctx: unknown): Promise<void>
     );
   }
   console.log("");
+}
+
+// ─── ready-approve ────────────────────────────────────────────────────────────
+
+async function pickRepoName(repoIndex: Record<string, string>): Promise<string | undefined> {
+  const names = Object.keys(repoIndex);
+  if (names.length === 0) return undefined;
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const picked = await filterableSelect({
+    message: "Approve team ready steps for which repo?",
+    options: names.map((n) => ({ value: n, label: repoLabel(n) })),
+    stderr: true,
+  });
+  return picked ?? undefined;
+}
+
+async function confirmApprove(): Promise<boolean> {
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const picked = await filterableSelect({
+    message: "Approve these steps to run unattended on every create/freshen?",
+    options: [
+      { value: "approve", label: "Approve" },
+      { value: "cancel", label: "Cancel" },
+    ],
+    stderr: true,
+  });
+  return picked === "approve";
+}
+
+/**
+ * Approve a repo's team-authored `ready` shell before it runs (RT-89). The
+ * daemon fail-closes on an unapproved team ladder; this records the user's
+ * approval, keyed by the ladder's content hash so a later team edit re-holds it.
+ * TTY only: a non-interactive caller gets the hash and a nonzero exit, never a
+ * prompt.
+ */
+export async function worktreeReadyApprove(args: string[], _ctx: unknown): Promise<void> {
+  const json = args.includes("--json");
+  const interactive = !!process.stdin.isTTY && !json && !process.env.RT_BATCH;
+  const positional = args.filter((a) => !a.startsWith("-"));
+
+  const repoIndex = loadRepoIndex();
+  let repoName = positional[0]
+    ? await resolveRepoArg(positional[0], (m) => failText(json, m))
+    : undefined;
+  if (!repoName) {
+    if (!interactive) failText(json, "no repo... pass a repo name (no TTY for the picker)");
+    repoName = await pickRepoName(repoIndex);
+    if (!repoName) { console.log(`\n  ${dim}nothing selected${reset}\n`); return; }
+  }
+
+  const repoPath = repoIndex[repoName];
+  if (!repoPath) failText(json, `repo not registered: ${repoName}`);
+
+  const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
+  const info = await inspectReadyGate(cfg, repoPath);
+
+  if (!info.teamOwned) {
+    if (json) { console.log(JSON.stringify({ teamOwned: false })); return; }
+    console.log(`\n  ${dim}no team-authored ready steps to approve for ${repoLabel(repoName)}${reset}\n`);
+    return;
+  }
+  if (info.approved) {
+    if (json) { console.log(JSON.stringify({ teamOwned: true, approved: true, hash: info.hash })); return; }
+    console.log(`\n  ${green}already approved${reset}  ${dim}${info.hash}${reset}\n`);
+    return;
+  }
+  if (!info.identity) failText(json, "repo has no derivable identity; cannot record an approval");
+
+  if (!interactive) {
+    // Never prompt off a TTY: name the hash and exit nonzero so a script must
+    // approve deliberately (mirrors the leaf-picker gate).
+    failText(
+      json,
+      `team \`ready\` steps for ${repoLabel(repoName)} need approval (hash ${info.hash}). Re-run in a TTY, or: rt settings set rt.worktreeReadyApproval '${info.hash}' --scope user`,
+    );
+  }
+
+  console.log(`\n  ${yellow}team-authored ready steps${reset} for ${bold}${repoLabel(repoName)}${reset}  ${dim}(hash ${info.hash})${reset}\n`);
+  for (const s of info.ladder) {
+    console.log(`    ${s.run}${s.when ? `  ${dim}(${s.when})${reset}` : ""}`);
+  }
+  console.log("");
+
+  if (!(await confirmApprove())) { console.log(`  ${dim}not approved${reset}\n`); return; }
+  writeReadyApproval(info.identity, info.hash);
+  console.log(`  ${green}approved${reset}  ${dim}${info.hash}${reset}\n`);
 }
 
 // ─── freshen ─────────────────────────────────────────────────────────────────
