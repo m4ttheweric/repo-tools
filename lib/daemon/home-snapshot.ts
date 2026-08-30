@@ -119,6 +119,15 @@ export interface HomeSnapshotDeps {
 
 const GIT_TIMEOUT_MS = 15_000;
 const PUSH_TIMEOUT_MS = 30_000;
+/** Cap for schedulePushRetry's geometric backoff (R042): an unreachable
+ *  remote must not keep spawning git and re-warning every base retry
+ *  window forever. */
+const PUSH_RETRY_BACKOFF_CAP_MS = 60 * 60 * 1000;
+
+/** attempt 0 -> baseMs (the existing flat pushDelaySec*5 window), doubling per consecutive failure, capped. */
+function nextPushRetryDelayMs(baseMs: number, attempt: number): number {
+  return Math.min(baseMs * 2 ** attempt, PUSH_RETRY_BACKOFF_CAP_MS);
+}
 
 // Registry defaults (packages/rt-client/src/settings/registry-defs.ts's
 // rt.homeSnapshot row) — also the NaN/non-finite fallback for clampSettings,
@@ -294,6 +303,9 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let lastCommitError: string | null = null;
   let lastLoggedCommitError: string | null = null;
   let lastLoggedAddError: string | null = null;
+  let lastLoggedPushError: string | null = null;
+  /** Consecutive failed-push count, for schedulePushRetry's geometric backoff (R042). Reset on any successful push or a fresh commit's schedulePush(). */
+  let pushRetryAttempt = 0;
   let pushPending = false;
   let pushInFlight: Promise<void> | null = null;
   /** A commit landed (or a retry is due) while a push was already running — the in-flight one has already captured its HEAD snapshot, so this must not be silently coalesced away or the new commit never gets pushed until some unrelated future commit happens to re-arm the timer. */
@@ -305,8 +317,33 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   /** Populated in init(), after the is-inside-work-tree check; see resolveDb's comment for why this can't happen at construction time. */
   let firstSeenDirty: Record<string, number> = {};
   let lastLoggedOwnersError: string | null = null;
-  /** Shared dedup key for every "deps.readSettings() itself threw" warn (armWatcher's debounce read, status()) — a settings store that broke after boot and stays broken must warn once, not on every fs event or every `rt home snapshot --status` poll. */
+  /** Shared dedup key for every "deps.readSettings() itself threw" warn (armWatcher's debounce read, status(), safeReadSettings) — a settings store that broke after boot and stays broken must warn once, not on every fs event or every `rt home snapshot --status` poll. */
   let lastLoggedSettingsError: string | null = null;
+
+  /**
+   * S091: every timer-path settings read (scheduleJanitor, schedulePush,
+   * schedulePushRetry, doPushInner's kill switch, doRun's own kill switch)
+   * used to call deps.readSettings() raw. A throw there (an authored
+   * `${repoRoot}` inside rt.homeSnapshot making getSetting expand and throw)
+   * rejected whichever async chain was mid-flight: doRun's promise, a
+   * scheduleJanitor `.finally` re-arm, or a bare setTimeout callback. None of
+   * those are caught anywhere upstream, so the janitor/push cycle for that
+   * repo silently stopped for the rest of the daemon's life while status()
+   * kept reporting enabled=true. One fallback path, matching armWatcher's
+   * already-correct debounce-read guard.
+   */
+  function safeReadSettings(): HomeSnapshotSettings {
+    try {
+      return deps.readSettings();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== lastLoggedSettingsError) {
+        deps.log.warn({ err }, "home-snapshot: failed to read settings; using the default");
+        lastLoggedSettingsError = message;
+      }
+      return { enabled: true, ...SETTINGS_FALLBACK };
+    }
+  }
 
   // Guarded: this runs at construction time, synchronously, in whatever
   // calls startHomeSnapshot() (module scope in lib/daemon.ts) — an
@@ -446,7 +483,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   }
 
   function scheduleJanitor(): void {
-    const intervalMs = deps.readSettings().janitorIntervalMin * 60_000;
+    const intervalMs = safeReadSettings().janitorIntervalMin * 60_000;
     janitorTimer = deps.setTimeout(() => {
       void runNow("janitor").finally(() => {
         if (!stopped) scheduleJanitor();
@@ -461,8 +498,9 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     // both eventually fire `doPush()` independently (the in-flight guard
     // below stops them overlapping, but not the redundant second attempt).
     if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
+    pushRetryAttempt = 0; // a fresh commit is a new push attempt, not a continuation of a prior failure streak
     if (pushTimer) deps.clearTimeout(pushTimer);
-    const delayMs = deps.readSettings().pushDelaySec * 1000;
+    const delayMs = safeReadSettings().pushDelaySec * 1000;
     pushTimer = deps.setTimeout(() => {
       pushTimer = null;
       void doPush();
@@ -472,7 +510,9 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   function schedulePushRetry(): void {
     if (stopped) return;
     if (pushRetryTimer) deps.clearTimeout(pushRetryTimer);
-    const retryMs = deps.readSettings().pushDelaySec * 5 * 1000;
+    const baseMs = safeReadSettings().pushDelaySec * 5 * 1000;
+    const retryMs = nextPushRetryDelayMs(baseMs, pushRetryAttempt);
+    pushRetryAttempt++;
     pushRetryTimer = deps.setTimeout(() => {
       pushRetryTimer = null;
       void doPush();
@@ -519,7 +559,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     // otherwise still fire. pushPending is left untouched (there's still a
     // real unpushed commit); once re-enabled, the next `committed ||
     // pushPending` check re-arms it exactly the same way a cancelled timer would.
-    if (deps.readSettings().enabled === false) {
+    if (safeReadSettings().enabled === false) {
       deps.log.debug("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping a due push");
       return;
     }
@@ -545,6 +585,8 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       pushFailureBroadcast = false;
       lastPushAt = deps.now();
       lastPushError = null;
+      lastLoggedPushError = null;
+      pushRetryAttempt = 0;
       persistPushRecord(resolveDb(), { at: lastPushAt, ok: true }, deps.log);
       if (pushRetryTimer) {
         deps.clearTimeout(pushRetryTimer);
@@ -558,8 +600,14 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       const redactedStderr = redactCredentials(result.stderr);
       pushPending = true;
       lastPushError = redactedStderr;
-      persistPushRecord(resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
-      deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
+      // R042: dedupe by message like the commit/add paths -- an unreachable
+      // remote otherwise re-warns and re-persists identically on every
+      // retry, indefinitely.
+      if (redactedStderr !== lastLoggedPushError) {
+        persistPushRecord(resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
+        deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
+        lastLoggedPushError = redactedStderr;
+      }
       // Only the FIRST failure of an unbroken streak broadcasts — a retry
       // storm (schedulePushRetry firing every pushDelaySec*5) would
       // otherwise spam every WS/socket client with the same event.
@@ -587,7 +635,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   async function doRun(reason: SnapshotReason): Promise<SnapshotResult> {
     lastRunAt = deps.now();
 
-    const settings = deps.readSettings();
+    const settings = safeReadSettings();
     if (settings.enabled === false) {
       // Kill switch: a scheduled push must not survive a live disable — the
       // whole point of flipping this off is "stop touching origin right
