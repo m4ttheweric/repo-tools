@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameS
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
+import { readRepoCache } from "./repo-cache.ts";
 import { deleteKvValue, getKvValue, getStateDb, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
 import { rekeyKvNamespace } from "./state/identity-migrate.ts";
 import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
@@ -994,6 +995,19 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
 }
 
 /**
+ * Cached read path `rt cd` serves from. A cache hit returns its rows as-is
+ * (no git, no fs scan); a miss (missing file, corrupt JSON, or a stale
+ * `version`) falls back to the same live `getKnownRepos` scan cd always did.
+ * Sync, matching `getKnownRepos` - the CLI cd path has no need for the async
+ * variant.
+ */
+export function getKnownReposCached(opts?: { includeMissing?: boolean }): KnownRepo[] {
+  const cached = readRepoCache();
+  if (cached) return cached.repos;
+  return getKnownRepos(opts);
+}
+
+/**
  * Async mirror of `getKnownRepos` (see its doc for the contract), safe on the
  * daemon thread: no `execSync` anywhere in this path. Must produce output
  * that deep-equals `getKnownRepos` for the same on-disk state (rows, order,
@@ -1313,6 +1327,15 @@ export function repoFromOptionValue(repos: KnownRepo[], value: string): KnownRep
 export function missingRepoRefusal(r: KnownRepo): string {
   const gone = r.worktrees[0]?.path ?? "its indexed path";
   return `${r.repoName} is no longer at ${gone} — run: rt repos locate <new-path> --repo ${r.repoName}`;
+}
+
+/**
+ * The refusal `rt cd` prints instead of emitting a dead path to stdout: the
+ * cd cache said this path existed but it is gone now (cache staleness, not
+ * the missing-repo-row case `missingRepoRefusal` handles).
+ */
+export function ghostPathRefusal(path: string): string {
+  return `${path} no longer exists (the cd cache may be stale) - run: rt repos prune`;
 }
 
 // ─── Test seam ───────────────────────────────────────────────────────────────

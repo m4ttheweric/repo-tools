@@ -18,11 +18,11 @@
  *   rtcd() { local dir; dir="$(rt cd "$@")" && [ -n "$dir" ] && cd "$dir"; }
  */
 
-import { readFileSync, writeFileSync, appendFileSync } from "fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, getKnownReposCached, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -163,6 +163,25 @@ async function ensureShellFunction(): Promise<void> {
   process.stdout.write = origWrite;
 }
 
+// ─── Cache read path ─────────────────────────────────────────────────────────
+
+/**
+ * The cd cache can predate the repo you are standing in right now (never yet
+ * written back since this repo was created or first registered), so a
+ * resolved identity the cached list doesn't carry forces one live
+ * `getKnownRepos` scan for this invocation - correctness over speed, and only
+ * ever the one extra scan, since a repo that's genuinely absent from the live
+ * list won't retrigger it on the next call either.
+ */
+export function resolveReposForIdentity(
+  identity: { repoName: string } | null,
+  cachedRepos: KnownRepo[],
+): KnownRepo[] {
+  if (!identity) return cachedRepos;
+  if (cachedRepos.some((r) => r.repoName === identity.repoName)) return cachedRepos;
+  return getKnownRepos({ includeMissing: true });
+}
+
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 export async function worktreePicker(args: string[]): Promise<void> {
@@ -191,17 +210,22 @@ export async function worktreePicker(args: string[]): Promise<void> {
   const wtBranch     = wtIdx !== -1 ? args[wtIdx + 1] : undefined;
 
   // getRepoIdentity() registers the current repo in the index (via
-  // updateRepoIndex) as a side effect, so it MUST run before getKnownRepos().
-  // Otherwise a repo you just entered — especially a local-only repo seen for
-  // the first time — is absent from `repos`, currentRepo resolves to null, and
-  // rt cd wrongly falls through to the global all-repos picker instead of
-  // recognizing where you are.
+  // updateRepoIndex) as a side effect, so it MUST run before the repo list is
+  // read. Otherwise a repo you just entered (especially a local-only repo
+  // seen for the first time) is absent from `repos`, currentRepo resolves to
+  // null, and rt cd wrongly falls through to the global all-repos picker
+  // instead of recognizing where you are.
   //
   // includeMissing: true so a lost repo still renders (dimmed, via repoOption)
   // in every picker built from `repos` — pickFromAllRepos's missing guard is
   // otherwise dead code, since a bare getKnownRepos() never hands it one.
+  //
+  // `repos` reads the cd cache (fast path). resolveReposForIdentity re-reads
+  // live when the cache predates the repo the identity just resolved, so the
+  // repo you are standing in is never invisible to its own cd invocation.
   const identity     = getRepoIdentity();
-  const repos        = getKnownRepos({ includeMissing: true });
+  const cachedRepos  = getKnownReposCached({ includeMissing: true });
+  const repos        = resolveReposForIdentity(identity, cachedRepos);
   const currentRepo  = identity
     ? repos.find((r) => r.repoName === identity.repoName) ?? null
     : null;
@@ -266,5 +290,14 @@ export async function worktreePicker(args: string[]): Promise<void> {
 
   // Restore stdout and print just the path
   process.stdout.write = realStdoutWrite;
+
+  // Ghost guard: the cache (or a picker built from it) can hand back a path
+  // that no longer exists on disk. Refuse rather than print a dead path...
+  // the shell wrapper `cd`s into whatever stdout prints, no questions asked.
+  if (!existsSync(selectedPath)) {
+    console.error(`\n  ${ghostPathRefusal(selectedPath)}\n`);
+    process.exit(1);
+  }
+
   realStdoutWrite(selectedPath + "\n");
 }
