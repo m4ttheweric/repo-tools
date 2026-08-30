@@ -462,7 +462,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 Run:
 ```bash
-mkdir -p ui/cmd/rt-ui ui/internal/protocol && cd ui && go mod init rt-ui && GOFLAGS=-mod=mod go get charm.land/bubbletea/v2@v2.0.9 charm.land/lipgloss/v2@v2.0.6 charm.land/bubbles/v2@v2.2.1 charm.land/huh/v2@v2.0.3 github.com/charmbracelet/colorprofile@v0.4.3 github.com/creack/pty@latest github.com/charmbracelet/x/vt@latest && cd ..
+mkdir -p ui/cmd/rt-ui ui/internal/protocol && cd ui && go mod init rt-ui && GOFLAGS=-mod=mod go get charm.land/bubbletea/v2@v2.0.9 charm.land/lipgloss/v2@v2.0.6 charm.land/bubbles/v2@v2.2.1 charm.land/huh/v2@v2.0.3 github.com/charmbracelet/colorprofile@v0.4.3 github.com/creack/pty@latest github.com/charmbracelet/x/vt@v0.0.0-20260830003929-9f48cc723c1c && cd ..
 ```
 Expected: `ui/go.mod` lists those modules; `go 1.26` line present.
 
@@ -2695,7 +2695,9 @@ export function openStep(title: string): StepHandle {
     const sent = send({ t, title: finalTitle ?? title, ...(hint ? { hint } : {}) });
     try { proc.stdin.end(); } catch { /* already closed */ }
     const code = await proc.exited;
-    return sent && code === 0;
+    // 130 means Ctrl-C reached the child, which finalized its own line; the
+    // parent is handling the same SIGINT, so there is nothing left to print.
+    return sent && (code === 0 || code === 130);
   };
 
   return {
@@ -3055,7 +3057,6 @@ test("when the child dies mid-step the plain final line is printed and a warning
   process.stderr.write = ((chunk: string | Uint8Array) => { errOut.push(String(chunk)); return true; }) as typeof process.stderr.write;
   try {
     const steps = createStepRunner();
-    await Bun.sleep(100);
     const r = await steps.run("pushing…", async () => { await Bun.sleep(150); return "ok"; }, { done: "pushed" });
     expect(r).toBe("ok");
   } finally {
