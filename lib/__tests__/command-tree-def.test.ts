@@ -5,7 +5,7 @@ import { renderUsage } from "../../scripts/lib/docs-render.ts";
 test("TREE is importable without side effects and has expected roots", () => {
   expect(typeof TREE).toBe("object");
   // A representative slice of the built-in surface.
-  for (const key of ["git", "sync", "run", "status", "sdm", "daemon"]) {
+  for (const key of ["git", "sync", "run", "update", "sdm", "daemon"]) {
     expect(TREE[key]).toBeDefined();
     expect(typeof TREE[key]!.description).toBe("string");
   }

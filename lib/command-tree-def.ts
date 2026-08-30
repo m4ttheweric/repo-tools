@@ -460,18 +460,6 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
-  status: {
-    description: "Live branch dashboard with MR actions, pipeline & review status",
-    module: "./commands/status/index.tsx",
-    fn: "showStatus",
-    context: "repo",
-    fullscreen: true,
-    args: [
-      { name: "Fresh", flag: "--fresh", type: "boolean", hint: "Refresh the cache before rendering" },
-      { name: "Max age", flag: "--max-age", type: "text", placeholder: "30s", hint: "Refresh first if the cache is older than this (45, 45s, 2m, 1h)" },
-    ],
-  },
-
   update: {
     description: "Check for updates via mattstack.app",
     module: "./commands/update.ts",
