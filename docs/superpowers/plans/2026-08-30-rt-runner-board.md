@@ -523,6 +523,19 @@ func (s *Session) WaitForPaint(text string) {
 	s.t.Fatalf("never painted %q:\n%s", text, s.Screen())
 }
 
+// WaitForGone is the negative of WaitForPaint: it returns once text has left
+// the emulated screen, for asserting a dismissed layer without a fixed sleep.
+func (s *Session) WaitForGone(text string) {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !strings.Contains(s.Screen(), text) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.t.Fatalf("still painted %q:\n%s", text, s.Screen())
+}
+
 func (s *Session) Type(keys ...string) {
 	for _, k := range keys {
 		time.Sleep(30 * time.Millisecond)
@@ -1234,10 +1247,7 @@ func TestQuitConfirmsWhenRunningAndEmitsQuitOnY(t *testing.T) {
 		t.Fatalf("q with running entries must not emit yet: %q", l)
 	}
 	s.Type("n")
-	time.Sleep(50 * time.Millisecond)
-	if strings.Contains(s.Screen(), "Quit and stop") {
-		t.Fatalf("n did not dismiss:\n%s", s.Screen())
-	}
+	s.WaitForGone("Quit and stop")
 	s.Type("q", "y")
 	l, _ := s.ReadLine(2 * time.Second)
 	if !strings.Contains(l, `"name":"quit"`) {
@@ -2201,19 +2211,22 @@ test("createWorkspace falls back to pane.list when the reply carries no root pan
   expect(seen[1]).toMatchObject({ method: "pane.list", params: { workspace_id: "wX" } });
 });
 
-test("createTab creates unfocused and reads its root pane, with pane.list as the fallback", async () => {
+test("createTab creates unfocused and reads its root pane from the reply", async () => {
   const { engine, seen } = engineWith((method) => {
     if (method === "tab.create") return { type: "tab_created", tab: { tab_id: "wX:t2", workspace_id: "wX" }, root_pane: { pane_id: "wX:p2", tab_id: "wX:t2" } };
     throw new Error("unexpected " + method);
   });
   expect(await engine.createTab("wX", "api")).toEqual({ tabId: "wX:t2", paneId: "wX:p2" });
   expect(seen[0]).toMatchObject({ method: "tab.create", params: { workspace_id: "wX", label: "api", focus: false } });
-  const fb = engineWith((method) => {
+});
+
+test("createTab falls back to pane.list filtered by tab when the reply carries no root pane", async () => {
+  const { engine } = engineWith((method) => {
     if (method === "tab.create") return { type: "tab_created", tab: { tab_id: "wX:t3", workspace_id: "wX" } };
     if (method === "pane.list") return { type: "pane_list", panes: [{ pane_id: "wX:p1", tab_id: "wX:t1" }, { pane_id: "wX:p3", tab_id: "wX:t3" }] };
     throw new Error("unexpected " + method);
   });
-  expect(await fb.engine.createTab("wX", "worker")).toEqual({ tabId: "wX:t3", paneId: "wX:p3" });
+  expect(await engine.createTab("wX", "worker")).toEqual({ tabId: "wX:t3", paneId: "wX:p3" });
 });
 
 test("run sends the wrapped text then Enter; interrupt sends ctrl+c", async () => {
@@ -2378,7 +2391,7 @@ export class HerdrEngine implements Engine {
 - [ ] **Step 4: Run the tests**
 
 Run: `bun test lib/runner/__tests__/engine.test.ts && bunx tsc --noEmit`
-Expected: PASS (8 tests), 0 errors. If `herdrRequest`'s unreachable-socket reply comes back as `{ ok: false, code: "unreachable" }`, the last test passes as written.
+Expected: PASS (9 tests), 0 errors. If `herdrRequest`'s unreachable-socket reply comes back as `{ ok: false, code: "unreachable" }`, the last test passes as written.
 
 - [ ] **Step 5: Commit**
 
@@ -2639,7 +2652,10 @@ function deps(over: Partial<RunnerDeps> & { sessions: FakeSession[]; engine?: Fa
     engine,
     openSession: async () => over.sessions[i++] ?? new FakeSession([]),
     resolve: over.resolve ?? (async () => ({ kind: "cancelled", code: 1 }) as RunResolution),
-    now: () => new Date("2026-08-30T00:00:00Z"),
+    // A frozen clock keeps every launched entry inside LAUNCH_GRACE_MS, so
+    // pollLiveness skips them; a test that asserts on a poll needs an
+    // advancing `now` override.
+    now: over.now ?? (() => new Date("2026-08-30T00:00:00Z")),
     sleep: async () => {},
     workspaceLabel: "rt-runner-test",
   };
@@ -3295,7 +3311,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Session protocol (hello first, open/model/close, intents, closed, exit table): Task 2 (`session.Run`, `ExitCode`), tested per row (closed 0, quit 0, EOF 70, signal 130, bad open 2).
 - Board model, intents, keys, tail semantics, quit layer, uptime derived in Go, cursor by id: Task 3 (`board.go`, `render.go`, tests for each key, reorder, empty state).
 - Add flow (close, in-process resolve, reopen with optimistic row, then launch; cancelled reopens unchanged): Tasks 5 (`resolveRun`, `RunAborted`) and 8 (`Runner.add`).
-- Engine over the socket with the verified shapes, `pane.list` for the root pane, wrapped command, ctrl+c, sentinel read: Task 6.
+- Engine over the socket with the verified shapes, `root_pane` from the create replies with `pane.list` as the fallback, wrapped command, ctrl+c, sentinel read: Task 6.
 - State rules (running via pgid vs shell, sentinel 0/130 → stopped, else crashed, optimistic holds; tail filter incl. sentinel and prompt line): Task 7.
 - Polling (1.5 s liveness, 1 s tail, push on change only, gated on an open session; immediate read on tail intent): Task 8.
 - Restart waits for the shell (5 s) then re-runs; `did not stop` error: Task 8.
