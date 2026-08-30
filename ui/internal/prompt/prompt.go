@@ -147,7 +147,9 @@ func Run(ctx context.Context, spec protocol.PromptSpec, term *os.File) (protocol
 		harvest = func() { result.OK = &v }
 	case "text":
 		v := spec.Initial
-		in := huh.NewInput().Description(spec.Hint).Placeholder(spec.Placeholder).Value(&v)
+		// The chevron replaces huh's "> " prompt; styling the default with a
+		// SetString chevron would paint both.
+		in := huh.NewInput().Prompt(theme.GlyphChevron + " ").Description(spec.Hint).Placeholder(spec.Placeholder).Value(&v)
 		if spec.Validate != nil {
 			re, err := regexp.Compile(spec.Validate.Pattern)
 			if err != nil {

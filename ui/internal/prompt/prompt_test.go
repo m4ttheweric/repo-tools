@@ -311,3 +311,16 @@ func TestCardIsCappedNarrowerThanTheTerminal(t *testing.T) {
 		t.Fatalf("card top edge spans %d columns, want %d:\n%s", widest, theme.CardWidth, paintedScreen(tty))
 	}
 }
+
+func TestTextInputDrawsOneChevronPrompt(t *testing.T) {
+	// huh's Input carries its own "> " prompt; the theme must replace it
+	// with the chevron, not prepend the chevron to it.
+	_, tty, _ := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-text.json")}, []string{keyEsc}, nil, false)
+	screen := paintedScreen(tty)
+	if strings.Contains(screen, "❯ >") || strings.Contains(screen, "> my-plugin") {
+		t.Fatalf("text prompt painted twice (chevron plus huh's default):\n%s", screen)
+	}
+	if !strings.Contains(screen, "❯ my-plugin") {
+		t.Fatalf("chevron prompt missing:\n%s", screen)
+	}
+}

@@ -101,7 +101,7 @@ func themed(accent color.Color) huh.Theme {
 		s.Focused.BlurredButton = base.Foreground(Dim).Padding(0, 1)
 		s.Focused.TextInput.Cursor = base.Foreground(accent)
 		s.Focused.TextInput.Placeholder = base.Foreground(Faint)
-		s.Focused.TextInput.Prompt = base.Foreground(accent).SetString(GlyphChevron + " ")
+		s.Focused.TextInput.Prompt = base.Foreground(accent)
 		s.Focused.TextInput.Text = base.Foreground(Text)
 		s.Help.ShortKey = base.Foreground(Faint)
 		s.Help.ShortDesc = base.Foreground(Dim)
