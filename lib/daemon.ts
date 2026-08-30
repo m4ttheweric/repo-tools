@@ -63,6 +63,7 @@ import { runCapture } from "./subprocess.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, withApiPortParkRetry, broadcast, apiWsClientCount, clearWsClients } from "./daemon/api-server.ts";
+import { deriveFailure } from "./daemon/failure.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
@@ -160,11 +161,7 @@ export function createHandleCommand(deps: HandleCommandDeps): HandleCommand {
       return result;
     } catch (err) {
       ctx.log.error({ err, reqId, cmd, caller, durationMs: Date.now() - t0, digest: redactDigest(payload) }, "command failed");
-      const message = err instanceof Error ? err.message : String(err);
-      const code =
-        err && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
-          ? (err as { code: string }).code
-          : "handler-threw";
+      const { code, message } = deriveFailure(err);
       return { ok: false, error: message, failure: { code, message }, reqId };
     } finally {
       currentCmd.cmd = null;
