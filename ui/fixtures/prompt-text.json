@@ -1,0 +1,2 @@
+{ "t": "prompt", "protocol": 1, "kind": "text", "title": "Plugin name", "hint": "kebab-case", "placeholder": "my-plugin",
+  "validate": { "pattern": "^[a-z0-9-]+$", "message": "must be kebab-case: lowercase letters, digits, dashes" } }

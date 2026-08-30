@@ -1,0 +1,6 @@
+[
+  { "t": "hello", "protocol": 1 },
+  { "t": "start", "title": "fetching origin…" },
+  { "t": "log", "level": "warn", "text": "diverged from origin/main" },
+  { "t": "done", "title": "origin fetched", "hint": "3 new commits" }
+]

@@ -1,0 +1,7 @@
+{ "t": "prompt", "protocol": 1, "kind": "multiselect", "title": "Disable which hooks?",
+  "options": [
+    { "value": "pre-commit", "label": "pre-commit", "hint": "lint-staged" },
+    { "value": "pre-push", "label": "pre-push", "hint": "bun test" },
+    { "value": "commit-msg", "label": "commit-msg", "hint": "commitlint" }
+  ],
+  "initial": ["pre-commit"] }
