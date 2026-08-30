@@ -55,4 +55,6 @@ samples = [s for s in (run_once() for _ in range(RUNS)) if s is not None]
 if not samples:
     print("no first-paint observed; is the pty the controlling tty? (see the preexec/ctty note in the plan)"); sys.exit(1)
 samples.sort()
-print(f"rt-ui prompt first-paint ms: min={samples[0]:.0f} median={samples[len(samples)//2]:.0f} max={samples[-1]:.0f} (n={len(samples)})")
+mid = len(samples) // 2
+median = (samples[mid - 1] + samples[mid]) / 2 if len(samples) % 2 == 0 else samples[mid]
+print(f"rt-ui prompt first-paint ms: min={samples[0]:.0f} median={median:.0f} max={samples[-1]:.0f} (n={len(samples)})")

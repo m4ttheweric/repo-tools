@@ -96,9 +96,32 @@ func runPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env
 	// Wait for the first paint before typing so keys are not swallowed, and
 	// before closing stdin so a "parent died" test sees a painted card die,
 	// not a program that never got to paint.
+	// A bad spec exits before any paint, so exit counts as well as paint; a
+	// helper that does neither would otherwise sit in Wait forever holding the
+	// pipe, so it is reaped and the test fails here.
+	var waitErr error
+	exited := make(chan struct{})
+	go func() {
+		waitErr = cmd.Wait()
+		close(exited)
+	}()
+	isExited := func() bool {
+		select {
+		case <-exited:
+			return true
+		default:
+			return false
+		}
+	}
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && !painted() {
+	for time.Now().Before(deadline) && !painted() && !isExited() {
 		time.Sleep(10 * time.Millisecond)
+	}
+	if !painted() && !isExited() {
+		_ = stdinW.Close()
+		_ = cmd.Process.Kill()
+		<-exited
+		t.Fatal("rt-ui neither painted nor exited within 3s")
 	}
 	if closeStdin {
 		stdinW.Close()
@@ -112,7 +135,8 @@ func runPTY(t *testing.T, argv []string, stdinLines []string, keys []string, env
 		time.Sleep(30 * time.Millisecond)
 		io.WriteString(ptmx, k)
 	}
-	err = cmd.Wait()
+	<-exited
+	err = waitErr
 	if !closeStdin {
 		stdinW.Close()
 	}

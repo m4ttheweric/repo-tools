@@ -66,6 +66,9 @@ test("log between steps prints a palette-colored line to stdout and spawns nothi
 test("withSpinner maps doneLabel/failLabel", async () => {
   await withSpinner("fetching origin…", async () => 1, { doneLabel: "origin fetched" });
   expect(sent().at(-1)).toEqual({ t: "done", title: "origin fetched" });
+  // failLabel is the failure title, never a hint under the success title.
+  await withSpinner("pushing…", async () => { throw new Error("rejected"); }, { doneLabel: "pushed", failLabel: "push rejected" }).catch(() => {});
+  expect(sent().at(-1)).toEqual({ t: "fail", title: "push rejected", hint: "rejected" });
 });
 
 test("with the gate closed nothing is spawned and the plain final line is printed", async () => {

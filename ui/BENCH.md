@@ -7,6 +7,7 @@ Measured with `scripts/bench-rt-ui.py` on the machine named below, 120x40 pty,
 | date | stack | machine | first-paint ms (min / median / max) |
 |---|---|---|---|
 | 2026-08-30 | bubbletea v2.0.9, lipgloss v2.0.6, huh v2.0.3 | Matthews-MacBook-Pro.local, Apple M5 Max | 21 / 34 / 53 |
+| 2026-08-30 | same, card on the alternate screen | same | 16 / 24 / 33 (three runs: medians 24, 25, 30) |
 
 Budget from the spec: median under 40 ms. Spike baseline (bubbletea v1.3.10,
 throwaway board, not this binary): 22 / 24 ms.

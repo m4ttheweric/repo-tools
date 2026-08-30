@@ -63,7 +63,7 @@ spawn-to-paint under ~40 ms and is re-checked there.
 
 ## Topology
 
-```
+```text
 rt (Bun, entrypoint, dispatcher, brains)
   │  spawns lazily, only on a TTY, only for interactive commands
   ▼
@@ -310,7 +310,7 @@ Rules that keep the seam honest:
 
 ## Go side
 
-```
+```text
 ui/
   go.mod                         module rt-ui, Go 1.26, charm.land/*/v2
   cmd/rt-ui/main.go              verb dispatch, /dev/tty open, exit codes, SIGPIPE ignore

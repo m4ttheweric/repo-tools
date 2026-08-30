@@ -55,6 +55,6 @@ func firstPaintTo(w io.Writer) {
 		return
 	}
 	firstPaintOnce.Do(func() {
-		fmt.Fprintf(w, "first-paint %d\n", time.Now().UnixMilli())
+		_, _ = fmt.Fprintf(w, "first-paint %d\n", time.Now().UnixMilli())
 	})
 }

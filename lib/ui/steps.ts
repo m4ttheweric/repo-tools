@@ -18,7 +18,7 @@ export interface StepRunner {
   run<T>(
     pending: string,
     task: () => Promise<T>,
-    opts?: { done?: string; doneHint?: string; errorHint?: string },
+    opts?: { done?: string; doneHint?: string; error?: string; errorHint?: string },
   ): Promise<T>;
 
   /** Print a static line between steps. */
@@ -70,7 +70,7 @@ export function createStepRunner(): StepRunner {
     async run<T>(
       pending: string,
       task: () => Promise<T>,
-      opts?: { done?: string; doneHint?: string; errorHint?: string },
+      opts?: { done?: string; doneHint?: string; error?: string; errorHint?: string },
     ) {
       const step: StepHandle | null = interactive() ? tryOpenStep(pending) : null;
       try {
@@ -84,7 +84,7 @@ export function createStepRunner(): StepRunner {
         return r;
       } catch (e) {
         const hint = opts?.errorHint ?? (e instanceof Error ? e.message : undefined);
-        const title = opts?.done ?? `${stripEllipsis(pending)} failed`;
+        const title = opts?.error ?? `${stripEllipsis(pending)} failed`;
         if (!step) {
           process.stdout.write(plainLine("error", title, hint));
         } else if (!(await step.fail(title, hint))) {
@@ -106,5 +106,5 @@ export async function withSpinner<T>(
   task: () => Promise<T>,
   opts?: { doneLabel?: string; failLabel?: string },
 ): Promise<T> {
-  return createStepRunner().run(label, task, { done: opts?.doneLabel, errorHint: opts?.failLabel });
+  return createStepRunner().run(label, task, { done: opts?.doneLabel, error: opts?.failLabel });
 }

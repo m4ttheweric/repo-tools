@@ -17,6 +17,18 @@ test("RT_UI_BIN wins over everything", () => {
   expect(resolveRtUi(p)).toBe("/custom/rt-ui");
 });
 
+test("a stale RT_UI_BIN names itself instead of falling through or spawning a ghost", () => {
+  const p = probes({ env: { RT_UI_BIN: "/gone/rt-ui" }, sourceRoot: () => "/repo", exists: (path) => path === "/repo/ui/dist/rt-ui" });
+  let err: unknown;
+  try {
+    resolveRtUi(p);
+  } catch (e) {
+    err = e;
+  }
+  expect(err).toBeInstanceOf(RtUiMissingError);
+  expect(String((err as Error).message)).toContain("/gone/rt-ui (RT_UI_BIN)");
+});
+
 test("a source checkout wins over an installed bundle (dev mode must never pin a stale helper)", () => {
   const p = probes({
     bundleRoot: () => "/Applications/mattstack-dev.app",

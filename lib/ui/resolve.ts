@@ -51,7 +51,10 @@ export const defaultProbes: ResolveProbes = {
 export function resolveRtUi(p: ResolveProbes = defaultProbes): string {
   const tried: string[] = [];
   const fromEnv = p.env.RT_UI_BIN;
-  if (fromEnv) return fromEnv;
+  if (fromEnv) {
+    if (p.exists(fromEnv)) return fromEnv;
+    throw new RtUiMissingError([`${fromEnv} (RT_UI_BIN)`]);
+  }
 
   const src = p.sourceRoot();
   if (src) {
