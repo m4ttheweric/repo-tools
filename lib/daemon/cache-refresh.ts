@@ -227,13 +227,14 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
 
             // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch.
             // The onError callback fires on per-MR enrich failures (GitLab,
-            // Linear) — recoverable, belongs at warn level. `signal` is not
-            // passed on here: aborting the GitLab socket lives in enrich.ts,
-            // whose owner threads it through once this seam is merged (RT-91).
+            // Linear) — recoverable, belongs at warn level. `signal` only
+            // guards entry (the GitLab/Linear SDK calls have no cancellation
+            // of their own): a deadline reached while listing branches above
+            // skips this round trip instead of starting one to discard.
             await refreshAllMRs(branches, remoteUrl, (msg) => {
               enrichErrors++;
               log.warn({ repo: repoName }, msg);
-            }, repoName);
+            }, repoName, signal);
           }
 
           // Clean pass. `branches.length === 0` counts as clean on purpose:
