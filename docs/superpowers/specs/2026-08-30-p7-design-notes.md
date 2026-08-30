@@ -41,7 +41,11 @@ present); a mount blip holds indefinitely while unreachable.
   the path is on a mounted filesystem. Most precise, but platform-specific and
   overkill for a failure mode already visible via `existsSync`.
 
-**Ruling:** _(pending question channel)_
+**Ruling: A.** A blip takes out the whole subtree so the parent vanishes with
+it, while a deleted pool dir keeps its parent, which preserves the ghost-prune
+test by construction. Hold indefinitely (never prune live claim state for an
+unplugged volume) and add a warn-level log line on each held pass naming the
+root, so a permanently-lost mount is visible rather than silent.
 
 ## D2 - RT-89: review team-scope `ready` shell before execution
 
@@ -78,7 +82,12 @@ New key follows `docs/settings-architecture.md` (registry entry, user scope,
 repo-keyed). User-authored, machine-authored, and rt's own implicit-install
 step are never gated.
 
-**Ruling:** _(pending question channel)_
+**Ruling: A** (TOFU per ladder hash, user scope), plus two riders: (1) make the
+held state discoverable beyond the event ... `rt worktree status`/`list` show
+"team ready held pending approval" so a silently-skipped ladder is not a
+mystery; (2) the `ready-approve` verb follows the repo's picker conventions ...
+a TTY-gated prompt showing the full ladder text, and non-TTY/RT_BATCH exits with
+the usage error and the hash it would approve.
 
 ## D3 - RT-91 core: thread an AbortSignal through the cache-refresh cycle
 
@@ -111,7 +120,10 @@ post-loop doppler + broadcast work) and in-flight git subprocesses it owns.
   the real socket wedge) but requires editing `lib/enrich.ts`, which
   `job/p7-residue` owns. Out of this job's fence; deferred to that owner.
 
-**Ruling:** _(pending question channel)_
+**Ruling: A** (cycle-seam cancellation plus git-subprocess abort). Rider: keep
+the seam threadable ... `refreshCacheImpl` carries the signal so a post-merge
+follow-up can pass the same signal into `refreshAllMRs` without reworking the
+seam. The integration brief notes that follow-up.
 
 ## D4 - RT-88 rider: per-scan reconciler deadline + wire `makeCoalescer` onRefused
 
