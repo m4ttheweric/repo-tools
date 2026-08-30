@@ -29,7 +29,7 @@ const SCOPE_STRONGEST_FIRST = [...SCOPE_ORDER].reverse();
 /** Order-sensitive content hash of a ready ladder; a stable id for approval. */
 export function readyLadderHash(steps: ReadyStep[]): string {
   const canonical = JSON.stringify(steps.map((s) => [s.run, s.when ?? null]));
-  return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+  return createHash("sha256").update(canonical).digest("hex");
 }
 
 /**
