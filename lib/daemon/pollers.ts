@@ -79,6 +79,7 @@ export function startPollers(deps: PollerDeps): PollersHandle {
     },
     scanDeadlineMs,
     () => log.warn("port scan timed out; cleared in-flight latch for next tick"),
+    { onRefused: () => log.warn("port scan skipped; too many stalled scans already running") },
   );
 
   const runProcessScan = makeCoalescer(
@@ -102,6 +103,7 @@ export function startPollers(deps: PollerDeps): PollersHandle {
     },
     scanDeadlineMs,
     () => log.warn("system process scan timed out; cleared in-flight latch for next tick"),
+    { onRefused: () => log.warn("system process scan skipped; too many stalled scans already running") },
   );
 
   async function refreshPortCache(): Promise<void> {

@@ -56,6 +56,8 @@ export interface ReconcilerDeps {
   repoIndex: () => Record<string, string>;
   emit: (type: string, data: unknown) => void;
   log: Logger;
+  /** Test seam: overrides RECONCILER_PASS_DEADLINE_MS for the pass latch. */
+  passDeadlineMs?: number;
 }
 
 /**
@@ -66,6 +68,20 @@ export interface ReconcilerDeps {
  * install subprocesses.
  */
 export const RECONCILER_CONCURRENCY = 4;
+
+/**
+ * A healthy pass over the estate is bounded already (per-subprocess timeouts:
+ * 5-min fetches, 15-min ready steps), so this whole-pass backstop sits well
+ * above any legitimate pass and only ever fires for a genuine wedge (a child
+ * that outlives its own timeout, a promise that never settles). Its job is to
+ * release the `inFlight` latch so `withReconcilerHeld` (repos:locate) and
+ * follow-up kicks stop waiting on a pass that will never end (S094).
+ */
+export const RECONCILER_PASS_DEADLINE_MS = 30 * 60 * 1000;
+
+/** Wedged passes still running past their deadline. Above this, a new pass is
+ *  refused rather than piling more orphaned work on (mirrors makeCoalescer). */
+const MAX_ORPHAN_PASSES = 2;
 
 // Freshen (spec §6.3) lives in ./reconciler/freshen.ts; replenish and shrink
 // (spec §6.4) live in ./reconciler/replenish.ts, imported above.
@@ -164,6 +180,9 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
   /** Non-null while a holder owns the reconciler. */
   let hold: Promise<void> | null = null;
   let kickQueued = false;
+  /** Passes still running after their deadline released the latch. */
+  let orphanPasses = 0;
+  const passDeadlineMs = deps.passDeadlineMs ?? RECONCILER_PASS_DEADLINE_MS;
   /**
    * True once the current pass's worker pool has begun processing at
    * least one repo. Two kicks that both land before this flips (the common
@@ -292,18 +311,43 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
       if (passStartedWork) kickQueued = true;
       return;
     }
+    if (orphanPasses >= MAX_ORPHAN_PASSES) {
+      // Too many wedged passes are still running; starting another only piles
+      // on more stuck git/install work. Refuse and let the next tick retry.
+      deps.log.warn({ orphanPasses }, "worktree reconciler: pass skipped; too many stalled passes still running");
+      return;
+    }
     passStartedWork = false;
-    const p = runOnce()
+    let timedOut = false;
+    const done = runOnce()
       .catch((err) => {
         deps.log.warn({ err }, "worktree reconciler: kick failed");
       })
       .finally(() => {
-        if (inFlight === p) inFlight = null;
-        if (kickQueued) {
-          kickQueued = false;
-          kick();
-        }
+        // The wedged pass finally settled; give back its orphan slot.
+        if (timedOut) orphanPasses--;
       });
+    // Race the pass against a deadline that RESOLVES (not rejects): a pass that
+    // outlives it releases the latch so holders and kicks proceed, while `done`
+    // finishes in the background. Its late registry writes are epoch-guarded and
+    // its git mutations hold per-tree locks, so the release is safe.
+    let deadlineTimer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<void>((resolve) => {
+      deadlineTimer = setTimeout(() => {
+        timedOut = true;
+        orphanPasses++;
+        deps.log.warn("worktree reconciler: pass exceeded its deadline; releasing the latch, pass continues in the background");
+        resolve();
+      }, passDeadlineMs);
+    });
+    const p: Promise<void> = Promise.race([done, deadline]).finally(() => {
+      clearTimeout(deadlineTimer);
+      if (inFlight === p) inFlight = null;
+      if (kickQueued) {
+        kickQueued = false;
+        kick();
+      }
+    });
     inFlight = p;
   }
 
