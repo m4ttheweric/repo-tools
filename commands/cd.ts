@@ -215,7 +215,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
       // A missing row must be pickable here so it gets the clean
       // missingRepoRefusal below instead of resolving via branch name against
       // a dead path.
-      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const { filterableSelect } = await import("../lib/fzf-select.ts");
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
         : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true });

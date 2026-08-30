@@ -47,7 +47,7 @@ test("daemon graph never transitively reaches the CLI picker chain (repo-arg, re
   // a new daemon module that reaches one of these transitively must fail
   // this test without anyone remembering to extend a scanned set by hand.
   const libDir = resolve(import.meta.dir, "..");
-  const bannedRelativeBasenames = new Set(["repo-arg.ts", "repo.ts", "fzf.ts", "rt-render.tsx"]);
+  const bannedRelativeBasenames = new Set(["repo-arg.ts", "repo.ts", "fzf.ts", "fzf-select.ts", "rt-render.tsx"]);
   const bannedBareSpecifiers = ["ink"];
 
   function resolveRelativeImport(fromFile: string, specifier: string): string | null {

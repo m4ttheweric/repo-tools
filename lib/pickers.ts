@@ -51,7 +51,7 @@ export async function pickWorktreeWithSwitch(
   currentPath: string,
   opts?: { stderr?: boolean },
 ): Promise<string | typeof SWITCH_REPO> {
-  const { filterableSelect, BackNavigation } = await import("./rt-render.tsx");
+  const { filterableSelect, BackNavigation } = await import("./fzf-select.ts");
 
   if (repo.worktrees.length === 0) return SWITCH_REPO;
 
@@ -103,7 +103,7 @@ export async function pickFromAllRepos(
   };
   if (repos.length === 1 && repos[0]!.missing) refuse(repos[0]!);
 
-  const { filterableSelect, BackNavigation } = await import("./rt-render.tsx");
+  const { filterableSelect, BackNavigation } = await import("./fzf-select.ts");
 
   // Loop: back from worktree/package picker restarts at repo picker
   while (true) {
@@ -178,7 +178,7 @@ export async function pickPackageWithEscape(
   allRepos: KnownRepo[],
   opts?: { stderr?: boolean },
 ): Promise<string> {
-  const { filterableSelect, BackNavigation } = await import("./rt-render.tsx");
+  const { filterableSelect, BackNavigation } = await import("./fzf-select.ts");
 
   let packages = getWorkspacePackages(worktreePath);
   let currentBranch = repo.worktrees.find((wt) => wt.path === worktreePath)?.branch ?? "";
@@ -257,7 +257,7 @@ export async function resolveWorktreeByBranch(
   repos: KnownRepo[],
   opts?: { stderr?: boolean },
 ): Promise<string> {
-  const { filterableSelect } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./fzf-select.ts");
 
   const lower = branch.toLowerCase();
   const matches: { path: string; branch: string; repoName: string }[] = [];
