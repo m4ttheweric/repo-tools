@@ -29,6 +29,7 @@ import { machineSettingsPath, repoDataDir, rtDir, teamSettingsPath } from "../rt
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
 import { closeStateDb, getStateDb, setKvValue } from "../state/index.ts";
+import * as stateNs from "../state/index.ts";
 import { getKnownRepos, loadRepoIndex, updateRepoIndex, __test__ } from "../repo-index.ts";
 
 const TEAM = "acme";
@@ -823,5 +824,24 @@ describe("repoOptions labels", () => {
       known("remote:github.com%2Fm4ttstack%2Frt"),
     ]).map((o) => o.label);
     expect(labels).toEqual(["m4ttstack/glance", "m4ttheweric/glance", "rt"]);
+  });
+
+  describe("13. updateRepoIndex no-op on unchanged row", () => {
+    test("re-registering the same repo at the same path skips the sqlite write", () => {
+      const dir = mkdtempSync(join(tmpdir(), "rt-noop-root-"));
+      const repo = join(dir, "r");
+      mkdirSync(repo, { recursive: true });
+      execSync("git init -q -b main", { cwd: repo, stdio: "pipe" });
+      execSync('git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init', { cwd: repo, stdio: "pipe" });
+      updateRepoIndex("noop-repo", repo); // first registration writes the row + mirror
+      const spy = spyOn(stateNs, "setKvValue");
+      try {
+        updateRepoIndex("noop-repo", repo); // unchanged path: must not write again
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });

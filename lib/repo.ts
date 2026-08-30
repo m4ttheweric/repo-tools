@@ -58,21 +58,12 @@ function deriveBaseUrl(remoteUrl: string): string {
     .replace(/^git@([^:]+):(.*)/, "https://$1/$2");
 }
 
-function getRemoteUrlForRoot(repoRoot: string): string | null {
-  try {
-    return execSync("git remote get-url origin", {
-      cwd: repoRoot, encoding: "utf8", stdio: "pipe",
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Reads the origin remote the same way rt-client's async `deriveRepoIdentity`
- * does (`git config --get remote.origin.url`), not `getRemoteUrlForRoot`'s
- * `git remote get-url origin` — under an `insteadOf` rewrite the two spellings
- * diverge and would mint two identities for one repo.
+ * does (`git config --get remote.origin.url`), not `git remote get-url origin`
+ * — under an `insteadOf` rewrite the two spellings diverge and would mint two
+ * identities for one repo. This is the single origin-URL read on the identity
+ * path; its raw value feeds the identity, the name, and the display URLs.
  */
 function readOriginRemoteForIdentity(repoRoot: string): string | null {
   try {
@@ -135,11 +126,17 @@ export function getRepoIdentityForRoot(repoRoot: string): RepoIdentity | null {
   // (no remote) still get an identity derived from the main worktree's realpath
   // so local commands (run, commit, nav, code) work. Remote-oriented
   // commands (mr, open) gate themselves on remoteUrl/baseUrl being non-empty.
-  const remoteUrl = getRemoteUrlForRoot(repoRoot);
+  //
+  // The origin URL is read once, via `git config --get remote.origin.url` (the
+  // raw stored value). The identity MUST key on that raw value to match
+  // rt-client's async deriveRepoIdentity and to stay stable under an insteadOf
+  // rewrite, so the same value feeds the name and the display URLs too rather
+  // than a second `git remote get-url` spawn whose rewritten spelling could
+  // diverge.
+  const remoteUrl = readOriginRemoteForIdentity(repoRoot);
   const repoName = remoteUrl ? deriveRepoName(remoteUrl) : basename(repoRoot);
 
-  const originRemote = readOriginRemoteForIdentity(repoRoot);
-  const remoteIdentity = originRemote ? identityFromRemote(originRemote) : null;
+  const remoteIdentity = remoteUrl ? identityFromRemote(remoteUrl) : null;
   const identity = serializeIdentity(
     remoteIdentity ?? { kind: "path", id: mainWorktreeRoot(repoRoot) },
   );

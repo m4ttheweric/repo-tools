@@ -242,7 +242,13 @@ function writeIndexRow(repoName: string, mainPath: string): void {
     // thread, which reaches this function through resolveIndexPathForIdentity.
     // The row stays lost (visible as `missing`) until `updateRepoIndexAsync`
     // or `rt repos locate` moves it as one unit.
-    if (storedPathMoved(storedIndexPath(repoName), mainPath)) return;
+    const stored = storedIndexPath(repoName);
+    if (storedPathMoved(stored, mainPath)) return;
+    // Unchanged row: skip the sqlite write and the full repos.json mirror
+    // rewrite. getRepoIdentity() calls this on every in-repo command, so
+    // re-registering a repo already at this path (the cd/run hot path) must
+    // not pay a write or churn the shared state.db.
+    if (stored === mainPath) return;
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
     writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
