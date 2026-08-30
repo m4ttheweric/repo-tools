@@ -72,8 +72,10 @@ Add an async mirror in `lib/repo-index.ts`:
   list, and picker rows are terminal-width-dependent (rebuild via
   `repoOptions()` at render, ~1ms, so the cache stays width-safe).
 - `writeRepoCache(repos)`: atomic (temp file + `renameSync`) so concurrent cd
-  readers never see a partial file. Best-effort; a write failure logs `warn`
-  and leaves the previous cache in place.
+  readers never see a partial file. Best-effort, never throws: on a write
+  failure it leaves the previous cache in place and does not log, since the
+  module is deliberately logger-free (daemon-safe, no dependency surface) --
+  a failed write just degrades to a live scan on the next read.
 - `readRepoCache(): { builtAt: number; repos: KnownRepo[] } | null`: returns
   null on missing / unparseable / wrong-version (cd then live-scans). Never
   throws.
@@ -83,9 +85,9 @@ Add an async mirror in `lib/repo-index.ts`:
 - In the daemon init path, register a `safeInterval` (reuse `scheduleSweep` for
   a boot-delay fire + repeating interval) that calls `getKnownReposAsync()` and
   `writeRepoCache()`.
-- Interval: 5 min. Backed by a settings key (`rt.cdCacheRefreshMin`, default 5,
-  clamped 1..60) following the `janitorIntervalMin` precedent in
-  `home-snapshot.ts`, so it is tunable without a rebuild.
+- Interval: 5 min, a hardcoded `REFRESH_MS = 5 * 60_000` constant -- not a
+  settings key. No `rt.cdCacheRefreshMin` (or equivalent) exists; do not add
+  one.
 - Log a domain event at `debug` per refresh (row count, duration). No
   outcome logging (the daemon seam owns that).
 - Daemon down => no refresh => cache goes stale but is still painted; ctrl-r +
@@ -129,8 +131,8 @@ Add an async mirror in `lib/repo-index.ts`:
 ## Edge cases
 
 - First-ever run / no cache -> live scan (today's behavior, no regression).
-- Corrupt / wrong-version cache -> live scan; `warn`; leave file for the next
-  poll to overwrite.
+- Corrupt / wrong-version cache -> live scan, no warn (the module is
+  logger-free by design); leave file for the next poll to overwrite.
 - Current repo absent from cache -> live scan this invocation (see 4).
 - Daemon down -> stale cache still paints; ctrl-r + guard cover it.
 - Concurrent cd reads during a daemon write -> atomic temp+rename prevents
@@ -139,7 +141,7 @@ Add an async mirror in `lib/repo-index.ts`:
 
 ## Decisions (ratified)
 
-- Interval: 5 min (settings-tunable).
+- Interval: 5 min, hardcoded `REFRESH_MS` constant (not settings-tunable).
 - ctrl-r manual refresh: yes.
 - Cache the structured `KnownRepo[]`, rebuild rows at render (width-safe).
 - No hard read-side age cap (stale paint is acceptable by design).
@@ -174,7 +176,7 @@ Add an async mirror in `lib/repo-index.ts`:
 1. `getKnownReposAsync` + parity test (`lib/repo-index.ts`).
 2. `lib/repo-cache.ts` + `cdCachePath()` in `rt-paths.ts` + tests.
 3. Daemon poll task (`safeInterval`/`scheduleSweep`) wired into daemon init;
-   `rt.cdCacheRefreshMin` setting.
+   hardcoded `REFRESH_MS` constant, no settings key.
 4. cd read path: `getKnownReposCached` + current-repo-missing fallback in
    `cd.ts`/`pickers.ts`.
 5. `buildFzfRows` extraction + `rt cd --emit-rows` emitter.
