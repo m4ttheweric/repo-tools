@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"rt-ui/internal/prompt"
 	"rt-ui/internal/protocol"
+	"rt-ui/internal/steps"
 	"rt-ui/internal/tty"
 )
 
@@ -62,4 +65,47 @@ func runPrompt() int {
 	return ExitOK
 }
 
-func runSteps() int { return ExitInternal }
+func runSteps() int {
+	r := bufio.NewReader(os.Stdin)
+	first, err := protocol.ReadLine(r)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rt-ui steps: no hello on stdin")
+		return ExitBadSpec
+	}
+	hello, err := protocol.DecodeStep(first)
+	if err != nil || hello.T != "hello" || hello.Protocol != protocol.Version {
+		fmt.Fprintf(os.Stderr, "rt-ui steps: bad hello %s\n", first)
+		return ExitBadSpec
+	}
+	term, err := tty.Open(tty.WriteOnly)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rt-ui steps:", err)
+		return ExitInternal
+	}
+	defer term.Close()
+
+	events := make(chan protocol.StepEvent, 16)
+	go func() {
+		defer close(events)
+		for {
+			line, err := protocol.ReadLine(r)
+			if err != nil {
+				return
+			}
+			ev, err := protocol.DecodeStep(line)
+			if err != nil {
+				continue
+			}
+			events <- ev
+		}
+	}()
+	// Cooked tty: ^C is a signal here, delivered to the whole group. Finalize
+	// the line ourselves so the cursor never dies mid-spinner.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	if steps.Run(events, signals, term) == steps.Signalled {
+		return ExitCancel
+	}
+	return ExitOK
+}
