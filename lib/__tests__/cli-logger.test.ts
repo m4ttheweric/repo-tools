@@ -100,19 +100,21 @@ describe("R052: installCliLogging routes lib/state/busy.ts's warnings onto the c
   test("a busy write inside this process lands in cli.<date>.log, not the daemon surface", () => {
     installCliLogging(["rt", "some-command"]);
 
-    persistOrWarn("mymodule", () => {
-      const e = new Error("database is locked");
-      (e as { code?: string }).code = "SQLITE_BUSY";
-      throw e;
-    }, { canary: "cli-busy-sink-canary" });
+    try {
+      persistOrWarn("mymodule", () => {
+        const e = new Error("database is locked");
+        (e as { code?: string }).code = "SQLITE_BUSY";
+        throw e;
+      }, { canary: "cli-busy-sink-canary" });
 
-    const lines = readTodaysCliLogLines();
-    const line = lines.at(-1)!;
-    const parsed = JSON.parse(line);
-    expect(parsed.level).toBe("warn");
-    expect(parsed.module).toBe("mymodule");
-    expect(parsed.canary).toBe("cli-busy-sink-canary");
-
-    setBusyLogSink(null); // don't leak this sink into later test files in the same process
+      const lines = readTodaysCliLogLines();
+      const line = lines.at(-1)!;
+      const parsed = JSON.parse(line);
+      expect(parsed.level).toBe("warn");
+      expect(parsed.module).toBe("mymodule");
+      expect(parsed.canary).toBe("cli-busy-sink-canary");
+    } finally {
+      setBusyLogSink(null); // don't leak this sink into later test files in the same process, even on assertion failure
+    }
   });
 });
