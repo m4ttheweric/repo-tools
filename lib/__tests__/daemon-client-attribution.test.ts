@@ -102,3 +102,54 @@ describe("auto-start bounded poll (S082)", () => {
     expect(result.response?.ok).toBe(true);
   }, 5000);
 });
+
+// R5 (RT-91 wave-1 minor): attemptRestart used to run its own bounded
+// isDaemonRunning() poll (sleep 250ms, then check, up to 12 times) before
+// daemonQueryAttributed ran a SECOND bounded wait via waitForSocket(). The
+// first loop's sleep-then-check order forces a needless fixed 250ms floor
+// even when the daemon binds almost immediately, since it never checks
+// before its first sleep. Collapsing to the single, already-shared
+// waitForSocket() (which checks immediately, then sleeps at a tighter 150ms
+// interval) should resolve a fast restart well under that 250ms floor.
+describe("restart wait is not doubled (R5)", () => {
+  let trayServer: ReturnType<typeof Bun.serve> | undefined;
+  let daemonServer: ReturnType<typeof Bun.serve> | undefined;
+  let bindTimer: ReturnType<typeof setTimeout> | undefined;
+
+  beforeEach(() => {
+    markDaemonInstalled();
+  });
+
+  afterEach(() => {
+    if (bindTimer) clearTimeout(bindTimer);
+    trayServer?.stop(true);
+    daemonServer?.stop(true);
+    markDaemonUninstalled();
+  });
+
+  test("a daemon that binds shortly after the tray ack is picked up in a single wait, not a 250ms-floor double wait", async () => {
+    trayServer = Bun.serve({
+      unix: TRAY_SOCK_PATH,
+      fetch: () => new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } }),
+    });
+
+    // Socket absent at call time (forces the restart path); bound 10ms in,
+    // well before either loop's first real check would land.
+    bindTimer = setTimeout(() => {
+      daemonServer = Bun.serve({
+        unix: DAEMON_SOCK_PATH,
+        fetch: () => new Response(JSON.stringify({ ok: true, data: {} }), { headers: { "Content-Type": "application/json" } }),
+      });
+    }, 10);
+
+    const start = Date.now();
+    const result = await daemonQueryAttributed("ping", {}, 200);
+    const elapsed = Date.now() - start;
+
+    expect(result.response?.ok).toBe(true);
+    // A single waitForSocket() wait catches this well inside its first
+    // 150ms-interval check; attemptRestart's old internal loop could not
+    // resolve before its first forced 250ms sleep elapsed.
+    expect(elapsed).toBeLessThan(220);
+  }, 5000);
+});
