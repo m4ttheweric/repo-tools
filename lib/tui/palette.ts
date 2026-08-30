@@ -25,9 +25,12 @@ export const T = {
   cyan:  [ 90, 170, 255] as const,  // #5AAAFF electric blue — group headers / info
 
   // Neutrals
-  dim:   [168, 160, 198] as const,  // #A8A0C6 muted plum   — secondary text / borders
-  muted: [210, 205, 235] as const,  // #D2CDEB lilac-grey   — tertiary text
-  white: [230, 224, 255] as const,  // #E6E0FF lavender white — primary text
+  dim:     [168, 160, 198] as const,  // #A8A0C6 muted plum   — secondary text / borders
+  muted:   [210, 205, 235] as const,  // #D2CDEB lilac-grey   — tertiary text
+  textSoft:[210, 205, 235] as const,  // #D2CDEB same as muted, token-sheet name
+  dimmer:  [139, 132, 168] as const,  // #8B84A8
+  faint:   [110, 102, 140] as const,  // #6E668C
+  white:   [230, 224, 255] as const,  // #E6E0FF lavender white — primary text
 } as const;
 
 export type Rgb = readonly [number, number, number];
