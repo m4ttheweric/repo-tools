@@ -119,7 +119,7 @@ function wireCycle(): Wiring {
 
   // Notifications must never reach the tray from a unit test; the fired
   // ledger itself is still real (kv state under the preload HOME).
-  spyOn(notifierModule, "notify").mockImplementation(() => {});
+  spyOn(notifierModule.__test__.getDefaultNotifier(), "notify").mockImplementation(() => {});
 
   // Call-order probe: the two prunes, in the order the cycle runs them.
   const calls: string[] = [];

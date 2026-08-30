@@ -27,11 +27,12 @@ import { getDiscussionsFileStore, type DiscussionsFileStore } from "./discussion
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import type { HandlerContext } from "./handlers/types.ts";
 import { notifyEnabled } from "../notifier.ts";
+import { numericUserId, MR_TERMINAL_STATES } from "../enrich.ts";
 
 export type BroadcastFn = (type: string, data: any) => void;
 
 export interface RefreshDeps {
-  ctx:       HandlerContext;
+  ctx:       Pick<HandlerContext, "cache" | "repoIndex">;
   broadcast: BroadcastFn;
 }
 
@@ -56,17 +57,8 @@ export interface MRMeta {
   terminal:        boolean;
 }
 
-/** "gitlab:123" and "gitlab:user:123" both → 123. */
-function numericUserId(id: string | null | undefined): number | null {
-  const tail = id?.split(":").pop();
-  const n = tail ? parseInt(tail, 10) : NaN;
-  return Number.isFinite(n) ? n : null;
-}
-
 const BOT_USERNAME = /^(?:project|group)_\d+_bot_/;
 const isBot = (n: Note) => BOT_USERNAME.test(n.author.username ?? "");
-
-const TERMINAL = new Set(["merged", "closed"]);
 
 /**
  * MR metadata for notifications and terminal-state checks: branch entry
@@ -75,7 +67,7 @@ const TERMINAL = new Set(["merged", "closed"]);
  * refuse rather than blind-fetch, so ungranted repos can't leak API calls.
  */
 export function resolveMRMeta(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "cache">,
   repoName: string,
   iid: number,
   projectStore: ProjectMRs = getProjectMRs(),
@@ -86,7 +78,7 @@ export function resolveMRMeta(
         title:           entry.mr.title ?? `!${iid}`,
         webUrl:          entry.mr.webUrl ?? null,
         authorNumericId: numericUserId(entry.mr.author?.id),
-        terminal:        TERMINAL.has(entry.mr.status),
+        terminal:        MR_TERMINAL_STATES.has(entry.mr.status),
       };
     }
   }
@@ -96,7 +88,7 @@ export function resolveMRMeta(
       title:           rec.pr.title ?? `!${iid}`,
       webUrl:          rec.pr.webUrl ?? null,
       authorNumericId: numericUserId(rec.pr.author?.id),
-      terminal:        TERMINAL.has(rec.pr.state),
+      terminal:        MR_TERMINAL_STATES.has(rec.pr.state),
     };
   }
   return null;
@@ -245,3 +237,5 @@ export async function refreshDiscussions(
 
   return { discussions, fetchedAt, newNotes };
 }
+
+export const __test__ = { MR_TERMINAL_STATES };

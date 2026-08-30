@@ -45,7 +45,7 @@ describe("system-processes handler", () => {
     const proc = makeProcess();
     const handlers = setup([proc]);
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.ok).toBe(true);
     expect(res.data.processes).toHaveLength(1);
@@ -61,7 +61,7 @@ describe("system-processes handler", () => {
       },
     });
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.data.processes[0].linearTicket).toBe("ENG-123: Do the thing");
   });
@@ -70,7 +70,7 @@ describe("system-processes handler", () => {
     const proc = makeProcess({ branch: "feature/untracked" });
     const handlers = setup([proc], {});
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.data.processes[0].linearTicket).toBeNull();
   });
@@ -79,7 +79,7 @@ describe("system-processes handler", () => {
     const proc = makeProcess({ branch: "feature/foo", repo: "myrepo" });
     const handlers = setup([proc], { [composeKey("myrepo", "feature/foo")]: { ticket: null } });
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.data.processes[0].linearTicket).toBeNull();
   });
@@ -88,7 +88,7 @@ describe("system-processes handler", () => {
     const proc = makeProcess({ branch: null });
     const handlers = setup([proc], {});
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.data.processes[0].linearTicket).toBeNull();
   });
@@ -96,7 +96,7 @@ describe("system-processes handler", () => {
   test("returns empty list when scanner has no processes", async () => {
     const handlers = setup([]);
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.ok).toBe(true);
     expect(res.data.processes).toEqual([]);
@@ -107,7 +107,7 @@ describe("system-processes handler", () => {
     const node = makeProcess({ pid: 406, ppid: 345, fullCommand: "node server.js" });
     const handlers = setup([doppler, node]);
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.data.processes).toHaveLength(1);
     const row = res.data.processes[0];
@@ -122,7 +122,7 @@ describe("system-processes handler", () => {
     const node = makeProcess({ pid: 30, ppid: 20, fullCommand: "node index.js" });
     const handlers = setup([bun, sh, node]);
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.data.processes).toHaveLength(1);
     expect(res.data.processes[0].chainPids).toEqual([10, 20, 30]);
@@ -134,7 +134,7 @@ describe("system-processes handler", () => {
     const childB = makeProcess({ pid: 102, ppid: 100, fullCommand: "node b.js" });
     const handlers = setup([parent, childA, childB]);
 
-    const res = await handlers["system-processes"]!({});
+    const res = await handlers["system-processes"]!({}) as any;
 
     expect(res.data.processes).toHaveLength(1);
     expect(res.data.processes[0].chainPids).toBeUndefined();

@@ -15,7 +15,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 import { rtDir } from "../rt-paths.ts";
 
@@ -187,6 +187,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   posted_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_messages_room_id ON chat_messages(room, id);
+-- (room, posted_at): pruneMessages' age cutoff filters on posted_at per
+-- room, and listRooms' SELECT_ROOM_LAST_POSTED_SQL (MAX(posted_at) WHERE
+-- room = ?) turns into an index-only scan instead of a per-room table scan.
+CREATE INDEX IF NOT EXISTS chat_messages_room_posted ON chat_messages(room, posted_at);
 CREATE TABLE IF NOT EXISTS chat_members (
   room          TEXT NOT NULL,
   handle        TEXT NOT NULL,
@@ -278,17 +282,31 @@ CREATE TABLE IF NOT EXISTS agents (
   finished_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS agents_repo_created ON agents(repo, created_at);
+-- created_at alone: SELECT_ALL_SQL orders the whole table by created_at DESC
+-- with no repo filter, which agents_repo_created (repo, created_at) cannot
+-- serve as an index-only scan.
+CREATE INDEX IF NOT EXISTS agents_created ON agents(created_at);
 `;
+
+/**
+ * Every schema block, in version order. `runMigrations` execs
+ * `SCHEMAS.join("")` unconditionally on EVERY open (R015/R056): every
+ * statement here is `IF NOT EXISTS`, so replaying against a db that already
+ * has the shape is a no-op, and a db missing a table (dropped by hand, by a
+ * bug, or by a partial write) self-heals instead of staying broken forever.
+ * A future schema block joins this array; leaving one out is caught by the
+ * dynamic table-presence test in db-schema-convergence.test.ts.
+ */
+const SCHEMAS = [V1_SCHEMA, V2_SCHEMA, V3_SCHEMA, V4_SCHEMA, V6_SCHEMA, V7_SCHEMA];
 
 /** project_mr_demands.sections (v6): SQLite's ALTER TABLE ADD COLUMN has no
     IF NOT EXISTS, so unlike every statement in the V*_SCHEMA strings above it
-    cannot simply replay -- a future SCHEMA_VERSION bump re-execs this whole
-    combined block against every db already at v6, and an unconditional ALTER
-    would throw "duplicate column", rolling back that migration and wedging
-    every later openStateDb call. Run it here instead, inside the same
-    migration transaction, gated on the column's actual absence. Any future
-    ALTER-added column follows this same conditional-exec pattern, never the
-    DDL strings. */
+    cannot simply replay -- SCHEMAS.join("") execs against every db on every
+    open, and an unconditional ALTER would throw "duplicate column", rolling
+    back the migration and wedging every later openStateDb call. Run it here
+    instead, inside the same migration transaction, gated on the column's
+    actual absence. Any future ALTER-added column follows this same
+    conditional-exec pattern, never the DDL strings. */
 function addSectionsColumnIfMissing(db: Database): void {
   const columns = db.query("PRAGMA table_info(project_mr_demands);").all() as { name: string }[];
   if (columns.some((c) => c.name === "sections")) return;
@@ -314,12 +332,14 @@ function addHandleColumnIfMissing(db: Database): void {
 /**
  * endpoint_claims.start_time (S068): the claiming pid's start-time, so a
  * recycled pid across a reboot reads as dead rather than pinning a port
- * forever. Called unconditionally from `openStateDb`, NOT from inside
- * `runMigrations`'s `user_version < SCHEMA_VERSION` gate: a machine already
- * at SCHEMA_VERSION never enters that gate, so a call placed there would
- * never add the column on such a machine. No SCHEMA_VERSION bump: this
- * column ships out-of-band of the versioned schema, like `sections`,
- * `archived_at`, and `handle` above.
+ * forever. Called unconditionally from `openStateDb`, outside
+ * `runMigrations`'s BEGIN IMMEDIATE transaction, unlike the three
+ * `addXColumnIfMissing` helpers above: those run inside the transaction,
+ * where a losing racer's duplicate-column error rolls back the whole
+ * migration; this one needs its own catch-and-recheck (below) to tolerate
+ * that same race outside a transaction's protection. No SCHEMA_VERSION
+ * bump: this column ships out-of-band of the versioned schema, like
+ * `sections`, `archived_at`, and `handle` above.
  */
 export function ensureEndpointClaimsStartTimeColumn(db: Database): void {
   const columns = db.query("PRAGMA table_info(endpoint_claims);").all() as { name: string }[];
@@ -469,49 +489,46 @@ function importLegacyStores(db: Database, dir: string): string[] {
 
 /**
  * The race-proof migration runner (spec "Schema versioning"): BEGIN
- * IMMEDIATE takes the write lock up front, user_version is RE-READ inside
- * the transaction, and every statement in the combined DDL string is IF NOT
- * EXISTS-safe (the one exception, an ALTER TABLE ADD COLUMN, lives outside
- * that string as its own conditional exec -- see addSectionsColumnIfMissing
- * -- and any future ALTER-added column must follow that same pattern rather
- * than join the DDL string). Two processes racing at v0: the loser blocks on
- * IMMEDIATE (busy_timeout), then sees v1 inside its own transaction and
- * applies nothing. A throwing migration rolls back and propagates, no
- * swallow.
+ * IMMEDIATE takes the write lock up front, and every statement in
+ * `SCHEMAS.join("")` plus the three guarded column helpers below is IF NOT
+ * EXISTS or table_info-guarded, so the whole block runs UNCONDITIONALLY on
+ * every open, not only while `user_version < SCHEMA_VERSION` (R015/R056): a
+ * db already at SCHEMA_VERSION but missing a table or column self-heals on
+ * its next open instead of staying broken forever. `user_version` is read
+ * once to gate ONLY the legacy-JSON import, which is not idempotent (see
+ * importLegacyStores' own comment), and is unconditionally re-stamped to
+ * SCHEMA_VERSION for compatibility with older builds' version checks. Two
+ * processes racing at v0: the loser blocks on IMMEDIATE (busy_timeout), then
+ * re-reads v1 inside its own transaction and skips the import. A throwing
+ * migration rolls back and propagates, no swallow.
  */
 function runMigrations(db: Database, dir: string): void {
   db.exec("BEGIN IMMEDIATE;");
   let toRename: string[] = [];
   try {
     const { user_version } = db.query("PRAGMA user_version;").get() as { user_version: number };
-    if (user_version < SCHEMA_VERSION) {
-      // One exec of the full combined schema, not a per-version step: every
-      // statement is IF NOT EXISTS, so replaying v1's DDL against an
-      // already-v1 db is a no-op and existing rows are untouched.
-      db.exec(V1_SCHEMA + V2_SCHEMA + V3_SCHEMA + V4_SCHEMA + V6_SCHEMA + V7_SCHEMA);
-      addSectionsColumnIfMissing(db);
-      addArchivedAtColumnIfMissing(db);
-      addHandleColumnIfMissing(db);
-      // Legacy-JSON import is single-shot and only correct from a true
-      // v0 (never-migrated) database: branch-cache's UPSERT would silently
-      // overwrite current rows with stale ones, and project-mrs-store's
-      // plain INSERT would hit its UNIQUE constraint, roll back this whole
-      // migration, and make every later openStateDb call throw. A v1->v2
-      // bump (this schema's own case, and any future one) must apply the
-      // new DDL without re-arming this seam.
-      if (user_version === 0) {
-        toRename = importLegacyStores(db, dir);
-      }
-      // v10 (data, not DDL): room posts wake every member by default now.
-      // Rows on the old mention-gated default move to "all" once; an
-      // explicit "none" is a choice and stays. After the legacy import so
-      // any imported rows are covered; a fresh database has none either way.
-      if (user_version < 10) {
-        db.exec("UPDATE chat_members SET wake_on = 'all' WHERE wake_on = 'mention';");
-        db.exec("UPDATE chat_room_defaults SET wake_on = 'all' WHERE wake_on = 'mention';");
-      }
-      db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
+    db.exec(SCHEMAS.join(""));
+    addSectionsColumnIfMissing(db);
+    addArchivedAtColumnIfMissing(db);
+    addHandleColumnIfMissing(db);
+    // Legacy-JSON import is single-shot and only correct from a true
+    // v0 (never-migrated) database: branch-cache's UPSERT would silently
+    // overwrite current rows with stale ones, and project-mrs-store's
+    // plain INSERT would hit its UNIQUE constraint, roll back this whole
+    // migration, and make every later openStateDb call throw.
+    if (user_version === 0) {
+      toRename = importLegacyStores(db, dir);
     }
+    // A room post wakes every member by default: rows on the old
+    // mention-gated default move to "all" once. An explicit "none" is a
+    // choice and stays. Runs after the legacy import so imported rows are
+    // covered; gated on the stored version (not unconditional, unlike the
+    // DDL above) so a later explicit choice is never re-flipped.
+    if (user_version < 10) {
+      db.exec("UPDATE chat_members SET wake_on = 'all' WHERE wake_on = 'mention';");
+      db.exec("UPDATE chat_room_defaults SET wake_on = 'all' WHERE wake_on = 'mention';");
+    }
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
     db.exec("COMMIT;");
   } catch (err) {
     try {
@@ -554,8 +571,8 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
   }
 
   runMigrations(db, dirname(path));
-  // Unconditional, outside runMigrations' version gate: see
-  // ensureEndpointClaimsStartTimeColumn's own comment for why.
+  // Outside runMigrations' transaction: see ensureEndpointClaimsStartTimeColumn's
+  // own comment for why.
   ensureEndpointClaimsStartTimeColumn(db);
   // Migration is done: drop from the startup budget to the flavor's
   // steady-state serve-time policy (daemon = 250ms warn-and-defer).
@@ -582,6 +599,77 @@ export function openStateDbGuarded(path: string): Database {
     }
   }
   return openStateDb(path, "cli");
+}
+
+/**
+ * Writes a standalone, fully-vacuumed copy of `db` to `path` via `VACUUM
+ * INTO` (R055): unlike a raw file copy, this is safe against a concurrent
+ * writer mid-transaction and against WAL sidecars, since sqlite produces the
+ * destination from a read-consistent snapshot in one statement.
+ */
+export function backupTo(db: Database, path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  db.query("VACUUM INTO ?").run(path);
+}
+
+/**
+ * `PRAGMA quick_check` wrapper: `[]` when the db reports "ok", otherwise the
+ * problem lines. A quick_check severe enough to throw outright (observed as
+ * SQLITE_CORRUPT on some corruption shapes, rather than a diagnostic row) is
+ * folded into the same nonempty-list contract instead of propagating.
+ */
+export function quickCheck(db: Database): string[] {
+  try {
+    const rows = db.query("PRAGMA quick_check;").all() as { quick_check: string }[];
+    const lines = rows.map((r) => r.quick_check);
+    return lines.length === 1 && lines[0] === "ok" ? [] : lines;
+  } catch (err) {
+    return [(err as Error).message];
+  }
+}
+
+/** ~/.mattstack/rt/backups: stamped state.db copies from `rt state backup` and the daily sweep. */
+export function stateBackupsDir(): string {
+  return join(dirname(stateDbPath()), "backups");
+}
+
+const STATE_BACKUP_PREFIX = "state-";
+const STATE_BACKUP_SUFFIX = ".db";
+const STATE_BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** A fresh stamped path under stateBackupsDir(); the stamp format matches quarantine()'s. */
+export function stampedBackupPath(now: Date = new Date()): string {
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  return join(stateBackupsDir(), `${STATE_BACKUP_PREFIX}${stamp}${STATE_BACKUP_SUFFIX}`);
+}
+
+/** Stamped backup filenames under stateBackupsDir(), newest first. `[]` when the dir doesn't exist yet. */
+export function listStateBackups(): string[] {
+  const dir = stateBackupsDir();
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.startsWith(STATE_BACKUP_PREFIX) && name.endsWith(STATE_BACKUP_SUFFIX))
+    .sort()
+    .reverse();
+}
+
+/** Removes stamped backups older than the retention window; returns the removed filenames. */
+export function pruneStateBackups(now: number = Date.now()): { removed: string[] } {
+  const dir = stateBackupsDir();
+  const removed: string[] = [];
+  for (const name of listStateBackups()) {
+    const iso = name.slice(STATE_BACKUP_PREFIX.length, -STATE_BACKUP_SUFFIX.length)
+      .replace(/^(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "$1:$2:$3.$4Z");
+    const at = Date.parse(iso);
+    if (Number.isNaN(at) || now - at <= STATE_BACKUP_RETENTION_MS) continue;
+    try {
+      unlinkSync(join(dir, name));
+      removed.push(name);
+    } catch {
+      // a concurrent sweep or manual cleanup already removed it
+    }
+  }
+  return { removed };
 }
 
 let singleton: Database | null = null;

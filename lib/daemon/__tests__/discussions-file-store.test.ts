@@ -25,8 +25,8 @@ function pmrsStore() {
 const note = (id: number) => ({ id, system: false, body: `n${id}`, createdAt: "2026-07-26T00:00:00Z", author: { id: "gitlab:user:777", name: "Luke", username: "luke" } });
 const disc = (id: number) => ({ id: `d${id}`, notes: [note(id)] }) as any;
 
-function fakeCtx(entries: Record<string, any>): HandlerContext {
-  return { cache: fakeStore(entries), repoIndex: () => ({ repo: "/tmp/repo" }) } as unknown as HandlerContext;
+function fakeCtx(entries: Record<string, any>): Pick<HandlerContext, "cache" | "repoIndex"> {
+  return { cache: fakeStore(entries), repoIndex: () => ({ repo: "/tmp/repo" }) };
 }
 
 describe("discussions store — row basics", () => {

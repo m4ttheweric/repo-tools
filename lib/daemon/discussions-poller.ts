@@ -30,19 +30,15 @@ import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { loadRepoTracking, grants, type RepoTracking } from "../repo-tracking.ts";
 import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
 import { lazyChildLogger } from "../daemon-logger.ts";
+import { MR_TERMINAL_STATES } from "../enrich.ts";
 const log = lazyChildLogger("discussions");
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
-
-const TERMINAL_STATES = new Set(["merged", "closed"]);
 
 export interface PollerEnv {
   ctx:       HandlerContext;
   broadcast: BroadcastFn;
 }
-
-let timer: ReturnType<typeof setInterval> | null = null;
-let sweeping = false;
 
 /**
  * Sweep targets = branch-cache MRs (any status not yet terminal) for granted
@@ -78,7 +74,7 @@ export function collectSweepTargets(
     const mr = entry.mr;
     const iid = mr?.iid;
     if (!mr || typeof iid !== "number") continue;
-    if (TERMINAL_STATES.has(mr.status)) continue;
+    if (MR_TERMINAL_STATES.has(mr.status)) continue;
     add(entry.repoName, iid);
   }
 
@@ -97,38 +93,61 @@ export function collectSweepTargets(
   return out;
 }
 
-async function sweep(env: PollerEnv): Promise<void> {
-  if (sweeping) return;
-  sweeping = true;
-  try {
-    const tracking = loadRepoTracking();
-    const targets = collectSweepTargets(env.ctx.cache.entries, tracking, getProjectMRs(), getDiscussionsFileStore());
+export interface DiscussionsPoller {
+  start(): void;
+  stop(): void;
+}
 
-    for (const { repoName, iid } of targets) {
-      try {
-        await refreshDiscussions({ ctx: env.ctx, broadcast: env.broadcast }, repoName, iid);
-      } catch (err) {
-        // Expected for a repo context that can't be resolved yet, or a
-        // transient fetch failure — keep going.
-        log.warn({ err }, `${repoName}#${iid} refresh failed`);
+/**
+ * R031: `timer`/`sweeping` used to be bare module-scope `let`s. Wraps them in
+ * a closure so a second createDiscussionsPoller(env) can coexist without
+ * sharing a timer handle or in-flight-sweep flag with the first.
+ */
+export function createDiscussionsPoller(env: PollerEnv): DiscussionsPoller {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let bootTimer: ReturnType<typeof setTimeout> | null = null;
+  let sweeping = false;
+
+  async function sweep(): Promise<void> {
+    if (sweeping) return;
+    sweeping = true;
+    try {
+      const tracking = loadRepoTracking();
+      const targets = collectSweepTargets(env.ctx.cache.entries, tracking, getProjectMRs(), getDiscussionsFileStore());
+
+      for (const { repoName, iid } of targets) {
+        try {
+          await refreshDiscussions({ ctx: env.ctx, broadcast: env.broadcast }, repoName, iid);
+        } catch (err) {
+          // Expected for a repo context that can't be resolved yet, or a
+          // transient fetch failure — keep going.
+          log.warn({ err }, `${repoName}#${iid} refresh failed`);
+        }
       }
+    } finally {
+      sweeping = false;
     }
-  } finally {
-    sweeping = false;
   }
+
+  function start(): void {
+    if (timer) return;
+    log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
+    // Kick off a first sweep after a short delay so the daemon finishes
+    // initializing freshness watchers before we start hitting GitLab. Captured
+    // so stop() clears it too: an uncleared boot timer would fire a sweep
+    // after the poller was torn down.
+    bootTimer = setTimeout(() => { bootTimer = null; sweep(); }, 10_000);
+    timer = setInterval(() => { sweep(); }, POLL_INTERVAL_MS);
+  }
+
+  function stop(): void {
+    if (bootTimer) { clearTimeout(bootTimer); bootTimer = null; }
+    if (!timer) return;
+    clearInterval(timer);
+    timer = null;
+  }
+
+  return { start, stop };
 }
 
-export function startDiscussionsPoller(env: PollerEnv): void {
-  if (timer) return;
-  log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
-  // Kick off a first sweep after a short delay so the daemon finishes
-  // initializing freshness watchers before we start hitting GitLab.
-  setTimeout(() => { sweep(env); }, 10_000);
-  timer = setInterval(() => { sweep(env); }, POLL_INTERVAL_MS);
-}
-
-export function stopDiscussionsPoller(): void {
-  if (!timer) return;
-  clearInterval(timer);
-  timer = null;
-}
+export const __test__ = { MR_TERMINAL_STATES };

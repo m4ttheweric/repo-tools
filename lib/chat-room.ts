@@ -1,12 +1,14 @@
 /**
  * The repository room `rt chat sign-in` joins: shared by the CLI's own
- * git-derived sign-in and the daemon's `--pane` sign-in, so the two never
- * land an agent in a different room for the same repo (fix round 2 -- the
- * daemon previously derived its own room from the index-based `repoForCwd`
- * label alone, which diverges from this codec on every path-kind identity:
- * `repoForCwd` yields the bare worktree basename, e.g. "gamma", where this
- * module's two-segment rule yields "pool-gamma" specifically to avoid the
- * cross-repo pool-slot collision a bare basename reintroduces).
+ * git-derived sign-in (`deriveRoomForCwd`, in the sibling chat-room-cli.ts)
+ * and the daemon's `--pane` sign-in (`deriveRoomForCwdAsync`, below), so the
+ * two never land an agent in a different room for the same repo (fix round 2
+ * -- the daemon previously derived its own room from the index-based
+ * `repoForCwd` label alone, which diverges from this codec on every
+ * path-kind identity: `repoForCwd` yields the bare worktree basename, e.g.
+ * "gamma", where this module's two-segment rule yields "pool-gamma"
+ * specifically to avoid the cross-repo pool-slot collision a bare basename
+ * reintroduces).
  *
  * Room naming is display, never a store key -- unlike handle derivation,
  * which must never leak the serialized identity's `%2F`/`:`, a room name
@@ -17,9 +19,7 @@
  * handle derivation avoids. Both go through `slugifyChatName`, so the
  * result always satisfies the room charset.
  */
-import { getRepoRoot } from "./git.ts";
-import { getRepoIdentityForRoot } from "./repo.ts";
-import { deriveRepoIdentity, parseIdentity, type RepoIdentity } from "./settings/identity.ts";
+import { deriveRepoIdentity, type RepoIdentity } from "./settings/identity.ts";
 import { slugifyChatName } from "./chat-room-name.ts";
 import { runCapture } from "./subprocess.ts";
 
@@ -33,25 +33,7 @@ export function roomForIdentity(id: RepoIdentity): string {
 }
 
 /**
- * Null when `cwd` isn't inside a git work tree at all -- the gate is a real
- * `git rev-parse`, not a directory walk, so a scratch dir with a stray
- * `.git` file never derives a bogus room. A real (sync) git spawn, via
- * `getRepoRoot`: fine for the CLI, which runs once per invocation and exits
- * -- never call this from the daemon thread (MAT-222); it must never
- * sync-exec. `deriveRoomForCwdAsync` below is the daemon's counterpart.
- */
-export function deriveRoomForCwd(cwd: string): string | null {
-  const root = getRepoRoot(cwd);
-  if (!root) return null;
-  const identity = getRepoIdentityForRoot(root);
-  if (!identity) return null;
-  const parsed = parseIdentity(identity.identity);
-  if (!parsed) return null;
-  return roomForIdentity(parsed);
-}
-
-/**
- * The daemon's counterpart to `deriveRoomForCwd`: the SAME
+ * The daemon's counterpart to `deriveRoomForCwd` (chat-room-cli.ts): the SAME
  * identity -> `roomForIdentity` codec, so parity holds, but resolved
  * through the async exec seam with a bounded timeout (mirrors
  * lib/repo-for-cwd.ts's `branchForCwd`) instead of `getRepoRoot`'s sync

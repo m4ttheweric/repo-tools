@@ -7,20 +7,25 @@
 import { findRun, listRuns, readRun } from "../../runs/store.ts";
 import { getRunLiveness } from "../../runs/liveness.ts";
 import { abandonRun } from "../../runs/reconcile.ts";
-import type { HandlerContext, HandlerMap, TypedHandlers, CommandResult } from "./types.ts";
+import type { HandlerContext, CommandResult } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
+type RunsHandlers = { "runs:list": (payload: unknown) => Promise<CommandResult<"runs:list">> }
+  & { "runs:get": (payload: unknown) => Promise<CommandResult<"runs:get">> }
+  & { "runs:abandon": (payload: unknown) => Promise<CommandResult<"runs:abandon">> };
+
 export function createRunsHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "log">,
   emitEvent: (topic: string, payload: unknown) => void,
-): Pick<TypedHandlers, "runs:list" | "runs:get" | "runs:abandon"> & HandlerMap {
-  const handlers: Pick<TypedHandlers, "runs:list" | "runs:get" | "runs:abandon"> & HandlerMap = {
-    "runs:list": async (payload: Commands["runs:list"]["payload"]): Promise<CommandResult<"runs:list">> => {
+): RunsHandlers {
+  const handlers: RunsHandlers = {
+    "runs:list": async (rawPayload: unknown): Promise<CommandResult<"runs:list">> => {
       // `repo` here is the run DIRECTORY's name — whatever key the pipeline
       // that wrote the run used, surfaced verbatim by runs:list. It is NOT
       // required to parse as an identity: refusing non-identity keys on this
       // read-only surface would 404 exactly the keys runs:list itself hands
       // out for pre-cutover runs.
+      const payload = rawPayload as Commands["runs:list"]["payload"] | undefined;
       try {
         return { ok: true as const, data: { runs: listRuns(payload?.repo || undefined, await getRunLiveness()) } };
       } catch (err) {
@@ -28,7 +33,8 @@ export function createRunsHandlers(
         return { ok: false as const, error: String(err) };
       }
     },
-    "runs:get": async (payload: Commands["runs:get"]["payload"]): Promise<CommandResult<"runs:get">> => {
+    "runs:get": async (rawPayload: unknown): Promise<CommandResult<"runs:get">> => {
+      const payload = rawPayload as Commands["runs:get"]["payload"] | undefined;
       const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
       if (!runId) return { ok: false as const, error: "missing runId" };
       try {
@@ -41,7 +47,8 @@ export function createRunsHandlers(
         return { ok: false as const, error: String(err) };
       }
     },
-    "runs:abandon": async (payload: Commands["runs:abandon"]["payload"]): Promise<CommandResult<"runs:abandon">> => {
+    "runs:abandon": async (rawPayload: unknown): Promise<CommandResult<"runs:abandon">> => {
+      const payload = rawPayload as Commands["runs:abandon"]["payload"];
       const runId = typeof payload?.runId === "string" ? payload.runId.trim() : "";
       if (!runId) return { ok: false as const, error: "missing runId" };
       try {

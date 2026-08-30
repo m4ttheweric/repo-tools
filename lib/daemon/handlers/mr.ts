@@ -26,12 +26,9 @@
  */
 
 import { applyMRWriteback, getCurrentUserId, getRepoContext } from "../freshness.ts";
-import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { PullRequest } from "@mattstack/glance";
 import { ReadBackFailedError } from "@mattstack/glance";
-import type { HandlerContext, HandlerMap } from "./types.ts";
-
-const log = lazyChildLogger("mr");
+import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
 
 type ActionName =
   | "merge" | "rebase" | "approve" | "unapprove"
@@ -51,11 +48,18 @@ export interface MRHandlerOverrides {
   retryDelayMs?: number;
 }
 
+// "mr:action" keeps its pre-existing flat `{ok:true}` wire reply (no `data`)
+// verbatim, so it stays on the loose `Promise<any>` escape hatch (same trick
+// as endpoint.ts/repos.ts); the two job-detail verbs already envelope as
+// {ok,data} and get the standard CommandResult carve-out.
 export function createMRHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "repoIndex" | "cache" | "log">,
   broadcast: (type: string, data: any) => void,
   overrides: MRHandlerOverrides = {},
-): HandlerMap {
+): { "mr:action": (payload: any, signal?: AbortSignal) => Promise<any> }
+  & { "mr:fetch-job-detail": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"mr:fetch-job-detail">> }
+  & { "mr:fetch-job-trace": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"mr:fetch-job-trace">> }
+  & HandlerMap {
   const getContext = overrides.getContext
     ?? ((repoName: string) => getRepoContext(repoName, ctx.repoIndex()[repoName]));
   const writeback = overrides.writeback
@@ -72,10 +76,11 @@ export function createMRHandlers(
 
   return {
     "mr:action": async (payload) => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
-      const action   = payload?.action   as ActionName | undefined;
-      const args     = (payload?.args as any[] | undefined) ?? [];
+      const p = payload as { repoName?: string; iid?: number; action?: ActionName; args?: any[] } | undefined;
+      const repoName = p?.repoName;
+      const iid      = p?.iid;
+      const action   = p?.action;
+      const args     = p?.args ?? [];
 
       if (!repoName || typeof iid !== "number" || !action) {
         return { ok: false, error: "missing repoName/iid/action" };
@@ -111,7 +116,7 @@ export function createMRHandlers(
           // `returnedPr` stays null, which drops through to the same follow-up
           // fetch the void actions use, so the stores still get a fresh shape.
           if (!(err instanceof ReadBackFailedError && err.writeApplied)) throw err;
-          log.warn({ err, repo: repoName, iid, action }, "action landed but its read-back failed; recovering via follow-up fetch");
+          ctx.log.warn({ err, repo: repoName, iid, action }, "action landed but its read-back failed; recovering via follow-up fetch");
         }
 
         const followUp = async () => {
@@ -119,7 +124,7 @@ export function createMRHandlers(
             const pr = await fetchSingle(provider, projectPath, iid);
             if (pr) writeback(repoName, projectPath, pr);
           } catch (err) {
-            log.warn({ err, repo: repoName, iid, action }, "write-back follow-up failed");
+            ctx.log.warn({ err, repo: repoName, iid, action }, "write-back follow-up failed");
           }
         };
 
@@ -129,7 +134,7 @@ export function createMRHandlers(
           try {
             writeback(repoName, projectPath, returnedPr);
           } catch (err) {
-            log.warn({ err, repo: repoName, iid, action }, "write-back failed");
+            ctx.log.warn({ err, repo: repoName, iid, action }, "write-back failed");
           }
         } else if (RETRY_ACTIONS.has(action)) {
           // Pipelines are the events blind spot: one delayed fetch catches
@@ -145,10 +150,11 @@ export function createMRHandlers(
     },
 
     "mr:fetch-job-detail": async (payload) => {
-      const repoName   = payload?.repoName   as string | undefined;
-      const iid        = payload?.iid        as number | undefined;
-      const jobId      = payload?.jobId      as number | undefined;
-      const pipelineId = payload?.pipelineId as number | undefined;
+      const p = payload as { repoName?: string; iid?: number; jobId?: number; pipelineId?: number } | undefined;
+      const repoName   = p?.repoName;
+      const iid        = p?.iid;
+      const jobId      = p?.jobId;
+      const pipelineId = p?.pipelineId;
 
       if (!repoName || typeof iid !== "number" || typeof jobId !== "number") {
         return { ok: false, error: "missing repoName/iid/jobId" };
@@ -164,9 +170,10 @@ export function createMRHandlers(
     },
 
     "mr:fetch-job-trace": async (payload) => {
-      const repoName = payload?.repoName as string | undefined;
-      const iid      = payload?.iid      as number | undefined;
-      const jobId    = payload?.jobId    as number | undefined;
+      const p = payload as { repoName?: string; iid?: number; jobId?: number } | undefined;
+      const repoName = p?.repoName;
+      const iid      = p?.iid;
+      const jobId    = p?.jobId;
 
       if (!repoName || typeof iid !== "number" || typeof jobId !== "number") {
         return { ok: false, error: "missing repoName/iid/jobId" };

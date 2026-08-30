@@ -26,6 +26,29 @@ export interface EventsBus {
    * to plant old rows.
    */
   emitAt(topic: string, payload: unknown, emittedAt: number): number;
+  /**
+   * The single owner of the persisted-event-frame idiom (R020): builds
+   * {id, topic, payload, emittedAt}, persists it via emitAt, and returns it.
+   * Replaces the copy formerly duplicated in command-router.ts. Deliberately
+   * does NOT fan out to onBroadcast subscribers -- before this refactor,
+   * command-router's persisted events never reached cron or the
+   * worktree:disposed reaction, and that stays true (see fanOut).
+   */
+  emitEvent(topic: string, payload: unknown): BusEvent;
+  /**
+   * Subscribe to every fanOut call, in registration order. Returns an
+   * unsubscribe.
+   */
+  onBroadcast(fn: (type: string, data: unknown) => void): () => void;
+  /**
+   * Notify onBroadcast subscribers of (type, data) with NO persistence --
+   * the non-journaled counterpart to emitEvent. This is what daemon.ts's
+   * `emit()` calls on every broadcast so the cron and worktree:disposed
+   * reactions keep firing exactly as they did as inline branches, without
+   * writing every broadcast (including high-frequency ones like the
+   * system-process scan) into events.db.
+   */
+  fanOut(type: string, data: unknown): void;
   list(opts: { pattern: string; after?: number; limit?: number }): WaitResult;
   head(): number;
   wait(opts: { pattern: string; after?: number; waitMs?: number; signal?: AbortSignal }): Promise<WaitResult>;
@@ -133,16 +156,52 @@ export function createEventsBus(opts: {
   const insertStmt = db.prepare(
     "INSERT INTO events (topic, payload, emittedAt) VALUES (?, ?, ?) RETURNING id",
   );
-  const afterStmt = db.prepare("SELECT id, topic, payload, emittedAt FROM events WHERE id > ? ORDER BY id");
+  // A negative LIMIT is SQLite's documented spelling of "no limit", so one
+  // statement covers both the unbounded scan (wait's wake-up check) and the
+  // bounded page (list's client-supplied limit).
+  const afterStmt = db.prepare(
+    "SELECT id, topic, payload, emittedAt FROM events WHERE id > ? ORDER BY id LIMIT ?",
+  );
   const maxIdStmt = db.prepare("SELECT COALESCE(MAX(id), 0) AS maxId FROM events");
 
   const maxId = (): number => (maxIdStmt.get() as { maxId: number }).maxId;
 
-  /** Matching events with id > after (glob filtered in JS — see matchTopic). */
+  const UNBOUNDED = -1;
+
+  /**
+   * Matching events with id > after (glob filtered in JS, see matchTopic).
+   * With no limit, one unbounded SQL read is fine (used only by wait's
+   * catch-up/wake-up checks, which scan a cursor close to the journal head).
+   * With a limit, pages the journal forward in id order reading limit + 1
+   * rows per call: a full page means more may remain (keep paging), a short
+   * page means the journal is exhausted. Bounds every single SQL read to
+   * limit + 1 rows even when matches are sparse (e.g. a narrow glob near
+   * the end of a long journal).
+   */
   const eventsAfter = (pattern: string, after: number, limit?: number): BusEvent[] => {
-    const rows = afterStmt.all(after) as EventRow[];
-    const matched = rows.filter(r => matchTopic(pattern, r.topic)).map(rowToEvent);
-    return limit != null ? matched.slice(0, limit) : matched;
+    if (limit == null) {
+      const rows = afterStmt.all(after, UNBOUNDED) as EventRow[];
+      return rows.filter(r => matchTopic(pattern, r.topic)).map(rowToEvent);
+    }
+    // A non-positive or fractional limit would defeat the paging below: a
+    // negative pageSize is SQLite's "unbounded" spelling (the exact full
+    // scan this function exists to avoid), and pageSize 0 returns no rows,
+    // leaving nothing to advance cursor from. Clamp so eventsAfter is safe
+    // even called directly with a bad limit, not just through events:list.
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const pageSize = safeLimit + 1;
+    const matched: BusEvent[] = [];
+    let cursor = after;
+    for (;;) {
+      const rows = afterStmt.all(cursor, pageSize) as EventRow[];
+      for (const r of rows) {
+        if (!matchTopic(pattern, r.topic)) continue;
+        matched.push(rowToEvent(r));
+        if (matched.length >= safeLimit) return matched;
+      }
+      if (rows.length < pageSize) return matched;
+      cursor = rows[rows.length - 1]!.id;
+    }
   };
 
   const MAX_WAIT_MS = 240_000; // under the 255s socket idle timeout; the daemon clamp, not the client's
@@ -155,6 +214,7 @@ export function createEventsBus(opts: {
     signal?: AbortSignal;
   }
   const waiters = new Set<Waiter>();
+  const broadcastSubscribers = new Set<(type: string, data: unknown) => void>();
 
   const settle = (w: Waiter, result: WaitResult): void => {
     if (!waiters.has(w)) return;
@@ -195,12 +255,33 @@ export function createEventsBus(opts: {
       return insertAndWake(topic, payload, emittedAt);
     },
 
+    emitEvent(topic, payload) {
+      const emittedAt = Date.now();
+      const id = insertAndWake(topic, payload, emittedAt);
+      return { id, topic, payload, emittedAt };
+    },
+
+    onBroadcast(fn) {
+      broadcastSubscribers.add(fn);
+      return () => { broadcastSubscribers.delete(fn); };
+    },
+
+    fanOut(type, data) {
+      for (const fn of [...broadcastSubscribers]) fn(type, data);
+    },
+
     list({ pattern, after, limit }) {
-      const events = eventsAfter(pattern, after ?? 0, limit);
+      // Clamp once and reuse for both the query and the truncation check: a
+      // fractional or non-positive limit from a direct caller would otherwise
+      // make `events.length === limit` false on a truncated page, mislabel it
+      // untruncated, and skip undelivered events on the caller's next `after`.
+      // `undefined` stays unbounded (the handler default lives at its seam).
+      const safeLimit = limit == null ? undefined : Math.max(1, Math.floor(limit));
+      const events = eventsAfter(pattern, after ?? 0, safeLimit);
       // Truncated result: cursor points at the last DELIVERED event so the
       // caller's next `after` resumes exactly where this page ended.
       // Untruncated (or empty) result: cursor is the journal head.
-      const cursor = events.length && limit != null && events.length === limit
+      const cursor = events.length && safeLimit != null && events.length === safeLimit
         ? events[events.length - 1]!.id
         : maxId();
       return { events, cursor };
@@ -229,7 +310,11 @@ export function createEventsBus(opts: {
       return new Promise<WaitResult>((resolve) => {
         const w: Waiter = {
           pattern,
-          afterId: effAfter,
+          // head, not effAfter: the catch-up read above already covered
+          // every id up to head, so registering here misses nothing.
+          // Keeping effAfter would make every non-matching emit rescan
+          // the whole gap between a stale caller cursor and head forever.
+          afterId: head,
           resolve,
           signal,
           timer: setTimeout(() => settle(w, { events: [], cursor: head }), capMs),

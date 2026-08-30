@@ -17,12 +17,12 @@ import {
 } from "../../state/index.ts";
 import { buildClaudeArgv, buildPaneCommand, type ClaudeInvocation } from "../../agent-argv.ts";
 import { defaultHerdrRunner, launchInWorkspace, type HerdrRunner } from "../../agent-herdr.ts";
-import { repoLabel } from "../../repo-arg.ts";
+import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { rtDir } from "../../rt-paths.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
-import type { CommandResult, TypedHandlers } from "./types.ts";
+import type { CommandResult } from "./types.ts";
 
 export interface HeadlessChild {
   exited: Promise<number>;
@@ -66,7 +66,14 @@ export function createAgentHandlers(opts: {
   herdrRunner?: HerdrRunner;
   spawnHeadless?: (argv: string[], cwd: string) => HeadlessChild;
   insertAgentFn?: typeof insertAgent;
-}): Pick<TypedHandlers, "agent:start" | "agent:resume" | "agent:get" | "agent:list"> & { db: Database } {
+}):
+  // Direct `unknown`-payload members, not `Pick<TypedHandlers, ...>`: a wider
+  // `unknown` param still satisfies TypedHandlers' narrower one at the
+  // command-router.ts assembly site (function parameter contravariance).
+  & { "agent:start": (payload: unknown) => Promise<CommandResult<"agent:start">> }
+  & { "agent:resume": (payload: unknown) => Promise<CommandResult<"agent:resume">> }
+  & { "agent:get": (payload: unknown) => Promise<CommandResult<"agent:get">> }
+  & { "agent:list": (payload: unknown) => Promise<CommandResult<"agent:list">> } {
   const { db, emitEvent } = opts;
   const log = opts.log ?? lazyChildLogger("agent");
   const spawnHeadless = opts.spawnHeadless ?? defaultSpawnHeadless;
@@ -131,9 +138,9 @@ export function createAgentHandlers(opts: {
   }
 
   return {
-    db,
-
-    "agent:start": async (payload: Commands["agent:start"]["payload"]): Promise<CommandResult<"agent:start">> => {
+    "agent:start": async (rawPayload: unknown): Promise<CommandResult<"agent:start">> => {
+      if (!rawPayload || typeof rawPayload !== "object") return { ok: false, error: "agent:start requires an object payload" };
+      const payload = rawPayload as Commands["agent:start"]["payload"];
       const { repo, cwd } = payload;
       if (!repo || !cwd) return { ok: false, error: "agent:start requires repo (serialized identity) and cwd" };
       if (payload.surface !== undefined && payload.surface !== "herdr" && payload.surface !== "headless") {
@@ -199,7 +206,8 @@ export function createAgentHandlers(opts: {
       }
     },
 
-    "agent:resume": async (payload: Commands["agent:resume"]["payload"]): Promise<CommandResult<"agent:resume">> => {
+    "agent:resume": async (rawPayload: unknown): Promise<CommandResult<"agent:resume">> => {
+      const payload = rawPayload as Commands["agent:resume"]["payload"];
       const rec = getAgent(payload.id, db);
       if (!rec) return { ok: false, error: `no agent record for "${payload.id}"` };
       if (payload.surface !== undefined && payload.surface !== "herdr" && payload.surface !== "headless") {
@@ -228,12 +236,14 @@ export function createAgentHandlers(opts: {
       }
     },
 
-    "agent:get": async (payload: Commands["agent:get"]["payload"]): Promise<CommandResult<"agent:get">> => {
+    "agent:get": async (rawPayload: unknown): Promise<CommandResult<"agent:get">> => {
+      const payload = rawPayload as Commands["agent:get"]["payload"];
       const rec = getAgent(payload.id, db);
       return rec ? { ok: true, data: rec } : { ok: false, error: `no agent record for "${payload.id}"` };
     },
 
-    "agent:list": async (payload: Commands["agent:list"]["payload"]): Promise<CommandResult<"agent:list">> => {
+    "agent:list": async (rawPayload: unknown): Promise<CommandResult<"agent:list">> => {
+      const payload = rawPayload as Commands["agent:list"]["payload"];
       return { ok: true, data: { agents: listAgents({ ...(payload.repo !== undefined && { repo: payload.repo }) }, db) } };
     },
   };

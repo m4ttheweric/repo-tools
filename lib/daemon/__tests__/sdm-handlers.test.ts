@@ -4,7 +4,7 @@ import type { HandlerContext } from "../handlers/types.ts";
 import type { SdmSnapshot } from "../../sdm/core.ts";
 import type { SdmResource } from "../../sdm/scan.ts";
 
-const ctx = { log: { info: () => {}, warn: () => {}, debug: () => {} } } as unknown as HandlerContext;
+const ctx = { log: { info: () => {}, warn: () => {}, debug: () => {} } } as unknown as Pick<HandlerContext, "log">;
 
 function okSnapshot(): SdmSnapshot {
   return {
@@ -41,7 +41,7 @@ describe("sdm handlers", () => {
   test("sdm:catalog passes through resources and fromCache from scan", async () => {
     const resources: SdmResource[] = [{ name: "example-a", type: "postgres", tags: ["env=staging"], standingAccess: false }];
     const h = createSdmHandlers(ctx, makeDeps({ scan: async () => ({ resources, fromCache: true }) }));
-    const r = await h["sdm:catalog"]!({});
+    const r = await h["sdm:catalog"]!({}) as any;
     expect(r.ok).toBe(true);
     expect(r.resources).toEqual(resources);
     expect(r.fromCache).toBe(true);
@@ -52,7 +52,7 @@ describe("sdm handlers", () => {
     const h = createSdmHandlers(ctx, makeDeps({
       scan: async () => ({ resources: [], fromCache: false, error: "sdm unavailable" }),
     }));
-    const r = await h["sdm:catalog"]!({});
+    const r = await h["sdm:catalog"]!({}) as any;
     expect(r.ok).toBe(true);
     expect(r.resources).toEqual([]);
     expect(r.error).toBe("sdm unavailable");
@@ -72,7 +72,7 @@ describe("sdm handlers", () => {
 
   test("sdm:snapshot serializes resources as a plain object", async () => {
     const h = createSdmHandlers(ctx, makeDeps());
-    const r = await h["sdm:snapshot"]!({});
+    const r = await h["sdm:snapshot"]!({}) as any;
     expect(r.ok).toBe(true);
     expect(r.health.status).toBe("ok");
     expect(r.resources["example-alpha-staging"].address).toBe("127.0.0.1:15432");
@@ -81,14 +81,14 @@ describe("sdm handlers", () => {
 
   test("sdm:recents joins live connected state", async () => {
     const h = createSdmHandlers(ctx, makeDeps());
-    const r = await h["sdm:recents"]!({});
+    const r = await h["sdm:recents"]!({}) as any;
     expect(r.ok).toBe(true);
     expect(r.recents[0].connected).toBe(true);
   });
 
   test("sdm:reconnect refuses when an access request is needed", async () => {
     const h = createSdmHandlers(ctx, makeDeps({ needsAccessRequest: async () => true }));
-    const r = await h["sdm:reconnect"]!({ key: "demo:alpha" });
+    const r = await h["sdm:reconnect"]!({ key: "demo:alpha" }) as any;
     expect(r.ok).toBe(false);
     expect(r.outcome).toBe("needs-access-request");
   });
@@ -101,7 +101,7 @@ describe("sdm handlers", () => {
         return { version: 1, recents: [] };
       },
     }));
-    const r = await h["sdm:reconnect"]!({ key: "demo:alpha" });
+    const r = await h["sdm:reconnect"]!({ key: "demo:alpha" }) as any;
     expect(r.ok).toBe(true);
     expect(r.address).toBe("127.0.0.1:15432");
     expect(recorded.tier).toBe("staging");
@@ -110,7 +110,7 @@ describe("sdm handlers", () => {
 
   test("sdm:reconnect rejects an unknown key", async () => {
     const h = createSdmHandlers(ctx, makeDeps());
-    const r = await h["sdm:reconnect"]!({ key: "nope:missing" });
+    const r = await h["sdm:reconnect"]!({ key: "nope:missing" }) as any;
     expect(r.ok).toBe(false);
     expect(r.error).toContain("unknown");
   });

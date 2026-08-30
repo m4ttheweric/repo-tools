@@ -6,6 +6,12 @@
  * self-authored transition. Static source checks (matching this file's
  * established S048/S049 test style — see freshness-provider-rotation.test.ts —
  * since GitLabProvider is an external network client with no test seam).
+ *
+ * R031: the real implementation now lives inside freshness.ts's
+ * `createFreshnessCore()` closure (an un-exported `async function`); a thin
+ * `export function resolveUserIdAcrossTracking(...)` wrapper below it
+ * delegates to the lazily-created default core. Both checks below account
+ * for that split.
  */
 import { test, expect } from "bun:test";
 import { readFileSync } from "fs";
@@ -15,11 +21,12 @@ const freshnessSrc = readFileSync(resolve(import.meta.dir, "..", "freshness.ts")
 const cacheRefreshSrc = readFileSync(resolve(import.meta.dir, "..", "cache-refresh.ts"), "utf8");
 
 test("S022: a mode-independent userId resolver is exported from freshness.ts", () => {
-  expect(freshnessSrc).toMatch(/export async function resolveUserIdAcrossTracking\(/);
+  expect(freshnessSrc).toMatch(/export function resolveUserIdAcrossTracking\(/);
+  expect(freshnessSrc).toMatch(/async function resolveUserIdAcrossTracking\(/);
 });
 
 test("S022: the resolver gates on the branches/project-mrs grant, not on live mode", () => {
-  const fn = freshnessSrc.match(/export async function resolveUserIdAcrossTracking\([\s\S]*?\n\}\n/)?.[0];
+  const fn = freshnessSrc.match(/async function resolveUserIdAcrossTracking\([\s\S]*?\n {2}\}\n/)?.[0];
   expect(fn).toBeTruthy();
   expect(fn).toMatch(/caches\.has\(["']branches["']\)/);
   expect(fn).toMatch(/caches\.has\(["']project-mrs["']\)/);

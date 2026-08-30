@@ -5,7 +5,7 @@
  */
 
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
-import type { CommandResult, HandlerMap, TypedHandlers } from "./types.ts";
+import type { CommandResult } from "./types.ts";
 import type { EventsBus } from "../events-bus.ts";
 
 const num = (v: unknown): number | undefined => {
@@ -14,35 +14,51 @@ const num = (v: unknown): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-// events:wait is declared as a named member (not left to the HandlerMap index
-// signature — that would fail TypedHandlers' required-key check in
-// buildRoutedHandlers) with the widened (payload, signal?) shape, which stays
-// assignable to TypedHandlers' payload-only signature.
+// events.db is a shared journal (S047, R030): a client that omits `limit`
+// must not be able to force a full-table read. 500 rows covers any
+// realistic catch-up page; a paginating client still gets more via cursor.
+const DEFAULT_LIST_LIMIT = 500;
+
+// payload is cast, not schema-validated, so limit <= 0 or fractional must
+// not reach eventsAfter's paging math (0/negative breaks it; see
+// events-bus.ts). A supplied positive limit passes through unshrunk, even
+// above DEFAULT_LIST_LIMIT: the default only covers an omitted limit.
+const clampListLimit = (n: number | undefined): number => Math.max(1, Math.floor(n ?? DEFAULT_LIST_LIMIT));
+
+// Every member takes a direct `unknown` payload rather than
+// `Pick<TypedHandlers, ...>`'s per-command type: a wider `unknown` param
+// still satisfies TypedHandlers' narrower one at the command-router.ts
+// assembly site (function parameter contravariance), and stays directly
+// assignable to Handler with no HandlerMap-intersection escape hatch needed.
 export function createEventsHandlers(
   bus: EventsBus,
   broadcast: (type: string, data: any) => void,
-): Pick<TypedHandlers, "events:emit" | "events:list" | "events:head"> & {
-  "events:wait": (
-    payload: Commands["events:wait"]["payload"],
-    signal?: AbortSignal,
-  ) => Promise<CommandResult<"events:wait">>;
-} & HandlerMap {
+): { "events:emit": (payload: unknown) => Promise<CommandResult<"events:emit">> }
+  & { "events:list": (payload: unknown) => Promise<CommandResult<"events:list">> }
+  & { "events:head": (payload: unknown) => Promise<CommandResult<"events:head">> }
+  & { "events:wait": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"events:wait">> } {
   return {
-    "events:emit": async (payload: Commands["events:emit"]["payload"]) => {
+    "events:emit": async (rawPayload: unknown) => {
+      const payload = rawPayload as Commands["events:emit"]["payload"] | undefined;
       const topic = typeof payload?.topic === "string" ? payload.topic.trim() : "";
       if (!topic) return { ok: false as const, error: "missing topic" };
       // One timestamp for both the journal row and the broadcast frame, so a
       // consumer comparing the two never sees them disagree.
       const emittedAt = Date.now();
-      const id = bus.emitAt(topic, payload.payload, emittedAt);
-      broadcast("event", { id, topic, payload: payload.payload ?? null, emittedAt });
+      const id = bus.emitAt(topic, payload?.payload, emittedAt);
+      broadcast("event", { id, topic, payload: payload?.payload ?? null, emittedAt });
       return { ok: true as const, data: { id } };
     },
 
-    "events:list": async (payload: Commands["events:list"]["payload"]) => {
+    "events:list": async (rawPayload: unknown) => {
+      const payload = rawPayload as Commands["events:list"]["payload"] | undefined;
       const pattern = typeof payload?.pattern === "string" ? payload.pattern.trim() : "";
       if (!pattern) return { ok: false as const, error: "missing pattern" };
-      const { events, cursor } = bus.list({ pattern, after: num(payload.after), limit: num(payload.limit) });
+      const { events, cursor } = bus.list({
+        pattern,
+        after: num(payload?.after),
+        limit: clampListLimit(num(payload?.limit)),
+      });
       return { ok: true as const, data: { events, cursor } };
     },
 
@@ -52,13 +68,14 @@ export function createEventsHandlers(
 
     // Widened-Handler shape: receives the request AbortSignal from the seam
     // so a dead client's waiter is removed instead of lingering to the cap.
-    "events:wait": async (payload: Commands["events:wait"]["payload"], signal?: AbortSignal) => {
+    "events:wait": async (rawPayload: unknown, signal?: AbortSignal) => {
+      const payload = rawPayload as Commands["events:wait"]["payload"] | undefined;
       const pattern = typeof payload?.pattern === "string" ? payload.pattern.trim() : "";
       if (!pattern) return { ok: false as const, error: "missing pattern" };
       const { events, cursor } = await bus.wait({
         pattern,
-        after: num(payload.after),
-        waitMs: num(payload.waitMs),
+        after: num(payload?.after),
+        waitMs: num(payload?.waitMs),
         signal,
       });
       return { ok: true as const, data: { events, cursor } };

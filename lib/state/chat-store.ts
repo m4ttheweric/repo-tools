@@ -123,8 +123,26 @@ const INSERT_MEMBER_SQL = `INSERT INTO chat_members (room, handle, joined_at, la
 const DELETE_MEMBER_SQL = `DELETE FROM chat_members WHERE room = ? AND handle = ?;`;
 const UPDATE_LAST_READ_SQL = `UPDATE chat_members SET last_read_id = ? WHERE room = ? AND handle = ?;`;
 
+/** How long a message survives before it's eligible for pruning (R053). */
+export const CHAT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+/** The newest N messages per room that pruneMessages never deletes, age floor notwithstanding -- a live room is never emptied. */
+export const CHAT_ROOM_FLOOR = 200;
+
 const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at";
 const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at) VALUES (?, ?, ?, ?, ?, ?);`;
+// Ranks each room's own messages newest-first (rn=1 is the newest); a row is
+// only a delete candidate once it falls outside the per-room floor AND past
+// the age cutoff -- either condition alone must keep it.
+const PRUNE_MESSAGES_SQL = `
+DELETE FROM chat_messages
+WHERE id IN (
+  SELECT id FROM (
+    SELECT id, posted_at, ROW_NUMBER() OVER (PARTITION BY room ORDER BY id DESC) AS rn
+    FROM chat_messages
+  )
+  WHERE rn > ? AND posted_at < ?
+);
+`;
 const SELECT_UNREAD_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? ORDER BY id ASC LIMIT ?;`;
 const SELECT_SINCE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND posted_at >= ? ORDER BY id ASC LIMIT ?;`;
 const SELECT_MESSAGES_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? ORDER BY id DESC LIMIT ?;`;
@@ -465,6 +483,22 @@ export function listMessages(
       : db.query(SELECT_MESSAGES_SQL).all(room, limit)
   ) as MessageRow[];
   return rows.reverse().map(rowToMessage);
+}
+
+/**
+ * The daily retention sweep (R053): deletes messages older than
+ * `olderThanMs` EXCEPT the newest `perRoomFloor` per room, which survive
+ * regardless of age -- the floor is what keeps a quiet-but-live room from
+ * ever being emptied outright.
+ */
+export function pruneMessages(
+  db: Database,
+  opts: { olderThanMs?: number; perRoomFloor?: number } = {},
+): { removed: number } {
+  const cutoff = Date.now() - (opts.olderThanMs ?? CHAT_RETENTION_MS);
+  const floor = opts.perRoomFloor ?? CHAT_ROOM_FLOOR;
+  const result = db.query(PRUNE_MESSAGES_SQL).run(floor, cutoff);
+  return { removed: result.changes };
 }
 
 export function markRead(handle: string, room?: string, db: Database = getStateDb()): void {

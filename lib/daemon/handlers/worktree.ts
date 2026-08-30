@@ -28,10 +28,11 @@
  * sides now key on that same identity string.
  */
 
-import { realpathSync, rmSync } from "fs";
+import { rmSync } from "fs";
 import { join } from "path";
 
-import { parseIdentity } from "../../settings/identity.ts";
+import { canon } from "../../fs-canon.ts";
+import { decodeRepo, type SerializedIdentity } from "../identity-decoder.ts";
 import { validateGitRef } from "../git-ref-validation.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import {
@@ -41,6 +42,7 @@ import {
   type DisposalMode,
   type TreeRecord,
 } from "../../worktree/registry.ts";
+import { patchTree } from "../../worktree/patch.ts";
 import { disambiguate, slugifyTicketTitle } from "../../worktree/branch-name.ts";
 import { createTree } from "../../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree, type DisposeDeps } from "../../worktree/dispose.ts";
@@ -84,27 +86,11 @@ export interface WorktreeHandlerOpts {
   kick: () => void;
   /** The live replenish create for a repo, or null; provision joins it rather than racing it. */
   creationInFlight: (repoName: string) => Promise<void> | null;
+  /** Excludes reconciler passes -- not other registry writers -- for the duration of `fn`. */
+  withReconcilerHeld: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 // ─── Small shared helpers ────────────────────────────────────────────────────
-
-/** realpathSync defensively; a path that doesn't exist compares as-is. */
-function canon(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
-/** Returns whether the save landed... false means the mutation is only in the caller's discarded `trees` snapshot, never on disk. */
-function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): boolean {
-  const trees = loadRegistry(repoName);
-  const rec = trees.find((t) => t.path === path);
-  if (!rec) return false;
-  patch(rec);
-  return saveRegistry(repoName, trees);
-}
 
 /**
  * `create-failed:<step>` carrying the tail of that step's output, same shape as
@@ -161,18 +147,19 @@ async function localBranchNames(repoPath: string): Promise<Set<string>> {
  * bare legacy name would otherwise start a fresh registry under a key
  * nothing else reads, silently reintroducing legacy-keyed rows post-migration.
  */
-function targetRepos(ctx: HandlerContext, repoName?: string): Array<[string, string]> {
+function targetRepos(ctx: Pick<HandlerContext, "repoIndex">, repoName?: string): Array<[string, string]> {
   const index = ctx.repoIndex();
   if (repoName) {
-    if (parseIdentity(repoName) === null) return [];
-    const path = index[repoName];
-    return path ? [[repoName, path]] : [];
+    const decoded = decodeRepo({ repoName });
+    if (!decoded.ok) return [];
+    const path = index[decoded.repo];
+    return path ? [[decoded.repo, path]] : [];
   }
   return Object.entries(index);
 }
 
 function disposeDeps(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "cache" | "log">,
   opts: WorktreeHandlerOpts,
   repoName: string,
   repoPath: string,
@@ -246,10 +233,19 @@ export function isClaimable(rec: TreeRecord | undefined): boolean {
   return rec !== undefined && rec.kind === "ephemeral" && rec.state === "on-deck";
 }
 
+// Named-key return type (not a bare HandlerMap), same trick as
+// endpoint.ts/repos.ts: keeps every command's compile-time proof (it exists,
+// for TypedHandlers) without narrowing this factory's `payload: any` reads,
+// which stays out of scope per the B2 ruling (worktree.ts, repos.ts,
+// endpoint.ts, home.ts, settings.ts all keep loose payload handling).
 export function createWorktreeHandlers(
-  ctx: HandlerContext,
+  ctx: Pick<HandlerContext, "repoIndex" | "cache" | "log">,
   opts: WorktreeHandlerOpts,
-): HandlerMap {
+): Record<
+    "worktree:provision" | "worktree:create" | "worktree:dispose" | "worktree:list"
+    | "worktree:restore" | "worktree:freshen" | "worktree:adopt",
+    (payload: any, signal?: AbortSignal) => Promise<any>
+  > & HandlerMap {
   /**
    * Undo a claim that could not be completed. Still on its `on-deck/<name>`
    * branch → the tree is untouched and goes back in the pool; already moved
@@ -285,9 +281,11 @@ export function createWorktreeHandlers(
 
   return {
     "worktree:provision": async (payload: any) => {
-      const repoName: string | undefined = payload?.repoName;
-      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
 
       const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
       const trees = loadRegistry(repoName);
@@ -493,9 +491,11 @@ export function createWorktreeHandlers(
     },
 
     "worktree:create": async (payload: any) => {
-      const repoName: string | undefined = payload?.repoName;
-      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
 
       const created = await withCreateLock(repoPath, () => createTree({ repoName, repoPath, emit: opts.emit, log: ctx.log }));
       if (!created.ok) {
@@ -610,9 +610,11 @@ export function createWorktreeHandlers(
     },
 
     "worktree:restore": async (payload: any) => {
-      const repoName: string | undefined = payload?.repoName;
-      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
       const treeName: string | undefined = typeof payload?.tree === "string" ? payload.tree : undefined;
       if (!treeName || treeName === "." || treeName === ".." || treeName.includes("/") || treeName.includes("\\")) {
         return { ok: false, error: "no-target" };
@@ -644,15 +646,20 @@ export function createWorktreeHandlers(
       const repos = targetRepos(ctx, payload?.repoName);
       if (repos.length === 0) return { ok: false, error: "repo-unknown" };
 
-      const ran: string[] = [];
-      for (const [repoName, repoPath] of repos) {
-        const names = await freshenRepo(
-          { repoName, repoPath, emit: opts.emit, log: ctx.log },
-          treeName ? { only: treeName } : {},
-        );
-        ran.push(...names);
-      }
-      return { ok: true, data: { ran } };
+      // Runs under the reconciler hold: a concurrent reconciler pass runs this
+      // same freshen duty per repo, and an interleaved run would double-freshen
+      // or race the same tree's checkout against itself.
+      return opts.withReconcilerHeld(async () => {
+        const ran: string[] = [];
+        for (const [repoName, repoPath] of repos) {
+          const names = await freshenRepo(
+            { repoName, repoPath, emit: opts.emit, log: ctx.log },
+            treeName ? { only: treeName } : {},
+          );
+          ran.push(...names);
+        }
+        return { ok: true, data: { ran } };
+      });
     },
 
     /**
@@ -664,13 +671,16 @@ export function createWorktreeHandlers(
      * branch it is already sitting on.
      */
     "worktree:adopt": async (payload: any) => {
-      const repoName: string | undefined = payload?.repoName;
-      const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
-      if (!repoName || !repoPath || parseIdentity(repoName) === null) return { ok: false, error: "repo-unknown" };
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
 
-      // Repo-wide lock: adopt rewrites every entry, so no per-tree operation
-      // may interleave with it. Synthetic key (no tree lives at this path).
-      const result = await withTreeLock(`${repoPath}#adopt`, async () => {
+      // Runs under the reconciler hold: adopt rewrites every entry, and a
+      // concurrent reconciler pass reading the same rows mid-rewrite would
+      // prune or reclassify trees adopt has not gotten to yet.
+      const result = await opts.withReconcilerHeld(async () => {
         const trees = await reconcileRepoRegistry({
           repoName, repoPath, emit: opts.emit, log: ctx.log,
         });
@@ -734,7 +744,6 @@ export function createWorktreeHandlers(
         return { ok: true as const, data: { main, claimed, unmanaged, disposed, refused } };
       });
 
-      if (result === "busy") return { ok: false, error: "busy" };
       if (result.ok) {
         // Adopt supersedes the parking lot: its per-repo index and app-level
         // transition state are dead once every tree is registry-tracked. The

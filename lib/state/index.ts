@@ -56,6 +56,12 @@ export {
   getStateDb,
   stateDbPath,
   closeStateDb,
+  backupTo,
+  quickCheck,
+  stateBackupsDir,
+  stampedBackupPath,
+  listStateBackups,
+  pruneStateBackups,
   type DbFlavor,
   type LegacyImport,
 } from "./db.ts";
@@ -116,6 +122,9 @@ export {
   roomArchivedAt,
   roomDefaultWake,
   listMembers,
+  pruneMessages,
+  CHAT_RETENTION_MS,
+  CHAT_ROOM_FLOOR,
   type ChatMember,
   type ChatMessage,
   type WakeMode,
@@ -124,7 +133,7 @@ export {
 
 export {
   insertAgent, getAgent, listAgents, updateAgentPane, markAgentResumed,
-  finishAgent, deleteAgent, newAgentId,
+  finishAgent, deleteAgent, newAgentId, pruneAgents, AGENTS_RETENTION_MS,
   type AgentRecord, type AgentSurface,
 } from "./agents-store.ts";
 

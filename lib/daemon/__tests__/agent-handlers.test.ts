@@ -27,14 +27,22 @@ function fresh(over: {
   insertAgentFn?: (...args: unknown[]) => void;
 } = {}) {
   const db = openStateDb(join(tmpdir(), `agent-h-${process.pid}-${n++}.db`));
-  return createAgentHandlers({
+  // Handlers no longer expose `db` (R028); tests that need to reach the
+  // underlying table directly get it back alongside the handler map.
+  return Object.assign(createAgentHandlers({
     db,
     emitEvent: over.emit ?? (() => 0),
     herdrRunner: over.runner,
     spawnHeadless: over.spawn,
     insertAgentFn: over.insertAgentFn as typeof import("../../state/index.ts").insertAgent | undefined,
-  });
+  }), { db });
 }
+
+test("agent:start returns ok:false for a null payload instead of throwing on destructure", async () => {
+  const h = fresh();
+  const res = await h["agent:start"](null as unknown as never);
+  expect(res.ok).toBe(false);
+});
 
 test("agent:start herdr records pane ids and a minted session uuid", async () => {
   const calls: string[][] = [];

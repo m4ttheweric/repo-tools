@@ -8,9 +8,8 @@ import { rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { endpointsPath, loadClaims, rekeyEndpointClaimsTable } from "../../endpoint/store.ts";
 import { closeStateDb, listEndpointClaims } from "../../state/index.ts";
 import { serializeIdentity } from "../../settings/identity.ts";
-import type { RepoIndex } from "../handlers/types.ts";
+import type { HandlerContext, RepoIndex } from "../handlers/types.ts";
 import { createEndpointHandlers, releaseEndpointsForWorktree } from "../handlers/endpoint.ts";
-import type { HandlerContext } from "../handlers/types.ts";
 
 /**
  * The daemon's repo index, as the handlers see it. Reset per test alongside
@@ -18,7 +17,7 @@ import type { HandlerContext } from "../handlers/types.ts";
  * stores' `repos.<identity>` sections reachable.
  */
 let repoIndex: RepoIndex = {};
-let ctx: HandlerContext;
+let ctx: Pick<HandlerContext, "log" | "repoIndex">;
 const fakeProbes = async () => ({ listeners: new Set<number>(), pidAlive: () => true, pidStartTime: () => undefined, canBind: () => true });
 
 const DEFAULT_ROLES = {
@@ -70,7 +69,7 @@ describe("endpoint handlers", () => {
     process.env.HOME = home;
     closeStateDb();
     repoIndex = {};
-    ctx = { log: pino({ level: "silent" }), repoIndex: () => repoIndex } as unknown as HandlerContext;
+    ctx = { log: pino({ level: "silent" }), repoIndex: () => repoIndex };
     handlers = createEndpointHandlers(ctx, { probes: fakeProbes });
   });
 

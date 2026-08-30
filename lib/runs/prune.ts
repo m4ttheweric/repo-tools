@@ -5,34 +5,21 @@
  * and must stay in front of every rmSync.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, realpathSync, statSync, type Dirent } from "fs";
-import { basename, dirname, join, sep } from "path";
+import { existsSync, readdirSync, statSync, type Dirent } from "fs";
+import { join, sep } from "path";
+import { canon } from "../fs-canon.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { runsRoot } from "./store.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 
-// realpathSync resolves symlinks (worktree.ts's `canon` precedent), but a
-// plain try/catch->resolve() fallback would compare a canonicalized root
-// against a non-canonicalized candidate whenever the candidate (or a
-// component of it) doesn't exist yet — e.g. macOS's /var -> /private/var,
-// which breaks the prefix check even with no symlink attack involved. Walk
-// up to the deepest existing ancestor, canonicalize THAT, and reattach the
-// missing tail lexically, so both sides always go through the same scheme.
-function canon(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    const parent = dirname(path);
-    if (parent === path) return path;
-    return join(canon(parent), basename(path));
-  }
-}
-
 // Both sides are canonicalized (not just resolve()'d) so a symlinked
 // intermediate component — e.g. <root>/<repo> pointed outside the runs
 // root — resolves to its real target before the prefix check, rather than
-// passing on the pre-symlink spelling.
+// passing on the pre-symlink spelling. `dir` always exists here (pruneRuns
+// only calls this with a path returned by realDirNames), so the shared
+// canon()'s realpath-or-unchanged fallback never has to compare a resolved
+// root against an unresolved candidate.
 export function assertPrunable(dir: string, root: string): void {
   const canonical = canon(dir);
   const canonicalRoot = canon(root);

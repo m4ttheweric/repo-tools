@@ -144,7 +144,12 @@ describe("provision claim: a dropped write is refused, not silently accepted", (
     const events: Array<{ type: string; data: any }> = [];
     const h = createWorktreeHandlers(
       { cache: fakeStore(), repoIndex: () => ({ [repoName]: repo }), log: fakeLog(), refreshCache: async () => {} } as any,
-      { emit: (type, data) => events.push({ type, data }), kick: () => {}, creationInFlight: () => null },
+      {
+        emit: (type, data) => events.push({ type, data }),
+        kick: () => {},
+        creationInFlight: () => null,
+        withReconcilerHeld: async (fn) => fn(),
+      },
     );
 
     getStateDb("daemon");

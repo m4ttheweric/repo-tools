@@ -10,6 +10,7 @@
  *   rt chat rooms
  *   rt chat who [room]
  *   rt chat mark [room]
+ *   rt chat prune [--json]                          delete messages past the retention floor (also runs daily in the daemon)
  *   rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]
  *   rt chat sign-in --pane <id> [--as <h>] [--status <text>]   sign in a herdr pane's session, no CLAUDE_CODE_SESSION_ID needed
  *   rt chat sign-out [--quiet] [--session <id>]
@@ -41,12 +42,13 @@ import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
 import { findGitRoot, repoAliasForPath, resolveMainWorktreePath } from "../lib/repo-for-cwd.ts";
 import { slugifyChatName as slugify } from "../lib/chat-room-name.ts";
-import { roomForIdentity, deriveRoomForCwd } from "../lib/chat-room.ts";
+import { roomForIdentity } from "../lib/chat-room.ts";
+import { deriveRoomForCwd } from "../lib/chat-room-cli.ts";
 import { getCurrentBranch, getRepoRoot } from "../lib/git.ts";
 import { getRepoIdentityForRoot } from "../lib/repo.ts";
 import { parseIdentity } from "../lib/settings/identity.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
-import { isValidChatName } from "../lib/state/index.ts";
+import { isValidChatName, pruneMessages, getStateDb } from "../lib/state/index.ts";
 import { shellQuote } from "../lib/herdr-launch.ts";
 import {
   currentSessionId,
@@ -803,6 +805,21 @@ async function runMark(args: string[]): Promise<void> {
 }
 
 /**
+ * Runs the same retention sweep the daemon fires daily (R053), directly
+ * against the local state.db -- no daemon round trip, same as `rt repos
+ * prune` against the repo index. Safe to run with the daemon up or down.
+ */
+async function runPrune(args: string[]): Promise<void> {
+  const { removed } = pruneMessages(getStateDb());
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, removed }));
+    return;
+  }
+  console.log(removed > 0 ? `pruned ${removed} old chat message${removed === 1 ? "" : "s"}` : "nothing to prune");
+}
+
+/**
  * Find-or-create the DM room and post — the recipient travels in `mentions`
  * (never prepended to the body), matching join+post's own body-splice guard:
  * the transcript reads exactly as typed and the desk still notifies when the
@@ -930,9 +947,10 @@ async function runSignIn(args: string[]): Promise<void> {
  * never consulted. The daemon still derives cwd/repo/branch/room and joins a
  * room, just from the TARGET pane's cwd (via herdr), not from this one, and
  * through the SAME deriveRoomForCwd/roomForIdentity codec this file's own
- * sign-in uses (lib/chat-room.ts) -- so the room a pane-signed-in agent
- * lands in never diverges from the one a normally-signed-in agent for the
- * same repo would. `--room`/`--no-room` still work: they travel through
+ * sign-in uses (lib/chat-room-cli.ts / lib/chat-room.ts) -- so the room a
+ * pane-signed-in agent lands in never diverges from the one a
+ * normally-signed-in agent for the same repo would. `--room`/`--no-room`
+ * still work: they travel through
  * unchanged and the daemon honors them the same way it honors its own
  * derivation. The resolved sessionId and room travel back in the response
  * so this process can write the session file for the pane it just signed
@@ -1085,7 +1103,7 @@ async function runBack(args: string[]): Promise<void> {
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "usage: rt chat <join|leave|archive|post|read|rooms|who|mark|sign-in|sign-out|away|back|buddies|dm|invite> ...";
+  "usage: rt chat <join|leave|archive|post|read|rooms|who|mark|prune|sign-in|sign-out|away|back|buddies|dm|invite> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   join: runJoin,
@@ -1096,6 +1114,7 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   rooms: runRooms,
   who: runWho,
   mark: runMark,
+  prune: runPrune,
   "sign-in": runSignIn,
   "sign-out": runSignOut,
   away: runAway,
@@ -1115,6 +1134,7 @@ const VERB_HINTS: Record<string, string> = {
   leave: "leave a room",
   mark: "mark a room read",
   archive: "park a room (post revives it)",
+  prune: "delete old messages past the retention floor",
   "sign-in": "sign in and set presence",
   "sign-out": "sign out",
   away: "set an away status",

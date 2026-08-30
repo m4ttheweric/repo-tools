@@ -53,7 +53,7 @@ import { deriveRoomForCwdAsync } from "../../chat-room.ts";
 import { runCapture } from "../../subprocess.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
-import type { CommandResult, TypedHandlers } from "./types.ts";
+import type { CommandResult } from "./types.ts";
 
 export type InboxDeps = { resolve: typeof resolveInbox; deliver: typeof deliverToInbox };
 const defaultInboxDeps: InboxDeps = { resolve: resolveInbox, deliver: deliverToInbox };
@@ -452,7 +452,13 @@ export function createChatHandlers(opts: {
   paneSessionPollMs?: number;
   /** Request logger; wired from ctx.log by command-router.ts. */
   log?: Logger;
-}): Pick<TypedHandlers, (typeof CHAT_COMMANDS)[number]> & { db: Database } {
+}): {
+  // A mapped type over CHAT_COMMANDS with a direct `unknown` payload, not
+  // `Pick<TypedHandlers, ...>`: a wider `unknown` param still satisfies
+  // TypedHandlers' narrower one at the command-router.ts assembly site
+  // (function parameter contravariance).
+  [K in (typeof CHAT_COMMANDS)[number]]: (payload: unknown) => Promise<CommandResult<K>>;
+} {
   const { db, emitEvent } = opts;
   const log = opts.log ?? defaultLog;
   const herdr = opts.herdr ?? herdrRequest;
@@ -467,9 +473,9 @@ export function createChatHandlers(opts: {
   const deliveryChains = new Map<string, Promise<void>>();
 
   return {
-    db,
-
-    "chat:join": async (payload: Commands["chat:join"]["payload"]): Promise<CommandResult<"chat:join">> => {
+    "chat:join": async (rawPayload: unknown): Promise<CommandResult<"chat:join">> => {
+      if (!rawPayload || typeof rawPayload !== "object") return { ok: false, error: "chat:join requires an object payload" };
+      const payload = rawPayload as Commands["chat:join"]["payload"];
       const { room, handle, wakeOn, cwd, pane } = payload;
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
@@ -484,12 +490,14 @@ export function createChatHandlers(opts: {
       }
     },
 
-    "chat:leave": async (payload: Commands["chat:leave"]["payload"]): Promise<CommandResult<"chat:leave">> => {
+    "chat:leave": async (rawPayload: unknown): Promise<CommandResult<"chat:leave">> => {
+      const payload = rawPayload as Commands["chat:leave"]["payload"];
       leaveRoom(payload.room, payload.handle, db);
       return { ok: true, data: {} };
     },
 
-    "chat:post": async (payload: Commands["chat:post"]["payload"]): Promise<CommandResult<"chat:post">> => {
+    "chat:post": async (rawPayload: unknown): Promise<CommandResult<"chat:post">> => {
+      const payload = rawPayload as Commands["chat:post"]["payload"];
       const { room, handle, body, mentions } = payload;
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
@@ -509,13 +517,15 @@ export function createChatHandlers(opts: {
       return { ok: true, data: posted };
     },
 
-    "chat:read": async (payload: Commands["chat:read"]["payload"]): Promise<CommandResult<"chat:read">> => {
+    "chat:read": async (rawPayload: unknown): Promise<CommandResult<"chat:read">> => {
+      const payload = rawPayload as Commands["chat:read"]["payload"];
       const { handle, room, limit, sinceMs } = payload;
       const rooms = readUnread({ handle, room, limit: clampLimit(limit, 20), sinceMs }, db);
       return { ok: true, data: { rooms } };
     },
 
-    "chat:rooms": async (payload: Commands["chat:rooms"]["payload"]): Promise<CommandResult<"chat:rooms">> => {
+    "chat:rooms": async (rawPayload: unknown): Promise<CommandResult<"chat:rooms">> => {
+      const payload = rawPayload as Commands["chat:rooms"]["payload"];
       const rooms = listRooms(payload.handle, db, { includeArchived: payload.includeArchived === true }).map((room) => {
         const defaultWake = roomDefaultWake(room.room, db);
         const withDefault = defaultWake ? { ...room, defaultWake } : room;
@@ -525,7 +535,8 @@ export function createChatHandlers(opts: {
       return { ok: true, data: { rooms } };
     },
 
-    "chat:who": async (payload: Commands["chat:who"]["payload"]): Promise<CommandResult<"chat:who">> => {
+    "chat:who": async (rawPayload: unknown): Promise<CommandResult<"chat:who">> => {
+      const payload = rawPayload as Commands["chat:who"]["payload"];
       const now = Date.now();
       const th = presenceThresholds();
       const dm = dmParticipants(payload.room, db);
@@ -553,18 +564,21 @@ export function createChatHandlers(opts: {
       return { ok: true, data: { members } };
     },
 
-    "chat:mark": async (payload: Commands["chat:mark"]["payload"]): Promise<CommandResult<"chat:mark">> => {
+    "chat:mark": async (rawPayload: unknown): Promise<CommandResult<"chat:mark">> => {
+      const payload = rawPayload as Commands["chat:mark"]["payload"];
       markRead(payload.handle, payload.room, db);
       return { ok: true, data: {} };
     },
 
-    "chat:messages": async (payload: Commands["chat:messages"]["payload"]): Promise<CommandResult<"chat:messages">> => {
+    "chat:messages": async (rawPayload: unknown): Promise<CommandResult<"chat:messages">> => {
+      const payload = rawPayload as Commands["chat:messages"]["payload"];
       const { room, before, limit } = payload;
       const messages = listMessages({ room, before, limit: clampLimit(limit, 50) }, db);
       return { ok: true, data: { messages } };
     },
 
-    "chat:sign-in": async (payload: Commands["chat:sign-in"]["payload"]): Promise<CommandResult<"chat:sign-in">> => {
+    "chat:sign-in": async (rawPayload: unknown): Promise<CommandResult<"chat:sign-in">> => {
+      const payload = rawPayload as Commands["chat:sign-in"]["payload"];
       const { baseHandle, cwd, repo, branch, pane, statusText, viaPane, room: explicitRoom, noRoom } = payload;
       if (baseHandle !== undefined && !isValidChatName(baseHandle)) return { ok: false, error: `invalid handle "${baseHandle}"` };
       if (explicitRoom !== undefined && !isValidChatName(explicitRoom)) return { ok: false, error: `invalid room "${explicitRoom}"` };
@@ -667,7 +681,8 @@ export function createChatHandlers(opts: {
     // path chat:sign-in --pane uses, so a foreign CLAUDE_CODE_SESSION_ID the
     // caller happens to have inherited never substitutes for the target
     // pane's own session -- that would sign the wrong session out.
-    "chat:sign-out": async (payload: Commands["chat:sign-out"]["payload"]): Promise<CommandResult<"chat:sign-out">> => {
+    "chat:sign-out": async (rawPayload: unknown): Promise<CommandResult<"chat:sign-out">> => {
+      const payload = rawPayload as Commands["chat:sign-out"]["payload"];
       let sessionId = payload.sessionId;
       if (payload.viaPane) {
         if (!payload.pane) return { ok: false, error: "chat: sign-out --pane requires a pane id" };
@@ -683,14 +698,16 @@ export function createChatHandlers(opts: {
       return { ok: true, data: { sessionId } };
     },
 
-    "chat:away": async (payload: Commands["chat:away"]["payload"]): Promise<CommandResult<"chat:away">> => {
+    "chat:away": async (rawPayload: unknown): Promise<CommandResult<"chat:away">> => {
+      const payload = rawPayload as Commands["chat:away"]["payload"];
       const err = assertionError(() => assertSessionSignedIn(payload.sessionId, db));
       if (err) return { ok: false, error: err };
       setAway(payload.sessionId, payload.text, db);
       return { ok: true, data: {} };
     },
 
-    "chat:back": async (payload: Commands["chat:back"]["payload"]): Promise<CommandResult<"chat:back">> => {
+    "chat:back": async (rawPayload: unknown): Promise<CommandResult<"chat:back">> => {
+      const payload = rawPayload as Commands["chat:back"]["payload"];
       const err = assertionError(() => assertSessionSignedIn(payload.sessionId, db));
       if (err) return { ok: false, error: err };
       setAway(payload.sessionId, null, db);
@@ -701,7 +718,8 @@ export function createChatHandlers(opts: {
       return { ok: true, data: { buddies: listBuddies(Date.now(), db, registryDeps) } };
     },
 
-    "chat:dm": async (payload: Commands["chat:dm"]["payload"]): Promise<CommandResult<"chat:dm">> => {
+    "chat:dm": async (rawPayload: unknown): Promise<CommandResult<"chat:dm">> => {
+      const payload = rawPayload as Commands["chat:dm"]["payload"];
       const { from, to, body, sessionId } = payload;
       if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
       if (!isValidChatName(to)) return { ok: false, error: `invalid handle "${to}"` };
@@ -726,14 +744,16 @@ export function createChatHandlers(opts: {
       return { ok: true, data: { room, id: posted.id, recipients: posted.recipients } };
     },
 
-    "chat:invite": async (payload: Commands["chat:invite"]["payload"]): Promise<CommandResult<"chat:invite">> => {
+    "chat:invite": async (rawPayload: unknown): Promise<CommandResult<"chat:invite">> => {
+      const payload = rawPayload as Commands["chat:invite"]["payload"];
       const { paneId, room, note, from, callerPane } = payload;
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
       if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
       return injectIntoPane({ paneId, text: inviteText(room, from, note), callerPane, herdr });
     },
 
-    "chat:archive": async (payload: Commands["chat:archive"]["payload"]): Promise<CommandResult<"chat:archive">> => {
+    "chat:archive": async (rawPayload: unknown): Promise<CommandResult<"chat:archive">> => {
+      const payload = rawPayload as Commands["chat:archive"]["payload"];
       const { room, handle, archived } = payload;
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
@@ -745,7 +765,8 @@ export function createChatHandlers(opts: {
       }
     },
 
-    "chat:dm-open": async (payload: Commands["chat:dm-open"]["payload"]): Promise<CommandResult<"chat:dm-open">> => {
+    "chat:dm-open": async (rawPayload: unknown): Promise<CommandResult<"chat:dm-open">> => {
+      const payload = rawPayload as Commands["chat:dm-open"]["payload"];
       const { from, to, sessionId } = payload;
       if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
       if (!isValidChatName(to)) return { ok: false, error: `invalid handle "${to}"` };

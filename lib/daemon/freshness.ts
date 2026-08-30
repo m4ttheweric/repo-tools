@@ -24,6 +24,13 @@
  *   initFreshness(env)      — daemon startup, after first cache refresh
  *   reconcileFreshness(env) — tail of every refreshCache(); follows repo index
  *   disposeFreshness()      — daemon shutdown
+ *
+ * R031: every watcher/provider/user-id/cache above is held by
+ * `createFreshnessCore()`, not raw module-scope `let`s, so `createFreshness`
+ * can hand back a fully independent instance (see the exported factory near
+ * the bottom of this file). Everything the daemon and CLI already import as
+ * free functions stays a thin wrapper over one lazily-created default core,
+ * so no existing caller's behavior changes.
  */
 
 import { GitLabProvider, type InvalidationKey, type MRApprovalRules, type PullRequest } from "@mattstack/glance";
@@ -46,7 +53,7 @@ const log = lazyChildLogger("freshness");
 // ─── Env bundle (passed in from daemon.ts to avoid circular imports) ────────
 
 export interface FreshnessEnv {
-  ctx:       HandlerContext;
+  ctx:       Pick<HandlerContext, "cache" | "repoIndex">;
   broadcast: (type: string, data: any) => void;
 }
 
@@ -62,13 +69,7 @@ export interface FreshnessEnv {
 
 export { createCursorStore, type CursorStore };
 
-let cursorStoreSingleton: CursorStore | null = null;
-
-function cursorStore(): CursorStore {
-  return cursorStoreSingleton ??= createCursorStore();
-}
-
-// ─── State ───────────────────────────────────────────────────────────────────
+// ─── Per-repo live watcher state ─────────────────────────────────────────────
 
 /** Per-repo live watcher state. Structurally a BatchRunner (Task 3). */
 interface RepoWatch {
@@ -87,34 +88,8 @@ interface RepoWatch {
   disposed:     boolean;
 }
 
-const watches   = new Map<string, RepoWatch>();
-
 /** Bound merged pending so a wedged processKeys cannot grow memory unbounded. */
 export const PENDING_CAP = 1000;
-
-const providers = new Map<string, { provider: GitLabProvider; token: string }>();
-let   userId: number | null = null;
-let   userIdResolved = false;
-let   selfUsername: string | null = null;
-
-const remoteUrlCache = new Map<string, string | null>();
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/** remote.origin.url, cached per repoPath for the process lifetime (remotes
- *  rarely change). Async so it never blocks the event loop. */
-async function getRemoteUrl(repoPath: string): Promise<string | null> {
-  const cached = remoteUrlCache.get(repoPath);
-  if (cached !== undefined) return cached;
-  const r = await runCapture(["git", "config", "--get", "remote.origin.url"], {
-    cwd: repoPath,
-    timeoutMs: 5000,
-    stderr: "ignore",
-  });
-  const url = r.exitCode === 0 ? (r.stdout.trim() || null) : null;
-  remoteUrlCache.set(repoPath, url);
-  return url;
-}
 
 /** The same debug-accounting hook makeProvider wires, for SDK helpers rt constructs directly (NoteMutator). */
 export function providerRequestHook(): { onRequest: (info: { op: string; transport: "graphql" | "rest"; method: string; path: string; durationMs: number; status: number }) => void } {
@@ -134,247 +109,6 @@ export function providerRequestHook(): { onRequest: (info: { op: string; transpo
  */
 function makeProvider(host: string, token: string): GitLabProvider {
   return new GitLabProvider(host, token, providerRequestHook());
-}
-
-async function ensureProvider(repoName: string, repoPath: string): Promise<GitLabProvider | null> {
-  const secrets = await loadSecrets();
-  if (!secrets.gitlabToken) {
-    log.info(`no gitlabToken; skipping ${repoName}`);
-    return null;
-  }
-
-  const cached = providers.get(repoName);
-  if (cached && cached.token === secrets.gitlabToken) return cached.provider;
-  if (cached) {
-    // Token rotated: drop the stale watch built on the old token and
-    // re-resolve userId against the new one on the next reconcile.
-    stopWatch(repoName);
-    userIdResolved = false;
-  }
-
-  const remoteUrl = await getRemoteUrl(repoPath);
-  if (!remoteUrl) {
-    log.info(`no origin remote for ${repoName}; skipping`);
-    return null;
-  }
-
-  if (!isGitLabRemote(remoteUrl)) {
-    log.info(`remote "${redactCredentials(remoteUrl)}" for ${repoName} is not GitLab; skipping events watch`);
-    return null;
-  }
-
-  const remote = parseRemoteUrl(remoteUrl);
-  if (!remote) {
-    log.info(`could not parse remote "${redactCredentials(remoteUrl)}" for ${repoName}; skipping`);
-    return null;
-  }
-
-  const provider = makeProvider(remote.host, secrets.gitlabToken);
-  providers.set(repoName, { provider, token: secrets.gitlabToken });
-  return provider;
-}
-
-async function ensureUserId(): Promise<number | null> {
-  if (userIdResolved) return userId;
-  // Resolve via any available provider. If none exist yet, defer until one does.
-  const anyProvider = providers.values().next().value?.provider as GitLabProvider | undefined;
-  if (!anyProvider) return null;
-
-  try {
-    const user = await anyProvider.validateToken();
-    const numId = user.id.split(":").pop();
-    userId = numId ? parseInt(numId, 10) : null;
-    userIdResolved = true;
-    selfUsername = user.username ?? null;
-    log.info(`resolved userId=${userId}`);
-  } catch (err) {
-    log.warn({ err }, "token validation failed");
-  }
-  return userId;
-}
-
-let userIdSuppressedWarned = false;
-
-/**
- * S022: reconcileFreshnessImpl only ever builds a provider (and thus only
- * ever calls ensureUserId) for repos in live mode, so a poll-only tracked
- * user's getCurrentUserId() stayed null forever and checkAndNotify silently
- * suppressed every self-authored transition. Called from cache-refresh.ts
- * BEFORE its checkAndNotify (reconcileSubscriptions/reconcileFreshnessImpl
- * runs after, so relying on it alone would leave the first cache-refresh
- * cycle still passing null). Gates on the `branches`/`project-mrs` grant,
- * never on mode, and is a no-op once userIdResolved (ensureUserId's own
- * guard) or once every candidate repo has been tried this cycle.
- */
-export async function resolveUserIdAcrossTracking(
-  repoIndex: Record<string, string>,
-  tracking: RepoTracking,
-): Promise<void> {
-  if (userIdResolved) return;
-  for (const [repoName, repoPath] of Object.entries(repoIndex)) {
-    const g = grants(tracking, repoName);
-    if (g.mode === "off") continue;
-    if (!g.caches.has("branches") && !g.caches.has("project-mrs")) continue;
-    if (!existsSync(repoPath)) continue;
-    const provider = await ensureProvider(repoName, repoPath);
-    if (!provider) continue;
-    await ensureUserId();
-    if (userIdResolved) return;
-  }
-  if (!userIdResolved && !userIdSuppressedWarned) {
-    userIdSuppressedWarned = true;
-    log.warn("userId is unresolved; self-authored MR transitions are being suppressed (no gitlabToken, or token validation failed)");
-  }
-}
-
-export function getSelfUsername(): string | null { return selfUsername; }
-
-export async function resolveSelfUsername(repoName: string, repoPath: string): Promise<string | null> {
-  if (selfUsername) return selfUsername;
-  try {
-    await getRepoContext(repoName, repoPath);   // materializes a provider for ensureUserId
-    await ensureUserId();
-    return selfUsername;
-  } catch (err) {
-    log.warn({ err, repo: repoName }, "self username resolution failed");
-    return null;
-  }
-}
-
-// ─── Aggregated connection state ─────────────────────────────────────────────
-
-/**
- * Roll up watcher states into the `mr:status` connection flag clients already
- * consume: any degraded watcher → "connecting", all live → "connected",
- * no watchers → "disconnected".
- */
-export function getAggregatedConnection(): "connected" | "connecting" | "disconnected" {
-  if (watches.size === 0) return "disconnected";
-  for (const w of watches.values()) {
-    if (w.state === "degraded") return "connecting";
-  }
-  return "connected";
-}
-
-function broadcastStatus(env: FreshnessEnv): void {
-  env.broadcast("mr:status", { connection: getAggregatedConnection() });
-}
-
-/** Per-repo watcher freshness for `rt daemon status`. */
-export function getFreshnessSnapshot(): Record<
-  string,
-  { state: "live" | "degraded"; lastSyncedAt: string | null; lastEventId: number | null }
-> {
-  const out: Record<string, { state: "live" | "degraded"; lastSyncedAt: string | null; lastEventId: number | null }> = {};
-  for (const [repoName, w] of watches) {
-    out[repoName] = { state: w.state, lastSyncedAt: w.lastSyncedAt, lastEventId: w.lastEventId };
-  }
-  return out;
-}
-
-// ─── Repo context (shared GitLab plumbing) ───────────────────────────────────
-
-/**
- * Cache of (projectPath, projectId) resolved for repos without a live watch.
- * Lets the discussions handlers run against repos whose watcher was never set
- * up (missing token at boot, non-indexed repo) or was disposed.
- */
-const ephemeralCtx = new Map<string, { projectPath: string; projectId: number | null }>();
-
-/**
- * Provider + project identifiers for a repo. Tries the live-watch fast path
- * first; if no watch exists and `repoPath` is provided, builds an ephemeral
- * `GitLabProvider` from the repo's git remote so REST-only operations
- * (discussions read/resolve/reply, MR actions) keep working.
- *
- * `projectPathOverride` lets callers supply the canonical project path
- * directly — useful when a repo's git remote URL has been redirected/renamed
- * since clone time and the API would 404 on the stale path. Pass the path
- * extracted from a cached MR's webUrl when available.
- *
- * Throws with a specific reason when no provider can be produced. Callers
- * surface the message so the UI can show which step failed
- * (missing token, unparseable remote, REST 404, …).
- */
-export async function getRepoContext(
-  repoName: string,
-  repoPath?: string,
-  projectPathOverride?: string,
-): Promise<{ provider: GitLabProvider; projectPath: string; projectId: number }> {
-  // A cached provider's token may have rotated since it was built; poll-mode
-  // repos and already-cached forge-handler providers never pass back through
-  // ensureProvider, so this is the only place that catches a stale token for
-  // them (S048/S049).
-  const cachedForToken = providers.get(repoName);
-  if (cachedForToken) {
-    const currentSecrets = await loadSecrets();
-    if (cachedForToken.token !== currentSecrets.gitlabToken) {
-      stopWatch(repoName);
-      userIdResolved = false;
-      selfUsername = null;
-      providers.delete(repoName);
-    }
-  }
-
-  const watch = watches.get(repoName);
-  let provider = providers.get(repoName)?.provider ?? null;
-
-  // Live-watch fast path — but only when the caller didn't override projectPath.
-  // If they did, fall through to the ephemeral path so we use the canonical path.
-  if (watch && provider && !projectPathOverride) {
-    if (watch.projectId !== null) {
-      return { provider, projectPath: watch.projectPath, projectId: watch.projectId };
-    }
-    const id = await fetchProjectId(provider, watch.projectPath);
-    watch.projectId = id;
-    return { provider, projectPath: watch.projectPath, projectId: id };
-  }
-
-  // Provider not yet built — construct from git remote.
-  if (!provider) {
-    if (!repoPath) {
-      throw new Error(`repo "${repoName}" not in ~/.mattstack/rt/repos.json (run rt repo add)`);
-    }
-    const secrets = await loadSecrets();
-    if (!secrets.gitlabToken) {
-      throw new Error("missing gitlabToken (run: rt secrets set rt gitlabToken)");
-    }
-    const remoteUrl = await getRemoteUrl(repoPath);
-    if (!remoteUrl) {
-      throw new Error(`could not read git remote.origin.url in ${repoPath}`);
-    }
-    const remote = parseRemoteUrl(remoteUrl);
-    if (!remote) {
-      throw new Error(`could not parse remote URL "${redactCredentials(remoteUrl)}"`);
-    }
-    provider = makeProvider(remote.host, secrets.gitlabToken);
-    providers.set(repoName, { provider, token: secrets.gitlabToken });
-  }
-
-  // Pick projectPath: explicit override > previously-cached ephemeral > git remote.
-  let projectPath: string | null = projectPathOverride ?? null;
-  if (!projectPath) {
-    const cached = ephemeralCtx.get(repoName);
-    if (cached) projectPath = cached.projectPath;
-  }
-  if (!projectPath && repoPath) {
-    const remoteUrl = await getRemoteUrl(repoPath);
-    const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
-    if (remote) projectPath = remote.projectPath;
-  }
-  if (!projectPath) {
-    throw new Error(`could not determine projectPath for ${repoName}`);
-  }
-
-  // Reuse cached projectId only when the path matches.
-  const cached = ephemeralCtx.get(repoName);
-  if (cached && cached.projectPath === projectPath && cached.projectId !== null) {
-    return { provider, projectPath, projectId: cached.projectId };
-  }
-
-  const projectId = await fetchProjectId(provider, projectPath);
-  ephemeralCtx.set(repoName, { projectPath, projectId });
-  return { provider, projectPath, projectId };
 }
 
 async function fetchProjectId(provider: GitLabProvider, projectPath: string): Promise<number> {
@@ -397,232 +131,12 @@ async function fetchProjectId(provider: GitLabProvider, projectPath: string): Pr
   return body.id;
 }
 
-/**
- * Numeric id of the authenticated GitLab user, or null if not yet resolved.
- * Used by the discussions poller so new-comment notifications can skip the
- * user's own replies, and by fetchSingleMR for viewer-scoped fields.
- */
-export function getCurrentUserId(): number | null {
-  return userId;
-}
-
-// ─── Invalidation → targeted refresh mapping ─────────────────────────────────
-
-export const GAP_FILL_DEBOUNCE_MS = 5000;
-
-/** Narrow provider surface the mapping needs — tests stub this. */
-export type TargetedFetcher = Pick<
-  GitLabProvider,
-  "fetchSingleMR" | "fetchPullRequestByBranch" | "fetchPullRequestsByBranches" | "fetchApprovalRules"
->;
-
-export interface RepoTarget {
-  repoName:    string;
-  projectPath: string;
-  provider:    TargetedFetcher;
-}
-
-/** Mutable batch-processing state. RepoWatch satisfies this structurally. */
-export interface BatchRunner {
-  processing:   boolean;
-  pending:      InvalidationKey[];
-  gapFillTimer: ReturnType<typeof setTimeout> | null;
-  /**
-   * Optional so bare test runners (never registered in `watches`) don't need
-   * it; production runners are always RepoWatch, which always sets it.
-   */
-  disposed?:    boolean;
-}
-
-/** Test seams. Production callers omit this. */
-export interface MappingOverrides {
-  refreshDiscussions?: (env: FreshnessEnv, repoName: string, iid: number) => Promise<unknown>;
-  notify?:             (entries: Record<string, any>, userId: number | null) => void;
-  gapFillDebounceMs?:  number;
-  grantsFor?:            (repoName: string) => RepoGrants;                   // default: grants(loadRepoTracking(), repoName)
-  projectStore?:         ProjectMRs;                                          // default: getProjectMRs()
-  hasCachedDiscussions?: (repoName: string, iid: number) => boolean;          // default: file-store read !== undefined
-  /** Approval-heal seam: rules for just these iids. default: provider.fetchApprovalRules({projectPath, iids}) */
-  fetchRulesByIid?:      (iids: number[]) => Promise<MRApprovalRules[]>;
-}
-
-/**
- * Process one tick's invalidations for a repo. Batches arriving while a
- * previous batch is still processing are merged into `runner.pending` and
- * drained when the current run finishes — no overlap, no loss.
- */
-export async function applyInvalidationBatch(
-  env: FreshnessEnv,
-  target: RepoTarget,
-  runner: BatchRunner,
-  keys: InvalidationKey[],
-  overrides: MappingOverrides = {},
-): Promise<void> {
-  if (runner.processing) {
-    const seen = new Set(runner.pending.map((k) => `${k.kind}:${k.ref}`));
-    for (const k of keys) {
-      if (runner.pending.length >= PENDING_CAP) break;
-      const id = `${k.kind}:${k.ref}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      runner.pending.push(k);
-    }
-    return;
-  }
-  runner.processing = true;
-  try {
-    await processKeys(env, target, runner, keys, overrides);
-    while (runner.pending.length > 0) {
-      const drained = runner.pending.splice(0);
-      await processKeys(env, target, runner, drained, overrides);
-    }
-  } finally {
-    runner.processing = false;
-  }
-}
-
-async function processKeys(
-  env: FreshnessEnv,
-  target: RepoTarget,
-  runner: BatchRunner,
-  keys: InvalidationKey[],
-  overrides: MappingOverrides,
-): Promise<void> {
-  const { ctx } = env;
-  const { repoName, projectPath, provider } = target;
-
-  // Dedup by kind:ref. The SDK dedups within a tick, but merged pending
-  // batches can re-introduce duplicates.
-  const seen = new Set<string>();
-  const unique = keys.filter((k) => {
-    const id = `${k.kind}:${k.ref}`;
-    if (seen.has(id)) return false;
-    seen.add(id);
-    return true;
-  });
-
-  // iid → branch for this repo, rebuilt per batch (the cache may have been
-  // reloaded from disk by the full poll since the last tick).
-  const branchByIid = new Map<number, string>();
-  for (const [key, entry] of Object.entries(ctx.cache.entries)) {
-    if (entry.repoName !== repoName) continue;
-    if (typeof entry.mr?.iid === "number") branchByIid.set(entry.mr.iid, branchOf(key));
-  }
-
-  const g = (overrides.grantsFor ?? ((r: string) => grants(loadRepoTracking(), r)))(repoName);
-  const pStore = overrides.projectStore ?? getProjectMRs();
-  const wantProject = g.caches.has("project-mrs");
-
-  const upsertProject = (pr: PullRequest) => {
-    // Demand-scoped repos only track the declared authors; an MR missing an
-    // author never guess-drops, since we can't tell which side of the scope
-    // it belongs on. A tagged stranger (out-of-scope author, still section-
-    // tagged) is kept too: dropping it here would silently erase a tag that
-    // only the approval-heal path is meant to clear.
-    const rec = pStore.read(repoName);
-    const scope = rec?.scope;
-    const tagged = (rec?.mrs[pr.iid]?.codeownerSections?.length ?? 0) > 0;
-    if (scope && pr.author?.username && !scope.authors.includes(pr.author.username) && !tagged) return;
-    const changed = pStore.upsert(repoName, projectPath, pr, "events");
-    if (changed.length > 0) env.broadcast("project-mrs", { repoName, iids: changed });
-  };
-
-  let mutated = false;
-
-  for (const k of unique) {
-    try {
-      switch (k.kind) {
-        case "mr": {
-          const iid = Number(k.ref);
-          const branch = branchByIid.get(iid);
-          if (!branch && !wantProject) {
-            // Not a cached MR and no project store to feed. Could be
-            // someone else's, or an MR just opened on one of our branches —
-            // the gap-fill decides cheaply.
-            scheduleGapFill(env, target, runner, overrides);
-            break;
-          }
-          const pr = await provider.fetchSingleMR(projectPath, iid, getCurrentUserId());
-          const feedBranch = branch
-            ?? (pr && ctx.cache.entries[composeKey(repoName, pr.sourceBranch)] !== undefined ? pr.sourceBranch : undefined);
-          if (feedBranch) mutated = updateEntry(env, repoName, feedBranch, pr) || mutated;
-          if (wantProject && pr) upsertProject(pr);
-          // GitLab's approval action bumps no updatedAt, so this is the only
-          // signal that heals a tag within one events tick rather than
-          // waiting on the next deep/delta sweep.
-          if (k.cause === "approved" && wantProject) {
-            const rec = pStore.read(repoName);
-            const sections = rec?.scope?.sections ?? [];
-            if (sections.length > 0 && (rec?.mrs[iid]?.codeownerSections?.length ?? 0) > 0) {
-              const fetchRulesByIid = overrides.fetchRulesByIid
-                ?? (async (iids: number[]) => provider.fetchApprovalRules({ projectPath, iids }));
-              const rules = await fetchRulesByIid([iid]);
-              const match = rules.find((r) => r.iid === iid);
-              if (match) {
-                const { sectionsMatching } = await import("./project-sync.ts");
-                pStore.setSectionTags(repoName, { [iid]: sectionsMatching(match.rules, sections) });
-                env.broadcast("project-mrs", { repoName, iids: [iid] });
-              }
-            }
-          }
-          break;
-        }
-        case "notes": {
-          const iid = Number(k.ref);
-          if (!g.caches.has("discussions")) break; // repo doesn't grant discussions
-          const hasCached = overrides.hasCachedDiscussions
-            ?? ((repo: string, mrIid: number) => getDiscussionsFileStore().read(repo, mrIid) !== undefined);
-          if (!hasCached(repoName, iid)) break; // not something a consumer has looked at
-          const refresh = overrides.refreshDiscussions ?? defaultRefreshDiscussions;
-          await refresh(env, repoName, iid);
-          break;
-        }
-        case "branch": {
-          const entry = ctx.cache.entries[composeKey(repoName, k.ref)];
-          const isOurs = entry !== undefined;
-          let fetchedForRef: PullRequest | null | undefined;
-          if (isOurs) {
-            fetchedForRef = await provider.fetchPullRequestByBranch(projectPath, k.ref, "all");
-            if (!(fetchedForRef == null && runner.gapFillTimer)) {
-              // MR may be mid-creation when null and a gap-fill is already
-              // armed; let the gap-fill decide instead of writing null now.
-              mutated = updateEntry(env, repoName, k.ref, fetchedForRef ?? null) || mutated;
-            }
-          }
-          if (wantProject) {
-            if (fetchedForRef) {
-              // Local push: reuse the PR the local handling just fetched.
-              upsertProject(fetchedForRef);
-            } else if (!isOurs) {
-              // Teammate push: resolve the branch through the project store.
-              const hit = pStore.findBySourceBranch(repoName, k.ref);
-              if (hit) {
-                const pr = await provider.fetchSingleMR(projectPath, hit.iid, getCurrentUserId());
-                if (pr) upsertProject(pr);
-              }
-            }
-          }
-          break;
-        }
-        case "pipelines":
-          // Pipeline status transitions emit no events (verified blind spot);
-          // the 5-min full poll covers pipeline drift.
-          break;
-      }
-    } catch (err) {
-      log.warn({ err, repo: repoName, key: `${k.kind}:${k.ref}` }, "targeted refresh failed");
-    }
-  }
-
-  // `mutated` survives RT-48 because it gates the NOTIFY, not a flush: only
-  // a batch that actually changed an entry is worth re-running transition
-  // detection over. The persistence it used to gate is gone — updateEntry
-  // writes the row itself.
-  if (mutated) {
-    const notify = overrides.notify
-      ?? ((entries: Record<string, any>, uid: number | null) => checkAndNotify(entries, undefined, uid));
-    notify(ctx.cache.entries, getCurrentUserId());
-  }
+// glance >=0.15 widened EventCursor.lastEventId to number | string | null for
+// GitHub's string event ids. This watch path is GitLab-only, whose ids stay
+// numeric; anything else reads as absent, same as glance's own pollers treat
+// foreign cursor shapes.
+function numericEventId(v: number | string | null | undefined): number | null {
+  return typeof v === "number" ? v : null;
 }
 
 /**
@@ -635,6 +149,9 @@ async function processKeys(
  * in-memory map in one call — the old batch-tail `ctx.flushCache()` calls
  * are gone, and with them the window where a daemon crash between mutation
  * and flush lost the update.
+ *
+ * Stateless (reads only `env`), so it lives outside the core factory below
+ * and is shared by every core instance.
  */
 function updateEntry(env: FreshnessEnv, repoName: string, branch: string, pr: PullRequest | null): boolean {
   const { ctx } = env;
@@ -653,6 +170,9 @@ function updateEntry(env: FreshnessEnv, repoName: string, branch: string, pr: Pu
  * the fresh PR into whichever stores hold it. The branch entry updates
  * unconditionally (it exists only if the MR is one of ours); the project
  * store updates only under the "project-mrs" grant.
+ *
+ * Stateless w.r.t. this module (touches only `env` and project-mrs-store's
+ * own singleton), so it lives outside the core factory below.
  */
 export function applyMRWriteback(env: FreshnessEnv, repoName: string, projectPath: string, pr: PullRequest): void {
   let branch: string | null = null;
@@ -674,202 +194,829 @@ async function defaultRefreshDiscussions(env: FreshnessEnv, repoName: string, ii
   return refreshDiscussions({ ctx: env.ctx, broadcast: env.broadcast }, repoName, iid);
 }
 
+// ─── Invalidation → targeted refresh mapping (types shared by core + tests) ─
+
+export const GAP_FILL_DEBOUNCE_MS = 5000;
+
+/** Narrow provider surface the mapping needs — tests stub this. */
+export type TargetedFetcher = Pick<
+  GitLabProvider,
+  "fetchSingleMR" | "fetchPullRequestByBranch" | "fetchPullRequestsByBranches" | "fetchApprovalRules"
+>;
+
+export interface RepoTarget {
+  repoName:    string;
+  projectPath: string;
+  provider:    TargetedFetcher;
+}
+
+/** Mutable batch-processing state. RepoWatch satisfies this structurally. */
+export interface BatchRunner {
+  processing:   boolean;
+  pending:      InvalidationKey[];
+  gapFillTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Optional so bare test runners (never registered in a core's `watches`)
+   * don't need it; production runners are always RepoWatch, which always
+   * sets it.
+   */
+  disposed?:    boolean;
+}
+
+/** Test seams. Production callers omit this. */
+export interface MappingOverrides {
+  refreshDiscussions?: (env: FreshnessEnv, repoName: string, iid: number) => Promise<unknown>;
+  notify?:             (entries: Record<string, any>, userId: number | null) => void;
+  gapFillDebounceMs?:  number;
+  grantsFor?:            (repoName: string) => RepoGrants;                   // default: grants(loadRepoTracking(), repoName)
+  projectStore?:         ProjectMRs;                                          // default: getProjectMRs()
+  hasCachedDiscussions?: (repoName: string, iid: number) => boolean;          // default: file-store read !== undefined
+  /** Approval-heal seam: rules for just these iids. default: provider.fetchApprovalRules({projectPath, iids}) */
+  fetchRulesByIid?:      (iids: number[]) => Promise<MRApprovalRules[]>;
+}
+
+// ─── Core factory (R031: the module-scope singleton, isolated) ──────────────
+
 /**
- * Debounced catch-all for events about MRs we don't have cached: one batch
- * fetch over this repo's branches that currently lack an MR. Covers the
- * "MR just opened on my branch" case without paying anything for other
- * users' MR activity (no null-mr branches → no request at all).
+ * Builds one independent instance of every watcher/provider/user-id/cache
+ * this module used to hold as bare module-scope `let`s. Two cores built from
+ * this factory share nothing: a test can construct `createFreshnessCore()`
+ * twice and mutate one without the other observing it.
+ *
+ * All the free functions exported below (`initFreshness`, `getRepoContext`,
+ * `applyInvalidationBatch`, etc.) delegate to ONE lazily-created default
+ * core, so every existing caller keeps operating against the same shared
+ * state it always has; this factory only adds the *option* of a separate
+ * instance via `createFreshness`.
  */
-function scheduleGapFill(
+function createFreshnessCore() {
+  const watches   = new Map<string, RepoWatch>();
+  const providers = new Map<string, { provider: GitLabProvider; token: string }>();
+  let   userId: number | null = null;
+  let   userIdResolved = false;
+  let   selfUsername: string | null = null;
+  let   userIdSuppressedWarned = false;
+
+  const remoteUrlCache = new Map<string, string | null>();
+
+  /**
+   * Cache of (projectPath, projectId) resolved for repos without a live watch.
+   * Lets the discussions handlers run against repos whose watcher was never
+   * set up (missing token at boot, non-indexed repo) or was disposed.
+   */
+  const ephemeralCtx = new Map<string, { projectPath: string; projectId: number | null }>();
+
+  let cursorStoreSingleton: CursorStore | null = null;
+  function cursorStore(): CursorStore {
+    return cursorStoreSingleton ??= createCursorStore();
+  }
+
+  // The 7s boot timer (initFreshness) and every refreshCache() tail call
+  // reconcileFreshness, and they can overlap in real time. Coalesce the same
+  // way cache-refresh.ts does: a caller that arrives while one is running
+  // awaits the in-flight run instead of starting a second pass that could
+  // double-startWatch the same repo.
+  let reconcileInFlight: Promise<void> | null = null;
+
+  /** remote.origin.url, cached per repoPath for the process lifetime (remotes
+   *  rarely change). Async so it never blocks the event loop. */
+  async function getRemoteUrl(repoPath: string): Promise<string | null> {
+    const cached = remoteUrlCache.get(repoPath);
+    if (cached !== undefined) return cached;
+    const r = await runCapture(["git", "config", "--get", "remote.origin.url"], {
+      cwd: repoPath,
+      timeoutMs: 5000,
+      stderr: "ignore",
+    });
+    const url = r.exitCode === 0 ? (r.stdout.trim() || null) : null;
+    remoteUrlCache.set(repoPath, url);
+    return url;
+  }
+
+  async function ensureProvider(repoName: string, repoPath: string): Promise<GitLabProvider | null> {
+    const secrets = await loadSecrets();
+    if (!secrets.gitlabToken) {
+      log.info(`no gitlabToken; skipping ${repoName}`);
+      return null;
+    }
+
+    const cached = providers.get(repoName);
+    if (cached && cached.token === secrets.gitlabToken) return cached.provider;
+    if (cached) {
+      // Token rotated: drop the stale watch built on the old token and
+      // re-resolve userId against the new one on the next reconcile.
+      stopWatch(repoName);
+      userIdResolved = false;
+    }
+
+    const remoteUrl = await getRemoteUrl(repoPath);
+    if (!remoteUrl) {
+      log.info(`no origin remote for ${repoName}; skipping`);
+      return null;
+    }
+
+    if (!isGitLabRemote(remoteUrl)) {
+      log.info(`remote "${redactCredentials(remoteUrl)}" for ${repoName} is not GitLab; skipping events watch`);
+      return null;
+    }
+
+    const remote = parseRemoteUrl(remoteUrl);
+    if (!remote) {
+      log.info(`could not parse remote "${redactCredentials(remoteUrl)}" for ${repoName}; skipping`);
+      return null;
+    }
+
+    const provider = makeProvider(remote.host, secrets.gitlabToken);
+    providers.set(repoName, { provider, token: secrets.gitlabToken });
+    return provider;
+  }
+
+  async function ensureUserId(): Promise<number | null> {
+    if (userIdResolved) return userId;
+    // Resolve via any available provider. If none exist yet, defer until one does.
+    const anyProvider = providers.values().next().value?.provider as GitLabProvider | undefined;
+    if (!anyProvider) return null;
+
+    try {
+      const user = await anyProvider.validateToken();
+      const numId = user.id.split(":").pop();
+      userId = numId ? parseInt(numId, 10) : null;
+      userIdResolved = true;
+      selfUsername = user.username ?? null;
+      log.info(`resolved userId=${userId}`);
+    } catch (err) {
+      log.warn({ err }, "token validation failed");
+    }
+    return userId;
+  }
+
+  /**
+   * S022: reconcileFreshnessImpl only ever builds a provider (and thus only
+   * ever calls ensureUserId) for repos in live mode, so a poll-only tracked
+   * user's getCurrentUserId() stayed null forever and checkAndNotify silently
+   * suppressed every self-authored transition. Called from cache-refresh.ts
+   * BEFORE its checkAndNotify (reconcileSubscriptions/reconcileFreshnessImpl
+   * runs after, so relying on it alone would leave the first cache-refresh
+   * cycle still passing null). Gates on the `branches`/`project-mrs` grant,
+   * never on mode, and is a no-op once userIdResolved (ensureUserId's own
+   * guard) or once every candidate repo has been tried this cycle.
+   */
+  async function resolveUserIdAcrossTracking(
+    repoIndex: Record<string, string>,
+    tracking: RepoTracking,
+  ): Promise<void> {
+    if (userIdResolved) return;
+    for (const [repoName, repoPath] of Object.entries(repoIndex)) {
+      const g = grants(tracking, repoName);
+      if (g.mode === "off") continue;
+      if (!g.caches.has("branches") && !g.caches.has("project-mrs")) continue;
+      if (!existsSync(repoPath)) continue;
+      const provider = await ensureProvider(repoName, repoPath);
+      if (!provider) continue;
+      await ensureUserId();
+      if (userIdResolved) return;
+    }
+    if (!userIdResolved && !userIdSuppressedWarned) {
+      userIdSuppressedWarned = true;
+      log.warn("userId is unresolved; self-authored MR transitions are being suppressed (no gitlabToken, or token validation failed)");
+    }
+  }
+
+  function getSelfUsername(): string | null { return selfUsername; }
+
+  async function resolveSelfUsername(repoName: string, repoPath: string): Promise<string | null> {
+    if (selfUsername) return selfUsername;
+    try {
+      await getRepoContext(repoName, repoPath);   // materializes a provider for ensureUserId
+      await ensureUserId();
+      return selfUsername;
+    } catch (err) {
+      log.warn({ err, repo: repoName }, "self username resolution failed");
+      return null;
+    }
+  }
+
+  /**
+   * Roll up watcher states into the `mr:status` connection flag clients already
+   * consume: any degraded watcher → "connecting", all live → "connected",
+   * no watchers → "disconnected".
+   */
+  function getAggregatedConnection(): "connected" | "connecting" | "disconnected" {
+    if (watches.size === 0) return "disconnected";
+    for (const w of watches.values()) {
+      if (w.state === "degraded") return "connecting";
+    }
+    return "connected";
+  }
+
+  function broadcastStatus(env: FreshnessEnv): void {
+    env.broadcast("mr:status", { connection: getAggregatedConnection() });
+  }
+
+  /** Per-repo watcher freshness for `rt daemon status`. */
+  function getFreshnessSnapshot(): Record<
+    string,
+    { state: "live" | "degraded"; lastSyncedAt: string | null; lastEventId: number | null }
+  > {
+    const out: Record<string, { state: "live" | "degraded"; lastSyncedAt: string | null; lastEventId: number | null }> = {};
+    for (const [repoName, w] of watches) {
+      out[repoName] = { state: w.state, lastSyncedAt: w.lastSyncedAt, lastEventId: w.lastEventId };
+    }
+    return out;
+  }
+
+  /**
+   * Provider + project identifiers for a repo. Tries the live-watch fast path
+   * first; if no watch exists and `repoPath` is provided, builds an ephemeral
+   * `GitLabProvider` from the repo's git remote so REST-only operations
+   * (discussions read/resolve/reply, MR actions) keep working.
+   *
+   * `projectPathOverride` lets callers supply the canonical project path
+   * directly — useful when a repo's git remote URL has been redirected/renamed
+   * since clone time and the API would 404 on the stale path. Pass the path
+   * extracted from a cached MR's webUrl when available.
+   *
+   * Throws with a specific reason when no provider can be produced. Callers
+   * surface the message so the UI can show which step failed
+   * (missing token, unparseable remote, REST 404, …).
+   */
+  async function getRepoContext(
+    repoName: string,
+    repoPath?: string,
+    projectPathOverride?: string,
+  ): Promise<{ provider: GitLabProvider; projectPath: string; projectId: number }> {
+    // A cached provider's token may have rotated since it was built; poll-mode
+    // repos and already-cached forge-handler providers never pass back through
+    // ensureProvider, so this is the only place that catches a stale token for
+    // them (S048/S049).
+    const cachedForToken = providers.get(repoName);
+    if (cachedForToken) {
+      const currentSecrets = await loadSecrets();
+      if (cachedForToken.token !== currentSecrets.gitlabToken) {
+        stopWatch(repoName);
+        userIdResolved = false;
+        selfUsername = null;
+        providers.delete(repoName);
+      }
+    }
+
+    const watch = watches.get(repoName);
+    let provider = providers.get(repoName)?.provider ?? null;
+
+    // Live-watch fast path — but only when the caller didn't override projectPath.
+    // If they did, fall through to the ephemeral path so we use the canonical path.
+    if (watch && provider && !projectPathOverride) {
+      if (watch.projectId !== null) {
+        return { provider, projectPath: watch.projectPath, projectId: watch.projectId };
+      }
+      const id = await fetchProjectId(provider, watch.projectPath);
+      watch.projectId = id;
+      return { provider, projectPath: watch.projectPath, projectId: id };
+    }
+
+    // Provider not yet built — construct from git remote.
+    if (!provider) {
+      if (!repoPath) {
+        throw new Error(`repo "${repoName}" not in the repo index (run rt repos register)`);
+      }
+      const secrets = await loadSecrets();
+      if (!secrets.gitlabToken) {
+        throw new Error("missing gitlabToken (run: rt secrets set rt gitlabToken)");
+      }
+      const remoteUrl = await getRemoteUrl(repoPath);
+      if (!remoteUrl) {
+        throw new Error(`could not read git remote.origin.url in ${repoPath}`);
+      }
+      const remote = parseRemoteUrl(remoteUrl);
+      if (!remote) {
+        throw new Error(`could not parse remote URL "${redactCredentials(remoteUrl)}"`);
+      }
+      provider = makeProvider(remote.host, secrets.gitlabToken);
+      providers.set(repoName, { provider, token: secrets.gitlabToken });
+    }
+
+    // Pick projectPath: explicit override > previously-cached ephemeral > git remote.
+    let projectPath: string | null = projectPathOverride ?? null;
+    if (!projectPath) {
+      const cached = ephemeralCtx.get(repoName);
+      if (cached) projectPath = cached.projectPath;
+    }
+    if (!projectPath && repoPath) {
+      const remoteUrl = await getRemoteUrl(repoPath);
+      const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
+      if (remote) projectPath = remote.projectPath;
+    }
+    if (!projectPath) {
+      throw new Error(`could not determine projectPath for ${repoName}`);
+    }
+
+    // Reuse cached projectId only when the path matches.
+    const cached = ephemeralCtx.get(repoName);
+    if (cached && cached.projectPath === projectPath && cached.projectId !== null) {
+      return { provider, projectPath, projectId: cached.projectId };
+    }
+
+    const projectId = await fetchProjectId(provider, projectPath);
+    ephemeralCtx.set(repoName, { projectPath, projectId });
+    return { provider, projectPath, projectId };
+  }
+
+  /**
+   * Numeric id of the authenticated GitLab user, or null if not yet resolved.
+   * Used by the discussions poller so new-comment notifications can skip the
+   * user's own replies, and by fetchSingleMR for viewer-scoped fields.
+   */
+  function getCurrentUserId(): number | null {
+    return userId;
+  }
+
+  /**
+   * Process one tick's invalidations for a repo. Batches arriving while a
+   * previous batch is still processing are merged into `runner.pending` and
+   * drained when the current run finishes — no overlap, no loss.
+   */
+  async function applyInvalidationBatch(
+    env: FreshnessEnv,
+    target: RepoTarget,
+    runner: BatchRunner,
+    keys: InvalidationKey[],
+    overrides: MappingOverrides = {},
+  ): Promise<void> {
+    if (runner.processing) {
+      const seen = new Set(runner.pending.map((k) => `${k.kind}:${k.ref}`));
+      for (const k of keys) {
+        if (runner.pending.length >= PENDING_CAP) break;
+        const id = `${k.kind}:${k.ref}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        runner.pending.push(k);
+      }
+      return;
+    }
+    runner.processing = true;
+    try {
+      await processKeys(env, target, runner, keys, overrides);
+      while (runner.pending.length > 0) {
+        const drained = runner.pending.splice(0);
+        await processKeys(env, target, runner, drained, overrides);
+      }
+    } finally {
+      runner.processing = false;
+    }
+  }
+
+  async function processKeys(
+    env: FreshnessEnv,
+    target: RepoTarget,
+    runner: BatchRunner,
+    keys: InvalidationKey[],
+    overrides: MappingOverrides,
+  ): Promise<void> {
+    const { ctx } = env;
+    const { repoName, projectPath, provider } = target;
+
+    // Dedup by kind:ref. The SDK dedups within a tick, but merged pending
+    // batches can re-introduce duplicates.
+    const seen = new Set<string>();
+    const unique = keys.filter((k) => {
+      const id = `${k.kind}:${k.ref}`;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+
+    // iid → branch for this repo, rebuilt per batch (the cache may have been
+    // reloaded from disk by the full poll since the last tick).
+    const branchByIid = new Map<number, string>();
+    for (const [key, entry] of Object.entries(ctx.cache.entries)) {
+      if (entry.repoName !== repoName) continue;
+      if (typeof entry.mr?.iid === "number") branchByIid.set(entry.mr.iid, branchOf(key));
+    }
+
+    const g = (overrides.grantsFor ?? ((r: string) => grants(loadRepoTracking(), r)))(repoName);
+    const pStore = overrides.projectStore ?? getProjectMRs();
+    const wantProject = g.caches.has("project-mrs");
+
+    const upsertProject = (pr: PullRequest) => {
+      // Demand-scoped repos only track the declared authors; an MR missing an
+      // author never guess-drops, since we can't tell which side of the scope
+      // it belongs on. A tagged stranger (out-of-scope author, still section-
+      // tagged) is kept too: dropping it here would silently erase a tag that
+      // only the approval-heal path is meant to clear.
+      const rec = pStore.read(repoName);
+      const scope = rec?.scope;
+      const tagged = (rec?.mrs[pr.iid]?.codeownerSections?.length ?? 0) > 0;
+      if (scope && pr.author?.username && !scope.authors.includes(pr.author.username) && !tagged) return;
+      const changed = pStore.upsert(repoName, projectPath, pr, "events");
+      if (changed.length > 0) env.broadcast("project-mrs", { repoName, iids: changed });
+    };
+
+    let mutated = false;
+
+    for (const k of unique) {
+      try {
+        switch (k.kind) {
+          case "mr": {
+            const iid = Number(k.ref);
+            const branch = branchByIid.get(iid);
+            if (!branch && !wantProject) {
+              // Not a cached MR and no project store to feed. Could be
+              // someone else's, or an MR just opened on one of our branches —
+              // the gap-fill decides cheaply.
+              scheduleGapFill(env, target, runner, overrides);
+              break;
+            }
+            const pr = await provider.fetchSingleMR(projectPath, iid, getCurrentUserId());
+            const feedBranch = branch
+              ?? (pr && ctx.cache.entries[composeKey(repoName, pr.sourceBranch)] !== undefined ? pr.sourceBranch : undefined);
+            if (feedBranch) mutated = updateEntry(env, repoName, feedBranch, pr) || mutated;
+            if (wantProject && pr) upsertProject(pr);
+            // GitLab's approval action bumps no updatedAt, so this is the only
+            // signal that heals a tag within one events tick rather than
+            // waiting on the next deep/delta sweep.
+            if (k.cause === "approved" && wantProject) {
+              const rec = pStore.read(repoName);
+              const sections = rec?.scope?.sections ?? [];
+              if (sections.length > 0 && (rec?.mrs[iid]?.codeownerSections?.length ?? 0) > 0) {
+                const fetchRulesByIid = overrides.fetchRulesByIid
+                  ?? (async (iids: number[]) => provider.fetchApprovalRules({ projectPath, iids }));
+                const rules = await fetchRulesByIid([iid]);
+                const match = rules.find((r) => r.iid === iid);
+                if (match) {
+                  const { sectionsMatching } = await import("./project-sync.ts");
+                  pStore.setSectionTags(repoName, { [iid]: sectionsMatching(match.rules, sections) });
+                  env.broadcast("project-mrs", { repoName, iids: [iid] });
+                }
+              }
+            }
+            break;
+          }
+          case "notes": {
+            const iid = Number(k.ref);
+            if (!g.caches.has("discussions")) break; // repo doesn't grant discussions
+            const hasCached = overrides.hasCachedDiscussions
+              ?? ((repo: string, mrIid: number) => getDiscussionsFileStore().read(repo, mrIid) !== undefined);
+            if (!hasCached(repoName, iid)) break; // not something a consumer has looked at
+            const refresh = overrides.refreshDiscussions ?? defaultRefreshDiscussions;
+            await refresh(env, repoName, iid);
+            break;
+          }
+          case "branch": {
+            const entry = ctx.cache.entries[composeKey(repoName, k.ref)];
+            const isOurs = entry !== undefined;
+            let fetchedForRef: PullRequest | null | undefined;
+            if (isOurs) {
+              fetchedForRef = await provider.fetchPullRequestByBranch(projectPath, k.ref, "all");
+              if (!(fetchedForRef == null && runner.gapFillTimer)) {
+                // MR may be mid-creation when null and a gap-fill is already
+                // armed; let the gap-fill decide instead of writing null now.
+                mutated = updateEntry(env, repoName, k.ref, fetchedForRef ?? null) || mutated;
+              }
+            }
+            if (wantProject) {
+              if (fetchedForRef) {
+                // Local push: reuse the PR the local handling just fetched.
+                upsertProject(fetchedForRef);
+              } else if (!isOurs) {
+                // Teammate push: resolve the branch through the project store.
+                const hit = pStore.findBySourceBranch(repoName, k.ref);
+                if (hit) {
+                  const pr = await provider.fetchSingleMR(projectPath, hit.iid, getCurrentUserId());
+                  if (pr) upsertProject(pr);
+                }
+              }
+            }
+            break;
+          }
+          case "pipelines":
+            // Pipeline status transitions emit no events (verified blind spot);
+            // the 5-min full poll covers pipeline drift.
+            break;
+        }
+      } catch (err) {
+        log.warn({ err, repo: repoName, key: `${k.kind}:${k.ref}` }, "targeted refresh failed");
+      }
+    }
+
+    // `mutated` survives RT-48 because it gates the NOTIFY, not a flush: only
+    // a batch that actually changed an entry is worth re-running transition
+    // detection over. The persistence it used to gate is gone — updateEntry
+    // writes the row itself.
+    if (mutated) {
+      const notify = overrides.notify
+        ?? ((entries: Record<string, any>, uid: number | null) => checkAndNotify(entries, undefined, uid));
+      notify(ctx.cache.entries, getCurrentUserId());
+    }
+  }
+
+  /**
+   * Debounced catch-all for events about MRs we don't have cached: one batch
+   * fetch over this repo's branches that currently lack an MR. Covers the
+   * "MR just opened on my branch" case without paying anything for other
+   * users' MR activity (no null-mr branches → no request at all).
+   */
+  function scheduleGapFill(
+    env: FreshnessEnv,
+    target: RepoTarget,
+    runner: BatchRunner,
+    overrides: MappingOverrides,
+  ): void {
+    if (runner.disposed) return; // stopWatch already tore this repo down
+    if (runner.gapFillTimer) return; // already scheduled
+    const delay = overrides.gapFillDebounceMs ?? GAP_FILL_DEBOUNCE_MS;
+    runner.gapFillTimer = setTimeout(() => {
+      runner.gapFillTimer = null;
+      if (runner.disposed) return; // stopWatch ran while this timer was pending
+      runGapFill(env, target, overrides).catch((err) => {
+        log.warn({ err, repo: target.repoName }, "gap-fill failed");
+      });
+    }, delay);
+  }
+
+  async function runGapFill(env: FreshnessEnv, target: RepoTarget, overrides: MappingOverrides): Promise<void> {
+    const { ctx } = env;
+    const { repoName, projectPath, provider } = target;
+
+    const nullMrBranches = Object.entries(ctx.cache.entries)
+      .filter(([, e]) => e.repoName === repoName && e.mr == null)
+      .map(([key]) => branchOf(key));
+    if (nullMrBranches.length === 0) return;
+    if (!provider.fetchPullRequestsByBranches) return;
+
+    const found = await provider.fetchPullRequestsByBranches(projectPath, nullMrBranches, "all");
+    let mutated = false;
+    for (const [branch, pr] of found) {
+      if (!pr) continue; // still no MR — leave the entry untouched
+      mutated = updateEntry(env, repoName, branch, pr) || mutated;
+    }
+    if (mutated) {
+      const notify = overrides.notify
+        ?? ((entries: Record<string, any>, uid: number | null) => checkAndNotify(entries, undefined, uid));
+      notify(ctx.cache.entries, getCurrentUserId());
+      log.info({ repo: repoName, filled: [...found.values()].filter(Boolean).length }, "gap-fill applied");
+    }
+  }
+
+  async function initFreshness(env: FreshnessEnv): Promise<void> {
+    log.info("initializing");
+    await reconcileFreshness(env);
+  }
+
+  /**
+   * Align watchers with the repo index and the tracking config: start one per
+   * live-tracked GitLab repo that lacks one, dispose watchers for repos removed
+   * from either. A watcher covers the whole project regardless of how many MRs
+   * are cached, because pushes to MR-less branches matter too.
+   */
+  function reconcileFreshness(env: FreshnessEnv): Promise<void> {
+    if (reconcileInFlight) return reconcileInFlight;
+    reconcileInFlight = reconcileFreshnessImpl(env).finally(() => { reconcileInFlight = null; });
+    return reconcileInFlight;
+  }
+
+  async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
+    const repoIndex = env.ctx.repoIndex();
+    const tracking = loadRepoTracking();
+
+    for (const [repoName, repoPath] of Object.entries(repoIndex)) {
+      if (grants(tracking, repoName).mode !== "live") continue;
+
+      // A live watch whose provider token has since rotated must be dropped so the
+      // ensureProvider/startWatch below rebuilds it with the current token (S048/S049).
+      const existing = providers.get(repoName);
+      if (existing && watches.has(repoName)) {
+        const secrets = await loadSecrets();
+        if (secrets.gitlabToken && existing.token !== secrets.gitlabToken) stopWatch(repoName);
+      }
+
+      if (watches.has(repoName)) continue;
+
+      const provider = await ensureProvider(repoName, repoPath);
+      if (!provider?.watchEvents) continue;
+      if (!userIdResolved) await ensureUserId();
+
+      // Re-check after the await: coalescing above should make this
+      // unreachable, but the await is a yield point, so re-verify before
+      // startWatch rather than trust a check made before it.
+      if (watches.has(repoName)) continue;
+
+      const remoteUrl = await getRemoteUrl(repoPath);
+      const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
+      if (!remote) continue;
+
+      startWatch(env, repoName, provider, remote.projectPath);
+    }
+
+    for (const repoName of [...watches.keys()]) {
+      if (!repoIndex[repoName]) {
+        stopWatch(repoName);
+        log.info(`disposed watcher for ${repoName} (repo removed from index)`);
+      } else if (grants(tracking, repoName).mode !== "live") {
+        stopWatch(repoName);
+        log.info(`disposed watcher for ${repoName} (no longer tracked live)`);
+      }
+    }
+
+    broadcastStatus(env);
+  }
+
+  function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvider, projectPath: string): void {
+    const resumeCursor = cursorStore().get(repoName);
+
+    const watch: RepoWatch = {
+      provider,
+      projectPath,
+      dispose:      () => {},
+      projectId:    null,
+      state:        "live",
+      lastSyncedAt: null,
+      lastEventId:  numericEventId(resumeCursor?.lastEventId),
+      processing:   false,
+      pending:      [],
+      gapFillTimer: null,
+      disposed:     false,
+    };
+
+    watch.dispose = provider.watchEvents!(
+      projectPath,
+      {
+        cursor: resumeCursor,
+        onCursor: (c) => {
+          cursorStore().set(repoName, c);
+          watch.lastEventId = numericEventId(c.lastEventId);
+        },
+        onStatus: (s) => {
+          const prev = watch.state;
+          watch.state = s.state;
+          watch.lastSyncedAt = s.lastSyncedAt;
+          if (prev !== s.state) {
+            log.info({ repo: repoName, state: s.state, cause: s.cause ?? null }, "events watcher status");
+            broadcastStatus(env);
+          }
+        },
+      },
+      (batch) => {
+        watch.lastSyncedAt = batch.syncedAt;
+        if (batch.invalidations.length === 0) return;
+        applyInvalidationBatch(env, { repoName, projectPath, provider }, watch, batch.invalidations)
+          .catch((err) => log.warn({ err, repo: repoName }, "invalidation batch failed"));
+      },
+    );
+
+    watches.set(repoName, watch);
+    log.info({ repo: repoName, projectPath, resumed: resumeCursor != null }, "events watcher started");
+
+    // Watcher start = the repo just went live; give project-mrs consumers
+    // data now instead of at the next 5-min cycle.
+    if (grants(loadRepoTracking(), repoName).caches.has("project-mrs")) {
+      import("./project-sync.ts")
+        .then(({ syncProjectMRs }) =>
+          syncProjectMRs({ repoIndex: () => env.ctx.repoIndex(), broadcast: env.broadcast }, repoName))
+        .catch((err) => log.warn({ err, repo: repoName }, "watcher-start project sync failed"));
+    }
+  }
+
+  function stopWatch(repoName: string): void {
+    const w = watches.get(repoName);
+    if (!w) return;
+    w.disposed = true; // must be set before dispose(): a batch already in flight checks this on the way out
+    try { w.dispose(); } catch { /* watcher already stopped */ }
+    if (w.gapFillTimer) clearTimeout(w.gapFillTimer);
+    watches.delete(repoName);
+  }
+
+  function disposeFreshness(): void {
+    for (const repoName of [...watches.keys()]) stopWatch(repoName);
+    providers.clear();
+    userId = null;
+    userIdResolved = false;
+  }
+
+  return {
+    resolveUserIdAcrossTracking,
+    getSelfUsername,
+    resolveSelfUsername,
+    getAggregatedConnection,
+    getFreshnessSnapshot,
+    getRepoContext,
+    getCurrentUserId,
+    applyInvalidationBatch,
+    initFreshness,
+    reconcileFreshness,
+    disposeFreshness,
+    /** Raw watch map, exposed only for the R031 independence test below. */
+    __watches: watches,
+  };
+}
+
+type FreshnessCore = ReturnType<typeof createFreshnessCore>;
+
+// ─── Public factory ───────────────────────────────────────────────────────
+
+export interface FreshnessUnit {
+  /** Align watchers with the current repo index and tracking config. */
+  reconcile(): Promise<void>;
+  /** Tear down every watcher and reset resolved-user state. */
+  dispose(): void;
+  /** `stop` alias of `dispose`, matching the DaemonUnit `start()`/`stop()` shape. */
+  stop(): void;
+  /** Per-repo watcher freshness for `rt daemon status`. */
+  getSnapshot(): ReturnType<FreshnessCore["getFreshnessSnapshot"]>;
+}
+
+/**
+ * Construct a fully independent freshness unit bound to `env`. Two units
+ * built this way share no watcher map, provider cache, or resolved user id:
+ * see `lib/daemon/__tests__/freshness-factory.test.ts`.
+ */
+export function createFreshness(env: FreshnessEnv): FreshnessUnit {
+  const core = createFreshnessCore();
+  return {
+    reconcile: () => core.reconcileFreshness(env),
+    dispose: () => core.disposeFreshness(),
+    stop: () => core.disposeFreshness(),
+    getSnapshot: () => core.getFreshnessSnapshot(),
+    // Not part of the public FreshnessUnit contract; __test__.watchesOf below
+    // is the only sanctioned reader.
+    __watches: core.__watches,
+  } as FreshnessUnit;
+}
+
+export const __test__ = {
+  /** The live watches Map backing a unit built by createFreshness, for R031 independence assertions only. */
+  watchesOf(unit: FreshnessUnit): Map<string, unknown> {
+    return (unit as unknown as { __watches: Map<string, unknown> }).__watches;
+  },
+};
+
+// ─── Default instance + free-function wrappers (unchanged call surface) ────
+//
+// Every function below is a thin wrapper over one lazily-created default
+// core, so existing callers (daemon.ts, cache-refresh.ts, the handlers, etc.)
+// keep sharing exactly the state they always have.
+
+let defaultCore: FreshnessCore | null = null;
+
+function getDefaultCore(): FreshnessCore {
+  return defaultCore ??= createFreshnessCore();
+}
+
+export function resolveUserIdAcrossTracking(
+  repoIndex: Record<string, string>,
+  tracking: RepoTracking,
+): Promise<void> {
+  return getDefaultCore().resolveUserIdAcrossTracking(repoIndex, tracking);
+}
+
+export function getSelfUsername(): string | null {
+  return getDefaultCore().getSelfUsername();
+}
+
+export function resolveSelfUsername(repoName: string, repoPath: string): Promise<string | null> {
+  return getDefaultCore().resolveSelfUsername(repoName, repoPath);
+}
+
+export function getAggregatedConnection(): "connected" | "connecting" | "disconnected" {
+  return getDefaultCore().getAggregatedConnection();
+}
+
+export function getFreshnessSnapshot(): Record<
+  string,
+  { state: "live" | "degraded"; lastSyncedAt: string | null; lastEventId: number | null }
+> {
+  return getDefaultCore().getFreshnessSnapshot();
+}
+
+export function getRepoContext(
+  repoName: string,
+  repoPath?: string,
+  projectPathOverride?: string,
+): Promise<{ provider: GitLabProvider; projectPath: string; projectId: number }> {
+  return getDefaultCore().getRepoContext(repoName, repoPath, projectPathOverride);
+}
+
+export function getCurrentUserId(): number | null {
+  return getDefaultCore().getCurrentUserId();
+}
+
+export function applyInvalidationBatch(
   env: FreshnessEnv,
   target: RepoTarget,
   runner: BatchRunner,
-  overrides: MappingOverrides,
-): void {
-  if (runner.disposed) return; // stopWatch already tore this repo down
-  if (runner.gapFillTimer) return; // already scheduled
-  const delay = overrides.gapFillDebounceMs ?? GAP_FILL_DEBOUNCE_MS;
-  runner.gapFillTimer = setTimeout(() => {
-    runner.gapFillTimer = null;
-    if (runner.disposed) return; // stopWatch ran while this timer was pending
-    runGapFill(env, target, overrides).catch((err) => {
-      log.warn({ err, repo: target.repoName }, "gap-fill failed");
-    });
-  }, delay);
+  keys: InvalidationKey[],
+  overrides: MappingOverrides = {},
+): Promise<void> {
+  return getDefaultCore().applyInvalidationBatch(env, target, runner, keys, overrides);
 }
 
-async function runGapFill(env: FreshnessEnv, target: RepoTarget, overrides: MappingOverrides): Promise<void> {
-  const { ctx } = env;
-  const { repoName, projectPath, provider } = target;
-
-  const nullMrBranches = Object.entries(ctx.cache.entries)
-    .filter(([, e]) => e.repoName === repoName && e.mr == null)
-    .map(([key]) => branchOf(key));
-  if (nullMrBranches.length === 0) return;
-  if (!provider.fetchPullRequestsByBranches) return;
-
-  const found = await provider.fetchPullRequestsByBranches(projectPath, nullMrBranches, "all");
-  let mutated = false;
-  for (const [branch, pr] of found) {
-    if (!pr) continue; // still no MR — leave the entry untouched
-    mutated = updateEntry(env, repoName, branch, pr) || mutated;
-  }
-  if (mutated) {
-    const notify = overrides.notify
-      ?? ((entries: Record<string, any>, uid: number | null) => checkAndNotify(entries, undefined, uid));
-    notify(ctx.cache.entries, getCurrentUserId());
-    log.info({ repo: repoName, filled: [...found.values()].filter(Boolean).length }, "gap-fill applied");
-  }
+export function initFreshness(env: FreshnessEnv): Promise<void> {
+  return getDefaultCore().initFreshness(env);
 }
 
-// ─── Watcher lifecycle ───────────────────────────────────────────────────────
-
-export async function initFreshness(env: FreshnessEnv): Promise<void> {
-  log.info("initializing");
-  await reconcileFreshness(env);
-}
-
-// The 7s boot timer (initFreshness) and every refreshCache() tail call
-// reconcileFreshness, and they can overlap in real time. Coalesce the same
-// way cache-refresh.ts does: a caller that arrives while one is running
-// awaits the in-flight run instead of starting a second pass that could
-// double-startWatch the same repo.
-let reconcileInFlight: Promise<void> | null = null;
-
-/**
- * Align watchers with the repo index and the tracking config: start one per
- * live-tracked GitLab repo that lacks one, dispose watchers for repos removed
- * from either. A watcher covers the whole project regardless of how many MRs
- * are cached, because pushes to MR-less branches matter too.
- */
 export function reconcileFreshness(env: FreshnessEnv): Promise<void> {
-  if (reconcileInFlight) return reconcileInFlight;
-  reconcileInFlight = reconcileFreshnessImpl(env).finally(() => { reconcileInFlight = null; });
-  return reconcileInFlight;
-}
-
-async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
-  const repoIndex = env.ctx.repoIndex();
-  const tracking = loadRepoTracking();
-
-  for (const [repoName, repoPath] of Object.entries(repoIndex)) {
-    if (grants(tracking, repoName).mode !== "live") continue;
-
-    // A live watch whose provider token has since rotated must be dropped so the
-    // ensureProvider/startWatch below rebuilds it with the current token (S048/S049).
-    const existing = providers.get(repoName);
-    if (existing && watches.has(repoName)) {
-      const secrets = await loadSecrets();
-      if (secrets.gitlabToken && existing.token !== secrets.gitlabToken) stopWatch(repoName);
-    }
-
-    if (watches.has(repoName)) continue;
-
-    const provider = await ensureProvider(repoName, repoPath);
-    if (!provider?.watchEvents) continue;
-    if (!userIdResolved) await ensureUserId();
-
-    // Re-check after the await: coalescing above should make this
-    // unreachable, but the await is a yield point, so re-verify before
-    // startWatch rather than trust a check made before it.
-    if (watches.has(repoName)) continue;
-
-    const remoteUrl = await getRemoteUrl(repoPath);
-    const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
-    if (!remote) continue;
-
-    startWatch(env, repoName, provider, remote.projectPath);
-  }
-
-  for (const repoName of [...watches.keys()]) {
-    if (!repoIndex[repoName]) {
-      stopWatch(repoName);
-      log.info(`disposed watcher for ${repoName} (repo removed from index)`);
-    } else if (grants(tracking, repoName).mode !== "live") {
-      stopWatch(repoName);
-      log.info(`disposed watcher for ${repoName} (no longer tracked live)`);
-    }
-  }
-
-  broadcastStatus(env);
-}
-
-// glance >=0.15 widened EventCursor.lastEventId to number | string | null for
-// GitHub's string event ids. This watch path is GitLab-only, whose ids stay
-// numeric; anything else reads as absent, same as glance's own pollers treat
-// foreign cursor shapes.
-function numericEventId(v: number | string | null | undefined): number | null {
-  return typeof v === "number" ? v : null;
-}
-
-function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvider, projectPath: string): void {
-  const resumeCursor = cursorStore().get(repoName);
-
-  const watch: RepoWatch = {
-    provider,
-    projectPath,
-    dispose:      () => {},
-    projectId:    null,
-    state:        "live",
-    lastSyncedAt: null,
-    lastEventId:  numericEventId(resumeCursor?.lastEventId),
-    processing:   false,
-    pending:      [],
-    gapFillTimer: null,
-    disposed:     false,
-  };
-
-  watch.dispose = provider.watchEvents!(
-    projectPath,
-    {
-      cursor: resumeCursor,
-      onCursor: (c) => {
-        cursorStore().set(repoName, c);
-        watch.lastEventId = numericEventId(c.lastEventId);
-      },
-      onStatus: (s) => {
-        const prev = watch.state;
-        watch.state = s.state;
-        watch.lastSyncedAt = s.lastSyncedAt;
-        if (prev !== s.state) {
-          log.info({ repo: repoName, state: s.state, cause: s.cause ?? null }, "events watcher status");
-          broadcastStatus(env);
-        }
-      },
-    },
-    (batch) => {
-      watch.lastSyncedAt = batch.syncedAt;
-      if (batch.invalidations.length === 0) return;
-      applyInvalidationBatch(env, { repoName, projectPath, provider }, watch, batch.invalidations)
-        .catch((err) => log.warn({ err, repo: repoName }, "invalidation batch failed"));
-    },
-  );
-
-  watches.set(repoName, watch);
-  log.info({ repo: repoName, projectPath, resumed: resumeCursor != null }, "events watcher started");
-
-  // Watcher start = the repo just went live; give project-mrs consumers
-  // data now instead of at the next 5-min cycle.
-  if (grants(loadRepoTracking(), repoName).caches.has("project-mrs")) {
-    import("./project-sync.ts")
-      .then(({ syncProjectMRs }) =>
-        syncProjectMRs({ repoIndex: () => env.ctx.repoIndex(), broadcast: env.broadcast }, repoName))
-      .catch((err) => log.warn({ err, repo: repoName }, "watcher-start project sync failed"));
-  }
-}
-
-function stopWatch(repoName: string): void {
-  const w = watches.get(repoName);
-  if (!w) return;
-  w.disposed = true; // must be set before dispose(): a batch already in flight checks this on the way out
-  try { w.dispose(); } catch { /* watcher already stopped */ }
-  if (w.gapFillTimer) clearTimeout(w.gapFillTimer);
-  watches.delete(repoName);
+  return getDefaultCore().reconcileFreshness(env);
 }
 
 export function disposeFreshness(): void {
-  for (const repoName of [...watches.keys()]) stopWatch(repoName);
-  providers.clear();
-  userId = null;
-  userIdResolved = false;
+  getDefaultCore().disposeFreshness();
 }

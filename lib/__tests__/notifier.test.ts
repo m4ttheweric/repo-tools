@@ -5,7 +5,7 @@ import { join } from "path";
 import { userSettingsPath } from "../rt-paths.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
-import { __test__, loadNotificationPrefs, saveNotificationPrefs, NOTIFICATION_TYPES } from "../notifier.ts";
+import { __test__, createNotifier, loadNotificationPrefs, saveNotificationPrefs, NOTIFICATION_TYPES } from "../notifier.ts";
 
 describe("notification prefs through the settings resolver", () => {
   const origHome = process.env.HOME;
@@ -56,7 +56,7 @@ const baseSnapshot = {
   pipelineStatus: null,
   mrState: "opened",
   approved: false,
-  approvedByUserIds: [] as string[],
+  approvedByUserIds: [] as number[],
   conflicts: false,
   conflictFreeStreak: 1,
   needsRebase: false,
@@ -71,7 +71,7 @@ describe("approval transition notifications", () => {
     const now = {
       ...baseSnapshot,
       approved: true,
-      approvedByUserIds: ["123"],
+      approvedByUserIds: [123],
     };
 
     expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("self-approved");
@@ -80,12 +80,12 @@ describe("approval transition notifications", () => {
   test("notifies when another approval completes an MR I had already approved", () => {
     const was = {
       ...baseSnapshot,
-      approvedByUserIds: ["123"],
+      approvedByUserIds: [123],
     };
     const now = {
       ...baseSnapshot,
       approved: true,
-      approvedByUserIds: ["123", "456"],
+      approvedByUserIds: [123, 456],
     };
 
     expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("notify");
@@ -96,15 +96,15 @@ describe("approval transition notifications", () => {
     const now = {
       ...baseSnapshot,
       approved: true,
-      approvedByUserIds: ["123"],
+      approvedByUserIds: [123],
     };
 
     expect(__test__.shouldNotifyApprovalTransition(was, now, null)).toBe("notify");
   });
 
   test("does not notify when approved flips with no new approver", () => {
-    const was = { ...baseSnapshot, approvedByUserIds: ["456"] };
-    const now = { ...baseSnapshot, approved: true, approvedByUserIds: ["456"] };
+    const was = { ...baseSnapshot, approvedByUserIds: [456] };
+    const now = { ...baseSnapshot, approved: true, approvedByUserIds: [456] };
     expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("no-new-approver");
   });
 
@@ -308,5 +308,63 @@ describe("removeFromQueueWithRetry (busy-swallowed post-push removal)", () => {
     const isQueuedFn = () => true;
     const ok = await __test__.removeFromQueueWithRetry("evt-3", 3, 1, removeFn, isQueuedFn);
     expect(ok).toBe(false);
+  });
+});
+
+describe("createNotifier instance isolation (R031 fix round 1)", () => {
+  test("checkRunawayProcesses routes its notify call through the constructing instance's own broadcast hook, not a shared default", () => {
+    const eventsA: Array<[string, unknown]> = [];
+    const eventsB: Array<[string, unknown]> = [];
+    const notifierA = createNotifier({ broadcast: (type, data) => eventsA.push([type, data]) });
+    const notifierB = createNotifier({ broadcast: (type, data) => eventsB.push([type, data]) });
+
+    const proc = {
+      pid: 90001, ppid: 1, command: "node", fullCommand: "node server.js",
+      cpuPercent: 99, rssKb: 0, uptime: "10:00", cwd: "/tmp", repo: "repo-iso-a",
+      worktree: null, branch: null, relativeDir: ".", port: null, linearTicket: null,
+      isRunaway: true, runawayDurationMs: 999_999, firstSeen: Date.now(), packageScript: null,
+    } as any;
+
+    notifierA.checkRunawayProcesses([proc], () => {}, () => false);
+
+    expect(eventsA.length).toBe(1);
+    expect(eventsA[0]![0]).toBe("notification");
+    // notifierB's own hook never fires for work done on notifierA.
+    expect(eventsB.length).toBe(0);
+  });
+
+  test("checkAndNotify routes its notify call through the constructing instance's own broadcast hook, not a shared default", () => {
+    const eventsA: Array<[string, unknown]> = [];
+    const eventsB: Array<[string, unknown]> = [];
+    const notifierA = createNotifier({ broadcast: (type, data) => eventsA.push([type, data]) });
+    const notifierB = createNotifier({ broadcast: (type, data) => eventsB.push([type, data]) });
+
+    // Unique per test run so this never collides with persisted state.db
+    // rows another test (or another run of this test) may have left behind.
+    const branch = `iso-branch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const entry = (pipelineStatus: string) => ({
+      ticket: null,
+      linearId: "",
+      fetchedAt: 0,
+      mr: {
+        author: { id: "gitlab:999999" },
+        state: "opened",
+        pipeline: { status: pipelineStatus },
+        blockers: { awaitingApprovals: true, hasConflicts: false },
+        reviews: { isApproved: false },
+        statusDetail: "unchecked",
+      },
+    });
+
+    // Baseline, then a running->failed transition, both on notifierA only.
+    notifierA.checkAndNotify({ [branch]: entry("running") }, undefined, 999999);
+    notifierA.checkAndNotify({ [branch]: entry("failed") }, undefined, 999999);
+
+    expect(eventsA.length).toBe(1);
+    // Two instances share the underlying state.db (branch/fired snapshots
+    // are process-wide by design, see the module doc comment), but the
+    // BROADCAST is instance-scoped: notifierB never constructed and never
+    // called checkAndNotify, so it must never see an event either way.
+    expect(eventsB.length).toBe(0);
   });
 });

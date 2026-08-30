@@ -10,8 +10,9 @@
  * would freeze the event loop long enough to time out status polls.
  */
 
-import { existsSync, realpathSync } from "fs";
+import { existsSync } from "fs";
 import { homedir } from "os";
+import { canon } from "./fs-canon.ts";
 import { loadRepoIndex as loadRepoIndexFromStore } from "./repo-index.ts";
 import { runCapture } from "./subprocess.ts";
 
@@ -165,23 +166,6 @@ export async function buildWorktreeMap(
       }),
   );
   return new Map(perRepo.flat());
-}
-
-/**
- * lsof reports the kernel's resolved (real, canonically-cased) path for a
- * process's cwd. The repo index and worktree map instead carry whatever
- * path the user cd'd through when the repo was registered (behind a
- * symlink, under a case-insensitive APFS volume's non-canonical spelling,
- * ...), so a raw string comparison against lsof's cwd can miss even a repo
- * that is genuinely running. Falls back to the literal path when it does
- * not (yet) exist on disk — mirrors lib/runs/prune.ts's canon().
- */
-function canon(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
 }
 
 /** Canonicalizes every path in the repo index once per scan (not once per matched port). */
