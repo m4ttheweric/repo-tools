@@ -18,7 +18,7 @@
 - `board` model: `{ workspace: string, entries: [{ id, name, command, pkg, repo, state: "running"|"stopped"|"crashed"|"starting"|"stopping", startedAt: ISO string|null, exitCode: number|null, error: string|null, tail: null | [{ ts, text }] }] }`; `tail` is non-null for exactly one entry (the selected one while the peek is open, whatever its state).
 - Board keys: `j`/`k`/↑/↓ move (Go-local); `t` toggles the tail peek and emits `tail` `{entryId, open}` (also on selection change while open); `a` emits `add`; `s` `restart`; `x` `stop`; `f` `focus`; `q`/Ctrl-C show the y/n layer when any entry is running (else quit at once); `y` emits `quit` then quits; `n`/Esc dismisses. Uptime `m:ss` derives from `startedAt` on Go's own 1 s tick.
 - Every command is launched wrapped: `cd <shellQuote(cwd)> && <cmd>; printf '\n__rt_exit %s\n' $?`; running iff `process_info.foreground_process_group_id != shell_pid` (both non-null); stopped when the last `__rt_exit N` line reads `0` or `130`, crashed otherwise; the sentinel line and a trailing shell-prompt line are filtered from pushed tails.
-- herdr socket methods and shapes (verified against `herdr api schema --json`, protocol 19): `workspace.create {label, focus:false}` → `{type:"workspace_created", workspace:{workspace_id}}`; `pane.list {workspace_id}` → `{panes:[{pane_id, tab_id}]}`; `tab.create {workspace_id, label, focus:false}` → `{tab:{tab_id}}`; `tab.rename {tab_id, label}`; `tab.focus {tab_id}`; `pane.send_text {pane_id, text}`; `pane.send_keys {pane_id, keys:["enter"]}` / `["ctrl+c"]`; `pane.process_info {pane_id}` → `{process_info:{foreground_process_group_id, shell_pid, foreground_processes:[{pid,name,argv,cmdline}]}}`; `pane.read {pane_id, source:"recent_unwrapped", lines, strip_ansi:true, format:"text"}` → `{read:{text, truncated}}`; `workspace.close {workspace_id}`. `workspace.create` and `tab.create` do NOT return a root pane; resolve it with `pane.list`.
+- herdr socket methods and shapes (verified against `herdr api schema --json`, protocol 19): `workspace.create {label, focus:false}` → `{type:"workspace_created", workspace:{workspace_id}, tab:{tab_id}, root_pane:{pane_id, tab_id}}`; `tab.create {workspace_id, label, focus:false}` → `{type:"tab_created", tab:{tab_id}, root_pane:{pane_id, tab_id}}`; `pane.list {workspace_id}` → `{panes:[{pane_id, tab_id}]}` (the fallback when a reply carries no `root_pane`); `tab.rename {tab_id, label}`; `tab.focus {tab_id}`; `pane.send_text {pane_id, text}`; `pane.send_keys {pane_id, keys:["enter"]}` / `["ctrl+c"]`; `pane.process_info {pane_id}` → `{process_info:{foreground_process_group_id, shell_pid, foreground_processes:[{pid,name,argv,cmdline}]}}`; `pane.read {pane_id, source:"recent_unwrapped", lines, strip_ansi:true, format:"text"}` → `{read:{text, truncated}}`; `workspace.close {workspace_id}`.
 - `rt runner` runs only when `interactive()` (`lib/ui/gate.ts`) is true and `herdrAvailable()` (`lib/herdr/client.ts`) answers; otherwise one plain line and exit 1. The command never calls the daemon and never re-implements herdr logic outside `lib/runner/engine.ts`.
 - Never use em dashes or en dashes anywhere. Never write the phrase "load bearing". Comments state constraints the code cannot show; never narrate the next line, never cite review findings or task numbers. Commit after every task with the trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - Gates: `bunx tsc --noEmit`, `bun test lib commands packages scripts` (foreground, 10-minute timeout), `bun run docs:check`, `bun run picker:check`, `cd ui && go vet ./... && go test ./... -count=1`. Never run a compiled `dist/rt` outside `scripts/bench-startup.ts`; never touch `/Applications`; never restart the daemon; never run against the developer's live herdr from a test (tests use `lib/herdr/__tests__/fake-herdr.ts` and in-memory fakes).
@@ -391,7 +391,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `ui/cmd/rt-ui/verbs.go` (add `runSession`), `ui/cmd/rt-ui/main.go` (dispatch `session`)
 
 **Interfaces:**
-- Produces (Go): `session.View` interface `{ tea.Model; SetModel(raw json.RawMessage) error; Reason() Reason }`; `session.Reason` with consts `ReasonQuit="quit"`, `ReasonCancel="cancel"`, `ReasonClosed="closed"`, `ReasonError="error"`; messages `session.ModelUpdate{Raw json.RawMessage}`, `session.CloseRequest{}`; `session.Emitter` with `Emit(protocol.Intent) tea.Cmd`; `session.Run(ctx, viewName string, mk func(*Emitter) View, in io.Reader, out io.Writer, term *os.File, version string) (Reason, string, error)`; `session.ExitCode(Reason, stdinEOF bool) int`.
+- Produces (Go): `session.View` interface `{ tea.Model; SetModel(raw json.RawMessage) error; Reason() Reason }`; `session.Reason` with consts `ReasonQuit="quit"`, `ReasonCancel="cancel"`, `ReasonClosed="closed"`, `ReasonError="error"`; messages `session.ModelUpdate{Raw json.RawMessage}`, `session.CloseRequest{}`; `session.Emitter` with `Emit(protocol.Intent) tea.Cmd`; `session.Run(ctx, viewName string, views []string, mk func(*Emitter) View, in io.Reader, out io.Writer, term *os.File, version string) (reason Reason, stdinEOF bool, err error)`; `session.ExitCode(reason Reason, stdinEOF bool, err error) int`.
 - Produces (tests): `testutil.StartSession(t, argv, env) *Session` with `Send(line string)`, `ReadLine(timeout) (string, bool)` (stdout), `Type(keys ...string)`, `Kill(sig)`, `Wait() (exit int)`, `TTY() string`, `Screen() string`, `CloseStdin()`.
 - Consumes: Task 1's protocol types; `tty.Open`, `tty.WatchStdinEOF` (existing).
 
@@ -507,12 +507,15 @@ func (s *Session) ReadLine(timeout time.Duration) (string, bool) {
 	}
 }
 
-// WaitForPaint blocks until the tty shows text, so keys are never typed
-// before the view is up.
+// WaitForPaint blocks until the emulated screen shows text, so keys are
+// never typed before the view is up. It reads the screen, not the raw
+// stream: styled text arrives as several SGR-separated writes and a
+// diffing renderer overwrites cells in place, so a substring match on the
+// bytes would miss what a user plainly sees.
 func (s *Session) WaitForPaint(text string) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(s.TTY(), text) {
+		if strings.Contains(s.Screen(), text) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -604,7 +607,10 @@ func TestOpenPaintsAltScreenAndCloseLeavesIt(t *testing.T) {
 	}
 	s.Send(`{"t":"model","model":{"text":"second model"}}`)
 	s.WaitForPaint("second model")
+	// The parent ends stdin right after close, exactly as spawn.ts does;
+	// that EOF must read as a clean close, never as a dead parent.
 	s.Send(`{"t":"close"}`)
+	s.CloseStdin()
 	line, ok := s.ReadLine(2 * time.Second)
 	if !ok || !strings.Contains(line, `"reason":"closed"`) {
 		t.Fatalf("closed line: %q", line)
@@ -708,6 +714,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -808,12 +815,14 @@ func Run(ctx context.Context, viewName string, views []string, mk func(*Emitter)
 		tea.WithoutSignalHandler(),
 	)
 
-	eof := false
+	// A close line ends the reader: the parent may end stdin right after it,
+	// and that EOF must never be mistaken for a dead parent.
+	var eof atomic.Bool
 	go func() {
 		for {
 			line, err := protocol.ReadLine(r)
 			if err != nil {
-				eof = true
+				eof.Store(true)
 				p.Send(CloseRequest{})
 				return
 			}
@@ -829,13 +838,14 @@ func Run(ctx context.Context, viewName string, views []string, mk func(*Emitter)
 				}
 			case "close":
 				p.Send(CloseRequest{})
+				return
 			}
 		}
 	}()
 
 	_, runErr := p.Run()
 	switch {
-	case eof:
+	case eof.Load():
 		closed(ReasonError, "stdin closed")
 		return ReasonError, true, nil
 	case ctx.Err() != nil, errors.Is(runErr, tea.ErrInterrupted):
@@ -1102,6 +1112,8 @@ func pad2(n int) string {
 package board_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1119,13 +1131,22 @@ func fixture(t *testing.T, name string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// fixtureLine compacts a pretty-printed fixture to the one line the wire
+// carries.
+func fixtureLine(t *testing.T, name string) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(fixture(t, name))); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
 func open(t *testing.T) *testutil.Session {
 	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
 	if l, ok := s.ReadLine(2 * time.Second); !ok || !strings.Contains(l, `"hello"`) {
 		t.Fatalf("hello: %q", l)
 	}
-	model := strings.Replace(fixture(t, "session-model-board.json"), `"t":"model"`, `"t":"open","view":"board"`, 1)
-	model = strings.Replace(model, `"t": "model"`, `"t": "open", "view": "board"`, 1)
+	model := strings.Replace(fixtureLine(t, "session-model-board.json"), `"t":"model"`, `"t":"open","view":"board"`, 1)
 	s.Send(model)
 	s.WaitForPaint("rt runner")
 	return s
@@ -1149,7 +1170,7 @@ func TestPopulatedBoardPaintsRowsHeaderAndKeybar(t *testing.T) {
 func TestEmptyBoardShowsTheEmptyState(t *testing.T) {
 	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
 	s.ReadLine(2 * time.Second)
-	s.Send(fixture(t, "session-open-board.json"))
+	s.Send(fixtureLine(t, "session-open-board.json"))
 	s.WaitForPaint("Nothing running")
 	if !strings.Contains(s.Screen(), "Press a to add a command") {
 		t.Fatalf("empty state missing:\n%s", s.Screen())
@@ -1237,7 +1258,7 @@ func TestQuitConfirmsWhenRunningAndEmitsQuitOnY(t *testing.T) {
 func TestQuitWithNothingRunningQuitsAtOnce(t *testing.T) {
 	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
 	s.ReadLine(2 * time.Second)
-	s.Send(fixture(t, "session-open-board.json"))
+	s.Send(fixtureLine(t, "session-open-board.json"))
 	s.WaitForPaint("Nothing running")
 	s.Type("q")
 	if l, _ := s.ReadLine(2 * time.Second); !strings.Contains(l, `"name":"quit"`) {
@@ -1551,7 +1572,7 @@ func render(b *Board) string {
 		bottom = lipgloss.JoinVertical(lipgloss.Left, rule(b.width), keybar(b))
 	}
 	body := lipgloss.Place(b.width, b.height-lipgloss.Height(bottom), lipgloss.Left, lipgloss.Top,
-		lipgloss.JoinVertical(lipgloss.Left, top...), lipgloss.WithWhitespaceBackground(theme.Bg))
+		lipgloss.JoinVertical(lipgloss.Left, top...), lipgloss.WithWhitespaceStyle(onBg))
 	return lipgloss.JoinVertical(lipgloss.Left, body, bottom)
 }
 
@@ -1673,7 +1694,7 @@ func confirmLayer(b *Board) string {
 	right := on.Foreground(theme.Pink).Bold(true).Render("y") + on.Render(" ") + on.Foreground(theme.Dim).Render("yes, stop all") + on.Render("   ") +
 		on.Foreground(theme.Dim).Bold(true).Render("n") + on.Render(" ") + on.Foreground(theme.Dim).Render("keep running")
 	inner := b.width - 4
-	line := left + lipgloss.PlaceHorizontal(inner-lipgloss.Width(left), lipgloss.Right, right, lipgloss.WithWhitespaceBackground(theme.WarnBg))
+	line := left + lipgloss.PlaceHorizontal(inner-lipgloss.Width(left), lipgloss.Right, right, lipgloss.WithWhitespaceStyle(on))
 	return on.Border(lipgloss.RoundedBorder()).BorderForeground(theme.Peach).BorderBackground(theme.WarnBg).Padding(0, 1).Render(line)
 }
 
@@ -1682,7 +1703,7 @@ func justify(width int, left, right string) string {
 	if avail < 0 {
 		avail = 0
 	}
-	return onBg.Render("  ") + left + lipgloss.PlaceHorizontal(avail, lipgloss.Right, right, lipgloss.WithWhitespaceBackground(theme.Bg)) + onBg.Render(" ")
+	return onBg.Render("  ") + left + lipgloss.PlaceHorizontal(avail, lipgloss.Right, right, lipgloss.WithWhitespaceStyle(onBg)) + onBg.Render(" ")
 }
 
 func clip(s string, w int) string {
@@ -1933,6 +1954,9 @@ export async function openSession(view: string, model: unknown): Promise<Session
     hello = undefined;
   }
   if (!hello || hello.t !== "hello" || hello.protocol !== PROTOCOL_VERSION || !hello.views.includes(view)) {
+    // The child is waiting for open and would wait forever: end its stdin so
+    // it sees a dead parent and exits, then report.
+    try { proc.stdin.end(); } catch { /* already closed */ }
     const stderr = await new Response(proc.stderr).text();
     await proc.exited;
     return fail(bin, 2, stderr || `rt-ui session: bad hello ${first.done ? "(stdout closed)" : first.value}`);
@@ -1940,11 +1964,6 @@ export async function openSession(view: string, model: unknown): Promise<Session
 
   let dead = false;
   let end: SessionEnd | undefined;
-  const exited = proc.exited.then((code) => {
-    dead = true;
-    end ??= { reason: "died", code };
-    return code;
-  });
   const send = (msg: object): void => {
     if (dead) return;
     try {
@@ -1956,7 +1975,14 @@ export async function openSession(view: string, model: unknown): Promise<Session
   };
   send({ t: "open", view, model });
 
-  async function* intents(): AsyncGenerator<SessionIntent> {
+  // One eager reader owns stdout for the child's whole life: intents queue
+  // up for whoever iterates, and the closed line is recorded whether or not
+  // anyone is still pulling (a quit intent is usually the last thing the
+  // consumer reads before it calls close()).
+  const queue: SessionIntent[] = [];
+  let wake: (() => void) | null = null;
+  let stdoutDone = false;
+  const drained = (async () => {
     for await (const line of reader) {
       let msg;
       try {
@@ -1964,11 +1990,27 @@ export async function openSession(view: string, model: unknown): Promise<Session
       } catch {
         continue;
       }
-      if (msg.t === "intent") yield msg;
-      if (msg.t === "closed") {
-        end = { reason: msg.reason, code: 0, ...(msg.message ? { message: msg.message } : {}) };
-        return;
+      if (msg.t === "intent") queue.push(msg);
+      if (msg.t === "closed") end = { reason: msg.reason, code: 0, ...(msg.message ? { message: msg.message } : {}) };
+      wake?.();
+    }
+    stdoutDone = true;
+    wake?.();
+  })();
+  const exited = proc.exited.then((code) => {
+    dead = true;
+    return code;
+  });
+
+  async function* intents(): AsyncGenerator<SessionIntent> {
+    while (true) {
+      if (queue.length) {
+        yield queue.shift()!;
+        continue;
       }
+      if (end || stdoutDone) return;
+      await new Promise<void>((r) => { wake = r; });
+      wake = null;
     }
   }
 
@@ -1978,16 +2020,16 @@ export async function openSession(view: string, model: unknown): Promise<Session
     exited,
     async close() {
       send({ t: "close" });
-      try { proc.stdin.end(); } catch { /* already closed */ }
       const code = await exited;
-      if (end && end.reason !== "died") return { ...end, code };
+      await drained;
+      // stdin stays open until the child is gone: EOF is its parent-death signal.
+      try { proc.stdin.end(); } catch { /* already closed */ }
+      if (end) return { ...end, code };
       return { reason: "died", code };
     },
   };
 }
 ```
-
-Note on the contract: unlike prompts, `close()` ends stdin only after `close` was sent; the child exits on `close` (or is already dead), so stdin cannot close early. The `end` recorded by the intents reader wins over the `died` default when a `closed` line was seen. The `exited` handler's `end ??=` runs only if no `closed` was recorded; ordering between the stdout reader and `exited` is not guaranteed, so `close()` prefers whatever `end` says once both are settled. If a test shows `exited` resolving before the last `closed` line is parsed, drain the reader inside `close()` before reading `end` (a `for await` over the remaining lines).
 
 - [ ] **Step 5: Run the tests**
 
@@ -2138,26 +2180,40 @@ test("wrapCommand cds, runs, and prints the exit sentinel", () => {
   expect(wrapCommand("/tmp/a b", "bun run dev")).toBe("cd '/tmp/a b' && bun run dev; printf '\\n__rt_exit %s\\n' $?");
 });
 
-test("createWorkspace creates unfocused, then resolves the initial tab and pane via pane.list", async () => {
+test("createWorkspace creates unfocused and reads the root pane from the reply", async () => {
   const { engine, seen } = engineWith((method, params) => {
-    if (method === "workspace.create") return { type: "workspace_created", workspace: { workspace_id: "wX", label: params.label } };
-    if (method === "pane.list") return { type: "pane_list", panes: [{ pane_id: "wX:p1", tab_id: "wX:t1", workspace_id: "wX" }] };
+    if (method === "workspace.create") return { type: "workspace_created", workspace: { workspace_id: "wX", label: params.label }, tab: { tab_id: "wX:t1" }, root_pane: { pane_id: "wX:p1", tab_id: "wX:t1" } };
     throw new Error("unexpected " + method);
   });
   const ws = await engine.createWorkspace("rt-runner-a3f9");
   expect(ws).toEqual({ workspaceId: "wX", tabId: "wX:t1", paneId: "wX:p1" });
+  expect(seen).toHaveLength(1);
   expect(seen[0]).toMatchObject({ method: "workspace.create", params: { label: "rt-runner-a3f9", focus: false } });
+});
+
+test("createWorkspace falls back to pane.list when the reply carries no root pane", async () => {
+  const { engine, seen } = engineWith((method) => {
+    if (method === "workspace.create") return { type: "workspace_created", workspace: { workspace_id: "wX" } };
+    if (method === "pane.list") return { type: "pane_list", panes: [{ pane_id: "wX:p1", tab_id: "wX:t1", workspace_id: "wX" }] };
+    throw new Error("unexpected " + method);
+  });
+  expect(await engine.createWorkspace("rt-runner-a3f9")).toEqual({ workspaceId: "wX", tabId: "wX:t1", paneId: "wX:p1" });
   expect(seen[1]).toMatchObject({ method: "pane.list", params: { workspace_id: "wX" } });
 });
 
-test("createTab creates unfocused and finds its pane by tab id", async () => {
+test("createTab creates unfocused and reads its root pane, with pane.list as the fallback", async () => {
   const { engine, seen } = engineWith((method) => {
-    if (method === "tab.create") return { type: "tab_created", tab: { tab_id: "wX:t2", workspace_id: "wX" } };
-    if (method === "pane.list") return { type: "pane_list", panes: [{ pane_id: "wX:p1", tab_id: "wX:t1" }, { pane_id: "wX:p2", tab_id: "wX:t2" }] };
+    if (method === "tab.create") return { type: "tab_created", tab: { tab_id: "wX:t2", workspace_id: "wX" }, root_pane: { pane_id: "wX:p2", tab_id: "wX:t2" } };
     throw new Error("unexpected " + method);
   });
   expect(await engine.createTab("wX", "api")).toEqual({ tabId: "wX:t2", paneId: "wX:p2" });
   expect(seen[0]).toMatchObject({ method: "tab.create", params: { workspace_id: "wX", label: "api", focus: false } });
+  const fb = engineWith((method) => {
+    if (method === "tab.create") return { type: "tab_created", tab: { tab_id: "wX:t3", workspace_id: "wX" } };
+    if (method === "pane.list") return { type: "pane_list", panes: [{ pane_id: "wX:p1", tab_id: "wX:t1" }, { pane_id: "wX:p3", tab_id: "wX:t3" }] };
+    throw new Error("unexpected " + method);
+  });
+  expect(await fb.engine.createTab("wX", "worker")).toEqual({ tabId: "wX:t3", paneId: "wX:p3" });
 });
 
 test("run sends the wrapped text then Enter; interrupt sends ctrl+c", async () => {
@@ -2259,9 +2315,12 @@ export class HerdrEngine implements Engine {
   }
 
   async createWorkspace(label: string) {
-    const r = await this.call<{ workspace?: { workspace_id: string } }>("workspace.create", { label, focus: false });
+    const r = await this.call<{ workspace?: { workspace_id: string }; tab?: { tab_id: string }; root_pane?: { pane_id: string; tab_id: string } }>("workspace.create", { label, focus: false });
     const workspaceId = r.workspace?.workspace_id;
     if (!workspaceId) throw new EngineError("bad_reply", "workspace.create returned no workspace_id");
+    if (r.root_pane?.pane_id && r.root_pane.tab_id) {
+      return { workspaceId, tabId: r.root_pane.tab_id, paneId: r.root_pane.pane_id };
+    }
     const panes = await this.call<{ panes?: { pane_id: string; tab_id: string }[] }>("pane.list", { workspace_id: workspaceId });
     const first = panes.panes?.[0];
     if (!first) throw new EngineError("no_pane", `workspace ${workspaceId} has no pane`);
@@ -2269,9 +2328,10 @@ export class HerdrEngine implements Engine {
   }
 
   async createTab(workspaceId: string, label: string) {
-    const r = await this.call<{ tab?: { tab_id: string } }>("tab.create", { workspace_id: workspaceId, label, focus: false });
+    const r = await this.call<{ tab?: { tab_id: string }; root_pane?: { pane_id: string } }>("tab.create", { workspace_id: workspaceId, label, focus: false });
     const tabId = r.tab?.tab_id;
     if (!tabId) throw new EngineError("bad_reply", "tab.create returned no tab_id");
+    if (r.root_pane?.pane_id) return { tabId, paneId: r.root_pane.pane_id };
     return { tabId, paneId: await this.paneOfTab(workspaceId, tabId) };
   }
 
@@ -2318,7 +2378,7 @@ export class HerdrEngine implements Engine {
 - [ ] **Step 4: Run the tests**
 
 Run: `bun test lib/runner/__tests__/engine.test.ts && bunx tsc --noEmit`
-Expected: PASS (7 tests), 0 errors. If `herdrRequest`'s unreachable-socket reply comes back as `{ ok: false, code: "unreachable" }`, the last test passes as written.
+Expected: PASS (8 tests), 0 errors. If `herdrRequest`'s unreachable-socket reply comes back as `{ ok: false, code: "unreachable" }`, the last test passes as written.
 
 - [ ] **Step 5: Commit**
 
@@ -2450,8 +2510,14 @@ function stamp(now: Date): string {
 
 export function filterTail(text: string, now: Date = new Date()): BoardTailLine[] {
   const lines = text.split("\n").filter((l) => !SENTINEL_RE.test(l));
-  while (lines.length && lines[lines.length - 1]!.trim() === "") lines.pop();
-  if (lines.length && PROMPT_RE.test(lines[lines.length - 1]!)) lines.pop();
+  // The sentinel's leading newline leaves a blank above the prompt; strip
+  // blanks, the prompt, then blanks again until nothing changes.
+  let n = -1;
+  while (n !== lines.length) {
+    n = lines.length;
+    while (lines.length && lines[lines.length - 1]!.trim() === "") lines.pop();
+    if (lines.length && PROMPT_RE.test(lines[lines.length - 1]!)) lines.pop();
+  }
   const ts = stamp(now);
   return lines.map((text) => ({ ts, text }));
 }
@@ -2612,9 +2678,9 @@ test("a cancelled picker reopens the board unchanged", async () => {
   expect(d.engine.calls).toEqual([]);
 });
 
-test("stop marks stopping, interrupts, and the next poll settles it as stopped 130; restart waits for the shell then re-runs", async () => {
+test("restart on a running entry interrupts, waits for the shell, and re-runs; stop then interrupts once more", async () => {
   const s = new FakeSession([{ t: "intent", name: "add" }]);
-  const s2 = new FakeSession([{ t: "intent", name: "stop", entryId: "e1" }, { t: "intent", name: "restart", entryId: "e1" }, { t: "intent", name: "quit" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "restart", entryId: "e1" }, { t: "intent", name: "stop", entryId: "e1" }, { t: "intent", name: "quit" }]);
   const d = deps({
     sessions: [s, s2],
     resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
@@ -2624,7 +2690,21 @@ test("stop marks stopping, interrupts, and the next poll settles it as stopped 1
   const e = r.entries[0]!;
   expect(d.engine.calls.filter((c) => c.startsWith("int:"))).toHaveLength(2);
   expect(d.engine.calls.filter((c) => c.startsWith("run:"))).toHaveLength(2);
-  expect(["running", "starting"]).toContain(e.state);
+  expect(e.state).toBe("stopping");
+});
+
+test("restart on a stopped entry skips the interrupt and just re-runs", async () => {
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "stop", entryId: "e1" }, { t: "intent", name: "restart", entryId: "e1" }, { t: "intent", name: "quit" }]);
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  await r.run();
+  expect(d.engine.calls.filter((c) => c.startsWith("int:"))).toHaveLength(1);
+  expect(d.engine.calls.filter((c) => c.startsWith("run:"))).toHaveLength(2);
+  expect(r.entries[0]!.state).toBe("starting");
 });
 
 test("focus failure pins an error on the entry and the board stays up", async () => {
@@ -2646,6 +2726,32 @@ test("tail intent reads immediately and pushes a model with tail for that entry 
   const withTail = s2.pushed.find((m) => (m as { entries: { tail: unknown }[] }).entries[0]?.tail);
   expect(withTail).toBeDefined();
   expect((withTail as { entries: { tail: { text: string }[] }[] }).entries[0]!.tail.map((l) => l.text)).toEqual(["line a", "line b"]);
+});
+
+test("a session that ends with reason error is treated as died", async () => {
+  class Errored extends FakeSession {
+    async close() { this.closedCalls++; return { reason: "error" as const, code: 70, message: "stdin closed" }; }
+  }
+  const s = new Errored([]);
+  const d = deps({ sessions: [s] });
+  await expect(new Runner(d).run()).rejects.toThrow(/rt-ui/);
+});
+
+test("a picker that throws reopens the board unchanged and warns", async () => {
+  const first = new FakeSession([{ t: "intent", name: "add" }]);
+  const second = new FakeSession([{ t: "intent", name: "quit" }]);
+  const errs: string[] = [];
+  const real = process.stderr.write;
+  process.stderr.write = ((c: string | Uint8Array) => { errs.push(String(c)); return true; }) as typeof process.stderr.write;
+  try {
+    const d = deps({ sessions: [first, second], resolve: async () => { throw new Error("picker exploded"); } });
+    const r = new Runner(d);
+    await r.run();
+    expect(r.entries).toEqual([]);
+  } finally {
+    process.stderr.write = real;
+  }
+  expect(errs.join("")).toContain("picker exploded");
 });
 
 test("a session that dies tears the workspace down", async () => {
@@ -2694,6 +2800,7 @@ const LIVENESS_MS = 1500;
 const TAIL_MS = 1000;
 const TAIL_LINES = 200;
 const RESTART_WAIT_MS = 5000;
+const LAUNCH_GRACE_MS = 500;
 
 export class SessionDied extends Error {
   constructor(code: number) {
@@ -2723,24 +2830,28 @@ export class Runner {
           const again = await this.handle(intent);
           if (again === "reopen") break;
           if (again === "done") {
-            this.stopTimers();
-            const end = await s.close();
-            this.session = null;
-            if (end.reason === "died") throw new SessionDied(end.code);
+            await this.closeSession(s);
             return;
           }
         }
         if (this.session === s) {
-          this.stopTimers();
-          const end = await s.close();
-          this.session = null;
-          if (end.reason === "died") throw new SessionDied(end.code);
+          const end = await this.closeSession(s);
           if (end.reason === "quit" || end.reason === "closed") return;
         }
       }
     } finally {
       await this.teardown();
     }
+  }
+
+  // died and error are the same thing to the runner: the view is gone for a
+  // reason that was not ours, so the board ends with a message, not silently.
+  private async closeSession(s: SessionHandle) {
+    this.stopTimers();
+    const end = await s.close();
+    this.session = null;
+    if (end.reason === "died" || end.reason === "error") throw new SessionDied(end.code);
+    return end;
   }
 
   private async openBoard(): Promise<void> {
@@ -2809,12 +2920,20 @@ export class Runner {
   private async add(): Promise<void> {
     const s = this.session;
     if (!s) return;
-    this.stopTimers();
-    const end = await s.close();
-    this.session = null;
-    if (end.reason === "died") throw new SessionDied(end.code);
+    await this.closeSession(s);
 
-    const res = await this.deps.resolve();
+    // The picker runs in this process with the terminal to itself. A
+    // "launched" result means the user picked a preset or queue, which
+    // rt run launched into their own herdr panes; the board reopens
+    // unchanged either way, as it does when the picker throws.
+    let res: RunResolution;
+    try {
+      res = await this.deps.resolve();
+    } catch (err) {
+      process.stderr.write(`  rt runner: picker failed (${err instanceof Error ? err.message : String(err)})\n`);
+      await this.openBoard();
+      return;
+    }
     if (res.kind !== "resolved") {
       await this.openBoard();
       return;
@@ -2900,6 +3019,10 @@ export class Runner {
     if (!this.session) return;
     for (const e of this.entries) {
       if (!e.paneId) continue;
+      // The previous run's exit sentinel is still in the pane text until the
+      // shell forks the new command; give a fresh launch a moment before
+      // reading the sentinel as this run's verdict.
+      if (e.startedAt && this.deps.now().getTime() - e.startedAt.getTime() < LAUNCH_GRACE_MS) continue;
       try {
         const info = await this.deps.engine.processInfo(e.paneId);
         const text = isRunning(info) ? "" : await this.deps.engine.read(e.paneId, 50);
@@ -2943,7 +3066,7 @@ export class Runner {
 - [ ] **Step 4: Run the tests**
 
 Run: `bun test lib/runner/__tests__/runner.test.ts && bunx tsc --noEmit`
-Expected: PASS (7 tests), 0 errors. The intents loop in `run()` is written so a `quit` closes and returns, an `add` breaks out to reopen, and a stream that ends without `quit` (a died child) closes and either returns or throws `SessionDied`; if a test hangs, the `FakeSession.next()` is returning `done: false` with no value.
+Expected: PASS (10 tests), 0 errors. The intents loop in `run()` is written so a `quit` closes and returns, an `add` breaks out to reopen, and a stream that ends without `quit` (a died child) closes and either returns or throws `SessionDied`; if a test hangs, the `FakeSession.next()` is returning `done: false` with no value. The restart tests rely on `FakeEngine`'s `running` set: `run` adds the pane, `interrupt` removes it, so `restart` on a running entry sees `isRunning` true once and then false.
 
 - [ ] **Step 5: Commit**
 
@@ -3182,6 +3305,6 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Error handling table: herdr down → probe; herdr call fails → entry error (`pin`); resolve null → reopen unchanged; session dies → teardown + message + exit 1: Tasks 8 and 9.
 - Live verification: Task 10 (manual, since tests never touch the developer's herdr).
 
-**Placeholder scan:** none. Task 1 Step 6's `fixture`/`FIXTURES` helpers exist in the target test file from phase 1. Task 3 Step 1's `itoa` note replaces the stray expression with the one-line body; the code as committed must be the one-liner.
+**Placeholder scan:** none. Task 1 Step 6's `fixture`/`FIXTURES` helpers exist in the target test file from phase 1. Every fixture sent down the wire in a Go test goes through `fixtureLine` (compacted), since the pretty-printed fixtures span several lines. `openSession`'s single eager stdout reader records `closed` even when the consumer has stopped pulling (a `quit` is usually the last intent read), and `close()` awaits both the child and the reader before ending stdin; the Go reader goroutine returns on a `close` line so the parent's later EOF can never be read as a dead parent.
 
 **Type consistency:** `protocol.Intent{Name, EntryID, Open}` (Task 1) is what `board.go` emits (Task 3) and `parseSessionLine` reads (Task 1 TS). `session.View{SetModel, Reason}` (Task 2) is what `board.New` implements (Task 3). `SessionHandle{intents, push, close, exited}` (Task 4) is what `Runner` consumes (Task 8) and `FakeSession` implements. `Engine`/`ProcessInfo` (Task 6) are what `state.ts` (Task 7) and `runner.ts` (Task 8) use. `RunResolution` (Task 5) is `Runner.deps.resolve`'s return (Task 8) and `runnerCommand` wires `resolveRun` to it (Task 9). `RunResolveResult` gains `script` in Task 5 and Task 8 reads it.
