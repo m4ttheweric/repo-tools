@@ -587,7 +587,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "worktreeReadyApprove",
         omitBehavior: "picker",
         args: [
-          { name: "Repo", type: "text", placeholder: "repo-tools", hint: "Repo whose team `ready` ladder to approve; omit to pick interactively" },
+          { name: "Repo", type: "text", optional: true, placeholder: "repo-tools", hint: "Repo whose team `ready` ladder to approve; omit to pick interactively" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
