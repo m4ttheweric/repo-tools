@@ -698,9 +698,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     }
 
     /// Kill whatever holds :5544 -- port 5544 exists only for this logdy
-    /// viewer, so anything bound there is fair game to replace.
+    /// viewer, so anything bound there is fair game to replace. Scoped to
+    /// the TCP listener only (`-sTCP:LISTEN`): a bare `-ti:5544` also
+    /// matches any client with an open connection TO that listener (e.g. a
+    /// browser tab left on the logdy page), and `kill` on that PID would
+    /// take out an unrelated process.
     private func killLogdy() {
-        let script = "pids=$(/usr/sbin/lsof -ti:5544 2>/dev/null); if [ -n \"$pids\" ]; then kill $pids; fi"
+        let script = "pids=$(/usr/sbin/lsof -nP -tiTCP:5544 -sTCP:LISTEN 2>/dev/null); if [ -n \"$pids\" ]; then kill $pids; fi"
         _ = TrayLog.runLogged("/bin/sh", ["-c", script], label: "kill stale logdy on :5544")
         logdySpawnedAt = nil
         logdySpawnedDay = nil
@@ -806,7 +810,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
         var candidates: [(path: String, mtime: Date)] = []
         let daemonStderr = logDir + "/daemon-stderr.log"
-        if let mtime = freshMtime(daemonStderr, after: lastKnownDaemonStartedAt) {
+        // freshMtime's `after` cutoff is a no-op when nil (nothing to compare
+        // against), so without a known daemon-start time it would accept ANY
+        // existing daemon-stderr.log -- including a stale crash left over
+        // from a much earlier daemon run. Require the cutoff before this
+        // candidate is even considered.
+        if let daemonStartedAt = lastKnownDaemonStartedAt,
+           let mtime = freshMtime(daemonStderr, after: daemonStartedAt) {
             candidates.append((daemonStderr, mtime))
         }
         let trayCrash = logDir + "/tray-crash.log"
