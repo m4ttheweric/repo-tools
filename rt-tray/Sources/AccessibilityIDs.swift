@@ -92,6 +92,7 @@ enum AXID {
     static let menuGearRestartDaemon = "menu.gear.restartDaemon"
     static let menuGearStopDaemon = "menu.gear.stopDaemon"
     static let menuGearViewLogs = "menu.gear.viewLogs"
+    static let menuGearOpenCrashLog = "menu.gear.openCrashLog"
     static let menuGearStartAtLogin = "menu.gear.startAtLogin"
     static let menuGearQuit = "menu.gear.quit"
 }

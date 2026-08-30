@@ -512,6 +512,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             dotColor = .systemYellow
         case .warning:
             dotColor = .systemOrange
+        case .degraded:
+            dotColor = .systemPink
         case .down:
             dotColor = .systemRed
         case .unknown:
@@ -582,10 +584,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             switch daemonLifecycle.status {
             case .requiresApproval:
                 TrayState.shared.statusText = "Daemon: needs approval in Login Items"
+                TrayState.shared.bootVerdict = nil
             case .notRegistered, .notFound:
                 TrayState.shared.statusText = "Daemon: not registered"
+                TrayState.shared.bootVerdict = nil
+            case .enabled:
+                // launchd considers the job registered and enabled, yet
+                // `ping` isn't answering — alive but not serving, the third
+                // named verdict (S026), distinct from "not registered".
+                TrayState.shared.statusText = "Daemon: alive but not serving"
+                TrayState.shared.bootVerdict = "alive but not serving"
             default:
                 TrayState.shared.statusText = "Daemon: not running"
+                TrayState.shared.bootVerdict = nil
             }
             TrayState.shared.needsApproval = needsLoginItemApproval()
         default:
@@ -793,6 +804,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     private var isRefreshing = false
     private var consecutiveStatusFailures = 0
+    /// Derived from the last successful poll's `uptime`; used to tell a
+    /// stale crash/log artifact from a current one (S029) without needing
+    /// to touch the daemon-side writer.
+    private var lastKnownDaemonStartedAt: Date?
 
     /// Main-actor so `isRefreshing` and all menu/UI mutations are serialized;
     /// the daemon queries themselves still run off-main across the awaits.
@@ -827,13 +842,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             }
         }
 
+        // Phase 2 health level: a degraded/unhealthy daemon-reported level
+        // outranks the local heuristics above — it names the actual failing
+        // subsystem instead of leaving the operator to guess from a color.
+        var failingSubsystem: String?
+        if let level = status.healthLevel, level != "ok" {
+            health = .degraded
+            failingSubsystem = status.healthReasons.first ?? level
+        }
+
+        lastKnownDaemonStartedAt = Date().addingTimeInterval(-Double(status.uptime) / 1000)
+
         currentHealth = health
         updateMenuBarTitle(status: health)
         TrayState.shared.health = health
-        TrayState.shared.statusText = "Daemon: running · pid \(status.pid) · \(formatUptime(status.uptime))"
+        TrayState.shared.failingSubsystem = failingSubsystem
+        if let failingSubsystem {
+            TrayState.shared.statusText = "Daemon: degraded — \(failingSubsystem)"
+        } else {
+            TrayState.shared.statusText = "Daemon: running · pid \(status.pid) · \(formatUptime(status.uptime))"
+        }
         // The daemon being reachable only proves the daemon's own agent is
         // approved — another registered agent (deck) can still be pending.
         TrayState.shared.needsApproval = needsLoginItemApproval()
+
+        await refreshBootDiagnostics()
+    }
+
+    /// Restart count, last-crash reason, and boot verdict (S026) — a separate
+    /// query from the main status poll since this data only lives on the
+    /// `ping` reply (see `DaemonClient.querySupervision`), not `tray:status`.
+    /// Best-effort: a nil result just means the gear menu shows no boot info,
+    /// same as before this feature existed.
+    private func refreshBootDiagnostics() async {
+        guard let supervision = await daemonClient.querySupervision() else { return }
+        TrayState.shared.restartCount = supervision.bootAttempts
+        let now = Date()
+        if let (verdict, reason) = bootVerdict(from: supervision, now: now) {
+            TrayState.shared.bootVerdict = verdict
+            TrayState.shared.lastCrashReason = reason
+        } else {
+            TrayState.shared.bootVerdict = nil
+            TrayState.shared.lastCrashReason = supervision.lastExit?.reason
+        }
     }
 
     private func drainPendingNotifications() async {
@@ -956,8 +1007,34 @@ enum DaemonHealth {
     case healthy    // Green dot — daemon running, all good
     case starting   // Yellow dot — daemon is starting/restarting
     case warning    // Orange dot — running but has pending notifications
+    case degraded   // Pink dot — daemon reports health.level != "ok" (a named subsystem cause, not a guess)
     case down       // Red dot — daemon not reachable
     case unknown    // Grey dot — initial state before first poll
+}
+
+/// Classifies a `SupervisionInfo` reading into one of the two verdicts
+/// observable while the daemon is still answering `ping` (a successful
+/// `querySupervision` already proves it's alive and serving) -- mirrors
+/// `classifyDaemonStatus`'s crash-looping/boot-failed branches in
+/// `lib/daemon-status.ts` at the same n=3-within-5-minutes threshold as
+/// `isCrashLooping` (`lib/daemon/supervision-state.ts`). The third named
+/// verdict, "alive but not serving", only applies once `ping` itself fails
+/// (see `setHealth`'s `.down` branch) and so can't be reached here.
+private func bootVerdict(from info: SupervisionInfo, now: Date) -> (verdict: String, reason: String)? {
+    let windowMs: Double = 5 * 60_000
+    let floorMs = now.timeIntervalSince1970 * 1000 - windowMs
+    let recentCount = info.recentFailures.filter { Double($0.at) > floorMs }.count
+
+    if recentCount >= 3 {
+        let reason = info.lastExit?.kind == "boot-failed"
+            ? (info.lastExit?.reason ?? "unknown")
+            : (info.recentFailures.last?.reason ?? "unknown")
+        return ("crash-looping", reason)
+    }
+    if info.lastExit?.kind == "boot-failed" {
+        return ("boot-failed", info.lastExit?.reason ?? "unknown")
+    }
+    return nil
 }
 
 struct DaemonStatus {
@@ -970,4 +1047,7 @@ struct DaemonStatus {
     let portsByRepo: [String: Int]
     let pendingNotifications: Int
     let lastRefresh: Int?
+    /// "ok" / "degraded" / "unhealthy", nil if the daemon didn't report one.
+    let healthLevel: String?
+    let healthReasons: [String]
 }
