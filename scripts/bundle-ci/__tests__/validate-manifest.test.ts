@@ -20,6 +20,11 @@ test("missing file throws with the path", () => {
   expect(() => readBundleRecipe("/nonexistent/mattstack.deck.json")).toThrow(/mattstack\.deck\.json/);
 });
 
+test("a non-ENOENT read failure surfaces as itself, not as a missing manifest", () => {
+  // A directory read fails EISDIR; the owner must not be told to add a file.
+  expect(() => readBundleRecipe(mkdtempSync(join(tmpdir(), "notafile-")))).toThrow(/EISDIR|illegal operation/i);
+});
+
 test("unparsable JSON throws", () => {
   expect(() => readBundleRecipe(manifest("{nope"))).toThrow();
 });

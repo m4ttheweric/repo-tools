@@ -224,6 +224,12 @@ bundle_helpers() {
         # make codesign treat it as a nested bundle, so reject it here rather
         # than fail the outer seal later.
         if [ -d "$DEPS_DIR/$name-skills" ]; then
+            # The destination dir is named for the helper, so a dotted helper
+            # name would itself read as a nested bundle even when every skill
+            # dir inside is clean.
+            case "$name" in
+                *.*) echo "  ✗ helper name '$name' contains a dot; it cannot carry a skills tree"; exit 1 ;;
+            esac
             while IFS= read -r -d '' bad; do
                 echo "  ✗ $name skills dir '$(basename "$bad")' contains a dot; rename it in the app repo"; exit 1
             done < <(find "$DEPS_DIR/$name-skills" -type d -name '*.*' -print0)

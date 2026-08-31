@@ -140,9 +140,17 @@ run as a verification exercise, not a routine.
 `.github/workflows/bundle-apps.yml` builds the managed mattstack apps from
 source and pins them into `rt-tray/deps.lock`. Manual dispatch only: inputs
 are `apps` (comma-separated names, or `all`) and `dry_run` (build and hash,
-skip release and PR). The plan job resolves the matrix from deps.lock rows
-carrying a `repo` field; build jobs run on macos-15 (arm64); the PR job
-opens one deps.lock PR on `bundle-ci/<run_id>`. Nothing pushes to main.
+skip release and PR). Four jobs: plan resolves the matrix from deps.lock rows
+carrying a `repo` field; build runs on macos-15 (arm64), one leg per app;
+release publishes the packaged tarballs; the PR job opens one deps.lock PR on
+`bundle-ci/<run_id>`. Nothing pushes to main.
+
+Release is a separate job on purpose. The build job runs each app repo's own
+recipe verbatim, and a recipe can write `GITHUB_ENV` and `GITHUB_PATH`, so no
+step holding the release token may follow it in the same job... a poisoned
+PATH would otherwise hand that token to an attacker-controlled `gh`. The
+build job's own token use (clone, tag guard) all happens before the recipe
+runs.
 
 Two declarations drive it, each owned by the party that knows it:
 

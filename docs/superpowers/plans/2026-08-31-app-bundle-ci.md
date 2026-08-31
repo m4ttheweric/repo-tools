@@ -179,7 +179,7 @@ describe("live deps.lock buildable set", () => {
   test("every managed app row carries its m4ttstack repo", () => {
     const want: Record<string, string> = {
       deck: "m4ttstack/deck",
-      board: "m4ttstack/mr-board",
+      board: "m4ttstack/board",
       gitq: "m4ttstack/gitq",
       console: "m4ttstack/console",
       chat: "m4ttstack/chat",
@@ -219,7 +219,7 @@ Expected: FAIL (no row carries `repo`; console/chat rows absent).
 
 - [ ] **Step 3: Edit deps.lock**
 
-- Add `"repo": "m4ttstack/deck"` to the deck row, `"repo": "m4ttstack/mr-board"` to board, `"repo": "m4ttstack/gitq"` to gitq (place it on the first line of each row after `"license"`, matching the file's compact style).
+- Add `"repo": "m4ttstack/deck"` to the deck row, `"repo": "m4ttstack/board"` to board, `"repo": "m4ttstack/gitq"` to gitq (place it on the first line of each row after `"license"`, matching the file's compact style).
 - Add two new rows after gitq (before mattstack-proxy-install), matching the pending-stub shape deck/board use:
 
 ```jsonc
@@ -1108,7 +1108,7 @@ jobs:
 
   pr:
     needs: build
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !cancelled() && !inputs.dry_run }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

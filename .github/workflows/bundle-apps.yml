@@ -70,10 +70,14 @@ jobs:
           bun scripts/bundle-ci/validate-manifest.ts app/mattstack.deck.json > recipe.json
           BUILD_CMD=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).build)')
           ARTIFACT=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).artifact)')
-          # A package.json with no version must fail here, not tag vundefined.
+          # The version is app-controlled and lands in GITHUB_ENV, where a
+          # newline would start a new variable, so the shape is constrained
+          # here rather than trusted. No version at all must fail too, not
+          # tag vundefined.
           VERSION=$(bun -e '
             const v = JSON.parse(await Bun.file("app/package.json").text()).version;
             if (typeof v !== "string" || !v) throw new Error("app package.json has no version");
+            if (!/^[A-Za-z0-9._+-]+$/.test(v)) throw new Error("unsupported version string: " + v);
             console.log(v);
           ')
           {
@@ -131,28 +135,54 @@ jobs:
             echo "- url: $URL"
             echo "- sha256: \`$SHA\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Release
-        if: ${{ !inputs.dry_run }}
-        env:
-          GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
-          APP_NAME: ${{ matrix.name }}
-          APP_REPO: ${{ matrix.repo }}
-        run: |
-          # --target pins the tag to the commit actually built; without it the
-          # tag lands on the default branch head at release time, which a
-          # mid-run push would make a commit this pipeline never compiled.
-          gh release create "v$VERSION" "$APP_NAME-darwin-arm64.tgz" \
-            --repo "$APP_REPO" \
-            --target "$SOURCE_SHA" \
-            --title "$APP_NAME v$VERSION" \
-            --notes "darwin-arm64 bundle build from $SOURCE_SHA"
+      # No step after Build may hold a release credential: Build runs the app
+      # repo's own recipe, which can write GITHUB_ENV and GITHUB_PATH, so a
+      # poisoned PATH could hand a later `gh` call the token. Publishing
+      # happens in the release job, which runs no app code.
       - uses: actions/upload-artifact@v4
         with:
-          name: result-${{ matrix.name }}
-          path: result-${{ matrix.name }}.json
+          name: bundle-${{ matrix.name }}
+          path: |
+            result-${{ matrix.name }}.json
+            ${{ matrix.name }}-darwin-arm64.tgz
+
+  release:
+    needs: build
+    if: ${{ !cancelled() && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+      # Only legs that packaged successfully left an artifact, so a partial
+      # build failure publishes exactly the apps that built.
+      - name: Publish releases
+        env:
+          GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
+        run: |
+          if ! compgen -G "result-*.json" > /dev/null; then
+            echo "::notice::no app packaged; nothing to release"
+            exit 0
+          fi
+          for f in result-*.json; do
+            name=$(jq -r .name "$f")
+            version=$(jq -r .version "$f")
+            source_sha=$(jq -r .sourceSha "$f")
+            repo=$(jq -r .url "$f" | sed -E 's#https://github.com/([^/]+/[^/]+)/releases/.*#\1#')
+            # --target pins the tag to the commit actually built; without it
+            # the tag lands on the default branch head at release time, which
+            # a mid-run push would make a commit this pipeline never compiled.
+            gh release create "v$version" "$name-darwin-arm64.tgz" \
+              --repo "$repo" \
+              --target "$source_sha" \
+              --title "$name v$version" \
+              --notes "darwin-arm64 bundle build from $source_sha"
+          done
 
   pr:
-    needs: build
+    needs: [build, release]
     # A bare `if` on a needs-dependent job carries an implicit success(), which
     # would skip the PR whenever ANY leg failed. With fail-fast disabled the
     # other legs have already published releases by then, and the tag guard
@@ -173,7 +203,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
-          pattern: result-*
+          pattern: bundle-*
           merge-multiple: true
       - name: Update deps.lock and open PR
         env:

@@ -14,7 +14,11 @@ export function readBundleRecipe(manifestPath: string): BundleRecipe {
   let text: string;
   try {
     text = readFileSync(manifestPath, "utf8");
-  } catch {
+  } catch (err) {
+    // Only a genuinely absent file means "add a manifest"; a permission or
+    // I/O failure must surface as itself rather than send the app owner
+    // looking for a file that is already there.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     throw new Error(`no mattstack.deck.json at ${manifestPath}`);
   }
   const m = JSON.parse(text) as Record<string, unknown>;
