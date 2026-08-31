@@ -92,7 +92,9 @@ directory is implicit (the manifest's own location).
 - `dev.build` / `dev.deploy` are the dev-gated action buttons, run in the repo dir.
 - `includeInBundle` marks the app as bundle-ready and in scope for the switch.
   This is the same field the (future) CI-bundling work keys on. The field name is
-  provisional; fox owns `mattstack.deck.json`. board/console/chat set it today.
+  provisional; fox owns `mattstack.deck.json`. It does **not** exist in any manifest
+  or in deck/rt source today: adding it to board/console/chat is new work
+  (Rollout step 1), not something they already declare.
 - deck's own manifest omits `dev.start` (deck refuses to run from source) but may
   carry `dev.deploy`. The model handles this with no special case: an absent
   `dev.start` means deck stays on its built binary even in dev mode, while still
@@ -198,11 +200,17 @@ Notes:
 | mattstack | dev | linked, valid | source | shown |
 | mattstack | dev | linked, bad | bundle + loud red issue | hidden ("fix link") |
 
-A bad link (dir gone, no manifest, or no `dev.start`) falls back to the bundled
-command and raises a `SyncIssue` that renders on the board row, rather than taking
-the app down. This over-delivers on "never non-working": even the developer's own
-bad path keeps the app up, but loudly, so they cannot silently run the bundle
-while editing source.
+The "bundle" cells above assume the bundle is installed. When it is not (transition
+window), the resolver's no-candidate path applies instead: it serves the
+still-present source loudly, or returns null with a loud issue if neither a bundle
+nor a source exists. See the resolver's existence check.
+
+A bad link (the dir is gone, or the manifest is unreadable/unparseable) falls back
+to the bundled command and raises a `SyncIssue` that renders on the board row,
+rather than taking the app down. A valid manifest that merely omits `dev.start` is
+not a bad link (deck itself is that case). This over-delivers on "never
+non-working": even the developer's own bad path keeps the app up, but loudly, so
+they cannot silently run the bundle while editing source.
 
 ## Command-route gating
 
@@ -214,9 +222,8 @@ later (finding #3):
 
 ```ts
 if (record.managedBy === "user") {
-  const m = readDeckManifest(record.workingDirectory);
-  if (!m?.commands?.[key]) return 404;      // key must be declared
-  // runnable; runs in record.workingDirectory
+  if (!record.commands?.[key]) return 404;  // unchanged from today: user apps keep record.commands
+  // runnable; runs in record.workingDirectory (shell = record.commands[key])
 } else {
   if (!isDevMode() || !record.dev?.workingDirectory) return 404;   // prod, or unlinked
   const dir = record.dev.workingDirectory;
@@ -226,7 +233,11 @@ if (record.managedBy === "user") {
 }
 ```
 
-The gate keys on a **valid link plus the key's presence**, not on `dev.start`, so
+Only the mattstack branch switches to the live manifest read. **User apps are
+unchanged**: they keep reading `record.commands` exactly as the route does today,
+so no user-app row needs a rewrite and no user app risks a regression from the
+live-read path. The gate keys on a **valid link plus the key's presence**, not on
+`dev.start`, so
 deck itself (valid manifest, `dev.deploy` present, no `dev.start`) shows its deploy
 button while an unlinked or broken-linked app shows none. Build/deploy for a
 mattstack app therefore surface only in dev mode with a valid link, which is why
@@ -245,11 +256,13 @@ notice on the next incidental read.
   existing `managed/restart`): recompute each managed app's serve shape and restart
   **only** those whose resolved command differs from what is actually running.
 - **Diff target (finding #4):** the command currently written into the app's
-  launchd plist, which deck installs and can read back (its `ProgramArguments`, via
-  the same launchd/services read path deck already uses). No last-resolved command
-  is stored on the record; the plist is the source of truth for "what is actually
-  running". A flip-then-flip-back that lands on the same command as the plist
-  already holds is a no-op, so nothing churns.
+  launchd plist, which deck composed and wrote at a path it knows. Deck has **no
+  plist-read path today** (`src/services/plist.ts` only renders; `launchd.ts` only
+  load/unload/kickstart), so the plan budgets a small new helper that parses
+  `ProgramArguments` back out of the app's installed plist. No last-resolved command
+  is stored on the record; the installed plist stays the source of truth for "what
+  is actually running". A flip-then-flip-back that lands on the same command the
+  plist already holds is a no-op, so nothing churns.
 - No poll loop: deck is the single supervisor of every managed child, so RT-67's
   park loop (which exists only because launchd runs two uncoordinated daemons) does
   not apply. The 2s cache is the self-heal fallback for the case where the poke did
@@ -299,7 +312,9 @@ deploy button surface (finding #5). Going forward, deck's `bootstrapSelf` sets i
 `dev.workingDirectory` the same way it sets `sourceDirectory` today, so a fresh
 install self-links without a manual `deck register`.
 
-User-app rows (`managedBy: "user"`) are untouched.
+User-app rows (`managedBy: "user"`) are untouched and need no rewrite: the command
+route keeps reading their `record.commands`, so the live-manifest-read path applies
+only to mattstack apps.
 
 ## Rollout sequencing (finding #1)
 
@@ -363,8 +378,9 @@ this as a named guard in the migration task.
 
 - deck: `src/registry/deck-manifest.ts` (parse `dev` node), `src/registry/records.ts`
   (record shape), `src/api/server.ts` (resolver, command-route gate, reresolve
-  endpoint, link PATCH), `src/api/register-manifest.ts` (link flow), the board UI, a
-  registry migration.
+  endpoint, link PATCH), `src/api/register-manifest.ts` (link flow), a new
+  plist-read helper (`src/services/plist.ts` / `launchd.ts`) for the reresolve diff,
+  the board UI, and a registry migration.
 - rt: `lib/setup/steps/deck.ts` (prod registration), `commands/settings.ts`
   (dev-mode toggle pokes deck).
 - app repos: `mattstack.deck.json` for chat, console, mr-board (add the `dev` node
