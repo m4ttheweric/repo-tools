@@ -647,7 +647,7 @@ async function launchQueue(
   }
 }
 
-/** Maps a saved preset's entries to runner seed rows, resolved against `worktreePath`. Pure — no spawning, so it's directly testable. */
+/** Maps a saved preset's entries to runner seed rows, resolved against `worktreePath`. Pure (no spawning), so it stays directly testable. */
 export function presetToSeed(preset: Preset, worktreePath: string): SeedEntry[] {
   return preset.entries.map((e) => ({
     name: e.script,
