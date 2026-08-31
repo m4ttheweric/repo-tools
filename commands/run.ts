@@ -49,12 +49,26 @@ import { navSeparator, type NavOption } from "../lib/navigate.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
 
+/** A picker cancellation or dead end. rt run exits with `code`; the runner treats it as "nothing chosen". */
+export class RunAborted extends Error {
+  constructor(public readonly code: number, message = "") {
+    super(message);
+    this.name = "RunAborted";
+  }
+}
+
+export type RunResolution =
+  | { kind: "resolved"; result: RunResolveResult }
+  | { kind: "launched" }
+  | { kind: "cancelled"; code: number };
+
 export interface RunResolveResult {
   targetDir: string;
   packageLabel: string;
   worktree: string;
   branch: string;
   commandTemplate: string;
+  script: string;
 }
 
 function detectPackageManager(dir: string): string {
@@ -286,7 +300,7 @@ async function selectPackageAndScript(
           initialPos: cursorPos,
         });
 
-        if (!pkgResult) process.exit(1);
+        if (!pkgResult) throw new RunAborted(1);
         if (pkgResult.key === "ctrl-up") return null; // back to worktree
 
         // ── ctrl-x: dequeue last item ──────────────────────────────────────
@@ -377,7 +391,7 @@ async function selectPackageAndScript(
       process.stderr.write(
         `No scripts found in ${packagePath}/package.json.\n`,
       );
-      process.exit(1);
+      throw new RunAborted(1);
     }
 
     if (scripts.length === 1) {
@@ -463,7 +477,7 @@ async function selectPackageAndScript(
       expectKeys: ["alt-enter", "tab"],
     });
 
-    if (!scriptResult) process.exit(1);
+    if (!scriptResult) throw new RunAborted(1);
 
     const scriptName =
       scriptResult.value === LAST_RUN_SENTINEL
@@ -527,7 +541,7 @@ async function selectPackageAndScript(
           expectKeys: ["tab"],
         });
 
-        if (!varResult) process.exit(1);
+        if (!varResult) throw new RunAborted(1);
         if (varResult.key === "ctrl-up") break; // back to script picker
 
         if (varResult.value === ADD_SENTINEL) {
@@ -537,7 +551,7 @@ async function selectPackageAndScript(
             placeholder: "e.g. with debug",
             stderr: true,
           });
-          if (!name) process.exit(1);
+          if (!name) throw new RunAborted(1);
 
           const baseCmd = `${pm} run ${scriptName}`;
           const command = await textInput({
@@ -545,7 +559,7 @@ async function selectPackageAndScript(
             defaultValue: baseCmd,
             stderr: true,
           });
-          if (!command) process.exit(1);
+          if (!command) throw new RunAborted(1);
 
           reportSave(
             "variation",
@@ -648,6 +662,220 @@ async function launchPreset(preset: Preset, worktreePath: string): Promise<void>
 
 // ─── Entry ──────────────────────────────────────────────────────────────────
 
+export async function resolveRun(
+  args: string[],
+  ctx: CommandContext,
+): Promise<RunResolution> {
+  try {
+    // Definite-assignment asserted: every path to the build-result section
+    // assigns both (resolved-context branch or picker loops), but tsc can't
+    // follow the labeled `break repoLoop` flow.
+    let worktreePath!: string;
+    let worktreeBranch!: string;
+    let repoName: string | undefined;
+    let packagePath = "";
+    let packageLabel = "";
+    let selectedScript = "";
+    let customCommand: string | undefined;
+    const queue: QueuedItem[] = [];
+
+    // If the dispatcher resolved a worktree, try that first.  On ctrl-up
+    // from the package picker, fall through to the full picker chain so
+    // the user can choose a different worktree.
+    let useResolved = !!ctx.identity;
+    if (useResolved) {
+      worktreePath = ctx.identity!.repoRoot;
+      // The serialized identity, not the display name — this flows into
+      // selectPackageAndScript purely as the run_history store key.
+      repoName = ctx.identity!.identity;
+
+      // ── Preset direct invoke: `rt run <preset-name>` ──────────────────────
+      const presetArg = args.find((a) => !a.startsWith("-") && a !== "again");
+      if (presetArg) {
+        const derivedIdentity = await deriveRepoIdentity(worktreePath);
+        const preset = findPreset(derivedIdentity.kind === "remote" ? derivedIdentity.id : null, presetArg);
+        if (preset) {
+          await launchPreset(preset, worktreePath);
+          return { kind: "launched" };
+        }
+      }
+
+      try {
+        worktreeBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+          cwd: worktreePath,
+          encoding: "utf8",
+          stdio: "pipe",
+        }).trim();
+      } catch {
+        worktreeBranch = "";
+      }
+
+      const ctxLabel = `${ctx.identity!.repoName} / ${basename(worktreePath)}`;
+      const sel = await selectPackageAndScript(worktreePath, repoName, ctxLabel, queue);
+      if (sel === QUEUE_LAUNCHED) {
+        // Queue was built and user chose "Launch all" -- launch and exit
+        await launchQueue(queue, worktreePath);
+        return { kind: "launched" };
+      }
+      if (sel) {
+        packagePath = sel.packagePath;
+        packageLabel = sel.packageLabel;
+        selectedScript = sel.selectedScript;
+        customCommand = sel.customCommand;
+      } else {
+        // User backed out — fall through to full picker chain
+        useResolved = false;
+      }
+    }
+
+    if (!useResolved) {
+      // ── Full picker chain: repo → worktree → package → script ──────────────
+      const knownRepos = getKnownRepos();
+      if (knownRepos.length === 0) {
+        process.stderr.write(
+          "No known repos. Run rt from inside a git repo to register it.\n",
+        );
+        throw new RunAborted(1);
+      }
+
+      // If we fell through from a resolved context, start at the worktree
+      // picker for that repo rather than re-asking which repo. The index keys
+      // KnownRepo.repoName holds are serialized identities now, so the match is
+      // against ctx.identity.identity — matching the display name here finds
+      // nothing and, with one known repo, exits instead of re-showing a picker.
+      const resolvedIdentity = ctx.identity?.identity;
+      let selectedRepo: KnownRepo | undefined = resolvedIdentity
+        ? knownRepos.find((r) => r.repoName === resolvedIdentity)
+        : knownRepos.length === 1
+          ? knownRepos[0]!
+          : undefined;
+
+      repoLoop: while (true) {
+        // ── Repo picker ─────────────────────────────────────────────────────
+        if (!selectedRepo) {
+          if (knownRepos.length === 1) throw new RunAborted(0); // back-propagated past last level
+          const { runNavPicker } = await import("../lib/navigate.ts");
+          const repoResult = await runNavPicker({
+            options: knownRepos.map((r) => ({
+              value: r.repoName,
+              label: repoLabel(r.repoName),
+              hint: `${r.worktrees.length} worktrees`,
+            })),
+            message: "Select repo",
+            headerParts: ["enter: select", "esc: cancel"],
+          });
+          if (!repoResult) throw new RunAborted(1);
+          // ctrl-up here is "back" with nowhere left to go, exactly like the
+          // single-repo case above. Without this the key falls through and
+          // selects whatever row the cursor was on, so with more than one known
+          // repo there is no way out of Select repo <-> Select package.
+          if (repoResult.key === "ctrl-up") throw new RunAborted(0);
+          selectedRepo = knownRepos.find((r) => r.repoName === repoResult.value)!;
+        }
+
+        const worktrees = selectedRepo.worktrees.filter((wt) =>
+          existsSync(wt.path),
+        );
+        if (worktrees.length === 0) {
+          process.stderr.write(
+            `No accessible worktrees for ${repoLabel(selectedRepo.repoName)}.\n`,
+          );
+          throw new RunAborted(1);
+        }
+
+        worktreeLoop: while (true) {
+          // ── Worktree picker ──────────────────────────────────────────────
+          if (worktrees.length === 1) {
+            worktreePath = worktrees[0]!.path;
+            worktreeBranch = worktrees[0]!.branch;
+          } else {
+            const { runNavPicker } = await import("../lib/navigate.ts");
+            const { enrichBranches, formatBranchLabel } = await import("../lib/enrich.ts");
+            let remoteUrl: string | undefined;
+            try {
+              remoteUrl = execSync("git config --get remote.origin.url", {
+                cwd: worktrees[0]!.path, encoding: "utf8", stdio: "pipe",
+              }).trim();
+            } catch { /* no remote */ }
+            const enriched = await enrichBranches(
+              worktrees.map((wt) => ({ path: wt.path, branch: wt.branch })),
+              remoteUrl,
+            );
+            const wtResult = await runNavPicker({
+              options: enriched.map((eb) => ({
+                value: eb.path,
+                label: formatBranchLabel(eb),
+                hint: "",
+              })),
+              message: `${repoLabel(selectedRepo.repoName)} worktrees`,
+              headerParts: [
+                "enter: select",
+                "ctrl-up: back to repo",
+                "esc: cancel",
+              ],
+            });
+            if (!wtResult) throw new RunAborted(1);
+            if (wtResult.key === "ctrl-up") {
+              process.stderr.write("\x1b[2J\x1b[H");
+              selectedRepo = undefined;
+              break worktreeLoop;
+            }
+            const wt = worktrees.find((w) => w.path === wtResult.value)!;
+            worktreePath = wt.path;
+            worktreeBranch = wt.branch;
+          }
+
+          // KnownRepo.repoName is the repo-index key, itself the serialized
+          // identity — already the correct run_history store key.
+          repoName = selectedRepo.repoName;
+
+          // ── Package + script ────────────────────────────────────────────
+          while (true) {
+            const wtCtx = worktrees.length > 1
+              ? `${repoLabel(selectedRepo.repoName)} / ${basename(worktreePath)}`
+              : repoLabel(selectedRepo.repoName);
+            const sel = await selectPackageAndScript(worktreePath, repoName, wtCtx, queue);
+            if (sel === QUEUE_LAUNCHED) {
+              await launchQueue(queue, worktreePath);
+              return { kind: "launched" };
+            }
+            if (!sel) {
+              process.stderr.write("\x1b[2J\x1b[H");
+              if (worktrees.length > 1) break; // re-show worktree picker
+              // Only 1 worktree — propagate up to repo
+              selectedRepo = undefined;
+              break worktreeLoop;
+            }
+            packagePath = sel.packagePath;
+            packageLabel = sel.packageLabel;
+            selectedScript = sel.selectedScript;
+            customCommand = sel.customCommand;
+            break repoLoop; // exit all loops → run command
+          }
+        }
+      }
+    }
+
+    // ── Build result ───────────────────────────────────────────────────────────
+
+    const pm = detectPackageManager(packagePath);
+
+    const result: RunResolveResult = {
+      targetDir: packagePath,
+      packageLabel,
+      worktree: worktreePath,
+      branch: worktreeBranch,
+      commandTemplate: customCommand ?? `${pm} run ${selectedScript}`,
+      script: selectedScript,
+    };
+
+    return { kind: "resolved", result };
+  } catch (e) {
+    if (e instanceof RunAborted) return { kind: "cancelled", code: e.code };
+    throw e;
+  }
+}
+
 export async function runCommand(
   args: string[],
   ctx: CommandContext,
@@ -658,213 +886,23 @@ export async function runCommand(
   // replays the actual command instead of "rt run".
   try { ensureHistoryHook(); } catch { /* don't block on setup */ }
 
-  // Definite-assignment asserted: every path to the build-result section
-  // assigns both (resolved-context branch or picker loops), but tsc can't
-  // follow the labeled `break repoLoop` flow.
-  let worktreePath!: string;
-  let worktreeBranch!: string;
-  let repoName: string | undefined;
-  let packagePath = "";
-  let packageLabel = "";
-  let selectedScript = "";
-  let customCommand: string | undefined;
-  const queue: QueuedItem[] = [];
-
-  // If the dispatcher resolved a worktree, try that first.  On ctrl-up
-  // from the package picker, fall through to the full picker chain so
-  // the user can choose a different worktree.
-  let useResolved = !!ctx.identity;
-  if (useResolved) {
-    worktreePath = ctx.identity!.repoRoot;
-    // The serialized identity, not the display name — this flows into
-    // selectPackageAndScript purely as the run_history store key.
-    repoName = ctx.identity!.identity;
-
-    // ── Preset direct invoke: `rt run <preset-name>` ──────────────────────
-    const presetArg = args.find((a) => !a.startsWith("-") && a !== "again");
-    if (presetArg) {
-      const derivedIdentity = await deriveRepoIdentity(worktreePath);
-      const preset = findPreset(derivedIdentity.kind === "remote" ? derivedIdentity.id : null, presetArg);
-      if (preset) {
-        await launchPreset(preset, worktreePath);
-        return;
-      }
-    }
-
-    try {
-      worktreeBranch = execSync("git rev-parse --abbrev-ref HEAD", {
-        cwd: worktreePath,
-        encoding: "utf8",
-        stdio: "pipe",
-      }).trim();
-    } catch {
-      worktreeBranch = "";
-    }
-
-    const ctxLabel = `${ctx.identity!.repoName} / ${basename(worktreePath)}`;
-    const sel = await selectPackageAndScript(worktreePath, repoName, ctxLabel, queue);
-    if (sel === QUEUE_LAUNCHED) {
-      // Queue was built and user chose "Launch all" -- launch and exit
-      await launchQueue(queue, worktreePath);
-      return;
-    }
-    if (sel) {
-      packagePath = sel.packagePath;
-      packageLabel = sel.packageLabel;
-      selectedScript = sel.selectedScript;
-      customCommand = sel.customCommand;
-    } else {
-      // User backed out — fall through to full picker chain
-      useResolved = false;
-    }
-  }
-
-  if (!useResolved) {
-    // ── Full picker chain: repo → worktree → package → script ──────────────
-    const knownRepos = getKnownRepos();
-    if (knownRepos.length === 0) {
-      process.stderr.write(
-        "No known repos. Run rt from inside a git repo to register it.\n",
-      );
-      process.exit(1);
-    }
-
-    // If we fell through from a resolved context, start at the worktree
-    // picker for that repo rather than re-asking which repo. The index keys
-    // KnownRepo.repoName holds are serialized identities now, so the match is
-    // against ctx.identity.identity — matching the display name here finds
-    // nothing and, with one known repo, exits instead of re-showing a picker.
-    const resolvedIdentity = ctx.identity?.identity;
-    let selectedRepo: KnownRepo | undefined = resolvedIdentity
-      ? knownRepos.find((r) => r.repoName === resolvedIdentity)
-      : knownRepos.length === 1
-        ? knownRepos[0]!
-        : undefined;
-
-    repoLoop: while (true) {
-      // ── Repo picker ─────────────────────────────────────────────────────
-      if (!selectedRepo) {
-        if (knownRepos.length === 1) process.exit(0); // back-propagated past last level
-        const { runNavPicker } = await import("../lib/navigate.ts");
-        const repoResult = await runNavPicker({
-          options: knownRepos.map((r) => ({
-            value: r.repoName,
-            label: repoLabel(r.repoName),
-            hint: `${r.worktrees.length} worktrees`,
-          })),
-          message: "Select repo",
-          headerParts: ["enter: select", "esc: cancel"],
-        });
-        if (!repoResult) process.exit(1);
-        // ctrl-up here is "back" with nowhere left to go, exactly like the
-        // single-repo case above. Without this the key falls through and
-        // selects whatever row the cursor was on, so with more than one known
-        // repo there is no way out of Select repo <-> Select package.
-        if (repoResult.key === "ctrl-up") process.exit(0);
-        selectedRepo = knownRepos.find((r) => r.repoName === repoResult.value)!;
-      }
-
-      const worktrees = selectedRepo.worktrees.filter((wt) =>
-        existsSync(wt.path),
-      );
-      if (worktrees.length === 0) {
-        process.stderr.write(
-          `No accessible worktrees for ${repoLabel(selectedRepo.repoName)}.\n`,
-        );
-        process.exit(1);
-      }
-
-      worktreeLoop: while (true) {
-        // ── Worktree picker ──────────────────────────────────────────────
-        if (worktrees.length === 1) {
-          worktreePath = worktrees[0]!.path;
-          worktreeBranch = worktrees[0]!.branch;
-        } else {
-          const { runNavPicker } = await import("../lib/navigate.ts");
-          const { enrichBranches, formatBranchLabel } = await import("../lib/enrich.ts");
-          let remoteUrl: string | undefined;
-          try {
-            remoteUrl = execSync("git config --get remote.origin.url", {
-              cwd: worktrees[0]!.path, encoding: "utf8", stdio: "pipe",
-            }).trim();
-          } catch { /* no remote */ }
-          const enriched = await enrichBranches(
-            worktrees.map((wt) => ({ path: wt.path, branch: wt.branch })),
-            remoteUrl,
-          );
-          const wtResult = await runNavPicker({
-            options: enriched.map((eb) => ({
-              value: eb.path,
-              label: formatBranchLabel(eb),
-              hint: "",
-            })),
-            message: `${repoLabel(selectedRepo.repoName)} worktrees`,
-            headerParts: [
-              "enter: select",
-              "ctrl-up: back to repo",
-              "esc: cancel",
-            ],
-          });
-          if (!wtResult) process.exit(1);
-          if (wtResult.key === "ctrl-up") {
-            process.stderr.write("\x1b[2J\x1b[H");
-            selectedRepo = undefined;
-            break worktreeLoop;
-          }
-          const wt = worktrees.find((w) => w.path === wtResult.value)!;
-          worktreePath = wt.path;
-          worktreeBranch = wt.branch;
-        }
-
-        // KnownRepo.repoName is the repo-index key, itself the serialized
-        // identity — already the correct run_history store key.
-        repoName = selectedRepo.repoName;
-
-        // ── Package + script ────────────────────────────────────────────
-        while (true) {
-          const wtCtx = worktrees.length > 1
-            ? `${repoLabel(selectedRepo.repoName)} / ${basename(worktreePath)}`
-            : repoLabel(selectedRepo.repoName);
-          const sel = await selectPackageAndScript(worktreePath, repoName, wtCtx, queue);
-          if (sel === QUEUE_LAUNCHED) {
-            await launchQueue(queue, worktreePath);
-            return;
-          }
-          if (!sel) {
-            process.stderr.write("\x1b[2J\x1b[H");
-            if (worktrees.length > 1) break; // re-show worktree picker
-            // Only 1 worktree — propagate up to repo
-            selectedRepo = undefined;
-            break worktreeLoop;
-          }
-          packagePath = sel.packagePath;
-          packageLabel = sel.packageLabel;
-          selectedScript = sel.selectedScript;
-          customCommand = sel.customCommand;
-          break repoLoop; // exit all loops → run command
-        }
-      }
-    }
-  }
-
-  // ── Build result ───────────────────────────────────────────────────────────
-
-  const pm = detectPackageManager(packagePath);
-
-  const result: RunResolveResult = {
-    targetDir: packagePath,
-    packageLabel,
-    worktree: worktreePath,
-    branch: worktreeBranch,
-    commandTemplate: customCommand ?? `${pm} run ${selectedScript}`,
-  };
+  const res = await resolveRun(args, ctx);
+  if (res.kind === "launched") return;
+  if (res.kind === "cancelled") process.exit(res.code);
+  const result = res.result;
 
   if (resolveOnly) {
     process.stdout.write(JSON.stringify(result) + "\n");
     return;
   }
 
-  const cmd = customCommand ?? `${pm} run ${selectedScript}`;
+  const packagePath = result.targetDir;
+  const packageLabel = result.packageLabel;
+  const worktreePath = result.worktree;
+  const worktreeBranch = result.branch;
+  const selectedScript = result.script;
+  const cmd = result.commandTemplate;
+
   process.stderr.write(`\nRunning: ${cmd}\n`);
   process.stderr.write(`  in: ${packagePath}\n\n`);
 

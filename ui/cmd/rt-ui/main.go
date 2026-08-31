@@ -38,6 +38,8 @@ func main() {
 		os.Exit(runPrompt())
 	case "steps":
 		os.Exit(runSteps())
+	case "session":
+		os.Exit(runSession(os.Args[2:]))
 	default:
 		usage()
 		os.Exit(ExitBadSpec)
@@ -45,5 +47,5 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rt-ui prompt | rt-ui steps | rt-ui --version")
+	fmt.Fprintln(os.Stderr, "usage: rt-ui prompt | rt-ui steps | rt-ui session --view <kind> | rt-ui --version")
 }

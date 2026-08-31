@@ -379,6 +379,16 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  runner: {
+    description: "Board of long-running commands in headless herdr panes (add, tail, restart, stop, focus)",
+    module: "./commands/runner.ts",
+    fn: "runnerCommand",
+    context: "worktree",
+    requiresTTY: true,
+    fullscreen: true,
+    args: [],
+  },
+
   commit: commitNode,
 
   port: {

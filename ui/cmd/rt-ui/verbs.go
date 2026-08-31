@@ -12,8 +12,10 @@ import (
 
 	"rt-ui/internal/prompt"
 	"rt-ui/internal/protocol"
+	"rt-ui/internal/session"
 	"rt-ui/internal/steps"
 	"rt-ui/internal/tty"
+	"rt-ui/internal/views/board"
 )
 
 const protocolVersion = protocol.Version
@@ -126,4 +128,68 @@ func runSteps() int {
 		return ExitCancel
 	}
 	return ExitOK
+}
+
+func runSession(args []string) int {
+	viewName := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--view" && i+1 < len(args) {
+			viewName = args[i+1]
+			i++
+		}
+	}
+	if viewName == "" {
+		fmt.Fprintln(os.Stderr, "rt-ui session: --view <kind> is required")
+		return ExitBadSpec
+	}
+	term, err := tty.Open(tty.ReadWrite)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rt-ui session:", err)
+		return ExitInternal
+	}
+	defer term.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	go func() {
+		<-signals
+		cancel()
+	}()
+
+	reason, _, err := session.Run(ctx, viewName, advertisedViews(), viewFor(viewName), os.Stdin, os.Stdout, term, version)
+	code := session.ExitCode(reason, err)
+	if code == ExitBadSpec || code == ExitInternal {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "rt-ui session:", err)
+		}
+	}
+	return code
+}
+
+// advertisedViews is what the hello line offers; the echo view is a test
+// fixture and only appears when the env asks for it.
+func advertisedViews() []string {
+	views := []string{"board"}
+	if os.Getenv("RT_UI_TEST_VIEWS") == "1" {
+		views = append(views, "echo")
+	}
+	return views
+}
+
+// viewFor maps a view name to its constructor; nil means unknown. The echo
+// view only exists for the session tests and is hidden without the env.
+func viewFor(name string) func(*session.Emitter) session.View {
+	switch name {
+	case "board":
+		return func(em *session.Emitter) session.View { return board.New(em) }
+	case "echo":
+		if os.Getenv("RT_UI_TEST_VIEWS") != "1" {
+			return func(*session.Emitter) session.View { return nil }
+		}
+		return func(em *session.Emitter) session.View { return session.NewEcho(em) }
+	}
+	return func(*session.Emitter) session.View { return nil }
 }
