@@ -88,15 +88,15 @@ regex and no per-framework rules.
   `Bun.spawn(["open", url])` (macOS). Tests inject a fake `openUrl` and assert
   it was called with the detected URL; NEVER spawn a real `open`.
 
-### 4. Surface (board render) — NEEDS SIGN-OFF
+### 4. Surface (board render): option A (ratified, Matt 2026-08-31)
 
-Recommended split (keeps rows clean for non-server commands while staying
-honest where the user is looking):
+The row-cell + tail-header split, which keeps rows clean for non-server
+commands while staying honest where the user is looking:
 
 - **Row, right side:** when `url != null`, show the host:port (e.g.
   `localhost:3000`) in a cyan cell, clipped. This is the openable payoff; `o`
   acts on the selected row.
-- **Tail-box header:** for the focused entry, show the full detection status —
+- **Tail-box header:** for the focused entry, show the full detection status:
   `link: localhost:3000` (found, cyan) · `link: detecting…` (running, `url ==
   null`, within URL_GIVEUP display window) · `link: none found` (running, `url
   == null`, past URL_GIVEUP_SECONDS, muted). URL_GIVEUP_SECONDS (~30) is a Go
@@ -169,8 +169,7 @@ every running row) are in Open decisions.
 - RESOLVED: `o` opens the URL in the browser (Matt, 2026-08-31).
 - RESOLVED: loopback/LAN + explicit-port regex only, strict `http(s)://` (Matt,
   2026-08-31).
-- OPEN (surfacing, section 4): the recommended row-cell + tail-header split vs.
-  an honest inline label on every running row. Matt to ratify on reading this
-  spec; the design memory (design-before-UI) says a reference capture precedes
-  final pixel polish, so the SDD's final review produces a real board capture
-  for sign-off before merge.
+- RESOLVED: surfacing = option A, the row-cell + tail-header split (Matt,
+  2026-08-31), over an honest inline label on every running row. The
+  design-before-UI rule still applies: Task 5 pauses and the SDD's final review
+  produces a real board capture for sign-off before merge.

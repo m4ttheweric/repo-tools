@@ -23,14 +23,14 @@
 
 ## File Structure
 
-- `lib/runner/state.ts` — add `detectUrl`, `Entry.url`, wire `url` through `newEntry`/`toModel`.
-- `lib/ui/protocol.ts` — `BoardEntry.url`; add `"open"` to `SESSION_INTENT_NAMES`.
-- `lib/runner/runner.ts` — scan in `pollLiveness`, clear on `restart`, `RunnerDeps.openUrl`, handle `"open"`.
-- `commands/runner.ts` — default `openUrl` in `buildRunnerDeps`.
-- `ui/internal/views/board/model.go` — `Entry.Url *string`.
-- `ui/internal/views/board/board.go` — `o` keybind emits `open` intent.
-- `ui/internal/views/board/render.go` — URL cell on the row + tail-header link status.
-- `ui/fixtures/*.json` — the board model fixture gains `url` on entries.
+- `lib/runner/state.ts`: add `detectUrl`, `Entry.url`, wire `url` through `newEntry`/`toModel`.
+- `lib/ui/protocol.ts`: `BoardEntry.url`; add `"open"` to `SESSION_INTENT_NAMES`.
+- `lib/runner/runner.ts`: scan in `pollLiveness`, clear on `restart`, `RunnerDeps.openUrl`, handle `"open"`.
+- `commands/runner.ts`: default `openUrl` in `buildRunnerDeps`.
+- `ui/internal/views/board/model.go`: `Entry.Url *string`.
+- `ui/internal/views/board/board.go`: `o` keybind emits `open` intent.
+- `ui/internal/views/board/render.go`: URL cell on the row + tail-header link status.
+- `ui/fixtures/*.json`: the board model fixture gains `url` on entries.
 
 ---
 
@@ -307,7 +307,7 @@ git commit -m "runner: open the detected url with o via a new open intent and in
 
 ---
 
-### Task 5: render the url on the board (SURFACING — confirm with Matt before starting)
+### Task 5: render the url on the board (SURFACING: option A, ratified)
 
 **Files:**
 - Modify: `ui/internal/views/board/render.go`, `ui/internal/views/board/model.go`
@@ -316,7 +316,7 @@ git commit -m "runner: open the detected url with o via a new open intent and in
 **Interfaces:**
 - Consumes: `Entry.Url` (Task 2), the board's ticking `now` and `Entry.StartedAt`.
 
-> GATE: section 4 of the spec (row cyan cell for a found url + tail-header link status, `none found` after ~30s) is the recommended surfacing but is marked NEEDS SIGN-OFF. Do not start this task until Matt has ratified the surfacing on the spec. The controller confirms before dispatching this task.
+> GATE: surfacing is option A (ratified, Matt 2026-08-31): a row cyan cell for a found url + a tail-header link status (`detecting…` / found / `none found` after ~30s). Per the design-before-UI rule, the controller pauses before dispatching this task and produces a real board capture for Matt's sign-off before the branch merges.
 
 - [ ] **Step 1: Write the failing test**
 
