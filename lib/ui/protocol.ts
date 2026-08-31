@@ -107,6 +107,7 @@ export interface BoardEntry {
   startedAt: string | null;
   exitCode: number | null;
   error: string | null;
+  url: string | null;
   tail: BoardTailLine[] | null;
 }
 

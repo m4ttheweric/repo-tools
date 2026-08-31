@@ -18,11 +18,12 @@ export interface Entry {
   startedAt: Date | null;
   exitCode: number | null;
   error: string | null;
+  url: string | null;
   tail: BoardTailLine[] | null;
 }
 
 export function newEntry(seq: number, name: string, command: string, cwd: string, pkg: string, repo: string): Entry {
-  return { id: `e${seq}`, name, command, cwd, pkg, repo, tabId: null, paneId: null, state: "starting", startedAt: null, exitCode: null, error: null, tail: null };
+  return { id: `e${seq}`, name, command, cwd, pkg, repo, tabId: null, paneId: null, state: "starting", startedAt: null, exitCode: null, error: null, url: null, tail: null };
 }
 
 /** A pane is running a command when its foreground process group is not the shell's own. */
@@ -112,6 +113,7 @@ export function toModel(workspace: string, entries: Entry[]): BoardModel {
       startedAt: e.startedAt ? e.startedAt.toISOString() : null,
       exitCode: e.exitCode,
       error: e.error,
+      url: e.url,
       tail: e.tail,
     })),
   };

@@ -21,6 +21,7 @@ type Entry struct {
 	StartedAt *string    `json:"startedAt"`
 	ExitCode  *int       `json:"exitCode"`
 	Error     *string    `json:"error"`
+	Url       *string    `json:"url"`
 	Tail      []TailLine `json:"tail"`
 }
 
