@@ -42,13 +42,12 @@ import {
   launchFallback,
   type LaunchItem,
 } from "../lib/herdr-launch.ts";
-import { herdrAvailable } from "../lib/herdr/client.ts";
 import { interactive } from "../lib/ui/gate.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
 import { navSeparator, type NavOption } from "../lib/navigate.ts";
-import { runSeededBoard, type SeedEntry } from "./runner.ts";
+import { runSeededBoard, tmuxAvailable, type SeedEntry } from "./runner.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
 
@@ -661,11 +660,12 @@ export function presetToSeed(preset: Preset, worktreePath: string): SeedEntry[] 
 
 /** Resolve a saved preset's entries against the current worktree and open a seeded runner board (or run them in place when herdr isn't available). Exported for direct testing, same as presetToSeed. */
 export async function launchPreset(preset: Preset, worktreePath: string, ctx: CommandContext): Promise<void> {
-  process.stderr.write(`\n  preset ${bold}${preset.name}${reset}\n\n`);
-  if (interactive() && (await herdrAvailable())) {
+  if (interactive() && tmuxAvailable()) {
     const seed = presetToSeed(preset, worktreePath);
     await runSeededBoard(seed, ctx);
   } else {
+    // The board never opens on this path, so the echo is the only cue of what launched.
+    process.stderr.write(`\n  preset ${bold}${preset.name}${reset}\n\n`);
     const items: LaunchItem[] = preset.entries.map((e) => ({
       label: `${e.packageLabel} → ${e.script}${e.variationName ? ` (${e.variationName})` : ""}`,
       command: e.command ?? `${detectPackageManager(join(worktreePath, e.packageRelPath))} run ${e.script}`,

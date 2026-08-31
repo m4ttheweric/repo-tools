@@ -334,6 +334,12 @@ func TestEditEscCancelsWithoutEmittingAnIntent(t *testing.T) {
 func TestModelReplacementKeepsCursorByIdAndUptimeTicks(t *testing.T) {
 	s := open(t)
 	s.Type("j")
+	// The reorder below races the keypress unless the cursor has visibly
+	// moved: if the model lands first the cursor never left e1, and the
+	// test then reads e1 back and reports it as a cursor that failed to
+	// follow. Waiting on the selected-row marker is the synchronisation the
+	// two other j-pressing tests approximate with a fixed sleep.
+	s.WaitForPaint("\u258c \u2717  worker")
 	reordered := `{"t":"model","model":{"workspace":"rt-runner-a3f9","entries":[` +
 		`{"id":"e2","name":"worker","command":"bun run worker","pkg":"backend","repo":"acme","state":"starting","startedAt":null,"exitCode":null,"error":null,"tail":null},` +
 		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"running","startedAt":"` + time.Now().Add(-125*time.Second).UTC().Format(time.RFC3339) + `","exitCode":null,"error":null,"tail":null}]}}`
