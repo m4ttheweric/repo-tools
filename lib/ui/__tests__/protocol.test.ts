@@ -52,6 +52,14 @@ test("session fixtures parse to typed inbound messages", () => {
   expect(() => parseSessionLine("{}")).toThrow(/rt-ui session/);
 });
 
+test("parseSessionLine rejects an intent name outside the declared union", () => {
+  expect(() => parseSessionLine(JSON.stringify({ t: "intent", name: "explode" }))).toThrow(/rt-ui session/);
+});
+
+test("parseSessionLine rejects a close reason outside the declared union", () => {
+  expect(() => parseSessionLine(JSON.stringify({ t: "closed", reason: "unknown" }))).toThrow(/rt-ui session/);
+});
+
 test("the board model fixture matches the BoardModel type shape", () => {
   const open = fixture("session-model-board.json") as { model: BoardModel };
   expect(open.model.workspace).toBe("rt-runner-a3f9");

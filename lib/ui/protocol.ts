@@ -122,16 +122,20 @@ export interface SessionHello {
   views: string[];
 }
 
+const SESSION_INTENT_NAMES = ["add", "restart", "stop", "focus", "tail", "quit"] as const;
+
 export interface SessionIntent {
   t: "intent";
-  name: "add" | "restart" | "stop" | "focus" | "tail" | "quit";
+  name: (typeof SESSION_INTENT_NAMES)[number];
   entryId?: string;
   open?: boolean;
 }
 
+const SESSION_CLOSED_REASONS = ["quit", "cancel", "closed", "error"] as const;
+
 export interface SessionClosed {
   t: "closed";
-  reason: "quit" | "cancel" | "closed" | "error";
+  reason: (typeof SESSION_CLOSED_REASONS)[number];
   message?: string;
 }
 
@@ -150,7 +154,7 @@ export function parseSessionLine(line: string): SessionInbound {
       if (typeof m.protocol !== "number" || !Array.isArray(m.views)) break;
       return { t: "hello", protocol: m.protocol, version: String(m.version ?? ""), views: m.views.map(String) };
     case "intent":
-      if (typeof m.name !== "string") break;
+      if (typeof m.name !== "string" || !SESSION_INTENT_NAMES.includes(m.name as SessionIntent["name"])) break;
       return {
         t: "intent",
         name: m.name as SessionIntent["name"],
@@ -158,7 +162,7 @@ export function parseSessionLine(line: string): SessionInbound {
         ...(typeof m.open === "boolean" ? { open: m.open } : {}),
       };
     case "closed":
-      if (typeof m.reason !== "string") break;
+      if (typeof m.reason !== "string" || !SESSION_CLOSED_REASONS.includes(m.reason as SessionClosed["reason"])) break;
       return { t: "closed", reason: m.reason as SessionClosed["reason"], ...(typeof m.message === "string" ? { message: m.message } : {}) };
   }
   throw new Error(`rt-ui session: unexpected message ${line.slice(0, 120)}`);
