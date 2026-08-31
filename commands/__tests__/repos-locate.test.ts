@@ -160,6 +160,9 @@ describe("reposLocate", () => {
     const code = await runExpectingProcessExit(() => reposLocate([], {}, deps));
 
     expect(code).toBe(1);
-    expect(deps.lines.join("\n")).toContain("remote:gitlab.com%2Fg%2Fghost");
+    // The serialized identity is decoded to a friendly label before display,
+    // so the lost row lists the repo name, never the raw serialized identity.
+    expect(deps.lines.join("\n")).toContain("ghost");
+    expect(deps.lines.join("\n")).not.toContain("remote:gitlab.com");
   });
 });
