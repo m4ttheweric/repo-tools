@@ -87,3 +87,79 @@ export function parsePromptResult(line: string): PromptResult {
   if (typeof r.text === "string") return { t: "result", text: r.text };
   throw new Error(`rt-ui result: no value/values/ok/text in ${line.slice(0, 120)}`);
 }
+
+// ─── session ─────────────────────────────────────────────────────────────────
+
+export type BoardState = "running" | "stopped" | "crashed" | "starting" | "stopping";
+
+export interface BoardTailLine {
+  ts: string;
+  text: string;
+}
+
+export interface BoardEntry {
+  id: string;
+  name: string;
+  command: string;
+  pkg: string;
+  repo: string;
+  state: BoardState;
+  startedAt: string | null;
+  exitCode: number | null;
+  error: string | null;
+  tail: BoardTailLine[] | null;
+}
+
+export interface BoardModel {
+  workspace: string;
+  entries: BoardEntry[];
+}
+
+export interface SessionHello {
+  t: "hello";
+  protocol: number;
+  version: string;
+  views: string[];
+}
+
+export interface SessionIntent {
+  t: "intent";
+  name: "add" | "restart" | "stop" | "focus" | "tail" | "quit";
+  entryId?: string;
+  open?: boolean;
+}
+
+export interface SessionClosed {
+  t: "closed";
+  reason: "quit" | "cancel" | "closed" | "error";
+  message?: string;
+}
+
+export type SessionInbound = SessionHello | SessionIntent | SessionClosed;
+
+export function parseSessionLine(line: string): SessionInbound {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line.trim());
+  } catch {
+    throw new Error(`rt-ui session: not JSON: ${line.slice(0, 120)}`);
+  }
+  const m = parsed as Record<string, unknown>;
+  switch (m?.t) {
+    case "hello":
+      if (typeof m.protocol !== "number" || !Array.isArray(m.views)) break;
+      return { t: "hello", protocol: m.protocol, version: String(m.version ?? ""), views: m.views.map(String) };
+    case "intent":
+      if (typeof m.name !== "string") break;
+      return {
+        t: "intent",
+        name: m.name as SessionIntent["name"],
+        ...(typeof m.entryId === "string" ? { entryId: m.entryId } : {}),
+        ...(typeof m.open === "boolean" ? { open: m.open } : {}),
+      };
+    case "closed":
+      if (typeof m.reason !== "string") break;
+      return { t: "closed", reason: m.reason as SessionClosed["reason"], ...(typeof m.message === "string" ? { message: m.message } : {}) };
+  }
+  throw new Error(`rt-ui session: unexpected message ${line.slice(0, 120)}`);
+}

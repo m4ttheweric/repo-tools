@@ -1,0 +1,7 @@
+{ "t": "model", "model": { "workspace": "rt-runner-a3f9", "entries": [
+  { "id": "e1", "name": "dev", "command": "bun run dev", "pkg": "web", "repo": "assured-dev",
+    "state": "running", "startedAt": "2026-08-29T22:38:26.000Z", "exitCode": null, "error": null,
+    "tail": [ { "ts": "22:41:07", "text": "VITE v5.4.2  ready in 412 ms" } ] },
+  { "id": "e2", "name": "worker", "command": "bun run worker", "pkg": "backend", "repo": "assured-dev",
+    "state": "crashed", "startedAt": "2026-08-29T22:38:40.000Z", "exitCode": 1, "error": null, "tail": null }
+] } }
