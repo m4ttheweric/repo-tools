@@ -1,0 +1,18 @@
+# Skills in this directory that are NOT distributed to mattstack users.
+#
+# Read by `rt skills link --from <dir>`, the path the installer uses to link
+# an app's bundled skills. A plain `rt skills link` in this checkout ignores
+# this file and links everything, because that is the author linking their
+# own work.
+#
+# Entries are directory names, one per line.
+
+# Cutting and tagging an rt release. Maintainer action.
+rt-release
+
+# Regenerating the rt.cool docs site after command changes. Maintainer action.
+rt-docs
+
+# The internal codec contract for state.db keys and daemon payloads. Applies
+# to writing rt-estate code, not to using rt.
+rt-repo-identity

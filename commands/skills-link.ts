@@ -15,7 +15,7 @@
 import { execFileSync } from "child_process";
 import { existsSync, statSync } from "fs";
 import { join, resolve } from "path";
-import { pruneLinksFrom, reconcileSkillLinks, type LinkAction, type ReconcileResult } from "../lib/skills/link.ts";
+import { pruneLinksFrom, readSkillsIgnore, reconcileSkillLinks, type LinkAction, type ReconcileResult } from "../lib/skills/link.ts";
 import { envelope } from "../lib/setup/contract.ts";
 
 function fail(message: string): never {
@@ -95,7 +95,13 @@ export async function skillsLink(args: string[]): Promise<void> {
     fail(source.error);
   }
 
-  report(source.dir, claudeSkillsDir, reconcileSkillLinks({ skillsDir: source.dir, claudeSkillsDir, dryRun }), dryRun, json);
+  // `.skillsignore` names skills the source declines to DISTRIBUTE, so it
+  // binds the bundle path (--from) and not a checkout: in this estate a user
+  // never has a checkout, so linking from a repo is the author linking their
+  // own work, author-only skills included.
+  const ignore = from === undefined ? [] : readSkillsIgnore(source.dir);
+
+  report(source.dir, claudeSkillsDir, reconcileSkillLinks({ skillsDir: source.dir, claudeSkillsDir, dryRun, ignore }), dryRun, json);
 }
 
 function report(skillsDir: string, claudeSkillsDir: string, result: ReconcileResult, dryRun: boolean, json: boolean): void {

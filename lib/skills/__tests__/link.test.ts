@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { pruneLinksFrom, reconcileSkillLinks } from "../link.ts";
+import { pruneLinksFrom, readSkillsIgnore, reconcileSkillLinks } from "../link.ts";
 
 let root: string;
 let skillsDir: string;
@@ -155,5 +155,37 @@ describe("pruneLinksFrom", () => {
     const result = pruneLinksFrom({ skillsDir, claudeSkillsDir: claudeDir, dryRun: true });
     expect(kinds(result)).toEqual({ "gitq:track": "prune" });
     expect(lstatSync(join(claudeDir, "gitq:track")).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe(".skillsignore", () => {
+  test("absent file ignores nothing", () => {
+    addSkill("rt-chat", "rt:chat");
+    expect(readSkillsIgnore(skillsDir)).toEqual([]);
+  });
+
+  test("reads entries, dropping comments, blanks and trailing slashes", () => {
+    writeFileSync(join(skillsDir, ".skillsignore"), "# author-only\nrt-release\n\nrt-docs/\n  rt-repo-identity  \n");
+    expect(readSkillsIgnore(skillsDir)).toEqual(["rt-release", "rt-docs", "rt-repo-identity"]);
+  });
+
+  test("an ignored skill is never linked", () => {
+    addSkill("rt-chat", "rt:chat");
+    addSkill("rt-release", "rt:release");
+    const result = reconcileSkillLinks({ skillsDir, claudeSkillsDir: claudeDir, ignore: ["rt-release"] });
+    expect(kinds(result)).toEqual({ "rt:chat": "create" });
+    expect(existsSync(join(claudeDir, "rt:release"))).toBe(false);
+  });
+
+  test("a skill linked before it was ignored gets pruned", () => {
+    addSkill("rt-chat", "rt:chat");
+    addSkill("rt-release", "rt:release");
+    reconcileSkillLinks({ skillsDir, claudeSkillsDir: claudeDir });
+    expect(lstatSync(join(claudeDir, "rt:release")).isSymbolicLink()).toBe(true);
+
+    const result = reconcileSkillLinks({ skillsDir, claudeSkillsDir: claudeDir, ignore: ["rt-release"] });
+    expect(result.actions.find((a) => a.name === "rt:release")?.kind).toBe("prune");
+    expect(existsSync(join(claudeDir, "rt:release"))).toBe(false);
+    expect(lstatSync(join(claudeDir, "rt:chat")).isSymbolicLink()).toBe(true);
   });
 });

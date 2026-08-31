@@ -48,19 +48,46 @@ function resolveLinkTarget(link: string, raw: string): string {
   return isAbsolute(raw) ? raw : resolve(join(link, ".."), raw);
 }
 
+/**
+ * Directory names listed in `<skillsDir>/.skillsignore` — one per line, `#`
+ * comments and blanks dropped, a trailing slash tolerated. Absent file, no
+ * entries. These are skills the source declines to distribute.
+ */
+export function readSkillsIgnore(skillsDir: string): string[] {
+  let raw: string;
+  try {
+    raw = readFileSync(join(skillsDir, ".skillsignore"), "utf8");
+  } catch {
+    return [];
+  }
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .map((line) => line.replace(/\/+$/, ""));
+}
+
 export function reconcileSkillLinks(opts: {
   skillsDir: string;
   claudeSkillsDir: string;
   dryRun?: boolean;
+  /** Skill directory names to leave unlinked (and unlink if already linked). */
+  ignore?: string[];
 }): ReconcileResult {
   const dryRun = opts.dryRun === true;
   const skillsDir = realpathSync(opts.skillsDir);
   const actions: LinkAction[] = [];
+  const ignore = new Set(opts.ignore ?? []);
+  const ignoredDirs = new Set<string>();
 
   const wanted = new Map<string, string>();
   for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const dir = join(skillsDir, entry.name);
+    if (ignore.has(entry.name)) {
+      ignoredDirs.add(dir);
+      continue;
+    }
     const skillMd = join(dir, "SKILL.md");
     if (!existsSync(skillMd)) continue;
     let name: unknown;
@@ -130,8 +157,10 @@ export function reconcileSkillLinks(opts: {
       const raw = readlinkSync(link);
       const pointsAt = resolveLinkTarget(link, raw);
       if (!pointsAt.startsWith(skillsDir + "/")) continue;
-      if (existsSync(pointsAt) && statSync(pointsAt).isDirectory()) continue;
-      actions.push({ kind: "prune", name: entry.name, link, target: null, detail: `target gone: ${raw}` });
+      const nowIgnored = ignoredDirs.has(pointsAt) || ignoredDirs.has(realpathSafe(pointsAt) ?? "");
+      if (!nowIgnored && existsSync(pointsAt) && statSync(pointsAt).isDirectory()) continue;
+      const detail = nowIgnored ? `listed in .skillsignore: ${raw}` : `target gone: ${raw}`;
+      actions.push({ kind: "prune", name: entry.name, link, target: null, detail });
       if (!dryRun) unlinkSync(link);
     }
   }
