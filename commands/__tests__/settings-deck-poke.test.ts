@@ -27,8 +27,14 @@ describe("pokeDeckReresolve", () => {
     });
     expect(msg).toContain("chat");
   });
+  test("degrades when reading api.json throws", async () => {
+    const msg = await pokeDeckReresolve({
+      readApiFile: () => { throw new Error("EACCES"); },
+    });
+    expect(msg).toContain("not poked");
+  });
 
-  // Additional failure-path coverage beyond the brief's four verbatim cases.
+  // Failure paths that keep the toggle alive when deck is unreachable or answers badly.
 
   test("degrades when api.json is unparseable", async () => {
     const msg = await pokeDeckReresolve({ readApiFile: () => "{not json" });
