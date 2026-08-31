@@ -562,6 +562,32 @@ test("edit with an unchanged command is a no-op: no restart, no extra run call",
   expect(d.engine.calls.filter((c) => c.startsWith("int:"))).toHaveLength(0);
 });
 
+test("launch registers the new workspace id once", async () => {
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "quit" }]);
+  const registered: string[] = [];
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const withRegister: RunnerDeps = { ...d, registerWorkspace: (id) => registered.push(id) };
+  await new Runner(withRegister).run();
+  expect(registered).toEqual(["wX"]);
+});
+
+test("teardown unregisters the workspace id", async () => {
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "quit" }]);
+  const unregistered: string[] = [];
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const withUnregister: RunnerDeps = { ...d, unregisterWorkspace: (id) => unregistered.push(id) };
+  await new Runner(withUnregister).run();
+  expect(unregistered).toEqual(["wX"]);
+});
+
 test("restart clears a latched url so a new port is re-detected", async () => {
   let time = new Date("2026-08-30T00:00:00Z").getTime();
   const engine = new UrlFakeEngine();

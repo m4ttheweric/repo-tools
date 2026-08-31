@@ -27,6 +27,8 @@ export interface RunnerDeps {
   openUrl: (url: string) => Promise<void>;
   workspaceLabel: string;
   seed?: SeedEntry[];
+  registerWorkspace?: (id: string) => void;
+  unregisterWorkspace?: (id: string) => void;
 }
 
 const LIVENESS_MS = 1500;
@@ -238,6 +240,7 @@ export class Runner {
       if (!this.workspaceId) {
         const ws = await this.deps.engine.createWorkspace(this.deps.workspaceLabel);
         this.workspaceId = ws.workspaceId;
+        this.deps.registerWorkspace?.(ws.workspaceId);
         await this.deps.engine.renameTab(ws.tabId, entry.name);
         entry.tabId = ws.tabId;
         entry.paneId = ws.paneId;
@@ -368,6 +371,10 @@ export class Runner {
         process.stderr.write(
           `  rt runner: could not close workspace ${this.workspaceId} (${err instanceof Error ? err.message : String(err)})\n`,
         );
+      } finally {
+        // A herdr close failure still drops ownership: the next launch's
+        // reconcile prunes any workspace left with no registry record.
+        this.deps.unregisterWorkspace?.(this.workspaceId);
       }
     }
   }
