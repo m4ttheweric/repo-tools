@@ -187,7 +187,7 @@ bundle_helpers() {
         echo "  ⚠ $DEPS_DIR missing — Helpers skipped (RT_REQUIRE_DEPS=0 set)"
         return
     fi
-    local row name version bundlePath ent status src dest prune
+    local row name version bundlePath ent status src dest prune skills_dest bad
     # Materialized to a file rather than streamed through `done < <(cmd)`: a
     # process-substitution loop never sees cmd's exit status, even under
     # set -o pipefail — an emitter crash (malformed lock, bun missing) would
@@ -219,6 +219,21 @@ bundle_helpers() {
             rm -rf "$prune"
             echo "  · pruned $name/${prune#"$dest"/}"
         done < <(find "$dest" -depth -type d \( -name '.claude-plugin' -o -name '.codex-plugin' \) -print0)
+        # Agent skills ride beside the binary in CI tarballs; land them at the
+        # stable path rt skills link consumes. A "." in a directory name would
+        # make codesign treat it as a nested bundle, so reject it here rather
+        # than fail the outer seal later.
+        if [ -d "$DEPS_DIR/$name-skills" ]; then
+            while IFS= read -r -d '' bad; do
+                echo "  ✗ $name skills dir '$(basename "$bad")' contains a dot; rename it in the app repo"; exit 1
+            done < <(find "$DEPS_DIR/$name-skills" -type d -name '*.*' -print0)
+            skills_dest="$CONTENTS/Helpers/skills/$name"
+            rm -rf "$skills_dest"; mkdir -p "$(dirname "$skills_dest")"
+            cp -R "$DEPS_DIR/$name-skills" "$skills_dest"
+            xattr -cr "$skills_dest" 2>/dev/null || true
+            HELPER_ENTITLEMENTS+=("$skills_dest	none")
+            echo "  ✓ Helpers/skills/$name"
+        fi
         # node ships a full development distribution, but the bundle needs it
         # only to run fast-browser's .mjs. include/ is 2726 C++ headers node-gyp
         # uses to compile native addons at build time; lib/node_modules/{npm,
