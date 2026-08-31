@@ -41,6 +41,7 @@ export class Runner {
   private lastPushed = "";
   private timers: ReturnType<typeof setInterval>[] = [];
   private tornDown = false;
+  private polling: { liveness: boolean; tail: boolean } = { liveness: false, tail: false };
 
   constructor(private readonly deps: RunnerDeps) {}
 
@@ -97,8 +98,20 @@ export class Runner {
   }
 
   private startTimers(): void {
-    this.timers.push(setInterval(() => void this.pollLiveness(), LIVENESS_MS));
-    this.timers.push(setInterval(() => void this.pollTail(), TAIL_MS));
+    this.timers.push(setInterval(() => void this.guarded("liveness", () => this.pollLiveness()), LIVENESS_MS));
+    this.timers.push(setInterval(() => void this.guarded("tail", () => this.pollTail()), TAIL_MS));
+  }
+
+  // Skips a tick that would overlap a still-awaiting herdr round-trip from the
+  // previous tick, rather than piling up concurrent polls of the same kind.
+  private async guarded(key: "liveness" | "tail", fn: () => Promise<void>): Promise<void> {
+    if (this.polling[key]) return;
+    this.polling[key] = true;
+    try {
+      await fn();
+    } finally {
+      this.polling[key] = false;
+    }
   }
 
   private stopTimers(): void {
@@ -282,8 +295,10 @@ export class Runner {
     if (this.workspaceId) {
       try {
         await this.deps.engine.closeWorkspace(this.workspaceId);
-      } catch {
-        /* herdr already gone: nothing left to close */
+      } catch (err) {
+        process.stderr.write(
+          `  rt runner: could not close workspace ${this.workspaceId} (${err instanceof Error ? err.message : String(err)})\n`,
+        );
       }
     }
   }
