@@ -15,6 +15,7 @@ import (
 	"rt-ui/internal/session"
 	"rt-ui/internal/steps"
 	"rt-ui/internal/tty"
+	"rt-ui/internal/views/board"
 )
 
 const protocolVersion = protocol.Version
@@ -182,6 +183,8 @@ func advertisedViews() []string {
 // view only exists for the session tests and is hidden without the env.
 func viewFor(name string) func(*session.Emitter) session.View {
 	switch name {
+	case "board":
+		return func(em *session.Emitter) session.View { return board.New(em) }
 	case "echo":
 		if os.Getenv("RT_UI_TEST_VIEWS") != "1" {
 			return func(*session.Emitter) session.View { return nil }
