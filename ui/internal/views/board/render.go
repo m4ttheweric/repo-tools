@@ -13,7 +13,7 @@ import (
 const (
 	nameW  = 10
 	pkgW   = 24
-	rightW = 9
+	rightW = 14
 	tailN  = 12
 )
 
@@ -178,7 +178,11 @@ func keybar(b *Board) string {
 func confirmLayer(b *Board) string {
 	on := lipgloss.NewStyle().Background(theme.WarnBg)
 	n := b.count("running") + b.count("starting")
-	left := on.Foreground(theme.Peach).Render("⚠ ") + on.Foreground(theme.Text).Render(fmt.Sprintf("Quit and stop %d running processes?", n))
+	noun := "processes"
+	if n == 1 {
+		noun = "process"
+	}
+	left := on.Foreground(theme.Peach).Render("⚠ ") + on.Foreground(theme.Text).Render(fmt.Sprintf("Quit and stop %d running %s?", n, noun))
 	right := on.Foreground(theme.Pink).Bold(true).Render("y") + on.Render(" ") + on.Foreground(theme.Dim).Render("yes, stop all") + on.Render("   ") +
 		on.Foreground(theme.Dim).Bold(true).Render("n") + on.Render(" ") + on.Foreground(theme.Dim).Render("keep running")
 	inner := b.width - 4
@@ -195,5 +199,8 @@ func justify(width int, left, right string) string {
 }
 
 func clip(s string, w int) string {
+	if w >= 1 && lipgloss.Width(s) > w {
+		return lipgloss.NewStyle().Inline(true).MaxWidth(w-1).Render(s) + "…"
+	}
 	return lipgloss.NewStyle().Inline(true).MaxWidth(w).Render(s)
 }
