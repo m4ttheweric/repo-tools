@@ -1203,7 +1203,7 @@ git commit -m "api: managed/reresolve selective restart on plist diff"
 
 **Files:**
 - Create: `src/registry/migrate-dev-shape.ts`
-- Modify: `src/main.ts` (call in `serve()` after registry/boot-env are ready and before `startApi` constructs the server)
+- Modify: `src/main.ts` (call in `serve()` after registry/boot-env are ready and before `startApi` constructs the server). It MUST be wrapped in a try/catch that logs, exactly like the sibling `reconcileMattstackTld` / `startGateway` / `startCanaryListener` calls in the same function: `putRecord` writes synchronously, so an EACCES / ENOSPC / read-only-fs throw would otherwise propagate out of `serve()`, `startApi` would never run, and every app on the machine would lose deck. That is a worse outage than the one the guard prevents. Log the returned counts too, so a real boot leaves evidence of what the migration touched.
 - Test: `src/registry/migrate-dev-shape.test.ts`
 
 **Interfaces:**
@@ -1231,6 +1231,12 @@ export function assertSlimRowKeepsAFallback(name: string, next: AppRecord): void
   }
 }
 
+/** The only sanctioned way to persist a slimmed row: asserts, then writes. */
+function writeSlimRow(next: AppRecord): void {
+  assertSlimRowKeepsAFallback(next.name, next);
+  putRecord(next);
+}
+
 export function migrateManagedDevShape(): { slimmed: string[]; skipped: string[] } {
   const slimmed: string[] = [];
   const skipped: string[] = [];
@@ -1250,16 +1256,16 @@ export function migrateManagedDevShape(): { slimmed: string[]; skipped: string[]
       skipped.push(record.name);
       continue;
     }
-    const next: AppRecord = {
+    // Every slim write goes through this one helper, so the guard cannot be
+    // bypassed by a later edit that adds another write path.
+    writeSlimRow({
       ...record,
       dev: { workingDirectory: dir! },
       command: undefined,
       workingDirectory: undefined,
       commands: undefined,
       sourceDirectory: undefined,
-    };
-    assertSlimRowKeepsAFallback(record.name, next);
-    putRecord(next);
+    });
     slimmed.push(record.name);
   }
   return { slimmed, skipped };
@@ -1302,7 +1308,12 @@ test("slims an old-shape bundle-ready row, and a second run is a no-op", () => {
   expect(r.command).toBeUndefined();
   expect(r.workingDirectory).toBeUndefined();
   expect(r.commands).toBeUndefined();
+  // Idempotence must be proven on the ROW, not just the return value.
   expect(migrateManagedDevShape().slimmed).toEqual([]);
+  const again = getRecord("chat")!;
+  expect(again.dev?.workingDirectory).toBe(dir);
+  expect(again.command).toBeUndefined();
+  expect(again.commands).toBeUndefined();
 });
 
 test("skips gitq-shaped (no includeInBundle) and fresh-install (no manifest) rows untouched", () => {
@@ -1322,6 +1333,7 @@ test("platform row: sourceDirectory moves to dev.workingDirectory, command survi
   expect(r.dev?.workingDirectory).toBe("/repos/deck");
   expect(r.sourceDirectory).toBeUndefined();
   expect(r.command).toEqual(["/app/deck", "serve"]);
+  expect(r.commands).toBeUndefined();
 });
 
 test("user rows are untouched", () => {
