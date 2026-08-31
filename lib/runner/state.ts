@@ -19,11 +19,14 @@ export interface Entry {
   exitCode: number | null;
   error: string | null;
   url: string | null;
+  // Internal only, never sent to the board (see toModel): a url seen on the
+  // previous scan but not yet confirmed by a second, matching scan.
+  urlPending: string | null;
   tail: BoardTailLine[] | null;
 }
 
 export function newEntry(seq: number, name: string, command: string, cwd: string, pkg: string, repo: string): Entry {
-  return { id: `e${seq}`, name, command, cwd, pkg, repo, tabId: null, paneId: null, state: "starting", startedAt: null, exitCode: null, error: null, url: null, tail: null };
+  return { id: `e${seq}`, name, command, cwd, pkg, repo, tabId: null, paneId: null, state: "starting", startedAt: null, exitCode: null, error: null, url: null, urlPending: null, tail: null };
 }
 
 /** A pane is running a command when its foreground process group is not the shell's own. */
@@ -60,6 +63,10 @@ const URL_RE = /https?:\/\/(\[::1\]|[a-zA-Z0-9.\-]+):(\d+)(\/[^\s'"()]*)?/g;
 const LOOPBACK_HOST =
   /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/;
 
+// Returns the LAST (most-recent) loopback URL, localhost/127 preferred over
+// a LAN address over 0.0.0.0: a server logs its dependency/config URLs first
+// and announces its own real URL last, so the most recent match in a given
+// preference tier is the one to trust.
 export function detectUrl(text: string): string | null {
   const hits: { host: string; url: string }[] = [];
   for (const m of text.matchAll(URL_RE)) {
@@ -68,10 +75,14 @@ export function detectUrl(text: string): string | null {
     hits.push({ host, url: m[0]! });
   }
   if (hits.length === 0) return null;
+  const last = (pred: (h: { host: string }) => boolean) => {
+    for (let i = hits.length - 1; i >= 0; i--) if (pred(hits[i]!)) return hits[i]!;
+    return undefined;
+  };
   const pick =
-    hits.find((h) => h.host === "localhost" || h.host === "127.0.0.1") ??
-    hits.find((h) => h.host === "0.0.0.0") ??
-    hits[0]!;
+    last((h) => h.host === "localhost" || h.host === "127.0.0.1") ??
+    last((h) => h.host === "0.0.0.0") ??
+    hits[hits.length - 1]!;
   return pick.url.replace(/[.,;:!?]+$/, "").replace("://0.0.0.0", "://localhost");
 }
 

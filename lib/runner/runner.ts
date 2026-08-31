@@ -272,6 +272,7 @@ export class Runner {
     e.state = "starting";
     e.error = null;
     e.url = null;
+    e.urlPending = null;
     try {
       if (isRunning(await this.deps.engine.processInfo(e.paneId))) {
         await this.deps.engine.interrupt(e.paneId);
@@ -324,7 +325,18 @@ export class Runner {
         if (e.url === null && (e.state === "running" || e.state === "starting")) {
           const scan = await this.deps.engine.read(e.paneId, URL_SCAN_LINES);
           const found = detectUrl(afterLastSentinel(scan));
-          if (found) e.url = found;
+          if (found === null) {
+            e.urlPending = null;
+          } else if (found === e.urlPending) {
+            // Same URL on two consecutive scans: the startup burst has settled,
+            // so latch it. Once latched it survives the banner scrolling out.
+            e.url = found;
+            e.urlPending = null;
+          } else {
+            // First sighting (or the candidate changed, e.g. an auxiliary URL was
+            // superseded by the real server URL): wait for a confirming scan.
+            e.urlPending = found;
+          }
         }
       } catch (err) {
         this.pin(e, err);
