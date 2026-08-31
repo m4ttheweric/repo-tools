@@ -42,10 +42,13 @@ import {
   launchFallback,
   type LaunchItem,
 } from "../lib/herdr-launch.ts";
+import { herdrAvailable } from "../lib/herdr/client.ts";
+import { interactive } from "../lib/ui/gate.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
 import { navSeparator, type NavOption } from "../lib/navigate.ts";
+import { runSeededBoard, type SeedEntry } from "./runner.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
 
@@ -164,6 +167,7 @@ async function selectPackageAndScript(
   // `repoIdentity` local below (settings-section key for presets/variations)
   // — the two are different string forms for the same repo.
   repoName: string | undefined,
+  ctx: CommandContext,
   contextLabel?: string,
   queue?: QueuedItem[],
 ): Promise<ScriptSelection | typeof QUEUE_LAUNCHED | null> {
@@ -330,7 +334,7 @@ async function selectPackageAndScript(
           const presetName = val.slice(PRESET_PREFIX.length, -2); // strip prefix + trailing "__"
           const preset = findPreset(repoIdentity, presetName);
           if (preset) {
-            await launchPreset(preset, worktreePath);
+            await launchPreset(preset, worktreePath, ctx);
             return QUEUE_LAUNCHED; // signal "already launched" — q is empty, launchQueue() is a no-op
           }
           cameFromScript = true;
@@ -644,18 +648,29 @@ async function launchQueue(
   }
 }
 
-/** Resolve a saved preset's entries against the current worktree and launch them. */
-async function launchPreset(preset: Preset, worktreePath: string): Promise<void> {
-  const items: LaunchItem[] = preset.entries.map((e) => ({
-    label: `${e.packageLabel} → ${e.script}${e.variationName ? ` (${e.variationName})` : ""}`,
+/** Maps a saved preset's entries to runner seed rows, resolved against `worktreePath`. Pure (no spawning), so it stays directly testable. */
+export function presetToSeed(preset: Preset, worktreePath: string): SeedEntry[] {
+  return preset.entries.map((e) => ({
+    name: `${e.script}${e.variationName ? ` (${e.variationName})` : ""}`,
     command: e.command ?? `${detectPackageManager(join(worktreePath, e.packageRelPath))} run ${e.script}`,
     cwd: join(worktreePath, e.packageRelPath),
+    pkg: e.packageLabel,
+    repo: basename(worktreePath),
   }));
+}
 
+/** Resolve a saved preset's entries against the current worktree and open a seeded runner board (or run them in place when herdr isn't available). Exported for direct testing, same as presetToSeed. */
+export async function launchPreset(preset: Preset, worktreePath: string, ctx: CommandContext): Promise<void> {
   process.stderr.write(`\n  preset ${bold}${preset.name}${reset}\n\n`);
-  if (isInsideHerdr()) {
-    await launchInHerdr(items);
+  if (interactive() && (await herdrAvailable())) {
+    const seed = presetToSeed(preset, worktreePath);
+    await runSeededBoard(seed, ctx);
   } else {
+    const items: LaunchItem[] = preset.entries.map((e) => ({
+      label: `${e.packageLabel} → ${e.script}${e.variationName ? ` (${e.variationName})` : ""}`,
+      command: e.command ?? `${detectPackageManager(join(worktreePath, e.packageRelPath))} run ${e.script}`,
+      cwd: join(worktreePath, e.packageRelPath),
+    }));
     launchFallback(items);
   }
 }
@@ -695,7 +710,7 @@ export async function resolveRun(
         const derivedIdentity = await deriveRepoIdentity(worktreePath);
         const preset = findPreset(derivedIdentity.kind === "remote" ? derivedIdentity.id : null, presetArg);
         if (preset) {
-          await launchPreset(preset, worktreePath);
+          await launchPreset(preset, worktreePath, ctx);
           return { kind: "launched" };
         }
       }
@@ -711,7 +726,7 @@ export async function resolveRun(
       }
 
       const ctxLabel = `${ctx.identity!.repoName} / ${basename(worktreePath)}`;
-      const sel = await selectPackageAndScript(worktreePath, repoName, ctxLabel, queue);
+      const sel = await selectPackageAndScript(worktreePath, repoName, ctx, ctxLabel, queue);
       if (sel === QUEUE_LAUNCHED) {
         // Queue was built and user chose "Launch all" -- launch and exit
         await launchQueue(queue, worktreePath);
@@ -834,7 +849,7 @@ export async function resolveRun(
             const wtCtx = worktrees.length > 1
               ? `${repoLabel(selectedRepo.repoName)} / ${basename(worktreePath)}`
               : repoLabel(selectedRepo.repoName);
-            const sel = await selectPackageAndScript(worktreePath, repoName, wtCtx, queue);
+            const sel = await selectPackageAndScript(worktreePath, repoName, ctx, wtCtx, queue);
             if (sel === QUEUE_LAUNCHED) {
               await launchQueue(queue, worktreePath);
               return { kind: "launched" };

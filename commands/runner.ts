@@ -7,13 +7,15 @@ import { randomBytes } from "crypto";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { herdrAvailable, herdrSocketPath } from "../lib/herdr/client.ts";
 import { HerdrEngine } from "../lib/runner/engine.ts";
-import { Runner, SessionDied, type RunnerDeps } from "../lib/runner/runner.ts";
+import { Runner, SessionDied, type RunnerDeps, type SeedEntry } from "../lib/runner/runner.ts";
 import { interactive } from "../lib/ui/gate.ts";
 import { exit, openSession } from "../lib/ui/spawn.ts";
 import { resolveRun } from "./run.ts";
 
+export type { SeedEntry };
+
 /** The exact deps the success path hands to Runner; pulled out so the assembly is unit-testable without a real herdr socket. */
-export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: string): RunnerDeps {
+export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: string, seed?: SeedEntry[]): RunnerDeps {
   return {
     engine: new HerdrEngine(sock),
     openSession,
@@ -21,10 +23,12 @@ export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: strin
     now: () => new Date(),
     sleep: (ms) => Bun.sleep(ms),
     workspaceLabel: `rt-runner-${randomBytes(2).toString("hex")}`,
+    seed,
   };
 }
 
-export async function runnerCommand(args: string[], ctx: CommandContext): Promise<void> {
+/** Gate + build + run, shared by the args-driven command and the seeded entry point. `args` feeds `buildRunnerDeps`'s resolve closure; the seeded caller has no CLI args, so it always passes `[]`. */
+async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[]): Promise<void> {
   if (!interactive()) {
     process.stderr.write("rt runner needs an interactive terminal (it drives herdr panes from the one you are in)\n");
     return exit(1);
@@ -35,7 +39,7 @@ export async function runnerCommand(args: string[], ctx: CommandContext): Promis
     return exit(1);
   }
 
-  const runner = new Runner(buildRunnerDeps(args, ctx, sock));
+  const runner = new Runner(buildRunnerDeps(args, ctx, sock, seed));
 
   // The board dies with this process: a signal tears the workspace down
   // before exit so no headless pane outlives its board.
@@ -57,4 +61,13 @@ export async function runnerCommand(args: string[], ctx: CommandContext): Promis
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }
+}
+
+export async function runnerCommand(args: string[], ctx: CommandContext): Promise<void> {
+  return gateAndRun(ctx, args);
+}
+
+/** Opens the board pre-seeded with resolved rows (e.g. from `rt run` on a preset); the in-board `a` key still falls back to the normal resolve flow. */
+export async function runSeededBoard(seed: SeedEntry[], ctx: CommandContext): Promise<void> {
+  return gateAndRun(ctx, [], seed);
 }
