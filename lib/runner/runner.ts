@@ -24,6 +24,7 @@ export interface RunnerDeps {
   resolve: () => Promise<RunResolution>;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
+  openUrl: (url: string) => Promise<void>;
   workspaceLabel: string;
   seed?: SeedEntry[];
 }
@@ -157,6 +158,17 @@ export class Runner {
         // intent landing mid-poll cannot start a second overlapping read.
         await this.guarded("tail", () => this.pollTail());
         break;
+      case "open": {
+        const e = this.find(intent.entryId);
+        if (e?.url) {
+          try {
+            await this.deps.openUrl(e.url);
+          } catch (err) {
+            this.pin(e, err);
+          }
+        }
+        break;
+      }
     }
     this.push();
     return "continue";

@@ -100,6 +100,7 @@ function deps(over: Partial<RunnerDeps> & { sessions: SessionHandle[]; engine?: 
     // advancing `now` override.
     now: over.now ?? (() => new Date("2026-08-30T00:00:00Z")),
     sleep: over.sleep ?? (async () => {}),
+    openUrl: over.openUrl ?? (async () => {}),
     workspaceLabel: "rt-runner-test",
     seed: over.seed,
   };
@@ -361,6 +362,42 @@ test("pollLiveness latches a url from pane output and does not rescan once found
 
   liveSession.send({ t: "intent", name: "quit" });
   await finished;
+});
+
+test("open intent calls openUrl with the entry's latched url", async () => {
+  const opened: string[] = [];
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+    openUrl: async (url: string) => { opened.push(url); },
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  r.entries[0]!.url = "http://localhost:5173/";
+
+  liveSession.send({ t: "intent", name: "open", entryId: "e1" });
+  await flushMicrotasks();
+  expect(opened).toEqual(["http://localhost:5173/"]);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
+test("open intent does nothing when the entry has no url", async () => {
+  const opened: string[] = [];
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "open", entryId: "e1" }, { t: "intent", name: "quit" }]);
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+    openUrl: async (url: string) => { opened.push(url); },
+  });
+  const r = new Runner(d);
+  await r.run();
+  expect(opened).toEqual([]);
 });
 
 test("restart clears a latched url so a new port is re-detected", async () => {

@@ -115,6 +115,25 @@ func TestActionKeysEmitIntentsWithEntryIds(t *testing.T) {
 	s.Wait()
 }
 
+func TestOpenKeyEmitsIntentOnlyWhenEntryHasUrl(t *testing.T) {
+	s := open(t)
+	// e1 (selected by default) carries url http://localhost:3000 in the fixture.
+	s.Type("o")
+	l, ok := s.ReadLine(2 * time.Second)
+	if !ok || !strings.Contains(l, `"name":"open"`) || !strings.Contains(l, `"entryId":"e1"`) {
+		t.Fatalf("open intent: %q", l)
+	}
+	s.Type("j")
+	time.Sleep(50 * time.Millisecond)
+	// e2 has no url; o must be a no-op.
+	s.Type("o")
+	if l, ok := s.ReadLine(200 * time.Millisecond); ok {
+		t.Fatalf("o with no url must not emit: %q", l)
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
 func TestQuitConfirmsWhenRunningAndEmitsQuitOnY(t *testing.T) {
 	s := open(t)
 	s.Type("q")

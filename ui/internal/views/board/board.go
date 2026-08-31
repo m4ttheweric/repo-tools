@@ -138,6 +138,12 @@ func (b *Board) key(k string) (tea.Model, tea.Cmd) {
 		}
 		name := map[string]string{"s": "restart", "x": "stop", "f": "focus"}[k]
 		return b, b.em.Emit(protocol.Intent{Name: name, EntryID: b.selected})
+	case "o":
+		e := b.selectedEntry()
+		if e == nil || e.Url == nil || *e.Url == "" {
+			return b, nil
+		}
+		return b, b.em.Emit(protocol.Intent{Name: "open", EntryID: b.selected})
 	case "q", "ctrl+c":
 		if b.count("running")+b.count("starting") > 0 {
 			b.confirm = true

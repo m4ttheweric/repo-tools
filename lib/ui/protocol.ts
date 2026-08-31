@@ -123,7 +123,7 @@ export interface SessionHello {
   views: string[];
 }
 
-const SESSION_INTENT_NAMES = ["add", "restart", "stop", "focus", "tail", "quit"] as const;
+const SESSION_INTENT_NAMES = ["add", "restart", "stop", "focus", "tail", "quit", "open"] as const;
 
 export interface SessionIntent {
   t: "intent";
