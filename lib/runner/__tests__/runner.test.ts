@@ -130,6 +130,7 @@ test("a seeded runner launches its seed entries on open without the picker", asy
   expect(r.entries.map((e) => e.name)).toEqual(["dev", "api"]);
   expect(d.engine.calls.some((c) => c.startsWith("run:") && c.includes("/repo/web") && c.includes("bun run dev"))).toBe(true);
   expect(d.engine.calls.some((c) => c.startsWith("run:") && c.includes("/repo/api") && c.includes("bun run api"))).toBe(true);
+  expect(r.entries.every((e) => e.state === "starting")).toBe(true);
 });
 
 test("add: closes the session, resolves in-process, reopens with an optimistic starting row, then launches", async () => {

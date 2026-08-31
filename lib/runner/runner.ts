@@ -57,7 +57,10 @@ export class Runner {
   async run(): Promise<void> {
     try {
       await this.openBoard();
-      for (const s of this.deps.seed ?? []) await this.launchResolved(s);
+      for (const s of this.deps.seed ?? []) {
+        const entry = this.pushEntry(s);
+        await this.launch(entry);
+      }
       this.push();
       while (this.session) {
         const s = this.session;
@@ -188,21 +191,25 @@ export class Runner {
       return;
     }
     const r = res.result;
-    await this.openBoard();
-    await this.launchResolved({
+    const entry = this.pushEntry({
       name: r.script || basename(r.targetDir),
       command: r.commandTemplate,
       cwd: r.targetDir,
       pkg: r.packageLabel,
       repo: basename(r.worktree),
     });
+    await this.openBoard();
+    await this.launch(entry);
     this.push();
   }
 
-  private async launchResolved(s: SeedEntry): Promise<void> {
+  // The optimistic "starting" row must be on this.entries before openBoard()
+  // runs, since openBoard() sends the current model as the reopened
+  // session's initial payload.
+  private pushEntry(s: SeedEntry): Entry {
     const entry = newEntry(++this.seq, s.name, s.command, s.cwd, s.pkg, s.repo);
     this.entries.push(entry);
-    await this.launch(entry);
+    return entry;
   }
 
   private async launch(entry: Entry): Promise<void> {
