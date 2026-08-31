@@ -284,3 +284,13 @@ export class Runner {
     }
   }
 }
+
+/**
+ * Test-only: run a single pollLiveness/pollTail pass on demand instead of
+ * waiting on the real interval timers. Each hook calls the exact private
+ * method the timer calls, so production polling behavior is unchanged.
+ */
+export const __test__ = {
+  pollLiveness: (r: Runner): Promise<void> => (r as unknown as { pollLiveness(): Promise<void> }).pollLiveness(),
+  pollTail: (r: Runner): Promise<void> => (r as unknown as { pollTail(): Promise<void> }).pollTail(),
+};

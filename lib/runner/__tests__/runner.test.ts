@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { Runner, type RunnerDeps } from "../runner.ts";
+import { Runner, type RunnerDeps, __test__ } from "../runner.ts";
 import type { Engine, ProcessInfo } from "../engine.ts";
 import type { SessionEnd, SessionHandle } from "../../ui/spawn.ts";
 import type { SessionIntent } from "../../ui/protocol.ts";
@@ -14,7 +14,7 @@ class FakeEngine implements Engine {
   async createTab(_ws: string, label: string) { this.calls.push(`tab:${label}`); const n = this.calls.filter((c) => c.startsWith("tab:")).length + 1; return { tabId: `wX:t${n}`, paneId: `wX:p${n}` }; }
   async renameTab(tabId: string, label: string) { this.calls.push(`rename:${tabId}:${label}`); }
   async focusTab(tabId: string) { if (this.fail === "focus") throw new Error("boom"); this.calls.push(`focus:${tabId}`); }
-  async run(paneId: string, _cwd: string, command: string) { this.calls.push(`run:${paneId}:${command}`); this.running.add(paneId); }
+  async run(paneId: string, cwd: string, command: string) { this.calls.push(`run:${paneId}:${cwd}:${command}`); this.running.add(paneId); }
   async interrupt(paneId: string) { this.calls.push(`int:${paneId}`); this.running.delete(paneId); this.text.set(paneId, "__rt_exit 130\n"); }
   async processInfo(paneId: string): Promise<ProcessInfo> { return { foregroundPgid: this.running.has(paneId) ? 9 : 1, shellPid: 1, foreground: [] }; }
   async read(paneId: string) { return this.text.get(paneId) ?? "line a\nline b\n"; }
@@ -45,7 +45,50 @@ class FakeSession implements SessionHandle {
   async close(): Promise<SessionEnd> { this.closedCalls++; this.finish(0); return { reason: "closed", code: 0 }; }
 }
 
-function deps(over: Partial<RunnerDeps> & { sessions: FakeSession[]; engine?: FakeEngine }): RunnerDeps & { engine: FakeEngine } {
+/**
+ * A session whose intents arrive on demand instead of from a fixed array:
+ * `next()` blocks (no polling, no timer) until `send` is called. Lets a test
+ * pause the runner mid-session to drive a poll deterministically, then
+ * resume it by sending the next intent.
+ */
+class QueueSession implements SessionHandle {
+  pushed: unknown[] = [];
+  closedCalls = 0;
+  private queue: SessionIntent[] = [];
+  private waiter: ((v: IteratorResult<SessionIntent>) => void) | null = null;
+  exited: Promise<number>;
+  private finish!: (code: number) => void;
+  constructor() {
+    this.exited = new Promise((r) => { this.finish = r; });
+  }
+  get intents(): AsyncIterable<SessionIntent> {
+    const self = this;
+    return { [Symbol.asyncIterator]() { return { next: () => self.next() }; } };
+  }
+  private next(): Promise<IteratorResult<SessionIntent>> {
+    const it = this.queue.shift();
+    if (it) return Promise.resolve({ value: it, done: false });
+    return new Promise((resolve) => { this.waiter = resolve; });
+  }
+  send(i: SessionIntent): void {
+    const w = this.waiter;
+    if (w) {
+      this.waiter = null;
+      w({ value: i, done: false });
+    } else {
+      this.queue.push(i);
+    }
+  }
+  push(m: unknown) { this.pushed.push(m); }
+  async close(): Promise<SessionEnd> { this.closedCalls++; this.finish(0); return { reason: "closed", code: 0 }; }
+}
+
+/** Drains pending microtasks so an in-flight async chain with no real timers or I/O settles before the next assertion. Not a real-time wait. */
+async function flushMicrotasks(times = 30): Promise<void> {
+  for (let i = 0; i < times; i++) await Promise.resolve();
+}
+
+function deps(over: Partial<RunnerDeps> & { sessions: SessionHandle[]; engine?: FakeEngine }): RunnerDeps & { engine: FakeEngine } {
   const engine = over.engine ?? new FakeEngine();
   let i = 0;
   return {
@@ -78,10 +121,16 @@ test("add: closes the session, resolves in-process, reopens with an optimistic s
   const r = new Runner(d);
   await r.run();
   expect(first.closedCalls).toBe(1);
-  expect(second.pushed.length).toBeGreaterThanOrEqual(0);
   expect(r.entries.map((e) => [e.name, e.pkg, e.repo])).toEqual([["dev", "web", "repo"]]);
-  expect(d.engine.calls.slice(0, 3)).toEqual(["ws:rt-runner-test", "rename:wX:t1:dev", "run:wX:p1:bun run dev"]);
+  // The resolved cwd (targetDir) reaches engine.run, not the worktree root or the label.
+  expect(d.engine.calls.slice(0, 3)).toEqual(["ws:rt-runner-test", "rename:wX:t1:dev", "run:wX:p1:/repo/web:bun run dev"]);
   expect(d.engine.calls.at(-1)).toBe("close:wX");
+  // The reopened session gets the post-launch model: the new entry, started.
+  expect(second.pushed).toHaveLength(1);
+  const pushedModel = second.pushed[0] as { entries: { id: string; name: string; state: string; startedAt: string | null }[] };
+  expect(pushedModel.entries).toHaveLength(1);
+  expect(pushedModel.entries[0]).toMatchObject({ id: "e1", name: "dev", state: "starting" });
+  expect(pushedModel.entries[0]!.startedAt).not.toBeNull();
 });
 
 test("a cancelled picker reopens the board unchanged", async () => {
@@ -180,4 +229,44 @@ test("a session that dies tears the workspace down", async () => {
   const r = new Runner(d);
   await expect(r.run()).rejects.toThrow(/rt-ui/);
   expect(d.engine.calls.at(-1)).toBe("close:wX");
+});
+
+test("pollLiveness flips a running entry to stopped or crashed once the exit sentinel lands", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const now = () => new Date(time);
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const engine = new FakeEngine();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now,
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  // Nothing here is real time: everything queued on the microtask chain
+  // above (close, resolve, openSession, createWorkspace, renameTab, run)
+  // settles before liveSession blocks on its next intent.
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  expect(e.paneId).toBe("wX:p1");
+
+  // The shell has reclaimed the foreground and left a clean-exit sentinel.
+  engine.running.delete(e.paneId!);
+  engine.text.set(e.paneId!, "line a\n__rt_exit 0\n");
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads the sentinel
+  await __test__.pollLiveness(r);
+  expect(e.state).toBe("stopped");
+  expect(e.exitCode).toBe(0);
+
+  // A later command in the same pane exits nonzero.
+  engine.text.set(e.paneId!, "line b\n__rt_exit 1\n");
+  time += 1000;
+  await __test__.pollLiveness(r);
+  expect(e.state).toBe("crashed");
+  expect(e.exitCode).toBe(1);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
 });
