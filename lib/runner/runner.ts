@@ -223,6 +223,10 @@ export class Runner {
       await this.deps.engine.run(e.paneId, e.cwd, e.command);
       e.startedAt = this.deps.now();
       e.exitCode = null;
+      // A pollLiveness tick can land during the wait above and overwrite
+      // e.state via deriveState; re-assert starting so the pushed model
+      // never shows a stale running/stopped label right after a restart.
+      e.state = "starting";
     } catch (err) {
       this.pin(e, err);
     }

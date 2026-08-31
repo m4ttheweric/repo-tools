@@ -99,7 +99,7 @@ function deps(over: Partial<RunnerDeps> & { sessions: SessionHandle[]; engine?: 
     // pollLiveness skips them; a test that asserts on a poll needs an
     // advancing `now` override.
     now: over.now ?? (() => new Date("2026-08-30T00:00:00Z")),
-    sleep: async () => {},
+    sleep: over.sleep ?? (async () => {}),
     workspaceLabel: "rt-runner-test",
   };
 }
@@ -169,6 +169,38 @@ test("restart on a stopped entry skips the interrupt and just re-runs", async ()
   await r.run();
   expect(d.engine.calls.filter((c) => c.startsWith("int:"))).toHaveLength(1);
   expect(d.engine.calls.filter((c) => c.startsWith("run:"))).toHaveLength(2);
+  expect(r.entries[0]!.state).toBe("starting");
+});
+
+test("restart re-asserts starting even when a poll lands mid-wait and marks the entry running", async () => {
+  class RestartEngine extends FakeEngine {
+    stillRunning = true;
+    override async processInfo(_paneId: string): Promise<ProcessInfo> {
+      return { foregroundPgid: this.stillRunning ? 9 : 1, shellPid: 1, foreground: [] };
+    }
+  }
+  const engine = new RestartEngine();
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  let r: Runner | undefined;
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "restart", entryId: "e1" }, { t: "intent", name: "quit" }]);
+  const d = deps({
+    sessions: [s, s2],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+    // restart's wait loop calls sleep between processInfo polls; use that
+    // seam to simulate pollLiveness landing mid-wait, while the engine still
+    // (falsely, from restart's view) reports the old command running, then
+    // let the wait loop see the shell reclaim the foreground next check.
+    sleep: async () => {
+      time += 1000; // clear LAUNCH_GRACE_MS so pollLiveness reads this entry
+      if (r) await __test__.pollLiveness(r);
+      engine.stillRunning = false;
+    },
+  });
+  r = new Runner(d);
+  await r.run();
   expect(r.entries[0]!.state).toBe("starting");
 });
 
