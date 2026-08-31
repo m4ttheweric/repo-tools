@@ -38,7 +38,8 @@ func render(b *Board) string {
 	}
 	if b.tailOpen {
 		if e := b.selectedEntry(); e != nil {
-			top = append(top, tailBox(b, e))
+			// blank spacer so the tail box is not flush against the row list
+			top = append(top, "", tailBox(b, e))
 		}
 	}
 	var bottom string
