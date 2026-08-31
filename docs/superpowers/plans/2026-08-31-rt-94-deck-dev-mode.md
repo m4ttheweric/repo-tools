@@ -1048,7 +1048,10 @@ test("readInstalledProgramArguments round-trips renderPlist, escapes included", 
   const manager = new LaunchdManager(async () => 0);
   const spec = {
     label: "com.mattstack.deck.chat",
-    programArguments: ["/usr/bin/env", "arg<with&odd>chars", "plain"],
+    // "a&lt;b" is the discriminating case: its RAW text already contains an
+    // entity-shaped substring, so unescaping &amp; first would regenerate a fake
+    // &lt; and collapse it. A plain "<" or "&" argument passes under either order.
+    programArguments: ["/usr/bin/env", "arg<with&odd>chars", "a&lt;b", "plain"],
     workingDirectory: "/tmp", environment: {}, stdoutPath: "/tmp/o", stderrPath: "/tmp/e",
   };
   await manager.install(spec);
