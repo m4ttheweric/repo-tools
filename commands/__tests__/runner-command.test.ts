@@ -1,7 +1,8 @@
 import { test, expect, afterEach } from "bun:test";
 import { __test__ as gate } from "../../lib/ui/gate.ts";
-import { __test__ as spawnTest } from "../../lib/ui/spawn.ts";
-import { runnerCommand } from "../runner.ts";
+import { __test__ as spawnTest, openSession } from "../../lib/ui/spawn.ts";
+import { HerdrEngine } from "../../lib/runner/engine.ts";
+import { buildRunnerDeps, runnerCommand } from "../runner.ts";
 
 afterEach(() => {
   gate.setInteractive(undefined);
@@ -40,4 +41,14 @@ test("with herdr unreachable the command names the socket and exits 1", async ()
   }
   expect(errs.join("")).toContain("/nonexistent/herdr.sock");
   expect(exits).toEqual([1]);
+});
+
+test("buildRunnerDeps assembles the success-path RunnerDeps", () => {
+  const deps = buildRunnerDeps(["x", "--resolve-only"], {} as never, "/tmp/sock");
+  expect(deps.engine).toBeInstanceOf(HerdrEngine);
+  expect(deps.openSession).toBe(openSession);
+  expect(deps.now()).toBeInstanceOf(Date);
+  expect(typeof deps.sleep).toBe("function");
+  expect(typeof deps.resolve).toBe("function");
+  expect(deps.workspaceLabel).toMatch(/^rt-runner-[0-9a-f]{4}$/);
 });

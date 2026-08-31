@@ -7,10 +7,22 @@ import { randomBytes } from "crypto";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { herdrAvailable, herdrSocketPath } from "../lib/herdr/client.ts";
 import { HerdrEngine } from "../lib/runner/engine.ts";
-import { Runner, SessionDied } from "../lib/runner/runner.ts";
+import { Runner, SessionDied, type RunnerDeps } from "../lib/runner/runner.ts";
 import { interactive } from "../lib/ui/gate.ts";
 import { exit, openSession } from "../lib/ui/spawn.ts";
 import { resolveRun } from "./run.ts";
+
+/** The exact deps the success path hands to Runner; pulled out so the assembly is unit-testable without a real herdr socket. */
+export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: string): RunnerDeps {
+  return {
+    engine: new HerdrEngine(sock),
+    openSession,
+    resolve: () => resolveRun(args.filter((a) => a !== "--resolve-only"), ctx),
+    now: () => new Date(),
+    sleep: (ms) => Bun.sleep(ms),
+    workspaceLabel: `rt-runner-${randomBytes(2).toString("hex")}`,
+  };
+}
 
 export async function runnerCommand(args: string[], ctx: CommandContext): Promise<void> {
   if (!interactive()) {
@@ -23,14 +35,7 @@ export async function runnerCommand(args: string[], ctx: CommandContext): Promis
     return exit(1);
   }
 
-  const runner = new Runner({
-    engine: new HerdrEngine(sock),
-    openSession,
-    resolve: () => resolveRun(args.filter((a) => a !== "--resolve-only"), ctx),
-    now: () => new Date(),
-    sleep: (ms) => Bun.sleep(ms),
-    workspaceLabel: `rt-runner-${randomBytes(2).toString("hex")}`,
-  });
+  const runner = new Runner(buildRunnerDeps(args, ctx, sock));
 
   // The board dies with this process: a signal tears the workspace down
   // before exit so no headless pane outlives its board.
