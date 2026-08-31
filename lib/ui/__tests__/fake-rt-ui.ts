@@ -13,6 +13,9 @@ const cfg = JSON.parse(process.env.RT_UI_FAKE ?? "{}") as {
   record?: string;
   holdMs?: number;
   dieOn?: "start";
+  intents?: object[];
+  closedReason?: string;
+  protocol?: number;
 };
 const verb = process.argv[2];
 
@@ -67,6 +70,55 @@ if (verb === "steps") {
   }
   if (cfg.record) appendFileSync(cfg.record, lines.join("\n") + "\n");
   process.exit(cfg.exit ?? 0);
+}
+
+if (verb === "session") {
+  const viewIdx = process.argv.indexOf("--view");
+  const view = viewIdx >= 0 ? process.argv[viewIdx + 1] : "";
+  process.stdout.write(JSON.stringify({ t: "hello", protocol: cfg.protocol ?? 1, version: "fake", views: [view] }) + "\n");
+  const intents = (cfg.intents ?? []) as object[];
+  let closedSent = false;
+  const sendClosed = (reason: string) => {
+    if (closedSent) return;
+    closedSent = true;
+    process.stdout.write(JSON.stringify({ t: "closed", reason }) + "\n");
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      if (cfg.record) appendFileSync(cfg.record, lines.join("\n") + "\n");
+      sendClosed("error");
+      process.exit(70);
+    }
+    buf += decoder.decode(value);
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      lines.push(line);
+      const t = (JSON.parse(line) as { t: string }).t;
+      if (t === "open") {
+        if (cfg.exit !== undefined) {
+          if (cfg.record) appendFileSync(cfg.record, lines.join("\n") + "\n");
+          process.exit(cfg.exit);
+        }
+        for (const it of intents) {
+          await Bun.sleep(20);
+          process.stdout.write(JSON.stringify({ t: "intent", ...it }) + "\n");
+          if ((it as { name?: string }).name === "quit") {
+            if (cfg.record) appendFileSync(cfg.record, lines.join("\n") + "\n");
+            sendClosed("quit");
+            process.exit(0);
+          }
+        }
+      }
+      if (t === "close") {
+        if (cfg.record) appendFileSync(cfg.record, lines.join("\n") + "\n");
+        sendClosed((cfg.closedReason as string | undefined) ?? "closed");
+        process.exit(0);
+      }
+    }
+  }
 }
 
 process.stderr.write("fake-rt-ui: unknown verb\n");
