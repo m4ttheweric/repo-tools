@@ -63,7 +63,9 @@ func render(b *Board) string {
 		}
 	}
 	var bottom string
-	if b.confirm {
+	if b.editing {
+		bottom = editLayer(b)
+	} else if b.confirm {
 		bottom = confirmLayer(b)
 	} else {
 		bottom = lipgloss.JoinVertical(lipgloss.Left, rule(b.width), keybar(b))
@@ -236,8 +238,22 @@ func keybar(b *Board) string {
 		return fg(theme.Faint).Render(k) + onBg.Render(" ") + fg(theme.Dim).Render(l)
 	}
 	left := group.Render("navigate") + onBg.Render(" ") + key("j/k", "up·down") + onBg.Render("   ") +
-		group.Render("process") + onBg.Render(" ") + strings.Join([]string{key("a", "add"), key("s", "restart"), key("x", "stop"), key("f", "focus"), key("t", "tail"), key("o", "open")}, onBg.Render("  "))
+		group.Render("process") + onBg.Render(" ") + strings.Join([]string{key("a", "add"), key("s", "restart"), key("x", "stop"), key("f", "focus"), key("e", "edit"), key("t", "tail"), key("o", "open")}, onBg.Render("  "))
 	return justify(b.width, left, key("q", "quit"))
+}
+
+func editLayer(b *Board) string {
+	on := lipgloss.NewStyle()
+	label := fg(theme.Cyan).Render("edit ")
+	if e := b.selectedEntry(); e != nil {
+		label += fg(theme.TextSoft).Render(e.Name) + on.Render("  ")
+	}
+	left := label + b.input.View()
+	right := fg(theme.Pink).Bold(true).Render("enter") + on.Render(" ") + fg(theme.Dim).Render("save") + on.Render("   ") +
+		fg(theme.Dim).Bold(true).Render("esc") + on.Render(" ") + fg(theme.Dim).Render("cancel")
+	inner := b.width - 4
+	line := left + lipgloss.PlaceHorizontal(inner-lipgloss.Width(left), lipgloss.Right, right, lipgloss.WithWhitespaceStyle(on))
+	return on.Border(lipgloss.RoundedBorder()).BorderForeground(theme.Panel).Padding(0, 1).Render(line)
 }
 
 func confirmLayer(b *Board) string {

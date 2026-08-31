@@ -285,6 +285,52 @@ func TestCrashedRowWithNilExitCodeShowsCrashedNotExitedZero(t *testing.T) {
 	s.Wait()
 }
 
+const (
+	keyEnter = "\r"
+	keyEsc   = "\x1b"
+)
+
+func TestEditKeyEntersEditModeSeededWithTheCurrentCommand(t *testing.T) {
+	s := open(t)
+	s.Type("e")
+	s.WaitForPaint("save")
+	if !strings.Contains(s.Screen(), "bun run dev") {
+		t.Fatalf("edit bar missing seeded command:\n%s", s.Screen())
+	}
+	s.Type(keyEsc)
+	s.WaitForGone("save")
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+func TestEditEnterEmitsEditIntentWithTheNewCommand(t *testing.T) {
+	s := open(t)
+	s.Type("e")
+	s.WaitForPaint("save")
+	s.Type("2")
+	s.Type(keyEnter)
+	l, ok := s.ReadLine(2 * time.Second)
+	if !ok || !strings.Contains(l, `"name":"edit"`) || !strings.Contains(l, `"entryId":"e1"`) || !strings.Contains(l, `"command":"bun run dev2"`) {
+		t.Fatalf("edit intent: %q", l)
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+func TestEditEscCancelsWithoutEmittingAnIntent(t *testing.T) {
+	s := open(t)
+	s.Type("e")
+	s.WaitForPaint("save")
+	s.Type("2")
+	s.Type(keyEsc)
+	s.WaitForGone("save")
+	if l, ok := s.ReadLine(200 * time.Millisecond); ok {
+		t.Fatalf("esc must not emit an edit intent: %q", l)
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
 func TestModelReplacementKeepsCursorByIdAndUptimeTicks(t *testing.T) {
 	s := open(t)
 	s.Type("j")

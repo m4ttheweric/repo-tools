@@ -472,6 +472,36 @@ test("open intent does nothing when the entry has no url", async () => {
   expect(opened).toEqual([]);
 });
 
+test("edit with a changed command updates the entry and restarts it", async () => {
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "edit", entryId: "e1", command: "bun run dev2" }, { t: "intent", name: "quit" }]);
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  await r.run();
+  const e = r.entries[0]!;
+  expect(e.command).toBe("bun run dev2");
+  expect(d.engine.calls.filter((c) => c.startsWith("run:"))).toHaveLength(2);
+  expect(d.engine.calls).toContain(`run:${e.paneId}:${e.cwd}:bun run dev2`);
+});
+
+test("edit with an unchanged command is a no-op: no restart, no extra run call", async () => {
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "edit", entryId: "e1", command: "bun run dev" }, { t: "intent", name: "quit" }]);
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  await r.run();
+  const e = r.entries[0]!;
+  expect(e.command).toBe("bun run dev");
+  expect(d.engine.calls.filter((c) => c.startsWith("run:"))).toHaveLength(1);
+  expect(d.engine.calls.filter((c) => c.startsWith("int:"))).toHaveLength(0);
+});
+
 test("restart clears a latched url so a new port is re-detected", async () => {
   let time = new Date("2026-08-30T00:00:00Z").getTime();
   const engine = new UrlFakeEngine();

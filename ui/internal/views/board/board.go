@@ -5,9 +5,11 @@ package board
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
 	"rt-ui/internal/protocol"
@@ -23,6 +25,8 @@ type Board struct {
 	selected string
 	tailOpen bool
 	confirm  bool
+	editing  bool
+	input    textinput.Model
 	width    int
 	height   int
 	spin     spinner.Model
@@ -31,8 +35,12 @@ type Board struct {
 }
 
 func New(em *session.Emitter) *Board {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.CharLimit = 0
 	return &Board{
 		em:     em,
+		input:  ti,
 		spin:   spinner.New(spinner.WithSpinner(spinner.Spinner{Frames: theme.SpinnerFrames, FPS: 80 * time.Millisecond})),
 		now:    time.Now(),
 		reason: session.ReasonClosed,
@@ -98,6 +106,9 @@ func (b *Board) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		b.reason = session.ReasonClosed
 		return b, tea.Quit
 	case tea.KeyPressMsg:
+		if b.editing {
+			return b.editKey(m)
+		}
 		return b.key(m.String())
 	}
 	return b, nil
@@ -138,6 +149,15 @@ func (b *Board) key(k string) (tea.Model, tea.Cmd) {
 		}
 		name := map[string]string{"s": "restart", "x": "stop", "f": "focus"}[k]
 		return b, b.em.Emit(protocol.Intent{Name: name, EntryID: b.selected})
+	case "e":
+		e := b.selectedEntry()
+		if e == nil {
+			return b, nil
+		}
+		b.input.SetValue(e.Command)
+		b.input.CursorEnd()
+		b.editing = true
+		return b, b.input.Focus()
 	case "o":
 		e := b.selectedEntry()
 		if e == nil || e.Url == nil || *e.Url == "" {
@@ -152,6 +172,27 @@ func (b *Board) key(k string) (tea.Model, tea.Cmd) {
 		return b.quit()
 	}
 	return b, nil
+}
+
+func (b *Board) editKey(m tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch m.String() {
+	case "esc":
+		b.editing = false
+		b.input.Blur()
+		return b, nil
+	case "enter":
+		v := strings.TrimSpace(b.input.Value())
+		b.editing = false
+		b.input.Blur()
+		if v == "" {
+			return b, nil
+		}
+		return b, b.em.Emit(protocol.Intent{Name: "edit", EntryID: b.selected, Command: v})
+	default:
+		var cmd tea.Cmd
+		b.input, cmd = b.input.Update(m)
+		return b, cmd
+	}
 }
 
 func (b *Board) quit() (tea.Model, tea.Cmd) {

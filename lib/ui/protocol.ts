@@ -123,13 +123,14 @@ export interface SessionHello {
   views: string[];
 }
 
-const SESSION_INTENT_NAMES = ["add", "restart", "stop", "focus", "tail", "quit", "open"] as const;
+const SESSION_INTENT_NAMES = ["add", "restart", "stop", "focus", "tail", "quit", "open", "edit"] as const;
 
 export interface SessionIntent {
   t: "intent";
   name: (typeof SESSION_INTENT_NAMES)[number];
   entryId?: string;
   open?: boolean;
+  command?: string;
 }
 
 const SESSION_CLOSED_REASONS = ["quit", "cancel", "closed", "error"] as const;
@@ -161,6 +162,7 @@ export function parseSessionLine(line: string): SessionInbound {
         name: m.name as SessionIntent["name"],
         ...(typeof m.entryId === "string" ? { entryId: m.entryId } : {}),
         ...(typeof m.open === "boolean" ? { open: m.open } : {}),
+        ...(typeof m.command === "string" ? { command: m.command } : {}),
       };
     case "closed":
       if (typeof m.reason !== "string" || !SESSION_CLOSED_REASONS.includes(m.reason as SessionClosed["reason"])) break;

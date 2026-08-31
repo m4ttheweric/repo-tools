@@ -52,6 +52,15 @@ test("session fixtures parse to typed inbound messages", () => {
   expect(() => parseSessionLine("{}")).toThrow(/rt-ui session/);
 });
 
+test("parseSessionLine parses an edit intent's command field", () => {
+  expect(parseSessionLine(JSON.stringify({ t: "intent", name: "edit", entryId: "e1", command: "bun run dev2" }))).toEqual({
+    t: "intent",
+    name: "edit",
+    entryId: "e1",
+    command: "bun run dev2",
+  });
+});
+
 test("parseSessionLine rejects an intent name outside the declared union", () => {
   expect(() => parseSessionLine(JSON.stringify({ t: "intent", name: "explode" }))).toThrow(/rt-ui session/);
 });

@@ -31,6 +31,7 @@ type Intent struct {
 	Name    string `json:"name"`
 	EntryID string `json:"entryId,omitempty"`
 	Open    *bool  `json:"open,omitempty"`
+	Command string `json:"command,omitempty"`
 }
 
 type Closed struct {

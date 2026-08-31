@@ -169,6 +169,14 @@ export class Runner {
         }
         break;
       }
+      case "edit": {
+        const e = this.find(intent.entryId);
+        if (e && typeof intent.command === "string" && intent.command !== e.command) {
+          e.command = intent.command;
+          await this.restart(e.id);
+        }
+        break;
+      }
     }
     this.push();
     return "continue";
