@@ -23,10 +23,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
+      # Assign before writing to the output file: a substitution inside echo
+      # swallows the planner's exit code and a failed plan would surface as an
+      # opaque matrix parse error in the build job instead of failing here.
       - id: plan
         env:
           APPS_INPUT: ${{ inputs.apps }}
-        run: echo "matrix=$(bun scripts/bundle-ci/plan-matrix.ts "$APPS_INPUT")" >> "$GITHUB_OUTPUT"
+        run: |
+          MATRIX=$(bun scripts/bundle-ci/plan-matrix.ts "$APPS_INPUT")
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   build:
     needs: plan
@@ -46,14 +51,23 @@ jobs:
           APP_REPO: ${{ matrix.repo }}
         run: |
           gh repo clone "$APP_REPO" app -- --depth 1 --branch main
-          echo "SOURCE_SHA=$(git -C app rev-parse HEAD)" >> "$GITHUB_ENV"
+          SOURCE_SHA=$(git -C app rev-parse HEAD)
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
       - name: Read and validate bundle recipe
         run: |
           bun scripts/bundle-ci/validate-manifest.ts app/mattstack.deck.json > recipe.json
+          BUILD_CMD=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).build)')
+          ARTIFACT=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).artifact)')
+          # A package.json with no version must fail here, not tag vundefined.
+          VERSION=$(bun -e '
+            const v = JSON.parse(await Bun.file("app/package.json").text()).version;
+            if (typeof v !== "string" || !v) throw new Error("app package.json has no version");
+            console.log(v);
+          ')
           {
-            echo "BUILD_CMD=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).build)')"
-            echo "ARTIFACT=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).artifact)')"
-            echo "VERSION=$(bun -e 'console.log(JSON.parse(await Bun.file("app/package.json").text()).version)')"
+            echo "BUILD_CMD=$BUILD_CMD"
+            echo "ARTIFACT=$ARTIFACT"
+            echo "VERSION=$VERSION"
           } >> "$GITHUB_ENV"
       - name: Refuse an already-released version
         if: ${{ !inputs.dry_run }}
@@ -61,8 +75,11 @@ jobs:
           GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
           APP_REPO: ${{ matrix.repo }}
         run: |
-          if gh api "repos/$APP_REPO/releases/tags/v$VERSION" --silent 2>/dev/null; then
-            echo "::error::v$VERSION already released on $APP_REPO; bump the version"
+          # The tag ref covers both a bare pushed tag and a full release; a
+          # release created onto a stale pre-existing tag would silently ship
+          # that tag's commit instead of main.
+          if gh api "repos/$APP_REPO/git/ref/tags/v$VERSION" --silent 2>/dev/null; then
+            echo "::error::tag v$VERSION already exists on $APP_REPO; bump the version"
             exit 1
           fi
       - name: Build
