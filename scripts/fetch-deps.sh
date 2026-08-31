@@ -21,13 +21,13 @@ for a in "$@"; do
 done
 
 DEPS_LOCK_TS="$ROOT/scripts/lib/deps-lock.ts"
-DEPS_ROOT="$ROOT/rt-tray/deps"
+DEPS_ROOT="${RT_DEPS_ROOT:-$ROOT/rt-tray/deps}"
 DEPS="$DEPS_ROOT/$ARCH"
 TOOLS="$DEPS_ROOT/tools"
 CACHE="${RT_DEPS_CACHE:-$HOME/Library/Caches/mattstack-deps}"
 mkdir -p "$DEPS" "$TOOLS" "$CACHE"
 
-LOCK_ARCH="$(bun "$DEPS_LOCK_TS" --arch)"
+LOCK_ARCH="$(bun "$DEPS_LOCK_TS" ${RT_DEPS_LOCK:+--lock "$RT_DEPS_LOCK"} --arch)"
 if [ "$LOCK_ARCH" != "$ARCH" ]; then
   echo "  x deps.lock arch is $LOCK_ARCH, this run wants $ARCH" >&2
   exit 1
@@ -75,6 +75,10 @@ unpack() { # name archive-file archive-kind extract-path dest
         cp -R "$tmp/$extract" "$dest"
       else
         cp -R "$tmp" "$dest"
+      fi
+      rm -rf "$dest-skills"
+      if [ -d "$tmp/skills" ]; then
+        cp -R "$tmp/skills" "$dest-skills"
       fi
       rm -rf "$tmp" ;;
     go-src)
@@ -151,7 +155,7 @@ split_tsv() {
 # otherwise iterate zero rows and this script would report Done. and exit 0.
 TSV="$(mktemp)"
 trap 'rm -f "$TSV"' EXIT
-bun "$DEPS_LOCK_TS" > "$TSV"
+bun "$DEPS_LOCK_TS" ${RT_DEPS_LOCK:+--lock "$RT_DEPS_LOCK"} > "$TSV"
 ROWS="$(wc -l < "$TSV" | tr -d ' ')"
 if [ "$ROWS" -eq 0 ]; then
   echo "  x deps.lock produced no rows" >&2
@@ -183,6 +187,10 @@ while IFS= read -r line; do
     if [ "$archive" = "raw" ] && [ "$(sha "$dest")" != "$sha" ]; then
       already=false
     fi
+    # A skills stamp promises a skills dir; a deleted dir must re-materialize.
+    if [ -f "$dest-skills.sha256" ] && [ "$(cat "$dest-skills.sha256")" = "$sha" ] && [ ! -d "$dest-skills" ]; then
+      already=false
+    fi
   fi
   if $already; then
     echo "  = $name $version already unpacked (archive ${sha:0:12} verified) -> ${dest#$ROOT/}"
@@ -192,6 +200,11 @@ while IFS= read -r line; do
   file="$(fetch "$url" "$sha")"
   unpack "$name" "$file" "$archive" "$extract" "$dest"
   echo "$sha" > "$stamp"
+  if [ -d "$dest-skills" ]; then
+    echo "$sha" > "$dest-skills.sha256"
+  else
+    rm -f "$dest-skills.sha256"
+  fi
   echo "  + $name $version -> ${dest#$ROOT/}"
 done < "$TSV"
 
