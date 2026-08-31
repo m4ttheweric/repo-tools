@@ -57,6 +57,15 @@ source checkout outranks the installed bundle when resolving the binary.
 `bun run ui:build` after any change under `ui/`; the shared fixtures in
 `ui/fixtures/` are golden-tested from both languages.
 
+`rt runner` is the first `session` view: `commands/runner.ts` gates and
+wires, `lib/runner/runner.ts` owns the entries and the intent loop,
+`lib/runner/engine.ts` is the only herdr door (socket API, no CLI spawns),
+and `ui/internal/views/board/` paints. Read
+`docs/superpowers/specs/2026-08-29-rt-runner-design.md` before touching any
+of them: the board is ephemeral and pane-owned (quit closes the workspace),
+the exit code of a pane command comes only from the `__rt_exit` sentinel,
+and the add flow closes and reopens the session around the fzf picker.
+
 ## Release & distribution
 
 Before touching the release workflow, the app bundle, signing, Sparkle, the
