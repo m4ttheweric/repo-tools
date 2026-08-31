@@ -110,7 +110,11 @@ func row(b *Board, i int) string {
 		right, rightC = "stopped", theme.Dimmer
 	case "crashed":
 		glyph, glyphC = "✗", theme.Coral
-		right, rightC = fmt.Sprintf("exited %d", deref(e.ExitCode)), theme.Coral
+		right = "crashed"
+		if e.ExitCode != nil {
+			right = fmt.Sprintf("exited %d", *e.ExitCode)
+		}
+		rightC = theme.Coral
 	case "starting":
 		glyph, glyphC = b.spin.View(), theme.Mint
 		right, rightC = "starting", theme.Dimmer
@@ -191,11 +195,4 @@ func justify(width int, left, right string) string {
 
 func clip(s string, w int) string {
 	return lipgloss.NewStyle().Inline(true).MaxWidth(w).Render(s)
-}
-
-func deref(p *int) int {
-	if p == nil {
-		return 0
-	}
-	return *p
 }

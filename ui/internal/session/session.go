@@ -183,7 +183,7 @@ func Run(ctx context.Context, viewName string, views []string, mk func(*Emitter)
 		return ReasonError, true, nil
 	case ctx.Err() != nil, errors.Is(runErr, tea.ErrInterrupted):
 		closed(ReasonCancel, "")
-		return ReasonCancel, false, nil
+		return ReasonCancel, false, nil //nolint:nilerr // intentional: ReasonCancel carries the outcome, not the error
 	case runErr != nil:
 		closed(ReasonError, runErr.Error())
 		return ReasonError, false, runErr
