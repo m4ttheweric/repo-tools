@@ -324,3 +324,68 @@ test("pollLiveness flips a running entry to stopped or crashed once the exit sen
   liveSession.send({ t: "intent", name: "quit" });
   await finished;
 });
+
+// Counts reads per pane so a test can assert the url-scan read fires once
+// then stops once an entry latches; production code has no such counter.
+class UrlFakeEngine extends FakeEngine {
+  readCounts = new Map<string, number>();
+  override async read(paneId: string): Promise<string> {
+    this.readCounts.set(paneId, (this.readCounts.get(paneId) ?? 0) + 1);
+    return this.text.get(paneId) ?? "starting dev server...\n  > Local: http://localhost:5173/\n";
+  }
+}
+
+test("pollLiveness latches a url from pane output and does not rescan once found", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new UrlFakeEngine();
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+
+  await __test__.pollLiveness(r);
+  expect(e.url).toBe("http://localhost:5173/");
+  expect(engine.readCounts.get(e.paneId!)).toBe(1);
+
+  await __test__.pollLiveness(r);
+  expect(engine.readCounts.get(e.paneId!)).toBe(1);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
+test("restart clears a latched url so a new port is re-detected", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new UrlFakeEngine();
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+  await __test__.pollLiveness(r);
+  expect(e.url).toBe("http://localhost:5173/");
+
+  liveSession.send({ t: "intent", name: "restart", entryId: "e1" });
+  await flushMicrotasks();
+  expect(e.url).toBeNull();
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
