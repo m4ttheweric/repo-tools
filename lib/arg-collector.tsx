@@ -1,4 +1,5 @@
 import { spawnSync } from "child_process";
+import { fzfHeightArgs } from "./fzf-select.ts";
 import type { CommandArg } from "./command-tree.ts";
 import { T, toAnsiFg, toHex } from "./tui/palette.ts";
 
@@ -28,6 +29,7 @@ export async function collectArgs(
     "--with-nth=2..",
     "--delimiter=\t",
     "--layout=reverse",
+    ...fzfHeightArgs(),
     "--border=left",
     "--no-separator",
     "--prompt=  filter: ",

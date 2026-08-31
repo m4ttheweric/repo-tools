@@ -16,6 +16,7 @@
  */
 
 import { bold, cyan, dim, reset, yellow } from "./tui.ts";
+import { fzfHeightArgs } from "./fzf-select.ts";
 import { spawnSync } from "child_process";
 import { resolve, join } from "path";
 import { existsSync } from "fs";
@@ -492,6 +493,7 @@ async function showPicker(
     "--delimiter=\t",
     "--tabstop=1",
     "--layout=reverse",
+    ...fzfHeightArgs(),
     "--border=left",
     "--no-separator",
     "--prompt=  filter: ",

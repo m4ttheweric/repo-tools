@@ -19,6 +19,7 @@
  */
 
 import { execFileSync, spawnSync } from "child_process";
+import { fzfHeightArgs } from "../lib/fzf-select.ts";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { applyEdits, modify } from "jsonc-parser";
 import { createInterface } from "node:readline";
@@ -1686,6 +1687,7 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
       "--with-nth=2..",
       "--delimiter=\t",
       "--layout=reverse",
+      ...fzfHeightArgs(),
       "--border=left",
       "--no-separator",
       "--prompt=  filter: ",

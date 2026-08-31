@@ -11,6 +11,15 @@ import { BackNavigation } from "./back-navigation.ts";
 
 export { BackNavigation } from "./back-navigation.ts";
 
+/**
+ * Transient pickers open inline, sized to their list, so the shell's
+ * scrollback stays in view; only the e2e harness asks for the alternate
+ * screen, because Termwright's parser cannot see fzf's inline region.
+ */
+export function fzfHeightArgs(): string[] {
+  return process.env.RT_FZF_ALT_SCREEN ? [] : ["--height=~100%"];
+}
+
 // ─── Option type ─────────────────────────────────────────────────────────────
 
 export interface SelectOption {
@@ -71,6 +80,7 @@ export async function filterableMultiselect(opts: {
     "--with-nth=2..",
     "--delimiter=\t",
     "--layout=reverse",
+    ...fzfHeightArgs(),
     "--border=left",
     "--no-separator",
     `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m`,
@@ -156,6 +166,7 @@ export function buildFilterableSelectArgs(opts: {
     "--delimiter=\t",
     "--tabstop=1",
     "--layout=reverse",
+    ...fzfHeightArgs(),
     "--border=left",
     "--no-separator",
     "--prompt=  filter: ",

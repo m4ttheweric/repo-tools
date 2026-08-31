@@ -21,6 +21,7 @@
  */
 
 import { spawnSync } from "child_process";
+import { fzfHeightArgs } from "../lib/fzf-select.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync, unlinkSync } from "node:fs";
@@ -180,6 +181,7 @@ function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
       "--with-nth=2..",         // display label col; value col is hidden
       "--delimiter=\t",
       "--layout=reverse",
+      ...fzfHeightArgs(),
       "--border=left",
       "--no-separator",
       "--prompt=  filter: ",
