@@ -190,7 +190,7 @@ test("focusTab splits a fresh pane and attaches when no client is attached, then
 
   expect(herdrCalls.map((c) => c.method)).toEqual(["pane.split", "pane.send_text", "pane.send_keys"]);
   expect(herdrCalls[0]!.params).toMatchObject({ pane_id: "%0", direction: "right", focus: true });
-  expect(herdrCalls[1]!.params).toMatchObject({ pane_id: "%9", text: `tmux -S ${SOCK} attach -t rt` });
+  expect(herdrCalls[1]!.params).toMatchObject({ pane_id: "%9", text: `tmux -S '${SOCK}' attach -t rt` });
   expect(herdrCalls[2]!.params).toMatchObject({ pane_id: "%9", keys: ["enter"] });
   expect(calls.some((a) => a.includes("select-window") && a.includes("@1"))).toBe(true);
 });

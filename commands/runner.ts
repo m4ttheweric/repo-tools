@@ -107,7 +107,7 @@ export async function reconcileTmuxWorkspaces(): Promise<void> {
 /** Gate + build + run, shared by the args-driven command and the seeded entry point. `args` feeds the resolve closure and, on the herdr path, selects the backend; the seeded caller has no CLI args, so it always passes `[]` and gets the tmux default. */
 async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[]): Promise<void> {
   if (!interactive()) {
-    process.stderr.write("rt runner needs an interactive terminal (it drives herdr panes from the one you are in)\n");
+    process.stderr.write("rt runner needs an interactive terminal (it drives a live board from the one you are in)\n");
     return exit(1);
   }
 

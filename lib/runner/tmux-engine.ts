@@ -81,7 +81,7 @@ export class TmuxEngine implements Engine {
       if (!s.ok) throw new EngineError(s.code, s.message);
       const newPane = s.result?.pane?.pane_id;
       if (!newPane) throw new EngineError("bad_reply", "pane.split returned no pane_id");
-      await herdr("pane.send_text", { pane_id: newPane, text: `tmux -S ${this.deps.socket} attach -t ${TMUX_SESSION}` });
+      await herdr("pane.send_text", { pane_id: newPane, text: `tmux -S '${this.deps.socket}' attach -t ${TMUX_SESSION}` });
       await herdr("pane.send_keys", { pane_id: newPane, keys: ["enter"] });
       await this.sleeper()(400);
     }
@@ -137,8 +137,13 @@ export class TmuxEngine implements Engine {
   }
 
   async closeWorkspace(_workspaceId: string): Promise<void> {
-    // Best-effort: the runner may close a workspace whose server is already gone.
-    await this.tmux(["kill-server"]);
+    // Best-effort: the runner may close a workspace whose server is already
+    // gone, and a spawn-level failure here must never break teardown.
+    try {
+      await this.tmux(["kill-server"]);
+    } catch {
+      // server already gone
+    }
   }
 }
 
