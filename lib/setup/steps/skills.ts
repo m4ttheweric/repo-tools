@@ -7,14 +7,16 @@
  */
 
 import { join } from "path";
+import { HELPERS_DIR } from "../../bundle-layout.ts";
 import { getKnownRepos } from "../../repo-index.ts";
-import { resolveTool } from "../../deps/resolve.ts";
+import { appBundlePath, bundledToolPath, resolveTool } from "../../deps/resolve.ts";
 import { getDef, isMigrated } from "../../settings/registry.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { setSetting } from "../../settings/write.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import { installCronTrigger, resolveBoardTriage, triageTrigger } from "../cron-install.ts";
+import { linkBundledSkills } from "../skills-link-bundled.ts";
 import { materializeSkills } from "../skills-materialize.ts";
 import { repoBasename } from "./repos.ts";
 import { toFailedOutcome } from "./step-utils.ts";
@@ -46,6 +48,41 @@ export const skillsMaterializeStep: StepDef = {
   kind: "rt",
   applies: () => true,
   run: skillsMaterializeRunSafe,
+};
+
+// ─── skills.link ─────────────────────────────────────────────────────────────
+
+async function skillsLinkRun(ctx: ApplyContext): Promise<StepOutcome> {
+  const root = appBundlePath(ctx.p);
+  if (!root) return { state: "skipped", detail: "not running from an app bundle" };
+
+  const results = linkBundledSkills({
+    skillsRoot: join(root, HELPERS_DIR, "skills"),
+    claudeSkillsDir: join(ctx.p.home, ".claude", "skills"),
+    isBundled: (app) => bundledToolPath(ctx.p, app) !== null,
+  });
+  if (results.length === 0) return { state: "skipped", detail: "bundle ships no skills" };
+
+  for (const r of results.filter((x) => x.skipped)) ctx.log("skills.link", `${r.app}: ${r.skipped}`);
+  const linked = results.filter((r) => !r.skipped);
+  const total = linked.reduce((n, r) => n + r.linked, 0);
+  return { state: "done", detail: `linked ${total} skill(s) from ${linked.length} app(s)` };
+}
+
+async function skillsLinkRunSafe(ctx: ApplyContext): Promise<StepOutcome> {
+  try {
+    return await skillsLinkRun(ctx);
+  } catch (err) {
+    return toFailedOutcome(err);
+  }
+}
+
+export const skillsLinkStep: StepDef = {
+  id: "skills.link",
+  title: "Link bundled skills",
+  kind: "rt",
+  applies: () => true,
+  run: skillsLinkRunSafe,
 };
 
 // ─── board.keys ──────────────────────────────────────────────────────────────

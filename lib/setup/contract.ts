@@ -80,6 +80,7 @@ export const STEP_IDS = [
   "proxy.install",
   "deck.managed",
   "skills.materialize",
+  "skills.link",
   "board.keys",
   "cron.triage",
   "plugins.install",

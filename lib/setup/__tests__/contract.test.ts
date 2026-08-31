@@ -81,7 +81,7 @@ describe("row", () => {
 });
 
 describe("STEP_IDS", () => {
-  test("matches the contract's 22 ids in order", () => {
+  test("matches the contract's 23 ids in order", () => {
     expect(STEP_IDS).toEqual([
       "home.init",
       "home.restore",
@@ -96,6 +96,7 @@ describe("STEP_IDS", () => {
       "proxy.install",
       "deck.managed",
       "skills.materialize",
+      "skills.link",
       "board.keys",
       "cron.triage",
       "plugins.install",
