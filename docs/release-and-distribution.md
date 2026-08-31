@@ -182,7 +182,7 @@ including `skills/.skillsignore`, the file `rt skills link` reads to keep
 maintainer-only skills off user machines.
 
 Manual precondition, once: a fine-grained org PAT with contents read+write
-on the m4ttstack app repos and contents write plus PR create on repo-tools,
+on the m4ttstack app repos and contents write plus pull-requests write on repo-tools,
 stored as the `MATTSTACK_RELEASE_TOKEN` Actions secret on repo-tools.
 
 Recovery: a release that published but whose PR step failed is durable and

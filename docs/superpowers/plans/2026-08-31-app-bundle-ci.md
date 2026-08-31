@@ -1195,7 +1195,7 @@ Append a `## App-bundle CI (bundle-apps.yml)` section to `docs/release-and-distr
 - Version rule: tag comes from the app repo's package.json; an existing tag fails the leg ("bump the version").
 - Dry run: `dry_run: true` builds + hashes without releasing; the e2e proof once an app's `bundle` node lands.
 - Skills contract: tarball root carries `skills/` verbatim; fetch-deps materializes `deps/arm64/<name>-skills/`; build.sh lands + signs `Contents/Helpers/skills/<name>/`; skill dir names must be dot-free.
-- **Manual precondition (Matt, once):** create a fine-grained org PAT named for this purpose with contents read+write on m4ttstack app repos and contents write + PR create on repo-tools; store as the `MATTSTACK_RELEASE_TOKEN` Actions secret on repo-tools.
+- **Manual precondition (Matt, once):** create a fine-grained org PAT named for this purpose with contents read+write on m4ttstack app repos and contents write + pull-requests write on repo-tools; store as the `MATTSTACK_RELEASE_TOKEN` Actions secret on repo-tools.
 - Recovery: release exists but PR failed -> re-run the pr job or hand-edit deps.lock from the run summary's url+sha.
 
 - [ ] **Step 2: Commit**

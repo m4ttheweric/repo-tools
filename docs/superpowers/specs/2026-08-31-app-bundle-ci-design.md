@@ -154,10 +154,18 @@ One file, `.github/workflows/bundle-apps.yml` in repo-tools.
   4. Assert `bundle.artifact` exists, is executable, and exits 0 on
      `--version` — exactly the gate `check-bundle.sh` runs later (no
      `--help` fallback there, so none here), moved earlier.
-  5. Stage `<name>` + optional `skills/`, tar, sha256.
-  6. Unless `dry_run`: create the release on the app repo (tag from
-     package.json version; fail if tag exists), upload the tarball.
-- **PR job (linux, after all builds):** unless `dry_run`, check out
+  5. Stage `<name>` + optional `skills/`, tar, sha256. Steps 3 to 5 share one
+     step so a recipe's `GITHUB_ENV` writes (which only reach later steps)
+     cannot swap the version or artifact out from under packaging.
+  6. Upload the tarball and result as an artifact. The build job never holds
+     a publishing credential after the recipe has run.
+- **Release job (linux, after all builds):** unless `dry_run`, download the
+  packaged artifacts and create each release. Which repo a tarball may be
+  published to comes from the plan job's matrix, never from the downloaded
+  result file, since the build job ran app code before writing it; the
+  version and source sha are read from that file but shape-checked first. It
+  re-emits each pin with the URL rebuilt from the trusted repo.
+- **PR job (linux, after the release job succeeds):** unless `dry_run`, check out
   repo-tools, rewrite each built app's deps.lock row (url, sha256, version,
   `status: "bundled"`, `archive: "tar.gz"`, `extract: "<name>"` — the last
   two matter for the deck/board stubs, which sit at `archive: "raw"` today;

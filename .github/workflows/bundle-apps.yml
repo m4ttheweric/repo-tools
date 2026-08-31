@@ -98,14 +98,16 @@ jobs:
             echo "::error::tag v$VERSION already exists on $APP_REPO; bump the version"
             exit 1
           fi
-      - name: Build
-        working-directory: app
-        run: bash -c "$BUILD_CMD"
-      - name: Smoke and package
+      # Build and packaging share ONE step deliberately. A recipe can append to
+      # GITHUB_ENV, but those writes only reach LATER steps, so resolving the
+      # version, artifact path and source sha here means packaging uses the
+      # same values the tag guard checked rather than ones the recipe supplied.
+      - name: Build, smoke and package
         env:
           APP_NAME: ${{ matrix.name }}
           APP_REPO: ${{ matrix.repo }}
         run: |
+          (cd app && bash -c "$BUILD_CMD")
           test -x "app/$ARTIFACT" || { echo "::error::bundle.artifact app/$ARTIFACT missing or not executable"; exit 1; }
           "app/$ARTIFACT" --version
           # Catch a dotted skill dir here, while the release is still

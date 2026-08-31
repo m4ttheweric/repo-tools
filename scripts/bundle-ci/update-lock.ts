@@ -37,8 +37,10 @@ function setField(block: string, field: string, value: string, name: string): st
   const re = new RegExp(`("${field}":\\s*")[^"]*(")`);
   if (!re.test(block)) throw new Error(`row ${name} has no "${field}" field to rewrite`);
   // A callback, not a replacement string: `$&` and friends inside a value
-  // would otherwise be expanded and corrupt the row.
-  return block.replace(re, (_m, open: string, close: string) => `${open}${value}${close}`);
+  // would otherwise be expanded. The value is JSON-escaped as well, so a
+  // quote or backslash cannot end the string it is being written into.
+  const encoded = JSON.stringify(value).slice(1, -1);
+  return block.replace(re, (_m, open: string, close: string) => `${open}${encoded}${close}`);
 }
 
 export function applyBuildResults(lockText: string, results: BuildResult[]): string {
