@@ -1,4 +1,4 @@
-# Preset launch via the runner board — Implementation Plan
+# Preset launch via the runner board: Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -9,6 +9,8 @@
 **Tech Stack:** Bun 1.3.x + TypeScript. The runner (`lib/runner/*`), the rt-ui board (Go, unchanged), herdr engine over `lib/herdr/client.ts`, fakes in `lib/herdr/__tests__/fake-herdr.ts` and `lib/ui/__tests__/fake-rt-ui.ts`.
 
 **Spec:** `docs/superpowers/specs/2026-08-31-preset-runner-launch-design.md`
+
+**Contract:** `PresetEntry` (`lib/run-presets.ts`) is `{ packageRelPath: string; packageLabel: string; script: string; variationName?: string; command?: string }`.
 
 ## Global Constraints
 

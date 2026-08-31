@@ -651,7 +651,7 @@ async function launchQueue(
 /** Maps a saved preset's entries to runner seed rows, resolved against `worktreePath`. Pure (no spawning), so it stays directly testable. */
 export function presetToSeed(preset: Preset, worktreePath: string): SeedEntry[] {
   return preset.entries.map((e) => ({
-    name: e.script,
+    name: `${e.script}${e.variationName ? ` (${e.variationName})` : ""}`,
     command: e.command ?? `${detectPackageManager(join(worktreePath, e.packageRelPath))} run ${e.script}`,
     cwd: join(worktreePath, e.packageRelPath),
     pkg: e.packageLabel,

@@ -6,7 +6,7 @@
 
 ## Background (current behavior)
 
-- A preset (`lib/run-presets.ts`): `Preset { name: string; entries: PresetEntry[] }`; `PresetEntry { packageRelPath: string; script: string; command?: string }`. Often several entries.
+- A preset (`lib/run-presets.ts`): `Preset { name: string; entries: PresetEntry[] }`; `PresetEntry { packageRelPath: string; packageLabel: string; script: string; variationName?: string; command?: string }`. Often several entries.
 - `launchPreset(preset, worktreePath)` (`commands/run.ts`) maps entries to `LaunchItem { label, command, cwd }` and, when `isInsideHerdr()`, calls `launchInHerdr(items)` (spawns raw herdr panes in the current workspace, no board); otherwise `launchFallback(items)`.
 - The runner (`lib/runner/runner.ts`) launches commands as tracked herdr panes on a board. Its `add()` does: `newEntry(++seq, name, command, cwd, pkg, repo)` -> `entries.push(entry)` -> `launch(entry)` (`createWorkspace` first time, then `createTab`, then `engine.run(paneId, cwd, command)`). `RunnerDeps = { engine, openSession, resolve, now, sleep, workspaceLabel }`. `rt runner` gates on `interactive()` and `herdrAvailable()`.
 
