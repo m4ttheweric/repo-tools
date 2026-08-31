@@ -797,7 +797,7 @@ devLink:
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `src/api/status.test.ts` using its existing buildStatus fixture: (a) a user app's `commands` present with `devMode: false`; (b) a grandfathered managed row's `commands` present only in dev; (c) a slim linked row lists manifest dev keys minus `start` in dev and nothing in prod, with `devLink: "linked"`; (d) an unlinked slim row gets `devLink: "unlinked"` and no commands; (e) a broken link gets `devLink: "broken"`.
+Add to `src/api/status.test.ts` using its existing buildStatus fixture: (a) a user app's `commands` present with `devMode: false`; (b) a grandfathered managed row's `commands` present only in dev, AND its `devLink` undefined in both modes (the exclusion is deliberate, so it needs its own regression assertion); (c) a slim linked row lists manifest dev keys minus `start` in dev and nothing in prod, with `devLink: "linked"`; (d) an unlinked slim row gets `devLink: "unlinked"` and no commands; (e) a broken link gets `devLink: "broken"`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
