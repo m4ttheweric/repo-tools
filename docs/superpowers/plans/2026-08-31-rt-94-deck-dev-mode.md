@@ -424,6 +424,7 @@ describe("serveShape matrix", () => {
     expect(serveShape(r, { devMode: () => false, helpersDir: helpers })).toEqual({
       command: [join(helpers, "chat")], cwd: dataDir("chat"),
     });
+    expect(getRecord("chat")?.issues).toBeUndefined();
   });
 
   test("never a phantom bundle: prod, source linked, no bundle: serves source loudly", () => {
