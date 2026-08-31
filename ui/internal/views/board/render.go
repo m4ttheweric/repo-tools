@@ -13,7 +13,7 @@ import (
 
 const (
 	nameW  = 10
-	pkgW   = 24
+	pkgW   = 40
 	rightW = 14
 	urlW   = 20
 	tailN  = 20
@@ -128,9 +128,27 @@ func nameWidth(b *Board) int {
 	return w
 }
 
+// pkgWidth grows the pkg·repo column to its longest content so labels like
+// "@assured/adjuster · seamus" are not clipped when the row has the room, with
+// the const as a cap so it cannot crowd out the flexible command column on a
+// narrow terminal. The command column absorbs whatever width is left.
+func pkgWidth(b *Board) int {
+	w := 0
+	for _, e := range b.model.Entries {
+		if n := lipgloss.Width(e.Pkg + " · " + e.Repo); n > w {
+			w = n
+		}
+	}
+	if w > pkgW {
+		w = pkgW
+	}
+	return w
+}
+
 func row(b *Board, i int) string {
 	e := b.model.Entries[i]
 	nw := nameWidth(b)
+	pw := pkgWidth(b)
 	sel := e.ID == b.selected
 	nameC, cmdC := theme.Text, theme.Dim
 	on := lipgloss.NewStyle()
@@ -169,7 +187,7 @@ func row(b *Board, i int) string {
 	if e.Url != nil && *e.Url != "" {
 		url = clip(hostPort(*e.Url), urlW)
 	}
-	cmdW := b.width - (2 + 1 + 2 + nw + 2 + 2 + pkgW + 2 + urlW + 2 + rightW + 1)
+	cmdW := b.width - (2 + 1 + 2 + nw + 2 + 2 + pw + 2 + urlW + 2 + rightW + 1)
 	if cmdW < 4 {
 		cmdW = 4
 	}
@@ -177,7 +195,7 @@ func row(b *Board, i int) string {
 		on.Foreground(glyphC).Render(glyph) + on.Render("  ") +
 		on.Foreground(nameC).Width(nw).Render(clip(e.Name, nw)) + on.Render("  ") +
 		on.Foreground(cmdC).Width(cmdW).Render(clip(e.Command, cmdW)) + on.Render("  ") +
-		on.Foreground(theme.Faint).Width(pkgW).Render(clip(e.Pkg+" · "+e.Repo, pkgW)) + on.Render("  ") +
+		on.Foreground(theme.Faint).Width(pw).Render(clip(e.Pkg+" · "+e.Repo, pw)) + on.Render("  ") +
 		on.Foreground(theme.Cyan).Width(urlW).Align(lipgloss.Right).Render(url) + on.Render("  ") +
 		on.Foreground(rightC).Width(rightW).Align(lipgloss.Right).Render(right) + on.Render(" ")
 }
