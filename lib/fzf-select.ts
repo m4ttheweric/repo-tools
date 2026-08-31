@@ -93,7 +93,8 @@ export async function filterableMultiselect(opts: {
     "--preview=printf '%s\\n' {+2..}",
     "--preview-window=up,4,wrap,border-bottom",
     "--preview-label= selected ",
-    `--color=border:${toHex(T.pink)}`,
+    "--scrollbar=▐",
+    `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)}`,
     ...bindings,
   ], {
     input,
@@ -177,7 +178,8 @@ export function buildFilterableSelectArgs(opts: {
     "--no-mouse",
     "--print-query",
     "--expect=ctrl-up",
-    `--color=border:${toHex(T.pink)}`,
+    "--scrollbar=▐",
+    `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)}`,
     ...(opts.exact ? ["--exact"] : []),
     ...(opts.reloadCommand ? [`--bind=ctrl-r:reload(${opts.reloadCommand})`] : []),
   ];

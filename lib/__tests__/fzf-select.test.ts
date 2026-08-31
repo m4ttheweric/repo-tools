@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { buildFilterableSelectArgs, buildFzfRows, type SelectOption } from "../fzf-select.ts";
-import { T, toAnsiFg } from "../tui/palette.ts";
+import { T, toAnsiFg, toHex } from "../tui/palette.ts";
 
 const q = (message: string) => `--header=${toAnsiFg(T.pink)}${message}\x1b[0m`;
 
@@ -89,5 +89,13 @@ describe("buildFilterableSelectArgs", () => {
     const explicitlyUndefined = buildFilterableSelectArgs({ message: "Pick a repo", exact: true, reloadCommand: undefined });
     expect(withoutReload).toEqual(explicitlyUndefined);
     expect(withoutReload.some((a) => a.startsWith("--bind=ctrl-r"))).toBe(false);
+  });
+
+  test("scrollbar is a thick neutral glyph, independent of the pink border", () => {
+    const args = buildFilterableSelectArgs({ message: "Pick a repo" });
+    expect(args).toContain("--scrollbar=▐");
+    expect(args).toContain(
+      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)}`,
+    );
   });
 });

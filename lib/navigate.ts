@@ -182,7 +182,8 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string, helpState
     "--no-mouse",
     "--print-query",
     `--expect=${expectStr}`,
-    `--color=border:${toHex(T.pink)}${opts.colorOverrides ?? ""}`,
+    "--scrollbar=▐",
+    `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)}${opts.colorOverrides ?? ""}`,
     ...(opts.initialQuery ? [`--query=${opts.initialQuery}`] : []),
     ...(opts.exact ? ["--exact"] : []),
     ...(opts.options.some((o) => o.separator)
