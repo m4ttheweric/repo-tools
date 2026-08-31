@@ -44,3 +44,12 @@ test("absolute or ..-escaping artifact rejected", () => {
 test("missing name rejected", () => {
   expect(() => readBundleRecipe(manifest({ bundle: { build: "x", artifact: "dist/x" } }))).toThrow(/name/);
 });
+
+test("control characters in build or artifact rejected", () => {
+  expect(() =>
+    readBundleRecipe(manifest({ name: "deck", bundle: { build: "a\nb", artifact: "dist/deck" } })),
+  ).toThrow(/control characters/);
+  expect(() =>
+    readBundleRecipe(manifest({ name: "deck", bundle: { build: "x", artifact: "dist/\tdeck" } })),
+  ).toThrow(/control characters/);
+});

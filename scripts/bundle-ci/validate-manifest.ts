@@ -34,6 +34,13 @@ export function readBundleRecipe(manifestPath: string): BundleRecipe {
   if (isAbsolute(bundle.artifact) || bundle.artifact.split("/").includes("..")) {
     throw new Error(`${manifestPath}: bundle.artifact must be repo-relative with no ".." segments`);
   }
+  // Both values reach the runner through GITHUB_ENV, where a newline begins a
+  // new variable; a control character in either would rewrite the job's env.
+  for (const field of ["build", "artifact"] as const) {
+    if (/[\u0000-\u001f]/.test(bundle[field] as string)) {
+      throw new Error(`${manifestPath}: bundle.${field} must not contain control characters`);
+    }
+  }
   return { name: m.name, build: bundle.build, artifact: bundle.artifact };
 }
 

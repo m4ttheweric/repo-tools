@@ -57,7 +57,10 @@ fetch() { # url sha → prints cached path
 
 unpack() { # name archive-file archive-kind extract-path dest
   local name="$1" file="$2" kind="$3" extract="$4" dest="$5" tmp
-  rm -rf "$dest"
+  # Skills are cleared for every archive kind, not just the tar branch that
+  # can write them: a tool migrating from tar.gz to raw would otherwise keep a
+  # stale tree that the post-unpack stamp then re-blesses under the new sha.
+  rm -rf "$dest" "$dest-skills"
   mkdir -p "$(dirname "$dest")"
   case "$kind" in
     raw)
@@ -76,7 +79,6 @@ unpack() { # name archive-file archive-kind extract-path dest
       else
         cp -R "$tmp" "$dest"
       fi
-      rm -rf "$dest-skills"
       if [ -d "$tmp/skills" ]; then
         cp -R "$tmp/skills" "$dest-skills"
       fi

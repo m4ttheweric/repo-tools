@@ -12,6 +12,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -20,9 +23,14 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
+      # plan-matrix reaches the settings resolver, which imports jsonc-parser.
+      # Without an install Bun fetches it from npm at run time, outside bun.lock.
+      - run: bun install --frozen-lockfile
       # Assign before writing to the output file: a substitution inside echo
       # swallows the planner's exit code and a failed plan would surface as an
       # opaque matrix parse error in the build job instead of failing here.
@@ -41,7 +49,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
+      # The Build step runs the app repo's own recipe, so this checkout must
+      # not leave a usable credential in .git/config beside it.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
@@ -92,6 +104,14 @@ jobs:
         run: |
           test -x "app/$ARTIFACT" || { echo "::error::bundle.artifact app/$ARTIFACT missing or not executable"; exit 1; }
           "app/$ARTIFACT" --version
+          # Catch a dotted skill dir here, while the release is still
+          # preventable: codesign reads one as a nested bundle, and the .app
+          # build would only reject it after this artifact is immutable.
+          if [ -d app/skills ]; then
+            while IFS= read -r -d '' bad; do
+              echo "::error::skills dir '$(basename "$bad")' contains a dot; rename it in $APP_REPO"; exit 1
+            done < <(find app/skills -type d -name '*.*' -print0)
+          fi
           mkdir stage
           cp "app/$ARTIFACT" "stage/$APP_NAME"
           if [ -d app/skills ]; then cp -R app/skills stage/skills; fi
@@ -102,6 +122,15 @@ jobs:
           printf '{"name":"%s","version":"%s","url":"%s","sha256":"%s","sourceSha":"%s"}\n' \
             "$APP_NAME" "$VERSION" "$URL" "$SHA" "$SOURCE_SHA" > "result-$APP_NAME.json"
           cat "result-$APP_NAME.json"
+          # The recovery path documented in release-and-distribution.md reads
+          # the url and sha from here when the PR step does not land them.
+          {
+            echo "### $APP_NAME v$VERSION"
+            echo ""
+            echo "- source: \`$SOURCE_SHA\`"
+            echo "- url: $URL"
+            echo "- sha256: \`$SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Release
         if: ${{ !inputs.dry_run }}
         env:
@@ -109,8 +138,12 @@ jobs:
           APP_NAME: ${{ matrix.name }}
           APP_REPO: ${{ matrix.repo }}
         run: |
+          # --target pins the tag to the commit actually built; without it the
+          # tag lands on the default branch head at release time, which a
+          # mid-run push would make a commit this pipeline never compiled.
           gh release create "v$VERSION" "$APP_NAME-darwin-arm64.tgz" \
             --repo "$APP_REPO" \
+            --target "$SOURCE_SHA" \
             --title "$APP_NAME v$VERSION" \
             --notes "darwin-arm64 bundle build from $SOURCE_SHA"
       - uses: actions/upload-artifact@v4
@@ -120,7 +153,14 @@ jobs:
 
   pr:
     needs: build
-    if: ${{ !inputs.dry_run }}
+    # A bare `if` on a needs-dependent job carries an implicit success(), which
+    # would skip the PR whenever ANY leg failed. With fail-fast disabled the
+    # other legs have already published releases by then, and the tag guard
+    # refuses a re-dispatch, so those releases could never be pinned.
+    if: ${{ !cancelled() && !inputs.dry_run }}
+    permissions:
+      contents: write
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -130,6 +170,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
+      - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
           pattern: result-*
@@ -138,6 +179,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
         run: |
+          if ! compgen -G "result-*.json" > /dev/null; then
+            echo "::notice::no app built successfully; nothing to pin"
+            exit 0
+          fi
           bun -e '
             const files = [...new Bun.Glob("result-*.json").scanSync(".")];
             const results = await Promise.all(files.map(async (f) => JSON.parse(await Bun.file(f).text())));
@@ -155,5 +200,7 @@ jobs:
             console.log(rs.map((r) => `- ${r.name} v${r.version} (source ${r.sourceSha.slice(0, 10)})`).join("\n"));
           ')
           git commit -m "deps.lock: bundle build $(date +%Y-%m-%d)"
-          git push origin "$BRANCH"
-          gh pr create --title "deps.lock: app bundle build" --body "$BODY"
+          # Force-push and an explicit --head keep the documented "re-run the
+          # pr job" recovery working after a run that pushed and then failed.
+          git push --force origin "$BRANCH"
+          gh pr create --head "$BRANCH" --title "deps.lock: app bundle build" --body "$BODY"
