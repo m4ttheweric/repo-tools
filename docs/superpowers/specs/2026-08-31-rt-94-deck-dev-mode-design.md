@@ -52,9 +52,9 @@ Two ground-truth findings that shaped this design:
   rt's existing `bundledToolPath` seam and does not depend on that work landing.
 - Running apps from a live/watch dev server. That stays a manual config or
   alt-port override, unchanged.
-- gitq and boxscore. They are not bundle-ready (`includeInBundle` is false), so
-  they are out of scope until their bundling work is done. The mechanism applies
-  to them for free once they are ready.
+- gitq and boxscore. They are not yet bundle-ready (they will not set
+  `includeInBundle` until their bundling work lands), so they are out of scope for
+  now. The mechanism applies to them for free once they are ready.
 
 ## The two app classes
 
