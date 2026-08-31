@@ -25,23 +25,32 @@ describe("buildNavArgs preview", () => {
 describe("buildNavArgs helpHeader", () => {
   const base = { options: [], message: "m" };
 
-  test("hides the hints at start and toggles them with ctrl-/", () => {
-    const args = buildNavArgs({ ...base, helpHeader: "line1\nline2" });
-    expect(args).toContain("--header=line1\nline2");
+  test("collapsed by default: chip footer; ctrl-/ and resize rebuild it through the marker file", () => {
+    const args = buildNavArgs({ ...base, helpHeader: "line1\nline2", resizeHeaderCommand: "printf hints" }, undefined, "/tmp/hs");
     expect(args).toContain("--footer=ctrl-/: commands");
-    expect(args).toContain("--bind=start:hide-header");
-    expect(args).toContain("--bind=ctrl-/:toggle-header");
+    expect(args.some((a) => a.startsWith("--bind=ctrl-/:transform-footer(") && a.includes("'/tmp/hs'") && a.includes("printf hints"))).toBe(true);
+    expect(args.some((a) => a.startsWith("--bind=resize:transform-footer(") && a.includes("printf hints"))).toBe(true);
+    expect(args.some((a) => a.includes("hide-header") || a.includes("toggle-header"))).toBe(false);
   });
 
-  test("explicit header wins over helpHeader", () => {
+  test("without a marker file the hints sit in the footer permanently", () => {
+    const args = buildNavArgs({ ...base, helpHeader: "line1\nline2" });
+    expect(args).toContain("--footer=line1\nline2");
+    expect(args.some((a) => a.includes("transform-footer"))).toBe(false);
+  });
+
+  test("explicit header wins over helpHeader and rides the footer", () => {
     const args = buildNavArgs({ ...base, header: "esc: cancel", helpHeader: "hints" });
-    expect(args).toContain("--header=esc: cancel");
-    expect(args.some((a) => a.includes("toggle-header") || a.startsWith("--footer"))).toBe(false);
+    expect(args).toContain("--footer=esc: cancel");
+    expect(args.some((a) => a.includes("transform-footer"))).toBe(false);
   });
 
-  test("omits footer and toggle binds when helpHeader is not set", () => {
+  test("the default legend rides the footer and the pink path is the header", () => {
     const args = buildNavArgs(base);
-    expect(args.some((a) => a.includes("toggle-header") || a.startsWith("--footer"))).toBe(false);
+    expect(args).toContain("--footer=enter: select  |: OR  !: exclude");
+    expect(args).toContain("--header-first");
+    expect(args).toContain("--border=left");
+    expect(args.some((a) => a.startsWith("--header=") && a.includes("m"))).toBe(true);
   });
 });
 

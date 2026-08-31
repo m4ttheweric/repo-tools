@@ -15,7 +15,7 @@ import { join } from "path";
 import { ensureFzf } from "./fzf.ts";
 import { startNavWatch } from "./nav-watch.ts";
 import { rtDir } from "./rt-paths.ts";
-import { T, toHex } from "./tui/palette.ts";
+import { toAnsiFg, T, toHex } from "./tui/palette.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -147,15 +147,11 @@ const DEFAULT_HEADER = "enter: select  |: OR  !: exclude";
  * ctrl-up is always added to --expect so callers can detect back-navigation
  * via `result.key === "ctrl-up"`.
  */
-export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[] {
+export function buildNavArgs(opts: NavPickerOpts, socketPath?: string, helpStateFile?: string): string[] {
   const helpMode = !!opts.helpHeader && !opts.header && !opts.headerParts;
-  const header =
+  const legend =
     opts.header ??
-    (opts.headerParts
-      ? opts.headerParts.join("  ")
-      : helpMode
-        ? opts.helpHeader!
-        : DEFAULT_HEADER);
+    (opts.headerParts ? opts.headerParts.join("  ") : helpMode ? null : DEFAULT_HEADER);
 
   const expectKeys = ["ctrl-up", ...(opts.expectKeys ?? [])];
   const expectStr = expectKeys.join(",");
@@ -170,17 +166,18 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[]
     // Up at the top wraps to the bottom and down at the bottom wraps to the
     // top, so a long list has no dead ends at either edge.
     "--cycle",
-    // A single rule across the top rather than a box around everything: the
-    // label still carries the current path, but the picker reads as part of the
-    // terminal instead of a drawn-on window.
-    "--border=top",
-    `--border-label= ${opts.message} `,
+    // The same left edge every rt picker draws; the path rides above the
+    // filter as the pink title and the key legend lives in the sticky footer.
+    "--border=left",
+    "--no-separator",
+    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m`,
+    "--header-first",
+    "--info=inline-right",
     "--prompt=filter: ",
-    `--header=${header}`,
     "--no-mouse",
     "--print-query",
     `--expect=${expectStr}`,
-    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}${opts.colorOverrides ?? ""}`,
+    `--color=border:${toHex(T.pink)}${opts.colorOverrides ?? ""}`,
     ...(opts.initialQuery ? [`--query=${opts.initialQuery}`] : []),
     ...(opts.exact ? ["--exact"] : []),
     ...(opts.options.some((o) => o.separator)
@@ -206,15 +203,19 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[]
           "--id-nth=1",
         ]
       : []),
+    ...(legend !== null ? [`--footer=${legend}`] : []),
+    // The expanded hints live in the footer. fzf exposes no current-footer
+    // state to transform commands, so a marker file carries the toggle: the
+    // ctrl-/ bind flips it, the resize bind re-lays the hints out only while
+    // it exists.
     ...(helpMode
-      ? [
-          "--footer=ctrl-/: commands",
-          "--bind=start:hide-header",
-          "--bind=ctrl-/:toggle-header",
-          ...(opts.resizeHeaderCommand
-            ? [`--bind=resize:transform-header(${opts.resizeHeaderCommand})`]
-            : []),
-        ]
+      ? opts.resizeHeaderCommand && helpStateFile
+        ? [
+            "--footer=ctrl-/: commands",
+            `--bind=ctrl-/:transform-footer([ -e '${helpStateFile}' ] && { rm -f '${helpStateFile}'; echo "ctrl-/: commands"; } || { touch '${helpStateFile}'; ${opts.resizeHeaderCommand}; })`,
+            `--bind=resize:transform-footer([ -e '${helpStateFile}' ] && { ${opts.resizeHeaderCommand}; } || echo "ctrl-/: commands")`,
+          ]
+        : [`--footer=${opts.helpHeader}`]
       : []),
   ];
 }
@@ -305,7 +306,13 @@ export async function runNavPicker(
   while (true) {
     const input = formatNavInput(opts.options);
     const paths = opts.watch ? navWatchPaths() : null;
-    const args = buildNavArgs(opts, paths?.socketPath);
+    const helpMode = !!opts.helpHeader && !opts.header && !opts.headerParts;
+    let helpState: string | null = null;
+    if (helpMode && opts.resizeHeaderCommand) {
+      mkdirSync(rtDir(), { recursive: true });
+      helpState = join(rtDir(), `nav-help-${process.pid}-${navSocketSeq++}`);
+    }
+    const args = buildNavArgs(opts, paths?.socketPath, helpState ?? undefined);
 
     // Tracks the options behind the most recent live-refresh render, so a
     // separator selected after a reload resolves against what is actually on
@@ -381,6 +388,13 @@ export async function runNavPicker(
     ]);
 
     watcher?.stop();
+    if (helpState) {
+      try {
+        unlinkSync(helpState);
+      } catch {
+        // Never expanded: the marker only exists after a ctrl-/ toggle.
+      }
+    }
     if (paths) {
       for (const p of [paths.socketPath, paths.listFile]) {
         try {
