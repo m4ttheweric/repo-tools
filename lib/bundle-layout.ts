@@ -9,7 +9,7 @@ import { basename, dirname, isAbsolute, join } from "path";
 import { currentMode } from "./dev-mode.ts";
 import { DEV_TRAY_APP_BUNDLE, TRAY_APP_BUNDLE, installedTrayAppPath } from "./rt-paths.ts";
 
-export type DepsLockArchive = "raw" | "tar.gz" | "tar.xz" | "zip" | "npm";
+export type DepsLockArchive = "raw" | "tar.gz" | "tar.xz" | "zip" | "npm" | "go-src";
 export type DepsLockEntitlements = "none" | "jit";
 export type DepsLockStatus = "bundled" | "pending";
 export type DepsLockKind = "helper" | "buildtool";
@@ -50,7 +50,7 @@ export const DEPS_LOCK_BUNDLE_PATH = "Contents/Resources/deps.lock";
 export const HELPERS_DIR = "Contents/Helpers";
 export const RT_BUNDLE_PATH = "Contents/MacOS/rt";
 
-const ARCHIVES = new Set<DepsLockArchive>(["raw", "tar.gz", "tar.xz", "zip", "npm"]);
+const ARCHIVES = new Set<DepsLockArchive>(["raw", "tar.gz", "tar.xz", "zip", "npm", "go-src"]);
 const SHA256 = /^[0-9a-f]{64}$/;
 const REQUIRED_STRING_FIELDS = ["name", "version", "license", "url", "sha256", "extract", "bundlePath"] as const;
 

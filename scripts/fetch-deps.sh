@@ -77,6 +77,34 @@ unpack() { # name archive-file archive-kind extract-path dest
         cp -R "$tmp" "$dest"
       fi
       rm -rf "$tmp" ;;
+    go-src)
+      # Built from source so rt-tray/patches/<name>.patch can restyle
+      # it; the patched fzf draws the half-block left border the whole rt
+      # chrome shares. Version is stamped so check-bundle's smoke matches.
+      command -v go >/dev/null || { echo "  x $name: go toolchain required for go-src builds" >&2; exit 1; }
+      tmp="$(mktemp -d)"
+      tar -xf "$file" -C "$tmp"
+      if [ ! -d "$tmp/$extract" ]; then
+        echo "  x $name: archive no longer contains $extract" >&2
+        rm -rf "$tmp"
+        exit 1
+      fi
+      patchfile="$ROOT/rt-tray/patches/$name.patch"
+      if [ -f "$patchfile" ]; then
+        patch -p1 -d "$tmp/$extract" --silent < "$patchfile" || {
+          echo "  x $name: patch $patchfile no longer applies to $extract" >&2
+          rm -rf "$tmp"
+          exit 1
+        }
+      fi
+      version_for_build="${extract#*-}"
+      (cd "$tmp/$extract" && go build -trimpath -ldflags "-s -w -X main.version=$version_for_build -X main.revision=rtpatch" -o "$dest" .) || {
+        echo "  x $name: go build failed" >&2
+        rm -rf "$tmp"
+        exit 1
+      }
+      rm -rf "$tmp"
+      chmod 755 "$dest" ;;
     zip)
       tmp="$(mktemp -d)"
       ditto -x -k "$file" "$tmp"

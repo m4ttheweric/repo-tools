@@ -3,9 +3,9 @@
   "arch": "arm64",
   "tools": [
     { "name": "fzf", "version": "0.74.3", "license": "MIT",
-      "url": "https://github.com/junegunn/fzf/releases/download/v0.74.3/fzf-0.74.3-darwin_arm64.tar.gz",
-      "sha256": "1f8501cea4f9c0c2d6110d0ff75d0ec9451cd9d7524d9a26244a154ea89f3bd5",
-      "archive": "tar.gz", "extract": "fzf", "bundlePath": "Contents/Helpers/fzf", "exec": ["Contents/Helpers/fzf"],
+      "url": "https://github.com/junegunn/fzf/archive/refs/tags/v0.74.3.tar.gz",
+      "sha256": "5b142217c3068647a7d8faa9c678cffada100b5f11a48609aa79c94ce04b28ef",
+      "archive": "go-src", "extract": "fzf-0.74.3", "bundlePath": "Contents/Helpers/fzf", "exec": ["Contents/Helpers/fzf"],
       "exposeByDefault": false, "entitlements": "none", "status": "bundled", "kind": "helper" },
     { "name": "jq", "version": "1.8.2", "license": "MIT",
       "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-macos-arm64",
