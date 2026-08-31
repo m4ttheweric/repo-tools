@@ -14,10 +14,12 @@ const (
 	nameW  = 10
 	pkgW   = 24
 	rightW = 9
-	tailN  = 6
+	tailN  = 12
 )
 
-var onBg = lipgloss.NewStyle().Background(theme.Bg)
+// The board renders on the terminal's native background; only the
+// selection highlight and the confirm bar paint an explicit background.
+var onBg = lipgloss.NewStyle()
 
 func fg(c color.Color) lipgloss.Style {
 	return onBg.Foreground(c)
@@ -90,13 +92,12 @@ func emptyState(width int) string {
 func row(b *Board, i int) string {
 	e := b.model.Entries[i]
 	sel := e.ID == b.selected
-	bg := theme.Bg
 	nameC, cmdC := theme.Text, theme.Dim
+	on := lipgloss.NewStyle()
 	if sel {
-		bg = theme.SelBg
 		nameC, cmdC = theme.PinkSoft, theme.TextSoft
+		on = on.Background(theme.SelBg)
 	}
-	on := lipgloss.NewStyle().Background(bg)
 	prefix := on.Render("  ")
 	if sel {
 		prefix = on.Foreground(theme.Pink).Render("▌ ")
@@ -154,7 +155,7 @@ func tailBox(b *Board, e *Entry) string {
 	for len(body) < tailN {
 		body = append(body, onBg.Width(inner).Render(""))
 	}
-	boxed := onBg.Border(lipgloss.RoundedBorder()).BorderTop(false).BorderForeground(theme.Panel).BorderBackground(theme.Bg).Padding(0, 1).
+	boxed := onBg.Border(lipgloss.RoundedBorder()).BorderTop(false).BorderForeground(theme.Panel).Padding(0, 1).
 		Render(strings.Join(body, "\n"))
 	return lipgloss.JoinVertical(lipgloss.Left, top, boxed)
 }
