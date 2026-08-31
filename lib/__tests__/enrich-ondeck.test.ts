@@ -18,7 +18,7 @@ describe("enrichBranches on-deck short-circuit", () => {
           { path: "/x/slot-1", branch: "on-deck/bill" },
           { path: "/x/slot-2", branch: "on-deck/cho" },
         ],
-        "git@gitlab.com:assured/assured-dev.git",
+        "git@gitlab.example.com:acme/acme.git",
       );
       expect(result.map((r) => r.branch)).toEqual(["on-deck/bill", "on-deck/cho"]);
       expect(result.every((r) => r.mr === null && r.ticket === null && r.linearId === null)).toBe(true);
@@ -39,7 +39,7 @@ describe("enrichBranches on-deck short-circuit", () => {
         { path: "/x/main", branch: "master" },
         { path: "/x/slot-1", branch: "on-deck/bill" },
       ],
-      "git@gitlab.com:assured/assured-dev.git",
+      "git@gitlab.example.com:acme/acme.git",
       { silent: true },
     );
     expect(result.map((r) => r.branch)).toEqual(["master", "on-deck/bill"]);

@@ -44,7 +44,7 @@ func open(t *testing.T) *testutil.Session {
 func TestPopulatedBoardPaintsRowsHeaderAndKeybar(t *testing.T) {
 	s := open(t)
 	screen := s.Screen()
-	for _, want := range []string{"rt runner", "rt-runner-a3f9", "1 running", "1 crashed", "dev", "bun run dev", "web · assured-dev", "worker", "exited 1", "navigate", "process", "q quit"} {
+	for _, want := range []string{"rt runner", "rt-runner-a3f9", "1 running", "1 crashed", "dev", "bun run dev", "web · acme", "worker", "exited 1", "navigate", "process", "q quit"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("missing %q in\n%s", want, screen)
 		}
@@ -147,7 +147,7 @@ func TestQuitConfirmsWhenOnlyStartingEntryExists(t *testing.T) {
 	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
 	s.ReadLine(2 * time.Second)
 	startingOnly := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
-		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"assured-dev","state":"starting","startedAt":null,"exitCode":null,"error":null,"tail":null}]}}`
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"starting","startedAt":null,"exitCode":null,"error":null,"tail":null}]}}`
 	s.Send(startingOnly)
 	s.WaitForPaint("rt runner")
 	s.Type("q")
@@ -179,12 +179,33 @@ func TestQuitWithNothingRunningQuitsAtOnce(t *testing.T) {
 	}
 }
 
+// TestCrashedRowWithNilExitCodeShowsCrashedNotExitedZero locks in that a
+// crashed entry launched without ever reaching a process (ExitCode nil)
+// renders "crashed", not the misleading "exited 0".
+func TestCrashedRowWithNilExitCodeShowsCrashedNotExitedZero(t *testing.T) {
+	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
+	s.ReadLine(2 * time.Second)
+	crashedNoExit := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"crashed","startedAt":null,"exitCode":null,"error":null,"tail":null}]}}`
+	s.Send(crashedNoExit)
+	s.WaitForPaint("rt runner")
+	screen := s.Screen()
+	if !strings.Contains(screen, "crashed") {
+		t.Fatalf("missing %q in\n%s", "crashed", screen)
+	}
+	if strings.Contains(screen, "exited 0") {
+		t.Fatalf("nil exitCode must not render as \"exited 0\":\n%s", screen)
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
 func TestModelReplacementKeepsCursorByIdAndUptimeTicks(t *testing.T) {
 	s := open(t)
 	s.Type("j")
 	reordered := `{"t":"model","model":{"workspace":"rt-runner-a3f9","entries":[` +
-		`{"id":"e2","name":"worker","command":"bun run worker","pkg":"backend","repo":"assured-dev","state":"starting","startedAt":null,"exitCode":null,"error":null,"tail":null},` +
-		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"assured-dev","state":"running","startedAt":"` + time.Now().Add(-125*time.Second).UTC().Format(time.RFC3339) + `","exitCode":null,"error":null,"tail":null}]}}`
+		`{"id":"e2","name":"worker","command":"bun run worker","pkg":"backend","repo":"acme","state":"starting","startedAt":null,"exitCode":null,"error":null,"tail":null},` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"running","startedAt":"` + time.Now().Add(-125*time.Second).UTC().Format(time.RFC3339) + `","exitCode":null,"error":null,"tail":null}]}}`
 	s.Send(reordered)
 	time.Sleep(150 * time.Millisecond)
 	s.Type("x")

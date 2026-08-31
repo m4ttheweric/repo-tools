@@ -80,10 +80,10 @@
 `ui/fixtures/session-model-board.json`:
 ```json
 { "t": "model", "model": { "workspace": "rt-runner-a3f9", "entries": [
-  { "id": "e1", "name": "dev", "command": "bun run dev", "pkg": "web", "repo": "assured-dev",
+  { "id": "e1", "name": "dev", "command": "bun run dev", "pkg": "web", "repo": "acme",
     "state": "running", "startedAt": "2026-08-29T22:38:26.000Z", "exitCode": null, "error": null,
     "tail": [ { "ts": "22:41:07", "text": "VITE v5.4.2  ready in 412 ms" } ] },
-  { "id": "e2", "name": "worker", "command": "bun run worker", "pkg": "backend", "repo": "assured-dev",
+  { "id": "e2", "name": "worker", "command": "bun run worker", "pkg": "backend", "repo": "acme",
     "state": "crashed", "startedAt": "2026-08-29T22:38:40.000Z", "exitCode": 1, "error": null, "tail": null }
 ] } }
 ```
@@ -1168,7 +1168,7 @@ func open(t *testing.T) *testutil.Session {
 func TestPopulatedBoardPaintsRowsHeaderAndKeybar(t *testing.T) {
 	s := open(t)
 	screen := s.Screen()
-	for _, want := range []string{"rt runner", "rt-runner-a3f9", "1 running", "1 crashed", "dev", "bun run dev", "web · assured-dev", "worker", "exited 1", "navigate", "process", "q quit"} {
+	for _, want := range []string{"rt runner", "rt-runner-a3f9", "1 running", "1 crashed", "dev", "bun run dev", "web · acme", "worker", "exited 1", "navigate", "process", "q quit"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("missing %q in\n%s", want, screen)
 		}
@@ -1283,8 +1283,8 @@ func TestModelReplacementKeepsCursorByIdAndUptimeTicks(t *testing.T) {
 	s := open(t)
 	s.Type("j")
 	reordered := `{"t":"model","model":{"workspace":"rt-runner-a3f9","entries":[` +
-		`{"id":"e2","name":"worker","command":"bun run worker","pkg":"backend","repo":"assured-dev","state":"starting","startedAt":null,"exitCode":null,"error":null,"tail":null},` +
-		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"assured-dev","state":"running","startedAt":"` + time.Now().Add(-125*time.Second).UTC().Format(time.RFC3339) + `","exitCode":null,"error":null,"tail":null}]}}`
+		`{"id":"e2","name":"worker","command":"bun run worker","pkg":"backend","repo":"acme","state":"starting","startedAt":null,"exitCode":null,"error":null,"tail":null},` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"running","startedAt":"` + time.Now().Add(-125*time.Second).UTC().Format(time.RFC3339) + `","exitCode":null,"error":null,"tail":null}]}}`
 	s.Send(reordered)
 	time.Sleep(150 * time.Millisecond)
 	s.Type("x")
@@ -2440,7 +2440,7 @@ test("filterTail drops the sentinel, trailing blanks and a trailing prompt, and 
 });
 
 test("deriveState: running beats everything; stopped on 0/130; crashed otherwise; starting holds until the shell has left", () => {
-  const e = newEntry(1, "dev", "bun run dev", "/repo/web", "web", "assured-dev");
+  const e = newEntry(1, "dev", "bun run dev", "/repo/web", "web", "acme");
   expect(deriveState({ ...e, state: "starting" }, info(4242, 4000), "")).toEqual({ state: "running", exitCode: null });
   expect(deriveState({ ...e, state: "running" }, info(4000, 4000), "x\n__rt_exit 0\n")).toEqual({ state: "stopped", exitCode: 0 });
   expect(deriveState({ ...e, state: "stopping" }, info(4000, 4000), "__rt_exit 130\n")).toEqual({ state: "stopped", exitCode: 130 });
@@ -2450,14 +2450,14 @@ test("deriveState: running beats everything; stopped on 0/130; crashed otherwise
 });
 
 test("toModel emits domain fields only, ISO startedAt, and tail for the one entry that has it", () => {
-  const a = { ...newEntry(1, "dev", "bun run dev", "/r/web", "web", "assured-dev"), state: "running" as const, startedAt: new Date("2026-08-29T22:38:26Z"), tail: [{ ts: "22:41:07", text: "hi" }] };
-  const b = newEntry(2, "api", "bun run api", "/r/api", "backend", "assured-dev");
+  const a = { ...newEntry(1, "dev", "bun run dev", "/r/web", "web", "acme"), state: "running" as const, startedAt: new Date("2026-08-29T22:38:26Z"), tail: [{ ts: "22:41:07", text: "hi" }] };
+  const b = newEntry(2, "api", "bun run api", "/r/api", "backend", "acme");
   const m = toModel("rt-runner-a3f9", [a, b]);
   expect(m).toEqual({
     workspace: "rt-runner-a3f9",
     entries: [
-      { id: "e1", name: "dev", command: "bun run dev", pkg: "web", repo: "assured-dev", state: "running", startedAt: "2026-08-29T22:38:26.000Z", exitCode: null, error: null, tail: [{ ts: "22:41:07", text: "hi" }] },
-      { id: "e2", name: "api", command: "bun run api", pkg: "backend", repo: "assured-dev", state: "starting", startedAt: null, exitCode: null, error: null, tail: null },
+      { id: "e1", name: "dev", command: "bun run dev", pkg: "web", repo: "acme", state: "running", startedAt: "2026-08-29T22:38:26.000Z", exitCode: null, error: null, tail: [{ ts: "22:41:07", text: "hi" }] },
+      { id: "e2", name: "api", command: "bun run api", pkg: "backend", repo: "acme", state: "starting", startedAt: null, exitCode: null, error: null, tail: null },
     ],
   });
   expect(JSON.stringify(m)).not.toContain("paneId");
