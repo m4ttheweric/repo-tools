@@ -256,6 +256,14 @@ PAT is required; its narrow scope is the mitigation.
 
 ## Open items carried into the plan
 
+- **Hardening follow-up (deliberately not done):** the build job runs each app
+  repo's `bundle.build` verbatim and then, in the same job, runs a step
+  holding the org PAT, so a `GITHUB_ENV`/PATH-poisoning recipe could reach
+  that token. Mitigated for now by top-level `permissions: contents: read`,
+  `persist-credentials: false` on that checkout, and rejecting control
+  characters in the recipe. The full fix is to move Release into its own job
+  that downloads the tarball artifact, so no secret-bearing step follows
+  untrusted code in the same job.
 - Exact `bundle.build` recipe per app (each repo's own lane; deck/board/
   console/chat/gitq owners write theirs — the pipeline just runs them; a
   dispatch of an app whose `bundle` node hasn't landed fails that leg

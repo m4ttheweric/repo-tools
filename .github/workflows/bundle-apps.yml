@@ -203,4 +203,10 @@ jobs:
           # Force-push and an explicit --head keep the documented "re-run the
           # pr job" recovery working after a run that pushed and then failed.
           git push --force origin "$BRANCH"
-          gh pr create --head "$BRANCH" --title "deps.lock: app bundle build" --body "$BODY"
+          # Re-running a pr job that already opened its PR must update it, not
+          # fail on the duplicate.
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr edit "$BRANCH" --body "$BODY"
+          else
+            gh pr create --head "$BRANCH" --title "deps.lock: app bundle build" --body "$BODY"
+          fi
