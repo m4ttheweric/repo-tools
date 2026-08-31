@@ -16,10 +16,9 @@ test("parseExitSentinel reads the last sentinel line only", () => {
   expect(parseExitSentinel("no sentinel here")).toBeNull();
 });
 
-test("filterTail drops the sentinel, trailing blanks and a trailing prompt, and stamps lines", () => {
+test("filterTail drops the sentinel, trailing blanks and a trailing prompt", () => {
   const lines = filterTail("VITE ready\n➜ Local: http://localhost:5173/\n__rt_exit 0\n\nmatt@mbp web % \n");
   expect(lines.map((l) => l.text)).toEqual(["VITE ready", "➜ Local: http://localhost:5173/"]);
-  expect(lines[0]!.ts).toMatch(/^\d\d:\d\d:\d\d$/);
 });
 
 test("deriveState: running beats everything; stopped on 0/130; crashed otherwise; starting holds until the shell has left", () => {
@@ -38,13 +37,13 @@ test("deriveState: stopping holds through the sentinel's I/O lag, not just start
 });
 
 test("toModel emits domain fields only, ISO startedAt, and tail for the one entry that has it", () => {
-  const a = { ...newEntry(1, "dev", "bun run dev", "/r/web", "web", "acme"), state: "running" as const, startedAt: new Date("2026-08-29T22:38:26Z"), tail: [{ ts: "22:41:07", text: "hi" }] };
+  const a = { ...newEntry(1, "dev", "bun run dev", "/r/web", "web", "acme"), state: "running" as const, startedAt: new Date("2026-08-29T22:38:26Z"), tail: [{ text: "hi" }] };
   const b = newEntry(2, "api", "bun run api", "/r/api", "backend", "acme");
   const m = toModel("rt-runner-a3f9", [a, b]);
   expect(m).toEqual({
     workspace: "rt-runner-a3f9",
     entries: [
-      { id: "e1", name: "dev", command: "bun run dev", pkg: "web", repo: "acme", state: "running", startedAt: "2026-08-29T22:38:26.000Z", exitCode: null, error: null, url: null, tail: [{ ts: "22:41:07", text: "hi" }] },
+      { id: "e1", name: "dev", command: "bun run dev", pkg: "web", repo: "acme", state: "running", startedAt: "2026-08-29T22:38:26.000Z", exitCode: null, error: null, url: null, tail: [{ text: "hi" }] },
       { id: "e2", name: "api", command: "bun run api", pkg: "backend", repo: "acme", state: "starting", startedAt: null, exitCode: null, error: null, url: null, tail: null },
     ],
   });

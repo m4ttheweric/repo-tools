@@ -7,7 +7,6 @@ import (
 )
 
 type TailLine struct {
-	TS   string `json:"ts"`
 	Text string `json:"text"`
 }
 

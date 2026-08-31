@@ -93,7 +93,6 @@ export function parsePromptResult(line: string): PromptResult {
 export type BoardState = "running" | "stopped" | "crashed" | "starting" | "stopping";
 
 export interface BoardTailLine {
-  ts: string;
   text: string;
 }
 

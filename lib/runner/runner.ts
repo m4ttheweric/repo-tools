@@ -350,7 +350,7 @@ export class Runner {
     const e = this.find(this.tailFor);
     if (!e?.paneId) return;
     try {
-      e.tail = filterTail(await this.deps.engine.read(e.paneId, TAIL_LINES), this.deps.now());
+      e.tail = filterTail(await this.deps.engine.read(e.paneId, TAIL_LINES));
     } catch (err) {
       this.pin(e, err);
     }

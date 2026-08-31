@@ -198,7 +198,7 @@ func tailBox(b *Board, e *Entry) string {
 	inner := b.width - 4
 	var body []string
 	for _, l := range lines {
-		text := fg(theme.Faint).Render(l.TS+" ") + fg(theme.TextSoft).Render(l.Text)
+		text := fg(theme.TextSoft).Render(l.Text)
 		body = append(body, onBg.Width(inner).Render(clip(text, inner)))
 	}
 	for len(body) < tailN {

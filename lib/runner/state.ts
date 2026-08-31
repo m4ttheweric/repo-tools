@@ -88,11 +88,7 @@ export function detectUrl(text: string): string | null {
 
 const PROMPT_RE = /[$%❯>]\s*$/;
 
-function stamp(now: Date): string {
-  return now.toTimeString().slice(0, 8);
-}
-
-export function filterTail(text: string, now: Date = new Date()): BoardTailLine[] {
+export function filterTail(text: string): BoardTailLine[] {
   const lines = text.split("\n").filter((l) => !SENTINEL_RE.test(l));
   // The sentinel's leading newline leaves a blank above the prompt; strip
   // blanks, the prompt, then blanks again until nothing changes.
@@ -102,8 +98,7 @@ export function filterTail(text: string, now: Date = new Date()): BoardTailLine[
     while (lines.length && lines[lines.length - 1]!.trim() === "") lines.pop();
     if (lines.length && PROMPT_RE.test(lines[lines.length - 1]!)) lines.pop();
   }
-  const ts = stamp(now);
-  return lines.map((text) => ({ ts, text }));
+  return lines.map((text) => ({ text }));
 }
 
 /**
