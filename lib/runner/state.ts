@@ -70,7 +70,7 @@ export function deriveState(entry: Entry, info: ProcessInfo, paneText: string): 
   if (isRunning(info)) return { state: "running", exitCode: null };
   const code = parseExitSentinel(paneText);
   if (code === null) {
-    if (entry.state === "starting") return { state: "starting", exitCode: null };
+    if (entry.state === "starting" || entry.state === "stopping") return { state: entry.state, exitCode: null };
     return { state: "stopped", exitCode: null };
   }
   if (code === 0 || code === 130) return { state: "stopped", exitCode: code };

@@ -32,6 +32,11 @@ test("deriveState: running beats everything; stopped on 0/130; crashed otherwise
   expect(deriveState({ ...e, state: "running" }, info(4000, 4000), "")).toEqual({ state: "stopped", exitCode: null });
 });
 
+test("deriveState: stopping holds through the sentinel's I/O lag, not just starting", () => {
+  const e = newEntry(1, "dev", "bun run dev", "/repo/web", "web", "assured-dev");
+  expect(deriveState({ ...e, state: "stopping" }, info(4000, 4000), "")).toEqual({ state: "stopping", exitCode: null });
+});
+
 test("toModel emits domain fields only, ISO startedAt, and tail for the one entry that has it", () => {
   const a = { ...newEntry(1, "dev", "bun run dev", "/r/web", "web", "assured-dev"), state: "running" as const, startedAt: new Date("2026-08-29T22:38:26Z"), tail: [{ ts: "22:41:07", text: "hi" }] };
   const b = newEntry(2, "api", "bun run api", "/r/api", "backend", "assured-dev");
