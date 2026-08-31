@@ -12,7 +12,7 @@
  */
 
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync } from "fs";
-import { isAbsolute, join, resolve } from "path";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { stripFrontmatter } from "./sources.ts";
 
 export type LinkActionKind =
@@ -137,6 +137,52 @@ export function reconcileSkillLinks(opts: {
   }
 
   return { actions, changed: actions.some((a) => a.kind === "create" || a.kind === "relink" || a.kind === "prune") };
+}
+
+/**
+ * Remove links pointing into a skills dir that no longer exists — an app
+ * whose bundled skills went away with it. Reconciliation cannot express this:
+ * it reads the source to learn what should exist, and here there is nothing
+ * left to read. Only links already pointing inside `skillsDir` are touched,
+ * so one app's uninstall never disturbs another's.
+ */
+export function pruneLinksFrom(opts: {
+  skillsDir: string;
+  claudeSkillsDir: string;
+  dryRun?: boolean;
+}): ReconcileResult {
+  const dryRun = opts.dryRun === true;
+  const actions: LinkAction[] = [];
+  if (!existsSync(opts.claudeSkillsDir)) return { actions, changed: false };
+
+  // The links were created against the source's realpath, but the source is
+  // gone and cannot be realpath'd now — so resolve through its nearest
+  // surviving ancestor (/var vs /private/var on macOS) and match either form.
+  const prefixes = [...new Set([opts.skillsDir, realpathThroughAncestor(opts.skillsDir)])]
+    .map((p) => p.replace(/\/+$/, "") + "/");
+  for (const entry of readdirSync(opts.claudeSkillsDir, { withFileTypes: true })) {
+    if (!entry.isSymbolicLink()) continue;
+    const link = join(opts.claudeSkillsDir, entry.name);
+    const raw = readlinkSync(link);
+    const pointsAt = resolveLinkTarget(link, raw);
+    if (!prefixes.some((p) => pointsAt.startsWith(p))) continue;
+    actions.push({ kind: "prune", name: entry.name, link, target: null, detail: `source gone: ${raw}` });
+    if (!dryRun) unlinkSync(link);
+  }
+  return { actions, changed: actions.length > 0 };
+}
+
+/** `p` with its nearest existing ancestor realpath'd, so a gone path still compares. */
+function realpathThroughAncestor(p: string): string {
+  const tail: string[] = [];
+  let cur = resolve(p);
+  while (!existsSync(cur)) {
+    const parent = dirname(cur);
+    if (parent === cur) return resolve(p);
+    tail.unshift(basename(cur));
+    cur = parent;
+  }
+  return join(realpathSync(cur), ...tail);
 }
 
 function realpathSafe(p: string): string | null {

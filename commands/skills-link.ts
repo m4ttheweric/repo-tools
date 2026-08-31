@@ -6,12 +6,16 @@
  * symlink convention with a verb. Creates missing links, repoints links whose
  * target moved inside the repo, prunes links whose target is gone, and
  * reports (never touches) names owned by anything outside this repo.
+ *
+ * `--from <dir>` names the source directory instead of deriving it from a
+ * checkout, so the mattstack installer can link an app's skills out of the
+ * .app bundle, where no repo exists.
  */
 
 import { execFileSync } from "child_process";
-import { existsSync } from "fs";
-import { join } from "path";
-import { reconcileSkillLinks, type LinkAction } from "../lib/skills/link.ts";
+import { existsSync, statSync } from "fs";
+import { join, resolve } from "path";
+import { pruneLinksFrom, reconcileSkillLinks, type LinkAction, type ReconcileResult } from "../lib/skills/link.ts";
 import { envelope } from "../lib/setup/contract.ts";
 
 function fail(message: string): never {
@@ -28,31 +32,73 @@ const GLYPH: Record<LinkAction["kind"], string> = {
   skip: "·",
 };
 
+/** The skills source: `--from` verbatim when given, else `<repo root>/skills`. */
+export function resolveSkillsDir(opts: {
+  from?: string;
+  repoRoot: () => string | null;
+}): { dir: string } | { error: string } {
+  if (opts.from !== undefined) {
+    const dir = resolve(opts.from);
+    if (!existsSync(dir)) return { error: `${dir} does not exist` };
+    if (!statSync(dir).isDirectory()) return { error: `${dir} is not a directory` };
+    return { dir };
+  }
+  const root = opts.repoRoot();
+  if (root === null) {
+    return { error: "not inside a git repo — run it from the repo whose skills/ you want linked, or pass --from <dir>" };
+  }
+  const dir = join(root, "skills");
+  if (!existsSync(dir)) return { error: `${dir} does not exist — this repo has no skills/ directory` };
+  return { dir };
+}
+
+function gitRepoRoot(): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+}
+
 export async function skillsLink(args: string[]): Promise<void> {
   let dryRun = false;
   let json = false;
+  let from: string | undefined;
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case "--dry-run": dryRun = true; break;
       case "--json": json = true; break;
+      case "--from": {
+        const value = args[++i];
+        if (value === undefined) fail("--from needs a directory");
+        from = value;
+        break;
+      }
       default: fail(`unknown flag ${args[i]}`);
     }
   }
 
-  let repoRoot: string;
-  try {
-    repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-  } catch {
-    fail("not inside a git repo — run it from the repo whose skills/ you want linked");
-  }
-  const skillsDir = join(repoRoot, "skills");
-  if (!existsSync(skillsDir)) {
-    fail(`${skillsDir} does not exist — this repo has no skills/ directory`);
-  }
-
   const claudeSkillsDir = join(process.env.HOME ?? "", ".claude", "skills");
-  const result = reconcileSkillLinks({ skillsDir, claudeSkillsDir, dryRun });
+  const source = resolveSkillsDir({ from, repoRoot: gitRepoRoot });
 
+  if ("error" in source) {
+    // A --from that has vanished is the uninstall case, not a bad argument:
+    // drop the links that pointed into it. With none to drop it IS a bad
+    // argument (a typo), so the original error still stands.
+    if (from !== undefined) {
+      const gone = pruneLinksFrom({ skillsDir: resolve(from), claudeSkillsDir, dryRun });
+      if (gone.actions.length > 0) {
+        report(resolve(from), claudeSkillsDir, gone, dryRun, json);
+        return;
+      }
+    }
+    fail(source.error);
+  }
+
+  report(source.dir, claudeSkillsDir, reconcileSkillLinks({ skillsDir: source.dir, claudeSkillsDir, dryRun }), dryRun, json);
+}
+
+function report(skillsDir: string, claudeSkillsDir: string, result: ReconcileResult, dryRun: boolean, json: boolean): void {
   if (json) {
     console.log(JSON.stringify(envelope({ ok: true, dryRun, skillsDir, claudeSkillsDir, changed: result.changed, actions: result.actions })));
     return;

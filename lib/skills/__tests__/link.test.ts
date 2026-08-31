@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { reconcileSkillLinks } from "../link.ts";
+import { pruneLinksFrom, reconcileSkillLinks } from "../link.ts";
 
 let root: string;
 let skillsDir: string;
@@ -114,5 +114,46 @@ describe("reconcileSkillLinks", () => {
     const result = reconcileSkillLinks({ skillsDir, claudeSkillsDir: claudeDir });
     const byKind = result.actions.map((a) => a.kind).sort();
     expect(byKind).toEqual(["create", "skip"]);
+  });
+});
+
+describe("pruneLinksFrom", () => {
+  test("removes links pointing into a source dir that is gone (an uninstalled app)", () => {
+    const dir = addSkill("track", "gitq:track");
+    reconcileSkillLinks({ skillsDir, claudeSkillsDir: claudeDir });
+    expect(lstatSync(join(claudeDir, "gitq:track")).isSymbolicLink()).toBe(true);
+
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(skillsDir, { recursive: true, force: true });
+
+    const result = pruneLinksFrom({ skillsDir, claudeSkillsDir: claudeDir });
+    expect(kinds(result)).toEqual({ "gitq:track": "prune" });
+    expect(result.changed).toBe(true);
+    expect(existsSync(join(claudeDir, "gitq:track"))).toBe(false);
+  });
+
+  test("leaves another app's links alone", () => {
+    addSkill("track", "gitq:track");
+    reconcileSkillLinks({ skillsDir, claudeSkillsDir: claudeDir });
+    const otherDir = join(root, "other", "skills", "add-app");
+    mkdirSync(otherDir, { recursive: true });
+    writeFileSync(join(otherDir, "SKILL.md"), "---\nname: deck:add-app\n---\n");
+    symlinkSync(otherDir, join(claudeDir, "deck:add-app"));
+
+    const result = pruneLinksFrom({ skillsDir: join(root, "gone", "skills"), claudeSkillsDir: claudeDir });
+    expect(result.actions).toEqual([]);
+    expect(result.changed).toBe(false);
+    expect(lstatSync(join(claudeDir, "gitq:track")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(claudeDir, "deck:add-app")).isSymbolicLink()).toBe(true);
+  });
+
+  test("a dry run reports without unlinking", () => {
+    addSkill("track", "gitq:track");
+    reconcileSkillLinks({ skillsDir, claudeSkillsDir: claudeDir });
+    rmSync(skillsDir, { recursive: true, force: true });
+
+    const result = pruneLinksFrom({ skillsDir, claudeSkillsDir: claudeDir, dryRun: true });
+    expect(kinds(result)).toEqual({ "gitq:track": "prune" });
+    expect(lstatSync(join(claudeDir, "gitq:track")).isSymbolicLink()).toBe(true);
   });
 });
