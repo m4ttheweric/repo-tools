@@ -494,7 +494,7 @@ async function showPicker(
     "--layout=reverse",
     "--border=left",
     "--no-separator",
-    "--prompt=filter: ",
+    "--prompt=  filter: ",
     `--header=${toAnsiFg(T.pink)}${breadcrumb.join(" › ")}\x1b[0m`,
     "--header-first",
     "--info=inline-right",

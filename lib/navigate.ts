@@ -173,7 +173,7 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string, helpState
     `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m`,
     "--header-first",
     "--info=inline-right",
-    "--prompt=filter: ",
+    "--prompt=  filter: ",
     "--no-mouse",
     "--print-query",
     `--expect=${expectStr}`,

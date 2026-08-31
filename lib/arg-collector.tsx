@@ -30,7 +30,7 @@ export async function collectArgs(
     "--layout=reverse",
     "--border=left",
     "--no-separator",
-    "--prompt=filter: ",
+    "--prompt=  filter: ",
     `--header=${toAnsiFg(T.pink)}${label} args\x1b[0m`,
     "--header-first",
     "--info=inline-right",
