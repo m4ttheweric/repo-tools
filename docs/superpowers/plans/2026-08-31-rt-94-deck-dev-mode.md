@@ -1144,12 +1144,23 @@ export async function reresolveManagedApps(drivers: Drivers): Promise<FlowResult
       unchanged.push(record.name);
       continue;
     }
+    // launchd gives no atomic replace, so a failure BETWEEN these two calls
+    // leaves the app torn down with nothing loaded. That state must be loud on
+    // the board row, not only in this response body, which only rt ever reads.
     try {
       await drivers.manager.uninstall(record.label);
-      await drivers.manager.install(spec);
-      restarted.push(record.name);
     } catch (err) {
       failed.push({ name: record.name, error: String(err).slice(0, 300) });
+      continue;
+    }
+    try {
+      await drivers.manager.install(spec);
+      clearIssues(record.name, "launchd");
+      restarted.push(record.name);
+    } catch (err) {
+      const error = String(err).slice(0, 300);
+      addIssue(record.name, { source: "launchd", message: error, at: new Date().toISOString() });
+      failed.push({ name: record.name, error });
     }
   }
   return { status: 200, body: { ok: failed.length === 0, restarted, unchanged, failed } };
