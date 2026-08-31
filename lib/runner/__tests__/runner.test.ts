@@ -101,6 +101,7 @@ function deps(over: Partial<RunnerDeps> & { sessions: SessionHandle[]; engine?: 
     now: over.now ?? (() => new Date("2026-08-30T00:00:00Z")),
     sleep: over.sleep ?? (async () => {}),
     workspaceLabel: "rt-runner-test",
+    seed: over.seed,
   };
 }
 
@@ -109,6 +110,26 @@ test("quit with nothing launched: opens the session, tears nothing down, closes 
   const d = deps({ sessions: [s] });
   await new Runner(d).run();
   expect(d.engine.calls).toEqual([]);
+});
+
+test("a seeded runner launches its seed entries on open without the picker", async () => {
+  const s = new FakeSession([{ t: "intent", name: "quit" }]);
+  let resolveCalls = 0;
+  const seed = [
+    { name: "dev", command: "bun run dev", cwd: "/repo/web", pkg: "web", repo: "acme" },
+    { name: "api", command: "bun run api", cwd: "/repo/api", pkg: "backend", repo: "acme" },
+  ];
+  const d = deps({
+    sessions: [s],
+    resolve: async () => { resolveCalls++; return { kind: "cancelled", code: 1 } as RunResolution; },
+    seed,
+  });
+  const r = new Runner(d);
+  await r.run();
+  expect(resolveCalls).toBe(0);
+  expect(r.entries.map((e) => e.name)).toEqual(["dev", "api"]);
+  expect(d.engine.calls.some((c) => c.startsWith("run:") && c.includes("/repo/web") && c.includes("bun run dev"))).toBe(true);
+  expect(d.engine.calls.some((c) => c.startsWith("run:") && c.includes("/repo/api") && c.includes("bun run api"))).toBe(true);
 });
 
 test("add: closes the session, resolves in-process, reopens with an optimistic starting row, then launches", async () => {
