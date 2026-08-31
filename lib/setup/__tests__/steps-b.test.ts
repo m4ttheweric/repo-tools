@@ -113,7 +113,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
   });
 
   /** Writes the real bundle (deps.lock, rt binary, whichever of deck/gitq/board are requested) to disk and points `mattstack.appPath` at it, then returns a fakeProbes mirroring the same layout so the Probes-side `exists`/`readFile` calls agree with what's really on disk. `deck` is always included — every deck.managed test needs the gate to pass; omit "gitq" or "board" from `tools` to simulate either not being bundled yet. */
-  function bundledProbes(opts: { tools?: ("gitq" | "board" | "console")[]; overrides?: Partial<Parameters<typeof fakeProbes>[0]> } = {}): ReturnType<typeof fakeProbes> {
+  function bundledProbes(opts: { tools?: ("gitq" | "board" | "console" | "chat")[]; overrides?: Partial<Parameters<typeof fakeProbes>[0]> } = {}): ReturnType<typeof fakeProbes> {
     const names = ["deck", ...(opts.tools ?? ["gitq"])];
     mkdirSync(join(appRoot, "Contents", "Resources"), { recursive: true });
     mkdirSync(join(appRoot, "Contents", "MacOS"), { recursive: true });
@@ -354,9 +354,9 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(p.calls.exec).toEqual([]);
     });
 
-    test("healthy + board bundled: adopts, repoints via PATCH, registers gitq and console as mattstack-managed", async () => {
+    test("healthy + board bundled: adopts, repoints via PATCH, registers gitq, console, chat as mattstack-managed", async () => {
       const p = bundledProbes({
-        tools: ["gitq", "board", "console"],
+        tools: ["gitq", "board", "console", "chat"],
         overrides: {
           files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
           fetch: healthyFetch(4100),
@@ -370,6 +370,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(detailOf(outcome)).toContain("repointed");
       expect(detailOf(outcome)).toContain("gitq registered (managed)");
       expect(detailOf(outcome)).toContain("console registered (managed)");
+      expect(detailOf(outcome)).toContain("chat registered (managed)");
 
       const deckBin = join(appRoot, HELPERS_DIR, "deck");
       expect(p.calls.exec[0]).toEqual([deckBin, "adopt", "mrs", "--as", "board", "--json"]);
@@ -382,12 +383,14 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(p.calls.exec[2]).toEqual([deckBin, "adopt", "gitq", "--managed-by", "rt", "--json"]);
       expect(p.calls.exec[3]).toEqual([deckBin, "add", "console", "--cmd", join(appRoot, HELPERS_DIR, "console"), "--dir", join(home, ".mattstack", "console")]);
       expect(p.calls.exec[4]).toEqual([deckBin, "adopt", "console", "--managed-by", "rt", "--json"]);
+      expect(p.calls.exec[5]).toEqual([deckBin, "add", "chat", "--cmd", join(appRoot, HELPERS_DIR, "chat"), "--dir", join(home, ".mattstack", "chat")]);
+      expect(p.calls.exec[6]).toEqual([deckBin, "adopt", "chat", "--managed-by", "rt", "--json"]);
       expect(p.calls.fetch).toContain("http://127.0.0.1:4100/api/v1/apps/board");
     });
 
     test("healthy + board NOT bundled: adopts, skips the repoint honestly", async () => {
       const p = bundledProbes({
-        tools: ["gitq", "console"],
+        tools: ["gitq", "console", "chat"],
         overrides: {
           files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
           fetch: healthyFetch(4100),
@@ -449,10 +452,11 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       const outcome = await deckManagedStep.run(ctx);
       expect(outcome).toEqual({
         state: "done",
-        detail: "board adopted (repointed); gitq not registered: not bundled; console not registered: not bundled",
+        detail: "board adopted (repointed); gitq not registered: not bundled; console not registered: not bundled; chat not registered: not bundled",
       });
       expect(logs.some((l) => l.line.includes("gitq") && l.line.includes("not bundled"))).toBe(true);
       expect(logs.some((l) => l.line.includes("console") && l.line.includes("not bundled"))).toBe(true);
+      expect(logs.some((l) => l.line.includes("chat") && l.line.includes("not bundled"))).toBe(true);
       expect(p.calls.exec).toHaveLength(1); // only the adopt — no `deck add` with a null bin
     });
 
@@ -507,7 +511,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       // "done", not "failed" — the run is free to proceed to skills.materialize/board.keys/cron.triage next.
       expect(outcome).toEqual({
         state: "done",
-        detail: "board not adopted (no legacy mrs to adopt); gitq registered (managed); console not registered: not bundled",
+        detail: "board not adopted (no legacy mrs to adopt); gitq registered (managed); console not registered: not bundled; chat not registered: not bundled",
       });
       // No repoint PATCH was issued — there was nothing to repoint.
       expect(p.calls.fetch.some((u) => u.includes("/api/v1/apps/board"))).toBe(false);
@@ -533,11 +537,11 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       const { ctx: second } = makeCtx(p);
       expect(await deckManagedStep.run(first)).toEqual({
         state: "done",
-        detail: "board adopted (repointed); gitq registered (managed); console not registered: not bundled",
+        detail: "board adopted (repointed); gitq registered (managed); console not registered: not bundled; chat not registered: not bundled",
       });
       expect(await deckManagedStep.run(second)).toEqual({
         state: "done",
-        detail: "board adopted (repointed); gitq already registered (managed); console not registered: not bundled",
+        detail: "board adopted (repointed); gitq already registered (managed); console not registered: not bundled; chat not registered: not bundled",
       });
     });
   });
