@@ -59,3 +59,18 @@ test("the board model fixture matches the BoardModel type shape", () => {
   expect(open.model.entries[1]!.exitCode).toBe(1);
   expect(open.model.entries[1]!.tail).toBeNull();
 });
+
+// open and close are TS-to-Go messages, not parseSessionLine input; these
+// golden-test the fixture JSON directly, mirroring the Go side's coverage.
+test("the open fixture matches its view and BoardModel shape", () => {
+  const open = fixture("session-open-board.json") as { t: string; view: string; model: BoardModel };
+  expect(open.t).toBe("open");
+  expect(open.view).toBe("board");
+  expect(open.model.workspace).toBe("rt-runner-a3f9");
+  expect(open.model.entries).toEqual([]);
+});
+
+test("the close fixture has the close tag", () => {
+  const close = fixture("session-close.json") as { t: string };
+  expect(close.t).toBe("close");
+});
