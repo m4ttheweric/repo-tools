@@ -183,7 +183,10 @@ function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
       "--border=left",
       "--no-separator",
       "--prompt=  filter: ",
-      `--header=${toAnsiFg(T.pink)}rt commit\x1b[0m\nspace: stage  tab: toggle+next  ctrl-a: toggle-all  ctrl-d: discard  enter: commit  esc: abort`,
+      `--header=${toAnsiFg(T.pink)}rt commit\x1b[0m`,
+      "--header-first",
+      "--info=inline-right",
+      "--footer=space: stage  tab: toggle+next  ctrl-a: toggle-all  ctrl-d: discard  enter: commit  esc: abort",
       "--no-mouse",
       "--bind=space:toggle,tab:toggle+down,ctrl-a:toggle-all",
       // GitHub Desktop style: everything checked by default. Must be the
