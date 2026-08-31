@@ -11,7 +11,7 @@ import type { CommandContext } from "../lib/command-tree.ts";
 export async function runNew(args: string[], _ctx: CommandContext): Promise<void> {
   let name = args[0];
   if (!name && process.stdin.isTTY) {
-    const { textInput } = await import("../lib/rt-render.tsx");
+    const { textInput } = await import("../lib/rt-render.ts");
     name = await textInput({ message: "Plugin name (kebab-case)", placeholder: "my-plugin" });
   }
   if (!name) {

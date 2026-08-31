@@ -43,7 +43,7 @@ function installableTools(p: Probes, reqs: PackRequirements[]): string[] {
 const SETUP_TOOLS = ["herdr", "fast-browser", "extension"];
 
 async function pickTool(message: string, names: string[]): Promise<string | null> {
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
   return filterableSelect({ message, options: names.map((n) => ({ value: n, label: n })), stderr: true });
 }
 

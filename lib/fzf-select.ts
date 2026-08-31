@@ -2,7 +2,7 @@
  * Filterable pickers backed by the native `fzf` binary.
  *
  * fzf does all the rendering, so the `rt cd`/`rt run` hot path pays for no
- * renderer of its own. rt-render.tsx re-exports these functions for
+ * renderer of its own. rt-render.ts re-exports these functions for
  * back-compat; the latency-sensitive callers import them from here directly.
  */
 

@@ -15,7 +15,7 @@ const ALLOWLIST = new Set<string>([
   "lib/repo.ts",                    // R050 / Phase 5.4 (via handlers/system-processes.ts)
   "lib/git.ts",                     // R050 / Phase 5.4 (via repo.ts)
   "lib/herdr-launch.ts",            // Phase 5 herdr (via handlers/pane.ts)
-  "lib/rt-render.tsx",              // R050 / Phase 5.4 (daemon carries the TUI)
+  "lib/rt-render.ts",              // R050 / Phase 5.4 (daemon carries the TUI)
 ]);
 
 const SYNC_EXEC = [

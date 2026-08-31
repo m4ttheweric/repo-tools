@@ -30,7 +30,7 @@ const IS_DEV_MODE = existsSync(join(homedir(), ".local/bin/rt"));
 import type { RepoIdentity } from "./repo.ts";
 import { MODULE_REGISTRY } from "./module-registry.ts";
 import { BackNavigation } from "./back-navigation.ts";
-import type { SelectOption } from "./rt-render.tsx";
+import type { SelectOption } from "./rt-render.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -320,7 +320,7 @@ export async function dispatch(
 
   // alt-enter at the picker: collect declared args interactively
   if (withArgs && node.args?.length && process.stdin.isTTY) {
-    const { collectArgs } = await import("./arg-collector.tsx");
+    const { collectArgs } = await import("./arg-collector.ts");
     const formLabel = [...breadcrumb, resolvedName].join(" ");
     const collected = await collectArgs(formLabel, node.args);
     if (collected === null) process.exit(0);

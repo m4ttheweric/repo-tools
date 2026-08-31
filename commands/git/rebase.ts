@@ -168,7 +168,7 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
 
   // 1. Fetch (unless caller already did)
   if (!opts.skipFetch) {
-    const { withSpinner } = await import("../../lib/rt-render.tsx");
+    const { withSpinner } = await import("../../lib/rt-render.ts");
     const { exec } = await import("child_process");
     const gitAsync = (args: string) =>
       new Promise<void>((resolve, reject) => {
@@ -577,7 +577,7 @@ export async function ontoCommand(
         .map((b) => b.trim())
         .filter((b) => b && b !== current);
       if (branches.length > 0) {
-        const { filterableSelect } = await import("../../lib/rt-render.tsx");
+        const { filterableSelect } = await import("../../lib/rt-render.ts");
         const picked = await filterableSelect({
           message: "rebase onto which branch?",
           options: branches.map((b) => ({ value: b, label: b })),

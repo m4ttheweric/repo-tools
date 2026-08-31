@@ -167,7 +167,7 @@ async function syncBranch(
 
   syncLog.worktree(cwd, branch);
 
-  const { createStepRunner } = await import("../lib/rt-render.tsx");
+  const { createStepRunner } = await import("../lib/rt-render.ts");
   const steps = createStepRunner();
 
   // 1. Fetch once (rebase/reset will skip their own fetch)

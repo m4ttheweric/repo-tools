@@ -181,7 +181,7 @@ async function pickRegisterTarget(): Promise<string | null | undefined> {
   const candidates = getKnownRepos().filter((r) => r.registered === false && r.worktrees[0]);
   if (candidates.length === 0) return undefined;
 
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
   return filterableSelect({
     message: "Which repo should rt register?",
     options: candidates.map((r) => ({
@@ -379,13 +379,13 @@ async function pickLocateTarget(json: boolean, deps: RegisterDeps): Promise<stri
 
   if (candidates.length === 1) {
     const only = candidates[0]!;
-    const { confirm } = await import("../lib/rt-render.tsx");
+    const { confirm } = await import("../lib/rt-render.ts");
     const ok = await confirm({ message: `Locate ${only.identity} at ${only.path}?`, stderr: true });
     if (!ok) process.exit(0);
     return only.path;
   }
 
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
   const picked = await filterableSelect({
     message: "Which directory did it move to?",
     options: candidates.map((c) => ({ value: c.path, label: c.path, hint: c.identity })),

@@ -1,7 +1,7 @@
 /**
  * Shared fzf navigation primitives.
  *
- * Used by nav.ts, run.ts, and rt-render.tsx to avoid duplicating the
+ * Used by nav.ts, run.ts, and rt-render.ts to avoid duplicating the
  * tab-delimited input builder, fzf argument builder, and output parser.
  *
  * Each command builds its own navigation loop on top of `runNavPicker`,

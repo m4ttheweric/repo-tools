@@ -227,7 +227,7 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
       process.exit(1);
     }
 
-    const { filterableSelect } = await import("./rt-render.tsx");
+    const { filterableSelect } = await import("./rt-render.ts");
     const picked = await filterableSelect({
       message: commandLabel ? `Pick a repo for ${commandLabel}` : "Pick a repo",
       options: repoOptions(choices),
@@ -281,7 +281,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
   if (choices.length === 1) {
     selectedRepo = choices[0]!;
   } else {
-    const { filterableSelect } = await import("./rt-render.tsx");
+    const { filterableSelect } = await import("./rt-render.ts");
     const options = repoOptions(choices);
 
     const picked = await filterableSelect({ message: "Select a repo", options });
@@ -309,7 +309,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
  * Returns null when the picker is cancelled (Esc / Ctrl-C).
  */
 export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opts?: { backLabel?: string }): Promise<string | null> {
-  const { filterableSelect } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./rt-render.ts");
   const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
 
   let remoteUrl: string | undefined;
@@ -345,7 +345,7 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opt
  * 3. Returns updated RepoIdentity after chdir
  */
 export async function pickRepoInteractive(): Promise<RepoIdentity> {
-  const { filterableSelect } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./rt-render.ts");
   const repos = getKnownRepos();
 
   if (repos.length === 0) {
@@ -415,7 +415,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
 }
 
 async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
-  const { filterableSelect } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./rt-render.ts");
 
   const options = repoOptions(repos);
 

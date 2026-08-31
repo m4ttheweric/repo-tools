@@ -58,7 +58,7 @@ export async function collectArgs(
   if (selectedNames.length === 0) return null;
 
   // Step 2: for each selected text/select arg, prompt for value
-  const { textInput } = await import("./rt-render.tsx");
+  const { textInput } = await import("./rt-render.ts");
   const values = new Map<string, string | true>();
 
   for (const name of selectedNames) {
@@ -71,7 +71,7 @@ export async function collectArgs(
     }
 
     if (arg.type === "select" && arg.options?.length) {
-      const { filterableSelect } = await import("./rt-render.tsx");
+      const { filterableSelect } = await import("./rt-render.ts");
       const val = await filterableSelect({
         message: arg.name,
         options: arg.options,

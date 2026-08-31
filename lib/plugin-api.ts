@@ -88,7 +88,7 @@ export function makeApi(pluginName: string): RtApi {
   const dataDir = join(rtDir(), "plugin-data", pluginName);
   return {
     async pick(items, opts) {
-      const { filterableSelect } = await import("./rt-render.tsx");
+      const { filterableSelect } = await import("./rt-render.ts");
       const options = items.map((i) =>
         typeof i === "string"
           ? { value: i, label: i }
@@ -97,11 +97,11 @@ export function makeApi(pluginName: string): RtApi {
       return filterableSelect({ message: opts?.label ?? "pick", options });
     },
     async prompt(label, opts) {
-      const { textInput } = await import("./rt-render.tsx");
+      const { textInput } = await import("./rt-render.ts");
       return textInput({ message: label, placeholder: opts?.placeholder, defaultValue: opts?.default });
     },
     async confirm(label, opts) {
-      const { confirm } = await import("./rt-render.tsx");
+      const { confirm } = await import("./rt-render.ts");
       return confirm({ message: label, initialValue: opts?.default });
     },
     store<T>(key: string) {

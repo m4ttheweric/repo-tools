@@ -156,7 +156,7 @@ async function runPush(
     const ff = isFastForwardPossible(branch, remote, cwd);
     if (ff === false) {
       if (process.stdin.isTTY) {
-        const { select } = await import("../../lib/rt-render.tsx");
+        const { select } = await import("../../lib/rt-render.ts");
         const choice = await select({
           message: `local has diverged from ${remote}/${branch} (likely after a rebase) — force push?`,
           options: [

@@ -37,7 +37,7 @@ function copyArg(args: string[]): string | undefined {
 }
 
 async function pickBackup(names: readonly string[]): Promise<string | null> {
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
   return filterableSelect({
     message: "Restore which state.db backup?",
     options: names.map((name) => ({ value: name, label: name })),

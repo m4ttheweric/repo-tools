@@ -167,7 +167,7 @@ async function resolvePack(flags: { team: string | null; packDir: string | null;
 }
 
 async function pickPack(packs: PackInfo[]): Promise<PackInfo | null> {
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
   const value = await filterableSelect({
     message: "which pack?",
     options: packs.map((p) => ({ value: p.name, label: p.name, hint: `${p.layout}  ${p.dir}` })),
@@ -1873,7 +1873,7 @@ async function pickBindArgs(args: string[]): Promise<PickedBind | null> {
     json: false,
   });
 
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
 
   let verbName = positionals[0];
   if (!verbName) {
