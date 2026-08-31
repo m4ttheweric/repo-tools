@@ -158,8 +158,8 @@ func runSession(args []string) int {
 		cancel()
 	}()
 
-	reason, eof, err := session.Run(ctx, viewName, advertisedViews(), viewFor(viewName), os.Stdin, os.Stdout, term, version)
-	code := session.ExitCode(reason, eof, err)
+	reason, _, err := session.Run(ctx, viewName, advertisedViews(), viewFor(viewName), os.Stdin, os.Stdout, term, version)
+	code := session.ExitCode(reason, err)
 	if code == ExitBadSpec || code == ExitInternal {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "rt-ui session:", err)

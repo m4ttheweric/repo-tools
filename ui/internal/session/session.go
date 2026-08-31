@@ -43,7 +43,14 @@ type View interface {
 	Reason() Reason
 }
 
-// Emitter serializes intent writes; Bubble Tea commands run concurrently.
+// Emitter serializes intent writes; Bubble Tea commands run concurrently and
+// never wait on each other, so an intent that must land before the closed
+// line (a "quit" intent, above all) MUST be issued as
+// tea.Sequence(emit, ..., tea.Quit), never as a bare or batched Cmd raced
+// against an independent Quit elsewhere: Sequence is the only construct here
+// that runs its Cmds strictly in order on one goroutine, so it is the only
+// way to guarantee a write happens before the Quit that follows it.
+// TestViewQuitEmitsClosedQuit is the regression test for this contract.
 type Emitter struct {
 	mu sync.Mutex
 	w  io.Writer
@@ -78,8 +85,36 @@ func Run(ctx context.Context, viewName string, views []string, mk func(*Emitter)
 	}
 
 	r := bufio.NewReader(in)
-	first, err := protocol.ReadLine(r)
+
+	// The blocking read for the open line has nothing else to select on, so
+	// a signal arriving in this window (cancelling ctx) would otherwise sit
+	// unobserved forever: run the read on its own goroutine and race it
+	// against ctx.Done() so an external kill before open still produces
+	// closed{cancel} instead of a hang. The goroutine leaks harmlessly on
+	// that path: nobody else reads r afterward and the process is exiting.
+	type firstLine struct {
+		line []byte
+		err  error
+	}
+	firstCh := make(chan firstLine, 1)
+	go func() {
+		line, err := protocol.ReadLine(r)
+		firstCh <- firstLine{line, err}
+	}()
+
+	var first []byte
+	select {
+	case res := <-firstCh:
+		first, err = res.line, res.err
+	case <-ctx.Done():
+		closed(ReasonCancel, "")
+		return ReasonCancel, false, nil
+	}
 	if err != nil {
+		// EOF here is the parent dying before it ever sent open, the same
+		// "parent died" row as an EOF after open: exit 70, not the exit-2
+		// protocol error, which is reserved for a wrong or malformed open
+		// actually received over the wire.
 		closed(ReasonError, "stdin closed before open")
 		return ReasonError, true, err
 	}
@@ -159,8 +194,10 @@ func Run(ctx context.Context, viewName string, views []string, mk func(*Emitter)
 }
 
 // ExitCode maps a reason to the contract: quit/closed 0, cancel 130, error 70
-// for a dead parent and 2 for a protocol error.
-func ExitCode(r Reason, stdinEOF bool, err error) int {
+// for a dead parent and 2 for a protocol error. The 2-vs-70 split rides
+// entirely on ErrBadOpen and r; Run's stdinEOF return is for callers that
+// want to log or test the distinction, not for this mapping.
+func ExitCode(r Reason, err error) int {
 	switch {
 	case errors.Is(err, ErrBadOpen):
 		return 2

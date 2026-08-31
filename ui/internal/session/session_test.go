@@ -106,6 +106,44 @@ func TestExternalSignalIsClosedCancelExit130(t *testing.T) {
 	if exit := s.Wait(); exit != 130 {
 		t.Fatalf("exit %d", exit)
 	}
+	if !strings.Contains(s.TTY(), "\x1b[?1049l") || !strings.Contains(s.TTY(), "\x1b[?25h") {
+		t.Fatalf("alt screen not left / cursor not shown: %q", s.TTY())
+	}
+}
+
+// TestExternalSignalBeforeOpenIsClosedCancelExit130 covers the window the
+// other signal test cannot reach: a kill that lands before open is ever
+// sent, while Run is still blocked reading the first line.
+func TestExternalSignalBeforeOpenIsClosedCancelExit130(t *testing.T) {
+	s := start(t)
+	s.ReadLine(2 * time.Second)
+	s.Kill(syscall.SIGTERM)
+	line, _ := s.ReadLine(2 * time.Second)
+	if !strings.Contains(line, `"reason":"cancel"`) {
+		t.Fatalf("closed: %q", line)
+	}
+	if exit := s.Wait(); exit != 130 {
+		t.Fatalf("exit %d", exit)
+	}
+	if s.TTY() != "" {
+		t.Fatalf("painted before open: %q", s.TTY())
+	}
+}
+
+// TestEOFBeforeOpenIsClosedErrorExit70 locks in the ruling that a dead
+// parent is exit 70 regardless of whether open ever arrived: exit 2 is
+// reserved for a malformed or wrong open actually received on the wire.
+func TestEOFBeforeOpenIsClosedErrorExit70(t *testing.T) {
+	s := start(t)
+	s.ReadLine(2 * time.Second)
+	s.CloseStdin()
+	line, _ := s.ReadLine(2 * time.Second)
+	if !strings.Contains(line, `"reason":"error"`) {
+		t.Fatalf("closed: %q", line)
+	}
+	if exit := s.Wait(); exit != 70 {
+		t.Fatalf("exit %d", exit)
+	}
 }
 
 func TestUnknownViewIsExit2(t *testing.T) {
