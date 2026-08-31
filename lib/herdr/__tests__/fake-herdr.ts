@@ -1,3 +1,4 @@
+import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -8,16 +9,21 @@ export class HerdrFakeError {
 
 export type FakeHerdrHandler = (method: string, params: Record<string, unknown>) => unknown | Promise<unknown>;
 
-let counter = 0;
-
 /**
  * herdr's wire contract, for tests: newline-delimited JSON over a unix
  * socket, one request per connection, the server closes after replying.
  * The handler returns the `result` object (with its `type` field) or a
  * HerdrFakeError; a thrown error becomes `internal_error`.
+ *
+ * The socket gets its own mkdtemp directory rather than a counter: eight
+ * suites import this helper, each with its own module instance and so its
+ * own counter starting at zero, so a pid-and-counter name collides across
+ * files. The loser's requests are answered by the winner's server, which
+ * reads as available with nothing in `seen`.
  */
 export function fakeHerdr(handler: FakeHerdrHandler) {
-  const sock = join(tmpdir(), `fake-herdr-${process.pid}-${counter++}.sock`);
+  const dir = mkdtempSync(join(tmpdir(), "fake-herdr-"));
+  const sock = join(dir, "s.sock");
   const seen: Array<{ id: string; method: string; params: Record<string, unknown> }> = [];
   const buffers = new Map<object, string>();
   const server = Bun.listen({
@@ -57,5 +63,12 @@ export function fakeHerdr(handler: FakeHerdrHandler) {
       error() {},
     },
   });
-  return { sock, seen, stop: () => server.stop(true) };
+  return {
+    sock,
+    seen,
+    stop: () => {
+      server.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }
