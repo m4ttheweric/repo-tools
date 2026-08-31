@@ -364,6 +364,51 @@ test("pollLiveness latches a url from pane output and does not rescan once found
   await finished;
 });
 
+// Tags reads by their requested line count (URL_SCAN_LINES=800 vs the
+// small liveness-sentinel read=50) so a test can isolate the url-scan read
+// from the sentinel read that still happens every tick regardless of state.
+class ScopedReadEngine extends FakeEngine {
+  scanReads = 0;
+  override async read(paneId: string, lines?: number): Promise<string> {
+    if (lines === 800) this.scanReads++;
+    return this.text.get(paneId) ?? "line a\nline b\n";
+  }
+}
+
+test("pollLiveness does not url-scan a crashed entry", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new ScopedReadEngine();
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+
+  // The shell reclaims the foreground with a nonzero exit sentinel: the entry crashes.
+  engine.running.delete(e.paneId!);
+  engine.text.set(e.paneId!, "line a\n__rt_exit 1\n");
+  await __test__.pollLiveness(r);
+  expect(e.state).toBe("crashed");
+  expect(e.url).toBeNull();
+  expect(engine.scanReads).toBe(0);
+
+  // A later tick against the same crashed entry must not scan either.
+  time += 1000;
+  await __test__.pollLiveness(r);
+  expect(engine.scanReads).toBe(0);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
 test("open intent calls openUrl with the entry's latched url", async () => {
   const opened: string[] = [];
   const addSession = new FakeSession([{ t: "intent", name: "add" }]);

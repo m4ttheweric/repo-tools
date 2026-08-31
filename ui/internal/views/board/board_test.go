@@ -44,7 +44,7 @@ func open(t *testing.T) *testutil.Session {
 func TestPopulatedBoardPaintsRowsHeaderAndKeybar(t *testing.T) {
 	s := open(t)
 	screen := s.Screen()
-	for _, want := range []string{"rt runner", "rt-runner-a3f9", "1 running", "1 crashed", "dev", "bun run dev", "web · acme", "worker", "exited 1", "navigate", "process", "q quit"} {
+	for _, want := range []string{"rt runner", "rt-runner-a3f9", "1 running", "1 crashed", "dev", "bun run dev", "web · acme", "worker", "exited 1", "navigate", "process", "q quit", "o open"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("missing %q in\n%s", want, screen)
 		}
@@ -173,6 +173,28 @@ func TestTailHeaderShowsDetectingWhenUrlPending(t *testing.T) {
 	s.WaitForPaint("tail · dev")
 	if !strings.Contains(s.Screen(), "detecting") {
 		t.Fatalf("tail header missing detecting:\n%s", s.Screen())
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+// TestTailHeaderShowsNoLinkTextForATerminalEntryWithNoUrl locks in that a
+// stopped/crashed entry that never found a url gets no link status at all,
+// not the "detecting…"/"none found" text reserved for running/starting.
+func TestTailHeaderShowsNoLinkTextForATerminalEntryWithNoUrl(t *testing.T) {
+	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
+	s.ReadLine(2 * time.Second)
+	model := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"stopped","startedAt":null,"exitCode":0,"error":null,"url":null,"tail":null}]}}`
+	s.Send(model)
+	s.WaitForPaint("rt runner")
+	s.Type("t")
+	s.WaitForPaint("tail · dev")
+	screen := s.Screen()
+	for _, absent := range []string{"detecting", "none found", "link:"} {
+		if strings.Contains(screen, absent) {
+			t.Fatalf("stopped entry with no url must show no link text, found %q in:\n%s", absent, screen)
+		}
 	}
 	s.Send(`{"t":"close"}`)
 	s.Wait()

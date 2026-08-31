@@ -191,12 +191,17 @@ func tailBox(b *Board, e *Entry) string {
 }
 
 // linkStatus is the tail header's right-hand text: the found url, an honest
-// give-up once urlGiveupSeconds has passed with none, or the pending state
-// within the window. Elapsed seconds are derived the same way Entry.uptime
-// derives them: StartedAt parsed as RFC3339 against b.now.
+// give-up once urlGiveupSeconds has passed with none, the pending state
+// within the window, or nothing at all once the entry has reached a
+// terminal state without ever finding one (a stopped/crashed one-shot is
+// never going to serve a url). Elapsed seconds are derived the same way
+// Entry.uptime derives them: StartedAt parsed as RFC3339 against b.now.
 func linkStatus(b *Board, e *Entry) string {
 	if e.Url != nil && *e.Url != "" {
 		return fg(theme.Cyan).Render("link: " + hostPort(*e.Url))
+	}
+	if e.State != "running" && e.State != "starting" {
+		return ""
 	}
 	if e.State == "running" && e.StartedAt != nil {
 		if t, err := time.Parse(time.RFC3339Nano, *e.StartedAt); err == nil {
@@ -214,7 +219,7 @@ func keybar(b *Board) string {
 		return fg(theme.Faint).Render(k) + onBg.Render(" ") + fg(theme.Dim).Render(l)
 	}
 	left := group.Render("navigate") + onBg.Render(" ") + key("j/k", "up·down") + onBg.Render("   ") +
-		group.Render("process") + onBg.Render(" ") + strings.Join([]string{key("a", "add"), key("s", "restart"), key("x", "stop"), key("f", "focus"), key("t", "tail")}, onBg.Render("  "))
+		group.Render("process") + onBg.Render(" ") + strings.Join([]string{key("a", "add"), key("s", "restart"), key("x", "stop"), key("f", "focus"), key("t", "tail"), key("o", "open")}, onBg.Render("  "))
 	return justify(b.width, left, key("q", "quit"))
 }
 

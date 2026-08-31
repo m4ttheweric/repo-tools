@@ -313,7 +313,7 @@ export class Runner {
         const next = deriveState(e, info, text);
         e.state = next.state;
         e.exitCode = next.exitCode;
-        if (e.url === null) {
+        if (e.url === null && (e.state === "running" || e.state === "starting")) {
           const scan = await this.deps.engine.read(e.paneId, URL_SCAN_LINES);
           const found = detectUrl(scan);
           if (found) e.url = found;
