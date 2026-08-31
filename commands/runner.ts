@@ -1,7 +1,8 @@
 /**
- * rt runner: a board of headless herdr panes. The command is the gate and
- * the wiring; the loop lives in lib/runner/runner.ts and the herdr calls in
- * lib/runner/engine.ts.
+ * rt runner: a board of services, run in a detached tmux session by
+ * default or in headless herdr panes under --herdr. The command is the
+ * gate and the wiring; the loop lives in lib/runner/runner.ts and the two
+ * backends in lib/runner/engine.ts (herdr) and lib/runner/tmux-engine.ts.
  */
 import { spawnSync } from "child_process";
 import { randomBytes } from "crypto";
@@ -9,10 +10,16 @@ import type { CommandContext } from "../lib/command-tree.ts";
 import { herdrAvailable, herdrRequest, herdrSocketPath } from "../lib/herdr/client.ts";
 import { HerdrEngine } from "../lib/runner/engine.ts";
 import { Runner, SessionDied, type RunnerDeps, type SeedEntry } from "../lib/runner/runner.ts";
-import { planReconcile, readRegistry, registerWorkspace, unregisterWorkspace, isAlive } from "../lib/runner/workspace-registry.ts";
+import { createTmuxEngine, killTmuxServer } from "../lib/runner/tmux-engine.ts";
+import { planReconcile, planTmuxReconcile, readRegistry, registerWorkspace, unregisterWorkspace, isAlive } from "../lib/runner/workspace-registry.ts";
 import { interactive } from "../lib/ui/gate.ts";
 import { exit, openSession } from "../lib/ui/spawn.ts";
 import { resolveRun } from "./run.ts";
+
+/** Mirrors the herdr `Bun.which` idiom; `path` is a seam so tests can fake tmux being absent from PATH. */
+export function tmuxAvailable(path: string = process.env.PATH ?? ""): boolean {
+  return Bun.which("tmux", { PATH: path }) !== null;
+}
 
 export type { SeedEntry };
 
@@ -34,6 +41,27 @@ export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: strin
     seed,
     registerWorkspace: (id) => registerWorkspace(id),
     unregisterWorkspace: (id) => unregisterWorkspace(id),
+  };
+}
+
+/** Same assembly as buildRunnerDeps, on the tmux backend: a fresh detached server per launch, registered under the "tmux" kind so its reconcile never touches herdr workspaces. */
+export function buildTmuxRunnerDeps(args: string[], ctx: CommandContext, seed?: SeedEntry[]): RunnerDeps {
+  return {
+    engine: createTmuxEngine(),
+    openSession,
+    resolve: () => resolveRun(args.filter((a) => a !== "--resolve-only"), ctx),
+    now: () => new Date(),
+    sleep: (ms) => Bun.sleep(ms),
+    openUrl: async (url: string) => {
+      const r = spawnSync("open", [url], { stdio: "ignore" });
+      if (r.error) throw r.error;
+      if (r.signal) throw new Error(`open was killed by ${r.signal}`);
+      if (r.status !== 0) throw new Error(`open exited with ${r.status}`);
+    },
+    workspaceLabel: `rt-runner-${randomBytes(2).toString("hex")}`,
+    seed,
+    registerWorkspace: (id) => registerWorkspace(id, process.pid, "tmux"),
+    unregisterWorkspace: (id) => unregisterWorkspace(id, "tmux"),
   };
 }
 
@@ -59,21 +87,50 @@ export async function reconcileRunnerWorkspaces(sock: string): Promise<void> {
   }
 }
 
-/** Gate + build + run, shared by the args-driven command and the seeded entry point. `args` feeds `buildRunnerDeps`'s resolve closure; the seeded caller has no CLI args, so it always passes `[]`. */
+/**
+ * Closes any tmux server this machine's registry shows dead-owned (a prior
+ * launch that never reached teardown). There is no tmux `workspace.list`
+ * equivalent to cross-check against, unlike the herdr reconcile: the
+ * registry itself is the whole signal. Best-effort: a failure here must
+ * never block a new launch.
+ */
+export async function reconcileTmuxWorkspaces(): Promise<void> {
+  try {
+    const plan = planTmuxReconcile(readRegistry("tmux"), isAlive);
+    for (const socket of plan.killSocketIds) await killTmuxServer(socket);
+    for (const id of plan.removeIds) unregisterWorkspace(id, "tmux");
+  } catch (err) {
+    process.stderr.write(`  rt runner: tmux orphan reconcile failed (${err instanceof Error ? err.message : String(err)})\n`);
+  }
+}
+
+/** Gate + build + run, shared by the args-driven command and the seeded entry point. `args` feeds the resolve closure and, on the herdr path, selects the backend; the seeded caller has no CLI args, so it always passes `[]` and gets the tmux default. */
 async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[]): Promise<void> {
   if (!interactive()) {
     process.stderr.write("rt runner needs an interactive terminal (it drives herdr panes from the one you are in)\n");
     return exit(1);
   }
-  const sock = herdrSocketPath();
-  if (!(await herdrAvailable(sock))) {
-    process.stderr.write(`herdr is not answering at ${sock}; start herdr and run rt runner from one of its panes\n`);
-    return exit(1);
+
+  const useHerdr = args.includes("--herdr");
+  const cleanArgs = args.filter((a) => a !== "--herdr" && a !== "--tmux");
+
+  let runner: Runner;
+  if (useHerdr) {
+    const sock = herdrSocketPath();
+    if (!(await herdrAvailable(sock))) {
+      process.stderr.write(`herdr is not answering at ${sock}; start herdr and run rt runner from one of its panes\n`);
+      return exit(1);
+    }
+    await reconcileRunnerWorkspaces(sock);
+    runner = new Runner(buildRunnerDeps(cleanArgs, ctx, sock, seed));
+  } else {
+    if (!tmuxAvailable()) {
+      process.stderr.write("rt runner needs tmux on PATH (or pass --herdr to use herdr panes)\n");
+      return exit(1);
+    }
+    await reconcileTmuxWorkspaces();
+    runner = new Runner(buildTmuxRunnerDeps(cleanArgs, ctx, seed));
   }
-
-  await reconcileRunnerWorkspaces(sock);
-
-  const runner = new Runner(buildRunnerDeps(args, ctx, sock, seed));
 
   // The board dies with this process: a signal tears the workspace down
   // before exit so no headless pane outlives its board. SIGHUP (a closed
