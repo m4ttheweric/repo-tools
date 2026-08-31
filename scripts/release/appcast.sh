@@ -59,16 +59,22 @@ literal_replace_in_file() {
 # Intent is unchanged: a real 4xx means "no previous appcast, first release",
 # while a network-level failure still aborts rather than silently degrading a
 # DNS blip into a fresh appcast that drops every existing delta.
+# curl that dies before writing `%{http_code}` leaves this empty, and an
+# unguarded numeric test on "" is a bash error rather than a false.
+is_http_status() {
+    case "$1" in "" | *[!0-9]*) return 1 ;; *) return 0 ;; esac
+}
+
 fetch_or_abort() {
     local url="$1" dest="$2" ctx="$3" rc=0 status
     status="$(curl -sSL -o "$dest" -w '%{http_code}' "$url")" || rc=$?
 
-    if [ "$rc" -eq 0 ] && [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
+    if [ "$rc" -eq 0 ] && is_http_status "$status" && [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
         return 0
     fi
 
     rm -f "$dest"
-    if [ "$status" -ge 400 ] && [ "$status" -lt 500 ]; then
+    if is_http_status "$status" && [ "$status" -ge 400 ] && [ "$status" -lt 500 ]; then
         return 22
     fi
     echo "✗ failed to fetch $ctx (curl exit $rc, HTTP ${status:-none} — not a 4xx, aborting rather than degrading silently)" >&2

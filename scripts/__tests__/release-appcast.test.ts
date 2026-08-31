@@ -114,10 +114,12 @@ function stampPublicKeyAndSign(appPath: string, publicKeyValue: string): void {
   execFileSync("codesign", ["--force", "--deep", "-s", "-", appPath]);
 }
 
-// A curl that always reports "not found" (curl -f's exit 22) — exercises
-// appcast.sh's first-release branch without any real network access.
+// A curl that always reports "not found" — exercises appcast.sh's
+// first-release branch without any real network access. It prints the status
+// and exits 0 because appcast.sh fetches WITHOUT `-f`: that is what real curl
+// does on a 404, and the script branches on the status, not the exit code.
 function writeCurl404Shim(binDir: string): void {
-  writeFileSync(join(binDir, "curl"), "#!/bin/bash\nexit 22\n");
+  writeFileSync(join(binDir, "curl"), "#!/bin/bash\necho 404\n");
   chmodSync(join(binDir, "curl"), 0o755);
 }
 
