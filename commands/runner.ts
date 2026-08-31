@@ -24,7 +24,10 @@ export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: strin
     now: () => new Date(),
     sleep: (ms) => Bun.sleep(ms),
     openUrl: async (url: string) => {
-      spawnSync("open", [url], { stdio: "ignore" });
+      const r = spawnSync("open", [url], { stdio: "ignore" });
+      if (r.error) throw r.error;
+      if (r.signal) throw new Error(`open was killed by ${r.signal}`);
+      if (r.status !== 0) throw new Error(`open exited with ${r.status}`);
     },
     workspaceLabel: `rt-runner-${randomBytes(2).toString("hex")}`,
     seed,

@@ -23,3 +23,9 @@ test("ignores a loopback host with no port", () => {
 test("returns null when there is no url", () => {
   expect(detectUrl("compiling...\nbuilt in 1.2s")).toBeNull();
 });
+test("strips a trailing comma left by surrounding prose", () => {
+  expect(detectUrl("see http://localhost:3000/api, then retry")).toBe("http://localhost:3000/api");
+});
+test("strips a trailing period left by surrounding prose", () => {
+  expect(detectUrl("server is up at http://localhost:3000/api.")).toBe("http://localhost:3000/api");
+});

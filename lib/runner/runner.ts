@@ -8,7 +8,7 @@ import type { RunResolution } from "../../commands/run.ts";
 import type { SessionHandle } from "../ui/spawn.ts";
 import type { SessionIntent } from "../ui/protocol.ts";
 import { EngineError, type Engine } from "./engine.ts";
-import { deriveState, detectUrl, filterTail, isRunning, newEntry, toModel, type Entry } from "./state.ts";
+import { afterLastSentinel, deriveState, detectUrl, filterTail, isRunning, newEntry, toModel, type Entry } from "./state.ts";
 
 export interface SeedEntry {
   name: string;
@@ -315,7 +315,7 @@ export class Runner {
         e.exitCode = next.exitCode;
         if (e.url === null && (e.state === "running" || e.state === "starting")) {
           const scan = await this.deps.engine.read(e.paneId, URL_SCAN_LINES);
-          const found = detectUrl(scan);
+          const found = detectUrl(afterLastSentinel(scan));
           if (found) e.url = found;
         }
       } catch (err) {

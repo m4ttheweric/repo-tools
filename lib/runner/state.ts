@@ -42,6 +42,17 @@ export function parseExitSentinel(text: string): number | null {
   return code;
 }
 
+// The output of the current run only: everything after the most recent exit
+// sentinel. A restart leaves the prior run's URL banner in the pane, and
+// scanning it would re-latch the old port.
+export function afterLastSentinel(text: string): string {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (SENTINEL_RE.test(lines[i]!)) return lines.slice(i + 1).join("\n");
+  }
+  return text;
+}
+
 // A loopback/LAN dev-server URL, port required. Non-loopback hosts (real
 // domains in doc links) never match; 0.0.0.0 is rewritten to localhost
 // because browsers do not reliably route it.
@@ -61,7 +72,7 @@ export function detectUrl(text: string): string | null {
     hits.find((h) => h.host === "localhost" || h.host === "127.0.0.1") ??
     hits.find((h) => h.host === "0.0.0.0") ??
     hits[0]!;
-  return pick.url.replace("://0.0.0.0", "://localhost");
+  return pick.url.replace(/[.,;:!?]+$/, "").replace("://0.0.0.0", "://localhost");
 }
 
 const PROMPT_RE = /[$%❯>]\s*$/;

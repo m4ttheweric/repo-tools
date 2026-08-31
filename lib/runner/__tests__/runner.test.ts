@@ -409,6 +409,33 @@ test("pollLiveness does not url-scan a crashed entry", async () => {
   await finished;
 });
 
+test("pollLiveness scans only the current run, ignoring a stale port left in scrollback by a restart", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new UrlFakeEngine();
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+
+  // Scrollback still holds the previous run's banner ahead of the exit
+  // sentinel; only the text after it belongs to the new run.
+  engine.text.set(e.paneId!, "> Local: http://localhost:3000/\n__rt_exit 0\n> Local: http://localhost:5173/\n");
+  await __test__.pollLiveness(r);
+  expect(e.url).toBe("http://localhost:5173/");
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
 test("open intent calls openUrl with the entry's latched url", async () => {
   const opened: string[] = [];
   const addSession = new FakeSession([{ t: "intent", name: "add" }]);
