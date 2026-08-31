@@ -117,6 +117,11 @@ jobs:
             while IFS= read -r -d '' bad; do
               echo "::error::skills dir '$(basename "$bad")' contains a dot; rename it in $APP_REPO"; exit 1
             done < <(find app/skills -type d -name '*.*' -print0)
+            # check-bundle asserts a SKILL.md per skill dir; catching it here
+            # keeps a malformed tree out of an already-immutable release.
+            while IFS= read -r -d '' d; do
+              [ -f "$d/SKILL.md" ] || { echo "::error::skills dir '$(basename "$d")' has no SKILL.md in $APP_REPO"; exit 1; }
+            done < <(find app/skills -mindepth 1 -maxdepth 1 -type d -print0)
           fi
           mkdir stage
           cp "app/$ARTIFACT" "stage/$APP_NAME"
