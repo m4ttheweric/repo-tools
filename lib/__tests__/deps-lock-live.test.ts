@@ -11,7 +11,7 @@ describe("live deps.lock buildable set", () => {
   test("every managed app row carries its m4ttstack repo", () => {
     const want: Record<string, string> = {
       deck: "m4ttstack/deck",
-      board: "m4ttstack/mr-board",
+      board: "m4ttstack/board",
       gitq: "m4ttstack/gitq",
       console: "m4ttstack/console",
       chat: "m4ttstack/chat",

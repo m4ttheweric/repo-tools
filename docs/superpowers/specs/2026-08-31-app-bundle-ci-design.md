@@ -1,7 +1,7 @@
 # App-bundle CI: build mattstack apps from source into deps.lock
 
 **Date:** 2026-08-31
-**Repos touched:** `repo-tools` (rt), and each managed app repo (deck, mr-board, console, chat, gitq)
+**Repos touched:** `repo-tools` (rt), and each managed app repo (deck, board, console, chat, gitq)
 **Status:** design ratified, ready for implementation plan
 
 ## Problem

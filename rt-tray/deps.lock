@@ -51,7 +51,7 @@
     { "name": "deck", "version": "", "license": "MIT", "repo": "m4ttstack/deck", "url": "", "sha256": "",
       "archive": "raw", "extract": "", "bundlePath": "Contents/Helpers/deck", "exec": ["Contents/Helpers/deck"],
       "exposeByDefault": true, "entitlements": "jit", "status": "pending", "kind": "helper" },
-    { "name": "board", "version": "", "license": "MIT", "repo": "m4ttstack/mr-board", "url": "", "sha256": "",
+    { "name": "board", "version": "", "license": "MIT", "repo": "m4ttstack/board", "url": "", "sha256": "",
       "archive": "raw", "extract": "", "bundlePath": "Contents/Helpers/board", "exec": ["Contents/Helpers/board"],
       "exposeByDefault": false, "entitlements": "jit", "status": "pending", "kind": "helper" },
     { "name": "gitq", "version": "0.2.1", "license": "MIT", "repo": "m4ttstack/gitq",
