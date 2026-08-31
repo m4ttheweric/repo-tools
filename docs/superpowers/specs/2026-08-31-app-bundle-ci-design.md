@@ -40,9 +40,11 @@ design is that work.
 
 - Signing or notarizing the built binaries in CI. `build.sh` signs every
   helper at `.app` assembly time, as it does today for downloaded binaries.
-- Changing `build.sh` / `fetch-deps.sh`. The output of this pipeline is
-  deps.lock rows in the exact shape those scripts already consume
-  (`archive: "tar.gz"` rows with an `extract` path).
+- Changing the binary extract/verify/sign path in `build.sh` /
+  `fetch-deps.sh`. The pipeline's output is deps.lock rows in the exact
+  shape those scripts already consume (`archive: "tar.gz"` rows with an
+  `extract` path). The one exception is the isolated skills-landing
+  addition described under Artifact layout.
 - Auto-releasing on every push. The pipeline is manual-dispatch by design;
   version bumps are deliberate.
 - x64 / multi-arch. The bundle pipeline is arm64-only today
@@ -121,8 +123,16 @@ skills/                 # verbatim copy of the repo's skills/ dir
   fetch/build change this design requires (isolated): `fetch-deps.sh`
   today keeps only the `extract` path from an archive, so it must
   additionally preserve a `skills/` dir when the archive carries one
-  (e.g. to `deps/arm64/<name>-skills/`), and `build.sh` copies it to
-  `Contents/Helpers/skills/<name>/`.
+  (e.g. to `deps/arm64/<name>-skills/`, covered by the same `$dest.sha256`
+  idempotency stamp so a deleted skills dir re-materializes), and
+  `build.sh` copies it to `Contents/Helpers/skills/<name>/`. The landed
+  skill trees MUST join build.sh's signing pass (a plain signature, the
+  way fast-browser's non-Mach-O files are signed): every regular file
+  under `Contents/Helpers` is nested code, and one unsigned file makes
+  the outer bundle seal refuse. Skill directory names must not contain a
+  `.` or codesign treats them as nested bundles (the same trap the
+  `.claude-plugin` prune exists for); the landing step prunes or rejects
+  such names.
 - The pipeline computes the tarball's sha256 after upload-staging and
   carries `{name, version, url, sha256}` forward to the PR step.
 
@@ -139,16 +149,19 @@ One file, `.github/workflows/bundle-apps.yml` in repo-tools.
   1. Clone `m4ttstack/<repo>` at `main` (depth 1); record the commit sha.
   2. Read `mattstack.deck.json`; validate `bundle.build` + `bundle.artifact`.
   3. Run `bundle.build`.
-  4. Assert `bundle.artifact` exists, is executable, and answers
-     `--version` (or at minimum exits 0 on `--help`) — the same smoke
-     `check-bundle.sh` will run later, moved earlier.
+  4. Assert `bundle.artifact` exists, is executable, and exits 0 on
+     `--version` — exactly the gate `check-bundle.sh` runs later (no
+     `--help` fallback there, so none here), moved earlier.
   5. Stage `<name>` + optional `skills/`, tar, sha256.
   6. Unless `dry_run`: create the release on the app repo (tag from
      package.json version; fail if tag exists), upload the tarball.
 - **PR job (linux, after all builds):** unless `dry_run`, check out
   repo-tools, rewrite each built app's deps.lock row (url, sha256, version,
-  `status: "bundled"`), and open a single PR titled for the batch, body
-  listing each app's version + source commit. No direct pushes to main.
+  `status: "bundled"`, `archive: "tar.gz"`, `extract: "<name>"` — the last
+  two matter for the deck/board stubs, which sit at `archive: "raw"` today;
+  a raw-archive tarball row would ship the tarball bytes as the binary),
+  and open a single PR titled for the batch, body listing each app's
+  version + source commit. No direct pushes to main.
 - Matrix failures are independent: one app failing does not block the
   others' releases; the PR includes only the apps that succeeded and the
   run summary names the failures.
@@ -223,7 +236,11 @@ PAT is required; its narrow scope is the mitigation.
 
 - **RT-94 (mona):** shared file is each app's `mattstack.deck.json` only.
   RT-94 adds `dev` + `includeInBundle`; this adds `bundle`. Disjoint keys,
-  both additive — merge in either order. RT-94's resolver starts choosing
+  both additive — merge in either order. One deliberate divergence from an
+  RT-94 side remark: the buildable set keys on deps.lock `repo` rows, not
+  `includeInBundle` (that field gates deck's dev/prod switch, not CI). The
+  row schema test asserts the pairing (a `repo` row's app manifest carries
+  `bundle`) so the two sets cannot diverge silently. RT-94's resolver starts choosing
   the bundle automatically once these rows are real and installed
   (`bundleExists` flips true); that is the designed interlock, not a
   conflict.
