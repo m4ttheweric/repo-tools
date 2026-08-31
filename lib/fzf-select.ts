@@ -2,7 +2,7 @@
  * Filterable pickers backed by the native `fzf` binary.
  *
  * fzf does all the rendering, so the `rt cd`/`rt run` hot path pays for no
- * renderer of its own. rt-render.tsx re-exports these functions for
+ * renderer of its own. rt-render.ts re-exports these functions for
  * back-compat; the latency-sensitive callers import them from here directly.
  */
 
@@ -12,12 +12,26 @@ import { BackNavigation } from "./back-navigation.ts";
 export { BackNavigation } from "./back-navigation.ts";
 
 /**
- * Transient pickers open inline, sized to their list, so the shell's
- * scrollback stays in view; only the e2e harness asks for the alternate
- * screen, because Termwright's parser cannot see fzf's inline region.
+ * Transient pickers open inline, beneath the breadcrumb `renderHeader`
+ * already printed: one text line plus the trailing blank line from its own
+ * `console.error` newline, 2 terminal rows, plus 1 row of spacing before the
+ * picker = a 3-row reserve. `--height=-3` is fzf's own "terminal height minus
+ * N" form (0.74+): fzf recomputes it from the live terminal size on every
+ * SIGWINCH, so the breadcrumb stays pinned on resize too, not just at
+ * launch — verified with a pty + VT-emulator harness (74-item list, 15/24/44
+ * row terminals, plus a live resize from 44 to 15 rows mid-picker) against
+ * the patched fzf binary. A plain terminalRows-3 line count computed here in
+ * JS would not have that property: fzf would keep the count fixed until the
+ * next full redraw. Only the e2e harness asks for the alternate screen,
+ * because Termwright's parser cannot see fzf's inline region.
  */
 export function fzfHeightArgs(): string[] {
-  return process.env.RT_FZF_ALT_SCREEN ? [] : ["--height=~100%"];
+  if (process.env.RT_FZF_ALT_SCREEN) return [];
+  const rows = process.stdout.rows ?? process.stderr.rows;
+  // Below this, a 3-row reserve leaves fzf's own chrome (header, prompt,
+  // border, footer) too little room to be usable; ~90% degrades gracefully.
+  if (rows === undefined || rows <= 8) return ["--height=~90%"];
+  return ["--height=-3"];
 }
 
 // ─── Option type ─────────────────────────────────────────────────────────────
@@ -83,7 +97,7 @@ export async function filterableMultiselect(opts: {
     ...fzfHeightArgs(),
     "--border=left",
     "--no-separator",
-    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m`,
+    `--header=${toAnsiFg(T.cyan)}${opts.message}\x1b[0m`,
     "--header-first",
     "--info=inline-right",
     "--footer=space: toggle  tab: toggle & next  enter: confirm",
@@ -93,7 +107,8 @@ export async function filterableMultiselect(opts: {
     "--preview=printf '%s\\n' {+2..}",
     "--preview-window=up,4,wrap,border-bottom",
     "--preview-label= selected ",
-    `--color=border:${toHex(T.pink)}`,
+    "--scrollbar=▐",
+    `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)}`,
     ...bindings,
   ], {
     input,
@@ -170,14 +185,15 @@ export function buildFilterableSelectArgs(opts: {
     "--border=left",
     "--no-separator",
     "--prompt=  filter: ",
-    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m`,
+    `--header=${toAnsiFg(T.cyan)}${opts.message}\x1b[0m`,
     "--header-first",
     "--info=inline-right",
     `--footer=${headerWithReload}`,
     "--no-mouse",
     "--print-query",
     "--expect=ctrl-up",
-    `--color=border:${toHex(T.pink)}`,
+    "--scrollbar=▐",
+    `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)}`,
     ...(opts.exact ? ["--exact"] : []),
     ...(opts.reloadCommand ? [`--bind=ctrl-r:reload(${opts.reloadCommand})`] : []),
   ];

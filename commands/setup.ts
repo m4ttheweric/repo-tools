@@ -182,7 +182,7 @@ export function realApplyDeps(): ApplyDeps {
     exit: process.exit,
     isTTY: () => process.stdin.isTTY === true,
     confirm: async (message: string) => {
-      const { confirm } = await import("../lib/rt-render.tsx");
+      const { confirm } = await import("../lib/rt-render.ts");
       return confirm({ message });
     },
   };

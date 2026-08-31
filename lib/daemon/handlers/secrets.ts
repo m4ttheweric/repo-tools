@@ -53,7 +53,7 @@ import type { Commands, ForgeSlug } from "../../../packages/rt-client/src/comman
 import type { CommandResult, HandlerContext } from "./types.ts";
 
 const DECK_SECRET_DOMAIN = "deck";
-const DECK_SECRET_KEYS = ["cfApiToken", "cfZoneId"] as const;
+const DECK_SECRET_KEYS = ["cfApiToken", "cfZoneId", "cfDnsToken", "railwayToken", "railwayApiToken"] as const;
 
 /** Cross-domain whitelist for the "board" scope — explicit (domain, key) pairs rather than one domain's key list, since board draws from both `board` and `rt`. */
 const BOARD_SECRET_ENTRIES = [
@@ -75,9 +75,20 @@ function defaultSecretsSeams(): SecretsSeams {
   };
 }
 
-async function loadDeckSecrets(): Promise<{ cfApiToken?: string; cfZoneId?: string }> {
+export interface DeckSecretsData {
+  cfApiToken?: string;
+  cfZoneId?: string;
+  /** Cloudflare Zone.DNS:Edit token for push-to-remote DNS writes (distinct from the Access-scoped cfApiToken). */
+  cfDnsToken?: string;
+  /** Railway PROJECT token — CLI `railway up`/`railway domain`. */
+  railwayToken?: string;
+  /** Railway ACCOUNT/TEAM token — GraphQL service management. */
+  railwayApiToken?: string;
+}
+
+async function loadDeckSecrets(): Promise<DeckSecretsData> {
   const seams = defaultSecretsSeams();
-  const out: { cfApiToken?: string; cfZoneId?: string } = {};
+  const out: DeckSecretsData = {};
   for (const key of DECK_SECRET_KEYS) {
     const value = await readSecret(DECK_SECRET_DOMAIN, key, seams);
     if (value !== null) out[key] = value;
@@ -122,7 +133,7 @@ export interface SecretsHandlerOverrides {
   /** Defaults to `loadSecrets` (the `rt` encrypted domain) for secrets:read's "extension" scope. */
   extensionSecrets?: () => Promise<{ linearApiKey?: string; gitlabToken?: string }>;
   /** Defaults to `loadDeckSecrets` (the `deck` encrypted domain) for secrets:read's "deck" scope. */
-  deckSecrets?: () => Promise<{ cfApiToken?: string; cfZoneId?: string }>;
+  deckSecrets?: () => Promise<DeckSecretsData>;
   /** Defaults to `loadBoardSecrets` (cross-domain: `board` + `rt`) for secrets:read's "board" scope. */
   boardSecrets?: () => Promise<BoardSecretsData>;
   /** Defaults to `getApiToken` (the real ~/.mattstack/rt/api-token, shared with api-auth.ts and api-server.ts). */
@@ -202,9 +213,12 @@ export function createSecretsHandlers(
       }
       if (scope === "deck") {
         const all = await deckSecrets();
-        const data: { cfApiToken?: string; cfZoneId?: string } = {};
+        const data: DeckSecretsData = {};
         if (all.cfApiToken) data.cfApiToken = all.cfApiToken;
         if (all.cfZoneId) data.cfZoneId = all.cfZoneId;
+        if (all.cfDnsToken) data.cfDnsToken = all.cfDnsToken;
+        if (all.railwayToken) data.railwayToken = all.railwayToken;
+        if (all.railwayApiToken) data.railwayApiToken = all.railwayApiToken;
         ctx.log.debug({ scope, keys: Object.keys(data) }, "secrets:read");
         return { ok: true as const, data };
       }

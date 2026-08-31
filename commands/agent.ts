@@ -224,7 +224,7 @@ const VERB_HINTS: Record<string, string> = {
 };
 
 async function pickAgentVerb(): Promise<string | null> {
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
   return filterableSelect({
     message: "rt agent",
     options: Object.keys(VERBS).map((v) => ({ value: v, label: v, hint: VERB_HINTS[v] ?? "" })),

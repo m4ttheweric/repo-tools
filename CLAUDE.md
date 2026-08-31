@@ -66,6 +66,18 @@ of them: the board is ephemeral and pane-owned (quit closes the workspace),
 the exit code of a pane command comes only from the `__rt_exit` sentinel,
 and the add flow closes and reopens the session around the fzf picker.
 
+## The TypeScript CLI is UI-free
+
+The rt TS CLI (`commands/`, `lib/`, `cli.ts`, `scripts/`) is pure Bun/TypeScript
+orchestration and MUST NOT contain UI-rendering code: no UI frameworks (ink,
+`@inkjs/*`, react, react-dom, preact, vue, solid, svelte), no JSX, no `.tsx`
+files. All UI is rendered by the Go `rt-ui` helper (prompts, steps, board)
+and by external binaries (fzf); the TS layer only drives them over stdio and
+process spawn. `packages/` (for example `packages/settings-kit`, a react UI
+kit for the web console) is a separate concern and is exempt from this rule.
+
+Enforced by `lib/__tests__/no-ui-in-cli.test.ts`.
+
 ## Release & distribution
 
 Before touching the release workflow, the app bundle, signing, Sparkle, the
@@ -131,7 +143,7 @@ something that does nothing.
 
 When adding a new command module referenced by `cli.ts` (any file with a `module:` entry in the command tree), you **must** also register it in `lib/module-registry.ts`. `bun build --compile` cannot resolve dynamic `import()` with runtime-constructed paths, so the compiled binary relies entirely on this registry to discover and bundle every command module. Running from source (`bun run cli.ts`) works fine without the registry entry because the dynamic import fallback succeeds, so you won't catch this locally -- it only breaks in the distributed binary.
 
-Every registry value is a thunk — `() => import("../commands/x.ts")` with the path spelled out literally — not an eagerly-evaluated namespace import. That's what keeps `rt --version` and every other dispatch from paying for the whole command surface: the bundler still statically discovers all 30 modules, but none of them evaluate until a command actually dispatches to it. Adding a static (non-thunked) `import` of a command module to `lib/module-registry.ts`, or a static value import of `lib/rt-render.tsx`/`ink` to `lib/command-tree.ts`, is a startup regression — `scripts/bench-startup.ts` gates this in the release workflow (`.github/workflows/release.yml`), and `lib/__tests__/no-eager-tui.test.ts` gates the command-tree and command-module cases directly.
+Every registry value is a thunk — `() => import("../commands/x.ts")` with the path spelled out literally — not an eagerly-evaluated namespace import. That's what keeps `rt --version` and every other dispatch from paying for the whole command surface: the bundler still statically discovers all 30 modules, but none of them evaluate until a command actually dispatches to it. Adding a static (non-thunked) `import` of a command module to `lib/module-registry.ts`, or a static value import of `lib/rt-render.ts`/`ink` to `lib/command-tree.ts`, is a startup regression — `scripts/bench-startup.ts` gates this in the release workflow (`.github/workflows/release.yml`), and `lib/__tests__/no-eager-tui.test.ts` gates the command-tree and command-module cases directly.
 
 ### `SCHEMA_VERSION` is claimed across sessions, not chosen per branch
 

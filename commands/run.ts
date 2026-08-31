@@ -339,7 +339,7 @@ async function selectPackageAndScript(
 
         // Save as preset, then ask whether to run it now
         if (val === SAVE_PRESET_SENTINEL) {
-          const { confirm, textInput } = await import("../lib/rt-render.tsx");
+          const { confirm, textInput } = await import("../lib/rt-render.ts");
           const name = await textInput({
             message: "Preset name",
             placeholder: "e.g. backend-lite",
@@ -545,7 +545,7 @@ async function selectPackageAndScript(
         if (varResult.key === "ctrl-up") break; // back to script picker
 
         if (varResult.value === ADD_SENTINEL) {
-          const { textInput } = await import("../lib/rt-render.tsx");
+          const { textInput } = await import("../lib/rt-render.ts");
           const name = await textInput({
             message: "Variation name",
             placeholder: "e.g. with debug",
@@ -778,7 +778,7 @@ export async function resolveRun(
         );
         if (worktrees.length === 0) {
           process.stderr.write(
-            `No accessible worktrees for ${selectedRepo.repoName}.\n`,
+            `No accessible worktrees for ${repoLabel(selectedRepo.repoName)}.\n`,
           );
           throw new RunAborted(1);
         }
@@ -807,7 +807,7 @@ export async function resolveRun(
                 label: formatBranchLabel(eb),
                 hint: "",
               })),
-              message: `${selectedRepo.repoName} worktrees`,
+              message: `${repoLabel(selectedRepo.repoName)} worktrees`,
               headerParts: [
                 "enter: select",
                 "ctrl-up: back to repo",
@@ -832,8 +832,8 @@ export async function resolveRun(
           // ── Package + script ────────────────────────────────────────────
           while (true) {
             const wtCtx = worktrees.length > 1
-              ? `${selectedRepo.repoName} / ${basename(worktreePath)}`
-              : selectedRepo.repoName;
+              ? `${repoLabel(selectedRepo.repoName)} / ${basename(worktreePath)}`
+              : repoLabel(selectedRepo.repoName);
             const sel = await selectPackageAndScript(worktreePath, repoName, wtCtx, queue);
             if (sel === QUEUE_LAUNCHED) {
               await launchQueue(queue, worktreePath);
@@ -976,7 +976,7 @@ export async function runAgainCommand(
     process.exit(0);
   }
 
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
   const chosen = await filterableSelect({
     message: "Recent runs",
     options: entries.map((tagged) => ({

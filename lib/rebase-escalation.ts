@@ -219,7 +219,7 @@ export async function runEscalationFlow(opts: {
       // off to... say so once instead of silently falling through to the prompt.
       console.log(`  ${yellow}--agent requested but herdr is not reachable... falling back to the prompt${reset}`);
     }
-    const { select } = await import("./rt-render.tsx");
+    const { select } = await import("./rt-render.ts");
     const options = [
       { value: "abort", label: "abort the rebase", hint: "default, same as before" },
       ...(agentPossible

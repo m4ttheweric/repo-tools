@@ -1335,7 +1335,7 @@ export function repoFromOptionValue(repos: KnownRepo[], value: string): KnownRep
 /** The one-line refusal every picker prints instead of cd-ing into a repo whose indexed path is gone. */
 export function missingRepoRefusal(r: KnownRepo): string {
   const gone = r.worktrees[0]?.path ?? "its indexed path";
-  return `${r.repoName} is no longer at ${gone} — run: rt repos locate <new-path> --repo ${r.repoName}`;
+  return `${repoLabel(r.repoName)} is no longer at ${gone} — run: rt repos locate <new-path> --repo ${r.repoName}`;
 }
 
 /**

@@ -111,7 +111,7 @@ async function guidedConnect(
     process.exitCode = 1;
     return;
   }
-  const { select, textInput, confirm } = await import("../lib/rt-render.tsx");
+  const { select, textInput, confirm } = await import("../lib/rt-render.ts");
   const result = await runGuidedConnect(target, opts, {
     getSnapshot: f => getSdmSnapshot(f),
     needsAccessRequest: async resource => {

@@ -296,7 +296,7 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
     const stagedList = result.paths.map((p) => `  \x1b[32m+\x1b[0m ${p}`).join("\n");
     process.stderr.write(`\n${stagedList}\n\n`);
 
-    const { textInput } = await import("../lib/rt-render.tsx");
+    const { textInput } = await import("../lib/rt-render.ts");
     const message = await textInput({
       message: "Commit message",
       placeholder: "feat: ...",

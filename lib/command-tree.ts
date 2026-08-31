@@ -30,7 +30,7 @@ const IS_DEV_MODE = existsSync(join(homedir(), ".local/bin/rt"));
 import type { RepoIdentity } from "./repo.ts";
 import { MODULE_REGISTRY } from "./module-registry.ts";
 import { BackNavigation } from "./back-navigation.ts";
-import type { SelectOption } from "./rt-render.tsx";
+import type { SelectOption } from "./rt-render.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -275,7 +275,8 @@ export async function dispatch(
       if (!repo) {
         const { yellow } = await import("./tui.ts");
         console.error(`\n  ${yellow}unknown repo: ${repoFlag}${reset}`);
-        console.error(`  ${dim}known: ${repos.map(r => r.repoName).join(", ")}${reset}\n`);
+        const { repoLabel } = await import("./repo-label.ts");
+        console.error(`  ${dim}known: ${repos.map(r => repoLabel(r.repoName)).join(", ")}${reset}\n`);
         process.exit(1);
       }
       // A missing row still resolves by name (that's the point — locate it),
@@ -319,7 +320,7 @@ export async function dispatch(
 
   // alt-enter at the picker: collect declared args interactively
   if (withArgs && node.args?.length && process.stdin.isTTY) {
-    const { collectArgs } = await import("./arg-collector.tsx");
+    const { collectArgs } = await import("./arg-collector.ts");
     const formLabel = [...breadcrumb, resolvedName].join(" ");
     const collected = await collectArgs(formLabel, node.args);
     if (collected === null) process.exit(0);

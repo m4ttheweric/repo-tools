@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { buildNavArgs } from "../navigate.ts";
+import { T, toHex } from "../tui/palette.ts";
 
 describe("buildNavArgs preview", () => {
   const base = { options: [], message: "m" };
@@ -78,6 +79,25 @@ describe("buildNavArgs cyclic scroll", () => {
   test("always enables --cycle so the list wraps at both ends", () => {
     // Up at the top goes to the bottom, down at the bottom goes to the top.
     expect(buildNavArgs({ options: [], message: "m" })).toContain("--cycle");
+  });
+});
+
+describe("buildNavArgs chrome colors", () => {
+  const base = { options: [], message: "m" };
+
+  test("scrollbar and footer divider go neutral; border stays pink, pointer/marker go cyan", () => {
+    const args = buildNavArgs(base);
+    expect(args).toContain("--scrollbar=▐");
+    expect(args).toContain(
+      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)}`,
+    );
+  });
+
+  test("colorOverrides still appends after the base chrome colors", () => {
+    const args = buildNavArgs({ ...base, colorOverrides: ",hl:#ffb86c" });
+    expect(args).toContain(
+      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)},hl:#ffb86c`,
+    );
   });
 });
 

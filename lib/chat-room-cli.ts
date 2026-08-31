@@ -1,7 +1,7 @@
 /**
  * CLI-only synchronous room derivation, split out of chat-room.ts so a
  * daemon module that only needs `deriveRoomForCwdAsync` never drags
- * repo.ts's picker chain (git.ts, repo-index.ts, the lazy rt-render.tsx
+ * repo.ts's picker chain (git.ts, repo-index.ts, the lazy rt-render.ts
  * import) in behind it merely by importing that sibling file -- see
  * lib/__tests__/no-eager-tui.test.ts's transitive daemon-graph guard.
  */

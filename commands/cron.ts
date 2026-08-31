@@ -31,7 +31,7 @@ async function requireKnownTrigger(args: string[], json: boolean, verb: string):
     // No trigger given: an interactive terminal gets a picker; agents and
     // --json callers keep the usage error and its exit code.
     if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
-      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const { filterableSelect } = await import("../lib/rt-render.ts");
       const picked = await filterableSelect({
         message: `rt cron ${verb}`,
         options: KNOWN_TRIGGERS.map((t) => ({ value: t, label: t, hint: "" })),

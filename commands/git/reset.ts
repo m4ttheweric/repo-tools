@@ -151,7 +151,7 @@ export async function resetToOrigin(opts: ResetOptions): Promise<ResetResult> {
 
   // 1. Fetch (unless caller already did)
   if (!opts.skipFetch) {
-    const { withSpinner } = await import("../../lib/rt-render.tsx");
+    const { withSpinner } = await import("../../lib/rt-render.ts");
     const { exec } = await import("child_process");
     const gitAsync = (args: string) =>
       new Promise<void>((resolve, reject) => {
@@ -287,7 +287,7 @@ export async function resetToOrigin(opts: ResetOptions): Promise<ResetResult> {
     log(`\n  ${dim}Will reset to ${remoteBranch} and cherry-pick these on top.${reset}\n`, quiet);
     // In interactive mode, we could prompt for confirmation.
     // For now, proceed — the backup is our safety net.
-    const { confirm: inkConfirm } = await import("../../lib/rt-render.tsx");
+    const { confirm: inkConfirm } = await import("../../lib/rt-render.ts");
     const ok = await inkConfirm({
       message: "Reset + cherry-pick?",
       initialValue: true,

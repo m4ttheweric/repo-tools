@@ -114,7 +114,7 @@ export async function teamCreate(args: string[], _ctx: CommandContext = {}, deps
 
   if (!name) {
     if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
-      const { textInput } = await import("../lib/rt-render.tsx");
+      const { textInput } = await import("../lib/rt-render.ts");
       name = await textInput({ message: "Team name", placeholder: "Platform Team" });
       if (!name) process.exit(0);
     } else {
@@ -297,7 +297,7 @@ export async function teamMembersRemove(args: string[], _ctx: CommandContext = {
   if (!handle) {
     const roster = process.stdin.isTTY && !json && !process.env.RT_BATCH ? rosterHandles(args) : [];
     if (roster.length > 0) {
-      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const { filterableSelect } = await import("../lib/rt-render.ts");
       const picked = await filterableSelect({
         message: "Remove which member?",
         options: roster.map((h) => ({ value: h, label: h })),

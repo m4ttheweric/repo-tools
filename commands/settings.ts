@@ -45,7 +45,7 @@ import {
 // ─── Linear token ────────────────────────────────────────────────────────────
 
 export async function setLinearToken(): Promise<void> {
-  const { textInput } = await import("../lib/rt-render.tsx");
+  const { textInput } = await import("../lib/rt-render.ts");
   const secrets = await loadSecrets();
 
   // try scopes the prompt only — a failed *save* must surface as an error,
@@ -86,7 +86,7 @@ export async function setLinearToken(): Promise<void> {
 // ─── GitLab token ────────────────────────────────────────────────────────────
 
 export async function setGitlabToken(): Promise<void> {
-  const { textInput } = await import("../lib/rt-render.tsx");
+  const { textInput } = await import("../lib/rt-render.ts");
   const secrets = await loadSecrets();
 
   // try scopes the prompt only — a failed *save* must surface as an error,
@@ -139,7 +139,7 @@ export async function setSdmEmail(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   } else {
-    const { textInput } = await import("../lib/rt-render.tsx");
+    const { textInput } = await import("../lib/rt-render.ts");
     try {
       email = await textInput({
         message: "StrongDM account email",
@@ -198,7 +198,7 @@ async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKe
     return null;
   }
 
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.ts");
 
   const selectedId = await filterableSelect({
     message: "Select your team",
@@ -221,7 +221,7 @@ async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKe
 // ─── Notification preferences ────────────────────────────────────────────────
 
 export async function configureNotifications(): Promise<void> {
-  const { filterableMultiselect } = await import("../lib/rt-render.tsx");
+  const { filterableMultiselect } = await import("../lib/rt-render.ts");
 
   const prefs = loadNotificationPrefs();
 
@@ -738,7 +738,7 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
   console.log("");
 
   if (!target) {
-    const { select } = await import("../lib/rt-render.tsx");
+    const { select } = await import("../lib/rt-render.ts");
     target = await select({
       message: "Switch to",
       options: [
@@ -776,7 +776,7 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
     let resolvedPath = sourcePath;
 
     if (!resolvedPath) {
-      const { textInput } = await import("../lib/rt-render.tsx");
+      const { textInput } = await import("../lib/rt-render.ts");
       const defaultGuess = `${Bun.env.HOME}/Documents/GitHub/repo-tools`;
       const entered = await textInput({
         message: "Path to repo-tools source directory",

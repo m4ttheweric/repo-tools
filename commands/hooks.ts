@@ -404,7 +404,7 @@ export async function toggleHooks(args: string[], ctx: CommandContext): Promise<
     return;
   }
 
-  const { confirm: inkConfirm, multiselect } = await import("../lib/rt-render.tsx");
+  const { confirm: inkConfirm, multiselect } = await import("../lib/rt-render.ts");
 
   const globalToggle = await inkConfirm({
     message: config.enabled ? "Hooks are ON globally. Keep enabled?" : "Hooks are OFF globally. Re-enable?",

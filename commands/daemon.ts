@@ -697,7 +697,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
       return;
     }
     const identity = resolved.identity;
-    const { filterableSelect, filterableMultiselect, textInput } = await import("../lib/rt-render.tsx");
+    const { filterableSelect, filterableMultiselect, textInput } = await import("../lib/rt-render.ts");
     const displayTracking = loadRepoTracking();
     const rawEntry = displayTracking[identity];
     const current = grants(displayTracking, identity);

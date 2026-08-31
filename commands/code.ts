@@ -193,7 +193,7 @@ async function ensureEditor(prefs: Prefs, repoName: string): Promise<string> {
     process.exit(1);
   }
 
-  const { select } = await import("../lib/rt-render.tsx");
+  const { select } = await import("../lib/rt-render.ts");
   const selected = await select({
     message: `Which editor for ${repoName}?`,
     options: installed.map(e => ({
@@ -223,7 +223,7 @@ async function resolveWorkspaceTarget(dirPath: string, prefs: Prefs): Promise<st
 
   // Multiple workspace files — show picker
   const wsFiles = readdirSync(dirPath).filter(f => f.endsWith(".code-workspace")).sort();
-  const { select } = await import("../lib/rt-render.tsx");
+  const { select } = await import("../lib/rt-render.ts");
   const options = [
     ...wsFiles.map(f => ({ value: f, label: f, hint: "workspace file" })),
     { value: "__folder__", label: "Open folder without workspace file", hint: "" },

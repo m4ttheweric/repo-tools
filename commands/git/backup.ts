@@ -66,7 +66,7 @@ export async function restoreCommand(
   }
 
   const { filterableSelect, confirm: inkConfirm } = await import(
-    "../../lib/rt-render.tsx"
+    "../../lib/rt-render.ts"
   );
 
   const selected = await filterableSelect({

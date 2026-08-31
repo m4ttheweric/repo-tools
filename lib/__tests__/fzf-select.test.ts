@@ -5,11 +5,59 @@
  * the exact tab layout and ANSI sequences.
  */
 
-import { describe, expect, test } from "bun:test";
-import { buildFilterableSelectArgs, buildFzfRows, type SelectOption } from "../fzf-select.ts";
-import { T, toAnsiFg } from "../tui/palette.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import { buildFilterableSelectArgs, buildFzfRows, fzfHeightArgs, type SelectOption } from "../fzf-select.ts";
+import { T, toAnsiFg, toHex } from "../tui/palette.ts";
 
-const q = (message: string) => `--header=${toAnsiFg(T.pink)}${message}\x1b[0m`;
+const q = (message: string) => `--header=${toAnsiFg(T.cyan)}${message}\x1b[0m`;
+
+/**
+ * fzfHeightArgs: `--height=-3` (fzf's native "terminal height minus N" form)
+ * is what keeps the breadcrumb `renderHeader` prints above the picker
+ * onscreen, at launch AND after a resize, since fzf recomputes it from the
+ * live terminal size on every SIGWINCH rather than fzf-select.ts precomputing
+ * a fixed line count. Verified with a pty + VT-emulator harness against a
+ * 74-item list in 15/24/44 row terminals, including a live resize from 44 to
+ * 15 rows mid-picker: the breadcrumb stayed onscreen in every case. `~90%` is
+ * kept only as the fallback for terminals too small to spare the reserve.
+ */
+describe("fzfHeightArgs", () => {
+  const originalStdoutRows = process.stdout.rows;
+  const originalStderrRows = process.stderr.rows;
+
+  afterEach(() => {
+    delete process.env.RT_FZF_ALT_SCREEN;
+    Object.defineProperty(process.stdout, "rows", { value: originalStdoutRows, configurable: true });
+    Object.defineProperty(process.stderr, "rows", { value: originalStderrRows, configurable: true });
+  });
+
+  const setRows = (rows: number | undefined) => {
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true });
+    Object.defineProperty(process.stderr, "rows", { value: rows, configurable: true });
+  };
+
+  test("default (inline) picker reserves 3 rows for the breadcrumb via fzf's native height-minus-N form", () => {
+    delete process.env.RT_FZF_ALT_SCREEN;
+    setRows(44);
+    expect(fzfHeightArgs()).toEqual(["--height=-3"]);
+  });
+
+  test("small terminal (rows <= 8) falls back to ~90%: a 3-row reserve would leave fzf's own chrome no room", () => {
+    setRows(8);
+    expect(fzfHeightArgs()).toEqual(["--height=~90%"]);
+  });
+
+  test("undefined rows (not a TTY) falls back to ~90%", () => {
+    setRows(undefined);
+    expect(fzfHeightArgs()).toEqual(["--height=~90%"]);
+  });
+
+  test("RT_FZF_ALT_SCREEN drops height args for the e2e harness's fullscreen mode", () => {
+    setRows(44);
+    process.env.RT_FZF_ALT_SCREEN = "1";
+    expect(fzfHeightArgs()).toEqual([]);
+  });
+});
 
 describe("buildFzfRows", () => {
   test("plain options: value, bold label padded to the widest label, dim hint", () => {
@@ -89,5 +137,13 @@ describe("buildFilterableSelectArgs", () => {
     const explicitlyUndefined = buildFilterableSelectArgs({ message: "Pick a repo", exact: true, reloadCommand: undefined });
     expect(withoutReload).toEqual(explicitlyUndefined);
     expect(withoutReload.some((a) => a.startsWith("--bind=ctrl-r"))).toBe(false);
+  });
+
+  test("scrollbar is a thick neutral glyph; border stays pink while pointer/marker go cyan", () => {
+    const args = buildFilterableSelectArgs({ message: "Pick a repo" });
+    expect(args).toContain("--scrollbar=▐");
+    expect(args).toContain(
+      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)}`,
+    );
   });
 });

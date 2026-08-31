@@ -94,7 +94,7 @@ async function ensureShellFunction(): Promise<void> {
   const origWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
 
-  const { confirm: inkConfirm } = await import("../lib/rt-render.tsx");
+  const { confirm: inkConfirm } = await import("../lib/rt-render.ts");
   const hasLegacyRtcd = rcContent.includes("rtcd()");
   const hasOldRtWrapper = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes(".last-cwd");
   const hasPreRehashWrapper = rcContent.includes("rt() {") && rcContent.includes(".last-cwd") && !rcContent.includes("hash -r");

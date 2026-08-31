@@ -22,6 +22,7 @@ import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import { getCurrentBranch, getRemoteDefaultBranch, hasUncommittedChanges } from "../lib/git-ops.ts";
 import { loadSyncConfig } from "../lib/sync-config.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
+import { repoLabel } from "../lib/repo-label.ts";
 import { rebaseOnto, type RebaseResult } from "./git/rebase.ts";
 import { resetToOrigin, type ResetResult } from "./git/reset.ts";
 import { syncLog } from "../lib/sync-log.ts";
@@ -166,7 +167,7 @@ async function syncBranch(
 
   syncLog.worktree(cwd, branch);
 
-  const { createStepRunner } = await import("../lib/rt-render.tsx");
+  const { createStepRunner } = await import("../lib/rt-render.ts");
   const steps = createStepRunner();
 
   // 1. Fetch once (rebase/reset will skip their own fetch)
@@ -289,7 +290,7 @@ async function syncBranch(
 // ─── Multi-worktree sync ─────────────────────────────────────────────────────
 
 async function syncAll(
-  repoName: string,
+  repoIdentity: string,
   opts: { dryRun?: boolean },
 ): Promise<void> {
   // Get all worktrees from daemon cache
@@ -322,11 +323,13 @@ async function syncAll(
     process.exit(1);
   }
 
-  const repoEntry = repoMap[repoName];
+  const repoEntry = repoMap[repoIdentity];
   if (!repoEntry) {
-    console.error(`\n  ${yellow}repo "${repoName}" not known to daemon — is it registered?${reset}\n`);
+    console.error(`\n  ${yellow}repo "${repoLabel(repoIdentity)}" not known to daemon — is it registered?${reset}\n`);
     process.exit(1);
   }
+
+  const repoName = repoLabel(repoIdentity);
 
   // Use daemon's worktree list directly (no need to re-run git worktree list)
   const worktrees = repoEntry.worktrees.map((wt) => ({
@@ -429,7 +432,7 @@ export async function syncAllCommand(
   if (!ensureOriginRemote(ctx.identity!.repoRoot)) return;
   syncLog.start(`rt sync all  repo=${repoName}${dryRun ? "  --dry-run" : ""}`);
   try {
-    await syncAll(repoName, { dryRun });
+    await syncAll(ctx.identity!.identity, { dryRun });
   } finally {
     syncLog.end();
   }

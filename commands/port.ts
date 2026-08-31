@@ -143,7 +143,7 @@ function killByPort(port: number): void {
 }
 
 async function showKillPicker(entries: PortEntry[]): Promise<void> {
-  const { filterableMultiselect } = await import("../lib/rt-render.tsx");
+  const { filterableMultiselect } = await import("../lib/rt-render.ts");
 
   const selectedPids = await filterableMultiselect({
     message: "Select processes to kill (or esc to exit)",

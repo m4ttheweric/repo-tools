@@ -108,7 +108,7 @@ export async function secretsSet(args: string[], _ctx: CommandContext = {}, seam
   const team = flagValue(args, "--team");
   let [domain, key] = positional(args);
   if ((!domain || !key) && process.stdin.isTTY && !process.env.RT_BATCH) {
-    const { textInput } = await import("../lib/rt-render.tsx");
+    const { textInput } = await import("../lib/rt-render.ts");
     if (!domain) {
       const existing = existingDomains(team);
       const hint = existing.length ? ` (existing: ${existing.join(", ")})` : "";
@@ -147,7 +147,7 @@ export async function secretsList(args: string[], _ctx: CommandContext = {}, sea
   if (!domain && process.stdin.isTTY && !process.env.RT_BATCH) {
     const domains = existingDomains(team);
     if (domains.length > 0) {
-      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const { filterableSelect } = await import("../lib/rt-render.ts");
       const picked = await filterableSelect({
         message: "Domain",
         options: domains.map((d) => ({ value: d, label: d })),
@@ -211,7 +211,7 @@ export async function secretsRotate(args: string[], _ctx: CommandContext = {}, s
   }
 
   if ((!domain || !key) && process.stdin.isTTY && !process.env.RT_BATCH) {
-    const { filterableSelect, textInput } = await import("../lib/rt-render.tsx");
+    const { filterableSelect, textInput } = await import("../lib/rt-render.ts");
     if (!domain) {
       const domains = existingDomains(team);
       if (domains.length > 0) {
