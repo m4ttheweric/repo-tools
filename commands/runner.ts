@@ -6,9 +6,10 @@
 import { spawnSync } from "child_process";
 import { randomBytes } from "crypto";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { herdrAvailable, herdrSocketPath } from "../lib/herdr/client.ts";
+import { herdrAvailable, herdrRequest, herdrSocketPath } from "../lib/herdr/client.ts";
 import { HerdrEngine } from "../lib/runner/engine.ts";
 import { Runner, SessionDied, type RunnerDeps, type SeedEntry } from "../lib/runner/runner.ts";
+import { planReconcile, readRegistry, registerWorkspace, unregisterWorkspace, isAlive } from "../lib/runner/workspace-registry.ts";
 import { interactive } from "../lib/ui/gate.ts";
 import { exit, openSession } from "../lib/ui/spawn.ts";
 import { resolveRun } from "./run.ts";
@@ -31,7 +32,31 @@ export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: strin
     },
     workspaceLabel: `rt-runner-${randomBytes(2).toString("hex")}`,
     seed,
+    registerWorkspace: (id) => registerWorkspace(id),
+    unregisterWorkspace: (id) => unregisterWorkspace(id),
   };
+}
+
+/**
+ * Closes any rt-runner-* workspace no live runner owns (a prior launch that
+ * died to SIGHUP or a crash, before this reconcile shipped). Best-effort: a
+ * failure here must never block a new launch.
+ */
+export async function reconcileRunnerWorkspaces(sock: string): Promise<void> {
+  try {
+    const res = await herdrRequest<{ workspaces?: { workspace_id: string; label: string }[] }>("workspace.list", {}, { sockPath: sock });
+    if (!res.ok) return;
+    const workspaces = (res.result.workspaces ?? []).map((w) => ({ id: w.workspace_id, label: w.label }));
+    const plan = planReconcile(workspaces, readRegistry(), isAlive);
+    for (const id of plan.closeWorkspaceIds) {
+      await herdrRequest("workspace.close", { workspace_id: id }, { sockPath: sock });
+    }
+    for (const id of plan.removeRegistryIds) {
+      unregisterWorkspace(id);
+    }
+  } catch (err) {
+    process.stderr.write(`  rt runner: orphan reconcile failed (${err instanceof Error ? err.message : String(err)})\n`);
+  }
 }
 
 /** Gate + build + run, shared by the args-driven command and the seeded entry point. `args` feeds `buildRunnerDeps`'s resolve closure; the seeded caller has no CLI args, so it always passes `[]`. */
@@ -46,15 +71,20 @@ async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[
     return exit(1);
   }
 
+  await reconcileRunnerWorkspaces(sock);
+
   const runner = new Runner(buildRunnerDeps(args, ctx, sock, seed));
 
   // The board dies with this process: a signal tears the workspace down
-  // before exit so no headless pane outlives its board.
+  // before exit so no headless pane outlives its board. SIGHUP (a closed
+  // terminal window) gets the same best-effort teardown; a launch this
+  // catches never leaves a workspace for the next reconcile to find.
   const onSignal = () => {
     void runner.teardown().finally(() => process.exit(130));
   };
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
+  process.once("SIGHUP", onSignal);
 
   try {
     await runner.run();
@@ -67,6 +97,7 @@ async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    process.off("SIGHUP", onSignal);
   }
 }
 
