@@ -1,4 +1,7 @@
 import { test, expect, afterEach } from "bun:test";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { __test__ as gate } from "../../lib/ui/gate.ts";
 import { __test__ as spawnTest, openSession } from "../../lib/ui/spawn.ts";
 import { HerdrEngine } from "../../lib/runner/engine.ts";
@@ -64,9 +67,20 @@ test("with no backend flag and tmux off PATH the command names it and exits 1 wi
   expect(errs.join("")).toContain("tmux on PATH");
 });
 
-test("tmuxAvailable reports false for an explicit PATH with no tmux, true for the real one", () => {
-  expect(tmuxAvailable("/nonexistent-empty-dir")).toBe(false);
-  expect(tmuxAvailable(REAL_PATH)).toBe(true);
+// Both branches run against a PATH this test builds. Asserting the true case
+// against the machine's own PATH made the result depend on whether tmux
+// happened to be installed, which is false on a CI runner.
+test("tmuxAvailable reports false for a PATH without tmux, true for one with it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rt-tmux-path-"));
+  try {
+    expect(tmuxAvailable(dir)).toBe(false);
+    const bin = join(dir, "tmux");
+    writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+    chmodSync(bin, 0o755);
+    expect(tmuxAvailable(dir)).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("buildRunnerDeps assembles the success-path RunnerDeps", () => {
