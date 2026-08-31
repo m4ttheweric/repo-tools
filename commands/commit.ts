@@ -21,12 +21,14 @@
  */
 
 import { spawnSync } from "child_process";
+import { fzfHeightArgs } from "../lib/fzf-select.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { ensureFzf } from "../lib/fzf.ts";
+import { T, toAnsiFg, toHex } from "../lib/tui/palette.ts";
 import {
   getChangedFiles,
   discardChanges,
@@ -162,7 +164,7 @@ interface PickerResult {
  * or null if the user cancelled (esc).
  */
 function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
-  ensureFzf();
+  const fzf = ensureFzf();
   const pipe = deltaPipeCmd();
   const { cmd: previewCmd, cleanup: cleanupPreview } = buildPreviewCmd(cwd, pipe);
 
@@ -172,17 +174,21 @@ function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
     .join("\n");
 
   const result = spawnSync(
-    "fzf",
+    fzf,
     [
       "--multi",
       "--ansi",
       "--with-nth=2..",         // display label col; value col is hidden
       "--delimiter=\t",
       "--layout=reverse",
-      "--border=rounded",
-      "--border-label= rt commit ",
+      ...fzfHeightArgs(),
+      "--border=left",
+      "--no-separator",
       "--prompt=  filter: ",
-      "--header=space: stage  tab: toggle+next  ctrl-a: toggle-all  ctrl-d: discard  enter: commit  esc: abort",
+      `--header=${toAnsiFg(T.pink)}rt commit\x1b[0m`,
+      "--header-first",
+      "--info=inline-right",
+      "--footer=space: stage  tab: toggle+next  ctrl-a: toggle-all  ctrl-d: discard  enter: commit  esc: abort",
       "--no-mouse",
       "--bind=space:toggle,tab:toggle+down,ctrl-a:toggle-all",
       // GitHub Desktop style: everything checked by default. Must be the
@@ -196,7 +202,7 @@ function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
       "--preview-window=right:60%:wrap:border-left",
       "--preview-label= diff ",
       // Highlight matched characters
-      "--color=hl:#ffb86c,hl+:#ffb86c",
+      `--color=hl:#ffb86c,hl+:#ffb86c,border:${toHex(T.pink)}`,
     ],
     {
       input,

@@ -16,12 +16,13 @@
  */
 
 import { bold, cyan, dim, reset, yellow } from "./tui.ts";
+import { fzfHeightArgs } from "./fzf-select.ts";
 import { spawnSync } from "child_process";
 import { resolve, join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { beginCommand, logCommand } from "./cli-logger.ts";
-import { toHex, T } from "./tui/palette.ts";
+import { toHex, toAnsiFg, T } from "./tui/palette.ts";
 
 // Dev mode is active when ~/.local/bin/rt exists (the wrapper script pointing
 // at local source). Same detection used by commands/version.ts.
@@ -465,7 +466,7 @@ async function showPicker(
   breadcrumb: string[],
 ): Promise<PickerSelection | typeof BACK | null> {
   const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
+  const fzf = ensureFzf();
 
   const visible = Object.entries(tree).filter(([_, n]) => isNodeVisible(n, IS_DEV_MODE));
   const anyHasArgs = visible.some(([_, n]) => n.args?.length);
@@ -485,21 +486,25 @@ async function showPicker(
   const expectKeys = ["ctrl-up"];
   if (anyHasArgs) expectKeys.push("alt-enter");
 
-  const result = spawnSync("fzf", [
+  const result = spawnSync(fzf, [
     "--ansi",
     "--with-nth=2..",
     "--nth=1",
     "--delimiter=\t",
     "--tabstop=1",
     "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${breadcrumb.join(" › ")} `,
-    "--prompt=filter: ",
-    `--header=${headerParts.join("  ")}`,
+    ...fzfHeightArgs(),
+    "--border=left",
+    "--no-separator",
+    "--prompt=  filter: ",
+    `--header=${toAnsiFg(T.pink)}${breadcrumb.join(" › ")}\x1b[0m`,
+    "--header-first",
+    "--info=inline-right",
+    `--footer=${headerParts.join("  ")}`,
     "--no-mouse",
     "--print-query",
     `--expect=${expectKeys.join(",")}`,
-    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+    `--color=border:${toHex(T.pink)}`,
   ], {
     input,
     stdio: ["pipe", "pipe", "inherit"],

@@ -1,6 +1,7 @@
 import { spawnSync } from "child_process";
+import { fzfHeightArgs } from "./fzf-select.ts";
 import type { CommandArg } from "./command-tree.ts";
-import { T, toHex } from "./tui/palette.ts";
+import { T, toAnsiFg, toHex } from "./tui/palette.ts";
 
 export async function collectArgs(
   label: string,
@@ -9,7 +10,7 @@ export async function collectArgs(
   if (!argDefs.length) return [];
 
   const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
+  const fzf = ensureFzf();
 
   // Step 1: multi-select which args to include
   const labelWidth = Math.max(...argDefs.map((a) => (a.flag ?? a.name).length));
@@ -22,19 +23,23 @@ export async function collectArgs(
     })
     .join("\n");
 
-  const result = spawnSync("fzf", [
+  const result = spawnSync(fzf, [
     "--multi",
     "--ansi",
     "--with-nth=2..",
     "--delimiter=\t",
     "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${label} args `,
-    "--prompt=filter: ",
-    "--header=space: toggle  tab: toggle & next  enter: confirm",
+    ...fzfHeightArgs(),
+    "--border=left",
+    "--no-separator",
+    "--prompt=  filter: ",
+    `--header=${toAnsiFg(T.pink)}${label} args\x1b[0m`,
+    "--header-first",
+    "--info=inline-right",
+    "--footer=space: toggle  tab: toggle & next  enter: confirm",
     "--no-mouse",
     "--bind=space:toggle,tab:toggle+down",
-    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+    `--color=border:${toHex(T.pink)}`,
   ], {
     input,
     stdio: ["pipe", "pipe", "inherit"],

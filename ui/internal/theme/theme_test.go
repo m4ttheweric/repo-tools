@@ -31,17 +31,20 @@ func TestSpinnerFrames(t *testing.T) {
 	}
 }
 
-func TestHuhFormBaseIsThePinkRoundedCard(t *testing.T) {
+func TestHuhFormBaseIsThePinkAccentBar(t *testing.T) {
 	styles := Huh().Theme(true)
 	out := styles.Form.Base.Render("body")
-	if !strings.Contains(out, "╭") || !strings.Contains(out, "╰") {
-		t.Fatalf("no rounded border in %q", out)
+	if !strings.Contains(out, "▌") {
+		t.Fatalf("no accent edge in %q", out)
+	}
+	if strings.ContainsAny(out, "╭╰╮╯─") {
+		t.Fatalf("box glyphs survived the bar chrome: %q", out)
 	}
 	if !strings.Contains(out, "\x1b[38;2;255;107;157m") {
-		t.Fatalf("border is not pink truecolor: %q", out)
+		t.Fatalf("edge is not pink truecolor: %q", out)
 	}
-	if lipgloss.Width(out) < 8 {
-		t.Fatalf("card too narrow: %q", out)
+	if lipgloss.Width(out) < 6 {
+		t.Fatalf("bar block too narrow: %q", out)
 	}
 }
 
@@ -51,7 +54,7 @@ func TestHuhDestructiveUsesPeachAccents(t *testing.T) {
 		t.Fatalf("destructive button is not peach: %q", styles.Focused.FocusedButton.Render("no"))
 	}
 	if !strings.Contains(styles.Form.Base.Render("x"), "\x1b[38;2;255;183;122m") {
-		t.Fatalf("destructive card border is not peach")
+		t.Fatalf("destructive edge is not peach")
 	}
 }
 

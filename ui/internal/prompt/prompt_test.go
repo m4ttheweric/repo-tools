@@ -49,27 +49,22 @@ func TestSelectEnterReturnsInitialAndExitsZero(t *testing.T) {
 	if r["value"] != "1h" {
 		t.Fatalf("value %v", r["value"])
 	}
-	if !strings.Contains(tty, "Access duration") || !strings.Contains(tty, "╭") {
-		t.Fatalf("card not painted: %q", tty)
+	if !strings.Contains(tty, "Access duration") || !strings.Contains(tty, "▌") {
+		t.Fatalf("prompt block not painted: %q", tty)
 	}
-	// The card must frame the prompt, not sit under it: huh renders Group.Base
-	// around the group footer alone, so a border parked there paints an empty
-	// box below the options and the title never gets a top edge.
-	if open, title := strings.Index(tty, "╭"), strings.Index(tty, "Access duration"); open > title {
-		t.Fatalf("card opens after the title, so it is not framing it: %q", tty)
-	}
-	// A card wider than the terminal has its right edge dropped rather than
-	// wrapped, so the closing corners are the proof that the frame fits.
-	if !strings.Contains(tty, "╮") || !strings.Contains(tty, "╯") {
-		t.Fatalf("card's right edge never painted, so it overflows the screen: %q", tty)
+	// The edge must run beside the prompt, not under it: huh renders
+	// Group.Base around the group footer alone, so an edge parked there sits
+	// beside an empty footer and the title row never gets one.
+	if edge, title := strings.Index(tty, "▌"), strings.Index(tty, "Access duration"); edge > title {
+		t.Fatalf("edge starts after the title, so it is not beside it: %q", tty)
 	}
 	if !strings.Contains(tty, "back to resources") {
 		t.Fatalf("back row missing: %q", tty)
 	}
 	// The card lives on the alternate screen: the terminal never reflows it
 	// mid-resize, and leaving it restores the user's screen byte for byte.
-	if enter := strings.Index(tty, "\x1b[?1049h"); enter < 0 || enter > strings.Index(tty, "╭") {
-		t.Fatalf("card painted before entering the alternate screen: %q", tty)
+	if enter := strings.Index(tty, "\x1b[?1049h"); enter < 0 || enter > strings.Index(tty, "▌") {
+		t.Fatalf("block painted before entering the alternate screen: %q", tty)
 	}
 	if !strings.Contains(tty, "\x1b[?1049l") {
 		t.Fatalf("alternate screen never left: %q", tty)
@@ -88,8 +83,8 @@ func TestSelectDownEnterPicksSecond(t *testing.T) {
 // (which skips Bubble Tea's final flush and strands the card).
 func assertCardGone(t *testing.T, tty string) {
 	t.Helper()
-	if screen := testutil.Screen(tty); strings.Contains(screen, "╭") || strings.Contains(screen, "Access duration") {
-		t.Fatalf("card still on screen after exit:\n%s", screen)
+	if screen := testutil.Screen(tty); strings.Contains(screen, "▌") || strings.Contains(screen, "Access duration") {
+		t.Fatalf("prompt block still on screen after exit:\n%s", screen)
 	}
 }
 
@@ -150,7 +145,7 @@ func TestConfirmYAndNAndCollapse(t *testing.T) {
 	if strings.Contains(tty[leaveAt:], "\x1b[1A") || strings.Contains(tty[leaveAt:], "\x1b[A") {
 		t.Fatalf("collapse moved the cursor up after leaving the alternate screen: %q", tty[leaveAt:])
 	}
-	if screen := testutil.Screen(tty); !strings.Contains(screen, "✓") || strings.Contains(screen, "╭") {
+	if screen := testutil.Screen(tty); !strings.Contains(screen, "✓") || strings.Contains(screen, "▌") {
 		t.Fatalf("final screen should be the collapsed line only:\n%s", screen)
 	}
 	stdout, _, exit = testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-confirm.json")}, []string{"n"}, nil, false)
@@ -257,7 +252,7 @@ func TestSignalledConfirmReportsNoAnswer(t *testing.T) {
 		t.Fatalf("exit %d stdout %q", exit, stdout)
 	}
 	// The collapsed line is the record of an answer; a cancel leaves none.
-	if screen := testutil.Screen(tty); strings.Contains(screen, "✓") || strings.Contains(screen, "╭") {
+	if screen := testutil.Screen(tty); strings.Contains(screen, "✓") || strings.Contains(screen, "▌") {
 		t.Fatalf("signalled confirm left an answer on screen:\n%s", screen)
 	}
 }
@@ -277,37 +272,49 @@ func TestTallCardNeverReachesTheMainScreen(t *testing.T) {
 	if exit != 0 || !strings.Contains(stdout, `"value":"v0"`) {
 		t.Fatalf("exit %d stdout %q", exit, stdout)
 	}
-	if screen := testutil.Screen(tty); strings.Contains(screen, "╭") ||
+	if screen := testutil.Screen(tty); strings.Contains(screen, "▌") ||
 		strings.Contains(screen, "Tall pick") || strings.Contains(screen, "option ") {
-		t.Fatalf("tall card reached the main screen:\n%s", screen)
+		t.Fatalf("tall block reached the main screen:\n%s", screen)
 	}
 }
 
-// paintedScreen replays the tty up to the card's last bottom-right corner, so
-// the card is still on the emulated screen when the test measures it. Bubble
-// Tea clears the alternate screen before leaving it, so a cut at the leave
-// sequence would replay an empty screen.
+// paintedScreen replays the tty up to Bubble Tea's final clear, the one it
+// writes just before leaving the alternate screen, so the prompt block is
+// still on the emulated screen when the test measures it. A cut at the leave
+// sequence itself would replay the already-cleared screen.
 func paintedScreen(tty string) string {
-	if i := strings.LastIndex(tty, "╯"); i >= 0 {
-		tty = tty[:i+len("╯")]
+	if i := strings.LastIndex(tty, "\x1b[H\x1b[2J"); i > 0 {
+		tty = tty[:i]
 	}
 	return testutil.Screen(tty)
 }
 
 func TestCardIsCappedNarrowerThanTheTerminal(t *testing.T) {
-	_, tty, _ := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-select.json")}, []string{keyEnter}, nil, false)
+	// The pty is 100 columns and the hint is longer than the cap, so without
+	// the clamp huh would lay the row out to the terminal edge.
+	long := `{"t":"prompt","protocol":1,"kind":"select","title":"Pick","hint":"` +
+		strings.Repeat("wide ", 19) + `end","options":[{"value":"a","label":"A"}],"initial":"a"}`
+	_, tty, _ := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{long}, []string{keyEnter}, nil, false)
 	widest := 0
 	for _, row := range strings.Split(paintedScreen(tty), "\n") {
-		if !strings.HasPrefix(strings.TrimLeft(row, " "), "╭") {
-			continue
-		}
-		if n := utf8.RuneCountInString(strings.TrimSpace(row)); n > widest {
+		if n := utf8.RuneCountInString(strings.TrimRight(row, " ")); n > widest {
 			widest = n
 		}
 	}
-	// The pty is 100 columns; a card that wide is a stripe the terminal
-	// rewraps on resize, so the top edge must stop at the shared card width.
-	if widest != theme.CardWidth {
-		t.Fatalf("card top edge spans %d columns, want %d:\n%s", widest, theme.CardWidth, paintedScreen(tty))
+	if widest > theme.CardWidth || widest < 40 {
+		t.Fatalf("widest painted row is %d columns, want a wrapped block within %d:\n%s", widest, theme.CardWidth, paintedScreen(tty))
+	}
+}
+
+func TestTextInputDrawsOneChevronPrompt(t *testing.T) {
+	// huh's Input carries its own "> " prompt; the theme must replace it
+	// with the chevron, not prepend the chevron to it.
+	_, tty, _ := testutil.RunPTY(t, []string{testutil.Binary(t), "prompt"}, []string{spec(t, "prompt-text.json")}, []string{keyEsc}, nil, false)
+	screen := paintedScreen(tty)
+	if strings.Contains(screen, "❯ >") || strings.Contains(screen, "> my-plugin") {
+		t.Fatalf("text prompt painted twice (chevron plus huh's default):\n%s", screen)
+	}
+	if !strings.Contains(screen, "❯ my-plugin") {
+		t.Fatalf("chevron prompt missing:\n%s", screen)
 	}
 }

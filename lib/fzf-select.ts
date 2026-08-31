@@ -6,10 +6,19 @@
  * back-compat; the latency-sensitive callers import them from here directly.
  */
 
-import { T, toHex } from "./tui/palette.ts";
+import { T, toAnsiFg, toHex } from "./tui/palette.ts";
 import { BackNavigation } from "./back-navigation.ts";
 
 export { BackNavigation } from "./back-navigation.ts";
+
+/**
+ * Transient pickers open inline, sized to their list, so the shell's
+ * scrollback stays in view; only the e2e harness asks for the alternate
+ * screen, because Termwright's parser cannot see fzf's inline region.
+ */
+export function fzfHeightArgs(): string[] {
+  return process.env.RT_FZF_ALT_SCREEN ? [] : ["--height=~100%"];
+}
 
 // ─── Option type ─────────────────────────────────────────────────────────────
 
@@ -37,7 +46,7 @@ export async function filterableMultiselect(opts: {
 }): Promise<string[] | null> {
   const { spawnSync } = await import("child_process");
   const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
+  const fzf = ensureFzf();
 
   const labelWidth = Math.max(...opts.options.map((o) => o.label.length));
   const input = opts.options
@@ -65,21 +74,26 @@ export async function filterableMultiselect(opts: {
     bindings.push(`--bind=start:${actions.join("+")}`);
   }
 
-  const result = spawnSync("fzf", [
+  const result = spawnSync(fzf, [
     "--multi",
     "--ansi",
     "--with-nth=2..",
     "--delimiter=\t",
     "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${opts.message} `,
-    "--prompt=filter: ",
-    "--header=space: toggle  tab: toggle & next  enter: confirm",
+    ...fzfHeightArgs(),
+    "--border=left",
+    "--no-separator",
+    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m`,
+    "--header-first",
+    "--info=inline-right",
+    "--footer=space: toggle  tab: toggle & next  enter: confirm",
+    "--prompt=  filter: ",
     "--no-mouse",
     "--bind=space:toggle,tab:toggle+down",
     "--preview=printf '%s\\n' {+2..}",
     "--preview-window=up,4,wrap,border-bottom",
     "--preview-label= selected ",
+    `--color=border:${toHex(T.pink)}`,
     ...bindings,
   ], {
     input,
@@ -152,14 +166,18 @@ export function buildFilterableSelectArgs(opts: {
     "--delimiter=\t",
     "--tabstop=1",
     "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${opts.message} `,
-    "--prompt=filter: ",
-    `--header=${headerWithReload}`,
+    ...fzfHeightArgs(),
+    "--border=left",
+    "--no-separator",
+    "--prompt=  filter: ",
+    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m`,
+    "--header-first",
+    "--info=inline-right",
+    `--footer=${headerWithReload}`,
     "--no-mouse",
     "--print-query",
     "--expect=ctrl-up",
-    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+    `--color=border:${toHex(T.pink)}`,
     ...(opts.exact ? ["--exact"] : []),
     ...(opts.reloadCommand ? [`--bind=ctrl-r:reload(${opts.reloadCommand})`] : []),
   ];
@@ -182,12 +200,12 @@ export async function filterableSelect(opts: {
 }): Promise<string | null> {
   const { spawnSync } = await import("child_process");
   const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
+  const fzf = ensureFzf();
 
   const options = opts.options;
   const input = buildFzfRows(options);
 
-  const result = spawnSync("fzf", buildFilterableSelectArgs(opts), {
+  const result = spawnSync(fzf, buildFilterableSelectArgs(opts), {
     input,
     stdio: ["pipe", "pipe", "inherit"],
     encoding: "utf8",

@@ -179,6 +179,7 @@ export async function startInteractive(
     PATH: `${join(RT_BINARY, "..")}:${bunDir}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
     TERM: "xterm-256color",
     RT_SKIP_SETUP: "1",
+    RT_FZF_ALT_SCREEN: "1",
     ...opts.env,
   };
 
