@@ -141,6 +141,11 @@ export function formatNavInput(options: NavOption[]): string {
 /** Default header when no header/headerParts are provided. */
 const DEFAULT_HEADER = "enter: select  |: OR  !: exclude";
 
+/** Single-quote a path for safe interpolation into an fzf shell binding. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 /**
  * Build the fzf CLI argument array.
  *
@@ -210,11 +215,14 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string, helpState
     // it exists.
     ...(helpMode
       ? opts.resizeHeaderCommand && helpStateFile
-        ? [
-            "--footer=ctrl-/: commands",
-            `--bind=ctrl-/:transform-footer([ -e '${helpStateFile}' ] && { rm -f '${helpStateFile}'; echo "ctrl-/: commands"; } || { touch '${helpStateFile}'; ${opts.resizeHeaderCommand}; })`,
-            `--bind=resize:transform-footer([ -e '${helpStateFile}' ] && { ${opts.resizeHeaderCommand}; } || echo "ctrl-/: commands")`,
-          ]
+        ? (() => {
+            const q = shellQuote(helpStateFile);
+            return [
+              "--footer=ctrl-/: commands",
+              `--bind=ctrl-/:transform-footer([ -e ${q} ] && { rm -f ${q}; echo "ctrl-/: commands"; } || { touch ${q}; ${opts.resizeHeaderCommand}; })`,
+              `--bind=resize:transform-footer([ -e ${q} ] && { ${opts.resizeHeaderCommand}; } || echo "ctrl-/: commands")`,
+            ];
+          })()
         : [`--footer=${opts.helpHeader}`]
       : []),
   ];
