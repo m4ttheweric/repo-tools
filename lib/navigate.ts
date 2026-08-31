@@ -15,7 +15,7 @@ import { join } from "path";
 import { ensureFzf } from "./fzf.ts";
 import { startNavWatch } from "./nav-watch.ts";
 import { rtDir } from "./rt-paths.ts";
-import { T, toAnsiFg, toHex } from "./tui/palette.ts";
+import { T, toHex } from "./tui/palette.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ export interface NavResult {
 
 export interface NavPickerOpts {
   options: NavOption[];
-  /** Shown as the pink first line of the header. */
+  /** Shown in the border label. */
   message: string;
   /** Full custom header string. Overrides `headerParts` if both are set. */
   header?: string;
@@ -170,17 +170,17 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[]
     // Up at the top wraps to the bottom and down at the bottom wraps to the
     // top, so a long list has no dead ends at either edge.
     "--cycle",
-    // A single rule down the left edge rather than a box around everything:
-    // the current path is now the first line of the header, and the picker
-    // reads as part of the terminal instead of a drawn-on window.
-    "--border=left",
-    "--no-separator",
+    // A single rule across the top rather than a box around everything: the
+    // label still carries the current path, but the picker reads as part of the
+    // terminal instead of a drawn-on window.
+    "--border=top",
+    `--border-label= ${opts.message} `,
     "--prompt=filter: ",
-    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m\n${header}`,
+    `--header=${header}`,
     "--no-mouse",
     "--print-query",
     `--expect=${expectStr}`,
-    `--color=border:${toHex(T.pink)}${opts.colorOverrides ?? ""}`,
+    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}${opts.colorOverrides ?? ""}`,
     ...(opts.initialQuery ? [`--query=${opts.initialQuery}`] : []),
     ...(opts.exact ? ["--exact"] : []),
     ...(opts.options.some((o) => o.separator)

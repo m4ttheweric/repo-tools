@@ -7,6 +7,9 @@
 
 import { describe, expect, test } from "bun:test";
 import { buildFilterableSelectArgs, buildFzfRows, type SelectOption } from "../fzf-select.ts";
+import { T, toAnsiFg } from "../tui/palette.ts";
+
+const q = (message: string) => `${toAnsiFg(T.pink)}${message}\x1b[0m\n`;
 
 describe("buildFzfRows", () => {
   test("plain options: value, bold label padded to the widest label, dim hint", () => {
@@ -59,13 +62,13 @@ describe("buildFilterableSelectArgs", () => {
   test("without reloadCommand: no ctrl-r bind, header unchanged", () => {
     const args = buildFilterableSelectArgs({ message: "Pick a repo" });
     expect(args.some((a) => a.startsWith("--bind=ctrl-r"))).toBe(false);
-    expect(args).toContain("--header=enter: select  |: OR  !: exclude");
+    expect(args).toContain(`--header=${q("Pick a repo")}enter: select  |: OR  !: exclude`);
   });
 
   test("with reloadCommand: adds the ctrl-r reload bind and header suffix", () => {
     const args = buildFilterableSelectArgs({ message: "Pick a repo", reloadCommand: "rt cd --emit-rows" });
     expect(args).toContain("--bind=ctrl-r:reload(rt cd --emit-rows)");
-    expect(args).toContain("--header=enter: select  |: OR  !: exclude  ctrl-r: refresh");
+    expect(args).toContain(`--header=${q("Pick a repo")}enter: select  |: OR  !: exclude  ctrl-r: refresh`);
   });
 
   test("with backLabel and reloadCommand: both header suffixes appear", () => {
@@ -75,7 +78,7 @@ describe("buildFilterableSelectArgs", () => {
       reloadCommand: "rt cd --emit-rows",
     });
     expect(args).toContain(
-      "--header=enter: select  |: OR  !: exclude  ctrl-up: back  ctrl-r: refresh",
+      `--header=${q("worktrees")}enter: select  |: OR  !: exclude  ctrl-up: back  ctrl-r: refresh`,
     );
     expect(args).toContain("--bind=ctrl-r:reload(rt cd --emit-rows)");
   });
