@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -10,6 +10,10 @@ const SCRIPT = join(REPO, "scripts", "fetch-deps.sh");
 let work: string;
 let lockPath: string;
 let depsRoot: string;
+
+afterAll(() => {
+  rmSync(work, { recursive: true, force: true });
+});
 
 function sh(cmd: string, env: Record<string, string> = {}): string {
   return execSync(cmd, {
