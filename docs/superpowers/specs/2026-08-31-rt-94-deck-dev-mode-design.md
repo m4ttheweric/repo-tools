@@ -142,10 +142,13 @@ shapes and picks by mode, verifying existence before returning:
 - `sourceShape(record)`: `{ command: argv(m.dev.start), cwd: dev.workingDirectory }`
   when the link is present, the dir exists, its manifest parses, and it has a
   `dev.start`. Otherwise null.
-- `bundleShape(record)`: `{ command: derivedBundleCommand(name), cwd: dataDir(name) }`
-  **only when that bundle binary is actually installed** (`bundleExists`). Otherwise
-  null. This is the fix for the transition window: a machine that has not yet had a
-  bundle installed for an app must not fall through to a path that isn't there.
+- `bundleShape(record)`: for a migrated slim row, `{ command: derivedBundleCommand(name),
+  cwd: dataDir(name) }` **only when that bundle binary is actually installed**
+  (`bundleExists`), else null ... the fix for the transition window: a machine that
+  has not yet had a bundle installed must not fall through to a path that isn't
+  there. For a **grandfathered** row (still carrying `record.command`, no `dev`
+  node), `bundleShape` is that stored `record.command` verbatim, so an unmigrated
+  managed app keeps serving exactly what it serves today (see Migration).
 
 ```ts
 function serveShape(record) {
@@ -245,6 +248,11 @@ deck shows deploy on a dev machine but not on a regular user's install. The
 dir+manifest validity check is shared with `serveShape` (one helper) so the two
 cannot diverge.
 
+A **grandfathered** mattstack row (still carries `record.commands`, no `dev` node)
+takes the pre-migration gate instead: dev-mode-gated on `record.commands` run in
+`workingDirectory`, exactly as today, so an unmigrated app's build/deploy buttons do
+not regress before it is slimmed (this is what keeps gitq's buttons live).
+
 ## Trigger and selective restart
 
 `rt settings dev-mode <mode>` already writes `mattstack.mode` and hands off the
@@ -297,10 +305,11 @@ PATCH that writes the single stored path:
 
 ## Migration
 
-Existing registry rows for the managed apps (board, console, chat, gitq) currently
-store the old source-run shape (`command` = a source entry, `workingDirectory` =
-the repo, `sourceDirectory` = null, `commands` = build/deploy copied onto the
-record). A one-time migration rewrites each managed row to the slim shape:
+Existing registry rows for the bundle-ready managed apps (board, console, chat)
+currently store the old source-run shape (`command` = a source entry,
+`workingDirectory` = the repo, `sourceDirectory` = null, `commands` = build/deploy
+copied onto the record). A one-time migration rewrites each of these rows (plus
+deck's own) to the slim shape:
 
 - Move the repo path into `dev.workingDirectory`.
 - Drop the copied `commands` (now read live from the manifest).
@@ -312,9 +321,20 @@ deploy button surface (finding #5). Going forward, deck's `bootstrapSelf` sets i
 `dev.workingDirectory` the same way it sets `sourceDirectory` today, so a fresh
 install self-links without a manual `deck register`.
 
+gitq stays out of the migration (Non-goals): it is not bundle-ready, has no `dev`
+node, and rt registers it with a `board` serve arg a name-derived bundle command
+would lose. Its row is left untouched. **Grandfathered rows** ... any managed row
+that still carries `record.command` / `record.commands` and has no `dev` node ...
+keep today's behavior verbatim in **both** seams: `serveShape` returns the stored
+`record.command` (its grandfathered prod shape), and the command route keeps its
+build/deploy buttons dev-gated on `record.commands` run in `workingDirectory`. The
+new dev-node behavior (slim record, live-read, bundle-vs-source switch) applies only
+to migrated slim rows. This is what keeps gitq's serving and its buttons unchanged
+until its bundling work lands, at which point its row is slimmed too.
+
 User-app rows (`managedBy: "user"`) are untouched and need no rewrite: the command
 route keeps reading their `record.commands`, so the live-manifest-read path applies
-only to mattstack apps.
+only to migrated (slim) mattstack rows.
 
 ## Rollout sequencing (finding #1)
 
@@ -384,12 +404,22 @@ this as a named guard in the migration task.
 - rt: `lib/setup/steps/deck.ts` (prod registration), `commands/settings.ts`
   (dev-mode toggle pokes deck).
 - app repos: `mattstack.deck.json` for chat, console, mr-board (add the `dev` node
-  and `includeInBundle`).
+  and `includeInBundle`), and deck itself (move its existing `deploy` under a `dev`
+  node, no `dev.start`).
 
 ## Open items carried into the plan
 
 - `includeInBundle` field name is provisional; confirm with fox against the
   CI-bundling manifest work.
-- Exact seam for the prod bundle path in deck (derive from deck's own bundle
-  location vs. rt supplying it at adopt). Both avoid a hand-authored path.
-- Whether the reresolve endpoint is new or an extension of `managed/restart`.
+
+Resolved during planning:
+
+- **Prod bundle path seam:** deck derives it itself via
+  `src/services/bundle-layout.ts` (`bundleHelpersDir()` + name); `bundleExists` =
+  `existsSync` on that path. No rt-supplied path is stored, and outside a bundle
+  `bundleShape` is null (the dev-machine fallback).
+- **Reresolve endpoint:** a new `POST /api/v1/apps/managed/reresolve`, separate from
+  `managed/restart` (which stays an unconditional kickstart with an existing
+  installer caller). reresolve is the selective reinstall + kickstart on plist diff.
+- **gitq scope:** out of the migration; grandfathered until its bundling work lands
+  (see Migration).
