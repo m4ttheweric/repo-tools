@@ -13,18 +13,25 @@ export { BackNavigation } from "./back-navigation.ts";
 
 /**
  * Transient pickers open inline, beneath the breadcrumb `renderHeader`
- * already printed (one text line plus a trailing blank line). `~100%` let
- * fzf claim the full terminal height, which pushed that breadcrumb into
- * scrollback on any list taller than the visible screen. `~90%` was
- * verified with a pty + VT-emulator harness (74-item list, 15-44 row
- * terminals): it keeps the 2-row breadcrumb onscreen, both on initial
- * render and after scrolling well past the picker's own window, while
- * still giving the list as much room as fzf's own item count would use.
- * Only the e2e harness asks for the alternate screen, because Termwright's
- * parser cannot see fzf's inline region.
+ * already printed: one text line plus the trailing blank line from its own
+ * `console.error` newline, 2 terminal rows, plus 1 row of spacing before the
+ * picker = a 3-row reserve. `--height=-3` is fzf's own "terminal height minus
+ * N" form (0.74+): fzf recomputes it from the live terminal size on every
+ * SIGWINCH, so the breadcrumb stays pinned on resize too, not just at
+ * launch — verified with a pty + VT-emulator harness (74-item list, 15/24/44
+ * row terminals, plus a live resize from 44 to 15 rows mid-picker) against
+ * the patched fzf binary. A plain terminalRows-3 line count computed here in
+ * JS would not have that property: fzf would keep the count fixed until the
+ * next full redraw. Only the e2e harness asks for the alternate screen,
+ * because Termwright's parser cannot see fzf's inline region.
  */
 export function fzfHeightArgs(): string[] {
-  return process.env.RT_FZF_ALT_SCREEN ? [] : ["--height=~90%"];
+  if (process.env.RT_FZF_ALT_SCREEN) return [];
+  const rows = process.stdout.rows ?? process.stderr.rows;
+  // Below this, a 3-row reserve leaves fzf's own chrome (header, prompt,
+  // border, footer) too little room to be usable; ~90% degrades gracefully.
+  if (rows === undefined || rows <= 8) return ["--height=~90%"];
+  return ["--height=-3"];
 }
 
 // ─── Option type ─────────────────────────────────────────────────────────────

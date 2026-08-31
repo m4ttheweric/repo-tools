@@ -12,24 +12,48 @@ import { T, toAnsiFg, toHex } from "../tui/palette.ts";
 const q = (message: string) => `--header=${toAnsiFg(T.pink)}${message}\x1b[0m`;
 
 /**
- * fzfHeightArgs: `--height=~90%` (not `~100%`) is what keeps the breadcrumb
- * `renderHeader` prints above the picker onscreen. Verified with a pty +
- * VT-emulator harness against a 74-item list in 15-44 row terminals: ~100%
- * pushed the breadcrumb into scrollback on every render, ~90% kept it
- * visible on initial render, after scrolling past the picker's own window,
- * and after exit.
+ * fzfHeightArgs: `--height=-3` (fzf's native "terminal height minus N" form)
+ * is what keeps the breadcrumb `renderHeader` prints above the picker
+ * onscreen, at launch AND after a resize, since fzf recomputes it from the
+ * live terminal size on every SIGWINCH rather than fzf-select.ts precomputing
+ * a fixed line count. Verified with a pty + VT-emulator harness against a
+ * 74-item list in 15/24/44 row terminals, including a live resize from 44 to
+ * 15 rows mid-picker: the breadcrumb stayed onscreen in every case. `~90%` is
+ * kept only as the fallback for terminals too small to spare the reserve.
  */
 describe("fzfHeightArgs", () => {
+  const originalStdoutRows = process.stdout.rows;
+  const originalStderrRows = process.stderr.rows;
+
   afterEach(() => {
     delete process.env.RT_FZF_ALT_SCREEN;
+    Object.defineProperty(process.stdout, "rows", { value: originalStdoutRows, configurable: true });
+    Object.defineProperty(process.stderr, "rows", { value: originalStderrRows, configurable: true });
   });
 
-  test("default (inline) picker caps height at ~90%, not ~100%", () => {
+  const setRows = (rows: number | undefined) => {
+    Object.defineProperty(process.stdout, "rows", { value: rows, configurable: true });
+    Object.defineProperty(process.stderr, "rows", { value: rows, configurable: true });
+  };
+
+  test("default (inline) picker reserves 3 rows for the breadcrumb via fzf's native height-minus-N form", () => {
     delete process.env.RT_FZF_ALT_SCREEN;
+    setRows(44);
+    expect(fzfHeightArgs()).toEqual(["--height=-3"]);
+  });
+
+  test("small terminal (rows <= 8) falls back to ~90%: a 3-row reserve would leave fzf's own chrome no room", () => {
+    setRows(8);
+    expect(fzfHeightArgs()).toEqual(["--height=~90%"]);
+  });
+
+  test("undefined rows (not a TTY) falls back to ~90%", () => {
+    setRows(undefined);
     expect(fzfHeightArgs()).toEqual(["--height=~90%"]);
   });
 
   test("RT_FZF_ALT_SCREEN drops height args for the e2e harness's fullscreen mode", () => {
+    setRows(44);
     process.env.RT_FZF_ALT_SCREEN = "1";
     expect(fzfHeightArgs()).toEqual([]);
   });
