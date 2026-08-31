@@ -21,7 +21,12 @@ export function readBundleRecipe(manifestPath: string): BundleRecipe {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     throw new Error(`no mattstack.deck.json at ${manifestPath}`);
   }
-  const m = JSON.parse(text) as Record<string, unknown>;
+  const m = JSON.parse(text) as Record<string, unknown> | null;
+  // A bare `null` or scalar parses fine; reading through it would throw a
+  // TypeError instead of the remediation the app owner needs.
+  if (typeof m !== "object" || m === null || Array.isArray(m)) {
+    throw new Error(`${manifestPath}: manifest must be a JSON object`);
+  }
   if (typeof m.name !== "string" || !m.name) {
     throw new Error(`${manifestPath}: manifest needs a string "name"`);
   }

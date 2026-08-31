@@ -58,3 +58,8 @@ test("control characters in build or artifact rejected", () => {
     readBundleRecipe(manifest({ name: "deck", bundle: { build: "x", artifact: "dist/\tdeck" } })),
   ).toThrow(/control characters/);
 });
+
+test("a null or scalar JSON root is rejected as a shape error", () => {
+  expect(() => readBundleRecipe(manifest("null"))).toThrow(/JSON object/);
+  expect(() => readBundleRecipe(manifest("[]"))).toThrow(/JSON object/);
+});

@@ -186,10 +186,14 @@ jobs:
               --target "$source_sha" \
               --title "$name v$version" \
               --notes "darwin-arm64 bundle build from $source_sha"
-            # Republish the pin from trusted inputs so the URL the PR writes
-            # into deps.lock cannot be chosen by the app either.
+            # Republish the pin from trusted inputs so neither the URL nor the
+            # digest the PR writes into deps.lock can be chosen by the app.
+            # The digest is recomputed from the archive actually uploaded: a
+            # value copied from the result file could be valid-looking but
+            # wrong, and every later bundle build would then reject the asset.
+            tgz_sha=$(sha256sum "$name-darwin-arm64.tgz" | cut -d' ' -f1)
             jq -n --arg n "$name" --arg v "$version" --arg r "$repo" \
-              --arg s "$(jq -r '.sha256' "$f")" --arg c "$source_sha" \
+              --arg s "$tgz_sha" --arg c "$source_sha" \
               '{name:$n, version:$v, sha256:$s, sourceSha:$c,
                 url:("https://github.com/"+$r+"/releases/download/v"+$v+"/"+$n+"-darwin-arm64.tgz")}' \
               > "pinned-$name.json"

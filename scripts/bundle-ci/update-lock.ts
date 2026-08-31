@@ -34,7 +34,9 @@ function rowSpan(lockText: string, name: string): { start: number; end: number }
 }
 
 function setField(block: string, field: string, value: string, name: string): string {
-  const re = new RegExp(`("${field}":\\s*")[^"]*(")`);
+  // The existing value may itself contain an escaped quote, so consume escape
+  // sequences rather than stopping at the first `"` after the opener.
+  const re = new RegExp(`("${field}":\\s*")(?:[^"\\\\]|\\\\.)*(")`);
   if (!re.test(block)) throw new Error(`row ${name} has no "${field}" field to rewrite`);
   // A callback, not a replacement string: `$&` and friends inside a value
   // would otherwise be expanded. The value is JSON-escaped as well, so a

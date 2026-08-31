@@ -68,3 +68,9 @@ test("a quote or backslash in a value is JSON-escaped, not left to break the row
   const out = applyBuildResults(LOCK, [{ ...RESULT, version: 'a"b\\c' }]);
   expect(parseDepsLock(out).tools.find((t) => t.name === "deck")!.version).toBe('a"b\\c');
 });
+
+test("an escaped quote already in a field value does not truncate the rewrite", () => {
+  const escaped = LOCK.replace('"version": ""', '"version": "0.1\\"rc"');
+  const out = applyBuildResults(escaped, [RESULT]);
+  expect(parseDepsLock(out).tools.find((t) => t.name === "deck")!.version).toBe("0.5.0");
+});
