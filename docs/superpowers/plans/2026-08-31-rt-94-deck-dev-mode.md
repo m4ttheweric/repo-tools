@@ -585,7 +585,7 @@ if (shape) {
 }
 ```
 
-(`serveShape` already recorded the dev-link issue on null; the app is deliberately not stood up, per "deck does not stand up a command that isn't there". In `reinstallSupervised`, a null shape counts the record as failed.)
+(`serveShape` already recorded the dev-link issue on null; the app is deliberately not stood up, per "deck does not stand up a command that isn't there". In `reinstallSupervised`, a null shape counts the record as failed. Keep `registerApp`'s existing `isService` gate around its install call: external (staticPort) records still get no plist.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -857,7 +857,7 @@ Run: `bun test core/board/logic.test.ts`
 
 - [ ] **Step 4: Implement the AppsTable affordances**
 
-Follow the existing command-button styles in `AppsTable.tsx` and `board.css`; keep the inline input minimal (text field + confirm/cancel, submitting on Enter). This is dev-machine-only UI (the fields only arrive when the server is in dev mode), so no public-board consideration applies.
+Follow the existing command-button styles in `AppsTable.tsx` and `board.css`; keep the inline input minimal (text field + confirm/cancel, submitting on Enter). The new affordances key on `devLink`, which only arrives when the server is in dev mode, so no public-board consideration applies (user-app `commands` do arrive in prod after Task 7; their buttons render as today).
 
 - [ ] **Step 5: Run the board suite and typecheck**
 
@@ -1188,7 +1188,7 @@ git commit -m "api: managed/reresolve selective restart on plist diff"
 
 **Files:**
 - Create: `src/registry/migrate-dev-shape.ts`
-- Modify: `src/main.ts` (call at serve boot, after registry/boot-env are ready and before the API server starts; find the spot where `bootstrapSelf` or the server construction runs and place it alongside)
+- Modify: `src/main.ts` (call in `serve()` after registry/boot-env are ready and before `startApi` constructs the server)
 - Test: `src/registry/migrate-dev-shape.test.ts`
 
 **Interfaces:**
@@ -1465,7 +1465,7 @@ git commit -m "manifest: move serve/build/deploy under dev node (RT-94)"
 
 **Files (repo-tools, branch `feat/rt-94-deck-dev-mode`):**
 - Modify: `lib/setup/steps/deck.ts`
-- Test: the step's existing test file (`lib/setup/steps/deck.test.ts` if present; otherwise the setup-steps suite that covers `deckManagedRun`)
+- Test: `lib/setup/__tests__/steps-b.test.ts` (the suite covering `deckManagedRun`)
 
 **Interfaces:**
 - Consumes: nothing new; `registerManagedApp(ctx, deckBin, name)` already exists in the file and is bundled-gated (`bundledToolPath` returns null until chat ships in the bundle, so this is a no-op that reports "not bundled" until the CI-bundling work lands, exactly like console/gitq today).
@@ -1498,7 +1498,7 @@ Run: `bun test lib/setup/steps/`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/setup/steps/deck.ts lib/setup/steps/deck.test.ts
+git add lib/setup/steps/deck.ts lib/setup/__tests__/steps-b.test.ts
 git commit -m "setup: register chat as a managed deck app"
 ```
 
