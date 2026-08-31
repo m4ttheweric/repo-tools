@@ -1575,7 +1575,7 @@ describe("skillsComposition --json", () => {
     "mattstack:review-core": {
       "criteria": "acme:watch-ci-domain"
     },
-    "mr-board:review": {
+    "board:review": {
       "skill": "acme:watch-ci-domain"
     }
   }
@@ -1592,7 +1592,7 @@ describe("skillsComposition --json", () => {
     expect(byRef["mattstack:watch-ci"]).toMatchObject({ kind: "verb", verb: "watch-ci" });
     expect(byRef["mattstack:stage-provision"]).toMatchObject({ kind: "stage", verb: null });
     expect(byRef["mattstack:review-core"]).toMatchObject({ kind: "skill", verb: null });
-    expect(byRef["mr-board:review"]).toMatchObject({ kind: "external", verb: null });
+    expect(byRef["board:review"]).toMatchObject({ kind: "external", verb: null });
   });
 
   test("rosterless pack: empty verbs, fills, and binders -- not a failure", async () => {
