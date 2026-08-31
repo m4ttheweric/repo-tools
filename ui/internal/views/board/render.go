@@ -62,6 +62,12 @@ func header(b *Board) string {
 	if n := b.count("crashed"); n > 0 {
 		counts = append(counts, fg(theme.Coral).Render(fmt.Sprintf("✗ %d crashed", n)))
 	}
+	if n := b.count("starting"); n > 0 {
+		counts = append(counts, fg(theme.Mint).Render(fmt.Sprintf("%s %d starting", b.spin.View(), n)))
+	}
+	if n := b.count("stopping"); n > 0 {
+		counts = append(counts, fg(theme.Coral).Render(fmt.Sprintf("%s %d stopping", b.spin.View(), n)))
+	}
 	if len(b.model.Entries) == 0 {
 		counts = append(counts, fg(theme.Faint).Render("0 commands"))
 	}

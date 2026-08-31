@@ -2,6 +2,7 @@ package board
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -48,24 +49,5 @@ func (e Entry) uptime(now time.Time) string {
 	if s < 0 {
 		s = 0
 	}
-	return intString(s/60) + ":" + pad2(s%60)
-}
-
-func intString(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
-}
-
-func pad2(n int) string {
-	if n < 10 {
-		return "0" + intString(n)
-	}
-	return intString(n)
+	return fmt.Sprintf("%d:%02d", s/60, s%60)
 }

@@ -141,6 +141,30 @@ func TestQuitConfirmsWhenRunningAndEmitsQuitOnY(t *testing.T) {
 	}
 }
 
+// TestQuitConfirmsWhenOnlyStartingEntryExists locks in the widened gate: a
+// launching entry is still active work, so it must confirm same as running.
+func TestQuitConfirmsWhenOnlyStartingEntryExists(t *testing.T) {
+	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
+	s.ReadLine(2 * time.Second)
+	startingOnly := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"assured-dev","state":"starting","startedAt":null,"exitCode":null,"error":null,"tail":null}]}}`
+	s.Send(startingOnly)
+	s.WaitForPaint("rt runner")
+	s.Type("q")
+	s.WaitForPaint("Quit and stop")
+	if l, ok := s.ReadLine(100 * time.Millisecond); ok {
+		t.Fatalf("q against a starting-only board must not emit yet: %q", l)
+	}
+	s.Type("y")
+	l, _ := s.ReadLine(2 * time.Second)
+	if !strings.Contains(l, `"name":"quit"`) {
+		t.Fatalf("quit intent: %q", l)
+	}
+	if exit := s.Wait(); exit != 0 {
+		t.Fatalf("exit %d", exit)
+	}
+}
+
 func TestQuitWithNothingRunningQuitsAtOnce(t *testing.T) {
 	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
 	s.ReadLine(2 * time.Second)
