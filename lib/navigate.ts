@@ -175,7 +175,7 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string, helpState
     // filter as the pink title and the key legend lives in the sticky footer.
     "--border=left",
     "--no-separator",
-    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m`,
+    `--header=${toAnsiFg(T.cyan)}${opts.message}\x1b[0m`,
     "--header-first",
     "--info=inline-right",
     "--prompt=  filter: ",
@@ -183,7 +183,7 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string, helpState
     "--print-query",
     `--expect=${expectStr}`,
     "--scrollbar=▐",
-    `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)}${opts.colorOverrides ?? ""}`,
+    `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)}${opts.colorOverrides ?? ""}`,
     ...(opts.initialQuery ? [`--query=${opts.initialQuery}`] : []),
     ...(opts.exact ? ["--exact"] : []),
     ...(opts.options.some((o) => o.separator)

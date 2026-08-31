@@ -9,7 +9,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { buildFilterableSelectArgs, buildFzfRows, fzfHeightArgs, type SelectOption } from "../fzf-select.ts";
 import { T, toAnsiFg, toHex } from "../tui/palette.ts";
 
-const q = (message: string) => `--header=${toAnsiFg(T.pink)}${message}\x1b[0m`;
+const q = (message: string) => `--header=${toAnsiFg(T.cyan)}${message}\x1b[0m`;
 
 /**
  * fzfHeightArgs: `--height=-3` (fzf's native "terminal height minus N" form)
@@ -139,11 +139,11 @@ describe("buildFilterableSelectArgs", () => {
     expect(withoutReload.some((a) => a.startsWith("--bind=ctrl-r"))).toBe(false);
   });
 
-  test("scrollbar is a thick neutral glyph, independent of the pink border", () => {
+  test("scrollbar is a thick neutral glyph; border stays pink while pointer/marker go cyan", () => {
     const args = buildFilterableSelectArgs({ message: "Pick a repo" });
     expect(args).toContain("--scrollbar=▐");
     expect(args).toContain(
-      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)}`,
+      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)}`,
     );
   });
 });

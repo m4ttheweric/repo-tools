@@ -85,18 +85,18 @@ describe("buildNavArgs cyclic scroll", () => {
 describe("buildNavArgs chrome colors", () => {
   const base = { options: [], message: "m" };
 
-  test("scrollbar and footer divider go neutral; only the border and title stay pink", () => {
+  test("scrollbar and footer divider go neutral; border stays pink, pointer/marker go cyan", () => {
     const args = buildNavArgs(base);
     expect(args).toContain("--scrollbar=▐");
     expect(args).toContain(
-      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)}`,
+      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)}`,
     );
   });
 
   test("colorOverrides still appends after the base chrome colors", () => {
     const args = buildNavArgs({ ...base, colorOverrides: ",hl:#ffb86c" });
     expect(args).toContain(
-      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},hl:#ffb86c`,
+      `--color=border:${toHex(T.pink)},scrollbar:${toHex(T.dim)},footer-border:${toHex(T.faint)},pointer:${toHex(T.cyan)},marker:${toHex(T.cyan)},hl:#ffb86c`,
     );
   });
 });
