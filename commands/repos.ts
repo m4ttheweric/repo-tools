@@ -25,6 +25,7 @@ import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { findLocateCandidates } from "../lib/repo-locate.ts";
 import { locateMovedRepo } from "../lib/repo-locate-dispatch.ts";
 import { resolveRepoArg } from "../lib/repo-arg.ts";
+import { repoLabel } from "../lib/repo-label.ts";
 
 export interface RegisterDeps {
   print: (s: string) => void;
@@ -256,7 +257,7 @@ export async function reposPrune(args: string[], _ctx: CommandContext = {}, deps
         ? `${describeReason(r)} but it still owns a worktree registry — keeping the row; run: ${r.hint} <new-path> --repo ${r.repoName}`
         : `${describeReason(r)}, but its data could not all move${describeDataMove(r, dryRun)} — keeping the row so nothing is orphaned`
       : `${describeReason(r)}${describeDataMove(r, dryRun)}`;
-    deps.print(`${verb} ${r.repoName} (${r.path.replace(homedir(), "~")}) — ${why}`);
+    deps.print(`${verb} ${repoLabel(r.repoName)} (${r.path.replace(homedir(), "~")}) — ${why}`);
   }
 }
 
@@ -368,7 +369,7 @@ async function pickLocateTarget(json: boolean, deps: RegisterDeps): Promise<stri
       deps.print(JSON.stringify(envelope({ lost: lost.map((r) => ({ repo: r.repoName, path: r.worktrees[0]?.path })), candidates })));
     } else {
       deps.print("missing repos:");
-      for (const r of lost) deps.print(`  ${r.repoName} — last seen at ${r.worktrees[0]?.path}`);
+      for (const r of lost) deps.print(`  ${repoLabel(r.repoName)} — last seen at ${r.worktrees[0]?.path}`);
       deps.print(candidates.length === 0
         ? `pass the new path: ${LOCATE_USAGE}`
         : "run interactively to pick a candidate, or pass the new path");

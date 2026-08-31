@@ -769,7 +769,7 @@ export async function runCommand(
       );
       if (worktrees.length === 0) {
         process.stderr.write(
-          `No accessible worktrees for ${selectedRepo.repoName}.\n`,
+          `No accessible worktrees for ${repoLabel(selectedRepo.repoName)}.\n`,
         );
         process.exit(1);
       }
@@ -798,7 +798,7 @@ export async function runCommand(
               label: formatBranchLabel(eb),
               hint: "",
             })),
-            message: `${selectedRepo.repoName} worktrees`,
+            message: `${repoLabel(selectedRepo.repoName)} worktrees`,
             headerParts: [
               "enter: select",
               "ctrl-up: back to repo",
@@ -823,8 +823,8 @@ export async function runCommand(
         // ── Package + script ────────────────────────────────────────────
         while (true) {
           const wtCtx = worktrees.length > 1
-            ? `${selectedRepo.repoName} / ${basename(worktreePath)}`
-            : selectedRepo.repoName;
+            ? `${repoLabel(selectedRepo.repoName)} / ${basename(worktreePath)}`
+            : repoLabel(selectedRepo.repoName);
           const sel = await selectPackageAndScript(worktreePath, repoName, wtCtx, queue);
           if (sel === QUEUE_LAUNCHED) {
             await launchQueue(queue, worktreePath);

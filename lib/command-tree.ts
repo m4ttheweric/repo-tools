@@ -275,7 +275,8 @@ export async function dispatch(
       if (!repo) {
         const { yellow } = await import("./tui.ts");
         console.error(`\n  ${yellow}unknown repo: ${repoFlag}${reset}`);
-        console.error(`  ${dim}known: ${repos.map(r => r.repoName).join(", ")}${reset}\n`);
+        const { repoLabel } = await import("./repo-label.ts");
+        console.error(`  ${dim}known: ${repos.map(r => repoLabel(r.repoName)).join(", ")}${reset}\n`);
         process.exit(1);
       }
       // A missing row still resolves by name (that's the point — locate it),
