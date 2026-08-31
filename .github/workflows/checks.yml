@@ -31,6 +31,11 @@ jobs:
       - name: Unit tests
         run: bun test lib commands packages scripts
 
+      - name: Workflow lint
+        run: |
+          brew install actionlint
+          actionlint
+
       # The Go helper's own vet + tests, plus the shared protocol fixtures
       # both languages golden-test (lib/ui/__tests__/protocol.test.ts runs
       # in the unit-test step above).
