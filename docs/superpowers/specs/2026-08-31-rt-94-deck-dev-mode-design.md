@@ -133,37 +133,62 @@ which removes the `sourceDirectory` / `workingDirectory` duplication.
 
 ## Resolver and fallback
 
-The guiding rule: there is never a non-working state.
+The guiding rule: there is never a non-working state, which means the resolver
+**never returns a command that does not exist on disk**. It resolves two candidate
+shapes and picks by mode, verifying existence before returning:
+
+- `sourceShape(record)`: `{ command: argv(m.dev.start), cwd: dev.workingDirectory }`
+  when the link is present, the dir exists, its manifest parses, and it has a
+  `dev.start`. Otherwise null.
+- `bundleShape(record)`: `{ command: derivedBundleCommand(name), cwd: dataDir(name) }`
+  **only when that bundle binary is actually installed** (`bundleExists`). Otherwise
+  null. This is the fix for the transition window: a machine that has not yet had a
+  bundle installed for an app must not fall through to a path that isn't there.
 
 ```ts
 function serveShape(record) {
   if (record.managedBy === "user") {
-    // source is always workingDirectory; no bundle, no mode switch
+    clearIssues(record.name, "dev-link");
     return { command: record.command, cwd: record.workingDirectory };
   }
-  if (isDevMode() && record.dev?.workingDirectory) {
-    const dir = record.dev.workingDirectory;
-    const m = dirExists(dir) ? readDeckManifest(dir) : null;
-    if (!m) {
-      // truly broken link: dir gone or manifest unreadable
-      addIssue(record.name, {
-        source: "dev-link",
-        message: `dev source ${dir} missing or invalid; running bundled`,
-      });
-    } else if (m.dev?.start) {
-      return { command: argv(m.dev.start), cwd: dir };
-    }
-    // manifest present but no dev.start (e.g. deck itself): stay bundled, no issue
+
+  const source = sourceShape(record);   // null unless linked + valid + has dev.start
+  const bundle = bundleShape(record);   // null unless the bundle binary is installed
+  const linkBroken = !!record.dev?.workingDirectory && !source && linkIsBroken(record);
+
+  // Preferred pick by mode; only ever return something that exists.
+  const chosen = isDevMode() ? (source ?? bundle) : (bundle ?? source);
+
+  if (!chosen) {
+    addIssue(record.name, { source: "dev-link", message: `no runnable shape for ${record.name} (no bundle, no valid source)` });
+    return null; // deck does not stand up a command that isn't there
   }
-  return { command: derivedBundleCommand(record.name), cwd: dataDir(record.name) };
+  if (chosen === bundle && linkBroken) {
+    addIssue(record.name, { source: "dev-link", message: `dev source ${record.dev.workingDirectory} missing or invalid; running bundled` });
+  } else if (chosen === source && !bundle && !isDevMode()) {
+    addIssue(record.name, { source: "dev-link", message: `bundle for ${record.name} not installed; serving source` });
+  } else {
+    clearIssues(record.name, "dev-link"); // resolved cleanly to its intended shape
+  }
+  return chosen;
 }
 ```
 
-A valid manifest that simply omits `dev.start` is not a broken link. It means the
-app has no source serve shape (deck itself is the case: it refuses to run from
-source), so deck stays on the bundled command with no issue raised, while its
-`dev.deploy` button still surfaces. Only a missing directory or an unreadable
-manifest raises the `dev-link` issue.
+Notes:
+
+- **Issue lifecycle (finding #2):** every clean resolution calls
+  `clearIssues(name, "dev-link")`, so a `dev-link` issue disappears from the board
+  row as soon as the developer fixes the path or the bundle appears. It is raised
+  only while a fallback is actually in effect.
+- **`dev.start` absent is not broken.** A valid manifest that simply omits
+  `dev.start` (deck itself, which refuses to run from source) is not a broken link:
+  `linkIsBroken` is false, `source` is null, and the app resolves to `bundle`
+  cleanly with no issue, while its `dev.deploy` button still surfaces. `linkIsBroken`
+  is true only for a missing dir or an unreadable/unparseable manifest.
+- **Never a phantom bundle (finding #1):** because `bundleShape` returns null when
+  the binary is not installed, a machine mid-transition (source running, no bundle
+  yet) keeps serving its source (loudly, if in prod) rather than pointing launchd at
+  a nonexistent path. This makes the rollout order-independent; see Rollout.
 
 | Class | Mode | Dev link | Serves | build / deploy |
 | --- | --- | --- | --- | --- |
@@ -182,20 +207,32 @@ while editing source.
 ## Command-route gating
 
 The `/api/v1/apps/:name/commands/:key` route keeps returning 404 (indistinguishable
-from absent) unless the command is genuinely runnable:
+from absent) unless the command is genuinely runnable. It performs the **same
+directory + manifest validity check** the resolver does, so a broken link hides the
+buttons (matching the "linked, bad" row) rather than passing the gate and failing
+later (finding #3):
 
 ```ts
 if (record.managedBy === "user") {
-  // always runnable; runs in record.workingDirectory
+  const m = readDeckManifest(record.workingDirectory);
+  if (!m?.commands?.[key]) return 404;      // key must be declared
+  // runnable; runs in record.workingDirectory
 } else {
-  if (!isDevMode() || !record.dev?.workingDirectory) return 404;
-  // runs in record.dev.workingDirectory, reading dev.build/deploy live from the manifest
+  if (!isDevMode() || !record.dev?.workingDirectory) return 404;   // prod, or unlinked
+  const dir = record.dev.workingDirectory;
+  const m = dirExists(dir) ? readDeckManifest(dir) : null;
+  if (!m?.dev?.[key]) return 404;           // broken link OR key absent -> 404
+  // runnable; runs in dir, reading m.dev[key] live
 }
 ```
 
-Build/deploy for a mattstack app therefore surface only in dev mode with a valid
-link, which is why deck (linked to its own repo) shows deploy on a dev machine but
-not on a regular user's install.
+The gate keys on a **valid link plus the key's presence**, not on `dev.start`, so
+deck itself (valid manifest, `dev.deploy` present, no `dev.start`) shows its deploy
+button while an unlinked or broken-linked app shows none. Build/deploy for a
+mattstack app therefore surface only in dev mode with a valid link, which is why
+deck shows deploy on a dev machine but not on a regular user's install. The
+dir+manifest validity check is shared with `serveShape` (one helper) so the two
+cannot diverge.
 
 ## Trigger and selective restart
 
@@ -207,8 +244,12 @@ notice on the next incidental read.
 - New deck endpoint (`POST /api/v1/apps/managed/reresolve`, or an extension of the
   existing `managed/restart`): recompute each managed app's serve shape and restart
   **only** those whose resolved command differs from what is actually running.
-- Diff against the live running command, not merely "has a dev link", so a
-  flip-then-flip-back before any restart does not churn.
+- **Diff target (finding #4):** the command currently written into the app's
+  launchd plist, which deck installs and can read back (its `ProgramArguments`, via
+  the same launchd/services read path deck already uses). No last-resolved command
+  is stored on the record; the plist is the source of truth for "what is actually
+  running". A flip-then-flip-back that lands on the same command as the plist
+  already holds is a no-op, so nothing churns.
 - No poll loop: deck is the single supervisor of every managed child, so RT-67's
   park loop (which exists only because launchd runs two uncoordinated daemons) does
   not apply. The 2s cache is the self-heal fallback for the case where the poke did
@@ -252,7 +293,33 @@ record). A one-time migration rewrites each managed row to the slim shape:
 - Drop the copied `commands` (now read live from the manifest).
 - Let prod `command` / data dir become derived.
 
+Deck's own row (`managedBy: "deck"`) already carries `sourceDirectory` = its repo;
+the migration moves that into `dev.workingDirectory`, which is what makes deck's own
+deploy button surface (finding #5). Going forward, deck's `bootstrapSelf` sets its
+`dev.workingDirectory` the same way it sets `sourceDirectory` today, so a fresh
+install self-links without a manual `deck register`.
+
 User-app rows (`managedBy: "user"`) are untouched.
+
+## Rollout sequencing (finding #1)
+
+The migration and the new resolver are safe to land in any order because the
+resolver never selects a bundle that isn't installed (`bundleShape` returns null
+otherwise) and falls back to the still-present source. Concretely, on a dev machine
+where board/console/chat run from source today with no bundle yet installed:
+
+- If the resolver lands first, those apps keep serving their source (loudly, since
+  prod mode would flag "bundle not installed; serving source"), never a phantom
+  bundle path.
+- Bundles become the prod shape only once rt setup has actually installed them and
+  `bundleExists` returns true.
+
+The natural, lowest-noise order is still: (1) app repos add the `dev` node +
+`includeInBundle`; (2) rt setup registers real bundled commands for these apps;
+(3) the migration rewrites existing rows. But correctness does not depend on it. The
+migration must not delete an app's currently-working source information until
+`dev.workingDirectory` is set, so no app is ever left with neither a bundle nor a
+source to fall back to.
 
 ## Error handling
 
@@ -267,16 +334,22 @@ User-app rows (`managedBy: "user"`) are untouched.
 
 - **Resolver unit tests:** every row of the fallback matrix, both classes,
   including the bad-link issue path.
-- **Command-route gating:** user app always runnable; mattstack app 404s in prod
-  and when unlinked, runnable when dev + linked.
+- **No phantom bundle:** bundle not installed + source linked resolves to source
+  (never a nonexistent path), raising the "bundle not installed" issue in prod;
+  neither present resolves to null with a loud issue.
+- **Issue lifecycle:** a `dev-link` issue raised on a bad link or missing bundle is
+  cleared on the next clean resolve (link fixed or bundle installed).
+- **Command-route gating:** user app runnable when its key is declared; mattstack
+  app 404s in prod, when unlinked, and on a broken link; runnable when dev + valid
+  link + key present; deck-self (no `dev.start`) still runs its declared `deploy`.
 - **Live-read, no drift:** editing a manifest's `dev.build` is reflected on the next
   resolve/button without re-registering.
-- **Selective restart:** only apps whose resolved command changed restart on a flag
-  flip; a no-op flip restarts nothing.
+- **Selective restart:** only apps whose resolved command differs from the installed
+  launchd `ProgramArguments` restart on a flag flip; a no-op flip restarts nothing.
 - **Link validation:** wrong dir, missing manifest, and name mismatch are each
   rejected with a clear error, via both CLI and the board PATCH.
-- **Migration:** an old-shape managed row rewrites correctly; a user-app row is
-  left alone.
+- **Migration:** an old-shape managed row rewrites correctly (including deck's
+  `sourceDirectory` -> `dev.workingDirectory`); a user-app row is left alone.
 
 ## Affected files (indicative, to be confirmed in the plan)
 
