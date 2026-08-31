@@ -195,7 +195,7 @@ export interface SyncIssue {
 And on `AppRecord`, next to `sourceDirectory`:
 
 ```ts
-  /** The developer's linked source checkout (RT-94). The one stored dev value:
+  /** The developer's linked source checkout. The one stored dev value:
       serve/build/deploy commands are read live from its mattstack.deck.json. */
   dev?: { workingDirectory: string };
 ```
@@ -308,7 +308,7 @@ import type { AppRecord } from "./records.ts";
 
 export interface ResolvedShape { command: string[]; cwd: string; }
 
-/** Prod data dir convention for managed apps: derived, never stored (spec: Deck record schema). */
+/** Prod data dir convention for managed apps: derived from the name, never stored. */
 export function dataDir(name: string): string {
   return join(process.env.HOME ?? homedir(), ".mattstack", name);
 }
@@ -328,7 +328,7 @@ export type LinkedManifest =
   | { state: "linked"; manifest: DeckManifest; dir: string };
 
 /** The one dir + manifest validity check, shared by the resolver and the
-    command-route gate so the two cannot diverge (spec: Command-route gating). */
+    command-route gate so the two cannot diverge. */
 export function readLinkedManifest(record: AppRecord): LinkedManifest {
   const dir = record.dev?.workingDirectory;
   if (!dir) return { state: "unlinked" };
@@ -708,7 +708,7 @@ Then the existing runId-GET / POST body runs unchanged, except `startCommandRun`
 Add to `src/api/server.test.ts`, following its existing route-test harness (it constructs the server with injected `deps` including `devMode`):
 
 ```ts
-describe("command route gating (RT-94)", () => {
+describe("command route gating by app class", () => {
   test("user app runs its declared key in prod", async () => { /* devMode: () => false; expect 200/started */ });
   test("user app 404s on an undeclared key", async () => { /* expect 404 */ });
   test("grandfathered managed row keeps dev-gated record.commands", async () => {
@@ -891,7 +891,7 @@ git commit -m "board: link-source / unlink affordances and dev-link states"
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-describe("editApp dev link (RT-94)", () => {
+describe("editApp dev link", () => {
   test("valid link stores dev.workingDirectory and reinstalls", async () => {
     /* managed record; PATCH { dev: { workingDirectory: dir } } with a matching-name manifest;
        expect 200, getRecord().dev.workingDirectory === dir, fake manager reinstalled the label. */
@@ -1207,7 +1207,7 @@ import { listRecords, putRecord, type AppRecord } from "./records.ts";
 import { readDeckManifest } from "./deck-manifest.ts";
 import { isPlatformManagedBy } from "../services/manager.ts";
 
-/** Uptime guard (RT-94 spec, Rollout sequencing): a slim row must carry its dev
+/** Uptime guard: a slim row must carry its dev
     link in the same write that clears its legacy source command, or the app
     would be left with neither a bundle nor a source to fall back to. */
 export function assertSlimRowKeepsAFallback(name: string, next: AppRecord): void {
