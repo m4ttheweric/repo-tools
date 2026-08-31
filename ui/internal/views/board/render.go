@@ -16,7 +16,7 @@ const (
 	pkgW   = 24
 	rightW = 14
 	urlW   = 20
-	tailN  = 12
+	tailN  = 20
 )
 
 // urlGiveupSeconds bounds how long the tail header stays "detecting…" for a
@@ -110,8 +110,25 @@ func emptyState(width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
+// nameWidth grows the name column to the longest command name so scripts like
+// "start:lite:watch" are not clipped, with the const as a floor and a cap so
+// one long name cannot crowd out the command column.
+func nameWidth(b *Board) int {
+	w := nameW
+	for _, e := range b.model.Entries {
+		if n := lipgloss.Width(e.Name); n > w {
+			w = n
+		}
+	}
+	if w > 22 {
+		w = 22
+	}
+	return w
+}
+
 func row(b *Board, i int) string {
 	e := b.model.Entries[i]
+	nw := nameWidth(b)
 	sel := e.ID == b.selected
 	nameC, cmdC := theme.Text, theme.Dim
 	on := lipgloss.NewStyle()
@@ -150,13 +167,13 @@ func row(b *Board, i int) string {
 	if e.Url != nil && *e.Url != "" {
 		url = clip(hostPort(*e.Url), urlW)
 	}
-	cmdW := b.width - (2 + 1 + 2 + nameW + 2 + 2 + pkgW + 2 + urlW + 2 + rightW + 1)
+	cmdW := b.width - (2 + 1 + 2 + nw + 2 + 2 + pkgW + 2 + urlW + 2 + rightW + 1)
 	if cmdW < 4 {
 		cmdW = 4
 	}
 	return prefix +
 		on.Foreground(glyphC).Render(glyph) + on.Render("  ") +
-		on.Foreground(nameC).Width(nameW).Render(clip(e.Name, nameW)) + on.Render("  ") +
+		on.Foreground(nameC).Width(nw).Render(clip(e.Name, nw)) + on.Render("  ") +
 		on.Foreground(cmdC).Width(cmdW).Render(clip(e.Command, cmdW)) + on.Render("  ") +
 		on.Foreground(theme.Faint).Width(pkgW).Render(clip(e.Pkg+" · "+e.Repo, pkgW)) + on.Render("  ") +
 		on.Foreground(theme.Cyan).Width(urlW).Align(lipgloss.Right).Render(url) + on.Render("  ") +
