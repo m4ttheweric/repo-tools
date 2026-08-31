@@ -55,3 +55,11 @@ test("unknown app throws and changes nothing", () => {
 test("result that would not re-parse throws", () => {
   expect(() => applyBuildResults(LOCK, [{ ...RESULT, sha256: "tooshort" }])).toThrow();
 });
+
+test("a brace inside a quoted value does not truncate the row span", () => {
+  const braced = LOCK.replace('"license": "MIT"', '"license": "MIT {see LICENSE}"');
+  const out = applyBuildResults(braced, [RESULT]);
+  const deck = parseDepsLock(out).tools.find((t) => t.name === "deck")!;
+  expect(deck.version).toBe("0.5.0");
+  expect(deck.license).toBe("MIT {see LICENSE}");
+});

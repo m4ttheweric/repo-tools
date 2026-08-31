@@ -15,9 +15,17 @@ function rowSpan(lockText: string, name: string): { start: number; end: number }
   if (idx < 0) throw new Error(`deps.lock has no row named ${name}`);
   const start = lockText.lastIndexOf("{", idx);
   let depth = 0;
+  let inString = false;
+  let escaped = false;
+  // Braces inside a quoted value (a url or license may carry one) must not
+  // move the depth, or the row span silently truncates or overruns.
   for (let i = start; i < lockText.length; i++) {
-    if (lockText[i] === "{") depth++;
-    else if (lockText[i] === "}") {
+    const ch = lockText[i];
+    if (escaped) escaped = false;
+    else if (ch === "\\") escaped = true;
+    else if (ch === '"') inString = !inString;
+    else if (!inString && ch === "{") depth++;
+    else if (!inString && ch === "}") {
       depth--;
       if (depth === 0) return { start, end: i + 1 };
     }

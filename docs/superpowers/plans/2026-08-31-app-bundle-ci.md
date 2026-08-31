@@ -1,5 +1,12 @@
 # App-Bundle CI Implementation Plan
 
+> **Status: executed and superseded by the shipped code.** All 11 tasks landed,
+> after which review rounds changed several of the snippets below ... notably
+> publishing moved into its own job so no secret-bearing step follows the app's
+> own build recipe, and the PR job gained status gating. Read the code and
+> `docs/superpowers/specs/2026-08-31-app-bundle-ci-design.md` as the current
+> contract; this file is the historical build record, not current guidance.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A manual-dispatch GitHub Actions pipeline that builds each managed mattstack app's darwin-arm64 binary from its repo's main, publishes a tarball release (binary + `skills/`), and opens a PR updating `rt-tray/deps.lock`.

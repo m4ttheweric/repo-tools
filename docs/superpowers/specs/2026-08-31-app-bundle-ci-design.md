@@ -123,8 +123,10 @@ skills/                 # verbatim copy of the repo's skills/ dir
   fetch/build change this design requires (isolated): `fetch-deps.sh`
   today keeps only the `extract` path from an archive, so it must
   additionally preserve a `skills/` dir when the archive carries one
-  (e.g. to `deps/arm64/<name>-skills/`, covered by the same `$dest.sha256`
-  idempotency stamp so a deleted skills dir re-materializes), and
+  (e.g. to `deps/arm64/<name>-skills/`, under its OWN `<name>-skills.sha256`
+  stamp carrying the same sha ... a separate stamp, not the binary's, so a
+  deleted skills dir forces a re-unpack instead of being skipped while the
+  binary stamp still validates), and
   `build.sh` copies it to `Contents/Helpers/skills/<name>/`. The landed
   skill trees MUST join build.sh's signing pass (a plain signature, the
   way fast-browser's non-Mach-O files are signed): every regular file

@@ -36,7 +36,12 @@ if (import.meta.main) {
   const args = process.argv.slice(2);
   const opt = (flag: string): string | null => {
     const i = args.indexOf(flag);
-    return i >= 0 ? (args[i + 1] ?? null) : null;
+    if (i < 0) return null;
+    const value = args[i + 1];
+    // A flag with no value must not fall back to the default lock: the caller
+    // asked for a specific file and would never see that it was ignored.
+    if (value === undefined) throw new Error(`${flag} needs a value`);
+    return value;
   };
   const kind = opt("--kind");
   const status = opt("--status");
