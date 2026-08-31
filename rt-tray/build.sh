@@ -254,6 +254,24 @@ bundle_helpers() {
 }
 bundle_helpers
 
+# ─── rt's own agent skills (Contents/Helpers/skills/rt) ──────────────────────
+# First-party analogue of the per-helper skills landing above: rt compiles
+# from this checkout, so its skills/ copies from the repo rather than a
+# tarball. Copied whole INCLUDING dotfiles: skills/.skillsignore is what lets
+# rt skills link separate user-facing skills from maintainer-only ones, so a
+# copy that drops it would ship all skills to every user.
+if [ -d "$REPO_DIR/skills" ]; then
+    while IFS= read -r -d '' bad; do
+        echo "  ✗ rt skills dir '$(basename "$bad")' contains a dot; rename it in repo-tools/skills"; exit 1
+    done < <(find "$REPO_DIR/skills" -type d -name '*.*' -print0)
+    rt_skills_dest="$CONTENTS/Helpers/skills/rt"
+    rm -rf "$rt_skills_dest"; mkdir -p "$(dirname "$rt_skills_dest")"
+    cp -R "$REPO_DIR/skills" "$rt_skills_dest"
+    xattr -cr "$rt_skills_dest" 2>/dev/null || true
+    HELPER_ENTITLEMENTS+=("$rt_skills_dest	none")
+    echo "  ✓ Helpers/skills/rt"
+fi
+
 # ─── Embed rt-ui (Contents/Helpers/rt-ui) ─────────────────────────────────────
 # A first-party helper built from ui/, not a deps.lock row: same signing pass
 # as the downloaded helpers, no url/sha256. Dev bundles run from source and
