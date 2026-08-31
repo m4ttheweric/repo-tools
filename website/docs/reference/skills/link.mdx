@@ -7,7 +7,7 @@ sidebar_label: link
 
 `rt › skills › link`
 
-Symlink this repo's skills/*/SKILL.md into ~/.claude/skills by frontmatter name (create, repoint, prune; conflicts reported, never touched)
+Symlink a skills/*/SKILL.md tree into ~/.claude/skills by frontmatter name (create, repoint, prune; conflicts reported, never touched)
 
 ## Usage
 
@@ -19,6 +19,7 @@ rt skills link [flags]
 
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--from` | text |  | Link this directory instead of the current repo's skills/ (no checkout needed) |
 | [`--dry-run`](/guides/common-flags) | boolean | `false` | Print what would change without touching disk |
 | [`--json`](/guides/common-flags) | boolean | `false` | Machine-readable result |
 

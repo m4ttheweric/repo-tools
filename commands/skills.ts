@@ -1116,7 +1116,7 @@ function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<
  * verbs[] is roster-shaped and therefore an incomplete binding universe:
  * measured against a live pack, stubs.jsonc's verbs and the manifest's
  * binding keys intersect on a minority -- the rest are pipeline stages,
- * cross-plugin keys (e.g. mr-board:review), and mattstack skills that bind
+ * cross-plugin keys (e.g. board:review), and mattstack skills that bind
  * fills without being a roster verb or a pipeline stage. binders[] inverts
  * every key in Resolved.bindings instead, so an inverse index built from it
  * (rather than from verbs[]) doesn't render genuinely-bound fills as

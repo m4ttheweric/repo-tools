@@ -29,3 +29,10 @@ test("strips a trailing comma left by surrounding prose", () => {
 test("strips a trailing period left by surrounding prose", () => {
   expect(detectUrl("server is up at http://localhost:3000/api.")).toBe("http://localhost:3000/api");
 });
+test("picks the last localhost url when an auxiliary url logs first", () => {
+  const t =
+    "info: [JobConfig] queue endpoint=http://localhost:9324\n...\nGraphQL http://localhost:10400/graphql\nHealth http://localhost:10400/health";
+  // The last match in the text is the health line, not the graphql line;
+  // the point of this test is 10400 over 9324, not which 10400 path wins.
+  expect(detectUrl(t)).toBe("http://localhost:10400/health");
+});

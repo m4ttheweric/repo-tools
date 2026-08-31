@@ -1244,10 +1244,11 @@ export const TREE: Record<string, CommandNode> = {
     description: "Compile, check, and manage the surface of the pack's committed skills",
     subcommands: {
       link: {
-        description: "Symlink this repo's skills/*/SKILL.md into ~/.claude/skills by frontmatter name (create, repoint, prune; conflicts reported, never touched)",
+        description: "Symlink a skills/*/SKILL.md tree into ~/.claude/skills by frontmatter name (create, repoint, prune; conflicts reported, never touched)",
         module: "./commands/skills-link.ts",
         fn: "skillsLink",
         args: [
+          { name: "From", flag: "--from", type: "text", placeholder: "path/to/skills", hint: "Link this directory instead of the current repo's skills/ (no checkout needed)" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would change without touching disk" },
           SETUP_JSON_ARG,
         ],

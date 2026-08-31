@@ -27,6 +27,8 @@ export interface RunnerDeps {
   openUrl: (url: string) => Promise<void>;
   workspaceLabel: string;
   seed?: SeedEntry[];
+  registerWorkspace?: (id: string) => void;
+  unregisterWorkspace?: (id: string) => void;
 }
 
 const LIVENESS_MS = 1500;
@@ -238,6 +240,7 @@ export class Runner {
       if (!this.workspaceId) {
         const ws = await this.deps.engine.createWorkspace(this.deps.workspaceLabel);
         this.workspaceId = ws.workspaceId;
+        this.deps.registerWorkspace?.(ws.workspaceId);
         await this.deps.engine.renameTab(ws.tabId, entry.name);
         entry.tabId = ws.tabId;
         entry.paneId = ws.paneId;
@@ -272,6 +275,7 @@ export class Runner {
     e.state = "starting";
     e.error = null;
     e.url = null;
+    e.urlPending = null;
     try {
       if (isRunning(await this.deps.engine.processInfo(e.paneId))) {
         await this.deps.engine.interrupt(e.paneId);
@@ -324,7 +328,18 @@ export class Runner {
         if (e.url === null && (e.state === "running" || e.state === "starting")) {
           const scan = await this.deps.engine.read(e.paneId, URL_SCAN_LINES);
           const found = detectUrl(afterLastSentinel(scan));
-          if (found) e.url = found;
+          if (found === null) {
+            e.urlPending = null;
+          } else if (found === e.urlPending) {
+            // Same URL on two consecutive scans: the startup burst has settled,
+            // so latch it. Once latched it survives the banner scrolling out.
+            e.url = found;
+            e.urlPending = null;
+          } else {
+            // First sighting (or the candidate changed, e.g. an auxiliary URL was
+            // superseded by the real server URL): wait for a confirming scan.
+            e.urlPending = found;
+          }
         }
       } catch (err) {
         this.pin(e, err);
@@ -338,7 +353,7 @@ export class Runner {
     const e = this.find(this.tailFor);
     if (!e?.paneId) return;
     try {
-      e.tail = filterTail(await this.deps.engine.read(e.paneId, TAIL_LINES), this.deps.now());
+      e.tail = filterTail(await this.deps.engine.read(e.paneId, TAIL_LINES));
     } catch (err) {
       this.pin(e, err);
     }
@@ -356,6 +371,10 @@ export class Runner {
         process.stderr.write(
           `  rt runner: could not close workspace ${this.workspaceId} (${err instanceof Error ? err.message : String(err)})\n`,
         );
+      } finally {
+        // A herdr close failure still drops ownership: the next launch's
+        // reconcile prunes any workspace left with no registry record.
+        this.deps.unregisterWorkspace?.(this.workspaceId);
       }
     }
   }

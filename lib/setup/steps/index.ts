@@ -14,7 +14,7 @@ import { settingsSeedStep } from "./settings.ts";
 import { reposCloneStep } from "./repos.ts";
 import { servicesRegisterStep, proxyInstallStep } from "./services.ts";
 import { deckManagedStep } from "./deck.ts";
-import { skillsMaterializeStep, boardKeysStep, cronTriageStep } from "./skills.ts";
+import { skillsMaterializeStep, skillsLinkStep, boardKeysStep, cronTriageStep } from "./skills.ts";
 import { pluginsInstallStep } from "./plugins.ts";
 import { fastbrowserSetupStep, herdrIntegrationStep, extensionInstallStep, servicesStartStep, snapshotPushStep } from "./tools.ts";
 import { verifyStep } from "./verify.ts";
@@ -59,6 +59,7 @@ export const STEPS: StepDef[] = [
   proxyInstallStep,
   deckManagedStep,
   skillsMaterializeStep,
+  skillsLinkStep,
   boardKeysStep,
   cronTriageStep,
   pluginsInstallStep,

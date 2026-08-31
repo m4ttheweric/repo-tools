@@ -336,7 +336,7 @@ class UrlFakeEngine extends FakeEngine {
   }
 }
 
-test("pollLiveness latches a url from pane output and does not rescan once found", async () => {
+test("pollLiveness latches a url only after two consecutive scans agree, then does not rescan", async () => {
   let time = new Date("2026-08-30T00:00:00Z").getTime();
   const engine = new UrlFakeEngine();
   const addSession = new FakeSession([{ t: "intent", name: "add" }]);
@@ -354,11 +354,69 @@ test("pollLiveness latches a url from pane output and does not rescan once found
   time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
 
   await __test__.pollLiveness(r);
-  expect(e.url).toBe("http://localhost:5173/");
+  expect(e.url).toBeNull();
   expect(engine.readCounts.get(e.paneId!)).toBe(1);
 
   await __test__.pollLiveness(r);
-  expect(engine.readCounts.get(e.paneId!)).toBe(1);
+  expect(e.url).toBe("http://localhost:5173/");
+  expect(engine.readCounts.get(e.paneId!)).toBe(2);
+
+  await __test__.pollLiveness(r);
+  expect(engine.readCounts.get(e.paneId!)).toBe(2);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
+// Returns a different scan buffer on each successive call (clamped to the
+// last entry once the sequence is exhausted), so a test can drive a pane
+// whose visible text changes across polls, as scrollback does in practice.
+class SequencedReadEngine extends FakeEngine {
+  private readCalls = 0;
+  constructor(private readonly buffers: string[]) { super(); }
+  override async read(_paneId: string): Promise<string> {
+    const buf = this.buffers[Math.min(this.readCalls, this.buffers.length - 1)]!;
+    this.readCalls++;
+    return buf;
+  }
+}
+
+test("a superseded early candidate never latches", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new SequencedReadEngine([
+    "info: [JobConfig] queue endpoint=http://localhost:9324\n",
+    "info: [JobConfig] queue endpoint=http://localhost:9324\nGraphQL http://localhost:10400/graphql\n",
+    "info: [JobConfig] queue endpoint=http://localhost:9324\nGraphQL http://localhost:10400/graphql\n",
+  ]);
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+
+  // Pass 1: only the queue url is visible; it becomes the pending candidate.
+  await __test__.pollLiveness(r);
+  expect(e.url).toBeNull();
+
+  // Pass 2: the real server url now trails the queue url in the buffer;
+  // it supersedes the pending candidate instead of confirming it.
+  time += 1000;
+  await __test__.pollLiveness(r);
+  expect(e.url).toBeNull();
+
+  // Pass 3: the same buffer confirms the server url, which latches. The
+  // queue url (9324) is never latched at any point in this sequence.
+  time += 1000;
+  await __test__.pollLiveness(r);
+  expect(e.url).toBe("http://localhost:10400/graphql");
 
   liveSession.send({ t: "intent", name: "quit" });
   await finished;
@@ -429,6 +487,8 @@ test("pollLiveness scans only the current run, ignoring a stale port left in scr
   // Scrollback still holds the previous run's banner ahead of the exit
   // sentinel; only the text after it belongs to the new run.
   engine.text.set(e.paneId!, "> Local: http://localhost:3000/\n__rt_exit 0\n> Local: http://localhost:5173/\n");
+  await __test__.pollLiveness(r);
+  time += 1000;
   await __test__.pollLiveness(r);
   expect(e.url).toBe("http://localhost:5173/");
 
@@ -502,6 +562,32 @@ test("edit with an unchanged command is a no-op: no restart, no extra run call",
   expect(d.engine.calls.filter((c) => c.startsWith("int:"))).toHaveLength(0);
 });
 
+test("launch registers the new workspace id once", async () => {
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "quit" }]);
+  const registered: string[] = [];
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const withRegister: RunnerDeps = { ...d, registerWorkspace: (id) => registered.push(id) };
+  await new Runner(withRegister).run();
+  expect(registered).toEqual(["wX"]);
+});
+
+test("teardown unregisters the workspace id", async () => {
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "quit" }]);
+  const unregistered: string[] = [];
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const withUnregister: RunnerDeps = { ...d, unregisterWorkspace: (id) => unregistered.push(id) };
+  await new Runner(withUnregister).run();
+  expect(unregistered).toEqual(["wX"]);
+});
+
 test("restart clears a latched url so a new port is re-detected", async () => {
   let time = new Date("2026-08-30T00:00:00Z").getTime();
   const engine = new UrlFakeEngine();
@@ -518,6 +604,8 @@ test("restart clears a latched url so a new port is re-detected", async () => {
   await flushMicrotasks();
   const e = r.entries[0]!;
   time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+  await __test__.pollLiveness(r);
+  time += 1000;
   await __test__.pollLiveness(r);
   expect(e.url).toBe("http://localhost:5173/");
 
