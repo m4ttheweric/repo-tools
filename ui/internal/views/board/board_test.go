@@ -134,6 +134,50 @@ func TestOpenKeyEmitsIntentOnlyWhenEntryHasUrl(t *testing.T) {
 	s.Wait()
 }
 
+func TestRowShowsHostPortWhenUrlDetected(t *testing.T) {
+	s := open(t)
+	// e1 carries url http://localhost:3000 in the fixture.
+	if !strings.Contains(s.Screen(), "localhost:3000") {
+		t.Fatalf("row url missing:\n%s", s.Screen())
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+func TestTailHeaderShowsNoneFoundWhenUrlGivesUp(t *testing.T) {
+	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
+	s.ReadLine(2 * time.Second)
+	old := time.Now().Add(-40 * time.Second).UTC().Format(time.RFC3339)
+	model := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"running","startedAt":"` + old + `","exitCode":null,"error":null,"url":null,"tail":null}]}}`
+	s.Send(model)
+	s.WaitForPaint("rt runner")
+	s.Type("t")
+	s.WaitForPaint("tail · dev")
+	if !strings.Contains(s.Screen(), "none found") {
+		t.Fatalf("tail header missing none found:\n%s", s.Screen())
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+func TestTailHeaderShowsDetectingWhenUrlPending(t *testing.T) {
+	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
+	s.ReadLine(2 * time.Second)
+	recent := time.Now().Add(-5 * time.Second).UTC().Format(time.RFC3339)
+	model := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"running","startedAt":"` + recent + `","exitCode":null,"error":null,"url":null,"tail":null}]}}`
+	s.Send(model)
+	s.WaitForPaint("rt runner")
+	s.Type("t")
+	s.WaitForPaint("tail · dev")
+	if !strings.Contains(s.Screen(), "detecting") {
+		t.Fatalf("tail header missing detecting:\n%s", s.Screen())
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
 func TestQuitConfirmsWhenRunningAndEmitsQuitOnY(t *testing.T) {
 	s := open(t)
 	s.Type("q")
