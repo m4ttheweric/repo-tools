@@ -42,7 +42,8 @@ if (import.meta.main) {
   const status = opt("--status");
   const wantArch = args.includes("--arch");
 
-  const lock = parseDepsLock(readFileSync(join(import.meta.dir, "..", "..", "rt-tray", "deps.lock"), "utf8"));
+  const lockPath = opt("--lock") ?? join(import.meta.dir, "..", "..", "rt-tray", "deps.lock");
+  const lock = parseDepsLock(readFileSync(lockPath, "utf8"));
 
   if (wantArch) {
     console.log(lock.arch);
