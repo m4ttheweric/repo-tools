@@ -7,9 +7,15 @@ import { __test__ as gate } from "../../lib/ui/gate.ts";
 // commands/__tests__/worktree.test.ts), so the real bindings must be
 // captured BEFORE any mock.module call in this file, and restored with
 // THOSE, not a fresh re-import of the module specifier.
-const realHerdrClient = await import("../../lib/herdr/client.ts");
-const realHerdrLaunch = await import("../../lib/herdr-launch.ts");
-const realRunner = await import("../runner.ts");
+//
+// They are COPIES for that same reason: holding the namespace itself hands
+// the restore an object the mock has already overwritten, so the stub
+// outlives afterEach and leaks to every later suite in the process. A
+// mocked herdrAvailable then answers true without touching a socket, and
+// lib/herdr's own test sees an empty `seen`.
+const realHerdrClient = { ...(await import("../../lib/herdr/client.ts")) };
+const realHerdrLaunch = { ...(await import("../../lib/herdr-launch.ts")) };
+const realRunner = { ...(await import("../runner.ts")) };
 
 afterEach(() => {
   gate.setInteractive(undefined);
