@@ -27,6 +27,7 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { ensureFzf } from "../lib/fzf.ts";
+import { T, toAnsiFg, toHex } from "../lib/tui/palette.ts";
 import {
   getChangedFiles,
   discardChanges,
@@ -179,10 +180,10 @@ function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
       "--with-nth=2..",         // display label col; value col is hidden
       "--delimiter=\t",
       "--layout=reverse",
-      "--border=rounded",
-      "--border-label= rt commit ",
+      "--border=left",
+      "--no-separator",
       "--prompt=  filter: ",
-      "--header=space: stage  tab: toggle+next  ctrl-a: toggle-all  ctrl-d: discard  enter: commit  esc: abort",
+      `--header=${toAnsiFg(T.pink)}rt commit\x1b[0m\nspace: stage  tab: toggle+next  ctrl-a: toggle-all  ctrl-d: discard  enter: commit  esc: abort`,
       "--no-mouse",
       "--bind=space:toggle,tab:toggle+down,ctrl-a:toggle-all",
       // GitHub Desktop style: everything checked by default. Must be the
@@ -196,7 +197,7 @@ function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
       "--preview-window=right:60%:wrap:border-left",
       "--preview-label= diff ",
       // Highlight matched characters
-      "--color=hl:#ffb86c,hl+:#ffb86c",
+      `--color=hl:#ffb86c,hl+:#ffb86c,border:${toHex(T.pink)}`,
     ],
     {
       input,

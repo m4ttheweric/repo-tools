@@ -6,7 +6,7 @@
  * back-compat; the latency-sensitive callers import them from here directly.
  */
 
-import { T, toHex } from "./tui/palette.ts";
+import { T, toAnsiFg, toHex } from "./tui/palette.ts";
 import { BackNavigation } from "./back-navigation.ts";
 
 export { BackNavigation } from "./back-navigation.ts";
@@ -71,15 +71,16 @@ export async function filterableMultiselect(opts: {
     "--with-nth=2..",
     "--delimiter=\t",
     "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${opts.message} `,
+    "--border=left",
+    "--no-separator",
+    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m\nspace: toggle  tab: toggle & next  enter: confirm`,
     "--prompt=filter: ",
-    "--header=space: toggle  tab: toggle & next  enter: confirm",
     "--no-mouse",
     "--bind=space:toggle,tab:toggle+down",
     "--preview=printf '%s\\n' {+2..}",
     "--preview-window=up,4,wrap,border-bottom",
     "--preview-label= selected ",
+    `--color=border:${toHex(T.pink)}`,
     ...bindings,
   ], {
     input,
@@ -152,14 +153,14 @@ export function buildFilterableSelectArgs(opts: {
     "--delimiter=\t",
     "--tabstop=1",
     "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${opts.message} `,
+    "--border=left",
+    "--no-separator",
     "--prompt=filter: ",
-    `--header=${headerWithReload}`,
+    `--header=${toAnsiFg(T.pink)}${opts.message}\x1b[0m\n${headerWithReload}`,
     "--no-mouse",
     "--print-query",
     "--expect=ctrl-up",
-    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+    `--color=border:${toHex(T.pink)}`,
     ...(opts.exact ? ["--exact"] : []),
     ...(opts.reloadCommand ? [`--bind=ctrl-r:reload(${opts.reloadCommand})`] : []),
   ];

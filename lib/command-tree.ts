@@ -21,7 +21,7 @@ import { resolve, join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { beginCommand, logCommand } from "./cli-logger.ts";
-import { toHex, T } from "./tui/palette.ts";
+import { toHex, toAnsiFg, T } from "./tui/palette.ts";
 
 // Dev mode is active when ~/.local/bin/rt exists (the wrapper script pointing
 // at local source). Same detection used by commands/version.ts.
@@ -492,14 +492,14 @@ async function showPicker(
     "--delimiter=\t",
     "--tabstop=1",
     "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${breadcrumb.join(" › ")} `,
+    "--border=left",
+    "--no-separator",
     "--prompt=filter: ",
-    `--header=${headerParts.join("  ")}`,
+    `--header=${toAnsiFg(T.pink)}${breadcrumb.join(" › ")}\x1b[0m\n${headerParts.join("  ")}`,
     "--no-mouse",
     "--print-query",
     `--expect=${expectKeys.join(",")}`,
-    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+    `--color=border:${toHex(T.pink)}`,
   ], {
     input,
     stdio: ["pipe", "pipe", "inherit"],

@@ -1,6 +1,6 @@
 import { spawnSync } from "child_process";
 import type { CommandArg } from "./command-tree.ts";
-import { T, toHex } from "./tui/palette.ts";
+import { T, toAnsiFg, toHex } from "./tui/palette.ts";
 
 export async function collectArgs(
   label: string,
@@ -28,13 +28,13 @@ export async function collectArgs(
     "--with-nth=2..",
     "--delimiter=\t",
     "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${label} args `,
+    "--border=left",
+    "--no-separator",
     "--prompt=filter: ",
-    "--header=space: toggle  tab: toggle & next  enter: confirm",
+    `--header=${toAnsiFg(T.pink)}${label} args\x1b[0m\nspace: toggle  tab: toggle & next  enter: confirm`,
     "--no-mouse",
     "--bind=space:toggle,tab:toggle+down",
-    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+    `--color=border:${toHex(T.pink)}`,
   ], {
     input,
     stdio: ["pipe", "pipe", "inherit"],

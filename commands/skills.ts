@@ -24,6 +24,7 @@ import { applyEdits, modify } from "jsonc-parser";
 import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath, sep } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
+import { T, toAnsiFg, toHex } from "../lib/tui/palette.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
@@ -1681,16 +1682,18 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
     "fzf",
     [
       "--multi",
+      "--ansi",
       "--with-nth=2..",
       "--delimiter=\t",
       "--layout=reverse",
-      "--border=rounded",
-      "--border-label= rt skills surface ",
+      "--border=left",
+      "--no-separator",
       "--prompt=  filter: ",
-      "--header=space: toggle public  tab: toggle+next  enter: review changes  esc: cancel",
+      `--header=${toAnsiFg(T.pink)}rt skills surface\x1b[0m\nspace: toggle public  tab: toggle+next  enter: review changes  esc: cancel`,
       "--no-mouse",
       "--bind=space:toggle,tab:toggle+down",
       `--bind=${loadBind}`,
+      `--color=border:${toHex(T.pink)}`,
     ],
     { input, stdio: ["pipe", "pipe", "inherit"], encoding: "utf8" },
   );
