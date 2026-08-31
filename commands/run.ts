@@ -43,6 +43,7 @@ import {
   type LaunchItem,
 } from "../lib/herdr-launch.ts";
 import { herdrAvailable } from "../lib/herdr/client.ts";
+import { interactive } from "../lib/ui/gate.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
@@ -658,11 +659,11 @@ export function presetToSeed(preset: Preset, worktreePath: string): SeedEntry[] 
   }));
 }
 
-/** Resolve a saved preset's entries against the current worktree and open a seeded runner board (or run them in place when herdr isn't available). */
-async function launchPreset(preset: Preset, worktreePath: string, ctx: CommandContext): Promise<void> {
+/** Resolve a saved preset's entries against the current worktree and open a seeded runner board (or run them in place when herdr isn't available). Exported for direct testing, same as presetToSeed. */
+export async function launchPreset(preset: Preset, worktreePath: string, ctx: CommandContext): Promise<void> {
   process.stderr.write(`\n  preset ${bold}${preset.name}${reset}\n\n`);
-  const seed = presetToSeed(preset, worktreePath);
-  if (await herdrAvailable()) {
+  if (interactive() && (await herdrAvailable())) {
+    const seed = presetToSeed(preset, worktreePath);
     await runSeededBoard(seed, ctx);
   } else {
     const items: LaunchItem[] = preset.entries.map((e) => ({
