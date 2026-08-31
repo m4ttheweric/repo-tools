@@ -1,7 +1,7 @@
 # App-bundle CI: build mattstack apps from source into deps.lock
 
 **Date:** 2026-08-31
-**Repos touched:** `repo-tools` (rt), and each managed app repo (deck, mr-board, console, chat)
+**Repos touched:** `repo-tools` (rt), and each managed app repo (deck, mr-board, console, chat, gitq)
 **Status:** design ratified, ready for implementation plan
 
 ## Problem
@@ -239,8 +239,12 @@ PAT is required; its narrow scope is the mitigation.
   both additive — merge in either order. One deliberate divergence from an
   RT-94 side remark: the buildable set keys on deps.lock `repo` rows, not
   `includeInBundle` (that field gates deck's dev/prod switch, not CI). The
-  row schema test asserts the pairing (a `repo` row's app manifest carries
-  `bundle`) so the two sets cannot diverge silently. RT-94's resolver starts choosing
+  repo-row-to-bundle-node pairing is enforced where both sides are visible:
+  the build job's dispatch-time manifest validation fails loudly when a
+  `repo` row's manifest lacks a `bundle` node (a repo-tools unit test
+  cannot read the other repos' manifests, and the pairing may legitimately
+  lag — gitq's row can gain `repo` before its `bundle` node lands, with
+  that leg failing loudly until it does). RT-94's resolver starts choosing
   the bundle automatically once these rows are real and installed
   (`bundleExists` flips true); that is the designed interlock, not a
   conflict.
@@ -253,7 +257,12 @@ PAT is required; its narrow scope is the mitigation.
 ## Open items carried into the plan
 
 - Exact `bundle.build` recipe per app (each repo's own lane; deck/board/
-  console/chat owners write theirs — the pipeline just runs them).
+  console/chat/gitq owners write theirs — the pipeline just runs them; a
+  dispatch of an app whose `bundle` node hasn't landed fails that leg
+  loudly, which the independent-matrix rule tolerates).
+- Skills-presence-on-skip mechanics for `fetch-deps.sh` (how a skipped
+  re-unpack knows the archive carried `skills/` — e.g. record presence
+  beside the stamp); the plan picks one mechanism.
 - Whether `check-bundle.sh` should assert `Contents/Helpers/skills/<app>/`
   contents for apps whose tarball carried skills (lean yes, cheap).
 - PAT creation is a Matt-on-GitHub step (org settings); the plan marks it a
