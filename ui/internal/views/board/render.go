@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 
@@ -14,8 +15,14 @@ const (
 	nameW  = 10
 	pkgW   = 24
 	rightW = 14
+	urlW   = 20
 	tailN  = 12
 )
+
+// urlGiveupSeconds bounds how long the tail header stays "detecting…" for a
+// running entry with no url yet; the scan itself never stops (Task 3), so
+// this is purely a display threshold before honestly reporting "none found".
+const urlGiveupSeconds = 30
 
 // The board renders on the terminal's native background; only the
 // selection highlight and the confirm bar paint an explicit background.
@@ -23,6 +30,19 @@ var onBg = lipgloss.NewStyle()
 
 func fg(c color.Color) lipgloss.Style {
 	return onBg.Foreground(c)
+}
+
+// hostPort strips a detected url down to host:port for the row cell, e.g.
+// "http://localhost:3000/" -> "localhost:3000".
+func hostPort(rawURL string) string {
+	s := rawURL
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }
 
 func render(b *Board) string {
@@ -126,7 +146,11 @@ func row(b *Board, i int) string {
 	if e.Error != nil {
 		right, rightC = clip(*e.Error, rightW), theme.Coral
 	}
-	cmdW := b.width - (2 + 1 + 2 + nameW + 2 + 2 + pkgW + 2 + rightW + 1)
+	url := ""
+	if e.Url != nil && *e.Url != "" {
+		url = clip(hostPort(*e.Url), urlW)
+	}
+	cmdW := b.width - (2 + 1 + 2 + nameW + 2 + 2 + pkgW + 2 + urlW + 2 + rightW + 1)
 	if cmdW < 4 {
 		cmdW = 4
 	}
@@ -135,12 +159,13 @@ func row(b *Board, i int) string {
 		on.Foreground(nameC).Width(nameW).Render(clip(e.Name, nameW)) + on.Render("  ") +
 		on.Foreground(cmdC).Width(cmdW).Render(clip(e.Command, cmdW)) + on.Render("  ") +
 		on.Foreground(theme.Faint).Width(pkgW).Render(clip(e.Pkg+" · "+e.Repo, pkgW)) + on.Render("  ") +
+		on.Foreground(theme.Cyan).Width(urlW).Align(lipgloss.Right).Render(url) + on.Render("  ") +
 		on.Foreground(rightC).Width(rightW).Align(lipgloss.Right).Render(right) + on.Render(" ")
 }
 
 func tailBox(b *Board, e *Entry) string {
 	title := fg(theme.Cyan).Render("tail") + fg(theme.Faint).Render(" · ") + fg(theme.TextSoft).Render(e.Name)
-	rightT := fg(theme.Faint).Render("refreshing 1s")
+	rightT := linkStatus(b, e)
 	border := fg(theme.Panel)
 	fill := b.width - 8 - lipgloss.Width(title) - lipgloss.Width(rightT)
 	if fill < 0 {
@@ -165,13 +190,36 @@ func tailBox(b *Board, e *Entry) string {
 	return lipgloss.JoinVertical(lipgloss.Left, top, boxed)
 }
 
+// linkStatus is the tail header's right-hand text: the found url, an honest
+// give-up once urlGiveupSeconds has passed with none, the pending state
+// within the window, or nothing at all once the entry has reached a
+// terminal state without ever finding one (a stopped/crashed one-shot is
+// never going to serve a url). Elapsed seconds are derived the same way
+// Entry.uptime derives them: StartedAt parsed as RFC3339 against b.now.
+func linkStatus(b *Board, e *Entry) string {
+	if e.Url != nil && *e.Url != "" {
+		return fg(theme.Cyan).Render("link: " + hostPort(*e.Url))
+	}
+	if e.State != "running" && e.State != "starting" {
+		return ""
+	}
+	if e.State == "running" && e.StartedAt != nil {
+		if t, err := time.Parse(time.RFC3339Nano, *e.StartedAt); err == nil {
+			if int(b.now.Sub(t).Seconds()) >= urlGiveupSeconds {
+				return fg(theme.Dimmer).Render("link: none found")
+			}
+		}
+	}
+	return fg(theme.Faint).Render("link: detecting…")
+}
+
 func keybar(b *Board) string {
 	group := fg(theme.Lav)
 	key := func(k, l string) string {
 		return fg(theme.Faint).Render(k) + onBg.Render(" ") + fg(theme.Dim).Render(l)
 	}
 	left := group.Render("navigate") + onBg.Render(" ") + key("j/k", "up·down") + onBg.Render("   ") +
-		group.Render("process") + onBg.Render(" ") + strings.Join([]string{key("a", "add"), key("s", "restart"), key("x", "stop"), key("f", "focus"), key("t", "tail")}, onBg.Render("  "))
+		group.Render("process") + onBg.Render(" ") + strings.Join([]string{key("a", "add"), key("s", "restart"), key("x", "stop"), key("f", "focus"), key("t", "tail"), key("o", "open")}, onBg.Render("  "))
 	return justify(b.width, left, key("q", "quit"))
 }
 

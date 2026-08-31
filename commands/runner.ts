@@ -3,6 +3,7 @@
  * the wiring; the loop lives in lib/runner/runner.ts and the herdr calls in
  * lib/runner/engine.ts.
  */
+import { spawnSync } from "child_process";
 import { randomBytes } from "crypto";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { herdrAvailable, herdrSocketPath } from "../lib/herdr/client.ts";
@@ -22,6 +23,12 @@ export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: strin
     resolve: () => resolveRun(args.filter((a) => a !== "--resolve-only"), ctx),
     now: () => new Date(),
     sleep: (ms) => Bun.sleep(ms),
+    openUrl: async (url: string) => {
+      const r = spawnSync("open", [url], { stdio: "ignore" });
+      if (r.error) throw r.error;
+      if (r.signal) throw new Error(`open was killed by ${r.signal}`);
+      if (r.status !== 0) throw new Error(`open exited with ${r.status}`);
+    },
     workspaceLabel: `rt-runner-${randomBytes(2).toString("hex")}`,
     seed,
   };

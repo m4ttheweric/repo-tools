@@ -8,7 +8,7 @@ import type { RunResolution } from "../../commands/run.ts";
 import type { SessionHandle } from "../ui/spawn.ts";
 import type { SessionIntent } from "../ui/protocol.ts";
 import { EngineError, type Engine } from "./engine.ts";
-import { deriveState, filterTail, isRunning, newEntry, toModel, type Entry } from "./state.ts";
+import { afterLastSentinel, deriveState, detectUrl, filterTail, isRunning, newEntry, toModel, type Entry } from "./state.ts";
 
 export interface SeedEntry {
   name: string;
@@ -24,6 +24,7 @@ export interface RunnerDeps {
   resolve: () => Promise<RunResolution>;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
+  openUrl: (url: string) => Promise<void>;
   workspaceLabel: string;
   seed?: SeedEntry[];
 }
@@ -33,6 +34,7 @@ const TAIL_MS = 1000;
 const TAIL_LINES = 200;
 const RESTART_WAIT_MS = 5000;
 const LAUNCH_GRACE_MS = 500;
+const URL_SCAN_LINES = 800;
 
 export class SessionDied extends Error {
   constructor(code: number) {
@@ -156,6 +158,17 @@ export class Runner {
         // intent landing mid-poll cannot start a second overlapping read.
         await this.guarded("tail", () => this.pollTail());
         break;
+      case "open": {
+        const e = this.find(intent.entryId);
+        if (e?.url) {
+          try {
+            await this.deps.openUrl(e.url);
+          } catch (err) {
+            this.pin(e, err);
+          }
+        }
+        break;
+      }
     }
     this.push();
     return "continue";
@@ -250,6 +263,7 @@ export class Runner {
     if (!e?.paneId) return;
     e.state = "starting";
     e.error = null;
+    e.url = null;
     try {
       if (isRunning(await this.deps.engine.processInfo(e.paneId))) {
         await this.deps.engine.interrupt(e.paneId);
@@ -299,6 +313,11 @@ export class Runner {
         const next = deriveState(e, info, text);
         e.state = next.state;
         e.exitCode = next.exitCode;
+        if (e.url === null && (e.state === "running" || e.state === "starting")) {
+          const scan = await this.deps.engine.read(e.paneId, URL_SCAN_LINES);
+          const found = detectUrl(afterLastSentinel(scan));
+          if (found) e.url = found;
+        }
       } catch (err) {
         this.pin(e, err);
       }

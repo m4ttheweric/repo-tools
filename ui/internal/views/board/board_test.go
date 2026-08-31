@@ -44,7 +44,7 @@ func open(t *testing.T) *testutil.Session {
 func TestPopulatedBoardPaintsRowsHeaderAndKeybar(t *testing.T) {
 	s := open(t)
 	screen := s.Screen()
-	for _, want := range []string{"rt runner", "rt-runner-a3f9", "1 running", "1 crashed", "dev", "bun run dev", "web · acme", "worker", "exited 1", "navigate", "process", "q quit"} {
+	for _, want := range []string{"rt runner", "rt-runner-a3f9", "1 running", "1 crashed", "dev", "bun run dev", "web · acme", "worker", "exited 1", "navigate", "process", "q quit", "o open"} {
 		if !strings.Contains(screen, want) {
 			t.Fatalf("missing %q in\n%s", want, screen)
 		}
@@ -110,6 +110,91 @@ func TestActionKeysEmitIntentsWithEntryIds(t *testing.T) {
 	s.Type("a")
 	if l, _ := s.ReadLine(2 * time.Second); !strings.Contains(l, `"name":"add"`) || strings.Contains(l, "entryId") {
 		t.Fatalf("add: %q", l)
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+func TestOpenKeyEmitsIntentOnlyWhenEntryHasUrl(t *testing.T) {
+	s := open(t)
+	// e1 (selected by default) carries url http://localhost:3000 in the fixture.
+	s.Type("o")
+	l, ok := s.ReadLine(2 * time.Second)
+	if !ok || !strings.Contains(l, `"name":"open"`) || !strings.Contains(l, `"entryId":"e1"`) {
+		t.Fatalf("open intent: %q", l)
+	}
+	s.Type("j")
+	time.Sleep(50 * time.Millisecond)
+	// e2 has no url; o must be a no-op.
+	s.Type("o")
+	if l, ok := s.ReadLine(200 * time.Millisecond); ok {
+		t.Fatalf("o with no url must not emit: %q", l)
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+func TestRowShowsHostPortWhenUrlDetected(t *testing.T) {
+	s := open(t)
+	// e1 carries url http://localhost:3000 in the fixture.
+	if !strings.Contains(s.Screen(), "localhost:3000") {
+		t.Fatalf("row url missing:\n%s", s.Screen())
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+func TestTailHeaderShowsNoneFoundWhenUrlGivesUp(t *testing.T) {
+	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
+	s.ReadLine(2 * time.Second)
+	old := time.Now().Add(-40 * time.Second).UTC().Format(time.RFC3339)
+	model := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"running","startedAt":"` + old + `","exitCode":null,"error":null,"url":null,"tail":null}]}}`
+	s.Send(model)
+	s.WaitForPaint("rt runner")
+	s.Type("t")
+	s.WaitForPaint("tail · dev")
+	if !strings.Contains(s.Screen(), "none found") {
+		t.Fatalf("tail header missing none found:\n%s", s.Screen())
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+func TestTailHeaderShowsDetectingWhenUrlPending(t *testing.T) {
+	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
+	s.ReadLine(2 * time.Second)
+	recent := time.Now().Add(-5 * time.Second).UTC().Format(time.RFC3339)
+	model := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"running","startedAt":"` + recent + `","exitCode":null,"error":null,"url":null,"tail":null}]}}`
+	s.Send(model)
+	s.WaitForPaint("rt runner")
+	s.Type("t")
+	s.WaitForPaint("tail · dev")
+	if !strings.Contains(s.Screen(), "detecting") {
+		t.Fatalf("tail header missing detecting:\n%s", s.Screen())
+	}
+	s.Send(`{"t":"close"}`)
+	s.Wait()
+}
+
+// TestTailHeaderShowsNoLinkTextForATerminalEntryWithNoUrl locks in that a
+// stopped/crashed entry that never found a url gets no link status at all,
+// not the "detecting…"/"none found" text reserved for running/starting.
+func TestTailHeaderShowsNoLinkTextForATerminalEntryWithNoUrl(t *testing.T) {
+	s := testutil.StartSession(t, []string{testutil.Binary(t), "session", "--view", "board"}, nil)
+	s.ReadLine(2 * time.Second)
+	model := `{"t":"open","view":"board","model":{"workspace":"rt-runner-a3f9","entries":[` +
+		`{"id":"e1","name":"dev","command":"bun run dev","pkg":"web","repo":"acme","state":"stopped","startedAt":null,"exitCode":0,"error":null,"url":null,"tail":null}]}}`
+	s.Send(model)
+	s.WaitForPaint("rt runner")
+	s.Type("t")
+	s.WaitForPaint("tail · dev")
+	screen := s.Screen()
+	for _, absent := range []string{"detecting", "none found", "link:"} {
+		if strings.Contains(screen, absent) {
+			t.Fatalf("stopped entry with no url must show no link text, found %q in:\n%s", absent, screen)
+		}
 	}
 	s.Send(`{"t":"close"}`)
 	s.Wait()

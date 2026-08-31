@@ -44,9 +44,17 @@ test("toModel emits domain fields only, ISO startedAt, and tail for the one entr
   expect(m).toEqual({
     workspace: "rt-runner-a3f9",
     entries: [
-      { id: "e1", name: "dev", command: "bun run dev", pkg: "web", repo: "acme", state: "running", startedAt: "2026-08-29T22:38:26.000Z", exitCode: null, error: null, tail: [{ ts: "22:41:07", text: "hi" }] },
-      { id: "e2", name: "api", command: "bun run api", pkg: "backend", repo: "acme", state: "starting", startedAt: null, exitCode: null, error: null, tail: null },
+      { id: "e1", name: "dev", command: "bun run dev", pkg: "web", repo: "acme", state: "running", startedAt: "2026-08-29T22:38:26.000Z", exitCode: null, error: null, url: null, tail: [{ ts: "22:41:07", text: "hi" }] },
+      { id: "e2", name: "api", command: "bun run api", pkg: "backend", repo: "acme", state: "starting", startedAt: null, exitCode: null, error: null, url: null, tail: null },
     ],
   });
   expect(JSON.stringify(m)).not.toContain("paneId");
+});
+
+test("newEntry starts with a null url and toModel carries it", () => {
+  const e = newEntry(1, "dev", "bun run dev", "/repo/web", "web", "acme");
+  expect(e.url).toBeNull();
+  e.url = "http://localhost:3000";
+  const m = toModel("ws", [e]);
+  expect(m.entries[0]!.url).toBe("http://localhost:3000");
 });

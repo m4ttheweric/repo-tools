@@ -18,11 +18,12 @@ export interface Entry {
   startedAt: Date | null;
   exitCode: number | null;
   error: string | null;
+  url: string | null;
   tail: BoardTailLine[] | null;
 }
 
 export function newEntry(seq: number, name: string, command: string, cwd: string, pkg: string, repo: string): Entry {
-  return { id: `e${seq}`, name, command, cwd, pkg, repo, tabId: null, paneId: null, state: "starting", startedAt: null, exitCode: null, error: null, tail: null };
+  return { id: `e${seq}`, name, command, cwd, pkg, repo, tabId: null, paneId: null, state: "starting", startedAt: null, exitCode: null, error: null, url: null, tail: null };
 }
 
 /** A pane is running a command when its foreground process group is not the shell's own. */
@@ -39,6 +40,39 @@ export function parseExitSentinel(text: string): number | null {
     if (m) code = Number(m[1]);
   }
   return code;
+}
+
+// The output of the current run only: everything after the most recent exit
+// sentinel. A restart leaves the prior run's URL banner in the pane, and
+// scanning it would re-latch the old port.
+export function afterLastSentinel(text: string): string {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (SENTINEL_RE.test(lines[i]!)) return lines.slice(i + 1).join("\n");
+  }
+  return text;
+}
+
+// A loopback/LAN dev-server URL, port required. Non-loopback hosts (real
+// domains in doc links) never match; 0.0.0.0 is rewritten to localhost
+// because browsers do not reliably route it.
+const URL_RE = /https?:\/\/(\[::1\]|[a-zA-Z0-9.\-]+):(\d+)(\/[^\s'"()]*)?/g;
+const LOOPBACK_HOST =
+  /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/;
+
+export function detectUrl(text: string): string | null {
+  const hits: { host: string; url: string }[] = [];
+  for (const m of text.matchAll(URL_RE)) {
+    const host = m[1]!;
+    if (!LOOPBACK_HOST.test(host)) continue;
+    hits.push({ host, url: m[0]! });
+  }
+  if (hits.length === 0) return null;
+  const pick =
+    hits.find((h) => h.host === "localhost" || h.host === "127.0.0.1") ??
+    hits.find((h) => h.host === "0.0.0.0") ??
+    hits[0]!;
+  return pick.url.replace(/[.,;:!?]+$/, "").replace("://0.0.0.0", "://localhost");
 }
 
 const PROMPT_RE = /[$%❯>]\s*$/;
@@ -90,6 +124,7 @@ export function toModel(workspace: string, entries: Entry[]): BoardModel {
       startedAt: e.startedAt ? e.startedAt.toISOString() : null,
       exitCode: e.exitCode,
       error: e.error,
+      url: e.url,
       tail: e.tail,
     })),
   };

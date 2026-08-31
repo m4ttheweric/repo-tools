@@ -100,6 +100,7 @@ function deps(over: Partial<RunnerDeps> & { sessions: SessionHandle[]; engine?: 
     // advancing `now` override.
     now: over.now ?? (() => new Date("2026-08-30T00:00:00Z")),
     sleep: over.sleep ?? (async () => {}),
+    openUrl: over.openUrl ?? (async () => {}),
     workspaceLabel: "rt-runner-test",
     seed: over.seed,
   };
@@ -320,6 +321,179 @@ test("pollLiveness flips a running entry to stopped or crashed once the exit sen
   await __test__.pollLiveness(r);
   expect(e.state).toBe("crashed");
   expect(e.exitCode).toBe(1);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
+// Counts reads per pane so a test can assert the url-scan read fires once
+// then stops once an entry latches; production code has no such counter.
+class UrlFakeEngine extends FakeEngine {
+  readCounts = new Map<string, number>();
+  override async read(paneId: string): Promise<string> {
+    this.readCounts.set(paneId, (this.readCounts.get(paneId) ?? 0) + 1);
+    return this.text.get(paneId) ?? "starting dev server...\n  > Local: http://localhost:5173/\n";
+  }
+}
+
+test("pollLiveness latches a url from pane output and does not rescan once found", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new UrlFakeEngine();
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+
+  await __test__.pollLiveness(r);
+  expect(e.url).toBe("http://localhost:5173/");
+  expect(engine.readCounts.get(e.paneId!)).toBe(1);
+
+  await __test__.pollLiveness(r);
+  expect(engine.readCounts.get(e.paneId!)).toBe(1);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
+// Tags reads by their requested line count (URL_SCAN_LINES=800 vs the
+// small liveness-sentinel read=50) so a test can isolate the url-scan read
+// from the sentinel read that still happens every tick regardless of state.
+class ScopedReadEngine extends FakeEngine {
+  scanReads = 0;
+  override async read(paneId: string, lines?: number): Promise<string> {
+    if (lines === 800) this.scanReads++;
+    return this.text.get(paneId) ?? "line a\nline b\n";
+  }
+}
+
+test("pollLiveness does not url-scan a crashed entry", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new ScopedReadEngine();
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+
+  // The shell reclaims the foreground with a nonzero exit sentinel: the entry crashes.
+  engine.running.delete(e.paneId!);
+  engine.text.set(e.paneId!, "line a\n__rt_exit 1\n");
+  await __test__.pollLiveness(r);
+  expect(e.state).toBe("crashed");
+  expect(e.url).toBeNull();
+  expect(engine.scanReads).toBe(0);
+
+  // A later tick against the same crashed entry must not scan either.
+  time += 1000;
+  await __test__.pollLiveness(r);
+  expect(engine.scanReads).toBe(0);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
+test("pollLiveness scans only the current run, ignoring a stale port left in scrollback by a restart", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new UrlFakeEngine();
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+
+  // Scrollback still holds the previous run's banner ahead of the exit
+  // sentinel; only the text after it belongs to the new run.
+  engine.text.set(e.paneId!, "> Local: http://localhost:3000/\n__rt_exit 0\n> Local: http://localhost:5173/\n");
+  await __test__.pollLiveness(r);
+  expect(e.url).toBe("http://localhost:5173/");
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
+test("open intent calls openUrl with the entry's latched url", async () => {
+  const opened: string[] = [];
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+    openUrl: async (url: string) => { opened.push(url); },
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  r.entries[0]!.url = "http://localhost:5173/";
+
+  liveSession.send({ t: "intent", name: "open", entryId: "e1" });
+  await flushMicrotasks();
+  expect(opened).toEqual(["http://localhost:5173/"]);
+
+  liveSession.send({ t: "intent", name: "quit" });
+  await finished;
+});
+
+test("open intent does nothing when the entry has no url", async () => {
+  const opened: string[] = [];
+  const s = new FakeSession([{ t: "intent", name: "add" }]);
+  const s2 = new FakeSession([{ t: "intent", name: "open", entryId: "e1" }, { t: "intent", name: "quit" }]);
+  const d = deps({
+    sessions: [s, s2],
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+    openUrl: async (url: string) => { opened.push(url); },
+  });
+  const r = new Runner(d);
+  await r.run();
+  expect(opened).toEqual([]);
+});
+
+test("restart clears a latched url so a new port is re-detected", async () => {
+  let time = new Date("2026-08-30T00:00:00Z").getTime();
+  const engine = new UrlFakeEngine();
+  const addSession = new FakeSession([{ t: "intent", name: "add" }]);
+  const liveSession = new QueueSession();
+  const d = deps({
+    sessions: [addSession, liveSession],
+    engine,
+    now: () => new Date(time),
+    resolve: async () => ({ kind: "resolved", result: { targetDir: "/repo/web", packageLabel: "web", worktree: "/repo", branch: "main", commandTemplate: "bun run dev", script: "dev" } }),
+  });
+  const r = new Runner(d);
+  const finished = r.run();
+  await flushMicrotasks();
+  const e = r.entries[0]!;
+  time += 1000; // clears LAUNCH_GRACE_MS so pollLiveness reads this entry
+  await __test__.pollLiveness(r);
+  expect(e.url).toBe("http://localhost:5173/");
+
+  liveSession.send({ t: "intent", name: "restart", entryId: "e1" });
+  await flushMicrotasks();
+  expect(e.url).toBeNull();
 
   liveSession.send({ t: "intent", name: "quit" });
   await finished;

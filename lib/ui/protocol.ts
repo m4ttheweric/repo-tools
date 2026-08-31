@@ -107,6 +107,7 @@ export interface BoardEntry {
   startedAt: string | null;
   exitCode: number | null;
   error: string | null;
+  url: string | null;
   tail: BoardTailLine[] | null;
 }
 
@@ -122,7 +123,7 @@ export interface SessionHello {
   views: string[];
 }
 
-const SESSION_INTENT_NAMES = ["add", "restart", "stop", "focus", "tail", "quit"] as const;
+const SESSION_INTENT_NAMES = ["add", "restart", "stop", "focus", "tail", "quit", "open"] as const;
 
 export interface SessionIntent {
   t: "intent";
