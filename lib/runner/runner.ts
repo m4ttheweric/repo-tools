@@ -138,7 +138,9 @@ export class Runner {
       case "tail":
         this.tailFor = intent.open ? intent.entryId ?? null : null;
         for (const e of this.entries) if (e.id !== this.tailFor) e.tail = null;
-        await this.pollTail();
+        // Route through the same reentrancy guard the interval uses so a tail
+        // intent landing mid-poll cannot start a second overlapping read.
+        await this.guarded("tail", () => this.pollTail());
         break;
     }
     this.push();

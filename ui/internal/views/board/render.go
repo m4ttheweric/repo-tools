@@ -200,6 +200,11 @@ func justify(width int, left, right string) string {
 
 func clip(s string, w int) string {
 	if w >= 1 && lipgloss.Width(s) > w {
+		// MaxWidth(0) does not truncate, so a one-cell window has no room for
+		// any content beside the marker: the ellipsis is the whole cell.
+		if w == 1 {
+			return "…"
+		}
 		return lipgloss.NewStyle().Inline(true).MaxWidth(w-1).Render(s) + "…"
 	}
 	return lipgloss.NewStyle().Inline(true).MaxWidth(w).Render(s)
