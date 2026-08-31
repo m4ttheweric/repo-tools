@@ -688,9 +688,13 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo, targe
  * with. Every failure path (missing/unparseable api.json, a non-2xx answer,
  * a network error, a timeout) degrades to a returned note instead of a throw.
  */
+/** Only the call signature, so a plain async test double satisfies it: Bun's
+    `typeof fetch` also carries `preconnect`, which no double supplies. */
+type FetchImpl = (...args: Parameters<typeof fetch>) => Promise<Response>;
+
 export async function pokeDeckReresolve(deps: {
   readApiFile?: () => string | null;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchImpl;
 } = {}): Promise<string> {
   const read = deps.readApiFile ?? (() => {
     try {

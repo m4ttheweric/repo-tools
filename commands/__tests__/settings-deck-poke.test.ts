@@ -5,7 +5,7 @@ describe("pokeDeckReresolve", () => {
   test("summarizes a successful reresolve", async () => {
     const msg = await pokeDeckReresolve({
       readApiFile: () => JSON.stringify({ port: 4141 }),
-      fetchImpl: (async () => Response.json({ restarted: ["chat"], unchanged: ["console"], failed: [] })) as typeof fetch,
+      fetchImpl: (async () => Response.json({ restarted: ["chat"], unchanged: ["console"], failed: [] })),
     });
     expect(msg).toContain("1 restarted");
     expect(msg).toContain("1 unchanged");
@@ -13,7 +13,7 @@ describe("pokeDeckReresolve", () => {
   test("degrades to a note when deck is not reachable", async () => {
     const msg = await pokeDeckReresolve({
       readApiFile: () => JSON.stringify({ port: 4141 }),
-      fetchImpl: (async () => { throw new Error("connect ECONNREFUSED"); }) as typeof fetch,
+      fetchImpl: (async () => { throw new Error("connect ECONNREFUSED"); }),
     });
     expect(msg).toContain("not poked");
   });
@@ -23,7 +23,7 @@ describe("pokeDeckReresolve", () => {
   test("names failed apps", async () => {
     const msg = await pokeDeckReresolve({
       readApiFile: () => JSON.stringify({ port: 4141 }),
-      fetchImpl: (async () => Response.json({ restarted: [], unchanged: [], failed: [{ name: "chat", error: "x" }] })) as typeof fetch,
+      fetchImpl: (async () => Response.json({ restarted: [], unchanged: [], failed: [{ name: "chat", error: "x" }] })),
     });
     expect(msg).toContain("chat");
   });
@@ -49,7 +49,7 @@ describe("pokeDeckReresolve", () => {
   test("degrades on a non-2xx answer", async () => {
     const msg = await pokeDeckReresolve({
       readApiFile: () => JSON.stringify({ port: 4141 }),
-      fetchImpl: (async () => new Response("", { status: 500 })) as typeof fetch,
+      fetchImpl: (async () => new Response("", { status: 500 })),
     });
     expect(msg).toContain("500");
   });
@@ -57,7 +57,7 @@ describe("pokeDeckReresolve", () => {
   test("degrades on a timeout", async () => {
     const msg = await pokeDeckReresolve({
       readApiFile: () => JSON.stringify({ port: 4141 }),
-      fetchImpl: (async () => { throw new DOMException("The operation timed out.", "TimeoutError"); }) as typeof fetch,
+      fetchImpl: (async () => { throw new DOMException("The operation timed out.", "TimeoutError"); }),
     });
     expect(msg).toContain("not poked");
   });

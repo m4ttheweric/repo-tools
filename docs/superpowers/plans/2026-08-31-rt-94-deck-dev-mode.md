@@ -1603,7 +1603,7 @@ describe("pokeDeckReresolve", () => {
   test("summarizes a successful reresolve", async () => {
     const msg = await pokeDeckReresolve({
       readApiFile: () => JSON.stringify({ port: 4141 }),
-      fetchImpl: (async () => Response.json({ restarted: ["chat"], unchanged: ["console"], failed: [] })) as typeof fetch,
+      fetchImpl: (async () => Response.json({ restarted: ["chat"], unchanged: ["console"], failed: [] })),
     });
     expect(msg).toContain("1 restarted");
     expect(msg).toContain("1 unchanged");
@@ -1611,7 +1611,7 @@ describe("pokeDeckReresolve", () => {
   test("degrades to a note when deck is not reachable", async () => {
     const msg = await pokeDeckReresolve({
       readApiFile: () => JSON.stringify({ port: 4141 }),
-      fetchImpl: (async () => { throw new Error("connect ECONNREFUSED"); }) as typeof fetch,
+      fetchImpl: (async () => { throw new Error("connect ECONNREFUSED"); }),
     });
     expect(msg).toContain("not poked");
   });
@@ -1621,7 +1621,7 @@ describe("pokeDeckReresolve", () => {
   test("names failed apps", async () => {
     const msg = await pokeDeckReresolve({
       readApiFile: () => JSON.stringify({ port: 4141 }),
-      fetchImpl: (async () => Response.json({ restarted: [], unchanged: [], failed: [{ name: "chat", error: "x" }] })) as typeof fetch,
+      fetchImpl: (async () => Response.json({ restarted: [], unchanged: [], failed: [{ name: "chat", error: "x" }] })),
     });
     expect(msg).toContain("chat");
   });
