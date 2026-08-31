@@ -184,10 +184,12 @@ jobs:
   pr:
     needs: [build, release]
     # A bare `if` on a needs-dependent job carries an implicit success(), which
-    # would skip the PR whenever ANY leg failed. With fail-fast disabled the
-    # other legs have already published releases by then, and the tag guard
-    # refuses a re-dispatch, so those releases could never be pinned.
-    if: ${{ !cancelled() && !inputs.dry_run }}
+    # would skip the PR whenever ANY build leg failed. With fail-fast disabled
+    # the other legs have already published releases by then, and the tag guard
+    # refuses a re-dispatch, so those releases could never be pinned. Release
+    # itself must still have succeeded though: deps.lock may only be pinned to
+    # URLs whose assets actually published.
+    if: ${{ !cancelled() && !inputs.dry_run && needs.release.result == 'success' }}
     permissions:
       contents: write
       pull-requests: write

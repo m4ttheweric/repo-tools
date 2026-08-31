@@ -12,15 +12,19 @@ export function planMatrix(lockText: string, appsInput: string): { name: string;
   const input = appsInput.trim();
   if (!input) throw new Error(`apps input is empty; pass app names or "all"`);
   if (input === "all") return buildable;
-  return input.split(",").map((raw) => {
+  const picked: { name: string; repo: string }[] = [];
+  for (const raw of input.split(",")) {
     const name = raw.trim();
     const row = buildable.find((b) => b.name === name);
     if (!row) {
       const known = buildable.map((b) => b.name).join(", ");
       throw new Error(`unknown app "${name}" (buildable: ${known})`);
     }
-    return row;
-  });
+    // A repeated name would produce two matrix legs uploading the same
+    // artifact name, which upload-artifact rejects mid-run.
+    if (!picked.some((p) => p.name === row.name)) picked.push(row);
+  }
+  return picked;
 }
 
 if (import.meta.main) {

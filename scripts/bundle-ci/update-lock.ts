@@ -28,7 +28,9 @@ function rowSpan(lockText: string, name: string): { start: number; end: number }
 function setField(block: string, field: string, value: string, name: string): string {
   const re = new RegExp(`("${field}":\\s*")[^"]*(")`);
   if (!re.test(block)) throw new Error(`row ${name} has no "${field}" field to rewrite`);
-  return block.replace(re, `$1${value}$2`);
+  // A callback, not a replacement string: `$&` and friends inside a value
+  // would otherwise be expanded and corrupt the row.
+  return block.replace(re, (_m, open: string, close: string) => `${open}${value}${close}`);
 }
 
 export function applyBuildResults(lockText: string, results: BuildResult[]): string {

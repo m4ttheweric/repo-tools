@@ -43,6 +43,11 @@ test("untouched rows keep their exact bytes", () => {
   expect(gitqBlockAfter).toBe(gitqBlockBefore);
 });
 
+test("a value containing regex replacement patterns is written literally", () => {
+  const out = applyBuildResults(LOCK, [{ ...RESULT, version: "1.0.0-$&x" }]);
+  expect(parseDepsLock(out).tools.find((t) => t.name === "deck")!.version).toBe("1.0.0-$&x");
+});
+
 test("unknown app throws and changes nothing", () => {
   expect(() => applyBuildResults(LOCK, [{ ...RESULT, name: "nope" }])).toThrow(/nope/);
 });

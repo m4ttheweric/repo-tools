@@ -32,6 +32,13 @@ test("named subset, whitespace tolerated", () => {
   ]);
 });
 
+test("a repeated name yields one leg, not a duplicate artifact name", () => {
+  expect(planMatrix(LOCK, "deck,deck,gitq")).toEqual([
+    { name: "deck", repo: "m4ttstack/deck" },
+    { name: "gitq", repo: "m4ttstack/gitq" },
+  ]);
+});
+
 test("unknown name throws", () => {
   expect(() => planMatrix(LOCK, "deck,nope")).toThrow(/nope/);
 });

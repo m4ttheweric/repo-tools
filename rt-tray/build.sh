@@ -268,7 +268,7 @@ bundle_helpers
 # copy that drops it would ship all skills to every user.
 if [ -d "$REPO_DIR/skills" ]; then
     while IFS= read -r -d '' bad; do
-        echo "  ✗ rt skills dir '$(basename "$bad")' contains a dot; rename it in repo-tools/skills"; exit 1
+        echo "  ✗ rt skills dir '$(basename "$bad")' contains a dot; rename it in $REPO_DIR/skills"; exit 1
     done < <(find "$REPO_DIR/skills" -type d -name '*.*' -print0)
     rt_skills_dest="$CONTENTS/Helpers/skills/rt"
     rm -rf "$rt_skills_dest"; mkdir -p "$(dirname "$rt_skills_dest")"
