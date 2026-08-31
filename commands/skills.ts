@@ -1680,7 +1680,7 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
     .join("\n");
 
   const result = spawnSync(
-    "fzf",
+    fzfPath,
     [
       "--multi",
       "--ansi",

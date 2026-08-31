@@ -120,6 +120,7 @@ describe("runNavPicker fzf exit 1 (no match)", () => {
       timeout: 10_000,
       env: {
         PATH: `${binDir}:/usr/bin:/bin`,
+        RT_FZF_BIN: shim,
         HOME: process.env.HOME ?? "",
         NAV_OPTS: JSON.stringify({ options: [{ value: "a", label: "a" }], message: "m", ...opts }),
       },

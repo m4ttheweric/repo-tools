@@ -10,7 +10,7 @@ export async function collectArgs(
   if (!argDefs.length) return [];
 
   const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
+  const fzf = ensureFzf();
 
   // Step 1: multi-select which args to include
   const labelWidth = Math.max(...argDefs.map((a) => (a.flag ?? a.name).length));
@@ -23,7 +23,7 @@ export async function collectArgs(
     })
     .join("\n");
 
-  const result = spawnSync("fzf", [
+  const result = spawnSync(fzf, [
     "--multi",
     "--ansi",
     "--with-nth=2..",

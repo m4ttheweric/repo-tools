@@ -466,7 +466,7 @@ async function showPicker(
   breadcrumb: string[],
 ): Promise<PickerSelection | typeof BACK | null> {
   const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
+  const fzf = ensureFzf();
 
   const visible = Object.entries(tree).filter(([_, n]) => isNodeVisible(n, IS_DEV_MODE));
   const anyHasArgs = visible.some(([_, n]) => n.args?.length);
@@ -486,7 +486,7 @@ async function showPicker(
   const expectKeys = ["ctrl-up"];
   if (anyHasArgs) expectKeys.push("alt-enter");
 
-  const result = spawnSync("fzf", [
+  const result = spawnSync(fzf, [
     "--ansi",
     "--with-nth=2..",
     "--nth=1",

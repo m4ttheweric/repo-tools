@@ -46,7 +46,7 @@ export async function filterableMultiselect(opts: {
 }): Promise<string[] | null> {
   const { spawnSync } = await import("child_process");
   const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
+  const fzf = ensureFzf();
 
   const labelWidth = Math.max(...opts.options.map((o) => o.label.length));
   const input = opts.options
@@ -74,7 +74,7 @@ export async function filterableMultiselect(opts: {
     bindings.push(`--bind=start:${actions.join("+")}`);
   }
 
-  const result = spawnSync("fzf", [
+  const result = spawnSync(fzf, [
     "--multi",
     "--ansi",
     "--with-nth=2..",
@@ -200,12 +200,12 @@ export async function filterableSelect(opts: {
 }): Promise<string | null> {
   const { spawnSync } = await import("child_process");
   const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
+  const fzf = ensureFzf();
 
   const options = opts.options;
   const input = buildFzfRows(options);
 
-  const result = spawnSync("fzf", buildFilterableSelectArgs(opts), {
+  const result = spawnSync(fzf, buildFilterableSelectArgs(opts), {
     input,
     stdio: ["pipe", "pipe", "inherit"],
     encoding: "utf8",

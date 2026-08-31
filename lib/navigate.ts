@@ -12,7 +12,7 @@
 import { spawnSync } from "child_process";
 import { mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
-import { ensureFzf } from "./fzf.ts";
+import { resolveFzf, ensureFzf } from "./fzf.ts";
 import { startNavWatch } from "./nav-watch.ts";
 import { rtDir } from "./rt-paths.ts";
 import { toAnsiFg, T, toHex } from "./tui/palette.ts";
@@ -259,7 +259,7 @@ export function findResumePosition(
     return idx >= 0 ? idx + 1 : null;
   }
   const input = options.map((o) => o.value).join("\n");
-  const result = spawnSync("fzf", ["--filter", query], {
+  const result = spawnSync(resolveFzf() ?? "fzf", ["--filter", query], {
     input,
     encoding: "utf8",
   });
@@ -298,7 +298,7 @@ function navWatchPaths(): { socketPath: string; listFile: string } {
 export async function runNavPicker(
   opts: NavPickerOpts,
 ): Promise<NavResult | null> {
-  ensureFzf();
+  const fzf = ensureFzf();
 
   let currentPos = opts.initialPos ?? null;
 
@@ -346,7 +346,7 @@ export async function runNavPicker(
     // firing for the live-refresh watcher wired up in runNavPicker's caller.
     // fzf reads the keyboard from /dev/tty directly, so a piped stdin is only
     // ever the item list.
-    const proc = Bun.spawn(["fzf", ...args], {
+    const proc = Bun.spawn([fzf, ...args], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "inherit",

@@ -164,7 +164,7 @@ interface PickerResult {
  * or null if the user cancelled (esc).
  */
 function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
-  ensureFzf();
+  const fzf = ensureFzf();
   const pipe = deltaPipeCmd();
   const { cmd: previewCmd, cleanup: cleanupPreview } = buildPreviewCmd(cwd, pipe);
 
@@ -174,7 +174,7 @@ function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
     .join("\n");
 
   const result = spawnSync(
-    "fzf",
+    fzf,
     [
       "--multi",
       "--ansi",

@@ -9,16 +9,34 @@
  * of erroring, since the same config-write path is also reachable via
  * `rt skills surface set`.
  *
- * rt prefers the fzf bundled inside mattstack.app by absolute path and only
- * falls back to PATH when it is not running from an install (source
- * checkout, dev mode).
+ * Every spawn site runs the path ensureFzf() returns, never a bare "fzf":
+ * a source checkout prefers its own fetch-deps build, an install prefers the
+ * helper inside mattstack.app, and PATH is the last resort.
  */
-import { bundledHelperPath } from "./bundle-layout.ts";
+import { existsSync, statSync } from "fs";
+import { resolve } from "path";
+import { bundledHelperPath, bundleRootFromExec } from "./bundle-layout.ts";
 import { bold, dim, yellow, reset } from "./tui.ts";
 
 type Which = (bin: string) => string | null;
 type Bundled = () => string | null;
+type SourceBuilt = () => string | null;
 const defaultWhich: Which = (b) => Bun.which(b);
+// Source runs prefer the checkout's own fetch-deps build: it carries the
+// patched left-border glyph, and the blessed dev app bundle is never rebuilt,
+// so bundle-first would pin dev mode to a stale helper. import.meta.dir is a
+// real directory only from source; a compiled binary reports a virtual path.
+const defaultSourceBuilt: SourceBuilt = () => {
+  const here = import.meta.dir;
+  if (!here || bundleRootFromExec() !== null) return null;
+  try {
+    if (!statSync(here).isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  const candidate = resolve(here, "..", "rt-tray", "deps", "arm64", "fzf");
+  return existsSync(candidate) ? candidate : null;
+};
 // bundledHelperPath throws on a mislabeled "buildtool" row; a bad deps.lock
 // entry must degrade to the PATH fallback here, not crash every picker spawn.
 const defaultBundled: Bundled = () => {
@@ -29,9 +47,20 @@ const defaultBundled: Bundled = () => {
   }
 };
 
-/** Resolve the fzf binary path: bundled inside mattstack.app first, then PATH; null if neither. Injectable for tests. */
-export function resolveFzf(which: Which = defaultWhich, bundled: Bundled = defaultBundled): string | null {
-  return bundled() ?? which("fzf");
+/**
+ * Resolve the fzf binary path: RT_FZF_BIN when it exists, else the source
+ * checkout's fetch-deps build, else the helper inside mattstack.app, else
+ * PATH; null if none. Injectable for tests.
+ */
+export function resolveFzf(
+  which: Which = defaultWhich,
+  bundled: Bundled = defaultBundled,
+  sourceBuilt: SourceBuilt = defaultSourceBuilt,
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const fromEnv = env.RT_FZF_BIN;
+  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  return sourceBuilt() ?? bundled() ?? which("fzf");
 }
 
 /** Shown when fzf is missing. Exported for reuse and tests. */
@@ -55,8 +84,9 @@ export function ensureFzf(
     process.exit(1);
   },
   bundled: Bundled = defaultBundled,
+  sourceBuilt: SourceBuilt = defaultSourceBuilt,
 ): string {
-  const path = resolveFzf(which, bundled);
+  const path = resolveFzf(which, bundled, sourceBuilt);
   if (path) return path;
   return fail(FZF_MISSING_MESSAGE);
 }
