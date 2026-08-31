@@ -321,6 +321,14 @@ migration must not delete an app's currently-working source information until
 `dev.workingDirectory` is set, so no app is ever left with neither a bundle nor a
 source to fall back to.
 
+This ordering is uptime-critical, not just cosmetic: the resolver's `chosen == null`
+branch (no bundle and no valid source) is a genuine app-down state, correctly
+fail-closed (deck refuses to stand up a phantom command) but real. The migration
+task must therefore carry an **explicit assertion** that `dev.workingDirectory` is
+set before it clears any legacy source command, so a future edit cannot reorder the
+steps and silently reintroduce the app-down window. The implementation plan pins
+this as a named guard in the migration task.
+
 ## Error handling
 
 - Missing / malformed manifest at a linked path: treated as a bad link (bundled
