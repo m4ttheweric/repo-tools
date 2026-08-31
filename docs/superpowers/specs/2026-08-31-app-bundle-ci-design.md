@@ -177,8 +177,17 @@ PAT is required; its narrow scope is the mitigation.
   (verify in the plan; if the TSV field extraction is positional, the field
   order must append, not insert).
 - New rows for `console` and `chat` are added (as `pending` + `repo`) so the
-  pipeline can build them; gitq's existing raw-binary row keeps working and
-  migrates to the tarball shape only when its bundling work lands.
+  pipeline can build them.
+- **gitq is two concerns, split cleanly by this design.** The gitq **CLI**
+  is a bundled helper in its own right (its deps.lock row ships today,
+  `exposeByDefault: true`) and is in the pipeline's buildable set either
+  way: its row gains `repo: "m4ttstack/gitq"` and migrates to the tarball
+  shape like the others, so the CLI keeps shipping regardless of any deck
+  status. The gitq **served web app** (deck running `gitq board`) is a
+  separate concern owned by RT-94's deck model: it stays a grandfathered
+  deck row (`includeInBundle` false) until that work lands. The pipeline's
+  buildable set keys on the deps.lock `repo` field, not `includeInBundle`,
+  which is exactly what lets the CLI ship while the deck-app side waits.
 
 ## Error handling
 
