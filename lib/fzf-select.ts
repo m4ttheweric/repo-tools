@@ -12,12 +12,19 @@ import { BackNavigation } from "./back-navigation.ts";
 export { BackNavigation } from "./back-navigation.ts";
 
 /**
- * Transient pickers open inline, sized to their list, so the shell's
- * scrollback stays in view; only the e2e harness asks for the alternate
- * screen, because Termwright's parser cannot see fzf's inline region.
+ * Transient pickers open inline, beneath the breadcrumb `renderHeader`
+ * already printed (one text line plus a trailing blank line). `~100%` let
+ * fzf claim the full terminal height, which pushed that breadcrumb into
+ * scrollback on any list taller than the visible screen. `~90%` was
+ * verified with a pty + VT-emulator harness (74-item list, 15-44 row
+ * terminals): it keeps the 2-row breadcrumb onscreen, both on initial
+ * render and after scrolling well past the picker's own window, while
+ * still giving the list as much room as fzf's own item count would use.
+ * Only the e2e harness asks for the alternate screen, because Termwright's
+ * parser cannot see fzf's inline region.
  */
 export function fzfHeightArgs(): string[] {
-  return process.env.RT_FZF_ALT_SCREEN ? [] : ["--height=~100%"];
+  return process.env.RT_FZF_ALT_SCREEN ? [] : ["--height=~90%"];
 }
 
 // ─── Option type ─────────────────────────────────────────────────────────────

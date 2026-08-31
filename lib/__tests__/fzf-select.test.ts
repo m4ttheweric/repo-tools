@@ -5,11 +5,35 @@
  * the exact tab layout and ANSI sequences.
  */
 
-import { describe, expect, test } from "bun:test";
-import { buildFilterableSelectArgs, buildFzfRows, type SelectOption } from "../fzf-select.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import { buildFilterableSelectArgs, buildFzfRows, fzfHeightArgs, type SelectOption } from "../fzf-select.ts";
 import { T, toAnsiFg, toHex } from "../tui/palette.ts";
 
 const q = (message: string) => `--header=${toAnsiFg(T.pink)}${message}\x1b[0m`;
+
+/**
+ * fzfHeightArgs: `--height=~90%` (not `~100%`) is what keeps the breadcrumb
+ * `renderHeader` prints above the picker onscreen. Verified with a pty +
+ * VT-emulator harness against a 74-item list in 15-44 row terminals: ~100%
+ * pushed the breadcrumb into scrollback on every render, ~90% kept it
+ * visible on initial render, after scrolling past the picker's own window,
+ * and after exit.
+ */
+describe("fzfHeightArgs", () => {
+  afterEach(() => {
+    delete process.env.RT_FZF_ALT_SCREEN;
+  });
+
+  test("default (inline) picker caps height at ~90%, not ~100%", () => {
+    delete process.env.RT_FZF_ALT_SCREEN;
+    expect(fzfHeightArgs()).toEqual(["--height=~90%"]);
+  });
+
+  test("RT_FZF_ALT_SCREEN drops height args for the e2e harness's fullscreen mode", () => {
+    process.env.RT_FZF_ALT_SCREEN = "1";
+    expect(fzfHeightArgs()).toEqual([]);
+  });
+});
 
 describe("buildFzfRows", () => {
   test("plain options: value, bold label padded to the widest label, dim hint", () => {
