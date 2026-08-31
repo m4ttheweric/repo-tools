@@ -66,8 +66,12 @@ describe("getKnownReposAsync parity", () => {
    *  `git worktree list --porcelain` reports the bare dir itself as a
    *  worktree row with a `bare` line and no branch; the sync builder's
    *  `!isBare` filter drops it, which is the parity gap this fixture pins. */
+  // `-b main` pins the bare repo's HEAD instead of inheriting the machine's
+  // init.defaultBranch: the wt2 line below resolves HEAD, so where that
+  // default is `master` the branch wt1 commits to is never the one HEAD
+  // names, and HEAD stays unborn ("fatal: invalid reference: HEAD").
   function bareRepoWithWorktrees(bareDir: string, wt1: string, wt2: string): void {
-    execSync(`git init -q --bare ${JSON.stringify(bareDir)}`, { stdio: "pipe" });
+    execSync(`git init -q --bare -b main ${JSON.stringify(bareDir)}`, { stdio: "pipe" });
     execSync(`git worktree add ${JSON.stringify(wt1)} -b main`, { cwd: bareDir, stdio: "pipe" });
     execSync("git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init", { cwd: wt1, stdio: "pipe" });
     execSync(`git worktree add ${JSON.stringify(wt2)} -b side`, { cwd: bareDir, stdio: "pipe" });
