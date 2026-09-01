@@ -19,13 +19,10 @@
  */
 
 import { execFileSync, spawnSync } from "child_process";
-import { fzfHeightArgs } from "../lib/fzf-select.ts";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { applyEdits, modify } from "jsonc-parser";
 import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath, sep } from "path";
-import { resolveFzf } from "../lib/fzf.ts";
-import { T, toAnsiFg, toHex } from "../lib/tui/palette.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
@@ -167,7 +164,7 @@ async function resolvePack(flags: { team: string | null; packDir: string | null;
 }
 
 async function pickPack(packs: PackInfo[]): Promise<PackInfo | null> {
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const value = await filterableSelect({
     message: "which pack?",
     options: packs.map((p) => ({ value: p.name, label: p.name, hint: `${p.layout}  ${p.dir}` })),
@@ -1601,11 +1598,11 @@ export type PaletteAction =
   | { kind: "declined"; delta: SurfaceDelta };
 
 /**
- * Pure decision seam for the palette's accept path -- fzf's default --multi
- * semantics emit the cursor row on Enter even when nothing is marked, so a
- * deliberate "uncheck everything" can silently reintroduce one row. Called
- * once (confirmed=false) to compute the delta for the pre-write preview, and
- * again with the real answer once the user has seen it.
+ * Pure decision seam for the palette's accept path. The picker's checked set
+ * round-trips honestly, so confirming with nothing marked yields an empty
+ * selection -- read as "every currently-public name goes internal", not as a
+ * leftover row. Called once (confirmed=false) to compute the delta for the
+ * pre-write preview, and again with the real answer once the user has seen it.
  */
 export function decidePaletteAction(
   previousPublic: Set<string>,
@@ -1660,61 +1657,33 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
     return;
   }
 
-  const fzfPath = resolveFzf();
-  if (!fzfPath || !process.stdin.isTTY) {
+  if (!process.stdin.isTTY) {
     printSurfaceRows(flags, source, rows);
     console.log("");
-    console.log("no tty or fzf not found -- edit one at a time: rt skills surface set <name> --public|--internal");
+    console.log("no tty -- edit one at a time: rt skills surface set <name> --public|--internal");
     return;
   }
 
-  const preselected = rows
-    .map((row, i) => (row.status === "public" ? i + 1 : null))
-    .filter((i): i is number => i !== null);
-  const loadBind = preselected.length
-    ? `load:${preselected.map((pos) => `pos(${pos})+toggle`).join("+")}+pos(1)`
-    : "load:pos(1)";
+  const { filterableMultiselect } = await import("../lib/pick-wrappers.ts");
+  const options = rows.map((row) => ({
+    value: row.name,
+    label: row.name,
+    hint: `${row.status.padEnd(9)}${kindLabel(row.kind)}`,
+  }));
+  const initialValues = rows.filter((row) => row.status === "public").map((row) => row.name);
 
-  const input = rows
-    .map((row) => `${row.name}\t${row.status.padEnd(9)}${kindLabel(row.kind).padEnd(15)}${row.name}`)
-    .join("\n");
+  const selected = await filterableMultiselect({
+    message: "rt skills surface",
+    options,
+    initialValues,
+  });
 
-  const result = spawnSync(
-    fzfPath,
-    [
-      "--multi",
-      "--ansi",
-      "--with-nth=2..",
-      "--delimiter=\t",
-      "--layout=reverse",
-      ...fzfHeightArgs(),
-      "--border=left",
-      "--no-separator",
-      "--prompt=  filter: ",
-      `--header=${toAnsiFg(T.pink)}rt skills surface\x1b[0m`,
-      "--header-first",
-      "--info=inline-right",
-      "--footer=space: toggle public  tab: toggle+next  enter: review changes  esc: cancel",
-      "--no-mouse",
-      "--bind=space:toggle,tab:toggle+down",
-      `--bind=${loadBind}`,
-      `--color=border:${toHex(T.pink)}`,
-    ],
-    { input, stdio: ["pipe", "pipe", "inherit"], encoding: "utf8" },
-  );
-
-  if (result.status !== 0) {
+  if (selected === null) {
     console.log("cancelled -- no changes made");
     return;
   }
 
-  const selectedSet = new Set(
-    (result.stdout ?? "")
-      .replace(/\n$/, "")
-      .split("\n")
-      .map((line) => line.split("\t")[0]!)
-      .filter(Boolean),
-  );
+  const selectedSet = new Set(selected);
 
   const resultRows = rows.map((row) => ({
     name: row.name,
@@ -1873,7 +1842,7 @@ async function pickBindArgs(args: string[]): Promise<PickedBind | null> {
     json: false,
   });
 
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
 
   let verbName = positionals[0];
   if (!verbName) {
@@ -1940,7 +1909,7 @@ export async function skillsBind(args: string[]): Promise<void> {
     const { positionals, flagArgs } = separateBindArgs(args);
     let [verbName, slotName, fill] = positionals;
     let rest = flagArgs;
-    if ((!verbName || !slotName || !fill) && process.stdin.isTTY && !args.includes("--json") && !process.env.RT_BATCH && resolveFzf()) {
+    if ((!verbName || !slotName || !fill) && process.stdin.isTTY && !args.includes("--json") && !process.env.RT_BATCH) {
       const picked = await pickBindArgs(args);
       if (picked) {
         verbName = picked.verbName;
