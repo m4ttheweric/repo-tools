@@ -1,7 +1,21 @@
 import { afterEach, expect, test } from "bun:test";
-import { runPick } from "../pick.ts";
+import { runPick, __test__ as pickInternals } from "../pick.ts";
 import { installFakePick, type PickFakeStep } from "../pick-fake.ts";
 import type { PickEvent, PickResult } from "../protocol.ts";
+
+// A regression that reintroduces the hang this guards against would otherwise
+// wedge the whole suite; racing a short timeout turns that into a fast failure.
+async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer!: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}: timed out after ${ms}ms (likely hung)`)), ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 let fake: ReturnType<typeof installFakePick> | undefined;
 
@@ -88,6 +102,33 @@ test("update() records the patch the caller sent", () => {
   handle.update({ message: "still working" });
   handle.update({ rows: [{ value: "z", left: [{ text: "Z" }] }] });
   expect(fake.calls[0]!.updates).toEqual([{ message: "still working" }, { rows: [{ value: "z", left: [{ text: "Z" }] }] }]);
+});
+
+test("a stream error rejects result instead of hanging forever", async () => {
+  async function* throwingLines(): AsyncGenerator<string> {
+    yield JSON.stringify({ t: "event", action: "select", value: "a", query: "" });
+    throw new Error("stream blew up");
+  }
+  const { result } = pickInternals.driveReaderForTest(throwingLines());
+  await expect(withTimeout(result, 500, "result")).rejects.toThrow("stream blew up");
+});
+
+test("a throwing onEvent is contained: later events and the result still settle", async () => {
+  const seen: string[] = [];
+  async function* linesSrc(): AsyncGenerator<string> {
+    yield JSON.stringify({ t: "event", action: "select", value: "a", query: "" });
+    yield JSON.stringify({ t: "event", action: "select", value: "b", query: "" });
+    yield JSON.stringify({ t: "result", action: "select", value: "b", query: "" });
+  }
+  const { result } = pickInternals.driveReaderForTest(linesSrc(), {
+    onEvent: (e) => {
+      seen.push(e.value ?? "");
+      if (e.value === "a") throw new Error("boom");
+    },
+  });
+  const r = await withTimeout(result, 500, "result");
+  expect(seen).toEqual(["a", "b"]);
+  expect(r).toEqual({ t: "result", action: "select", value: "b", query: "" });
 });
 
 test("runPick throws when stdin/stderr are not TTYs, without installing a fake", () => {

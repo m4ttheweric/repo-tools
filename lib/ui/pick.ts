@@ -52,6 +52,76 @@ function killLiveOnExit(): void {
   });
 }
 
+interface ResultSink {
+  settled: boolean;
+  resolve(r: PickResult): void;
+  reject(e: unknown): void;
+}
+
+/**
+ * Consumes the child's stdout lines until it closes or errors. Shared by the
+ * real spawn and a direct test harness so the error path below is exercised
+ * without needing a real child process. A stream error (the source iterable
+ * rejecting, e.g. a broken pipe) is the one case the clean "closed with no
+ * result" handling below cannot reach on its own, so it needs its own catch:
+ * without it the result Promise never settles.
+ */
+async function driveReader(
+  lineSource: AsyncIterable<string>,
+  cb: PickCallbacks,
+  pendingModals: Array<(v: string | null) => void>,
+  sink: ResultSink,
+  stderrText: Promise<string>,
+): Promise<void> {
+  // Events stream in on one stdout pipe; chaining each dispatch onto the
+  // previous one is what guarantees onEvent finishes with one event before
+  // the next is delivered, without blocking the reader from picking up a
+  // modal-result or the terminal result in the meantime. Each dispatch
+  // swallows its own rejection so one throwing onEvent can never wedge the
+  // chain -- and with it, the terminal result -- for every event after it.
+  let eventChain: Promise<void> = Promise.resolve();
+  try {
+    for await (const line of lineSource) {
+      let msg: { t?: string; [k: string]: unknown };
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (msg.t === "event") {
+        const evt = msg as unknown as PickEvent;
+        eventChain = eventChain.then(async () => {
+          try {
+            await cb.onEvent?.(evt);
+          } catch {
+            /* contained: a bad handler must not block later events or the result */
+          }
+        });
+      } else if (msg.t === "modal-result") {
+        const mr = msg as unknown as PickModalResult;
+        pendingModals.shift()?.(mr.value);
+      } else if (msg.t === "result" && !sink.settled) {
+        sink.settled = true;
+        const r = msg as unknown as PickResult;
+        // Wait for any event callbacks already queued so the terminal
+        // result never resolves ahead of them.
+        eventChain = eventChain.then(() => sink.resolve(r));
+      }
+    }
+    await eventChain;
+    if (!sink.settled) {
+      sink.settled = true;
+      const stderr = await stderrText;
+      sink.reject(new Error(`rt-ui pick: exited without a result${stderr.trim() ? ` (${stderr.trim()})` : ""}`));
+    }
+  } catch (err) {
+    if (!sink.settled) {
+      sink.settled = true;
+      sink.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+}
+
 function spawnPick(req: PickRequest, cb: PickCallbacks): PickHandle {
   // A misuse assertion, not the graceful RT_BATCH-style gate the wrapper
   // layer applies before ever calling runPick: there is no /dev/tty fallback
@@ -82,49 +152,15 @@ function spawnPick(req: PickRequest, cb: PickCallbacks): PickHandle {
 
   let resolveResult!: (r: PickResult) => void;
   let rejectResult!: (e: unknown) => void;
-  let settled = false;
   const result = new Promise<PickResult>((res, rej) => {
     resolveResult = res;
     rejectResult = rej;
   });
+  const sink: ResultSink = { settled: false, resolve: resolveResult, reject: rejectResult };
 
   const pendingModals: Array<(v: string | null) => void> = [];
 
-  // Events stream in on one stdout pipe; chaining each dispatch onto the
-  // previous one is what guarantees onEvent finishes with one event before
-  // the next is delivered, without blocking the reader from picking up a
-  // modal-result or the terminal result in the meantime.
-  let eventChain: Promise<void> = Promise.resolve();
-
-  (async () => {
-    for await (const line of lines(proc.stdout)) {
-      let msg: { t?: string; [k: string]: unknown };
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (msg.t === "event") {
-        const evt = msg as unknown as PickEvent;
-        eventChain = eventChain.then(() => cb.onEvent?.(evt));
-      } else if (msg.t === "modal-result") {
-        const mr = msg as unknown as PickModalResult;
-        pendingModals.shift()?.(mr.value);
-      } else if (msg.t === "result" && !settled) {
-        settled = true;
-        const r = msg as unknown as PickResult;
-        // Wait for any event callbacks already queued so the terminal
-        // result never resolves ahead of them.
-        eventChain = eventChain.then(() => resolveResult(r));
-      }
-    }
-    await eventChain;
-    if (!settled) {
-      settled = true;
-      const stderr = await stderrText;
-      rejectResult(new Error(`rt-ui pick: exited without a result${stderr.trim() ? ` (${stderr.trim()})` : ""}`));
-    }
-  })();
+  void driveReader(lines(proc.stdout), cb, pendingModals, sink, stderrText);
 
   return {
     update(patch) {
@@ -150,5 +186,23 @@ export function runPick(req: Omit<PickRequest, "t" | "protocol">, cb: PickCallba
 export const __test__ = {
   setImpl(fn: PickImpl | undefined): void {
     impl = fn ?? spawnPick;
+  },
+  /**
+   * Drives driveReader directly against a caller-supplied line source,
+   * bypassing spawn (and its TTY guard) entirely. Exists to unit-test the
+   * stream-error and throwing-onEvent containment paths, which a real child
+   * process can't be used to trigger in a test.
+   */
+  driveReaderForTest(lineSource: AsyncIterable<string>, cb: PickCallbacks = {}): { result: Promise<PickResult>; pendingModals: Array<(v: string | null) => void> } {
+    let resolveResult!: (r: PickResult) => void;
+    let rejectResult!: (e: unknown) => void;
+    const result = new Promise<PickResult>((res, rej) => {
+      resolveResult = res;
+      rejectResult = rej;
+    });
+    const sink: ResultSink = { settled: false, resolve: resolveResult, reject: rejectResult };
+    const pendingModals: Array<(v: string | null) => void> = [];
+    void driveReader(lineSource, cb, pendingModals, sink, Promise.resolve(""));
+    return { result, pendingModals };
   },
 };
