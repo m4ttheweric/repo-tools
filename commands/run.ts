@@ -34,8 +34,7 @@ import {
   variationKey,
   type Variation,
 } from "../lib/variations.ts";
-import { bold, dim, reset, yellow, green, magenta } from "../lib/tui.ts";
-import { T, toAnsiFg } from "../lib/tui/palette.ts";
+import { bold, dim, reset, yellow, green } from "../lib/tui.ts";
 import {
   isInsideHerdr,
   launchInHerdr,
@@ -46,10 +45,15 @@ import { interactive } from "../lib/ui/gate.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
-import { navSeparator, type NavOption } from "../lib/navigate.ts";
+import { runPick } from "../lib/ui/pick.ts";
+import type { PickAction, PickRow, PickSegment } from "../lib/ui/protocol.ts";
 import { runSeededBoard, tmuxAvailable, type SeedEntry } from "./runner.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
+const LAUNCH_ALL_SENTINEL = "__rt:launch-all__";
+const SAVE_PRESET_SENTINEL = "__rt:save-preset__";
+const PRESET_PREFIX = "__rt:preset:";
+const QUEUED_PREFIX = "__queued:";
 
 /** A picker cancellation or dead end. rt run exits with `code`; the runner treats it as "nothing chosen". */
 export class RunAborted extends Error {
@@ -71,6 +75,123 @@ export interface RunResolveResult {
   branch: string;
   commandTemplate: string;
   script: string;
+}
+
+// ─── Segment-form picker rows ────────────────────────────────────────────────
+//
+// NavOption (lib/navigate.ts's runNavPicker) only carries a flat label+hint
+// per row, so it can't express a per-segment tone (the mint ✓, the lavender
+// variation suffix) or a named group boundary tied to live data rather than a
+// separator row. These builders and `runSegmentPicker` talk to the rt-ui pick
+// verb directly for that reason; the values they carry and the branching on
+// the result below are unchanged from the NavOption-based picker they replace.
+
+function queueRow(qi: QueuedItem, index: number): PickRow {
+  const left: PickSegment[] = [
+    { text: "✓ ", tone: "mint" },
+    { text: `${qi.packageLabel} › ${qi.script}` },
+  ];
+  if (qi.variationName) left.push({ text: ` (${qi.variationName})`, tone: "lav" });
+  if (qi.packageRelPath !== ".") left.push({ text: `  ${qi.packageRelPath}`, tone: "dim" });
+  return { value: `${QUEUED_PREFIX}${index}__`, left, group: "queue" };
+}
+
+function launchAllRow(queuedCount: number): PickRow {
+  return {
+    value: LAUNCH_ALL_SENTINEL,
+    left: [
+      { text: "Launch all", bold: true },
+      { text: `  ${queuedCount} queued → runner board`, tone: "dim" },
+    ],
+    group: "queue",
+  };
+}
+
+function savePresetRow(): PickRow {
+  return {
+    value: SAVE_PRESET_SENTINEL,
+    left: [
+      { text: "Save as preset…", bold: true },
+      { text: "  save the current queue", tone: "dim" },
+    ],
+    group: "queue",
+  };
+}
+
+function presetRow(p: Preset): PickRow {
+  return {
+    value: `${PRESET_PREFIX}${p.name}__`,
+    left: [
+      { text: p.name, bold: true },
+      { text: `  ${p.entries.map((e) => `${e.packageLabel}:${e.script}`).join(" + ")}`, tone: "dim" },
+    ],
+    group: "presets",
+  };
+}
+
+/** Bold label plus a dim hint -- the plain two-column look every simple row shares. */
+function plainRow(entry: { value: string; label: string; hint?: string }, group?: string): PickRow {
+  const left: PickSegment[] = [{ text: entry.label, bold: true }];
+  if (entry.hint) left.push({ text: `  ${entry.hint}`, tone: "dim" });
+  return { value: entry.value, left, ...(group ? { group } : {}) };
+}
+
+function lastRunRow(entry: RunHistoryEntry): PickRow {
+  return {
+    value: LAST_RUN_SENTINEL,
+    left: [
+      { text: `↻ ${entry.script}`, tone: "mint" },
+      { text: `  last run · ${formatAge(entry.ts)}`, tone: "dim" },
+    ],
+  };
+}
+
+/** `key: label` header parts become global footer actions -- exit keys (ctrl-up plus every expectKey) close the picker with that key as the action id; any other header part is a label-only action. Mirrors runNavPicker's own headerParts translation (lib/pick-wrappers.ts), which NavOption-based call sites get for free but a raw `rows` request has to build itself. */
+function footerActions(headerParts: string[], expectKeys: string[]): PickAction[] {
+  const exitKeys = new Set<string>(["ctrl-up", ...expectKeys]);
+  const headerLabels = new Map(
+    headerParts.map((part) => {
+      const sep = part.indexOf(": ");
+      return sep < 0 ? ([part, part] as const) : ([part.slice(0, sep), part.slice(sep + 2)] as const);
+    }),
+  );
+  const actions: PickAction[] = [];
+  for (const key of exitKeys) {
+    actions.push({ id: key, label: headerLabels.get(key) ?? key, key, scope: "global", event: false });
+  }
+  for (const [key, label] of headerLabels) {
+    if (exitKeys.has(key)) continue;
+    actions.push({ id: key, label, key, scope: "global" });
+  }
+  return actions;
+}
+
+interface SegmentPickResult {
+  value: string | null;
+  /** "" for a plain accept, otherwise the exit key pressed (ctrl-up, tab, alt-enter, ctrl-x, ...). */
+  key: string;
+  query: string;
+}
+
+/** Runs a picker from pre-built rows and returns the same {value, key, query} triple runNavPicker returns, or null on cancel. */
+async function runSegmentPicker(opts: {
+  message: string;
+  rows: PickRow[];
+  headerParts: string[];
+  expectKeys?: string[];
+  resumeValue?: string;
+}): Promise<SegmentPickResult | null> {
+  const handle = runPick({
+    message: opts.message,
+    rows: opts.rows,
+    actions: footerActions(opts.headerParts, opts.expectKeys ?? []),
+    ...(opts.resumeValue ? { resumeValue: opts.resumeValue } : {}),
+  });
+  const result = await handle.result;
+
+  if (result.action === "cancel" || result.action === "esc") return null;
+  const key = result.action === "select" || result.action === "enter" ? "" : result.action;
+  return { value: result.value ?? null, key, query: result.query };
 }
 
 function detectPackageManager(dir: string): string {
@@ -151,7 +272,16 @@ function reportSave(kind: string, label: string, result: SaveOutcome, repoLabel:
   process.stderr.write(`  ${yellow}⚠${reset} ${dim}not saved — ${detail}${reset}\n`);
 }
 
-export const __test__ = { reportSave };
+export const __test__ = {
+  reportSave,
+  queueRow,
+  launchAllRow,
+  savePresetRow,
+  presetRow,
+  plainRow,
+  lastRunRow,
+  footerActions,
+};
 
 /**
  * Package → script → variations picker loop.
@@ -209,52 +339,19 @@ async function selectPackageAndScript(
         // Manual package picker
         const rootScripts = getPackageJsonScripts(worktreePath);
 
-        // ── Queue display options (prepended when queue is active) ─────────
-        const LAUNCH_ALL_SENTINEL = "__rt:launch-all__";
-        const SAVE_PRESET_SENTINEL = "__rt:save-preset__";
-        const PRESET_PREFIX = "__rt:preset:";
-        const QUEUED_PREFIX = "__queued:";
+        // ── Rows, in board order: queue (✓ items, Launch all, Save as
+        // preset…) → presets → packages. Each is a real named group. ────────
+        const rows: PickRow[] = [];
 
-        const queueOptions: NavOption[] = [];
         if (q.length > 0) {
-          for (let i = 0; i < q.length; i++) {
-            const qi = q[i]!;
-            const varSuffix = qi.variationName ? ` ${magenta}(${qi.variationName})${reset}` : "";
-            queueOptions.push({
-              value: `${QUEUED_PREFIX}${i}__`,
-              label: `${green}✓${reset} ${qi.packageLabel} > ${qi.script}${varSuffix}`,
-              hint: "",
-            });
-          }
-          if (q.length >= 2) {
-            queueOptions.push({
-              value: SAVE_PRESET_SENTINEL,
-              label: "Save as preset...",
-              hint: "",
-            });
-          }
-          queueOptions.push({
-            value: LAUNCH_ALL_SENTINEL,
-            label: `Launch all (${q.length} queued)`,
-            hint: "",
-            color: toAnsiFg(T.mint),
-          });
-          queueOptions.push(navSeparator());
+          q.forEach((qi, i) => rows.push(queueRow(qi, i)));
+          rows.push(launchAllRow(q.length));
+          if (q.length >= 2) rows.push(savePresetRow());
         }
 
         // ── Saved presets (shown above packages, only outside an active queue) ──
         const presets = q.length === 0 ? loadPresets(repoIdentity) : [];
-        const savedPresetOptions = presets.length > 0
-          ? [
-              ...presets.map((p) => ({
-                value: `${PRESET_PREFIX}${p.name}__`,
-                label: p.name,
-                hint: p.entries.map((e) => `${e.packageLabel}:${e.script}`).join(" + "),
-                color: yellow,
-              })),
-              navSeparator(),
-            ]
-          : [];
+        presets.forEach((p) => rows.push(presetRow(p)));
 
         const packageOptions = [
           ...(rootScripts.length > 0
@@ -272,7 +369,7 @@ async function selectPackageAndScript(
             hint: p.path,
           })),
         ];
-
+        packageOptions.forEach((entry) => rows.push(plainRow(entry, "packages")));
 
         const queueHeaderParts = q.length > 0
           ? [
@@ -286,21 +383,21 @@ async function selectPackageAndScript(
               "esc: cancel",
             ];
 
-        const allPkgOptions = [...queueOptions, ...savedPresetOptions, ...packageOptions];
+        // Cursor lands on Launch all with 2+ queued (the likely next action),
+        // or the first package with exactly 1 queued (inviting a second pick)
+        // -- same target rows the old index math landed on, by value instead.
+        const resumeValue = q.length >= 2
+          ? LAUNCH_ALL_SENTINEL
+          : q.length === 1
+            ? packageOptions[0]?.value
+            : undefined;
 
-        let cursorPos: number | null = null;
-        if (q.length >= 2) {
-          cursorPos = queueOptions.findIndex((o) => o.value === LAUNCH_ALL_SENTINEL) + 1;
-        } else if (q.length === 1) {
-          cursorPos = queueOptions.length + savedPresetOptions.length + 1;
-        }
-
-        const pkgResult = await runNavPicker({
-          options: allPkgOptions,
+        const pkgResult = await runSegmentPicker({
+          rows,
           message: label ? `Select package — ${label}` : "Select package",
           headerParts: queueHeaderParts,
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
-          initialPos: cursorPos,
+          resumeValue,
         });
 
         if (!pkgResult) throw new RunAborted(1);
@@ -439,16 +536,9 @@ async function selectPackageAndScript(
       );
     }
 
-    const sentinelOption = lastRun
-      ? [
-          {
-            value: LAST_RUN_SENTINEL,
-            label: `↻ ${lastRun.script}`,
-            hint: `last run · ${formatAge(lastRun.ts)}`,
-            color: toAnsiFg(T.mint),
-          },
-        ]
-      : [];
+    const scriptRows: PickRow[] = [];
+    if (lastRun) scriptRows.push(lastRunRow(lastRun));
+    scripts.forEach((s) => scriptRows.push(plainRow({ value: s, label: s, hint: pkgScripts[s]?.slice(0, 60) })));
 
     const scriptHeaderParts = q.length > 0
       ? [
@@ -464,15 +554,8 @@ async function selectPackageAndScript(
           "ctrl-up: back",
         ];
 
-    const scriptResult = await runNavPicker({
-      options: [
-        ...sentinelOption,
-        ...scripts.map((s) => ({
-          value: s,
-          label: s,
-          hint: pkgScripts[s]?.slice(0, 60),
-        })),
-      ],
+    const scriptResult = await runSegmentPicker({
+      rows: scriptRows,
       message: label
         ? `Select script — ${label} · ${packageLabel === "." ? "root" : packageLabel}`
         : "Select script",
@@ -537,7 +620,7 @@ async function selectPackageAndScript(
               label: v.name,
               hint: v.command.slice(0, 60),
             })),
-            { value: ADD_SENTINEL, label: "+ Add variation...", hint: "" },
+            { value: ADD_SENTINEL, label: "+ Add variation…", hint: "" },
           ],
           message: `Variation for "${scriptName}"`,
           headerParts: varHeaderParts,
@@ -804,8 +887,7 @@ export async function resolveRun(
             worktreePath = worktrees[0]!.path;
             worktreeBranch = worktrees[0]!.branch;
           } else {
-            const { runNavPicker } = await import("../lib/navigate.ts");
-            const { enrichBranches, formatBranchLabel } = await import("../lib/enrich.ts");
+            const { enrichBranches, formatBranchSegments } = await import("../lib/enrich.ts");
             let remoteUrl: string | undefined;
             try {
               remoteUrl = execSync("git config --get remote.origin.url", {
@@ -816,12 +898,11 @@ export async function resolveRun(
               worktrees.map((wt) => ({ path: wt.path, branch: wt.branch })),
               remoteUrl,
             );
-            const wtResult = await runNavPicker({
-              options: enriched.map((eb) => ({
-                value: eb.path,
-                label: formatBranchLabel(eb),
-                hint: "",
-              })),
+            const wtResult = await runSegmentPicker({
+              rows: enriched.map((eb) => {
+                const { left, right } = formatBranchSegments(eb);
+                return { value: eb.path, left, right };
+              }),
               message: `${repoLabel(selectedRepo.repoName)} worktrees`,
               headerParts: [
                 "enter: select",
