@@ -117,6 +117,7 @@ export {
   markRead,
   markDelivered,
   pendingMessages,
+  stalePendingPairs,
   listRooms,
   archiveRoom,
   roomArchivedAt,

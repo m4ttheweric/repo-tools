@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { Logger } from "pino";
 import { openStateDb, presenceForSession } from "../../state/index.ts";
-import { createChatHandlers, type InboxDeps } from "../handlers/chat.ts";
+import { createChatDeliverySweep, createChatHandlers, planSweepTargets, type InboxDeps } from "../handlers/chat.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
 import { herdrRequest } from "../../herdr/client.ts";
@@ -564,4 +564,191 @@ test("a failed welcome delivery leaves the catch-up cursor untouched; the same m
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
   await Bun.sleep(0);
   expect(lastReadId(h.db, "r", "b")).toBeGreaterThan(before); // same unread, now shown and confirmed: cursor advances
+});
+
+// ─── planSweepTargets (pure planner) ────────────────────────────────────────
+
+test("planSweepTargets keeps a stale pair whose recipient is signed in with an alive binding", () => {
+  const stale = [{ room: "r", handle: "b", maxId: 5 }];
+  const presenceByHandle = new Map([["b", { sessionId: "sess-b" }]]);
+  const alive = new Set(["sess-b"]);
+  expect(planSweepTargets(stale, presenceByHandle, alive)).toEqual(stale);
+});
+
+test("planSweepTargets drops a stale pair with no presence row at all", () => {
+  const stale = [{ room: "r", handle: "ghost", maxId: 5 }];
+  expect(planSweepTargets(stale, new Map(), new Set())).toEqual([]);
+});
+
+test("planSweepTargets drops a signed-out recipient even with a presence row", () => {
+  const stale = [{ room: "r", handle: "b", maxId: 5 }];
+  const presenceByHandle = new Map([["b", { sessionId: "sess-b", signedOutAt: 123 }]]);
+  const alive = new Set(["sess-b"]);
+  expect(planSweepTargets(stale, presenceByHandle, alive)).toEqual([]);
+});
+
+test("planSweepTargets drops a signed-in recipient whose binding is not alive", () => {
+  const stale = [{ room: "r", handle: "b", maxId: 5 }];
+  const presenceByHandle = new Map([["b", { sessionId: "sess-b" }]]);
+  expect(planSweepTargets(stale, presenceByHandle, new Set())).toEqual([]); // alive set is empty
+});
+
+test("planSweepTargets filters a mixed batch independently, keeping order", () => {
+  const stale = [
+    { room: "r1", handle: "live", maxId: 1 },
+    { room: "r2", handle: "ghost", maxId: 2 },
+    { room: "r3", handle: "away", maxId: 3 },
+    { room: "r4", handle: "dead-binding", maxId: 4 },
+  ];
+  const presenceByHandle = new Map([
+    ["live", { sessionId: "sess-live" }],
+    ["away", { sessionId: "sess-away", signedOutAt: 999 }],
+    ["dead-binding", { sessionId: "sess-dead" }],
+  ]);
+  const alive = new Set(["sess-live"]);
+  expect(planSweepTargets(stale, presenceByHandle, alive)).toEqual([{ room: "r1", handle: "live", maxId: 1 }]);
+});
+
+// ─── createChatDeliverySweep (wiring) ───────────────────────────────────────
+
+function freshSweep(inboxDeps: InboxDeps, opts?: { herdr?: typeof herdrRequest; log?: Logger; retryDelayMs?: number }) {
+  const db = openStateDb(join(tmpdir(), `chat-sweep-${process.pid}-${n++}.db`));
+  const deliveryChains = new Map<string, Promise<void>>();
+  const sweep = createChatDeliverySweep({ db, deliveryChains, inboxDeps, ...opts });
+  return { db, deliveryChains, sweep };
+}
+
+test("the sweep is a no-op when nothing is stale", async () => {
+  const calls: Array<[string, string]> = [];
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: fakeSocketPath(), status: "idle" }),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const { db, sweep } = freshSweep(inboxDeps);
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  const result = await sweep();
+  expect(result).toEqual({ swept: 0, recovered: 0 });
+  expect(calls).toEqual([]);
+});
+
+test("the sweep re-delivers a stale cursor for a signed-in, alive-bound recipient through the real deliver path", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  // The registry resolver misses "b" at post time (modeling exactly the
+  // incident: a binding the daemon can't resolve yet/right now) and only
+  // starts answering once the sweep runs -- the normal per-post delivery
+  // never gets a chance to advance the cursor, so it is genuinely stuck
+  // until the sweep discovers it.
+  let resolverReady = false;
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const { log, infoCalls } = fakeLogger();
+  const { db, sweep } = freshSweep(inboxDeps, { log });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+
+  const signIn = (await import("../../state/index.ts")).signIn;
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0); // the queued post delivery ran and missed (resolver not ready), just like the incident
+  expect(calls).toEqual([]);
+  expect(lastReadId(db, "general", "b")).toBeLessThan(posted.data.id);
+
+  resolverReady = true;
+  const result = await sweep();
+  expect(result).toEqual({ swept: 1, recovered: 1 });
+  expect(calls).toHaveLength(1);
+  expect(lastReadId(db, "general", "b")).toBe(posted.data.id);
+  expect(infoCalls[0]![0]).toMatchObject({ recipient: "b", room: "general", recovered: 1 });
+});
+
+test("the sweep never re-delivers a poster's own message back to themselves", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-a" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const { db, sweep } = freshSweep(inboxDeps);
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+
+  const signIn = (await import("../../state/index.ts")).signIn;
+  signIn({ sessionId: "sess-a", baseHandle: "a" }, db);
+
+  await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  await Bun.sleep(0);
+
+  const result = await sweep();
+  expect(result).toEqual({ swept: 0, recovered: 0 });
+  expect(calls).toEqual([]);
+});
+
+test("the sweep skips a signed-out recipient and a recipient with a dead binding", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const { db, sweep } = freshSweep(inboxDeps);
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "c" });
+
+  const { signIn, signOut } = await import("../../state/index.ts");
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+  signOut("sess-b", undefined, db); // signed out: a live binding must not matter
+  signIn({ sessionId: "sess-c", baseHandle: "c" }, db); // resolver never answers for sess-c: dead binding
+
+  await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  await Bun.sleep(0);
+
+  const result = await sweep();
+  expect(result).toEqual({ swept: 0, recovered: 0 });
+  expect(calls).toEqual([]);
+});
+
+test("a sweep re-delivery chains behind an in-flight post delivery to the same recipient instead of racing it", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let releaseFirst: (() => void) | undefined;
+  let deliverCount = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => {
+      deliverCount++;
+      calls.push([socketPath, content]);
+      if (deliverCount === 1) await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return { ok: true };
+    },
+  };
+  const db = openStateDb(join(tmpdir(), `chat-sweep-race-${process.pid}-${n++}.db`));
+  const deliveryChains = new Map<string, Promise<void>>();
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps, deliveryChains }), { db });
+  const sweep = createChatDeliverySweep({ db, deliveryChains, inboxDeps });
+
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const { signIn } = await import("../../state/index.ts");
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0); // the queued post delivery is now blocked on the gate
+
+  const sweepResult = sweep(); // must chain behind, not race, the held post delivery
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(1); // still just the held first attempt
+
+  releaseFirst?.();
+  await sweepResult;
+  expect(calls).toHaveLength(1); // the sweep found nothing left stale once it finally ran
 });

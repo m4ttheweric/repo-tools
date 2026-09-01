@@ -18,6 +18,7 @@ import {
   markRead,
   markDelivered,
   pendingMessages,
+  stalePendingPairs,
   listRooms,
   archiveRoom,
   roomArchivedAt,
@@ -265,6 +266,96 @@ function deliverSerialized(
   return serializeDelivery(chains, chainKey(msg.room, recipient), () =>
     deliverPost(db, deps, herdr, log, retryDelayMs, recipient, msg),
   );
+}
+
+/** The presence shape planSweepTargets actually needs -- a subset of PresenceRow, spelled out so the planner stays pure and testable with plain object literals instead of a full store row. */
+type SweepPresence = { sessionId: string; signedOutAt?: number };
+
+/**
+ * Pure: given stalePendingPairs' raw candidates plus a presence snapshot and
+ * which of those sessions have an alive registry binding, decides which
+ * pairs are actually worth re-invoking delivery for. A candidate with no
+ * presence row, a signed-out one, or a signed-in one whose binding is dead
+ * is dropped -- deliverPost would reach the same conclusion itself, but
+ * checking here means the sweep never even builds a delivery chain entry
+ * for a candidate that can't receive anything.
+ */
+export function planSweepTargets(
+  stale: Array<{ room: string; handle: string; maxId: number }>,
+  presenceByHandle: Map<string, SweepPresence>,
+  aliveSessionIds: Set<string>,
+): Array<{ room: string; handle: string; maxId: number }> {
+  return stale.filter((pair) => {
+    const presence = presenceByHandle.get(pair.handle);
+    if (!presence || presence.signedOutAt !== undefined) return false;
+    return aliveSessionIds.has(presence.sessionId);
+  });
+}
+
+/**
+ * The daemon's periodic delivery sweep (the deadlock fix): finds every
+ * (room, handle) whose cursor is behind that room's newest message via
+ * stalePendingPairs, keeps only the ones planSweepTargets says a live
+ * recipient could receive, and re-invokes the SAME deliverSerialized path a
+ * normal post uses -- this and postAndNotify are the only two callers.
+ * Sharing `deliveryChains` with createChatHandlers (see that factory's
+ * `deliveryChains` opt) is what keeps a sweep re-delivery from racing a
+ * post's own in-flight delivery to the same recipient.
+ *
+ * A candidate whose entire pending backlog is self-authored is skipped
+ * before it ever reaches deliverSerialized: postMessage never advances the
+ * poster's own cursor (see stalePendingPairs), so a poster is a legitimate
+ * "stale" row that nonetheless has nothing worth pushing back to itself.
+ */
+export function createChatDeliverySweep(opts: {
+  db: Database;
+  deliveryChains: Map<string, Promise<void>>;
+  herdr?: typeof herdrRequest;
+  inboxDeps?: InboxDeps;
+  log?: Logger;
+  retryDelayMs?: number;
+}): () => Promise<{ swept: number; recovered: number }> {
+  const { db, deliveryChains } = opts;
+  const herdr = opts.herdr ?? herdrRequest;
+  const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
+  const log = opts.log ?? defaultLog;
+  const retryDelayMs = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+
+  return async function sweepPendingDeliveries(): Promise<{ swept: number; recovered: number }> {
+    const stale = stalePendingPairs(db);
+    if (stale.length === 0) return { swept: 0, recovered: 0 };
+
+    const presenceByHandle = new Map<string, SweepPresence>();
+    for (const { handle } of stale) {
+      if (presenceByHandle.has(handle)) continue;
+      const presence = presenceForHandle(handle, db);
+      if (presence) presenceByHandle.set(handle, presence);
+    }
+    const aliveSessionIds = new Set<string>();
+    for (const presence of presenceByHandle.values()) {
+      const binding = inboxDeps.resolve(presence.sessionId);
+      if (binding && inboxAlive(binding)) aliveSessionIds.add(presence.sessionId);
+    }
+
+    const targets = planSweepTargets(stale, presenceByHandle, aliveSessionIds);
+    let swept = 0;
+    let recovered = 0;
+    for (const target of targets) {
+      const pending = pendingMessages(target.room, target.handle, target.maxId, db);
+      if (pending.length === 0 || pending.every((m) => m.handle === target.handle)) continue;
+      const dm = dmParticipants(target.room, db) !== null;
+      swept++;
+      const result = await deliverSerialized(
+        deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, target.handle,
+        { room: target.room, dm, id: target.maxId },
+      );
+      if (result.delivered) {
+        recovered += result.count;
+        log.info({ recipient: target.handle, room: target.room, recovered: result.count }, "chat: sweep recovered a stale delivery");
+      }
+    }
+    return { swept, recovered };
+  };
 }
 
 // Not a real room -- isValidChatName forbids '_' -- so this key can never
