@@ -141,6 +141,11 @@ const commitNode: CommandNode = {
   fn: "commitFlow",
   context: "worktree",
   requiresTTY: true,
+  // The picker renders an inline frame, not an alt-screen, so it owns the top
+  // region of the terminal; a dispatcher header printed above it would get
+  // orphaned by the frame's own repaints. The picker renders its own
+  // in-card breadcrumb instead.
+  fullscreen: true,
   args: [],
 };
 
@@ -501,6 +506,10 @@ export const TREE: Record<string, CommandNode> = {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
     fn: "worktreePicker",
+    // Same inline-frame constraint as commitNode above: the picker owns the
+    // top region, so suppress the dispatcher header (the picker carries its
+    // own breadcrumb instead).
+    fullscreen: true,
     // The hidden --emit-rows reload path (commands/cd.ts) is deliberately
     // non-interactive, so it must clear the TTY gate on a plain pipe even
     // without RT_BATCH set. It is not declared in `args` below, so it never
@@ -524,11 +533,14 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   nav: {
-    description: "Navigate filesystem with fzf; persistent picker, esc to quit",
+    description: "Navigate filesystem; persistent picker, esc to quit",
     module: "./commands/nav.ts",
     fn: "navigate",
     omitBehavior: "picker",
     requiresTTY: true,
+    // Same inline-frame constraint as commitNode above: the picker owns the
+    // top region, so suppress the dispatcher header.
+    fullscreen: true,
     args: [
       { name: "Path", type: "text", placeholder: ".", hint: "Starting directory; defaults to the current directory" },
     ],
@@ -1290,12 +1302,15 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
       surface: {
-        description: "List, set, or apply the pack's public/internal skill surface (bare invocation opens an fzf multi-toggle palette)",
+        description: "List, set, or apply the pack's public/internal skill surface (bare invocation opens a multi-toggle palette)",
         module: "./commands/skills.ts",
         fn: "skillsSurface",
         omitBehavior: "picker",
+        // Same inline-frame constraint as commitNode above: the palette owns
+        // the top region, so suppress the dispatcher header.
+        fullscreen: true,
         args: [
-          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name>... --public|--internal | apply; omit for the fzf palette" },
+          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name>... --public|--internal | apply; omit for the palette" },
           { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
           SETUP_JSON_ARG,

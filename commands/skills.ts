@@ -1674,6 +1674,7 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
 
   const selected = await filterableMultiselect({
     message: "rt skills surface",
+    breadcrumb: ["rt", "skills", "surface"],
     options,
     initialValues,
   });

@@ -648,6 +648,9 @@ describe("skillsSurface bare invocation (interactive palette)", () => {
     expect(req.multi).toBe(true);
     expect(req.initialValues?.slice().sort()).toEqual(["pub-skill"]);
     expect(req.rows.map((r) => r.value).sort()).toEqual(["int-skill", "pub-skill"]);
+    // Dispatcher header is suppressed for this leaf (fullscreen: true in the
+    // tree), so the palette must carry its own in-card breadcrumb.
+    expect(req.breadcrumb).toEqual(["rt", "skills", "surface"]);
   });
 
   test("selecting exactly today's public set yields no-changes without writing surface.jsonc", async () => {
