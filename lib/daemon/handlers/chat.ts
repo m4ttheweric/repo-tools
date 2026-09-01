@@ -841,6 +841,9 @@ export function createChatHandlers(opts: {
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
       if (!isValidBody(body)) return { ok: false, error: `body must be a non-empty string under ${MAX_BODY_BYTES} bytes` };
       if (mentions !== undefined && !Array.isArray(mentions)) return { ok: false, error: "mentions must be an array of handles" };
+      // Rejected rather than coerced: a truthy non-boolean (the string
+      // "false", say) would silently suppress every wake this post owes.
+      if (quiet !== undefined && typeof quiet !== "boolean") return { ok: false, error: "quiet must be a boolean" };
       const invalidMention = mentions?.find((m) => !isValidChatName(m));
       if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
       // A typo'd room previously no-op'd through postMessage's REVIVE (a

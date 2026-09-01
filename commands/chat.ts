@@ -677,7 +677,7 @@ async function runPost(args: string[]): Promise<void> {
   requireValidName("handle", handle);
 
   const quiet = args.includes("--quiet");
-  const res = await chatPost({ room, handle, body, quiet });
+  const res = await chatPost({ room, handle, body, quiet }, sockOpts(args));
   const data = unwrap(res, "post");
   // Output stays to a line or two: who was actually woken (a post that
   // delivered to nobody used to be silent, indistinguishable from success
@@ -710,7 +710,7 @@ async function runAck(args: string[]): Promise<void> {
   const handle = resolveHandle(args);
   requireValidName("handle", handle);
 
-  const res = await chatAck({ id, handle });
+  const res = await chatAck({ id, handle }, sockOpts(args));
   const data = unwrap(res, "ack");
   if (args.includes("--json")) {
     console.log(JSON.stringify({ ok: true, id, author: data.author, room: data.room, already: data.already }));

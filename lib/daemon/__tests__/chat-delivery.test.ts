@@ -463,6 +463,13 @@ test("a quiet post reaches the room record but wakes nobody", async () => {
   expect(lastReadId(h.db, "general", "b")).toBe(0);
 });
 
+test("a non-boolean quiet is rejected, never coerced into silencing the post", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "general", handle: "a" });
+  const res = await h["chat:post"]({ room: "general", handle: "a", body: "hi", quiet: "false" as unknown as boolean });
+  expect(res).toEqual({ ok: false, error: "quiet must be a boolean" });
+});
+
 test("a quiet post rides along in the next bundle a normal post causes", async () => {
   const calls: Array<[string, string]> = [];
   const sock = fakeSocketPath();
