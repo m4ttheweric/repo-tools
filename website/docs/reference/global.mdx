@@ -5,7 +5,7 @@ title: Global flags & entry points
 
 # Global flags & entry points
 
-A few entry points are handled directly by `rt`'s CLI entry (`cli.ts`), before any command-tree dispatch. These are not tree commands, so they don't have their own generated reference page.
+A few entry points are handled directly by `rt`'s CLI entry (`cli.ts`), before any command-tree dispatch (except `--help`, which the dispatcher itself handles at every depth). These are not tree commands, so they don't have their own generated reference page.
 
 ## `--version` / `-V`
 
