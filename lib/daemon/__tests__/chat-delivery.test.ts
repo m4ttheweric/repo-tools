@@ -443,6 +443,92 @@ test("a repeat ack never wakes the author a second time", async () => {
   expect(calls).toEqual([]);
 });
 
+/** Asker `a` and claimant `b` both have live sessions; `c` is a member with no session. Returns the posted id with the welcome frames already cleared. */
+async function claimScenario() {
+  const calls: Array<[string, string]> = [];
+  const sockA = fakeSocketPath();
+  const sockB = fakeSocketPath();
+  const socks: Record<string, string> = { "sess-a": sockA, "sess-b": sockB };
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => {
+      const socketPath = socks[sessionId];
+      return socketPath ? { pid: process.pid, socketPath, status: "idle" } : null;
+    },
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-a", baseHandle: "a" });
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  for (const handle of ["a", "b", "c"]) await h["chat:join"]({ room: "general", handle });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "one of you: write the TLDR" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  calls.length = 0;
+  return { h, calls, id: posted.data.id, sockA, sockB };
+}
+
+test("a won claim wakes only the message's author, with a one-line receipt", async () => {
+  const { h, calls, id, sockA } = await claimScenario();
+  const res = await h["chat:claim"]({ id, handle: "b" });
+  expect(res).toEqual({ ok: true, data: { outcome: "claimed", author: "a", room: "general" } });
+  await Bun.sleep(0);
+  expect(calls).toEqual([
+    [sockA, `<cross-session-message from-name="b (claim)">\nb claimed your message #${id}: "one of you: write the TLDR"\n</cross-session-message>`],
+  ]);
+});
+
+test("a lost claim names the holder and the expiry, and wakes nobody", async () => {
+  const { h, calls, id } = await claimScenario();
+  await h["chat:claim"]({ id, handle: "b" });
+  await Bun.sleep(0);
+  calls.length = 0;
+  const lost = await h["chat:claim"]({ id, handle: "c" });
+  expect(lost.ok).toBe(true);
+  if (!lost.ok) throw new Error("unreachable");
+  expect(lost.data).toMatchObject({ outcome: "lost", holder: "b" });
+  expect((lost.data as { expiresAt: number }).expiresAt).toBeGreaterThan(Date.now());
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+});
+
+test("taking over an expired claim receipts the previous holder and tells the author who has it now", async () => {
+  const { h, calls, id, sockA, sockB } = await claimScenario();
+  await h["chat:claim"]({ id, handle: "b" });
+  await Bun.sleep(0);
+  calls.length = 0;
+  h.db.query("UPDATE chat_claims SET claimed_at = claimed_at - ? WHERE message_id = ?;").run(6 * 60_000, id);
+  const took = await h["chat:claim"]({ id, handle: "c" });
+  expect(took).toEqual({ ok: true, data: { outcome: "claimed", author: "a", room: "general", previousHolder: "b" } });
+  await Bun.sleep(0);
+  expect(calls).toEqual([
+    [sockA, `<cross-session-message from-name="c (claim)">\nc claimed your message #${id} (took over from b): "one of you: write the TLDR"\n</cross-session-message>`],
+    [sockB, `<cross-session-message from-name="c (claim)">\nc took over #${id} from you: "one of you: write the TLDR"\n</cross-session-message>`],
+  ]);
+});
+
+test("release frees the id for the next claimant and wakes nobody", async () => {
+  const { h, calls, id } = await claimScenario();
+  await h["chat:claim"]({ id, handle: "b" });
+  await Bun.sleep(0);
+  calls.length = 0;
+  expect(await h["chat:release"]({ id, handle: "c" })).toEqual({ ok: false, error: `you are neither the holder of #${id} nor its author` });
+  expect(await h["chat:release"]({ id, handle: "b" })).toEqual({ ok: true, data: { holder: "b" } });
+  expect(await h["chat:release"]({ id, handle: "b" })).toEqual({ ok: false, error: `#${id} is not claimed` });
+  const next = await h["chat:claim"]({ id, handle: "c" });
+  expect(next).toMatchObject({ ok: true, data: { outcome: "claimed" } });
+  await Bun.sleep(0);
+  expect(calls.map(([sock]) => sock)).toEqual([calls[0]![0]]);
+});
+
+test("chat:claim refuses a DM message and your own message", async () => {
+  const { h, id } = await claimScenario();
+  expect(await h["chat:claim"]({ id, handle: "a" })).toEqual({ ok: false, error: `message #${id} is your own` });
+  const dm = await h["chat:dm"]({ from: "a", to: "b", body: "just you" });
+  if (!dm.ok) throw new Error(`dm failed: ${dm.error}`);
+  expect(await h["chat:claim"]({ id: dm.data.id, handle: "b" })).toEqual({ ok: false, error: `message #${dm.data.id} is a DM; nobody else can answer it` });
+});
+
 test("a quiet post reaches the room record but wakes nobody", async () => {
   const calls: Array<[string, string]> = [];
   const sock = fakeSocketPath();

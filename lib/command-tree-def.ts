@@ -810,8 +810,8 @@ export const TREE: Record<string, CommandNode> = {
     fn: "chat",
     omitBehavior: "picker",
     args: [
-      { name: "Verb", type: "text", placeholder: "join | leave | archive | post | read | ack | rooms | who | mark | prune | sign-in | sign-out | away | back | buddies | dm | invite", hint: "The chat action to run" },
-      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; the message id for ack; omit on read/rooms/who to span everything, and on prune/sign-in/sign-out/buddies/back/away, which take no room" },
+      { name: "Verb", type: "text", placeholder: "join | leave | archive | post | read | ack | claim | release | rooms | who | mark | prune | sign-in | sign-out | away | back | buddies | dm | invite", hint: "The chat action to run" },
+      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; the message id for ack/claim/release; omit on read/rooms/who to span everything, and on prune/sign-in/sign-out/buddies/back/away, which take no room" },
       { name: "Text", type: "text", optional: true, placeholder: "@handle message", hint: "A one-line message body (every word after the room/handle) — post, dm; leave it out and feed the body on stdin (a heredoc) so paragraphs and lists survive; away takes this directly, with no room before it" },
       { name: "As handle", flag: "--as", type: "text", placeholder: "repo-tools-main", hint: "Override the derived handle for this invocation; refused while signed in (sign out first)" },
       { name: "Wake on", flag: "--wake-on", type: "text", placeholder: "mention | all | none", hint: "For join: when this handle gets delivered a message (default mention)" },

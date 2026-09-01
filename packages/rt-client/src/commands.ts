@@ -108,6 +108,12 @@ export interface ChatMessage {
   postedAt: number;
 }
 
+/** `claimed` is the only outcome that woke anyone; `previousHolder` marks a takeover of an expired claim. */
+export type ChatClaimOutcome =
+  | { outcome: "claimed"; author: string; room: string; previousHolder?: string }
+  | { outcome: "held"; author: string; room: string }
+  | { outcome: "lost"; holder: string; claimedAt: number; expiresAt: number };
+
 export interface RoomSummary {
   room: string;
   memberCount: number;
@@ -419,6 +425,8 @@ export interface Commands {
   "chat:leave": { payload: { room: string; handle: string }; data: Record<string, never> };
   "chat:post": { payload: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean }; data: { id: number; recipients: string[] } };
   "chat:ack": { payload: { id: number; handle: string }; data: { author: string; room: string; already: boolean } };
+  "chat:claim": { payload: { id: number; handle: string }; data: ChatClaimOutcome };
+  "chat:release": { payload: { id: number; handle: string }; data: { holder: string } };
   "chat:read": { payload: { handle: string; room?: string; limit?: number; sinceMs?: number }; data: { rooms: { room: string; messages: ChatMessage[] }[] } };
   "chat:rooms": { payload: { handle: string; includeArchived?: boolean }; data: { rooms: RoomSummary[] } };
   "chat:who": { payload: { room: string }; data: { members: ChatMember[] } };
@@ -561,6 +569,8 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "runs:get",
   "runs:abandon",
   "chat:ack",
+  "chat:claim",
+  "chat:release",
   "chat:join",
   "chat:leave",
   "chat:post",

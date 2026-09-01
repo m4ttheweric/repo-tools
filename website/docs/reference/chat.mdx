@@ -20,7 +20,7 @@ rt chat <verb> [<room>] [<text>] [flags]
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
 | `<verb>` | text |  | The chat action to run |
-| `<room>` | text |  | Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; the message id for ack; omit on read/rooms/who to span everything, and on prune/sign-in/sign-out/buddies/back/away, which take no room |
+| `<room>` | text |  | Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; the message id for ack/claim/release; omit on read/rooms/who to span everything, and on prune/sign-in/sign-out/buddies/back/away, which take no room |
 | `<text>` | text |  | A one-line message body (every word after the room/handle) — post, dm; leave it out and feed the body on stdin (a heredoc) so paragraphs and lists survive; away takes this directly, with no room before it |
 | `--as` | text |  | Override the derived handle for this invocation; refused while signed in (sign out first) |
 | `--wake-on` | text |  | For join: when this handle gets delivered a message (default mention) |

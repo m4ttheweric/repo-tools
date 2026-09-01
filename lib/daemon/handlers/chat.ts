@@ -8,6 +8,8 @@ import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
 import {
   ackMessage,
+  claimMessage,
+  releaseClaim,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -66,6 +68,8 @@ const defaultLog = lazyChildLogger("chat");
 
 const CHAT_COMMANDS = [
   "chat:ack",
+  "chat:claim",
+  "chat:release",
   "chat:join",
   "chat:leave",
   "chat:post",
@@ -245,22 +249,67 @@ const ACK_BODY_PREVIEW = 80;
  * "ack" costs. The preview is whitespace-collapsed so a heredoc body cannot
  * turn a one-line receipt into a paragraph.
  */
-async function deliverAck(
+async function deliverReceipt(
+  db: Database,
+  deps: InboxDeps,
+  log: Logger,
+  args: { to: string; from: string; kind: "ack" | "claim"; text: string; messageId: number },
+): Promise<void> {
+  const { to, from, kind, text, messageId } = args;
+  const presence = presenceForHandle(to, db);
+  if (!presence || presence.signedOutAt !== undefined) return;
+  const binding = deps.resolve(presence.sessionId);
+  if (!binding || !inboxAlive(binding)) return;
+  const result = await deps.deliver(binding.socketPath, wrapCrossSession(`${from} (${kind})`, text));
+  if (!result.ok) log.warn({ to, from, id: messageId, err: result.error }, `chat: ${kind} receipt push failed`);
+}
+
+function previewBody(body: string): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  return flat.length > ACK_BODY_PREVIEW ? `${flat.slice(0, ACK_BODY_PREVIEW)}...` : flat;
+}
+
+function deliverAck(
   db: Database,
   deps: InboxDeps,
   log: Logger,
   args: { author: string; acker: string; messageId: number; body: string },
 ): Promise<void> {
   const { author, acker, messageId, body } = args;
-  const presence = presenceForHandle(author, db);
-  if (!presence || presence.signedOutAt !== undefined) return;
-  const binding = deps.resolve(presence.sessionId);
-  if (!binding || !inboxAlive(binding)) return;
-  const flat = body.replace(/\s+/g, " ").trim();
-  const preview = flat.length > ACK_BODY_PREVIEW ? `${flat.slice(0, ACK_BODY_PREVIEW)}...` : flat;
-  const content = wrapCrossSession(`${acker} (ack)`, `${acker} acknowledged your message #${messageId}: "${preview}"`);
-  const result = await deps.deliver(binding.socketPath, content);
-  if (!result.ok) log.warn({ author, acker, id: messageId, err: result.error }, "chat: ack receipt push failed");
+  const text = `${acker} acknowledged your message #${messageId}: "${previewBody(body)}"`;
+  return deliverReceipt(db, deps, log, { to: author, from: acker, kind: "ack", text, messageId });
+}
+
+/**
+ * A won claim receipts the author (so an asker knows who is on it during the
+ * minutes before the answer lands); a takeover of an expired claim also
+ * receipts the previous holder, who may still be alive and composing. Losers
+ * and re-claims of a held id wake nobody: silence is the whole point.
+ */
+async function deliverClaim(
+  db: Database,
+  deps: InboxDeps,
+  log: Logger,
+  args: { author: string; claimer: string; messageId: number; body: string; previousHolder?: string },
+): Promise<void> {
+  const { author, claimer, messageId, body, previousHolder } = args;
+  const preview = previewBody(body);
+  const takeover = previousHolder ? ` (took over from ${previousHolder})` : "";
+  await deliverReceipt(db, deps, log, {
+    to: author,
+    from: claimer,
+    kind: "claim",
+    text: `${claimer} claimed your message #${messageId}${takeover}: "${preview}"`,
+    messageId,
+  });
+  if (!previousHolder) return;
+  await deliverReceipt(db, deps, log, {
+    to: previousHolder,
+    from: claimer,
+    kind: "claim",
+    text: `${claimer} took over #${messageId} from you: "${preview}"`,
+    messageId,
+  });
 }
 
 function chainKey(room: string, handle: string): string {
@@ -884,6 +933,51 @@ export function createChatHandlers(opts: {
         });
       }
       return { ok: true, data: { author: res.author, room: res.room, already: res.already } };
+    },
+
+    "chat:claim": async (rawPayload: unknown): Promise<CommandResult<"chat:claim">> => {
+      const payload = rawPayload as Commands["chat:claim"]["payload"];
+      const { id, handle } = payload;
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "id must be a positive message id" };
+      const res = claimMessage({ messageId: id, handle }, db);
+      if (!res.ok) {
+        const why = {
+          "unknown-message": `no message #${id}`,
+          "own-message": `message #${id} is your own`,
+          "not-a-member": `you are not a member of the room message #${id} is in`,
+          dm: `message #${id} is a DM; nobody else can answer it`,
+        }[res.reason];
+        return { ok: false, error: why };
+      }
+      if (res.outcome === "lost") {
+        return { ok: true, data: { outcome: "lost", holder: res.holder, claimedAt: res.claimedAt, expiresAt: res.expiresAt } };
+      }
+      if (res.outcome === "held") return { ok: true, data: { outcome: "held", author: res.author, room: res.room } };
+      const { author, room, body, previousHolder } = res;
+      queueMicrotask(() => {
+        deliverClaim(db, inboxDeps, log, { author, claimer: handle, messageId: id, body, previousHolder }).catch((err) => {
+          log.warn({ err, id, handle }, "chat: claim delivery failed");
+        });
+      });
+      return { ok: true, data: previousHolder ? { outcome: "claimed", author, room, previousHolder } : { outcome: "claimed", author, room } };
+    },
+
+    "chat:release": async (rawPayload: unknown): Promise<CommandResult<"chat:release">> => {
+      const payload = rawPayload as Commands["chat:release"]["payload"];
+      const { id, handle } = payload;
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "id must be a positive message id" };
+      const res = releaseClaim({ messageId: id, handle }, db);
+      if (!res.ok) {
+        const why = {
+          "unknown-message": `no message #${id}`,
+          "not-claimed": `#${id} is not claimed`,
+          "not-holder": `you are neither the holder of #${id} nor its author`,
+        }[res.reason];
+        return { ok: false, error: why };
+      }
+      return { ok: true, data: { holder: res.holder } };
     },
 
     "chat:read": async (rawPayload: unknown): Promise<CommandResult<"chat:read">> => {

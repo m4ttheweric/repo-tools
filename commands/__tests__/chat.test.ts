@@ -351,6 +351,48 @@ describe("rt chat CLI — additional verb behavior", () => {
     expect(out).toContain("b");
   });
 
+  async function postedId(): Promise<number> {
+    for (const h of ["asker", "b", "c"]) await runChat(["join", "r", "--as", h]);
+    await runChat(["post", "r", "one", "of", "you:", "TLDR", "--as", "asker"]);
+    const read = JSON.parse(await runChat(["read", "r", "--as", "b", "--json"]));
+    return read.rooms[0].messages[0].id as number;
+  }
+
+  test("claim: the winner is told so, every later claimant is told who holds it, and both exit 0", async () => {
+    const id = await postedId();
+    expect(await runChat(["claim", String(id), "--as", "b"])).toBe(`claimed #${id} → asker`);
+    const lost = await runChatRaw(["claim", String(id), "--as", "c"]);
+    expect(lost.code).toBe(0);
+    expect(lost.stdout).toMatch(new RegExp(`^#${id} already claimed by b \\d+s ago \\(claimable again in [0-9ms ]+\\)$`));
+    expect(await runChat(["claim", String(id), "--as", "b"])).toBe(`you already hold #${id}`);
+  });
+
+  test("claim --json carries the outcome discriminator for every branch", async () => {
+    const id = await postedId();
+    expect(JSON.parse(await runChat(["claim", String(id), "--as", "b", "--json"]))).toEqual({ ok: true, id, outcome: "claimed", author: "asker", room: "r" });
+    const lost = JSON.parse(await runChat(["claim", String(id), "--as", "c", "--json"]));
+    expect(lost).toMatchObject({ ok: true, id, outcome: "lost", holder: "b" });
+    expect(typeof lost.expiresAt).toBe("number");
+  });
+
+  test("release: the holder or the author frees the id; anyone else exits 1 with the reason", async () => {
+    const id = await postedId();
+    await runChat(["claim", String(id), "--as", "b"]);
+    const refused = await runChatRaw(["release", String(id), "--as", "c"]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain("neither the holder");
+    expect(await runChat(["release", String(id), "--as", "b"])).toBe(`released #${id} (was held by b)`);
+    await runChat(["claim", String(id), "--as", "c"]);
+    expect(await runChat(["release", String(id), "--as", "asker"])).toBe(`released #${id} (was held by c)`);
+  });
+
+  test("claim and release refuse a non-id the same way ack does", async () => {
+    const { code, stderr } = await runChatRaw(["claim", "m-412", "--as", "b"]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("not a message id");
+    expect((await runChatRaw(["release", "--as", "b"])).stderr).toContain("usage: rt chat release <messageId>");
+  });
+
   test("leave drops membership so rooms no longer lists it", async () => {
     await runChat(["join", "r", "--as", "solo"]);
     await runChat(["leave", "r", "--as", "solo"]);

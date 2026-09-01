@@ -634,3 +634,85 @@ export function ackMessage(
     .run(messageId, handle, Date.now());
   return { ok: true, author: msg.handle, room: msg.room, body: msg.body, already: result.changes === 0 };
 }
+
+/**
+ * A claim outlives its holder by this much. A holder whose session died
+ * mid-compose can never release, so without expiry one crash turns "one of
+ * you answer this" into nobody answering, silently. Five minutes is long
+ * enough to compose a real answer and short enough that the room is not
+ * stuck for the afternoon.
+ */
+export const CLAIM_TTL_MS = 5 * 60_000;
+
+type MessageOwner = { room: string; handle: string; body: string };
+
+export type ClaimResult =
+  | { ok: true; outcome: "claimed"; author: string; room: string; body: string; previousHolder?: string }
+  | { ok: true; outcome: "held"; author: string; room: string; body: string }
+  | { ok: true; outcome: "lost"; holder: string; claimedAt: number; expiresAt: number }
+  | { ok: false; reason: "unknown-message" | "not-a-member" | "own-message" | "dm" };
+
+/**
+ * Test-and-set on one room message: the first caller holds it, every later
+ * caller is told who does. The check and the write are one transaction, so
+ * N agents claiming in the same instant cannot all read "unclaimed" first --
+ * that race is exactly what a posted "I'll take it" cannot win, since the
+ * post lands after everyone has already started composing.
+ *
+ * An expired claim (see CLAIM_TTL_MS) is taken over rather than refused,
+ * and the result names the previous holder so the caller can receipt them.
+ */
+export function claimMessage(
+  args: { messageId: number; handle: string; nowMs?: number },
+  db: Database = getStateDb(),
+): ClaimResult {
+  const { messageId, handle } = args;
+  const now = args.nowMs ?? Date.now();
+  // Every read sits inside one immediate (write-locked) transaction, so a
+  // second connection can never observe "unclaimed" and then lose the write
+  // with SQLITE_BUSY_SNAPSHOT; it waits, re-reads, and is told "lost".
+  const run = db.transaction((): ClaimResult => {
+    const msg = db.query("SELECT room, handle, body FROM chat_messages WHERE id = ?;").get(messageId) as MessageOwner | null;
+    if (!msg) return { ok: false, reason: "unknown-message" };
+    if (dmParticipants(msg.room, db)) return { ok: false, reason: "dm" };
+    if (msg.handle === handle) return { ok: false, reason: "own-message" };
+    const member = db.query("SELECT 1 AS present FROM chat_members WHERE room = ? AND handle = ?;").get(msg.room, handle) as { present: number } | null;
+    if (!member) return { ok: false, reason: "not-a-member" };
+
+    const won = { ok: true as const, outcome: "claimed" as const, author: msg.handle, room: msg.room, body: msg.body };
+    const existing = db.query("SELECT handle, claimed_at AS claimedAt FROM chat_claims WHERE message_id = ?;").get(messageId) as
+      | { handle: string; claimedAt: number }
+      | null;
+    if (!existing) {
+      db.query("INSERT INTO chat_claims (message_id, handle, claimed_at) VALUES (?, ?, ?);").run(messageId, handle, now);
+      return won;
+    }
+    const expiresAt = existing.claimedAt + CLAIM_TTL_MS;
+    if (now < expiresAt) {
+      if (existing.handle === handle) return { ok: true, outcome: "held", author: msg.handle, room: msg.room, body: msg.body };
+      return { ok: true, outcome: "lost", holder: existing.handle, claimedAt: existing.claimedAt, expiresAt };
+    }
+    db.query("UPDATE chat_claims SET handle = ?, claimed_at = ? WHERE message_id = ?;").run(handle, now, messageId);
+    return existing.handle === handle ? won : { ...won, previousHolder: existing.handle };
+  });
+  return run.immediate();
+}
+
+export type ReleaseResult =
+  | { ok: true; holder: string }
+  | { ok: false; reason: "unknown-message" | "not-claimed" | "not-holder" };
+
+/** The holder hands a claim back; the message's author may also pull it back, so an asker can un-stick their own question without finding the holder. */
+export function releaseClaim(args: { messageId: number; handle: string }, db: Database = getStateDb()): ReleaseResult {
+  const { messageId, handle } = args;
+  const run = db.transaction((): ReleaseResult => {
+    const msg = db.query("SELECT handle FROM chat_messages WHERE id = ?;").get(messageId) as { handle: string } | null;
+    if (!msg) return { ok: false, reason: "unknown-message" };
+    const existing = db.query("SELECT handle FROM chat_claims WHERE message_id = ?;").get(messageId) as { handle: string } | null;
+    if (!existing) return { ok: false, reason: "not-claimed" };
+    if (existing.handle !== handle && msg.handle !== handle) return { ok: false, reason: "not-holder" };
+    db.query("DELETE FROM chat_claims WHERE message_id = ?;").run(messageId);
+    return { ok: true, holder: existing.handle };
+  });
+  return run.immediate();
+}

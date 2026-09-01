@@ -106,6 +106,9 @@ export {
 
 export {
   ackMessage,
+  claimMessage,
+  releaseClaim,
+  CLAIM_TTL_MS,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -128,6 +131,8 @@ export {
   CHAT_RETENTION_MS,
   CHAT_ROOM_FLOOR,
   type AckResult,
+  type ClaimResult,
+  type ReleaseResult,
   type ChatMember,
   type ChatMessage,
   type WakeMode,
