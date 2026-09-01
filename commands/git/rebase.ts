@@ -577,7 +577,7 @@ export async function ontoCommand(
         .map((b) => b.trim())
         .filter((b) => b && b !== current);
       if (branches.length > 0) {
-        const { filterableSelect } = await import("../../lib/rt-render.ts");
+        const { filterableSelect } = await import("../../lib/pick-wrappers.ts");
         const picked = await filterableSelect({
           message: "rebase onto which branch?",
           options: branches.map((b) => ({ value: b, label: b })),

@@ -66,7 +66,7 @@ async function pickRole(): Promise<string | null> {
     const repoIdentity = identity.kind === "remote" ? identity.id : null;
     const roles = Object.keys(loadEndpointConfig({ repoIdentity, repoName }).roles);
     if (roles.length > 0) {
-      const { filterableSelect } = await import("../lib/rt-render.ts");
+      const { filterableSelect } = await import("../lib/pick-wrappers.ts");
       return filterableSelect({
         message: `endpoint role in ${repoName}`,
         options: roles.map((r) => ({ value: r, label: r })),
@@ -139,7 +139,7 @@ async function pickWorktree(identity: string): Promise<string | null> {
   const data = res.data as { repos: Record<string, Array<{ worktree: string }>> };
   const worktrees = [...new Set((data.repos[identity] ?? []).map((c) => c.worktree))];
   if (worktrees.length === 0) fail("no claims to release");
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   return filterableSelect({
     message: "worktree to release",
     options: worktrees.map((w) => ({ value: w, label: w })),

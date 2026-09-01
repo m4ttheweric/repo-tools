@@ -328,7 +328,7 @@ async function enrichTrailingByPath(rows: TreeRow[]): Promise<Map<string, string
 
 async function pickOneTree(rows: TreeRow[], message: string): Promise<TreeRow | null> {
   if (rows.length === 0) return null;
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const trailingByPath = await enrichTrailingByPath(rows);
   const nameWidth = Math.max(...rows.map((r) => r.name.length));
   const options = rows.map((r) => {
@@ -478,7 +478,7 @@ function printRestorableEntries(entries: Awaited<ReturnType<typeof fetchRestorab
 
 async function pickRestorableEntry(entries: Awaited<ReturnType<typeof fetchRestorableEntries>>): Promise<string | null> {
   if (entries.length === 0) return null;
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const nameWidth = Math.max(...entries.map((e) => e.name.length));
   const options = entries.map((e) => ({
     value: e.name,
@@ -576,7 +576,7 @@ export async function worktreeList(args: string[], _ctx: unknown): Promise<void>
 async function pickRepoName(repoIndex: Record<string, string>): Promise<string | undefined> {
   const names = Object.keys(repoIndex);
   if (names.length === 0) return undefined;
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const picked = await filterableSelect({
     message: "Approve team ready steps for which repo?",
     options: names.map((n) => ({ value: n, label: repoLabel(n) })),
@@ -586,7 +586,7 @@ async function pickRepoName(repoIndex: Record<string, string>): Promise<string |
 }
 
 async function confirmApprove(): Promise<boolean> {
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const picked = await filterableSelect({
     message: "Approve these steps to run unattended on every create/freshen?",
     options: [
@@ -779,7 +779,7 @@ export async function worktreeEach(args: string[], _ctx: unknown): Promise<void>
       label: relWorktreeName(repoPath, b.path).padEnd(widest),
       hint:  b.branch ?? "(detached)",
     }));
-    const { filterableMultiselect } = await import("../lib/rt-render.ts");
+    const { filterableMultiselect } = await import("../lib/pick-wrappers.ts");
     const selected = await filterableMultiselect({
       message: `Run "${parsed.command}" in which worktrees? (${identity.repoName})`,
       options,

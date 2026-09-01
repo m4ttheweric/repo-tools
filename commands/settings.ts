@@ -198,7 +198,7 @@ async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKe
     return null;
   }
 
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
 
   const selectedId = await filterableSelect({
     message: "Select your team",
@@ -221,7 +221,7 @@ async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKe
 // ─── Notification preferences ────────────────────────────────────────────────
 
 export async function configureNotifications(): Promise<void> {
-  const { filterableMultiselect } = await import("../lib/rt-render.ts");
+  const { filterableMultiselect } = await import("../lib/pick-wrappers.ts");
 
   const prefs = loadNotificationPrefs();
 

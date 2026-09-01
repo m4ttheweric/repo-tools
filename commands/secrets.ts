@@ -147,7 +147,7 @@ export async function secretsList(args: string[], _ctx: CommandContext = {}, sea
   if (!domain && process.stdin.isTTY && !process.env.RT_BATCH) {
     const domains = existingDomains(team);
     if (domains.length > 0) {
-      const { filterableSelect } = await import("../lib/rt-render.ts");
+      const { filterableSelect } = await import("../lib/pick-wrappers.ts");
       const picked = await filterableSelect({
         message: "Domain",
         options: domains.map((d) => ({ value: d, label: d })),
@@ -211,7 +211,8 @@ export async function secretsRotate(args: string[], _ctx: CommandContext = {}, s
   }
 
   if ((!domain || !key) && process.stdin.isTTY && !process.env.RT_BATCH) {
-    const { filterableSelect, textInput } = await import("../lib/rt-render.ts");
+    const { filterableSelect } = await import("../lib/pick-wrappers.ts");
+    const { textInput } = await import("../lib/rt-render.ts");
     if (!domain) {
       const domains = existingDomains(team);
       if (domains.length > 0) {

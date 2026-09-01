@@ -1143,7 +1143,7 @@ const VERB_HINTS: Record<string, string> = {
 };
 
 async function pickChatVerb(): Promise<string | null> {
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   return filterableSelect({
     message: "rt chat",
     options: Object.keys(VERBS).map((v) => ({ value: v, label: v, hint: VERB_HINTS[v] ?? "" })),

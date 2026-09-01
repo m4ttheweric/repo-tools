@@ -95,7 +95,7 @@ async function fetchRunsForPicker(args: string[]): Promise<RunSummary[]> {
 }
 
 async function pickRunId(runs: RunSummary[], message: string): Promise<string | null> {
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const idWidth = Math.max(...runs.map((r) => r.id.length));
   const options = runs.map((r) => ({
     value: r.id,

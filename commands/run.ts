@@ -991,7 +991,7 @@ export async function runAgainCommand(
     process.exit(0);
   }
 
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const chosen = await filterableSelect({
     message: "Recent runs",
     options: entries.map((tagged) => ({
