@@ -17,7 +17,7 @@ describe("emitRunUpdated", () => {
 
   test("posts events:emit with the run-updated topic and payload", async () => {
     mkdirSync(dirname(DAEMON_SOCK_PATH), { recursive: true });
-    let seen: { path: string; body: unknown } | null = null;
+    let seen = null as { path: string; body: unknown } | null;
     server = Bun.serve({
       unix: DAEMON_SOCK_PATH,
       async fetch(req) {
