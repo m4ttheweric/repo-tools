@@ -74,8 +74,8 @@ export const LEGACY_IMPORTS: LegacyImport[] = [];
 // without updating docs/superpowers/specs/2026-08-20-rt-statedb.md first.
 const V1_SCHEMA = `
 CREATE TABLE IF NOT EXISTS branch_cache (
-  branch     TEXT PRIMARY KEY,           -- BARE branch name: the cache's semantic key TODAY, kept
-  repo       TEXT,                       -- attribute, nullable (CacheEntry.repoName?, optional today)
+  branch     TEXT PRIMARY KEY,           -- composeKey(repo, branch): "\${identity}:\${branch}", bare only when repo is NULL
+  repo       TEXT,                       -- the same identity the key carries, nullable (CacheEntry.repoName?)
   ticket     TEXT,                       -- JSON (LinearTicket | null)
   linear_id  TEXT NOT NULL DEFAULT '',
   mr         TEXT,                       -- JSON (MRInfo | null)
