@@ -117,15 +117,19 @@ func TestRealTmuxCtrlSlashTogglesKeybarWithoutLatchingHeldBadge(t *testing.T) {
 		t.Fatalf("a bare ctrl press must not latch the ⌃ keys badge in a fallback tmux (no key releases):\n%s", grid)
 	}
 
-	// ctrl-/ is a discrete keypress and must still toggle the two-line keybar,
-	// badge still absent.
+	// ctrl-/ is a discrete keypress that toggles the two-line keybar. Neither
+	// physical-hold indicator may appear: the "held: showing all keys" keybar
+	// tag and the "⌃ keys" header badge both name a real ctrl hold, and nothing
+	// is held here. (The toggle's rendered line1 is asserted deterministically at
+	// the model level in TestExpandedKeybarHeldIndicatorGatesOnPhysicalHold; a
+	// real tmux grid cannot distinguish one keybar line from two once the frame
+	// height is pinned, so this gate owns the fallback badge-absence guarantee.)
 	sess.pressCtrlSlash(t)
-	sess.waitFor(t, "showing all keys")
 	time.Sleep(300 * time.Millisecond)
 
 	grid := sess.capture(t)
-	if !strings.Contains(grid, "showing all keys") {
-		t.Fatalf("ctrl-/ must toggle the two-line keybar on in a fallback tmux:\n%s", grid)
+	if strings.Contains(grid, "showing all keys") {
+		t.Fatalf("the held indicator must not show on a ctrl-/ toggle in fallback (nothing held):\n%s", grid)
 	}
 	if strings.Contains(grid, "⌃ keys") {
 		t.Fatalf("the ⌃ keys physical-hold badge must never latch on in a fallback tmux:\n%s", grid)

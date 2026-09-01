@@ -296,7 +296,14 @@ func expandedKeybarLines(m *Model, top, h, n int) (line1 string, zones1 []mouseZ
 		rangeText = fg(theme.Cyan).Render(strconv.Itoa(top+1)+"-"+strconv.Itoa(top+h)) +
 			fg(theme.Faint).Render(" of "+strconv.Itoa(n))
 	}
-	right1 := renderKeybarRight(rangeText, fg(theme.Cyan).Render("held: showing all keys"))
+	// The "held" indicator names the physical-ctrl state only. A ctrl-/ toggle
+	// (m.expanded) shows this same two-line keybar without it; the range keeps
+	// its slot either way.
+	heldLabel := ""
+	if m.held.ctrl {
+		heldLabel = fg(theme.Cyan).Render("held: showing all keys")
+	}
+	right1 := renderKeybarRight(rangeText, heldLabel)
 	right2 := renderKeybarCluster(keybarCluster{actions: ungrouped})
 
 	firstGroups := truncateKeybarGroups(left, keybarLeftBudget(m.width, right1))

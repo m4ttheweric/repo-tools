@@ -3468,6 +3468,60 @@ func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
 	}
 }
 
+// TestExpandedKeybarHeldIndicatorGatesOnPhysicalHold pins the ctrl-/ TOGGLE
+// path: m.expanded renders the same two-line grouped keybar, but the
+// "held: showing all keys" indicator names a physical ctrl hold and must NOT
+// appear when only the toggle is on (no Kitty hold engaged). The range keeps
+// its slot either way. A fallback terminal reaches this exact state.
+func TestExpandedKeybarHeldIndicatorGatesOnPhysicalHold(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5,
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
+		},
+	}
+	m := New(req)
+	m.width = 90
+	m.expanded = true // the ctrl-/ toggle, nothing physically held
+
+	lines := strings.Split(render(m), "\n")
+	if want := 11; len(lines) != want {
+		t.Fatalf("the ctrl-/ toggle should render the two-line keybar (%d lines), got %d:\n%s", want, len(lines), render(m))
+	}
+	if strings.Contains(ansi.Strip(lines[0]), "⌃ keys") {
+		t.Fatalf("no header badge while nothing is physically held: %q", ansi.Strip(lines[0]))
+	}
+	line1 := ansi.Strip(lines[len(lines)-2])
+	line2 := ansi.Strip(lines[len(lines)-1])
+	// Two-line keybar: the groups sit on line one and quit is pinned alone on
+	// line two. Without the held indicator's width the act group fits line one,
+	// but the second line (the ungrouped quit run) is what makes it two lines.
+	if !strings.Contains(line1, "act") || !strings.Contains(line1, "open in editor") {
+		t.Fatalf("the act group should render on the expanded keybar: %q", line1)
+	}
+	if !strings.Contains(line2, "esc") || !strings.Contains(line2, "quit") {
+		t.Fatalf("the second keybar line should pin quit to the right: %q", line2)
+	}
+	if strings.Contains(line2, "open in editor") {
+		t.Fatalf("the groups belong on line one, not the pinned quit line: %q", line2)
+	}
+	// The held indicator names a physical hold, which is not engaged here.
+	if strings.Contains(line1, "held: showing all keys") {
+		t.Fatalf("the held indicator must not show on a ctrl-/ toggle: %q", line1)
+	}
+	// The range keeps its slot regardless of the held indicator.
+	if !strings.Contains(line1, "1-5 of 20") {
+		t.Fatalf("the range indicator must survive on the toggle path: %q", line1)
+	}
+}
+
 // isQuitCmd reports whether running cmd yields the program's own quit signal,
 // mirroring mustNotQuit's check in the positive direction for the exit-path
 // tests. quit() now returns tea.Sequence(tea.ClearScreen, tea.Quit) so the
@@ -3898,8 +3952,9 @@ func TestCtrlSlashTogglesExpandedKeybar(t *testing.T) {
 
 	m := New(req)
 	m.width = 90
-	if strings.Contains(lastLine(render(m)), "showing all keys") {
-		t.Fatal("setup: the expanded keybar must not show before ctrl-/")
+	// Collapsed: the single-line keybar carries the act group inline.
+	if !strings.Contains(lastLine(render(m)), "open in editor") {
+		t.Fatalf("setup: the single-line keybar should carry the act group inline: %q", lastLine(render(m)))
 	}
 
 	// Legacy decode: ctrl-/ surfaces as ctrl+_.
@@ -3908,9 +3963,18 @@ func TestCtrlSlashTogglesExpandedKeybar(t *testing.T) {
 	if !m.expanded {
 		t.Fatal("ctrl-/ (ctrl+_) should toggle the expanded keybar on")
 	}
-	lines := strings.Split(render(m), "\n")
-	if !strings.Contains(ansi.Strip(lines[len(lines)-2]), "held: showing all keys") {
-		t.Fatalf("the two-line grouped keybar should show after ctrl-/: %q", ansi.Strip(lines[len(lines)-2]))
+	// Expanded lifts the groups to line one, leaving quit alone on the last
+	// line -- the two-line keybar, independent of the physical-hold path so the
+	// "held: showing all keys" indicator stays absent.
+	last := lastLine(render(m))
+	if strings.Contains(last, "open in editor") {
+		t.Fatalf("the expanded keybar should lift the act group off the last line: %q", last)
+	}
+	if !strings.Contains(last, "esc") || !strings.Contains(last, "quit") {
+		t.Fatalf("the expanded keybar should pin quit alone on the last line: %q", last)
+	}
+	if strings.Contains(last, "showing all keys") {
+		t.Fatalf("the held indicator must not show on a ctrl-/ toggle: %q", last)
 	}
 
 	// A second ctrl-/ toggles it back off.
@@ -3919,8 +3983,8 @@ func TestCtrlSlashTogglesExpandedKeybar(t *testing.T) {
 	if m.expanded {
 		t.Fatal("a second ctrl-/ should toggle the expanded keybar off")
 	}
-	if strings.Contains(lastLine(render(m)), "showing all keys") {
-		t.Fatal("the expanded keybar should hide after the second ctrl-/")
+	if !strings.Contains(lastLine(render(m)), "open in editor") {
+		t.Fatalf("the single-line keybar should return after the second ctrl-/: %q", lastLine(render(m)))
 	}
 
 	// Kitty decode: ctrl-/ surfaces as ctrl+/ and must toggle the same state.
@@ -3928,6 +3992,9 @@ func TestCtrlSlashTogglesExpandedKeybar(t *testing.T) {
 	m = next.(*Model)
 	if !m.expanded {
 		t.Fatal("ctrl-/ (ctrl+/) should toggle the expanded keybar on")
+	}
+	if strings.Contains(lastLine(render(m)), "open in editor") {
+		t.Fatalf("ctrl-/ (ctrl+/) should re-expand the keybar: %q", lastLine(render(m)))
 	}
 }
 
@@ -3960,8 +4027,10 @@ func TestCtrlKeysBadgeGatesOnPhysicalHoldNotToggle(t *testing.T) {
 		t.Fatalf("setup: ctrl-/ should toggle expanded on without a physical hold: expanded=%v held=%v", tog.expanded, tog.held.ctrl)
 	}
 	togLines := strings.Split(render(tog), "\n")
-	if !strings.Contains(ansi.Strip(togLines[len(togLines)-2]), "held: showing all keys") {
-		t.Fatalf("the toggle must still show the two-line keybar: %q", ansi.Strip(togLines[len(togLines)-2]))
+	// The two-line keybar renders (expanded), but "held: showing all keys" names
+	// a physical hold, which the toggle never engages... so it must be absent.
+	if strings.Contains(ansi.Strip(togLines[len(togLines)-2]), "held: showing all keys") {
+		t.Fatalf("the held indicator must not show on the sticky ctrl-/ toggle: %q", ansi.Strip(togLines[len(togLines)-2]))
 	}
 	if strings.Contains(header(tog), "⌃ keys") {
 		t.Fatalf("the ⌃ keys badge must be absent on the sticky ctrl-/ toggle: %q", header(tog))
@@ -4041,8 +4110,10 @@ func TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles(t *testing.T) 
 		t.Fatal("ctrl-/ must still toggle the expanded keybar on a fallback terminal")
 	}
 	lines := strings.Split(render(m), "\n")
-	if !strings.Contains(ansi.Strip(lines[len(lines)-2]), "held: showing all keys") {
-		t.Fatalf("ctrl-/ must still show the two-line keybar on a fallback terminal: %q", ansi.Strip(lines[len(lines)-2]))
+	// The toggle expands the keybar (m.expanded above), but the held indicator
+	// names a physical hold, which a fallback terminal never engages.
+	if strings.Contains(ansi.Strip(lines[len(lines)-2]), "held: showing all keys") {
+		t.Fatalf("the held indicator must not show on the ctrl-/ toggle in a fallback terminal: %q", ansi.Strip(lines[len(lines)-2]))
 	}
 	if strings.Contains(header(m), "⌃ keys") {
 		t.Fatalf("the ⌃ keys badge must stay absent after ctrl-/ on a fallback terminal: %q", header(m))
