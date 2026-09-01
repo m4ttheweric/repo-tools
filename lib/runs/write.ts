@@ -146,3 +146,44 @@ export function runStatus(db: Database, status: string, now: number = Date.now()
     return { ok: false, error: `sqlite write failed: ${String(err)}`, code: 1 };
   }
 }
+
+export function stageStart(db: Database, name: string, env: NodeJS.ProcessEnv, now: number = Date.now()): Ok | Fail {
+  try {
+    db.run(
+      `INSERT INTO stages (run_id, name, status, attempt, started_at)
+       SELECT id, ?, 'running', COALESCE((SELECT MAX(attempt) FROM stages WHERE name = ?), 0) + 1, ? FROM runs`,
+      [name, name, now],
+    );
+    db.run("UPDATE runs SET current_stage=?", [name]);
+    recordIdentity(db, env, now);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `sqlite write failed: ${String(err)}`, code: 1 };
+  }
+}
+
+function changes(db: Database): number {
+  return (db.query("SELECT changes() AS n").get() as { n: number }).n;
+}
+
+// A zero-row update means stage-start never landed (skipped, or refused by
+// the caller's shell guard); answering ok there once left a run with no row
+// for the stage and nothing telling the agent to retry.
+export function stageEnd(
+  db: Database,
+  name: string,
+  status: "done" | "failed",
+  opts: { reason?: string; detailPath?: string; now?: number } = {},
+): Ok | Fail {
+  try {
+    db.run(
+      `UPDATE stages SET status=?, ended_at=?, reason=?, detail_path=?
+       WHERE name=? AND attempt=(SELECT MAX(attempt) FROM stages WHERE name=?)`,
+      [status, opts.now ?? Date.now(), opts.reason ?? null, opts.detailPath ?? null, name, name],
+    );
+    if (changes(db) === 0) return { ok: false, error: `stage never started: ${name}`, code: 3 };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `sqlite write failed: ${String(err)}`, code: 1 };
+  }
+}

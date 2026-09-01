@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createRunDb, KNOWN_SCHEMA_VERSION, migrate, openRunDb, runStart, runStatus } from "../write.ts";
+import { createRunDb, KNOWN_SCHEMA_VERSION, migrate, openRunDb, runStart, runStatus, stageStart, stageEnd } from "../write.ts";
 import { seedRun } from "./fixtures.ts";
 
 function tmp(): string {
@@ -138,6 +138,64 @@ describe("runStatus", () => {
     expect(runStatus(db, "done", 9000)).toEqual({ ok: true });
     expect(db.query("SELECT status, ended_at FROM runs").get()).toEqual({ status: "done", ended_at: 9000 });
     expect(runStatus(db, "paused")).toMatchObject({ ok: false, code: 2 });
+    db.close();
+  });
+});
+
+function started(): Database {
+  const r = runStart(tmp(), { repo: "demo", workType: "feature", pipeline: "default", env: {} });
+  if (!r.ok) throw new Error(r.error);
+  return openRunDb(r.runDb);
+}
+
+describe("stage lifecycle", () => {
+  test("stage-start inserts a running row, sets current_stage, and bumps attempt on re-entry", () => {
+    const db = started();
+    expect(stageStart(db, "plan", {}, 10)).toEqual({ ok: true });
+    expect(stageEnd(db, "plan", "done", { now: 20 })).toEqual({ ok: true });
+    expect(stageStart(db, "plan", {}, 30)).toEqual({ ok: true });
+    const rows = db.query("SELECT attempt, status, started_at, ended_at FROM stages ORDER BY attempt").all();
+    expect(rows).toEqual([{ attempt: 1, status: "done", started_at: 10, ended_at: 20 }, { attempt: 2, status: "running", started_at: 30, ended_at: null }]);
+    expect(db.query("SELECT current_stage FROM runs").get()).toEqual({ current_stage: "plan" });
+    db.close();
+  });
+
+  test("stage-start records identity from env", () => {
+    const db = started();
+    stageStart(db, "plan", { HERDR_PANE_ID: "w1:p4" }, 10);
+    expect(db.query("SELECT value, produced_by FROM fields WHERE key='herdr-pane'").get()).toEqual({ value: "w1:p4", produced_by: "run" });
+    db.close();
+  });
+
+  test("stage-fail records reason and detail path on the latest attempt", () => {
+    const db = started();
+    stageStart(db, "gates", {}, 10);
+    expect(stageEnd(db, "gates", "failed", { reason: "cvi-islands assertion failed", detailPath: "/tmp/gates.log", now: 20 })).toEqual({ ok: true });
+    expect(db.query("SELECT status, reason, detail_path FROM stages WHERE name='gates'").get()).toEqual({ status: "failed", reason: "cvi-islands assertion failed", detail_path: "/tmp/gates.log" });
+    db.close();
+  });
+
+  test("a reason containing quotes is stored verbatim", () => {
+    const db = started();
+    stageStart(db, "gates", {}, 10);
+    stageEnd(db, "gates", "failed", { reason: "expected '/c/1' got '/x'" });
+    expect(db.query("SELECT reason FROM stages WHERE name='gates'").get()).toEqual({ reason: "expected '/c/1' got '/x'" });
+    db.close();
+  });
+
+  test("stage-fail without a reason stores NULL", () => {
+    const db = started();
+    stageStart(db, "gates", {}, 10);
+    stageEnd(db, "gates", "failed");
+    expect(db.query("SELECT reason, detail_path FROM stages WHERE name='gates'").get()).toEqual({ reason: null, detail_path: null });
+    db.close();
+  });
+
+  test("stage-done and stage-fail on a stage that was never started are exit 3 and write nothing", () => {
+    const db = started();
+    expect(stageEnd(db, "plan", "done")).toEqual({ ok: false, error: "stage never started: plan", code: 3 });
+    expect(stageEnd(db, "gates", "failed", { reason: "boom" })).toEqual({ ok: false, error: "stage never started: gates", code: 3 });
+    expect(db.query("SELECT COUNT(*) AS n FROM stages").get()).toEqual({ n: 0 });
     db.close();
   });
 });
