@@ -297,6 +297,16 @@ CREATE TABLE IF NOT EXISTS chat_acks (
 );
 `;
 
+// message_id alone is the key: one holder per message is the whole
+// contract, so the INSERT that races N claimants is the lock itself.
+const V9_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chat_claims (
+  message_id INTEGER PRIMARY KEY,
+  handle     TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL
+);
+`;
+
 /**
  * Every schema block, in version order. `runMigrations` execs
  * `SCHEMAS.join("")` unconditionally on EVERY open (R015/R056): every
@@ -306,7 +316,7 @@ CREATE TABLE IF NOT EXISTS chat_acks (
  * A future schema block joins this array; leaving one out is caught by the
  * dynamic table-presence test in db-schema-convergence.test.ts.
  */
-const SCHEMAS = [V1_SCHEMA, V2_SCHEMA, V3_SCHEMA, V4_SCHEMA, V6_SCHEMA, V7_SCHEMA, V8_SCHEMA];
+const SCHEMAS = [V1_SCHEMA, V2_SCHEMA, V3_SCHEMA, V4_SCHEMA, V6_SCHEMA, V7_SCHEMA, V8_SCHEMA, V9_SCHEMA];
 
 /** project_mr_demands.sections (v6): SQLite's ALTER TABLE ADD COLUMN has no
     IF NOT EXISTS, so unlike every statement in the V*_SCHEMA strings above it

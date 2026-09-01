@@ -15,8 +15,11 @@ import { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
+import { dmRoomFor } from "../dm-store.ts";
 import {
+  CLAIM_TTL_MS,
   archiveRoom,
+  claimMessage,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -31,6 +34,7 @@ import {
   postMessage,
   readUnread,
   recipientsFor,
+  releaseClaim,
   roomArchivedAt,
   stalePendingPairs,
 } from "../chat-store.ts";
@@ -66,6 +70,78 @@ test("ackMessage refuses an unknown message, a non-member, and your own message"
   expect(ackMessage({ messageId: 9999, handle: "b" }, db)).toEqual({ ok: false, reason: "unknown-message" });
   expect(ackMessage({ messageId: posted!.id, handle: "stranger" }, db)).toEqual({ ok: false, reason: "not-a-member" });
   expect(ackMessage({ messageId: posted!.id, handle: "a" }, db)).toEqual({ ok: false, reason: "own-message" });
+});
+
+function claimFixture() {
+  const db = freshDb();
+  for (const h of ["asker", "b", "c", "d"]) joinRoom({ room: "build", handle: h }, db);
+  const posted = postMessage({ room: "build", handle: "asker", body: "one of you: write the TLDR" }, db)!;
+  return { db, id: posted.id };
+}
+
+test("claimMessage: the first claimant wins and learns whose message it is", () => {
+  const { db, id } = claimFixture();
+  const res = claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  expect(res).toEqual({ ok: true, outcome: "claimed", author: "asker", room: "build", body: "one of you: write the TLDR" });
+});
+
+test("claimMessage: every later claimant loses and is told who holds it and when it frees up", () => {
+  const { db, id } = claimFixture();
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  const lost = claimMessage({ messageId: id, handle: "c", nowMs: 41_000 }, db);
+  expect(lost).toEqual({ ok: true, outcome: "lost", holder: "b", claimedAt: 1000, expiresAt: 1000 + CLAIM_TTL_MS });
+});
+
+test("claimMessage: N claimants in the same instant produce exactly one winner", () => {
+  const { db, id } = claimFixture();
+  const outcomes = ["b", "c", "d", "b", "c", "d"].map((h) => claimMessage({ messageId: id, handle: h, nowMs: 5000 }, db));
+  const wins = outcomes.filter((o) => o.ok && o.outcome === "claimed");
+  expect(wins).toHaveLength(1);
+});
+
+test("claimMessage: re-claiming your own live claim reports held, not a fresh win", () => {
+  const { db, id } = claimFixture();
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  expect(claimMessage({ messageId: id, handle: "b", nowMs: 2000 }, db)).toMatchObject({ ok: true, outcome: "held", author: "asker" });
+});
+
+test("claimMessage: an expired claim is taken over and the takeover names the previous holder", () => {
+  const { db, id } = claimFixture();
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  const still = claimMessage({ messageId: id, handle: "c", nowMs: 1000 + CLAIM_TTL_MS - 1 }, db);
+  expect(still).toMatchObject({ outcome: "lost" });
+  const took = claimMessage({ messageId: id, handle: "c", nowMs: 1000 + CLAIM_TTL_MS }, db);
+  expect(took).toEqual({ ok: true, outcome: "claimed", author: "asker", room: "build", body: "one of you: write the TLDR", previousHolder: "b" });
+  expect(claimMessage({ messageId: id, handle: "b", nowMs: 1000 + CLAIM_TTL_MS + 1 }, db)).toMatchObject({ outcome: "lost", holder: "c" });
+});
+
+test("claimMessage: re-claiming your own expired claim is a fresh win with no previous holder", () => {
+  const { db, id } = claimFixture();
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  const again = claimMessage({ messageId: id, handle: "b", nowMs: 1000 + CLAIM_TTL_MS }, db);
+  expect(again).toMatchObject({ ok: true, outcome: "claimed" });
+  expect(again).not.toHaveProperty("previousHolder");
+});
+
+test("claimMessage refuses an unknown message, a non-member, your own message, and a DM", () => {
+  const { db, id } = claimFixture();
+  expect(claimMessage({ messageId: 9999, handle: "b" }, db)).toEqual({ ok: false, reason: "unknown-message" });
+  expect(claimMessage({ messageId: id, handle: "stranger" }, db)).toEqual({ ok: false, reason: "not-a-member" });
+  expect(claimMessage({ messageId: id, handle: "asker" }, db)).toEqual({ ok: false, reason: "own-message" });
+  const { room: dm } = dmRoomFor("b", "c", "matt", db);
+  const dmMsg = postMessage({ room: dm, handle: "b", body: "just you" }, db)!;
+  expect(claimMessage({ messageId: dmMsg.id, handle: "c" }, db)).toEqual({ ok: false, reason: "dm" });
+});
+
+test("releaseClaim: the holder or the message author can release; anyone else cannot", () => {
+  const { db, id } = claimFixture();
+  expect(releaseClaim({ messageId: id, handle: "b" }, db)).toEqual({ ok: false, reason: "not-claimed" });
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  expect(releaseClaim({ messageId: id, handle: "c" }, db)).toEqual({ ok: false, reason: "not-holder" });
+  expect(releaseClaim({ messageId: id, handle: "b" }, db)).toEqual({ ok: true, holder: "b" });
+  expect(claimMessage({ messageId: id, handle: "c", nowMs: 2000 }, db)).toMatchObject({ outcome: "claimed" });
+  expect(releaseClaim({ messageId: id, handle: "asker" }, db)).toEqual({ ok: true, holder: "c" });
+  expect(releaseClaim({ messageId: 9999, handle: "asker" }, db)).toEqual({ ok: false, reason: "unknown-message" });
 });
 
 test("rejects names outside the charset", () => {
