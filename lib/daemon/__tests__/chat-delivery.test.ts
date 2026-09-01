@@ -446,9 +446,14 @@ test("a repeat ack never wakes the author a second time", async () => {
 /** Asker `a` and claimant `b` both have live sessions; `c` is a member with no session. Returns the posted id with the welcome frames already cleared. */
 async function claimScenario() {
   const calls: Array<[string, string]> = [];
-  const socks: Record<string, string> = { "sess-a": fakeSocketPath(), "sess-b": fakeSocketPath() };
+  const sockA = fakeSocketPath();
+  const sockB = fakeSocketPath();
+  const socks: Record<string, string> = { "sess-a": sockA, "sess-b": sockB };
   const inboxDeps: InboxDeps = {
-    resolve: (sessionId) => (socks[sessionId] ? { pid: process.pid, socketPath: socks[sessionId], status: "idle" } : null),
+    resolve: (sessionId) => {
+      const socketPath = socks[sessionId];
+      return socketPath ? { pid: process.pid, socketPath, status: "idle" } : null;
+    },
     deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
   };
   const h = freshHandlers(inboxDeps);
@@ -460,7 +465,7 @@ async function claimScenario() {
   if (!posted.ok) throw new Error("unreachable");
   await Bun.sleep(0);
   calls.length = 0;
-  return { h, calls, id: posted.data.id, sockA: socks["sess-a"], sockB: socks["sess-b"] };
+  return { h, calls, id: posted.data.id, sockA, sockB };
 }
 
 test("a won claim wakes only the message's author, with a one-line receipt", async () => {
