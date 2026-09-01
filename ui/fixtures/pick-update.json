@@ -17,5 +17,9 @@
       ],
       "match": "hedwig cvi-p6-token-pipeline"
     }
+  ],
+  "actions": [
+    { "id": "cd", "label": "cd here", "key": "enter", "scope": "item", "primary": true },
+    { "id": "refresh", "label": "refresh", "key": "ctrl-r", "scope": "global", "event": true }
   ]
 }

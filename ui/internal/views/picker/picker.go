@@ -2,7 +2,10 @@ package picker
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
+	"strings"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -37,7 +40,25 @@ type Model struct {
 	width       int
 	height      int
 
+	// output is where an event:true action writes its PickEvent line while
+	// the model keeps running; Run wires the real stdout, tests wire a
+	// buffer directly since they drive Update without a live tea.Program.
+	// Bubble Tea runs every returned Cmd on its own goroutine, so two
+	// event writes fired close together -- or an event write racing Run's
+	// own final result write after the program exits -- would interleave
+	// on output without outputMu serializing them.
+	output   io.Writer
+	outputMu sync.Mutex
+
 	result *protocol.PickResult
+}
+
+// UpdateMsg carries a mid-flight PickUpdate patch into the running program.
+// readPatches decodes it off input and hands it to tea.Program.Send, the
+// same bridge session.go uses to get external NDJSON onto the single
+// goroutine Update runs on.
+type UpdateMsg struct {
+	Update protocol.PickUpdate
 }
 
 // New builds a Model from an opening request and ranks it against
@@ -72,18 +93,134 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+	case UpdateMsg:
+		m.applyUpdate(msg.Update)
 	case tea.KeyPressMsg:
-		switch msg.String() {
+		key := msg.String()
+		switch key {
 		case "down":
 			m.moveCursor(1)
+			return m, nil
 		case "up":
 			m.moveCursor(-1)
-		case "enter":
+			return m, nil
+		}
+		if action, ok := m.actionForKey(key); ok {
+			if action.Event {
+				return m, m.emitEvent(action.ID)
+			}
+			m.resultForAction(action.ID)
+			return m, tea.Quit
+		}
+		if key == "enter" {
 			m.selectCursor()
 			return m, tea.Quit
 		}
 	}
 	return m, nil
+}
+
+// applyUpdate patches whichever fields the message carries; each is replaced
+// wholesale rather than merged, matching PickUpdate's own "any subset of
+// fields present" contract. A row replacement re-ranks against the query
+// that's already live and re-resolves the cursor, since the old match
+// indices no longer describe the new row set.
+func (m *Model) applyUpdate(u protocol.PickUpdate) {
+	if u.Message != "" {
+		m.req.Message = u.Message
+	}
+	if u.Actions != nil {
+		m.req.Actions = u.Actions
+	}
+	if u.Rows != nil {
+		value, hadCursor := m.cursorRowValue()
+		prevCursor := m.cursor
+		m.req.Rows = u.Rows
+		m.refilter()
+		m.cursor = m.resolveCursor(value, hadCursor, prevCursor)
+	}
+}
+
+// resolveCursor keeps the cursor pinned to the row the user was looking at
+// across a live replacement: an index-based cursor would otherwise land on
+// whatever row happens to reshuffle into the old numeric slot. When that
+// row is gone from the new set, the previous numeric position is clamped
+// into the new range instead of resetting to the top.
+func (m *Model) resolveCursor(value string, had bool, prev int) int {
+	if had {
+		for i, mt := range m.matches {
+			if m.req.Rows[mt.Index].Value == value {
+				return i
+			}
+		}
+	}
+	n := len(m.matches)
+	switch {
+	case n == 0:
+		return 0
+	case prev >= n:
+		return n - 1
+	case prev < 0:
+		return 0
+	default:
+		return prev
+	}
+}
+
+// actionForKey resolves a pressed key against the registry. The wire's key
+// strings follow the picker's display convention (hyphenated, e.g.
+// "ctrl-r", matching the footer legend elsewhere in this package) while
+// bubbletea's own Key.String() joins modifiers with "+" (e.g. "ctrl+r"); the
+// translation happens here so the registry can stay in the display form
+// without every producer needing to know bubbletea's wire format.
+func (m *Model) actionForKey(key string) (protocol.PickAction, bool) {
+	for _, a := range m.req.Actions {
+		if a.Key != "" && strings.ReplaceAll(a.Key, "-", "+") == key {
+			return a, true
+		}
+	}
+	return protocol.PickAction{}, false
+}
+
+// cursorRowValue reads the value of the row currently under the cursor;
+// the bool is false when there is no row to read (an empty list, or a
+// cursor a caller pushed out of bounds directly).
+func (m *Model) cursorRowValue() (string, bool) {
+	if m.cursor < 0 || m.cursor >= len(m.matches) {
+		return "", false
+	}
+	return m.req.Rows[m.matches[m.cursor].Index].Value, true
+}
+
+// resultForAction terminates the session with a registry action's id as the
+// result's Action, mirroring selectCursor's shape for the built-in "select".
+func (m *Model) resultForAction(actionID string) {
+	var value *string
+	if v, ok := m.cursorRowValue(); ok {
+		value = &v
+	}
+	m.result = &protocol.PickResult{Action: actionID, Value: value, Query: m.query}
+}
+
+// emitEvent reports an event:true action without ending the session. The
+// write happens inside the returned tea.Cmd, not here directly, so it runs
+// on bubbletea's command goroutine rather than racing the render loop that
+// called Update -- the same discipline session.Emitter.Emit documents for
+// the analogous mid-session write there.
+func (m *Model) emitEvent(actionID string) tea.Cmd {
+	var value *string
+	if v, ok := m.cursorRowValue(); ok {
+		value = &v
+	}
+	ev := protocol.PickEvent{Action: actionID, Value: value, Query: m.query}
+	return func() tea.Msg {
+		if m.output != nil {
+			m.outputMu.Lock()
+			_, _ = m.output.Write(protocol.EncodePickEvent(ev))
+			m.outputMu.Unlock()
+		}
+		return nil
+	}
 }
 
 func (m *Model) moveCursor(delta int) {
@@ -180,6 +317,7 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 	defer term.Close()
 
 	m := New(req)
+	m.output = output
 
 	p := tea.NewProgram(m,
 		tea.WithInput(term),
@@ -188,10 +326,10 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 		tea.WithoutSignalHandler(),
 	)
 
-	// Tasks 8/9 parse update/modal/event messages off input and forward them
-	// into the program; for this scaffold, draining keeps a parent that
-	// streams pick-update lines from blocking on a full pipe.
-	go drain(input)
+	// Task 10 defines the modal overlay itself; readPatches already sees
+	// "modal" lines on the wire and drops them rather than forwarding an
+	// undefined shape into the program.
+	go readPatches(p, input)
 
 	if _, err := p.Run(); err != nil {
 		return err
@@ -201,15 +339,31 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 	if result == nil {
 		result = &protocol.PickResult{Action: "cancel", Query: m.query}
 	}
+	m.outputMu.Lock()
 	_, err = output.Write(protocol.EncodePickResult(*result))
+	m.outputMu.Unlock()
 	return err
 }
 
-func drain(r io.Reader) {
-	br := bufio.NewReader(r)
+// readPatches decodes update messages off input and forwards them into the
+// running program via p.Send, which is safe to call from any goroutine --
+// the same bridge session.go uses for its own mid-flight model
+// replacements. It returns once input closes, which happens when the
+// parent ends the connection.
+func readPatches(p *tea.Program, input io.Reader) {
+	br := bufio.NewReader(input)
 	for {
-		if _, err := protocol.ReadLine(br); err != nil {
+		line, err := protocol.ReadLine(br)
+		if err != nil {
 			return
+		}
+		kind, raw, err := protocol.DecodePickLine(line)
+		if err != nil || kind != "update" {
+			continue
+		}
+		var u protocol.PickUpdate
+		if json.Unmarshal(raw, &u) == nil {
+			p.Send(UpdateMsg{Update: u})
 		}
 	}
 }

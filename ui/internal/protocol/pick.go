@@ -33,6 +33,11 @@ type PickAction struct {
 	Scope   string `json:"scope"`
 	Group   string `json:"group,omitempty"`
 	Primary bool   `json:"primary,omitempty"`
+	// Event, true: the picker stays open and reports a PickEvent; false or
+	// absent: it closes with a PickResult. Omitempty so a request built
+	// without any event actions round-trips without ever mentioning the
+	// field, matching every other boolean flag on this struct.
+	Event bool `json:"event,omitempty"`
 }
 
 type PickRequest struct {
@@ -111,5 +116,13 @@ func DecodePickLine(line []byte) (string, []byte, error) {
 func EncodePickResult(r PickResult) []byte {
 	r.T = "result"
 	b, _ := json.Marshal(r)
+	return append(b, '\n')
+}
+
+// EncodePickEvent mirrors EncodePickResult for the mid-session line an
+// event:true action writes while the picker stays open.
+func EncodePickEvent(e PickEvent) []byte {
+	e.T = "event"
+	b, _ := json.Marshal(e)
 	return append(b, '\n')
 }

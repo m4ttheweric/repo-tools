@@ -26,7 +26,7 @@
     }
   ],
   "actions": [
-    { "id": "dispose", "label": "dispose worktree", "key": "enter", "scope": "item", "group": "worktree", "primary": true },
+    { "id": "dispose", "label": "dispose worktree", "key": "enter", "scope": "item", "group": "worktree", "primary": true, "event": true },
     { "id": "refresh", "label": "refresh", "key": "ctrl-r", "scope": "global", "group": "nav" }
   ],
   "multi": true,

@@ -114,6 +114,8 @@ test("pick request fixture carries protocol 1 and round-trips through encodeLine
   expect(req.protocol).toBe(1);
   expect(req.rows.length).toBeGreaterThanOrEqual(2);
   expect(req.actions?.length).toBeGreaterThan(0);
+  expect(req.actions?.find((a) => a.id === "dispose")?.event).toBe(true);
+  expect(req.actions?.find((a) => a.id === "refresh")?.event).toBeUndefined();
   const line = encodeLine(req);
   expect(line.endsWith("\n")).toBe(true);
   expect(JSON.parse(line)).toEqual(req);
@@ -123,6 +125,8 @@ test("pick update and modal fixtures match their typed shape and round-trip", ()
   const update = fixture("pick-update.json") as PickUpdate;
   expect(update.t).toBe("update");
   expect(update.rows?.[0]?.right?.some((seg) => seg.hex !== undefined)).toBe(true);
+  expect(update.actions?.find((a) => a.id === "refresh")?.event).toBe(true);
+  expect(update.actions?.find((a) => a.id === "cd")?.event).toBeUndefined();
   expect(JSON.parse(encodeLine(update))).toEqual(update);
 
   const modal = fixture("pick-modal.json") as PickModal;

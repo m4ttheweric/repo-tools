@@ -166,6 +166,8 @@ export interface PickAction {
   scope: "item" | "global";
   group?: string;
   primary?: boolean;
+  /** True: the picker stays open and reports an event; absent/false: it closes with a result. */
+  event?: boolean;
 }
 
 export interface PickRequest {

@@ -1,6 +1,8 @@
 package picker
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -33,6 +35,141 @@ func TestDownThenEnterSelectsTheSecondRow(t *testing.T) {
 	}
 	if m.result.Action != "select" || m.result.Value == nil || *m.result.Value != "b" || m.result.Query != "" {
 		t.Fatalf("got %+v", m.result)
+	}
+}
+
+// TestUpdateReplacesRowsAndPreservesCursorByValue is the golden for
+// applyUpdate's row-patch path: the cursor sits on a value before the
+// replacement, that value survives (at a different index -- "z" is now
+// sorted ahead of it), and the cursor must still land on it rather than on
+// whatever row now occupies the old numeric slot.
+func TestUpdateReplacesRowsAndPreservesCursorByValue(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}, {Value: "c"}},
+	}
+	m := New(req)
+	m.cursor = 1 // sits on "b"
+
+	next, _ := m.Update(UpdateMsg{Update: protocol.PickUpdate{
+		Rows: []protocol.PickRow{{Value: "z"}, {Value: "b"}},
+	}})
+	m = next.(*Model)
+
+	if len(m.matches) != 2 {
+		t.Fatalf("want 2 matches after replace, got %d", len(m.matches))
+	}
+	got := m.req.Rows[m.matches[m.cursor].Index].Value
+	if got != "b" {
+		t.Fatalf("cursor should still track value b, landed on %q", got)
+	}
+}
+
+// TestUpdateClampsCursorWhenItsValueIsGone covers the other half of the
+// same contract: the row the cursor was on is absent from the replacement,
+// so the numeric position clamps into the new (shorter) range instead of
+// resetting to the top or panicking out of bounds.
+func TestUpdateClampsCursorWhenItsValueIsGone(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}, {Value: "c"}},
+	}
+	m := New(req)
+	m.cursor = 2 // sits on "c"
+
+	next, _ := m.Update(UpdateMsg{Update: protocol.PickUpdate{
+		Rows: []protocol.PickRow{{Value: "x"}, {Value: "y"}},
+	}})
+	m = next.(*Model)
+
+	if m.cursor != 1 {
+		t.Fatalf("cursor should clamp to the last valid index (1), got %d", m.cursor)
+	}
+}
+
+func TestUpdateReplacesMessageAndActions(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Message: "old", Rows: []protocol.PickRow{{Value: "a"}}}
+	m := New(req)
+
+	next, _ := m.Update(UpdateMsg{Update: protocol.PickUpdate{
+		Message: "new",
+		Actions: []protocol.PickAction{{ID: "x", Label: "X", Scope: "item"}},
+	}})
+	m = next.(*Model)
+
+	if m.req.Message != "new" {
+		t.Fatalf("message not replaced: %q", m.req.Message)
+	}
+	if len(m.req.Actions) != 1 || m.req.Actions[0].ID != "x" {
+		t.Fatalf("actions not replaced: %+v", m.req.Actions)
+	}
+}
+
+// TestEventActionKeyWritesEventAndStaysOpen is the golden for the
+// event:true dispatch path: the key is matched against the registry (not
+// the hardcoded enter/select path), the write happens on the returned
+// tea.Cmd rather than inline, and the model produces no terminal result.
+func TestEventActionKeyWritesEventAndStaysOpen(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}},
+		Actions: []protocol.PickAction{
+			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global", Event: true},
+		},
+	}
+	m := New(req)
+	var buf bytes.Buffer
+	m.output = &buf
+	m.cursor = 1 // sits on "b"
+
+	next, cmd := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
+	m = next.(*Model)
+
+	if m.result != nil {
+		t.Fatalf("event action must not terminate the session: %+v", m.result)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to write the event")
+	}
+	if msg := cmd(); msg != nil {
+		t.Fatalf("event cmd should return no further message, got %#v", msg)
+	}
+
+	var ev protocol.PickEvent
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &ev); err != nil {
+		t.Fatalf("event line not valid JSON: %v (%s)", err, buf.String())
+	}
+	if ev.T != "event" || ev.Action != "refresh" || ev.Value == nil || *ev.Value != "b" || ev.Query != "" {
+		t.Fatalf("got %+v", ev)
+	}
+}
+
+// TestNonEventActionKeyProducesTerminalResult covers the opposite branch: a
+// registry action without event:true ends the session, exactly as Task 4's
+// hardcoded "enter" path does for the built-in select, but carrying the
+// action's own id rather than "select".
+func TestNonEventActionKeyProducesTerminalResult(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}},
+		Actions: []protocol.PickAction{
+			{ID: "dispose", Label: "dispose", Key: "ctrl-x", Scope: "item"},
+		},
+	}
+	m := New(req)
+	m.cursor = 0 // sits on "a"
+
+	next, cmd := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'x'})
+	m = next.(*Model)
+
+	if m.result == nil || m.result.Action != "dispose" || m.result.Value == nil || *m.result.Value != "a" {
+		t.Fatalf("got %+v", m.result)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to end the session")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected the cmd to quit the program")
 	}
 }
 
