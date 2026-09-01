@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MattstackCore
 import ServiceManagement
 
 // MARK: - Main View
@@ -20,6 +21,9 @@ struct ProcessPanelView: View {
             statusStrip
             if trayState.needsApproval {
                 approvalRow
+            }
+            if !trayState.readyHeldRepos.isEmpty {
+                readyHeldRow
             }
             Divider()
             headerBar
@@ -191,6 +195,35 @@ struct ProcessPanelView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Color.orange.opacity(0.08))
+    }
+
+    /// The half of RT-98 that cannot be dismissed. Its notification can be
+    /// swiped away; this stays until someone approves, because every worktree
+    /// claim in these repos silently skips the team's declared steps meanwhile.
+    private var readyHeldRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "hand.raised.fill")
+                .font(.caption)
+                .foregroundColor(.orange)
+            Text(readyHeldSummary)
+                .font(.caption)
+            Spacer()
+            PanelButton(label: "Copy Command", icon: nil, action: copyReadyHeldCommands)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.08))
+    }
+
+    private var readyHeldSummary: String {
+        let names = trayState.readyHeldRepos.map(\.label).joined(separator: ", ")
+        return "Team ready steps held for \(names) — worktree claims are skipping them."
+    }
+
+    private func copyReadyHeldCommands() {
+        let commands = trayState.readyHeldRepos.map(\.approveCommand).joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(commands, forType: .string)
     }
 
     // MARK: - Header
