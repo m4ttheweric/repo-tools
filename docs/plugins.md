@@ -1,6 +1,6 @@
 # rt user plugins
 
-Add your own commands to rt. A plugin is a folder under `~/.rt/plugins/<name>/` with a declarative `plugin.json` manifest and either TypeScript files (run in-process with an injected API) or existing executables (run as subprocesses). Plugin commands live in the root command tree next to built-ins and inherit everything the tree provides: fzf navigation, breadcrumbs, repo/worktree context resolution, alt-enter arg forms, invocation logging, and error capture.
+Add your own commands to rt. A plugin is a folder under `~/.mattstack/rt/plugins/<name>/` with a declarative `plugin.json` manifest and either TypeScript files (run in-process with an injected API) or existing executables (run as subprocesses). Plugin commands live in the root command tree next to built-ins and inherit everything the tree provides: fzf navigation, breadcrumbs, repo/worktree context resolution, alt-enter arg forms, invocation logging, and error capture.
 
 Two properties worth knowing up front:
 
@@ -10,18 +10,18 @@ Two properties worth knowing up front:
 ## Quickstart
 
 ```bash
-rt plugin new my-tool     # scaffold ~/.rt/plugins/my-tool/ + IDE types, runs bun install
+rt plugin new my-tool     # scaffold ~/.mattstack/rt/plugins/my-tool/ + IDE types, runs bun install
 rt my-tool                # run it
 rt plugin list            # installed plugins and their health
 rt plugin validate        # deep checks: files exist, modules import, exports match
 ```
 
-`rt plugin new` leaves you with a working command. Open `~/.rt/plugins/my-tool/` in your editor and you get full autocomplete on the injected API (see IDE setup below).
+`rt plugin new` leaves you with a working command. Open `~/.mattstack/rt/plugins/my-tool/` in your editor and you get full autocomplete on the injected API (see IDE setup below).
 
 ## Plugin anatomy
 
 ```
-~/.rt/plugins/my-tool/
+~/.mattstack/rt/plugins/my-tool/
   plugin.json          # manifest (required): declares your commands
   my-tool.ts           # handler modules referenced by the manifest
   helper.ts            # relative imports between plugin files work
@@ -35,8 +35,8 @@ rt reads `plugin.json` and your handler files at runtime. `package.json`, `tscon
 
 State lives outside the plugin folder:
 
-- `~/.rt/plugin-data/<name>/` scoped JSON storage (created on first write)
-- `~/.rt/logs/plugins.YYYY-MM-DD.log` your domain events, visible in `rt daemon logs`
+- `~/.mattstack/rt/plugin-data/<name>/` scoped JSON storage (created on first write)
+- `~/.mattstack/rt/logs/plugins.YYYY-MM-DD.log` your domain events, visible in `rt daemon logs`
 
 ## The manifest
 
@@ -117,10 +117,10 @@ export async function run(args: string[], ctx: RtCommandContext) {
 | `pick(items, opts?)` | rt's fuzzy palette. Items are strings or `{ value, label?, hint? }`. Resolves `null` on Esc. |
 | `prompt(label, opts?)` | single-line text input (`placeholder`, `default`) |
 | `confirm(label, opts?)` | yes/no, `default` picks the preselected answer |
-| `store<T>(key)` | `get()`/`set(v)` JSON persistence at `~/.rt/plugin-data/<plugin>/<key>.json`; keys are letters, digits, `.`, `_`, `-` |
-| `log.info/warn/debug(msg, data?)` | JSON lines to `~/.rt/logs/plugins.YYYY-MM-DD.log`; `debug` only writes when `RT_LOG_LEVEL=debug` |
+| `store<T>(key)` | `get()`/`set(v)` JSON persistence at `~/.mattstack/rt/plugin-data/<plugin>/<key>.json`; keys are letters, digits, `.`, `_`, `-` |
+| `log.info/warn/debug(msg, data?)` | JSON lines to `~/.mattstack/rt/logs/plugins.YYYY-MM-DD.log`; `debug` only writes when `RT_LOG_LEVEL=debug` |
 
-The runtime contract is the standard library (Bun/Node builtins) plus this API. npm dependencies in plugin runtime code are not supported in v1. You never need to log invocations, durations, or errors yourself; the dispatcher records those for every command in `~/.rt/logs/cli.YYYY-MM-DD.log`.
+The runtime contract is the standard library (Bun/Node builtins) plus this API. npm dependencies in plugin runtime code are not supported in v1. You never need to log invocations, durations, or errors yourself; the dispatcher records those for every command in `~/.mattstack/rt/logs/cli.YYYY-MM-DD.log`.
 
 Throwing is fine: the error and stack land in the CLI log with your command's name, and rt exits 1.
 
@@ -143,7 +143,7 @@ Plugin commands merge into the root tree on every invocation. Built-ins always w
 
 ## IDE setup
 
-rt writes a types-only package to `~/.rt/plugin-api/` (regenerated automatically whenever the embedded contract changes, e.g. after an rt upgrade). The scaffolded `package.json` depends on it via `"rt-plugin": "file:../../plugin-api"`, which is why `import type { RtCommandContext } from "rt-plugin"` resolves in your editor after `bun install`. The import is type-only and erased at runtime; if you accidentally value-import `rt-plugin`, it throws with a message explaining the API arrives via `ctx`.
+rt writes a types-only package to `~/.mattstack/rt/plugin-api/` (regenerated automatically whenever the embedded contract changes, e.g. after an rt upgrade). The scaffolded `package.json` depends on it via `"rt-plugin": "file:../../plugin-api"`, which is why `import type { RtCommandContext } from "rt-plugin"` resolves in your editor after `bun install`. The import is type-only and erased at runtime; if you accidentally value-import `rt-plugin`, it throws with a message explaining the API arrives via `ctx`.
 
 If your editor shows red squiggles in a plugin folder, run `bun install` in that folder. Typecheck a plugin any time with `bunx tsc --noEmit` from its folder.
 
