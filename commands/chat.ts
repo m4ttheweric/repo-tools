@@ -70,6 +70,7 @@ import {
   chatLeave,
   chatMark,
   chatMessages,
+  chatAck,
   chatPost,
   chatRead,
   chatRooms,
@@ -694,6 +695,31 @@ async function runPost(args: string[]): Promise<void> {
   if (url) console.log(`posted → ${url}`);
 }
 
+/**
+ * The counterpart to a room post: acknowledging costs the author one wake and
+ * every other member nothing, where a posted "ack" wakes the whole room. The
+ * id comes from the delivered line (`[#room] handle #<id>: body`).
+ */
+async function runAck(args: string[]): Promise<void> {
+  const rest = positionals(args);
+  const raw = rest[0];
+  if (!raw) fail("usage: rt chat ack <messageId>");
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) fail(`not a message id: ${raw} (the delivered line shows it as "#<id>")`);
+
+  const handle = resolveHandle(args);
+  requireValidName("handle", handle);
+
+  const res = await chatAck({ id, handle });
+  const data = unwrap(res, "ack");
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, id, author: data.author, room: data.room, already: data.already }));
+    return;
+  }
+  if (data.already) console.log(`already acked #${id} (${data.author} was not woken again)`);
+  else console.log(`acked #${id} → ${data.author}`);
+}
+
 async function runRead(args: string[]): Promise<void> {
   const room = positional(args);
   if (room) requireValidName("room", room);
@@ -1107,9 +1133,10 @@ async function runBack(args: string[]): Promise<void> {
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "usage: rt chat <join|leave|archive|post|read|rooms|who|mark|prune|sign-in|sign-out|away|back|buddies|dm|invite> ...";
+  "usage: rt chat <join|leave|archive|post|read|ack|rooms|who|mark|prune|sign-in|sign-out|away|back|buddies|dm|invite> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
+  ack: runAck,
   join: runJoin,
   leave: runLeave,
   archive: runArchive,
@@ -1130,6 +1157,7 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
 
 const VERB_HINTS: Record<string, string> = {
   read: "show recent messages",
+  ack: "acknowledge one message, waking only its author",
   post: "send a message to a room",
   dm: "send a direct message to a handle",
   rooms: "list rooms",

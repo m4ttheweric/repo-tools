@@ -288,6 +288,15 @@ CREATE INDEX IF NOT EXISTS agents_repo_created ON agents(repo, created_at);
 CREATE INDEX IF NOT EXISTS agents_created ON agents(created_at);
 `;
 
+const V8_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chat_acks (
+  message_id INTEGER NOT NULL,
+  handle     TEXT NOT NULL,
+  acked_at   INTEGER NOT NULL,
+  PRIMARY KEY (message_id, handle)
+);
+`;
+
 /**
  * Every schema block, in version order. `runMigrations` execs
  * `SCHEMAS.join("")` unconditionally on EVERY open (R015/R056): every
@@ -297,7 +306,7 @@ CREATE INDEX IF NOT EXISTS agents_created ON agents(created_at);
  * A future schema block joins this array; leaving one out is caught by the
  * dynamic table-presence test in db-schema-convergence.test.ts.
  */
-const SCHEMAS = [V1_SCHEMA, V2_SCHEMA, V3_SCHEMA, V4_SCHEMA, V6_SCHEMA, V7_SCHEMA];
+const SCHEMAS = [V1_SCHEMA, V2_SCHEMA, V3_SCHEMA, V4_SCHEMA, V6_SCHEMA, V7_SCHEMA, V8_SCHEMA];
 
 /** project_mr_demands.sections (v6): SQLite's ALTER TABLE ADD COLUMN has no
     IF NOT EXISTS, so unlike every statement in the V*_SCHEMA strings above it

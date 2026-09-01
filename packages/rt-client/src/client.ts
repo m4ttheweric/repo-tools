@@ -175,6 +175,17 @@ export function chatPost(
   return rtCommand<{ id: number; recipients: string[] }>("chat:post", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
+export function chatAck(
+  a: { id: number; handle: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ author: string; room: string; already: boolean }>> {
+  return rtCommand<{ author: string; room: string; already: boolean }>(
+    "chat:ack",
+    { id: a.id, handle: a.handle },
+    { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 },
+  );
+}
+
 export function chatRead(
   a: { handle: string; room?: string; limit?: number; sinceMs?: number },
   o: RtClientOptions = {},

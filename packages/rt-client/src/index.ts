@@ -12,6 +12,7 @@ export {
   abandonRun,
   chatJoin,
   chatLeave,
+  chatAck,
   chatPost,
   chatRead,
   chatRooms,

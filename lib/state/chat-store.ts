@@ -604,3 +604,33 @@ export interface StalePendingRow {
 export function stalePendingPairs(db: Database = getStateDb()): StalePendingRow[] {
   return db.query(SELECT_STALE_PENDING_SQL).all() as StalePendingRow[];
 }
+
+export type AckResult =
+  | { ok: true; author: string; room: string; body: string; already: boolean }
+  | { ok: false; reason: "unknown-message" | "not-a-member" | "own-message" };
+
+/**
+ * Records that `handle` has acknowledged one message. `already` is what keeps
+ * a re-ack from waking the author a second time: the INSERT is OR IGNORE
+ * against the (message_id, handle) primary key, so the second call reports
+ * the same success without a new notification being owed.
+ */
+export function ackMessage(
+  args: { messageId: number; handle: string },
+  db: Database = getStateDb(),
+): AckResult {
+  const { messageId, handle } = args;
+  const msg = db
+    .query("SELECT room, handle, body FROM chat_messages WHERE id = ?;")
+    .get(messageId) as { room: string; handle: string; body: string } | null;
+  if (!msg) return { ok: false, reason: "unknown-message" };
+  if (msg.handle === handle) return { ok: false, reason: "own-message" };
+  const member = db
+    .query("SELECT 1 AS present FROM chat_members WHERE room = ? AND handle = ?;")
+    .get(msg.room, handle) as { present: number } | null;
+  if (!member) return { ok: false, reason: "not-a-member" };
+  const result = db
+    .query("INSERT OR IGNORE INTO chat_acks (message_id, handle, acked_at) VALUES (?, ?, ?);")
+    .run(messageId, handle, Date.now());
+  return { ok: true, author: msg.handle, room: msg.room, body: msg.body, already: result.changes === 0 };
+}

@@ -8,11 +8,11 @@ test("the default push timeout is 3000ms, not the original 1000ms that made one 
   expect(DEFAULT_TIMEOUT_MS).toBe(3000);
 });
 
-test("renderDeliveries formats room and dm lines", () => {
+test("renderDeliveries formats room and dm lines, each carrying the id rt chat ack takes", () => {
   expect(renderDeliveries([
-    { room: "general", dm: false, handle: "max", body: "hello" },
-    { room: "dm-1", dm: true, handle: "eli", body: "hi" },
-  ])).toBe("[#general] max: hello\n[dm] eli: hi");
+    { room: "general", dm: false, handle: "max", body: "hello", id: 12 },
+    { room: "dm-1", dm: true, handle: "eli", body: "hi", id: 13 },
+  ])).toBe("[#general] max #12: hello\n[dm] eli #13: hi");
 });
 
 test("wrapCrossSession produces the exact envelope Claude Code collapses on", () => {

@@ -7,6 +7,7 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
 import {
+  ackMessage,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -64,6 +65,7 @@ const defaultInboxDeps: InboxDeps = { resolve: resolveInbox, deliver: deliverToI
 const defaultLog = lazyChildLogger("chat");
 
 const CHAT_COMMANDS = [
+  "chat:ack",
   "chat:join",
   "chat:leave",
   "chat:post",
@@ -212,7 +214,7 @@ async function deliverPost(
   // advances the cursor past them.
   const others = pending.filter((m) => m.handle !== recipient);
   if (others.length === 0) return { delivered: false, count: 0 };
-  const items = others.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
+  const items = others.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body, id: m.id }));
   const content = wrapCrossSession(deliveryLabel(items), `${renderDeliveries(items)}\n${REPLY_STEER}`);
   let result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) {
@@ -232,6 +234,33 @@ async function deliverPost(
   // never goes stale enough for prunePresence to delete its row.
   touchLastSeen(presence.sessionId, Date.now(), db);
   return { delivered: true, count: others.length };
+}
+
+const ACK_BODY_PREVIEW = 80;
+
+/**
+ * A receipt, not a message: no chat_messages row, no cursor movement, no room
+ * fan-out. It reaches exactly one inbox, the author's, which is the whole
+ * point -- acknowledging costs one wake instead of the room-wide one a posted
+ * "ack" costs. The preview is whitespace-collapsed so a heredoc body cannot
+ * turn a one-line receipt into a paragraph.
+ */
+async function deliverAck(
+  db: Database,
+  deps: InboxDeps,
+  log: Logger,
+  args: { author: string; acker: string; messageId: number; body: string },
+): Promise<void> {
+  const { author, acker, messageId, body } = args;
+  const presence = presenceForHandle(author, db);
+  if (!presence || presence.signedOutAt !== undefined) return;
+  const binding = deps.resolve(presence.sessionId);
+  if (!binding || !inboxAlive(binding)) return;
+  const flat = body.replace(/\s+/g, " ").trim();
+  const preview = flat.length > ACK_BODY_PREVIEW ? `${flat.slice(0, ACK_BODY_PREVIEW)}...` : flat;
+  const content = wrapCrossSession(`${acker} (ack)`, `${acker} acknowledged your message #${messageId}: "${preview}"`);
+  const result = await deps.deliver(binding.socketPath, content);
+  if (!result.ok) log.warn({ author, acker, id: messageId, err: result.error }, "chat: ack receipt push failed");
 }
 
 function chainKey(room: string, handle: string): string {
@@ -824,6 +853,34 @@ export function createChatHandlers(opts: {
       const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions, quiet }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
+    },
+
+    "chat:ack": async (rawPayload: unknown): Promise<CommandResult<"chat:ack">> => {
+      const payload = rawPayload as Commands["chat:ack"]["payload"];
+      const { id, handle } = payload;
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "id must be a positive message id" };
+      const res = ackMessage({ messageId: id, handle }, db);
+      if (!res.ok) {
+        const why =
+          res.reason === "unknown-message"
+            ? `no message #${id}`
+            : res.reason === "own-message"
+              ? `message #${id} is your own`
+              : `you are not a member of the room message #${id} is in`;
+        return { ok: false, error: why };
+      }
+      // Only a first ack owes a receipt: a repeat is already recorded, and
+      // re-waking the author is exactly the noise this verb exists to avoid.
+      if (!res.already) {
+        const { author, body } = res;
+        queueMicrotask(() => {
+          deliverAck(db, inboxDeps, log, { author, acker: handle, messageId: id, body }).catch((err) => {
+            log.warn({ err, id, handle }, "chat: ack delivery failed");
+          });
+        });
+      }
+      return { ok: true, data: { author: res.author, room: res.room, already: res.already } };
     },
 
     "chat:read": async (rawPayload: unknown): Promise<CommandResult<"chat:read">> => {
