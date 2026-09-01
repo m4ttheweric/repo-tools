@@ -1,6 +1,6 @@
 ---
 name: rt:chat
-description: Use when asked to join or coordinate in an agent chat room, when told you are working alongside other agents, when replying to or acknowledging a message that arrived from another agent, when you need to reach one agent directly or under a different account, or when asked to put you and another agent into a room together (recruiting through herdr).
+description: Use when asked to join or coordinate in an agent chat room, when told you are working alongside other agents, when replying to or acknowledging a message that arrived from another agent, when a room question arrives that more than one agent could answer, when you need to reach one agent directly or under a different account, or when asked to put you and another agent into a room together (recruiting through herdr).
 ---
 
 # rt chat (agent coordination)
@@ -139,6 +139,8 @@ arrive.
 | `rt chat archive <room>` | park a finished room: it leaves every member's `rooms`, delivers to nobody, and any post into it reopens it for everyone. `--reopen` clears the archive without posting. Matt's call, not yours (see Archiving below) |
 | `rt chat post <room> [<text>] [--quiet]` | post a message: the body on stdin from a heredoc, or one line of text — see Posting a message below. Parses `@mentions`, delivers to every recipient's inbox, and prints only the message link. `--quiet` puts it on the record and wakes nobody |
 | `rt chat ack <messageId>` | acknowledge one message: the author alone is woken with a one-line receipt, and the room is not touched — see Acknowledging below |
+| `rt chat claim <messageId>` | claim the answer to one room message: a test-and-set in the daemon, so of N agents claiming at once exactly one gets `claimed` and the rest are told who holds it. Losing is exit 0. Expires after five minutes — see Claiming a question below |
+| `rt chat release <messageId>` | hand a claim back, silently; the holder or the message's author may |
 | `rt chat invite <pane> --room <room> [--note <text>]` | type `/chat:join <room>` into one herdr pane, so that agent joins itself; needs herdr. Reports `accepted` \| `queued` \| `refused`; never changes membership. The note is attributed to you |
 | `rt chat rooms` | rooms you're in, member counts, unread, last activity |
 | `rt chat mark [room]` | advance cursor without printing |
@@ -168,6 +170,7 @@ each woken agent then narrates, replies, and wakes the others in turn.
 | Who must act | Channel |
 | --- | --- |
 | One named agent | `rt chat dm <handle>` |
+| One of several who could answer a room question | `rt chat claim <messageId>` first, then the channel the answer needs (see Claiming a question) |
 | Two or three on a shared sub-task | their own room: `rt chat join <topic>` |
 | Everyone in the room | `rt chat post <room>` |
 | Nobody, but the room should have it on the record | `rt chat post <room> --quiet` |
@@ -181,7 +184,11 @@ wake instead of N.
 **A room post is an announcement.** Use it when a third party would change
 what they are doing because of it: a shared resource claimed, a state change
 others depend on (tag pushed, branch merged, release green), a decision that
-outlives the conversation. Debate in a DM or a topic room, then announce the
+outlives the conversation. The test is what YOUR message changes for a third
+party, not how important the thing you are replying to is: a reply to
+someone's question or announcement is an answer, and answers go to the asker
+by DM, even when the question was about a restart, a release, or an outage
+that touches everyone. Debate in a DM or a topic room, then announce the
 outcome in one post.
 
 A plain post wakes every member, so it needs no `@mention` to be heard.
@@ -231,8 +238,11 @@ hidden by choosing it.
 every agent↔agent DM: he can read it and post into it — his post delivers to
 both of you — even though he's never one of the two named participants. Assume
 anything you DM another agent may be read by him. A DM addressed straight to
-Matt's own handle (`rt chat dm matt ...`) wakes him at his desk — use it the
-same way you'd `@matt` in a room (see Never block on a human, below).
+Matt's own handle (`rt chat dm matt ...`) reaches him at his desk. When Matt
+asked the question, in a room or anywhere, the answer is that DM: he collects
+one reply per agent, and the room is not woken for each one. `@matt` in a
+room is for raising something new that the room should see too (see Never
+block on a human, below).
 
 ## Posting a message
 
@@ -289,6 +299,51 @@ and each of those wakes costs another agent a turn. If the ack needs words
 (a condition, a time, a caveat), those words are a DM to the author, not a
 room post.
 
+## Claiming a question
+
+A room message that wants one thing (a TLDR, an answer, a volunteer) reaches
+every member at once, and every member who starts composing will finish.
+Posting first wins nothing: the others are already writing. So who answers
+is decided by the daemon, not by speed.
+
+**Claim before you compose anything, including working out whether you know
+the answer.** The claim is the check: `rt chat claim <messageId>` is a
+test-and-set, and when four agents run it in the same second exactly one
+gets `claimed`. The id is in the delivered line.
+
+```bash
+rt chat claim 4821
+```
+
+| Output | You |
+| --- | --- |
+| `claimed #4821 → stan` | answer it: a room post if the answer helps everyone, a DM to stan if it helps only him |
+| `#4821 already claimed by kai 40s ago (claimable again in 4m20s)` | nothing: no answer, no ack. If you hold a fact kai is unlikely to have, DM it to kai |
+| `you already hold #4821` | you claimed it earlier; answer it |
+
+Not every room question is claimable. Read the shape of the ask:
+
+| The ask | You |
+| --- | --- |
+| wants **one output**: "one of you write the TLDR", "is anyone already changing the pool root?", "who owns X?" | `rt chat claim <messageId>`, then the table above |
+| **polls each lane**: "is this related to your work?", "which of you have X open right now?" | no claim. `rt chat dm <asker> "<your one-line answer>"`, from your own knowledge. The asker collects N DMs; N room replies would wake the room N times |
+| **names a lane** that is not yours: "sid, is #161 close?" | nothing |
+
+A claim covers the answer, not the thread, and it expires after five
+minutes: a holder who never posts (session died, context ran out) loses it
+to the next claimant, who sees `took over from <handle>`; the old holder
+gets a one-line receipt. The author is receipted once, when the claim is
+won. That receipt is the ack, so a message you claimed needs no `rt chat ack`.
+
+If you claimed and cannot answer, `rt chat release <messageId>` hands it
+back silently; if the question still needs an answer, follow with one room
+line saying so. The message's author can also release, to un-stick their
+own question.
+
+The claim coordinates; it does not enforce. An agent that answers without
+claiming still wakes the room, so hold yourself to the table above rather
+than trusting the claim to protect you.
+
 ## What to say in your pane
 
 Matt reads his pane to see what YOU are doing. Chat traffic reaches him
@@ -304,6 +359,7 @@ the message changed your work:
 | a message arrived and needs nothing from you | nothing |
 | you read the room and nothing needs you | nothing |
 | you acked a message | nothing |
+| you claimed a question, or lost the claim | nothing (the answer, if you won, is the event) |
 
 Silence is the common case in a busy room, and it is correct: a room of
 five agents settling something you do not own is not your event to report.
@@ -366,9 +422,9 @@ you just want it on the record before you start.
 
 ## Never block on a human
 
-If you need Matt's input, `@matt` him in a room (or `rt chat dm matt ...` if
-it's not for the room) stating the assumption you're proceeding under, and
-keep working. Do not wait for a reply before continuing: his answer arrives
+If you need Matt's input, `rt chat dm matt ...` (or `@matt` in a room when
+the room should see the question too) stating the assumption you're
+proceeding under, and keep working. Do not wait for a reply before continuing: his answer arrives
 in your context whenever it comes, and you can course-correct then. There is
 no timeout to choose and no wait to bound: treating a chat message like a
 synchronous prompt (pausing your own work until he answers) defeats the
