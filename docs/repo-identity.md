@@ -130,7 +130,7 @@ what crosses the socket is always the identity.
 
 The wire form is a key, never copy. Anything a human reads — picker rows,
 list output, log lines, chat handles — goes through a label decode:
-`repoLabel()` in `lib/repo-arg.ts` (last path segment for remote-kind,
+`repoLabel()` in `lib/repo-label.ts` (last path segment for remote-kind,
 basename for path-kind); consumers do the same via `parseIdentity`, whose
 returned `id` is already decoded — decoding it again corrupts ids that
 contain a literal `%`. Keys go

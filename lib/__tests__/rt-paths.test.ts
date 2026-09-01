@@ -567,8 +567,12 @@ describe("worktreePoolRoot (friendly PATH-safe identity segment)", () => {
     expect(root.includes(":")).toBe(false);
   });
 
-  test("path-kind identity becomes local-<basename>", () => {
-    expect(basename(worktreePoolRoot("path:%2FUsers%2Fdev%2Fscratch"))).toBe("local-scratch");
+  test("path-kind identity becomes local-<basename>-<hash>, distinct paths never collide", () => {
+    const a = basename(worktreePoolRoot("path:%2FUsers%2Fdev%2Fscratch"));
+    const b = basename(worktreePoolRoot("path:%2Ftmp%2Fscratch"));
+    expect(a).toMatch(/^local-scratch-[0-9a-f]{6}$/);
+    expect(b).toMatch(/^local-scratch-[0-9a-f]{6}$/);
+    expect(a).not.toBe(b);
   });
 
   test("an unparseable wire degrades to a sanitized copy, never throws", () => {

@@ -109,6 +109,13 @@ function dashSafe(part: string): string {
   return part.replace(/[^A-Za-z0-9._]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+/** Stable 6-hex tag of an identity id; djb2-xor, no crypto import needed. */
+function shortHash(id: string): string {
+  let h = 5381;
+  for (let i = 0; i < id.length; i++) h = ((h * 33) ^ id.charCodeAt(i)) >>> 0;
+  return h.toString(16).padStart(6, "0").slice(-6);
+}
+
 /** Hostname fallback: dots flatten too, so a host reads as one dashed word. */
 function hostSafe(host: string): string {
   return dashSafe(host.replace(/\./g, "-"));
@@ -127,7 +134,13 @@ function hostSafe(host: string): string {
 function worktreePoolSegment(serializedIdentity: string): string {
   const parsed = parseIdentity(serializedIdentity);
   if (!parsed) return dashSafe(serializedIdentity);
-  if (parsed.kind === "path") return `local-${dashSafe(basename(parsed.id))}`;
+  if (parsed.kind === "path") {
+    // Distinct paths sharing a basename are realistic on one machine (two
+    // "scratch" checkouts), so path-kind carries a short identity hash.
+    // Remote-kind stays hashless by ruling: the dash-join ambiguity needs
+    // two registered repos on ONE host colliding, which the estate accepts.
+    return `local-${dashSafe(basename(parsed.id))}-${shortHash(parsed.id)}`;
+  }
   const slash = parsed.id.indexOf("/");
   const host = slash === -1 ? parsed.id : parsed.id.slice(0, slash);
   const rest = slash === -1 ? "" : parsed.id.slice(slash + 1);
