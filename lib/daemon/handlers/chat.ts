@@ -41,6 +41,7 @@ import {
   type BuddyStatus,
   type RegistryDeps,
   type WakeMode,
+  type StalePendingRow,
 } from "../../state/index.ts";
 import { CHAT_NOTIFICATION_CATEGORY, notifyEnabled } from "../../notifier.ts";
 import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.ts";
@@ -272,8 +273,6 @@ function deliverSerialized(
 /** The presence shape planSweepTargets actually needs -- a subset of PresenceRow, spelled out so the planner stays pure and testable with plain object literals instead of a full store row. */
 type SweepPresence = { sessionId: string; signedOutAt?: number };
 
-type SweepCandidate = { room: string; handle: string; maxId: number; wakeOn: WakeMode };
-
 /**
  * Pure: given stalePendingPairs' raw candidates plus a presence snapshot and
  * which of those sessions have an alive registry binding, decides which
@@ -288,12 +287,16 @@ type SweepCandidate = { room: string; handle: string; maxId: number; wakeOn: Wak
  * that needs each pending message's author/mentions, which this function
  * deliberately does not have; see pendingIncludesRecipient, applied once
  * pendingMessages is fetched for a candidate that survives this filter.
+ *
+ * Takes stalePendingPairs' own row type directly (not a locally-declared
+ * shape) so the planner's candidate contract can never silently drift from
+ * what the store actually returns.
  */
 export function planSweepTargets(
-  stale: SweepCandidate[],
+  stale: StalePendingRow[],
   presenceByHandle: Map<string, SweepPresence>,
   aliveSessionIds: Set<string>,
-): SweepCandidate[] {
+): StalePendingRow[] {
   return stale.filter((pair) => {
     if (pair.wakeOn === "none") return false;
     const presence = presenceByHandle.get(pair.handle);
