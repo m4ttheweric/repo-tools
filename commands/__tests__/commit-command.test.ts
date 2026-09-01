@@ -288,16 +288,41 @@ describe("commitFlow routing", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("cancel aborts without touching git state", async () => {
+  test("cancel aborts without touching git state, printing the faint 'aborted' line on a TTY", async () => {
     const dir = makeRepo();
     writeFileSync(join(dir, "tracked.txt"), "changed\n");
 
     fake = installFakePick([resultStep({ action: "cancel", value: null })]);
 
-    const { exitCode, stderr } = await runCapturingExit(() => commitFlow([], ctxFor(dir)));
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    try {
+      const { exitCode, stderr } = await runCapturingExit(() => commitFlow([], ctxFor(dir)));
+      expect(exitCode).toBe(0);
+      expect(stderr).toContain("aborted");
+    } finally {
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
 
-    expect(exitCode).toBe(0);
-    expect(stderr).toContain("aborted");
+  test("cancel off a TTY (--json/RT_BATCH/piped) exits clean but prints no 'aborted' decoration", async () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "tracked.txt"), "changed\n");
+
+    fake = installFakePick([resultStep({ action: "cancel", value: null })]);
+
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: false, configurable: true });
+    try {
+      const { exitCode, stderr } = await runCapturingExit(() => commitFlow([], ctxFor(dir)));
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("aborted");
+    } finally {
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
     rmSync(dir, { recursive: true, force: true });
   });
 });
