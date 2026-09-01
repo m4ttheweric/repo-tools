@@ -19,7 +19,7 @@ import { currentBranchAsync, listWorktreesAsync, runGit, type WorktreeEntry } fr
 import { isTreeLocked } from "../../worktree/locks.ts";
 import { scrapTree, type CreateDeps } from "../../worktree/create.ts";
 import { loadWorktreeAppConfig } from "../../worktree/config.ts";
-import { legacyWorktreePoolRoot, worktreePoolRoot } from "../../rt-paths.ts";
+import { legacyWorktreePoolRoots, worktreePoolRoot } from "../../rt-paths.ts";
 import { patchTree } from "../../worktree/patch.ts";
 
 export interface ReconcileDeps {
@@ -67,11 +67,13 @@ export const MISSING_PRUNE_PASSES = 3;
  * guard needed.
  */
 export function healLegacyPoolRoots(deps: Pick<ReconcileDeps, "repoName" | "emit" | "log">): void {
-  const legacyRoot = legacyWorktreePoolRoot(deps.repoName);
-  if (legacyRoot === worktreePoolRoot(deps.repoName)) return;
-  const legacyPrefix = legacyRoot + sep;
+  const current = worktreePoolRoot(deps.repoName);
+  const legacyPrefixes = legacyWorktreePoolRoots(deps.repoName)
+    .filter((root) => root !== current)
+    .map((root) => root + sep);
+  if (legacyPrefixes.length === 0) return;
   for (const rec of loadRegistry(deps.repoName)) {
-    if (rec.state !== "on-deck" || !rec.path.startsWith(legacyPrefix)) continue;
+    if (rec.state !== "on-deck" || !legacyPrefixes.some((p) => rec.path.startsWith(p))) continue;
     const flipped = patchTree(deps.repoName, rec.path, (r) => {
       r.state = "disposable";
       r.disposableReason = "legacy pool root (colon path breaks installs)";
