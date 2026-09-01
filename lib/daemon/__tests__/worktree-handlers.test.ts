@@ -200,6 +200,18 @@ describe("worktree:provision", () => {
     expect(claimed!.data).toMatchObject({ repo: repoName, tree: "alpha", branch: "rt-99-do-the-thing", owner: "pane-1" });
   });
 
+  test("a delivered claim carries handoff done; the reply is the last writer (RT-99)", async () => {
+    const repo = makeRepo();
+    seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
+    const { h } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:provision"]!({ repoName, branch: "rt-99-handoff" });
+
+    expect(res.ok).toBe(true);
+    const stored = loadRegistry(repoName).find((t) => t.name === "alpha")!;
+    expect(stored.handoff).toBe("done");
+  });
+
   test("refuses a branch attached to another tree before touching the registry", async () => {
     const repo = makeRepo();
     seedOnDeck(repo, repoName, "alpha", new Date().toISOString());

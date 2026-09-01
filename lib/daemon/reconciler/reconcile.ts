@@ -15,7 +15,7 @@ import {
   type TreeKind,
   type TreeRecord,
 } from "../../worktree/registry.ts";
-import { listWorktreesAsync, runGit, type WorktreeEntry } from "../../worktree/git-async.ts";
+import { currentBranchAsync, listWorktreesAsync, runGit, type WorktreeEntry } from "../../worktree/git-async.ts";
 import { isTreeLocked } from "../../worktree/locks.ts";
 import { scrapTree, type CreateDeps } from "../../worktree/create.ts";
 import { loadWorktreeAppConfig } from "../../worktree/config.ts";
@@ -118,8 +118,60 @@ export function healLegacyPoolRoots(deps: Pick<ReconcileDeps, "repoName" | "emit
  *... a pass that keeps losing simply skips its save and lets the next tick redo
  * it, since every correction here is derived from ground truth and idempotent.
  */
+
+/**
+ * A claim whose handoff marker is still "pending" was written by a provision
+ * that never replied: the daemon died (or was restarted) between the claim
+ * write and the handover, so no caller owns the tree. Release it the way
+ * rollbackClaim would have. Keyed ONLY on the marker: RT-96's
+ * readyPendingAt marks healthy delivered claims mid-background-install and
+ * must never match. A held tree lock means the provision is still alive in
+ * THIS process; skip it, its own handler will finish or roll back.
+ */
+export async function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName" | "emit" | "log">): Promise<void> {
+  for (const rec of loadRegistry(deps.repoName)) {
+    if (rec.state !== "claimed" || rec.handoff !== "pending") continue;
+    if (isTreeLocked(rec.path)) continue;
+    // The registry branch is stale when the death landed between checkout
+    // and the branch patch, so git is the authority: only a tree still
+    // sitting on its pool branch may rejoin the pool.
+    const current = await currentBranchAsync(rec.path);
+    const poolBranch = typeof rec.branch === "string" && rec.branch.startsWith("on-deck/") ? rec.branch : null;
+    const backToPool = poolBranch !== null && current === poolBranch;
+    // Mirror of markHandoffDelivered's CAS: the git await above yielded the
+    // event loop, so the handler may have delivered this claim in the gap.
+    // Re-check inside the same synchronous load-mutate-save; losing means
+    // the caller owns the tree and this pass must not touch it.
+    let released = false;
+    const flipped = patchTree(deps.repoName, rec.path, (r) => {
+      if (r.state !== "claimed" || r.handoff !== "pending") return;
+      released = true;
+      delete r.handoff;
+      delete r.claimedAt;
+      delete r.owner;
+      delete r.disposal;
+      if (backToPool) {
+        r.state = "on-deck";
+      } else {
+        r.state = "disposable";
+        if (current) r.branch = current;
+        r.disposableReason = "stranded claim (provision died before handover)";
+      }
+    });
+    if (!flipped || !released) continue;
+    deps.log.warn({ repo: deps.repoName, tree: rec.name, backToPool }, "reconcile: released a stranded claim");
+    if (!backToPool) {
+      deps.emit("worktree:disposable", {
+        repo: deps.repoName, tree: rec.name, path: rec.path, branch: current ?? rec.branch,
+        reason: "stranded claim (provision died before handover)",
+      });
+    }
+  }
+}
+
 export async function reconcileRepo(deps: ReconcileDeps): Promise<TreeRecord[]> {
   healLegacyPoolRoots(deps);
+  await releaseStrandedClaims(deps);
   for (let attempt = 1; attempt <= RECONCILE_MAX_ATTEMPTS; attempt++) {
     const result = await reconcilePass(deps, attempt);
     if (!("conflict" in result)) return result.trees;
