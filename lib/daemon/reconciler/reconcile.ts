@@ -4,7 +4,7 @@
  * `TreeRecord[]` out) is stable.
  */
 
-import { basename, dirname } from "path";
+import { basename, dirname, sep } from "path";
 import { existsSync } from "fs";
 import type { Logger } from "pino";
 import { canon } from "../../fs-canon.ts";
@@ -19,6 +19,8 @@ import { listWorktreesAsync, runGit, type WorktreeEntry } from "../../worktree/g
 import { isTreeLocked } from "../../worktree/locks.ts";
 import { scrapTree, type CreateDeps } from "../../worktree/create.ts";
 import { loadWorktreeAppConfig } from "../../worktree/config.ts";
+import { legacyWorktreePoolRoot, worktreePoolRoot } from "../../rt-paths.ts";
+import { patchTree } from "../../worktree/patch.ts";
 
 export interface ReconcileDeps {
   repoName: string;
@@ -56,6 +58,35 @@ const RECONCILE_MAX_ATTEMPTS = 3;
 export const MISSING_PRUNE_PASSES = 3;
 
 /**
+ * Pre-RT-95 pool roots embed the raw wire colon, which splits PATH during a
+ * tree's installs, so on-deck trees under one can never pass their ready
+ * steps again. Flip them disposable (the normal dispose + replenish pipeline
+ * rebuilds under the PATH-safe root); claimed trees stay, their work and
+ * completed installs are intact. Runs before the pass so this tick's sweep
+ * already sees the flipped state. Single-row patchTree writes: no epoch
+ * guard needed.
+ */
+export function healLegacyPoolRoots(deps: Pick<ReconcileDeps, "repoName" | "emit" | "log">): void {
+  const legacyRoot = legacyWorktreePoolRoot(deps.repoName);
+  if (legacyRoot === worktreePoolRoot(deps.repoName)) return;
+  const legacyPrefix = legacyRoot + sep;
+  for (const rec of loadRegistry(deps.repoName)) {
+    if (rec.state !== "on-deck" || !rec.path.startsWith(legacyPrefix)) continue;
+    const flipped = patchTree(deps.repoName, rec.path, (r) => {
+      r.state = "disposable";
+      r.disposableReason = "legacy pool root (colon path breaks installs)";
+    });
+    if (!flipped) continue;
+    deps.log.info({ repo: deps.repoName, tree: rec.name, path: rec.path }, "reconcile: legacy pool-root tree flipped disposable");
+    deps.emit("worktree:disposable", {
+      repo: deps.repoName, tree: rec.name, path: rec.path, branch: rec.branch,
+      reason: "legacy pool root (colon path breaks installs)",
+    });
+  }
+}
+
+
+/**
  * Reconcile one repo's worktree registry against git ground truth (spec §4).
  *
  * Order matters:
@@ -88,6 +119,7 @@ export const MISSING_PRUNE_PASSES = 3;
  * it, since every correction here is derived from ground truth and idempotent.
  */
 export async function reconcileRepo(deps: ReconcileDeps): Promise<TreeRecord[]> {
+  healLegacyPoolRoots(deps);
   for (let attempt = 1; attempt <= RECONCILE_MAX_ATTEMPTS; attempt++) {
     const result = await reconcilePass(deps, attempt);
     if (!("conflict" in result)) return result.trees;
