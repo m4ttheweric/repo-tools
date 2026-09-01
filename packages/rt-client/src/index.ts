@@ -86,6 +86,9 @@ export { daemonHealth } from "./health.ts";
 
 export { repoNameForPath } from "./repos.ts";
 
+export { decidePlacement, openSmartPane } from "./smart-pane.ts";
+export type { Placement, PlacementOpts, HerdrCall } from "./smart-pane.ts";
+
 // ─── Settings (RT-50) ────────────────────────────────────────────────────────
 
 export { getSetting, listSettings, explainSetting, expandVariables, SCOPE_ORDER, setSettingsWarnSink } from "./settings/resolve.ts";
