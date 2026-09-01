@@ -11,8 +11,7 @@
  */
 
 import { existsSync, readFileSync, renameSync } from "fs";
-import { join } from "path";
-import { repoDataDir } from "./rt-paths.ts";
+import { legacyRepoFile } from "./legacy-repo-data.ts";
 import {
   appendRunHistoryEntry,
   hasRunHistory,
@@ -25,7 +24,7 @@ export type { RunHistoryEntry } from "./state/index.ts";
 
 /** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 function legacyHistoryPath(repoName: string): string {
-  return join(repoDataDir(repoName), "run-history.jsonl");
+  return legacyRepoFile(repoName, "run-history.jsonl");
 }
 
 /**

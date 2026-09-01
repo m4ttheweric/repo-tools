@@ -1,6 +1,5 @@
-import { join } from "path";
 import { canon } from "../fs-canon.ts";
-import { repoDataDir } from "../rt-paths.ts";
+import { legacyRepoFile } from "../legacy-repo-data.ts";
 import { deleteKvValue, getKvValue, hasKvValue, importLegacyJsonFile, listKvValues, setKvValue, setKvValueCritical } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
@@ -29,7 +28,7 @@ const WORKTREE_REGISTRY_NS = "worktree-registry";
 
 /** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function registryPath(repoName: string): string {
-  return join(repoDataDir(repoName), "worktrees.json");
+  return legacyRepoFile(repoName, "worktrees.json");
 }
 
 export interface Registry {

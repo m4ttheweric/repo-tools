@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 import { editorPrefKey, __test__ } from "../code.ts";
 
 describe("editorPrefKey", () => {
@@ -38,7 +38,7 @@ describe("editorPrefKey", () => {
   test("falls back to the basename outside any repo", () => {
     const bare = realpathSync(mkdtempSync(join(tmpdir(), "rt-pref-key-bare-")));
 
-    expect(editorPrefKey(bare)).toBe(bare.split("/").pop());
+    expect(editorPrefKey(bare)).toBe(basename(bare));
 
     rmSync(bare, { recursive: true, force: true });
   });
