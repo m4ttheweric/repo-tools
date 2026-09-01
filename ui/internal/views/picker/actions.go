@@ -18,21 +18,18 @@ const (
 	idToggleAll  = "toggle-all"
 )
 
-// defaultActions is what a bare request renders: select always exists,
-// cancel is always the last word (the terminal escape hatch), and back only
-// exists once the breadcrumb has somewhere to return to.
+// defaultActions is what a bare request renders: select always exists, and
+// cancel is always the last word (the terminal escape hatch). back is never
+// synthesized here -- it is caller-declared only (in the request's own
+// Actions), never derived from breadcrumb depth.
 func defaultActions(req protocol.PickRequest) []protocol.PickAction {
 	if isMultiRequest(req) {
 		return multiDefaultActions(req)
 	}
-	defaults := []protocol.PickAction{
+	return []protocol.PickAction{
 		{ID: idSelect, Label: "select", Key: "enter", Scope: "item"},
+		{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"},
 	}
-	if len(req.Breadcrumb) > 1 {
-		defaults = append(defaults, protocol.PickAction{ID: idBack, Label: "back", Key: "ctrl-up", Scope: "global"})
-	}
-	defaults = append(defaults, protocol.PickAction{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"})
-	return defaults
 }
 
 // multiDefaultActions is the Multi board's "mark" footer cluster. space,
@@ -43,19 +40,16 @@ func defaultActions(req protocol.PickRequest) []protocol.PickAction {
 // registry dispatch instead of the hardcoded handler the key actually
 // runs. enter still dispatches through the registry as idSelect (and does
 // belong in the menu, unlike the other three), just labeled "confirm" here
-// instead of "select".
+// instead of "select". back is never synthesized here, same as the
+// non-multi defaults -- caller-declared only.
 func multiDefaultActions(req protocol.PickRequest) []protocol.PickAction {
-	defaults := []protocol.PickAction{
+	return []protocol.PickAction{
 		{ID: idToggle, Label: "toggle", Key: "space", Scope: "item", Group: "mark", MenuHidden: true},
 		{ID: idToggleNext, Label: "toggle & next", Key: "tab", Scope: "item", Group: "mark", MenuHidden: true},
 		{ID: idToggleAll, Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark", MenuHidden: true},
 		{ID: idSelect, Label: "confirm", Key: "enter", Scope: "item", Group: "mark", Primary: true},
+		{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"},
 	}
-	if len(req.Breadcrumb) > 1 {
-		defaults = append(defaults, protocol.PickAction{ID: idBack, Label: "back", Key: "ctrl-up", Scope: "global"})
-	}
-	defaults = append(defaults, protocol.PickAction{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"})
-	return defaults
 }
 
 // effectiveActions is the request's declared registry plus whichever

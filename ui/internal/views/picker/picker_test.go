@@ -790,8 +790,9 @@ func TestGroupHeadersRenderAboveFirstRowOfEachGroup(t *testing.T) {
 // TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight is the golden for
 // the Branch board's footer: a caller-declared group ("pick", holding
 // select/enter and with-args/alt-enter) renders lav-labeled on the left, and
-// the injected back/cancel defaults -- ungrouped, since this request never
-// claims a group for them -- pin to the right with no group label.
+// back/cancel -- back caller-declared here, cancel injected, both ungrouped
+// since this request never claims a group for them -- pin to the right with
+// no group label.
 func TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
@@ -800,6 +801,7 @@ func TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight(t *testing.T) {
 		Actions: []protocol.PickAction{
 			{ID: "select", Label: "select", Key: "enter", Scope: "item", Group: "pick", Primary: true},
 			{ID: "with-args", Label: "with args", Key: "alt-enter", Scope: "item", Group: "pick"},
+			{ID: "back", Label: "back", Key: "ctrl-up", Scope: "global"},
 		},
 	}
 	m := New(req)
@@ -871,23 +873,31 @@ func TestDefaultActionsCoverTheBareRequest(t *testing.T) {
 		t.Fatalf("want a default cancel bound to esc, got %+v (ok=%v)", a, ok)
 	}
 	if _, ok := byID["back"]; ok {
-		t.Fatalf("a flat breadcrumb (depth <= 1) must not get a back default: %+v", actions)
+		t.Fatalf("a bare request must not get a back default: %+v", actions)
 	}
 
 	nested := flat
 	nested.Breadcrumb = []string{"rt", "worktree"}
 	nestedActions := effectiveActions(nested)
-	var sawBack bool
 	for _, a := range nestedActions {
 		if a.ID == "back" {
-			sawBack = true
-			if a.Key != "ctrl-up" {
-				t.Fatalf("back should bind ctrl-up, got %q", a.Key)
-			}
+			t.Fatalf("breadcrumb depth must never synthesize a back default: %+v", nestedActions)
 		}
 	}
-	if !sawBack {
-		t.Fatalf("breadcrumb depth > 1 should inject a back default: %+v", nestedActions)
+
+	declared := nested
+	declared.Actions = []protocol.PickAction{
+		{ID: "back", Label: "back", Key: "ctrl-up", Scope: "global"},
+	}
+	declaredActions := effectiveActions(declared)
+	var backCount int
+	for _, a := range declaredActions {
+		if a.ID == "back" {
+			backCount++
+		}
+	}
+	if backCount != 1 {
+		t.Fatalf("a caller-declared back must survive effectiveActions exactly once, got %d: %+v", backCount, declaredActions)
 	}
 }
 
@@ -994,6 +1004,56 @@ func TestDeriveMenuSkipsMenuHiddenActions(t *testing.T) {
 		if rows[i].Rule || rows[i].ActionID != want {
 			t.Fatalf("row %d = %+v, want action %q", i, rows[i], want)
 		}
+	}
+}
+
+// TestCtrlKMenuShowsOnlyDeclaredActionsNeverInjectedDefaults is the ruling
+// (a) golden: opening the overlay from a live model must build the menu
+// from the request's own declared Actions only, never from
+// effectiveActions' injected select/cancel/back -- even when the breadcrumb
+// is deep enough that back would once have been synthesized into the
+// keybar right alongside it.
+func TestCtrlKMenuShowsOnlyDeclaredActionsNeverInjectedDefaults(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "worktree"},
+		Rows:       []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "editor", Label: "open in editor", Scope: "item"},
+		},
+	}
+	m := New(req)
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("ctrl-k should open the registry menu")
+	}
+
+	var ids []string
+	for _, r := range m.modal.rows {
+		ids = append(ids, r.actionID)
+	}
+	if len(ids) != 1 || ids[0] != "editor" {
+		t.Fatalf("menu must show only the declared action, got %+v", ids)
+	}
+}
+
+// TestCtrlKMenuOpensNothingWithNoDeclaredActions covers the other half of
+// ruling (a): a request that declares no registry at all has nothing for
+// ctrl-k to show, so it must leave the picker untouched rather than opening
+// a menu of nothing but injected defaults.
+func TestCtrlKMenuOpensNothingWithNoDeclaredActions(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal != nil {
+		t.Fatalf("ctrl-k with no declared actions must open nothing, got %+v", m.modal)
 	}
 }
 
@@ -1696,10 +1756,10 @@ func TestCtrlKMenuHidesBuiltinMultiMarkActionsButKeepsCallerActions(t *testing.T
 	for _, r := range m.modal.rows {
 		ids = append(ids, r.actionID)
 	}
-	for _, hidden := range []string{"toggle", "toggle-next", "toggle-all"} {
+	for _, hidden := range []string{"toggle", "toggle-next", "toggle-all", "select", "cancel", "back"} {
 		for _, id := range ids {
 			if id == hidden {
-				t.Fatalf("built-in mark-cluster action %q must never appear as a ctrl-k menu row, got rows %+v", hidden, ids)
+				t.Fatalf("built-in/injected action %q must never appear as a ctrl-k menu row, got rows %+v", hidden, ids)
 			}
 		}
 	}
@@ -1905,6 +1965,9 @@ func TestMouseRightClickOpensMenuAtRow(t *testing.T) {
 		Rows: []protocol.PickRow{
 			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
 			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "editor", Label: "open in editor", Scope: "item"},
 		},
 	}
 	m := New(req)

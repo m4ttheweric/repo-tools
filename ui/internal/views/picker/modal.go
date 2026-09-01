@@ -92,13 +92,14 @@ func (m *Model) menuCursorRow() int {
 	return m.cursor
 }
 
-// openRegistryMenu opens the ctrl-k/right-click overlay from the action
-// registry the model already holds -- no round trip to TS. A registry with
-// nothing to show (no actions at all) leaves the picker untouched rather
-// than opening an empty box.
+// openRegistryMenu opens the ctrl-k/right-click overlay from the request's
+// own declared actions only -- never the injected keybar defaults
+// (select/cancel/back), which stay keybar-only and never become menu rows.
+// A request with nothing declared leaves the picker untouched rather than
+// opening an empty box.
 func (m *Model) openRegistryMenu() {
 	cursorRow := m.menuCursorRow()
-	rows := deriveMenu(effectiveActions(m.req), cursorRow)
+	rows := deriveMenu(m.req.Actions, cursorRow)
 	if len(rows) == 0 {
 		return
 	}
