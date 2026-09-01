@@ -18,6 +18,7 @@ import { machineSettingsPath, repoDataDir, rtDir } from "../../rt-paths.ts";
 import { deriveRepoIdentity } from "../../settings/identity.ts";
 import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
+import { readyTaskFor } from "../../worktree/ready-async.ts";
 import { tryLockTree } from "../../worktree/locks.ts";
 import { branchExistsLocalAsync, currentBranchAsync, headSha } from "../../worktree/git-async.ts";
 import {
@@ -388,20 +389,67 @@ describe("worktree:provision", () => {
     expect(String(flipped!.data.reason).startsWith("checkout-failed:")).toBe(true);
   });
 
-  test("a ready step that fails after the claim hands the tree over flagged", async () => {
+  test("wait:true — a ready step that fails after the claim hands the tree over flagged", async () => {
     const repo = makeRepo();
     await declareWorktrees(repo, repoName, { ready: [{ run: "exit 3" }] });
     seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
     const { h } = makeHandlers({ [repoName]: repo });
 
-    const res: any = await h["worktree:provision"]!({ repoName, branch: "rt-9-degraded" });
+    const res: any = await h["worktree:provision"]!({ repoName, branch: "rt-9-degraded", wait: true });
 
     // Non-fatal: the caller has a usable tree, but must be able to see that
     // its readiness is degraded.
     expect(res.ok).toBe(true);
     expect(res.data.readyFailed).toBe(true);
     expect(res.data.failedStep).toBe("exit 3");
-    expect(loadRegistry(repoName).find((t) => t.name === "alpha")!.state).toBe("claimed");
+    expect(res.data.readyPending).toBeUndefined();
+    const stored = loadRegistry(repoName).find((t) => t.name === "alpha")!;
+    expect(stored.state).toBe("claimed");
+    expect(stored.readyFailure).toBe("exit 3");
+    expect(stored.readyPendingAt).toBeUndefined();
+  });
+
+  test("RT-96: triggered steps queue to a background task and provision returns immediately", async () => {
+    const repo = makeRepo();
+    await declareWorktrees(repo, repoName, { ready: [{ run: "sleep 0.2 && echo ran >> settle-marker.txt" }] });
+    seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
+    const { h, events } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:provision"]!({ repoName, branch: "rt-96-async" });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.readyPending).toBe(true);
+    expect(res.data.readySteps).toEqual(["sleep 0.2 && echo ran >> settle-marker.txt"]);
+    expect(res.data.readyHeld).toBe(false);
+    expect(res.data.readyAt).toBeNull();
+    const stored = loadRegistry(repoName).find((t) => t.name === "alpha")!;
+    expect(stored.readyPendingAt).toBeTruthy();
+
+    const task = readyTaskFor(res.data.path);
+    expect(task).not.toBeNull();
+    const settle = await task!;
+    expect(settle.ok).toBe(true);
+    expect(existsSync(join(res.data.path, "settle-marker.txt"))).toBe(true);
+    const settled = loadRegistry(repoName).find((t) => t.name === "alpha")!;
+    expect(settled.readyPendingAt).toBeUndefined();
+    expect(settled.readyAt).toBeTruthy();
+    expect(events.find((e) => e.type === "worktree:ready-settled")?.data).toMatchObject({
+      repo: repoName, tree: "alpha", ok: true,
+    });
+  });
+
+  test("RT-96: wait:true blocks until the steps settle and stamps readyAt", async () => {
+    const repo = makeRepo();
+    await declareWorktrees(repo, repoName, { ready: [{ run: "true" }] });
+    seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
+    const { h, events } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:provision"]!({ repoName, branch: "rt-96-wait", wait: true });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.readyPending).toBeUndefined();
+    expect(res.data.readyAt).toBeTruthy();
+    expect(events.find((e) => e.type === "worktree:ready-settled")?.data).toMatchObject({ ok: true });
   });
 
   test("skips a locked on-deck tree and picks the next best", async () => {
@@ -421,6 +469,69 @@ describe("worktree:provision", () => {
     } finally {
       release!();
     }
+  });
+});
+
+describe("worktree:await-ready", () => {
+  test("joins the in-flight settle from an async provision and reports readiness", async () => {
+    const repo = makeRepo();
+    await declareWorktrees(repo, repoName, { ready: [{ run: "sleep 0.2 && echo ran >> settle-marker.txt" }] });
+    seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
+    const { h } = makeHandlers({ [repoName]: repo });
+
+    const prov: any = await h["worktree:provision"]!({ repoName, branch: "rt-96-join" });
+    expect(prov.data.readyPending).toBe(true);
+
+    const res: any = await h["worktree:await-ready"]!({ repoName, tree: "alpha" });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.ready).toBe(true);
+    expect(res.data.readyAt).toBeTruthy();
+    expect(existsSync(join(prov.data.path, "settle-marker.txt"))).toBe(true);
+  });
+
+  test("a settled failure is reported from the registry without re-running anything", async () => {
+    const repo = makeRepo();
+    const rec = seedClaimed(repo, repoName, "alpha", "rt-96-failed");
+    const trees = loadRegistry(repoName).map((t) =>
+      t.path === rec.path ? { ...t, readyFailure: "exit 3" } : t,
+    );
+    saveRegistry(repoName, trees);
+    const { h } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:await-ready"]!({ repoName, tree: "alpha" });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.ready).toBe(false);
+    expect(res.data.failedStep).toBe("exit 3");
+  });
+
+  test("an orphaned pending marker (daemon restart) is recovered by re-running the steps", async () => {
+    const repo = makeRepo();
+    await declareWorktrees(repo, repoName, { ready: [{ run: "echo ran >> recover-marker.txt" }] });
+    const rec = seedClaimed(repo, repoName, "alpha", "rt-96-orphan");
+    const trees = loadRegistry(repoName).map((t) =>
+      t.path === rec.path ? { ...t, readyPendingAt: new Date().toISOString() } : t,
+    );
+    saveRegistry(repoName, trees);
+    const { h } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:await-ready"]!({ repoName, tree: "alpha" });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.ready).toBe(true);
+    expect(existsSync(join(rec.path, "recover-marker.txt"))).toBe(true);
+    const settled = loadRegistry(repoName).find((t) => t.path === rec.path)!;
+    expect(settled.readyPendingAt).toBeUndefined();
+    expect(settled.readyAt).toBeTruthy();
+  });
+
+  test("an unknown tree refuses", async () => {
+    const repo = makeRepo();
+    const { h } = makeHandlers({ [repoName]: repo });
+    const res: any = await h["worktree:await-ready"]!({ repoName, tree: "ghost" });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("tree-unknown");
   });
 });
 

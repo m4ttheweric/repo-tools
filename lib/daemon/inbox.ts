@@ -67,11 +67,17 @@ export async function deliverToInbox(
   return Promise.race([attempt, timeout]);
 }
 
+/**
+ * The `#<id>` is what `rt chat ack <messageId>` takes. It rides next to the
+ * handle rather than at the end of the line because a batch collapses to one
+ * truncated row in the terminal: an id at the end of a long body would be cut
+ * off exactly when a bundle makes it necessary to tell the messages apart.
+ */
 export function renderDeliveries(
-  items: Array<{ room: string; dm: boolean; handle: string; body: string }>,
+  items: Array<{ room: string; dm: boolean; handle: string; body: string; id: number }>,
 ): string {
   return items
-    .map((item) => `${item.dm ? "[dm]" : `[#${item.room}]`} ${item.handle}: ${item.body}`)
+    .map((item) => `${item.dm ? "[dm]" : `[#${item.room}]`} ${item.handle} #${item.id}: ${item.body}`)
     .join("\n");
 }
 

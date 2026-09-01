@@ -18,6 +18,8 @@ export interface TreeRecord {
   claimedAt?: string;
   readyAt?: string; // last successful full readiness (ISO)
   readyStamp?: string; // commit sha the ready steps last ran against
+  readyPendingAt?: string; // ISO; claim-time steps queued to a background task (RT-96)
+  readyFailure?: string; // failed step name from the last background settle
   disposableReason?: string;
   retryFailures?: number; // shared backoff counter (create/freshen)
   nextRetryAt?: string; // ISO; skip mutating work until then
