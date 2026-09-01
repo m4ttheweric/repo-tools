@@ -64,7 +64,9 @@ import {
   worktreeReadyHeld,
   WORKTREE_APP_ENABLE_COMMAND,
 } from "../../worktree/config.ts";
-import { changedSince, runReadySteps, stepsToRun } from "../../worktree/ready.ts";
+import { changedSince, stepsToRun } from "../../worktree/ready.ts";
+import { computeClaimReadySteps, readyTaskFor, startReadyTask } from "../../worktree/ready-async.ts";
+import type { ReadyStep } from "../../worktree/config.ts";
 import { freshenRepo, reconcileRepoRegistry, withCreateLock } from "../worktree-reconciler.ts";
 import { repoDataDir, rtDir } from "../../rt-paths.ts";
 
@@ -354,6 +356,7 @@ export function createWorktreeHandlers(
 
       const tree = rec;
       const onDeckBranch = tree.branch;
+      let queuedSteps: ReadyStep[] | null = null;
 
       const outcome = await withTreeLock(tree.path, async (): Promise<
         { ok: true; data: any } | { ok: false; error: string }
@@ -447,8 +450,10 @@ export function createWorktreeHandlers(
 
         // Re-verify readiness: normally every `when` trigger no-ops, but a
         // default branch that moved (or a teammate branch just checked out)
-        // runs the delta. A failing step does NOT destroy the claimed tree —
-        // the caller has it and can fix it; readyAt simply doesn't advance.
+        // runs the delta. Triggered steps are queued to a background task
+        // (RT-96) — the caller gets the tree as soon as the branch is real —
+        // unless `wait: true` asks for the settled result. A failing step
+        // does NOT destroy the claimed tree either way.
         const { steps: readySteps, held } = await evaluateReadyGate(cfg, repoName, repoPath);
         if (held) {
           ctx.log.warn({ repo: repoName, tree: tree.name }, "provision: team `ready` steps held pending approval; run `rt worktree ready-approve`");
@@ -457,18 +462,14 @@ export function createWorktreeHandlers(
         const stamp = loadRegistry(repoName).find((t) => t.path === tree.path)?.readyStamp;
         const changed = stamp ? await changedSince(tree.path, stamp) : null;
         const toRun = stepsToRun(readySteps, changed);
-        let readyFailure: string | null = null;
         if (toRun.length > 0) {
-          const ready = await runReadySteps(tree.path, toRun);
-          if (!ready.ok) {
-            readyFailure = ready.failedStep;
-            ctx.log.warn(
-              { repo: repoName, tree: tree.name, failedStep: ready.failedStep },
-              "provision: ready step failed after claim",
-            );
-          } else {
-            patchTree(repoName, tree.path, (r) => { r.readyAt = new Date().toISOString(); });
-          }
+          // The settle task re-verifies this record under its own lock; the
+          // marker is what recovery keys on if the daemon dies mid-settle.
+          patchTree(repoName, tree.path, (r) => {
+            r.readyPendingAt = new Date().toISOString();
+            delete r.readyFailure;
+          });
+          queuedSteps = toRun;
         }
 
         const final = loadRegistry(repoName).find((t) => t.path === tree.path);
@@ -479,11 +480,14 @@ export function createWorktreeHandlers(
             path: tree.path,
             branch,
             wasOnDeck,
-            readyAt: final?.readyAt ?? null,
+            // A queued settle means the pool-era readyAt no longer describes
+            // this tree: the branch's own deps have not been validated yet.
+            readyAt: queuedSteps ? null : final?.readyAt ?? null,
             branchState,
-            // Additive, and only present when it happened: the tree is usable
-            // and handed over, but its dependencies may be stale.
-            ...(readyFailure ? { readyFailed: true as const, failedStep: readyFailure } : {}),
+            readyHeld: held,
+            ...(queuedSteps
+              ? { readyPending: true as const, readySteps: queuedSteps.map((s) => s.run) }
+              : {}),
           },
         };
       });
@@ -492,6 +496,35 @@ export function createWorktreeHandlers(
       // Claiming shrinks the pool: ask for a replenish pass now rather than
       // waiting for the next tick.
       if (outcome.ok) opts.kick();
+
+      if (outcome.ok && queuedSteps) {
+        // Started outside the claim's tree lock (the task takes its own) and
+        // deliberately not awaited on the default path: settle outcomes land
+        // in the registry and on the event bus, never in a rejection.
+        const task = startReadyTask({
+          repoName, path: outcome.data.path, steps: queuedSteps,
+          emit: opts.emit, log: ctx.log,
+        });
+        if (payload.wait === true) {
+          await task;
+          // The registry, not the settle's return value, decides what the
+          // caller is told: a non-terminal outcome (the tree lock never
+          // freed) leaves `readyPendingAt` standing for recovery, and
+          // reporting that as settled would hand back a half-installed tree.
+          const settled = loadRegistry(repoName).find((t) => t.path === outcome.data.path);
+          outcome.data.readyAt = settled?.readyAt ?? null;
+          if (settled?.readyPendingAt) {
+            outcome.data.readyPending = true;
+          } else {
+            delete outcome.data.readyPending;
+            delete outcome.data.readySteps;
+          }
+          if (settled?.readyFailure) {
+            outcome.data.readyFailed = true;
+            outcome.data.failedStep = settled.readyFailure;
+          }
+        }
+      }
       return outcome;
     },
 
@@ -671,6 +704,41 @@ export function createWorktreeHandlers(
         }
         return { ok: true, data: { ran } };
       });
+    },
+
+    "worktree:await-ready": async (payload: any) => {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
+      const treeName = typeof payload?.tree === "string" ? payload.tree : undefined;
+      if (!treeName) return { ok: false, error: "tree-required" };
+      const rec = loadRegistry(repoName).find((t) => t.name === treeName);
+      if (!rec) return { ok: false, error: "tree-unknown" };
+
+      // Join the live settle when there is one; a pending marker with no task
+      // is a settle lost to a daemon restart, recovered right here so the
+      // caller's wait still ends in a real outcome.
+      let task = readyTaskFor(rec.path);
+      if (!task && rec.readyPendingAt) {
+        const steps = await computeClaimReadySteps(repoName, repoPath, rec.path);
+        task = startReadyTask({ repoName, path: rec.path, steps, emit: opts.emit, log: ctx.log });
+      }
+      if (task) await task;
+
+      const final = loadRegistry(repoName).find((t) => t.path === rec.path);
+      if (!final) return { ok: false, error: "tree-unknown" };
+      return {
+        ok: true,
+        data: {
+          tree: final.name,
+          path: final.path,
+          ready: !final.readyFailure && !final.readyPendingAt,
+          readyAt: final.readyAt ?? null,
+          ...(final.readyFailure ? { failedStep: final.readyFailure } : {}),
+        },
+      };
     },
 
     /**
