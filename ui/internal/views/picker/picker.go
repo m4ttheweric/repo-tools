@@ -34,31 +34,42 @@ type Model struct {
 	modal       *modalState
 	held        heldModifiers
 	hover       int
+	width       int
 
 	result *protocol.PickResult
 }
 
-// New builds a Model from an opening request. matches starts as the
-// identity mapping in request order; Task 6 replaces it with Rank's real
-// output once query filtering lands.
+// New builds a Model from an opening request and ranks it against
+// InitialQuery immediately, so a request that opens pre-filtered renders
+// its real matches on the first frame rather than the identity order.
 func New(req protocol.PickRequest) *Model {
-	matches := make([]Match, len(req.Rows))
-	for i := range req.Rows {
-		matches[i] = Match{Index: i}
-	}
-	return &Model{
+	m := &Model{
 		req:      req,
 		query:    req.InitialQuery,
-		matches:  matches,
 		selected: make(map[string]bool),
 		hover:    -1,
 	}
+	m.refilter()
+	return m
+}
+
+// refilter re-ranks matches against the current query. Rank itself already
+// short-circuits an empty query to the identity order, so this is safe to
+// call unconditionally.
+func (m *Model) refilter() {
+	targets := make([]string, len(m.req.Rows))
+	for i, row := range m.req.Rows {
+		targets[i] = matchText(row)
+	}
+	m.matches = Rank(m.query, targets, m.req.Exact)
 }
 
 func (m *Model) Init() tea.Cmd { return nil }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "down":
@@ -98,9 +109,8 @@ func (m *Model) selectCursor() {
 	m.result = &protocol.PickResult{Action: "select", Value: &value, Query: m.query}
 }
 
-// View is a stub; Task 5 builds the real breadcrumb/filter/rows/keybar render.
 func (m *Model) View() tea.View {
-	v := tea.NewView("")
+	v := tea.NewView(render(m))
 	// Inline, not alt-screen: the picker is content-anchored, appearing
 	// where the caller invoked it rather than taking over the terminal.
 	v.MouseMode = tea.MouseModeAllMotion
