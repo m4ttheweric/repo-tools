@@ -221,6 +221,10 @@ export async function runNavPicker(opts: NavPickerOpts): Promise<NavResult | nul
   const handle = runPick({
     message: opts.message,
     rows,
+    // Nav-grammar default: a single bold segment naming the picker, same as
+    // every other caller that builds its own breadcrumb by hand -- without
+    // this the header goes blank (Go renders Breadcrumb, never Message).
+    breadcrumb: opts.breadcrumb ?? [opts.message],
     ...(actions ? { actions } : {}),
     ...(opts.initialQuery ? { initialQuery: opts.initialQuery } : {}),
     ...(resumeValue ? { resumeValue } : {}),

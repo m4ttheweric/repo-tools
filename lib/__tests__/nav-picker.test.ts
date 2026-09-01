@@ -60,6 +60,20 @@ describe("options -> rows", () => {
   });
 });
 
+describe("breadcrumb", () => {
+  test("defaults to a single bold segment naming the message (nav grammar)", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "a" })]);
+    await runNavPicker({ message: "Open thing.ts with", options: OPTIONS });
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["Open thing.ts with"]);
+  });
+
+  test("an explicit breadcrumb overrides the message-derived default", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "a" })]);
+    await runNavPicker({ message: "m", options: OPTIONS, breadcrumb: ["rt", "sdm", "connect"] });
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "sdm", "connect"]);
+  });
+});
+
 describe("headerParts -> footer actions", () => {
   test("each headerPart becomes a label-only global action, key and label parsed from 'key: label'", async () => {
     fake = installFakePick([resultStep({ action: "select", value: "a" })]);

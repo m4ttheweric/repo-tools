@@ -40,6 +40,8 @@ export interface NavPickerOpts {
   options: NavOption[];
   /** Shown in the border label. */
   message: string;
+  /** Header-left breadcrumb Go renders instead of `message`; defaults to `[message]` when unset (runNavPicker, lib/pick-wrappers.ts). */
+  breadcrumb?: string[];
   /** Full custom header string. Overrides `headerParts` if both are set. */
   header?: string;
   /** Header segments joined with "  ". Ignored if `header` is set. */
