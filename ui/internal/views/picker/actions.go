@@ -13,12 +13,27 @@ import (
 // registry at all.
 const (
 	idSelect     = "select"
+	idWithArgs   = "with-args"
 	idCancel     = "cancel"
 	idBack       = "back"
 	idToggle     = "toggle"
 	idToggleNext = "toggle-next"
 	idToggleAll  = "toggle-all"
 )
+
+// isInjectedDefaultID reports whether id names one of the built-in defaults
+// the picker or the command-tree dispatcher injects. These are keybar
+// affordances only: the ctrl-k menu is caller-declared actions, so an
+// injected default that reaches deriveMenu (showPicker declares
+// select/with-args/back on the wire, so they arrive as m.req.Actions) is
+// dropped there rather than listed as if the caller had asked for it.
+func isInjectedDefaultID(id string) bool {
+	switch id {
+	case idSelect, idWithArgs, idCancel, idBack, idToggle, idToggleNext, idToggleAll:
+		return true
+	}
+	return false
+}
 
 // defaultActions is what a bare request renders: select always exists, and
 // cancel is always the last word (the terminal escape hatch). back is never
@@ -91,12 +106,13 @@ type keybarCluster struct {
 // groups (in first-seen order) and the right side's ungrouped run. The
 // built-in defaults land in the ungrouped run unless a caller gives them a
 // group of their own, which is what pins back/cancel to the right by
-// default. Keyless actions never reach the footer; they are menu-only.
+// default. Keyless actions never reach the footer; they are menu-only, and
+// FooterHidden actions stay bound but out of the legend the same way.
 func keybarClusters(actions []protocol.PickAction) (left []keybarCluster, right []protocol.PickAction) {
 	order := make([]string, 0, len(actions))
 	byGroup := make(map[string][]protocol.PickAction, len(actions))
 	for _, a := range actions {
-		if a.Key == "" {
+		if a.Key == "" || a.FooterHidden {
 			continue
 		}
 		if a.Group == "" {
@@ -223,11 +239,14 @@ type MenuRow struct {
 // dropped entirely rather than rendering an empty section above the rule.
 // MenuHidden actions never become a row here regardless of scope: the menu
 // dispatches whatever it shows through the generic registry path, which
-// would mis-fire for an action a hardcoded key already owns.
+// would mis-fire for an action a hardcoded key already owns. An injected
+// default id (select/with-args/back/cancel and the multi mark cluster) is
+// excluded the same way, so the dispatcher's own select/with-args/back never
+// list as menu rows and a request that declares nothing opens no menu at all.
 func deriveMenu(actions []protocol.PickAction, cursorRow int) []MenuRow {
 	var item, global []MenuRow
 	for _, a := range actions {
-		if a.MenuHidden {
+		if a.MenuHidden || isInjectedDefaultID(a.ID) {
 			continue
 		}
 		row := MenuRow{ActionID: a.ID, Label: a.Label, Key: a.Key}

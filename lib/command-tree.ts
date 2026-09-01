@@ -594,8 +594,12 @@ export async function showPicker(
     actions.push({ id: "with-args", label: "with args", key: "alt-enter", scope: "item", group: "pick" });
   }
   // ctrl-up is always bound: at the root it has nowhere to go back to, so it
-  // cancels (same as Esc) rather than going silently unbound.
-  actions.push({ id: "back", label: "back", key: "ctrl-up", scope: "global" });
+  // cancels (same as Esc) rather than going silently unbound. footerHidden at
+  // the root keeps it dispatchable but out of the keybar legend, so no bare
+  // "ctrl-up" advertises a back that only cancels; depth>1 keeps the visible
+  // "back" label.
+  const atRoot = breadcrumb.length <= 1;
+  actions.push({ id: "back", label: "back", key: "ctrl-up", scope: "global", ...(atRoot ? { footerHidden: true } : {}) });
 
   const handle = runPick({
     message: breadcrumb.join(" "),

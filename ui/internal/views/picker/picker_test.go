@@ -272,6 +272,44 @@ func TestUpdateBreadcrumbReplacesRenderedHeader(t *testing.T) {
 	}
 }
 
+// TestApplyUpdateCrumbSuffixCoupledToBreadcrumb pins the coupling the nav
+// expand toggle leans on and that otherwise has no guard: CrumbSuffix rides
+// the Breadcrumb it annotates. (a) an update carrying a Breadcrumb but no
+// CrumbSuffix CLEARS a previously-set suffix (nav returning to the default
+// sort); (b) an actions-only update carries no Breadcrumb patch, so it
+// PRESERVES the suffix.
+func TestApplyUpdateCrumbSuffixCoupledToBreadcrumb(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb:  []string{"~/src"},
+		CrumbSuffix: " (Size, largest first)",
+		Rows:        []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+	m.width = 60
+
+	// (a) A breadcrumb patch with no suffix clears the prior suffix.
+	next, _ := m.Update(UpdateMsg{Update: protocol.PickUpdate{T: "update", Breadcrumb: []string{"~/src/pkg"}}})
+	m = next.(*Model)
+	if m.req.CrumbSuffix != "" {
+		t.Fatalf("a breadcrumb-carrying update with no suffix must clear it, got %q", m.req.CrumbSuffix)
+	}
+
+	// Re-establish a suffix through a breadcrumb patch that carries one.
+	next, _ = m.Update(UpdateMsg{Update: protocol.PickUpdate{T: "update", Breadcrumb: []string{"~/src/pkg"}, CrumbSuffix: " (Name, A-Z)"}})
+	m = next.(*Model)
+	if m.req.CrumbSuffix != " (Name, A-Z)" {
+		t.Fatalf("setup: the suffix should be re-established, got %q", m.req.CrumbSuffix)
+	}
+
+	// (b) An actions-only update patches no breadcrumb, so the suffix survives.
+	next, _ = m.Update(UpdateMsg{Update: protocol.PickUpdate{T: "update", Actions: []protocol.PickAction{{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global"}}}})
+	m = next.(*Model)
+	if m.req.CrumbSuffix != " (Name, A-Z)" {
+		t.Fatalf("an actions-only update must preserve the suffix, got %q", m.req.CrumbSuffix)
+	}
+}
+
 // TestEventActionKeyEnqueuesEventAndStaysOpen is the golden for the
 // event:true dispatch path: the key is matched against the registry (not
 // the hardcoded enter/select path), the encoded line is enqueued onto
@@ -1118,6 +1156,42 @@ func TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight(t *testing.T) {
 	}
 }
 
+// TestRootBackActionBoundButHiddenFromFooter pins the Actions board's root
+// footer: at the command-tree root the ctrl-up back action carries FooterHidden,
+// so it stays bound (ctrl-up still cancels) yet never advertises a bare
+// "ctrl-up" in a legend that has nowhere to go back to. The right-pinned run
+// then shows only the injected esc/quit. depth>1 keeps the visible back label,
+// which TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight pins.
+func TestRootBackActionBoundButHiddenFromFooter(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "list", Left: []protocol.PickSegment{{Text: "list"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "select", Label: "select", Key: "enter", Scope: "item", Group: "pick", Primary: true},
+			{ID: "back", Label: "back", Key: "ctrl-up", Scope: "global", FooterHidden: true},
+		},
+	}
+	m := New(req)
+	m.width = 80
+
+	lines := strings.Split(render(m), "\n")
+	footer := ansi.Strip(lines[len(lines)-1])
+	if strings.Contains(footer, "ctrl-up") || strings.Contains(footer, "back") {
+		t.Fatalf("the footer-hidden back action must not appear in the keybar legend: %q", footer)
+	}
+	if !strings.Contains(footer, "esc") || !strings.Contains(footer, "quit") {
+		t.Fatalf("the injected esc/quit default must still pin right: %q", footer)
+	}
+
+	// FooterHidden hides the legend row only: ctrl-up still dispatches the
+	// bound back action and resolves it, so the root's escape hatch survives.
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: tea.KeyUp})
+	m = next.(*Model)
+	if m.result == nil || m.result.Action != idBack {
+		t.Fatalf("ctrl-up must still dispatch the bound back action, got %+v", m.result)
+	}
+}
+
 // TestKeybarLegendIntegratesWithTheScrollRangeOnTheSameFooterLine mirrors
 // the Scrolling board: when the list overflows the viewport, the range
 // indicator sits between the (empty, here) grouped legend and the pinned
@@ -1379,6 +1453,53 @@ func TestCtrlKMenuOpensNothingWithNoDeclaredActions(t *testing.T) {
 	m = next.(*Model)
 	if m.modal != nil {
 		t.Fatalf("ctrl-k with no declared actions must open nothing, got %+v", m.modal)
+	}
+}
+
+// TestCtrlKMenuExcludesInjectedDefaultsDeclaredOnTheWire covers the root
+// dispatcher case the earlier test does not reach: showPicker declares
+// select/with-args/back as m.req.Actions on the wire, so deriveMenu has to
+// drop them by id rather than list them as if the caller asked for them. A
+// registry of nothing but those defaults opens no menu; one real declared
+// action alongside them becomes the only menu row.
+func TestCtrlKMenuExcludesInjectedDefaultsDeclaredOnTheWire(t *testing.T) {
+	defaults := []protocol.PickAction{
+		{ID: "select", Label: "select", Key: "enter", Scope: "item", Group: "pick", Primary: true},
+		{ID: "with-args", Label: "with args", Key: "alt-enter", Scope: "item", Group: "pick"},
+		{ID: "back", Label: "back", Key: "ctrl-up", Scope: "global", FooterHidden: true},
+	}
+
+	bare := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows:    []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+		Actions: defaults,
+	}
+	m := New(bare)
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal != nil {
+		var ids []string
+		for _, r := range m.modal.rows {
+			ids = append(ids, r.actionID)
+		}
+		t.Fatalf("a registry of nothing but injected defaults must open no menu, got %+v", ids)
+	}
+
+	withReal := bare
+	withReal.Actions = append(append([]protocol.PickAction{}, defaults...),
+		protocol.PickAction{ID: "editor", Label: "open in editor", Scope: "item"})
+	m = New(withReal)
+	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("ctrl-k should open a menu once a real action is declared")
+	}
+	var ids []string
+	for _, r := range m.modal.rows {
+		ids = append(ids, r.actionID)
+	}
+	if len(ids) != 1 || ids[0] != "editor" {
+		t.Fatalf("only the caller-declared action may appear, never the injected defaults: %+v", ids)
 	}
 }
 
@@ -3676,6 +3797,55 @@ func TestCtrlSlashTogglesExpandedKeybar(t *testing.T) {
 	m = next.(*Model)
 	if !m.expanded {
 		t.Fatal("ctrl-/ (ctrl+/) should toggle the expanded keybar on")
+	}
+}
+
+// TestCtrlKeysBadgeGatesOnPhysicalHoldNotToggle pins the Modifiers board's
+// "⌃ keys" header badge as a physical-hold indicator: a bare ctrl hold shows
+// it, while the sticky ctrl-/ toggle shows the two-line keybar WITHOUT it. The
+// badge gates on m.held.ctrl, never on the toggle's own m.expanded, so the two
+// states stay visually distinct.
+func TestCtrlKeysBadgeGatesOnPhysicalHoldNotToggle(t *testing.T) {
+	rows := make([]protocol.PickRow, 6)
+	for i := range rows {
+		v := fmt.Sprintf("row%d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows,
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+		},
+	}
+	header := func(m *Model) string { return ansi.Strip(strings.Split(render(m), "\n")[0]) }
+
+	// Sticky toggle: the two-line keybar shows, the badge does not, and the
+	// physical-hold flag was never set.
+	tog := New(req)
+	tog.width = 90
+	next, _ := tog.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
+	tog = next.(*Model)
+	if !tog.expanded || tog.held.ctrl {
+		t.Fatalf("setup: ctrl-/ should toggle expanded on without a physical hold: expanded=%v held=%v", tog.expanded, tog.held.ctrl)
+	}
+	togLines := strings.Split(render(tog), "\n")
+	if !strings.Contains(ansi.Strip(togLines[len(togLines)-2]), "held: showing all keys") {
+		t.Fatalf("the toggle must still show the two-line keybar: %q", ansi.Strip(togLines[len(togLines)-2]))
+	}
+	if strings.Contains(header(tog), "⌃ keys") {
+		t.Fatalf("the ⌃ keys badge must be absent on the sticky ctrl-/ toggle: %q", header(tog))
+	}
+
+	// Physical hold: the same badge is present.
+	held := New(req)
+	held.width = 90
+	next, _ = held.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
+	held = next.(*Model)
+	if !held.held.ctrl {
+		t.Fatal("setup: a bare ctrl press should set held.ctrl")
+	}
+	if !strings.Contains(header(held), "⌃ keys") {
+		t.Fatalf("the ⌃ keys badge must be present on a physical ctrl hold: %q", header(held))
 	}
 }
 

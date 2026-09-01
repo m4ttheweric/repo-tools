@@ -158,11 +158,13 @@ describe("showPicker", () => {
     expect(fake.calls[0]!.request.actions?.some((a) => a.id === "with-args")).toBe(false);
   });
 
-  test("registers the ctrl-up-bound back action at every depth, including the root", async () => {
+  test("registers the ctrl-up-bound back action at every depth: footerHidden at the root, visible below it", async () => {
     fake = installFakePick([resultStep({ action: "select", value: "list" })]);
     await showPicker(PICKER_TREE, ["rt"]);
+    // At the root the back action stays bound (ctrl-up still cancels) but
+    // footerHidden keeps it out of the keybar legend.
     expect(fake.calls[0]!.request.actions).toContainEqual({
-      id: "back", label: "back", key: "ctrl-up", scope: "global",
+      id: "back", label: "back", key: "ctrl-up", scope: "global", footerHidden: true,
     });
 
     fake.restore();
@@ -171,6 +173,9 @@ describe("showPicker", () => {
     expect(fake.calls[0]!.request.actions).toContainEqual({
       id: "back", label: "back", key: "ctrl-up", scope: "global",
     });
+    // depth>1 keeps the visible back label: footerHidden never rides the wire.
+    const back = fake.calls[0]!.request.actions!.find((a) => a.id === "back")!;
+    expect(back.footerHidden).toBeUndefined();
   });
 
   // The old fzf-backed showPicker captured ctrl-up unconditionally and, at
