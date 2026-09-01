@@ -37,9 +37,14 @@ construction, so it always fits in one URL path segment and is a legal
 directory name. `encodeURIComponent` it again when it rides in a URL
 (`/api/runs/${encodeURIComponent(identity)}/${runId}`).
 
-Legal directory name is NOT PATH-safe: the delimiter colon splits any PATH
-entry the directory ends up inside (a worktree's `node_modules/.bin` during
-installs, RT-95). Any identity-keyed directory whose subtree can land in
+Legal directory name is NOT PATH-safe, and PATH-safe is NOT URL-safe: the
+delimiter colon splits any PATH entry the directory ends up inside (a
+worktree's `node_modules/.bin` during installs, RT-95), and ANY
+percent-encoding breaks every consumer that parses a bare path as a URL
+(node's ESM loader rejects `%2F`; `import.meta.url` re-encodes `%` to
+`%25`). A pool segment must therefore contain no colon and no percent at
+all... an escape scheme cannot fix this class, only a percent-free slug
+can, and `lib/__tests__/rt-paths.test.ts` pins that invariant. Any identity-keyed directory whose subtree can land in
 PATH uses the friendly pool segment instead: `gh-<org>-<repo>` (host alias,
 else the dashed hostname), `local-<basename>` for path-kind
 (`worktreePoolRoot` in `lib/rt-paths.ts`). The segment is a derived
