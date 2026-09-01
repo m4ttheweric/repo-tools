@@ -82,14 +82,25 @@ test("plainRow: labelWidth pads the label so hints line up down a group", () => 
 });
 
 test("footerActions: exit keys close with event:false, other header parts are label-only", () => {
-  const idle = runTest.footerActions(["enter: select", "ctrl-up: back", "esc: cancel"], []);
+  const idle = runTest.footerActions(["enter: select", "ctrl-up: back", "esc: cancel"], [], "run");
   expect(idle).toContainEqual({ id: "ctrl-up", label: "back", key: "ctrl-up", scope: "global", event: false });
   expect(idle.some((a) => a.id === "ctrl-x")).toBe(false);
 
-  const queueActive = runTest.footerActions(["enter: select", "ctrl-x: dequeue", "esc: cancel"], ["ctrl-x"]);
-  expect(queueActive).toContainEqual({ id: "ctrl-x", label: "dequeue", key: "ctrl-x", scope: "global", event: false });
+  const queueActive = runTest.footerActions(["enter: select", "ctrl-x: dequeue", "esc: cancel"], ["ctrl-x"], "queue");
+  expect(queueActive).toContainEqual({ id: "ctrl-x", label: "dequeue", key: "ctrl-x", scope: "global", event: false, group: "queue" });
   // ctrl-up is always an exit key even when no header part names it -- label falls back to the key itself.
   expect(queueActive).toContainEqual({ id: "ctrl-up", label: "ctrl-up", key: "ctrl-up", scope: "global", event: false });
+});
+
+test("footerActions: primary keys cluster under the lav group label; ctrl-up and esc pin right (F-r1)", () => {
+  const actions = runTest.footerActions(["enter: run", "tab: queue", "ctrl-up: back", "esc: quit"], ["tab"], "run");
+  const byId = (id: string) => actions.find((a) => a.id === id);
+  // enter and tab carry the group label -> lav cluster on the left.
+  expect(byId("enter")?.group).toBe("run");
+  expect(byId("tab")?.group).toBe("run");
+  // ctrl-up (back) and esc (quit) stay ungrouped -> right-pinned run.
+  expect(byId("ctrl-up")?.group).toBeUndefined();
+  expect(byId("esc")?.group).toBeUndefined();
 });
 
 // ─── Wiring: sequential fake over the real package -> script -> package flow ─
@@ -204,7 +215,11 @@ test("package picker: queue-active state groups queue rows, adds Launch all + Sa
   const idleActions = fake.calls[0]!.actions ?? [];
   const queueActions = queueCall.actions ?? [];
   expect(idleActions.some((a) => a.id === "ctrl-x")).toBe(false);
-  expect(queueActions).toContainEqual({ id: "ctrl-x", label: "dequeue", key: "ctrl-x", scope: "global", event: false });
+  expect(queueActions).toContainEqual({ id: "ctrl-x", label: "dequeue", key: "ctrl-x", scope: "global", event: false, group: "queue" });
+  // The queue-active footer clusters its keys under the "queue" lav label,
+  // leaving ctrl-up and esc to pin right (RunChain.dc.html panel 2).
+  expect(queueActions.find((a) => a.id === "enter")?.group).toBe("queue");
+  expect(queueActions.find((a) => a.id === "ctrl-up")?.group).toBeUndefined();
 });
 
 // ─── esc-abort contract (RunAborted, not a live picker or a launched run) ───

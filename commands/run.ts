@@ -148,7 +148,7 @@ function lastRunRow(entry: RunHistoryEntry): PickRow {
 }
 
 /** `key: label` header parts become global footer actions -- exit keys (ctrl-up plus every expectKey) close the picker with that key as the action id; any other header part is a label-only action. Mirrors runNavPicker's own headerParts translation (lib/pick-wrappers.ts), which NavOption-based call sites get for free but a raw `rows` request has to build itself. */
-function footerActions(headerParts: string[], expectKeys: string[]): PickAction[] {
+function footerActions(headerParts: string[], expectKeys: string[], groupLabel: string): PickAction[] {
   const exitKeys = new Set<string>(["ctrl-up", ...expectKeys]);
   const headerLabels = new Map(
     headerParts.map((part) => {
@@ -156,13 +156,16 @@ function footerActions(headerParts: string[], expectKeys: string[]): PickAction[
       return sep < 0 ? ([part, part] as const) : ([part.slice(0, sep), part.slice(sep + 2)] as const);
     }),
   );
+  // ctrl-up (back) and esc (quit) pin right; every other action clusters under
+  // the lav group label on the left, matching RunChain.dc.html's footer.
+  const groupOf = (key: string) => (key === "ctrl-up" || key === "esc" ? {} : { group: groupLabel });
   const actions: PickAction[] = [];
   for (const key of exitKeys) {
-    actions.push({ id: key, label: headerLabels.get(key) ?? key, key, scope: "global", event: false });
+    actions.push({ id: key, label: headerLabels.get(key) ?? key, key, scope: "global", event: false, ...groupOf(key) });
   }
   for (const [key, label] of headerLabels) {
     if (exitKeys.has(key)) continue;
-    actions.push({ id: key, label, key, scope: "global" });
+    actions.push({ id: key, label, key, scope: "global", ...groupOf(key) });
   }
   return actions;
 }
@@ -179,6 +182,7 @@ async function runSegmentPicker(opts: {
   message: string;
   rows: PickRow[];
   headerParts: string[];
+  groupLabel: string;
   expectKeys?: string[];
   resumeValue?: string;
   breadcrumb?: string[];
@@ -186,7 +190,7 @@ async function runSegmentPicker(opts: {
   const handle = runPick({
     message: opts.message,
     rows: opts.rows,
-    actions: footerActions(opts.headerParts, opts.expectKeys ?? []),
+    actions: footerActions(opts.headerParts, opts.expectKeys ?? [], opts.groupLabel),
     ...(opts.resumeValue ? { resumeValue: opts.resumeValue } : {}),
     ...(opts.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
   });
@@ -401,6 +405,7 @@ async function selectPackageAndScript(
           rows,
           message: label ? `Select package — ${label}` : "Select package",
           headerParts: queueHeaderParts,
+          groupLabel: q.length > 0 ? "queue" : "run",
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
           resumeValue,
           breadcrumb,
@@ -566,6 +571,7 @@ async function selectPackageAndScript(
         ? `Select script — ${label} · ${packageLabel === "." ? "root" : packageLabel}`
         : "Select script",
       headerParts: scriptHeaderParts,
+      groupLabel: q.length > 0 ? "queue" : "run",
       expectKeys: ["alt-enter", "tab"],
       breadcrumb,
     });
@@ -916,6 +922,7 @@ export async function resolveRun(
                 "ctrl-up: back to repo",
                 "esc: quit",
               ],
+              groupLabel: "run",
               breadcrumb: ["rt", "run", repoLabel(selectedRepo.repoName)],
             });
             if (!wtResult) throw new RunAborted(1);
