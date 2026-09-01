@@ -429,6 +429,10 @@ describe("runApplyWith — need-bearing steps", () => {
     expect(outcomeFromNeed("timeout")).toEqual({ state: "failed", detail: "timed out waiting for mattstack.app" });
     expect(outcomeFromNeed("app-gone")).toEqual({ state: "failed", detail: "mattstack.app stopped responding" });
     expect(outcomeFromNeed("no-app").state).toBe("skipped");
+    expect(outcomeFromNeed("app-unanswerable")).toEqual({
+      state: "failed",
+      detail: "mattstack.app is running but cannot answer setup requests from this terminal — quit it and Retry, or finish setup in the app",
+    });
     expect(outcomeFromNeed({ ok: true, detail: "d" })).toEqual({ state: "done", detail: "d" });
     expect(outcomeFromNeed({ ok: false, detail: "d" })).toEqual({ state: "failed", detail: "d" });
   });
@@ -560,6 +564,24 @@ describe("createApplyContext", () => {
 
     expect(result).toBe("no-app");
     expect(events).toEqual([]); // reachability is probed BEFORE emitting `need` — nobody is listening
+  });
+
+  test("ctx.need refuses fast when nonInteractive and the tray IS reachable — a standalone run's needs have no reader, so waiting is a guaranteed 10-minute hang", async () => {
+    const tray = fakeTray({ "GET /version": () => ({ status: 200, json: { version: "1.0.0" } }) });
+    const p = fakeProbes({ tray });
+    const events: ApplyEvent[] = [];
+    const ctx = await createApplyContext({
+      probes: p,
+      emit: (ev) => events.push(ev),
+      secrets: fakeSecrets,
+      relay: fakeRelay,
+      flags: { nonInteractive: true, teamOfOne: false, ci: false },
+    });
+
+    const result = await ctx.need("services.register", { type: "app-register-services", plists: [] });
+
+    expect(result).toBe("app-unanswerable");
+    expect(events).toEqual([]); // refused before emitting — only an app-driven apply services needs
   });
 
   test("ctx.need emits the need event and threads the injected clock into awaitNeed's poll loop when reachable", async () => {

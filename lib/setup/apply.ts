@@ -81,7 +81,7 @@ export interface ApplyContext {
    * `EventId` (not `StepId`) so `rt uninstall`'s action ids — which share
    * this same need protocol and this same context type — typecheck too.
    */
-  need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app">;
+  need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app" | "app-unanswerable">;
 }
 
 export interface StepDef {
@@ -308,11 +308,18 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
     relay,
     secretPresence: deps.secretPresence ?? realSecretPresence(),
     redact: redactor.redact,
-    async need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app"> {
+    async need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app" | "app-unanswerable"> {
       // Reachability is checked BEFORE the `need` event goes out: a
       // nonInteractive run with no live tray.sock has nobody to answer it,
       // so emitting first would strand an unanswerable `need` on the stream.
-      if (flags.nonInteractive && !(await trayReachable(p))) return "no-app";
+      // A REACHABLE tray is no better for a nonInteractive run: needs ride
+      // the app's own stdout pipe, so only an app-driven apply services
+      // them — a standalone run would poll ten minutes and fail anyway.
+      // Refuse fast with the way out instead. (The app's own spawn is
+      // never nonInteractive, so onboarding keeps its emit-and-wait path.)
+      if (flags.nonInteractive) {
+        return (await trayReachable(p)) ? "app-unanswerable" : "no-app";
+      }
       emit({ event: "need", id, request });
       return awaitNeed(p.tray, id, needOpts);
     },
