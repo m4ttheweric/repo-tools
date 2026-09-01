@@ -14,7 +14,7 @@
 
 - Big bang: at cutover no fzf spawn path remains; the deletion inventory in the spec ("Deleted at cutover") is executed in full, including the patched fzf binary, `lib/nav-watch.ts`, rt-health's `tool.fzf` row + `LINK_BUNDLED_FZF`, `RT_FZF_ALT_SCREEN`, and the listed unit tests.
 - Contracts preserved byte-identical: non-TTY/`--json`/`RT_BATCH` gates (picker-conformance stays green), `ctrl-up`=back everywhere (`BackNavigation` when `backLabel` set), `alt-enter`=with-args, `stderr: true` output discipline, exit codes.
-- Sacred logic untouched: `commands/run.ts` (queue/presets/variations/resolve), `commands/cd.ts` decisions (two-step, auto-select-when-one), `lib/enrich.ts` data pipeline (it gains ONLY `formatBranchSegments`).
+- Sacred logic untouched: `commands/run.ts` (queue/presets/variations/resolve), `commands/cd.ts` decisions (two-step, auto-select-when-one), `lib/enrich.ts` data pipeline (its one addition is `formatBranchSegments`; the `formatBranchLabel` flatten is deleted in T19).
 - The TS CLI stays UI-free (no ink/react/jsx/.tsx; `lib/__tests__/no-ui-in-cli.test.ts`).
 - New command modules (none expected) would need `lib/module-registry.ts`; `rt-ui pick` is a Go verb, not a TS module.
 - Theme: three new tokens exactly — `HoverBg #251E3D`, `Surface #221A35`, `Blue #6B9DFF`. `GlyphBar` untouched. Update the two stale theme.go comments (`Huh()`'s fzf comparison, `CardWidth`'s "fzf pickers stay full width").
@@ -39,9 +39,9 @@
 - `ui/cmd/rt-ui/main.go` — `pick` verb wiring.
 - `lib/ui/protocol.ts` — pick message types (mirrored Go structs in `ui/internal/protocol/`, fixtures in `ui/fixtures/`).
 - `lib/ui/pick.ts` (new) — spawn + stream + gates. `lib/ui/pick-fake.ts` (new, test double).
-- `lib/pick-wrappers.ts` (new) — `filterableSelect`, `filterableMultiselect`, `runNavPicker`, arg-collector picker, re-exported from their current homes so import sites don't move.
+- `lib/pick-wrappers.ts` (new) — `filterableSelect`, `filterableMultiselect`, `runNavPicker`, arg-collector picker, import sites repointed here at each function's migration task; `lib/navigate.ts` keeps the Nav* types and re-exports `runNavPicker`.
 - Rewritten in place: `lib/command-tree.ts` `showPicker`, `commands/commit.ts` picker, `commands/skills.ts` palette, `commands/nav.ts` loop (events model), `commands/cd.ts` (ctrl-r event; `formatBranchSegments` consumption), `lib/pickers.ts`.
-- `lib/enrich.ts` — add `formatBranchSegments` only.
+- `lib/enrich.ts` — add `formatBranchSegments`; delete `formatBranchLabel` (T19).
 - Deleted: per the spec inventory (Phase 7 executes it verbatim).
 
 ## Phases
@@ -170,7 +170,7 @@ Per Filtering/RunChain boards: no-match = count `0/N`, inline faint `no matches`
 
 **Model:** sonnet; reviewer opus. **Files:** `picker.go`, tests.
 
-`update` handling: replace rows (re-rank current query; keep cursor on the same `value` if it survives, else clamp), replace message, replace actions. `event` emission: an action whose id is in the request's `events` set... NO — the classification lives in TS (it knows the handlers); protocol addition NOT needed: TS marks event-actions in the registry. Add `event?: boolean` to `PickAction` in protocol.ts + Go + the `pick-request.json`/`pick-update.json` fixtures (extend Task 3's fixtures in this task; both golden tests updated together). On an `event:true` action: Go writes `PickEvent` and stays open; on any other action: terminal `PickResult`.
+`update` handling: replace rows (re-rank current query; keep cursor on the same `value` if it survives, else clamp), replace message, replace actions. `event` emission: classification lives in TS (it knows the handlers) and rides the registry. Add `event?: boolean` to `PickAction` in protocol.ts + Go + the `pick-request.json`/`pick-update.json` fixtures (extend Task 3's fixtures in this task; both golden tests updated together). On an `event:true` action: Go writes `PickEvent` and stays open; on any other action: terminal `PickResult`.
 
 - [ ] Step 1: failing model tests: (a) update with new rows preserves cursor by value; (b) pressing an `event:true` action's key writes an event line and the model keeps running; (c) a non-event action produces the terminal result.
 - [ ] Steps 2-5: implement, PASS, commit.
@@ -218,12 +218,12 @@ Grammar per Mouse board: hover=HoverBg (never moves cursor); click row=cursor; d
 **Produces:**
 ```ts
 export interface PickHandle {
-  update(patch: Omit<PickUpdate, "kind">): void;
+  update(patch: Omit<PickUpdate, "t">): void;
   modal(message: string, rows: PickRow[]): Promise<string | null>;
   result: Promise<PickResult>;
 }
 export interface PickCallbacks { onEvent?: (e: PickEvent) => void | Promise<void> }
-export function runPick(req: Omit<PickRequest, "kind">, cb?: PickCallbacks): PickHandle;
+export function runPick(req: Omit<PickRequest, "t" | "protocol">, cb?: PickCallbacks): PickHandle;
 // Non-TTY guard is the CALLER's (wrapper's) responsibility, preserving each
 // call site's exact current message/exit — runPick throws if stdin/stderr are
 // not TTYs (programming error, mirrors prompt spawn gate).
@@ -235,7 +235,7 @@ Spawns `rt-ui pick` via the same resolution as `lib/ui/spawn.ts` (source checkou
 
 ### Task 14: Wrappers — `filterableSelect` + `filterableMultiselect`
 
-**Model:** sonnet; reviewer opus. **Files:** Create `lib/pick-wrappers.ts`; Modify `lib/fzf-select.ts` to re-export from it (spawn code deleted in Phase 7; until then the old path stays for un-migrated callers — the wrapper flip happens per call site in Phases 5-6 via the re-export switch); Test `lib/__tests__/pick-wrappers.test.ts`.
+**Model:** sonnet; reviewer opus. **Files:** Create `lib/pick-wrappers.ts`; repoint the ~11 `./fzf-select.ts` importers of these two functions to `lib/pick-wrappers.ts` in this task (the flip is at once, per the Phases note; `lib/fzf-select.ts` keeps only what direct-spawn surfaces still use until T22 deletes it); Test `lib/__tests__/pick-wrappers.test.ts`.
 
 Same signatures as today (spec: wrappers keep names/signatures), plus ONE optional trailing param shared by both:
 ```ts
@@ -333,4 +333,4 @@ One `runPick` per cwd (not per interaction). Registry: `enter` is `event:true` f
 - Spec coverage: every spec section maps (protocol→T3/T8, matcher→T1, tokens→T2, core render→T5-7, updates/events→T8, registry→T9, modals→T10, multi→T11, mouse/modifiers→T12, TS core→T13, wrappers→T14-16, surfaces→T17-21, deletion+test fates+rt-health→T22, parity+docs→T23, enrichment→T19, terminal-ownership rule→T20 registry classification).
 - The `event` flag and `acceptNoMatch`/`crumbEvents` flags are protocol additions made in T8/T12/T16 with fixtures updated in the same task (fixture discipline preserved).
 - Type consistency: `PickSegment/PickRow/PickAction/PickRequest/PickUpdate/PickEvent/PickResult` names used uniformly; `runPick/PickHandle` consistent across T13-21.
-- Phases keep the tree green: wrappers re-export so un-migrated callers stay on fzf until their phase-6 task; Phase 7 deletes only after all call sites are off.
+- Phase greenness: per the Phases note — the T14 flip lands all select/multiselect callers at once (unit-green via the fake); direct-spawn surfaces flip at their own task; the 7 fzf e2e suites are red from Phase 5 until T22 removes them (expected).
