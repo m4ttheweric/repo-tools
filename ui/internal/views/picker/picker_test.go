@@ -3676,18 +3676,35 @@ func interleavingGroupRows() []protocol.PickRow {
 }
 
 // TestFrameHeightStaysConstantWhenAFuzzyQueryInterleavesGroups is the grouped
-// case the flat-list tests missed: Rank sorts filtered matches by fuzzy score,
-// interleaving the two groups so a window carries a header before nearly every
-// row. Reserving only distinctGroupCount header lines under-counted that, the
-// natural frame crossed the floor, and the padded frame changed height per
-// keystroke -- the residue this fix exists to close. Pre-fix the padded height
-// moved (22 -> 33 -> 33); the floor now reserves the window maximum so it holds.
+// footprint golden: fuzzy score alone would interleave the two groups (the raw
+// Rank guard below asserts it does), but GroupContiguous partitions matches
+// into one contiguous block per group after Rank, so the whole match list
+// carries exactly distinctGroupCount headers and the reverted floor
+// (chrome + rowCap + distinctGroupCount) holds -- the padded frame never
+// changes height as a typed query narrows it. It once proved the 2*rowCap
+// need; contiguity is why that worst case can revert.
 func TestFrameHeightStaysConstantWhenAFuzzyQueryInterleavesGroups(t *testing.T) {
+	rows := interleavingGroupRows()
+	groups := make([]string, len(rows))
+	targets := make([]string, len(rows))
+	for i, r := range rows {
+		groups[i] = r.Group
+		targets[i] = r.Left[0].Text
+	}
+	const distinct = 2 // interleavingGroupRows carries exactly two groups
+
+	// Setup guard: the raw fuzzy Rank really does interleave the two groups, so
+	// contiguity is doing real work -- without it the list would carry a header
+	// before nearly every row, far more than the two groups.
+	if b := groupBoundaries(Rank("ab", targets, false), groups); b <= distinct {
+		t.Fatalf("setup: the fuzzy Rank did not interleave the groups (%d boundaries); the scenario never reproduced", b)
+	}
+
 	build := func(query string) *Model {
 		req := protocol.PickRequest{
 			T: "pick", Protocol: protocol.Version,
 			Breadcrumb: []string{"rt", "nav"},
-			Rows:       interleavingGroupRows(),
+			Rows:       rows,
 		}
 		next, _ := New(req).Update(tea.WindowSizeMsg{Width: 80, Height: 60})
 		m := next.(*Model)
@@ -3700,20 +3717,131 @@ func TestFrameHeightStaysConstantWhenAFuzzyQueryInterleavesGroups(t *testing.T) 
 
 	queries := []string{"a", "ab", "axb"}
 	padded := make([]int, len(queries))
-	natural := make([]int, len(queries))
 	for i, q := range queries {
 		m := build(q)
 		padded[i] = lipgloss.Height(renderView(m))
-		natural[i] = lipgloss.Height(render(m))
-	}
-
-	if natural[0] == natural[1] && natural[1] == natural[2] {
-		t.Fatalf("setup: the natural frame height did not move across the queries (%v); the interleave never reproduced", natural)
+		if b := groupBoundaries(m.matches, groups); b > distinct {
+			t.Fatalf("contiguity failed for query %q: %d header boundaries across the match list, want <= %d", q, b, distinct)
+		}
 	}
 	for i, q := range queries {
 		if padded[i] != padded[0] {
-			t.Fatalf("padded frame height moved across a group-interleaving query %q: padded %v, natural %v", q, padded, natural)
+			t.Fatalf("padded frame height moved across a group-interleaving query %q: padded %v", q, padded)
 		}
+	}
+}
+
+// queuePackagesInterleaveRows is the RunChain board's queue-pinned-top layout:
+// a queue block ahead of a packages block, each label carrying "ab" at a
+// widening gap so fuzzy ranking scores rows from the two groups into an
+// alternating order under an "ab" query.
+func queuePackagesInterleaveRows() []protocol.PickRow {
+	var rows []protocol.PickRow
+	gap := func(group, suffix string, n int) protocol.PickRow {
+		label := "a" + strings.Repeat("x", n) + "b" + suffix
+		return protocol.PickRow{Value: label, Group: group, Left: []protocol.PickSegment{{Text: label}}}
+	}
+	for i := 0; i < 6; i++ {
+		rows = append(rows, gap("queue", "q", i))
+	}
+	for i := 0; i < 6; i++ {
+		rows = append(rows, gap("packages", "p", i))
+	}
+	return rows
+}
+
+// groupBoundaries counts header boundaries in a match order: how many times a
+// non-empty group label first appears or changes from the previous match --
+// exactly the group-header lines render.go would paint for that order (mirrors
+// headerBoundary).
+func groupBoundaries(ms []Match, groups []string) int {
+	count := 0
+	for i, mt := range ms {
+		g := groups[mt.Index]
+		if g == "" {
+			continue
+		}
+		if i == 0 || groups[ms[i-1].Index] != g {
+			count++
+		}
+	}
+	return count
+}
+
+// TestGroupedMatchesRenderContiguousUnderAFuzzyQuery is the ruling's render
+// golden: a fuzzy query that would interleave queue and packages by score
+// instead renders each group as one contiguous block -- one QUEUE header, one
+// PACKAGES header, queue pinned above packages -- with every queue match ahead
+// of every packages match.
+func TestGroupedMatchesRenderContiguousUnderAFuzzyQuery(t *testing.T) {
+	rows := queuePackagesInterleaveRows()
+	groups := make([]string, len(rows))
+	targets := make([]string, len(rows))
+	for i, r := range rows {
+		groups[i] = r.Group
+		targets[i] = r.Left[0].Text
+	}
+
+	// Setup guard: the raw Rank interleaves the two groups under "ab".
+	if b := groupBoundaries(Rank("ab", targets, false), groups); b <= 2 {
+		t.Fatalf("setup: the fuzzy Rank did not interleave queue and packages (%d boundaries)", b)
+	}
+
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "run"},
+		Rows:       rows,
+	}
+	next, _ := New(req).Update(tea.WindowSizeMsg{Width: 80, Height: 60})
+	m := next.(*Model)
+	for _, r := range "ab" {
+		n, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = n.(*Model)
+	}
+
+	if b := groupBoundaries(m.matches, groups); b != 2 {
+		t.Fatalf("grouped matches did not render contiguous: %d header boundaries, want 2 (one QUEUE, one PACKAGES)", b)
+	}
+	seenPackages := false
+	for _, mt := range m.matches {
+		switch rows[mt.Index].Group {
+		case "packages":
+			seenPackages = true
+		case "queue":
+			if seenPackages {
+				t.Fatal("a queue match followed a packages match -- caller order (queue pinned top) was not preserved")
+			}
+		}
+	}
+
+	plain := ansi.Strip(render(m))
+	if strings.Count(plain, "QUEUE") != 1 || strings.Count(plain, "PACKAGES") != 1 {
+		t.Fatalf("expected exactly one QUEUE and one PACKAGES header:\n%s", plain)
+	}
+	if strings.Index(plain, "QUEUE") > strings.Index(plain, "PACKAGES") {
+		t.Fatalf("QUEUE header must render above PACKAGES (queue pinned top):\n%s", plain)
+	}
+}
+
+// TestGroupedReservationCountsOneHeaderPerGroup pins the reverted reservation:
+// with contiguity a grouped list reserves chrome + rowCap + distinctGroupCount,
+// not the pre-revert worst case chrome + 2*rowCap.
+func TestGroupedReservationCountsOneHeaderPerGroup(t *testing.T) {
+	rows := queuePackagesInterleaveRows() // two groups
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows}
+	m := New(req)
+	m.width = 80 // height 0: unbounded, so the reserve is not clamped to a pane
+
+	rowCap := defaultCap
+	chrome := chromeRows + 1 // expanded keybar always reserved; this request is not multi
+	want := chrome + rowCap + distinctGroupCount(rows)
+
+	got := m.reservedContentHeight()
+	if got != want {
+		t.Fatalf("grouped reservation = %d, want chrome+rowCap+distinctGroupCount = %d", got, want)
+	}
+	if got == chrome+2*rowCap {
+		t.Fatalf("reservation still reserves the 2*rowCap worst case (%d); it must revert to distinctGroupCount headers", got)
 	}
 }
 

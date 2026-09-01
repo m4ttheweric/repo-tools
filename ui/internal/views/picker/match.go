@@ -79,3 +79,35 @@ func Rank(query string, targets []string, exact bool) []Match {
 
 	return matches
 }
+
+// GroupContiguous reorders ranked matches so every group's matched rows form
+// one contiguous block, so the list renders one header per group instead of
+// fuzzy score interleaving a group and repeating its header down the list.
+// groups[i] is the group label of original row i, the label a match's Index
+// reads back into. Blocks follow the caller's group order -- each group's
+// first appearance in groups -- so a pinned group (run's queue ahead of
+// packages) holds the top even when a later group out-scores it; within a
+// block the incoming Rank score order is kept, best first. Rows with an empty
+// label collapse into their own block the same way. One distinct group (or
+// none) returns matches unchanged.
+func GroupContiguous(matches []Match, groups []string) []Match {
+	order := make(map[string]int)
+	for _, g := range groups {
+		if _, seen := order[g]; !seen {
+			order[g] = len(order)
+		}
+	}
+	if len(order) <= 1 {
+		return matches
+	}
+	buckets := make([][]Match, len(order))
+	for _, mt := range matches {
+		slot := order[groups[mt.Index]]
+		buckets[slot] = append(buckets[slot], mt)
+	}
+	out := make([]Match, 0, len(matches))
+	for _, b := range buckets {
+		out = append(out, b...)
+	}
+	return out
+}

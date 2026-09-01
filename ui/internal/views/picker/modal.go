@@ -142,15 +142,11 @@ func (m *Model) reservedContentHeight() int {
 	if isMultiRequest(m.req) {
 		chrome++
 	}
-	// Rank re-sorts filtered matches by fuzzy score, interleaving groups, so a
-	// visible window of at most rowCap rows can carry a header boundary before
-	// nearly every row -- far more than the distinct group count. Reserve the
-	// window maximum (rowCap header lines) whenever the list groups at all, or
-	// a typed query crosses the floor and the frame height moves per keystroke.
-	headers := 0
-	if distinctGroupCount(m.req.Rows) > 0 {
-		headers = rowCap
-	}
+	// Grouped matches render contiguous (GroupContiguous partitions them after
+	// Rank), so the whole list carries one header per group and any window shows
+	// at most distinctGroupCount of them. Reserve that many header lines so a
+	// typed query narrowing the list never crosses the floor.
+	headers := distinctGroupCount(m.req.Rows)
 	reserved := chrome + rowCap + headers
 	if o := m.registryMenuHeight(); o > reserved {
 		reserved = o
@@ -202,9 +198,9 @@ func (m *Model) raiseReserved() {
 }
 
 // distinctGroupCount counts the distinct non-empty group labels across the
-// rows, so the reserve can tell whether the list groups at all. It is not the
-// header maximum: fuzzy ranking interleaves groups under a query, so a window
-// can carry many more boundaries than there are groups.
+// rows. Since grouped matches render contiguous, this is exactly how many
+// headers the whole list carries, and so the most any window can show -- the
+// header room reservedContentHeight budgets.
 func distinctGroupCount(rows []protocol.PickRow) int {
 	seen := make(map[string]bool)
 	for _, r := range rows {
@@ -242,10 +238,10 @@ func (m *Model) armPinRelease() {
 }
 
 // openRegistryMenu opens the ctrl-k/right-click overlay from the request's
-// own declared actions only -- never the injected keybar defaults
-// (select/cancel/back), which stay keybar-only and never become menu rows.
-// A request with nothing declared leaves the picker untouched rather than
-// opening an empty box.
+// own declared actions -- deriveMenu is the authority on which are dropped
+// (every injected keybar default and every MenuHidden action stay keybar-only
+// and never become menu rows). A request with nothing left to show leaves the
+// picker untouched rather than opening an empty box.
 func (m *Model) openRegistryMenu() {
 	cursorRow := m.menuCursorRow()
 	rows := deriveMenu(m.req.Actions, cursorRow)

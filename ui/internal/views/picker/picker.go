@@ -188,15 +188,19 @@ func (m *Model) showExpandedKeybar() bool {
 	return m.held.ctrl || m.expanded
 }
 
-// refilter re-ranks matches against the current query. Rank itself already
-// short-circuits an empty query to the identity order, so this is safe to
-// call unconditionally.
+// refilter re-ranks matches against the current query, then partitions the
+// ranked order into contiguous group blocks so each group renders under one
+// header (GroupContiguous). Rank short-circuits an empty query to identity
+// order and GroupContiguous leaves an already-contiguous list untouched, so
+// this is safe to call unconditionally.
 func (m *Model) refilter() {
 	targets := make([]string, len(m.req.Rows))
+	groups := make([]string, len(m.req.Rows))
 	for i, row := range m.req.Rows {
 		targets[i] = matchText(row)
+		groups[i] = row.Group
 	}
-	m.matches = Rank(m.query, targets, m.req.Exact)
+	m.matches = GroupContiguous(Rank(m.query, targets, m.req.Exact), groups)
 }
 
 func (m *Model) Init() tea.Cmd { return nil }
