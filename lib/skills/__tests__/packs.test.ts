@@ -85,6 +85,27 @@ describe("discoverPacks", () => {
     const packs = discoverPacks({ settingsPath: join(extra, "nope.json"), extraPackDirs: [{ name: "solo", dir: extra }] });
     expect(packs.map((p) => p.name)).toEqual(["solo"]);
   });
+  test("a url source whose url is file:// resolves to that local checkout; other url sources are ignored", () => {
+    const checkout = tmp("rt-packs-checkout-");
+    writeFile(join(checkout, "surface.jsonc"), `{ "public": ["shepherdr"] }\n`);
+    writeFile(join(checkout, "skills", "shepherdr", "SKILL.md"), "---\nname: shepherdr\n---\nbody\n");
+    const market = tmp("rt-packs-url-market-");
+    writeFile(
+      join(market, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({
+        plugins: [
+          { name: "local-clone", source: { source: "url", url: `file://${checkout}`, ref: "main" } },
+          { name: "remote-clone", source: { source: "url", url: "https://github.com/someone/pack.git", ref: "main" } },
+        ],
+      }),
+    );
+    const settingsPath = join(tmp("rt-packs-url-settings-"), "settings.json");
+    writeFile(settingsPath, JSON.stringify({ extraKnownMarketplaces: { local: { source: { source: "directory", path: market } } } }));
+
+    const packs = discoverPacks({ settingsPath });
+    expect(packs.map((p) => p.name)).toEqual(["local-clone"]);
+    expect(packs[0]!.dir).toBe(checkout);
+  });
 });
 
 describe("detectLayout", () => {
