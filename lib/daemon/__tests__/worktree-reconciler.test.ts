@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import * as fsNamespace from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
+import { fileURLToPath } from "url";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../../json-store.ts";
 import { closeStateDb, listKvValues, setKvValue } from "../../state/index.ts";
@@ -1488,7 +1489,7 @@ describe("freshen", () => {
 
 describe("freshen stash discipline: no positional stash ref in source", () => {
   test("worktree-reconciler.ts never references a positional stash@{0}", () => {
-    const source = readFileSync(join(dirname(new URL(import.meta.url).pathname), "..", "worktree-reconciler.ts"), "utf8");
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "worktree-reconciler.ts"), "utf8");
     expect(source.includes("stash@{0}")).toBe(false);
   });
 });
