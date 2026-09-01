@@ -4,10 +4,10 @@
  * needs the same reverse-resolution (identity passthrough → directory derive
  * → index lookup by display name) — this is the one place it lives.
  */
-import { realpathSync, statSync } from "fs";
-import { basename } from "path";
+import { statSync } from "fs";
 import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
 import { loadRepoIndex } from "./repo-index.ts";
+import { reverseLookupByName } from "./repo-name-lookup.ts";
 import { getRepoIdentity, identityForRootReadOnly } from "./repo.ts";
 import { getRepoRoot } from "./git.ts";
 
@@ -90,29 +90,5 @@ export async function resolveRepoArg(arg: string, fail: (msg: string) => never):
   fail(`--repo "${arg}" did not match a known repo — pass --repo <name> or run from inside a registered repo`);
 }
 
-/**
- * Index rows whose basename or identity tail matches `name`, with each
- * legacy-name/identity pair the additive heal leaves behind collapsed to one
- * row (identity preferred) — until `rt repos prune` collapses the pair for
- * real, both rows point at the same directory and a naive match count calls
- * every healed repo ambiguous.
- */
-export function reverseLookupByName(name: string, index: Record<string, string>): [string, string][] {
-  const matches = Object.entries(index).filter(
-    ([id, path]) => basename(path) === name || parseIdentity(id)?.id.split("/").pop() === name,
-  );
-  const byRealpath = new Map<string, [string, string]>();
-  for (const m of matches) {
-    let real: string;
-    try {
-      real = realpathSync(m[1]);
-    } catch {
-      real = m[1];
-    }
-    const prev = byRealpath.get(real);
-    if (!prev || (parseIdentity(m[0]) !== null && parseIdentity(prev[0]) === null)) byRealpath.set(real, m);
-  }
-  return [...byRealpath.values()];
-}
-
+export { reverseLookupByName } from "./repo-name-lookup.ts";
 export { repoLabel } from "./repo-label.ts";

@@ -20,12 +20,30 @@ export interface RekeyOpts {
   resolve?: (name: string) => Promise<string | null>;
 }
 
-/** Looks a legacy name up in the repo index and derives its serialized identity; null when the name is unknown. */
-async function realResolveLegacyKey(name: string): Promise<string | null> {
+/**
+ * Resolves a legacy name to its serialized identity; null when it cannot be
+ * pinned to exactly one repo.
+ *
+ * The exact-key hit comes first: a pre-cutover index row is still keyed by its
+ * plain name, and its path is authoritative. But post-cutover the index keys
+ * on identities, so a legacy name is not a key at ALL any more, and rows
+ * naming one were retained forever. The same reverse lookup `--repo` uses
+ * finds them by the checkout's basename or the identity's tail.
+ *
+ * Ambiguity stays unresolvable on purpose. Re-keying a row onto the wrong
+ * repo silently attributes one repo's history to another, which is worse than
+ * leaving it under a legacy key that a human can still see and prune.
+ */
+export async function realResolveLegacyKey(name: string): Promise<string | null> {
   const { loadRepoIndex } = await import("../repo-index.ts");
-  const path = loadRepoIndex()[name];
-  if (!path) return null;
-  return serializeIdentity(await deriveRepoIdentity(path));
+  const index = loadRepoIndex();
+
+  const path = index[name];
+  if (path) return serializeIdentity(await deriveRepoIdentity(path));
+
+  const { reverseLookupByName } = await import("../repo-name-lookup.ts");
+  const matches = reverseLookupByName(name, index);
+  return matches.length === 1 ? matches[0]![0] : null;
 }
 
 export async function rekeyKvNamespace(ns: string, opts: RekeyOpts = {}): Promise<RekeyReport> {

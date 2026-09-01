@@ -29,6 +29,7 @@ import { applyMRWriteback, getCurrentUserId, getRepoContext } from "../freshness
 import type { PullRequest } from "@mattstack/glance";
 import { ReadBackFailedError } from "@mattstack/glance";
 import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
+import { decodeRepo } from "../identity-decoder.ts";
 
 type ActionName =
   | "merge" | "rebase" | "approve" | "unapprove"
@@ -77,14 +78,16 @@ export function createMRHandlers(
   return {
     "mr:action": async (payload) => {
       const p = payload as { repoName?: string; iid?: number; action?: ActionName; args?: any[] } | undefined;
-      const repoName = p?.repoName;
       const iid      = p?.iid;
       const action   = p?.action;
       const args     = p?.args ?? [];
 
-      if (!repoName || typeof iid !== "number" || !action) {
+      if (typeof iid !== "number" || !action) {
         return { ok: false, error: "missing repoName/iid/action" };
       }
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return { ok: false, error: decoded.error };
+      const repoName = decoded.repo;
 
       try {
         const { provider, projectPath } = await contextFor(repoName);
@@ -151,14 +154,16 @@ export function createMRHandlers(
 
     "mr:fetch-job-detail": async (payload) => {
       const p = payload as { repoName?: string; iid?: number; jobId?: number; pipelineId?: number } | undefined;
-      const repoName   = p?.repoName;
       const iid        = p?.iid;
       const jobId      = p?.jobId;
       const pipelineId = p?.pipelineId;
 
-      if (!repoName || typeof iid !== "number" || typeof jobId !== "number") {
+      if (typeof iid !== "number" || typeof jobId !== "number") {
         return { ok: false, error: "missing repoName/iid/jobId" };
       }
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return { ok: false, error: decoded.error };
+      const repoName = decoded.repo;
 
       try {
         const { provider, projectPath } = await contextFor(repoName);
@@ -171,13 +176,15 @@ export function createMRHandlers(
 
     "mr:fetch-job-trace": async (payload) => {
       const p = payload as { repoName?: string; iid?: number; jobId?: number } | undefined;
-      const repoName = p?.repoName;
       const iid      = p?.iid;
       const jobId    = p?.jobId;
 
-      if (!repoName || typeof iid !== "number" || typeof jobId !== "number") {
+      if (typeof iid !== "number" || typeof jobId !== "number") {
         return { ok: false, error: "missing repoName/iid/jobId" };
       }
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return { ok: false, error: decoded.error };
+      const repoName = decoded.repo;
 
       try {
         const { provider, projectPath } = await contextFor(repoName);
