@@ -168,7 +168,9 @@ if [ "$SCENARIO" = headless ]; then
   # an admin user; ~2 min, idempotent when CLT is already present.
   vm_ssh_try "$VM_ADMIN_USER" "$RUN_VM" "/Applications/mattstack.app/Contents/MacOS/rt tools install apple-clt" >>"$VM_RUN_DIR/logs/clt.log" 2>&1 \
     || { vm_phase_end screens fail "headless CLT install failed (logs/clt.log)"; exit 1; }
-  if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/e2e-cleanroom.sh --app /Applications/mattstack.app --allow-existing-install --artifacts-dir '$GUEST_RUN/logs/cleanroom'" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
+  # An ssh session's login keychain is locked, unlike the GUI session a real
+  # install runs in — home.init's age-key store needs it open.
+  if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "security unlock-keychain -p '$VM_TESTER_PASS' ~/Library/Keychains/login.keychain-db && GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/e2e-cleanroom.sh --app /Applications/mattstack.app --allow-existing-install --artifacts-dir '$GUEST_RUN/logs/cleanroom'" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
     vm_phase_end screens pass "headless: scripts/e2e-cleanroom.sh in guest"
   else vm_phase_end screens fail "headless recipe failed (logs/screens.log)"; fi
 else
