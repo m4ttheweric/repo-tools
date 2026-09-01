@@ -963,6 +963,39 @@ func TestDeriveMenuDropsItemScopeWithNoCursorRow(t *testing.T) {
 	}
 }
 
+// TestDeriveMenuSkipsMenuHiddenActions covers the ctrl-k mis-dispatch fix
+// directly: an action flagged MenuHidden (the multi mark-cluster's own
+// synthesized toggle/toggle-all entries, in practice) never becomes a menu
+// row, in either scope, while an ordinary action right next to it still
+// does -- so the exclusion is a per-action flag, not a wholesale drop of
+// its scope or group.
+func TestDeriveMenuSkipsMenuHiddenActions(t *testing.T) {
+	actions := []protocol.PickAction{
+		{ID: "toggle", Label: "toggle", Key: "space", Scope: "item", Group: "mark", MenuHidden: true},
+		{ID: "dispose", Label: "dispose", Scope: "item"},
+		{ID: "toggle-all", Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark", MenuHidden: true},
+		{ID: "refresh", Label: "refresh", Scope: "global"},
+	}
+
+	rows := deriveMenu(actions, 0)
+
+	wantIDs := []string{"dispose", "", "refresh"}
+	if len(rows) != len(wantIDs) {
+		t.Fatalf("got %d rows, want %d: %+v", len(rows), len(wantIDs), rows)
+	}
+	for i, want := range wantIDs {
+		if want == "" {
+			if !rows[i].Rule {
+				t.Fatalf("row %d should be the item/global rule, got %+v", i, rows[i])
+			}
+			continue
+		}
+		if rows[i].Rule || rows[i].ActionID != want {
+			t.Fatalf("row %d = %+v, want action %q", i, rows[i], want)
+		}
+	}
+}
+
 func TestZeroRowModelDoesNotPanic(t *testing.T) {
 	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{}}
 	m := New(req)
@@ -1628,5 +1661,81 @@ func TestSelectedPanelCountsAsChromeInHeaderBudget(t *testing.T) {
 	lines := strings.Split(plain, "\n")
 	if len(lines) > 19 {
 		t.Fatalf("rendered frame must fit the pane height (19) once the selected panel is counted as chrome: got %d lines:\n%s", len(lines), plain)
+	}
+}
+
+// TestCtrlKMenuHidesBuiltinMultiMarkActionsButKeepsCallerActions is the
+// mis-dispatch regression guard: on a multi request that also declares its
+// own item/global actions, the ctrl-k menu must never surface the
+// synthesized toggle/toggle-next/toggle-all rows (space/tab/ctrl-a are
+// hardcoded in Update and never meant to be selected from a menu -- doing
+// so used to fall through resultForAction's generic branch and silently
+// terminate the session with a bogus PickResult{Action:"toggle"}), while a
+// caller's own declared action still appears and still dispatches through
+// its real path (event stays open, non-event ends the session).
+func TestCtrlKMenuHidesBuiltinMultiMarkActionsButKeepsCallerActions(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "dispose", Label: "dispose", Scope: "item", Group: "worktree", Event: true},
+			{ID: "refresh", Label: "refresh", Scope: "global", Group: "nav"},
+		},
+	}
+	m := New(req)
+	m.events = make(chan []byte, 4)
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("ctrl-k should open the registry menu")
+	}
+
+	var ids []string
+	for _, r := range m.modal.rows {
+		ids = append(ids, r.actionID)
+	}
+	for _, hidden := range []string{"toggle", "toggle-next", "toggle-all"} {
+		for _, id := range ids {
+			if id == hidden {
+				t.Fatalf("built-in mark-cluster action %q must never appear as a ctrl-k menu row, got rows %+v", hidden, ids)
+			}
+		}
+	}
+
+	var sawDispose, sawRefresh bool
+	for _, id := range ids {
+		sawDispose = sawDispose || id == "dispose"
+		sawRefresh = sawRefresh || id == "refresh"
+	}
+	if !sawDispose || !sawRefresh {
+		t.Fatalf("caller-declared item/global actions must still appear in the menu, got %+v", ids)
+	}
+
+	if m.modal.rows[m.modal.matches[m.modal.cursor].Index].actionID != "dispose" {
+		t.Fatalf("setup: expected dispose (the declared item action) first, got %+v", m.modal.rows)
+	}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*Model)
+
+	if cmd != nil {
+		t.Fatal("dispose is event:true and must not end the session")
+	}
+	if m.result != nil {
+		t.Fatalf("no menu path may produce a builtin mis-dispatch result: %+v", m.result)
+	}
+
+	var line []byte
+	select {
+	case line = <-m.events:
+	default:
+		t.Fatal("expected the dispose action's event enqueued")
+	}
+	var ev protocol.PickEvent
+	if err := json.Unmarshal(line, &ev); err != nil {
+		t.Fatalf("event line not valid JSON: %v (%s)", err, line)
+	}
+	if ev.Action != "dispose" {
+		t.Fatalf("caller action should dispatch as itself, got %+v", ev)
 	}
 }

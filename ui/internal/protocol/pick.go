@@ -38,6 +38,13 @@ type PickAction struct {
 	// without any event actions round-trips without ever mentioning the
 	// field, matching every other boolean flag on this struct.
 	Event bool `json:"event,omitempty"`
+	// MenuHidden marks an action that the picker itself synthesizes for a
+	// hardcoded key (never decoded off the wire, so json:"-" -- a caller's
+	// own request can never set or see it): it still renders in the footer
+	// keybar, but deriveMenu excludes it from the ctrl-k/right-click menu,
+	// since selecting it there would dispatch through the generic registry
+	// path instead of the hardcoded handler that key actually runs.
+	MenuHidden bool `json:"-"`
 }
 
 type PickRequest struct {

@@ -35,14 +35,17 @@ func defaultActions(req protocol.PickRequest) []protocol.PickAction {
 // multiDefaultActions is the Multi board's "mark" footer cluster. space,
 // tab, and ctrl-a never reach the registry dispatch path -- Update handles
 // them directly, ahead of actionForKey -- so these entries exist purely to
-// put them in the footer legend and the ctrl-k menu; enter still dispatches
-// through the registry as idSelect, just labeled "confirm" here instead of
-// "select".
+// put them in the footer legend; MenuHidden keeps them out of the ctrl-k
+// menu, since selecting one there would fall through to the generic
+// registry dispatch instead of the hardcoded handler the key actually
+// runs. enter still dispatches through the registry as idSelect (and does
+// belong in the menu, unlike the other three), just labeled "confirm" here
+// instead of "select".
 func multiDefaultActions(req protocol.PickRequest) []protocol.PickAction {
 	defaults := []protocol.PickAction{
-		{ID: "toggle", Label: "toggle", Key: "space", Scope: "item", Group: "mark"},
-		{ID: "toggle-next", Label: "toggle & next", Key: "tab", Scope: "item", Group: "mark"},
-		{ID: "toggle-all", Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark"},
+		{ID: "toggle", Label: "toggle", Key: "space", Scope: "item", Group: "mark", MenuHidden: true},
+		{ID: "toggle-next", Label: "toggle & next", Key: "tab", Scope: "item", Group: "mark", MenuHidden: true},
+		{ID: "toggle-all", Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark", MenuHidden: true},
 		{ID: idSelect, Label: "confirm", Key: "enter", Scope: "item", Group: "mark", Primary: true},
 	}
 	if len(req.Breadcrumb) > 1 {
@@ -176,9 +179,15 @@ type MenuRow struct {
 // actions included, since the menu is the only surface that shows them.
 // cursorRow < 0 means there is no row to act on, so the item half is
 // dropped entirely rather than rendering an empty section above the rule.
+// MenuHidden actions never become a row here regardless of scope: the menu
+// dispatches whatever it shows through the generic registry path, which
+// would mis-fire for an action a hardcoded key already owns.
 func deriveMenu(actions []protocol.PickAction, cursorRow int) []MenuRow {
 	var item, global []MenuRow
 	for _, a := range actions {
+		if a.MenuHidden {
+			continue
+		}
 		row := MenuRow{ActionID: a.ID, Label: a.Label, Key: a.Key}
 		switch a.Scope {
 		case "item":
