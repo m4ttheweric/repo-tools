@@ -45,6 +45,12 @@ describe("resolveBoardTriage", () => {
     const b = { repoName: "remote:github.com%2Fsomeone%2Fboard", worktrees: [{ path: "/repos/board-b", branch: "main", isBare: false }] };
     const p = { exists: () => true };
 
+    // Each row alone MUST resolve first: bundled is also what zero matches
+    // returns, so asserting it for the pair proves nothing on its own... a
+    // repoLabel that decoded neither identity would look identical.
+    expect(resolveBoardTriage(p, [a], ["/opt/board"])).toEqual({ kind: "checkout", run: ["bun", "run", "/repos/board-a/bin/triage.ts"] });
+    expect(resolveBoardTriage(p, [b], ["/opt/board"])).toEqual({ kind: "checkout", run: ["bun", "run", "/repos/board-b/bin/triage.ts"] });
+
     expect(resolveBoardTriage(p, [a, b], ["/opt/board"])).toEqual({ kind: "bundled", run: ["/opt/board", "triage"] });
   });
 
