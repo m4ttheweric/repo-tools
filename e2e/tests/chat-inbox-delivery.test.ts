@@ -188,6 +188,11 @@ async function dm(homeDir: string, to: string, body: string, sessionId: string):
   return JSON.parse(res.stdout);
 }
 
+async function claim(homeDir: string, id: number, sessionId: string): Promise<{ exitCode: number; stdout: string }> {
+  const res = await finished(runRt(["chat", "claim", String(id), "--session", sessionId], homeDir));
+  return { exitCode: res.exitCode, stdout: res.stdout.trim() };
+}
+
 // ─── suite ───────────────────────────────────────────────────────────────────
 
 describe("rt chat inbox delivery (e2e)", () => {
@@ -285,5 +290,47 @@ describe("rt chat inbox delivery (e2e)", () => {
     await dm(home, "a", "are you still there", "sess-c");
     await Bun.sleep(500);
     expect(inboxA.frames.length).toBe(beforeSignOut);
+  }, 30_000);
+
+  test("a won claim receipts the author's inbox only; the next claimant is told who holds it and exits 0", async () => {
+    const sessionA = "44444444-4444-4444-4444-444444444444";
+    const sessionB = "55555555-5555-5555-5555-555555555555";
+    const { sock: herdrSock, stop: stopHerdr } = fakeHerdrForPanes([
+      { paneId: "w1:pa", sessionId: sessionA },
+      { paneId: "w1:pb", sessionId: sessionB },
+    ]);
+    stops.push(stopHerdr);
+    const inboxA = startFakeInbox();
+    stops.push(inboxA.stop);
+    const inboxB = startFakeInbox();
+    stops.push(inboxB.stop);
+    registerFakeInbox(home, sessionA, inboxA.socketPath);
+    registerFakeInbox(home, sessionB, inboxB.socketPath);
+
+    await startDaemonForHome(home, { HERDR_SOCKET_PATH: herdrSock });
+
+    await signInPane(home, "w1:pa", "asker", "testroom");
+    await signInPane(home, "w1:pb", "b", "testroom");
+    await signIn(home, "sess-c", "c", "testroom");
+    await waitForFrame(inboxA.frames, (f) => frameContent(f).includes("You're signed in"));
+    await waitForFrame(inboxB.frames, (f) => frameContent(f).includes("You're signed in"));
+
+    const posted = await post(home, "testroom", "one of you: write the TLDR", sessionA);
+    await waitForFrame(inboxB.frames, (f) => frameContent(f).includes("write the TLDR"));
+
+    const won = await claim(home, posted.id, sessionB);
+    expect(won).toEqual({ exitCode: 0, stdout: `claimed #${posted.id} → asker` });
+    const receipt = await waitForFrame(inboxA.frames, (f) => frameContent(f).includes("(claim)"));
+    expect(frameContent(receipt)).toBe(
+      `<cross-session-message from-name="b (claim)">\nb claimed your message #${posted.id}: "one of you: write the TLDR"\n</cross-session-message>`,
+    );
+
+    const lost = await claim(home, posted.id, "sess-c");
+    expect(lost.exitCode).toBe(0);
+    expect(lost.stdout).toMatch(new RegExp(`^#${posted.id} already claimed by b \\d+s ago \\(claimable again in [0-9ms ]+\\)$`));
+    // Losing wakes nobody: no frame about the claim reaches b, and the author saw exactly one receipt.
+    await Bun.sleep(300);
+    expect(inboxB.frames.some((f) => frameContent(f).includes("(claim)"))).toBe(false);
+    expect(inboxA.frames.filter((f) => frameContent(f).includes("(claim)")).length).toBe(1);
   }, 30_000);
 });
