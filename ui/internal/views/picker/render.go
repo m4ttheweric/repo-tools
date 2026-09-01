@@ -29,15 +29,15 @@ const chromeRows = 5
 // totalChromeRows is chromeRows plus the pinned selected panel's own line,
 // when a multi session is showing one -- the panel sits between the filter
 // line and the top rule, so it eats into the same pane budget every other
-// chrome line already claims -- plus one more line while ctrl is held, when
-// the keybar itself grows from one line to the Modifiers board's two-line
-// grouped legend.
+// chrome line already claims -- plus one more line while the expanded keybar
+// shows (ctrl held or ctrl-/ toggled), when the keybar itself grows from one
+// line to the Modifiers board's two-line grouped legend.
 func (m *Model) totalChromeRows() int {
 	rows := chromeRows
 	if m.showSelectedPanel() {
 		rows++
 	}
-	if m.held.ctrl {
+	if m.showExpandedKeybar() {
 		rows++
 	}
 	return rows
@@ -106,7 +106,7 @@ func render(m *Model) string {
 
 	lines = append(lines, rule(m.width))
 	y++
-	if m.held.ctrl {
+	if m.showExpandedKeybar() {
 		line1, zones1, line2, zones2 := expandedKeybarLines(m, top, h, n)
 		zones.addAll(y, zones1)
 		y++
@@ -625,6 +625,12 @@ func leftSegColor(seg protocol.PickSegment, cursorRow bool) (color.Color, bool) 
 		case "dim":
 			return theme.Dimmer, seg.Bold
 		}
+	} else if seg.Tone == "text" || seg.Tone == "" {
+		// The focused row's default-text label reads at full bold Text, the
+		// board's cursor tone, even when a segment-form (extras.rows) caller
+		// left bold unset: the options path bakes that bold into the row data,
+		// so this path has to supply it rather than pass seg.Bold through.
+		return theme.Text, true
 	}
 	if c, ok := toneColor(seg.Tone); ok {
 		return c, seg.Bold

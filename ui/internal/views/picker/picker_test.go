@@ -3266,3 +3266,113 @@ func TestFrameHeightStaysConstantWhenAFuzzyQueryInterleavesGroups(t *testing.T) 
 		}
 	}
 }
+
+// TestCursorRowLabelBoldOnExtrasRowsPath is the Commit.dc.html golden for
+// F-c2: commit builds its rows via extras.rows, where the label segment
+// carries neither a tone nor bold (unlike the options path, which bakes
+// bold:true into the row data). The cursor row must still render that label
+// bold Text, exactly as the options path does.
+func TestCursorRowLabelBoldOnExtrasRowsPath(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "lib/runner/workspace-registry.ts"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "commands/runner.ts"}}},
+		},
+	}
+	m := New(req)
+	m.width = 90
+
+	cursorRow := rowLine(m, 0)
+	if !strings.Contains(cursorRow, "1;"+textSGR) {
+		t.Fatalf("cursor row label from extras.rows should render bold Text: %q", cursorRow)
+	}
+	nonCursorRow := rowLine(m, 1)
+	if strings.Contains(nonCursorRow, "1;"+textSGR) {
+		t.Fatalf("non-cursor row label must not be bold Text: %q", nonCursorRow)
+	}
+}
+
+// TestCtrlSlashTogglesExpandedKeybar is the F-n1 golden: ctrl-/ toggles the
+// Modifiers-board two-line grouped keybar on and off, independent of the
+// physical-hold path. On a legacy terminal ctrl-/ arrives as ctrl+_ (byte
+// 0x1F + 0x40 = '_'); on Kitty as ctrl+/. Both must drive the toggle.
+func TestCtrlSlashTogglesExpandedKeybar(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5,
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
+		},
+	}
+	lastLine := func(frame string) string {
+		lines := strings.Split(frame, "\n")
+		return ansi.Strip(lines[len(lines)-1])
+	}
+
+	m := New(req)
+	m.width = 90
+	if strings.Contains(lastLine(render(m)), "showing all keys") {
+		t.Fatal("setup: the expanded keybar must not show before ctrl-/")
+	}
+
+	// Legacy decode: ctrl-/ surfaces as ctrl+_.
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
+	m = next.(*Model)
+	if !m.expanded {
+		t.Fatal("ctrl-/ (ctrl+_) should toggle the expanded keybar on")
+	}
+	lines := strings.Split(render(m), "\n")
+	if !strings.Contains(ansi.Strip(lines[len(lines)-2]), "held: showing all keys") {
+		t.Fatalf("the two-line grouped keybar should show after ctrl-/: %q", ansi.Strip(lines[len(lines)-2]))
+	}
+
+	// A second ctrl-/ toggles it back off.
+	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
+	m = next.(*Model)
+	if m.expanded {
+		t.Fatal("a second ctrl-/ should toggle the expanded keybar off")
+	}
+	if strings.Contains(lastLine(render(m)), "showing all keys") {
+		t.Fatal("the expanded keybar should hide after the second ctrl-/")
+	}
+
+	// Kitty decode: ctrl-/ surfaces as ctrl+/ and must toggle the same state.
+	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '/'})
+	m = next.(*Model)
+	if !m.expanded {
+		t.Fatal("ctrl-/ (ctrl+/) should toggle the expanded keybar on")
+	}
+}
+
+// TestHoverRowRendersHoverBg pins the hover-SGR fix's list-row half: a
+// hovered non-cursor row carries HoverBg #251E3D, the exact 48;2;37;30;61
+// background the Mouse board specifies.
+func TestHoverRowRendersHoverBg(t *testing.T) {
+	const hoverBgSGR = "48;2;37;30;61"
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "provision", Tone: "text"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "dispose", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	render(m)
+
+	next, _ := m.Update(tea.MouseMotionMsg{X: 2, Y: 4})
+	m = next.(*Model)
+	if m.hover != 1 {
+		t.Fatalf("setup: motion over row 1 should set hover=1, got %d", m.hover)
+	}
+	lines := strings.Split(render(m), "\n")
+	if !strings.Contains(lines[4], hoverBgSGR) {
+		t.Fatalf("the hovered row should carry HoverBg %s: %q", hoverBgSGR, lines[4])
+	}
+}

@@ -42,9 +42,13 @@ type Model struct {
 	selected    map[string]bool
 	modal       *modalState
 	held        heldModifiers
-	hover       int
-	width       int
-	height      int
+	// expanded is the ctrl-/ sticky toggle for the two-line grouped keybar,
+	// distinct from held.ctrl's physical-hold state: a terminal that never
+	// reports a bare ctrl press still gets the expanded legend on ctrl-/.
+	expanded bool
+	hover    int
+	width    int
+	height   int
 
 	// reservedHeight is the session-long floor renderView pads every frame to,
 	// set the moment the pane size is known and re-derived only on a resize.
@@ -161,6 +165,15 @@ func (m *Model) showSelectedPanel() bool {
 	return m.multiMode() && len(m.selected) > 0
 }
 
+// showExpandedKeybar reports whether the footer paints the Modifiers board's
+// two-line grouped legend in place of the single line: either ctrl is
+// physically held (Kitty protocol) or ctrl-/ has toggled it on. Both drive
+// the same render, and reservedContentHeight already budgets the extra line
+// for either.
+func (m *Model) showExpandedKeybar() bool {
+	return m.held.ctrl || m.expanded
+}
+
 // refilter re-ranks matches against the current query. Rank itself already
 // short-circuits an empty query to the identity order, so this is safe to
 // call unconditionally.
@@ -209,6 +222,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateModal(msg)
 		}
 		key := msg.String()
+		// ctrl-/ is byte 0x1F; ultraviolet's legacy decode surfaces it as
+		// ctrl+_ (0x1F + 0x40 = '_'), Kitty as ctrl+/. Canonicalize so both
+		// the expanded-keybar toggle and a caller's own ctrl-/ registry action
+		// resolve against one spelling regardless of terminal.
+		if key == "ctrl+_" {
+			key = "ctrl+/"
+		}
+		if key == "ctrl+/" {
+			// The two-line grouped keybar is a generic affordance every picker
+			// gets on ctrl-/; a caller that also registered ctrl-/ (nav's
+			// "commands" relabel) still has its event dispatched by
+			// actionForKey below, so the toggle deliberately does not return.
+			m.expanded = !m.expanded
+		}
 		switch key {
 		case "down":
 			m.moveCursor(1)
