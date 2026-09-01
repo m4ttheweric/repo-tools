@@ -1263,7 +1263,7 @@ export async function skillsMaterialize(args: string[]): Promise<void> {
   }
 }
 
-// ─── rt skills surface -- list / set / apply / fzf palette ────────────────
+// ─── rt skills surface -- list / set / apply / palette ────────────────
 
 type SurfaceFlags = {
   team: string | null;

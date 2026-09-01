@@ -506,10 +506,6 @@ export const TREE: Record<string, CommandNode> = {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
     fn: "worktreePicker",
-    // Same inline-frame constraint as commitNode above: the picker owns the
-    // top region, so suppress the dispatcher header (the picker carries its
-    // own breadcrumb instead).
-    fullscreen: true,
     // The hidden --emit-rows reload path (commands/cd.ts) is deliberately
     // non-interactive, so it must clear the TTY gate on a plain pipe even
     // without RT_BATCH set. It is not declared in `args` below, so it never

@@ -48,9 +48,11 @@ test("worktree restore's Tree arg is marked optional, matching its picker/--list
 test("picker-hosting leaves suppress the dispatcher header (fullscreen), like run", () => {
   expect(TREE.run!.fullscreen).toBe(true); // existing reference case
   expect(TREE.commit!.fullscreen).toBe(true);
-  expect(TREE.cd!.fullscreen).toBe(true);
   expect(TREE.nav!.fullscreen).toBe(true);
   expect(TREE.skills!.subcommands!.surface!.fullscreen).toBe(true);
+  // cd stays flagless until its picker (routed through lib/pickers.ts) carries
+  // an in-card breadcrumb; suppressing its header before then would blank it.
+  expect(TREE.cd!.fullscreen).toBeUndefined();
 });
 
 test("the bare skills branch node is not flagged fullscreen -- only the surface leaf is", () => {
