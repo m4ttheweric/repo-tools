@@ -33,6 +33,7 @@ import {
   isSwitchRepo,
 } from "../lib/pickers.ts";
 import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
+import { printAborted } from "../lib/ui/abort.ts";
 
 // ─── Shell function setup ────────────────────────────────────────────────────
 
@@ -255,7 +256,10 @@ export async function worktreePicker(args: string[]): Promise<void> {
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
         : await pickRepo(repos, { onReload: reloadRepos });
-      if (!pickedRepoName) process.exit(0); // Esc on repo picker
+      if (!pickedRepoName) {
+        printAborted();
+        process.exit(0); // Esc on repo picker
+      }
       const pickedRepo = repoFromOptionValue(repos, pickedRepoName)!;
       if (pickedRepo.missing) {
         console.error(`\n  ${missingRepoRefusal(pickedRepo)}\n`);
@@ -290,7 +294,10 @@ export async function worktreePicker(args: string[]): Promise<void> {
   // ── In a multi-worktree repo: worktree picker ────────────────────────────
   } else if (currentRepo && currentRepo.worktrees.length > 1) {
     const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
-    if (!result) process.exit(0);
+    if (!result) {
+      printAborted();
+      process.exit(0);
+    }
     selectedPath = isSwitchRepo(result)
       ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos })
       : result;
