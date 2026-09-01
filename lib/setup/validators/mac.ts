@@ -32,8 +32,16 @@ async function macosVersionRow(p: Probes): Promise<Row> {
 
 async function cltRow(p: Probes): Promise<Row> {
   const base = { id: "tool.clt", kind: "tool" as const, title: "Command Line Tools", why: "Provides git and the other command-line build tools rt depends on.", required: true };
-  const [xcodeSelect, gitVersion] = await Promise.all([p.exec(["xcode-select", "-p"]), p.exec(["git", "--version"])]);
-  if (xcodeSelect.code === 0 && gitVersion.code === 0) {
+  // xcode-select gates the git probe: on a CLT-less Mac, /usr/bin/git is
+  // Apple's stub, and invoking it from a GUI process (the app runs this
+  // validator at first launch) pops the system "install the developer
+  // tools?" dialog. The stub must never run until CLT is actually selected.
+  const xcodeSelect = await p.exec(["xcode-select", "-p"]);
+  if (xcodeSelect.code !== 0) {
+    return row({ ...base, status: "missing", detail: "Apple command line tools not installed", action: CLT_INSTALL_ACTION });
+  }
+  const gitVersion = await p.exec(["git", "--version"]);
+  if (gitVersion.code === 0) {
     return row({ ...base, status: "ready", detail: gitVersion.stdout.trim() || "git installed" });
   }
   return row({ ...base, status: "missing", detail: "Apple command line tools not installed", action: CLT_INSTALL_ACTION });
