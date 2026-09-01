@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 
 	"rt-ui/internal/protocol"
 	"rt-ui/internal/tty"
@@ -605,6 +606,7 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 		tea.WithOutput(term),
 		tea.WithColorProfile(colorprofile.TrueColor),
 		tea.WithoutSignalHandler(),
+		tea.WithFilter(denyGraphemeWidthMode),
 	)
 
 	go readPatches(p, input)
@@ -616,6 +618,26 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 
 	m.drainEvents(writerDone)
 	return m.writeResult(output)
+}
+
+// denyGraphemeWidthMode swallows bubbletea's own reply to its startup
+// DECRQM query for mode 2027 (grapheme clustering), pinning the renderer's
+// cursor-motion width math to wcwidth for the life of the program.
+//
+// Left alone, bubbletea flips its internal width model to GraphemeWidth --
+// and answers the terminal's own query by turning mode 2027 ON -- the
+// moment the terminal reports the mode as recognized at all (set, reset, or
+// permanently set; only "not recognized" leaves it alone), with no check
+// that the terminal's OWN renderer actually agrees with GraphemeWidth's
+// column math for whatever it just painted. Denying the report keeps both
+// sides on the same (default, wcwidth) width table, so a real tmux that
+// answers "recognized" for a glyph it renders differently can never
+// desync the cursor-motion bookkeeping the way it could otherwise.
+func denyGraphemeWidthMode(_ tea.Model, msg tea.Msg) tea.Msg {
+	if report, ok := msg.(tea.ModeReportMsg); ok && report.Mode == ansi.ModeUnicodeCore {
+		return nil
+	}
+	return msg
 }
 
 // eventBufferSize is how many event lines Update can enqueue ahead of the
