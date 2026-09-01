@@ -38,18 +38,15 @@ answer for it.
 | Daemon answers `repo-unknown` for the identity | Same fallback as above. |
 | Daemon answers any other refusal (branch already attached, validation failure, provisioning step failure) | Loud refusal: Claude's `EnterWorktree` call fails and shows the error, with the escape hatch named in the message. |
 
-One nuance worth knowing: resolving a repo's identity (the very first step,
-before the daemon is even asked) has a side effect of registering that repo
-into rt's own index if it was not there already. So "the daemon has never
-heard of this repo" is not the same as "the daemon replies `repo-unknown`" --
-a brand new git repo the hook fires against gets folded into rt's index on
-that very first call, then goes through the real provisioning path. If that
-repo has an `origin` remote, provisioning usually succeeds (a real rt tree,
-not a `.claude/worktrees` one). If it does not, provisioning fails at the
-`git fetch origin <branch>` step and the hook refuses loudly rather than
-falling back. The clean `repo-unknown` -> fallback path in the table above
-is really the daemon-unreachable case; a locally resolvable git repo rarely
-takes it.
+Read-only guarantee: resolving a repo's identity (the very first step,
+before the daemon is even asked) never registers that repo into rt's index.
+The hook derives the identity, then checks whether that identity is
+*already* an index row -- a repo rt has never seen before reads as
+unregistered and goes straight to the `.claude/worktrees/<name>` fallback,
+even though the identity itself was perfectly derivable. Only a repo that
+was registered some other way (an earlier `rt` command run inside it, a
+prior worktree lifecycle command) reaches the real daemon-provisioning
+path. The hook is never itself the reason a repo becomes known to rt.
 
 ## Failure mode: binary gone
 
@@ -72,23 +69,28 @@ missing.
 
 ## Manual verification (headless smoke recipe)
 
-This is the recipe used to prove the hook live, end to end, without touching
-a real repo or the real `~/.claude`. Run it in a throwaway scratch directory.
+This is the recipe used to prove the hook live, end to end, without
+touching a real repo, the real `~/.claude`, or the real rt state. The
+`env HOME=<isolated home>` on the hook command is the load-bearing part: it
+is what makes the hook's own `rt` invocation read and write an isolated
+`~/.mattstack`, never the real one, so the run cannot register a scratch
+repo into (or read a stale answer from) rt's real index.
 
 ```bash
 # 1. throwaway repo, isolated from any real work
-mkdir -p /tmp/smoke && cd /tmp/smoke
-git init base -q
-cd base && git commit --allow-empty -q -m "init"
+mkdir -p /tmp/smoke/base /tmp/smoke/home
+cd /tmp/smoke/base
+git init -q
+git commit --allow-empty -q -m "init"
 
-# 2. a settings.json whose WorktreeCreate command points straight at the
-#    worktree checkout's cli.ts via bun (resolve bun with `which bun`)
+# 2. a settings.json whose WorktreeCreate command runs the hook's rt code
+#    under an isolated HOME (resolve bun with `which bun`)
 cat > /tmp/smoke/settings.json <<'JSON'
 {
   "hooks": {
     "WorktreeCreate": [
       { "hooks": [ { "type": "command",
-        "command": "<absolute bun> run <repo>/cli.ts worktree claude-hook" } ] }
+        "command": "env HOME=/tmp/smoke/home <absolute bun> run <repo>/cli.ts worktree claude-hook" } ] }
     ]
   }
 }
@@ -100,14 +102,14 @@ claude -p "Use the EnterWorktree tool with name 'smoke1'. Then run pwd via Bash 
   --settings /tmp/smoke/settings.json
 ```
 
-What to expect: since this scratch repo has no `origin` remote, the identity
-resolution step still registers it (see the nuance above), so real
-provisioning is attempted and fails at `git fetch origin master`. The
-`EnterWorktree` call surfaces that failure verbatim (including the
-`rt worktree hook uninstall` escape hatch), and `pwd` confirms Claude never
-left the original directory. A scratch repo with a working `origin` remote
-would instead land in a real rt-provisioned tree.
+What to expect: the isolated HOME's rt index starts empty, so this scratch
+repo reads as unregistered no matter what its identity derives to. The hook
+falls back without ever asking the daemon, `EnterWorktree` reports a
+created worktree at `/tmp/smoke/base/.claude/worktrees/smoke1`, and `pwd`
+inside the session confirms that same path. Nothing under the isolated
+home's `repo-index` namespace or the real `~/.mattstack` should show this
+scratch repo afterward -- that is the read-only guarantee holding.
 
-Clean up afterward: remove the scratch repo and (since resolving its
-identity registers it) run `rt repos prune --dry-run` once the path is gone
-to confirm nothing was left dangling in rt's own index.
+Clean up afterward: remove `/tmp/smoke` (both `base` and `home` are
+throwaway and confined to the isolated HOME; nothing under the real
+`~/.mattstack` needs pruning as a result of this recipe).
