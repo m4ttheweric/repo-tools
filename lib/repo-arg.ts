@@ -30,6 +30,48 @@ export function currentRepoIdentityFor(cwd: string): string | undefined {
   return identityForRootReadOnly(repoRoot);
 }
 
+export type RepoArgResolution =
+  | { kind: "resolved"; identity: string }
+  | { kind: "none" }
+  | { kind: "ambiguous"; matches: string[] };
+
+/**
+ * `resolveRepoArg` without the exit. Callers matching the result against rows
+ * `getKnownRepos` carries need the answer plus their own fallback: an
+ * unregistered scanned row is keyed by directory basename and never reaches
+ * the index, so it resolves to `none` here yet is still a legitimate match.
+ */
+export async function tryResolveRepoArg(arg: string): Promise<RepoArgResolution> {
+  if (parseIdentity(arg)) return { kind: "resolved", identity: arg };
+
+  // Directory derivation only for args SPELLED as paths. A bare name that
+  // happens to collide with a directory under cwd ("logs", "docs") must take
+  // the index lookup, not silently derive that directory's path identity.
+  const looksLikePath = arg.includes("/") || arg.startsWith(".") || arg.startsWith("~");
+  if (looksLikePath) {
+    try {
+      if (statSync(arg).isDirectory()) {
+        return { kind: "resolved", identity: serializeIdentity(await deriveRepoIdentity(arg)) };
+      }
+    } catch {
+      // not a directory on disk — fall through to the name lookup
+    }
+  }
+
+  const index = loadRepoIndex();
+
+  // A pre-cutover row is keyed by a plain name that matches neither an
+  // identity tail nor its checkout's basename, so the name lookup below cannot
+  // see it. Its own key still addresses it, until `rt repos prune` collapses
+  // the pair onto the identity.
+  if (index[arg] !== undefined) return { kind: "resolved", identity: arg };
+
+  const collapsed = reverseLookupByName(arg, index);
+  if (collapsed.length === 1) return { kind: "resolved", identity: collapsed[0]![0] };
+  if (collapsed.length > 1) return { kind: "ambiguous", matches: collapsed.map(([id]) => id) };
+  return { kind: "none" };
+}
+
 /**
  * `--repo` may be an already-serialized identity, a directory path, or a
  * bare repo name — resolve any of those to the identity the daemon and
@@ -38,24 +80,10 @@ export function currentRepoIdentityFor(cwd: string): string | undefined {
  * keeps its own exit-message conventions (JSON vs text, etc).
  */
 export async function resolveRepoArg(arg: string, fail: (msg: string) => never): Promise<string> {
-  if (parseIdentity(arg)) return arg;
-
-  // Directory derivation only for args SPELLED as paths. A bare name that
-  // happens to collide with a directory under cwd ("logs", "docs") must take
-  // the index lookup, not silently derive that directory's path identity.
-  const looksLikePath = arg.includes("/") || arg.startsWith(".") || arg.startsWith("~");
-  if (looksLikePath) {
-    try {
-      if (statSync(arg).isDirectory()) return serializeIdentity(await deriveRepoIdentity(arg));
-    } catch {
-      // not a directory on disk — fall through to the name lookup
-    }
-  }
-
-  const collapsed = reverseLookupByName(arg, loadRepoIndex());
-  if (collapsed.length === 1) return collapsed[0]![0];
-  if (collapsed.length > 1) {
-    fail(`--repo "${arg}" matches more than one repo: ${collapsed.map(([id]) => id).join(", ")} — pass the full identity`);
+  const resolution = await tryResolveRepoArg(arg);
+  if (resolution.kind === "resolved") return resolution.identity;
+  if (resolution.kind === "ambiguous") {
+    fail(`--repo "${arg}" matches more than one repo: ${resolution.matches.join(", ")} — pass the full identity`);
   }
   fail(`--repo "${arg}" did not match a known repo — pass --repo <name> or run from inside a registered repo`);
 }

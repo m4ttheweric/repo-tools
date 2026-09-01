@@ -8,6 +8,7 @@ import { join } from "path";
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
 import type { KnownRepo } from "../repo-index.ts";
+import { repoLabel } from "../repo-label.ts";
 
 export interface CronTrigger {
   name: string;
@@ -46,7 +47,9 @@ export function resolveBoardTriage(
   known: Pick<KnownRepo, "repoName" | "worktrees" | "registered">[],
   boardExec: string[] | null,
 ): BoardTriageResolution {
-  const checkout = known.find((r) => r.registered !== false && r.repoName === "board");
+  // `repoName` is a serialized identity for every row the index wrote
+  // post-cutover, so "board" only ever matches its decoded label.
+  const checkout = known.find((r) => r.registered !== false && repoLabel(r.repoName) === "board");
   if (checkout) {
     const script = join(checkout.worktrees[0]!.path, "bin", "triage.ts");
     if (p.exists(script)) return { kind: "checkout", run: ["bun", "run", script] };

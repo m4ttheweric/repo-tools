@@ -288,12 +288,21 @@ export async function dispatch(
     if (repoFlag) {
       // --repo provided: resolve that repo and show worktree picker (skip repo picker + cwd detection)
       const { getKnownRepos, pickWorktreeFromRepo, getRepoIdentity, missingRepoRefusal } = await import("./repo.ts");
+      const { tryResolveRepoArg } = await import("./repo-arg.ts");
       const repos = getKnownRepos({ includeMissing: true });
-      const repo = repos.find(r => r.repoName === repoFlag);
+      // The typed name is a LABEL and the index keys on identities, so resolve
+      // before matching. The raw spelling stays as the fallback: an
+      // unregistered scanned row is basename-keyed and never reaches the index.
+      const resolution = await tryResolveRepoArg(repoFlag);
+      const repo = (resolution.kind === "resolved"
+        ? repos.find(r => r.repoName === resolution.identity)
+        : undefined) ?? repos.find(r => r.repoName === repoFlag);
       if (!repo) {
         const { yellow } = await import("./tui.ts");
-        console.error(`\n  ${yellow}unknown repo: ${repoFlag}${reset}`);
-        const { repoLabel } = await import("./repo-label.ts");
+        const { repoLabel, repoLabelQualified } = await import("./repo-label.ts");
+        console.error(`\n  ${yellow}${resolution.kind === "ambiguous"
+          ? `"${repoFlag}" matches more than one repo: ${resolution.matches.map(repoLabelQualified).join(", ")}`
+          : `unknown repo: ${repoFlag}`}${reset}`);
         console.error(`  ${dim}known: ${repos.map(r => repoLabel(r.repoName)).join(", ")}${reset}\n`);
         process.exit(1);
       }

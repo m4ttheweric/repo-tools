@@ -16,6 +16,9 @@ const realGetKnownRepos = realRepoModule.getKnownRepos;
 const realPickWorktreeFromRepo = realRepoModule.pickWorktreeFromRepo;
 const realGetRepoIdentity = realRepoModule.getRepoIdentity;
 
+const realRepoArgModule = await import("../repo-arg.ts");
+const realTryResolveRepoArg = realRepoArgModule.tryResolveRepoArg;
+
 const noop = async () => {};
 
 const TREE: Record<string, CommandNode> = {
@@ -96,6 +99,10 @@ describe("dispatch --repo flag scoping", () => {
       pickWorktreeFromRepo: realPickWorktreeFromRepo,
       getRepoIdentity: realGetRepoIdentity,
     }));
+    mock.module("../repo-arg.ts", () => ({
+      ...realRepoArgModule,
+      tryResolveRepoArg: realTryResolveRepoArg,
+    }));
   });
 
   test('context:"worktree" node: --repo is stripped from args and resolved onto ctx.identity', async () => {
@@ -140,6 +147,51 @@ describe("dispatch --repo flag scoping", () => {
 
     expect(capturedArgs).toEqual(["--flag", "x"]);
     expect(capturedCtx?.identity?.repoName).toBe("acme");
+  });
+
+  // Index rows are keyed by serialized identity, so a typed display name has
+  // to be resolved before it can match one. Matching the raw spelling found
+  // nothing for every repo rt actually knows, and the "known:" list printed
+  // alongside the refusal decodes to that same name.
+  test('context:"worktree" node: --repo <display name> matches an identity-keyed row', async () => {
+    const real = realRepoModule;
+    const identity = "remote:github.com%2Facme%2Facme-dev";
+    const fakeRepo: KnownRepo = {
+      repoName: identity,
+      worktrees: [{ path: process.cwd(), branch: "main", isBare: false }],
+      dataDir: "/fake/acme-data",
+    };
+    const fakeIdentity: RepoIdentity = {
+      repoName: "acme-dev",
+      identity,
+      repoRoot: process.cwd(),
+      dataDir: "/fake/acme-data",
+      remoteUrl: "",
+      baseUrl: "",
+    };
+    mock.module("../repo.ts", () => ({
+      ...real,
+      getKnownRepos: () => [fakeRepo],
+      pickWorktreeFromRepo: async () => null,
+      getRepoIdentity: () => fakeIdentity,
+    }));
+    mock.module("../repo-arg.ts", () => ({
+      ...realRepoArgModule,
+      tryResolveRepoArg: async () => ({ kind: "resolved", identity }),
+    }));
+
+    let reached = false;
+    const tree: Record<string, CommandNode> = {
+      cmd: {
+        description: "test",
+        context: "worktree",
+        handler: async () => { reached = true; },
+      },
+    };
+
+    await dispatch(tree, ["cmd", "--repo", "acme-dev"]);
+
+    expect(reached).toBe(true);
   });
 
   test('node without context: --repo survives untouched in its own args (no repo.ts mocking needed)', async () => {
