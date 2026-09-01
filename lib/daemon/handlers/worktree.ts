@@ -42,7 +42,7 @@ import {
   type DisposalMode,
   type TreeRecord,
 } from "../../worktree/registry.ts";
-import { patchTree } from "../../worktree/patch.ts";
+import { markHandoffDelivered, patchTree } from "../../worktree/patch.ts";
 import { disambiguate, slugifyTicketTitle } from "../../worktree/branch-name.ts";
 import { createTree } from "../../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree, type DisposeDeps } from "../../worktree/dispose.ts";
@@ -532,11 +532,12 @@ export function createWorktreeHandlers(
       // Still "pending" on a later reconcile pass means this reply never
       // happened (daemon died mid-provision) and the claim is released (RT-99).
       if (outcome.ok) {
-        const delivered = patchTree(repoName, outcome.data.path, (r) => { r.handoff = "done"; });
-        // An unrecorded delivery would hand the caller a tree that a later
-        // reconcile pass releases out from under them; refusing is the only
-        // reply consistent with what the registry will do next.
-        if (!delivered) return { ok: false, error: "handoff-write-failed" };
+        // CAS: a reconcile tick may have released this claim after the tree
+        // lock dropped; whoever wrote first wins, and losing means the tree
+        // is back in the pool, so the only consistent reply is a refusal.
+        if (!markHandoffDelivered(repoName, outcome.data.path)) {
+          return { ok: false, error: "handoff-write-failed" };
+        }
       }
       return outcome;
     },

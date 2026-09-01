@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, registryEpoch, saveRegistry, type TreeRecord } from "../registry.ts";
-import { patchTree } from "../patch.ts";
+import { markHandoffDelivered, patchTree } from "../patch.ts";
 
 const rec = (over: Partial<TreeRecord>): TreeRecord => ({
   name: "bellatrix",
@@ -53,5 +53,26 @@ describe("patchTree", () => {
     patchTree("r", "/tmp/x", (r) => { r.state = "disposable"; });
     const trees = loadRegistry("r");
     expect(trees.find((t) => t.path === "/tmp/y")).toMatchObject({ state: "on-deck" });
+  });
+});
+
+describe("markHandoffDelivered (RT-99 CAS)", () => {
+  const identity = "remote:example.com%2Facme%2Frepo";
+
+  test("flips a claimed+pending row to done", () => {
+    saveRegistry(identity, [rec({ state: "claimed", handoff: "pending" })]);
+    expect(markHandoffDelivered(identity, "/tmp/x")).toBe(true);
+    expect(loadRegistry(identity)[0]!.handoff).toBe("done");
+  });
+
+  test("refuses when the release already flipped the row (lost the race)", () => {
+    saveRegistry(identity, [rec({ state: "on-deck" })]);
+    expect(markHandoffDelivered(identity, "/tmp/x")).toBe(false);
+    expect(loadRegistry(identity)[0]!.handoff).toBeUndefined();
+  });
+
+  test("refuses a vanished row", () => {
+    saveRegistry(identity, []);
+    expect(markHandoffDelivered(identity, "/nope/nowhere")).toBe(false);
   });
 });

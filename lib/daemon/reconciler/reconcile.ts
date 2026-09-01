@@ -155,7 +155,7 @@ export async function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName"
     deps.log.warn({ repo: deps.repoName, tree: rec.name, backToPool }, "reconcile: released a stranded claim");
     if (!backToPool) {
       deps.emit("worktree:disposable", {
-        repo: deps.repoName, tree: rec.name, path: rec.path, branch: rec.branch,
+        repo: deps.repoName, tree: rec.name, path: rec.path, branch: current ?? rec.branch,
         reason: "stranded claim (provision died before handover)",
       });
     }
