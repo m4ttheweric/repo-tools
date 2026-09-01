@@ -464,6 +464,75 @@ describe("rt nav: exits print the path on real stdout", () => {
     expect(writes).toContain(join(root, "sub") + "\n");
     rmSync(root, { recursive: true, force: true });
   });
+
+  test("terminal fired with nothing under the cursor prints 'aborted' and quits (no shell spawned)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    fake = installFakePick([resultStep("terminal", null, "")]);
+    const spawn = fakeSpawnSync();
+
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await withRealStdoutRestore(() => navigate([root], baseDeps({ spawnSync: spawn.fn })));
+      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+      expect(spawn.calls).toHaveLength(0);
+    } finally {
+      stderrSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("open-with fired with nothing under the cursor prints 'aborted' and quits", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    fake = installFakePick([resultStep("open-with", null, "")]);
+
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await withRealStdoutRestore(() => navigate([root], baseDeps()));
+      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+    } finally {
+      stderrSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("open-with cancelled at the app sub-picker prints 'aborted' and resumes nav (no exit)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    writeFileSync(join(root, "notes.txt"), "x");
+
+    const seq = installSequentialFakePick([
+      [resultStep("open-with", "f:notes.txt", "")],
+      [resultStep("cancel", null)], // pickOpenWith's own app picker
+      [resultStep("cancel", null)], // resumed nav session -- ends the test
+    ]);
+
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await withRealStdoutRestore(() => navigate([root], baseDeps()));
+      expect(seq.calls.length).toBe(3);
+      expect(seq.calls[2]!.request.resumeValue).toBe("f:notes.txt");
+      const written = stderrSpy.mock.calls.flat().join("");
+      expect((written.match(/aborted/g) ?? []).length).toBe(2); // open-with cancel, then esc off the resumed session
+    } finally {
+      stderrSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+      seq.restore();
+    }
+
+    rmSync(root, { recursive: true, force: true });
+  });
 });
 
 describe("rt nav: terminal-owning exits re-invoke with resume", () => {

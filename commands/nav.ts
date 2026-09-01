@@ -209,9 +209,10 @@ async function pickOpenWith(target: string, kind: ItemKind, deps: NavDeps): Prom
 
 type SessionOutcome =
   | { type: "cd"; path: string }
-  // `aborted` distinguishes esc/cancel-to-shell from a deliberate quit (opening
-  // a terminal, launching "open with…"); only the former prints the
-  // "aborted" line.
+  // `aborted` distinguishes esc/cancel-to-shell (and a terminal/open-with
+  // action that fired with nothing under the cursor to act on) from a
+  // deliberate quit that actually opened a terminal or launched an app;
+  // only the former prints the "aborted" line.
   | { type: "quit"; aborted?: boolean }
   | { type: "resume"; cwd: string; showHidden: boolean; sort: SortState; resumeValue?: string; initialQuery?: string };
 
@@ -375,6 +376,8 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
           const detail = r.error?.message ?? (r.stderr || r.stdout || "").trim() ?? "";
           console.error(`  Quick Look failed${detail ? `: ${detail.split("\n")[0]}` : ` (exit ${r.status})`}`);
         }
+      } else {
+        printAborted();
       }
       return { type: "resume", cwd, showHidden, sort, resumeValue: result.value ?? undefined, initialQuery: result.query || undefined };
     }
@@ -385,15 +388,17 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
         const shellCwd = kind === "folder" ? target : dirname(target);
         const shell = process.env.SHELL || "/bin/zsh";
         deps.spawnSync(shell, [], { cwd: shellCwd, stdio: "inherit" });
+        return { type: "quit" };
       }
-      return { type: "quit" };
+      return { type: "quit", aborted: true };
     }
 
     case "open-with": {
-      if (!result.value) return { type: "quit" };
+      if (!result.value) return { type: "quit", aborted: true };
       const { kind, target } = targetOf(cwd, result.value);
       const launched = await pickOpenWith(target, kind, deps);
       if (launched) return { type: "quit" };
+      printAborted();
       return { type: "resume", cwd, showHidden, sort, resumeValue: result.value, initialQuery: result.query || undefined };
     }
 
