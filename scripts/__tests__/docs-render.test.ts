@@ -57,6 +57,12 @@ test("renderArgsTable returns empty string when no args", () => {
   expect(renderArgsTable([], NO_COMMON)).toBe("");
 });
 
+test("renderArgsTable escapes a pipe in a hint so it doesn't close the table cell early", () => {
+  const args: CommandArg[] = [{ name: "Status", flag: "--status", type: "text", hint: "done | failed | abandoned" }];
+  const out = renderArgsTable(args, NO_COMMON);
+  expect(out).toContain("| `--status` | text |  | done \\| failed \\| abandoned |");
+});
+
 import { renderPage, renderSubcommandsTable } from "../lib/docs-render.ts";
 import type { CommandNode } from "../../lib/command-tree.ts";
 
@@ -137,6 +143,17 @@ test("renderSubcommandsTable escapes MDX-hostile characters in subcommand descri
   const out = renderSubcommandsTable(node, ["sdm"]);
   expect(out).toContain("&lt;key&gt;");
   expect(out).not.toContain("connect <key> directly");
+});
+
+test("renderSubcommandsTable escapes a pipe in a subcommand description so it doesn't close the table cell early", () => {
+  const node: CommandNode = {
+    description: "Pipeline write verbs",
+    subcommands: {
+      field: { description: "field set KEY VALUE --stage NAME | field get KEY", module: "./commands/runs-write.ts", fn: "runsField" },
+    },
+  };
+  const out = renderSubcommandsTable(node, ["runs"]);
+  expect(out).toContain("| [`field`](field) | field set KEY VALUE --stage NAME \\| field get KEY |");
 });
 
 test("renderUsage leaves the bash usage block unescaped (raw positional inside a code fence)", () => {

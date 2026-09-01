@@ -32,7 +32,7 @@ rt runs [flags]
 | [`stage-start`](stage-start) | Pipeline: start a stage attempt (reads RT_RUN_DB) |
 | [`stage-done`](stage-done) | Pipeline: finish the latest attempt of a stage (reads RT_RUN_DB) |
 | [`stage-fail`](stage-fail) | Pipeline: fail the latest attempt of a stage (reads RT_RUN_DB) |
-| [`field`](field) | Pipeline: field set KEY VALUE --stage NAME | field get KEY (reads RT_RUN_DB) |
+| [`field`](field) | Pipeline: field set KEY VALUE --stage NAME \| field get KEY (reads RT_RUN_DB) |
 | [`decision`](decision) | Pipeline: decision record --contract C --scope S --selection JSON --decided-by W (reads RT_RUN_DB) |
 | [`snapshot`](snapshot) | Pipeline: the full run document as JSON (reads RT_RUN_DB) |
 
