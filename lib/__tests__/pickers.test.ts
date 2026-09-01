@@ -10,6 +10,9 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { installFakePick, type PickFakeStep } from "../ui/pick-fake.ts";
+import { __test__ as pickTest } from "../ui/pick.ts";
+import type { PickCallbacks, PickHandle, PickImpl } from "../ui/pick.ts";
+import type { PickRequest, PickResult } from "../ui/protocol.ts";
 import * as linearModule from "../linear.ts";
 import * as enrichModule from "../enrich.ts";
 import type { EnrichedBranch } from "../enrich.ts";
@@ -40,6 +43,70 @@ function resultStep(result: Partial<{ action: string; value: string | null; quer
 
 function repoFixture(name: string, path: string, branch = "main"): KnownRepo {
   return { repoName: name, worktrees: [{ path, branch, isBare: false }], dataDir: "/d" };
+}
+
+/**
+ * Per-call sequencer for cancel flows that need two DIFFERENT runPick
+ * results in one test (e.g. back out of the package picker, then cancel the
+ * worktree picker it opens) -- installFakePick's one script replays for
+ * every call, which can't express that. "result" steps only: none of these
+ * cancel paths exercise events or modals.
+ */
+function installSequentialFakePick(scripts: PickFakeStep[][]): { calls: { request: PickRequest }[]; restore(): void } {
+  const calls: { request: PickRequest }[] = [];
+  let callIndex = 0;
+
+  const fakeImpl: PickImpl = (req, _cb: PickCallbacks) => {
+    const script = scripts[callIndex] ?? [];
+    callIndex++;
+    calls.push({ request: req });
+
+    let resolveResult!: (r: PickResult) => void;
+    const result = new Promise<PickResult>((res) => { resolveResult = res; });
+    for (const step of script) {
+      if (step.kind === "result") resolveResult({ t: "result", ...step.result });
+    }
+
+    return {
+      update() {},
+      modal: async () => null,
+      result,
+    } satisfies PickHandle;
+  };
+
+  pickTest.setImpl(fakeImpl);
+  let restored = false;
+  return {
+    calls,
+    restore() {
+      if (restored) return;
+      restored = true;
+      pickTest.setImpl(undefined);
+    },
+  };
+}
+
+/**
+ * Forces process.stderr.isTTY so printAborted() actually writes, mocks
+ * process.exit to throw instead of killing the test process, and asserts
+ * both: the process tried to exit, and the shared "aborted" line printed
+ * before it did.
+ */
+async function expectAbortedExit(fn: () => Promise<unknown>): Promise<void> {
+  const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+  const originalExit = process.exit;
+  process.exit = ((): never => { throw new Error("process.exit sentinel"); }) as unknown as typeof process.exit;
+  try {
+    await expect(fn()).rejects.toThrow("process.exit sentinel");
+    expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+  } finally {
+    process.exit = originalExit;
+    stderrSpy.mockRestore();
+    if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+    else delete (process.stderr as { isTTY?: boolean }).isTTY;
+  }
 }
 
 describe("pickFromAllRepos: ctrl-r reload", () => {
@@ -238,5 +305,84 @@ describe("pickWorktreeWithSwitch: progressive enrichment", () => {
 
     expect(enrichSpy).toHaveBeenCalledTimes(1);
     expect(enrichSpy.mock.calls[0]![2]).toEqual({ silent: true });
+  });
+});
+
+describe("abort lines (item 5): user-cancel in lib/pickers.ts prints the shared line", () => {
+  const twoWorktreeRepo: KnownRepo = {
+    repoName: "solo",
+    worktrees: [
+      { path: "/a/wt1", branch: "main", isBare: false },
+      { path: "/a/wt2", branch: "feature", isBare: false },
+    ],
+    dataDir: "/d",
+  };
+
+  test("pickWorktreeWithSwitch: esc/cancel prints aborted before exiting", async () => {
+    const { pickWorktreeWithSwitch } = await import("../pickers.ts");
+    fake = installFakePick([resultStep({ action: "cancel" })]);
+    await expectAbortedExit(() => pickWorktreeWithSwitch(twoWorktreeRepo, "/a/wt1"));
+  });
+
+  test("pickFromAllRepos: cancelling the repo step prints aborted before exiting", async () => {
+    const { pickFromAllRepos } = await import("../pickers.ts");
+    fake = installFakePick([resultStep({ action: "cancel" })]);
+    await expectAbortedExit(() =>
+      pickFromAllRepos([repoFixture("repo-a", "/a"), repoFixture("repo-b", "/b")]),
+    );
+  });
+
+  test("pickFromAllRepos: cancelling the worktree step (single known repo) prints aborted before exiting", async () => {
+    const { pickFromAllRepos } = await import("../pickers.ts");
+    fake = installFakePick([resultStep({ action: "cancel" })]);
+    await expectAbortedExit(() => pickFromAllRepos([twoWorktreeRepo]));
+  });
+
+  test("pickPackageWithEscape: cancelling the package picker prints aborted before exiting", async () => {
+    const { pickPackageWithEscape } = await import("../pickers.ts");
+    const repo = repoFixture("solo", "/a/wt1");
+    fake = installFakePick([resultStep({ action: "cancel" })]);
+    await expectAbortedExit(() => pickPackageWithEscape(repo, "/a/wt1", [repo]));
+  });
+
+  test("pickPackageWithEscape: back to the worktree picker (single repo), then cancelling it prints aborted", async () => {
+    const { pickPackageWithEscape } = await import("../pickers.ts");
+    const seq = installSequentialFakePick([
+      [resultStep({ action: "back" })], // package picker: ctrl-up
+      [resultStep({ action: "cancel" })], // pickWorktreeFromRepo (lib/repo.ts): esc
+    ]);
+    try {
+      await expectAbortedExit(() => pickPackageWithEscape(twoWorktreeRepo, "/a/wt1", [twoWorktreeRepo]));
+    } finally {
+      seq.restore();
+    }
+  });
+
+  test("pickPackageWithEscape: back to the repo-aware worktree picker (multi-repo), then cancelling it prints aborted", async () => {
+    const { pickPackageWithEscape } = await import("../pickers.ts");
+    const other = repoFixture("other", "/b");
+    const seq = installSequentialFakePick([
+      [resultStep({ action: "back" })], // package picker: ctrl-up
+      [resultStep({ action: "cancel" })], // pickWorktreeWithSwitch: esc
+    ]);
+    try {
+      await expectAbortedExit(() => pickPackageWithEscape(twoWorktreeRepo, "/a/wt1", [twoWorktreeRepo, other]));
+    } finally {
+      seq.restore();
+    }
+  });
+
+  test("resolveWorktreeByBranch: cancelling the ambiguous-match picker prints aborted before exiting", async () => {
+    const { resolveWorktreeByBranch } = await import("../pickers.ts");
+    const repo: KnownRepo = {
+      repoName: "solo",
+      worktrees: [
+        { path: "/a/feat-1", branch: "feat-1", isBare: false },
+        { path: "/a/feat-2", branch: "feat-2", isBare: false },
+      ],
+      dataDir: "/d",
+    };
+    fake = installFakePick([resultStep({ action: "cancel" })]);
+    await expectAbortedExit(() => resolveWorktreeByBranch("feat", [repo]));
   });
 });
