@@ -129,7 +129,7 @@ export function listEntries(
     try {
       st = statSync(join(dir, name));
     } catch {
-      continue; // broken symlink etc. — skip (matches prior nav behavior)
+      continue; // broken symlink etc: skip (matches prior nav behavior)
     }
     const meta: EntryMeta = {
       name,
@@ -169,9 +169,9 @@ const POLL_INTERVAL_MS = 250;
 /**
  * Polls the directory's mtime instead of subscribing to fs.watch. On Darwin
  * 25 (macOS 26), directory-level fs.watch is backed by FSEvents, and FSEvents
- * was confirmed to deliver zero add/remove notifications on this OS build —
- * the same wall lib/nav-watch.ts hit for the fzf-era picker (see its own
- * defaultWatch for the full account). A directory's mtime changes whenever an
+ * was confirmed to deliver zero add/remove notifications on this OS build.
+ * lib/nav-watch.ts hit the same wall (see its own defaultWatch for the full
+ * account). A directory's mtime changes whenever an
  * entry is added, removed, or renamed, so polling it is a reliable substitute.
  * Do not "optimize" this back to fs.watch(dir, ...) without first confirming
  * FSEvents actually delivers directory events on the target OS.

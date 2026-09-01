@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * rt nav — Filesystem navigator.
+ * rt nav: Filesystem navigator.
  *
  * Browse folders and files. Selecting a folder descends into it; selecting a
  * file opens it in its default app and stays open (like a persistent Finder).
@@ -26,7 +26,7 @@
  * toggling hidden files, and re-sorting all re-render the same session in
  * place rather than closing and reopening it. A session only ends when the
  * user actually leaves nav (cd, quit) or an action needs the real terminal
- * (an external editor, Quick Look, a spawned shell) — those close the
+ * (an external editor, Quick Look, a spawned shell). Those close the
  * session, run their side effect, then open a fresh one back where the user
  * left off.
  */
@@ -174,7 +174,7 @@ async function pickOpenWith(target: string, kind: ItemKind, deps: NavDeps): Prom
   const result = await runNavPicker({
     options, message: `Open ${name} with`, header: "esc: cancel", expectKeys: [],
   });
-  // ctrl-up is always in the expect set and means "back" everywhere in rt —
+  // ctrl-up is always in the expect set and means "back" everywhere in rt, so
   // treat it as cancel here, not as accepting the highlighted row.
   if (!result || !result.value || result.key === "ctrl-up") return false;
   deps.spawnSync(result.value, [target], { stdio: "inherit" });

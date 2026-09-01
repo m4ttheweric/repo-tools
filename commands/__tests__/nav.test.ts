@@ -2,9 +2,9 @@
  * rt nav on the events model: one runPick session per browse (descend,
  * toggle, sort, and live-refresh all patch that same session in place), with
  * a handful of actions that must own the real terminal (editor, Quick Look,
- * a spawned shell) closing the session and — except for the shell, which is
- * a deliberate full exit — reopening a fresh one with resumeValue/
- * initialQuery so browsing picks back up where it left off.
+ * a spawned shell) closing the session and reopening a fresh one with
+ * resumeValue/initialQuery so browsing picks back up where it left off. The
+ * shell is the exception: it is a deliberate full exit, no reopen.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
