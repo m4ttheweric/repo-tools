@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decideCreate, nameIntent } from "../claude-hook.ts";
+import { decideCreate, decideRemove, nameIntent } from "../claude-hook.ts";
 
 const input = { cwd: "/fake/repo", name: "RT-123-fix-totals" };
 const stockOk = async (_c: string, n: string) => ({ ok: true as const, path: `/fake/repo/.claude/worktrees/${n}` });
@@ -65,5 +65,18 @@ describe("decideCreate", () => {
       stockAdd: async () => ({ ok: false, error: "branch-exists:RT-123-fix-totals" }),
     });
     expect(d).toEqual({ kind: "refused", error: "branch-exists:RT-123-fix-totals" });
+  });
+});
+
+describe("decideRemove", () => {
+  test("rt-managed path maps to a dispose", () => {
+    expect(decideRemove("/pool/fred", () => ({ repoName: "remote:example%2Fr", tree: "fred" })))
+      .toEqual({ kind: "dispose", repoName: "remote:example%2Fr", tree: "fred" });
+  });
+  test("unknown path is a noop", () => {
+    expect(decideRemove("/elsewhere/tree", () => null)).toEqual({ kind: "noop" });
+  });
+  test("missing path field is a noop", () => {
+    expect(decideRemove(null, () => { throw new Error("must not look up"); })).toEqual({ kind: "noop" });
   });
 });

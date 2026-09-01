@@ -51,3 +51,14 @@ export async function stockWorktreeAdd(cwd: string, name: string): Promise<{ ok:
   if (add.exitCode !== 0) return { ok: false, error: add.stderr.toString().trim().split("\n").pop() ?? "git worktree add failed" };
   return { ok: true, path };
 }
+
+export type RemoveDecision = { kind: "dispose"; repoName: string; tree: string } | { kind: "noop" };
+
+export function decideRemove(
+  worktreePath: string | null,
+  registryLookup: (path: string) => { repoName: string; tree: string } | null,
+): RemoveDecision {
+  if (!worktreePath) return { kind: "noop" };
+  const hit = registryLookup(worktreePath);
+  return hit ? { kind: "dispose", repoName: hit.repoName, tree: hit.tree } : { kind: "noop" };
+}
