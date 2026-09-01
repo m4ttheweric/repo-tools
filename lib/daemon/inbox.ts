@@ -1,4 +1,8 @@
-const DEFAULT_TIMEOUT_MS = 1000;
+// 1000ms once let one slow-but-alive recipient (heavy load, not actually
+// gone) register as a dropped push -- the failure that started the silent
+// deadlock this file's delivery fix addresses. 3000ms gives a busy inbox
+// room to answer before the caller gives up on it.
+export const DEFAULT_TIMEOUT_MS = 3000;
 
 export async function deliverToInbox(
   socketPath: string,

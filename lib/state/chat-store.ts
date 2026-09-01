@@ -149,6 +149,44 @@ const SELECT_MESSAGES_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE 
 const SELECT_MESSAGES_BEFORE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id < ? ORDER BY id DESC LIMIT ?;`;
 const SELECT_PENDING_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? AND id <= ? ORDER BY id ASC;`;
 const UPDATE_LAST_READ_CLAMPED_SQL = `UPDATE chat_members SET last_read_id = MAX(last_read_id, ?) WHERE room = ? AND handle = ?;`;
+// One query, cheap when idle (both joins are on indexed/PK columns and the
+// per-room MAX collapses to a handful of rows): every (room, handle) whose
+// member cursor sits behind that room's newest message, in a non-archived
+// room, PROVIDED some message in that gap was authored by someone else --
+// the EXISTS clause is the idle early-out for a poster whose only pending
+// backlog is their own message (postMessage never self-advances the
+// author's own cursor): no wake_on setting ever makes a message a recipient
+// of itself, so that row can never become a delivery target and is worth
+// dropping before a presence lookup or pendingMessages call, not just
+// before deliverSerialized. The wake_on <> 'none' leg is the SAME idle
+// early-out for a different permanent row: dm-store adds the human as a
+// silent wake_on:"none" third member (last_read_id 0, forever) to every DM
+// room he isn't a named participant of -- without this leg that row alone
+// would make the idle path never fire for a real estate (every DM room
+// always has one), even though the planner-level wake_on:"none" check
+// (createChatDeliverySweep's own contract, kept as the pure source of
+// truth) would drop it anyway. `wakeOn` rides along so the sweep planner
+// can apply the same wake_on rules recipientsFromMembers uses without a
+// second query. This is the sweep's only store read -- it discovers
+// candidates, it does not decide who is deliverable (presence/binding
+// liveness and the wake_on/mention match are the sweep planner's job, not
+// a store concern).
+const SELECT_STALE_PENDING_SQL = `
+SELECT chat_members.room AS room, chat_members.handle AS handle, maxes.maxId AS maxId, chat_members.wake_on AS wakeOn
+FROM chat_members
+JOIN (SELECT room, MAX(id) AS maxId FROM chat_messages GROUP BY room) AS maxes
+  ON maxes.room = chat_members.room
+JOIN chat_rooms ON chat_rooms.name = chat_members.room
+WHERE chat_members.last_read_id < maxes.maxId
+  AND chat_rooms.archived_at IS NULL
+  AND chat_members.wake_on <> 'none'
+  AND EXISTS (
+    SELECT 1 FROM chat_messages m
+    WHERE m.room = chat_members.room
+      AND m.id > chat_members.last_read_id
+      AND m.handle <> chat_members.handle
+  );
+`;
 
 // `@` is strictly the mention sigil, and `/` would reshape the
 // `chat/<room>/msg` event topic (lib/daemon/handlers/chat.ts's
@@ -541,4 +579,23 @@ export function pendingMessages(room: string, handle: string, upToId: number, db
   if (!member) return [];
   const rows = db.query(SELECT_PENDING_SQL).all(room, member.last_read_id, upToId) as MessageRow[];
   return rows.map(rowToMessage);
+}
+
+export interface StalePendingRow {
+  room: string;
+  handle: string;
+  maxId: number;
+  wakeOn: WakeMode;
+}
+
+/**
+ * Every (room, handle) whose member cursor is behind that room's newest
+ * message right now -- the daemon's periodic delivery sweep's one candidate
+ * query (lib/daemon/handlers/chat.ts's createChatDeliverySweep). Presence
+ * and binding liveness are checked downstream by the sweep's planner, not
+ * here: a stale cursor for a handle nobody has resolved a session for is
+ * still a legitimate row (it just never becomes a re-delivery target).
+ */
+export function stalePendingPairs(db: Database = getStateDb()): StalePendingRow[] {
+  return db.query(SELECT_STALE_PENDING_SQL).all() as StalePendingRow[];
 }

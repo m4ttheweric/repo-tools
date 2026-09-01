@@ -117,6 +117,7 @@ export {
   markRead,
   markDelivered,
   pendingMessages,
+  stalePendingPairs,
   listRooms,
   archiveRoom,
   roomArchivedAt,
@@ -129,6 +130,7 @@ export {
   type ChatMessage,
   type WakeMode,
   type RoomSummary,
+  type StalePendingRow,
 } from "./chat-store.ts";
 
 export {

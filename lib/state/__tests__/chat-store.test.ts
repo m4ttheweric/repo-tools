@@ -31,6 +31,7 @@ import {
   readUnread,
   recipientsFor,
   roomArchivedAt,
+  stalePendingPairs,
 } from "../chat-store.ts";
 
 let n = 0;
@@ -230,6 +231,83 @@ test("pendingMessages returns the recipient's unread backlog bounded above by th
   markDelivered("r", "b", one.id, db);
   expect(pendingMessages("r", "b", two.id, db).map((m) => m.body)).toEqual(["two"]);
   expect(pendingMessages("r", "nobody", two.id, db)).toEqual([]);
+});
+
+test("stalePendingPairs finds a member whose cursor sits behind the room's max id, and reports its wakeOn", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b", wakeOn: "mention" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  expect(stalePendingPairs(db)).toEqual([{ room: "r", handle: "b", maxId: posted.id, wakeOn: "mention" }]);
+});
+
+// R... (sweep review finding 3): the poster's own cursor also lags its own
+// post (postMessage never self-advances it), but a stale row whose ENTIRE
+// pending backlog is self-authored can never be a delivery target -- no
+// wake_on setting makes a message a recipient of itself. Excluding it here
+// (an EXISTS on "some OTHER author has a message in the gap") is the idle
+// early-out: a poster-only room never costs the sweep a presence lookup or
+// a pendingMessages call, not just a wasted deliverSerialized call.
+test("stalePendingPairs excludes a member whose entire pending backlog is self-authored", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  expect(stalePendingPairs(db)).toEqual([]);
+  // Sanity: the row exists as a plain lagging cursor -- it is the EXISTS
+  // clause specifically that drops it, not some other filter swallowing it.
+  expect((db.query("SELECT last_read_id FROM chat_members WHERE room = 'r' AND handle = 'a';").get() as { last_read_id: number }).last_read_id)
+    .toBeLessThan(posted.id);
+});
+
+// Review round 3 finding B: dm-store adds the human as a silent
+// wake_on:"none" third member (last_read_id 0, forever) to EVERY DM room
+// where he isn't one of the two named participants -- without this filter,
+// that row alone would make stalePendingPairs' idle early-out never fire
+// for a real estate (every DM room always has a permanently-lagging
+// wake_on:none row), so every 30s tick would pay a presence lookup and a
+// full registry scan for a candidate that can never be delivered to.
+test("stalePendingPairs never returns a wake_on:none member, even with a genuinely lagging cursor", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "silent", wakeOn: "none" }, db);
+  postMessage({ room: "r", handle: "a", body: "hi" }, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
+test("stalePendingPairs still includes a member once someone ELSE has posted, even if the member also has an unread post of their own", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "mine" }, db); // a's own post: alone, would exclude a
+  const fromB = postMessage({ room: "r", handle: "b", body: "b posts too" }, db)!;
+  // "a" is stale behind a message NOT authored by "a" (b's post) -- must appear.
+  expect(stalePendingPairs(db).find((r) => r.handle === "a")).toEqual({ room: "r", handle: "a", maxId: fromB.id, wakeOn: "all" });
+});
+
+test("stalePendingPairs is empty once markDelivered catches every cursor up to the max id", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  markDelivered("r", "a", posted.id, db);
+  markDelivered("r", "b", posted.id, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
+test("stalePendingPairs excludes an archived room even with a pending member", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  archiveRoom("r", true, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
+test("stalePendingPairs is empty for a room with no messages at all", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  expect(stalePendingPairs(db)).toEqual([]);
 });
 
 test("archive hides a room from every membership walk and keeps the member rows", () => {
