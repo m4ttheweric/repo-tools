@@ -1,5 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { parseHookStdin, shouldOfferClaudeHook } from "../worktree-hook.ts";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, realpathSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { parseHookStdin, recordClaudeHookAnswer, shouldOfferClaudeHook } from "../worktree-hook.ts";
+import { loadWorktreeAppConfig } from "../../lib/worktree/config.ts";
+import { getSetting } from "../../lib/settings/resolve.ts";
 
 describe("parseHookStdin", () => {
   test("create event yields cwd and name", () => {
@@ -27,5 +32,33 @@ describe("shouldOfferClaudeHook", () => {
     expect(shouldOfferClaudeHook({ ...base, hookInstalled: true })).toBe(false);
     expect(shouldOfferClaudeHook({ ...base, priorAnswer: "declined" })).toBe(false);
     expect(shouldOfferClaudeHook({ ...base, settingsFileExists: false })).toBe(false);
+  });
+});
+
+describe("recordClaudeHookAnswer", () => {
+  const REAL_HOME = process.env.HOME;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rt-claudehook-home-")));
+  });
+
+  afterEach(() => {
+    if (REAL_HOME === undefined) delete process.env.HOME;
+    else process.env.HOME = REAL_HOME;
+  });
+
+  test("on an unowned machine, recording an answer pins the pre-existing effective config instead of flipping it", () => {
+    // Unowned machine (no store rung, no legacy file): the documented S077
+    // default is `enabled: false`. Regression: recordClaudeHookAnswer used to
+    // write `{ claudeHook }` alone, which first-time-owned the key with no
+    // `enabled` field — loadWorktreeAppConfig()'s store branch then defaults
+    // `enabled` to true, silently flipping worktree-app on.
+    expect(loadWorktreeAppConfig()).toEqual({ enabled: false, killProcesses: true });
+
+    recordClaudeHookAnswer("declined");
+
+    expect(loadWorktreeAppConfig()).toEqual({ enabled: false, killProcesses: true });
+    const stored = getSetting<Record<string, unknown> | undefined>("rt.worktreeApp").value;
+    expect(stored?.claudeHook).toBe("declined");
   });
 });

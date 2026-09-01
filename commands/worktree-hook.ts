@@ -14,6 +14,7 @@ import { claudeWorktreeHookStatus, installClaudeWorktreeHooks, uninstallClaudeWo
 import { getSetting } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { decideCreate, decideRemove, stockWorktreeAdd } from "../lib/worktree/claude-hook.ts";
+import { loadWorktreeAppConfig } from "../lib/worktree/config.ts";
 import { explainError } from "./worktree.ts";
 import { findTreeByPath } from "../lib/worktree/registry.ts";
 
@@ -52,10 +53,19 @@ function priorClaudeHookAnswer(): string | undefined {
   return typeof value?.claudeHook === "string" ? value.claudeHook : undefined;
 }
 
-/** Merges into whatever machine-scope value already exists so sibling fields (`enabled`, `killProcesses`) are never clobbered. */
-function recordClaudeHookAnswer(answer: "installed" | "declined"): void {
+/**
+ * Merges into whatever machine-scope value already exists so sibling fields
+ * (`enabled`, `killProcesses`) are never clobbered. Seeded from the
+ * currently-EFFECTIVE config (`loadWorktreeAppConfig()`, which falls through
+ * to the legacy file / the unowned-machine default per lib/worktree/config.ts's
+ * header) so that a first-time-owns-the-key write pins the behavior that was
+ * already true, rather than picking up the store branch's own
+ * `enabled !== false` default (which disagrees with the unowned default).
+ */
+export function recordClaudeHookAnswer(answer: "installed" | "declined"): void {
+  const effective = loadWorktreeAppConfig();
   const existing = getSetting<Record<string, unknown> | undefined>(WORKTREE_APP_SETTING_KEY).value ?? {};
-  setSetting(WORKTREE_APP_SETTING_KEY, { ...existing, claudeHook: answer }, "machine");
+  setSetting(WORKTREE_APP_SETTING_KEY, { ...effective, ...existing, claudeHook: answer }, "machine");
 }
 
 /**
