@@ -2219,10 +2219,13 @@ func TestModifierPressAndReleaseTracksHeldState(t *testing.T) {
 	}
 }
 
-// TestAltHeldRendersHeaderBadgeAndCursorRowBadge is the alt-held golden:
-// the Modifiers board's header badge and the cursor row's "pick args" badge
-// both appear while alt is held.
-func TestAltHeldRendersHeaderBadgeAndCursorRowBadge(t *testing.T) {
+// TestAltHeldTracksStateButRendersNoBadge pins the deferred-rendering
+// ruling: alt-held is still tracked (mouse.go's applyModifierHeld), but
+// neither the header "with args" badge nor the cursor row's "pick args"
+// badge render, since the protocol has no per-row way to say a row
+// actually has a with-args action -- rendering either would assert an
+// affordance a plain picker (worktree dispose, settings) can't honor.
+func TestAltHeldTracksStateButRendersNoBadge(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Breadcrumb: []string{"rt", "worktree"},
@@ -2233,43 +2236,56 @@ func TestAltHeldRendersHeaderBadgeAndCursorRowBadge(t *testing.T) {
 	}
 	m := New(req)
 	m.width = 92
-	m.held.alt = true
 
-	plain := ansi.Strip(render(m))
-	lines := strings.Split(plain, "\n")
+	before := render(m)
 
-	if !strings.Contains(lines[0], "⌥ with args") {
-		t.Fatalf("breadcrumb line should carry the alt-held badge: %q", lines[0])
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftAlt})
+	m = next.(*Model)
+	if !m.held.alt {
+		t.Fatal("setup: alt press should still set held.alt")
 	}
 
-	var cursorLine string
-	for _, l := range lines {
-		if strings.Contains(l, "▌") {
-			cursorLine = l
-			break
-		}
+	after := render(m)
+	if after != before {
+		t.Fatalf("holding alt must not change the rendered frame while no badge is wired:\nbefore: %q\nafter:  %q", before, after)
 	}
-	if !strings.Contains(cursorLine, "enter → pick args") {
-		t.Fatalf("the cursor row should carry the pick-args badge while alt is held: %q", cursorLine)
+	plain := ansi.Strip(after)
+	if strings.Contains(plain, "with args") || strings.Contains(plain, "pick args") {
+		t.Fatalf("no with-args affordance should render for a request with no with-args data: %q", plain)
 	}
 }
 
-// TestCtrlHeldSwapsKeybarRangeToHeldIndicator is the ctrl-held golden: the
-// footer's range/held indicator swaps to the Modifiers board's "showing all
-// keys" cue while ctrl is held.
-func TestCtrlHeldSwapsKeybarRangeToHeldIndicator(t *testing.T) {
-	req := protocol.PickRequest{
-		T: "pick", Protocol: protocol.Version,
-		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+// TestCtrlHeldTracksStateButKeepsTheNormalKeybar pins the deferred-rendering
+// ruling: ctrl-held is still tracked, but the footer renders exactly as it
+// would unheld -- no fabricated "showing all keys" claim, and (on a
+// scrolling list) the real range indicator is never dropped.
+func TestCtrlHeldTracksStateButKeepsTheNormalKeybar(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
 	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5}
 	m := New(req)
-	m.width = 92
-	m.held.ctrl = true
+	m.width = 60
 
-	plain := ansi.Strip(render(m))
-	lines := strings.Split(plain, "\n")
-	footer := lines[len(lines)-1]
-	if !strings.Contains(footer, "held: showing all keys") {
-		t.Fatalf("footer should show the ctrl-held indicator: %q", footer)
+	before := render(m)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
+	m = next.(*Model)
+	if !m.held.ctrl {
+		t.Fatal("setup: ctrl press should still set held.ctrl")
+	}
+
+	after := render(m)
+	if after != before {
+		t.Fatalf("holding ctrl must not change the rendered frame while no expanded keymap is wired:\nbefore: %q\nafter:  %q", before, after)
+	}
+	footer := ansi.Strip(strings.Split(after, "\n")[len(strings.Split(after, "\n"))-1])
+	if strings.Contains(footer, "showing all keys") {
+		t.Fatalf("no fabricated expansion claim should render: %q", footer)
+	}
+	if !strings.Contains(footer, "1-5 of 20") {
+		t.Fatalf("the real range indicator must survive while ctrl is held: %q", footer)
 	}
 }

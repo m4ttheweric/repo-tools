@@ -235,18 +235,20 @@ func breadcrumbLine(m *Model) string {
 
 // countText is the breadcrumb line's right-aligned count area. A multi
 // session leads with the mint selected-count glyph ahead of the ordinary
-// fraction; a plain session is just the fraction. Alt held prepends the
-// Modifiers board's "with args" badge ahead of either.
+// fraction; a plain session is just the fraction.
+//
+// The Modifiers board's alt-held "with args" badge is not rendered here:
+// asserting a with-args affordance requires knowing whether this request's
+// rows actually carry one, which the protocol doesn't model yet (actions
+// are registry-wide, not per-row). m.held.alt is still tracked (mouse.go);
+// wire this badge in once the command-palette work adds that per-row data,
+// rather than claiming a capability a plain picker can't honor.
 func countText(m *Model) string {
-	prefix := ""
-	if m.held.alt {
-		prefix = fg(theme.Lav).Bold(true).Render("⌥ with args") + fg(theme.Faint).Render("  ·  ")
-	}
 	if m.multiMode() {
-		return prefix + fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
+		return fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
 			fg(theme.Faint).Render(" selected  ·  ") + countFraction(m)
 	}
-	return prefix + countFraction(m)
+	return countFraction(m)
 }
 
 // countFraction turns cyan only while a query is narrowing the list to at
@@ -416,15 +418,12 @@ func rowLineWidth(m *Model, i int, width int) string {
 		selMarkerWidth = 2
 	}
 
-	// The cursor row's own right segments are replaced by the Modifiers
-	// board's "enter → pick args" pill while alt is held -- it previews what
-	// enter now does, so it has to sit exactly where the row's usual right
-	// text does, sharing the same width budget below.
-	altBadge := cursorRow && m.held.alt
+	// The Modifiers board's alt-held "enter → pick args" cursor-row badge is
+	// not rendered here: it previews a with-args action, and the protocol
+	// has no per-row way to say a given row actually has one (see
+	// countText's header-badge note). m.held.alt is still tracked; wire the
+	// badge in once the command-palette work supplies that data.
 	rightPlain := plainConcat(row.Right)
-	if altBadge {
-		rightPlain = " enter → pick args "
-	}
 	rightWidth := lipgloss.Width(rightPlain)
 
 	// Budget: 1 gutter column + 1 separator column, plus a gap column ahead
@@ -452,9 +451,6 @@ func rowLineWidth(m *Model, i int, width int) string {
 	}
 
 	rightRendered := renderSegments(row.Right, rowBg)
-	if altBadge {
-		rightRendered = lipgloss.NewStyle().Background(theme.Lav).Foreground(theme.Bg).Bold(true).Render(rightPlain)
-	}
 
 	return gutter + rowBg.Render(" ") + selMarker + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
 }

@@ -64,6 +64,24 @@ func (z *hitZones) addAll(y int, zs []mouseZone) {
 // x. A row's marker zone is always recorded ahead of its row zone (see
 // rowZones), so a click inside the narrower marker span resolves to the
 // marker rather than falling through to the row underneath it.
+//
+// UNRESOLVED: every caller (handleMouseClick, handleMouseMotion) passes
+// mouse.Y straight through, treating it as content-relative (0 = the
+// picker's own first rendered line, matching how render() numbers its
+// zones). bubbletea v2 actually delivers terminal-absolute coordinates --
+// translateInputEvent does no translation -- and this picker renders
+// inline, anchored wherever the terminal's cursor sat when the frame
+// started, not at absolute row 0. On a live terminal every click's Y is
+// therefore off by that frame's start row. The contained fix, once that
+// start row is known: subtract it from y here before comparing against
+// zone.xStart/xEnd. tea.RequestCursorPosition/CursorPositionMsg is the
+// candidate way to measure it (issue the request once before the first
+// render, before any picker content is drawn), but its reliability across
+// terminals and its behavior once inline content grows past the bottom of
+// the screen and the terminal auto-scrolls (which would move the anchor
+// again, mid-session, with no further signal) are unverified without a
+// live terminal -- do not guess a formula here. This must be measured and
+// closed against a real terminal, not reasoned out from the client source.
 func (z hitZones) at(x, y int) (mouseZone, bool) {
 	for _, zone := range z.byY[y] {
 		if x >= zone.xStart && x < zone.xEnd {
@@ -109,14 +127,18 @@ func breadcrumbZones(m *Model) []mouseZone {
 // alongside the string it describes, not recomputed later against a stale
 // frame. keybarLine itself delegates here and discards the zones, so the
 // two can never drift into two different ideas of where a key landed.
+// The Modifiers board's ctrl-held expanded keymap (a second footer row
+// surfacing keys -- built-in navigation, alt-enter -- that the registry
+// doesn't carry today) is not built here: it needs the same registry
+// groundwork the nav ctrl-/ task lands, and a footer that silently grows a
+// line while held has real chrome-budget implications this task didn't
+// scope. m.held.ctrl is still tracked (see applyModifierHeld); wire the
+// expanded keymap in alongside ctrl-/.
 func keybarLineZones(m *Model, top, h, n int) (string, []mouseZone) {
 	left, ungrouped := keybarClusters(effectiveActions(m.req))
 
 	rangeText := ""
-	switch {
-	case m.held.ctrl:
-		rangeText = fg(theme.Cyan).Render("held: showing all keys")
-	case n > h:
+	if n > h {
 		rangeText = fg(theme.Cyan).Render(strconv.Itoa(top+1)+"-"+strconv.Itoa(top+h)) +
 			fg(theme.Faint).Render(" of "+strconv.Itoa(n))
 	}
