@@ -1084,3 +1084,234 @@ func TestGroupHeadersRespectPaneBudgetWhenWindowed(t *testing.T) {
 		}
 	}
 }
+
+// surfaceBgSGR is theme.Surface's (#221A35) truecolor SGR fragment as a
+// background parameter -- the overlay box's own fill, distinct from the
+// foreground fragments the other consts above pin.
+const surfaceBgSGR = "48;2;34;26;53"
+
+// TestModalMessageDimsTheParentAndPaintsASurfaceOverlay is the golden for
+// the composite itself: dimForeground steps the parent's Text tone down to
+// Dim (the same transform renderModal runs over the parent before
+// compositing), and the composited frame carries the overlay's Surface
+// background -- present only once a modal is actually open, per the base
+// goldens elsewhere in this file staying unchanged with m.modal nil.
+func TestModalMessageDimsTheParentAndPaintsASurfaceOverlay(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}}},
+	}
+	m := New(req)
+	m.width = 60
+
+	base := render(m)
+	if !strings.Contains(base, textSGR) {
+		t.Fatalf("setup: the lone (cursor) row should render full Text before dimming: %q", base)
+	}
+
+	m.openTSModal(protocol.PickModal{
+		Message: "Sort by",
+		Rows: []protocol.PickRow{
+			{Value: "size", Left: []protocol.PickSegment{{Text: "Size", Tone: "text"}}},
+			{Value: "name", Left: []protocol.PickSegment{{Text: "Name", Tone: "text"}}},
+		},
+	})
+	if m.modal == nil {
+		t.Fatal("a modal message should open the overlay")
+	}
+
+	dimmed := dimForeground(base)
+	if strings.Contains(dimmed, textSGR) {
+		t.Fatalf("dimForeground must remove every undimmed Text fragment: %q", dimmed)
+	}
+	if !strings.Contains(dimmed, dimSGR) {
+		t.Fatalf("dimForeground should step the cursor row's Text down to Dim: %q", dimmed)
+	}
+
+	composited := renderView(m)
+	if !strings.Contains(composited, surfaceBgSGR) {
+		t.Fatalf("composited frame should paint the overlay's Surface background: %q", ansi.Strip(composited))
+	}
+}
+
+// TestModalRowSelectionWritesModalResultAndClosesOverlay covers the
+// TS-driven modal's happy path: selecting a row answers modal-result with
+// that row's value (not the terminal PickResult -- the picker is still
+// running) and the overlay closes, leaving the parent picker resumed.
+func TestModalRowSelectionWritesModalResultAndClosesOverlay(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
+	m := New(req)
+	m.events = make(chan []byte, 4)
+
+	m.openTSModal(protocol.PickModal{
+		Message: "Sort by",
+		Rows: []protocol.PickRow{
+			{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}},
+			{Value: "name", Left: []protocol.PickSegment{{Text: "Name"}}},
+		},
+	})
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = next.(*Model)
+	next, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*Model)
+
+	if cmd != nil {
+		t.Fatal("selecting a modal row must not end the picker session")
+	}
+	if m.modal != nil {
+		t.Fatal("the overlay should close once a row is selected")
+	}
+	if m.result != nil {
+		t.Fatalf("a modal selection must not produce a terminal result: %+v", m.result)
+	}
+
+	var line []byte
+	select {
+	case line = <-m.events:
+	default:
+		t.Fatal("expected a modal-result line enqueued onto m.events")
+	}
+	var mr protocol.PickModalResult
+	if err := json.Unmarshal(line, &mr); err != nil {
+		t.Fatalf("modal-result line not valid JSON: %v (%s)", err, line)
+	}
+	if mr.T != "modal-result" || mr.Value == nil || *mr.Value != "name" {
+		t.Fatalf("got %+v", mr)
+	}
+}
+
+// TestModalEscWritesNullModalResultAndCloses covers dismissal: esc answers
+// modal-result with a null value rather than leaving the caller's await
+// hanging, and closes the overlay the same as a selection would.
+func TestModalEscWritesNullModalResultAndCloses(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
+	m := New(req)
+	m.events = make(chan []byte, 4)
+
+	m.openTSModal(protocol.PickModal{
+		Message: "Sort by",
+		Rows:    []protocol.PickRow{{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}}},
+	})
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = next.(*Model)
+
+	if cmd != nil {
+		t.Fatal("esc must not end the picker session")
+	}
+	if m.modal != nil {
+		t.Fatal("esc should close the overlay")
+	}
+
+	var line []byte
+	select {
+	case line = <-m.events:
+	default:
+		t.Fatal("expected a modal-result line enqueued onto m.events")
+	}
+	var mr protocol.PickModalResult
+	if err := json.Unmarshal(line, &mr); err != nil {
+		t.Fatalf("modal-result line not valid JSON: %v (%s)", err, line)
+	}
+	if mr.T != "modal-result" || mr.Value != nil {
+		t.Fatalf("esc should answer a null value, got %+v", mr)
+	}
+}
+
+// TestCtrlKMenuEventActionEmitsEventAndStaysOpen covers the registry-menu
+// mechanism's event branch: opening ctrl-k renders the same overlay from
+// the model's own action registry (no TS round trip), and choosing an
+// event:true row dispatches exactly as if its key had been pressed --
+// emitting a PickEvent and leaving the picker running.
+func TestCtrlKMenuEventActionEmitsEventAndStaysOpen(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "dispose", Label: "dispose", Scope: "item", Event: true},
+		},
+	}
+	m := New(req)
+	m.events = make(chan []byte, 4)
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("ctrl-k should open the registry menu")
+	}
+	if m.modal.rows[m.modal.matches[m.modal.cursor].Index].actionID != "dispose" {
+		t.Fatalf("expected the declared item action first, got %+v", m.modal.rows)
+	}
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*Model)
+
+	if cmd != nil {
+		t.Fatal("an event:true menu action must not end the picker session")
+	}
+	if m.modal != nil {
+		t.Fatal("the menu should close once a row is dispatched")
+	}
+	if m.result != nil {
+		t.Fatalf("an event:true action must not produce a terminal result: %+v", m.result)
+	}
+
+	var line []byte
+	select {
+	case line = <-m.events:
+	default:
+		t.Fatal("expected the dispatched action's event enqueued onto m.events")
+	}
+	var ev protocol.PickEvent
+	if err := json.Unmarshal(line, &ev); err != nil {
+		t.Fatalf("event line not valid JSON: %v (%s)", err, line)
+	}
+	if ev.T != "event" || ev.Action != "dispose" || ev.Value == nil || *ev.Value != "a" {
+		t.Fatalf("got %+v", ev)
+	}
+}
+
+// TestCtrlKMenuNonEventActionYieldsTerminalResult covers the opposite
+// branch: choosing a menu row whose action has no event:true ends the
+// picker session with the ordinary terminal PickResult, carrying that
+// action's id exactly as pressing its key would.
+func TestCtrlKMenuNonEventActionYieldsTerminalResult(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "dispose", Label: "dispose", Scope: "item", Event: true},
+			{ID: "editor", Label: "open in editor", Scope: "item"},
+		},
+	}
+	m := New(req)
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("ctrl-k should open the registry menu")
+	}
+
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = next.(*Model)
+	if got := m.modal.rows[m.modal.matches[m.modal.cursor].Index].actionID; got != "editor" {
+		t.Fatalf("setup: cursor should sit on the second declared item action, got %q", got)
+	}
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*Model)
+
+	if m.modal != nil {
+		t.Fatal("the menu should close once a row is dispatched")
+	}
+	if m.result == nil || m.result.Action != "editor" || m.result.Value == nil || *m.result.Value != "a" {
+		t.Fatalf("got %+v", m.result)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to end the session")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected the cmd to quit the program")
+	}
+}

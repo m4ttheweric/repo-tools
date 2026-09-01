@@ -14,11 +14,6 @@ import (
 	"rt-ui/internal/tty"
 )
 
-// modalState is the picker's submenu overlay, opened by a PickModal message
-// and closed with a PickModalResult; left empty until that behavior is
-// built, so the field exists without shaping what it will hold.
-type modalState struct{}
-
 // heldModifiers is cross-event modifier tracking (shift/alt held across
 // mouse and key events, driving range-select); left empty until that
 // behavior is built, so the field exists without shaping what it will hold.
@@ -63,6 +58,12 @@ type UpdateMsg struct {
 	Update protocol.PickUpdate
 }
 
+// ModalMsg carries a TS-driven PickModal into the running program, the same
+// way UpdateMsg carries a PickUpdate.
+type ModalMsg struct {
+	Modal protocol.PickModal
+}
+
 // New builds a Model from an opening request and ranks it against
 // InitialQuery immediately, so a request that opens pre-filtered renders
 // its real matches on the first frame rather than the identity order.
@@ -97,7 +98,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 	case UpdateMsg:
 		m.applyUpdate(msg.Update)
+	case ModalMsg:
+		m.openTSModal(msg.Modal)
 	case tea.KeyPressMsg:
+		if m.modal != nil {
+			return m.updateModal(msg)
+		}
 		key := msg.String()
 		switch key {
 		case "down":
@@ -114,6 +120,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.resultForAction(action.ID)
 			return m, tea.Quit
+		}
+		if key == "ctrl+k" {
+			m.openRegistryMenu()
+			return m, nil
 		}
 		if key == "enter" {
 			m.selectCursor()
@@ -241,15 +251,26 @@ func (m *Model) resultForAction(actionID string) {
 // is what actually performs the output write, in the order things were
 // enqueued.
 func (m *Model) emitEvent(actionID string) {
-	if m.events == nil {
-		return
-	}
 	var value *string
 	if v, ok := m.cursorRowValue(); ok {
 		value = &v
 	}
 	ev := protocol.PickEvent{Action: actionID, Value: value, Query: m.query}
-	m.events <- protocol.EncodePickEvent(ev)
+	m.enqueueOutput(protocol.EncodePickEvent(ev))
+}
+
+// enqueueOutput sends an already-encoded line onto the ordered event
+// writer. A modal-result line (modal.go) is, like an event, a mid-flight
+// Go->TS message that has to land before the terminal result -- routing
+// both through this one send keeps that ordering guarantee to a single
+// choke point instead of a second, unsynchronized path to output. Nil
+// m.events (a bare model in a test that never wires Run's writer) drops
+// the line rather than blocking forever on a channel nobody drains.
+func (m *Model) enqueueOutput(line []byte) {
+	if m.events == nil {
+		return
+	}
+	m.events <- line
 }
 
 // startEventWriter starts the single goroutine that drains m.events onto
@@ -370,8 +391,20 @@ func (m *Model) selectCursor() {
 	m.result = &protocol.PickResult{Action: "select", Value: &value, Query: m.query}
 }
 
+// renderView is the frame View() paints: the plain list render, composited
+// under the modal overlay (dimmed parent + Surface box) whenever one is
+// open. A separate function from render() so a test can assert on the
+// modal-composited frame without going through tea.View's own wrapper.
+func renderView(m *Model) string {
+	body := render(m)
+	if m.modal != nil && body != "" {
+		body = renderModal(m, body)
+	}
+	return body
+}
+
 func (m *Model) View() tea.View {
-	v := tea.NewView(render(m))
+	v := tea.NewView(renderView(m))
 	// Inline, not alt-screen: the picker is content-anchored, appearing
 	// where the caller invoked it rather than taking over the terminal.
 	v.MouseMode = tea.MouseModeAllMotion
@@ -401,9 +434,6 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 		tea.WithoutSignalHandler(),
 	)
 
-	// The modal overlay itself is not built yet; readPatches already sees
-	// "modal" lines on the wire and drops them rather than forwarding an
-	// undefined shape into the program.
 	go readPatches(p, input)
 
 	if _, err := p.Run(); err != nil {
@@ -422,11 +452,14 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 // draining independently of how fast events arrive.
 const eventBufferSize = 16
 
-// readPatches decodes update messages off input and forwards them into the
-// running program via p.Send, which is safe to call from any goroutine --
-// the same bridge session.go uses for its own mid-flight model
+// readPatches decodes update/modal messages off input and forwards them
+// into the running program via p.Send, which is safe to call from any
+// goroutine -- the same bridge session.go uses for its own mid-flight model
 // replacements. It returns once input closes, which happens when the
-// parent ends the connection.
+// parent ends the connection. Any other message kind (a result or event --
+// Go->TS directions Run itself writes, never reads back) is ignored rather
+// than treated as an error, so a wire that echoes its own output doesn't
+// wedge the read loop.
 func readPatches(p *tea.Program, input io.Reader) {
 	br := bufio.NewReader(input)
 	for {
@@ -435,12 +468,20 @@ func readPatches(p *tea.Program, input io.Reader) {
 			return
 		}
 		kind, raw, err := protocol.DecodePickLine(line)
-		if err != nil || kind != "update" {
+		if err != nil {
 			continue
 		}
-		var u protocol.PickUpdate
-		if json.Unmarshal(raw, &u) == nil {
-			p.Send(UpdateMsg{Update: u})
+		switch kind {
+		case "update":
+			var u protocol.PickUpdate
+			if json.Unmarshal(raw, &u) == nil {
+				p.Send(UpdateMsg{Update: u})
+			}
+		case "modal":
+			var pm protocol.PickModal
+			if json.Unmarshal(raw, &pm) == nil {
+				p.Send(ModalMsg{Modal: pm})
+			}
 		}
 	}
 }
