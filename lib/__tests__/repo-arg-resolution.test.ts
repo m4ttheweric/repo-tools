@@ -60,6 +60,21 @@ describe("tryResolveRepoArg", () => {
     expect(await tryResolveRepoArg("legacy-name")).toEqual({ kind: "resolved", identity: "legacy-name" });
   });
 
+  // The additive heal leaves a legacy row and its identity row pointing at one
+  // directory until `rt repos prune` collapses them, and reverseLookupByName
+  // resolves that pair identity-first on purpose. A label lookup must not
+  // short-circuit past it and hand back the legacy key: every caller feeds the
+  // result to identity-only daemon verbs.
+  test("prefers the identity over a legacy row the heal has not collapsed yet", async () => {
+    setKvValue(REPO_INDEX_NS, "app", "/repos/app");
+    setKvValue(REPO_INDEX_NS, "remote:github.com%2Fowner%2Fapp", "/repos/app");
+
+    expect(await tryResolveRepoArg("app")).toEqual({
+      kind: "resolved",
+      identity: "remote:github.com%2Fowner%2Fapp",
+    });
+  });
+
   test("reports none for a name no row carries", async () => {
     setKvValue(REPO_INDEX_NS, RT_ID, "/repos/repo-tools");
 

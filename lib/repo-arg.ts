@@ -60,15 +60,17 @@ export async function tryResolveRepoArg(arg: string): Promise<RepoArgResolution>
 
   const index = loadRepoIndex();
 
-  // A pre-cutover row is keyed by a plain name that matches neither an
-  // identity tail nor its checkout's basename, so the name lookup below cannot
-  // see it. Its own key still addresses it, until `rt repos prune` collapses
-  // the pair onto the identity.
-  if (index[arg] !== undefined) return { kind: "resolved", identity: arg };
-
   const collapsed = reverseLookupByName(arg, index);
   if (collapsed.length === 1) return { kind: "resolved", identity: collapsed[0]![0] };
   if (collapsed.length > 1) return { kind: "ambiguous", matches: collapsed.map(([id]) => id) };
+
+  // Last resort, and it MUST stay last. A pre-cutover row keyed by a plain
+  // name matching neither an identity tail nor its checkout's basename is
+  // invisible to the lookup above, and its own key still has to address it.
+  // Checking it FIRST would short-circuit the identity-first collapse that
+  // lookup performs on a legacy/identity pair the heal has not pruned yet,
+  // handing a legacy key to identity-only daemon verbs.
+  if (index[arg] !== undefined) return { kind: "resolved", identity: arg };
   return { kind: "none" };
 }
 
