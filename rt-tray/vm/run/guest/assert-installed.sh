@@ -23,11 +23,14 @@ else
 fi
 V=$(rt --version 2>/dev/null | tr -d '\n'); [ -n "$V" ] && ok "rt --version = $V" || bad "rt --version"
 
-# rt verify --json
-if rt verify --json > "$LOGS/verify.json" 2>"$LOGS/verify.stderr"; then
-  grep -q '"passed": *true' "$LOGS/verify.json" && ok "rt verify passed" || bad "rt verify passed:false"
+# rt verify --ci --json: the machine-gate contract (bare-machine absences —
+# FDA's human click, no herdr/claude/Chrome, team-of-one — are not failures).
+# The daemon stays strictly asserted below via launchctl, so --ci's daemon
+# leniency costs nothing here.
+if rt verify --ci --json > "$LOGS/verify.json" 2>"$LOGS/verify.stderr"; then
+  grep -q '"passed": *true' "$LOGS/verify.json" && ok "rt verify --ci passed" || bad "rt verify --ci passed:false"
 else
-  bad "rt verify exited $? (see logs/verify.json)"
+  bad "rt verify --ci exited $? (see logs/verify.json)"
 fi
 grep -E '"status": *"(fail|warn)"' -B2 "$LOGS/verify.json" | grep '"name"' | sed 's/^/  verify: /' || true
 
