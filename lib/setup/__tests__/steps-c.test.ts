@@ -175,7 +175,7 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       const outcome = await pluginsInstallStep.run(ctx);
 
       expect(outcome.state).toBe("done");
-      expect(detailOf(outcome)).toContain("3 marketplace(s), 3 plugin(s) across 1 config dir(s)");
+      expect(detailOf(outcome)).toContain("3 marketplace(s), 4 plugin(s) across 1 config dir(s)");
       expect(detailOf(outcome)).toContain(MERGE_MANIFESTS_MISSING_CODE); // no mattstack plugin on disk yet in this fake — materialize honestly skips
       // acme-skills is team-authored (came from the team's own marketplace.json) — installed, never auto-enabled.
       expect(detailOf(outcome)).toContain("awaiting your approval to enable: acme-skills@acme-market");
@@ -184,10 +184,10 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       const installs = execCalls.filter((c) => c.argv[1] === "plugin" && c.argv[2] === "install");
       const enables = execCalls.filter((c) => c.argv[1] === "plugin" && c.argv[2] === "enable");
       expect(marketAdds).toHaveLength(3);
-      expect(installs).toHaveLength(3);
+      expect(installs).toHaveLength(4);
       // Only the trusted plugins (rt's own baseline) are auto-enabled — the
       // team-authored one is installed but never gets the enable call (R-F3).
-      expect(enables).toHaveLength(2);
+      expect(enables).toHaveLength(3);
       expect(enables.map((c) => c.argv.at(-1))).not.toContain("acme-skills@acme-market");
       expect(execCalls.every((c) => c.argv[0] === "/usr/local/bin/claude")).toBe(true);
       expect(execCalls.every((c) => c.env?.CLAUDE_CONFIG_DIR === join(home, ".claude"))).toBe(true);
@@ -199,7 +199,7 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(marketSrcs).toEqual(expect.arrayContaining(["https://example.com/extra-market", MATTSTACK_MARKETPLACE_SOURCE, teamDir]));
 
       const pluginNames = installs.map((c) => c.argv.at(-1) ?? "");
-      expect(pluginNames).toEqual(expect.arrayContaining(["mattstack@mattstack", "fast-browser@mattstack", "acme-skills@acme-market"]));
+      expect(pluginNames).toEqual(expect.arrayContaining(["mattstack@mattstack", "fast-browser@mattstack", "chat@mattstack", "acme-skills@acme-market"]));
 
       const state = readSetupState(p);
       expect([...state.marketplaces].sort()).toEqual([...marketSrcs].sort());

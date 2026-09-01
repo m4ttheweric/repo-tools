@@ -25,7 +25,7 @@ import { claudeConfigDirs } from "../tools-install.ts";
 import { toFailedOutcome } from "./step-utils.ts";
 
 export const MATTSTACK_MARKETPLACE_SOURCE = "https://github.com/m4ttstack/mattstack-marketplace";
-const BASE_PLUGINS = ["mattstack@mattstack", "fast-browser@mattstack"];
+const BASE_PLUGINS = ["mattstack@mattstack", "fast-browser@mattstack", "chat@mattstack"];
 const PLUGIN_EXEC_TIMEOUT_MS = 60_000;
 const RETRY_REMEDY = "Open Claude Code once so it finishes first-run, then Retry.";
 
