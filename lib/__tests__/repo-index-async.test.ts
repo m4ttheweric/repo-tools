@@ -116,11 +116,14 @@ describe("getKnownReposAsync parity", () => {
     const gonePath = join(goneParent, "gone-repo");
     realRepo(gonePath);
     indexRepo("gone-repo", gonePath);
-    rmSync(goneParent, { recursive: true, force: true });
-    // Instrument for the CI-only flake (room hunt 2026-09-01): both sync and
-    // async classifiers agreed the dir was LIVE in every failing run, which
-    // points at this delete not taking rather than at existsSync. If this
-    // fires on CI, the root cause is settled in one firing.
+    // On macos-latest runners this rmSync sometimes neither removes the dir
+    // nor throws (proven by the bare assert firing twice on run 33557932676;
+    // force:true only swallows ENOENT and maxRetries defaulted to 0, so a
+    // real EBUSY/ENOTEMPTY would have thrown). Retry until the dir is gone;
+    // the assert stays as the tripwire for a delete that never takes.
+    for (let attempt = 0; attempt < 5 && existsSync(goneParent); attempt++) {
+      rmSync(goneParent, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    }
     expect(existsSync(goneParent)).toBe(false);
 
     const syncResult = getKnownRepos({ includeMissing: true });
