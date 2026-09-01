@@ -35,6 +35,7 @@ type Model struct {
 	held        heldModifiers
 	hover       int
 	width       int
+	height      int
 
 	result *protocol.PickResult
 }
@@ -70,6 +71,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "down":
@@ -96,6 +98,23 @@ func (m *Model) moveCursor(delta int) {
 	if m.cursor >= n {
 		m.cursor = n - 1
 	}
+}
+
+// viewport derives the current scroll window from the cursor, re-using (and
+// persisting) the previous top so repeated calls scroll in small steps
+// rather than recentering from scratch every frame. A pane height of zero
+// means no WindowSizeMsg has landed yet -- true at construction, and true
+// for a test that builds a Model and calls render directly -- so that case
+// is treated as an unbounded pane, leaving cap and list length alone to
+// decide h.
+func (m *Model) viewport() (top, h int) {
+	pane := m.height
+	if pane <= 0 {
+		pane = len(m.matches) + chromeRows
+	}
+	top, h = Viewport(m.cursor, m.viewportTop, len(m.matches), m.req.Cap, pane, chromeRows)
+	m.viewportTop = top
+	return top, h
 }
 
 // selectCursor terminates the session with the row under the cursor. The

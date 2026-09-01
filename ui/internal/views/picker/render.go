@@ -20,17 +20,86 @@ func fg(c color.Color) lipgloss.Style {
 	return onBg.Foreground(c)
 }
 
+// chromeRows is the fixed line count wrapping the scrollable row list:
+// breadcrumb, filter, top rule, bottom rule, keybar. Viewport subtracts it
+// from the pane height to find how many rows actually fit.
+const chromeRows = 5
+
 func render(m *Model) string {
 	if m.width == 0 {
 		return ""
 	}
-	lines := make([]string, 0, len(m.matches)+5)
+	top, h := m.viewport()
+	n := len(m.matches)
+	scrolling := n > h
+
+	lines := make([]string, 0, h+chromeRows)
 	lines = append(lines, breadcrumbLine(m), filterLine(m), rule(m.width))
-	for i := range m.matches {
-		lines = append(lines, rowLine(m, i))
+
+	rowWidth := m.width
+	if scrolling {
+		rowWidth-- // last column is the thumb rail's dedicated gutter
 	}
-	lines = append(lines, rule(m.width), keybarStub(m))
+	thumbTop, thumbH := thumbSpan(top, h, n)
+	for i := top; i < top+h; i++ {
+		line := rowLineWidth(m, i, rowWidth)
+		if scrolling {
+			line += thumbCell(i-top, thumbTop, thumbH)
+		}
+		lines = append(lines, line)
+	}
+
+	lines = append(lines, rule(m.width), keybarLine(m, top, h, n))
 	return strings.Join(lines, "\n")
+}
+
+// thumbSpan sizes the rail to the visible fraction of the list (h*h/n,
+// floored, minimum one row so a long list always shows something to grab)
+// and positions it in lockstep with the scroll offset.
+func thumbSpan(top, h, n int) (thumbTop, thumbH int) {
+	if n <= 0 || h <= 0 {
+		return 0, 0
+	}
+	thumbH = h * h / n
+	if thumbH < 1 {
+		thumbH = 1
+	}
+	if thumbH > h {
+		thumbH = h
+	}
+	maxTop := n - h
+	if maxTop <= 0 {
+		return 0, thumbH
+	}
+	avail := h - thumbH
+	if avail < 0 {
+		avail = 0
+	}
+	thumbTop = top * avail / maxTop
+	return thumbTop, thumbH
+}
+
+// thumbCell paints one row of the rail: Panel-colored across the thumb's
+// span, a plain blank cell everywhere else in the gutter.
+func thumbCell(rowInWindow, thumbTop, thumbH int) string {
+	if rowInWindow >= thumbTop && rowInWindow < thumbTop+thumbH {
+		return lipgloss.NewStyle().Background(theme.Panel).Render(" ")
+	}
+	return onBg.Render(" ")
+}
+
+// keybarLine currently renders only the right-pinned visible-range
+// indicator, shown whenever the list overflows the window; the left-side
+// key legend is filled in by later work. The separator between the two
+// numbers is a plain ASCII hyphen, not an en/em dash -- a rendered-output
+// constraint that applies everywhere, including here.
+func keybarLine(m *Model, top, h, n int) string {
+	right := ""
+	if n > h {
+		right = fg(theme.Cyan).Render(fmt.Sprintf("%d-%d", top+1, top+h)) +
+			fg(theme.Faint).Render(fmt.Sprintf(" of %d", n))
+	}
+	return justify(m.width, "", right)
 }
 
 func rule(width int) string {
@@ -72,11 +141,6 @@ func filterLine(m *Model) string {
 	return justify(m.width, left, "")
 }
 
-// keybarStub is a blank placeholder line; keybar content is filled in later.
-func keybarStub(m *Model) string {
-	return justify(m.width, "", "")
-}
-
 // justify mirrors the board header/keybar convention: a 2-column left
 // margin, the right block pinned to the edge, a 1-column trailing margin.
 func justify(width int, left, right string) string {
@@ -87,11 +151,18 @@ func justify(width int, left, right string) string {
 	return onBg.Render("  ") + left + lipgloss.PlaceHorizontal(avail, lipgloss.Right, right, lipgloss.WithWhitespaceStyle(onBg)) + onBg.Render(" ")
 }
 
-// rowLine paints one matched row: a 1-column gutter outside the highlight
-// (pink bar on the cursor row, blank otherwise), then a SelBg/HoverBg-filled
-// span carrying the left segments, matched-character highlight, spacer, and
-// right segments pinned to the far edge.
+// rowLine paints row i at the model's full width.
 func rowLine(m *Model, i int) string {
+	return rowLineWidth(m, i, m.width)
+}
+
+// rowLineWidth paints one matched row within an explicit width: a 1-column
+// gutter outside the highlight (pink bar on the cursor row, blank
+// otherwise), then a SelBg/HoverBg-filled span carrying the left segments,
+// matched-character highlight, spacer, and right segments pinned to the far
+// edge. The width is explicit (rather than always m.width) because a
+// scrolling list shrinks it by one column to make room for the thumb rail.
+func rowLineWidth(m *Model, i int, width int) string {
 	match := m.matches[i]
 	row := m.req.Rows[match.Index]
 	cursorRow := i == m.cursor
@@ -115,7 +186,7 @@ func rowLine(m *Model, i int) string {
 
 	// Budget: 1 gutter column + 1 separator column, plus a gap column ahead
 	// of any right segments so they never touch the left text directly.
-	leftBudget := m.width - 2 - rightWidth
+	leftBudget := width - 2 - rightWidth
 	if rightWidth > 0 {
 		leftBudget--
 	}
@@ -140,7 +211,7 @@ func rowLine(m *Model, i int) string {
 		usedLeftWidth++
 	}
 
-	spacer := m.width - 2 - usedLeftWidth - rightWidth
+	spacer := width - 2 - usedLeftWidth - rightWidth
 	if spacer < 0 {
 		spacer = 0
 	}
