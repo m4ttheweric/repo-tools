@@ -172,7 +172,7 @@ test("focusTab throws no_herdr when no herdr caller is injected", async () => {
   await expect(engine.focusTab("@1")).rejects.toMatchObject({ name: "EngineError", code: "no_herdr" });
 });
 
-test("focusTab splits a fresh pane and attaches when no client is attached, then selects the window", async () => {
+test("focusTab reads the anchor's rect, splits/attaches per the placement decision, then selects the window", async () => {
   const { calls, push } = tracker();
   const herdrCalls: { method: string; params: Record<string, unknown> }[] = [];
   const sh = async (argv: string[]) => {
@@ -182,16 +182,18 @@ test("focusTab splits a fresh pane and attaches when no client is attached, then
   };
   const herdr = async (method: string, params: Record<string, unknown>) => {
     herdrCalls.push({ method, params });
-    if (method === "pane.split") return { ok: true as const, result: { type: "pane_info", pane: { pane_id: "%9" } } };
+    // A 102x81 rect decides "down" (two-column pane, per decidePlacement).
+    if (method === "pane.layout") return { ok: true as const, result: { layout: { panes: [{ pane_id: "%0", rect: { width: 102, height: 81 } }] } } };
+    if (method === "pane.split") return { ok: true as const, result: { pane: { pane_id: "%9" } } };
     return { ok: true as const, result: {} };
   };
   const engine = new TmuxEngine({ socket: SOCK, sh, herdr, env: { HERDR_PANE_ID: "%0" }, sleep: async () => {} });
   await engine.focusTab("@1");
 
-  expect(herdrCalls.map((c) => c.method)).toEqual(["pane.split", "pane.send_text", "pane.send_keys"]);
-  expect(herdrCalls[0]!.params).toMatchObject({ pane_id: "%0", direction: "right", focus: true });
-  expect(herdrCalls[1]!.params).toMatchObject({ pane_id: "%9", text: `tmux -S '${SOCK}' attach -t rt` });
-  expect(herdrCalls[2]!.params).toMatchObject({ pane_id: "%9", keys: ["enter"] });
+  expect(herdrCalls.map((c) => c.method)).toEqual(["pane.layout", "pane.split", "pane.send_text", "pane.send_keys"]);
+  expect(herdrCalls[1]!.params).toMatchObject({ pane_id: "%0", direction: "down", focus: true });
+  expect(herdrCalls[2]!.params).toMatchObject({ pane_id: "%9", text: `tmux -S '${SOCK}' attach -t rt` });
+  expect(herdrCalls[3]!.params).toMatchObject({ pane_id: "%9", keys: ["enter"] });
   expect(calls.some((a) => a.includes("select-window") && a.includes("@1"))).toBe(true);
 });
 
@@ -211,9 +213,9 @@ test("focusTab only selects the window when a client is already attached", async
   expect(calls.some((a) => a.includes("select-window") && a.includes("@1"))).toBe(true);
 });
 
-test("focusTab surfaces a herdr split failure as EngineError", async () => {
+test("focusTab surfaces a herdr split failure", async () => {
   const sh = async (argv: string[]) => (argv.includes("list-clients") ? { code: 0, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" });
   const herdr = async () => ({ ok: false as const, code: "no_pane", message: "pane gone" });
   const engine = new TmuxEngine({ socket: SOCK, sh, herdr, env: { HERDR_PANE_ID: "%0" } });
-  await expect(engine.focusTab("@1")).rejects.toMatchObject({ name: "EngineError", code: "no_pane", message: "pane gone" });
+  await expect(engine.focusTab("@1")).rejects.toThrow("pane gone");
 });

@@ -8,6 +8,7 @@
 import { mkdirSync } from "fs";
 import { randomBytes } from "crypto";
 import { dirname, join } from "path";
+import { openSmartPane } from "../../packages/rt-client/src/smart-pane.ts";
 import { herdrRequest } from "../herdr/client.ts";
 import { rtDir } from "../rt-paths.ts";
 import { EngineError, wrapCommand, type Engine, type ProcessInfo } from "./engine.ts";
@@ -69,20 +70,17 @@ export class TmuxEngine implements Engine {
   async focusTab(tabId: string): Promise<void> {
     const paneId = this.deps.env?.HERDR_PANE_ID;
     if (!paneId) throw new EngineError("no_herdr", "focus needs herdr: run the board inside a herdr pane");
-    const herdr = this.deps.herdr;
-    if (!herdr) throw new EngineError("no_herdr", "focus needs herdr");
+    if (!this.deps.herdr) throw new EngineError("no_herdr", "focus needs herdr");
 
     // An attached client always shows the session's current window, so the
     // only thing worth splitting a NEW pane for is having no client attached
     // at all (the runner's own herdr pane was closed).
     const clients = (await this.tmux(["list-clients", "-t", TMUX_SESSION])).stdout.trim();
     if (!clients) {
-      const s = await herdr("pane.split", { pane_id: paneId, direction: "right", focus: true });
-      if (!s.ok) throw new EngineError(s.code, s.message);
-      const newPane = s.result?.pane?.pane_id;
-      if (!newPane) throw new EngineError("bad_reply", "pane.split returned no pane_id");
-      await herdr("pane.send_text", { pane_id: newPane, text: `tmux -S '${this.deps.socket}' attach -t ${TMUX_SESSION}` });
-      await herdr("pane.send_keys", { pane_id: newPane, keys: ["enter"] });
+      await openSmartPane(this.deps.herdr, paneId, {
+        command: `tmux -S '${this.deps.socket}' attach -t ${TMUX_SESSION}`,
+        focus: true,
+      });
       await this.sleeper()(400);
     }
     await this.tmux(["select-window", "-t", tabId]);
