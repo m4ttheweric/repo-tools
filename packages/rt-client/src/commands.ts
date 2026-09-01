@@ -254,11 +254,19 @@ export interface StatusData {
   worktreePool: { dormant: true; repos: string[]; message: string } | { dormant: false };
 }
 
+/** Duplicated shape on purpose: mirrors lib/worktree/ready-held.ts's ReadyHeldRepo. */
+export interface ReadyHeldRepo {
+  repo: string;
+  hash: string;
+}
+
 export interface TrayStatusData {
   pid: number; uptime: number; memoryUsage: number; watchedRepos: number; cacheEntries: number;
   portsCached: number; portCacheAge: number | null; lastRefresh: number | null;
   portsByRepo: Record<string, number>; pendingNotifications: number;
   health: { level: HealthLevel; reasons: string[] }; metrics: HealthMetrics; eventLoop: HealthEventLoop;
+  /** Optional because a daemon older than RT-98 does not send it. */
+  worktreeReadyHeld?: ReadyHeldRepo[];
 }
 
 /** Duplicated shape on purpose: mirrors lib/port-scanner.ts's PortEntry. */
