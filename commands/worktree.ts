@@ -450,7 +450,13 @@ export async function worktreeAwaitReady(args: string[], _ctx: unknown): Promise
     console.log(`  ${green}✓${reset} ${bold}${d.tree}${reset} ready ${dim}(${d.readyAt ?? "no steps to run"})${reset}`);
   } else {
     process.exitCode = 1;
-    console.log(`  ${yellow}⚠${reset} ${bold}${d.tree}${reset} settled degraded — step "${d.failedStep}" failed; tree is usable but dependencies may be stale`);
+    // Not-ready with no failedStep means the steps never got to run (the
+    // settle could not take the tree lock), which is a different state from
+    // a step that ran and failed.
+    const why = d.failedStep
+      ? `step "${d.failedStep}" failed`
+      : "readiness did not complete";
+    console.log(`  ${yellow}⚠${reset} ${bold}${d.tree}${reset} not ready — ${why}; tree is usable but dependencies may be stale`);
   }
   console.log("");
 }

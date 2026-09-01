@@ -36,6 +36,8 @@ export interface ReadyTaskDeps {
   steps: ReadyStep[];
   emit: (type: string, data: unknown) => void;
   log: Logger;
+  /** Lock retry budget; defaults to the constants above. */
+  lockRetry?: { attempts: number; delayMs: number };
 }
 
 export function startReadyTask(deps: ReadyTaskDeps): Promise<ReadySettle> {
@@ -56,9 +58,11 @@ export function startReadyTask(deps: ReadyTaskDeps): Promise<ReadySettle> {
 
 async function runTask(deps: ReadyTaskDeps): Promise<ReadySettle> {
   const { repoName, path, emit, log } = deps;
+  const attempts = deps.lockRetry?.attempts ?? LOCK_RETRY_ATTEMPTS;
+  const delayMs = deps.lockRetry?.delayMs ?? LOCK_RETRY_DELAY_MS;
 
-  for (let attempt = 0; attempt < LOCK_RETRY_ATTEMPTS; attempt++) {
-    if (attempt > 0) await Bun.sleep(LOCK_RETRY_DELAY_MS);
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await Bun.sleep(delayMs);
 
     const outcome = await withTreeLock(path, async (): Promise<ReadySettle> => {
       const rec = findByPath(loadRegistry(repoName), path);

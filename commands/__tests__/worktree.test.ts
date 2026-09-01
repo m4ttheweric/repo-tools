@@ -168,6 +168,31 @@ describe("worktree CLI identity plumbing", () => {
     expect(call!.payload!.tree).toBe("alpha");
   });
 
+  test("await-ready reports unfinished readiness without printing an undefined step name", async () => {
+    const repoPath = makeGitRepo("await-pending-repo");
+    process.chdir(repoPath);
+    // Not-ready with no failedStep is the still-pending case (the settle never
+    // got the tree lock), not a failed step.
+    installFakeDaemon({
+      ok: true,
+      data: { tree: "alpha", path: "p", ready: false, readyAt: null },
+    });
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+    try {
+      await worktreeAwaitReady(["alpha"], {});
+    } finally {
+      console.log = origLog;
+      process.exitCode = 0;
+    }
+
+    const out = lines.join("\n");
+    expect(out).not.toContain("undefined");
+    expect(out).toContain("alpha");
+  });
+
   test("an unresolvable --repo exits with a clear message instead of sending a bogus key to the daemon", async () => {
     const calls = installFakeDaemon({ ok: true, data: { trees: [] } });
     const exitSpy = mock(() => {

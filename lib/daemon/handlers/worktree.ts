@@ -506,14 +506,22 @@ export function createWorktreeHandlers(
           emit: opts.emit, log: ctx.log,
         });
         if (payload.wait === true) {
-          const settle = await task;
+          await task;
+          // The registry, not the settle's return value, decides what the
+          // caller is told: a non-terminal outcome (the tree lock never
+          // freed) leaves `readyPendingAt` standing for recovery, and
+          // reporting that as settled would hand back a half-installed tree.
           const settled = loadRegistry(repoName).find((t) => t.path === outcome.data.path);
-          delete outcome.data.readyPending;
-          delete outcome.data.readySteps;
           outcome.data.readyAt = settled?.readyAt ?? null;
-          if (!settle.ok && settle.failedStep) {
+          if (settled?.readyPendingAt) {
+            outcome.data.readyPending = true;
+          } else {
+            delete outcome.data.readyPending;
+            delete outcome.data.readySteps;
+          }
+          if (settled?.readyFailure) {
             outcome.data.readyFailed = true;
-            outcome.data.failedStep = settle.failedStep;
+            outcome.data.failedStep = settled.readyFailure;
           }
         }
       }

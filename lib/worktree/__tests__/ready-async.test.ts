@@ -12,6 +12,7 @@ import { join } from "path";
 import type { Logger } from "pino";
 import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
+import { tryLockTree } from "../locks.ts";
 import { recoverPendingReady, startReadyTask, readyTaskFor } from "../ready-async.ts";
 
 const repoName = "remote:acme";
@@ -147,6 +148,32 @@ describe("startReadyTask", () => {
 
     expect(kicked).toEqual([]);
     await live;
+  });
+
+  test("a tree whose lock never frees stays pending, so recovery can retry it", async () => {
+    const path = makeTreeDir();
+    seedPending(path);
+    const { emit, events } = collector();
+    const release = tryLockTree(path);
+    expect(release).not.toBeNull();
+
+    try {
+      const settle = await startReadyTask({
+        repoName, path, steps: [{ run: "true" }], emit, log: fakeLog(),
+        lockRetry: { attempts: 2, delayMs: 5 },
+      });
+
+      expect(settle.ok).toBe(false);
+      if (!settle.ok) expect(settle.skipped).toBe("busy");
+      // The pending marker is the ONLY record that these steps still owe a
+      // run... clearing it here would strand the tree half-installed.
+      const rec = loadRegistry(repoName).find((t) => t.path === path)!;
+      expect(rec.readyPendingAt).toBeTruthy();
+      expect(rec.readyAt).toBeUndefined();
+      expect(events.find((e) => e.type === "worktree:ready-settled")).toBeUndefined();
+    } finally {
+      release!();
+    }
   });
 
   test("skips settling when the tree left the registry before the task ran", async () => {
