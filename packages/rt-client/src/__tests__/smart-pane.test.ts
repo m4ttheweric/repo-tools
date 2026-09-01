@@ -31,8 +31,8 @@ describe("decidePlacement", () => {
   });
 
   test("respects custom minCols/minRows", () => {
-    // 60x30 clears the defaults (>=100 wide, >=28 tall would be needed) but
-    // fails a stricter custom floor, so it spills to a tab instead.
+    // Under defaults (min 50x14) 60x30 splits down; a stricter floor (40x20
+    // needs 80x40 to split) leaves no usable child, so it spills to a tab.
     expect(decidePlacement({ width: 60, height: 30 }, { minCols: 40, minRows: 20 })).toEqual({ kind: "tab" });
   });
 });
