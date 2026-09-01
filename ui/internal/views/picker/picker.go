@@ -118,38 +118,35 @@ func (m *Model) viewport() (top, h int) {
 	}
 	top, h = Viewport(m.cursor, m.viewportTop, len(m.matches), m.req.Cap, pane, chromeRows)
 	if bounded {
-		top, h = m.fitHeaderBudget(top, h, pane-chromeRows)
+		top, h = m.fitHeaderBudget(h, pane-chromeRows)
 	}
 	m.viewportTop = top
 	return top, h
 }
 
-// fitHeaderBudget shrinks a cursor-safe [top, top+h) window until its match
-// rows plus their interleaved group headers fit budget display lines. The
-// edge farther from the cursor gives way first, so the margin actually
-// nearest the cursor -- the one scrolloff cared most about -- survives
-// intact; once the window has shrunk to the cursor's own row, that row is
-// kept regardless of budget, since scrolling the selection off screen is
-// worse than a pane too small to hold a boundary and its header together
-// overflowing by one line.
-func (m *Model) fitHeaderBudget(top, h, budget int) (int, int) {
+// fitHeaderBudget finds the tallest window that still fits budget display
+// lines once its interleaved group headers are counted in, re-deriving a
+// scrolloff-correct top via placeTop for every height it tries rather than
+// eroding whatever edge a shrink first reaches: eroding an edge in place
+// can leave the cursor pinned on the window's last visible line even when
+// the now-smaller height could easily afford full scrolloff margin on both
+// sides, since erosion never revisits where the window ought to sit once it
+// stops moving. Once the window has shrunk to the cursor's own row, that
+// row is kept regardless of budget -- hiding the selection is worse than a
+// pane too small to hold a lone header and its row overflowing by a line.
+func (m *Model) fitHeaderBudget(h, budget int) (top, finalH int) {
 	if budget < 0 {
 		budget = 0
 	}
-	for h > 1 && h+headerCount(m, top, h) > budget {
-		switch {
-		case top+h-1 > m.cursor:
-			h--
-		case top < m.cursor:
-			top++
-			h--
-		default:
-			// h > 1 with the cursor pinned at both edges is unreachable --
-			// guarded only so a violated assumption can't spin forever.
-			h--
+	n := len(m.matches)
+	for h > 1 {
+		top := placeTop(m.cursor, m.viewportTop, n, h)
+		if h+headerCount(m, top, h) <= budget {
+			return top, h
 		}
+		h--
 	}
-	return top, h
+	return placeTop(m.cursor, m.viewportTop, n, h), h
 }
 
 // selectCursor terminates the session with the row under the cursor. The

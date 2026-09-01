@@ -417,9 +417,11 @@ func TestUngroupedListEmitsNoHeaderLines(t *testing.T) {
 // own row ceiling (h=14 for a 20-row pane) still doesn't leave room for the
 // ~7 headers that land inside it. The fix has to trim rows -- not headers,
 // there's nothing optional about those -- until rows+headers fits the
-// pane, while keeping the cursor's own row on screen and a header still
-// directly above whichever row ends up as the window's first line, if that
-// row is genuinely its group's first.
+// pane, while keeping the cursor's own row on screen, a header still
+// directly above whichever row ends up as the window's first line if that
+// row is genuinely its group's first, and (once trimming has room to spare)
+// the cursor's usual scrolloff margin on both visible edges rather than
+// pinned to whichever edge a naive shrink happened to leave it on.
 func TestGroupHeadersRespectPaneBudgetWhenWindowed(t *testing.T) {
 	const n = 20
 	rows := make([]protocol.PickRow, n)
@@ -438,6 +440,20 @@ func TestGroupHeadersRespectPaneBudgetWhenWindowed(t *testing.T) {
 	m.cursor = 10
 
 	const budget = 20 - chromeRows // paneRows - chromeRows, the same ceiling Viewport enforces for rows alone
+
+	top, h := m.viewport()
+	topMargin := m.cursor - top
+	bottomMargin := (top + h - 1) - m.cursor
+	// h=10 here easily affords 2+2 scrolloff (2*scrolloff+1=5 <= 10), so a
+	// window that shrank purely to fit the header budget still owes the
+	// cursor its full margin on both edges -- unlike Task 6's own goldens,
+	// which walk a window too short to promise more than the symmetric-clamp
+	// case, this one is deliberately roomy enough that scrolloff has no
+	// excuse to be dropped.
+	if topMargin < scrolloff || bottomMargin < scrolloff {
+		t.Fatalf("header-budget trim dropped scrolloff even though h=%d affords it: top=%d h=%d cursor=%d (topMargin=%d, bottomMargin=%d, want >= %d both)",
+			h, top, h, m.cursor, topMargin, bottomMargin, scrolloff)
+	}
 
 	plain := ansi.Strip(render(m))
 	lines := strings.Split(plain, "\n")

@@ -31,7 +31,21 @@ func Viewport(cursor, top, n, cap_, paneRows, chromeRows int) (newTop, h int) {
 	if h == 0 || n == 0 {
 		return 0, h
 	}
+	return placeTop(cursor, top, n, h), h
+}
 
+// placeTop positions a window's top edge for an already-decided height h so
+// the cursor keeps scrolloff rows of margin from both visible edges
+// wherever h affords it, shrinking that margin symmetrically only when h is
+// too short to hold scrolloff on both sides at once. Factored out of
+// Viewport so a caller that needs to try several candidate heights (the
+// header budget trim shrinks h to make room for header lines) can re-derive
+// a scrolloff-correct top for each candidate instead of inheriting whatever
+// top Viewport happened to compute for its own, larger h.
+func placeTop(cursor, prevTop, n, h int) int {
+	if h <= 0 || n <= 0 {
+		return 0
+	}
 	if cursor < 0 {
 		cursor = 0
 	}
@@ -40,33 +54,33 @@ func Viewport(cursor, top, n, cap_, paneRows, chromeRows int) (newTop, h int) {
 	}
 
 	maxTop := n - h
-	newTop = top
-	if newTop < 0 {
-		newTop = 0
+	if maxTop < 0 {
+		maxTop = 0
 	}
-	if newTop > maxTop {
-		newTop = maxTop
+	top := prevTop
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
 	}
 
-	// A window shorter than 2*scrolloff+1 can't hold the cursor scrolloff
-	// rows from both edges at once; shrink the margin symmetrically rather
-	// than let one edge claim it all.
 	off := scrolloff
 	if lim := (h - 1) / 2; lim < off {
 		off = lim
 	}
 
-	switch pos := cursor - newTop; {
+	switch pos := cursor - top; {
 	case pos < off:
-		newTop = cursor - off
+		top = cursor - off
 	case pos > h-1-off:
-		newTop = cursor - (h - 1 - off)
+		top = cursor - (h - 1 - off)
 	}
-	if newTop < 0 {
-		newTop = 0
+	if top < 0 {
+		top = 0
 	}
-	if newTop > maxTop {
-		newTop = maxTop
+	if top > maxTop {
+		top = maxTop
 	}
-	return newTop, h
+	return top
 }
