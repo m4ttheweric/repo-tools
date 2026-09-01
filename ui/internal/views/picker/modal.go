@@ -147,6 +147,25 @@ func (m *Model) armPinRelease() {
 	m.pinHoldFrames = 2
 }
 
+// setQueryCmd applies a query edit and returns the render command it needs. A
+// query whose new match set changes the rendered frame's height would leave
+// bubbletea's inline renderer to diff across the same grow/shrink transition
+// pinFrameHeight's own comment describes: an ambiguous-width glyph (the pink
+// prompt marker, a selection dot) slips the differ's row bookkeeping for that
+// one frame, stranding the prior frame above the live one once the picker sits
+// below other terminal content. Forcing a full clear repaints the frame whole
+// from its anchor, the same guard the overlay transitions ride. An edit that
+// leaves the height unchanged stays on the ordinary in-place diff, so ordinary
+// typing within a still-overflowing list never flickers a needless repaint.
+func (m *Model) setQueryCmd(q string) tea.Cmd {
+	before := lipgloss.Height(renderView(m))
+	m.setQuery(q)
+	if lipgloss.Height(renderView(m)) != before {
+		return tea.ClearScreen
+	}
+	return nil
+}
+
 // openRegistryMenu opens the ctrl-k/right-click overlay from the request's
 // own declared actions only -- never the injected keybar defaults
 // (select/cancel/back), which stay keybar-only and never become menu rows.

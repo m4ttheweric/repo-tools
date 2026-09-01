@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -3033,5 +3034,96 @@ func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
 	}
 	if !strings.Contains(line2, "esc") || !strings.Contains(line2, "quit") {
 		t.Fatalf("second keybar line should still pin quit to the right: %q", line2)
+	}
+}
+
+// isClearScreenCmd reports whether cmd is bubbletea's full-repaint clear,
+// tea.ClearScreen. clearScreenMsg is unexported and unconstructable here, so
+// its dynamic type is matched against a known tea.ClearScreen() msg rather
+// than by a case in a type switch.
+func isClearScreenCmd(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	return reflect.TypeOf(cmd()) == reflect.TypeOf(tea.ClearScreen())
+}
+
+// typedRow30 is a 30-row request whose rows all contain "r" but none contain
+// "z", so one query edit can shrink the frame to "no matches" and another can
+// leave it full, exercising both sides of the height-change clear.
+func typedRow30() protocol.PickRequest {
+	rows := make([]protocol.PickRow, 30)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v}}}
+	}
+	return protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows}
+}
+
+// TestQueryEditThatShrinksTheFrameRidesAClear pins the F1 residue root cause:
+// a typed query that changes the rendered frame's height must ride
+// tea.ClearScreen, so bubbletea repaints the frame whole instead of diffing
+// across the grow/shrink. That diff path is where an ambiguous-width glyph
+// slips the row bookkeeping and orphans the prior frame above the live one
+// once the picker is anchored below other terminal content -- the reviewer's
+// "frame orphaned" symptom, misread as a typed rune lagging or being lost.
+func TestQueryEditThatShrinksTheFrameRidesAClear(t *testing.T) {
+	m := New(typedRow30())
+	m.width = 80
+
+	before := lipgloss.Height(renderView(m))
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'z', Text: "z"})
+	m = next.(*Model)
+	after := lipgloss.Height(renderView(m))
+
+	if after == before {
+		t.Fatalf("setup: 'z' did not change the frame height (%d), cannot exercise the residue path", before)
+	}
+	if !isClearScreenCmd(cmd) {
+		t.Fatalf("a height-changing query edit must ride tea.ClearScreen to repaint whole; got cmd %v", cmd)
+	}
+}
+
+// TestBackspaceThatGrowsTheFrameRidesAClear is the grow-direction mate: undoing
+// the no-match query grows the frame back, the same height transition in
+// reverse, and must clear just as the shrink does.
+func TestBackspaceThatGrowsTheFrameRidesAClear(t *testing.T) {
+	m := New(typedRow30())
+	m.width = 80
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: 'z', Text: "z"})
+	m = next.(*Model)
+	shrunk := lipgloss.Height(renderView(m))
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = next.(*Model)
+	grown := lipgloss.Height(renderView(m))
+
+	if grown == shrunk {
+		t.Fatalf("setup: backspace did not grow the frame back (%d)", shrunk)
+	}
+	if !isClearScreenCmd(cmd) {
+		t.Fatalf("a height-changing backspace must ride tea.ClearScreen; got cmd %v", cmd)
+	}
+}
+
+// TestQueryEditThatKeepsTheHeightDoesNotClear is the negative bound: a query
+// edit that leaves the rendered frame the same height stays on bubbletea's
+// ordinary in-place diff and must NOT force a full clear, so continuous typing
+// within a still-overflowing list never flickers a needless whole repaint.
+func TestQueryEditThatKeepsTheHeightDoesNotClear(t *testing.T) {
+	m := New(typedRow30())
+	m.width = 80
+
+	before := lipgloss.Height(renderView(m))
+	next, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m = next.(*Model)
+	after := lipgloss.Height(renderView(m))
+
+	if after != before {
+		t.Fatalf("setup: 'r' changed the frame height (%d -> %d); it should still match every row", before, after)
+	}
+	if isClearScreenCmd(cmd) {
+		t.Fatal("a query edit that keeps the height must not force a full clear")
 	}
 }

@@ -250,7 +250,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if key == "backspace" {
 			if r := []rune(m.query); len(r) > 0 {
-				m.setQuery(string(r[:len(r)-1]))
+				return m, m.setQueryCmd(string(r[:len(r)-1]))
 			}
 			return m, nil
 		}
@@ -259,8 +259,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// enter, and modifier combos), so this is what distinguishes real
 		// typed input from every special key already handled above.
 		if msg.Text != "" {
-			m.setQuery(m.query + msg.Text)
-			return m, nil
+			return m, m.setQueryCmd(m.query + msg.Text)
 		}
 	}
 	return m, nil
