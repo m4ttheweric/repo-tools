@@ -149,3 +149,40 @@ export function commitStaged(cwd: string, message: string): string {
   const out = git(cwd, ["commit", "-m", message]);
   return out.split("\n")[0] ?? "";
 }
+
+export interface NumstatCounts {
+  adds: number;
+  dels: number;
+}
+
+/**
+ * Per-path add/delete counts from `git diff --numstat HEAD`. Covers both
+ * staged and unstaged changes (numstat against HEAD, not the index) so the
+ * picker's stats column matches what `getChangedFiles` lists. Binary rows
+ * report `-` for both columns — git cannot line-diff them — mapped to 0/0
+ * rather than omitted, since the picker still needs a row for that path.
+ * Rename rows (`old => new`) are not specially parsed: the combined field
+ * doesn't match either side's plain path, so a renamed file simply falls
+ * through to the caller's own default rather than resolving here.
+ */
+export function numstatCounts(cwd: string): Map<string, NumstatCounts> {
+  const counts = new Map<string, NumstatCounts>();
+  let out: string;
+  try {
+    out = git(cwd, ["diff", "--numstat", "HEAD"]);
+  } catch {
+    return counts;
+  }
+
+  for (const line of out.split("\n")) {
+    if (!line) continue;
+    const [addsRaw, delsRaw, path] = line.split("\t");
+    if (path === undefined) continue;
+    counts.set(path, {
+      adds: addsRaw === "-" ? 0 : Number(addsRaw),
+      dels: delsRaw === "-" ? 0 : Number(delsRaw),
+    });
+  }
+
+  return counts;
+}
