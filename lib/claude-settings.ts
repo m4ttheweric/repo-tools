@@ -97,8 +97,10 @@ export function uninstallClaudeWorktreeHooks(settingsPath: string): HookWriteRes
 export function claudeWorktreeHookStatus(settingsPath: string): ClaudeHookStatus {
   const settings = readSettings(settingsPath);
   const create = settings.hooks?.WorktreeCreate ?? [];
+  const remove = settings.hooks?.WorktreeRemove ?? [];
   const owned = create.find((e) => isOwnedBy(e, CREATE_SUFFIX));
-  if (!owned) return { installed: false };
+  const ownedRemove = remove.find((e) => isOwnedBy(e, REMOVE_SUFFIX));
+  if (!owned || !ownedRemove) return { installed: false };
 
   const command = owned.hooks[0]?.command ?? "";
   const binary = command.split(" ")[0] ?? "";

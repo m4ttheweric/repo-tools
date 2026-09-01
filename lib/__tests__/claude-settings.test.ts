@@ -71,3 +71,23 @@ describe("claudeWorktreeHookStatus", () => {
     expect(s.installed && s.binaryExists).toBe(false);
   });
 });
+
+describe("claudeWorktreeHookStatus: both events required", () => {
+  test("a missing WorktreeRemove entry reports not installed", () => {
+    const p = scratchSettings({});
+    installClaudeWorktreeHooks(p, "/usr/local/bin/rt");
+    const s = JSON.parse(readFileSync(p, "utf8"));
+    delete s.hooks.WorktreeRemove;
+    writeFileSync(p, JSON.stringify(s, null, 2));
+    expect(claudeWorktreeHookStatus(p)).toEqual({ installed: false });
+  });
+
+  test("a missing WorktreeCreate entry reports not installed even with remove present", () => {
+    const p = scratchSettings({});
+    installClaudeWorktreeHooks(p, "/usr/local/bin/rt");
+    const s = JSON.parse(readFileSync(p, "utf8"));
+    delete s.hooks.WorktreeCreate;
+    writeFileSync(p, JSON.stringify(s, null, 2));
+    expect(claudeWorktreeHookStatus(p)).toEqual({ installed: false });
+  });
+});
