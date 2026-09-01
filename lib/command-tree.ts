@@ -117,6 +117,12 @@ export interface CommandNode {
   args?: CommandArg[];
 
   /**
+   * Leaf wraps an external binary that owns its own --help (plugin exec
+   * targets): forward the flag as an ordinary arg instead of intercepting.
+   */
+  passThroughHelp?: boolean;
+
+  /**
    * What this leaf does when its required positional is omitted in a TTY.
    * The picker-conformance gate (lib/__tests__/picker-conformance.test.ts)
    * requires every leaf with a required positional to declare one — the
@@ -158,6 +164,11 @@ export async function dispatch(
   // arrived via direct args and never saw the parent picker).
   const root = rootTree ?? tree;
   const [name, ...rest] = args;
+
+  if (name && HELP_FLAGS.has(name)) {
+    printBranchHelp(tree, breadcrumb, root);
+    process.exit(0);
+  }
 
   // No args or unknown → show picker for this level
   let node = name ? resolveNode(tree, name) : null;
@@ -231,6 +242,13 @@ export async function dispatch(
 
       return dispatch(node.subcommands, [picked.command], [...breadcrumb, resolvedName], baseDir, root, picked.withArgs);
     }
+  }
+
+  // --help as the FIRST remaining arg only — a later token may be a flag's
+  // value (e.g. `pane send x --text --help`), which must reach the handler.
+  if (rest[0] && HELP_FLAGS.has(rest[0]) && !node.passThroughHelp) {
+    printLeafHelp(node, [...breadcrumb, resolvedName]);
+    process.exit(0);
   }
 
   // Leaf node → execute
@@ -452,6 +470,96 @@ function showUsage(tree: Record<string, CommandNode>, breadcrumb: string[]): voi
     console.error(`  ${bold}${padded}${reset} ${dim}${node.description}${reset}`);
   }
   console.error("");
+}
+
+// ─── Help (--help / -h at any node) ──────────────────────────────────────────
+
+const HELP_FLAGS = new Set(["--help", "-h"]);
+
+/** Help is the requested product: stdout, ANSI only when stdout is a TTY. */
+function helpColors(): { b: string; d: string; r: string } {
+  return process.stdout.isTTY ? { b: bold, d: dim, r: reset } : { b: "", d: "", r: "" };
+}
+
+function slugArg(name: string): string {
+  return name.toLowerCase().trim().replace(/\s+/g, "-");
+}
+
+function argToken(a: CommandArg): string {
+  if (!a.flag) return a.optional ? `[<${slugArg(a.name)}>]` : `<${slugArg(a.name)}>`;
+  return a.type === "boolean" ? `[${a.flag}]` : `[${a.flag} <${slugArg(a.name)}>]`;
+}
+
+function printCommandListing(tree: Record<string, CommandNode>): void {
+  const { b, d, r } = helpColors();
+  const visible = Object.entries(tree).filter(([, n]) => isNodeVisible(n, IS_DEV_MODE));
+  const width = Math.max(...visible.map(([name]) => name.length), 0);
+  for (const [name, sub] of visible) {
+    console.log(`  ${b}${name.padEnd(width + 2)}${r}${d}${sub.description}${r}`);
+  }
+}
+
+function printBranchHelp(
+  tree: Record<string, CommandNode>,
+  breadcrumb: string[],
+  root: Record<string, CommandNode>,
+): void {
+  const { b, d, r } = helpColors();
+  const node = nodeAtPath(root, breadcrumb.slice(1));
+  console.log(`\n  ${b}usage:${r} ${breadcrumb.join(" ")} <command>`);
+  if (node?.description) console.log(`  ${d}${node.description}${r}`);
+  console.log("");
+  printCommandListing(tree);
+  console.log("");
+}
+
+function printLeafHelp(node: CommandNode, breadcrumb: string[]): void {
+  const { b, d, r } = helpColors();
+  const args = node.args ?? [];
+  const tokens = [
+    ...args.filter((a) => !a.flag).map(argToken),
+    ...args.filter((a) => a.flag).map(argToken),
+  ];
+  if (node.subcommands) tokens.push("[<command>]");
+
+  console.log(`\n  ${b}usage:${r} ${[...breadcrumb, ...tokens].join(" ")}`);
+  console.log(`  ${d}${node.description}${r}`);
+  if (node.aliases?.length) console.log(`  ${d}aliases: ${node.aliases.join(", ")}${r}`);
+
+  if (args.length) {
+    console.log("");
+    const rows = args.map((a) => {
+      const token = a.flag
+        ? (a.type === "boolean" ? a.flag : `${a.flag} <${slugArg(a.name)}>`)
+        : `<${slugArg(a.name)}>`;
+      let detail = a.hint ?? a.name;
+      if (a.default !== undefined) detail += `  (default: ${a.default})`;
+      return [token, detail] as const;
+    });
+    const width = Math.max(...rows.map(([t]) => t.length));
+    for (const [token, detail] of rows) {
+      console.log(`  ${b}${token.padEnd(width + 2)}${r}${d}${detail}${r}`);
+    }
+  }
+
+  if (node.subcommands) {
+    console.log("");
+    printCommandListing(node.subcommands);
+  }
+  console.log("");
+}
+
+/** Resolve the node a breadcrumb path (minus "rt") points at, aliases included. */
+function nodeAtPath(root: Record<string, CommandNode>, path: string[]): CommandNode | null {
+  let tree: Record<string, CommandNode> | null = root;
+  let node: CommandNode | null = null;
+  for (const name of path) {
+    if (!tree) return null;
+    node = resolveNode(tree, name);
+    if (!node) return null;
+    tree = node.subcommands ?? null;
+  }
+  return node;
 }
 
 /** Sentinel: the user pressed ctrl-up at a subtree picker. */
