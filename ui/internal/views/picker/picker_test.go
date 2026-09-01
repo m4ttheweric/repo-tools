@@ -3205,3 +3205,64 @@ func TestEmptyBreadcrumbHeaderRowIsNotBlank(t *testing.T) {
 		t.Fatalf("the header row should carry the live count, got %q", header)
 	}
 }
+
+// interleavingGroupRows is a two-group list whose labels carry "ab" at a
+// widening gap, so fuzzy ranking scores folder and file rows into an
+// alternating order under a query -- a filtered window then shows a header
+// boundary before nearly every row, far more than the two groups.
+func interleavingGroupRows() []protocol.PickRow {
+	var rows []protocol.PickRow
+	gap := func(prefix, suffix string, n int) protocol.PickRow {
+		label := prefix + strings.Repeat("x", n) + suffix
+		return protocol.PickRow{Value: label, Group: prefix + suffix, Left: []protocol.PickSegment{{Text: label}}}
+	}
+	for i := 0; i < 10; i++ {
+		rows = append(rows, gap("a", "bfolder", i))
+	}
+	for i := 0; i < 10; i++ {
+		rows = append(rows, gap("a", "bfile", i))
+	}
+	return rows
+}
+
+// TestFrameHeightStaysConstantWhenAFuzzyQueryInterleavesGroups is the grouped
+// case the flat-list tests missed: Rank sorts filtered matches by fuzzy score,
+// interleaving the two groups so a window carries a header before nearly every
+// row. Reserving only distinctGroupCount header lines under-counted that, the
+// natural frame crossed the floor, and the padded frame changed height per
+// keystroke -- the residue this fix exists to close. Pre-fix the padded height
+// moved (22 -> 32 -> 33); the floor now reserves the window maximum so it holds.
+func TestFrameHeightStaysConstantWhenAFuzzyQueryInterleavesGroups(t *testing.T) {
+	build := func(query string) *Model {
+		req := protocol.PickRequest{
+			T: "pick", Protocol: protocol.Version,
+			Breadcrumb: []string{"rt", "nav"},
+			Rows:       interleavingGroupRows(),
+		}
+		next, _ := New(req).Update(tea.WindowSizeMsg{Width: 80, Height: 60})
+		m := next.(*Model)
+		for _, r := range query {
+			n, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+			m = n.(*Model)
+		}
+		return m
+	}
+
+	queries := []string{"a", "ab", "axb"}
+	padded := make([]int, len(queries))
+	natural := make([]int, len(queries))
+	for i, q := range queries {
+		m := build(q)
+		padded[i] = lipgloss.Height(renderView(m))
+		natural[i] = lipgloss.Height(render(m))
+	}
+
+	if natural[0] == natural[1] && natural[1] == natural[2] {
+		t.Fatalf("setup: the natural frame height did not move across the queries (%v); the interleave never reproduced", natural)
+	}
+	for i, q := range queries {
+		if padded[i] != padded[0] {
+			t.Fatalf("padded frame height moved across a group-interleaving query %q: padded %v, natural %v", q, padded, natural)
+		}
+	}
+}

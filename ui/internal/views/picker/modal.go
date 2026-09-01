@@ -137,8 +137,13 @@ func (m *Model) reservedContentHeight() int {
 	if isMultiRequest(m.req) {
 		chrome++
 	}
-	headers := distinctGroupCount(m.req.Rows)
-	if headers > rowCap {
+	// Rank re-sorts filtered matches by fuzzy score, interleaving groups, so a
+	// visible window of at most rowCap rows can carry a header boundary before
+	// nearly every row -- far more than the distinct group count. Reserve the
+	// window maximum (rowCap header lines) whenever the list groups at all, or
+	// a typed query crosses the floor and the frame height moves per keystroke.
+	headers := 0
+	if distinctGroupCount(m.req.Rows) > 0 {
 		headers = rowCap
 	}
 	reserved := chrome + rowCap + headers
@@ -192,8 +197,9 @@ func (m *Model) raiseReserved() {
 }
 
 // distinctGroupCount counts the distinct non-empty group labels across the
-// rows -- the most group-header display lines any window can carry, which the
-// row cap never counted.
+// rows, so the reserve can tell whether the list groups at all. It is not the
+// header maximum: fuzzy ranking interleaves groups under a query, so a window
+// can carry many more boundaries than there are groups.
 func distinctGroupCount(rows []protocol.PickRow) int {
 	seen := make(map[string]bool)
 	for _, r := range rows {
