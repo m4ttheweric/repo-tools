@@ -482,7 +482,10 @@ export function createChatDeliverySweep(opts: {
       }
 
       const noteFailure = () => {
-        noteFailure();
+        const { crossedCeiling, count } = recordSweepFailure(failureCounts, key, entry, target, tick, maxConsecutiveFailures);
+        if (crossedCeiling) {
+          log.warn({ recipient: target.handle, room: target.room, consecutiveFailures: count }, "chat: sweep pair crossed its consecutive-failure ceiling; backing off, never permanently stopping");
+        }
       };
       const dm = dmParticipants(target.room, db) !== null;
       sweptPairs++;
