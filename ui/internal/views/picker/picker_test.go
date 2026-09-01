@@ -15,6 +15,21 @@ import (
 	"rt-ui/internal/protocol"
 )
 
+// mustNotQuit fails t if cmd is the program's own quit signal. A non-nil cmd
+// no longer means "the session is ending" on its own -- an overlay
+// open/close now rides a tea.ClearScreen cmd while staying open -- so every
+// "must not end the session" assertion has to check the cmd's actual kind,
+// not merely whether one was returned.
+func mustNotQuit(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		return
+	}
+	if _, ok := cmd().(tea.QuitMsg); ok {
+		t.Fatal("expected the session to stay open, got a quit cmd")
+	}
+}
+
 func TestDownThenEnterSelectsTheSecondRow(t *testing.T) {
 	req := protocol.PickRequest{
 		T:        "pick",
@@ -1250,9 +1265,7 @@ func TestModalRowSelectionWritesModalResultAndClosesOverlay(t *testing.T) {
 	next, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(*Model)
 
-	if cmd != nil {
-		t.Fatal("selecting a modal row must not end the picker session")
-	}
+	mustNotQuit(t, cmd)
 	if m.modal != nil {
 		t.Fatal("the overlay should close once a row is selected")
 	}
@@ -1291,9 +1304,7 @@ func TestModalEscWritesNullModalResultAndCloses(t *testing.T) {
 	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	m = next.(*Model)
 
-	if cmd != nil {
-		t.Fatal("esc must not end the picker session")
-	}
+	mustNotQuit(t, cmd)
 	if m.modal != nil {
 		t.Fatal("esc should close the overlay")
 	}
@@ -1341,9 +1352,7 @@ func TestCtrlKMenuEventActionEmitsEventAndStaysOpen(t *testing.T) {
 	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(*Model)
 
-	if cmd != nil {
-		t.Fatal("an event:true menu action must not end the picker session")
-	}
+	mustNotQuit(t, cmd)
 	if m.modal != nil {
 		t.Fatal("the menu should close once a row is dispatched")
 	}
@@ -1779,9 +1788,7 @@ func TestCtrlKMenuHidesBuiltinMultiMarkActionsButKeepsCallerActions(t *testing.T
 	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = next.(*Model)
 
-	if cmd != nil {
-		t.Fatal("dispose is event:true and must not end the session")
-	}
+	mustNotQuit(t, cmd)
 	if m.result != nil {
 		t.Fatalf("no menu path may produce a builtin mis-dispatch result: %+v", m.result)
 	}

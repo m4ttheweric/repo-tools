@@ -178,7 +178,7 @@ func (m *Model) updateModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.closeModal()
-		return m, nil
+		return m, tea.ClearScreen
 	case "down":
 		m.modal.moveCursor(1)
 		return m, nil
@@ -218,6 +218,9 @@ func (m *Model) closeModal() {
 // registry menu row is dispatched exactly as if its action's key had been
 // pressed on the main list: event:true stays open and emits a PickEvent,
 // anything else ends the session with the ordinary terminal PickResult.
+// Every path that closes the overlay without quitting the program repaints
+// with a full-frame clear (see closeModal/updateModal's esc case) so the
+// next frame never shows the box's own residue underneath it.
 func (m *Model) selectModalRow() (tea.Model, tea.Cmd) {
 	ms := m.modal
 	if ms.cursor < 0 || ms.cursor >= len(ms.matches) {
@@ -229,17 +232,17 @@ func (m *Model) selectModalRow() (tea.Model, tea.Cmd) {
 		value := row.value
 		m.writeModalResult(&value)
 		m.modal = nil
-		return m, nil
+		return m, tea.ClearScreen
 	}
 
 	m.modal = nil
-	action, ok := actionByID(effectiveActions(m.req), row.actionID)
+	action, ok := actionByID(m.req.Actions, row.actionID)
 	if !ok {
-		return m, nil
+		return m, tea.ClearScreen
 	}
 	if action.Event {
 		m.emitEvent(action.ID)
-		return m, nil
+		return m, tea.ClearScreen
 	}
 	m.resultForAction(action.ID)
 	return m, tea.Quit

@@ -148,6 +148,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyUpdate(msg.Update)
 	case ModalMsg:
 		m.openTSModal(msg.Modal)
+		return m, tea.ClearScreen
 	case tea.MouseClickMsg:
 		return m.handleMouseClick(msg)
 	case tea.MouseMotionMsg:
@@ -198,6 +199,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if key == "ctrl+k" {
 			m.openRegistryMenu()
+			if m.modal != nil {
+				// The overlay composites onto the same total frame height
+				// the plain list already occupies, so bubbletea's own
+				// height-change redraw never fires here; the incremental
+				// diff alone is what left residue behind on this exact
+				// transition.
+				return m, tea.ClearScreen
+			}
 			return m, nil
 		}
 		if key == "enter" {

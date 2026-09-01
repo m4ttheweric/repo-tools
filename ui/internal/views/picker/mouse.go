@@ -262,6 +262,9 @@ func (m *Model) clickRight(zone mouseZone) (tea.Model, tea.Cmd) {
 	}
 	m.cursor = zone.row
 	m.openRegistryMenu()
+	if m.modal != nil {
+		return m, tea.ClearScreen
+	}
 	return m, nil
 }
 
