@@ -668,7 +668,7 @@ test("the sweep is a no-op when nothing is stale", async () => {
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
   await h["chat:join"]({ room: "general", handle: "a" });
   const result = await sweep();
-  expect(result).toEqual({ swept: 0, recovered: 0 });
+  expect(result).toEqual({ sweptPairs: 0, recoveredMessages: 0 });
   expect(calls).toEqual([]);
 });
 
@@ -711,7 +711,7 @@ test("the sweep re-delivers a stale cursor for a signed-in, alive-bound recipien
 
   resolverReady = true;
   const result = await sweep();
-  expect(result).toEqual({ swept: 1, recovered: 1 });
+  expect(result).toEqual({ sweptPairs: 1, recoveredMessages: 1 });
   expect(calls).toHaveLength(1);
   expect(lastReadId(db, "general", "b")).toBe(posted.data.id);
   expect(infoCalls[0]![0]).toMatchObject({ recipient: "b", room: "general", recovered: 1 });
@@ -735,7 +735,7 @@ test("the sweep never re-delivers a poster's own message back to themselves", as
   await Bun.sleep(0);
 
   const result = await sweep();
-  expect(result).toEqual({ swept: 0, recovered: 0 });
+  expect(result).toEqual({ sweptPairs: 0, recoveredMessages: 0 });
   expect(calls).toEqual([]);
 });
 
@@ -765,7 +765,7 @@ test("the sweep never delivers to a wake_on:none member even with a genuinely st
   expect(calls).toEqual([]);
 
   const result = await sweep();
-  expect(result).toEqual({ swept: 0, recovered: 0 });
+  expect(result).toEqual({ sweptPairs: 0, recoveredMessages: 0 });
   expect(calls).toEqual([]);
   expect(lastReadId(db, "general", "b")).toBeLessThan(posted.data.id); // cursor must stay untouched -- rt chat read must still show this later
 });
@@ -791,7 +791,7 @@ test("the sweep never delivers to a wake_on:mention member who was never mention
   expect(calls).toEqual([]);
 
   const result = await sweep();
-  expect(result).toEqual({ swept: 0, recovered: 0 });
+  expect(result).toEqual({ sweptPairs: 0, recoveredMessages: 0 });
   expect(calls).toEqual([]);
   expect(lastReadId(db, "general", "b")).toBeLessThan(posted.data.id);
 });
@@ -825,7 +825,7 @@ test("the sweep DOES deliver to a wake_on:mention member once a pending message 
 
   resolverReady = true;
   const result = await sweep();
-  expect(result).toEqual({ swept: 1, recovered: 1 });
+  expect(result).toEqual({ sweptPairs: 1, recoveredMessages: 1 });
   expect(calls).toHaveLength(1);
   expect(lastReadId(db, "general", "b")).toBe(posted.data.id);
 });
@@ -852,7 +852,7 @@ test("the sweep skips a signed-out recipient and a recipient with a dead binding
   await Bun.sleep(0);
 
   const result = await sweep();
-  expect(result).toEqual({ swept: 0, recovered: 0 });
+  expect(result).toEqual({ sweptPairs: 0, recoveredMessages: 0 });
   expect(calls).toEqual([]);
 });
 
@@ -1003,9 +1003,9 @@ test("a delivery that succeeds before the ceiling resets the pair's failure coun
 
   resolverReady = true;
   const first = await sweep(); // fails: counter -> 1 (below the ceiling of 2)
-  expect(first).toEqual({ swept: 1, recovered: 0 });
+  expect(first).toEqual({ sweptPairs: 1, recoveredMessages: 0 });
   const second = await sweep(); // succeeds: counter reset to 0, not incremented
-  expect(second).toEqual({ swept: 1, recovered: 1 });
+  expect(second).toEqual({ sweptPairs: 1, recoveredMessages: 1 });
   expect(lastReadId(db, "general", "b")).toBeGreaterThan(0);
 });
 
@@ -1037,7 +1037,7 @@ test("a capped pair's failure counter is forgotten once it stops being stale", a
   resolverReady = true;
   await sweep(); // fails once, immediately hits the ceiling of 1
   const capped = await sweep(); // capped: swept stays 0, no attempt made
-  expect(capped).toEqual({ swept: 0, recovered: 0 });
+  expect(capped).toEqual({ sweptPairs: 0, recoveredMessages: 0 });
 
   // Resolved through a path OTHER than the sweep (a real per-post delivery,
   // or here directly): the pair is no longer stale on the next tick.
@@ -1047,7 +1047,7 @@ test("a capped pair's failure counter is forgotten once it stops being stale", a
   await Bun.sleep(0); // queued push also fails via the same always-failing inboxDeps -- stale again, fresh counter
 
   const revived = await sweep(); // must attempt again -- the earlier ceiling must not still apply
-  expect(revived.swept).toBe(1);
+  expect(revived.sweptPairs).toBe(1);
 });
 
 test("a sweep re-delivery chains behind an in-flight post delivery to the same recipient instead of racing it", async () => {

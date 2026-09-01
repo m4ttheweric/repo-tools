@@ -368,7 +368,7 @@ export function createChatDeliverySweep(opts: {
   retryDelayMs?: number;
   /** Overridable so a test doesn't need to run a real 5-tick failure streak. */
   maxConsecutiveFailures?: number;
-}): () => Promise<{ swept: number; recovered: number }> {
+}): () => Promise<{ sweptPairs: number; recoveredMessages: number }> {
   const { db, deliveryChains } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
@@ -380,11 +380,11 @@ export function createChatDeliverySweep(opts: {
   // scheduleSweep call to the next to ever reach the ceiling.
   const failureCounts = new Map<string, SweepFailureEntry>();
 
-  return async function sweepPendingDeliveries(): Promise<{ swept: number; recovered: number }> {
+  return async function sweepPendingDeliveries(): Promise<{ sweptPairs: number; recoveredMessages: number }> {
     const stale = stalePendingPairs(db);
     if (stale.length === 0) {
       failureCounts.clear(); // nothing stale at all: no streak is worth remembering
-      return { swept: 0, recovered: 0 };
+      return { sweptPairs: 0, recoveredMessages: 0 };
     }
     // Forget a pair's streak once it's no longer a stale candidate at all --
     // resolved through ANY path (a normal post succeeding, the member
@@ -417,8 +417,8 @@ export function createChatDeliverySweep(opts: {
     }
 
     const targets = planSweepTargets(stale, presenceByHandle, aliveSessionIds);
-    let swept = 0;
-    let recovered = 0;
+    let sweptPairs = 0;
+    let recoveredMessages = 0;
     for (const target of targets) {
       const pending = pendingMessages(target.room, target.handle, target.maxId, db);
       if (!pendingIncludesRecipient(pending, target.handle, target.wakeOn)) continue;
@@ -431,7 +431,7 @@ export function createChatDeliverySweep(opts: {
       }
 
       const dm = dmParticipants(target.room, db) !== null;
-      swept++;
+      sweptPairs++;
       try {
         const result = await deliverSerialized(
           deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, target.handle,
@@ -439,7 +439,7 @@ export function createChatDeliverySweep(opts: {
         );
         if (result.delivered) {
           failureCounts.delete(key);
-          recovered += result.count;
+          recoveredMessages += result.count;
           log.info({ recipient: target.handle, room: target.room, recovered: result.count }, "chat: sweep recovered a stale delivery");
         } else {
           const streak = entry && entry.maxId === target.maxId ? entry.count : 0;
@@ -453,7 +453,7 @@ export function createChatDeliverySweep(opts: {
         log.warn({ err, recipient: target.handle, room: target.room }, "chat: sweep delivery threw; continuing with the remaining targets");
       }
     }
-    return { swept, recovered };
+    return { sweptPairs, recoveredMessages };
   };
 }
 
