@@ -35,7 +35,7 @@ export async function collectArgs(
     }
 
     if (arg.type === "select" && arg.options?.length) {
-      const { filterableSelect } = await import("./rt-render.ts");
+      const { filterableSelect } = await import("./pick-wrappers.ts");
       const val = await filterableSelect({
         message: arg.name,
         options: arg.options,

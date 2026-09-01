@@ -54,6 +54,33 @@ describe("collectArgs", () => {
     expect(collected).toBeNull();
   });
 
+  test("prompts a select arg's value through the Go picker (filterableSelect), not fzf", async () => {
+    const argDefs: CommandArg[] = [
+      {
+        name: "Scope",
+        flag: "--scope",
+        type: "select",
+        options: [
+          { value: "prod", label: "prod" },
+          { value: "dev", label: "dev" },
+        ],
+      },
+    ];
+    // One replayed step answers both picks: the arg multiselect reads `values`,
+    // the select-value pick reads `value`. The value pick reaching the fake at
+    // all is what proves it routes through runPick, not a spawned fzf.
+    fake = installFakePick([
+      { kind: "result", result: { action: "select", value: "prod", values: ["Scope"], query: "" } },
+    ]);
+
+    const collected = await collectArgs("rt settings get", argDefs);
+
+    expect(collected).toEqual(["--scope", "prod"]);
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]!.request.multi).toBeFalsy();
+    expect(fake.calls[1]!.request.rows.map((r) => r.value)).toEqual(["prod", "dev"]);
+  });
+
   test("assembles a positional (flagless) selected arg from a boolean toggle", async () => {
     const argDefs: CommandArg[] = [
       { name: "Verbose", flag: "--verbose", type: "boolean" },
