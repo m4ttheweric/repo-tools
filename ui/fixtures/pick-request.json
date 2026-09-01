@@ -1,0 +1,34 @@
+{
+  "t": "pick",
+  "protocol": 1,
+  "message": "rt worktree dispose — on-deck pool",
+  "breadcrumb": ["rt", "worktree", "dispose"],
+  "rows": [
+    {
+      "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/bill",
+      "left": [
+        { "text": "bill", "tone": "text", "bold": true },
+        { "text": " · ", "tone": "faint" },
+        { "text": "on-deck/bill", "tone": "dim" }
+      ],
+      "right": [{ "text": "[Local Only]", "tone": "faint" }],
+      "match": "bill on-deck/bill"
+    },
+    {
+      "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho",
+      "left": [
+        { "text": "cho", "tone": "text", "bold": true },
+        { "text": " · ", "tone": "faint" },
+        { "text": "on-deck/cho", "tone": "dim" }
+      ],
+      "right": [{ "text": "[Local Only]", "tone": "faint" }],
+      "match": "cho on-deck/cho"
+    }
+  ],
+  "actions": [
+    { "id": "dispose", "label": "dispose worktree", "key": "enter", "scope": "item", "group": "worktree", "primary": true },
+    { "id": "refresh", "label": "refresh", "key": "ctrl-r", "scope": "global", "group": "nav" }
+  ],
+  "multi": true,
+  "initialQuery": "on-deck"
+}

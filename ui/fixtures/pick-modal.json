@@ -1,0 +1,20 @@
+{
+  "t": "modal",
+  "message": "hedwig — actions",
+  "rows": [
+    {
+      "value": "cd",
+      "left": [{ "text": "cd into worktree", "tone": "text", "bold": true }],
+      "group": "primary"
+    },
+    {
+      "value": "dispose",
+      "left": [{ "text": "dispose worktree", "tone": "text" }],
+      "group": "danger"
+    },
+    {
+      "value": "copy-path",
+      "left": [{ "text": "copy path", "tone": "text" }]
+    }
+  ]
+}

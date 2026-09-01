@@ -1,7 +1,21 @@
 import { test, expect } from "bun:test";
 import { readFileSync, readdirSync } from "fs";
 import { join, resolve } from "path";
-import { PROTOCOL_VERSION, encodeLine, parsePromptResult, parseSessionLine, type PromptSpec, type StepEvent, type BoardModel } from "../protocol.ts";
+import {
+  PROTOCOL_VERSION,
+  encodeLine,
+  parsePromptResult,
+  parseSessionLine,
+  type PromptSpec,
+  type StepEvent,
+  type BoardModel,
+  type PickRequest,
+  type PickUpdate,
+  type PickModal,
+  type PickEvent,
+  type PickModalResult,
+  type PickResult,
+} from "../protocol.ts";
 
 const FIXTURES = resolve(import.meta.dir, "..", "..", "..", "ui", "fixtures");
 
@@ -90,4 +104,54 @@ test("the open fixture matches its view and BoardModel shape", () => {
 test("the close fixture has the close tag", () => {
   const close = fixture("session-close.json") as { t: string };
   expect(close.t).toBe("close");
+});
+
+// ─── pick ────────────────────────────────────────────────────────────────────
+
+test("pick request fixture carries protocol 1 and round-trips through encodeLine", () => {
+  const req = fixture("pick-request.json") as PickRequest;
+  expect(req.t).toBe("pick");
+  expect(req.protocol).toBe(1);
+  expect(req.rows.length).toBeGreaterThanOrEqual(2);
+  expect(req.actions?.length).toBeGreaterThan(0);
+  const line = encodeLine(req);
+  expect(line.endsWith("\n")).toBe(true);
+  expect(JSON.parse(line)).toEqual(req);
+});
+
+test("pick update and modal fixtures match their typed shape and round-trip", () => {
+  const update = fixture("pick-update.json") as PickUpdate;
+  expect(update.t).toBe("update");
+  expect(update.rows?.[0]?.right?.some((seg) => seg.hex !== undefined)).toBe(true);
+  expect(JSON.parse(encodeLine(update))).toEqual(update);
+
+  const modal = fixture("pick-modal.json") as PickModal;
+  expect(modal.t).toBe("modal");
+  expect(modal.rows.length).toBeGreaterThan(0);
+  expect(JSON.parse(encodeLine(modal))).toEqual(modal);
+});
+
+test("pick event, modal-result, and result fixtures match their typed shape", () => {
+  const event = fixture("pick-event.json") as PickEvent;
+  expect(event).toEqual({
+    t: "event",
+    action: "dispose",
+    value: "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho",
+    query: "cho",
+  });
+
+  const modalResult = fixture("pick-modal-result.json") as PickModalResult;
+  expect(modalResult).toEqual({ t: "modal-result", value: "dispose" });
+
+  const result = fixture("pick-result.json") as PickResult;
+  expect(result.t).toBe("result");
+  expect(result.values).toEqual([
+    "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/bill",
+    "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho",
+  ]);
+});
+
+test("pick result value accepts null and round-trips through encodeLine", () => {
+  const cancel: PickResult = { t: "result", action: "cancel", value: null, query: "" };
+  expect(JSON.parse(encodeLine(cancel))).toEqual(cancel);
 });

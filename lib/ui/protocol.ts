@@ -142,6 +142,81 @@ export interface SessionClosed {
 
 export type SessionInbound = SessionHello | SessionIntent | SessionClosed;
 
+// ─── pick ────────────────────────────────────────────────────────────────────
+
+export interface PickSegment {
+  text: string;
+  tone?: string;
+  hex?: string;
+  bold?: boolean;
+}
+
+export interface PickRow {
+  value: string;
+  left: PickSegment[];
+  right?: PickSegment[];
+  match?: string;
+  group?: string;
+}
+
+export interface PickAction {
+  id: string;
+  label: string;
+  key?: string;
+  scope: "item" | "global";
+  group?: string;
+  primary?: boolean;
+}
+
+export interface PickRequest {
+  t: "pick";
+  protocol: 1;
+  message: string;
+  breadcrumb?: string[];
+  rows: PickRow[];
+  actions?: PickAction[];
+  multi?: boolean;
+  initialValues?: string[];
+  initialQuery?: string;
+  resumeValue?: string;
+  exact?: boolean;
+  cap?: number;
+  selectedPanel?: boolean;
+}
+
+export interface PickUpdate {
+  t: "update";
+  rows?: PickRow[];
+  message?: string;
+  actions?: PickAction[];
+}
+
+export interface PickModal {
+  t: "modal";
+  message: string;
+  rows: PickRow[];
+}
+
+export interface PickEvent {
+  t: "event";
+  action: string;
+  value: string | null;
+  query: string;
+}
+
+export interface PickModalResult {
+  t: "modal-result";
+  value: string | null;
+}
+
+export interface PickResult {
+  t: "result";
+  action: string;
+  value: string | null;
+  values?: string[];
+  query: string;
+}
+
 export function parseSessionLine(line: string): SessionInbound {
   let parsed: unknown;
   try {

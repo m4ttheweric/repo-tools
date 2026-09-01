@@ -1,0 +1,21 @@
+{
+  "t": "update",
+  "message": "rt cd — assured-dev worktrees",
+  "rows": [
+    {
+      "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/hedwig",
+      "left": [
+        { "text": "hedwig", "tone": "text", "bold": true },
+        { "text": " · ", "tone": "faint" },
+        { "text": "cvi-p6-token-pipeline", "tone": "dim" }
+      ],
+      "right": [
+        { "text": "⟳", "tone": "cyan" },
+        { "text": "◉", "tone": "mint" },
+        { "text": "In Review", "hex": "#FF7979" },
+        { "text": "CVI-812", "tone": "dimmer" }
+      ],
+      "match": "hedwig cvi-p6-token-pipeline"
+    }
+  ]
+}
