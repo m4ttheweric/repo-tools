@@ -77,7 +77,7 @@ describe("recordClaudeHookAnswer", () => {
     // Unowned machine (no store rung, no legacy file): the documented S077
     // default is `enabled: false`. Regression: recordClaudeHookAnswer used to
     // write `{ claudeHook }` alone, which first-time-owned the key with no
-    // `enabled` field — loadWorktreeAppConfig()'s store branch then defaults
+    // `enabled` field... loadWorktreeAppConfig()'s store branch then defaults
     // `enabled` to true, silently flipping worktree-app on.
     expect(loadWorktreeAppConfig()).toEqual({ enabled: false, killProcesses: true });
 

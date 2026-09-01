@@ -120,7 +120,7 @@ function mainWorktreeRoot(repoRoot: string): string {
 /**
  * The identity computation shared by `getRepoIdentityForRoot` (which then
  * mints a data dir and registers the index row) and `identityForRootReadOnly`
- * (which does neither) — kept as one function so the two can never diverge
+ * (which does neither), kept as one function so the two can never diverge
  * on what a repo's identity IS.
  *
  * A repo is identified by its origin remote when it has one. Local-only repos
@@ -170,9 +170,9 @@ export function getRepoIdentityForRoot(repoRoot: string): RepoIdentity | null {
 
 /**
  * Same identity as `getRepoIdentityForRoot`, but never creates the data dir
- * and never writes the repo index row — for a caller (the Claude Code
- * worktree hook) that must be able to check a repo's identity without ever
- * being the reason that repo becomes known to rt.
+ * and never writes the repo index row (for a caller, the Claude Code
+ * worktree hook, that must be able to check a repo's identity without ever
+ * being the reason that repo becomes known to rt).
  */
 export function identityForRootReadOnly(repoRoot: string): string {
   return computeIdentity(repoRoot).identity;

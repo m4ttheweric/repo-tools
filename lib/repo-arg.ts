@@ -21,8 +21,8 @@ export function currentRepoIdentity(): string | undefined {
  * instead of `process.cwd()` (for callers, such as the Claude Code worktree
  * hook, that receive a cwd out-of-band and cannot trust the process's own
  * cwd to match it) and, unlike `currentRepoIdentity()`, never registers the
- * repo as a side effect — it must be safe to call against a repo rt has
- * never seen before without that call being the reason rt now knows it.
+ * repo as a side effect (it must be safe to call against a repo rt has
+ * never seen before without that call being the reason rt now knows it).
  */
 export function currentRepoIdentityFor(cwd: string): string | undefined {
   const repoRoot = getRepoRoot(cwd);
