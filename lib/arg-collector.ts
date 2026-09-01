@@ -6,6 +6,11 @@ export async function collectArgs(
 ): Promise<string[] | null> {
   if (!argDefs.length) return [];
 
+  // label is the command context arg-collector already has (command-tree.ts
+  // builds it as `[...breadcrumb, resolvedName].join(" ")`), so splitting on
+  // " " recovers the same segments for the picker header.
+  const breadcrumb = label.split(" ");
+
   // Step 1: multi-select which args to include
   const { filterableMultiselect } = await import("./pick-wrappers.ts");
   const options = argDefs.map((arg) => ({
@@ -17,6 +22,7 @@ export async function collectArgs(
   const selectedNames = await filterableMultiselect({
     message: `${label} args`,
     options,
+    breadcrumb,
   });
 
   if (!selectedNames || selectedNames.length === 0) return null;
@@ -39,6 +45,7 @@ export async function collectArgs(
       const val = await filterableSelect({
         message: arg.name,
         options: arg.options,
+        breadcrumb,
       });
       if (!val) return null;
       values.set(name, val);

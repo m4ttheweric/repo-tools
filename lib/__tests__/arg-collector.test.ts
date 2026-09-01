@@ -34,6 +34,7 @@ describe("collectArgs", () => {
     expect(fake.calls[0]!.request.multi).toBe(true);
     expect(fake.calls[0]!.request.message).toBe("rt worktree dispose args");
     expect(fake.calls[0]!.request.rows.map((r) => r.value)).toEqual(["Force", "Dry run"]);
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "worktree", "dispose"]);
   });
 
   test("returns null when nothing is selected in the multiselect", async () => {
@@ -79,6 +80,10 @@ describe("collectArgs", () => {
     expect(fake.calls).toHaveLength(2);
     expect(fake.calls[1]!.request.multi).toBeFalsy();
     expect(fake.calls[1]!.request.rows.map((r) => r.value)).toEqual(["prod", "dev"]);
+    // The select sub-stage's header used to be blank -- it now carries the
+    // same breadcrumb as the multiselect stage that opened it.
+    expect(fake.calls[1]!.request.breadcrumb).toEqual(["rt", "settings", "get"]);
+    expect(fake.calls[1]!.request.breadcrumb).toEqual(fake.calls[0]!.request.breadcrumb);
   });
 
   test("assembles a positional (flagless) selected arg from a boolean toggle", async () => {
