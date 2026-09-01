@@ -950,6 +950,18 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which team's local store to write, for --scope team (only needed when several are cloned)" },
         ],
       },
+      unset: {
+        description: "Remove a setting from one authored store (the only supported way; hand-editing a store is not)",
+        module: "./commands/settings-keys.ts",
+        fn: "settingsUnset",
+        omitBehavior: { exempt: "agent-facing; the key is passed explicitly (discover the set with rt settings list)" },
+        args: [
+          { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key to remove" },
+          { name: "Scope", flag: "--scope", type: "select", hint: "Which store to remove it from", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.user.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.team.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/user/local/<machine-key>/settings.local.jsonc" }] },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which team's local store to edit, for --scope team (only needed when several are cloned)" },
+        ],
+      },
       list: {
         description: "List every registered setting resolved through the settings resolver",
         module: "./commands/settings-keys.ts",
