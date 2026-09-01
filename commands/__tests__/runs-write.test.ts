@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { DAEMON_SOCK_PATH } from "../../lib/daemon-config.ts";
@@ -64,6 +64,15 @@ describe("rt runs write verbs", () => {
     const missing = await runWriteVerb("snapshot", [], { RT_RUN_DB: "/nowhere/state.db", ...QUIET });
     expect(missing.code).toBe(2);
     expect(JSON.parse(missing.out).error).toContain("run DB not found");
+  });
+
+  test("a run DB that fails to open returns the contract's error, exit 1, never throws", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const path = join(root, "state.db");
+    writeFileSync(path, "not a sqlite database, just garbage bytes");
+    const r = await runWriteVerb("snapshot", [], { RT_RUN_DB: path, ...QUIET });
+    expect(r.code).toBe(1);
+    expect(JSON.parse(r.out)).toMatchObject({ ok: false });
   });
 
   test("stage lifecycle through the CLI, including the never-started guard at exit 3", async () => {

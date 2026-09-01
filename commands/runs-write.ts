@@ -185,11 +185,14 @@ async function withRunDbAsync(env: NodeJS.ProcessEnv, body: (db: Database) => Pr
   const path = env.RT_RUN_DB;
   if (!path) return { out: json({ ok: false, error: "RT_RUN_DB is not set" }), code: 2 };
   if (!existsSync(path)) return { out: json({ ok: false, error: `run DB not found: ${path}` }), code: 2 };
-  const db = openRunDb(path);
+  let db: Database | undefined;
   try {
+    db = openRunDb(path);
     return await body(db);
+  } catch (err) {
+    return { out: json({ ok: false, error: `sqlite write failed: ${String(err)}` }), code: 1 };
   } finally {
-    db.close();
+    db?.close();
   }
 }
 

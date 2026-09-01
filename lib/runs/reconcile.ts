@@ -3,6 +3,7 @@
  * to stop claiming otherwise. The write itself goes through write.ts like
  * every other mutation.
  */
+import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 import { join } from "path";
 import { isPathComponent, runsRoot } from "./store.ts";
@@ -15,8 +16,9 @@ export function abandonRun(repo: string, runId: string, reason: string): Abandon
   const path = join(runsRoot(), repo, runId, "state.db");
   if (!existsSync(path)) return { ok: false, error: `no run ${runId} in ${repo}` };
 
-  const db = openRunDb(path);
+  let db: Database | undefined;
   try {
+    db = openRunDb(path);
     const row = db.query("SELECT status FROM runs LIMIT 1").get() as { status: string } | undefined;
     if (!row) return { ok: false, error: "run row missing" };
     if (row.status !== "running") return { ok: false, error: `run already ${row.status}` };
@@ -30,6 +32,6 @@ export function abandonRun(repo: string, runId: string, reason: string): Abandon
   } catch (err) {
     return { ok: false, error: String(err) };
   } finally {
-    db.close();
+    db?.close();
   }
 }

@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { abandonRun } from "../reconcile.ts";
 import { root, seedRun } from "./fixtures.ts";
@@ -50,4 +51,14 @@ test("path components are validated", () => {
   root();
   expect(abandonRun("../etc", "x", "y").ok).toBe(false);
   expect(abandonRun("acme", "../../x", "y").ok).toBe(false);
+});
+
+test("a run DB that fails to open returns ok:false instead of throwing", () => {
+  const dir = root();
+  const runDir = join(dir, "acme", "20260822-130003-ffff");
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, "state.db"), "not a sqlite database, just garbage bytes");
+  const res = abandonRun("acme", "20260822-130003-ffff", "x");
+  expect(res.ok).toBe(false);
+  if (!res.ok) expect(res.error).toBeTruthy();
 });
