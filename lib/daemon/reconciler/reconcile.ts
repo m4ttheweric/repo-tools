@@ -15,7 +15,7 @@ import {
   type TreeKind,
   type TreeRecord,
 } from "../../worktree/registry.ts";
-import { listWorktreesAsync, runGit, type WorktreeEntry } from "../../worktree/git-async.ts";
+import { currentBranchAsync, listWorktreesAsync, runGit, type WorktreeEntry } from "../../worktree/git-async.ts";
 import { isTreeLocked } from "../../worktree/locks.ts";
 import { scrapTree, type CreateDeps } from "../../worktree/create.ts";
 import { loadWorktreeAppConfig } from "../../worktree/config.ts";
@@ -128,11 +128,16 @@ export function healLegacyPoolRoots(deps: Pick<ReconcileDeps, "repoName" | "emit
  * must never match. A held tree lock means the provision is still alive in
  * THIS process; skip it, its own handler will finish or roll back.
  */
-export function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName" | "emit" | "log">): void {
+export async function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName" | "emit" | "log">): Promise<void> {
   for (const rec of loadRegistry(deps.repoName)) {
     if (rec.state !== "claimed" || rec.handoff !== "pending") continue;
     if (isTreeLocked(rec.path)) continue;
-    const backToPool = typeof rec.branch === "string" && rec.branch.startsWith("on-deck/");
+    // The registry branch is stale when the death landed between checkout
+    // and the branch patch, so git is the authority: only a tree still
+    // sitting on its pool branch may rejoin the pool.
+    const current = await currentBranchAsync(rec.path);
+    const poolBranch = typeof rec.branch === "string" && rec.branch.startsWith("on-deck/") ? rec.branch : null;
+    const backToPool = poolBranch !== null && current === poolBranch;
     const flipped = patchTree(deps.repoName, rec.path, (r) => {
       delete r.handoff;
       delete r.claimedAt;
@@ -142,6 +147,7 @@ export function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName" | "em
         r.state = "on-deck";
       } else {
         r.state = "disposable";
+        if (current) r.branch = current;
         r.disposableReason = "stranded claim (provision died before handover)";
       }
     });
@@ -158,7 +164,7 @@ export function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName" | "em
 
 export async function reconcileRepo(deps: ReconcileDeps): Promise<TreeRecord[]> {
   healLegacyPoolRoots(deps);
-  releaseStrandedClaims(deps);
+  await releaseStrandedClaims(deps);
   for (let attempt = 1; attempt <= RECONCILE_MAX_ATTEMPTS; attempt++) {
     const result = await reconcilePass(deps, attempt);
     if (!("conflict" in result)) return result.trees;

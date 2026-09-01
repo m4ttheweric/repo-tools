@@ -532,7 +532,11 @@ export function createWorktreeHandlers(
       // Still "pending" on a later reconcile pass means this reply never
       // happened (daemon died mid-provision) and the claim is released (RT-99).
       if (outcome.ok) {
-        patchTree(repoName, outcome.data.path, (r) => { r.handoff = "done"; });
+        const delivered = patchTree(repoName, outcome.data.path, (r) => { r.handoff = "done"; });
+        // An unrecorded delivery would hand the caller a tree that a later
+        // reconcile pass releases out from under them; refusing is the only
+        // reply consistent with what the registry will do next.
+        if (!delivered) return { ok: false, error: "handoff-write-failed" };
       }
       return outcome;
     },

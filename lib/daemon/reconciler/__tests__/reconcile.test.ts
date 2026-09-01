@@ -142,16 +142,21 @@ describe("reconcile.ts: healLegacyPoolRoots (RT-95)", () => {
 
 describe("reconcile.ts: releaseStrandedClaims (RT-99)", () => {
   const identity = "remote:example.com%2Facme%2Frepo";
+  let repo: string;
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtstrand-home-")));
     closeStateDb();
+    repo = makeRepo();
   });
 
-  function claimedRow(name: string, branch: string, handoff?: "pending" | "done"): TreeRecord {
-    return {
+  /** A real git worktree at the pool root, on `branch`, with a claimed row. */
+  function seedTree(name: string, branch: string, handoff?: "pending" | "done"): TreeRecord {
+    const path = join(worktreePoolRoot(identity), name);
+    execSync(`git worktree add -b '${branch}' '${path}'`, { cwd: repo, shell: "/bin/zsh" });
+    const rec: TreeRecord = {
       name,
-      path: join(worktreePoolRoot(identity), name),
+      path,
       kind: "ephemeral",
       state: "claimed",
       branch,
@@ -160,39 +165,53 @@ describe("reconcile.ts: releaseStrandedClaims (RT-99)", () => {
       disposal: "merge",
       ...(handoff ? { handoff } : {}),
     };
+    const trees = loadRegistry(identity);
+    trees.push(rec);
+    saveRegistry(identity, trees);
+    return rec;
   }
 
-  test("pending claim still on its pool branch goes back on-deck", () => {
-    saveRegistry(identity, [claimedRow("fred", "on-deck/fred", "pending")]);
-    releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+  test("pending claim still on its pool branch (git-verified) goes back on-deck", async () => {
+    seedTree("fred", "on-deck/fred", "pending");
+    await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
     const rec = loadRegistry(identity)[0]!;
     expect(rec.state).toBe("on-deck");
     expect(rec.claimedAt).toBeUndefined();
     expect(rec.handoff).toBeUndefined();
   });
 
-  test("pending claim whose branch moved flips disposable with a stranded reason", () => {
+  test("registry says pool branch but git moved on: disposable, never back to the pool", async () => {
+    const rec = seedTree("ginny", "on-deck/ginny", "pending");
+    execSync("git checkout -b acme-9-work", { cwd: rec.path, shell: "/bin/zsh" });
+    await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+    const stored = loadRegistry(identity)[0]!;
+    expect(stored.state).toBe("disposable");
+    expect(stored.branch).toBe("acme-9-work");
+    expect(stored.disposableReason).toContain("stranded claim");
+  });
+
+  test("pending claim on a work branch flips disposable with a stranded reason", async () => {
     const events: Array<{ type: string }> = [];
-    saveRegistry(identity, [claimedRow("bill", "acme-1-work", "pending")]);
-    releaseStrandedClaims({ repoName: identity, emit: (type) => events.push({ type }), log: fakeLog() });
+    seedTree("bill", "acme-1-work", "pending");
+    await releaseStrandedClaims({ repoName: identity, emit: (type) => events.push({ type }), log: fakeLog() });
     const rec = loadRegistry(identity)[0]!;
     expect(rec.state).toBe("disposable");
     expect(rec.disposableReason).toContain("stranded claim");
     expect(events.some((e) => e.type === "worktree:disposable")).toBe(true);
   });
 
-  test("delivered (done) and pre-marker claims are never touched", () => {
-    saveRegistry(identity, [claimedRow("neville", "acme-2-work", "done"), claimedRow("hedwig", "acme-3-work")]);
-    releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+  test("delivered (done) and pre-marker claims are never touched", async () => {
+    seedTree("neville", "acme-2-work", "done");
+    seedTree("hedwig", "acme-3-work");
+    await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
     for (const rec of loadRegistry(identity)) expect(rec.state).toBe("claimed");
   });
 
-  test("a locked pending claim is skipped (provision still in flight)", () => {
-    const row = claimedRow("tonks", "acme-4-work", "pending");
-    saveRegistry(identity, [row]);
+  test("a locked pending claim is skipped (provision still in flight)", async () => {
+    const row = seedTree("tonks", "acme-4-work", "pending");
     const release = tryLockTree(row.path);
     try {
-      releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+      await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
       expect(loadRegistry(identity)[0]!.state).toBe("claimed");
     } finally {
       release?.();
