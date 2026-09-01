@@ -286,7 +286,7 @@ test("footer reads 'esc quit' everywhere run declares it, not 'esc cancel'", asy
   expect(source).toContain("esc: quit");
 });
 
-test("package/script picker requests carry an in-card breadcrumb: rt > run > <context>", async () => {
+test("package picker breadcrumb: rt > run > <repo> (no worktree, so it never slash-doubles)", async () => {
   const { root, pkgAPath } = makeWorkspaceFixture();
   fixtureDir = root;
 
@@ -308,9 +308,75 @@ test("package/script picker requests carry an in-card breadcrumb: rt > run > <co
 
   await resolveRun([], ctx);
   expect(fake.calls).toHaveLength(2);
-  const expected = ["rt", "run", `picker-fixture / ${root.split("/").pop()}`];
-  expect(fake.calls[0]!.breadcrumb).toEqual(expected);
-  expect(fake.calls[1]!.breadcrumb).toEqual(expected);
+  expect(fake.calls[0]!.breadcrumb).toEqual(["rt", "run", "picker-fixture"]);
+});
+
+test("script picker breadcrumb carries the package segment the package stage doesn't have", async () => {
+  const { root, pkgAPath } = makeWorkspaceFixture();
+  fixtureDir = root;
+
+  fake = installSequentialPick([
+    { action: "select", value: pkgAPath, query: "" }, // package picker -- pick "a"
+    { action: "cancel", value: null, query: "" }, // script picker -- bail out
+  ]);
+
+  const ctx = {
+    identity: {
+      repoName: "picker-fixture",
+      identity: `test-picker-repo-${Date.now()}`,
+      repoRoot: root,
+      dataDir: "",
+      remoteUrl: "",
+      baseUrl: "",
+    },
+  } as never;
+
+  await resolveRun([], ctx);
+  expect(fake.calls).toHaveLength(2);
+  expect(fake.calls[1]!.breadcrumb).toEqual(["rt", "run", "picker-fixture", "a"]);
+});
+
+test("regression: a worktree whose basename matches the repo name never doubles the repo segment", async () => {
+  // The old bug: contextLabel joined repoName and basename(worktreePath) with
+  // " / ", so a worktree directory literally named after the repo (the
+  // common main-checkout layout) rendered "rt › run › repo / repo". mkdtemp
+  // always suffixes a random string, so nest a directory literally named
+  // "picker-fixture" to reproduce basename(worktreePath) === repoName exactly.
+  const parent = mkdtempSync(join(tmpdir(), "run-doubling-"));
+  const root = join(parent, "picker-fixture");
+  mkdirSync(root);
+  fixtureDir = parent;
+  // Two root scripts (no workspaces) so the picker actually opens: the
+  // package stage auto-resolves to "root" with no packages to choose between,
+  // but the script stage still needs a picker once there's more than one.
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "root", scripts: { dev: "vite", build: "vite build" } }));
+
+  fake = installSequentialPick([{ action: "cancel", value: null, query: "" }]);
+
+  const ctx = {
+    identity: {
+      repoName: "picker-fixture",
+      identity: `test-picker-repo-${Date.now()}`,
+      repoRoot: root,
+      dataDir: "",
+      remoteUrl: "",
+      baseUrl: "",
+    },
+  } as never;
+
+  await resolveRun([], ctx);
+  // A single script auto-resolves past the package/script pickers straight
+  // to the (single) script's picker call -- see selectPackageAndScript's
+  // packages.length===0 branch, which skips a package picker entirely here
+  // since there are no packages.json workspaces, only a root script.
+  expect(fake.calls.length).toBeGreaterThanOrEqual(1);
+  for (const call of fake.calls) {
+    const runIdx = call.breadcrumb?.indexOf("run") ?? -1;
+    expect(runIdx).toBeGreaterThanOrEqual(0);
+    // Every segment after "run" is distinct -- "picker-fixture" appears once.
+    expect(call.breadcrumb!.filter((s) => s === "picker-fixture")).toHaveLength(1);
+    expect(call.breadcrumb!.join(" › ")).not.toContain("picker-fixture / picker-fixture");
+  }
 });
 
 // ─── package row alignment ───────────────────────────────────────────────────

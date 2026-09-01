@@ -46,6 +46,7 @@ import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-pre
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
 import { runPick } from "../lib/ui/pick.ts";
+import { printAborted } from "../lib/ui/abort.ts";
 import type { PickAction, PickRow, PickSegment } from "../lib/ui/protocol.ts";
 import { runSeededBoard, tmuxAvailable, type SeedEntry } from "./runner.ts";
 
@@ -310,7 +311,12 @@ async function selectPackageAndScript(
   const { runNavPicker } = await import("../lib/navigate.ts");
   const packages = getWorkspacePackages(worktreePath);
   const label = contextLabel ? `${contextLabel}` : "";
-  const breadcrumb = label ? ["rt", "run", label] : ["rt", "run"];
+  // contextLabel reads "repo / worktree" for the on-screen message; the
+  // breadcrumb only ever names the repo, so take the part before the first
+  // " / " -- this also keeps a worktree whose basename equals the repo name
+  // (the common main-checkout case) from doubling the repo segment.
+  const repoSegment = label.split(" / ")[0] ?? "";
+  const breadcrumb = repoSegment ? ["rt", "run", repoSegment] : ["rt", "run"];
   const derivedIdentity = await deriveRepoIdentity(worktreePath);
   const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   let cameFromScript = false;
@@ -565,15 +571,16 @@ async function selectPackageAndScript(
           "ctrl-up: back",
         ];
 
+    const packageSegment = packageLabel === "." ? "root" : packageLabel;
     const scriptResult = await runSegmentPicker({
       rows: scriptRows,
       message: label
-        ? `Select script — ${label} · ${packageLabel === "." ? "root" : packageLabel}`
+        ? `Select script — ${label} · ${packageSegment}`
         : "Select script",
       headerParts: scriptHeaderParts,
       groupLabel: q.length > 0 ? "queue" : "run",
       expectKeys: ["alt-enter", "tab"],
-      breadcrumb,
+      breadcrumb: [...breadcrumb, packageSegment],
     });
 
     if (!scriptResult) throw new RunAborted(1);
@@ -999,7 +1006,10 @@ export async function runCommand(
 
   const res = await resolveRun(args, ctx);
   if (res.kind === "launched") return;
-  if (res.kind === "cancelled") process.exit(res.code);
+  if (res.kind === "cancelled") {
+    printAborted();
+    process.exit(res.code);
+  }
   const result = res.result;
 
   if (resolveOnly) {
@@ -1098,7 +1108,10 @@ export async function runAgainCommand(
     stderr: true,
   });
 
-  if (!chosen) process.exit(0);
+  if (!chosen) {
+    printAborted();
+    process.exit(0);
+  }
 
   const picked = entries.find((t) => taggedId(t) === chosen);
   if (!picked) process.exit(1);
