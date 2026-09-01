@@ -127,7 +127,7 @@ const runsSubcommands: Record<string, CommandNode> = {
     args: [
       { name: "Verb", type: "text", placeholder: "set", hint: "set | get" },
       { name: "Key", type: "text", placeholder: "branch", hint: "Field key" },
-      { name: "Value", type: "text", optional: true, placeholder: "cv-1-slug", hint: "set only" },
+      { name: "Value", type: "text", optional: true, placeholder: "acme-1-slug", hint: "set only" },
       { name: "Stage", flag: "--stage", type: "text", placeholder: "provision", hint: "set only: producing stage" },
     ],
   },

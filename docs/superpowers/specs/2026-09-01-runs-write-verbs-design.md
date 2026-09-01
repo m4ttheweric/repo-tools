@@ -93,7 +93,7 @@ In the same bump, through the writing-skills skill:
 
 1. rt: merge to main, then release, so teammates' rt carries the verbs.
 2. mattstack-skills: the bump above. Local sessions on `rt` dev mode see the verbs as soon as main has them.
-3. `claude plugin update mattstack@mattstack`; `rt skills compile --pack claimview` (the plain form, `--json` does not write today); bump the pack; push; `claude plugin update claimview@assured`. The compiled pack's script disappears from a machine at that machine's own `claude plugin update`, so each person runs it with no pipeline in flight; the recompile and push do not touch anyone's installed copy.
+3. `claude plugin update mattstack@mattstack`; `rt skills compile --pack <team>` for the team pack (the plain form, `--json` does not write today); bump the pack; push; `claude plugin update <pack>@<marketplace>`. The compiled pack's script disappears from a machine at that machine's own `claude plugin update`, so each person runs it with no pipeline in flight; the recompile and push do not touch anyone's installed copy.
 4. On an rt without these verbs, `rt runs stage-start` and every other write call falls through to the bare `rt runs` list and exits 0, recording nothing: the dispatcher runs a node's own handler when the first argument matches no subcommand. That is the silent failure this spec exists to remove, and it is reachable by anyone whose pack updates before their rt. The `run-start` gate in the work engine (above) is what catches it: no `{"ok":true,...,"runDb":...}`, no pipeline. rt has no self-update verb, so updating rt is a manual step per machine and the gate's message says so.
 
 ## Non-goals

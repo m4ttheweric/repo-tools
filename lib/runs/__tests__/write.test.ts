@@ -109,8 +109,8 @@ describe("stage lifecycle", () => {
   test("stage-fail records reason and detail path on the latest attempt", () => {
     const db = started();
     stageStart(db, "gates", {}, 10);
-    expect(stageEnd(db, "gates", "failed", { reason: "cvi-islands assertion failed", detailPath: "/tmp/gates.log", now: 20 })).toEqual({ ok: true });
-    expect(db.query("SELECT status, reason, detail_path FROM stages WHERE name='gates'").get()).toEqual({ status: "failed", reason: "cvi-islands assertion failed", detail_path: "/tmp/gates.log" });
+    expect(stageEnd(db, "gates", "failed", { reason: "acme-gate assertion failed", detailPath: "/tmp/gates.log", now: 20 })).toEqual({ ok: true });
+    expect(db.query("SELECT status, reason, detail_path FROM stages WHERE name='gates'").get()).toEqual({ status: "failed", reason: "acme-gate assertion failed", detail_path: "/tmp/gates.log" });
     db.close();
   });
 

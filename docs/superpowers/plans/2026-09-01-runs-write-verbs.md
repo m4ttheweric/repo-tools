@@ -59,7 +59,7 @@ mattstack-skills (main):
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `KNOWN_SCHEMA_VERSION: 2`; `createRunDb(path: string): Database`; `openRunDb(path: string): Database`; `migrate(db: Database): void`; `type Fail = { ok: false; error: string; code: 1 | 2 | 3 }`; `type Ok<T extends object = {}> = { ok: true } & T`; and from `paths.ts`, `runsRoot(): string` and `isPathComponent(s: string): boolean`. Later tasks add mutations to `write.ts`.
+- Produces: `KNOWN_SCHEMA_VERSION: 2`; `createRunDb(path: string): Database`; `openRunDb(path: string): Database`; `migrate(db: Database): void`; `type Fail = { ok: false; error: string; code: 1 | 2 | 3 }`; `type Ok<T extends object = {}> = { ok: true } & T`; and from `paths.ts`, `runsRoot(): string` and `isPathComponent(s: string): boolean`. Later tasks add mutations to `write.ts` (see Task 4's execution note: `runStart` itself ended up in a new `lib/runs/start.ts`, off the daemon's import graph).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -539,6 +539,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ### Task 4: run-start and run-status
 
+**Execution note:** during execution, `runStart` moved to a new `lib/runs/start.ts` instead of `write.ts` as drafted below, because the daemon's import graph reaches `write.ts` (through `store.ts` and `reconcile.ts`) and must never reach a synchronous spawn; `runStart` shells out to git for pack provenance. `commands/runs-write.ts` is the only importer of `start.ts`. The interfaces and test bodies below are otherwise unchanged; read `runStart`'s location as `lib/runs/start.ts`.
+
 **Files:**
 - Modify: `lib/runs/write.ts` (append)
 - Test: `lib/runs/__tests__/write.test.ts` (append)
@@ -776,8 +778,8 @@ describe("stage lifecycle", () => {
   test("stage-fail records reason and detail path on the latest attempt", () => {
     const db = started();
     stageStart(db, "gates", {}, 10);
-    expect(stageEnd(db, "gates", "failed", { reason: "cvi-islands assertion failed", detailPath: "/tmp/gates.log", now: 20 })).toEqual({ ok: true });
-    expect(db.query("SELECT status, reason, detail_path FROM stages WHERE name='gates'").get()).toEqual({ status: "failed", reason: "cvi-islands assertion failed", detail_path: "/tmp/gates.log" });
+    expect(stageEnd(db, "gates", "failed", { reason: "acme-gate assertion failed", detailPath: "/tmp/gates.log", now: 20 })).toEqual({ ok: true });
+    expect(db.query("SELECT status, reason, detail_path FROM stages WHERE name='gates'").get()).toEqual({ status: "failed", reason: "acme-gate assertion failed", detail_path: "/tmp/gates.log" });
     db.close();
   });
 
@@ -1665,7 +1667,7 @@ Then in `lib/command-tree-def.ts`, add to `runsSubcommands` after `abandon`:
     args: [
       { name: "Verb", type: "text", placeholder: "set", hint: "set | get" },
       { name: "Key", type: "text", placeholder: "branch", hint: "Field key" },
-      { name: "Value", type: "text", optional: true, placeholder: "cv-1-slug", hint: "set only" },
+      { name: "Value", type: "text", optional: true, placeholder: "acme-1-slug", hint: "set only" },
       { name: "Stage", flag: "--stage", type: "text", placeholder: "provision", hint: "set only: producing stage" },
     ],
   },
@@ -1932,34 +1934,34 @@ claude plugin update mattstack@mattstack
 
 Confirm the new cache dir has no `attachments/pipeline/work/scripts/pipeline-state.sh`.
 
-- [ ] **Step 3: Recompile the claimview pack**
+- [ ] **Step 3: Recompile the team pack**
 
 Only with no pipeline in flight on this machine (`rt runs` shows nothing running for the repos this pack serves).
 
 ```bash
-rt skills check --pack claimview
+rt skills check --pack <team>
 ```
 
-Bump `~/.mattstack/teams/claimview/mattstack/packs/claimview/.claude-plugin/plugin.json` to the next patch, then:
+Bump `~/.mattstack/teams/<team>/mattstack/packs/<team>/.claude-plugin/plugin.json` to the next patch, then:
 
 ```bash
-rt skills compile --pack claimview
-rt skills check --pack claimview
+rt skills compile --pack <team>
+rt skills check --pack <team>
 ```
 
-Use the plain form; `--json` reports without writing. Expected: every verb in-sync, and `packs/claimview/skills/work/scripts/pipeline-state.sh` gone, `grep -rn 'rt runs' packs/claimview/attachments/stage-*/SKILL.md` hitting every stage.
+Use the plain form; `--json` reports without writing. Expected: every verb in-sync, and `packs/<team>/skills/work/scripts/pipeline-state.sh` gone, `grep -rn 'rt runs' packs/<team>/attachments/stage-*/SKILL.md` hitting every stage.
 
 - [ ] **Step 4: Commit and push the pack, update the plugin**
 
 ```bash
-cd ~/.mattstack/teams/claimview/mattstack
-git add -A packs/claimview
-git commit -m "claimview <version>: recompile for rt runs write verbs"
+cd ~/.mattstack/teams/<team>/mattstack
+git add -A packs/<team>
+git commit -m "<pack> <version>: recompile for rt runs write verbs"
 git push origin main
-claude plugin update claimview@assured
+claude plugin update <pack>@<marketplace>
 ```
 
-Tell Matt each teammate's next `claude plugin update claimview@assured` removes the script on their machine, so they should run it between pipelines, after updating rt.
+Tell Matt each teammate's next `claude plugin update <pack>@<marketplace>` removes the script on their machine, so they should run it between pipelines, after updating rt.
 
 - [ ] **Step 5: Verify end to end**
 
