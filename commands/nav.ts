@@ -202,7 +202,7 @@ async function pickOpenWith(target: string, kind: ItemKind, deps: NavDeps): Prom
 type SessionOutcome =
   | { type: "cd"; path: string }
   // `aborted` distinguishes esc/cancel-to-shell from a deliberate quit (opening
-  // a terminal, launching "open with…") — only the former prints the
+  // a terminal, launching "open with…"); only the former prints the
   // "aborted" line.
   | { type: "quit"; aborted?: boolean }
   | { type: "resume"; cwd: string; showHidden: boolean; sort: SortState; resumeValue?: string; initialQuery?: string };

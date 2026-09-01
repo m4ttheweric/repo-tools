@@ -293,11 +293,9 @@ export async function worktreePicker(args: string[]): Promise<void> {
 
   // ── In a multi-worktree repo: worktree picker ────────────────────────────
   } else if (currentRepo && currentRepo.worktrees.length > 1) {
+    // pickWorktreeWithSwitch exits internally on cancel (its abort line rides
+    // the shared lib/pickers.ts cancel path), so result is never falsy here.
     const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
-    if (!result) {
-      printAborted();
-      process.exit(0);
-    }
     selectedPath = isSwitchRepo(result)
       ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos })
       : result;
