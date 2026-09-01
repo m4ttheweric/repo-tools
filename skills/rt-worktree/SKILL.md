@@ -20,7 +20,10 @@ over anything remembered or written here.
 - **Start work**: `rt worktree provision` (with a ticket or branch) claims a
   tree and prints its path. Repos can opt into a warm pool ("on-deck" trees)
   that makes claiming instant; without one, provision creates fresh. `create`
-  pre-warms the pool; it is not the start-work verb.
+  pre-warms the pool; it is not the start-work verb. Provision returns as soon
+  as the branch is checked out; any dependency steps the branch triggers
+  (install, migrations) keep running in the background, reported as
+  `readyPending` with the queued steps.
 - **Finish**: trees claimed with the default `merge` disposal auto-dispose
   after their MR merges, so cleanup usually needs no command. `rt worktree
   dispose` is the manual path; it refuses dirty or unpushed trees, and it is
@@ -41,6 +44,15 @@ over anything remembered or written here.
   TTY and exit with usage otherwise.
 - `rt worktree list --json` is ground truth for what exists and where. Tree
   kinds: `main`, `claimed`, `on-deck`, `unmanaged`.
+- **Never run the tree's install yourself.** A tree from the pool is warm for
+  the default branch, so its `node_modules` genuinely can be wrong for your
+  branch ... that is what the background step is already fixing, in that same
+  directory. A hand-rolled `pnpm install` races it. Before the first command
+  that needs dependencies (tests, typecheck, a dev server), run `rt worktree
+  await-ready <tree>`: it joins the running step, returns when it settles, and
+  reports a degraded tree rather than hanging. Use it instead of polling
+  `list`. `provision --wait` is the one-shot form when you have nothing to do
+  while it installs.
 - If provision or list reports team `ready` steps held pending approval, a
   human must run `rt worktree ready-approve <repo>`; surface it to Matt
   rather than working around it.
