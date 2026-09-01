@@ -241,10 +241,9 @@ func TestUpdateResetQueryOverridesCursorPreservationFromRowSwap(t *testing.T) {
 	}
 }
 
-// TestUpdateBreadcrumbReplacesRenderedHeader is the golden for the second
-// parity gap: render.go's breadcrumbLine reads m.req.Breadcrumb, so a
-// PickUpdate carrying a new one must change what View() actually paints, not
-// just what the model stores.
+// TestUpdateBreadcrumbReplacesRenderedHeader: render.go's breadcrumbLine reads
+// m.req.Breadcrumb, so a PickUpdate carrying a new one must change what View()
+// actually paints, not just what the model stores.
 func TestUpdateBreadcrumbReplacesRenderedHeader(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
