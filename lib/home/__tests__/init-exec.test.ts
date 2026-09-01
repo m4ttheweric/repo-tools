@@ -129,19 +129,26 @@ describe("executeInitPlan", () => {
       if (!result.ok) expect(result.failedStep).toBe("commitInitialUserRepo");
     });
 
-    test("R043: no git identity fails with an actionable message, never attempts the commit", async () => {
+    test("no git identity falls back to a built-in identity for this commit only — a fresh machine's install must not stop here (supersedes R043)", async () => {
       const seam = new FakeExecSeam({ identity: { name: "", email: "" } });
 
       const result = await executeInitPlan([{ kind: "commitInitialUserRepo" }], seam, noopLog);
 
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.failedStep).toBe("commitInitialUserRepo");
-        expect(result.stderr).toContain("git config --global user.name");
-        expect(result.stderr).toContain("git config --global user.email");
-        expect(result.stderr).toContain("rt home init");
-      }
-      expect(seam.calls.some((c) => c.kind === "run" && c.cmd.includes("commit"))).toBe(false);
+      expect(result).toEqual({ ok: true });
+      expect(seam.calls).toContainEqual({
+        kind: "run",
+        cmd: ["git", "-c", "user.name=mattstack", "-c", "user.email=home@mattstack.local", "-c", "commit.gpgsign=false", "-C", "user", "commit", "-m", "initial home repo"],
+        cwd: undefined,
+      });
+    });
+
+    test("a configured identity is used as-is — no fallback -c identity flags on the commit", async () => {
+      const seam = new FakeExecSeam({ identity: { name: "Matt", email: "matt@example.test" } });
+
+      const result = await executeInitPlan([{ kind: "commitInitialUserRepo" }], seam, noopLog);
+
+      expect(result).toEqual({ ok: true });
+      expect(seam.calls).toContainEqual({ kind: "run", cmd: ["git", "-c", "commit.gpgsign=false", "-C", "user", "commit", "-m", "initial home repo"], cwd: undefined });
     });
   });
 
