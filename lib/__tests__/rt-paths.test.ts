@@ -24,9 +24,10 @@ import { tmpdir } from "os";
 // restoring with `() => osReal` would restore the mock to itself. Capture
 // the real function BEFORE any test can call mock.module("os", ...).
 const realHostname = osReal.hostname;
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import {
   rtDir, reposDir, repoDataDir, logsDir,
+  worktreePoolRoot, legacyWorktreePoolRoot,
   migrateLegacyRtDir, legacyDirsPresent,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
   trayAppPath, devTrayAppPath, legacyTrayAppPaths, installedTrayAppPath, machineSettingsPath,
@@ -544,5 +545,30 @@ describe("rt-paths", () => {
       offenders,
       `Legacy .rt paths must go through rt-paths.ts (rtDir() et al.):\n${offenders.join("\n")}`,
     ).toEqual([]);
+  });
+});
+
+describe("worktreePoolRoot (RT-95: PATH-safe identity segment)", () => {
+  test("remote wire's delimiter colon becomes %3A in the dir segment", () => {
+    const root = worktreePoolRoot("remote:github.com%2Facme%2Frepo");
+    expect(basename(root)).toBe("remote%3Agithub.com%2Facme%2Frepo");
+  });
+
+  test("path wire gets the same treatment", () => {
+    expect(basename(worktreePoolRoot("path:%2FUsers%2Fdev%2Fscratch"))).toBe("path%3A%2FUsers%2Fdev%2Fscratch");
+  });
+
+  test("id-embedded %3A survives untouched; only the raw delimiter changes", () => {
+    const root = worktreePoolRoot("remote:gitlab.example.com%3A8443%2Fteam%2Frepo");
+    expect(basename(root)).toBe("remote%3Agitlab.example.com%3A8443%2Fteam%2Frepo");
+  });
+
+  test("no segment of the returned path contains a raw colon", () => {
+    const root = worktreePoolRoot("remote:github.com%2Facme%2Frepo");
+    expect(root.includes(":")).toBe(false);
+  });
+
+  test("legacyWorktreePoolRoot keeps the raw wire form for heal targeting", () => {
+    expect(basename(legacyWorktreePoolRoot("remote:github.com%2Facme%2Frepo"))).toBe("remote:github.com%2Facme%2Frepo");
   });
 });
