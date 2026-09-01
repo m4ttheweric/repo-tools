@@ -10,6 +10,21 @@ private let acme = held("aaa")
 private let acmeEdited = held("bbb")
 
 let readyHeldChecks: [Check] = [
+    Check("a held entry decodes from the daemon's own field names") { c in
+        // Verbatim from lib/daemon/__tests__/status-ready-held.test.ts: a key
+        // renamed on either side silently yields no badge, which is the exact
+        // invisibility RT-98 exists to end.
+        let json = Data(#"""
+        [{"repo":"remote:gitlab.com%2Facme%2Ftray-held","label":"tray-held",
+          "hash":"abc","approveCommand":"rt worktree ready-approve tray-held"}]
+        """#.utf8)
+
+        let decoded = try JSONDecoder().decode([ReadyHeldRepo].self, from: json)
+
+        try c.requireEqual(decoded.count, 1)
+        c.expectEqual(decoded[0].label, "tray-held")
+        c.expectEqual(decoded[0].approveCommand, "rt worktree ready-approve tray-held")
+    },
     Check("a newly held ladder notifies once and is recorded") { c in
         let out = ReadyHeldNotifier.decide(held: [acme], ledger: [:], now: epoch)
         c.expectEqual(out.notify, [acme])
