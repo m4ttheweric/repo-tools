@@ -119,8 +119,33 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectCursor()
 			return m, tea.Quit
 		}
+		if key == "backspace" {
+			if r := []rune(m.query); len(r) > 0 {
+				m.setQuery(string(r[:len(r)-1]))
+			}
+			return m, nil
+		}
+		// msg.Text carries the produced character(s) only for genuinely
+		// printable key presses (bubbletea leaves it empty for arrows,
+		// enter, and modifier combos), so this is what distinguishes real
+		// typed input from every special key already handled above.
+		if msg.Text != "" {
+			m.setQuery(m.query + msg.Text)
+			return m, nil
+		}
 	}
 	return m, nil
+}
+
+// setQuery replaces the query, re-ranks matches against it, and rebinds
+// the cursor to the top: a changed query reorders and resizes the match
+// set, so whatever row the cursor sat on before may no longer exist or
+// may no longer be adjacent to where it lands now.
+func (m *Model) setQuery(q string) {
+	m.query = q
+	m.refilter()
+	m.cursor = 0
+	m.viewportTop = 0
 }
 
 // applyUpdate patches whichever fields the message carries; each is replaced

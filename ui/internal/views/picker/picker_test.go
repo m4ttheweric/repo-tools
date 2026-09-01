@@ -38,6 +38,69 @@ func TestDownThenEnterSelectsTheSecondRow(t *testing.T) {
 	}
 }
 
+// TestTypedRuneInputAndBackspaceFilterAtTheKeyDecodeSeam is the regression
+// guard for the seam every other filter test bypassed: those all seed
+// InitialQuery and never drive typing through Update at all. This one
+// feeds tea.KeyPressMsg values the way bubbletea's own decoder actually
+// delivers them -- a printable key carries the rune in both Code and
+// Text (ultraviolet's decoder.go: "KeyPressEvent{Code: code, Text:
+// string(code)}"), while backspace carries only a Code and an empty
+// Text -- so it exercises the msg.Text branch a msg.String()-only test
+// would never reach.
+func TestTypedRuneInputAndBackspaceFilterAtTheKeyDecodeSeam(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "bin", Left: []protocol.PickSegment{{Text: "bin", Tone: "text"}}},
+			{Value: "bill", Left: []protocol.PickSegment{{Text: "bill", Tone: "text"}}},
+			{Value: "other", Left: []protocol.PickSegment{{Text: "other", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	if len(m.matches) != 3 {
+		t.Fatalf("want all 3 rows to match the empty query, got %d", len(m.matches))
+	}
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = next.(*Model)
+	if m.cursor != 1 {
+		t.Fatalf("setup: cursor should be 1 before typing, got %d", m.cursor)
+	}
+
+	typeRune := func(r rune) {
+		next, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = next.(*Model)
+	}
+	typeRune('b')
+	typeRune('i')
+	typeRune('l')
+
+	if m.query != "bil" {
+		t.Fatalf("query = %q, want %q", m.query, "bil")
+	}
+	if m.cursor != 0 {
+		t.Fatalf("typing must rebind the cursor to the top, got cursor=%d", m.cursor)
+	}
+	if len(m.matches) != 1 {
+		t.Fatalf("typing %q should narrow to the one row containing it in order, got %d matches: %+v", "bil", len(m.matches), m.matches)
+	}
+	if got := m.req.Rows[m.matches[0].Index].Value; got != "bill" {
+		t.Fatalf("the surviving match should be %q, got %q", "bill", got)
+	}
+
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = next.(*Model)
+
+	if m.query != "bi" {
+		t.Fatalf("backspace should drop the last rune: query = %q, want %q", m.query, "bi")
+	}
+	if m.cursor != 0 {
+		t.Fatalf("backspace must also rebind the cursor to the top, got cursor=%d", m.cursor)
+	}
+	if len(m.matches) != 2 {
+		t.Fatalf("backspacing to %q should re-widen the match set, got %d matches", "bi", len(m.matches))
+	}
+}
+
 // TestUpdateReplacesRowsAndPreservesCursorByValue is the golden for
 // applyUpdate's row-patch path: the cursor sits on a value before the
 // replacement, that value survives (at a different index -- "z" is now
