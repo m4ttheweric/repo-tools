@@ -343,6 +343,20 @@ export function pendingIncludesRecipient(pending: Array<{ handle: string; mentio
  * everything wake_on rules out -- so every target this function ever calls
  * deliverSerialized for is one a normal push would also have delivered to.
  */
+/** How many consecutive sweep-triggered failures a (room, handle) pair tolerates before the sweep stops attempting it -- a permanently-broken pair must not cost a fresh deliverPost attempt (retry + warn log) on every tick forever. */
+const DEFAULT_MAX_CONSECUTIVE_SWEEP_FAILURES = 5;
+
+/**
+ * The failure streak is scoped to the maxId it was accumulated against, not
+ * just the (room, handle) pair: a pair capped while stuck on an old message
+ * gets a fresh streak the moment a NEWER message makes it stale again (the
+ * room's maxId advanced), since that is a materially different situation
+ * worth its own attempts -- deliverPost bundles the whole pending range
+ * regardless, so the new message deserves its own chance rather than
+ * inheriting an old ceiling that had nothing to do with it.
+ */
+type SweepFailureEntry = { count: number; maxId: number };
+
 export function createChatDeliverySweep(opts: {
   db: Database;
   deliveryChains: Map<string, Promise<void>>;
@@ -352,16 +366,33 @@ export function createChatDeliverySweep(opts: {
   registryDeps?: RegistryDeps;
   log?: Logger;
   retryDelayMs?: number;
+  /** Overridable so a test doesn't need to run a real 5-tick failure streak. */
+  maxConsecutiveFailures?: number;
 }): () => Promise<{ swept: number; recovered: number }> {
   const { db, deliveryChains } = opts;
   const herdr = opts.herdr ?? herdrRequest;
   const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
   const log = opts.log ?? defaultLog;
   const retryDelayMs = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  const maxConsecutiveFailures = opts.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_SWEEP_FAILURES;
+  // One map per sweep instance (one daemon), persisting across ticks --
+  // that persistence is the whole point: a streak must survive from one
+  // scheduleSweep call to the next to ever reach the ceiling.
+  const failureCounts = new Map<string, SweepFailureEntry>();
 
   return async function sweepPendingDeliveries(): Promise<{ swept: number; recovered: number }> {
     const stale = stalePendingPairs(db);
-    if (stale.length === 0) return { swept: 0, recovered: 0 };
+    if (stale.length === 0) {
+      failureCounts.clear(); // nothing stale at all: no streak is worth remembering
+      return { swept: 0, recovered: 0 };
+    }
+    // Forget a pair's streak once it's no longer a stale candidate at all --
+    // resolved through ANY path (a normal post succeeding, the member
+    // leaving, wake_on changing), not just a sweep-triggered success.
+    const staleKeys = new Set(stale.map((p) => chainKey(p.room, p.handle)));
+    for (const key of failureCounts.keys()) {
+      if (!staleKeys.has(key)) failureCounts.delete(key);
+    }
 
     const presenceByHandle = new Map<string, SweepPresence>();
     for (const { handle } of stale) {
@@ -391,15 +422,35 @@ export function createChatDeliverySweep(opts: {
     for (const target of targets) {
       const pending = pendingMessages(target.room, target.handle, target.maxId, db);
       if (!pendingIncludesRecipient(pending, target.handle, target.wakeOn)) continue;
+
+      const key = chainKey(target.room, target.handle);
+      const entry = failureCounts.get(key);
+      if (entry && entry.count >= maxConsecutiveFailures && entry.maxId >= target.maxId) {
+        log.debug({ recipient: target.handle, room: target.room, consecutiveFailures: entry.count }, "chat: sweep skipping a pair past its consecutive-failure ceiling");
+        continue;
+      }
+
       const dm = dmParticipants(target.room, db) !== null;
       swept++;
-      const result = await deliverSerialized(
-        deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, target.handle,
-        { room: target.room, dm, id: target.maxId },
-      );
-      if (result.delivered) {
-        recovered += result.count;
-        log.info({ recipient: target.handle, room: target.room, recovered: result.count }, "chat: sweep recovered a stale delivery");
+      try {
+        const result = await deliverSerialized(
+          deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, target.handle,
+          { room: target.room, dm, id: target.maxId },
+        );
+        if (result.delivered) {
+          failureCounts.delete(key);
+          recovered += result.count;
+          log.info({ recipient: target.handle, room: target.room, recovered: result.count }, "chat: sweep recovered a stale delivery");
+        } else {
+          const streak = entry && entry.maxId === target.maxId ? entry.count : 0;
+          failureCounts.set(key, { count: streak + 1, maxId: target.maxId });
+        }
+      } catch (err) {
+        // One target's delivery throwing (a programming error, a DB hiccup)
+        // must not abort the rest of this tick's targets.
+        const streak = entry && entry.maxId === target.maxId ? entry.count : 0;
+        failureCounts.set(key, { count: streak + 1, maxId: target.maxId });
+        log.warn({ err, recipient: target.handle, room: target.room }, "chat: sweep delivery threw; continuing with the remaining targets");
       }
     }
     return { swept, recovered };

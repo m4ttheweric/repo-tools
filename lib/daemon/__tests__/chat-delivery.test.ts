@@ -651,7 +651,7 @@ test("pendingIncludesRecipient is false for wake_on:mention when nothing pending
 
 // ─── createChatDeliverySweep (wiring) ───────────────────────────────────────
 
-function freshSweep(inboxDeps: InboxDeps, opts?: { herdr?: typeof herdrRequest; log?: Logger; retryDelayMs?: number; registryDeps?: RegistryDeps }) {
+function freshSweep(inboxDeps: InboxDeps, opts?: { herdr?: typeof herdrRequest; log?: Logger; retryDelayMs?: number; registryDeps?: RegistryDeps; maxConsecutiveFailures?: number }) {
   const db = openStateDb(join(tmpdir(), `chat-sweep-${process.pid}-${n++}.db`));
   const deliveryChains = new Map<string, Promise<void>>();
   const sweep = createChatDeliverySweep({ db, deliveryChains, inboxDeps, ...opts });
@@ -928,6 +928,126 @@ test("the sweep never checks binding-aliveness for a signed-out presence", async
 
   await sweep();
   expect(aliveChecked).toEqual([]);
+});
+
+// Review finding 4 (SHOULD-FIX): a permanently-broken pair must not cost a
+// fresh deliverPost attempt (and its own retry + warn log) on every 30s
+// tick forever -- that's 2880 warn lines/day and a chain-hold per tick for
+// one stuck pair. After maxConsecutiveFailures the sweep stops attempting
+// it; a later success (via any path) makes it non-stale, which forgets the
+// counter (see the "no longer stale" test below).
+test("the sweep stops attempting a pair after its consecutive-failure ceiling, without capping other pairs", async () => {
+  const sock = fakeSocketPath();
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
+  let resolverReady = false;
+  let deliverCalls = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: () => (resolverReady ? binding : null),
+    deliver: async () => { deliverCalls++; return { ok: false, error: "boom" }; }, // always fails
+  };
+  const registryDeps: RegistryDeps = {
+    resolve: () => binding,
+    alive: () => true,
+    resolveAll: () => new Map([["sess-b", binding]]),
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps, retryDelayMs: 0, maxConsecutiveFailures: 2 });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+
+  const { signIn } = await import("../../state/index.ts");
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+
+  await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  await Bun.sleep(0); // resolver not ready: the normal push misses entirely, no deliver() calls yet
+  expect(deliverCalls).toBe(0);
+
+  resolverReady = true;
+  await sweep(); // attempt 1: fails (2 deliver() calls: original + deliverPost's own retry) -> counter 1
+  expect(deliverCalls).toBe(2);
+  await sweep(); // attempt 2: fails (2 more) -> counter reaches the ceiling of 2
+  expect(deliverCalls).toBe(4);
+  await sweep(); // ceiling reached: must not attempt again
+  expect(deliverCalls).toBe(4);
+  await sweep(); // stays capped on every later tick too
+  expect(deliverCalls).toBe(4);
+});
+
+test("a delivery that succeeds before the ceiling resets the pair's failure counter", async () => {
+  const sock = fakeSocketPath();
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
+  let resolverReady = false;
+  let attempt = 0;
+  const inboxDeps: InboxDeps = {
+    resolve: () => (resolverReady ? binding : null),
+    // Fails the first sweep's pair of calls (original + retry), then
+    // succeeds from the second sweep's first call onward.
+    deliver: async () => { attempt++; return attempt <= 2 ? { ok: false, error: "boom" } : { ok: true }; },
+  };
+  const registryDeps: RegistryDeps = {
+    resolve: () => binding,
+    alive: () => true,
+    resolveAll: () => new Map([["sess-b", binding]]),
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps, retryDelayMs: 0, maxConsecutiveFailures: 2 });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+
+  const { signIn } = await import("../../state/index.ts");
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+
+  await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  await Bun.sleep(0);
+  expect(attempt).toBe(0);
+
+  resolverReady = true;
+  const first = await sweep(); // fails: counter -> 1 (below the ceiling of 2)
+  expect(first).toEqual({ swept: 1, recovered: 0 });
+  const second = await sweep(); // succeeds: counter reset to 0, not incremented
+  expect(second).toEqual({ swept: 1, recovered: 1 });
+  expect(lastReadId(db, "general", "b")).toBeGreaterThan(0);
+});
+
+test("a capped pair's failure counter is forgotten once it stops being stale", async () => {
+  const sock = fakeSocketPath();
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
+  let resolverReady = false;
+  const inboxDeps: InboxDeps = {
+    resolve: () => (resolverReady ? binding : null),
+    deliver: async () => ({ ok: false, error: "boom" }), // always fails via the sweep path
+  };
+  const registryDeps: RegistryDeps = {
+    resolve: () => binding,
+    alive: () => true,
+    resolveAll: () => new Map([["sess-b", binding]]),
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps, retryDelayMs: 0, maxConsecutiveFailures: 1 });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+
+  const { signIn, markDelivered } = await import("../../state/index.ts");
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+
+  resolverReady = true;
+  await sweep(); // fails once, immediately hits the ceiling of 1
+  const capped = await sweep(); // capped: swept stays 0, no attempt made
+  expect(capped).toEqual({ swept: 0, recovered: 0 });
+
+  // Resolved through a path OTHER than the sweep (a real per-post delivery,
+  // or here directly): the pair is no longer stale on the next tick.
+  markDelivered("general", "b", posted.data.id, db);
+  const secondPost = await h["chat:post"]({ room: "general", handle: "a", body: "again" });
+  if (!secondPost.ok) throw new Error("unreachable");
+  await Bun.sleep(0); // queued push also fails via the same always-failing inboxDeps -- stale again, fresh counter
+
+  const revived = await sweep(); // must attempt again -- the earlier ceiling must not still apply
+  expect(revived.swept).toBe(1);
 });
 
 test("a sweep re-delivery chains behind an in-flight post delivery to the same recipient instead of racing it", async () => {
