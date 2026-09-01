@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { deliverToInbox, deliveryLabel, renderDeliveries, wrapCrossSession } from "../inbox.ts";
+import { DEFAULT_TIMEOUT_MS, deliverToInbox, deliveryLabel, renderDeliveries, wrapCrossSession } from "../inbox.ts";
+
+test("the default push timeout is 3000ms, not the original 1000ms that made one slow recipient look like a dropped push", () => {
+  expect(DEFAULT_TIMEOUT_MS).toBe(3000);
+});
 
 test("renderDeliveries formats room and dm lines", () => {
   expect(renderDeliveries([
