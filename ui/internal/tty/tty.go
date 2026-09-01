@@ -26,6 +26,7 @@ func Open(mode Mode) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/tty: %w", err)
 	}
+	expandTabs(int(f.Fd()))
 	return f, nil
 }
 

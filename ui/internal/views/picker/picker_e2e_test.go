@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -416,5 +417,146 @@ func TestFullGridStaysCleanAcrossARacedWireModalCycle(t *testing.T) {
 	final := s.FullGrid()
 	if final != base {
 		t.Fatalf("full-grid residue after a raced wire-modal cycle:\n--- base ---\n%s\n--- final ---\n%s", base, final)
+	}
+}
+
+// tabOrREPSequence matches a literal tab byte or an ANSI REP (repeat
+// preceding character, "ESC [ Pn b") escape sequence in a raw tty stream.
+// Both are motion/repaint optimizations the renderer's own diff can choose
+// on a byte-count basis; a tab-stop-relative cursor move is the one this
+// package no longer lets the renderer consider at all once /dev/tty's own
+// termios has tab expansion turned on.
+var tabOrREPSequence = regexp.MustCompile("\t|\x1b\\[[0-9]*b")
+
+// TestWireModalOpenEmitsNoTabOrRepSequence is the overlay-specific byte
+// gate: opening a wire-message modal composited over the header row used
+// to be exactly the transition that picked a tab-stop-relative cursor move
+// there (clean key-opened ctrl-k menus never did) -- the real terminal's
+// own tab-stop model and this renderer's own model of one have no
+// guarantee of agreeing, and disagreeing by even one column on that row is
+// what left a stanza behind above the live frame. Asserts directly against
+// the bytes the real binary writes to its tty while the overlay opens, not
+// against a synthetic string.
+//
+// The breadcrumb and declared actions here are deliberately not the same
+// shape wireModalFullGridRequest's own goldens use: this exact combination
+// (a three-segment breadcrumb, two declared actions) is what actually
+// drives the differ to prefer a tab-stop-relative move over an absolute
+// one on the composited header row in this harness -- a shorter
+// breadcrumb never gives it a wide enough gap to make tabs the cheaper
+// choice, so it would never turn this golden red before the fix either.
+func TestWireModalOpenEmitsNoTabOrRepSequence(t *testing.T) {
+	const cols, rows = 110, 34
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "worktree", "dispose"},
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "alpha"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "bravo"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "dispose", Label: "dispose", Key: "ctrl-x", Scope: "item"},
+			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global"},
+		},
+	}
+	reqLine, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modal := protocol.PickModal{
+		T: "modal", Message: "Sort by",
+		Rows: []protocol.PickRow{
+			{Value: "name", Left: []protocol.PickSegment{{Text: "Name"}}},
+			{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}},
+		},
+	}
+	modalLine, err := json.Marshal(modal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := startWidePtySession(t, []string{testutil.Binary(t), "pick"}, cols, rows, 1)
+	s.Send(string(reqLine))
+	s.WaitForPaint("alpha")
+	time.Sleep(300 * time.Millisecond)
+	preOpenLen := len(s.TTY())
+
+	s.Send(string(modalLine))
+	s.WaitForPaint("esc dismiss")
+	time.Sleep(300 * time.Millisecond)
+
+	openBytes := s.TTY()[preOpenLen:]
+	if m := tabOrREPSequence.FindString(openBytes); m != "" {
+		t.Fatalf("wire-modal open emitted a tab or REP motion: %q\nfull transition bytes: %q", m, openBytes)
+	}
+}
+
+// TestPickerFramesNeverEmitATabByte is the simpler, global byte gate: no
+// picker session -- list navigation, a key-opened menu, and a wire-message
+// modal, opened and closed -- ever writes a literal tab byte (0x09) to its
+// tty at all, across the whole raw stream. /dev/tty's own termios now has
+// tab expansion on for every view that opens one (see internal/tty), so
+// this isn't specific to overlays; it's the property the fix actually
+// establishes. Same request/modal shape as
+// TestWireModalOpenEmitsNoTabOrRepSequence, for the same reason: it's the
+// one this harness has confirmed actually drives the differ to reach for a
+// tab in the first place, so a narrower shape would pass whether or not
+// the fix is doing anything.
+func TestPickerFramesNeverEmitATabByte(t *testing.T) {
+	const cols, rows = 110, 34
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "worktree", "dispose"},
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "alpha"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "bravo"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "dispose", Label: "dispose", Key: "ctrl-x", Scope: "item"},
+			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global"},
+		},
+	}
+	reqLine, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := startWidePtySession(t, []string{testutil.Binary(t), "pick"}, cols, rows, 1)
+	s.Send(string(reqLine))
+	s.WaitForPaint("alpha")
+	time.Sleep(150 * time.Millisecond)
+
+	s.Type("\x1b[B") // down arrow
+	s.Type("\x1b[B")
+	time.Sleep(100 * time.Millisecond)
+
+	s.Type("\x0b") // ctrl-k opens the registry menu
+	s.WaitForPaint("esc dismiss")
+	time.Sleep(150 * time.Millisecond)
+	s.Type("\x1b")
+	s.WaitForGone("esc dismiss")
+	time.Sleep(150 * time.Millisecond)
+
+	modal := protocol.PickModal{
+		T: "modal", Message: "Sort by",
+		Rows: []protocol.PickRow{
+			{Value: "name", Left: []protocol.PickSegment{{Text: "Name"}}},
+			{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}},
+		},
+	}
+	modalLine, err := json.Marshal(modal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Send(string(modalLine))
+	s.WaitForPaint("esc dismiss")
+	time.Sleep(150 * time.Millisecond)
+	s.Type("\x1b")
+	s.WaitForGone("esc dismiss")
+	time.Sleep(150 * time.Millisecond)
+
+	tty := s.TTY()
+	if strings.ContainsRune(tty, '\t') {
+		t.Fatalf("session emitted a tab byte somewhere in its tty stream:\n%q", tty)
 	}
 }
