@@ -129,9 +129,10 @@ function presetRow(p: Preset): PickRow {
   };
 }
 
-/** Bold label plus a dim hint -- the plain two-column look every simple row shares. */
-function plainRow(entry: { value: string; label: string; hint?: string }, group?: string): PickRow {
-  const left: PickSegment[] = [{ text: entry.label, bold: true }];
+/** Bold label plus a dim hint -- the plain two-column look every simple row shares. `labelWidth` pads the label so hints align down a row group; omit it for a standalone row. */
+function plainRow(entry: { value: string; label: string; hint?: string }, group?: string, labelWidth?: number): PickRow {
+  const label = labelWidth != null ? entry.label.padEnd(labelWidth) : entry.label;
+  const left: PickSegment[] = [{ text: label, bold: true }];
   if (entry.hint) left.push({ text: `  ${entry.hint}`, tone: "dim" });
   return { value: entry.value, left, ...(group ? { group } : {}) };
 }
@@ -180,12 +181,14 @@ async function runSegmentPicker(opts: {
   headerParts: string[];
   expectKeys?: string[];
   resumeValue?: string;
+  breadcrumb?: string[];
 }): Promise<SegmentPickResult | null> {
   const handle = runPick({
     message: opts.message,
     rows: opts.rows,
     actions: footerActions(opts.headerParts, opts.expectKeys ?? []),
     ...(opts.resumeValue ? { resumeValue: opts.resumeValue } : {}),
+    ...(opts.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
   });
   const result = await handle.result;
 
@@ -303,6 +306,7 @@ async function selectPackageAndScript(
   const { runNavPicker } = await import("../lib/navigate.ts");
   const packages = getWorkspacePackages(worktreePath);
   const label = contextLabel ? `${contextLabel}` : "";
+  const breadcrumb = label ? ["rt", "run", label] : ["rt", "run"];
   const derivedIdentity = await deriveRepoIdentity(worktreePath);
   const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   let cameFromScript = false;
@@ -369,18 +373,19 @@ async function selectPackageAndScript(
             hint: p.path,
           })),
         ];
-        packageOptions.forEach((entry) => rows.push(plainRow(entry, "packages")));
+        const packageLabelWidth = packageOptions.reduce((w, o) => Math.max(w, o.label.length), 0);
+        packageOptions.forEach((entry) => rows.push(plainRow(entry, "packages", packageLabelWidth)));
 
         const queueHeaderParts = q.length > 0
           ? [
               "enter: select",
               "ctrl-x: dequeue",
-              "esc: cancel",
+              "esc: quit",
             ]
           : [
               "enter: select",
               "ctrl-up: back",
-              "esc: cancel",
+              "esc: quit",
             ];
 
         // Cursor lands on Launch all with 2+ queued (the likely next action),
@@ -398,6 +403,7 @@ async function selectPackageAndScript(
           headerParts: queueHeaderParts,
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
           resumeValue,
+          breadcrumb,
         });
 
         if (!pkgResult) throw new RunAborted(1);
@@ -561,6 +567,7 @@ async function selectPackageAndScript(
         : "Select script",
       headerParts: scriptHeaderParts,
       expectKeys: ["alt-enter", "tab"],
+      breadcrumb,
     });
 
     if (!scriptResult) throw new RunAborted(1);
@@ -860,7 +867,7 @@ export async function resolveRun(
               hint: `${r.worktrees.length} worktrees`,
             })),
             message: "Select repo",
-            headerParts: ["enter: select", "esc: cancel"],
+            headerParts: ["enter: select", "esc: quit"],
           });
           if (!repoResult) throw new RunAborted(1);
           // ctrl-up here is "back" with nowhere left to go, exactly like the
@@ -907,8 +914,9 @@ export async function resolveRun(
               headerParts: [
                 "enter: select",
                 "ctrl-up: back to repo",
-                "esc: cancel",
+                "esc: quit",
               ],
+              breadcrumb: ["rt", "run", repoLabel(selectedRepo.repoName)],
             });
             if (!wtResult) throw new RunAborted(1);
             if (wtResult.key === "ctrl-up") {

@@ -69,6 +69,18 @@ test("plainRow: bold label plus a dim hint, group optional", () => {
   ]);
 });
 
+test("plainRow: labelWidth pads the label so hints line up down a group", () => {
+  const short = runTest.plainRow({ value: "v", label: "ui", hint: "packages/ui" }, "packages", 6);
+  expect(short.left[0]).toEqual({ text: "ui    ", bold: true });
+
+  const exact = runTest.plainRow({ value: "v", label: "backend", hint: "apps/backend" }, "packages", 7);
+  expect(exact.left[0]).toEqual({ text: "backend", bold: true });
+
+  // Omitted width leaves the label unpadded (a standalone row has nothing to align against).
+  const unpadded = runTest.plainRow({ value: "v", label: "ui", hint: "packages/ui" }, "packages");
+  expect(unpadded.left[0]).toEqual({ text: "ui", bold: true });
+});
+
 test("footerActions: exit keys close with event:false, other header parts are label-only", () => {
   const idle = runTest.footerActions(["enter: select", "ctrl-up: back", "esc: cancel"], []);
   expect(idle).toContainEqual({ id: "ctrl-up", label: "back", key: "ctrl-up", scope: "global", event: false });
@@ -193,6 +205,136 @@ test("package picker: queue-active state groups queue rows, adds Launch all + Sa
   const queueActions = queueCall.actions ?? [];
   expect(idleActions.some((a) => a.id === "ctrl-x")).toBe(false);
   expect(queueActions).toContainEqual({ id: "ctrl-x", label: "dequeue", key: "ctrl-x", scope: "global", event: false });
+});
+
+// ─── esc-abort contract (RunAborted, not a live picker or a launched run) ───
+
+test("esc at the package stage aborts to shell: RunAborted, no further picker call, nothing launched", async () => {
+  const { root } = makeWorkspaceFixture();
+  fixtureDir = root;
+
+  fake = installSequentialPick([
+    { action: "esc", value: null, query: "" }, // package picker: esc
+  ]);
+
+  const ctx = {
+    identity: {
+      repoName: "picker-fixture",
+      identity: `test-picker-repo-${Date.now()}`,
+      repoRoot: root,
+      dataDir: "",
+      remoteUrl: "",
+      baseUrl: "",
+    },
+  } as never;
+
+  const res: RunResolution = await resolveRun([], ctx);
+  expect(res.kind).toBe("cancelled");
+  if (res.kind === "cancelled") expect(res.code).toBe(1);
+  // Aborts outright -- doesn't fall through to another picker call.
+  expect(fake.calls).toHaveLength(1);
+});
+
+test("esc at the script stage aborts to shell, same as the package stage", async () => {
+  const { root, pkgAPath } = makeWorkspaceFixture();
+  fixtureDir = root;
+
+  fake = installSequentialPick([
+    { action: "select", value: pkgAPath, query: "" }, // package picker: pick "a"
+    { action: "esc", value: null, query: "" }, // script picker: esc
+  ]);
+
+  const ctx = {
+    identity: {
+      repoName: "picker-fixture",
+      identity: `test-picker-repo-${Date.now()}`,
+      repoRoot: root,
+      dataDir: "",
+      remoteUrl: "",
+      baseUrl: "",
+    },
+  } as never;
+
+  const res: RunResolution = await resolveRun([], ctx);
+  expect(res.kind).toBe("cancelled");
+  if (res.kind === "cancelled") expect(res.code).toBe(1);
+  // Aborts outright -- doesn't bounce back to the package picker or run anything.
+  expect(fake.calls).toHaveLength(2);
+});
+
+// ─── footer wording + breadcrumb ─────────────────────────────────────────────
+
+test("footer reads 'esc quit' everywhere run declares it, not 'esc cancel'", async () => {
+  const { readFileSync } = await import("fs");
+  const source = readFileSync(new URL("../run.ts", import.meta.url), "utf8");
+  expect(source).not.toContain("esc: cancel");
+  expect(source).toContain("esc: quit");
+});
+
+test("package/script picker requests carry an in-card breadcrumb: rt > run > <context>", async () => {
+  const { root, pkgAPath } = makeWorkspaceFixture();
+  fixtureDir = root;
+
+  fake = installSequentialPick([
+    { action: "select", value: pkgAPath, query: "" }, // package picker
+    { action: "cancel", value: null, query: "" }, // script picker -- bail out
+  ]);
+
+  const ctx = {
+    identity: {
+      repoName: "picker-fixture",
+      identity: `test-picker-repo-${Date.now()}`,
+      repoRoot: root,
+      dataDir: "",
+      remoteUrl: "",
+      baseUrl: "",
+    },
+  } as never;
+
+  await resolveRun([], ctx);
+  expect(fake.calls).toHaveLength(2);
+  const expected = ["rt", "run", `picker-fixture / ${root.split("/").pop()}`];
+  expect(fake.calls[0]!.breadcrumb).toEqual(expected);
+  expect(fake.calls[1]!.breadcrumb).toEqual(expected);
+});
+
+// ─── package row alignment ───────────────────────────────────────────────────
+
+test("package picker rows: the label column is padded so hints line up (board parity)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "rt-run-align-"));
+  fixtureDir = root;
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "root", workspaces: ["packages/*"] }));
+  const pkgUi = join(root, "packages", "ui");
+  const pkgSvc = join(root, "packages", "config-service");
+  mkdirSync(pkgUi, { recursive: true });
+  mkdirSync(pkgSvc, { recursive: true });
+  writeFileSync(join(pkgUi, "package.json"), JSON.stringify({ name: "ui", scripts: { dev: "vite" } }));
+  writeFileSync(join(pkgSvc, "package.json"), JSON.stringify({ name: "config-service", scripts: { dev: "vite" } }));
+
+  fake = installSequentialPick([
+    { action: "cancel", value: null, query: "" }, // package picker -- just inspect the request
+  ]);
+
+  const ctx = {
+    identity: {
+      repoName: "picker-fixture",
+      identity: `test-picker-repo-${Date.now()}`,
+      repoRoot: root,
+      dataDir: "",
+      remoteUrl: "",
+      baseUrl: "",
+    },
+  } as never;
+
+  await resolveRun([], ctx);
+  const packageRows = fake.calls[0]!.rows.filter((r) => r.group === "packages");
+  expect(packageRows).toHaveLength(2);
+  const labelTexts = packageRows.map((r) => r.left[0]!.text as string);
+  // Every label in the group pads to the same width -- the hint column starts
+  // at the same offset on every row, matching the board.
+  const widths = new Set(labelTexts.map((t) => t.length));
+  expect(widths.size).toBe(1);
+  expect(Math.max(...labelTexts.map((t) => t.length))).toBe("config-service".length);
 });
 
 // ─── formatBranchLabel -> formatBranchSegments migration ─────────────────────
