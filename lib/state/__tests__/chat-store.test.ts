@@ -233,19 +233,40 @@ test("pendingMessages returns the recipient's unread backlog bounded above by th
   expect(pendingMessages("r", "nobody", two.id, db)).toEqual([]);
 });
 
-test("stalePendingPairs finds every member whose cursor sits behind the room's max id, author included", () => {
+test("stalePendingPairs finds a member whose cursor sits behind the room's max id, and reports its wakeOn", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b", wakeOn: "mention" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  expect(stalePendingPairs(db)).toEqual([{ room: "r", handle: "b", maxId: posted.id, wakeOn: "mention" }]);
+});
+
+// R... (sweep review finding 3): the poster's own cursor also lags its own
+// post (postMessage never self-advances it), but a stale row whose ENTIRE
+// pending backlog is self-authored can never be a delivery target -- no
+// wake_on setting makes a message a recipient of itself. Excluding it here
+// (an EXISTS on "some OTHER author has a message in the gap") is the idle
+// early-out: a poster-only room never costs the sweep a presence lookup or
+// a pendingMessages call, not just a wasted deliverSerialized call.
+test("stalePendingPairs excludes a member whose entire pending backlog is self-authored", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  expect(stalePendingPairs(db)).toEqual([]);
+  // Sanity: the row exists as a plain lagging cursor -- it is the EXISTS
+  // clause specifically that drops it, not some other filter swallowing it.
+  expect((db.query("SELECT last_read_id FROM chat_members WHERE room = 'r' AND handle = 'a';").get() as { last_read_id: number }).last_read_id)
+    .toBeLessThan(posted.id);
+});
+
+test("stalePendingPairs still includes a member once someone ELSE has posted, even if the member also has an unread post of their own", () => {
   const db = freshDb();
   joinRoom({ room: "r", handle: "a" }, db);
   joinRoom({ room: "r", handle: "b" }, db);
-  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
-  // postMessage never self-advances the author's own cursor, so "a" is a
-  // legitimate stale row too by this query's own definition -- whether that
-  // candidate is worth re-delivering to is the sweep planner's call, not
-  // this store query's (see createChatDeliverySweep's self-authored guard).
-  expect(stalePendingPairs(db).sort((x, y) => x.handle.localeCompare(y.handle))).toEqual([
-    { room: "r", handle: "a", maxId: posted.id },
-    { room: "r", handle: "b", maxId: posted.id },
-  ]);
+  postMessage({ room: "r", handle: "a", body: "mine" }, db); // a's own post: alone, would exclude a
+  const fromB = postMessage({ room: "r", handle: "b", body: "b posts too" }, db)!;
+  // "a" is stale behind a message NOT authored by "a" (b's post) -- must appear.
+  expect(stalePendingPairs(db).find((r) => r.handle === "a")).toEqual({ room: "r", handle: "a", maxId: fromB.id, wakeOn: "all" });
 });
 
 test("stalePendingPairs is empty once markDelivered catches every cursor up to the max id", () => {

@@ -130,6 +130,7 @@ export {
   type ChatMessage,
   type WakeMode,
   type RoomSummary,
+  type StalePendingRow,
 } from "./chat-store.ts";
 
 export {

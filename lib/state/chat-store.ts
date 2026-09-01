@@ -152,17 +152,31 @@ const UPDATE_LAST_READ_CLAMPED_SQL = `UPDATE chat_members SET last_read_id = MAX
 // One query, cheap when idle (both joins are on indexed/PK columns and the
 // per-room MAX collapses to a handful of rows): every (room, handle) whose
 // member cursor sits behind that room's newest message, in a non-archived
-// room. This is the sweep's only store read -- it discovers candidates, it
-// does not decide who is deliverable (presence/binding liveness is the
-// sweep planner's job, not a store concern).
+// room, PROVIDED some message in that gap was authored by someone else --
+// the EXISTS clause is the idle early-out for a poster whose only pending
+// backlog is their own message (postMessage never self-advances the
+// author's own cursor): no wake_on setting ever makes a message a recipient
+// of itself, so that row can never become a delivery target and is worth
+// dropping before a presence lookup or pendingMessages call, not just
+// before deliverSerialized. `wakeOn` rides along so the sweep planner can
+// apply the same wake_on rules recipientsFromMembers uses without a second
+// query. This is the sweep's only store read -- it discovers candidates, it
+// does not decide who is deliverable (presence/binding liveness and the
+// wake_on/mention match are the sweep planner's job, not a store concern).
 const SELECT_STALE_PENDING_SQL = `
-SELECT chat_members.room AS room, chat_members.handle AS handle, maxes.maxId AS maxId
+SELECT chat_members.room AS room, chat_members.handle AS handle, maxes.maxId AS maxId, chat_members.wake_on AS wakeOn
 FROM chat_members
 JOIN (SELECT room, MAX(id) AS maxId FROM chat_messages GROUP BY room) AS maxes
   ON maxes.room = chat_members.room
 JOIN chat_rooms ON chat_rooms.name = chat_members.room
 WHERE chat_members.last_read_id < maxes.maxId
-  AND chat_rooms.archived_at IS NULL;
+  AND chat_rooms.archived_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM chat_messages m
+    WHERE m.room = chat_members.room
+      AND m.id > chat_members.last_read_id
+      AND m.handle <> chat_members.handle
+  );
 `;
 
 // `@` is strictly the mention sigil, and `/` would reshape the
@@ -558,10 +572,11 @@ export function pendingMessages(room: string, handle: string, upToId: number, db
   return rows.map(rowToMessage);
 }
 
-interface StalePendingRow {
+export interface StalePendingRow {
   room: string;
   handle: string;
   maxId: number;
+  wakeOn: WakeMode;
 }
 
 /**
