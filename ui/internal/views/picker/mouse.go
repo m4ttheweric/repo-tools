@@ -296,7 +296,7 @@ func (m *Model) clickRow(row int) (tea.Model, tea.Cmd) {
 		m.lastClickRow = -1
 		m.lastClickAt = time.Time{}
 		m.selectCursor()
-		return m, tea.Quit
+		return m.quit()
 	}
 	m.lastClickRow = row
 	m.lastClickAt = now
@@ -341,7 +341,7 @@ func (m *Model) dispatchAction(action protocol.PickAction) (tea.Model, tea.Cmd) 
 		return m, nil
 	}
 	m.resultForAction(action.ID)
-	return m, tea.Quit
+	return m.quit()
 }
 
 // handleMouseMotion tracks which row the pointer is over. Hover is purely a

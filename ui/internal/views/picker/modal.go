@@ -118,52 +118,116 @@ func padToHeight(body string, target int) string {
 	return body
 }
 
-// pinFrameHeight records the current frame's own natural height as a
-// floor every later frame renders at until the overlay's own close
-// releases it (armPinRelease). It never lowers an existing pin, so a
-// session that opens one overlay, replaces it with a shorter one, then a
-// taller one again never dips through an intermediate height along the
-// way.
+// reservedContentHeight is the session floor renderView pads to from the
+// first paint: the row cap (the visible-row ceiling, past which the list
+// scrolls), the tallest chrome the session can show, room for the group
+// headers the cap never counted, and never past the pane. A frame padded to
+// this never grows or shrinks as the query narrows, a descend swaps the rows,
+// or ctrl-t toggles hidden files, so none of those re-enter the inline
+// grow/shrink diff pinFrameHeight guards for.
+func (m *Model) reservedContentHeight() int {
+	rowCap := m.req.Cap
+	if rowCap <= 0 {
+		rowCap = defaultCap
+	}
+	// chromeRows counts one keybar line; the ctrl-held legend is two, and a
+	// multi session can reveal the selected panel -- reserve both so holding
+	// ctrl or checking a row never grows the frame.
+	chrome := chromeRows + 1
+	if isMultiRequest(m.req) {
+		chrome++
+	}
+	headers := distinctGroupCount(m.req.Rows)
+	if headers > rowCap {
+		headers = rowCap
+	}
+	reserved := chrome + rowCap + headers
+	if o := m.registryMenuHeight(); o > reserved {
+		reserved = o
+	}
+	if m.height > 0 && reserved > m.height {
+		reserved = m.height
+	}
+	return reserved
+}
+
+// registryMenuHeight is the height a ctrl-k / right-click overlay derived
+// from this request's declared actions would occupy, so the reserved frame
+// is tall enough to host it without the base list growing when it opens.
+func (m *Model) registryMenuHeight() int {
+	rows := deriveMenu(m.req.Actions, 0)
+	if len(rows) == 0 {
+		return 0
+	}
+	ms := &modalState{kind: modalRegistry, rows: modalRowsFromMenu(rows)}
+	ms.refilter()
+	return lipgloss.Height(renderModalBox(ms, m.width))
+}
+
+// setReserved re-derives the floor from the current pane, dropping it when a
+// resize shrinks the terminal (a resize is a full repaint, not the inline
+// diff the floor exists to avoid). pinnedHeight tracks the floor up, and back
+// down only when a shrunk pane leaves it taller than the terminal.
+func (m *Model) setReserved() {
+	m.reservedHeight = m.reservedContentHeight()
+	if m.pinnedHeight < m.reservedHeight {
+		m.pinnedHeight = m.reservedHeight
+	}
+	if m.height > 0 && m.pinnedHeight > m.height {
+		m.pinnedHeight = m.reservedHeight
+	}
+}
+
+// raiseReserved lifts the floor to cover a live row swap that needs more room
+// (more groups, a breadcrumb the request gained) without ever lowering it
+// within a fixed pane, so a descend into a shorter directory never shrinks
+// the frame back.
+func (m *Model) raiseReserved() {
+	if r := m.reservedContentHeight(); r > m.reservedHeight {
+		m.reservedHeight = r
+	}
+	if m.pinnedHeight < m.reservedHeight {
+		m.pinnedHeight = m.reservedHeight
+	}
+}
+
+// distinctGroupCount counts the distinct non-empty group labels across the
+// rows -- the most group-header display lines any window can carry, which the
+// row cap never counted.
+func distinctGroupCount(rows []protocol.PickRow) int {
+	seen := make(map[string]bool)
+	for _, r := range rows {
+		if r.Group != "" {
+			seen[r.Group] = true
+		}
+	}
+	return len(seen)
+}
+
+// pinFrameHeight raises the pad target to host an overlay taller than the
+// session floor, so that overlay's own open and close repaint whole
+// (armPinRelease holds the raise through the close's clearScreenMsg) rather
+// than diffing across its grow and shrink. It never lowers the target; a
+// shorter overlay opening over a taller floor changes nothing.
 //
 // The height this holds steady is exactly what bubbletea's own inline
 // renderer treats as a "grow" or "shrink" transition -- entering that path
 // is what the terminal's own idea of an ambiguous-width glyph's column
 // cost (❯, ◉) can disagree with this renderer's own, slipping the
 // differ's row bookkeeping for one frame and leaving a transitional
-// stanza behind. A frame whose height never changes across an overlay's
-// open and close never enters that path at all.
+// stanza behind.
 func (m *Model) pinFrameHeight() {
 	if h := lipgloss.Height(composeFrame(m)); h > m.pinnedHeight {
 		m.pinnedHeight = h
 	}
 }
 
-// armPinRelease keeps the current pin through this render (the close's own)
-// and its one guaranteed clearScreenMsg follow-up, releasing only once both
-// have rendered -- see pinHoldFrames' own comment for why one call isn't
-// enough -- so the picker doesn't carry a padded frame forever once nothing
-// is using it.
+// armPinRelease keeps a pinFrameHeight raise through this render (the close's
+// own) and its one guaranteed clearScreenMsg follow-up, dropping the target
+// back to the session floor (never to zero) only once both have rendered --
+// see pinHoldFrames' own comment for why one call isn't enough.
 func (m *Model) armPinRelease() {
 	m.pinHoldFrames = 2
-}
-
-// setQueryCmd applies a query edit and returns the render command it needs. A
-// query whose new match set changes the rendered frame's height would leave
-// bubbletea's inline renderer to diff across the same grow/shrink transition
-// pinFrameHeight's own comment describes: an ambiguous-width glyph (the pink
-// prompt marker, a selection dot) slips the differ's row bookkeeping for that
-// one frame, stranding the prior frame above the live one once the picker sits
-// below other terminal content. Forcing a full clear repaints the frame whole
-// from its anchor, the same guard the overlay transitions ride. An edit that
-// leaves the height unchanged stays on the ordinary in-place diff, so ordinary
-// typing within a still-overflowing list never flickers a needless repaint.
-func (m *Model) setQueryCmd(q string) tea.Cmd {
-	before := lipgloss.Height(renderView(m))
-	m.setQuery(q)
-	if lipgloss.Height(renderView(m)) != before {
-		return tea.ClearScreen
-	}
-	return nil
 }
 
 // openRegistryMenu opens the ctrl-k/right-click overlay from the request's
@@ -333,7 +397,7 @@ func (m *Model) selectModalRow() (tea.Model, tea.Cmd) {
 		return m, tea.ClearScreen
 	}
 	m.resultForAction(action.ID)
-	return m, tea.Quit
+	return m.quit()
 }
 
 // writeModalResult answers a TS-driven modal through the same ordered

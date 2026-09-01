@@ -46,20 +46,36 @@ type Model struct {
 	width       int
 	height      int
 
-	// pinnedHeight, when > 0, is the line-count height renderView pads every
-	// frame to. Set the moment an overlay opens, to whatever it and the
-	// list beneath it naturally need, and held through the overlay's own
-	// close so neither transition crosses bubbletea's genuine-height-change
-	// redraw path -- see pinFrameHeight's own comment for why that path is
-	// the one worth avoiding. pinHoldFrames, armed by armPinRelease, keeps
-	// it held for that many more Update calls past the close before
-	// releasing -- 2, not 1: the close's own render is already covered
-	// without decrementing anything, and tea.ClearScreen's own Cmd sends
-	// exactly one clearScreenMsg back through Update asynchronously, whose
-	// render is still part of the same close transition, not yet "the next
-	// unrelated one" this pin is meant to survive until.
+	// reservedHeight is the session-long floor renderView pads every frame to,
+	// set the moment the pane size is known and re-derived only on a resize.
+	// A frame whose padded height never drops below it never re-enters
+	// bubbletea's inline shrink diff on a query narrow, a row-set swap, or a
+	// hidden-files toggle -- the transition an ambiguous-width glyph (❯, ◉)
+	// can slip, stranding the prior frame above the live one when the picker
+	// sits below other terminal content. reservedContentHeight computes it:
+	// the row cap plus the tallest chrome plus room for the largest overlay
+	// this request can host, never past the pane.
+	reservedHeight int
+
+	// pinnedHeight, always >= reservedHeight, is that floor raised further
+	// while an overlay taller than it is open, so a tall wire modal's own
+	// open/close still repaints whole (pinFrameHeight/armPinRelease) rather
+	// than diffing across its grow/shrink. pinHoldFrames, armed by
+	// armPinRelease, holds the raised value for that many more Update calls
+	// past the close before it drops back to reservedHeight (never to zero) --
+	// 2, not 1: the close's own render is already covered without decrementing
+	// anything, and tea.ClearScreen's own Cmd sends exactly one clearScreenMsg
+	// back through Update asynchronously, whose render is still part of the
+	// same close transition.
 	pinnedHeight  int
 	pinHoldFrames int
+
+	// closing collapses the final frame to zero rows on quit (renderView
+	// returns empty), so the picker leaves clean scrollback the way legacy
+	// fzf does rather than a dead card the next chained stage stacks under.
+	// bubbletea's graceful-shutdown render paints that empty View; nothing
+	// here writes to the tty.
+	closing bool
 
 	// zones is the render pass's own record of what each rendered line's
 	// columns target, rebuilt every render() call; mouse.go's click/motion
@@ -162,15 +178,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.pinHoldFrames > 0 {
 		m.pinHoldFrames--
 		if m.pinHoldFrames == 0 {
-			m.pinnedHeight = 0
+			m.pinnedHeight = m.reservedHeight
 		}
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.setReserved()
 	case UpdateMsg:
 		m.applyUpdate(msg.Update)
+		m.raiseReserved()
 	case ModalMsg:
 		m.openTSModal(msg.Modal)
 		m.pinFrameHeight()
@@ -221,7 +239,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.resultForAction(action.ID)
-			return m, tea.Quit
+			return m.quit()
 		}
 		if key == "ctrl+k" {
 			m.openRegistryMenu()
@@ -234,10 +252,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "enter" {
 			if len(m.matches) == 0 && m.req.AcceptNoMatch {
 				m.result = &protocol.PickResult{Action: idSelect, Value: nil, Query: m.query}
-				return m, tea.Quit
+				return m.quit()
 			}
 			m.selectCursor()
-			return m, tea.Quit
+			return m.quit()
 		}
 		if key == "esc" {
 			// Reached only once a declared esc action has already had its
@@ -246,11 +264,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// declares nothing: cancel is otherwise unreachable from the
 			// keyboard on a bare picker.
 			m.result = &protocol.PickResult{Action: idCancel, Query: m.query}
-			return m, tea.Quit
+			return m.quit()
 		}
 		if key == "backspace" {
 			if r := []rune(m.query); len(r) > 0 {
-				return m, m.setQueryCmd(string(r[:len(r)-1]))
+				m.setQuery(string(r[:len(r)-1]))
 			}
 			return m, nil
 		}
@@ -259,7 +277,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// enter, and modifier combos), so this is what distinguishes real
 		// typed input from every special key already handled above.
 		if msg.Text != "" {
-			return m, m.setQueryCmd(m.query + msg.Text)
+			m.setQuery(m.query + msg.Text)
+			return m, nil
 		}
 	}
 	return m, nil
@@ -602,7 +621,20 @@ func (m *Model) selectCursor() {
 // so a test can assert on the modal-composited frame without going through
 // tea.View's own wrapper.
 func renderView(m *Model) string {
+	if m.closing {
+		return ""
+	}
 	return padToHeight(composeFrame(m), m.pinnedHeight)
+}
+
+// quit ends the session and collapses the final frame to zero rows. The
+// host's own graceful-shutdown render paints the empty View this produces,
+// erasing the reserved height so the picker leaves clean scrollback rather
+// than a dead card the next chained stage stacks under -- an effect the host
+// runs, never a write from here.
+func (m *Model) quit() (tea.Model, tea.Cmd) {
+	m.closing = true
+	return m, tea.Quit
 }
 
 func (m *Model) View() tea.View {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -3037,93 +3036,172 @@ func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
 	}
 }
 
-// isClearScreenCmd reports whether cmd is bubbletea's full-repaint clear,
-// tea.ClearScreen. clearScreenMsg is unexported and unconstructable here, so
-// its dynamic type is matched against a known tea.ClearScreen() msg rather
-// than by a case in a type switch.
-func isClearScreenCmd(cmd tea.Cmd) bool {
+// isQuitCmd reports whether cmd is the program's own quit signal, mirroring
+// mustNotQuit's check in the positive direction for the exit-path tests.
+func isQuitCmd(cmd tea.Cmd) bool {
 	if cmd == nil {
 		return false
 	}
-	return reflect.TypeOf(cmd()) == reflect.TypeOf(tea.ClearScreen())
+	_, ok := cmd().(tea.QuitMsg)
+	return ok
 }
 
-// typedRow30 is a 30-row request whose rows all contain "r" but none contain
-// "z", so one query edit can shrink the frame to "no matches" and another can
-// leave it full, exercising both sides of the height-change clear.
-func typedRow30() protocol.PickRequest {
-	rows := make([]protocol.PickRow, 30)
+// stableHeightReq is an n-row request under a breadcrumb whose rows all
+// contain "r" but none contain "z", so one query edit can collapse the match
+// set to zero while another leaves it full -- the natural frame height really
+// moves, which is what makes the constant-padded-height assertions non-vacuous.
+func stableHeightReq(n int) protocol.PickRequest {
+	return protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "list"},
+		Rows:       stableHeightRows(n),
+	}
+}
+
+func stableHeightRows(n int) []protocol.PickRow {
+	rows := make([]protocol.PickRow, n)
 	for i := range rows {
 		v := fmt.Sprintf("row%02d", i)
 		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v}}}
 	}
-	return protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows}
+	return rows
 }
 
-// TestQueryEditThatShrinksTheFrameRidesAClear pins the F1 residue root cause:
-// a typed query that changes the rendered frame's height must ride
-// tea.ClearScreen, so bubbletea repaints the frame whole instead of diffing
-// across the grow/shrink. That diff path is where an ambiguous-width glyph
-// slips the row bookkeeping and orphans the prior frame above the live one
-// once the picker is anchored below other terminal content -- the reviewer's
-// "frame orphaned" symptom, misread as a typed rune lagging or being lost.
-func TestQueryEditThatShrinksTheFrameRidesAClear(t *testing.T) {
-	m := New(typedRow30())
-	m.width = 80
+// TestFrameHeightStaysConstantWhenAQueryShrinksTheList is the core of the
+// stable-height fix: once the pane is known, a typed query that collapses the
+// list to no matches must not change the padded frame's height. The natural
+// (unpadded) frame really shrinks; the reserved floor holds renderView steady,
+// so the frame never re-enters bubbletea's inline shrink diff -- the residue
+// path that reads as a lost or lagging rune when the picker sits below other
+// terminal content. Pre-fix, with no floor, renderView tracked the natural
+// height and this changed.
+func TestFrameHeightStaysConstantWhenAQueryShrinksTheList(t *testing.T) {
+	next, _ := New(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m := next.(*Model)
 
 	before := lipgloss.Height(renderView(m))
-	next, cmd := m.Update(tea.KeyPressMsg{Code: 'z', Text: "z"})
-	m = next.(*Model)
-	after := lipgloss.Height(renderView(m))
+	naturalBefore := lipgloss.Height(render(m))
 
-	if after == before {
-		t.Fatalf("setup: 'z' did not change the frame height (%d), cannot exercise the residue path", before)
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'z', Text: "z"}) // no row contains z
+	m = next.(*Model)
+
+	naturalAfter := lipgloss.Height(render(m))
+	if naturalAfter == naturalBefore {
+		t.Fatalf("setup: the query did not move the natural frame height (%d); nothing to hold constant", naturalBefore)
 	}
-	if !isClearScreenCmd(cmd) {
-		t.Fatalf("a height-changing query edit must ride tea.ClearScreen to repaint whole; got cmd %v", cmd)
+	if after := lipgloss.Height(renderView(m)); after != before {
+		t.Fatalf("padded frame changed height across a query shrink: before %d, after %d", before, after)
 	}
 }
 
-// TestBackspaceThatGrowsTheFrameRidesAClear is the grow-direction mate: undoing
-// the no-match query grows the frame back, the same height transition in
-// reverse, and must clear just as the shrink does.
-func TestBackspaceThatGrowsTheFrameRidesAClear(t *testing.T) {
-	m := New(typedRow30())
-	m.width = 80
-
-	next, _ := m.Update(tea.KeyPressMsg{Code: 'z', Text: "z"})
-	m = next.(*Model)
-	shrunk := lipgloss.Height(renderView(m))
-
-	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
-	m = next.(*Model)
-	grown := lipgloss.Height(renderView(m))
-
-	if grown == shrunk {
-		t.Fatalf("setup: backspace did not grow the frame back (%d)", shrunk)
-	}
-	if !isClearScreenCmd(cmd) {
-		t.Fatalf("a height-changing backspace must ride tea.ClearScreen; got cmd %v", cmd)
-	}
-}
-
-// TestQueryEditThatKeepsTheHeightDoesNotClear is the negative bound: a query
-// edit that leaves the rendered frame the same height stays on bubbletea's
-// ordinary in-place diff and must NOT force a full clear, so continuous typing
-// within a still-overflowing list never flickers a needless whole repaint.
-func TestQueryEditThatKeepsTheHeightDoesNotClear(t *testing.T) {
-	m := New(typedRow30())
-	m.width = 80
+// TestFrameHeightStaysConstantWhenADescendSwapsTheRows drives the row-set swap
+// a nav descend performs (a PickUpdate replacing Rows). The new directory is
+// much shorter, so the natural frame shrinks, but the reserved floor keeps
+// renderView constant.
+func TestFrameHeightStaysConstantWhenADescendSwapsTheRows(t *testing.T) {
+	next, _ := New(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m := next.(*Model)
 
 	before := lipgloss.Height(renderView(m))
-	next, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	m = next.(*Model)
-	after := lipgloss.Height(renderView(m))
+	naturalBefore := lipgloss.Height(render(m))
 
-	if after != before {
-		t.Fatalf("setup: 'r' changed the frame height (%d -> %d); it should still match every row", before, after)
+	next, _ = m.Update(UpdateMsg{Update: protocol.PickUpdate{Rows: stableHeightRows(4)}})
+	m = next.(*Model)
+
+	naturalAfter := lipgloss.Height(render(m))
+	if naturalAfter == naturalBefore {
+		t.Fatalf("setup: the descend did not move the natural frame height (%d)", naturalBefore)
 	}
-	if isClearScreenCmd(cmd) {
-		t.Fatal("a query edit that keeps the height must not force a full clear")
+	if after := lipgloss.Height(renderView(m)); after != before {
+		t.Fatalf("padded frame changed height across a descend: before %d, after %d", before, after)
+	}
+}
+
+// TestFrameHeightStaysConstantWhenAHiddenFilesToggleGrowsTheRowSet drives the
+// other direction ctrl-t takes: a PickUpdate that grows the row set (revealing
+// hidden entries). The natural frame grows within the floor; renderView holds.
+func TestFrameHeightStaysConstantWhenAHiddenFilesToggleGrowsTheRowSet(t *testing.T) {
+	next, _ := New(stableHeightReq(5)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m := next.(*Model)
+
+	before := lipgloss.Height(renderView(m))
+	naturalBefore := lipgloss.Height(render(m))
+
+	next, _ = m.Update(UpdateMsg{Update: protocol.PickUpdate{Rows: stableHeightRows(12)}})
+	m = next.(*Model)
+
+	naturalAfter := lipgloss.Height(render(m))
+	if naturalAfter == naturalBefore {
+		t.Fatalf("setup: the toggle did not move the natural frame height (%d)", naturalBefore)
+	}
+	if after := lipgloss.Height(renderView(m)); after != before {
+		t.Fatalf("padded frame changed height across a hidden-files toggle: before %d, after %d", before, after)
+	}
+}
+
+// TestReservedFrameShowsCap14ContentAndRespectsThePaneCap pins the two board
+// constraints the reserve must not break: on a tall pane the frame stays at
+// the cap-14 content height with its scroll-range label, never stretched to
+// the pane; on a short pane the reserve is clamped to the pane and never
+// paints past the terminal.
+func TestReservedFrameShowsCap14ContentAndRespectsThePaneCap(t *testing.T) {
+	next, _ := New(stableHeightReq(100)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	tall := next.(*Model)
+
+	h := lipgloss.Height(renderView(tall))
+	if h >= 40 {
+		t.Fatalf("reserved frame is pane-tall (%d of 40) rather than content-anchored", h)
+	}
+	plain := ansi.Strip(render(tall))
+	if !strings.Contains(plain, "of 100") {
+		t.Fatalf("cap-14 windowed frame should carry the scroll-range label:\n%s", plain)
+	}
+	if rowLines := strings.Count(plain, "row"); rowLines != defaultCap {
+		t.Fatalf("cap-14 window should paint exactly %d row lines, painted %d:\n%s", defaultCap, rowLines, plain)
+	}
+
+	next, _ = New(stableHeightReq(100)).Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	short := next.(*Model)
+	if sh := lipgloss.Height(renderView(short)); sh > 12 {
+		t.Fatalf("reserved frame exceeded the pane: height %d, pane 12", sh)
+	}
+}
+
+// TestQuitCollapsesTheFrameToZeroRows pins self-erase-on-close: a select that
+// ends the session leaves an empty final frame so the picker collapses to
+// clean scrollback rather than a dead card the next chained stage stacks
+// under. Pre-fix, renderView still painted the reserved frame after the quit.
+func TestQuitCollapsesTheFrameToZeroRows(t *testing.T) {
+	next, _ := New(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	m := next.(*Model)
+	if lipgloss.Height(renderView(m)) <= 1 {
+		t.Fatal("setup: the live frame should occupy the reserved height, not be empty")
+	}
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // select -> quit
+	m = next.(*Model)
+	if !isQuitCmd(cmd) {
+		t.Fatalf("enter on a match should end the session")
+	}
+	if got := renderView(m); got != "" {
+		t.Fatalf("final frame after quit must collapse to zero rows, got %d:\n%q", lipgloss.Height(got), got)
+	}
+}
+
+// TestEmptyBreadcrumbHeaderRowIsNotBlank locks the defensive edge: a request
+// with no breadcrumb still renders its header row (the chrome budget and the
+// mouse hit-zones both key on that row always being present), and that row
+// carries the live count rather than a blank line.
+func TestEmptyBreadcrumbHeaderRowIsNotBlank(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: stableHeightRows(5)}
+	m := New(req)
+	m.width = 40
+
+	header := ansi.Strip(strings.Split(render(m), "\n")[0])
+	if strings.TrimSpace(header) == "" {
+		t.Fatalf("empty breadcrumb must not leave a blank header row, got %q", header)
+	}
+	if !strings.Contains(header, "5/5") {
+		t.Fatalf("the header row should carry the live count, got %q", header)
 	}
 }
