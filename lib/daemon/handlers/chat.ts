@@ -405,15 +405,19 @@ export function createChatDeliverySweep(opts: {
     // candidate -- resolveInbox itself is resolveAllInboxes().get(id), so a
     // per-candidate loop would have re-scanned the whole registry directory
     // per candidate (claude-registry.ts's own doc on resolveAllInboxes
-    // names this exact multi-lookup case). A signed-out presence is
-    // skipped before even doing the (now cheap, in-memory) alive check --
-    // its binding can never matter, so there is nothing to spend a lookup on.
-    const scoped = snapshotRegistryDeps(opts.registryDeps);
+    // names this exact multi-lookup case). Skipped entirely when no stale
+    // handle has a presence row at all -- nothing could resolve regardless
+    // of what the registry says, so the scan itself would be wasted work.
+    // A signed-out presence is skipped before even doing the (now cheap,
+    // in-memory) alive check -- its binding can never matter either.
     const aliveSessionIds = new Set<string>();
-    for (const presence of presenceByHandle.values()) {
-      if (presence.signedOutAt !== undefined) continue;
-      const binding = scoped.resolve(presence.sessionId);
-      if (binding && scoped.alive(binding)) aliveSessionIds.add(presence.sessionId);
+    if (presenceByHandle.size > 0) {
+      const scoped = snapshotRegistryDeps(opts.registryDeps);
+      for (const presence of presenceByHandle.values()) {
+        if (presence.signedOutAt !== undefined) continue;
+        const binding = scoped.resolve(presence.sessionId);
+        if (binding && scoped.alive(binding)) aliveSessionIds.add(presence.sessionId);
+      }
     }
 
     const targets = planSweepTargets(stale, presenceByHandle, aliveSessionIds);

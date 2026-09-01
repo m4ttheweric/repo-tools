@@ -897,6 +897,32 @@ test("the sweep resolves the registry once per run, not once per stale candidate
   expect(resolveAllCalls).toBe(1);
 });
 
+// Review round 3 finding C (NITPICK): a stale candidate with no presence
+// row at all (never signed in) can never resolve to a binding regardless
+// of what the registry says -- the scan itself is wasted work when NO
+// stale handle has a presence row.
+test("the sweep never scans the registry when no stale handle has a presence row at all", async () => {
+  const inboxDeps: InboxDeps = {
+    resolve: () => null,
+    deliver: async () => ({ ok: true }),
+  };
+  let resolveAllCalls = 0;
+  const registryDeps: RegistryDeps = {
+    resolve: () => null,
+    alive: () => true,
+    resolveAll: () => { resolveAllCalls++; return new Map(); },
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" }); // never signs in -- no presence row at all
+  await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  await Bun.sleep(0);
+
+  await sweep();
+  expect(resolveAllCalls).toBe(0);
+});
+
 // Review finding 2: a signed-out presence must never even reach the
 // registry alive-check -- it's excluded regardless of what the registry
 // says, so checking it first is pure waste on top of being (before this
