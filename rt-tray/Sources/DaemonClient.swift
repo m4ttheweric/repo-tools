@@ -1,4 +1,5 @@
 import Foundation
+import MattstackCore
 import Network
 
 // MARK: - DaemonClient
@@ -33,7 +34,8 @@ class DaemonClient {
             pendingNotifications: data.pendingNotifications,
             lastRefresh: data.lastRefresh,
             healthLevel: data.health?.level,
-            healthReasons: data.health?.reasons ?? []
+            healthReasons: data.health?.reasons ?? [],
+            readyHeld: data.worktreeReadyHeld ?? []
         )
     }
 
@@ -236,6 +238,8 @@ struct TrayStatusData: Decodable {
     let pendingNotifications: Int
     let lastRefresh: Int?
     let health: HealthData?
+    /// Absent on a daemon older than RT-98, so optional rather than defaulted.
+    let worktreeReadyHeld: [ReadyHeldRepo]?
 }
 
 /// Daemon-computed health level + human-readable reasons (phase 2). `level`

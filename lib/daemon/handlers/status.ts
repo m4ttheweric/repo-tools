@@ -17,6 +17,7 @@ import type { HandlerContext, HandlerMap, CommandResult } from "./types.ts";
 import type { PortEntry } from "../../port-scanner.ts";
 import { listWorktreesAsync, type WorktreeEntry } from "../../worktree/git-async.ts";
 import { worktreePoolDormant, WORKTREE_APP_ENABLE_COMMAND } from "../../worktree/config.ts";
+import { heldReadyLadders } from "../../worktree/ready-held.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { getFreshnessSnapshot } from "../freshness.ts";
 import { readSupervisionState } from "../supervision-state.ts";
@@ -119,6 +120,9 @@ export function createStatusHandlers(
           lastRefresh: ctx.refreshStatusRef.lastRefreshAt || null,
           portsByRepo,
           pendingNotifications: peekNotifications().length,
+          // RT-89's trust gate is otherwise invisible until someone provisions;
+          // the tray badges this and notifies on the transition into it.
+          worktreeReadyHeld: await heldReadyLadders(ctx.repoIndex()),
           health: { level: h.level, reasons: h.reasons },
           metrics: h.metrics,
           eventLoop: h.eventLoop,
