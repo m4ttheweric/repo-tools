@@ -173,8 +173,7 @@ test("package picker: queue-active state groups queue rows, adds Launch all + Sa
   expect(scriptCall.rows[0]!.value).toBe("__rt:last-run__");
   expect(scriptCall.rows[0]!.left[0]).toMatchObject({ text: "↻ dev", tone: "mint" });
 
-  // Call 4 (index 4): package picker with 2 items queued -- the state this
-  // task's board names "queue active".
+  // Call 4 (index 4): package picker with 2 items queued (the "queue active" state).
   const queueCall = fake.calls[4]!;
   const queueGroupRows = queueCall.rows.filter((r) => r.group === "queue");
   // 2 queued items + Launch all + Save as preset.
