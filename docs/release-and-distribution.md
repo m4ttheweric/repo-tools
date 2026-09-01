@@ -169,6 +169,35 @@ refuses just like a full release... published artifacts are immutable; bump
 the version instead. One leg failing never blocks the others
 (`fail-fast: false`); the PR carries only the apps that succeeded.
 
+### Adding a managed app to the bundle (the checklist that built console and chat)
+
+1. **The app must answer `--version` with a bare semver and exit 0.** The
+   build leg's smoke step and `check-bundle.sh` both probe it; a server
+   that just starts listening hangs both. Apps on `@mattstack/app-server`
+   get this from `serveMattstackApp` (≥0.1.2) — pass `version` from
+   package.json, never a hardcoded string, or the tag and the binary
+   disagree.
+2. **A compiled Bun server needs embedded assets.** The console pattern:
+   `build:binary` runs `vite build && mattstack-embed-assets && bun build
+   --compile`; the server passes `embedded: () => import('./embedded/manifest'
+   as string)`; tsconfig excludes the generated manifest; `.gitignore`
+   carries `dist-bin` and the manifest path.
+3. **Declare the pair**: `bundle: { build, artifact }` in the app's
+   `mattstack.deck.json`, and the `repo` field on its deps.lock row.
+4. **Dry-run dispatch first** (`dry_run: true`), then the real one. The
+   real run publishes an immutable release and opens a deps.lock PR; two
+   real runs back-to-back conflict on the PR — merge the first, then apply
+   the second's row by hand from its PR diff (verify the sha yourself from
+   the release asset) and close it.
+5. **Private app repos work, with one wire**: their release assets refuse
+   bare curl, so `fetch-deps.sh` falls back to `gh release download` for
+   github release URLs. CI's fetch step passes
+   `GH_TOKEN: MATTSTACK_RELEASE_TOKEN` for that; local builds ride the
+   developer's own gh auth. The sha gate judges the bytes either way.
+
+An app's skills and plugins do NOT automatically ride its binary — see
+"Two channels ship skills" below.
+
 Skills ride the artifacts: each tarball's root is the `<name>` binary plus
 the repo's `skills/` copied verbatim (omitted when absent).
 `fetch-deps.sh` materializes `deps/arm64/<name>-skills/` beside the binary
@@ -199,8 +228,31 @@ the run summary. Re-dispatching the same app fails on the tag guard by
 design.
 
 Workflow lint: the checks workflow runs actionlint over `bundle-apps.yml`,
-`checks.yml`, `e2e.yml`, and `purity.yml`. `release.yml` is grandfathered
-(pre-existing findings) until it is next edited.
+`checks.yml`, `e2e.yml`, `purity.yml`, and `renovate.yml`. `release.yml`
+is grandfathered (pre-existing SC2086/SC2129 style findings only).
+
+### Two channels ship skills — pick deliberately
+
+- **The app tarball → `rt skills link --from`**: the repo's `skills/` dir
+  rides the bundle to `Contents/Helpers/skills/<name>/`, reconciled into
+  `~/.claude/skills` by frontmatter name. `skills/.skillsignore` (rt's
+  own skills) keeps maintainer-only skills off user machines; a plain
+  `rt skills link` in a checkout ignores it, because that is the author.
+  Right for skills addressed by their bare name (`rt:chat` rides rt's
+  own surface this way).
+- **A marketplace plugin**: `marketplace/marketplace.json` in this repo is
+  the generator source; `scripts/release/marketplace.sh` REPLACES the
+  published m4ttstack/mattstack-marketplace tree wholesale, so anything
+  living only in the published repo (or only in the local dev marketplace
+  working copy, which has no git remote) dies on the next publish. Plugins
+  with no repo of their own ship inline under `marketplace/plugins/`
+  (string source `"./plugins/<name>"`); everything else is a url-pinned
+  git source. Required when the `<plugin>:` namespace is a wire contract
+  (`rt chat invite` types `/chat:join`) or the plugin carries hooks —
+  `linkBundledSkills` handles skills dirs only, never hooks.
+- A baseline plugin reaches users only if it is BOTH published in the
+  marketplace AND listed in `BASE_PLUGINS` (`lib/setup/steps/plugins.ts`).
+  The chat plugin needed both wires; check both when adding one.
 
 ## Still unproven (as of 2026-08-24)
 
