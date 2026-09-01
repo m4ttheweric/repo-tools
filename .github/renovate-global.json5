@@ -5,6 +5,8 @@
 // bumped in the consumers below.
 {
   platform: "github",
+  // default author is a Mend-owned identity whose commits GitHub flags Unverified
+  gitAuthor: "m4ttheweric <49927862+m4ttheweric@users.noreply.github.com>",
   autodiscover: false,
   repositories: [
     "m4ttstack/rt",
