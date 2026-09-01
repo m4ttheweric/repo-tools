@@ -7,7 +7,7 @@
  *   settings gitlab token   — set GitLab personal access token
  */
 
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
 import type { CommandContext } from "../lib/command-tree.ts";
@@ -682,6 +682,49 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo, targe
   console.log(`  ${green}✓${reset} launched ${incoming.appPath}`);
 }
 
+/**
+ * deck's `isDevMode` cache refreshes every 2 seconds on its own, so this poke
+ * only shortens that wait: it must never fail the toggle it rides along
+ * with. Every failure path (missing/unparseable api.json, a non-2xx answer,
+ * a network error, a timeout) degrades to a returned note instead of a throw.
+ */
+/** Only the call signature, so a plain async test double satisfies it: Bun's
+    `typeof fetch` also carries `preconnect`, which no double supplies. */
+type FetchImpl = (...args: Parameters<typeof fetch>) => Promise<Response>;
+
+export async function pokeDeckReresolve(deps: {
+  readApiFile?: () => string | null;
+  fetchImpl?: FetchImpl;
+} = {}): Promise<string> {
+  const read = deps.readApiFile ?? (() => {
+    try {
+      return readFileSync(join(process.env.HOME ?? homedir(), ".mattstack", "deck", "api.json"), "utf8");
+    } catch {
+      return null;
+    }
+  });
+  const doFetch = deps.fetchImpl ?? fetch;
+  try {
+    const raw = read();
+    if (raw === null) return "deck not poked (no api.json); managed apps follow on their next resolve";
+    const port = (JSON.parse(raw) as { port?: unknown }).port;
+    if (typeof port !== "number") return "deck not poked (bad api.json); managed apps follow on their next resolve";
+    const res = await doFetch(`http://127.0.0.1:${port}/api/v1/apps/managed/reresolve`, {
+      method: "POST",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return `deck answered ${res.status} on reresolve; managed apps follow on their next resolve`;
+    const body = (await res.json()) as { restarted?: string[]; unchanged?: string[]; failed?: Array<{ name: string; error: string }> };
+    const restarted = body.restarted ?? [];
+    const failed = body.failed ?? [];
+    const parts = [`${restarted.length} restarted`, `${(body.unchanged ?? []).length} unchanged`];
+    if (failed.length) parts.push(`${failed.length} failed (${failed.map((f) => f.name).join(", ")})`);
+    return `deck re-resolved managed apps: ${parts.join(", ")}`;
+  } catch (e) {
+    return `deck not poked (${(e as Error).message}); managed apps follow on their next resolve`;
+  }
+}
+
 export type GuardVerdict = "noop" | "repair" | "switch";
 
 /** "already in X mode" is earned only when every leg agrees; a serving daemon of the wrong flavor makes the toggle a repair even when the CLI already matches. */
@@ -807,6 +850,7 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
     console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
 
     await handoffToFlavor(outgoing, incoming, target);
+    console.log(`  ${dim}${await pokeDeckReresolve()}${reset}`);
 
     console.log(`  ${dim}restart your terminal (or: source ${shellResult.rcPath ?? "~/.zshrc"}) to activate${reset}`);
 
@@ -815,6 +859,7 @@ export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, e
     console.log(`  ${green}✓${reset} CLI restored to prod mode  ${dim}(mattstack.app binary installed at ~/.local/bin/rt)${reset}`);
 
     await handoffToFlavor(outgoing, incoming, target);
+    console.log(`  ${dim}${await pokeDeckReresolve()}${reset}`);
   }
 
   console.log("");

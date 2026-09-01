@@ -159,8 +159,9 @@ async function deckManagedRun(ctx: ApplyContext): Promise<StepOutcome> {
   const boardDetail = adopted.kind === "skip" ? `board not adopted (${adopted.detail})` : `board adopted (${await repointBoard(ctx, port)})`;
   const gitqDetail = await registerManagedApp(ctx, deckBin, "gitq", ["board"]);
   const consoleDetail = await registerManagedApp(ctx, deckBin, "console");
+  const chatDetail = await registerManagedApp(ctx, deckBin, "chat");
 
-  return { state: "done", detail: `${boardDetail}; ${gitqDetail}; ${consoleDetail}` };
+  return { state: "done", detail: `${boardDetail}; ${gitqDetail}; ${consoleDetail}; ${chatDetail}` };
 }
 
 async function deckManagedRunSafe(ctx: ApplyContext): Promise<StepOutcome> {
