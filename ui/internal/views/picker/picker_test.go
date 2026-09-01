@@ -2866,8 +2866,13 @@ func TestAltNotHeldRendersIdenticallyRegardlessOfWithArgs(t *testing.T) {
 // TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim is the Modifiers board's
 // "⌥ held" golden: the header carries the "with args" badge, the cursor row
 // (WithArgs true) swaps its right side for the "pick args" badge, a
-// non-cursor WithArgs row keeps its ordinary styling, and the WithArgs-false
-// row fades to Faint -- all three only once alt is actually held.
+// non-cursor WithArgs row keeps its ordinary styling, and a non-cursor
+// WithArgs-false row fades to Faint -- all three only once alt is actually
+// held. A second pass moves the cursor onto a WithArgs-false row itself:
+// the board keeps the focused row full-strength under its own SelBg
+// highlight, so the cursor row's own left text must never dim, even though
+// it has no args to preview -- only a still-non-cursor no-args row (here,
+// "dispose") dims.
 func TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
@@ -2876,6 +2881,7 @@ func TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim(t *testing.T) {
 			{Value: "provision", Left: []protocol.PickSegment{{Text: "provision", Tone: "text", Bold: true}}, WithArgs: true},
 			{Value: "create", Left: []protocol.PickSegment{{Text: "create", Tone: "text", Bold: true}}, WithArgs: true},
 			{Value: "list", Left: []protocol.PickSegment{{Text: "list", Tone: "text", Bold: true}}},
+			{Value: "dispose", Left: []protocol.PickSegment{{Text: "dispose", Tone: "text", Bold: true}}},
 		},
 	}
 	m := New(req)
@@ -2914,7 +2920,22 @@ func TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim(t *testing.T) {
 	}
 
 	if !strings.Contains(listLine, faintSGR) {
-		t.Fatalf("a row without WithArgs should fade to Faint while alt is held: %q", listLine)
+		t.Fatalf("a non-cursor row without WithArgs should fade to Faint while alt is held: %q", listLine)
+	}
+
+	// Move the cursor onto "list" (WithArgs false, index 2): the focused
+	// row's own left text must stay full-strength, while "dispose" (still
+	// non-cursor, also WithArgs false) still dims.
+	m.cursor = 2
+	lines = strings.Split(render(m), "\n")
+	focusedNoArgsLine := lines[5] // cursor now on "list"
+	disposeLine := lines[6]       // non-cursor, WithArgs false
+
+	if strings.Contains(focusedNoArgsLine, faintSGR) {
+		t.Fatalf("the cursor row's own left text must never dim, even with no args: %q", focusedNoArgsLine)
+	}
+	if !strings.Contains(disposeLine, faintSGR) {
+		t.Fatalf("a non-cursor row without WithArgs should still fade to Faint: %q", disposeLine)
 	}
 }
 
@@ -2932,6 +2953,9 @@ func TestCtrlNotHeldRendersTheSingleLineKeybar(t *testing.T) {
 	m.width = 60
 
 	lines := strings.Split(render(m), "\n")
+	if strings.Contains(ansi.Strip(lines[0]), "⌃ keys") {
+		t.Fatalf("no ctrl-held header badge should render while ctrl is not held: %q", ansi.Strip(lines[0]))
+	}
 	footer := ansi.Strip(lines[len(lines)-1])
 	if strings.Contains(footer, "showing all keys") {
 		t.Fatalf("no expansion claim should render while ctrl is not held: %q", footer)
@@ -2942,10 +2966,11 @@ func TestCtrlNotHeldRendersTheSingleLineKeybar(t *testing.T) {
 }
 
 // TestCtrlHeldRendersTwoLineGroupedKeybar is the Modifiers board's "⌃ held"
-// golden: the footer grows to two lines, each declared group renders whole
-// (never split mid-group) across them, "held: showing all keys" pins to the
-// first line's right edge alongside the still-live range indicator, and the
-// ordinary right-pinned action run (quit) closes the second line.
+// golden: the header carries the "⌃ keys" badge, the footer grows to two
+// lines, each declared group renders whole (never split mid-group) across
+// them, "held: showing all keys" pins to the first line's right edge
+// alongside the still-live range indicator, and the ordinary right-pinned
+// action run (quit) closes the second line.
 func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
 	rows := make([]protocol.PickRow, 20)
 	for i := range rows {
@@ -2979,6 +3004,14 @@ func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
 	if want := 11; len(lines) != want {
 		t.Fatalf("expected %d lines with the two-line keybar, got %d:\n%s", want, len(lines), render(m))
 	}
+	header := lines[0]
+	if !strings.Contains(ansi.Strip(header), "⌃ keys") {
+		t.Fatalf("header should carry the ctrl-held badge while ctrl is held: %q", ansi.Strip(header))
+	}
+	if !strings.Contains(header, cyanSGR) {
+		t.Fatalf("ctrl-held badge should be cyan-colored: %q", header)
+	}
+
 	line1 := ansi.Strip(lines[len(lines)-2])
 	line2 := ansi.Strip(lines[len(lines)-1])
 

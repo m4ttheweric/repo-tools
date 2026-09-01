@@ -293,11 +293,17 @@ func breadcrumbLine(m *Model) string {
 // multi-selection prefix or the plain fraction -- a session-level "args
 // preview is live" indicator; the per-row claim (which rows actually have
 // one) is rowLineWidth's own cursor badge and dim, keyed off
-// PickRow.WithArgs.
+// PickRow.WithArgs. Ctrl held prepends the same board's "⌃ keys" badge the
+// same way, mirroring the alt badge's color/separator grammar with cyan in
+// place of lav. The two are mutually exclusive on the boards, so alt wins
+// if somehow both are held at once.
 func countText(m *Model) string {
 	prefix := ""
-	if m.held.alt {
+	switch {
+	case m.held.alt:
 		prefix = fg(theme.Lav).Bold(true).Render("⌥ with args") + fg(theme.Faint).Render(keybarRightSep)
+	case m.held.ctrl:
+		prefix = fg(theme.Cyan).Bold(true).Render("⌃ keys") + fg(theme.Faint).Render(keybarRightSep)
 	}
 	if m.multiMode() && len(m.selected) > 0 {
 		return prefix + fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
@@ -489,11 +495,14 @@ func rowLineWidth(m *Model, i int, width int) string {
 	// previews what enter now does, so it replaces the cursor row's own
 	// right segments outright -- but only for a row PickRow.WithArgs
 	// actually claims; a row without one keeps its ordinary right text even
-	// while alt is held. argsDim is the board's "no args" fade: any row
-	// that doesn't claim WithArgs steps its whole line down to Faint while
-	// alt is held, cursor or not, independent of the badge.
+	// while alt is held. argsDim is the board's "no args" fade: a
+	// non-cursor row that doesn't claim WithArgs steps down to Faint while
+	// alt is held. The cursor row is excluded regardless of WithArgs -- the
+	// board keeps the focused row full-strength under its SelBg highlight
+	// even when it has no args to preview, same as the badge's own
+	// cursor-only gate.
 	argsBadge := cursorRow && m.held.alt && row.WithArgs
-	argsDim := m.held.alt && !row.WithArgs
+	argsDim := m.held.alt && !row.WithArgs && !cursorRow
 
 	rightPlain := plainConcat(row.Right)
 	if argsBadge {
