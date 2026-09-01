@@ -1,0 +1,278 @@
+name: Bundle apps
+
+on:
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: Comma-separated app names, or "all"
+        required: true
+        default: all
+      dry_run:
+        description: Build and hash only; skip release and PR
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      # plan-matrix reaches the settings resolver, which imports jsonc-parser.
+      # Without an install Bun fetches it from npm at run time, outside bun.lock.
+      - run: bun install --frozen-lockfile
+      # Assign before writing to the output file: a substitution inside echo
+      # swallows the planner's exit code and a failed plan would surface as an
+      # opaque matrix parse error in the build job instead of failing here.
+      - id: plan
+        env:
+          APPS_INPUT: ${{ inputs.apps }}
+        run: |
+          MATRIX=$(bun scripts/bundle-ci/plan-matrix.ts "$APPS_INPUT")
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      # The Build step runs the app repo's own recipe, so this checkout must
+      # not leave a usable credential in .git/config beside it.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - name: Clone app repo at main
+        env:
+          GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
+          APP_REPO: ${{ matrix.repo }}
+        run: |
+          gh repo clone "$APP_REPO" app -- --depth 1 --branch main
+          SOURCE_SHA=$(git -C app rev-parse HEAD)
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+      - name: Read and validate bundle recipe
+        run: |
+          bun scripts/bundle-ci/validate-manifest.ts app/mattstack.deck.json > recipe.json
+          BUILD_CMD=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).build)')
+          ARTIFACT=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).artifact)')
+          # The version is app-controlled and lands in GITHUB_ENV, where a
+          # newline would start a new variable, so the shape is constrained
+          # here rather than trusted. No version at all must fail too, not
+          # tag vundefined.
+          VERSION=$(bun -e '
+            const v = JSON.parse(await Bun.file("app/package.json").text()).version;
+            if (typeof v !== "string" || !v) throw new Error("app package.json has no version");
+            if (!/^[A-Za-z0-9._+-]+$/.test(v)) throw new Error("unsupported version string: " + v);
+            console.log(v);
+          ')
+          {
+            echo "BUILD_CMD=$BUILD_CMD"
+            echo "ARTIFACT=$ARTIFACT"
+            echo "VERSION=$VERSION"
+          } >> "$GITHUB_ENV"
+      - name: Refuse an already-released version
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
+          APP_REPO: ${{ matrix.repo }}
+        run: |
+          # The tag ref covers both a bare pushed tag and a full release; a
+          # release created onto a stale pre-existing tag would silently ship
+          # that tag's commit instead of main.
+          if gh api "repos/$APP_REPO/git/ref/tags/v$VERSION" --silent 2>/dev/null; then
+            echo "::error::tag v$VERSION already exists on $APP_REPO; bump the version"
+            exit 1
+          fi
+      # Build and packaging share ONE step deliberately. A recipe can append to
+      # GITHUB_ENV, but those writes only reach LATER steps, so resolving the
+      # version, artifact path and source sha here means packaging uses the
+      # same values the tag guard checked rather than ones the recipe supplied.
+      - name: Build, smoke and package
+        env:
+          APP_NAME: ${{ matrix.name }}
+          APP_REPO: ${{ matrix.repo }}
+        run: |
+          (cd app && bash -c "$BUILD_CMD")
+          test -x "app/$ARTIFACT" || { echo "::error::bundle.artifact app/$ARTIFACT missing or not executable"; exit 1; }
+          "app/$ARTIFACT" --version
+          # Catch a dotted skill dir here, while the release is still
+          # preventable: codesign reads one as a nested bundle, and the .app
+          # build would only reject it after this artifact is immutable.
+          if [ -d app/skills ]; then
+            while IFS= read -r -d '' bad; do
+              echo "::error::skills dir '$(basename "$bad")' contains a dot; rename it in $APP_REPO"; exit 1
+            done < <(find app/skills -type d -name '*.*' -print0)
+            # check-bundle asserts a SKILL.md per skill dir; catching it here
+            # keeps a malformed tree out of an already-immutable release.
+            while IFS= read -r -d '' d; do
+              [ -f "$d/SKILL.md" ] || { echo "::error::skills dir '$(basename "$d")' has no SKILL.md in $APP_REPO"; exit 1; }
+            done < <(find app/skills -mindepth 1 -maxdepth 1 -type d -print0)
+          fi
+          mkdir stage
+          cp "app/$ARTIFACT" "stage/$APP_NAME"
+          if [ -d app/skills ]; then cp -R app/skills stage/skills; fi
+          TGZ="$APP_NAME-darwin-arm64.tgz"
+          tar czf "$TGZ" -C stage .
+          SHA=$(shasum -a 256 "$TGZ" | cut -d' ' -f1)
+          URL="https://github.com/$APP_REPO/releases/download/v$VERSION/$TGZ"
+          printf '{"name":"%s","version":"%s","url":"%s","sha256":"%s","sourceSha":"%s"}\n' \
+            "$APP_NAME" "$VERSION" "$URL" "$SHA" "$SOURCE_SHA" > "result-$APP_NAME.json"
+          cat "result-$APP_NAME.json"
+          # The recovery path documented in release-and-distribution.md reads
+          # the url and sha from here when the PR step does not land them.
+          {
+            echo "### $APP_NAME v$VERSION"
+            echo ""
+            echo "- source: \`$SOURCE_SHA\`"
+            echo "- url: $URL"
+            echo "- sha256: \`$SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # No step after Build may hold a release credential: Build runs the app
+      # repo's own recipe, which can write GITHUB_ENV and GITHUB_PATH, so a
+      # poisoned PATH could hand a later `gh` call the token. Publishing
+      # happens in the release job, which runs no app code.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.name }}
+          path: |
+            result-${{ matrix.name }}.json
+            ${{ matrix.name }}-darwin-arm64.tgz
+
+  release:
+    needs: [plan, build]
+    if: ${{ !cancelled() && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+      # Every value that decides WHERE something is published comes from the
+      # plan job's matrix, never from the downloaded artifact: the build job
+      # ran app-controlled code before writing that file, so a recipe could
+      # otherwise name another repo and have this step publish there with the
+      # release token. Values read from the artifact are shape-checked and
+      # used only as data.
+      - name: Publish releases
+        env:
+          GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: |
+          published=0
+          while read -r name repo; do
+            f="result-$name.json"
+            [ -f "$f" ] || { echo "::notice::$name did not package; skipping"; continue; }
+            version=$(jq -r '.version // ""' "$f")
+            source_sha=$(jq -r '.sourceSha // ""' "$f")
+            case "$version" in
+              ""|*[!A-Za-z0-9._+-]*) echo "::error::$name reported an unusable version"; exit 1 ;;
+            esac
+            case "$source_sha" in
+              *[!0-9a-f]*|"") echo "::error::$name reported an unusable source sha"; exit 1 ;;
+            esac
+            gh release create "v$version" "$name-darwin-arm64.tgz" \
+              --repo "$repo" \
+              --target "$source_sha" \
+              --title "$name v$version" \
+              --notes "darwin-arm64 bundle build from $source_sha"
+            # Republish the pin from trusted inputs so neither the URL nor the
+            # digest the PR writes into deps.lock can be chosen by the app.
+            # The digest is recomputed from the archive actually uploaded: a
+            # value copied from the result file could be valid-looking but
+            # wrong, and every later bundle build would then reject the asset.
+            tgz_sha=$(sha256sum "$name-darwin-arm64.tgz" | cut -d' ' -f1)
+            jq -n --arg n "$name" --arg v "$version" --arg r "$repo" \
+              --arg s "$tgz_sha" --arg c "$source_sha" \
+              '{name:$n, version:$v, sha256:$s, sourceSha:$c,
+                url:("https://github.com/"+$r+"/releases/download/v"+$v+"/"+$n+"-darwin-arm64.tgz")}' \
+              > "pinned-$name.json"
+            published=$((published + 1))
+          done < <(jq -r '.include[] | "\(.name) \(.repo)"' <<< "$MATRIX")
+          if [ "$published" -eq 0 ]; then
+            echo "::notice::no app packaged; nothing to release"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ hashFiles('pinned-*.json') != '' }}
+        with:
+          name: pinned-results
+          path: pinned-*.json
+
+  pr:
+    needs: [build, release]
+    # A bare `if` on a needs-dependent job carries an implicit success(), which
+    # would skip the PR whenever ANY build leg failed. With fail-fast disabled
+    # the other legs have already published releases by then, and the tag guard
+    # refuses a re-dispatch, so those releases could never be pinned. Release
+    # itself must still have succeeded though: deps.lock may only be pinned to
+    # URLs whose assets actually published.
+    if: ${{ !cancelled() && !inputs.dry_run && needs.release.result == 'success' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - run: bun install --frozen-lockfile
+      # pinned-results, not the raw bundle artifacts: the release job rebuilt
+      # each pin from the plan's trusted repo mapping, so the URL written into
+      # deps.lock is never one the app's own build could choose.
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinned-results
+      - name: Update deps.lock and open PR
+        env:
+          GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
+        run: |
+          if ! compgen -G "pinned-*.json" > /dev/null; then
+            echo "::notice::no app published; nothing to pin"
+            exit 0
+          fi
+          bun -e '
+            const files = [...new Bun.Glob("pinned-*.json").scanSync(".")];
+            const results = await Promise.all(files.map(async (f) => JSON.parse(await Bun.file(f).text())));
+            await Bun.write("results.json", JSON.stringify(results));
+          '
+          bun scripts/bundle-ci/update-lock.ts results.json
+          BRANCH="bundle-ci/${{ github.run_id }}"
+          git config user.name "bundle-apps workflow"
+          git config user.email "noreply@github.com"
+          git checkout -b "$BRANCH"
+          git add rt-tray/deps.lock
+          # shellcheck disable=SC2016
+          BODY=$(bun -e '
+            const rs = JSON.parse(await Bun.file("results.json").text());
+            console.log(rs.map((r) => `- ${r.name} v${r.version} (source ${r.sourceSha.slice(0, 10)})`).join("\n"));
+          ')
+          git commit -m "deps.lock: bundle build $(date +%Y-%m-%d)"
+          # Force-push and an explicit --head keep the documented "re-run the
+          # pr job" recovery working after a run that pushed and then failed.
+          git push --force origin "$BRANCH"
+          # Re-running a pr job that already opened its PR must update it, not
+          # fail on the duplicate.
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr edit "$BRANCH" --body "$BODY"
+          else
+            gh pr create --head "$BRANCH" --title "deps.lock: app bundle build" --body "$BODY"
+          fi

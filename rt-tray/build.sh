@@ -187,7 +187,7 @@ bundle_helpers() {
         echo "  ⚠ $DEPS_DIR missing — Helpers skipped (RT_REQUIRE_DEPS=0 set)"
         return
     fi
-    local row name version bundlePath ent status src dest prune
+    local row name version bundlePath ent status src dest prune skills_dest bad
     # Materialized to a file rather than streamed through `done < <(cmd)`: a
     # process-substitution loop never sees cmd's exit status, even under
     # set -o pipefail — an emitter crash (malformed lock, bun missing) would
@@ -219,6 +219,27 @@ bundle_helpers() {
             rm -rf "$prune"
             echo "  · pruned $name/${prune#"$dest"/}"
         done < <(find "$dest" -depth -type d \( -name '.claude-plugin' -o -name '.codex-plugin' \) -print0)
+        # Agent skills ride beside the binary in CI tarballs; land them at the
+        # stable path rt skills link consumes. A "." in a directory name would
+        # make codesign treat it as a nested bundle, so reject it here rather
+        # than fail the outer seal later.
+        if [ -d "$DEPS_DIR/$name-skills" ]; then
+            # The destination dir is named for the helper, so a dotted helper
+            # name would itself read as a nested bundle even when every skill
+            # dir inside is clean.
+            case "$name" in
+                *.*) echo "  ✗ helper name '$name' contains a dot; it cannot carry a skills tree"; exit 1 ;;
+            esac
+            while IFS= read -r -d '' bad; do
+                echo "  ✗ $name skills dir '$(basename "$bad")' contains a dot; rename it in the app repo"; exit 1
+            done < <(find "$DEPS_DIR/$name-skills" -type d -name '*.*' -print0)
+            skills_dest="$CONTENTS/Helpers/skills/$name"
+            rm -rf "$skills_dest"; mkdir -p "$(dirname "$skills_dest")"
+            cp -R "$DEPS_DIR/$name-skills" "$skills_dest"
+            xattr -cr "$skills_dest" 2>/dev/null || true
+            HELPER_ENTITLEMENTS+=("$skills_dest	none")
+            echo "  ✓ Helpers/skills/$name"
+        fi
         # node ships a full development distribution, but the bundle needs it
         # only to run fast-browser's .mjs. include/ is 2726 C++ headers node-gyp
         # uses to compile native addons at build time; lib/node_modules/{npm,
@@ -238,6 +259,24 @@ bundle_helpers() {
     cp "$SCRIPT_DIR/deps.lock" "$CONTENTS/Resources/deps.lock"
 }
 bundle_helpers
+
+# ─── rt's own agent skills (Contents/Helpers/skills/rt) ──────────────────────
+# First-party analogue of the per-helper skills landing above: rt compiles
+# from this checkout, so its skills/ copies from the repo rather than a
+# tarball. Copied whole INCLUDING dotfiles: skills/.skillsignore is what lets
+# rt skills link separate user-facing skills from maintainer-only ones, so a
+# copy that drops it would ship all skills to every user.
+if [ -d "$REPO_DIR/skills" ]; then
+    while IFS= read -r -d '' bad; do
+        echo "  ✗ rt skills dir '$(basename "$bad")' contains a dot; rename it in $REPO_DIR/skills"; exit 1
+    done < <(find "$REPO_DIR/skills" -type d -name '*.*' -print0)
+    rt_skills_dest="$CONTENTS/Helpers/skills/rt"
+    rm -rf "$rt_skills_dest"; mkdir -p "$(dirname "$rt_skills_dest")"
+    cp -R "$REPO_DIR/skills" "$rt_skills_dest"
+    xattr -cr "$rt_skills_dest" 2>/dev/null || true
+    HELPER_ENTITLEMENTS+=("$rt_skills_dest	none")
+    echo "  ✓ Helpers/skills/rt"
+fi
 
 # ─── Embed rt-ui (Contents/Helpers/rt-ui) ─────────────────────────────────────
 # A first-party helper built from ui/, not a deps.lock row: same signing pass

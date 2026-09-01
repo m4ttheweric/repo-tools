@@ -135,6 +135,65 @@ The update path end-to-end (Create Release → appcast → installed app
 updates) has NOT run yet — it needs the first real tag; treat its first
 run as a verification exercise, not a routine.
 
+## App-bundle CI (bundle-apps.yml)
+
+`.github/workflows/bundle-apps.yml` builds the managed mattstack apps from
+source and pins them into `rt-tray/deps.lock`. Manual dispatch only: inputs
+are `apps` (comma-separated names, or `all`) and `dry_run` (build and hash,
+skip release and PR). Four jobs: plan resolves the matrix from deps.lock rows
+carrying a `repo` field; build runs on macos-15 (arm64), one leg per app;
+release publishes the packaged tarballs; the PR job opens one deps.lock PR on
+`bundle-ci/<run_id>`. Nothing pushes to main.
+
+Release is a separate job on purpose. The build job runs each app repo's own
+recipe verbatim, and a recipe can write `GITHUB_ENV` and `GITHUB_PATH`, so no
+step holding the release token may follow it in the same job... a poisoned
+PATH would otherwise hand that token to an attacker-controlled `gh`. The
+build job's own token use (clone, tag guard) all happens before the recipe
+runs.
+
+Two declarations drive it, each owned by the party that knows it:
+
+- `repo` on the deps.lock row (`"m4ttstack/<repo>"`) marks the app
+  buildable. Rows without it (fzf, node, cloudflared...) are third-party
+  pins the pipeline never touches.
+- `bundle: { build, artifact }` in the app repo's `mattstack.deck.json` is
+  the compile recipe, run verbatim at the repo root. A dispatched app whose
+  manifest lacks it fails that leg loudly with the remediation; that
+  failure IS the pairing enforcement between the two declarations.
+
+Version and tag rules: the tag is `v<version>` from the app repo's root
+`package.json` (a missing version fails the leg, never a `vundefined`
+release). The guard checks the git tag ref, so a bare pre-existing tag
+refuses just like a full release... published artifacts are immutable; bump
+the version instead. One leg failing never blocks the others
+(`fail-fast: false`); the PR carries only the apps that succeeded.
+
+Skills ride the artifacts: each tarball's root is the `<name>` binary plus
+the repo's `skills/` copied verbatim (omitted when absent).
+`fetch-deps.sh` materializes `deps/arm64/<name>-skills/` beside the binary
+under its own sha stamp (a deleted skills dir re-materializes on the next
+run), and `build.sh` lands it signed at `Contents/Helpers/skills/<name>/`.
+Skill directory names must be dot-free (codesign reads a dotted dir as a
+nested bundle); `check-bundle.sh` asserts each skill dir carries a
+`SKILL.md`. rt's own skills are the first-party analogue: `build.sh`
+copies the checkout's `skills/` whole to `Contents/Helpers/skills/rt/`,
+including `skills/.skillsignore`, the file `rt skills link` reads to keep
+maintainer-only skills off user machines.
+
+Manual precondition, once: a fine-grained org PAT with contents read+write
+on the m4ttstack app repos and contents write plus pull-requests write on repo-tools,
+stored as the `MATTSTACK_RELEASE_TOKEN` Actions secret on repo-tools.
+
+Recovery: a release that published but whose PR step failed is durable and
+safe... re-run the pr job, or hand-edit deps.lock from the url and sha in
+the run summary. Re-dispatching the same app fails on the tag guard by
+design.
+
+Workflow lint: the checks workflow runs actionlint over `bundle-apps.yml`,
+`checks.yml`, `e2e.yml`, and `purity.yml`. `release.yml` is grandfathered
+(pre-existing findings) until it is next edited.
+
 ## Still unproven (as of 2026-08-24)
 
 - A real tag cut end to end (publish + Sparkle update leg + marketplace

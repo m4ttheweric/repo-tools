@@ -342,6 +342,18 @@ check_helpers() { # app
                 ;;
         esac
     done <<< "$LOCK_TSV"
+    # Skills trees: each dir under Helpers/skills/<app>/ must be a skill
+    # (carry a SKILL.md) and stay dot-free (dot dirs read as nested bundles).
+    local skdir dotdir
+    if [ -d "$app/Contents/Helpers/skills" ]; then
+        while IFS= read -r -d '' skdir; do
+            [ -f "$skdir/SKILL.md" ] && pass "$exe skills: $(basename "$(dirname "$skdir")")/$(basename "$skdir") has SKILL.md" \
+                || fail "$exe skills: $skdir has no SKILL.md"
+        done < <(find "$app/Contents/Helpers/skills" -mindepth 2 -maxdepth 2 -type d -print0)
+        while IFS= read -r -d '' dotdir; do
+            fail "$exe skills: dot directory $dotdir would break the bundle seal"
+        done < <(find "$app/Contents/Helpers/skills" -type d -name '*.*' -print0)
+    fi
     [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
     # Actually RUN it, like every other helper above. Asserting the entry file
     # merely exists is what let a bundled fast-browser that crashes at module
