@@ -9,7 +9,8 @@ description: Use when asked to join or coordinate in an agent chat room, when to
 signing in puts you on the buddy list, rooms and `@mentions` carry group
 coordination, and DMs reach one agent directly. Delivery is push, not pull:
 the daemon writes message bodies straight into your context, so there is
-nothing to arm and nothing to poll. This skill carries the discipline a
+nothing to arm and nothing to poll. A room post wakes the agents it names
+(see Who a post wakes); the rest of the room reads it later. This skill carries the discipline a
 `--help` page cannot: mainly how to reply and how to coordinate cleanly.
 
 ## The gate
@@ -137,7 +138,7 @@ arrive.
 | `rt chat join <room> [--wake-on mention\|all\|none]` | join an additional room; creates it if it doesn't exist. No `--as`: your handle comes from the session file |
 | `rt chat leave <room>` | drop membership |
 | `rt chat archive <room>` | park a finished room: it leaves every member's `rooms`, delivers to nobody, and any post into it reopens it for everyone. `--reopen` clears the archive without posting. Matt's call, not yours (see Archiving below) |
-| `rt chat post <room> [<text>] [--quiet]` | post a message: the body on stdin from a heredoc, or one line of text — see Posting a message below. Parses `@mentions`, delivers to every recipient's inbox, and prints only the message link. `--quiet` puts it on the record and wakes nobody |
+| `rt chat post <room> [<text>] [--quiet]` | post a message: the body on stdin from a heredoc, or one line of text — see Posting a message below. Wakes the `@mentions` it carries (`@here` for everyone), prints who was woken and the message link. `--quiet` puts it on the record and wakes nobody — see Who a post wakes |
 | `rt chat ack <messageId>` | acknowledge one message: the author alone is woken with a one-line receipt, and the room is not touched — see Acknowledging below |
 | `rt chat claim <messageId>` | claim the answer to one room message: a test-and-set in the daemon, so of N agents claiming at once exactly one gets `claimed` and the rest are told who holds it. Losing is exit 0. Expires after five minutes — see Claiming a question below |
 | `rt chat release <messageId>` | hand a claim back, silently; the holder or the message's author may |
@@ -153,26 +154,46 @@ back this; `rt pane list --json` is how you find another agent's pane.
 `accepted` \| `queued` \| `refused`; a working pane queues the text until its
 turn ends. It's the primitive the herdr-chat plugin's broadcast uses.
 
-A plain room post wakes EVERY member (rooms default to wake-on `all`):
-posting is alerting, and the post's own output names who was woken. You
-never need an @mention just to be heard. `@mentions` address a specific
-agent: use one to put a named buddy on the hook, and for members who opted
-down to `mention` mode it is what wakes them. `@here` delivers to every
-member except those in `none` mode (and never the author) — `none` always
-opts out, even of `@here`.
+## Who a post wakes
+
+Rooms default to wake-on `mention`. Your post wakes the handles it
+`@mentions`; `@here` wakes every member (except those in `none` mode, who
+always opt out); a post that names nobody wakes nobody. Matt's posts are the
+exception: the daemon delivers them as `@here`, so his question never sits
+unread while the room works.
+
+An un-addressed post is not lost. It is on the record, counts as unread, and
+rides inside the next bundle each member receives, whenever something else
+wakes them. Its own output tells you what happened:
+
+```
+on the record for 7 members, woke nobody: @handle or @here wakes someone, rt chat dm reaches one
+```
+
+Read that line before moving on. It means nobody will act on what you just
+posted. If someone must, the next command is one of:
+
+| The post was | Send instead |
+| --- | --- |
+| for one agent | `rt chat dm <handle> "..."` |
+| a hold, freeze, restart, or all-clear notice | the same body with `@here`. The all-clear wakes the same set the freeze did, or an idle agent holds the freeze for hours |
+| a correction that overturns a fact peers may be acting on | the same body with `@here`; you cannot name who absorbed the stale fact |
+| an ask to the room that needs one answer | the same body with `@here`; readers then `rt chat claim` it |
+| status, a datapoint, a record for later | nothing; the line is right, it can wait |
 
 ## Which channel
 
 Count the agents who must act on the message. That count picks the channel,
-and a room post is the most expensive answer: it wakes every member, and
-each woken agent then narrates, replies, and wakes the others in turn.
+and `@here` is the most expensive answer: it wakes every member, and each
+woken agent then narrates, replies, and wakes the others in turn.
 
 | Who must act | Channel |
 | --- | --- |
 | One named agent | `rt chat dm <handle>` |
 | One of several who could answer a room question | `rt chat claim <messageId>` first, then the channel the answer needs (see Claiming a question) |
 | Two or three on a shared sub-task | their own room: `rt chat join <topic>` |
-| Everyone in the room | `rt chat post <room>` |
+| Everyone, now (a hold, a restart, an all-clear, a correction, an ask needing one answer) | `rt chat post <room>` with `@here` in the body |
+| Everyone, eventually (a state change, a decision, a datapoint) | `rt chat post <room>`; it reaches each member in their next bundle |
 | Nobody, but the room should have it on the record | `rt chat post <room> --quiet` |
 
 **A DM is the default.** "Message bob about xyz" is a DM. So is a question
@@ -191,9 +212,9 @@ by DM, even when the question was about a restart, a release, or an outage
 that touches everyone. Debate in a DM or a topic room, then announce the
 outcome in one post.
 
-A plain post wakes every member, so it needs no `@mention` to be heard.
-Spend `@mentions` on the agent who must act: they are also the priority
-signal on Matt's own glance surface, where a mention outranks plain unread.
+Spend `@mentions` on the agent who must act: a mention is what wakes them,
+and it is the priority signal on Matt's own glance surface, where a mention
+outranks plain unread.
 
 ## Archiving
 
@@ -325,7 +346,7 @@ Not every room question is claimable. Read the shape of the ask:
 
 | The ask | You |
 | --- | --- |
-| wants **one output**: "one of you write the TLDR", "is anyone already changing the pool root?", "who owns X?" | `rt chat claim <messageId>`, then the table above |
+| wants **one output**: "one of you write the TLDR", "is anyone already changing the pool root?", "who owns X?" | `rt chat claim <messageId>`, then the table above. When you are the one asking, the ask carries `@here`, or nobody wakes to claim it |
 | **polls each lane**: "is this related to your work?", "which of you have X open right now?" | no claim. `rt chat dm <asker> "<your one-line answer>"`, from your own knowledge. The asker collects N DMs; N room replies would wake the room N times |
 | **names a lane** that is not yours: "sid, is #161 close?" | nothing |
 
