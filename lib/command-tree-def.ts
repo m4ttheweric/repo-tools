@@ -548,6 +548,7 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Branch", flag: "--branch", type: "text", placeholder: "feature/my-branch", hint: "Explicit branch name (overrides --ticket)" },
           { name: "Owner", flag: "--owner", type: "text", placeholder: "matt", hint: "Who's claiming this tree" },
           { name: "Disposal", flag: "--disposal", type: "text", placeholder: "merge", hint: "Disposal mode: merge (default) or job" },
+          { name: "Wait", flag: "--wait", type: "boolean", default: false, hint: "Block until background ready steps (installs, migrations) settle instead of returning immediately" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
@@ -613,6 +614,17 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to freshen; omit to pick interactively (or run for every repo, headless)" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Narrow to this registered repo" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
+      "await-ready": {
+        description: "Wait for a claimed tree's background ready steps to settle (no tree + TTY → picker)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeAwaitReady",
+        omitBehavior: "picker",
+        args: [
+          { name: "Tree", type: "text", placeholder: "my-tree", hint: "Claimed tree to wait on; omit to pick interactively" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
