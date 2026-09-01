@@ -300,12 +300,11 @@ if [ -n "${RT_VSIX:-}" ]; then
     cp "$RT_VSIX" "$CONTENTS/Resources/rt-context.vsix" && echo "  ✓ rt-context.vsix"
 fi
 
-# ─── Sparkle framework (swift-build path copies the SPM artifact; xcodebuild embeds it itself) ───
+# ─── Sparkle framework (from the deps.lock xcframework; xcodebuild embeds it itself) ───
 embed_sparkle() {
     [ -d "$CONTENTS/Frameworks/Sparkle.framework" ] && { echo "  ✓ Sparkle.framework (embedded by xcodebuild)"; return; }
-    local fw
-    fw="$(find "$SCRIPT_DIR/.build/artifacts" -type d -name 'Sparkle.framework' -path '*macos-arm64*' 2>/dev/null | head -1)"
-    if [ -z "$fw" ]; then echo "  ⚠ Sparkle.framework not in .build/artifacts — Package.swift has no Sparkle dependency yet; updater disabled in this build"; return; fi
+    local fw="$SCRIPT_DIR/deps/tools/sparkle-xcframework/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+    if [ ! -d "$fw" ]; then echo "  ✗ Sparkle.framework not at $fw — run scripts/fetch-deps.sh arm64"; exit 1; fi
     ditto "$fw" "$CONTENTS/Frameworks/Sparkle.framework"
     echo "  ✓ Sparkle.framework → Contents/Frameworks"
 }

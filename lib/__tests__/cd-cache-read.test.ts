@@ -105,12 +105,26 @@ describe("resolveReposForIdentity (cd's current-repo-missing live fallback)", ()
     expect(resolveReposForIdentity(null, cached)).toBe(cached);
   });
 
+  // Cached rows carry serialized identities, so the probe compares against
+  // `identity.identity`. Comparing the display name never hit, and every
+  // `rt cd` paid the full live rescan the cache exists to avoid.
   test("identity present and already in the cached list: returns the cached list unchanged", () => {
+    const identity = "remote:github.com%2Fowner%2Fcurrent-repo";
+    const cached: KnownRepo[] = [
+      { repoName: identity, worktrees: [{ path: "/x/current-repo", branch: "main", isBare: false }], dataDir: "/data/current-repo" },
+    ];
+
+    expect(resolveReposForIdentity({ identity, repoRoot: "/x/current-repo" }, cached)).toBe(cached);
+  });
+
+  test("a legacy plain-name cached row still counts as present, matched by repo root", () => {
     const cached: KnownRepo[] = [
       { repoName: "current-repo", worktrees: [{ path: "/x/current-repo", branch: "main", isBare: false }], dataDir: "/data/current-repo" },
     ];
 
-    expect(resolveReposForIdentity({ repoName: "current-repo" }, cached)).toBe(cached);
+    const identity = { identity: "remote:github.com%2Fowner%2Fcurrent-repo", repoRoot: "/x/current-repo" };
+
+    expect(resolveReposForIdentity(identity, cached)).toBe(cached);
   });
 
   test("identity present but absent from a stale cached list: falls back to a live scan that sees it", () => {
@@ -122,7 +136,7 @@ describe("resolveReposForIdentity (cd's current-repo-missing live fallback)", ()
 
     const staleCache: KnownRepo[] = []; // cache predates this repo entirely
 
-    const result = resolveReposForIdentity({ repoName: "current-repo" }, staleCache);
+    const result = resolveReposForIdentity({ identity: "current-repo", repoRoot: dir }, staleCache);
 
     expect(result).not.toBe(staleCache);
     expect(result.some((r) => r.repoName === "current-repo")).toBe(true);

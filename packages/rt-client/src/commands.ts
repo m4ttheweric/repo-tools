@@ -108,6 +108,12 @@ export interface ChatMessage {
   postedAt: number;
 }
 
+/** `claimed` is the only outcome that woke anyone; `previousHolder` marks a takeover of an expired claim. */
+export type ChatClaimOutcome =
+  | { outcome: "claimed"; author: string; room: string; previousHolder?: string }
+  | { outcome: "held"; author: string; room: string }
+  | { outcome: "lost"; holder: string; claimedAt: number; expiresAt: number };
+
 export interface RoomSummary {
   room: string;
   memberCount: number;
@@ -254,11 +260,23 @@ export interface StatusData {
   worktreePool: { dormant: true; repos: string[]; message: string } | { dormant: false };
 }
 
+/** Duplicated shape on purpose: mirrors lib/worktree/ready-held.ts's ReadyHeldRepo. */
+export interface ReadyHeldRepo {
+  /** Serialized repo identity. A key, never displayed. */
+  repo: string;
+  /** Decoded display name. Never sent back as a key. */
+  label: string;
+  hash: string;
+  approveCommand: string;
+}
+
 export interface TrayStatusData {
   pid: number; uptime: number; memoryUsage: number; watchedRepos: number; cacheEntries: number;
   portsCached: number; portCacheAge: number | null; lastRefresh: number | null;
   portsByRepo: Record<string, number>; pendingNotifications: number;
   health: { level: HealthLevel; reasons: string[] }; metrics: HealthMetrics; eventLoop: HealthEventLoop;
+  /** Optional because a daemon older than RT-98 does not send it. */
+  worktreeReadyHeld?: ReadyHeldRepo[];
 }
 
 /** Duplicated shape on purpose: mirrors lib/port-scanner.ts's PortEntry. */
@@ -405,7 +423,10 @@ export interface Commands {
   "runs:abandon": { payload: { runId: string; repo?: string; reason?: string }; data: { ok: boolean } };
   "chat:join": { payload: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string }; data: { handle: string; memberCount: number; unread: number } };
   "chat:leave": { payload: { room: string; handle: string }; data: Record<string, never> };
-  "chat:post": { payload: { room: string; handle: string; body: string; mentions?: string[] }; data: { id: number; recipients: string[] } };
+  "chat:post": { payload: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean }; data: { id: number; recipients: string[] } };
+  "chat:ack": { payload: { id: number; handle: string }; data: { author: string; room: string; already: boolean } };
+  "chat:claim": { payload: { id: number; handle: string }; data: ChatClaimOutcome };
+  "chat:release": { payload: { id: number; handle: string }; data: { holder: string } };
   "chat:read": { payload: { handle: string; room?: string; limit?: number; sinceMs?: number }; data: { rooms: { room: string; messages: ChatMessage[] }[] } };
   "chat:rooms": { payload: { handle: string; includeArchived?: boolean }; data: { rooms: RoomSummary[] } };
   "chat:who": { payload: { room: string }; data: { members: ChatMember[] } };
@@ -547,6 +568,9 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "runs:list",
   "runs:get",
   "runs:abandon",
+  "chat:ack",
+  "chat:claim",
+  "chat:release",
   "chat:join",
   "chat:leave",
   "chat:post",

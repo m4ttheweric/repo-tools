@@ -165,6 +165,12 @@ export function chooseMachineProfile(input: ChooseMachineProfileInput): ChooseMa
 
   if (profiles.length === 0) return resolved(hostnameSlug, "hostname");
 
+  // A lone profile named after THIS machine's slug is this machine's own —
+  // a partial install's retry, or the app's first launch racing post-install,
+  // created it moments earlier. Adopting it non-interactively is what the
+  // picker would offer anyway; anything else still requires a human choice.
+  if (profiles.length === 1 && profiles[0] === hostnameSlug) return resolved(hostnameSlug, "existing");
+
   if (!interactive) throw new ProfileChoiceRequiredError(profiles);
 
   return { key: "", source: "prompt-needed" };

@@ -136,6 +136,11 @@ jobs:
         continue-on-error: true
 
       - name: Fetch bundled dependencies
+        # GH_TOKEN: console and chat are private repos, so their release
+        # assets refuse bare curl; fetch-deps falls back to gh, which needs
+        # a token that can read the m4ttstack app repos.
+        env:
+          GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
         run: scripts/fetch-deps.sh arm64
 
       # bunx vsce package runs a Node CLI under Bun's Node-compat shim, which
@@ -155,6 +160,32 @@ jobs:
           RT_VSIX="$(ls "$PWD"/*.vsix 2>/dev/null | head -1)"
           [ -n "$RT_VSIX" ] || { echo "::error::no .vsix produced by bun run package"; exit 1; }
           echo "RT_VSIX=$RT_VSIX" >> "$GITHUB_ENV"
+
+      # Sparkle now vendors through deps.lock as a local binaryTarget — SPM's
+      # own download of the binary-artifact zip hung indefinitely on tag runs
+      # (five in a row; git resolve itself took seconds). With no remote deps
+      # this step is near-instant, and stays as the tripwire: any future remote
+      # dependency that hangs fails here, bounded and visible, not in the build.
+      - name: Resolve Swift packages (bounded)
+        working-directory: rt-tray
+        env:
+          # A credential prompt on a non-TTY hangs git forever and silently —
+          # the exact shape of the tag-run wedge. Fail fast instead; the retry
+          # loop owns recovery. (macOS runners have no GNU timeout; perl alarm
+          # is the portable bound. No pipe on the if: sed's exit code was
+          # swallowing a 127 and turning this step into an 85ms no-op.)
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -o pipefail
+          for i in 1 2 3; do
+            if /usr/bin/perl -e 'alarm 240; exec @ARGV' swift package resolve --verbose; then
+              exit 0
+            fi
+            echo "::warning::swift package resolve attempt $i failed or timed out; clearing SPM caches and retrying"
+            rm -rf .build/repositories ~/Library/Caches/org.swift.swiftpm || true
+          done
+          echo "::error::swift package resolve failed after 3 bounded attempts"
+          exit 1
 
       # ── The app (build.sh signs inside-out with the imported identity) ───────
       - name: Build mattstack.app

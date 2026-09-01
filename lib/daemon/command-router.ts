@@ -63,6 +63,14 @@ export function buildRoutedHandlers(opts: {
    * facade comment).
    */
   stateDb: Database;
+  /**
+   * Shared with the daemon's periodic chat delivery sweep (lib/daemon.ts),
+   * so a sweep re-delivery chains behind an in-flight chat:post/chat:dm
+   * delivery to the same recipient instead of racing it. A caller with no
+   * sweep (most tests) omits this and createChatHandlers falls back to its
+   * own private map.
+   */
+  chatDeliveryChains?: Map<string, Promise<void>>;
 }): Record<string, Handler> {
   const { ctx, broadcast, systemProcessScanner } = opts;
   // The bus owns frame-building + persistence (R020, events-bus.ts); this
@@ -74,7 +82,9 @@ export function buildRoutedHandlers(opts: {
     broadcast("event", frame);
     return frame.id;
   };
-  const chatHandlers = createChatHandlers({ db: opts.stateDb, emitEvent, repoIndex: ctx.repoIndex, log: ctx.log });
+  const chatHandlers = createChatHandlers({
+    db: opts.stateDb, emitEvent, repoIndex: ctx.repoIndex, log: ctx.log, deliveryChains: opts.chatDeliveryChains,
+  });
   const paneHandlers = createPaneHandlers({ db: opts.stateDb, repoIndex: ctx.repoIndex });
   const agentHandlers = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
   const handlers: TypedHandlers & HandlerMap = {

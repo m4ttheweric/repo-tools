@@ -13,6 +13,7 @@ import { retainedTrashRoot } from "../trash.ts";
 import { loadWorktreeRepoConfig } from "../config.ts";
 import { disposeTree, type DisposeDeps } from "../dispose.ts";
 import { listRestorableEntries, restoreTree, type RestoreDeps } from "../restore.ts";
+import { legacyWorktreePoolRoots } from "../../rt-paths.ts";
 import { branchExistsLocalAsync } from "../git-async.ts";
 
 const GIT_ID = "-c user.email=t@t -c user.name=t";
@@ -252,5 +253,27 @@ describe("restoreTree", () => {
     expect(restorable.length).toBe(1);
     expect(restorable[0]).toMatchObject({ name: "tree-a", branch: "feature-a", reason: "auto" });
     expect(Date.parse(restorable[0]!.keptUntil)).toBeGreaterThan(Date.now());
+  });
+});
+
+describe("legacy pool-root retention stores stay readable", () => {
+  test("an entry retired under a prior pool-root spelling is still listed", async () => {
+    const repoName = "remote:example.com%2Facme%2Flegacy-trash";
+    const repo = makeRepo();
+    const legacyPct = legacyWorktreePoolRoots(repoName)[1]!;
+    const entry = join(legacyPct, ".trash", "oldtree-1700000000000");
+    mkdirSync(entry, { recursive: true });
+    writeFileSync(join(entry, "manifest.json"), JSON.stringify({
+      name: "oldtree",
+      originalPath: join(legacyPct, "oldtree"),
+      branch: "feat/old",
+      headSha: null,
+      reason: "test",
+      disposedAt: new Date().toISOString(),
+      keptUntil: new Date(Date.now() + 86400000).toISOString(),
+    }));
+
+    const restorable = await listRestorableEntries(repoName, repo);
+    expect(restorable.some((e) => e.name === "oldtree")).toBe(true);
   });
 });

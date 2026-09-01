@@ -37,6 +37,23 @@ construction, so it always fits in one URL path segment and is a legal
 directory name. `encodeURIComponent` it again when it rides in a URL
 (`/api/runs/${encodeURIComponent(identity)}/${runId}`).
 
+Legal directory name is NOT PATH-safe, and PATH-safe is NOT URL-safe: the
+delimiter colon splits any PATH entry the directory ends up inside (a
+worktree's `node_modules/.bin` during installs, RT-95), and ANY
+percent-encoding breaks every consumer that parses a bare path as a URL
+(node's ESM loader rejects `%2F`; `import.meta.url` re-encodes `%` to
+`%25`). A pool segment must therefore contain no colon and no percent at
+all... an escape scheme cannot fix this class, only a percent-free slug
+can, and `lib/__tests__/rt-paths.test.ts` pins that invariant. Any identity-keyed directory whose subtree can land in
+PATH uses the friendly pool segment instead: `gh-<org>-<repo>` (host alias,
+else the dashed hostname), `local-<basename>` for path-kind
+(`worktreePoolRoot` in `lib/rt-paths.ts`). The segment is a derived
+directory name, never parsed back and never a key; its dash join is
+ambiguous only if two registered repos collide on it, which the host
+prefix confines to a single host. State.db keys, kv namespaces, payloads,
+and URLs keep the raw wire, and anything HUMAN-RENDERED goes through
+`lib/repo-label.ts` (`lib/__tests__/no-wire-in-ui.test.ts` is the ratchet).
+
 Never swap the forms: settings lookups miss on the wire form, and daemon
 verbs refuse the raw one (silently — see below). A `path`-kind repo has no
 `host/path`, so it gets no repo-scoped settings sections at all
@@ -118,7 +135,7 @@ what crosses the socket is always the identity.
 
 The wire form is a key, never copy. Anything a human reads — picker rows,
 list output, log lines, chat handles — goes through a label decode:
-`repoLabel()` in `lib/repo-arg.ts` (last path segment for remote-kind,
+`repoLabel()` in `lib/repo-label.ts` (last path segment for remote-kind,
 basename for path-kind); consumers do the same via `parseIdentity`, whose
 returned `id` is already decoded — decoding it again corrupts ids that
 contain a literal `%`. Keys go

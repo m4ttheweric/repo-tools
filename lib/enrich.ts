@@ -17,6 +17,7 @@
  * type from this module.
  */
 
+import { fileURLToPath } from "url";
 import {
   getBranchCacheStore,
   getStateDb,
@@ -685,7 +686,7 @@ function spawnCacheRefresh(
   remoteUrl: string | undefined,
 ): void {
   try {
-    const scriptPath = new URL(import.meta.url).pathname;
+    const scriptPath = fileURLToPath(import.meta.url);
     const payload = JSON.stringify({
       branches: branches.map(b => ({ path: b.path, branch: b.branch })),
       remoteUrl,

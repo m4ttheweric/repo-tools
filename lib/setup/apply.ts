@@ -81,7 +81,7 @@ export interface ApplyContext {
    * `EventId` (not `StepId`) so `rt uninstall`'s action ids — which share
    * this same need protocol and this same context type — typecheck too.
    */
-  need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app">;
+  need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app" | "app-unanswerable">;
 }
 
 export interface StepDef {
@@ -226,7 +226,7 @@ export interface CreateApplyContextDeps {
   relay: RelayClient;
   /** Defaults to `realSecretPresence()` — override for a fully-faked run/test so `verify` (and anything else reading `ctx.secretPresence`) can never reach the real keychain/sops. */
   secretPresence?: SecretPresence;
-  flags: { nonInteractive: boolean; teamOfOne: boolean; ci: boolean };
+  flags: { nonInteractive: boolean; teamOfOne: boolean; ci: boolean; appMayDrive?: boolean };
   /** Threaded straight into `awaitNeed`'s poll loop for the reachable/interactive branch of `need()` — real timers and `Date.now` by default. Tests inject a fake clock/sleep so that branch is driven deterministically instead of pinned to a real 10-minute deadline and 1 s polls. */
   needOpts?: { timeoutMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number };
 }
@@ -308,11 +308,22 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
     relay,
     secretPresence: deps.secretPresence ?? realSecretPresence(),
     redact: redactor.redact,
-    async need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app"> {
+    async need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app" | "app-unanswerable"> {
       // Reachability is checked BEFORE the `need` event goes out: a
       // nonInteractive run with no live tray.sock has nobody to answer it,
       // so emitting first would strand an unanswerable `need` on the stream.
-      if (flags.nonInteractive && !(await trayReachable(p))) return "no-app";
+      // A REACHABLE tray is no better for a nonInteractive run: needs ride
+      // the app's own stdout pipe, so only an app-driven run services
+      // them — a standalone run would poll ten minutes and fail anyway.
+      // Refuse fast with the way out instead. Setup's app spawn never
+      // passes --non-interactive, so onboarding keeps emit-and-wait; but
+      // uninstall derives nonInteractive from a missing TTY, which the
+      // app-driven spawn also lacks — those callers set appMayDrive and
+      // keep the wait (their needs ARE serviced).
+      if (flags.nonInteractive) {
+        if (!(await trayReachable(p))) return "no-app";
+        if (!flags.appMayDrive) return "app-unanswerable";
+      }
       emit({ event: "need", id, request });
       return awaitNeed(p.tray, id, needOpts);
     },

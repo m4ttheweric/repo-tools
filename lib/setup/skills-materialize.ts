@@ -19,6 +19,8 @@
 
 import { join } from "path";
 import { getKnownRepos, type KnownRepo } from "../repo-index.ts";
+import { repoLabel } from "../repo-label.ts";
+import { tryResolveRepoArg } from "../repo-arg.ts";
 import { UserActionableError } from "./errors.ts";
 import type { Probes } from "./probes.ts";
 
@@ -86,13 +88,23 @@ export async function materializeSkills(p: Probes, opts: { repo?: string }): Pro
   const known = registeredKnownRepos();
   let targets: { name: string; path: string }[];
   if (opts.repo) {
-    const match = known.find((r) => r.repoName === opts.repo);
+    // Rows are keyed by serialized identity, so a typed name resolves to one
+    // before matching. The raw-spelling fallback is for kind "none" ONLY: on an
+    // ambiguous label a legacy row spelled that way would otherwise decide
+    // which repo gets materialized.
+    const resolution = await tryResolveRepoArg(opts.repo);
+    if (resolution.kind === "ambiguous") {
+      throw new UserActionableError("repo-ambiguous", `"${opts.repo}" matches more than one repo: ${resolution.matches.join(", ")}... pass the full identity`);
+    }
+    const match = resolution.kind === "resolved"
+      ? known.find((r) => r.repoName === resolution.identity)
+      : known.find((r) => r.repoName === opts.repo);
     if (!match) {
       throw new UserActionableError("repo-not-registered", `"${opts.repo}" is not a registered repo (rt repos register first)`);
     }
-    targets = [{ name: match.repoName, path: match.worktrees[0]!.path }];
+    targets = [{ name: repoLabel(match.repoName), path: match.worktrees[0]!.path }];
   } else {
-    targets = known.map((r) => ({ name: r.repoName, path: r.worktrees[0]!.path }));
+    targets = known.map((r) => ({ name: repoLabel(r.repoName), path: r.worktrees[0]!.path }));
   }
 
   const mattstackHome = join(p.home, ".mattstack");

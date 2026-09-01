@@ -101,6 +101,12 @@ describe("rt runs (read-side e2e)", () => {
   const REPO = "e2e-repo";
   const RUN_ID = "20260821-120000-e2e1";
   const STARTED_AT = 1_755_000_000_000;
+  // A real serialized identity, whose %2F the REST route used to decode back
+  // into path separators -- splitting the repo in half and never finding the
+  // run. Every other repo key in this suite is %-free, which is why the route
+  // could break unnoticed.
+  const WIRE_REPO = "remote:github.com%2Fm4ttstack%2Frt";
+  const WIRE_RUN_ID = "20260821-130000-wire1";
 
   beforeAll(async () => {
     apiPort = freePort();
@@ -110,6 +116,7 @@ describe("rt runs (read-side e2e)", () => {
     // reads the REAL default path, ~/.mattstack/runs, under the harness HOME.
     const runsRoot = join(home, ".mattstack", "runs");
     seedRun(runsRoot, REPO, RUN_ID, STARTED_AT);
+    seedRun(runsRoot, WIRE_REPO, WIRE_RUN_ID, STARTED_AT);
 
     daemon = runRt(["--daemon"], home);
     await waitForSocket(join(home, ".mattstack", "rt", "rt.sock"));
@@ -171,6 +178,15 @@ describe("rt runs (read-side e2e)", () => {
     expect(out.ok).toBe(true);
     expect(out.data.run.id).toBe(RUN_ID);
     expect(out.data.stages).toHaveLength(1);
+  }, 20_000);
+
+  test("GET /api/runs/:repo/:runId finds a run under a serialized identity", async () => {
+    const res = await fetch(`http://127.0.0.1:${apiPort}/api/runs/${WIRE_REPO}/${WIRE_RUN_ID}`);
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as ApiEnvelope<RunDetail>;
+    expect(out.ok).toBe(true);
+    expect(out.data.run.id).toBe(WIRE_RUN_ID);
+    expect(out.data.run.repo).toBe(WIRE_REPO);
   }, 20_000);
 
   test("rt events emit run-updated round-trips through rt events list", async () => {

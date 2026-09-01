@@ -1,6 +1,6 @@
 # rt — repo tools
 
-Personal developer CLI built with Bun. Compiled to a standalone binary via `bun build --compile` and distributed as a GitHub Release tarball that mattstack.app (and `rt --post-install`) installs.
+Personal developer CLI built with Bun. Compiled to a standalone binary via `bun build --compile` and shipped inside the mattstack.app bundle, which installs it (there is no separate CLI tarball asset).
 
 ## Architecture docs live in Linear, not this repo
 
@@ -142,6 +142,21 @@ code that performs it before documenting it, or the docs will tell users to run
 something that does nothing.
 
 ## Footguns
+
+### `bun run test` does not run e2e, and CI does
+
+`test` is `bun test lib commands packages scripts`; the e2e suite is a separate
+script (`test:e2e`, and `test:all` for both) because it needs
+`--preload ./e2e/setup.ts`. So a green local `bun run test` is not the same
+gate CI applies, and the difference is invisible in the output.
+
+It matters most for anything asserted verbatim end to end: the chat delivery
+frame, a CLI's `--json` envelope, a usage string. Those have exact-string
+assertions in `e2e/tests/` that no unit suite covers, so a deliberate format
+change reads as fully green locally and fails in CI. Run `bun run test:all`,
+or at least the one e2e file covering the surface, before calling a change
+verified. Claiming verification from a suite that never exercised the changed
+contract is the actual defect here, not the red CI.
 
 ### Module registry
 

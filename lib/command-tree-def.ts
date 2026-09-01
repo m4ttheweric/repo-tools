@@ -556,8 +556,48 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Branch", flag: "--branch", type: "text", placeholder: "feature/my-branch", hint: "Explicit branch name (overrides --ticket)" },
           { name: "Owner", flag: "--owner", type: "text", placeholder: "matt", hint: "Who's claiming this tree" },
           { name: "Disposal", flag: "--disposal", type: "text", placeholder: "merge", hint: "Disposal mode: merge (default) or job" },
+          { name: "Wait", flag: "--wait", type: "boolean", default: false, hint: "Block until background ready steps (installs, migrations) settle instead of returning immediately" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
+      },
+      "claude-hook": {
+        description: "Claude Code WorktreeCreate/WorktreeRemove hook endpoint (stdin JSON in, tree path out)",
+        module: "./commands/worktree-hook.ts",
+        fn: "claudeHookCommand",
+        hidden: true,
+        omitBehavior: { exempt: "agent-facing; driven by Claude Code over stdin, never interactively" },
+        args: [
+          { name: "Remove", flag: "--remove", type: "boolean", default: false, hint: "Handle a WorktreeRemove event (courtesy guarded dispose)" },
+        ],
+      },
+      hook: {
+        description: "Claude Code worktree hook: install, remove, or inspect the WorktreeCreate/WorktreeRemove wiring",
+        subcommands: {
+          install: {
+            description: "Write the hook pair into ~/.claude/settings.json",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookInstallCommand",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+          uninstall: {
+            description: "Remove rt's hook entries from ~/.claude/settings.json",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookUninstallCommand",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+          status: {
+            description: "Report whether the hook is installed and healthy",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookStatusCommand",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+        },
       },
       create: {
         description: "Create a fresh worktree (optionally straight into the on-deck pool)",
@@ -621,6 +661,17 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to freshen; omit to pick interactively (or run for every repo, headless)" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Narrow to this registered repo" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
+      "await-ready": {
+        description: "Wait for a claimed tree's background ready steps to settle (no tree + TTY → picker)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeAwaitReady",
+        omitBehavior: "picker",
+        args: [
+          { name: "Tree", type: "text", placeholder: "my-tree", hint: "Claimed tree to wait on; omit to pick interactively" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
@@ -767,8 +818,8 @@ export const TREE: Record<string, CommandNode> = {
     fn: "chat",
     omitBehavior: "picker",
     args: [
-      { name: "Verb", type: "text", placeholder: "join | leave | archive | post | read | rooms | who | mark | prune | sign-in | sign-out | away | back | buddies | dm | invite", hint: "The chat action to run" },
-      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; omit on read/rooms/who to span everything, and on prune/sign-in/sign-out/buddies/back/away, which take no room" },
+      { name: "Verb", type: "text", placeholder: "join | leave | archive | post | read | ack | claim | release | rooms | who | mark | prune | sign-in | sign-out | away | back | buddies | dm | invite", hint: "The chat action to run" },
+      { name: "Room", type: "text", optional: true, placeholder: "build", hint: "Room name for join/leave/archive/post/read/who/mark; the target handle for dm; the pane id for invite; the message id for ack/claim/release; omit on read/rooms/who to span everything, and on prune/sign-in/sign-out/buddies/back/away, which take no room" },
       { name: "Text", type: "text", optional: true, placeholder: "@handle message", hint: "A one-line message body (every word after the room/handle) — post, dm; leave it out and feed the body on stdin (a heredoc) so paragraphs and lists survive; away takes this directly, with no room before it" },
       { name: "As handle", flag: "--as", type: "text", placeholder: "repo-tools-main", hint: "Override the derived handle for this invocation; refused while signed in (sign out first)" },
       { name: "Wake on", flag: "--wake-on", type: "text", placeholder: "mention | all | none", hint: "For join: when this handle gets delivered a message (default mention)" },
@@ -785,7 +836,7 @@ export const TREE: Record<string, CommandNode> = {
       { name: "Pane", flag: "--pane", type: "text", placeholder: "w1:p1", hint: "For sign-in/sign-out: target this herdr pane's Claude session daemon-side (resolved via herdr), no CLAUDE_CODE_SESSION_ID needed" },
       { name: "Body file", flag: "--file", type: "text", placeholder: "post.md", hint: "For post/dm: read the body from a file instead of stdin or the text" },
       { name: "As is", flag: "--as-is", type: "boolean", default: false, hint: "For post/dm: post a long single-line body anyway (500+ characters with no line break is refused by default)" },
-      { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For sign-out: suppress output (the SessionEnd hook's flag)" },
+      { name: "Quiet", flag: "--quiet", type: "boolean", default: false, hint: "For post: put the message on the room record without waking anyone (it stays unread and catches up in a later delivery); for sign-out: suppress output (the SessionEnd hook's flag)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of the plain rendering (join/leave/archive/post/read/rooms/who/mark/prune/buddies/dm/away/back/sign-in/sign-out/invite)" },
     ],
   },
@@ -905,6 +956,18 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Scope", flag: "--scope", type: "select", hint: "Which store to write into", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.user.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.team.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/user/local/<machine-key>/settings.local.jsonc" }] },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
           { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which team's local store to write, for --scope team (only needed when several are cloned)" },
+        ],
+      },
+      unset: {
+        description: "Remove a setting from one authored store (the only supported way; hand-editing a store is not)",
+        module: "./commands/settings-keys.ts",
+        fn: "settingsUnset",
+        omitBehavior: { exempt: "agent-facing; the key is passed explicitly (discover the set with rt settings list)" },
+        args: [
+          { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key to remove" },
+          { name: "Scope", flag: "--scope", type: "select", hint: "Which store to remove it from", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.user.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.team.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/user/local/<machine-key>/settings.local.jsonc" }] },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which team's local store to edit, for --scope team (only needed when several are cloned)" },
         ],
       },
       list: {

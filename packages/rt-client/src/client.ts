@@ -18,6 +18,7 @@ import type {
   WakeMode,
   ChatMember,
   ChatMessage,
+  ChatClaimOutcome,
   RoomSummary,
   BuddyStatus,
   PresenceRow,
@@ -166,12 +167,32 @@ export function chatLeave(
 }
 
 export function chatPost(
-  a: { room: string; handle: string; body: string; mentions?: string[] },
+  a: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean },
   o: RtClientOptions = {},
 ): Promise<RtResponse<{ id: number; recipients: string[] }>> {
   const payload: Record<string, unknown> = { room: a.room, handle: a.handle, body: a.body };
   if (a.mentions !== undefined) payload.mentions = a.mentions;
+  if (a.quiet) payload.quiet = true;
   return rtCommand<{ id: number; recipients: string[] }>("chat:post", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function chatAck(
+  a: { id: number; handle: string },
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ author: string; room: string; already: boolean }>> {
+  return rtCommand<{ author: string; room: string; already: boolean }>(
+    "chat:ack",
+    { id: a.id, handle: a.handle },
+    { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 },
+  );
+}
+
+export function chatClaim(a: { id: number; handle: string }, o: RtClientOptions = {}): Promise<RtResponse<ChatClaimOutcome>> {
+  return rtCommand<ChatClaimOutcome>("chat:claim", { id: a.id, handle: a.handle }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function chatRelease(a: { id: number; handle: string }, o: RtClientOptions = {}): Promise<RtResponse<{ holder: string }>> {
+  return rtCommand<{ holder: string }>("chat:release", { id: a.id, handle: a.handle }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function chatRead(

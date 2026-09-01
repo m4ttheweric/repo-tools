@@ -9,6 +9,10 @@ export const HEALTH_THRESHOLDS = {
   refreshStaleMultiplier: 2,
   rssSoftThresholdBytes: 1024 * 1024 * 1024,
   rssGrowthPct: 50,
+  /** Window the rss baseline represents, and the uptime a process must reach
+   *  before its growth is judged. Below it the baseline is still the boot
+   *  sample, so a merely-warmed process reads as growth (RT-102). */
+  rssGrowthWindowMs: 60 * 60_000,
   diskSoftFloorBytes: 500 * 1024 * 1024,
   diskHardFloorBytes: 100 * 1024 * 1024,
   restartsPerHourUnhealthy: 5,
@@ -91,7 +95,11 @@ export function computeHealth(i: HealthInputs): HealthSnapshot {
     degraded.push(`refresh: last success ${Math.round(refreshAge / 1000)}s ago`);
   }
   if (i.mem.rss > T.rssSoftThresholdBytes) degraded.push(`memory: rss ${mb(i.mem.rss)}MB`);
-  if (i.rssBaseline && i.mem.rss > i.rssBaseline.rss * (1 + T.rssGrowthPct / 100)) {
+  if (
+    i.rssBaseline &&
+    i.uptimeMs >= T.rssGrowthWindowMs &&
+    i.mem.rss > i.rssBaseline.rss * (1 + T.rssGrowthPct / 100)
+  ) {
     degraded.push(`memory: rss grew >${T.rssGrowthPct}% in the last hour`);
   }
   if (i.eventLoop.maxLagMs > T.loopLagDegradedMs) degraded.push(`event-loop: lag ${i.eventLoop.maxLagMs}ms`);

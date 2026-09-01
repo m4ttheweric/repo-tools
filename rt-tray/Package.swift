@@ -6,10 +6,14 @@ let package = Package(
     platforms: [
         .macOS(.v14)
     ],
-    dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
-    ],
     targets: [
+        // Local artifact from deps.lock (scripts/fetch-deps.sh arm64): SPM's own
+        // download of this zip hangs indefinitely on GitHub-hosted macOS runners,
+        // so the remote package dependency is deliberately gone.
+        .binaryTarget(
+            name: "Sparkle",
+            path: "deps/tools/sparkle-xcframework/Sparkle.xcframework"
+        ),
         .target(
             name: "MattstackCore",
             path: "Sources-core"
@@ -18,7 +22,7 @@ let package = Package(
             name: "rt-tray",
             dependencies: [
                 "MattstackCore",
-                .product(name: "Sparkle", package: "Sparkle"),
+                "Sparkle",
             ],
             path: "Sources",
             swiftSettings: [
@@ -30,7 +34,7 @@ let package = Package(
                 .linkedFramework("ServiceManagement"),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker",
-                              "@executable_path/../../artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64"],
+                              "@executable_path/../../../deps/tools/sparkle-xcframework/Sparkle.xcframework/macos-arm64_x86_64"],
                               .when(configuration: .debug)),
             ]
         ),

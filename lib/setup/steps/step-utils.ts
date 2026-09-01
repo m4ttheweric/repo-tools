@@ -24,7 +24,7 @@ export function toFailedOutcome(err: unknown): StepOutcome {
  * than re-deriving it — only the remedy/detail text is step-specific.
  */
 export function needOutcome(
-  reply: NeedReply | "timeout" | "app-gone" | "no-app",
+  reply: NeedReply | "timeout" | "app-gone" | "no-app" | "app-unanswerable",
   ctx: Pick<ApplyContext, "nonInteractive">,
   copy: { noAppDetail: string; noAppRemedy: string; timeoutRemedy: string },
 ): StepOutcome {
@@ -34,6 +34,9 @@ export function needOutcome(
       : { state: "failed", detail: copy.noAppDetail, remedy: copy.noAppRemedy };
   }
   const base = outcomeFromNeed(reply);
+  if (reply === "app-unanswerable" && base.state === "failed") {
+    return { ...base, remedy: "Quit mattstack.app, then Retry" };
+  }
   if ((reply === "timeout" || reply === "app-gone") && base.state === "failed") {
     return { ...base, remedy: copy.timeoutRemedy };
   }

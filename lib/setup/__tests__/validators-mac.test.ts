@@ -50,8 +50,10 @@ describe("macRows — tool.clt", () => {
     expect(r.required).toBe(true);
   });
 
-  test("xcode-select 127 -> missing with install action via apple-clt", async () => {
+  test("xcode-select 127 -> missing with install action via apple-clt, and git is NEVER probed — the stub pops Apple's install dialog from a GUI context", async () => {
+    const probed: string[] = [];
     const execScript: ExecScript = (argv) => {
+      probed.push(argv[0]!);
       if (argv[0] === "sw_vers") return ok("15.6\n");
       if (argv[0] === "xcode-select") return missing("xcode-select");
       if (argv[0] === "git") return ok("git version 2.43.0\n");
@@ -61,6 +63,20 @@ describe("macRows — tool.clt", () => {
     expect(r.status).toBe("missing");
     expect(r.detail).toBe("Apple command line tools not installed");
     expect(r.action).toEqual({ type: "install", label: "Install…", tool: "apple-clt", via: "apple-clt" });
+    expect(probed).not.toContain("git");
+  });
+
+  test("xcode-select exiting 2 (no CLT selected) also skips the git probe", async () => {
+    const probed: string[] = [];
+    const execScript: ExecScript = (argv) => {
+      probed.push(argv[0]!);
+      if (argv[0] === "sw_vers") return ok("15.6\n");
+      if (argv[0] === "xcode-select") return { code: 2, stdout: "", stderr: "unable to get active developer directory" };
+      return ok();
+    };
+    const r = await pickRow(macRows(fakeProbes({ exec: execScript })), "tool.clt");
+    expect(r.status).toBe("missing");
+    expect(probed).not.toContain("git");
   });
 
   test("git --version failing even with CLT selected -> missing", async () => {

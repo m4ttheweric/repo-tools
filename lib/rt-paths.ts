@@ -25,6 +25,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync } from "fs";
 import { homedir, hostname } from "os";
 import { basename, join } from "path";
+import { parseIdentity } from "../packages/rt-client/src/settings/identity-codec.ts";
 import { getSetting } from "./settings/resolve.ts";
 
 function home(): string {
@@ -97,9 +98,71 @@ export function worktreesDir(): string {
   return join(rtDir(), "worktrees");
 }
 
-/** worktrees/<serialized identity> (one repo's pool root). */
+/** Hosts common enough in this estate to earn a short prefix. */
+const POOL_HOST_ALIASES: Record<string, string> = {
+  "github.com": "gh",
+  "gitlab.com": "gl",
+};
+
+/** Anything outside [A-Za-z0-9._] becomes a dash; runs collapse; ends trim. */
+function dashSafe(part: string): string {
+  return part.replace(/[^A-Za-z0-9._]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/** Stable 6-hex tag of an identity id; djb2-xor, no crypto import needed. */
+function shortHash(id: string): string {
+  let h = 5381;
+  for (let i = 0; i < id.length; i++) h = ((h * 33) ^ id.charCodeAt(i)) >>> 0;
+  return h.toString(16).padStart(6, "0").slice(-6);
+}
+
+/** Hostname fallback: dots flatten too, so a host reads as one dashed word. */
+function hostSafe(host: string): string {
+  return dashSafe(host.replace(/\./g, "-"));
+}
+
+/**
+ * Friendly, PATH-safe pool segment: `gh-<org>-<repo>` (host alias, else the
+ * dash-safe hostname), `local-<basename>` for path-kind. A colon in a pool
+ * path splits PATH when the tree's node_modules/.bin is prepended during
+ * installs (RT-95), so no raw colon may survive. The segment is a derived
+ * DIRECTORY NAME, never parsed back and never a key; the dash join is
+ * ambiguous (`a-b`/`c` vs `a`/`b-c`) only if two registered repos collide
+ * on it, which the alias prefix makes cross-host-safe and the estate does
+ * not hit within one host.
+ */
+function worktreePoolSegment(serializedIdentity: string): string {
+  const parsed = parseIdentity(serializedIdentity);
+  if (!parsed) return dashSafe(serializedIdentity);
+  if (parsed.kind === "path") {
+    // Distinct paths sharing a basename are realistic on one machine (two
+    // "scratch" checkouts), so path-kind carries a short identity hash.
+    // Remote-kind stays hashless by ruling: the dash-join ambiguity needs
+    // two registered repos on ONE host colliding, which the estate accepts.
+    return `local-${dashSafe(basename(parsed.id))}-${shortHash(parsed.id)}`;
+  }
+  const slash = parsed.id.indexOf("/");
+  const host = slash === -1 ? parsed.id : parsed.id.slice(0, slash);
+  const rest = slash === -1 ? "" : parsed.id.slice(slash + 1);
+  const prefix = POOL_HOST_ALIASES[host] ?? hostSafe(host);
+  return rest ? `${prefix}-${dashSafe(rest)}` : prefix;
+}
+
+/** worktrees/<friendly PATH-safe segment> (one repo's pool root). */
 export function worktreePoolRoot(serializedIdentity: string): string {
-  return join(worktreesDir(), serializedIdentity);
+  return join(worktreesDir(), worktreePoolSegment(serializedIdentity));
+}
+
+/**
+ * Prior pool-root spellings, oldest first: the raw wire (colon, pre-RT-95)
+ * and the %3A form (RT-95's hotfix). Heal and trash-read targeting only:
+ * never create anything under them.
+ */
+export function legacyWorktreePoolRoots(serializedIdentity: string): string[] {
+  return [
+    join(worktreesDir(), serializedIdentity),
+    join(worktreesDir(), serializedIdentity.replace(":", "%3A")),
+  ];
 }
 
 // ─── Settings stores (RT-47, re-rooted under the home repo's user/ zone) ──────

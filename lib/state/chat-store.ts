@@ -46,6 +46,8 @@ export interface ChatMessage {
   mentions: string[];
   replyTo?: number;
   postedAt: number;
+  /** Set only on a quiet post, so an ordinary message's shape is unchanged. */
+  quiet?: boolean;
 }
 
 interface MemberRow {
@@ -83,6 +85,7 @@ interface MessageRow {
   mentions: string | null;
   reply_to: number | null;
   posted_at: number;
+  quiet: number;
 }
 
 function rowToMessage(row: MessageRow): ChatMessage {
@@ -95,6 +98,7 @@ function rowToMessage(row: MessageRow): ChatMessage {
     postedAt: row.posted_at,
   };
   if (row.reply_to !== null) message.replyTo = row.reply_to;
+  if (row.quiet) message.quiet = true;
   return message;
 }
 
@@ -128,8 +132,8 @@ export const CHAT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 /** The newest N messages per room that pruneMessages never deletes, age floor notwithstanding -- a live room is never emptied. */
 export const CHAT_ROOM_FLOOR = 200;
 
-const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at";
-const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at) VALUES (?, ?, ?, ?, ?, ?);`;
+const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at, quiet";
+const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at, quiet) VALUES (?, ?, ?, ?, ?, ?, ?);`;
 // Ranks each room's own messages newest-first (rn=1 is the newest); a row is
 // only a delete candidate once it falls outside the per-room floor AND past
 // the age cutoff -- either condition alone must keep it.
@@ -149,6 +153,45 @@ const SELECT_MESSAGES_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE 
 const SELECT_MESSAGES_BEFORE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id < ? ORDER BY id DESC LIMIT ?;`;
 const SELECT_PENDING_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? AND id <= ? ORDER BY id ASC;`;
 const UPDATE_LAST_READ_CLAMPED_SQL = `UPDATE chat_members SET last_read_id = MAX(last_read_id, ?) WHERE room = ? AND handle = ?;`;
+// One query, cheap when idle (both joins are on indexed/PK columns and the
+// per-room MAX collapses to a handful of rows): every (room, handle) whose
+// member cursor sits behind that room's newest message, in a non-archived
+// room, PROVIDED some message in that gap was authored by someone else --
+// the EXISTS clause is the idle early-out for a poster whose only pending
+// backlog is their own message (postMessage never self-advances the
+// author's own cursor): no wake_on setting ever makes a message a recipient
+// of itself, so that row can never become a delivery target and is worth
+// dropping before a presence lookup or pendingMessages call, not just
+// before deliverSerialized. The wake_on <> 'none' leg is the SAME idle
+// early-out for a different permanent row: dm-store adds the human as a
+// silent wake_on:"none" third member (last_read_id 0, forever) to every DM
+// room he isn't a named participant of -- without this leg that row alone
+// would make the idle path never fire for a real estate (every DM room
+// always has one), even though the planner-level wake_on:"none" check
+// (createChatDeliverySweep's own contract, kept as the pure source of
+// truth) would drop it anyway. `wakeOn` rides along so the sweep planner
+// can apply the same wake_on rules recipientsFromMembers uses without a
+// second query. This is the sweep's only store read -- it discovers
+// candidates, it does not decide who is deliverable (presence/binding
+// liveness and the wake_on/mention match are the sweep planner's job, not
+// a store concern).
+const SELECT_STALE_PENDING_SQL = `
+SELECT chat_members.room AS room, chat_members.handle AS handle, maxes.maxId AS maxId, chat_members.wake_on AS wakeOn
+FROM chat_members
+JOIN (SELECT room, MAX(id) AS maxId FROM chat_messages GROUP BY room) AS maxes
+  ON maxes.room = chat_members.room
+JOIN chat_rooms ON chat_rooms.name = chat_members.room
+WHERE chat_members.last_read_id < maxes.maxId
+  AND chat_rooms.archived_at IS NULL
+  AND chat_members.wake_on <> 'none'
+  AND EXISTS (
+    SELECT 1 FROM chat_messages m
+    WHERE m.room = chat_members.room
+      AND m.id > chat_members.last_read_id
+      AND m.handle <> chat_members.handle
+      AND m.quiet = 0
+  );
+`;
 
 // `@` is strictly the mention sigil, and `/` would reshape the
 // `chat/<room>/msg` event topic (lib/daemon/handlers/chat.ts's
@@ -393,16 +436,16 @@ export function recipientsFor(
 }
 
 export function postMessage(
-  args: { room: string; handle: string; body: string; mentions?: string[] },
+  args: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean },
   db: Database = getStateDb(),
 ): { id: number; recipients: string[] } | undefined {
-  const { room, handle, body } = args;
+  const { room, handle, body, quiet } = args;
   const mentions = mergeMentions(body, args.mentions);
 
   const run = db.transaction((): { id: number; recipients: string[] } => {
     const now = Date.now();
     db.query(REVIVE_ROOM_SQL).run(room);
-    const result = db.query(INSERT_MESSAGE_SQL).run(room, handle, body, JSON.stringify(mentions), null, now);
+    const result = db.query(INSERT_MESSAGE_SQL).run(room, handle, body, JSON.stringify(mentions), null, now, quiet ? 1 : 0);
     const recipients = recipientsFor(room, handle, mentions, db);
     return { id: Number(result.lastInsertRowid), recipients };
   });
@@ -541,4 +584,135 @@ export function pendingMessages(room: string, handle: string, upToId: number, db
   if (!member) return [];
   const rows = db.query(SELECT_PENDING_SQL).all(room, member.last_read_id, upToId) as MessageRow[];
   return rows.map(rowToMessage);
+}
+
+export interface StalePendingRow {
+  room: string;
+  handle: string;
+  maxId: number;
+  wakeOn: WakeMode;
+}
+
+/**
+ * Every (room, handle) whose member cursor is behind that room's newest
+ * message right now -- the daemon's periodic delivery sweep's one candidate
+ * query (lib/daemon/handlers/chat.ts's createChatDeliverySweep). Presence
+ * and binding liveness are checked downstream by the sweep's planner, not
+ * here: a stale cursor for a handle nobody has resolved a session for is
+ * still a legitimate row (it just never becomes a re-delivery target).
+ */
+export function stalePendingPairs(db: Database = getStateDb()): StalePendingRow[] {
+  return db.query(SELECT_STALE_PENDING_SQL).all() as StalePendingRow[];
+}
+
+export type AckResult =
+  | { ok: true; author: string; room: string; body: string; already: boolean }
+  | { ok: false; reason: "unknown-message" | "not-a-member" | "own-message" };
+
+/**
+ * Records that `handle` has acknowledged one message. `already` is what keeps
+ * a re-ack from waking the author a second time: the INSERT is OR IGNORE
+ * against the (message_id, handle) primary key, so the second call reports
+ * the same success without a new notification being owed.
+ */
+export function ackMessage(
+  args: { messageId: number; handle: string },
+  db: Database = getStateDb(),
+): AckResult {
+  const { messageId, handle } = args;
+  const msg = db
+    .query("SELECT room, handle, body FROM chat_messages WHERE id = ?;")
+    .get(messageId) as { room: string; handle: string; body: string } | null;
+  if (!msg) return { ok: false, reason: "unknown-message" };
+  if (msg.handle === handle) return { ok: false, reason: "own-message" };
+  const member = db
+    .query("SELECT 1 AS present FROM chat_members WHERE room = ? AND handle = ?;")
+    .get(msg.room, handle) as { present: number } | null;
+  if (!member) return { ok: false, reason: "not-a-member" };
+  const result = db
+    .query("INSERT OR IGNORE INTO chat_acks (message_id, handle, acked_at) VALUES (?, ?, ?);")
+    .run(messageId, handle, Date.now());
+  return { ok: true, author: msg.handle, room: msg.room, body: msg.body, already: result.changes === 0 };
+}
+
+/**
+ * A claim outlives its holder by this much. A holder whose session died
+ * mid-compose can never release, so without expiry one crash turns "one of
+ * you answer this" into nobody answering, silently. Five minutes is long
+ * enough to compose a real answer and short enough that the room is not
+ * stuck for the afternoon.
+ */
+export const CLAIM_TTL_MS = 5 * 60_000;
+
+type MessageOwner = { room: string; handle: string; body: string };
+
+export type ClaimResult =
+  | { ok: true; outcome: "claimed"; author: string; room: string; body: string; previousHolder?: string }
+  | { ok: true; outcome: "held"; author: string; room: string; body: string }
+  | { ok: true; outcome: "lost"; holder: string; claimedAt: number; expiresAt: number }
+  | { ok: false; reason: "unknown-message" | "not-a-member" | "own-message" | "dm" };
+
+/**
+ * Test-and-set on one room message: the first caller holds it, every later
+ * caller is told who does. The check and the write are one transaction, so
+ * N agents claiming in the same instant cannot all read "unclaimed" first --
+ * that race is exactly what a posted "I'll take it" cannot win, since the
+ * post lands after everyone has already started composing.
+ *
+ * An expired claim (see CLAIM_TTL_MS) is taken over rather than refused,
+ * and the result names the previous holder so the caller can receipt them.
+ */
+export function claimMessage(
+  args: { messageId: number; handle: string; nowMs?: number },
+  db: Database = getStateDb(),
+): ClaimResult {
+  const { messageId, handle } = args;
+  const now = args.nowMs ?? Date.now();
+  // Every read sits inside one immediate (write-locked) transaction, so a
+  // second connection can never observe "unclaimed" and then lose the write
+  // with SQLITE_BUSY_SNAPSHOT; it waits, re-reads, and is told "lost".
+  const run = db.transaction((): ClaimResult => {
+    const msg = db.query("SELECT room, handle, body FROM chat_messages WHERE id = ?;").get(messageId) as MessageOwner | null;
+    if (!msg) return { ok: false, reason: "unknown-message" };
+    if (dmParticipants(msg.room, db)) return { ok: false, reason: "dm" };
+    if (msg.handle === handle) return { ok: false, reason: "own-message" };
+    const member = db.query("SELECT 1 AS present FROM chat_members WHERE room = ? AND handle = ?;").get(msg.room, handle) as { present: number } | null;
+    if (!member) return { ok: false, reason: "not-a-member" };
+
+    const won = { ok: true as const, outcome: "claimed" as const, author: msg.handle, room: msg.room, body: msg.body };
+    const existing = db.query("SELECT handle, claimed_at AS claimedAt FROM chat_claims WHERE message_id = ?;").get(messageId) as
+      | { handle: string; claimedAt: number }
+      | null;
+    if (!existing) {
+      db.query("INSERT INTO chat_claims (message_id, handle, claimed_at) VALUES (?, ?, ?);").run(messageId, handle, now);
+      return won;
+    }
+    const expiresAt = existing.claimedAt + CLAIM_TTL_MS;
+    if (now < expiresAt) {
+      if (existing.handle === handle) return { ok: true, outcome: "held", author: msg.handle, room: msg.room, body: msg.body };
+      return { ok: true, outcome: "lost", holder: existing.handle, claimedAt: existing.claimedAt, expiresAt };
+    }
+    db.query("UPDATE chat_claims SET handle = ?, claimed_at = ? WHERE message_id = ?;").run(handle, now, messageId);
+    return existing.handle === handle ? won : { ...won, previousHolder: existing.handle };
+  });
+  return run.immediate();
+}
+
+export type ReleaseResult =
+  | { ok: true; holder: string }
+  | { ok: false; reason: "unknown-message" | "not-claimed" | "not-holder" };
+
+/** The holder hands a claim back; the message's author may also pull it back, so an asker can un-stick their own question without finding the holder. */
+export function releaseClaim(args: { messageId: number; handle: string }, db: Database = getStateDb()): ReleaseResult {
+  const { messageId, handle } = args;
+  const run = db.transaction((): ReleaseResult => {
+    const msg = db.query("SELECT handle FROM chat_messages WHERE id = ?;").get(messageId) as { handle: string } | null;
+    if (!msg) return { ok: false, reason: "unknown-message" };
+    const existing = db.query("SELECT handle FROM chat_claims WHERE message_id = ?;").get(messageId) as { handle: string } | null;
+    if (!existing) return { ok: false, reason: "not-claimed" };
+    if (existing.handle !== handle && msg.handle !== handle) return { ok: false, reason: "not-holder" };
+    db.query("DELETE FROM chat_claims WHERE message_id = ?;").run(messageId);
+    return { ok: true, holder: existing.handle };
+  });
+  return run.immediate();
 }

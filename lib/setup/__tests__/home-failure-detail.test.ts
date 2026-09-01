@@ -27,6 +27,18 @@ describe("failureDetail", () => {
   test("empty stderr yields an empty detail rather than throwing", () => {
     expect(failureDetail("   \n  \n")).toBe("");
   });
+
+  // The exact shape that reached CI second: `rt home init` prints a
+  // `failed at step "X":` header line and the real error on the next line;
+  // matching the header alone dropped the payload entirely.
+  test("a header line ending in a colon carries the next line with it", () => {
+    const stderr = ['rt home init: failed at step "commitInitialUserRepo":', "fatal: empty ident name not allowed"].join("\n");
+    expect(failureDetail(stderr)).toBe('rt home init: failed at step "commitInitialUserRepo": fatal: empty ident name not allowed');
+  });
+
+  test("a header line with no following line still reports itself", () => {
+    expect(failureDetail('rt home init: failed at step "cloneUserRepo":')).toBe('rt home init: failed at step "cloneUserRepo":');
+  });
 });
 
 // ─── remedy for a missing binary ─────────────────────────────────────────────

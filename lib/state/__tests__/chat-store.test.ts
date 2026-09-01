@@ -15,8 +15,11 @@ import { Database } from "bun:sqlite";
 import { tmpdir } from "os";
 import { join } from "path";
 import { openStateDb } from "../db.ts";
+import { dmRoomFor } from "../dm-store.ts";
 import {
+  CLAIM_TTL_MS,
   archiveRoom,
+  claimMessage,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -27,16 +30,119 @@ import {
   markRead,
   parseMentions,
   pendingMessages,
+  ackMessage,
   postMessage,
   readUnread,
   recipientsFor,
+  releaseClaim,
   roomArchivedAt,
+  stalePendingPairs,
 } from "../chat-store.ts";
 
 let n = 0;
 function freshDb() {
   return openStateDb(join(tmpdir(), `chat-test-${process.pid}-${n++}.db`));
 }
+
+test("ackMessage records an ack and reports the author it belongs to", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  const posted = postMessage({ room: "build", handle: "a", body: "taking the picker branch" }, db);
+  const res = ackMessage({ messageId: posted!.id, handle: "b" }, db);
+  expect(res).toEqual({ ok: true, author: "a", room: "build", body: "taking the picker branch", already: false });
+});
+
+test("acking twice is idempotent and says so, so a re-ack never wakes the author again", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  const posted = postMessage({ room: "build", handle: "a", body: "hi" }, db);
+  ackMessage({ messageId: posted!.id, handle: "b" }, db);
+  expect(ackMessage({ messageId: posted!.id, handle: "b" }, db)).toMatchObject({ ok: true, already: true });
+});
+
+test("ackMessage refuses an unknown message, a non-member, and your own message", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  const posted = postMessage({ room: "build", handle: "a", body: "hi" }, db);
+  expect(ackMessage({ messageId: 9999, handle: "b" }, db)).toEqual({ ok: false, reason: "unknown-message" });
+  expect(ackMessage({ messageId: posted!.id, handle: "stranger" }, db)).toEqual({ ok: false, reason: "not-a-member" });
+  expect(ackMessage({ messageId: posted!.id, handle: "a" }, db)).toEqual({ ok: false, reason: "own-message" });
+});
+
+function claimFixture() {
+  const db = freshDb();
+  for (const h of ["asker", "b", "c", "d"]) joinRoom({ room: "build", handle: h }, db);
+  const posted = postMessage({ room: "build", handle: "asker", body: "one of you: write the TLDR" }, db)!;
+  return { db, id: posted.id };
+}
+
+test("claimMessage: the first claimant wins and learns whose message it is", () => {
+  const { db, id } = claimFixture();
+  const res = claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  expect(res).toEqual({ ok: true, outcome: "claimed", author: "asker", room: "build", body: "one of you: write the TLDR" });
+});
+
+test("claimMessage: every later claimant loses and is told who holds it and when it frees up", () => {
+  const { db, id } = claimFixture();
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  const lost = claimMessage({ messageId: id, handle: "c", nowMs: 41_000 }, db);
+  expect(lost).toEqual({ ok: true, outcome: "lost", holder: "b", claimedAt: 1000, expiresAt: 1000 + CLAIM_TTL_MS });
+});
+
+test("claimMessage: N claimants in the same instant produce exactly one winner", () => {
+  const { db, id } = claimFixture();
+  const outcomes = ["b", "c", "d", "b", "c", "d"].map((h) => claimMessage({ messageId: id, handle: h, nowMs: 5000 }, db));
+  const wins = outcomes.filter((o) => o.ok && o.outcome === "claimed");
+  expect(wins).toHaveLength(1);
+});
+
+test("claimMessage: re-claiming your own live claim reports held, not a fresh win", () => {
+  const { db, id } = claimFixture();
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  expect(claimMessage({ messageId: id, handle: "b", nowMs: 2000 }, db)).toMatchObject({ ok: true, outcome: "held", author: "asker" });
+});
+
+test("claimMessage: an expired claim is taken over and the takeover names the previous holder", () => {
+  const { db, id } = claimFixture();
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  const still = claimMessage({ messageId: id, handle: "c", nowMs: 1000 + CLAIM_TTL_MS - 1 }, db);
+  expect(still).toMatchObject({ outcome: "lost" });
+  const took = claimMessage({ messageId: id, handle: "c", nowMs: 1000 + CLAIM_TTL_MS }, db);
+  expect(took).toEqual({ ok: true, outcome: "claimed", author: "asker", room: "build", body: "one of you: write the TLDR", previousHolder: "b" });
+  expect(claimMessage({ messageId: id, handle: "b", nowMs: 1000 + CLAIM_TTL_MS + 1 }, db)).toMatchObject({ outcome: "lost", holder: "c" });
+});
+
+test("claimMessage: re-claiming your own expired claim is a fresh win with no previous holder", () => {
+  const { db, id } = claimFixture();
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  const again = claimMessage({ messageId: id, handle: "b", nowMs: 1000 + CLAIM_TTL_MS }, db);
+  expect(again).toMatchObject({ ok: true, outcome: "claimed" });
+  expect(again).not.toHaveProperty("previousHolder");
+});
+
+test("claimMessage refuses an unknown message, a non-member, your own message, and a DM", () => {
+  const { db, id } = claimFixture();
+  expect(claimMessage({ messageId: 9999, handle: "b" }, db)).toEqual({ ok: false, reason: "unknown-message" });
+  expect(claimMessage({ messageId: id, handle: "stranger" }, db)).toEqual({ ok: false, reason: "not-a-member" });
+  expect(claimMessage({ messageId: id, handle: "asker" }, db)).toEqual({ ok: false, reason: "own-message" });
+  const { room: dm } = dmRoomFor("b", "c", "matt", db);
+  const dmMsg = postMessage({ room: dm, handle: "b", body: "just you" }, db)!;
+  expect(claimMessage({ messageId: dmMsg.id, handle: "c" }, db)).toEqual({ ok: false, reason: "dm" });
+});
+
+test("releaseClaim: the holder or the message author can release; anyone else cannot", () => {
+  const { db, id } = claimFixture();
+  expect(releaseClaim({ messageId: id, handle: "b" }, db)).toEqual({ ok: false, reason: "not-claimed" });
+  claimMessage({ messageId: id, handle: "b", nowMs: 1000 }, db);
+  expect(releaseClaim({ messageId: id, handle: "c" }, db)).toEqual({ ok: false, reason: "not-holder" });
+  expect(releaseClaim({ messageId: id, handle: "b" }, db)).toEqual({ ok: true, holder: "b" });
+  expect(claimMessage({ messageId: id, handle: "c", nowMs: 2000 }, db)).toMatchObject({ outcome: "claimed" });
+  expect(releaseClaim({ messageId: id, handle: "asker" }, db)).toEqual({ ok: true, holder: "c" });
+  expect(releaseClaim({ messageId: 9999, handle: "asker" }, db)).toEqual({ ok: false, reason: "unknown-message" });
+});
 
 test("rejects names outside the charset", () => {
   expect(isValidChatName("build")).toBe(true);
@@ -230,6 +336,83 @@ test("pendingMessages returns the recipient's unread backlog bounded above by th
   markDelivered("r", "b", one.id, db);
   expect(pendingMessages("r", "b", two.id, db).map((m) => m.body)).toEqual(["two"]);
   expect(pendingMessages("r", "nobody", two.id, db)).toEqual([]);
+});
+
+test("stalePendingPairs finds a member whose cursor sits behind the room's max id, and reports its wakeOn", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b", wakeOn: "mention" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  expect(stalePendingPairs(db)).toEqual([{ room: "r", handle: "b", maxId: posted.id, wakeOn: "mention" }]);
+});
+
+// R... (sweep review finding 3): the poster's own cursor also lags its own
+// post (postMessage never self-advances it), but a stale row whose ENTIRE
+// pending backlog is self-authored can never be a delivery target -- no
+// wake_on setting makes a message a recipient of itself. Excluding it here
+// (an EXISTS on "some OTHER author has a message in the gap") is the idle
+// early-out: a poster-only room never costs the sweep a presence lookup or
+// a pendingMessages call, not just a wasted deliverSerialized call.
+test("stalePendingPairs excludes a member whose entire pending backlog is self-authored", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  expect(stalePendingPairs(db)).toEqual([]);
+  // Sanity: the row exists as a plain lagging cursor -- it is the EXISTS
+  // clause specifically that drops it, not some other filter swallowing it.
+  expect((db.query("SELECT last_read_id FROM chat_members WHERE room = 'r' AND handle = 'a';").get() as { last_read_id: number }).last_read_id)
+    .toBeLessThan(posted.id);
+});
+
+// Review round 3 finding B: dm-store adds the human as a silent
+// wake_on:"none" third member (last_read_id 0, forever) to EVERY DM room
+// where he isn't one of the two named participants -- without this filter,
+// that row alone would make stalePendingPairs' idle early-out never fire
+// for a real estate (every DM room always has a permanently-lagging
+// wake_on:none row), so every 30s tick would pay a presence lookup and a
+// full registry scan for a candidate that can never be delivered to.
+test("stalePendingPairs never returns a wake_on:none member, even with a genuinely lagging cursor", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "silent", wakeOn: "none" }, db);
+  postMessage({ room: "r", handle: "a", body: "hi" }, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
+test("stalePendingPairs still includes a member once someone ELSE has posted, even if the member also has an unread post of their own", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "mine" }, db); // a's own post: alone, would exclude a
+  const fromB = postMessage({ room: "r", handle: "b", body: "b posts too" }, db)!;
+  // "a" is stale behind a message NOT authored by "a" (b's post) -- must appear.
+  expect(stalePendingPairs(db).find((r) => r.handle === "a")).toEqual({ room: "r", handle: "a", maxId: fromB.id, wakeOn: "all" });
+});
+
+test("stalePendingPairs is empty once markDelivered catches every cursor up to the max id", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  markDelivered("r", "a", posted.id, db);
+  markDelivered("r", "b", posted.id, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
+test("stalePendingPairs excludes an archived room even with a pending member", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  archiveRoom("r", true, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
+test("stalePendingPairs is empty for a room with no messages at all", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  expect(stalePendingPairs(db)).toEqual([]);
 });
 
 test("archive hides a room from every membership walk and keeps the member rows", () => {

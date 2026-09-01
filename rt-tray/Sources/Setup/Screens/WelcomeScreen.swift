@@ -2,8 +2,8 @@ import SwiftUI
 
 struct WelcomeScreen: View {
     private let bullets: [(String, String)] = [
-        ("terminal", "Install the rt command into ~/.local/bin and add one PATH line to your shell rc."),
-        ("gearshape.2", "Run background services: the rt daemon, deck, board, and gitq."),
+        ("terminal", "Install the mattstack CLI tools (rt, deck, gitq) into ~/.local/bin and add one PATH line to your shell rc."),
+        ("gearshape.2", "Run background services: the rt daemon and the bundled apps."),
         ("sparkles", "Install the mattstack skills into Claude Code."),
         ("puzzlepiece.extension", "Install the editor extension."),
         ("lock.shield", "Ask for Full Disk Access and background-item approval."),

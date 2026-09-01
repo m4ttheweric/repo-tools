@@ -21,7 +21,9 @@ import { homedir } from "os";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { dim, green, red, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, findKnownRepo } from "../lib/repo.ts";
+import { currentRepoIdentityFor } from "../lib/repo-arg.ts";
+import { repoLabel } from "../lib/repo-label.ts";
 import { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo } from "../lib/pickers.ts";
 
 // ─── Preference storage (rt.workspacePrefs, machine-scoped) ────────────────
@@ -56,7 +58,7 @@ function savePrefs(prefs: Prefs): void {
   }
 }
 
-export const __test__ = { loadPrefs, savePrefs };
+export const __test__ = { loadPrefs, savePrefs, savedEditor };
 
 // ─── Editor detection ────────────────────────────────────────────────────────
 
@@ -139,12 +141,33 @@ function isEditorCommandAvailable(command: string): boolean {
 }
 
 /**
+ * The editor pref key for a directory. Both entry points MUST derive it the
+ * same way or a choice saved through `rt code` is invisible to `rt nav` and
+ * the two drift to different editors for one repo. The repo identity is that
+ * shared key: stable across worktrees, renames, and whichever subdirectory
+ * nav happened to be sitting in. Anything outside a repo keys on its own
+ * basename, as before.
+ */
+export function editorPrefKey(dirPath: string): string {
+  return currentRepoIdentityFor(dirPath) ?? dirPath.split("/").pop() ?? "unknown";
+}
+
+/**
+ * A pref saved before the identity cutover is adopted, not re-prompted for:
+ * `rt nav` keyed on a directory basename and older `rt code` builds on a
+ * display name.
+ */
+function savedEditor(prefs: Prefs, repoKey: string, legacyKeys: string[]): string | undefined {
+  return prefs.editors[repoKey] ?? legacyKeys.map(k => prefs.editors[k]).find(Boolean);
+}
+
+/**
  * Returns the editor command if it can be determined without an interactive
  * picker (saved pref or exactly one editor installed). Returns null if a
  * picker is required.
  */
-export function resolveEditorSync(prefs: Prefs, repoName: string): string | null {
-  const saved = prefs.editors[repoName];
+export function resolveEditorSync(prefs: Prefs, repoKey: string, legacyKeys: string[] = []): string | null {
+  const saved = savedEditor(prefs, repoKey, legacyKeys);
   if (saved && isEditorCommandAvailable(saved)) return saved;
   const installed = detectInstalledEditors();
   if (installed.length === 1) return installed[0]!.command;
@@ -174,13 +197,13 @@ export function resolveWorkspaceSync(dirPath: string, prefs: Prefs): string | nu
 
 // ─── Async resolvers (with pickers) ─────────────────────────────────────────
 
-async function ensureEditor(prefs: Prefs, repoName: string): Promise<string> {
+async function ensureEditor(prefs: Prefs, repoKey: string, legacyKeys: string[] = []): Promise<string> {
   // Fast path: sync resolver covers the common case
-  const fast = resolveEditorSync(prefs, repoName);
+  const fast = resolveEditorSync(prefs, repoKey, legacyKeys);
   if (fast) {
-    // Auto-save if it was detected (not yet persisted)
-    if (!prefs.editors[repoName]) {
-      prefs.editors[repoName] = fast;
+    // Auto-save if it was detected, or adopted off a legacy key
+    if (!prefs.editors[repoKey]) {
+      prefs.editors[repoKey] = fast;
       savePrefs(prefs);
     }
     return fast;
@@ -195,7 +218,7 @@ async function ensureEditor(prefs: Prefs, repoName: string): Promise<string> {
 
   const { select } = await import("../lib/rt-render.ts");
   const selected = await select({
-    message: `Which editor for ${repoName}?`,
+    message: `Which editor for ${repoLabel(repoKey)}?`,
     options: installed.map(e => ({
       value: e.command,
       label: e.label,
@@ -203,7 +226,7 @@ async function ensureEditor(prefs: Prefs, repoName: string): Promise<string> {
     })),
   });
 
-  prefs.editors[repoName] = selected;
+  prefs.editors[repoKey] = selected;
   savePrefs(prefs);
   return selected;
 }
@@ -299,14 +322,15 @@ function launchEditor(editor: string, target: string): string | null {
 
 export async function openDirectoryInEditor(dirPath: string): Promise<void> {
   const prefs = loadPrefs();
-  const repoName = dirPath.split("/").pop() || "unknown";
-  const editor = await ensureEditor(prefs, repoName);
+  const basename = dirPath.split("/").pop() || "unknown";
+  const repoKey = editorPrefKey(dirPath);
+  const editor = await ensureEditor(prefs, repoKey, [basename]);
   const editorLabel = editorLabelFor(editor);
   const target = await resolveWorkspaceTarget(dirPath, prefs);
 
   const used = launchEditor(editor, target);
   if (used) {
-    if (used !== editor) { prefs.editors[repoName] = used; savePrefs(prefs); }
+    if (used !== editor) { prefs.editors[repoKey] = used; savePrefs(prefs); }
     console.error(`\n  ${green}✓${reset} Opened ${dirPath.split("/").pop()} in ${editorLabel}`);
   } else {
     console.error(`\n  ${red}Failed to open ${editorLabel}. Is '${editor}' CLI installed?${reset}`);
@@ -326,7 +350,7 @@ export async function openInEditor(args: string[]): Promise<void> {
   const identity = getRepoIdentity();
   const repos = getKnownRepos();
   const currentRepo = identity
-    ? repos.find(r => r.repoName === identity.repoName) ?? null
+    ? findKnownRepo(repos, identity) ?? null
     : null;
 
   let selectedPath: string;
@@ -343,16 +367,19 @@ export async function openInEditor(args: string[]): Promise<void> {
   }
 
   const selectedRepo = repos.find(r => r.worktrees.some(wt => wt.path === selectedPath));
-  const repoName = selectedRepo?.repoName || selectedPath.split("/").pop() || "unknown";
+  const basename = selectedPath.split("/").pop() || "unknown";
+  const repoKey = editorPrefKey(selectedPath);
 
   const prefs = loadPrefs();
-  const editor = await ensureEditor(prefs, repoName);
+  // The index row's own key is a legacy candidate: an unregistered scanned row
+  // is keyed by basename, and pre-cutover rows by display name.
+  const editor = await ensureEditor(prefs, repoKey, [selectedRepo?.repoName, basename].filter((k): k is string => !!k));
   const editorLabel = editorLabelFor(editor);
   const target = await resolveWorkspaceTarget(selectedPath, prefs);
 
   const used = launchEditor(editor, target);
   if (used) {
-    if (used !== editor) { prefs.editors[repoName] = used; savePrefs(prefs); }
+    if (used !== editor) { prefs.editors[repoKey] = used; savePrefs(prefs); }
     const label = target.endsWith(".code-workspace")
       ? target.split("/").pop()
       : selectedPath.split("/").pop();

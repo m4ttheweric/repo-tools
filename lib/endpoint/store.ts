@@ -1,5 +1,4 @@
-import { join } from "path";
-import { repoDataDir } from "../rt-paths.ts";
+import { legacyRepoFile } from "../legacy-repo-data.ts";
 import {
   hasEndpointClaims,
   importLegacyJsonFile,
@@ -23,7 +22,7 @@ export function rekeyEndpointClaimsTable(): Promise<RekeyReport> {
 
 /** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function endpointsPath(repoName: string): string {
-  return join(repoDataDir(repoName), "endpoints.json");
+  return legacyRepoFile(repoName, "endpoints.json");
 }
 
 /**

@@ -1,4 +1,8 @@
-const DEFAULT_TIMEOUT_MS = 1000;
+// 1000ms once let one slow-but-alive recipient (heavy load, not actually
+// gone) register as a dropped push -- the failure that started the silent
+// deadlock this file's delivery fix addresses. 3000ms gives a busy inbox
+// room to answer before the caller gives up on it.
+export const DEFAULT_TIMEOUT_MS = 3000;
 
 export async function deliverToInbox(
   socketPath: string,
@@ -63,11 +67,17 @@ export async function deliverToInbox(
   return Promise.race([attempt, timeout]);
 }
 
+/**
+ * The `#<id>` is what `rt chat ack <messageId>` takes. It rides next to the
+ * handle rather than at the end of the line because a batch collapses to one
+ * truncated row in the terminal: an id at the end of a long body would be cut
+ * off exactly when a bundle makes it necessary to tell the messages apart.
+ */
 export function renderDeliveries(
-  items: Array<{ room: string; dm: boolean; handle: string; body: string }>,
+  items: Array<{ room: string; dm: boolean; handle: string; body: string; id: number }>,
 ): string {
   return items
-    .map((item) => `${item.dm ? "[dm]" : `[#${item.room}]`} ${item.handle}: ${item.body}`)
+    .map((item) => `${item.dm ? "[dm]" : `[#${item.room}]`} ${item.handle} #${item.id}: ${item.body}`)
     .join("\n");
 }
 

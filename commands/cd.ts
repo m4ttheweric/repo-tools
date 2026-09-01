@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, getKnownReposCached, getWorkspacePackages, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, getKnownReposCached, findKnownRepo, repoCarriesWorktree, getWorkspacePackages, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
 import { writeRepoCache } from "../lib/repo-cache.ts";
 import {
   pickWorktreeWithSwitch,
@@ -177,11 +177,15 @@ async function ensureShellFunction(): Promise<void> {
  * list won't retrigger it on the next call either.
  */
 export function resolveReposForIdentity(
-  identity: { repoName: string } | null,
+  identity: { identity: string; repoRoot: string } | null,
   cachedRepos: KnownRepo[],
 ): KnownRepo[] {
   if (!identity) return cachedRepos;
-  if (cachedRepos.some((r) => r.repoName === identity.repoName)) return cachedRepos;
+  // The matched row must also CARRY the worktree being stood in: a cache
+  // written before this worktree existed matches on identity alone, and serving
+  // it hides the new tree from `--worktree <branch>` and from the picker.
+  const hit = findKnownRepo(cachedRepos, identity);
+  if (hit && repoCarriesWorktree(hit, identity.repoRoot)) return cachedRepos;
   return getKnownRepos({ includeMissing: true });
 }
 
@@ -241,7 +245,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
   const cachedRepos  = getKnownReposCached({ includeMissing: true });
   const repos        = resolveReposForIdentity(identity, cachedRepos);
   const currentRepo  = identity
-    ? repos.find((r) => r.repoName === identity.repoName) ?? null
+    ? findKnownRepo(repos, identity) ?? null
     : null;
 
   let selectedPath: string;

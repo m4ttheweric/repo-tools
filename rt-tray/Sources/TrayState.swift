@@ -1,4 +1,5 @@
 import Foundation
+import MattstackCore
 import SwiftUI
 
 /// Daemon status shared between AppDelegate (which polls) and the process
@@ -33,6 +34,13 @@ class TrayState: ObservableObject {
     /// whenever `health == .degraded` — the red-flicker class becomes a
     /// named cause instead of an unexplained color change.
     @Published var failingSubsystem: String? = nil
+
+    // ── Held ready ladders (RT-98) ──────────────────────────────────────────
+    /// Repos whose team-authored `ready` steps the daemon is holding pending
+    /// approval. Every worktree claim in these repos runs degraded, so the
+    /// panel badges them until someone approves; unlike the notification, this
+    /// cannot be dismissed.
+    @Published var readyHeldRepos: [ReadyHeldRepo] = []
 
     var healthColor: Color {
         switch health {

@@ -24,9 +24,10 @@ import { tmpdir } from "os";
 // restoring with `() => osReal` would restore the mock to itself. Capture
 // the real function BEFORE any test can call mock.module("os", ...).
 const realHostname = osReal.hostname;
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import {
   rtDir, reposDir, repoDataDir, logsDir,
+  worktreePoolRoot, legacyWorktreePoolRoots,
   migrateLegacyRtDir, legacyDirsPresent,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
   trayAppPath, devTrayAppPath, legacyTrayAppPaths, installedTrayAppPath, machineSettingsPath,
@@ -544,5 +545,60 @@ describe("rt-paths", () => {
       offenders,
       `Legacy .rt paths must go through rt-paths.ts (rtDir() et al.):\n${offenders.join("\n")}`,
     ).toEqual([]);
+  });
+});
+
+describe("worktreePoolRoot (friendly PATH-safe identity segment)", () => {
+  test("github remote gets the gh alias: gh-<org>-<repo>", () => {
+    expect(basename(worktreePoolRoot("remote:github.com%2Fm4ttstack%2Frt"))).toBe("gh-m4ttstack-rt");
+  });
+
+  test("gitlab remote gets the gl alias", () => {
+    expect(basename(worktreePoolRoot("remote:gitlab.com%2Facme%2Facme-dev"))).toBe("gl-acme-acme-dev");
+  });
+
+  test("unknown host falls back to the dash-safe hostname", () => {
+    expect(basename(worktreePoolRoot("remote:bitbucket.org%2Fteam%2Frepo"))).toBe("bitbucket-org-team-repo");
+  });
+
+  test("nested groups and host ports flatten to dashes, no raw colon survives", () => {
+    const root = worktreePoolRoot("remote:gitlab.example.com%3A8443%2Fteam%2Fsub%2Frepo");
+    expect(basename(root)).toBe("gitlab-example-com-8443-team-sub-repo");
+    expect(root.includes(":")).toBe(false);
+  });
+
+  test("segments are percent-free and colon-free: colons split PATH, %2F breaks node's ESM loader, %25 breaks import.meta.url pathname", () => {
+    for (const wire of [
+      "remote:github.com%2Facme%2Frepo",
+      "remote:gitlab.example.com%3A8443%2Fteam%2Fsub%2Frepo",
+      "path:%2FUsers%2Fdev%2Fscratch",
+      "not-a-wire-with-%25-junk",
+    ]) {
+      const root = worktreePoolRoot(wire);
+      expect(root.includes(":")).toBe(false);
+      expect(root.includes("%")).toBe(false);
+    }
+  });
+
+  test("path-kind identity becomes local-<basename>-<hash>, distinct paths never collide", () => {
+    const a = basename(worktreePoolRoot("path:%2FUsers%2Fdev%2Fscratch"));
+    const b = basename(worktreePoolRoot("path:%2Ftmp%2Fscratch"));
+    expect(a).toMatch(/^local-scratch-[0-9a-f]{6}$/);
+    expect(b).toMatch(/^local-scratch-[0-9a-f]{6}$/);
+    expect(a).not.toBe(b);
+  });
+
+  test("an unparseable wire degrades to a sanitized copy, never throws", () => {
+    const root = worktreePoolRoot("not-a-wire");
+    expect(basename(root)).toBe("not-a-wire");
+    expect(root.includes(":")).toBe(false);
+  });
+
+  test("legacyWorktreePoolRoots lists both prior forms, colon then %3A", () => {
+    const id = "remote:github.com%2Facme%2Frepo";
+    expect(legacyWorktreePoolRoots(id).map((p) => basename(p))).toEqual([
+      "remote:github.com%2Facme%2Frepo",
+      "remote%3Agithub.com%2Facme%2Frepo",
+    ]);
   });
 });

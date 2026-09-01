@@ -342,8 +342,19 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(await deckManagedStep.run(ctx)).toEqual({ state: "skipped", detail: "deck not bundled yet" });
     });
 
-    test("deck bundled but unhealthy (no api.json) -> failed, never runs adopt", async () => {
+    test("deck bundled but unhealthy with NO app running -> skipped, never runs adopt — nothing has started deck yet (fresh non-interactive install)", async () => {
       const p = bundledProbes();
+      const { ctx } = makeCtx(p);
+      const outcome = await deckManagedStep.run(ctx);
+      expect(outcome).toEqual({
+        state: "skipped",
+        detail: "deck is not running and mattstack.app is not there to start it — open the app, then Retry",
+      });
+      expect(p.calls.exec).toEqual([]);
+    });
+
+    test("deck bundled but unhealthy while the app IS running -> failed, never runs adopt", async () => {
+      const p = bundledProbes({ overrides: { tray: fakeTray({ "GET /version": () => ({ status: 200, json: { version: "1.0.0" } }) }) } });
       const { ctx } = makeCtx(p);
       const outcome = await deckManagedStep.run(ctx);
       expect(outcome).toEqual({

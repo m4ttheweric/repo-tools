@@ -307,6 +307,15 @@ export function removeIndexRow(key: string): void {
   deleteKvValue(REPO_INDEX_NS, key);
 }
 
+/**
+ * Read-only membership check: is this serialized identity already a row in
+ * the index? Callers that must not treat "derivable" as "known" (the Claude
+ * Code worktree hook) gate on this rather than deriving-and-registering.
+ */
+export function isRepoRegistered(identity: string): boolean {
+  return loadRepoIndex()[identity] !== undefined;
+}
+
 /** Rewrite ~/.mattstack/rt/repos.json from the current rows — a FILE write, so it runs after a transaction commits, never inside one. */
 export function refreshRepoIndexMirror(): void {
   try {
@@ -998,6 +1007,36 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
   const { knownNames, knownPaths } = buildDedupeSets(known);
 
   return [...known, ...lost, ...scanUnregisteredRepos([...known, ...lost], knownNames, knownPaths)];
+}
+
+/**
+ * The row in `repos` for the repo you are standing in, or undefined.
+ *
+ * Three key forms coexist in `repoName`: a serialized identity (every row
+ * written post-cutover), a legacy plain name, and a directory basename (an
+ * unregistered scanned row). `RepoIdentity.repoName` is a LABEL, never a key,
+ * so matching it against any of them silently finds nothing. The caller then
+ * decides it is nowhere and falls through to a picker or a full rescan. Every
+ * "am I here?" check goes through this function so that cannot recur.
+ *
+ * Identity first; then the repo root, which pins a legacy or unregistered row
+ * without trusting its spelling.
+ */
+export function findKnownRepo(
+  repos: KnownRepo[],
+  identity: { identity: string; repoRoot: string },
+): KnownRepo | undefined {
+  const byIdentity = repos.find((r) => r.repoName === identity.identity);
+  if (byIdentity) return byIdentity;
+
+  return repos.find((r) => repoCarriesWorktree(r, identity.repoRoot));
+}
+
+/** True when `repo` lists `path` among its worktrees, compared through realpath
+    so one directory reached by two spellings still matches. */
+export function repoCarriesWorktree(repo: KnownRepo, path: string): boolean {
+  const target = safeRealpath(path);
+  return repo.worktrees.some((w) => safeRealpath(w.path) === target);
 }
 
 /**

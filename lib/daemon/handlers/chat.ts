@@ -7,6 +7,9 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
 import {
+  ackMessage,
+  claimMessage,
+  releaseClaim,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -18,6 +21,7 @@ import {
   markRead,
   markDelivered,
   pendingMessages,
+  stalePendingPairs,
   listRooms,
   archiveRoom,
   roomArchivedAt,
@@ -39,6 +43,8 @@ import {
   snapshotRegistryDeps,
   type BuddyStatus,
   type RegistryDeps,
+  type WakeMode,
+  type StalePendingRow,
 } from "../../state/index.ts";
 import { CHAT_NOTIFICATION_CATEGORY, notifyEnabled } from "../../notifier.ts";
 import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.ts";
@@ -61,6 +67,9 @@ const defaultInboxDeps: InboxDeps = { resolve: resolveInbox, deliver: deliverToI
 const defaultLog = lazyChildLogger("chat");
 
 const CHAT_COMMANDS = [
+  "chat:ack",
+  "chat:claim",
+  "chat:release",
   "chat:join",
   "chat:leave",
   "chat:post",
@@ -167,42 +176,140 @@ async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | un
   }
 }
 
+// One immediate retry before falling back to badge+park: cheap insurance
+// against exactly the transient this file was built to survive (recipient
+// briefly under load, not actually gone). Overridable so a test doesn't pay
+// the real delay.
+const DEFAULT_RETRY_DELAY_MS = 300;
+
 /**
- * A resolver miss, a signed-out recipient, a dead binding, and an ok:false
- * send are all the same outcome here: no cursor advance. A later post to the
- * same recipient tries again and, via pendingMessages, catches up everything
- * still behind the cursor at that point -- not just its own message -- so a
- * failed send never drops a body permanently. This function does not defend
- * against a concurrent call for the same (room, handle): two overlapping
- * calls would both read the same pre-advance pending range and duplicate it
- * into two frames. Callers must go through deliverSerialized, never call
- * this directly from postAndNotify.
+ * A resolver miss, a signed-out recipient, a dead binding, and a
+ * still-failing-after-retry send are all the same outcome here: no cursor
+ * advance. Recovery now has three layers, in order: this function's own
+ * retry (a transient push failure self-heals invisibly, same call), a later
+ * post to the same recipient (via pendingMessages, catches up everything
+ * still behind the cursor -- not just its own message), and the periodic
+ * delivery sweep for the case neither of those arrives (see
+ * createChatDeliverySweep) -- a 2-party DM at a wait-point may never get a
+ * "later post" from either side, so the sweep is not optional belt-and-
+ * suspenders, it is what makes that case recover at all. This function does
+ * not defend against a concurrent call for the same (room, handle): two
+ * overlapping calls would both read the same pre-advance pending range and
+ * duplicate it into two frames. Callers must go through deliverSerialized,
+ * never call this directly from postAndNotify or the sweep.
  */
 async function deliverPost(
   db: Database,
   deps: InboxDeps,
   herdr: typeof herdrRequest,
+  log: Logger,
+  retryDelayMs: number,
   recipient: string,
   msg: { room: string; dm: boolean; id: number },
-): Promise<void> {
+): Promise<{ delivered: boolean; count: number }> {
   const presence = presenceForHandle(recipient, db);
-  if (!presence || presence.signedOutAt !== undefined) return;
+  if (!presence || presence.signedOutAt !== undefined) return { delivered: false, count: 0 };
   const binding = deps.resolve(presence.sessionId);
-  if (!binding || !inboxAlive(binding)) return;
+  if (!binding || !inboxAlive(binding)) return { delivered: false, count: 0 };
   const pending = pendingMessages(msg.room, recipient, msg.id, db);
-  if (pending.length === 0) return;
-  const items = pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
+  // postMessage never self-advances the author's cursor, so a recipient's own
+  // posts stay in their pending range and every later bundle would render them
+  // back into their own pane. Presentational only -- markDelivered below still
+  // advances the cursor past them.
+  const others = pending.filter((m) => m.handle !== recipient);
+  if (others.length === 0) return { delivered: false, count: 0 };
+  const items = others.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body, id: m.id }));
   const content = wrapCrossSession(deliveryLabel(items), `${renderDeliveries(items)}\n${REPLY_STEER}`);
-  const result = await deps.deliver(binding.socketPath, content);
+  let result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) {
-    await reportUnreadBadge(herdr, presence.pane, pending.length);
-    return;
+    await Bun.sleep(retryDelayMs);
+    result = await deps.deliver(binding.socketPath, content);
+  }
+  if (!result.ok) {
+    // The error STRING (e.g. "timeout" vs a connect errno), not just a
+    // boolean -- this is exactly what the incident's silent hour lacked.
+    log.warn({ recipient, room: msg.room, err: result.error }, "chat: delivery push failed after retry");
+    await reportUnreadBadge(herdr, presence.pane, others.length);
+    return { delivered: false, count: 0 };
   }
   markDelivered(msg.room, recipient, msg.id, db);
   // Refreshes the SESSION heartbeat -- the only remaining route to it now
   // that chat:pulse is gone -- so a recipient actively receiving messages
   // never goes stale enough for prunePresence to delete its row.
   touchLastSeen(presence.sessionId, Date.now(), db);
+  return { delivered: true, count: others.length };
+}
+
+const ACK_BODY_PREVIEW = 80;
+
+/**
+ * A receipt, not a message: no chat_messages row, no cursor movement, no room
+ * fan-out. It reaches exactly one inbox, the author's, which is the whole
+ * point -- acknowledging costs one wake instead of the room-wide one a posted
+ * "ack" costs. The preview is whitespace-collapsed so a heredoc body cannot
+ * turn a one-line receipt into a paragraph.
+ */
+async function deliverReceipt(
+  db: Database,
+  deps: InboxDeps,
+  log: Logger,
+  args: { to: string; from: string; kind: "ack" | "claim"; text: string; messageId: number },
+): Promise<void> {
+  const { to, from, kind, text, messageId } = args;
+  const presence = presenceForHandle(to, db);
+  if (!presence || presence.signedOutAt !== undefined) return;
+  const binding = deps.resolve(presence.sessionId);
+  if (!binding || !inboxAlive(binding)) return;
+  const result = await deps.deliver(binding.socketPath, wrapCrossSession(`${from} (${kind})`, text));
+  if (!result.ok) log.warn({ to, from, id: messageId, err: result.error }, `chat: ${kind} receipt push failed`);
+}
+
+function previewBody(body: string): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  return flat.length > ACK_BODY_PREVIEW ? `${flat.slice(0, ACK_BODY_PREVIEW)}...` : flat;
+}
+
+function deliverAck(
+  db: Database,
+  deps: InboxDeps,
+  log: Logger,
+  args: { author: string; acker: string; messageId: number; body: string },
+): Promise<void> {
+  const { author, acker, messageId, body } = args;
+  const text = `${acker} acknowledged your message #${messageId}: "${previewBody(body)}"`;
+  return deliverReceipt(db, deps, log, { to: author, from: acker, kind: "ack", text, messageId });
+}
+
+/**
+ * A won claim receipts the author (so an asker knows who is on it during the
+ * minutes before the answer lands); a takeover of an expired claim also
+ * receipts the previous holder, who may still be alive and composing. Losers
+ * and re-claims of a held id wake nobody: silence is the whole point.
+ */
+async function deliverClaim(
+  db: Database,
+  deps: InboxDeps,
+  log: Logger,
+  args: { author: string; claimer: string; messageId: number; body: string; previousHolder?: string },
+): Promise<void> {
+  const { author, claimer, messageId, body, previousHolder } = args;
+  const preview = previewBody(body);
+  const takeover = previousHolder ? ` (took over from ${previousHolder})` : "";
+  await deliverReceipt(db, deps, log, {
+    to: author,
+    from: claimer,
+    kind: "claim",
+    text: `${claimer} claimed your message #${messageId}${takeover}: "${preview}"`,
+    messageId,
+  });
+  if (!previousHolder) return;
+  await deliverReceipt(db, deps, log, {
+    to: previousHolder,
+    from: claimer,
+    kind: "claim",
+    text: `${claimer} took over #${messageId} from you: "${preview}"`,
+    messageId,
+  });
 }
 
 function chainKey(room: string, handle: string): string {
@@ -216,12 +323,14 @@ function chainKey(room: string, handle: string): string {
  * against the same pre-advance cursor and duplicate a frame. The
  * predecessor's failure is swallowed before chaining, so one failure never
  * blocks the next. The map entry is deleted once nothing is chained behind
- * it, so a quiet key leaves no permanent entry.
+ * it, so a quiet key leaves no permanent entry. Generic over `task`'s result
+ * so a caller (the delivery sweep) can read back what happened -- the chain
+ * bookkeeping itself only ever needs to know settlement, never the value.
  */
-function serializeDelivery(chains: Map<string, Promise<void>>, key: string, task: () => Promise<void>): Promise<void> {
+function serializeDelivery<T>(chains: Map<string, Promise<void>>, key: string, task: () => Promise<T>): Promise<T> {
   const prior = chains.get(key) ?? Promise.resolve();
   const result = prior.catch(() => {}).then(() => task());
-  const swallowed = result.catch(() => {});
+  const swallowed: Promise<void> = result.then(() => undefined, () => undefined);
   chains.set(key, swallowed);
   void swallowed.finally(() => {
     if (chains.get(key) === swallowed) chains.delete(key);
@@ -234,10 +343,275 @@ function deliverSerialized(
   db: Database,
   deps: InboxDeps,
   herdr: typeof herdrRequest,
+  log: Logger,
+  retryDelayMs: number,
   recipient: string,
   msg: { room: string; dm: boolean; id: number },
-): Promise<void> {
-  return serializeDelivery(chains, chainKey(msg.room, recipient), () => deliverPost(db, deps, herdr, recipient, msg));
+): Promise<{ delivered: boolean; count: number }> {
+  return serializeDelivery(chains, chainKey(msg.room, recipient), () =>
+    deliverPost(db, deps, herdr, log, retryDelayMs, recipient, msg),
+  );
+}
+
+/** The presence shape planSweepTargets actually needs -- a subset of PresenceRow, spelled out so the planner stays pure and testable with plain object literals instead of a full store row. */
+type SweepPresence = { sessionId: string; signedOutAt?: number };
+
+/**
+ * Pure: given stalePendingPairs' raw candidates plus a presence snapshot and
+ * which of those sessions have an alive registry binding, decides which
+ * pairs are actually worth re-invoking delivery for. A candidate with no
+ * presence row, a signed-out one, or a signed-in one whose binding is dead
+ * is dropped -- deliverPost would reach the same conclusion itself, but
+ * checking here means the sweep never even builds a delivery chain entry
+ * for a candidate that can't receive anything. A wake_on:"none" candidate is
+ * also dropped here, cheaply and unconditionally: no pending message can
+ * ever make a "none" member a recipient, so there is nothing a per-message
+ * check downstream could find. wake_on:"mention" is NOT resolved here --
+ * that needs each pending message's author/mentions, which this function
+ * deliberately does not have; see pendingIncludesRecipient, applied once
+ * pendingMessages is fetched for a candidate that survives this filter.
+ *
+ * Takes stalePendingPairs' own row type directly (not a locally-declared
+ * shape) so the planner's candidate contract can never silently drift from
+ * what the store actually returns.
+ */
+export function planSweepTargets(
+  stale: StalePendingRow[],
+  presenceByHandle: Map<string, SweepPresence>,
+  aliveSessionIds: Set<string>,
+): StalePendingRow[] {
+  return stale.filter((pair) => {
+    if (pair.wakeOn === "none") return false;
+    const presence = presenceByHandle.get(pair.handle);
+    if (!presence || presence.signedOutAt !== undefined) return false;
+    return aliveSessionIds.has(presence.sessionId);
+  });
+}
+
+/**
+ * Mirrors recipientsFromMembers' per-member filter (lib/state/chat-store.ts)
+ * applied to one already-fetched message instead of a room's member list:
+ * true when `handle` would have been a recipient of `message` under the
+ * normal push rules for `wakeOn` (never the author; never a quiet post, which
+ * may only ride along in a bundle another message causes; "all" is
+ * unconditional; "mention" needs an exact handle mention or @here).
+ */
+function isRecipientUnderWakeRules(message: { handle: string; mentions: string[]; quiet?: boolean }, handle: string, wakeOn: WakeMode): boolean {
+  if (message.handle === handle || message.quiet || wakeOn === "none") return false;
+  return wakeOn === "all" || message.mentions.includes("here") || message.mentions.includes(handle);
+}
+
+/**
+ * True when at least one of `pending` would have named `handle` a recipient
+ * under `wakeOn` -- the sweep's own analog of recipientsFor, needed because
+ * (unlike a normal post, which only ever calls deliverPost for handles
+ * recipientsFor already vetted) a sweep candidate arrives with no such
+ * guarantee. Bundling still delivers the WHOLE pending range once this gate
+ * passes, same as a normal post's own catch-up batching -- this only
+ * decides whether the recipient should be swept at all, not which
+ * individual messages in the batch they "should" see.
+ */
+export function pendingIncludesRecipient(pending: Array<{ handle: string; mentions: string[]; quiet?: boolean }>, handle: string, wakeOn: WakeMode): boolean {
+  return pending.some((m) => isRecipientUnderWakeRules(m, handle, wakeOn));
+}
+
+/**
+ * The daemon's periodic delivery sweep (the deadlock fix): finds every
+ * (room, handle) whose cursor is behind that room's newest message via
+ * stalePendingPairs, keeps only the ones planSweepTargets says a live
+ * recipient could receive, and re-invokes the SAME deliverSerialized path a
+ * normal post uses -- this and postAndNotify are the only two callers.
+ * Sharing `deliveryChains` with createChatHandlers (see that factory's
+ * `deliveryChains` opt) is what keeps a sweep re-delivery from racing a
+ * post's own in-flight delivery to the same recipient.
+ *
+ * stalePendingPairs already excludes a self-authored-only backlog (its own
+ * EXISTS clause), and planSweepTargets/pendingIncludesRecipient exclude
+ * everything wake_on rules out -- so every target this function ever calls
+ * deliverSerialized for is one a normal push would also have delivered to.
+ */
+/** How many consecutive sweep-triggered failures a (room, handle) pair tolerates before the sweep starts backing off it -- a permanently-broken pair must not cost a fresh deliverPost attempt (retry + warn log) on every tick forever. */
+const DEFAULT_MAX_CONSECUTIVE_SWEEP_FAILURES = 5;
+
+/**
+ * Backoff, once past the ceiling, doubles per further failure (2^(count -
+ * max) ticks) and saturates here -- about 60 minutes at the daemon's
+ * current 30s sweep interval. The ceiling is a THROTTLE, never a permanent
+ * stop: "eventually delivered" is the invariant a 2-party DM wait-point
+ * depends on (the incident's own shape -- nobody posts again to shake a
+ * stuck pair loose), so a saturated pair still gets retried roughly hourly
+ * forever, not muted outright.
+ */
+const MAX_SWEEP_BACKOFF_TICKS = 120;
+
+/**
+ * The failure streak is scoped to the maxId it was accumulated against, not
+ * just the (room, handle) pair: a pair backing off while stuck on an old
+ * message gets a fresh streak the moment a NEWER message makes it stale
+ * again (the room's maxId advanced), since that is a materially different
+ * situation worth its own immediate attempt -- deliverPost bundles the
+ * whole pending range regardless, so the new message deserves its own
+ * chance rather than inheriting an old backoff window that had nothing to
+ * do with it. `skipUntilTick` is only ever meaningful once `count` has
+ * reached the ceiling; below it, every tick attempts.
+ */
+type SweepFailureEntry = { count: number; maxId: number; skipUntilTick: number };
+
+/**
+ * Records one sweep-triggered failure for `key` and returns whether this is
+ * the exact tick the streak crossed the ceiling (the caller's cue to warn
+ * once, not on every later backed-off retry that also fails).
+ */
+function recordSweepFailure(
+  failureCounts: Map<string, SweepFailureEntry>,
+  key: string,
+  entry: SweepFailureEntry | undefined,
+  target: StalePendingRow,
+  tick: number,
+  maxConsecutiveFailures: number,
+): { crossedCeiling: boolean; count: number } {
+  const priorStreak = entry && entry.maxId === target.maxId ? entry.count : 0;
+  const count = priorStreak + 1;
+  let skipUntilTick = tick;
+  if (count >= maxConsecutiveFailures) {
+    const backoffTicks = Math.min(2 ** (count - maxConsecutiveFailures), MAX_SWEEP_BACKOFF_TICKS);
+    skipUntilTick = tick + backoffTicks;
+  }
+  failureCounts.set(key, { count, maxId: target.maxId, skipUntilTick });
+  return { crossedCeiling: priorStreak < maxConsecutiveFailures && count >= maxConsecutiveFailures, count };
+}
+
+export function createChatDeliverySweep(opts: {
+  db: Database;
+  deliveryChains: Map<string, Promise<void>>;
+  herdr?: typeof herdrRequest;
+  inboxDeps?: InboxDeps;
+  /** The registry probe for the sweep's OWN presence/binding pre-check, snapshotted once per run via snapshotRegistryDeps -- deliberately separate from `inboxDeps.resolve`, which stays a per-recipient call at actual delivery time (deliverPost). Real by default, fakeable the same way createChatHandlers' registryDeps is. */
+  registryDeps?: RegistryDeps;
+  log?: Logger;
+  retryDelayMs?: number;
+  /** Overridable so a test doesn't need to run a real 5-tick failure streak. */
+  maxConsecutiveFailures?: number;
+}): () => Promise<{ sweptPairs: number; recoveredMessages: number }> {
+  const { db, deliveryChains } = opts;
+  const herdr = opts.herdr ?? herdrRequest;
+  const inboxDeps = opts.inboxDeps ?? defaultInboxDeps;
+  const log = opts.log ?? defaultLog;
+  const retryDelayMs = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  const maxConsecutiveFailures = opts.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_SWEEP_FAILURES;
+  // One map per sweep instance (one daemon), persisting across ticks --
+  // that persistence is the whole point: a streak must survive from one
+  // scheduleSweep call to the next to ever reach the ceiling and back off.
+  const failureCounts = new Map<string, SweepFailureEntry>();
+  // One tick per sweepPendingDeliveries() call -- the backoff clock. Counting
+  // invocations rather than wall-clock time keeps the whole mechanism
+  // deterministic for a test calling sweep() directly, independent of
+  // whatever real interval scheduleSweep ends up driving it at.
+  let tick = 0;
+  // scheduleSweep drives this off a bare setInterval that never awaits the
+  // tick, and one run is sequential over its targets at up to a retry pair
+  // of inbox timeouts each -- so a slow run CAN outlive the interval. Two
+  // overlapping runs would share `tick` (draining a backoff window in half
+  // the wall-clock time it encodes) and interleave their read-modify-write
+  // of `failureCounts`, letting a stale `entry` clobber the other run's
+  // streak. Skipping is always safe: the next tick rescans from the store.
+  let inFlight = false;
+
+  return async function sweepPendingDeliveries(): Promise<{ sweptPairs: number; recoveredMessages: number }> {
+    if (inFlight) return { sweptPairs: 0, recoveredMessages: 0 };
+    inFlight = true;
+    try {
+      return await runSweep();
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  async function runSweep(): Promise<{ sweptPairs: number; recoveredMessages: number }> {
+    tick += 1;
+    const stale = stalePendingPairs(db);
+    if (stale.length === 0) {
+      failureCounts.clear(); // nothing stale at all: no streak is worth remembering
+      return { sweptPairs: 0, recoveredMessages: 0 };
+    }
+    // Forget a pair's streak once it's no longer a stale candidate at all --
+    // resolved through ANY path (a normal post succeeding, the member
+    // leaving, wake_on changing), not just a sweep-triggered success.
+    const staleKeys = new Set(stale.map((p) => chainKey(p.room, p.handle)));
+    for (const key of failureCounts.keys()) {
+      if (!staleKeys.has(key)) failureCounts.delete(key);
+    }
+
+    const presenceByHandle = new Map<string, SweepPresence>();
+    for (const { handle } of stale) {
+      if (presenceByHandle.has(handle)) continue;
+      const presence = presenceForHandle(handle, db);
+      if (presence) presenceByHandle.set(handle, presence);
+    }
+    // ONE registry scan for the whole run (snapshotRegistryDeps calls
+    // deps.resolveAll() exactly once), not one resolveInbox call per stale
+    // candidate -- resolveInbox itself is resolveAllInboxes().get(id), so a
+    // per-candidate loop would have re-scanned the whole registry directory
+    // per candidate (claude-registry.ts's own doc on resolveAllInboxes
+    // names this exact multi-lookup case). Skipped entirely when no stale
+    // handle has a presence row at all -- nothing could resolve regardless
+    // of what the registry says, so the scan itself would be wasted work.
+    // A signed-out presence is skipped before even doing the (now cheap,
+    // in-memory) alive check -- its binding can never matter either.
+    const aliveSessionIds = new Set<string>();
+    if (presenceByHandle.size > 0) {
+      const scoped = snapshotRegistryDeps(opts.registryDeps);
+      for (const presence of presenceByHandle.values()) {
+        if (presence.signedOutAt !== undefined) continue;
+        const binding = scoped.resolve(presence.sessionId);
+        if (binding && scoped.alive(binding)) aliveSessionIds.add(presence.sessionId);
+      }
+    }
+
+    const targets = planSweepTargets(stale, presenceByHandle, aliveSessionIds);
+    let sweptPairs = 0;
+    let recoveredMessages = 0;
+    for (const target of targets) {
+      const pending = pendingMessages(target.room, target.handle, target.maxId, db);
+      if (!pendingIncludesRecipient(pending, target.handle, target.wakeOn)) continue;
+
+      const key = chainKey(target.room, target.handle);
+      const entry = failureCounts.get(key);
+      const backingOff = entry && entry.maxId === target.maxId && entry.count >= maxConsecutiveFailures;
+      if (backingOff && tick <= entry.skipUntilTick) {
+        log.debug({ recipient: target.handle, room: target.room, consecutiveFailures: entry.count, retryTick: entry.skipUntilTick + 1 }, "chat: sweep backing off a pair past its consecutive-failure ceiling");
+        continue;
+      }
+
+      const noteFailure = () => {
+        const { crossedCeiling, count } = recordSweepFailure(failureCounts, key, entry, target, tick, maxConsecutiveFailures);
+        if (crossedCeiling) {
+          log.warn({ recipient: target.handle, room: target.room, consecutiveFailures: count }, "chat: sweep pair crossed its consecutive-failure ceiling; backing off, never permanently stopping");
+        }
+      };
+      const dm = dmParticipants(target.room, db) !== null;
+      sweptPairs++;
+      try {
+        const result = await deliverSerialized(
+          deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, target.handle,
+          { room: target.room, dm, id: target.maxId },
+        );
+        if (result.delivered) {
+          failureCounts.delete(key);
+          recoveredMessages += result.count;
+          log.info({ recipient: target.handle, room: target.room, recovered: result.count }, "chat: sweep recovered a stale delivery");
+        } else {
+          noteFailure();
+        }
+      } catch (err) {
+        // One target's delivery throwing (a programming error, a DB hiccup)
+        // must not abort the rest of this tick's targets.
+        noteFailure();
+        log.warn({ err, recipient: target.handle, room: target.room }, "chat: sweep delivery threw; continuing with the remaining targets");
+      }
+    }
+    return { sweptPairs, recoveredMessages };
+  }
 }
 
 // Not a real room -- isValidChatName forbids '_' -- so this key can never
@@ -379,14 +753,15 @@ async function findPaneSessionRetrying(
 function postAndNotify(
   db: Database,
   emitEvent: (topic: string, payload?: unknown) => unknown,
-  args: { room: string; handle: string; body: string; mentions?: string[] },
+  args: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean },
   inboxDeps: InboxDeps,
   herdr: typeof herdrRequest,
   deliveryChains: Map<string, Promise<void>>,
   log: Logger,
+  retryDelayMs: number,
 ): { id: number; recipients: string[] } | undefined {
-  const { room, handle, body, mentions } = args;
-  const posted = postMessage({ room, handle, body, mentions }, db);
+  const { room, handle, body, mentions, quiet } = args;
+  const posted = postMessage({ room, handle, body, mentions, quiet }, db);
   if (!posted) return undefined;
   // The row is durable at this point. The msg emit is best-effort: a throw
   // here (a full disk, an orphan daemon holding an events.db lock) must
@@ -398,9 +773,14 @@ function postAndNotify(
     log.warn({ err, id: posted.id, room }, "chat: emit for the posted message threw; message is durable, this emit was not");
   }
   const dm = dmParticipants(room, db);
+  // A quiet post is the record without the interruption: it stays unread (so
+  // peek and the viewer still surface it) and catches up inside whatever
+  // bundle a later ordinary message causes, but it wakes nobody itself --
+  // neither an agent's inbox below nor the human's desk further down.
+  if (quiet) return { id: posted.id, recipients: [] };
   for (const recipient of posted.recipients) {
     queueMicrotask(() => {
-      deliverSerialized(deliveryChains, db, inboxDeps, herdr, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
+      deliverSerialized(deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
         log.warn({ err, room, recipient, id: posted.id }, "chat: inbox delivery failed");
       });
     });
@@ -452,6 +832,10 @@ export function createChatHandlers(opts: {
   paneSessionPollMs?: number;
   /** Request logger; wired from ctx.log by command-router.ts. */
   log?: Logger;
+  /** deliverPost's single-retry delay; overridable so a test doesn't pay the real ~300ms. */
+  retryDelayMs?: number;
+  /** Shared with createChatDeliverySweep so the periodic sweep chains behind the same in-flight post deliveries instead of racing them; defaults to a private map when the caller (a bare createChatHandlers test) has no sweep. */
+  deliveryChains?: Map<string, Promise<void>>;
 }): {
   // A mapped type over CHAT_COMMANDS with a direct `unknown` payload, not
   // `Pick<TypedHandlers, ...>`: a wider `unknown` param still satisfies
@@ -468,9 +852,12 @@ export function createChatHandlers(opts: {
   const exec = opts.exec ?? runCapture;
   const paneSessionBudgetMs = opts.paneSessionBudgetMs ?? PANE_SESSION_BUDGET_MS;
   const paneSessionPollMs = opts.paneSessionPollMs ?? PANE_SESSION_POLL_MS;
+  const retryDelayMs = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   // One chain map per handler instance (one daemon, one db): shared across
   // every chat:post/chat:dm call so deliverSerialized actually serializes.
-  const deliveryChains = new Map<string, Promise<void>>();
+  // Also shared with the delivery sweep when the caller passes one in, so a
+  // sweep re-delivery chains behind rather than races an in-flight post.
+  const deliveryChains = opts.deliveryChains ?? new Map<string, Promise<void>>();
 
   return {
     "chat:join": async (rawPayload: unknown): Promise<CommandResult<"chat:join">> => {
@@ -498,11 +885,14 @@ export function createChatHandlers(opts: {
 
     "chat:post": async (rawPayload: unknown): Promise<CommandResult<"chat:post">> => {
       const payload = rawPayload as Commands["chat:post"]["payload"];
-      const { room, handle, body, mentions } = payload;
+      const { room, handle, body, mentions, quiet } = payload;
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
       if (!isValidBody(body)) return { ok: false, error: `body must be a non-empty string under ${MAX_BODY_BYTES} bytes` };
       if (mentions !== undefined && !Array.isArray(mentions)) return { ok: false, error: "mentions must be an array of handles" };
+      // Rejected rather than coerced: a truthy non-boolean (the string
+      // "false", say) would silently suppress every wake this post owes.
+      if (quiet !== undefined && typeof quiet !== "boolean") return { ok: false, error: "quiet must be a boolean" };
       const invalidMention = mentions?.find((m) => !isValidChatName(m));
       if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
       // A typo'd room previously no-op'd through postMessage's REVIVE (a
@@ -512,9 +902,82 @@ export function createChatHandlers(opts: {
         const nearby = closestRoomNames(room, handle, db);
         return { ok: false, error: `unknown room "${room}"${nearby.length ? ` — did you mean: ${nearby.join(", ")}` : ""}` };
       }
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains, log);
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions, quiet }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
+    },
+
+    "chat:ack": async (rawPayload: unknown): Promise<CommandResult<"chat:ack">> => {
+      const payload = rawPayload as Commands["chat:ack"]["payload"];
+      const { id, handle } = payload;
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "id must be a positive message id" };
+      const res = ackMessage({ messageId: id, handle }, db);
+      if (!res.ok) {
+        const why =
+          res.reason === "unknown-message"
+            ? `no message #${id}`
+            : res.reason === "own-message"
+              ? `message #${id} is your own`
+              : `you are not a member of the room message #${id} is in`;
+        return { ok: false, error: why };
+      }
+      // Only a first ack owes a receipt: a repeat is already recorded, and
+      // re-waking the author is exactly the noise this verb exists to avoid.
+      if (!res.already) {
+        const { author, body } = res;
+        queueMicrotask(() => {
+          deliverAck(db, inboxDeps, log, { author, acker: handle, messageId: id, body }).catch((err) => {
+            log.warn({ err, id, handle }, "chat: ack delivery failed");
+          });
+        });
+      }
+      return { ok: true, data: { author: res.author, room: res.room, already: res.already } };
+    },
+
+    "chat:claim": async (rawPayload: unknown): Promise<CommandResult<"chat:claim">> => {
+      const payload = rawPayload as Commands["chat:claim"]["payload"];
+      const { id, handle } = payload;
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "id must be a positive message id" };
+      const res = claimMessage({ messageId: id, handle }, db);
+      if (!res.ok) {
+        const why = {
+          "unknown-message": `no message #${id}`,
+          "own-message": `message #${id} is your own`,
+          "not-a-member": `you are not a member of the room message #${id} is in`,
+          dm: `message #${id} is a DM; nobody else can answer it`,
+        }[res.reason];
+        return { ok: false, error: why };
+      }
+      if (res.outcome === "lost") {
+        return { ok: true, data: { outcome: "lost", holder: res.holder, claimedAt: res.claimedAt, expiresAt: res.expiresAt } };
+      }
+      if (res.outcome === "held") return { ok: true, data: { outcome: "held", author: res.author, room: res.room } };
+      const { author, room, body, previousHolder } = res;
+      queueMicrotask(() => {
+        deliverClaim(db, inboxDeps, log, { author, claimer: handle, messageId: id, body, previousHolder }).catch((err) => {
+          log.warn({ err, id, handle }, "chat: claim delivery failed");
+        });
+      });
+      return { ok: true, data: previousHolder ? { outcome: "claimed", author, room, previousHolder } : { outcome: "claimed", author, room } };
+    },
+
+    "chat:release": async (rawPayload: unknown): Promise<CommandResult<"chat:release">> => {
+      const payload = rawPayload as Commands["chat:release"]["payload"];
+      const { id, handle } = payload;
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "id must be a positive message id" };
+      const res = releaseClaim({ messageId: id, handle }, db);
+      if (!res.ok) {
+        const why = {
+          "unknown-message": `no message #${id}`,
+          "not-claimed": `#${id} is not claimed`,
+          "not-holder": `you are neither the holder of #${id} nor its author`,
+        }[res.reason];
+        return { ok: false, error: why };
+      }
+      return { ok: true, data: { holder: res.holder } };
     },
 
     "chat:read": async (rawPayload: unknown): Promise<CommandResult<"chat:read">> => {
@@ -742,7 +1205,7 @@ export function createChatHandlers(opts: {
       // Recipient travels in `mentions`, not the body, so the transcript
       // shows the text as typed and the desk still notifies when `to` is
       // the human.
-      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains, log);
+      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: dm failed (retry budget exhausted)" };
       return { ok: true, data: { room, id: posted.id, recipients: posted.recipients } };
     },

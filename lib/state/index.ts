@@ -105,6 +105,10 @@ export {
 } from "./run-history-store.ts";
 
 export {
+  ackMessage,
+  claimMessage,
+  releaseClaim,
+  CLAIM_TTL_MS,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -117,6 +121,7 @@ export {
   markRead,
   markDelivered,
   pendingMessages,
+  stalePendingPairs,
   listRooms,
   archiveRoom,
   roomArchivedAt,
@@ -125,10 +130,14 @@ export {
   pruneMessages,
   CHAT_RETENTION_MS,
   CHAT_ROOM_FLOOR,
+  type AckResult,
+  type ClaimResult,
+  type ReleaseResult,
   type ChatMember,
   type ChatMessage,
   type WakeMode,
   type RoomSummary,
+  type StalePendingRow,
 } from "./chat-store.ts";
 
 export {

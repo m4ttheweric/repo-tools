@@ -1,0 +1,15 @@
+{
+  "name": "chat",
+  "version": "0.3.0",
+  "description": "rt chat presence: sign-in/join/sign-out/away skills and the hooks that confirm a signed-in session across resumes.",
+  "author": {
+    "name": "Matthew Goodwin"
+  },
+  "license": "MIT",
+  "skills": [
+    "./skills/sign-in",
+    "./skills/join",
+    "./skills/sign-out",
+    "./skills/away"
+  ]
+}

@@ -7,6 +7,7 @@
  */
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { resolveRepoArg } from "../lib/repo-arg.ts";
+import { repoLabel } from "../lib/repo-label.ts";
 import type { RunDetail, RunSummary } from "../packages/rt-client/src/commands.ts";
 
 function fail(msg: string): never {
@@ -46,7 +47,7 @@ export function formatRunLine(r: RunSummary): string {
   const icon = STATUS_ICON[r.status] ?? "?";
   const stage = r.status === "running" && r.current_stage ? `@ ${r.current_stage}` : "";
   const when = new Date(r.started_at).toISOString().slice(0, 16).replace("T", " ");
-  return `${icon} ${r.id}  ${r.repo}  ${r.work_type}  ${r.status} ${stage}  ${when}`;
+  return `${icon} ${r.id}  ${repoLabel(r.repo)}  ${r.work_type}  ${r.status} ${stage}  ${when}`;
 }
 
 export function formatRunDetail(d: RunDetail): string {
@@ -100,7 +101,7 @@ async function pickRunId(runs: RunSummary[], message: string): Promise<string | 
   const options = runs.map((r) => ({
     value: r.id,
     label: r.id.padEnd(idWidth),
-    hint: `${r.repo}  ${r.status}${r.current_stage ? ` @ ${r.current_stage}` : ""}`,
+    hint: `${repoLabel(r.repo)}  ${r.status}${r.current_stage ? ` @ ${r.current_stage}` : ""}`,
   }));
   return filterableSelect({ message, options, stderr: true });
 }

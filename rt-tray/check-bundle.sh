@@ -206,7 +206,16 @@ check_signed() { # path label want-ent(none|jit)
     codesign --verify --strict "$p" 2>/dev/null && pass "$label signature verifies" || fail "$label signature does not verify"
     assert_hardened_runtime "$p" "$label"
     if ent_has "$p" 'allow-jit'; then [ "$want" = jit ] && pass "$label has allow-jit" || fail "$label unexpectedly has allow-jit"; else [ "$want" = none ] && pass "$label has no jit entitlement" || fail "$label missing allow-jit"; fi
-    ent_has "$p" 'allow-unsigned-executable-memory' && fail "$label carries allow-unsigned-executable-memory (JIT-only entitlements only)" || pass "$label has no allow-unsigned-executable-memory"
+    # allow-unsigned-executable-memory rides WITH allow-jit and never alone:
+    # bun's JIT emits into plain malloc'd pages (not MAP_JIT), so a
+    # long-running bun-compiled service is CODESIGNING-killed mid-run
+    # without it (the daemon crash-looped 15 times in the VM clean room;
+    # version-check smokes never warm the JIT, so only a soak catches it).
+    if ent_has "$p" 'allow-unsigned-executable-memory'; then
+        [ "$want" = jit ] && pass "$label has allow-unsigned-executable-memory (with jit)" || fail "$label unexpectedly has allow-unsigned-executable-memory"
+    else
+        [ "$want" = jit ] && fail "$label missing allow-unsigned-executable-memory (bun JIT dies mid-run without it)" || pass "$label has no allow-unsigned-executable-memory"
+    fi
 }
 APPS=("$PROD")
 [ -n "$DEV" ] && APPS+=("$DEV")
@@ -354,6 +363,25 @@ check_helpers() { # app
             fail "$exe skills: dot directory $dotdir would break the bundle seal"
         done < <(find "$app/Contents/Helpers/skills" -type d -name '*.*' -print0)
     fi
+    # Reverse direction: every top-level Helpers entry must trace to a
+    # deps.lock row or be a first-party build.sh product (rt-ui, skills).
+    # The row loop above only proves declared things exist; a helper the
+    # lock doesn't pin would otherwise ship unverified and unversioned.
+    local allowed=" rt-ui skills " seg entry stowaways=0
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        split_tsv "$row"
+        seg="${FIELDS[6]#Contents/Helpers/}"; seg="${seg%%/*}"
+        allowed="$allowed$seg "
+    done <<< "$LOCK_TSV"
+    while IFS= read -r -d '' entry; do
+        seg="$(basename "$entry")"
+        case "$allowed" in
+            *" $seg "*) ;;
+            *) fail "$exe Helpers/$seg is not declared by deps.lock"; stowaways=$((stowaways + 1)) ;;
+        esac
+    done < <(find "$app/Contents/Helpers" -mindepth 1 -maxdepth 1 -print0)
+    [ "$stowaways" -eq 0 ] && pass "$exe Helpers holds only deps.lock-declared and first-party entries"
     [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
     # Actually RUN it, like every other helper above. Asserting the entry file
     # merely exists is what let a bundled fast-browser that crashes at module

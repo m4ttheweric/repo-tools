@@ -19,6 +19,7 @@
  */
 
 import { execSync, spawn, spawnSync } from "child_process";
+import { repoLabelQualified } from "../lib/repo-label.ts";
 import { basename, join } from "path";
 import { reverseLookupByName } from "../lib/repo-arg.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
@@ -61,6 +62,26 @@ export interface FlavorTuple {
   intended: IntendedMode;
   cliFlavor: "dev" | "prod";
   daemon: { flavor: string; pid: number | null } | null;
+}
+
+
+/**
+ * Human events line: repo keys arrive as wire identities and MUST render as
+ * labels (no-wire-in-ui.test.ts pins this seam). lastSyncedAt only advances
+ * on a non-empty batch or a state transition, so a quiet-but-healthy repo
+ * can go the whole session without one; "never" would misread as broken,
+ * not idle.
+ */
+export function formatFreshnessParts(
+  freshness: Record<string, { state: string; lastSyncedAt: string | null }>,
+  now: number,
+): string[] {
+  return Object.entries(freshness).map(([repo, f]) => {
+    const age = f.lastSyncedAt
+      ? `${Math.round((now - Date.parse(f.lastSyncedAt)) / 1000)}s ago`
+      : "no events yet";
+    return `${repoLabelQualified(repo)} ${f.state} (${age})`;
+  });
 }
 
 export async function describeTuple(): Promise<FlavorTuple> {
@@ -506,16 +527,7 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
       | Record<string, { state: string; lastSyncedAt: string | null }>
       | undefined;
     if (freshness && Object.keys(freshness).length > 0) {
-      const parts = Object.entries(freshness).map(([repo, f]) => {
-        // lastSyncedAt only advances on a non-empty batch or a state
-        // transition, so a quiet-but-healthy repo can go the whole session
-        // without one; "never" would misread as broken, not idle.
-        const age = f.lastSyncedAt
-          ? `${Math.round((now - Date.parse(f.lastSyncedAt)) / 1000)}s ago`
-          : "no events yet";
-        return `${repo} ${f.state} (${age})`;
-      });
-      lines.push(`    ${dim}events: ${parts.join(" · ")}${reset}`);
+      lines.push(`    ${dim}events: ${formatFreshnessParts(freshness, now).join(" · ")}${reset}`);
     }
 
     const health = verdict.data.health as { level: string; reasons: string[] } | undefined;

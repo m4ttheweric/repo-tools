@@ -996,7 +996,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         // approved — another registered agent (deck) can still be pending.
         TrayState.shared.needsApproval = needsLoginItemApproval()
 
+        updateReadyHeld(status.readyHeld)
+
         await refreshBootDiagnostics()
+    }
+
+    /// Persisted so a tray relaunch does not re-announce a hold the operator
+    /// has already seen; the notifier's re-arm interval, not a restart, is what
+    /// brings a standing hold back.
+    private static let readyHeldLedgerKey = "readyHeldLedger"
+
+    /// Badge the held repos and announce the ones not yet announced (RT-98).
+    @MainActor
+    private func updateReadyHeld(_ held: [ReadyHeldRepo]) {
+        TrayState.shared.readyHeldRepos = held
+
+        let defaults = UserDefaults.standard
+        let stored = defaults.dictionary(forKey: Self.readyHeldLedgerKey) as? [String: Date] ?? [:]
+        let outcome = ReadyHeldNotifier.decide(held: held, ledger: stored, now: Date())
+        defaults.set(outcome.ledger, forKey: Self.readyHeldLedgerKey)
+
+        for repo in outcome.notify {
+            TrayLog.warn("worktree ready ladder held pending approval", [
+                "repo": repo.label, "hash": repo.hash,
+            ])
+            notificationManager.fireReadyHeld(repo)
+        }
     }
 
     /// Restart count, last-crash reason, and boot verdict (S026) — a separate
@@ -1180,4 +1205,6 @@ struct DaemonStatus {
     /// "ok" / "degraded" / "unhealthy", nil if the daemon didn't report one.
     let healthLevel: String?
     let healthReasons: [String]
+    /// Repos whose team `ready` ladder is held pending approval (RT-98).
+    let readyHeld: [ReadyHeldRepo]
 }

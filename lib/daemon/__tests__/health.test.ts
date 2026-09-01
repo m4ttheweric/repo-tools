@@ -30,6 +30,33 @@ test("all-nominal inputs are ok with no reasons", () => {
   expect(h.eventLoop.maxLagMs).toBe(20);
 });
 
+test("rss growth is not reported before the process has a full window of history", () => {
+  // The real shape (RT-102): a fresh daemon's baseline is its own cold boot
+  // sample, so a warmed process clears 1.5x against it every time. Numbers are
+  // the ones measured on a live restart: 140.9MB at 1s, 303.9MB at 3min.
+  const i = base();
+  i.uptimeMs = 3 * 60_000;
+  i.mem.rss = 304 * 1024 * 1024;
+  i.rssBaseline = { rss: 141 * 1024 * 1024, at: i.now - 3 * 60_000 };
+
+  const h = computeHealth(i);
+
+  expect(h.reasons.some((r) => r.includes("rss grew"))).toBe(false);
+  expect(h.level).toBe("ok");
+});
+
+test("rss growth is reported once the process has a full window of history", () => {
+  const i = base();
+  i.uptimeMs = 2 * 60 * 60_000;
+  i.mem.rss = 304 * 1024 * 1024;
+  i.rssBaseline = { rss: 141 * 1024 * 1024, at: i.now - 30 * 60_000 };
+
+  const h = computeHealth(i);
+
+  expect(h.reasons.some((r) => r.includes("rss grew"))).toBe(true);
+  expect(h.level).toBe("degraded");
+});
+
 test("a degraded freshness watcher flips degraded and names refresh", () => {
   const i = base();
   i.freshness = { "remote:gitlab/acme": { state: "degraded" } };

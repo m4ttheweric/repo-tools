@@ -2,13 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { deliverToInbox, deliveryLabel, renderDeliveries, wrapCrossSession } from "../inbox.ts";
+import { DEFAULT_TIMEOUT_MS, deliverToInbox, deliveryLabel, renderDeliveries, wrapCrossSession } from "../inbox.ts";
 
-test("renderDeliveries formats room and dm lines", () => {
+test("the default push timeout is 3000ms, not the original 1000ms that made one slow recipient look like a dropped push", () => {
+  expect(DEFAULT_TIMEOUT_MS).toBe(3000);
+});
+
+test("renderDeliveries formats room and dm lines, each carrying the id rt chat ack takes", () => {
   expect(renderDeliveries([
-    { room: "general", dm: false, handle: "max", body: "hello" },
-    { room: "dm-1", dm: true, handle: "eli", body: "hi" },
-  ])).toBe("[#general] max: hello\n[dm] eli: hi");
+    { room: "general", dm: false, handle: "max", body: "hello", id: 12 },
+    { room: "dm-1", dm: true, handle: "eli", body: "hi", id: 13 },
+  ])).toBe("[#general] max #12: hello\n[dm] eli #13: hi");
 });
 
 test("wrapCrossSession produces the exact envelope Claude Code collapses on", () => {

@@ -14,6 +14,7 @@ import { execSync } from "child_process";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import { withInlineSpinner } from "../lib/tui/inline-spinner.ts";
 import { scanListeningPorts, type PortEntry } from "../lib/port-scanner.ts";
+import { repoLabel } from "../lib/repo-label.ts";
 
 // ─── Data fetching ───────────────────────────────────────────────────────────
 
@@ -46,7 +47,7 @@ async function getPortData(): Promise<{ entries: PortEntry[]; source: "daemon" |
  */
 function folderPath(entry: PortEntry): string {
   const { basename } = require("path") as typeof import("path");
-  const wtName = entry.worktree ? basename(entry.worktree) : (entry.repo ?? "unknown");
+  const wtName = entry.worktree ? basename(entry.worktree) : (entry.repo ? repoLabel(entry.repo) : "unknown");
   return entry.relativeDir && entry.relativeDir !== "." ? `${wtName}/${entry.relativeDir}` : wtName;
 }
 
@@ -90,7 +91,7 @@ function displayPorts(entries: PortEntry[]): void {
 
   console.log("");
   for (const [repoName, worktrees] of grouped) {
-    console.log(`  ${bold}${cyan}${repoName}${reset}`);
+    console.log(`  ${bold}${cyan}${repoLabel(repoName)}${reset}`);
 
     for (const [_wtPath, ports] of worktrees) {
       const branchName = ports[0]?.branch;
@@ -152,7 +153,7 @@ async function showKillPicker(entries: PortEntry[]): Promise<void> {
       return {
         value: String(p.pid),
         label: `${yellow}:${p.port}${reset}  ${folderPath(p)}  ${dim}${p.command}${reset}`,
-        hint: `${p.repo}${p.branch ? ` \u00b7 ${p.branch}` : ""} \u00b7 ${uptimeStr}`,
+        hint: `${p.repo ? repoLabel(p.repo) : ""}${p.branch ? ` \u00b7 ${p.branch}` : ""} \u00b7 ${uptimeStr}`,
       };
     }),
   });

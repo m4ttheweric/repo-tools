@@ -5,6 +5,11 @@
   },
   "plugins": [
     {
+      "name": "chat",
+      "source": "./plugins/chat",
+      "description": "rt chat presence: sign-in/join/sign-out/away skills and the hooks that confirm a signed-in session across resumes."
+    },
+    {
       "name": "fast-browser",
       "source": {
         "source": "url",

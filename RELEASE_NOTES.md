@@ -1,59 +1,83 @@
-the worktree lifecycle release. `rt worktree` replaces the parking lot with a provision/dispose lifecycle backed by an on-deck pool of ready trees, and the daemon moves to realtime event tracking with per-repo grants. also ships the `@mattstack/rt-client` package, StrongDM agent verbs, and a batch of nav picker quality-of-life work. (an experimental mattcloud sandbox surface was built and retired entirely within this range, so it ships nothing.)
+the mattstack.app release. rt now ships inside a signed, notarized Mac app that installs the whole suite, keeps itself updated through Sparkle, and walks a new machine through everything macOS gates behind native prompts. standalone CLI downloads are retired. the clean-room proof runs the entire journey on a fresh VM: Gatekeeper accept, headless Command Line Tools install, 21-step post-install, daemon alive under launchd, verify green.
 
-### Worktree lifecycle
+### mattstack.app
 
-- new `rt worktree` verb family: `provision`, `create`, `dispose`, `list`, `freshen`, `adopt`, and `each`, with a nav picker when invoked bare
-- on-deck pool: pre-created worktrees kept ready by the daemon (replenish/shrink), a ready-step engine with changed-glob triggers, and name pools with ticket-derived branch names
-- `provision` claims from the pool or cold-creates, revalidates the claim under lock, and surfaces degraded readiness instead of hiding it
-- `dispose` is guarded (MR-sha anchor, tolerant of generated drift, lease-aware) and renames to trash with async reaping, so verb latency is independent of tree size; if the trash rename fails, the branch and registry record are kept
-- merge reactor: merged MRs trigger auto-return of your shell and guarded auto-dispose of the finished tree
-- per-repo worktree registry with a reconcile pass (ground-truth branches, unmanaged-tree adoption), epoch-checked saves so stale snapshots cannot clobber concurrent writes, and per-tree operation locks
-- the parking lot is deleted; `rt park` remains as a deprecated stub pointing at `rt worktree`
-- install dedup sees through env-var prefixes, and pnpm implicit installs default to a plain install
+- rt-tray is rebranded and rebuilt as mattstack.app: signed, notarized, stapled, distributed as dmg + zip with a signed Sparkle appcast and per-release deltas
+- onboarding wizard drives setup end to end: welcome, permissions (Full Disk Access, notifications, background items), team join or team-of-one, install progress with per-step retry
+- flavor exclusivity: one registered flavor per machine (prod XOR dev), self-healing to the declared mode instead of racing for sockets
+- `rt --post-install` refuses transient roots (DMG, translocation), sweeps legacy installs, and completes non-interactively on a fresh Mac with no git identity (a fallback identity covers the initial home-repo commit)
+- headless Apple CLT install via the softwareupdate trigger-file flow, claimed done only after a green git re-probe; the app never invokes the git stub before CLT exists, so Apple's install dialog stays gone
+- setup that must be driven by the app refuses fast from a bare terminal instead of hanging ten minutes on an unanswerable request
+- `rt uninstall` reverses what the installer did, with a consent gate for ~/.mattstack; `rt update` asks the app
 
-### Daemon: realtime tracking and freshness
+### The setup verb family
 
-- per-repo tracking levels (`live`/`poll`/`off`) with per-cache opt-in grants, edited interactively via `rt daemon track`
-- realtime events watchers replace the ActionCable MR subscriptions; events fan out to granted stores (project upserts, teammate pushes, notes)
-- delta sync: incremental `updatedAfter` pulls with a daily deep reconcile, demand-scoped to a 30-day window; a failed deep reconcile falls back to delta instead of wedging the repo
-- pipeline top-up inside delta sync (4-wide fetches, restores 5-minute pipeline freshness, stuck pipelines age out after 24h)
-- freshness on demand: `cache:read` takes a max-age gate, and `rt daemon status` gains `--fresh`/`--max-age` plus events freshness reporting
-- discussions lifted into `~/.rt/discussions.json` with grant-aware reads; bot-authored notes are skipped
-- MR actions write back: mutations refresh the stores they changed, and a failed read-back can no longer report a succeeded mutation as failed
-- notification correctness: `mr_ready` keys on mergeability, `mr_approved` requires a new approver, conflict flaps stopped
-- `mr:by-branch` batch read (store-first with forge write-back)
-- `secrets:forge-token`, a grant-gated forge-token verb
-- cron trigger layer: broadcast pattern to debounced command
-- `rt daemon status` stops calling a live daemon dead
+- `rt setup plan|status|apply`: a validator-driven plan, an NDJSON apply engine with resume and stop-on-fail, and an interactive walk; `--post-install` is headless apply
+- `rt verify` IS the setup validators, one implementation; `--ci` is the machine-gate variant
+- `rt tools install|setup`: brew, vendored, and CLT installs with tool-owned setup steps
+- `rt services`: launchd facade with need-event waits over tray.sock
+- `rt setup <integration> status|connect` (Slack app creation included); accounts and access validators with honest exit-2 error envelopes
+- security hardening rounds throughout: exact-value secret redaction, team-declared data never picks a privileged target, vendor-install RCE closed
 
-### rt-client
+### Teams
 
-- published as `@mattstack/rt-client`: typed commands, unix-socket transport, relay, repo-name resolution, and a fake-daemon subpath export for tests
-- daemon handlers for the client catalog carry the catalog's own types
+- `rt team create|publish|invite|join|members|status`: a scaffolded team zone pushed at install, opaque invites (AES-256-GCM, AAD-bound codes) redeemed through the switchboard relay, reply-key exchange and peering, and roster-driven secret recipients
+- team-scope secrets: N-recipient sops with `rotate --team`
+- membership permission model and forge grants minted with the invite
 
-### StrongDM
+### The bundle
 
-- agent JSON envelopes for `connect`, `status`, and `connections`, with a production guard and non-interactive reason/duration defaults
-- desktop-app preflight: launches SDM.app when the CLI probe errors
-- `rt sdm connections` listing, and the rt-sdm-connect agent orchestration skill
+- the app carries the whole suite under Contents/Helpers: deck, board, gitq, console, chat, fast-browser, cloudflared, and the tool floor (fzf, jq, gh, glab, bun, node, sops, age-keygen), every binary signed inside the sealed bundle
+- a central bundle pipeline builds managed apps from source: a `repo` field on the deps.lock row marks an app buildable, the app repo's own `mattstack.deck.json` carries the recipe, and each dispatch publishes an immutable per-app release plus a deps.lock PR
+- publishing lives in its own job so no app recipe ever runs beside a credential; pins come only from the trusted plan matrix, and the release job recomputes hashes from the uploaded artifact
+- bun-compiled services get `allow-unsigned-executable-memory` beside `allow-jit`: bun's JIT emits into plain malloc pages, and without it a long-running daemon is codesigning-killed mid-run while every short smoke passes
+- check-bundle asserts the full contract from inside the signed bundle, and the VM harness (golden image + walkthrough) proves the install on a machine stricter than any real Mac
 
-### Navigation
+### Skills
 
-- image previews in the fzf preview pane, with iTerm2 routing and character-art fallback when kitten cannot render
-- live listing refresh while the picker is open, via the nav-watch fs-event bridge
-- sort menu on ctrl-s, list wraparound at both ends, and cursor retention after opening a file
-- fzf `--expect` keys are honored on exit 1, so ctrl-up no longer acts as a cancel; the run repo picker treats ctrl-up as back
+- `rt skills compile|check`: a pure compile core turning skill sources into compiled packs, with surface.jsonc enforcement, registered vs internal fill modes, and manifest IO
+- `rt skills surface`: list, set, apply, with an fzf palette and a reviewed confirm on the accept path
+- `rt skills link`: reconciles bundled skill trees into Claude Code; `--from <dir>` links an app's bundled skills and `.skillsignore` keeps maintainer-only skills off user machines
+- bundled skills ride each app's release artifact and land under Contents/Helpers/skills
 
-### Notifications and tray
+### Home repo and settings
 
-- notification sounds coalesce, so a burst plays one tone
-- notifier fallback dispatch is an async spawn with kill escalation
+- your settings become a local-first git repo at `~/.mattstack/user`: initialized offline, committed with history, backed up only when you add a remote; `rt home key import` brings an external age key into the keychain
+- per-machine profiles under `user/local/<machine>` with a picker on fresh machines and safe adopt-on-reinstall; the materialize phase regenerates PATH shims, daemon registration, and tool setups as init's last step
+- `rt.hooks` becomes a settings key with hooks.json as a self-healing derived cache
+- the suite settings resolver (`@mattstack/rt-client`) is the one store every mattstack app reads through
 
-### Fixes and internals
+### rt runner and the Go UI
 
-- dev-mode wrapper replaces `--tsconfig-override` with a cwd pivot (bun#22023)
-- glance renamed to `@mattstack/glance` and bumped through 0.18, following its rebase contract
-- tests isolate HOME via a bunfig preload, and log writers resolve `~/.rt/logs` at call time, so test runs stop polluting real logs
-- README refreshed for the public profile
+- rt's prompts and step spinners render through a bundled Go helper (rt-ui) over NDJSON; Ink is gone and the TS CLI is UI-free by hard rule
+- `rt runner`: a board of a repo's services in headless herdr panes, tmux-backed by default; `rt run` presets launch through the seeded board, detect and latch served URLs, and fan out with layout-smart pane placement
+- fzf picker chrome: accent bar, left-edge pickers, footer keys, a patched fzf glyph, and resize-aware heights
+- the omit-args convention is now enforced: every leaf that requires a positional shows a picker instead of erroring (gate + 24 leaf fixes)
 
-**Full Changelog**: https://github.com/m4ttstack/rt/compare/v2.5.0...v2.6.0
+### rt chat
+
+- group chat and presence for the agents in the estate, over the daemon: rooms, DMs, mentions, away status, invites typed into panes, and a web viewer every post links into
+- delivery hardened across five rounds: socket-first push, retry with pending sweep and backoff, cross-session envelopes, wake re-arm after daemon restarts
+- sign-in/join/sign-out/away ship as a Claude Code plugin with session hooks, published in the mattstack marketplace and installed by setup
+
+### Daemon
+
+- stability audit and six-phase hardening: the API port retries on EADDRINUSE instead of crashing, sync-exec is banned from the daemon thread, honest supervision and trust boundaries, and an age-based log janitor with `rt.logRetentionDays`
+- repo identity re-key: every store and daemon verb keys on a stable serialized identity with legacy heal; `rt repos locate` re-points the index, worktree registry, and git admin files in one pass, and `rt repos prune` carries a retired name's data forward instead of evicting it
+- `rt cd` gets a daemon-served repo-list cache with a live fallback and ctrl-r refresh
+- project-mrs learns section tags (codeowner sections, scope sections, demand backfill) with realtime tag healing
+- run tracking: `/api/runs` REST surface, run-state round trips (CLI, REST, events), and a run-liveness staleness ladder
+
+### Agent coordination
+
+- `rt agent start|resume|show|list`: hand a workspace and tab to another session and resume it, daemon-optional
+- `rt pane send`: drive a herdr pane from the CLI
+- `rt events`: a small estate-wide event bus
+
+### Release and estate machinery
+
+- every release publishes the Claude Code plugin marketplace; the catalog carries the mattstack pack, fast-browser, and the chat plugin
+- internal packages moved off vendored file: deps onto the npm registry (public and private under @mattstack), with self-hosted Renovate keeping the estate current
+- CI gates typecheck, unit tests, and doc drift on every PR; the Homebrew tap machinery is retired — the app is the way in
+
+**Full Changelog**: https://github.com/m4ttstack/rt/compare/v2.7.0...v2.8.0

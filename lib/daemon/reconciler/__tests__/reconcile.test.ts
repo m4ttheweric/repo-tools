@@ -6,7 +6,10 @@ import { join } from "path";
 import type { Logger } from "pino";
 import { closeStateDb } from "../../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../../worktree/registry.ts";
-import { reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
+import { healLegacyPoolRoots, releaseStrandedClaims, reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
+import { tryLockTree } from "../../../worktree/locks.ts";
+import { markHandoffDelivered } from "../../../worktree/patch.ts";
+import { legacyWorktreePoolRoots, worktreePoolRoot } from "../../../rt-paths.ts";
 
 function fakeLog(): Logger {
   return { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as Logger;
@@ -78,5 +81,155 @@ describe("reconcile.ts: reconcileRepo", () => {
     const held = loadRegistry(repoName).find((t) => t.name === "amber");
     expect(held).toBeDefined();
     expect(held?.missCount ?? 0).toBe(0); // a held pass never accrues a miss
+  });
+});
+
+describe("reconcile.ts: healLegacyPoolRoots (RT-95)", () => {
+  const identity = "remote:example.com%2Facme%2Frepo";
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtheal-home-")));
+    closeStateDb();
+  });
+
+  function seed(state: "on-deck" | "claimed", root: string, name: string): TreeRecord {
+    return {
+      name,
+      path: join(root, name),
+      kind: "ephemeral",
+      state,
+      branch: `on-deck/${name}`,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  test("flips only on-deck trees under the legacy colon root to disposable", () => {
+    const [colonRoot, pctRoot] = legacyWorktreePoolRoots(identity);
+    const current = worktreePoolRoot(identity);
+    const events: Array<{ type: string; data: any }> = [];
+    saveRegistry(identity, [
+      seed("on-deck", colonRoot!, "fred"),
+      seed("on-deck", pctRoot!, "bill"),
+      seed("claimed", colonRoot!, "snape"),
+      seed("on-deck", current, "tonks"),
+    ]);
+
+    healLegacyPoolRoots({ repoName: identity, emit: (type, data) => events.push({ type, data }), log: fakeLog() });
+
+    const trees = loadRegistry(identity);
+    const byName = Object.fromEntries(trees.map((t) => [t.name, t]));
+    expect(byName.fred!.state).toBe("disposable");
+    expect(byName.fred!.disposableReason).toContain("legacy pool root");
+    expect(byName.bill!.state).toBe("disposable");
+    expect(byName.snape!.state).toBe("claimed");
+    expect(byName.tonks!.state).toBe("on-deck");
+    expect(events.filter((e) => e.type === "worktree:disposable").length).toBe(2);
+  });
+
+  test("second run is a no-op", () => {
+    const [colonRoot] = legacyWorktreePoolRoots(identity);
+    saveRegistry(identity, [seed("on-deck", colonRoot!, "fred")]);
+    healLegacyPoolRoots({ repoName: identity, emit: () => {}, log: fakeLog() });
+    const events: unknown[] = [];
+    healLegacyPoolRoots({ repoName: identity, emit: (t) => events.push(t), log: fakeLog() });
+    expect(events.length).toBe(0);
+  });
+
+  test("colon-free identity (legacy root equals current) heals nothing", () => {
+    const plain = "acme";
+    saveRegistry(plain, [seed("on-deck", worktreePoolRoot(plain), "fred")]);
+    healLegacyPoolRoots({ repoName: plain, emit: () => {}, log: fakeLog() });
+    expect(loadRegistry(plain)[0]!.state).toBe("on-deck");
+  });
+});
+
+describe("reconcile.ts: releaseStrandedClaims (RT-99)", () => {
+  const identity = "remote:example.com%2Facme%2Frepo";
+  let repo: string;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtstrand-home-")));
+    closeStateDb();
+    repo = makeRepo();
+  });
+
+  /** A real git worktree at the pool root, on `branch`, with a claimed row. */
+  function seedTree(name: string, branch: string, handoff?: "pending" | "done"): TreeRecord {
+    const path = join(worktreePoolRoot(identity), name);
+    execSync(`git worktree add -b '${branch}' '${path}'`, { cwd: repo, shell: "/bin/zsh" });
+    const rec: TreeRecord = {
+      name,
+      path,
+      kind: "ephemeral",
+      state: "claimed",
+      branch,
+      createdAt: new Date().toISOString(),
+      claimedAt: new Date().toISOString(),
+      disposal: "merge",
+      ...(handoff ? { handoff } : {}),
+    };
+    const trees = loadRegistry(identity);
+    trees.push(rec);
+    saveRegistry(identity, trees);
+    return rec;
+  }
+
+  test("pending claim still on its pool branch (git-verified) goes back on-deck", async () => {
+    seedTree("fred", "on-deck/fred", "pending");
+    await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+    const rec = loadRegistry(identity)[0]!;
+    expect(rec.state).toBe("on-deck");
+    expect(rec.claimedAt).toBeUndefined();
+    expect(rec.handoff).toBeUndefined();
+  });
+
+  test("registry says pool branch but git moved on: disposable, never back to the pool", async () => {
+    const rec = seedTree("ginny", "on-deck/ginny", "pending");
+    execSync("git checkout -b acme-9-work", { cwd: rec.path, shell: "/bin/zsh" });
+    await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+    const stored = loadRegistry(identity)[0]!;
+    expect(stored.state).toBe("disposable");
+    expect(stored.branch).toBe("acme-9-work");
+    expect(stored.disposableReason).toContain("stranded claim");
+  });
+
+  test("pending claim on a work branch flips disposable with a stranded reason", async () => {
+    const events: Array<{ type: string }> = [];
+    seedTree("bill", "acme-1-work", "pending");
+    await releaseStrandedClaims({ repoName: identity, emit: (type) => events.push({ type }), log: fakeLog() });
+    const rec = loadRegistry(identity)[0]!;
+    expect(rec.state).toBe("disposable");
+    expect(rec.disposableReason).toContain("stranded claim");
+    expect(events.some((e) => e.type === "worktree:disposable")).toBe(true);
+  });
+
+  test("delivered (done) and pre-marker claims are never touched", async () => {
+    seedTree("neville", "acme-2-work", "done");
+    seedTree("hedwig", "acme-3-work");
+    await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+    for (const rec of loadRegistry(identity)) expect(rec.state).toBe("claimed");
+  });
+
+  test("delivery landing mid-release wins: the row survives untouched", async () => {
+    const row = seedTree("luna", "acme-5-work", "pending");
+    // The release awaits git between its pending-read and its patch; simulate
+    // the handler's CAS landing in that gap by delivering before the call.
+    // The release's own in-callback re-check must then refuse to mutate.
+    markHandoffDelivered(identity, row.path);
+    await releaseStrandedClaims({ repoName: identity, emit: () => { throw new Error("must not emit"); }, log: fakeLog() });
+    const stored = loadRegistry(identity)[0]!;
+    expect(stored.state).toBe("claimed");
+    expect(stored.handoff).toBe("done");
+  });
+
+  test("a locked pending claim is skipped (provision still in flight)", async () => {
+    const row = seedTree("tonks", "acme-4-work", "pending");
+    const release = tryLockTree(row.path);
+    try {
+      await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+      expect(loadRegistry(identity)[0]!.state).toBe("claimed");
+    } finally {
+      release?.();
+    }
   });
 });

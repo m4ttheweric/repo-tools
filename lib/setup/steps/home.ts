@@ -59,7 +59,14 @@ export function failureDetail(stderr: string): string {
   // `79828 |  code`, `      ^`, `    at fn (file:1:2)` — bun's crash frames.
   const isFrame = (l: string) => /^\d+\s*\|/.test(l) || /^\^+$/.test(l) || /^at\s/.test(l);
   const named = lines.find((l) => /\b(error|Error|EACCES|ENOENT|denied|failed|fatal)\b/.test(l) && !isFrame(l));
-  return named ?? lines.find((l) => !isFrame(l)) ?? lines[0]!;
+  const chosen = named ?? lines.find((l) => !isFrame(l)) ?? lines[0]!;
+  // A line ending in ":" is a header introducing the real error on the next
+  // line (`rt home init: failed at step "X":` + payload) — carry it along.
+  if (chosen.endsWith(":")) {
+    const next = lines[lines.indexOf(chosen) + 1];
+    if (next !== undefined && !isFrame(next)) return `${chosen} ${next}`;
+  }
+  return chosen;
 }
 
 async function homeInitRun(ctx: ApplyContext): Promise<StepOutcome> {

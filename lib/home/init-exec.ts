@@ -82,19 +82,22 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog): Promise<vo
     case "commitInitialUserRepo": {
       log("committing the initial user/ tree");
       await run(exec, ["git", "-C", "user", "add", "-A"]);
-      // Checked before the commit spawn: an unconfigured identity fails
-      // `git commit` with an opaque "empty ident name" error, so this turns
-      // it into an actionable message instead.
+      // An unconfigured identity fails `git commit` with an opaque "empty
+      // ident name" error, and a fresh machine's install must not stop on
+      // it — the home repo is local-only here, so a built-in identity for
+      // this one commit is safe. A later configured identity applies from
+      // the next commit on.
       const name = await exec.run(["git", "-C", "user", "config", "user.name"]);
       const email = await exec.run(["git", "-C", "user", "config", "user.email"]);
-      if (name.code !== 0 || !name.stdout.trim() || email.code !== 0 || !email.stdout.trim()) {
-        throw new StepFailed("no git identity: run `git config --global user.name` and `git config --global user.email`, then re-run `rt home init`");
-      }
+      const identityFlags =
+        name.code !== 0 || !name.stdout.trim() || email.code !== 0 || !email.stdout.trim()
+          ? ["-c", "user.name=mattstack", "-c", "user.email=home@mattstack.local"]
+          : [];
       // `-c commit.gpgsign=false`: a global signing config with an unusable
       // key fails this commit outright (exit 128), taking down an init that
       // needs no signature. An empty tree is not a failure either — a
       // resumed init can reach here with everything already committed.
-      const result = await exec.run(["git", "-c", "commit.gpgsign=false", "-C", "user", "commit", "-m", "initial home repo"]);
+      const result = await exec.run(["git", ...identityFlags, "-c", "commit.gpgsign=false", "-C", "user", "commit", "-m", "initial home repo"]);
       if (result.code !== 0 && !/nothing to commit/i.test(`${result.stdout}\n${result.stderr}`)) {
         throw new StepFailed(result.stderr);
       }

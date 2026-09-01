@@ -10,7 +10,9 @@
 
 import { isAbsolute, join, relative, resolve } from "path";
 import type { Logger } from "pino";
+import { legacyWorktreePoolRoots } from "../rt-paths.ts";
 import { loadRegistry } from "../worktree/registry.ts";
+import { recoverPendingReady } from "../worktree/ready-async.ts";
 import { MR_TERMINAL_STATES } from "../enrich.ts";
 import { ensureWorktreeRegistryRekeyed } from "../repo-index.ts";
 import {
@@ -119,7 +121,7 @@ function isRootAnAncestorOfRepo(repoPath: string, root: string): boolean {
 async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Logger }): Promise<void> {
   const { repoName, repoPath, log } = deps;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  const roots = [join(repoPath, ".worktrees")];
+  const roots = [join(repoPath, ".worktrees"), ...legacyWorktreePoolRoots(repoName)];
   if (isRootAnAncestorOfRepo(repoPath, cfg.root)) {
     log.warn({ repo: repoName, root: cfg.root, repoPath }, "worktree trash sweep refused a configured root that is an ancestor of the repo");
   } else {
@@ -222,6 +224,14 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
       await reconcileRepoRegistry({ repoName, repoPath, emit: deps.emit, log: deps.log });
     } catch (err) {
       deps.log.warn({ err, repo: repoName }, "worktree reconciler: reconcile pass failed");
+    }
+    // Before the enabled gate: a claim's settle is owed to the provision that
+    // made it, whether or not this machine runs a pool. Fire-and-forget per
+    // tree; the tasks never reject.
+    try {
+      await recoverPendingReady({ repoName, repoPath, emit: deps.emit, log: deps.log });
+    } catch (err) {
+      deps.log.warn({ err, repo: repoName }, "worktree reconciler: pending-ready recovery failed");
     }
     // Separate catches throughout: any one duty throwing must not cost the
     // next duty (or another repo) its own pass.

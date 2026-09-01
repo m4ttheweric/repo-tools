@@ -114,6 +114,17 @@ vm_phase_begin boot
 RUN_ARGS=(--no-audio "--dir=run:$VM_RUN_DIR"); [ "$GRAPHICS" = 0 ] && RUN_ARGS+=(--no-graphics)
 tart run "$RUN_VM" "${RUN_ARGS[@]}" >>"$VM_RUN_DIR/logs/tart.log" 2>&1 &
 TART_PID=$!
+# The tester key baked into a golden can drift from .cache (a rebuilt cache
+# regenerates the pair; goldens are never re-provisioned). The admin
+# password is the same bootstrap credential build-golden used, so re-trust
+# the current key in the CLONE — goldens stay unbooted and immutable.
+if vm_ip "$RUN_VM" 90 >/dev/null; then
+  for keyuser in "$VM_TESTER_USER" "$VM_ADMIN_USER"; do
+    vm_ssh_pw_try "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$RUN_VM" \
+      "sudo install -d -m 700 -o $keyuser -g staff /Users/$keyuser/.ssh && echo '$(cat "$VM_SSH_KEY.pub")' | sudo tee /Users/$keyuser/.ssh/authorized_keys >/dev/null && sudo chown $keyuser:staff /Users/$keyuser/.ssh/authorized_keys && sudo chmod 600 /Users/$keyuser/.ssh/authorized_keys" \
+      >>"$VM_RUN_DIR/logs/tart.log" 2>&1 || true
+  done
+fi
 if vm_wait_ssh "$VM_TESTER_USER" "$RUN_VM" 420; then
   [ "$GRAPHICS" = 1 ] && { shot_watcher & SHOT_PID=$!; }
   if [ "$VERIFY_GOLDEN" = 1 ]; then "$VM_ROOT/golden/verify-golden.sh" "$VER" "$RUN_VM" >>"$VM_RUN_DIR/logs/verify-golden.log" 2>&1 || { vm_phase_end boot fail "golden verification failed in the clone"; exit 1; }; fi
@@ -152,9 +163,24 @@ esac
 # ── screens / headless ───────────────────────────────────────────────────────
 vm_phase_begin screens
 if [ "$SCENARIO" = headless ]; then
-  if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/e2e-cleanroom.sh --app /Applications/mattstack.app --allow-existing-install --artifacts-dir '$GUEST_RUN/logs/cleanroom'" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
+  # The golden is gitless by design, so post-install blocks on tool.clt.
+  # Drive the headless CLT install first, as admin — softwareupdate needs
+  # an admin user; ~2 min, idempotent when CLT is already present.
+  vm_ssh_try "$VM_ADMIN_USER" "$RUN_VM" "/Applications/mattstack.app/Contents/MacOS/rt tools install apple-clt" >>"$VM_RUN_DIR/logs/clt.log" 2>&1 \
+    || { vm_phase_end screens fail "headless CLT install failed (logs/clt.log)"; exit 1; }
+  # Quit the app for the recipe: app-needs ride the app's own stdout pipe
+  # when the app drives setup, so a standalone rt with the app RUNNING waits
+  # on services.register until it times out — with the app absent the step
+  # degrades and `rt daemon install` covers registration (CI's proven path).
+  # Relaunched below before the assert phase, which expects the tray up.
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "osascript -e 'tell application \"mattstack\" to quit' 2>/dev/null; sleep 2; pkill -x mattstack 2>/dev/null; true" >>"$VM_RUN_DIR/logs/screens.log" 2>&1
+  # An ssh session's login keychain is locked, unlike the GUI session a real
+  # install runs in — home.init's age-key store needs it open.
+  if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "security unlock-keychain -p '$VM_TESTER_PASS' ~/Library/Keychains/login.keychain-db && GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/e2e-cleanroom.sh --app /Applications/mattstack.app --allow-existing-install --artifacts-dir '$GUEST_RUN/logs/cleanroom'" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
     vm_phase_end screens pass "headless: scripts/e2e-cleanroom.sh in guest"
   else vm_phase_end screens fail "headless recipe failed (logs/screens.log)"; fi
+  # The assert phase expects the tray up; relaunch what the recipe quit.
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "open -a /Applications/mattstack.app; sleep 8" >>"$VM_RUN_DIR/logs/screens.log" 2>&1 || true
 else
   CODE_ARG=""; [ -n "$CODE_FILE" ] && { cp "$CODE_FILE" "$VM_RUN_DIR/in/invite-code.txt"; CODE_ARG="--invite-code-file '$GUEST_RUN/in/invite-code.txt'"; }
   if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' VM_ADMIN_PASS='$VM_ADMIN_PASS' DRIVER_LAUNCH_ARGS='$LAUNCH_ARGS' $PAT_ENV='${!PAT_ENV:-}' bash $GUEST_BIN/drive-setup.sh $SCENARIO --team-slug $SLUG --pat-env $PAT_ENV $CODE_ARG" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
