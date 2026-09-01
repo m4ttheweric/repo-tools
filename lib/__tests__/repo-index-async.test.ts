@@ -144,7 +144,10 @@ describe("getKnownReposAsync parity", () => {
     if (gone?.missing !== true) {
       // Same hunt: dump the evidence the room could never see — the row's
       // recorded path spelling and whether that exact path exists right now.
-      throw new Error(`gone-repo not classified missing: ${JSON.stringify({ gone, gonePath, existsNow: existsSync(gonePath) })}`);
+      // ALL matching rows, not the first: a live/scanned duplicate shadowing
+      // the lost row via find() is one of the two standing theories.
+      const goneRows = syncResult.filter((r) => r.repoName === "gone-repo");
+      throw new Error(`gone-repo not classified missing: ${JSON.stringify({ goneRows, gonePath, existsNow: existsSync(gonePath) })}`);
     }
     expect(gone?.missing).toBe(true);
 
