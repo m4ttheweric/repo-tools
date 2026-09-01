@@ -97,8 +97,27 @@ export function worktreesDir(): string {
   return join(rtDir(), "worktrees");
 }
 
-/** worktrees/<serialized identity> (one repo's pool root). */
+/**
+ * The wire form's delimiter colon is PATH-hostile: a pool tree's
+ * node_modules/.bin lands in PATH during installs, and PATH splits on `:`,
+ * vanishing every workspace bin (RT-95). Only the first colon is the
+ * delimiter; id colons are already %3A via encodeURIComponent, so replacing
+ * it is unambiguous.
+ */
+function worktreePoolSegment(serializedIdentity: string): string {
+  return serializedIdentity.replace(":", "%3A");
+}
+
+/** worktrees/<PATH-safe identity segment> (one repo's pool root). */
 export function worktreePoolRoot(serializedIdentity: string): string {
+  return join(worktreesDir(), worktreePoolSegment(serializedIdentity));
+}
+
+/**
+ * The pre-RT-95 pool root with the raw wire colon. Heal targeting only:
+ * never create anything under it.
+ */
+export function legacyWorktreePoolRoot(serializedIdentity: string): string {
   return join(worktreesDir(), serializedIdentity);
 }
 
