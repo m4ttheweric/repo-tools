@@ -106,14 +106,49 @@ func (m *Model) moveCursor(delta int) {
 // means no WindowSizeMsg has landed yet -- true at construction, and true
 // for a test that builds a Model and calls render directly -- so that case
 // is treated as an unbounded pane, leaving cap and list length alone to
-// decide h.
+// decide h. A real pane height additionally has to give some of its budget
+// back to group headers: Viewport's own ceiling only ever counted match
+// rows, so a window dense with group boundaries can still paint more lines
+// than the pane has room for unless it's trimmed again here.
 func (m *Model) viewport() (top, h int) {
 	pane := m.height
-	if pane <= 0 {
+	bounded := pane > 0
+	if !bounded {
 		pane = len(m.matches) + chromeRows
 	}
 	top, h = Viewport(m.cursor, m.viewportTop, len(m.matches), m.req.Cap, pane, chromeRows)
+	if bounded {
+		top, h = m.fitHeaderBudget(top, h, pane-chromeRows)
+	}
 	m.viewportTop = top
+	return top, h
+}
+
+// fitHeaderBudget shrinks a cursor-safe [top, top+h) window until its match
+// rows plus their interleaved group headers fit budget display lines. The
+// edge farther from the cursor gives way first, so the margin actually
+// nearest the cursor -- the one scrolloff cared most about -- survives
+// intact; once the window has shrunk to the cursor's own row, that row is
+// kept regardless of budget, since scrolling the selection off screen is
+// worse than a pane too small to hold a boundary and its header together
+// overflowing by one line.
+func (m *Model) fitHeaderBudget(top, h, budget int) (int, int) {
+	if budget < 0 {
+		budget = 0
+	}
+	for h > 1 && h+headerCount(m, top, h) > budget {
+		switch {
+		case top+h-1 > m.cursor:
+			h--
+		case top < m.cursor:
+			top++
+			h--
+		default:
+			// h > 1 with the cursor pinned at both edges is unreachable --
+			// guarded only so a violated assumption can't spin forever.
+			h--
+		}
+	}
 	return top, h
 }
 

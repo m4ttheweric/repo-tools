@@ -52,11 +52,7 @@ func render(m *Model) string {
 	}
 	thumbTop, thumbH := thumbSpan(top, h, n)
 	for i := top; i < top+h; i++ {
-		// Group boundaries are computed against the full match order, not
-		// just the visible window, so scrolling into the middle of a group
-		// never repeats its header and scrolling to a group's first row
-		// (even as the window's own top line) still shows one.
-		if group := groupOf(m, i); group != "" && (i == 0 || groupOf(m, i-1) != group) {
+		if group, ok := headerBoundary(m, i); ok {
 			lines = append(lines, groupHeaderLine(group))
 		}
 		line := rowLineWidth(m, i, rowWidth)
@@ -92,6 +88,37 @@ func noMatchKeybarLine(m *Model) string {
 // selected row.
 func groupOf(m *Model, i int) string {
 	return m.req.Rows[m.matches[i].Index].Group
+}
+
+// headerBoundary reports whether matches[i] starts a new group -- computed
+// against the full match order, not just the visible window, so scrolling
+// into the middle of a group never repeats its header and scrolling to a
+// group's first row (even as the window's own top line) still shows one.
+// The viewport sizes its window against this same check before any line is
+// painted, so it and the row loop must never diverge -- hence one function
+// instead of two copies of the boundary condition.
+func headerBoundary(m *Model, i int) (group string, ok bool) {
+	group = groupOf(m, i)
+	if group == "" {
+		return "", false
+	}
+	if i == 0 || groupOf(m, i-1) != group {
+		return group, true
+	}
+	return "", false
+}
+
+// headerCount reports how many group headers fall within [top, top+h) --
+// the extra display lines Viewport's own row ceiling never accounted for,
+// so the viewport window has to budget for them separately.
+func headerCount(m *Model, top, h int) int {
+	count := 0
+	for i := top; i < top+h; i++ {
+		if _, ok := headerBoundary(m, i); ok {
+			count++
+		}
+	}
+	return count
 }
 
 // groupHeaderLine paints a group boundary as a faint uppercase label at the

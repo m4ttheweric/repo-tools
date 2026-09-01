@@ -2,6 +2,7 @@ package picker
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -384,4 +385,102 @@ func TestZeroRowModelDoesNotPanic(t *testing.T) {
 	m.width = 60
 
 	_ = render(m)
+}
+
+// TestUngroupedListEmitsNoHeaderLines pins the zero-header case explicitly
+// rather than leaving it only inferable from the Task 5/6 goldens still
+// passing: a list where no row carries a Group must render exactly the
+// row count the rest of the chrome already expects, with nothing extra
+// interleaved.
+func TestUngroupedListEmitsNoHeaderLines(t *testing.T) {
+	rows := make([]protocol.PickRow, 5)
+	for i := range rows {
+		v := fmt.Sprintf("row%d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows}
+	m := New(req)
+	m.width = 40
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+
+	const wantLines = 3 + 5 + 2 // breadcrumb+filter+rule, 5 rows, rule+footer
+	if len(lines) != wantLines {
+		t.Fatalf("an ungrouped list must not interleave header lines: got %d lines, want %d:\n%s", len(lines), wantLines, plain)
+	}
+}
+
+// TestGroupHeadersRespectPaneBudgetWhenWindowed is the golden for the
+// overflow this task's review caught: 20 rows in groups of 2 give a header
+// every other row, so the [top, top+h) window Viewport hands back on its
+// own row ceiling (h=14 for a 20-row pane) still doesn't leave room for the
+// ~7 headers that land inside it. The fix has to trim rows -- not headers,
+// there's nothing optional about those -- until rows+headers fits the
+// pane, while keeping the cursor's own row on screen and a header still
+// directly above whichever row ends up as the window's first line, if that
+// row is genuinely its group's first.
+func TestGroupHeadersRespectPaneBudgetWhenWindowed(t *testing.T) {
+	const n = 20
+	rows := make([]protocol.PickRow, n)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{
+			Value: v,
+			Group: fmt.Sprintf("group%d", i/2),
+			Left:  []protocol.PickSegment{{Text: v, Tone: "text"}},
+		}
+	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows}
+	m := New(req)
+	m.width = 60
+	m.height = 20
+	m.cursor = 10
+
+	const budget = 20 - chromeRows // paneRows - chromeRows, the same ceiling Viewport enforces for rows alone
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+	rowsArea := lines[3 : len(lines)-2] // between the top rule and the bottom rule/footer
+
+	if len(rowsArea) > budget {
+		t.Fatalf("rows-area overflowed the pane budget: got %d lines (rows+headers), budget %d:\n%s", len(rowsArea), budget, plain)
+	}
+
+	var sawCursorRow bool
+	for _, l := range rowsArea {
+		if strings.Contains(l, "▌") && strings.Contains(l, "row10") {
+			sawCursorRow = true
+		}
+	}
+	if !sawCursorRow {
+		t.Fatalf("cursor row row10 must stay visible once the window is trimmed for headers:\n%s", plain)
+	}
+
+	// rowRe finds the row number anywhere on the line rather than requiring
+	// it at the start: the cursor row carries a leading gutter glyph
+	// (theme.GlyphBar) that a strict prefix match would otherwise trip on.
+	rowRe := regexp.MustCompile(`row(\d+)`)
+	rowNum := func(l string) (int, bool) {
+		m := rowRe.FindStringSubmatch(l)
+		if m == nil {
+			return 0, false
+		}
+		var i int
+		fmt.Sscanf(m[1], "%d", &i)
+		return i, true
+	}
+	for i, l := range rowsArea {
+		trimmed := strings.TrimSpace(l)
+		if !strings.HasPrefix(trimmed, "GROUP") {
+			continue
+		}
+		if i+1 >= len(rowsArea) {
+			t.Fatalf("header with no row rendered beneath it: %q", l)
+		}
+		num, ok := rowNum(rowsArea[i+1])
+		if !ok || num%2 != 0 {
+			t.Fatalf("header %q must sit directly above its group's first row, got %q", l, rowsArea[i+1])
+		}
+	}
 }
