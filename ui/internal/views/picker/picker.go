@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -231,6 +232,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key == "enter" {
+			if len(m.matches) == 0 && m.req.AcceptNoMatch {
+				m.result = &protocol.PickResult{Action: idSelect, Value: nil, Query: m.query}
+				return m, tea.Quit
+			}
 			m.selectCursor()
 			return m, tea.Quit
 		}
@@ -347,7 +352,10 @@ func (m *Model) cursorRowValue() (string, bool) {
 // resultForAction terminates the session with a registry action's id as the
 // result's Action, mirroring selectCursor's shape for the built-in "select".
 // The confirm action in a multi session is the one exception: it carries the
-// whole selected set, not the cursor row alone.
+// whole selected set, not the cursor row alone. Any other exit action in a
+// multi session still carries that same checked set on Values (alongside
+// Value, the cursor row), so a bulk action -- commit's ctrl-d discard --
+// acts on what the user checked, not on wherever the cursor sits.
 func (m *Model) resultForAction(actionID string) {
 	if actionID == idSelect && m.multiMode() {
 		m.selectMulti()
@@ -357,7 +365,11 @@ func (m *Model) resultForAction(actionID string) {
 	if v, ok := m.cursorRowValue(); ok {
 		value = &v
 	}
-	m.result = &protocol.PickResult{Action: actionID, Value: value, Query: m.query}
+	result := &protocol.PickResult{Action: actionID, Value: value, Query: m.query}
+	if m.multiMode() {
+		result.Values = m.selectedValuesInOrder()
+	}
+	m.result = result
 }
 
 // toggleCursor flips the selection state of the row under the cursor,
@@ -401,13 +413,20 @@ func (m *Model) toggleAllVisible() {
 // order, so a caller can zip the result against its own row list
 // positionally without re-deriving an order of its own.
 func (m *Model) selectMulti() {
+	m.result = &protocol.PickResult{Action: idSelect, Values: m.selectedValuesInOrder(), Query: m.query}
+}
+
+// selectedValuesInOrder lists every checked row's value in request order --
+// the same order selectMulti's own Values carries, shared with any other
+// multi-mode exit action's Values (see resultForAction).
+func (m *Model) selectedValuesInOrder() []string {
 	values := make([]string, 0, len(m.selected))
 	for _, row := range m.req.Rows {
 		if m.selected[row.Value] {
 			values = append(values, row.Value)
 		}
 	}
-	m.result = &protocol.PickResult{Action: idSelect, Values: values, Query: m.query}
+	return values
 }
 
 // emitEvent reports an event:true action without ending the session. It
@@ -595,6 +614,10 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 		return err
 	}
 	defer term.Close()
+
+	if f, ok := output.(*os.File); ok && stdoutIsATerminal(f) {
+		return errStdoutSharesTTY
+	}
 
 	m := New(req)
 	m.output = output

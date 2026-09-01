@@ -143,7 +143,7 @@ export async function runFilePicker(cwd: string, files: ChangedFile[]): Promise<
 
   if (values === null) return null;
   if (raw?.action === DISCARD_ACTION_ID) {
-    return { action: "discard", paths: raw.value ? [raw.value] : [] };
+    return { action: "discard", paths: raw.values ?? (raw.value ? [raw.value] : []) };
   }
   return { action: "select", paths: values };
 }

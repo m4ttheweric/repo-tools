@@ -560,3 +560,63 @@ func TestPickerFramesNeverEmitATabByte(t *testing.T) {
 		t.Fatalf("session emitted a tab byte somewhere in its tty stream:\n%q", tty)
 	}
 }
+
+// TestPickRefusesWhenStdoutIsTheSameDeviceAsTheTTY reproduces the debug-
+// harness footgun directly: stdout wired to the same pty the child opens as
+// its controlling terminal (via Setctty on fd 3, the same mechanism every
+// other test here uses to give the child a /dev/tty) is exactly the shape
+// that corrupted the frame, so the host guard must refuse to start rather
+// than let the protocol stream and the visual frame share a cursor.
+func TestPickRefusesWhenStdoutIsTheSameDeviceAsTheTTY(t *testing.T) {
+	ptmx, pts, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ptmx.Close()
+	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: 30, Cols: 100}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(testutil.Binary(t), "pick")
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout = pts // the same device the child opens as /dev/tty below
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.ExtraFiles = []*os.File{pts}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 3}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pts.Close()
+
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}},
+	}
+	reqLine, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(stdin, string(reqLine)+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	stdin.Close()
+
+	waitErr := cmd.Wait()
+	exit := 0
+	if ee, ok := waitErr.(*exec.ExitError); ok {
+		exit = ee.ExitCode()
+	} else if waitErr != nil {
+		t.Fatalf("wait: %v", waitErr)
+	}
+	if exit == 0 {
+		t.Fatalf("expected a non-zero exit when stdout shares the tty, stderr: %s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "refusing to run with stdout attached to the terminal") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}

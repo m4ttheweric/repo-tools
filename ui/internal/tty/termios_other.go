@@ -8,3 +8,8 @@ package tty
 // matters for keeping the package buildable everywhere, not for any
 // platform rt-ui actually ships or tests on.
 func expandTabs(int) {}
+
+// IsTerminal always reports false here, for the same reason expandTabs is a
+// no-op: no verified termios lever on this platform, and never the platform
+// rt-ui actually ships or tests on.
+func IsTerminal(int) bool { return false }

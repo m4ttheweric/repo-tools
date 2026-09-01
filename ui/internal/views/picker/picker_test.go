@@ -2165,6 +2165,105 @@ func TestCtrlKMenuHidesBuiltinMultiMarkActionsButKeepsCallerActions(t *testing.T
 	}
 }
 
+// TestMultiExitActionCarriesTheCheckedSelectionAsValues covers commit's
+// ctrl-d: a non-select EXIT action in a multi session must carry the whole
+// checked set, not just the cursor row, so a bulk operation (discard) acts
+// on the selection the user actually built up rather than wherever the
+// cursor happens to be sitting.
+func TestMultiExitActionCarriesTheCheckedSelectionAsValues(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}, {Value: "c"}},
+		Actions: []protocol.PickAction{
+			{ID: "discard", Label: "discard", Key: "ctrl-d", Scope: "global"},
+		},
+	}
+	m := New(req)
+	m.selected["c"] = true
+	m.selected["a"] = true
+	m.cursor = 1 // sits on "b", which is NOT checked
+
+	next, cmd := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'd'})
+	m = next.(*Model)
+
+	if m.result == nil {
+		t.Fatal("no result produced")
+	}
+	if m.result.Action != "discard" {
+		t.Fatalf("got action %q", m.result.Action)
+	}
+	want := []string{"a", "c"}
+	if len(m.result.Values) != len(want) {
+		t.Fatalf("got %+v, want %v", m.result.Values, want)
+	}
+	for i, v := range want {
+		if m.result.Values[i] != v {
+			t.Fatalf("Values must list the checked set in request order, got %v, want %v", m.result.Values, want)
+		}
+	}
+	if m.result.Value == nil || *m.result.Value != "b" {
+		t.Fatalf("Value must still carry the cursor row alongside Values, got %+v", m.result.Value)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to end the session")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected the cmd to quit the program")
+	}
+}
+
+// TestAcceptNoMatchEnterOnNoMatchResolvesWithNilValueAndQuery covers the
+// Task 20 nav unblock: a request opted into AcceptNoMatch resolves enter on
+// a no-match filter with a terminal select result carrying the typed query,
+// instead of leaving the picker open with nothing to select.
+func TestAcceptNoMatchEnterOnNoMatchResolvesWithNilValueAndQuery(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, InitialQuery: "zzz", AcceptNoMatch: true,
+		Rows: []protocol.PickRow{{Value: "restore"}, {Value: "list"}},
+	}
+	m := New(req)
+	if len(m.matches) != 0 {
+		t.Fatalf("setup: expected no matches for query %q, got %d", m.query, len(m.matches))
+	}
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*Model)
+
+	if m.result == nil {
+		t.Fatal("no result produced")
+	}
+	if m.result.Action != idSelect || m.result.Value != nil || m.result.Query != "zzz" {
+		t.Fatalf("got %+v", m.result)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to end the session")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected the cmd to quit the program")
+	}
+}
+
+// TestEnterOnNoMatchWithoutAcceptNoMatchProducesNoResult pins the other half
+// of AcceptNoMatch's contract: a request that never opts in keeps today's
+// behavior unchanged -- enter on a no-match filter never fabricates a result.
+func TestEnterOnNoMatchWithoutAcceptNoMatchProducesNoResult(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, InitialQuery: "zzz",
+		Rows: []protocol.PickRow{{Value: "restore"}, {Value: "list"}},
+	}
+	m := New(req)
+	if len(m.matches) != 0 {
+		t.Fatalf("setup: expected no matches for query %q, got %d", m.query, len(m.matches))
+	}
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*Model)
+
+	if m.result != nil {
+		t.Fatalf("enter on no-match without AcceptNoMatch must not set a result, got %+v", m.result)
+	}
+}
+
 // ─── mouse ──────────────────────────────────────────────────────────────
 
 // TestMouseHoverSetsHoverNotCursor is the Mouse board's central invariant:

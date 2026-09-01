@@ -44,3 +44,15 @@ func expandTabs(fd int) {
 	term.Oflag = (term.Oflag &^ unix.TABDLY) | unix.TAB3
 	_ = unix.IoctlSetTermios(fd, setTermiosRequest, term)
 }
+
+// IsTerminal reports whether fd refers to a terminal device -- the standard
+// isatty test (a termios ioctl succeeds only against a tty). This is the
+// only reliable way to compare a fd against "the terminal": /dev/tty is a
+// cloning alias whose own stat identity (Dev/Ino/Rdev) is fixed and
+// unrelated to whichever real terminal device it redirects I/O to, on both
+// Darwin and Linux, so no stat-based comparison against an opened /dev/tty
+// can ever match the real device it proxies.
+func IsTerminal(fd int) bool {
+	_, err := termios.GetTermios(fd)
+	return err == nil
+}

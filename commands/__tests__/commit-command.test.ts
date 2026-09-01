@@ -208,6 +208,19 @@ describe("runFilePicker outcome translation", () => {
     expect(outcome).toEqual({ action: "discard", paths: [] });
     rmSync(dir, { recursive: true, force: true });
   });
+
+  test("a discard action result with a checked selection carries the whole selection (bulk), not just the cursor value", async () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "tracked.txt"), "changed\n");
+
+    fake = installFakePick([
+      resultStep({ action: "discard", value: "tracked.txt", values: ["a.txt", "c.txt"] }),
+    ]);
+    const outcome = await runFilePicker(dir, getChangedFiles(dir));
+
+    expect(outcome).toEqual({ action: "discard", paths: ["a.txt", "c.txt"] });
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe("commitFlow routing", () => {
