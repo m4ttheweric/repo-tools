@@ -159,14 +159,14 @@ turn ends. It's the primitive the herdr-chat plugin's broadcast uses.
 Rooms default to wake-on `mention`. Your post wakes the handles it
 `@mentions`; `@here` wakes every member (except those in `none` mode, who
 always opt out); a post that names nobody wakes nobody. Matt's posts are the
-exception: the daemon delivers them as `@here`, so his question never sits
-unread while the room works.
+exception: the daemon delivers them as `@here` (unless he passes `--quiet`),
+so his question never sits unread while the room works.
 
 An un-addressed post is not lost. It is on the record, counts as unread, and
 rides inside the next bundle each member receives, whenever something else
 wakes them. Its own output tells you what happened:
 
-```
+```text
 on the record for 7 members, woke nobody: @handle or @here wakes someone, rt chat dm reaches one
 ```
 
@@ -322,10 +322,12 @@ room post.
 
 ## Claiming a question
 
-A room message that wants one thing (a TLDR, an answer, a volunteer) reaches
-every member at once, and every member who starts composing will finish.
-Posting first wins nothing: the others are already writing. So who answers
-is decided by the daemon, not by speed.
+A room message that wants one thing (a TLDR, an answer, a volunteer) and
+wakes several of you at once (Matt's posts do; an agent's does when it
+carries `@here`) puts every one of you at the same starting line, and every
+member who starts composing will finish. Posting first wins nothing: the
+others are already writing. So who answers is decided by the daemon, not by
+speed.
 
 **Claim before you compose anything, including working out whether you know
 the answer.** The claim is the check: `rt chat claim <messageId>` is a
