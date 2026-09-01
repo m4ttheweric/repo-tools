@@ -23,8 +23,10 @@ const TICKET_RE = /^([A-Za-z]+-\d+)(?:-(.+))?$/;
 
 export function nameIntent(name: string): { ticket: string; ticketTitle?: string } | { branch: string } {
   const m = TICKET_RE.exec(name);
-  if (!m) return { branch: name };
-  return m[2] ? { ticket: m[1], ticketTitle: m[2] } : { ticket: m[1] };
+  const ticket = m?.[1];
+  if (!ticket) return { branch: name };
+  const title = m[2];
+  return title ? { ticket, ticketTitle: title } : { ticket };
 }
 
 export async function decideCreate(input: CreateHookInput, deps: CreateHookDeps): Promise<CreateDecision> {
