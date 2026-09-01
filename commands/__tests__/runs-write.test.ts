@@ -16,6 +16,22 @@ async function startRun(): Promise<{ env: Record<string, string>; runDb: string 
   return { env: { RT_RUN_DB: parsed.runDb, ...QUIET }, runDb: parsed.runDb };
 }
 
+async function withFakeDaemon<T>(body: (seen: { topic: string; payload: { repo: string; runId: string; stage: string | null; kind: string } }[]) => Promise<T>): Promise<T> {
+  mkdirSync(dirname(DAEMON_SOCK_PATH), { recursive: true });
+  if (existsSync(DAEMON_SOCK_PATH)) rmSync(DAEMON_SOCK_PATH);
+  const seen: { topic: string; payload: { repo: string; runId: string; stage: string | null; kind: string } }[] = [];
+  const server = Bun.serve({
+    unix: DAEMON_SOCK_PATH,
+    async fetch(req) { seen.push(await req.json()); return new Response(JSON.stringify({ ok: true })); },
+  });
+  try {
+    return await body(seen);
+  } finally {
+    server.stop(true);
+    if (existsSync(DAEMON_SOCK_PATH)) rmSync(DAEMON_SOCK_PATH);
+  }
+}
+
 describe("rt runs write verbs", () => {
   test("run-start prints ok, runId, runDb and exits 0", async () => {
     const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
@@ -110,22 +126,41 @@ describe("rt runs write verbs", () => {
   });
 
   test("a write emits run-updated when a daemon is listening", async () => {
-    mkdirSync(dirname(DAEMON_SOCK_PATH), { recursive: true });
-    if (existsSync(DAEMON_SOCK_PATH)) rmSync(DAEMON_SOCK_PATH);
-    const seen: unknown[] = [];
-    const server = Bun.serve({
-      unix: DAEMON_SOCK_PATH,
-      async fetch(req) { seen.push(await req.json()); return new Response(JSON.stringify({ ok: true })); },
-    });
-    try {
+    await withFakeDaemon(async (seen) => {
       const { env } = await startRun();
       await runWriteVerb("stage-start", ["--stage", "plan"], { RT_RUN_DB: env.RT_RUN_DB });
       expect(seen).toEqual([{ topic: "run-updated", payload: { repo: "demo", runId: expect.any(String), stage: "plan", kind: "stage-start" } }]);
-    } finally {
-      server.stop(true);
-      if (existsSync(DAEMON_SOCK_PATH)) rmSync(DAEMON_SOCK_PATH);
-    }
+    });
   });
+
+  test("run-start emits kind run-start with stage null", async () => {
+    await withFakeDaemon(async (seen) => {
+      const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+      await runWriteVerb("run-start", ["--repo", "demo", "--work-type", "feature", "--pipeline", "default"], { RT_RUNS_ROOT: root });
+      expect(seen).toEqual([{ topic: "run-updated", payload: { repo: "demo", runId: expect.any(String), stage: null, kind: "run-start" } }]);
+    });
+  });
+
+  test.each([
+    ["run-status", ["--status", "done"], [], { stage: null, kind: "run-status" }],
+    ["stage-done", ["--stage", "plan"], [["stage-start", "--stage", "plan"]], { stage: "plan", kind: "stage-done" }],
+    ["stage-fail", ["--stage", "plan"], [["stage-start", "--stage", "plan"]], { stage: "plan", kind: "stage-fail" }],
+    ["field", ["set", "mr-url", "https://x", "--stage", "ship"], [], { stage: "ship", kind: "field-set" }],
+    ["decision", ["record", "--contract", "c@1", "--scope", "run", "--selection", "{}", "--decided-by", "w"], [], { stage: "run", kind: "decision" }],
+  ] as [string, string[], string[][], { stage: string | null; kind: string }][])(
+    "%s emits the row's own kind and stage",
+    async (verb, args, setup, want) => {
+      await withFakeDaemon(async (seen) => {
+        const { env } = await startRun();
+        const emitting = { RT_RUN_DB: env.RT_RUN_DB };
+        for (const [setupVerb, ...setupArgs] of setup) await runWriteVerb(setupVerb as Parameters<typeof runWriteVerb>[0], setupArgs, emitting);
+        await runWriteVerb(verb as Parameters<typeof runWriteVerb>[0], args, emitting);
+        const last = seen[seen.length - 1];
+        expect(last?.payload.kind).toBe(want.kind);
+        expect(last?.payload.stage).toBe(want.stage);
+      });
+    },
+  );
 });
 
 describe("rt runs positional rejection", () => {
