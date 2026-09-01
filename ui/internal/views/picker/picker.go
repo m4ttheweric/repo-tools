@@ -44,6 +44,21 @@ type Model struct {
 	width       int
 	height      int
 
+	// pinnedHeight, when > 0, is the line-count height renderView pads every
+	// frame to. Set the moment an overlay opens, to whatever it and the
+	// list beneath it naturally need, and held through the overlay's own
+	// close so neither transition crosses bubbletea's genuine-height-change
+	// redraw path -- see pinFrameHeight's own comment for why that path is
+	// the one worth avoiding. pinHoldFrames, armed by armPinRelease, keeps
+	// it held for that many more Update calls past the close before
+	// releasing -- 2, not 1: the close's own render is already covered
+	// without decrementing anything, and tea.ClearScreen's own Cmd sends
+	// exactly one clearScreenMsg back through Update asynchronously, whose
+	// render is still part of the same close transition, not yet "the next
+	// unrelated one" this pin is meant to survive until.
+	pinnedHeight  int
+	pinHoldFrames int
+
 	// zones is the render pass's own record of what each rendered line's
 	// columns target, rebuilt every render() call; mouse.go's click/motion
 	// handlers only ever read it, never recompute layout themselves.
@@ -142,6 +157,12 @@ func (m *Model) refilter() {
 func (m *Model) Init() tea.Cmd { return nil }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.pinHoldFrames > 0 {
+		m.pinHoldFrames--
+		if m.pinHoldFrames == 0 {
+			m.pinnedHeight = 0
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -150,6 +171,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyUpdate(msg.Update)
 	case ModalMsg:
 		m.openTSModal(msg.Modal)
+		m.pinFrameHeight()
 		return m, tea.ClearScreen
 	case tea.MouseClickMsg:
 		return m.handleMouseClick(msg)
@@ -202,11 +224,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "ctrl+k" {
 			m.openRegistryMenu()
 			if m.modal != nil {
-				// The overlay composites onto the same total frame height
-				// the plain list already occupies, so bubbletea's own
-				// height-change redraw never fires here; the incremental
-				// diff alone is what left residue behind on this exact
-				// transition.
+				m.pinFrameHeight()
 				return m, tea.ClearScreen
 			}
 			return m, nil
@@ -549,16 +567,13 @@ func (m *Model) selectCursor() {
 	m.result = &protocol.PickResult{Action: idSelect, Value: &value, Query: m.query}
 }
 
-// renderView is the frame View() paints: the plain list render, composited
-// under the modal overlay (dimmed parent + Surface box) whenever one is
-// open. A separate function from render() so a test can assert on the
-// modal-composited frame without going through tea.View's own wrapper.
+// renderView is the frame View() paints: composeFrame's own plain-list-or-
+// composited-overlay content, padded to m.pinnedHeight when an overlay
+// open/close transition has one active. A separate function from render()
+// so a test can assert on the modal-composited frame without going through
+// tea.View's own wrapper.
 func renderView(m *Model) string {
-	body := render(m)
-	if m.modal != nil && body != "" {
-		body = renderModal(m, body)
-	}
-	return body
+	return padToHeight(composeFrame(m), m.pinnedHeight)
 }
 
 func (m *Model) View() tea.View {

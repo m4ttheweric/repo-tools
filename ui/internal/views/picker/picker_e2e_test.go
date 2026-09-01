@@ -110,7 +110,15 @@ type widePtySession struct {
 	rows   int
 }
 
-func startWidePtySession(t *testing.T, argv []string, cols, rows int) *widePtySession {
+// startWidePtySession starts argv on a pty of the given size, optionally
+// preceded by priorLines lines of fake shell-prompt text written directly
+// to the pty (not through argv's own stdout, which carries the picker's
+// wire protocol, not its visual output) -- so the picker's own frame does
+// NOT start at absolute row 0, the same way it wouldn't in a real terminal
+// pane with something already on screen above it. 0 means no prior content
+// -- the picker is the first thing the pty ever sees, matching a fresh
+// session.
+func startWidePtySession(t *testing.T, argv []string, cols, rows, priorLines int) *widePtySession {
 	t.Helper()
 	ptmx, pts, err := pty.Open()
 	if err != nil {
@@ -119,7 +127,19 @@ func startWidePtySession(t *testing.T, argv []string, cols, rows int) *widePtySe
 	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+
+	var shCmd strings.Builder
+	for i := 0; i < priorLines; i++ {
+		fmt.Fprintf(&shCmd, "printf 'prompt line %%d\\n' %d > /dev/tty; ", i)
+	}
+	shCmd.WriteString("exec ")
+	for i, a := range argv {
+		if i > 0 {
+			shCmd.WriteString(" ")
+		}
+		shCmd.WriteString(a)
+	}
+	cmd := exec.Command("sh", "-c", shCmd.String())
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -172,7 +192,24 @@ func (s *widePtySession) TTY() string {
 
 // Screen mirrors testutil.Screen, sized to this session's own terminal
 // instead of testutil's fixed 100x30.
+// Screen replays the raw stream through a same-sized vt.Emulator and
+// returns the visible text with trailing blank rows trimmed -- handy for
+// substring-based waits, but not for a residue check: trimming the blank
+// tail is exactly what would hide a stanza sitting above the live frame if
+// the trim ever cut into real content by mistake. FullGrid is the
+// byte-for-byte comparison surface; Screen is the polling convenience.
 func (s *widePtySession) Screen() string {
+	lines := strings.Split(s.FullGrid(), "\n")
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
+}
+
+// FullGrid replays the raw stream through a same-sized vt.Emulator and
+// returns EVERY row -- all s.rows of them, top row included, no trailing
+// trim -- so a residue stanza left behind above the live frame (or a
+// legitimate scroll that moved prior content off the top) shows up in the
+// comparison rather than being silently dropped by a bottom trim that only
+// ever looked at "the frame region."
+func (s *widePtySession) FullGrid() string {
 	em := vt.NewEmulator(s.cols, s.rows)
 	drained := make(chan struct{})
 	go func() {
@@ -188,7 +225,7 @@ func (s *widePtySession) Screen() string {
 	for i, l := range lines {
 		lines[i] = strings.TrimRight(l, " ")
 	}
-	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
+	return strings.Join(lines, "\n")
 }
 
 func (s *widePtySession) WaitForPaint(text string) {
@@ -245,7 +282,7 @@ func TestWireModalHeaderNeverOverflowsTheTerminalWidth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := startWidePtySession(t, []string{testutil.Binary(t), "pick"}, cols, rows)
+	s := startWidePtySession(t, []string{testutil.Binary(t), "pick"}, cols, rows, 0)
 	s.Send(string(reqLine))
 	s.WaitForPaint("alpha")
 	time.Sleep(300 * time.Millisecond) // let the first frame settle
@@ -281,5 +318,104 @@ func TestWireModalHeaderNeverOverflowsTheTerminalWidth(t *testing.T) {
 	final := s.Screen()
 	if final != base {
 		t.Fatalf("final frame carries residue from the wire-modal open/dismiss cycle:\n--- base ---\n%s\n--- final ---\n%s", base, final)
+	}
+}
+
+// wireModalFullGridRequest builds the request/modal pair the two full-grid
+// goldens below both drive: a 2-row multi list with nothing selected (so
+// the selected panel and its chip both stay hidden) and a short TS modal --
+// the shape a live 110x34 tmux drive reported residue against.
+func wireModalFullGridRequest() (reqLine, modalLine []byte) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Multi: true,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "alpha", Tone: "text"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "bravo", Tone: "text"}}},
+		},
+	}
+	modal := protocol.PickModal{
+		T: "modal", Message: "Sort",
+		Rows: []protocol.PickRow{
+			{Value: "name", Left: []protocol.PickSegment{{Text: "Name"}}},
+			{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}},
+		},
+	}
+	reqLine, _ = json.Marshal(req)
+	modalLine, _ = json.Marshal(modal)
+	return reqLine, modalLine
+}
+
+// TestFullGridStaysCleanAcrossASettledWireModalCycle is the strengthened
+// residue golden: it compares the ENTIRE pty grid (every one of the 110x34
+// rows, the row above the picker's own frame included -- not just the live
+// frame region a byte-for-byte check of the visible frame alone would miss
+// a stanza sitting above it in) across a real wire-message modal open and
+// esc-dismiss, with a line of prior pane content already on screen before
+// the picker's own frame starts -- the same way a real terminal pane
+// running a picker after some earlier output would leave the picker's
+// frame anchored below row 0, not at it. The open waits for the frame to
+// settle before dismissing, mirroring a normal, unhurried session.
+//
+// This harness's own terminal emulation was confirmed, across many
+// configurations, not to reproduce the specific residue a real tmux
+// session showed for this same sequence -- see the fix report's own notes
+// on that investigation -- so this golden is not a RED-before/GREEN-after
+// proof of the fix by itself. It is kept because the invariant it checks
+// (the full grid, not just the live frame slice) is strictly stronger than
+// what came before, and it does catch any residue this harness is capable
+// of producing at all.
+func TestFullGridStaysCleanAcrossASettledWireModalCycle(t *testing.T) {
+	const cols, rows = 110, 34
+	reqLine, modalLine := wireModalFullGridRequest()
+
+	s := startWidePtySession(t, []string{testutil.Binary(t), "pick"}, cols, rows, 1)
+	s.Send(string(reqLine))
+	s.WaitForPaint("alpha")
+	time.Sleep(300 * time.Millisecond)
+	base := s.FullGrid()
+
+	s.Send(string(modalLine))
+	s.WaitForPaint("esc dismiss")
+	time.Sleep(700 * time.Millisecond) // settle before dismissing
+
+	s.Type("\x1b")
+	s.WaitForGone("esc dismiss")
+	time.Sleep(700 * time.Millisecond)
+
+	final := s.FullGrid()
+	if final != base {
+		t.Fatalf("full-grid residue after a settled wire-modal cycle:\n--- base ---\n%s\n--- final ---\n%s", base, final)
+	}
+}
+
+// TestFullGridStaysCleanAcrossARacedWireModalCycle is
+// TestFullGridStaysCleanAcrossASettledWireModalCycle's raced sibling: two
+// wire modal messages fired back to back, with no wait for the first to
+// settle before the second arrives -- the shape openTSModal's own clobber
+// guard exists for. Same full-grid comparison, same caveat about this
+// harness's own inability to reproduce the real-tmux-only symptom.
+func TestFullGridStaysCleanAcrossARacedWireModalCycle(t *testing.T) {
+	const cols, rows = 110, 34
+	reqLine, modalLine := wireModalFullGridRequest()
+
+	s := startWidePtySession(t, []string{testutil.Binary(t), "pick"}, cols, rows, 1)
+	s.Send(string(reqLine))
+	s.WaitForPaint("alpha")
+	time.Sleep(300 * time.Millisecond)
+	base := s.FullGrid()
+
+	s.Send(string(modalLine))
+	s.Send(string(modalLine))
+	s.WaitForPaint("esc dismiss")
+	time.Sleep(700 * time.Millisecond)
+
+	s.Type("\x1b")
+	s.WaitForGone("esc dismiss")
+	time.Sleep(700 * time.Millisecond)
+
+	final := s.FullGrid()
+	if final != base {
+		t.Fatalf("full-grid residue after a raced wire-modal cycle:\n--- base ---\n%s\n--- final ---\n%s", base, final)
 	}
 }

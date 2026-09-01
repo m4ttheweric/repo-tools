@@ -1522,6 +1522,95 @@ func TestWireModalAnswersAPriorOpenModalBeforeReplacingIt(t *testing.T) {
 	}
 }
 
+// TestOverlayCloseHoldsTheSameHeightAsWhileOpen is the in-repo proxy for
+// "no height-changing repaint on modal close": bubbletea's inline renderer
+// only takes the grow/shrink redraw path (a cursor-up-then-erase sequence a
+// terminal's own idea of an ambiguous-width glyph's column cost can
+// disagree with) when the frame's own line count actually changes between
+// consecutive renders. A wire modal taller than the base list opens (that
+// transition's own height jump from the pre-open frame is a separate,
+// accepted case -- see the package doc note above New -- since nothing can
+// retroactively widen a frame already sent to the terminal); what this
+// pins is that dismissing it does NOT then shrink the frame straight back
+// down in the same step. The height right after esc must equal the height
+// while the modal was still open, held for one extra render past the
+// transition itself (armPinRelease's own countdown) before the picker is
+// free to shrink back to natural size on a later, unrelated interaction.
+func TestOverlayCloseHoldsTheSameHeightAsWhileOpen(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+
+	modalRows := make([]protocol.PickRow, 20)
+	for i := range modalRows {
+		modalRows[i] = protocol.PickRow{Value: fmt.Sprintf("opt%02d", i), Left: []protocol.PickSegment{{Text: fmt.Sprintf("opt%02d", i)}}}
+	}
+	next, _ := m.Update(ModalMsg{Modal: protocol.PickModal{Message: "Sort by", Rows: modalRows}})
+	m = next.(*Model)
+	openHeight := lipgloss.Height(renderView(m))
+
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = next.(*Model)
+	closeHeight := lipgloss.Height(renderView(m))
+
+	if closeHeight != openHeight {
+		t.Fatalf("dismiss changed the frame height: while open %d, right after dismiss %d", openHeight, closeHeight)
+	}
+
+	// tea.ClearScreen's own Cmd sends bubbletea's internal clearScreenMsg
+	// back through Update asynchronously -- unexported, so unconstructable
+	// here, but any message type Update doesn't specifically recognize
+	// falls through the same way, which is what matters for this: the pin
+	// has to survive that render too, not just the esc keypress's own.
+	next, _ = m.Update(unrecognizedMsg{})
+	m = next.(*Model)
+	if h := lipgloss.Height(renderView(m)); h != openHeight {
+		t.Fatalf("the render following an unrelated internal message changed height: while open %d, got %d", openHeight, h)
+	}
+}
+
+// unrecognizedMsg stands in for a tea.Msg type Update has no case for --
+// bubbletea's own internal clearScreenMsg included, since that type is
+// unexported and unconstructable from this package -- to drive Update's
+// pinHoldFrames countdown without it representing any real interaction.
+type unrecognizedMsg struct{}
+
+// TestRacedRepeatedOverlayOpenNeverShrinks covers the raced case: a second
+// wire modal (shorter than the first) arriving before the first has been
+// dismissed at all -- the clobber path openTSModal's own guard covers,
+// never routing through closeModal/armPinRelease since the overlay never
+// truly closes between them. The frame height must stay at the taller
+// modal's own height throughout, never dipping to the shorter one's.
+func TestRacedRepeatedOverlayOpenNeverShrinks(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
+	m := New(req)
+	m.width = 60
+
+	tallRows := make([]protocol.PickRow, 20)
+	for i := range tallRows {
+		tallRows[i] = protocol.PickRow{Value: fmt.Sprintf("opt%02d", i), Left: []protocol.PickSegment{{Text: fmt.Sprintf("opt%02d", i)}}}
+	}
+	next, _ := m.Update(ModalMsg{Modal: protocol.PickModal{Message: "Sort by", Rows: tallRows}})
+	m = next.(*Model)
+	tallHeight := lipgloss.Height(renderView(m))
+
+	next, _ = m.Update(ModalMsg{Modal: protocol.PickModal{
+		Message: "Filter by",
+		Rows:    []protocol.PickRow{{Value: "kind", Left: []protocol.PickSegment{{Text: "Kind"}}}},
+	}})
+	m = next.(*Model)
+
+	if h := lipgloss.Height(renderView(m)); h != tallHeight {
+		t.Fatalf("a shorter modal replacing an open one shrank the frame: tall %d, got %d", tallHeight, h)
+	}
+}
+
 // TestCtrlKMenuEventActionEmitsEventAndStaysOpen covers the registry-menu
 // mechanism's event branch: opening ctrl-k renders the same overlay from
 // the model's own action registry (no TS round trip), and choosing an

@@ -92,6 +92,61 @@ func (m *Model) menuCursorRow() int {
 	return m.cursor
 }
 
+// composeFrame is renderView's own composition step before any height
+// padding: the plain list, composited under the modal overlay when one is
+// open. Kept separate from renderView so pinFrameHeight can measure a
+// frame's own natural height without measuring back through padding an
+// earlier call already applied.
+func composeFrame(m *Model) string {
+	body := render(m)
+	if m.modal != nil && body != "" {
+		body = renderModal(m, body)
+	}
+	return body
+}
+
+// padToHeight appends blank trailing lines until body reaches target
+// lines. target <= 0 means no pin is active, so the frame renders at its
+// own natural height, unpadded.
+func padToHeight(body string, target int) string {
+	if target <= 0 || body == "" {
+		return body
+	}
+	if h := lipgloss.Height(body); h < target {
+		body += strings.Repeat("\n", target-h)
+	}
+	return body
+}
+
+// pinFrameHeight records the current frame's own natural height as a
+// floor every later frame renders at until the overlay's own close
+// releases it (armPinRelease). It never lowers an existing pin, so a
+// session that opens one overlay, replaces it with a shorter one, then a
+// taller one again never dips through an intermediate height along the
+// way.
+//
+// The height this holds steady is exactly what bubbletea's own inline
+// renderer treats as a "grow" or "shrink" transition -- entering that path
+// is what the terminal's own idea of an ambiguous-width glyph's column
+// cost (❯, ◉) can disagree with this renderer's own, slipping the
+// differ's row bookkeeping for one frame and leaving a transitional
+// stanza behind. A frame whose height never changes across an overlay's
+// open and close never enters that path at all.
+func (m *Model) pinFrameHeight() {
+	if h := lipgloss.Height(composeFrame(m)); h > m.pinnedHeight {
+		m.pinnedHeight = h
+	}
+}
+
+// armPinRelease keeps the current pin through this render (the close's own)
+// and its one guaranteed clearScreenMsg follow-up, releasing only once both
+// have rendered -- see pinHoldFrames' own comment for why one call isn't
+// enough -- so the picker doesn't carry a padded frame forever once nothing
+// is using it.
+func (m *Model) armPinRelease() {
+	m.pinHoldFrames = 2
+}
+
 // openRegistryMenu opens the ctrl-k/right-click overlay from the request's
 // own declared actions only -- never the injected keybar defaults
 // (select/cancel/back), which stay keybar-only and never become menu rows.
@@ -189,6 +244,7 @@ func (m *Model) updateModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.closeModal()
+		m.armPinRelease()
 		return m, tea.ClearScreen
 	case "down":
 		m.modal.moveCursor(1)
@@ -243,10 +299,12 @@ func (m *Model) selectModalRow() (tea.Model, tea.Cmd) {
 		value := row.value
 		m.writeModalResult(&value)
 		m.modal = nil
+		m.armPinRelease()
 		return m, tea.ClearScreen
 	}
 
 	m.modal = nil
+	m.armPinRelease()
 	action, ok := actionByID(m.req.Actions, row.actionID)
 	if !ok {
 		return m, tea.ClearScreen
