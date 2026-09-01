@@ -3231,7 +3231,7 @@ func interleavingGroupRows() []protocol.PickRow {
 // row. Reserving only distinctGroupCount header lines under-counted that, the
 // natural frame crossed the floor, and the padded frame changed height per
 // keystroke -- the residue this fix exists to close. Pre-fix the padded height
-// moved (22 -> 32 -> 33); the floor now reserves the window maximum so it holds.
+// moved (22 -> 33 -> 33); the floor now reserves the window maximum so it holds.
 func TestFrameHeightStaysConstantWhenAFuzzyQueryInterleavesGroups(t *testing.T) {
 	build := func(query string) *Model {
 		req := protocol.PickRequest{
