@@ -1,0 +1,10 @@
+Closing a stage that was never opened with `stage-start` is a usage bug, not a no-op: `stage-done` exits 3 and reports the error instead of answering ok.
+
+```bash
+$ rt runs stage-done --stage gates
+{"ok":false,"error":"stage never started: gates"}
+$ echo $?
+3
+```
+
+The same holds for `stage-fail` on a stage with no matching `stage-start`. A pipeline that sees exit 3 has a sequencing bug to fix, not a run to retry.
