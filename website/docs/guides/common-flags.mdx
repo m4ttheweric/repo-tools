@@ -7,6 +7,23 @@ title: Common flags
 
 A handful of flags show up across many `rt` commands rather than being specific to one. This page is the single place that documents them; command reference pages link back here instead of repeating the explanation on every row.
 
+## `--help` / `-h`
+
+Every command and subcommand accepts `--help` (or `-h`), at any depth:
+
+```bash
+rt --help              # top-level command listing
+rt daemon --help       # subcommand listing for daemon
+rt worktree provision -h   # usage, description, and flags for one verb
+```
+
+On a branch command this prints the subcommand listing with descriptions. On a leaf verb it prints the usage line, description, aliases, and each declared argument and flag with its hint and default. Help goes to stdout and exits `0`, with color only when stdout is a terminal, so it is safe to pipe.
+
+Two boundaries to know:
+
+- `--help` is only recognized as the *first* token after the command path. A later `--help` reaches the command untouched, so it can never be mistaken for a flag's value.
+- Plugin commands that wrap an external binary (`exec` plugins) forward `--help` to that binary instead, which owns its own help. Commands that route verbs internally rather than through the command tree (for example `rt chat join`) answer a verb-level `--help` with that verb's own usage line.
+
 ## `--json`
 
 Emit machine-readable output instead of the interactive TUI. Commands that support scripting or agent callers (for example `rt sync`) honor `--json`: when a command like `rt sync` hits a conflict it can't resolve, `--json` makes it print a deterministic JSON "conflict bundle" describing the branch, target, and unresolved files, then exit with status `3`, leaving the rebase paused rather than prompting interactively. `--json` always wins over the agent-escalation flags below, because a scripted caller needs a predictable contract, not a prompt.

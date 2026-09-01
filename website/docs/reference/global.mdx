@@ -5,7 +5,7 @@ title: Global flags & entry points
 
 # Global flags & entry points
 
-A few entry points are handled directly by `rt`'s CLI entry (`cli.ts`), before any command-tree dispatch. These are not tree commands, so they don't have their own generated reference page.
+A few entry points are handled directly by `rt`'s CLI entry (`cli.ts`), before any command-tree dispatch (except `--help`, which the dispatcher itself handles at every depth). These are not tree commands, so they don't have their own generated reference page.
 
 ## `--version` / `-V`
 
@@ -20,10 +20,10 @@ Prints the installed version (`rt <version>`) and exits.
 
 ```bash
 rt --help
-rt -h
+rt daemon --help
 ```
 
-Shows the root command picker's listing non-interactively (as if run off a TTY), so it works in scripts and piped output instead of launching the interactive picker.
+Unlike the other flags on this page, `--help` is handled by the command-tree dispatcher itself, so it works on every command and subcommand, not just at the root. See [Common flags](/guides/common-flags) for the full behavior.
 
 ## `--grant-fda`
 

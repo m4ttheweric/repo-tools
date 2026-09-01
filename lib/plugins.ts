@@ -194,6 +194,8 @@ export function toCommandNode(pluginName: string, pluginDir: string, node: Plugi
   const spec = node.exec!;
   const [cmd, ...fixed] = Array.isArray(spec) ? spec : [spec];
   const resolved = cmd!.includes("/") ? resolve(pluginDir, cmd!) : cmd!;
+  // The exec target owns its own --help; the dispatcher must not intercept it.
+  out.passThroughHelp = true;
   out.handler = async (args: string[], ctx: CommandContext) => {
     const env: Record<string, string | undefined> = {
       ...process.env,

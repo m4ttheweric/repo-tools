@@ -21,7 +21,8 @@ describe("smoke", () => {
     const result = await rt(["--help"], { home });
     expect(result.exitCode).toBe(0);
 
-    const output = result.stderr;
+    // Help is a first-class product on stdout (dispatch-level --help).
+    const output = result.stdout;
     const expectedCommands = [
       "git", "sync", "run", "commit",
       "port", "update", "version",

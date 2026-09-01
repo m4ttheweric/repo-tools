@@ -163,14 +163,8 @@ if (args[0] === "--version" || args[0] === "-V") {
   const { loadPluginTree, ExecFailure } = await import("./lib/plugins.ts");
   const fullTree = loadPluginTree(TREE);
   try {
-    if (args[0] === "--help" || args[0] === "-h") {
-      const originalIsTTY = process.stdin.isTTY;
-      Object.defineProperty(process.stdin, "isTTY", { value: false });
-      await dispatch(fullTree, [], ["rt"], baseDir);
-      Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY });
-    } else {
-      await dispatch(fullTree, args, ["rt"], baseDir);
-    }
+    // --help/-h at any depth is intercepted by dispatch itself.
+    await dispatch(fullTree, args, ["rt"], baseDir);
   } catch (err) {
     if (err instanceof ExecFailure) process.exit(err.code);
     throw err;
