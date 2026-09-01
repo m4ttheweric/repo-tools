@@ -481,6 +481,9 @@ export function createChatDeliverySweep(opts: {
         continue;
       }
 
+      const noteFailure = () => {
+        noteFailure();
+      };
       const dm = dmParticipants(target.room, db) !== null;
       sweptPairs++;
       try {
@@ -493,10 +496,7 @@ export function createChatDeliverySweep(opts: {
           recoveredMessages += result.count;
           log.info({ recipient: target.handle, room: target.room, recovered: result.count }, "chat: sweep recovered a stale delivery");
         } else {
-          const { crossedCeiling, count } = recordSweepFailure(failureCounts, key, entry, target, tick, maxConsecutiveFailures);
-          if (crossedCeiling) {
-            log.warn({ recipient: target.handle, room: target.room, consecutiveFailures: count }, "chat: sweep pair crossed its consecutive-failure ceiling; backing off, never permanently stopping");
-          }
+          noteFailure();
         }
       } catch (err) {
         // One target's delivery throwing (a programming error, a DB hiccup)
