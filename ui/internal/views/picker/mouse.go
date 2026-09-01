@@ -144,6 +144,11 @@ func keybarLineZones(m *Model, top, h, n int) (string, []mouseZone) {
 	}
 	ungroupedRendered := renderKeybarCluster(keybarCluster{actions: ungrouped})
 	right := renderKeybarRight(rangeText, ungroupedRendered)
+
+	// The right-pinned run (range + back/quit) always renders in full; the
+	// left legend is what gives way at a narrow width, one whole group at a
+	// time, never mid-key.
+	left = truncateKeybarGroups(left, keybarLeftBudget(m.width, right))
 	line := justify(m.width, renderKeybarLeft(left), right)
 
 	var zones []mouseZone

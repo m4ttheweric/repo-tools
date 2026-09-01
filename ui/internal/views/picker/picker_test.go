@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"rt-ui/internal/protocol"
@@ -871,9 +872,48 @@ func TestKeybarLegendIntegratesWithTheScrollRangeOnTheSameFooterLine(t *testing.
 	}
 }
 
+// TestKeybarTruncatesAtGroupBoundaryNeverMidWord is the Fix-3 golden: at a
+// width too narrow for every declared group to fit, the right-pinned
+// esc/quit cluster still renders in full, and the left legend gives up
+// whole trailing groups rather than clipping a key or a label mid-word.
+func TestKeybarTruncatesAtGroupBoundaryNeverMidWord(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}},
+		Actions: []protocol.PickAction{
+			{ID: "select", Label: "select", Key: "enter", Scope: "item", Group: "pick"},
+			{ID: "all", Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark"},
+			{ID: "sort", Label: "sort by name", Key: "ctrl-s", Scope: "global", Group: "view"},
+		},
+	}
+	m := New(req)
+	m.width = 45 // fits "pick" and "mark" but not "view" alongside esc/quit
+
+	lines := strings.Split(render(m), "\n")
+	footer := ansi.Strip(lines[len(lines)-1])
+	trimmed := strings.TrimRight(footer, " ")
+
+	if lipgloss.Width(footer) > m.width {
+		t.Fatalf("footer must fit the pane width (%d), got width %d: %q", m.width, lipgloss.Width(footer), footer)
+	}
+	if !strings.HasSuffix(trimmed, "esc quit") {
+		t.Fatalf("esc/quit must always survive intact: %q", footer)
+	}
+	if !strings.Contains(footer, "pick enter select") {
+		t.Fatalf("the first group should still fit and render whole: %q", footer)
+	}
+	if strings.Contains(footer, "view") || strings.Contains(footer, "sort") {
+		t.Fatalf("a group that does not fit must be dropped whole, not partially rendered: %q", footer)
+	}
+	if strings.Contains(footer, "…") {
+		t.Fatalf("group-boundary truncation drops whole groups, never an ellipsis: %q", footer)
+	}
+}
+
 // TestDefaultActionsCoverTheBareRequest pins the case a request declares no
-// registry at all: select and cancel always exist, but back only once the
-// breadcrumb has somewhere to return to.
+// registry at all: select and cancel always exist, and back is never
+// synthesized from breadcrumb depth -- only a caller declaring it puts it in
+// effectiveActions, at any depth.
 func TestDefaultActionsCoverTheBareRequest(t *testing.T) {
 	flat := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
 	actions := effectiveActions(flat)

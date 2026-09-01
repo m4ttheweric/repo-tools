@@ -3,6 +3,8 @@ package picker
 import (
 	"strings"
 
+	"charm.land/lipgloss/v2"
+
 	"rt-ui/internal/protocol"
 	"rt-ui/internal/theme"
 )
@@ -142,6 +144,43 @@ func renderKeybarLeft(groups []keybarCluster) string {
 		parts[i] = renderKeybarCluster(g)
 	}
 	return strings.Join(parts, "  ")
+}
+
+// keybarLeftMargins is justify's own 2-column left margin plus 1-column
+// trailing margin -- the fixed overhead every keybar line's left/right split
+// has to divide the remaining width around, budget-wise.
+const keybarLeftMargins = 3
+
+// keybarLeftBudget is how many columns the left legend may spend once the
+// right-pinned run -- which always renders in full -- has claimed its own
+// space, mirroring justify's arithmetic solved for the other side.
+func keybarLeftBudget(width int, right string) int {
+	budget := width - keybarLeftMargins - lipgloss.Width(right)
+	if budget < 0 {
+		budget = 0
+	}
+	return budget
+}
+
+// truncateKeybarGroups keeps the longest whole-group prefix of groups that
+// fits within avail columns, measured in the same "  "-joined layout
+// renderKeybarLeft paints. A group that would only partly fit is dropped in
+// full rather than clipped mid-key, so the legend never ends on a broken
+// token -- the truncation boundary is a group, never a character.
+func truncateKeybarGroups(groups []keybarCluster, avail int) []keybarCluster {
+	used, kept := 0, 0
+	for i, g := range groups {
+		w := lipgloss.Width(renderKeybarCluster(g))
+		if i > 0 {
+			w += lipgloss.Width("  ")
+		}
+		if used+w > avail {
+			break
+		}
+		used += w
+		kept = i + 1
+	}
+	return groups[:kept]
 }
 
 // keybarRightSep joins the range/held indicator to the ungrouped action run
