@@ -2212,10 +2212,10 @@ func TestMultiExitActionCarriesTheCheckedSelectionAsValues(t *testing.T) {
 	}
 }
 
-// TestAcceptNoMatchEnterOnNoMatchResolvesWithNilValueAndQuery covers the
-// Task 20 nav unblock: a request opted into AcceptNoMatch resolves enter on
-// a no-match filter with a terminal select result carrying the typed query,
-// instead of leaving the picker open with nothing to select.
+// TestAcceptNoMatchEnterOnNoMatchResolvesWithNilValueAndQuery: a request opted
+// into AcceptNoMatch resolves enter on a no-match filter with a terminal select
+// result carrying the typed query, instead of leaving the picker open with
+// nothing to select.
 func TestAcceptNoMatchEnterOnNoMatchResolvesWithNilValueAndQuery(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version, InitialQuery: "zzz", AcceptNoMatch: true,
