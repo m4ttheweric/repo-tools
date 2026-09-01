@@ -215,7 +215,7 @@ function decodeOrUndefined(raw: string): string | undefined {
 
 /**
  * A repo path segment. A serialized identity is ALREADY one slash-free
- * segment — that is what `serializeIdentity`'s percent-encoding buys — so the
+ * segment, which is what `serializeIdentity`'s percent-encoding buys, so the
  * raw segment IS the key, and decoding it turns its `%2F` back into route
  * separators. That silently destroyed the identity: `hooks:repair` refused the
  * non-canonical result and still answered ok, and `runs:get` split the repo in

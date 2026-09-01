@@ -1,5 +1,5 @@
 /**
- * `findKnownRepo` — the one seam that answers "is this repo the one I am
+ * `findKnownRepo`: the one seam that answers "is this repo the one I am
  * standing in?".
  *
  * `KnownRepo.repoName` holds a SERIALIZED IDENTITY for every row the index

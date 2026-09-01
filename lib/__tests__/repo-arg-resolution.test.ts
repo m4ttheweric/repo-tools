@@ -1,5 +1,5 @@
 /**
- * `tryResolveRepoArg` — `resolveRepoArg` without the exit.
+ * `tryResolveRepoArg`: `resolveRepoArg` without the exit.
  *
  * Callers that match a resolved identity against rows `getKnownRepos` carries
  * (which include unregistered basename-keyed candidates the index never sees)

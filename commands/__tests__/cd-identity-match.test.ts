@@ -2,7 +2,7 @@
  * `rt cd`'s cache seam. `resolveReposForIdentity` re-reads the repo index live
  * only when the cd cache predates the repo you are standing in. Matching the
  * cached rows (serialized identities) against the identity's DISPLAY name
- * never hit, so every `rt cd` invocation paid a full live rescan — the cache
+ * never hit, so every `rt cd` invocation paid a full live rescan. The cache
  * was dead weight, not a fast path.
  */
 

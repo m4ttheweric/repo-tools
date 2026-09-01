@@ -103,7 +103,7 @@ function repoIndex(): Record<string, string> {
 async function resolveRepoContext(repoName: string | undefined): Promise<RepoContext> {
   if (!repoName) return { repoIdentity: null };
   // The index keys on serialized identities, so a typed name has to resolve to
-  // one before it can be looked up — every registered repo reads as
+  // one before it can be looked up. Every registered repo reads as
   // unregistered otherwise.
   const repoPath = repoIndex()[await resolveRepoArg(repoName, fail)];
   if (!repoPath) fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);

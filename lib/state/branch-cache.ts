@@ -8,9 +8,9 @@
  * docs/superpowers/specs/2026-08-20-rt-statedb.md — "Tables (v1)"
  * (`branch_cache`), "Store-by-store" item 1, and "New: branch-cache GC".
  *
- * `branch_cache`'s primary key is the COMPOSITE `composeKey(repo, branch)` —
+ * `branch_cache`'s primary key is the COMPOSITE `composeKey(repo, branch)`:
  * `${identity}:${branch}`, degrading to the bare branch only when the entry
- * carries no repo — so two repos sharing a branch name get two rows instead of
+ * carries no repo, so two repos sharing a branch name get two rows instead of
  * overwriting each other. `repo` is the same identity kept as its own nullable
  * column, so it can be queried and GC'd on. The two therefore have to move
  * together: re-keying `repo` alone strands the row behind a key naming the old
@@ -61,7 +61,7 @@ export async function rekeyBranchCacheTable(): Promise<RekeyReport> {
  * Second pass: the PRIMARY KEY, which `rekeyTableColumn` cannot reach.
  *
  * The `branch` column holds the composite `${repo}:${branch}` every reader
- * composes, so rewriting `repo` alone leaves the key naming the OLD repo — or,
+ * composes, so rewriting `repo` alone leaves the key naming the OLD repo, or,
  * for a row written under the original bare-PK schema, naming no repo at all.
  * Either way exact lookup misses and readers fall through to `getByBranch`'s
  * suffix scan, which can hand back ANOTHER repo's row for a branch name two
@@ -88,9 +88,9 @@ function repairCompositeKeys(): string[] {
     } catch (err) {
       if (!(err as { code?: string } | undefined)?.code?.startsWith("SQLITE_CONSTRAINT")) throw err;
       // The correct key is already taken, so this row is the stale
-      // pre-migration copy — same drop policy as rekeyTableColumn's.
+      // pre-migration copy, same drop policy as rekeyTableColumn's.
       db.query("DELETE FROM branch_cache WHERE rowid = ?;").run(id);
-      console.warn(`rt: branch_cache key ${branch} collided with an existing ${want} row — dropped the stale duplicate`);
+      console.warn(`rt: branch_cache key ${branch} collided with an existing ${want} row; dropped the stale duplicate`);
     }
     repaired.push(branch);
   }

@@ -1015,7 +1015,7 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
  * Three key forms coexist in `repoName`: a serialized identity (every row
  * written post-cutover), a legacy plain name, and a directory basename (an
  * unregistered scanned row). `RepoIdentity.repoName` is a LABEL, never a key,
- * so matching it against any of them silently finds nothing — the caller then
+ * so matching it against any of them silently finds nothing. The caller then
  * decides it is nowhere and falls through to a picker or a full rescan. Every
  * "am I here?" check goes through this function so that cannot recur.
  *

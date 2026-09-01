@@ -2,8 +2,8 @@
  * Where a pre-cutover rt left this repo's per-repo files.
  *
  * Leaf module on purpose: its three consumers (run-history, endpoint store,
- * worktree registry) sit BELOW lib/repo-index.ts in the import graph — that
- * module imports worktree/registry.ts — so the index namespace is mirrored
+ * worktree registry) sit BELOW lib/repo-index.ts in the import graph (that
+ * module imports worktree/registry.ts), so the index namespace is mirrored
  * here rather than imported, the same trade repo-index.ts already makes in the
  * other direction for the worktree-registry namespace.
  */
@@ -14,7 +14,7 @@ import { repoDataDir } from "./rt-paths.ts";
 import { repoLabel } from "./repo-label.ts";
 import { listKvValues } from "./state/index.ts";
 
-/** Mirrors lib/repo-index.ts's REPO_INDEX_NS — see this module's header. */
+/** Mirrors lib/repo-index.ts's REPO_INDEX_NS. See this module's header. */
 const REPO_INDEX_NS = "repo-index";
 
 /**
@@ -46,7 +46,7 @@ export function legacyRepoFile(identity: string, file: string): string {
   try {
     claimants = Object.keys(listKvValues<string>(REPO_INDEX_NS)).filter(k => repoLabel(k) === label);
   } catch {
-    return current; // unreadable index — never guess at an owner
+    return current; // unreadable index: never guess at an owner
   }
   return claimants.length === 1 ? legacy : current;
 }

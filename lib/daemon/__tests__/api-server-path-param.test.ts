@@ -35,7 +35,7 @@ describe("pathParam", () => {
   });
 });
 
-// A serialized identity is ALREADY one slash-free segment — that is what
+// A serialized identity is ALREADY one slash-free segment, which is what
 // serializeIdentity's percent-encoding buys (see its docblock). Decoding it
 // turns its %2F back into route separators, which silently destroyed the key:
 // hooks:repair refused the non-canonical string and answered ok/no-op, and
