@@ -119,10 +119,27 @@ describe("getKnownReposAsync parity", () => {
     // On macos-latest runners this rmSync sometimes neither removes the dir
     // nor throws (proven by the bare assert firing twice on run 33557932676;
     // force:true only swallows ENOENT and maxRetries defaulted to 0, so a
-    // real EBUSY/ENOTEMPTY would have thrown). Retry until the dir is gone;
-    // the assert stays as the tripwire for a delete that never takes.
-    for (let attempt = 0; attempt < 5 && existsSync(goneParent); attempt++) {
+    // real EBUSY/ENOTEMPTY would have thrown). Measure before mitigating:
+    // poll WITHOUT re-deleting first, so delayed visibility (dir vanishes on
+    // its own after N ms) is distinguishable from a delete that never
+    // happened (dir gone only after a re-issued rmSync). The assert stays as
+    // the tripwire for a delete that never takes either way.
+    rmSync(goneParent, { recursive: true, force: true });
+    const deleteIssuedAt = Date.now();
+    let visibleForMs = 0;
+    while (existsSync(goneParent) && Date.now() - deleteIssuedAt < 2000) {
+      await Bun.sleep(25);
+      visibleForMs = Date.now() - deleteIssuedAt;
+    }
+    let redeletes = 0;
+    while (existsSync(goneParent) && redeletes < 4) {
+      redeletes++;
       rmSync(goneParent, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    }
+    if (visibleForMs > 0 || redeletes > 0) {
+      console.error(
+        `[parity-meter] gone-repo dir survived its delete: lingeredMs=${visibleForMs} redeletes=${redeletes}`,
+      );
     }
     expect(existsSync(goneParent)).toBe(false);
 
