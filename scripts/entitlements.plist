@@ -2,9 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- JavaScriptCore / V8 JIT under the hardened runtime. Add
-       com.apple.security.cs.allow-unsigned-executable-memory for a specific
-       tool only if that signed tool crashes at launch (see deps.lock). -->
+  <!-- JavaScriptCore / V8 JIT under the hardened runtime. -->
   <key>com.apple.security.cs.allow-jit</key><true/>
+  <!-- Bun's JIT also emits code into plain malloc'd pages (not MAP_JIT),
+       which allow-jit does not cover: a long-running bun-compiled binary
+       (the rt daemon was the first) dies mid-run with SIGKILL "Code
+       Signature Invalid" / CODESIGNING "Invalid Page" on an r-x
+       MALLOC_SMALL region once the hotter JIT tiers kick in. Short
+       invocations (version checks) never warm up, which is why smoke
+       tests pass without this. Proven in the VM clean room on macOS
+       26.6.2. (No double hyphen in these comments: AMFI's XML parser
+       rejects it where plutil tolerates it.) -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
 </dict>
 </plist>
