@@ -32,7 +32,6 @@ import {
   loadVariations,
   saveVariation,
   variationKey,
-  type Variation,
 } from "../lib/variations.ts";
 import { bold, dim, reset, yellow, green } from "../lib/tui.ts";
 import {
