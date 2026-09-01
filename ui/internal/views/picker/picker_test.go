@@ -429,6 +429,80 @@ func TestHighlightSkippedWhenMatchFieldDivergesFromLeftText(t *testing.T) {
 	}
 }
 
+// textSGR/textSoftSGR/dimSGR/dimmerSGR are theme.Text/TextSoft/Dim/Dimmer's
+// truecolor SGR fragments, as lipgloss actually renders them -- the same
+// way cyanSGR above pins the highlight color without needing a terminal to
+// interpret the escape codes.
+const (
+	textSGR     = "38;2;230;224;255"
+	textSoftSGR = "38;2;210;205;235"
+	dimSGR      = "38;2;168;160;198"
+	dimmerSGR   = "38;2;139;132;168"
+)
+
+// TestFocusDimsNonCursorRowsButNotTheCursorRow is the golden for row-level
+// focus: the cursor row keeps today's bold Text label / Dim hint, while
+// every other row steps its default text/dim tones down a shade (and
+// drops the label's bold) so focus reads from contrast rather than every
+// row painting at the cursor row's own weight.
+func TestFocusDimsNonCursorRowsButNotTheCursorRow(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{
+				Value: "bill",
+				Left: []protocol.PickSegment{
+					{Text: "bill", Tone: "text", Bold: true},
+					{Text: " · ", Tone: "faint"},
+					{Text: "on-deck/bill", Tone: "dim"},
+				},
+			},
+			{
+				Value: "cho",
+				Left: []protocol.PickSegment{
+					{Text: "cho", Tone: "text", Bold: true},
+					{Text: " · ", Tone: "faint"},
+					{Text: "on-deck/cho", Tone: "dim"},
+				},
+			},
+		},
+	}
+	m := New(req)
+	m.width = 92
+
+	cursorRow := rowLine(m, 0)
+	if !strings.Contains(cursorRow, "1;"+textSGR) {
+		t.Fatalf("cursor row label should stay bold Text: %q", cursorRow)
+	}
+	if !strings.Contains(cursorRow, dimSGR) {
+		t.Fatalf("cursor row hint should stay Dim: %q", cursorRow)
+	}
+	if strings.Contains(cursorRow, textSoftSGR) || strings.Contains(cursorRow, dimmerSGR) {
+		t.Fatalf("cursor row must not carry the non-cursor dimmed tones: %q", cursorRow)
+	}
+
+	nonCursorRow := rowLine(m, 1)
+	if strings.Contains(nonCursorRow, "1;"+textSGR) {
+		t.Fatalf("non-cursor row label must lose bold Text: %q", nonCursorRow)
+	}
+	if !strings.Contains(nonCursorRow, textSoftSGR) {
+		t.Fatalf("non-cursor row label should step down to TextSoft: %q", nonCursorRow)
+	}
+	if !strings.Contains(nonCursorRow, dimmerSGR) {
+		t.Fatalf("non-cursor row hint should step down to Dimmer: %q", nonCursorRow)
+	}
+	if strings.Contains(nonCursorRow, dimSGR) {
+		t.Fatalf("non-cursor row hint must not keep the cursor row's Dim: %q", nonCursorRow)
+	}
+	// The faint separator is an explicit semantic tone, not a default
+	// text/dim tone, so focus must leave it exactly as segColor would
+	// render it on either row.
+	const faintSGR = "38;2;110;102;140"
+	if !strings.Contains(cursorRow, faintSGR) || !strings.Contains(nonCursorRow, faintSGR) {
+		t.Fatalf("the faint separator must render identically on both rows:\ncursor: %q\nnon-cursor: %q", cursorRow, nonCursorRow)
+	}
+}
+
 func TestViewportHeight(t *testing.T) {
 	cases := []struct {
 		name                               string

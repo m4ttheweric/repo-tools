@@ -280,7 +280,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 	if matchText(row) != leftPlain {
 		positions = nil
 	}
-	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), positions, rowBg)
+	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), positions, rowBg, cursorRow)
 	usedLeftWidth := lipgloss.Width(kept)
 	if truncated {
 		leftRendered += rowBg.Foreground(theme.Faint).Render("…")
@@ -303,7 +303,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 // shows. positions index by rune, not byte -- fzf's Chars falls back to a
 // byte offset only when the target is pure ASCII, where the two coincide,
 // so non-ASCII targets would misalign under byte-slicing.
-func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style) string {
+func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool) string {
 	matched := make(map[int]bool, len(positions))
 	for _, p := range positions {
 		matched[p] = true
@@ -311,7 +311,8 @@ func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int,
 	var out strings.Builder
 	runeIdx := 0
 	for _, seg := range row.Left {
-		base := rowBg.Foreground(segColor(seg)).Bold(seg.Bold)
+		color, bold := leftSegColor(seg, cursorRow)
+		base := rowBg.Foreground(color).Bold(bold)
 		for _, r := range seg.Text {
 			if runeIdx >= keptRunes {
 				return out.String()
@@ -346,6 +347,31 @@ func segColor(seg protocol.PickSegment) color.Color {
 		return c
 	}
 	return theme.Text
+}
+
+// leftSegColor resolves a left segment's foreground and bold for row focus:
+// on a non-cursor row, the default text tone (explicit "text" or unset)
+// steps down to TextSoft with bold dropped, and "dim" steps down to
+// Dimmer, so focus reads from color contrast rather than every row
+// competing at the cursor row's own weight. Any other tone -- faint, an
+// explicit semantic color, or a hex -- is a deliberate accent the row
+// author chose and is left exactly as segColor would render it.
+func leftSegColor(seg protocol.PickSegment, cursorRow bool) (color.Color, bool) {
+	if seg.Hex != "" {
+		return lipgloss.Color(seg.Hex), seg.Bold
+	}
+	if !cursorRow {
+		switch seg.Tone {
+		case "text", "":
+			return theme.TextSoft, false
+		case "dim":
+			return theme.Dimmer, seg.Bold
+		}
+	}
+	if c, ok := toneColor(seg.Tone); ok {
+		return c, seg.Bold
+	}
+	return theme.Text, seg.Bold
 }
 
 func toneColor(tone string) (color.Color, bool) {
