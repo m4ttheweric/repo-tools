@@ -1,9 +1,9 @@
 /**
  * filterableSelect/filterableMultiselect built on the rt-ui `pick` verb.
- * Same names and signatures as the fzf-backed originals in fzf-select.ts,
- * plus one optional trailing `extras` param. Translates a plain SelectOption
- * list into rows and the terminal PickResult back into the shapes callers
- * already depend on.
+ * Same names and signatures as the original fzf-backed pickers, plus one
+ * optional trailing `extras` param. Translates a plain SelectOption list into
+ * rows and the terminal PickResult back into the shapes callers already
+ * depend on.
  */
 import { runPick, type PickHandle } from "./ui/pick.ts";
 import type { PickAction, PickEvent, PickRow, PickSegment } from "./ui/protocol.ts";
@@ -17,7 +17,7 @@ export interface SelectOption {
   label: string;
   /** Displayed as dim text after the label. */
   hint?: string;
-  /** Unused by this wrapper (no caller sets it); kept for signature parity with fzf-select.ts. */
+  /** Unused by this wrapper (no caller sets it); kept for signature parity with the original fzf-backed picker. */
   color?: string;
 }
 
@@ -133,12 +133,7 @@ export async function filterableMultiselect(
 // ─── runNavPicker ───────────────────────────────────────────────────────────
 //
 // Translates NavPickerOpts (lib/navigate.ts, which keeps the type homes and
-// re-exports this function) onto runPick. preview/previewHidden/helpHeader/
-// resizeHeaderCommand/watch are accepted but no-op here -- their fzf-only
-// callers are rebuilt on the pick verb before those options are deleted.
-// colorOverrides is dropped: tone/hex row segments replace it, and nothing
-// here reads the field (it stays declared on NavPickerOpts only because the
-// fzf-backed buildNavArgs in navigate.ts still consumes it).
+// re-exports this function) onto runPick.
 
 /** Bold label, padded to the widest label across the whole option list, plus a dim hint -- same look as the fzf-backed picker. */
 function navOptionsToRows(options: NavOption[]): PickRow[] {

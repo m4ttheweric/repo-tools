@@ -246,10 +246,10 @@ describe("memoization", () => {
   });
 
   test("appBundleRoot() with the DEFAULT exists (zero-arg call) still memoizes a hit", () => {
-    // No injected `exists` here — this exercises the real fzf-picker hot
-    // path (resolveFzf()'s own default), which is the memo's reason to
-    // exist. Whatever the real machine resolves (often null in CI) must be
-    // returned unchanged on a second zero-arg call.
+    // No injected `exists` here — this exercises the real rt-ui picker/prompt
+    // hot path (the bundleRoot seam's own default), which is the memo's
+    // reason to exist. Whatever the real machine resolves (often null in CI)
+    // must be returned unchanged on a second zero-arg call.
     const first = appBundleRoot();
     const second = appBundleRoot();
     expect(second).toBe(first);

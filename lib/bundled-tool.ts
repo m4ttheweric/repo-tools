@@ -8,9 +8,9 @@
  * caller gains is that an INSTALLED machine no longer depends on the user
  * having the tool on PATH at all.
  *
- * `lib/fzf.ts` predates this and keeps its own resolver because it also owns a
- * bespoke missing-tool message and an exit path; this is the plain version for
- * tools that just need an argv[0].
+ * `lib/ui/resolve.ts` keeps its own resolver because it also owns a bespoke
+ * missing-tool message and an exit path; this is the plain version for tools
+ * that just need an argv[0].
  */
 
 import { bundledHelperPath } from "./bundle-layout.ts";

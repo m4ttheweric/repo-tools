@@ -14,7 +14,6 @@ import { activeLaunchdLabel, isDaemonInstalled } from "../../daemon-config.ts";
 import { currentMode, resolveIntendedMode } from "../../dev-mode.ts";
 import { appBundlePath, linkPath } from "../../deps/resolve.ts";
 import { localBinDir, shimReport, staleIntercepts } from "../../endpoint/shim.ts";
-import { resolveFzf } from "../../fzf.ts";
 import { legacyDirsPresent, legacyTrayAppPaths, RT_DIR_LABEL } from "../../rt-paths.ts";
 import { detectShellFrom, shellRcPathFor } from "../../shell-integration.ts";
 import { readHomePushRecord, type HomePushRecord } from "../../home/push-record.ts";
@@ -68,11 +67,6 @@ export function checkRtContextExtension(home: string): ExtensionCheckResult {
 
 // ─── injectable seams ─────────────────────────────────────────────────────────
 
-export interface RtHealthSeams {
-  resolveFzf: typeof resolveFzf;
-}
-
-const REAL_SEAMS: RtHealthSeams = { resolveFzf };
 // The bare exec, not `createRealProbes().exec`: a full Probes captures $HOME at
 // construction, and this is module-load time.
 const REAL_EXEC: Probes["exec"] = execWithTimeout;
@@ -80,7 +74,6 @@ const REAL_EXEC: Probes["exec"] = execWithTimeout;
 // ─── row builders ──────────────────────────────────────────────────────────
 
 const LINK_BUNDLED_RT: Action = { type: "link-bundled", label: "Use mattstack's", tool: "rt" };
-const LINK_BUNDLED_FZF: Action = { type: "link-bundled", label: "Use mattstack's", tool: "fzf" };
 const REINSTALL_SHIMS_ACTION: Action = { type: "run", label: "Re-install shims", verb: ["intercept", "install"] };
 const INSTALL_EXTENSION_ACTION: Action = { type: "run", label: "Install extension", verb: ["tools", "setup", "extension"] };
 /** No `rt home remote set` verb exists yet (installer-lane scope), so the remedy names the raw git commands instead of a `run` action. */
@@ -195,20 +188,6 @@ function interceptsRow(p: Probes): Row {
     return row({ ...base, status: "needs-you", detail: `shims are current but the rules cache is stale (${staleRules.reason}) — run rt intercept install`, action: REINSTALL_SHIMS_ACTION });
   }
   return row({ ...base, status: "ready", detail: `${report.length} installed and current` });
-}
-
-async function fzfRow(p: Probes, seams: RtHealthSeams): Promise<Row> {
-  const base = { id: "tool.fzf", kind: "tool" as const, title: "fzf", why: "Every interactive rt picker shells out to fzf.", required: true };
-  const fzfPath = seams.resolveFzf();
-  if (!fzfPath) return row({ ...base, status: "missing", detail: "fzf not found", action: LINK_BUNDLED_FZF });
-
-  const res = await p.exec([fzfPath, "--version"]);
-  if (res.code !== 0) return row({ ...base, status: "error", detail: `resolved to ${fzfPath} but could not run it (exit ${res.code})` });
-
-  const version = res.stdout.trim().split(/\s+/)[0] || res.stdout.trim() || "unknown version";
-  const root = appBundlePath(p);
-  const bundled = root !== null && (fzfPath === root || fzfPath.startsWith(`${root}/`));
-  return row({ ...base, status: "ready", detail: `fzf ${version} (${bundled ? "bundled" : "PATH"})` });
 }
 
 async function appRow(p: Probes): Promise<Row> {
@@ -466,13 +445,12 @@ export async function homeBackupRow(
 
 // ─── entry point ────────────────────────────────────────────────────────────
 
-export async function rtHealthRows(p: Probes, opts: { ci: boolean }, seams: RtHealthSeams = REAL_SEAMS): Promise<Row[]> {
+export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Row[]> {
   return [
     await rtRow(p),
     rtLinkRow(p),
     legacyDirsRow(),
     interceptsRow(p),
-    await fzfRow(p, seams),
     await appRow(p),
     vsixRow(p),
     extensionRow(p),

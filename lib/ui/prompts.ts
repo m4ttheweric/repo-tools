@@ -3,7 +3,7 @@
  * renderer changed (Ink to rt-ui). `stderr` is accepted for source
  * compatibility and ignored: /dev/tty rendering keeps stdout clean by itself.
  */
-import type { SelectOption } from "../fzf-select.ts";
+import type { SelectOption } from "../pick-wrappers.ts";
 import { interactive } from "./gate.ts";
 import { PROTOCOL_VERSION, type PromptOption } from "./protocol.ts";
 import { exit, runPrompt } from "./spawn.ts";
