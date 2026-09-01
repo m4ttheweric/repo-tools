@@ -182,3 +182,8 @@ export function snapshot(db: Database): Ok<{ run: Row | null; stages: Row[]; fie
     return { ok: false, error: `sqlite read failed: ${String(err)}`, code: 1 };
   }
 }
+
+export function runIdentity(db: Database): { repo: string; runId: string } | null {
+  const row = db.query("SELECT id, repo FROM runs LIMIT 1").get() as { id: string; repo: string } | undefined;
+  return row ? { repo: row.repo, runId: row.id } : null;
+}

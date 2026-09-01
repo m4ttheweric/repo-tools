@@ -22,7 +22,7 @@ import { emitRunUpdated } from "../lib/runs/emit.ts";
 import { runStart } from "../lib/runs/start.ts";
 import { runsRoot } from "../lib/runs/store.ts";
 import {
-  decisionRecord, fieldGet, fieldSet, openRunDb, runStatus, snapshot, stageEnd, stageStart,
+  decisionRecord, fieldGet, fieldSet, openRunDb, runIdentity, runStatus, snapshot, stageEnd, stageStart,
   type Fail,
 } from "../lib/runs/write.ts";
 
@@ -68,12 +68,8 @@ function positionals(args: string[]): string[] {
   return out;
 }
 
-function runIdentity(db: Database): { repo: string; runId: string } {
-  const row = db.query("SELECT id, repo FROM runs LIMIT 1").get() as { id: string; repo: string } | undefined;
-  return { repo: row?.repo ?? "", runId: row?.id ?? "" };
-}
-
-async function emitted(env: NodeJS.ProcessEnv, ident: { repo: string; runId: string }, stage: string | null, kind: string): Promise<void> {
+async function emitted(env: NodeJS.ProcessEnv, ident: { repo: string; runId: string } | null, stage: string | null, kind: string): Promise<void> {
+  if (!ident) return;
   await emitRunUpdated({ repo: ident.repo, runId: ident.runId, stage, kind }, env);
 }
 
