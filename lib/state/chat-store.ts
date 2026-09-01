@@ -149,6 +149,21 @@ const SELECT_MESSAGES_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE 
 const SELECT_MESSAGES_BEFORE_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id < ? ORDER BY id DESC LIMIT ?;`;
 const SELECT_PENDING_SQL = `SELECT ${MESSAGE_COLUMNS} FROM chat_messages WHERE room = ? AND id > ? AND id <= ? ORDER BY id ASC;`;
 const UPDATE_LAST_READ_CLAMPED_SQL = `UPDATE chat_members SET last_read_id = MAX(last_read_id, ?) WHERE room = ? AND handle = ?;`;
+// One query, cheap when idle (both joins are on indexed/PK columns and the
+// per-room MAX collapses to a handful of rows): every (room, handle) whose
+// member cursor sits behind that room's newest message, in a non-archived
+// room. This is the sweep's only store read -- it discovers candidates, it
+// does not decide who is deliverable (presence/binding liveness is the
+// sweep planner's job, not a store concern).
+const SELECT_STALE_PENDING_SQL = `
+SELECT chat_members.room AS room, chat_members.handle AS handle, maxes.maxId AS maxId
+FROM chat_members
+JOIN (SELECT room, MAX(id) AS maxId FROM chat_messages GROUP BY room) AS maxes
+  ON maxes.room = chat_members.room
+JOIN chat_rooms ON chat_rooms.name = chat_members.room
+WHERE chat_members.last_read_id < maxes.maxId
+  AND chat_rooms.archived_at IS NULL;
+`;
 
 // `@` is strictly the mention sigil, and `/` would reshape the
 // `chat/<room>/msg` event topic (lib/daemon/handlers/chat.ts's
@@ -541,4 +556,22 @@ export function pendingMessages(room: string, handle: string, upToId: number, db
   if (!member) return [];
   const rows = db.query(SELECT_PENDING_SQL).all(room, member.last_read_id, upToId) as MessageRow[];
   return rows.map(rowToMessage);
+}
+
+interface StalePendingRow {
+  room: string;
+  handle: string;
+  maxId: number;
+}
+
+/**
+ * Every (room, handle) whose member cursor is behind that room's newest
+ * message right now -- the daemon's periodic delivery sweep's one candidate
+ * query (lib/daemon/handlers/chat.ts's createChatDeliverySweep). Presence
+ * and binding liveness are checked downstream by the sweep's planner, not
+ * here: a stale cursor for a handle nobody has resolved a session for is
+ * still a legitimate row (it just never becomes a re-delivery target).
+ */
+export function stalePendingPairs(db: Database = getStateDb()): StalePendingRow[] {
+  return db.query(SELECT_STALE_PENDING_SQL).all() as StalePendingRow[];
 }

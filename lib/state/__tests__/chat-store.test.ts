@@ -31,6 +31,7 @@ import {
   readUnread,
   recipientsFor,
   roomArchivedAt,
+  stalePendingPairs,
 } from "../chat-store.ts";
 
 let n = 0;
@@ -230,6 +231,47 @@ test("pendingMessages returns the recipient's unread backlog bounded above by th
   markDelivered("r", "b", one.id, db);
   expect(pendingMessages("r", "b", two.id, db).map((m) => m.body)).toEqual(["two"]);
   expect(pendingMessages("r", "nobody", two.id, db)).toEqual([]);
+});
+
+test("stalePendingPairs finds every member whose cursor sits behind the room's max id, author included", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  // postMessage never self-advances the author's own cursor, so "a" is a
+  // legitimate stale row too by this query's own definition -- whether that
+  // candidate is worth re-delivering to is the sweep planner's call, not
+  // this store query's (see createChatDeliverySweep's self-authored guard).
+  expect(stalePendingPairs(db).sort((x, y) => x.handle.localeCompare(y.handle))).toEqual([
+    { room: "r", handle: "a", maxId: posted.id },
+    { room: "r", handle: "b", maxId: posted.id },
+  ]);
+});
+
+test("stalePendingPairs is empty once markDelivered catches every cursor up to the max id", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  const posted = postMessage({ room: "r", handle: "a", body: "one" }, db)!;
+  markDelivered("r", "a", posted.id, db);
+  markDelivered("r", "b", posted.id, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
+test("stalePendingPairs excludes an archived room even with a pending member", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  archiveRoom("r", true, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
+test("stalePendingPairs is empty for a room with no messages at all", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  expect(stalePendingPairs(db)).toEqual([]);
 });
 
 test("archive hides a room from every membership walk and keeps the member rows", () => {
