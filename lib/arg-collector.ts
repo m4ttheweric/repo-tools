@@ -45,7 +45,9 @@ export async function collectArgs(
       const val = await filterableSelect({
         message: arg.name,
         options: arg.options,
-        breadcrumb,
+        // Appends the arg being collected as the final crumb, distinguishing
+        // this sub-stage from the multiselect stage's own breadcrumb.
+        breadcrumb: [...breadcrumb, arg.name],
       });
       if (!val) return null;
       values.set(name, val);

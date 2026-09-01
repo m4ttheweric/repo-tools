@@ -187,6 +187,8 @@ async function runSegmentPicker(opts: {
   expectKeys?: string[];
   resumeValue?: string;
   breadcrumb?: string[];
+  /** Faint text after the bold breadcrumb (RunChain.dc.html's "· <context>"). */
+  crumbSuffix?: string;
 }): Promise<SegmentPickResult | null> {
   const handle = runPick({
     message: opts.message,
@@ -194,6 +196,7 @@ async function runSegmentPicker(opts: {
     actions: footerActions(opts.headerParts, opts.expectKeys ?? [], opts.groupLabel),
     ...(opts.resumeValue ? { resumeValue: opts.resumeValue } : {}),
     ...(opts.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
+    ...(opts.crumbSuffix ? { crumbSuffix: opts.crumbSuffix } : {}),
   });
   const result = await handle.result;
 
@@ -308,15 +311,17 @@ async function selectPackageAndScript(
   contextLabel?: string,
   queue?: QueuedItem[],
 ): Promise<ScriptSelection | typeof QUEUE_LAUNCHED | null> {
-  const { runNavPicker } = await import("../lib/navigate.ts");
   const packages = getWorkspacePackages(worktreePath);
   const label = contextLabel ? `${contextLabel}` : "";
-  // contextLabel reads "repo / worktree" for the on-screen message; the
-  // breadcrumb only ever names the repo, so take the part before the first
+  // contextLabel reads "repo / worktree" for the on-screen message; the crumb
+  // suffix only ever names the repo, so take the part before the first
   // " / " -- this also keeps a worktree whose basename equals the repo name
   // (the common main-checkout case) from doubling the repo segment.
   const repoSegment = label.split(" / ")[0] ?? "";
-  const breadcrumb = repoSegment ? ["rt", "run", repoSegment] : ["rt", "run"];
+  // Board grammar (RunChain.dc.html): the breadcrumb stays the two bold
+  // "rt › run" segments; everything past the faint middle dot is a
+  // crumbSuffix, never another breadcrumb segment.
+  const breadcrumb = ["rt", "run"];
   const derivedIdentity = await deriveRepoIdentity(worktreePath);
   const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   let cameFromScript = false;
@@ -390,6 +395,7 @@ async function selectPackageAndScript(
           ? [
               "enter: select",
               "ctrl-x: dequeue",
+              "ctrl-up: back",
               "esc: quit",
             ]
           : [
@@ -415,6 +421,7 @@ async function selectPackageAndScript(
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
           resumeValue,
           breadcrumb,
+          crumbSuffix: repoSegment ? ` · ${repoSegment}` : undefined,
         });
 
         if (!pkgResult) throw new RunAborted(1);
@@ -572,6 +579,9 @@ async function selectPackageAndScript(
         ];
 
     const packageSegment = packageLabel === "." ? "root" : packageLabel;
+    // Board grammar drops the repo at this stage: the crumb suffix is
+    // "<package> · <path>", never "<repo> · <package> · <path>".
+    const packagePathSegment = packagePath === worktreePath ? "." : relative(worktreePath, packagePath);
     const scriptResult = await runSegmentPicker({
       rows: scriptRows,
       message: label
@@ -580,7 +590,8 @@ async function selectPackageAndScript(
       headerParts: scriptHeaderParts,
       groupLabel: q.length > 0 ? "queue" : "run",
       expectKeys: ["alt-enter", "tab"],
-      breadcrumb: [...breadcrumb, packageSegment],
+      breadcrumb,
+      crumbSuffix: ` · ${packageSegment} · ${packagePathSegment}`,
     });
 
     if (!scriptResult) throw new RunAborted(1);
@@ -633,18 +644,19 @@ async function selectPackageAndScript(
         : ["enter: run", "tab: queue", "ctrl-up: back"];
 
       while (true) {
-        const varResult = await runNavPicker({
-          options: [
-            ...existing.map((v) => ({
-              value: v.command,
-              label: v.name,
-              hint: v.command.slice(0, 60),
-            })),
-            { value: ADD_SENTINEL, label: "+ Add variation…", hint: "" },
-          ],
+        const varOptions = [
+          ...existing.map((v) => ({ value: v.command, label: v.name, hint: v.command.slice(0, 60) })),
+          { value: ADD_SENTINEL, label: "+ Add variation…", hint: "" },
+        ];
+        const varLabelWidth = varOptions.reduce((w, o) => Math.max(w, o.label.length), 0);
+        const varResult = await runSegmentPicker({
+          rows: varOptions.map((o) => plainRow(o, undefined, varLabelWidth)),
           message: `Variation for "${scriptName}"`,
           headerParts: varHeaderParts,
+          groupLabel: q.length > 0 ? "queue" : "run",
           expectKeys: ["tab"],
+          breadcrumb,
+          crumbSuffix: ` · variation for "${scriptName}"`,
         });
 
         if (!varResult) throw new RunAborted(1);

@@ -220,6 +220,10 @@ test("package picker: queue-active state groups queue rows, adds Launch all + Sa
   // leaving ctrl-up and esc to pin right (RunChain.dc.html panel 2).
   expect(queueActions.find((a) => a.id === "enter")?.group).toBe("queue");
   expect(queueActions.find((a) => a.id === "ctrl-up")?.group).toBeUndefined();
+  // Regression: the queue-active footer used to omit "ctrl-up: back" from its
+  // headerParts, so footerActions' generic fallback rendered the key name
+  // twice ("ctrl-up ctrl-up") instead of "ctrl-up back".
+  expect(queueActions).toContainEqual({ id: "ctrl-up", label: "back", key: "ctrl-up", scope: "global", event: false });
 });
 
 // ─── esc-abort contract (RunAborted, not a live picker or a launched run) ───
@@ -286,7 +290,7 @@ test("footer reads 'esc quit' everywhere run declares it, not 'esc cancel'", asy
   expect(source).toContain("esc: quit");
 });
 
-test("package picker breadcrumb: rt > run > <repo> (no worktree, so it never slash-doubles)", async () => {
+test("package picker breadcrumb is the bare 'rt run' chevron pair; the repo rides the faint crumbSuffix (RunChain.dc.html panel 1)", async () => {
   const { root, pkgAPath } = makeWorkspaceFixture();
   fixtureDir = root;
 
@@ -308,10 +312,11 @@ test("package picker breadcrumb: rt > run > <repo> (no worktree, so it never sla
 
   await resolveRun([], ctx);
   expect(fake.calls).toHaveLength(2);
-  expect(fake.calls[0]!.breadcrumb).toEqual(["rt", "run", "picker-fixture"]);
+  expect(fake.calls[0]!.breadcrumb).toEqual(["rt", "run"]);
+  expect(fake.calls[0]!.crumbSuffix).toBe(" · picker-fixture");
 });
 
-test("script picker breadcrumb carries the package segment the package stage doesn't have", async () => {
+test("script picker breadcrumb stays 'rt run'; crumbSuffix carries package · path and drops the repo (RunChain.dc.html panel 3)", async () => {
   const { root, pkgAPath } = makeWorkspaceFixture();
   fixtureDir = root;
 
@@ -333,23 +338,31 @@ test("script picker breadcrumb carries the package segment the package stage doe
 
   await resolveRun([], ctx);
   expect(fake.calls).toHaveLength(2);
-  expect(fake.calls[1]!.breadcrumb).toEqual(["rt", "run", "picker-fixture", "a"]);
+  expect(fake.calls[1]!.breadcrumb).toEqual(["rt", "run"]);
+  expect(fake.calls[1]!.crumbSuffix).toBe(" · a · packages/a");
+  expect(fake.calls[1]!.crumbSuffix).not.toContain("picker-fixture");
 });
 
-test("regression: a worktree whose basename matches the repo name never doubles the repo segment", async () => {
+test("regression: a worktree whose basename matches the repo name never doubles the repo segment in crumbSuffix", async () => {
   // The old bug: contextLabel joined repoName and basename(worktreePath) with
   // " / ", so a worktree directory literally named after the repo (the
   // common main-checkout layout) rendered "rt › run › repo / repo". mkdtemp
   // always suffixes a random string, so nest a directory literally named
   // "picker-fixture" to reproduce basename(worktreePath) === repoName exactly.
+  // Two packages so the manual package picker actually opens -- the repo
+  // segment now only ever reaches the picker through the package stage's
+  // crumbSuffix, not the breadcrumb array.
   const parent = mkdtempSync(join(tmpdir(), "run-doubling-"));
   const root = join(parent, "picker-fixture");
   mkdirSync(root);
   fixtureDir = parent;
-  // Two root scripts (no workspaces) so the picker actually opens: the
-  // package stage auto-resolves to "root" with no packages to choose between,
-  // but the script stage still needs a picker once there's more than one.
-  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "root", scripts: { dev: "vite", build: "vite build" } }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "root", workspaces: ["packages/*"] }));
+  const pkgA = join(root, "packages", "a");
+  const pkgB = join(root, "packages", "b");
+  mkdirSync(pkgA, { recursive: true });
+  mkdirSync(pkgB, { recursive: true });
+  writeFileSync(join(pkgA, "package.json"), JSON.stringify({ name: "a", scripts: { dev: "vite" } }));
+  writeFileSync(join(pkgB, "package.json"), JSON.stringify({ name: "b", scripts: { dev: "vite" } }));
 
   fake = installSequentialPick([{ action: "cancel", value: null, query: "" }]);
 
@@ -365,18 +378,39 @@ test("regression: a worktree whose basename matches the repo name never doubles 
   } as never;
 
   await resolveRun([], ctx);
-  // A single script auto-resolves past the package/script pickers straight
-  // to the (single) script's picker call -- see selectPackageAndScript's
-  // packages.length===0 branch, which skips a package picker entirely here
-  // since there are no packages.json workspaces, only a root script.
-  expect(fake.calls.length).toBeGreaterThanOrEqual(1);
-  for (const call of fake.calls) {
-    const runIdx = call.breadcrumb?.indexOf("run") ?? -1;
-    expect(runIdx).toBeGreaterThanOrEqual(0);
-    // Every segment after "run" is distinct -- "picker-fixture" appears once.
-    expect(call.breadcrumb!.filter((s) => s === "picker-fixture")).toHaveLength(1);
-    expect(call.breadcrumb!.join(" › ")).not.toContain("picker-fixture / picker-fixture");
-  }
+  expect(fake.calls).toHaveLength(1);
+  const call = fake.calls[0]!;
+  expect(call.breadcrumb).toEqual(["rt", "run"]);
+  expect(call.crumbSuffix).toBe(" · picker-fixture");
+  expect(call.crumbSuffix).not.toContain("picker-fixture / picker-fixture");
+});
+
+test("variations picker breadcrumb stays 'rt run'; crumbSuffix reads variation for \"<script>\" (RunChain.dc.html panel 4)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "rt-run-var-"));
+  fixtureDir = root;
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "root", scripts: { dev: "vite", build: "vite build" } }));
+
+  fake = installSequentialPick([
+    { action: "alt-enter", value: "dev", query: "" }, // script picker -- open variations for "dev"
+    { action: "cancel", value: null, query: "" }, // variations picker -- bail out
+  ]);
+
+  const ctx = {
+    identity: {
+      repoName: "picker-fixture",
+      identity: `test-picker-repo-${Date.now()}`,
+      repoRoot: root,
+      dataDir: "",
+      remoteUrl: "",
+      baseUrl: "",
+    },
+  } as never;
+
+  const res: RunResolution = await resolveRun([], ctx);
+  expect(res.kind).toBe("cancelled");
+  expect(fake.calls).toHaveLength(2);
+  expect(fake.calls[1]!.breadcrumb).toEqual(["rt", "run"]);
+  expect(fake.calls[1]!.crumbSuffix).toBe(' · variation for "dev"');
 });
 
 // ─── package row alignment ───────────────────────────────────────────────────

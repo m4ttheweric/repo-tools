@@ -80,10 +80,10 @@ describe("collectArgs", () => {
     expect(fake.calls).toHaveLength(2);
     expect(fake.calls[1]!.request.multi).toBeFalsy();
     expect(fake.calls[1]!.request.rows.map((r) => r.value)).toEqual(["prod", "dev"]);
-    // The select sub-stage's header used to be blank -- it now carries the
-    // same breadcrumb as the multiselect stage that opened it.
-    expect(fake.calls[1]!.request.breadcrumb).toEqual(["rt", "settings", "get"]);
-    expect(fake.calls[1]!.request.breadcrumb).toEqual(fake.calls[0]!.request.breadcrumb);
+    // The select sub-stage's breadcrumb appends the arg being collected as
+    // its final segment, distinguishing it from the multiselect stage.
+    expect(fake.calls[1]!.request.breadcrumb).toEqual(["rt", "settings", "get", "Scope"]);
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "settings", "get"]);
   });
 
   test("assembles a positional (flagless) selected arg from a boolean toggle", async () => {
