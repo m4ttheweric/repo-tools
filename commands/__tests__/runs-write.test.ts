@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -16,13 +16,15 @@ async function startRun(): Promise<{ env: Record<string, string>; runDb: string 
   return { env: { RT_RUN_DB: parsed.runDb, ...QUIET }, runDb: parsed.runDb };
 }
 
-async function withFakeDaemon<T>(body: (seen: { topic: string; payload: { repo: string; runId: string; stage: string | null; kind: string } }[]) => Promise<T>): Promise<T> {
+type SeenEmission = { topic: string; payload: { repo: string; runId: string; stage: string | null; kind: string } };
+
+async function withFakeDaemon<T>(body: (seen: SeenEmission[]) => Promise<T>): Promise<T> {
   mkdirSync(dirname(DAEMON_SOCK_PATH), { recursive: true });
   if (existsSync(DAEMON_SOCK_PATH)) rmSync(DAEMON_SOCK_PATH);
-  const seen: { topic: string; payload: { repo: string; runId: string; stage: string | null; kind: string } }[] = [];
+  const seen: SeenEmission[] = [];
   const server = Bun.serve({
     unix: DAEMON_SOCK_PATH,
-    async fetch(req) { seen.push(await req.json()); return new Response(JSON.stringify({ ok: true })); },
+    async fetch(req) { seen.push((await req.json()) as SeenEmission); return new Response(JSON.stringify({ ok: true })); },
   });
   try {
     return await body(seen);

@@ -29,9 +29,7 @@ import {
 export type WriteVerb = "run-start" | "run-status" | "stage-start" | "stage-done" | "stage-fail" | "field" | "decision" | "snapshot";
 export type CliResult = { out: string; code: number };
 
-class Usage extends Error {
-  constructor(message: string) { super(message); }
-}
+class Usage extends Error {}
 
 function json(value: unknown): string {
   return JSON.stringify(value);
