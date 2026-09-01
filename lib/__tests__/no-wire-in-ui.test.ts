@@ -13,7 +13,7 @@ import { formatFreshnessParts } from "../../commands/daemon.ts";
 
 const WIRES = [
   "remote:github.com%2Fm4ttstack%2Frt",
-  "remote:gitlab.com%2Fassured%2Fassured-dev",
+  "remote:gitlab.com%2Facme%2Facme-dev",
   "remote:gitlab.example.com%3A8443%2Fteam%2Fsub%2Frepo",
   "path:%2FUsers%2Fdev%2Fscratch",
 ];
