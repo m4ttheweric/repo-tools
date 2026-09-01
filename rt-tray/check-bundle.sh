@@ -363,6 +363,25 @@ check_helpers() { # app
             fail "$exe skills: dot directory $dotdir would break the bundle seal"
         done < <(find "$app/Contents/Helpers/skills" -type d -name '*.*' -print0)
     fi
+    # Reverse direction: every top-level Helpers entry must trace to a
+    # deps.lock row or be a first-party build.sh product (rt-ui, skills).
+    # The row loop above only proves declared things exist; a helper the
+    # lock doesn't pin would otherwise ship unverified and unversioned.
+    local allowed=" rt-ui skills " seg entry stowaways=0
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        split_tsv "$row"
+        seg="${FIELDS[6]#Contents/Helpers/}"; seg="${seg%%/*}"
+        allowed="$allowed$seg "
+    done <<< "$LOCK_TSV"
+    while IFS= read -r -d '' entry; do
+        seg="$(basename "$entry")"
+        case "$allowed" in
+            *" $seg "*) ;;
+            *) fail "$exe Helpers/$seg is not declared by deps.lock"; stowaways=$((stowaways + 1)) ;;
+        esac
+    done < <(find "$app/Contents/Helpers" -mindepth 1 -maxdepth 1 -print0)
+    [ "$stowaways" -eq 0 ] && pass "$exe Helpers holds only deps.lock-declared and first-party entries"
     [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
     # Actually RUN it, like every other helper above. Asserting the entry file
     # merely exists is what let a bundled fast-browser that crashes at module
