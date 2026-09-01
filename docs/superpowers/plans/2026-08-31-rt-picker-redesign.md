@@ -56,6 +56,8 @@
 **Phase 7 — cutover sweep:** Task 22 (deletion inventory + rt-health/deps + test fates + docs).
 **Phase 8 — parity:** Task 23 (board-parity review + Ghostty captures + CLAUDE.md).
 
+**Checkpoint reviews (Matt's instruction):** the executor (remy) messages kai over rt chat at these gates and WAITS for kai's verdict before proceeding: (1) end of Phase 2 (first real render), (2) end of Phase 3 (interactions), (3) end of Phase 5 (wrapper flip), (4) after each Phase 6 surface lands, (5) before the Phase 7 sweep, (6) Phase 8 final. kai captures the real TUI in Ghostty (screenshot method) and scrutinizes against docs/design/picker/; findings come back as fix-or-ratify items.
+
 Tasks within a phase are sequential; phases are sequential. Green-tree caveat, stated so nobody debugs it as a regression: Task 14s wrapper swap flips every filterableSelect/filterableMultiselect caller at once in Phase 5 (unit suites must stay green via the fake), and the 7 fzf-driving Termwright e2e suites go red from Phase 5 until Task 22 deletes them — expected, not a defect. Direct-spawn surfaces (commit, skills, nav, showPicker, arg-collector) stay on fzf until their own task.
 
 ---
@@ -285,7 +287,7 @@ Notes: the non-TTY fallback line drops its fzf mention (becomes `no tty -- edit 
 
 ### Task 19: Migrate `rt cd` + `formatBranchSegments`
 
-**Model:** sonnet; reviewer opus. **Files:** Modify `lib/enrich.ts` (ADD `formatBranchSegments(eb: EnrichedBranch): { left: PickSegment[]; right: PickSegment[] }` — same fields as `formatBranchLabelParts`, tones per the glyph vocabulary, ticket stateColor as `hex`); Modify `lib/pickers.ts` + `commands/cd.ts`: repo/worktree pickers on the wrappers, worktree rows from `formatBranchSegments`, ctrl-r as an `event:true` action whose handler re-lists repos in-process and calls `handle.update({rows})`; progressive enrichment: open with `dirName · branch` rows immediately, then `handle.update({rows: enriched})` when `enrichBranches` resolves (silent mode; no spinner). Delete cd's use of `reloadCommand` (option dies in Phase 7). Tests: segments golden (ticket/[Local Only]/icons cases from enrich fixtures), ctrl-r update flow, progressive update with the fake.
+**Model:** sonnet; reviewer opus. **Files:** Modify `lib/enrich.ts` (ADD `formatBranchSegments(eb: EnrichedBranch): { left: PickSegment[]; right: PickSegment[] }` — same fields as `formatBranchLabelParts`, tones per the glyph vocabulary, ticket stateColor as `hex`); Modify `lib/pickers.ts` + `commands/cd.ts`: repo/worktree pickers on the wrappers, worktree rows from `formatBranchSegments`, ctrl-r as an `event:true` action whose handler re-lists repos in-process and calls `handle.update({rows})`; progressive enrichment: open with `dirName · branch` rows immediately, then `handle.update({rows: enriched})` when `enrichBranches` resolves (silent mode; no spinner). Delete cd's use of `reloadCommand` (option dies in Phase 7). DELETE `formatBranchLabel` (the fzf flatten; its only caller `lib/pickers.ts:35` migrates to `formatBranchSegments` in this task). Tests: segments golden (ticket/[Local Only]/icons cases from enrich fixtures), ctrl-r update flow, progressive update with the fake.
 
 - [ ] Steps: red → green → commit. Boards: Cd, Enrichment.
 
