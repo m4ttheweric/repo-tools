@@ -18,7 +18,7 @@ describe("parseProvisionArgs", () => {
   test("bare --ticket", () => {
     expect(parseProvisionArgs(["--ticket", "RT-40"])).toEqual({
       repoName: undefined, ticket: "RT-40", title: undefined, branch: undefined,
-      owner: undefined, disposal: undefined, json: false,
+      owner: undefined, disposal: undefined, wait: false, json: false,
     });
   });
   test("--ticket with --title", () => {
@@ -40,7 +40,7 @@ describe("parseProvisionArgs", () => {
   test("no flags → all undefined, json false", () => {
     expect(parseProvisionArgs([])).toEqual({
       repoName: undefined, ticket: undefined, title: undefined, branch: undefined,
-      owner: undefined, disposal: undefined, json: false,
+      owner: undefined, disposal: undefined, wait: false, json: false,
     });
   });
 });
