@@ -101,6 +101,22 @@ describe("filterableSelect", () => {
     expect(fake.calls[0]!.request.cap).toBe(50);
   });
 
+  test("extras.onEvent receives an event-typed message from the fake", async () => {
+    fake = installFakePick([
+      { kind: "event", event: { action: "reload", value: null, query: "" } },
+      resultStep({ action: "select", value: "a" }),
+    ]);
+    const events: string[] = [];
+    await filterableSelect(
+      { message: "Pick one", options: [{ value: "a", label: "Alpha" }] },
+      {
+        actions: [{ id: "reload", label: "refresh", key: "ctrl-r", scope: "global", event: true }],
+        onEvent: (e) => { events.push(e.action); },
+      },
+    );
+    expect(events).toEqual(["reload"]);
+  });
+
   test("backLabel injects a back action wired to ctrl-up", async () => {
     fake = installFakePick([resultStep({ action: "select", value: "a" })]);
     await filterableSelect({

@@ -6,7 +6,7 @@
  * already depend on.
  */
 import { runPick, type PickHandle } from "./ui/pick.ts";
-import type { PickAction, PickRow, PickSegment } from "./ui/protocol.ts";
+import type { PickAction, PickEvent, PickRow, PickSegment } from "./ui/protocol.ts";
 import { BackNavigation } from "./back-navigation.ts";
 import type { NavOption, NavPickerOpts, NavResult } from "./navigate.ts";
 
@@ -29,12 +29,14 @@ export interface PickerExtras {
   /** Live handle for update() pushes, called once the picker has opened. */
   onOpen?: (h: PickHandle) => void;
   cap?: number;
+  /** Event door for `event: true` actions (e.g. a ctrl-r reload) -- without this, such an action fires Go-side but is dropped TS-side. */
+  onEvent?: (e: PickEvent) => void | Promise<void>;
 }
 
 const BACK_ACTION_ID = "back";
 
 /** Two-column look: bold label padded to the widest label, then a dim hint. */
-function optionsToRows(options: SelectOption[]): PickRow[] {
+export function optionsToRows(options: SelectOption[]): PickRow[] {
   const labelWidth = options.reduce((w, o) => Math.max(w, o.label.length), 0);
   return options.map((o) => {
     const left: PickSegment[] = [{ text: o.label.padEnd(labelWidth), bold: true }];
@@ -68,13 +70,16 @@ export async function filterableSelect(
   const rows = extras.rows ?? optionsToRows(opts.options);
   const actions = withBackAction(extras.actions, opts.backLabel);
 
-  const handle = runPick({
-    message: opts.message,
-    rows,
-    ...(actions ? { actions } : {}),
-    ...(opts.exact ? { exact: true } : {}),
-    ...(extras.cap !== undefined ? { cap: extras.cap } : {}),
-  });
+  const handle = runPick(
+    {
+      message: opts.message,
+      rows,
+      ...(actions ? { actions } : {}),
+      ...(opts.exact ? { exact: true } : {}),
+      ...(extras.cap !== undefined ? { cap: extras.cap } : {}),
+    },
+    extras.onEvent ? { onEvent: extras.onEvent } : undefined,
+  );
   extras.onOpen?.(handle);
 
   const result = await handle.result;
@@ -98,14 +103,17 @@ export async function filterableMultiselect(
 ): Promise<string[] | null> {
   const rows = extras.rows ?? optionsToRows(opts.options);
 
-  const handle = runPick({
-    message: opts.message,
-    rows,
-    multi: true,
-    ...(opts.initialValues !== undefined ? { initialValues: opts.initialValues } : {}),
-    ...(extras.actions ? { actions: extras.actions } : {}),
-    ...(extras.cap !== undefined ? { cap: extras.cap } : {}),
-  });
+  const handle = runPick(
+    {
+      message: opts.message,
+      rows,
+      multi: true,
+      ...(opts.initialValues !== undefined ? { initialValues: opts.initialValues } : {}),
+      ...(extras.actions ? { actions: extras.actions } : {}),
+      ...(extras.cap !== undefined ? { cap: extras.cap } : {}),
+    },
+    extras.onEvent ? { onEvent: extras.onEvent } : undefined,
+  );
   extras.onOpen?.(handle);
 
   const result = await handle.result;

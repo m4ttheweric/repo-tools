@@ -60,59 +60,33 @@ function repoOptionsFromList(repos: KnownRepo[]) {
   return repoOptions(repos);
 }
 
-/**
- * Mirrors pick-wrappers.ts's own options→rows translation (bold padded label
- * + dim hint). The ctrl-r reload path below bypasses that wrapper to reach
- * `onEvent` (which it doesn't plumb), so refreshed rows have to reproduce
- * that same look by hand instead of drifting from every other picker's
- * repo row.
- */
-function reposToRows(repos: KnownRepo[]): PickRow[] {
-  const options = repoOptionsFromList(repos);
-  const labelWidth = options.reduce((w, o) => Math.max(w, o.label.length), 0);
-  return options.map((o) => {
-    const left: PickSegment[] = [{ text: o.label.padEnd(labelWidth), bold: true }];
-    if (o.hint) left.push({ text: `  ${o.hint}`, tone: "dim" });
-    return { value: o.value, left };
-  });
-}
-
 const RELOAD_ACTION: PickAction = { id: "reload", label: "refresh", key: "ctrl-r", scope: "global", event: true };
 
 /**
- * Single-step repo picker. Goes straight to `runPick` instead of the
- * filterableSelect wrapper because the wrapper doesn't plumb `onEvent` --
- * needed here so ctrl-r can re-list repos and push `handle.update` without
- * closing the picker (an `event: true` action never reaches `PickHandle.result`).
- * Exported for cd.ts's own inline repo picker (the `--repo --worktree` combo),
- * which needs the same reload wiring without going through `pickFromAllRepos`'s
+ * Single-step repo picker, built on the filterableSelect wrapper. Exported
+ * for cd.ts's own inline repo picker (the `--repo --worktree` combo), which
+ * needs the same reload wiring without going through `pickFromAllRepos`'s
  * repo→worktree loop.
  */
 export async function pickRepo(
   repos: KnownRepo[],
   opts?: { onReload?: () => KnownRepo[] | Promise<KnownRepo[]> },
 ): Promise<string | null> {
-  const { runPick } = await import("./ui/pick.ts");
+  const { filterableSelect, optionsToRows } = await import("./pick-wrappers.ts");
 
-  let handle!: PickHandle;
-  handle = runPick(
+  let handle: PickHandle | undefined;
+  return filterableSelect(
+    { message: "Pick a repo", options: repoOptionsFromList(repos) },
     {
-      message: "Pick a repo",
-      rows: reposToRows(repos),
       ...(opts?.onReload ? { actions: [RELOAD_ACTION] } : {}),
-    },
-    {
+      onOpen: (h) => { handle = h; },
       onEvent: async (evt) => {
         if (evt.action !== RELOAD_ACTION.id || !opts?.onReload) return;
         const fresh = await opts.onReload();
-        handle.update({ rows: reposToRows(fresh) });
+        handle?.update({ rows: optionsToRows(repoOptionsFromList(fresh)) });
       },
     },
   );
-
-  const result = await handle.result;
-  if (result.action === "cancel") return null;
-  return result.value ?? null;
 }
 
 // ─── Pickers ─────────────────────────────────────────────────────────────────
