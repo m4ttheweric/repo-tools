@@ -45,16 +45,17 @@ const STATUS_TONES: Record<string, string> = {
   U: "lav",
 };
 
-/** Marker + path left segments. Staged changes color by status letter;
- *  unstaged changes render dim — the same information today's raw two-char
- *  porcelain badge carried, just split into segments instead of one string. */
+/** Path + marker left segments. Segment 0 is the row's label — the selected
+ *  panel (rt-ui) reads only Left[0].Text for its mint dot-joined summary, so
+ *  the marker must trail rather than lead. Staged changes color by status
+ *  letter; unstaged changes render dim. */
 function fileLeftSegments(f: ChangedFile): PickSegment[] {
   if (f.rawStatus === "??") {
-    return [{ text: "??", tone: "faint" }, { text: `  ${f.path}` }];
+    return [{ text: f.path }, { text: "  ??", tone: "faint" }];
   }
   const letter = f.isStaged ? f.rawStatus[0]! : f.rawStatus[1]!;
   const tone = f.isStaged ? (STATUS_TONES[letter] ?? "text") : "dim";
-  return [{ text: f.rawStatus, tone }, { text: `  ${f.path}` }];
+  return [{ text: f.path }, { text: `  ${f.rawStatus}`, tone }];
 }
 
 /** Stats right segments. Untracked files never appear in `git diff HEAD`, so
@@ -129,7 +130,12 @@ export async function runFilePicker(cwd: string, files: ChangedFile[]): Promise<
 
   let raw: PickResult | undefined;
   const values = await filterableMultiselect(
-    { message: "rt commit", options: [], initialValues: files.map((f) => f.path) },
+    {
+      message: "rt commit",
+      options: [],
+      initialValues: files.map((f) => f.path),
+      breadcrumb: ["rt", "commit"],
+    },
     {
       rows,
       actions: [{ id: DISCARD_ACTION_ID, label: "discard", key: "ctrl-d", scope: "global" }],

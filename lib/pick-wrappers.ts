@@ -64,6 +64,8 @@ export async function filterableSelect(
     /** When set, adds a back action bound to ctrl-up and throws BackNavigation on it. */
     backLabel?: string;
     exact?: boolean;
+    /** Header-left breadcrumb (e.g. ["rt", "commit"]); Go renders this, not `message`. */
+    breadcrumb?: string[];
   },
   extras: PickerExtras = {},
 ): Promise<string | null> {
@@ -77,6 +79,7 @@ export async function filterableSelect(
       ...(actions ? { actions } : {}),
       ...(opts.exact ? { exact: true } : {}),
       ...(extras.cap !== undefined ? { cap: extras.cap } : {}),
+      ...(opts.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
     },
     extras.onEvent ? { onEvent: extras.onEvent } : undefined,
   );
@@ -98,6 +101,8 @@ export async function filterableMultiselect(
     options: SelectOption[];
     initialValues?: string[];
     stderr?: boolean;
+    /** Header-left breadcrumb (e.g. ["rt", "commit"]); Go renders this, not `message`. */
+    breadcrumb?: string[];
   },
   extras: PickerExtras = {},
 ): Promise<string[] | null> {
@@ -111,6 +116,7 @@ export async function filterableMultiselect(
       ...(opts.initialValues !== undefined ? { initialValues: opts.initialValues } : {}),
       ...(extras.actions ? { actions: extras.actions } : {}),
       ...(extras.cap !== undefined ? { cap: extras.cap } : {}),
+      ...(opts.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
     },
     extras.onEvent ? { onEvent: extras.onEvent } : undefined,
   );

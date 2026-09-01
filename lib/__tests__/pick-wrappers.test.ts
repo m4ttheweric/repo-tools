@@ -117,6 +117,22 @@ describe("filterableSelect", () => {
     expect(events).toEqual(["reload"]);
   });
 
+  test("breadcrumb passes through to the request", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "a" })]);
+    await filterableSelect({
+      message: "Pick one",
+      options: [{ value: "a", label: "Alpha" }],
+      breadcrumb: ["rt", "nav"],
+    });
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "nav"]);
+  });
+
+  test("omitting breadcrumb leaves the request without one", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "a" })]);
+    await filterableSelect({ message: "Pick one", options: [{ value: "a", label: "Alpha" }] });
+    expect(fake.calls[0]!.request.breadcrumb).toBeUndefined();
+  });
+
   test("backLabel injects a back action wired to ctrl-up", async () => {
     fake = installFakePick([resultStep({ action: "select", value: "a" })]);
     await filterableSelect({
@@ -168,5 +184,21 @@ describe("filterableMultiselect", () => {
     expect(fake.calls[0]!.request.initialValues).toEqual(["b"]);
     expect(fake.calls[0]!.request.multi).toBe(true);
     expect(selected).toEqual(["b"]);
+  });
+
+  test("breadcrumb passes through to the request", async () => {
+    fake = installFakePick([resultStep({ action: "select", values: ["a"] })]);
+    await filterableMultiselect({
+      message: "Pick some",
+      options: [{ value: "a", label: "Alpha" }],
+      breadcrumb: ["rt", "commit"],
+    });
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "commit"]);
+  });
+
+  test("omitting breadcrumb leaves the request without one", async () => {
+    fake = installFakePick([resultStep({ action: "select", values: ["a"] })]);
+    await filterableMultiselect({ message: "Pick some", options: [{ value: "a", label: "Alpha" }] });
+    expect(fake.calls[0]!.request.breadcrumb).toBeUndefined();
   });
 });

@@ -91,7 +91,7 @@ async function runCapturingExit(fn: () => Promise<void>): Promise<{ exitCode: nu
 }
 
 describe("runFilePicker rows", () => {
-  test("a tracked modified file gets a staged-marker + path left, +adds mint / -dels coral right", async () => {
+  test("a tracked modified file gets a path + staged-marker left (label first, for the selected panel), +adds mint / -dels coral right", async () => {
     const dir = makeRepo();
     writeFileSync(join(dir, "tracked.txt"), "base\nextra1\nextra2\n");
 
@@ -102,8 +102,8 @@ describe("runFilePicker rows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.value).toBe("tracked.txt");
     expect(rows[0]!.left).toEqual([
-      { text: " M", tone: "dim" },
-      { text: "  tracked.txt" },
+      { text: "tracked.txt" },
+      { text: "   M", tone: "dim" },
     ]);
     expect(rows[0]!.right).toEqual([
       { text: "+2", tone: "mint" },
@@ -124,8 +124,8 @@ describe("runFilePicker rows", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.value).toBe("loose.txt");
     expect(rows[0]!.left).toEqual([
-      { text: "??", tone: "faint" },
-      { text: "  loose.txt" },
+      { text: "loose.txt" },
+      { text: "  ??", tone: "faint" },
     ]);
     expect(rows[0]!.right).toEqual([{ text: "new", tone: "faint" }]);
     rmSync(dir, { recursive: true, force: true });
@@ -143,6 +143,17 @@ describe("runFilePicker rows", () => {
     expect(fake.calls[0]!.request.initialValues?.slice().sort()).toEqual(
       files.map((f) => f.path).sort(),
     );
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("requests the rt › commit breadcrumb, not a header-left message", async () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "tracked.txt"), "changed\n");
+
+    fake = installFakePick([resultStep({ action: "select", values: [] })]);
+    await runFilePicker(dir, getChangedFiles(dir));
+
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "commit"]);
     rmSync(dir, { recursive: true, force: true });
   });
 
