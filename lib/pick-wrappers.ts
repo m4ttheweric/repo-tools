@@ -225,6 +225,7 @@ export async function runNavPicker(opts: NavPickerOpts): Promise<NavResult | nul
     // every other caller that builds its own breadcrumb by hand -- without
     // this the header goes blank (Go renders Breadcrumb, never Message).
     breadcrumb: opts.breadcrumb ?? [opts.message],
+    ...(opts.crumbSuffix ? { crumbSuffix: opts.crumbSuffix } : {}),
     ...(actions ? { actions } : {}),
     ...(opts.initialQuery ? { initialQuery: opts.initialQuery } : {}),
     ...(resumeValue ? { resumeValue } : {}),

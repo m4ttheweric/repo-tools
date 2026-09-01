@@ -72,6 +72,18 @@ describe("breadcrumb", () => {
     await runNavPicker({ message: "m", options: OPTIONS, breadcrumb: ["rt", "sdm", "connect"] });
     expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "sdm", "connect"]);
   });
+
+  test("crumbSuffix rides with an explicit breadcrumb", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "a" })]);
+    await runNavPicker({ message: "m", options: OPTIONS, breadcrumb: ["rt", "sdm", "connections"], crumbSuffix: "  ● connected" });
+    expect(fake.calls[0]!.request.crumbSuffix).toBe("  ● connected");
+  });
+
+  test("crumbSuffix is omitted when unset", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "a" })]);
+    await runNavPicker({ message: "m", options: OPTIONS, breadcrumb: ["rt", "sdm", "connections"] });
+    expect(fake.calls[0]!.request.crumbSuffix).toBeUndefined();
+  });
 });
 
 describe("headerParts -> footer actions", () => {
