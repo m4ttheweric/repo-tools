@@ -4,7 +4,7 @@ import { ReadBackFailedError } from "@mattstack/glance";
 import { fakeStore } from "./fake-cache-store.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const fakeCtx = () => ({ cache: fakeStore({}), repoIndex: () => ({ repo: "/tmp/repo" }), log: { warn() {}, info() {}, debug() {}, error() {} } as any });
+const fakeCtx = () => ({ cache: fakeStore({}), repoIndex: () => ({ "remote:gitlab.com%2Fg%2Fp": "/tmp/repo" }), log: { warn() {}, info() {}, debug() {}, error() {} } as any });
 const prOf = (iid: number, state = "opened") => ({ iid, state, sourceBranch: `b${iid}` }) as any;
 
 function harness(provider: Record<string, unknown>) {
@@ -149,6 +149,24 @@ describe("mr:* identity guard", () => {
 
     expect(res.ok).toBe(true);
     expect(writebacks).toEqual([{ repo: WIRE, pp: "g/p", iid: 7, state: "merged" }]);
+  });
+
+  // decodeRepo validates SHAPE only. A well-formed identity the index does not
+  // carry reached getRepoContext and came back as its raw index error, so a
+  // caller could not tell "I do not know that repo" from a provider fault.
+  // hooks:repair already answers this case explicitly; mr:* now matches it.
+  test("mr:action refuses a well-formed identity the index does not carry", async () => {
+    const { handlers } = harness({ mergePullRequest: async () => prOf(7, "merged") });
+
+    const res = await handlers["mr:action"]!({
+      repoName: "remote:gitlab.com%2Fg%2Fnot-indexed",
+      iid: 7,
+      action: "merge",
+      args: [],
+    }) as any;
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("repo-unknown");
   });
 
   test("mr:fetch-job-detail refuses a display name", async () => {

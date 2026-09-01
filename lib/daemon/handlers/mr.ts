@@ -75,6 +75,20 @@ export function createMRHandlers(
     return getContext(repoName);
   }
 
+  /**
+   * `decodeRepo` validates the wire SHAPE only. A well-formed identity the
+   * index does not carry would reach `getRepoContext` and come back as its raw
+   * index error, so a caller could not tell "I do not know that repo" from a
+   * provider fault. `hooks:repair` answers that case explicitly; these verbs
+   * now match it.
+   */
+  function decodeIndexedRepo(payload: unknown): { ok: true; repo: string } | { ok: false; error: string } {
+    const decoded = decodeRepo(payload);
+    if (!decoded.ok) return { ok: false, error: decoded.error };
+    if (!ctx.repoIndex()[decoded.repo]) return { ok: false, error: "repo-unknown" };
+    return { ok: true, repo: decoded.repo };
+  }
+
   return {
     "mr:action": async (payload) => {
       const p = payload as { repoName?: string; iid?: number; action?: ActionName; args?: any[] } | undefined;
@@ -85,7 +99,7 @@ export function createMRHandlers(
       if (typeof iid !== "number" || !action) {
         return { ok: false, error: "missing repoName/iid/action" };
       }
-      const decoded = decodeRepo(payload);
+      const decoded = decodeIndexedRepo(payload);
       if (!decoded.ok) return { ok: false, error: decoded.error };
       const repoName = decoded.repo;
 
@@ -161,7 +175,7 @@ export function createMRHandlers(
       if (typeof iid !== "number" || typeof jobId !== "number") {
         return { ok: false, error: "missing repoName/iid/jobId" };
       }
-      const decoded = decodeRepo(payload);
+      const decoded = decodeIndexedRepo(payload);
       if (!decoded.ok) return { ok: false, error: decoded.error };
       const repoName = decoded.repo;
 
@@ -182,7 +196,7 @@ export function createMRHandlers(
       if (typeof iid !== "number" || typeof jobId !== "number") {
         return { ok: false, error: "missing repoName/iid/jobId" };
       }
-      const decoded = decodeRepo(payload);
+      const decoded = decodeIndexedRepo(payload);
       if (!decoded.ok) return { ok: false, error: decoded.error };
       const repoName = decoded.repo;
 

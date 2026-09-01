@@ -111,6 +111,29 @@ describe("heldReadyLadders", () => {
     expect(held[0]!.approveCommand).toBe(`rt worktree ready-approve ${WIRE}`);
   });
 
+  // An unpruned legacy/identity pair points at ONE directory, so the fallback's
+  // premise ("the identity always parses") does not hold for the legacy row:
+  // emitting its plain-name key produces a command that cannot resolve once any
+  // other checkout shares the label.
+  test("a legacy-keyed row emits the canonical identity, never its plain-name key", async () => {
+    teamReady(LADDER);
+    const twin = realpathSync(mkdtempSync(join(tmpdir(), "rtheld-collide-")));
+    execSync("git init -q && git remote add origin git@gitlab.com:other/held-snapshot.git", {
+      cwd: twin,
+      shell: "/bin/zsh",
+    });
+
+    const held = await heldReadyLadders({
+      ...index,
+      "held-snapshot": repoPath,
+      [serializeIdentity(await deriveRepoIdentity(twin))]: twin,
+    });
+
+    for (const entry of held) {
+      expect(entry.approveCommand).not.toBe("rt worktree ready-approve held-snapshot");
+    }
+  });
+
   test("an approved ladder is absent", async () => {
     teamReady(LADDER);
     writeReadyApproval(IDENTITY, readyLadderHash(LADDER));

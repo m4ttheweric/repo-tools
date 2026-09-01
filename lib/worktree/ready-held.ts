@@ -13,6 +13,7 @@
 import { lazyChildLogger } from "../daemon-logger.ts";
 import { repoLabel } from "../repo-label.ts";
 import { reverseLookupByName } from "../repo-name-lookup.ts";
+import { parseIdentity } from "../settings/identity.ts";
 import { inspectReadyGate, loadWorktreeRepoConfig } from "./config.ts";
 
 const log = lazyChildLogger("worktree-ready-held");
@@ -62,8 +63,29 @@ export function resetHeldReadyLaddersCache(): void {
  * holds makes both impossible here rather than merely unlikely.
  */
 function approveArg(repo: string, label: string, repoIndex: Record<string, string>): string {
+  const canonical = canonicalKey(repo, repoIndex);
   const matches = reverseLookupByName(label, repoIndex);
-  return matches.length === 1 && matches[0]![0] === repo ? label : repo;
+  return matches.length === 1 && matches[0]![0] === canonical ? label : canonical;
+}
+
+/**
+ * The identity for an index row: the key itself when it already parses, else a
+ * sibling key naming the same directory that does.
+ *
+ * The fallback above leans on "the identity always parses", and that premise
+ * fails for an unpruned legacy row, whose key is a plain name. Emitting one
+ * produces a command that cannot resolve the moment any other checkout shares
+ * the label, which is exactly when the fallback fires. No derivation here: a
+ * sibling lookup is pure, and `deriveRepoIdentity` would spawn git on the
+ * polled tray:status path.
+ */
+function canonicalKey(repo: string, repoIndex: Record<string, string>): string {
+  if (parseIdentity(repo)) return repo;
+  const path = repoIndex[repo];
+  for (const [key, keyPath] of Object.entries(repoIndex)) {
+    if (keyPath === path && parseIdentity(key)) return key;
+  }
+  return repo;
 }
 
 async function compute(repoIndex: Record<string, string>): Promise<ReadyHeldRepo[]> {

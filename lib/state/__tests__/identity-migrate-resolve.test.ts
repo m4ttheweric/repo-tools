@@ -1,5 +1,5 @@
 /**
- * `realResolveLegacyKey` — the default resolver every re-key uses.
+ * `realResolveLegacyKey`: the default resolver every re-key uses.
  *
  * It looked the legacy name up as an index KEY, but post-cutover the index
  * keys on serialized identities, so a legacy name is not a key at all any
