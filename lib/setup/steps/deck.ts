@@ -150,6 +150,14 @@ async function deckManagedRun(ctx: ApplyContext): Promise<StepOutcome> {
   const port = readDeckApiPort(ctx);
   const healthy = port !== null && (await deckIsHealthy(ctx, port));
   if (!healthy) {
+    // A fresh non-interactive install reaches here with the app absent:
+    // services.register just skipped for the same reason, so nothing has
+    // started deck yet — that is a sequencing fact, not a failure. Deck
+    // down while the app IS running stays a hard stop.
+    const tray = await ctx.p.tray("/version", { method: "GET" });
+    if (tray.status === 0) {
+      return { state: "skipped", detail: "deck is not running and mattstack.app is not there to start it — open the app, then Retry" };
+    }
     return { state: "failed", detail: "deck is not answering its own /healthz — cannot adopt board safely", remedy: "Start deck, then Retry" };
   }
 
