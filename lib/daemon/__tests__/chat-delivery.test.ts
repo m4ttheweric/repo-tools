@@ -2,6 +2,7 @@ import { beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import type { Logger } from "pino";
 import { openStateDb, presenceForSession } from "../../state/index.ts";
 import { createChatHandlers, type InboxDeps } from "../handlers/chat.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
@@ -10,11 +11,24 @@ import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
 
 let n = 0;
-function freshHandlers(inboxDeps?: InboxDeps, herdr?: typeof herdrRequest) {
+function freshHandlers(inboxDeps?: InboxDeps, herdr?: typeof herdrRequest, extra?: { log?: Logger; retryDelayMs?: number }) {
   const db = openStateDb(join(tmpdir(), `chat-deliv-${process.pid}-${n++}.db`));
   // Handlers no longer expose `db` (R028); tests that need to reach the
   // underlying table directly get it back alongside the handler map.
-  return Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps, herdr }), { db });
+  return Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps, herdr, ...extra }), { db });
+}
+
+/** Captures warn/info calls without pulling in a real pino instance. */
+function fakeLogger() {
+  const warnCalls: unknown[][] = [];
+  const infoCalls: unknown[][] = [];
+  const log = {
+    warn: (...args: unknown[]) => { warnCalls.push(args); },
+    info: (...args: unknown[]) => { infoCalls.push(args); },
+    debug: () => {},
+    error: () => {},
+  } as unknown as Logger;
+  return { log, warnCalls, infoCalls };
 }
 
 /** Points a real `herdrRequest` at a fake unix-socket herdr server for the duration of one test. */
@@ -261,7 +275,7 @@ test("a delivery failure leaves the recipient's cursor untouched", async () => {
   expect(lastReadId(h.db, "general", "b")).toBe(before);
 });
 
-test("a failed delivery batches with the next successful one, catching up the whole pending range", async () => {
+test("one retry on a failed push: fails once then succeeds -- single frame, cursor advanced, no badge", async () => {
   const calls: Array<[string, string]> = [];
   const sock = fakeSocketPath();
   let attempt = 0;
@@ -273,7 +287,66 @@ test("a failed delivery batches with the next successful one, catching up the wh
       return attempt === 1 ? { ok: false, error: "timeout" } : { ok: true };
     },
   };
-  const h = freshHandlers(inboxDeps);
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const { log, warnCalls, infoCalls } = fakeLogger();
+  const h = freshHandlers(inboxDeps, herdr, { log, retryDelayMs: 1 });
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b", pane: "w1:p1" });
+  await settleWelcome(calls);
+  attempt = 0;
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await waitFor(() => calls.length >= 2);
+  expect(calls).toHaveLength(2); // the failed attempt, then the retry
+  expect(calls[1]![1]).toBe(
+    `<cross-session-message from-name="a (#general)">\n[#general] a: hi\n${STEER}\n</cross-session-message>`,
+  );
+  expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
+  await Bun.sleep(20); // give a stray badge/warn time to land before asserting their absence
+  expect(seen.find((r) => r.method === "pane.report_metadata")).toBeUndefined();
+  expect(warnCalls).toHaveLength(0); // an invisible transient must not log -- the seams cover it
+  expect(infoCalls).toHaveLength(0);
+  stop();
+});
+
+test("both delivery attempts failing logs a warn with recipient, room, and the raw error string, then still badges", async () => {
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async () => ({ ok: false, error: "timeout" }),
+  };
+  const { herdr, seen, stop } = fakeHerdrClient(() => ({}));
+  const { log, warnCalls } = fakeLogger();
+  const h = freshHandlers(inboxDeps, herdr, { log, retryDelayMs: 1 });
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b", pane: "w1:p1" });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "@b hi" });
+  await waitFor(() => warnCalls.length >= 1);
+  expect(warnCalls[0]![0]).toMatchObject({ recipient: "b", room: "general", err: "timeout" });
+  await waitFor(() => seen.some((r) => r.method === "pane.report_metadata"));
+  stop();
+});
+
+test("a failed delivery (both attempts) batches with the next successful one, catching up the whole pending range", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let attempt = 0;
+  let releaseFirst: (() => void) | undefined;
+  const inboxDeps: InboxDeps = {
+    resolve: () => ({ pid: process.pid, socketPath: sock, status: "idle" }),
+    deliver: async (socketPath, content) => {
+      attempt++;
+      calls.push([socketPath, content]);
+      if (attempt === 1) {
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+        return { ok: false, error: "timeout" };
+      }
+      return attempt === 2 ? { ok: false, error: "timeout" } : { ok: true };
+    },
+  };
+  const h = freshHandlers(inboxDeps, undefined, { retryDelayMs: 1 });
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
   await settleWelcome(calls);
   attempt = 0;
@@ -281,12 +354,14 @@ test("a failed delivery batches with the next successful one, catching up the wh
   await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
   const first = await h["chat:post"]({ room: "general", handle: "a", body: "one" });
   if (!first.ok) throw new Error("unreachable");
-  await Bun.sleep(0);
+  await waitFor(() => calls.length >= 1); // attempt 1 registered, now blocked on the gate
   const second = await h["chat:post"]({ room: "general", handle: "a", body: "two" });
   if (!second.ok) throw new Error("unreachable");
   await Bun.sleep(0);
-  expect(calls).toHaveLength(2);
-  expect(calls[1]![1]).toBe(
+  expect(calls).toHaveLength(1); // second is chained behind the still-held first
+  releaseFirst?.();
+  await waitFor(() => calls.length >= 3); // attempt1 (held, fails), attempt2 (retry, fails), attempt3 (post two, succeeds and catches up both)
+  expect(calls[2]![1]).toBe(
     `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: one\n[#general] a: two\n${STEER}\n</cross-session-message>`,
   );
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
@@ -351,10 +426,14 @@ test("a held first delivery that ultimately fails still lets the second carry bo
         await new Promise<void>((resolve) => { releaseFirst = resolve; });
         return { ok: false, error: "timeout" };
       }
-      return { ok: true };
+      // The automatic retry (attempt 2) also fails, so the held delivery
+      // stays genuinely stuck and only the second post's own send (attempt
+      // 3) recovers it -- this test is about the next-post safety net, not
+      // the retry.
+      return attempt === 2 ? { ok: false, error: "timeout" } : { ok: true };
     },
   };
-  const h = freshHandlers(inboxDeps);
+  const h = freshHandlers(inboxDeps, undefined, { retryDelayMs: 1 });
   await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
   await settleWelcome(calls);
   attempt = 0;
@@ -372,11 +451,9 @@ test("a held first delivery that ultimately fails still lets the second carry bo
   expect(calls).toHaveLength(1); // second still chained behind the held first
 
   releaseFirst?.();
-  await Bun.sleep(0);
-  await Bun.sleep(0);
+  await waitFor(() => calls.length >= 3); // held attempt fails, retry fails, then post two's own send catches up both
 
-  expect(calls).toHaveLength(2);
-  expect(calls[1]![1]).toBe(
+  expect(calls[2]![1]).toBe(
     `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: one\n[#general] a: two\n${STEER}\n</cross-session-message>`,
   );
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);

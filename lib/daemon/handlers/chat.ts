@@ -167,42 +167,63 @@ async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | un
   }
 }
 
+// One immediate retry before falling back to badge+park: cheap insurance
+// against exactly the transient this file was built to survive (recipient
+// briefly under load, not actually gone). Overridable so a test doesn't pay
+// the real delay.
+const DEFAULT_RETRY_DELAY_MS = 300;
+
 /**
- * A resolver miss, a signed-out recipient, a dead binding, and an ok:false
- * send are all the same outcome here: no cursor advance. A later post to the
- * same recipient tries again and, via pendingMessages, catches up everything
- * still behind the cursor at that point -- not just its own message -- so a
- * failed send never drops a body permanently. This function does not defend
- * against a concurrent call for the same (room, handle): two overlapping
- * calls would both read the same pre-advance pending range and duplicate it
- * into two frames. Callers must go through deliverSerialized, never call
- * this directly from postAndNotify.
+ * A resolver miss, a signed-out recipient, a dead binding, and a
+ * still-failing-after-retry send are all the same outcome here: no cursor
+ * advance. Recovery now has three layers, in order: this function's own
+ * retry (a transient push failure self-heals invisibly, same call), a later
+ * post to the same recipient (via pendingMessages, catches up everything
+ * still behind the cursor -- not just its own message), and the periodic
+ * delivery sweep for the case neither of those arrives (see
+ * createChatDeliverySweep) -- a 2-party DM at a wait-point may never get a
+ * "later post" from either side, so the sweep is not optional belt-and-
+ * suspenders, it is what makes that case recover at all. This function does
+ * not defend against a concurrent call for the same (room, handle): two
+ * overlapping calls would both read the same pre-advance pending range and
+ * duplicate it into two frames. Callers must go through deliverSerialized,
+ * never call this directly from postAndNotify or the sweep.
  */
 async function deliverPost(
   db: Database,
   deps: InboxDeps,
   herdr: typeof herdrRequest,
+  log: Logger,
+  retryDelayMs: number,
   recipient: string,
   msg: { room: string; dm: boolean; id: number },
-): Promise<void> {
+): Promise<{ delivered: boolean; count: number }> {
   const presence = presenceForHandle(recipient, db);
-  if (!presence || presence.signedOutAt !== undefined) return;
+  if (!presence || presence.signedOutAt !== undefined) return { delivered: false, count: 0 };
   const binding = deps.resolve(presence.sessionId);
-  if (!binding || !inboxAlive(binding)) return;
+  if (!binding || !inboxAlive(binding)) return { delivered: false, count: 0 };
   const pending = pendingMessages(msg.room, recipient, msg.id, db);
-  if (pending.length === 0) return;
+  if (pending.length === 0) return { delivered: false, count: 0 };
   const items = pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
   const content = wrapCrossSession(deliveryLabel(items), `${renderDeliveries(items)}\n${REPLY_STEER}`);
-  const result = await deps.deliver(binding.socketPath, content);
+  let result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) {
+    await Bun.sleep(retryDelayMs);
+    result = await deps.deliver(binding.socketPath, content);
+  }
+  if (!result.ok) {
+    // The error STRING (e.g. "timeout" vs a connect errno), not just a
+    // boolean -- this is exactly what the incident's silent hour lacked.
+    log.warn({ recipient, room: msg.room, err: result.error }, "chat: delivery push failed after retry");
     await reportUnreadBadge(herdr, presence.pane, pending.length);
-    return;
+    return { delivered: false, count: 0 };
   }
   markDelivered(msg.room, recipient, msg.id, db);
   // Refreshes the SESSION heartbeat -- the only remaining route to it now
   // that chat:pulse is gone -- so a recipient actively receiving messages
   // never goes stale enough for prunePresence to delete its row.
   touchLastSeen(presence.sessionId, Date.now(), db);
+  return { delivered: true, count: pending.length };
 }
 
 function chainKey(room: string, handle: string): string {
@@ -216,12 +237,14 @@ function chainKey(room: string, handle: string): string {
  * against the same pre-advance cursor and duplicate a frame. The
  * predecessor's failure is swallowed before chaining, so one failure never
  * blocks the next. The map entry is deleted once nothing is chained behind
- * it, so a quiet key leaves no permanent entry.
+ * it, so a quiet key leaves no permanent entry. Generic over `task`'s result
+ * so a caller (the delivery sweep) can read back what happened -- the chain
+ * bookkeeping itself only ever needs to know settlement, never the value.
  */
-function serializeDelivery(chains: Map<string, Promise<void>>, key: string, task: () => Promise<void>): Promise<void> {
+function serializeDelivery<T>(chains: Map<string, Promise<void>>, key: string, task: () => Promise<T>): Promise<T> {
   const prior = chains.get(key) ?? Promise.resolve();
   const result = prior.catch(() => {}).then(() => task());
-  const swallowed = result.catch(() => {});
+  const swallowed: Promise<void> = result.then(() => undefined, () => undefined);
   chains.set(key, swallowed);
   void swallowed.finally(() => {
     if (chains.get(key) === swallowed) chains.delete(key);
@@ -234,10 +257,14 @@ function deliverSerialized(
   db: Database,
   deps: InboxDeps,
   herdr: typeof herdrRequest,
+  log: Logger,
+  retryDelayMs: number,
   recipient: string,
   msg: { room: string; dm: boolean; id: number },
-): Promise<void> {
-  return serializeDelivery(chains, chainKey(msg.room, recipient), () => deliverPost(db, deps, herdr, recipient, msg));
+): Promise<{ delivered: boolean; count: number }> {
+  return serializeDelivery(chains, chainKey(msg.room, recipient), () =>
+    deliverPost(db, deps, herdr, log, retryDelayMs, recipient, msg),
+  );
 }
 
 // Not a real room -- isValidChatName forbids '_' -- so this key can never
@@ -384,6 +411,7 @@ function postAndNotify(
   herdr: typeof herdrRequest,
   deliveryChains: Map<string, Promise<void>>,
   log: Logger,
+  retryDelayMs: number,
 ): { id: number; recipients: string[] } | undefined {
   const { room, handle, body, mentions } = args;
   const posted = postMessage({ room, handle, body, mentions }, db);
@@ -400,7 +428,7 @@ function postAndNotify(
   const dm = dmParticipants(room, db);
   for (const recipient of posted.recipients) {
     queueMicrotask(() => {
-      deliverSerialized(deliveryChains, db, inboxDeps, herdr, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
+      deliverSerialized(deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
         log.warn({ err, room, recipient, id: posted.id }, "chat: inbox delivery failed");
       });
     });
@@ -452,6 +480,10 @@ export function createChatHandlers(opts: {
   paneSessionPollMs?: number;
   /** Request logger; wired from ctx.log by command-router.ts. */
   log?: Logger;
+  /** deliverPost's single-retry delay; overridable so a test doesn't pay the real ~300ms. */
+  retryDelayMs?: number;
+  /** Shared with createChatDeliverySweep so the periodic sweep chains behind the same in-flight post deliveries instead of racing them; defaults to a private map when the caller (a bare createChatHandlers test) has no sweep. */
+  deliveryChains?: Map<string, Promise<void>>;
 }): {
   // A mapped type over CHAT_COMMANDS with a direct `unknown` payload, not
   // `Pick<TypedHandlers, ...>`: a wider `unknown` param still satisfies
@@ -468,9 +500,12 @@ export function createChatHandlers(opts: {
   const exec = opts.exec ?? runCapture;
   const paneSessionBudgetMs = opts.paneSessionBudgetMs ?? PANE_SESSION_BUDGET_MS;
   const paneSessionPollMs = opts.paneSessionPollMs ?? PANE_SESSION_POLL_MS;
+  const retryDelayMs = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
   // One chain map per handler instance (one daemon, one db): shared across
   // every chat:post/chat:dm call so deliverSerialized actually serializes.
-  const deliveryChains = new Map<string, Promise<void>>();
+  // Also shared with the delivery sweep when the caller passes one in, so a
+  // sweep re-delivery chains behind rather than races an in-flight post.
+  const deliveryChains = opts.deliveryChains ?? new Map<string, Promise<void>>();
 
   return {
     "chat:join": async (rawPayload: unknown): Promise<CommandResult<"chat:join">> => {
@@ -512,7 +547,7 @@ export function createChatHandlers(opts: {
         const nearby = closestRoomNames(room, handle, db);
         return { ok: false, error: `unknown room "${room}"${nearby.length ? ` — did you mean: ${nearby.join(", ")}` : ""}` };
       }
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains, log);
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
     },
@@ -742,7 +777,7 @@ export function createChatHandlers(opts: {
       // Recipient travels in `mentions`, not the body, so the transcript
       // shows the text as typed and the desk still notifies when `to` is
       // the human.
-      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains, log);
+      const posted = postAndNotify(db, emitEvent, { room, handle: from, body, mentions: [to] }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: dm failed (retry budget exhausted)" };
       return { ok: true, data: { room, id: posted.id, recipients: posted.recipients } };
     },
