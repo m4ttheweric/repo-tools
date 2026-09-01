@@ -8,8 +8,10 @@
 import { execSync } from "child_process";
 import { join } from "path";
 import { getRepoIdentity, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
-import { enrichBranches, formatBranchLabel } from "./enrich.ts";
+import { enrichBranches, formatBranchSegments, type EnrichedBranch } from "./enrich.ts";
 import { repoLabel } from "./repo-label.ts";
+import type { PickHandle } from "./ui/pick.ts";
+import type { PickAction, PickRow, PickSegment } from "./ui/protocol.ts";
 
 const SWITCH_REPO     = "__switch_repo__"     as const;
 
@@ -25,20 +27,92 @@ export async function getRemoteUrl(repoPath: string): Promise<string | undefined
   }
 }
 
-async function buildWorktreeOptions(
-  worktrees: Array<{ path: string; branch: string }>,
-  remoteUrl?: string,
-): Promise<{ value: string; label: string; hint: string }[]> {
-  const enriched = await enrichBranches(worktrees, remoteUrl);
-  return enriched.map((eb) => ({
-    value: eb.path,
-    label: formatBranchLabel(eb),
-    hint: "",
-  }));
+function dirNameOf(path: string): string {
+  return path.split("/").pop() || path;
+}
+
+/** Appends a right-pinned "(current)" marker, matching a worktree's own segments when present. */
+function annotateCurrent(right: PickSegment[], isCurrent: boolean): PickSegment[] {
+  if (!isCurrent) return right;
+  const marker: PickSegment = { text: "(current)", tone: "faint" };
+  return right.length > 0 ? [...right, { text: "  " }, marker] : [marker];
+}
+
+/** Cheap `dirName · branch` row shown the instant the picker opens, before enrichment resolves. */
+function cheapWorktreeRow(wt: { path: string; branch: string }, currentPath: string): PickRow {
+  const dirName = dirNameOf(wt.path);
+  const left: PickSegment[] = wt.branch
+    ? [
+        { text: dirName, tone: "text", bold: true },
+        { text: " · ", tone: "faint" },
+        { text: wt.branch, tone: "dim" },
+      ]
+    : [{ text: dirName, tone: "text", bold: true }];
+  return { value: wt.path, left, right: annotateCurrent([], wt.path === currentPath) };
+}
+
+function enrichedWorktreeRow(eb: EnrichedBranch, currentPath: string): PickRow {
+  const { left, right } = formatBranchSegments(eb);
+  return { value: eb.path, left, right: annotateCurrent(right, eb.path === currentPath) };
 }
 
 function repoOptionsFromList(repos: KnownRepo[]) {
   return repoOptions(repos);
+}
+
+/**
+ * Mirrors pick-wrappers.ts's own options→rows translation (bold padded label
+ * + dim hint). The ctrl-r reload path below bypasses that wrapper to reach
+ * `onEvent` (which it doesn't plumb), so refreshed rows have to reproduce
+ * that same look by hand instead of drifting from every other picker's
+ * repo row.
+ */
+function reposToRows(repos: KnownRepo[]): PickRow[] {
+  const options = repoOptionsFromList(repos);
+  const labelWidth = options.reduce((w, o) => Math.max(w, o.label.length), 0);
+  return options.map((o) => {
+    const left: PickSegment[] = [{ text: o.label.padEnd(labelWidth), bold: true }];
+    if (o.hint) left.push({ text: `  ${o.hint}`, tone: "dim" });
+    return { value: o.value, left };
+  });
+}
+
+const RELOAD_ACTION: PickAction = { id: "reload", label: "refresh", key: "ctrl-r", scope: "global", event: true };
+
+/**
+ * Single-step repo picker. Goes straight to `runPick` instead of the
+ * filterableSelect wrapper because the wrapper doesn't plumb `onEvent` --
+ * needed here so ctrl-r can re-list repos and push `handle.update` without
+ * closing the picker (an `event: true` action never reaches `PickHandle.result`).
+ * Exported for cd.ts's own inline repo picker (the `--repo --worktree` combo),
+ * which needs the same reload wiring without going through `pickFromAllRepos`'s
+ * repo→worktree loop.
+ */
+export async function pickRepo(
+  repos: KnownRepo[],
+  opts?: { onReload?: () => KnownRepo[] | Promise<KnownRepo[]> },
+): Promise<string | null> {
+  const { runPick } = await import("./ui/pick.ts");
+
+  let handle!: PickHandle;
+  handle = runPick(
+    {
+      message: "Pick a repo",
+      rows: reposToRows(repos),
+      ...(opts?.onReload ? { actions: [RELOAD_ACTION] } : {}),
+    },
+    {
+      onEvent: async (evt) => {
+        if (evt.action !== RELOAD_ACTION.id || !opts?.onReload) return;
+        const fresh = await opts.onReload();
+        handle.update({ rows: reposToRows(fresh) });
+      },
+    },
+  );
+
+  const result = await handle.result;
+  if (result.action === "cancel") return null;
+  return result.value ?? null;
 }
 
 // ─── Pickers ─────────────────────────────────────────────────────────────────
@@ -50,28 +124,39 @@ function repoOptionsFromList(repos: KnownRepo[]) {
 export async function pickWorktreeWithSwitch(
   repo: KnownRepo,
   currentPath: string,
-  opts?: { stderr?: boolean; reloadCommand?: string },
+  opts?: { stderr?: boolean },
 ): Promise<string | typeof SWITCH_REPO> {
-  const { filterableSelect, BackNavigation } = await import("./fzf-select.ts");
+  const { filterableSelect, BackNavigation } = await import("./pick-wrappers.ts");
 
   if (repo.worktrees.length === 0) return SWITCH_REPO;
 
-  const remoteUrl = await getRemoteUrl(repo.worktrees[0]?.path || currentPath);
-  const options = await buildWorktreeOptions(repo.worktrees, remoteUrl);
+  let liveHandle: PickHandle | undefined;
+  const options = repo.worktrees.map((wt) => ({ value: wt.path, label: wt.branch || dirNameOf(wt.path) }));
 
-  // Annotate the current worktree so the user knows where they are
-  for (const opt of options) {
-    if (opt.value === currentPath) opt.hint = "(current)";
-  }
-
-  try {
-    const picked = await filterableSelect({
+  const resultPromise = filterableSelect(
+    {
       message: `${repoLabel(repo.repoName)} worktrees`,
       options,
       backLabel: "Switch to a different repo",
       ...(opts?.stderr ? { stderr: true } : {}),
-      ...(opts?.reloadCommand ? { reloadCommand: opts.reloadCommand } : {}),
-    });
+    },
+    {
+      rows: repo.worktrees.map((wt) => cheapWorktreeRow(wt, currentPath)),
+      onOpen: (h) => { liveHandle = h; },
+    },
+  );
+
+  // The picker is already on screen with cheap dirName·branch rows by the
+  // time this fetch/cache round trip starts, so it never blocks the open.
+  // Silent mode keeps its fetch spinner from printing over the live frame.
+  void (async () => {
+    const remoteUrl = await getRemoteUrl(repo.worktrees[0]?.path || currentPath);
+    const enriched = await enrichBranches(repo.worktrees, remoteUrl, { silent: true });
+    liveHandle?.update({ rows: enriched.map((eb) => enrichedWorktreeRow(eb, currentPath)) });
+  })();
+
+  try {
+    const picked = await resultPromise;
     // Esc/Ctrl-C → null; exit cleanly rather than leaking null through the
     // string return type (callers do selectedPath.split(...) etc.).
     if (!picked) process.exit(0);
@@ -88,7 +173,13 @@ export async function pickWorktreeWithSwitch(
  */
 export async function pickFromAllRepos(
   repos: KnownRepo[],
-  opts?: { stderr?: boolean; errorMessage?: string; includePackages?: boolean; reloadCommand?: string },
+  opts?: {
+    stderr?: boolean;
+    errorMessage?: string;
+    includePackages?: boolean;
+    /** In-process ctrl-r reload: re-lists repos and pushes fresh rows without closing the picker. */
+    onReload?: () => KnownRepo[] | Promise<KnownRepo[]>;
+  },
 ): Promise<string> {
   const writer = opts?.stderr ? console.error : console.log;
 
@@ -105,7 +196,7 @@ export async function pickFromAllRepos(
   };
   if (repos.length === 1 && repos[0]!.missing) refuse(repos[0]!);
 
-  const { filterableSelect, BackNavigation } = await import("./fzf-select.ts");
+  const { BackNavigation } = await import("./pick-wrappers.ts");
 
   // Loop: back from worktree/package picker restarts at repo picker
   while (true) {
@@ -114,12 +205,7 @@ export async function pickFromAllRepos(
     if (repos.length === 1) {
       selectedRepo = repos[0]!;
     } else {
-      const picked = await filterableSelect({
-        message: "Pick a repo",
-        options: repoOptionsFromList(repos),
-        ...(opts?.stderr ? { stderr: true } : {}),
-        ...(opts?.reloadCommand ? { reloadCommand: opts.reloadCommand } : {}),
-      });
+      const picked = await pickRepo(repos, { onReload: opts?.onReload });
       if (!picked) process.exit(1);
       selectedRepo = repoFromOptionValue(repos, picked)!;
     }
@@ -181,7 +267,7 @@ export async function pickPackageWithEscape(
   allRepos: KnownRepo[],
   opts?: { stderr?: boolean },
 ): Promise<string> {
-  const { filterableSelect, BackNavigation } = await import("./fzf-select.ts");
+  const { filterableSelect, BackNavigation } = await import("./pick-wrappers.ts");
 
   let packages = getWorkspacePackages(worktreePath);
   let currentBranch = repo.worktrees.find((wt) => wt.path === worktreePath)?.branch ?? "";
@@ -260,7 +346,7 @@ export async function resolveWorktreeByBranch(
   repos: KnownRepo[],
   opts?: { stderr?: boolean },
 ): Promise<string> {
-  const { filterableSelect } = await import("./fzf-select.ts");
+  const { filterableSelect } = await import("./pick-wrappers.ts");
 
   const lower = branch.toLowerCase();
   const matches: { path: string; branch: string; repoName: string }[] = [];
