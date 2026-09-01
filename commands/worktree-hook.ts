@@ -5,11 +5,14 @@
  * The WorktreeRemove stdin shape is UNVERIFIED (never observed firing), so
  * the parser accepts worktree_path or path and treats absence as a noop.
  */
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { currentRepoIdentityFor } from "../lib/repo-arg.ts";
 import { claudeWorktreeHookStatus, installClaudeWorktreeHooks, uninstallClaudeWorktreeHooks } from "../lib/claude-settings.ts";
+import { getSetting } from "../lib/settings/resolve.ts";
+import { setSetting } from "../lib/settings/write.ts";
 import { decideCreate, decideRemove, stockWorktreeAdd } from "../lib/worktree/claude-hook.ts";
 import { explainError } from "./worktree.ts";
 import { findTreeByPath } from "../lib/worktree/registry.ts";
@@ -18,6 +21,85 @@ const HOOK_PROVISION_TIMEOUT_MS = 240_000;
 
 export function claudeSettingsPath(): string {
   return join(process.env.HOME ?? homedir(), ".claude", "settings.json");
+}
+
+// Same key/scope as lib/worktree/config.ts's app-level toggle (`enabled`,
+// `killProcesses`)... a field-bag, not owned exclusively by either module, so
+// every read/write here must merge rather than replace.
+const WORKTREE_APP_SETTING_KEY = "rt.worktreeApp";
+
+/** The pure offer gate: every field must clear for the offer to fire. */
+export function shouldOfferClaudeHook(env: {
+  isTTY: boolean;
+  json: boolean;
+  batch: boolean;
+  settingsFileExists: boolean;
+  hookInstalled: boolean;
+  priorAnswer: string | undefined;
+}): boolean {
+  return (
+    env.isTTY &&
+    !env.json &&
+    !env.batch &&
+    env.settingsFileExists &&
+    !env.hookInstalled &&
+    env.priorAnswer === undefined
+  );
+}
+
+function priorClaudeHookAnswer(): string | undefined {
+  const value = getSetting<Record<string, unknown> | undefined>(WORKTREE_APP_SETTING_KEY).value;
+  return typeof value?.claudeHook === "string" ? value.claudeHook : undefined;
+}
+
+/** Merges into whatever machine-scope value already exists so sibling fields (`enabled`, `killProcesses`) are never clobbered. */
+function recordClaudeHookAnswer(answer: "installed" | "declined"): void {
+  const existing = getSetting<Record<string, unknown> | undefined>(WORKTREE_APP_SETTING_KEY).value ?? {};
+  setSetting(WORKTREE_APP_SETTING_KEY, { ...existing, claudeHook: answer }, "machine");
+}
+
+/**
+ * One-time TTY offer to install the Claude Code worktree hook, called as the
+ * last statement of the five worktree lifecycle verbs' success paths. Never
+ * throws into its caller: an offer failure must never fail the lifecycle
+ * verb that hosted it.
+ */
+export async function maybeOfferClaudeHook(json: boolean): Promise<void> {
+  try {
+    const settingsPath = claudeSettingsPath();
+    const status = claudeWorktreeHookStatus(settingsPath);
+
+    const offer = shouldOfferClaudeHook({
+      isTTY: Boolean(process.stdin.isTTY),
+      json,
+      batch: Boolean(process.env.RT_BATCH),
+      settingsFileExists: existsSync(settingsPath),
+      hookInstalled: status.installed,
+      priorAnswer: priorClaudeHookAnswer(),
+    });
+    if (!offer) return;
+
+    const { confirm } = await import("../lib/rt-render.ts");
+    const accepted = await confirm({
+      message: "Install the Claude Code worktree hook? (rt provisions a worktree automatically when Claude creates one)",
+      initialValue: true,
+    });
+
+    if (!accepted) {
+      recordClaudeHookAnswer("declined");
+      return;
+    }
+
+    const rtBin = Bun.which("rt");
+    if (!rtBin) {
+      console.warn("rt: skipping claude hook install offer... rt is not on PATH");
+      return;
+    }
+    installClaudeWorktreeHooks(settingsPath, rtBin);
+    recordClaudeHookAnswer("installed");
+  } catch (err) {
+    console.warn(`rt: claude hook install offer failed... ${String(err)}`);
+  }
 }
 
 function emit(json: boolean, data: Record<string, unknown>, text: string): void {
