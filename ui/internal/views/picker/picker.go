@@ -1,0 +1,154 @@
+package picker
+
+import (
+	"bufio"
+	"io"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
+
+	"rt-ui/internal/protocol"
+	"rt-ui/internal/tty"
+)
+
+// modalState is Task 10's submenu overlay (opened by a PickModal message,
+// closed with a PickModalResult); left empty until that task defines what
+// it needs to render and dismiss.
+type modalState struct{}
+
+// heldModifiers is Task 12's cross-event modifier tracking (shift/alt held
+// across mouse and key events, driving range-select); left empty until that
+// task defines its fields.
+type heldModifiers struct{}
+
+// Model is the picker's Bubble Tea model. Every field the later render,
+// filter, action, modal, and mouse tasks need is scaffolded now so each one
+// only fills in behavior, never reshapes the struct.
+type Model struct {
+	req         protocol.PickRequest
+	query       string
+	cursor      int
+	viewportTop int
+	matches     []Match
+	selected    map[string]bool
+	modal       *modalState
+	held        heldModifiers
+	hover       int
+
+	result *protocol.PickResult
+}
+
+// New builds a Model from an opening request. matches starts as the
+// identity mapping in request order; Task 6 replaces it with Rank's real
+// output once query filtering lands.
+func New(req protocol.PickRequest) *Model {
+	matches := make([]Match, len(req.Rows))
+	for i := range req.Rows {
+		matches[i] = Match{Index: i}
+	}
+	return &Model{
+		req:      req,
+		query:    req.InitialQuery,
+		matches:  matches,
+		selected: make(map[string]bool),
+		hover:    -1,
+	}
+}
+
+func (m *Model) Init() tea.Cmd { return nil }
+
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "down":
+			m.moveCursor(1)
+		case "up":
+			m.moveCursor(-1)
+		case "enter":
+			m.selectCursor()
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) moveCursor(delta int) {
+	n := len(m.matches)
+	if n == 0 {
+		return
+	}
+	m.cursor += delta
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor >= n {
+		m.cursor = n - 1
+	}
+}
+
+// selectCursor terminates the session with the row under the cursor. The
+// bounds guard covers a zero-row request, which moveCursor never lets the
+// cursor leave but Update's enter case can still reach directly.
+func (m *Model) selectCursor() {
+	if m.cursor < 0 || m.cursor >= len(m.matches) {
+		return
+	}
+	value := m.req.Rows[m.matches[m.cursor].Index].Value
+	m.result = &protocol.PickResult{Action: "select", Value: &value, Query: m.query}
+}
+
+// View is a stub; Task 5 builds the real breadcrumb/filter/rows/keybar render.
+func (m *Model) View() tea.View {
+	v := tea.NewView("")
+	// Inline, not alt-screen: the picker is content-anchored, appearing
+	// where the caller invoked it rather than taking over the terminal.
+	v.MouseMode = tea.MouseModeAllMotion
+	v.KeyboardEnhancements.ReportEventTypes = true
+	return v
+}
+
+// Run drives the picker to completion: it paints on /dev/tty (never input or
+// output, which carry the NDJSON protocol -- same split as prompt/session)
+// and writes exactly one result line to output before returning.
+func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
+	term, err := tty.Open(tty.ReadWrite)
+	if err != nil {
+		return err
+	}
+	defer term.Close()
+
+	m := New(req)
+
+	p := tea.NewProgram(m,
+		tea.WithInput(term),
+		tea.WithOutput(term),
+		tea.WithColorProfile(colorprofile.TrueColor),
+		tea.WithoutSignalHandler(),
+	)
+
+	// Tasks 8/9 parse update/modal/event messages off input and forward them
+	// into the program; for this scaffold, draining keeps a parent that
+	// streams pick-update lines from blocking on a full pipe.
+	go drain(input)
+
+	if _, err := p.Run(); err != nil {
+		return err
+	}
+
+	result := m.result
+	if result == nil {
+		result = &protocol.PickResult{Action: "cancel", Query: m.query}
+	}
+	_, err = output.Write(protocol.EncodePickResult(*result))
+	return err
+}
+
+func drain(r io.Reader) {
+	br := bufio.NewReader(r)
+	for {
+		if _, err := protocol.ReadLine(br); err != nil {
+			return
+		}
+	}
+}

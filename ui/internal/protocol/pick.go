@@ -104,3 +104,12 @@ func DecodePickLine(line []byte) (string, []byte, error) {
 	}
 	return probe.T, line, nil
 }
+
+// EncodePickResult mirrors EncodeIntent/EncodeClosed: T is stamped here, not
+// by the caller, so a Model can build a PickResult without knowing the wire
+// discriminator.
+func EncodePickResult(r PickResult) []byte {
+	r.T = "result"
+	b, _ := json.Marshal(r)
+	return append(b, '\n')
+}

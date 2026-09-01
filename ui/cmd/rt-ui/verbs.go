@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"rt-ui/internal/steps"
 	"rt-ui/internal/tty"
 	"rt-ui/internal/views/board"
+	"rt-ui/internal/views/picker"
 )
 
 const protocolVersion = protocol.Version
@@ -80,6 +82,38 @@ func runPrompt() int {
 	}
 	if _, err := os.Stdout.Write(protocol.EncodeResult(result)); err != nil {
 		// stdout gone: the parent died between our answer and our write.
+		return ExitInternal
+	}
+	return ExitOK
+}
+
+// runPick mirrors runPrompt's spec-then-run shape: decode the opening
+// request off stdin (same protocol-mismatch gate as DecodePrompt), then hand
+// the rest of stdin and stdout to picker.Run, which owns /dev/tty itself.
+func runPick() int {
+	r := bufio.NewReader(os.Stdin)
+	line, err := protocol.ReadLine(r)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rt-ui pick: no request on stdin")
+		return ExitBadSpec
+	}
+	kind, raw, err := protocol.DecodePickLine(line)
+	if err != nil || kind != "pick" {
+		fmt.Fprintln(os.Stderr, "rt-ui pick: bad request")
+		return ExitBadSpec
+	}
+	var req protocol.PickRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		fmt.Fprintln(os.Stderr, "rt-ui pick:", err)
+		return ExitBadSpec
+	}
+	if req.Protocol != protocol.Version {
+		fmt.Fprintf(os.Stderr, "rt-ui pick: protocol %d, rt-ui speaks %d\n", req.Protocol, protocol.Version)
+		return ExitBadSpec
+	}
+
+	if err := picker.Run(req, r, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "rt-ui pick:", err)
 		return ExitInternal
 	}
 	return ExitOK
