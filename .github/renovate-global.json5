@@ -1,0 +1,43 @@
+// Self-hosted Renovate global config, run by .github/workflows/renovate.yml.
+// Scope is estate-internal packages only: no external-dep PRs, no per-repo
+// onboarding files. soribashi lives on the m4ttheweric account, which the
+// org PAT cannot reach, so its repo is not listed; its packages still get
+// bumped in the consumers below.
+{
+  platform: "github",
+  autodiscover: false,
+  repositories: [
+    "m4ttstack/rt",
+    "m4ttstack/deck",
+    "m4ttstack/board",
+    "m4ttstack/console",
+    "m4ttstack/chat",
+    "m4ttstack/gitq",
+    "m4ttstack/tui-kit",
+    "m4ttstack/app-kit",
+    "m4ttstack/fast-browser",
+  ],
+  onboarding: false,
+  requireConfig: "optional",
+  dependencyDashboard: false,
+  prHourlyLimit: 0,
+  prConcurrentLimit: 0,
+  packageRules: [
+    { matchPackageNames: ["*"], enabled: false },
+    {
+      matchPackageNames: ["@mattstack/**", "@soribashi/**"],
+      enabled: true,
+      groupName: "mattstack internal deps",
+      // bump moves the range in package.json, not just the lockfile,
+      // so consumers visibly track latest
+      rangeStrategy: "bump",
+    },
+  ],
+  hostRules: [
+    {
+      matchHost: "registry.npmjs.org",
+      hostType: "npm",
+      token: "{{ secrets.NPM_READ_TOKEN }}",
+    },
+  ],
+}

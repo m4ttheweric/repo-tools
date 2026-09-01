@@ -37,7 +37,7 @@ jobs:
       - name: Workflow lint
         run: |
           brew install actionlint
-          actionlint .github/workflows/bundle-apps.yml .github/workflows/checks.yml .github/workflows/e2e.yml .github/workflows/purity.yml
+          actionlint .github/workflows/bundle-apps.yml .github/workflows/checks.yml .github/workflows/e2e.yml .github/workflows/purity.yml .github/workflows/renovate.yml
 
       # The Go helper's own vet + tests, plus the shared protocol fixtures
       # both languages golden-test (lib/ui/__tests__/protocol.test.ts runs

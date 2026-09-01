@@ -1,0 +1,35 @@
+name: renovate
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 4am CDT, daily
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log what would happen without opening PRs"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Renovate
+        uses: renovatebot/github-action@v46.2.5
+        with:
+          configurationFile: .github/renovate-global.json5
+          token: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
+        env:
+          # RENOVATE_SECRETS is the only env route through the action's
+          # env-regex filter; the config references it as secrets.NPM_READ_TOKEN
+          RENOVATE_SECRETS: '{"NPM_READ_TOKEN":"${{ secrets.NPM_READ_TOKEN }}"}'
+          RENOVATE_DRY_RUN: ${{ inputs.dry_run && 'full' || 'null' }}
+          LOG_LEVEL: info
