@@ -8,11 +8,24 @@ import { realpathSync, statSync } from "fs";
 import { basename } from "path";
 import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
 import { loadRepoIndex } from "./repo-index.ts";
-import { getRepoIdentity } from "./repo.ts";
+import { getRepoIdentity, getRepoIdentityForRoot } from "./repo.ts";
+import { getRepoRoot } from "./git.ts";
 
 /** Daemon payload key for the in-repo default — the serialized identity, not the display name. */
 export function currentRepoIdentity(): string | undefined {
   return getRepoIdentity()?.identity ?? undefined;
+}
+
+/**
+ * Same as `currentRepoIdentity()`, but resolves against an explicit `cwd`
+ * instead of `process.cwd()` — for callers (the Claude Code worktree hook)
+ * that receive a cwd out-of-band and cannot trust the process's own cwd to
+ * match it.
+ */
+export function currentRepoIdentityFor(cwd: string): string | undefined {
+  const repoRoot = getRepoRoot(cwd);
+  if (!repoRoot) return undefined;
+  return getRepoIdentityForRoot(repoRoot)?.identity ?? undefined;
 }
 
 /**

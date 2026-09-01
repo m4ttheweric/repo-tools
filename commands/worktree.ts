@@ -213,7 +213,7 @@ function failText(json: boolean, message: string): never {
   process.exit(1);
 }
 
-function explainError(error: string): string {
+export function explainError(error: string): string {
   if (error === "busy") return "that worktree is locked by another operation right now — try again shortly";
   if (error === "repo-unknown") return "unknown repo — pass --repo <name> or run from inside a registered repo";
   if (error === "branch-unresolved") return "need --branch <name> or --ticket <id> to name the work branch";

@@ -551,6 +551,16 @@ export const TREE: Record<string, CommandNode> = {
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
+      "claude-hook": {
+        description: "Claude Code WorktreeCreate/WorktreeRemove hook endpoint (stdin JSON in, tree path out)",
+        module: "./commands/worktree-hook.ts",
+        fn: "claudeHookCommand",
+        hidden: true,
+        omitBehavior: { exempt: "agent-facing; driven by Claude Code over stdin, never interactively" },
+        args: [
+          { name: "Remove", flag: "--remove", type: "boolean", default: false, hint: "Handle a WorktreeRemove event (courtesy guarded dispose)" },
+        ],
+      },
       create: {
         description: "Create a fresh worktree (optionally straight into the on-deck pool)",
         module: "./commands/worktree.ts",
