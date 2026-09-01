@@ -113,8 +113,19 @@ func (m *Model) openRegistryMenu() {
 }
 
 // openTSModal opens the overlay from a wire PickModal message, rendering
-// the same box a registry menu does.
+// the same box a registry menu does. A registry menu already open owes the
+// wire nothing and is simply replaced. A TS-driven modal already open is
+// different: the wire contract owes its caller exactly one modal-result
+// line, and silently overwriting m.modal would leave that caller blocked
+// forever waiting for an answer that never comes -- so it gets answered
+// null, the same way esc-dismissing it would, before the new one opens.
+// Either way the caller's own ClearScreen on the ModalMsg case (picker.go)
+// repaints the transition, so no overlay's own residue survives into the
+// next one.
 func (m *Model) openTSModal(pm protocol.PickModal) {
+	if m.modal != nil && m.modal.kind == modalTSDriven {
+		m.writeModalResult(nil)
+	}
 	ms := &modalState{kind: modalTSDriven, title: pm.Message, rows: modalRowsFromPick(pm.Rows)}
 	ms.refilter()
 	m.modal = ms
@@ -385,9 +396,27 @@ func modalJustify(width int, bg lipgloss.Style, left, right string) string {
 	return left + lipgloss.PlaceHorizontal(avail, lipgloss.Right, right, lipgloss.WithWhitespaceStyle(bg))
 }
 
+// modalHeaderLine clips ms.title to what's actually left of width once the
+// margin, the "esc dismiss" hint, and a gap column ahead of it are spoken
+// for. modalContentWidth already sizes the box for the title in the common
+// case, but caps at maxInner -- a title long enough to hit that cap (a
+// registry menu's title is a row's own label, always short, but a
+// TS-driven modal's title is caller-supplied free text with no such bound)
+// would otherwise render past width uncapped, the one line in the box
+// modalRowLine's own clipping convention didn't already cover.
 func modalHeaderLine(ms *modalState, width int) string {
-	left := surfaceBg.Render(" ") + sfg(theme.Text).Bold(true).Render(ms.title)
-	right := sfg(theme.Faint).Render("esc dismiss")
+	const rightText = "esc dismiss"
+	titleBudget := width - 1 - 1 - lipgloss.Width(rightText)
+	if titleBudget < 0 {
+		titleBudget = 0
+	}
+	kept, truncated := clipRunes(ms.title, titleBudget)
+	title := kept
+	if truncated {
+		title += "…"
+	}
+	left := surfaceBg.Render(" ") + sfg(theme.Text).Bold(true).Render(title)
+	right := sfg(theme.Faint).Render(rightText)
 	return modalJustify(width, surfaceBg, left, right)
 }
 

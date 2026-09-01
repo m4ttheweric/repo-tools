@@ -1438,6 +1438,90 @@ func TestModalEscWritesNullModalResultAndCloses(t *testing.T) {
 	}
 }
 
+// TestWireModalReplacesAnOpenRegistryMenuCleanly covers a wire modal
+// arriving while the ctrl-k/right-click menu is still open: the registry
+// menu owes the wire nothing on a plain dismiss, so it is simply replaced
+// -- the overlay afterward is the TS modal alone, with none of the menu's
+// own rows surviving into it.
+func TestWireModalReplacesAnOpenRegistryMenuCleanly(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "dispose", Label: "dispose", Scope: "item"},
+		},
+	}
+	m := New(req)
+	m.events = make(chan []byte, 4)
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil || m.modal.kind != modalRegistry {
+		t.Fatalf("setup: ctrl-k should open the registry menu, got %+v", m.modal)
+	}
+
+	next, cmd := m.Update(ModalMsg{Modal: protocol.PickModal{
+		Message: "Sort by",
+		Rows:    []protocol.PickRow{{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}}},
+	}})
+	m = next.(*Model)
+
+	if m.modal == nil || m.modal.kind != modalTSDriven {
+		t.Fatalf("the wire modal should replace the menu, got %+v", m.modal)
+	}
+	if len(m.modal.rows) != 1 || m.modal.rows[0].text != "Size" {
+		t.Fatalf("the menu's own rows must not survive into the wire modal: %+v", m.modal.rows)
+	}
+	if _, ok := cmd().(tea.QuitMsg); ok {
+		t.Fatal("replacing the overlay must not end the session")
+	}
+	select {
+	case line := <-m.events:
+		t.Fatalf("a registry menu owes the wire nothing on replacement, got a line anyway: %s", line)
+	default:
+	}
+}
+
+// TestWireModalAnswersAPriorOpenModalBeforeReplacingIt covers a wire modal
+// arriving while a DIFFERENT TS-driven modal is still open and unanswered:
+// the wire contract owes that first modal exactly one modal-result line, so
+// it gets answered null -- the same way esc-dismissing it would -- before
+// the new one opens, rather than leaving its caller blocked forever.
+func TestWireModalAnswersAPriorOpenModalBeforeReplacingIt(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
+	m := New(req)
+	m.events = make(chan []byte, 4)
+
+	m.openTSModal(protocol.PickModal{
+		Message: "Sort by",
+		Rows:    []protocol.PickRow{{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}}},
+	})
+
+	next, _ := m.Update(ModalMsg{Modal: protocol.PickModal{
+		Message: "Filter by",
+		Rows:    []protocol.PickRow{{Value: "kind", Left: []protocol.PickSegment{{Text: "Kind"}}}},
+	}})
+	m = next.(*Model)
+
+	if m.modal == nil || m.modal.title != "Filter by" {
+		t.Fatalf("the newer modal should now be open, got %+v", m.modal)
+	}
+
+	var line []byte
+	select {
+	case line = <-m.events:
+	default:
+		t.Fatal("the first modal should have been answered null before being replaced")
+	}
+	var mr protocol.PickModalResult
+	if err := json.Unmarshal(line, &mr); err != nil {
+		t.Fatalf("modal-result line not valid JSON: %v (%s)", err, line)
+	}
+	if mr.T != "modal-result" || mr.Value != nil {
+		t.Fatalf("the clobbered modal should be answered null, got %+v", mr)
+	}
+}
+
 // TestCtrlKMenuEventActionEmitsEventAndStaysOpen covers the registry-menu
 // mechanism's event branch: opening ctrl-k renders the same overlay from
 // the model's own action registry (no TS round trip), and choosing an
