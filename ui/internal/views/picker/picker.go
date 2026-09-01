@@ -85,6 +85,18 @@ type Model struct {
 	// columns target, rebuilt every render() call; mouse.go's click/motion
 	// handlers only ever read it, never recompute layout themselves.
 	zones hitZones
+	// modalZones and modalBox are the overlay's own hit record, rebuilt by
+	// renderModal whenever a modal is open: modalZones maps a frame line to
+	// the modal row painted there, modalBox is the box's frame rectangle a
+	// press outside dismisses on. Recorded against the compositor's centered
+	// origin, not the base list's row coordinates (see recordModalZones), and
+	// read-only in the modal mouse handlers.
+	modalZones hitZones
+	modalBox   modalBoxRect
+	// modalHover is the modal match index the pointer is over (-1 = none),
+	// the overlay's counterpart to hover for the base list: a render hint
+	// modalRowLine paints HoverBg on, never the overlay's keyboard cursor.
+	modalHover int
 	// lastClickRow/lastClickAt pair a row click with whatever click preceded
 	// it, the only way to detect a double-click: MouseMsg carries no click
 	// timestamp of its own. -1 is "no previous click" (never a valid match
@@ -135,6 +147,7 @@ func New(req protocol.PickRequest) *Model {
 		query:        req.InitialQuery,
 		selected:     make(map[string]bool),
 		hover:        -1,
+		modalHover:   -1,
 		lastClickRow: -1,
 		nowFn:        time.Now,
 	}

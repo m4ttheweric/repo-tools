@@ -28,7 +28,23 @@ const (
 	zoneMarker
 	zoneCrumb
 	zoneKeybarKey
+	zoneModalRow
 )
+
+// modalBoxRect is the open overlay's bordered frame rectangle, recorded by
+// recordModalZones so a press outside it can be told apart from one on a row
+// (a dismiss vs. an activate). Half-open on both axes: [x0,x1) x [y0,y1).
+// valid is false until a render has recorded one, so a click that somehow
+// arrives before the first modal paint reads as outside rather than as the
+// zero rectangle's corner.
+type modalBoxRect struct {
+	x0, y0, x1, y1 int
+	valid          bool
+}
+
+func (r modalBoxRect) contains(x, y int) bool {
+	return r.valid && x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1
+}
 
 // mouseZone is one clickable region recorded during render(): a half-open
 // column span [xStart, xEnd) on one specific line of the current frame.
@@ -232,7 +248,7 @@ func (m *Model) applyModifierHeld(code rune, down bool) bool {
 // header line) and any button beyond left/right are inert.
 func (m *Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if m.modal != nil {
-		return m, nil
+		return m.modalMouseClick(msg)
 	}
 	mouse := msg.Mouse()
 	zone, ok := m.zones.at(mouse.X, mouse.Y)
@@ -244,6 +260,29 @@ func (m *Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m.clickRight(zone)
 	case tea.MouseLeft:
 		return m.clickLeft(zone)
+	}
+	return m, nil
+}
+
+// modalMouseClick routes a press against the open overlay: a left/right press
+// on a modal row activates it through the very path a keyboard select of that
+// row takes (set the overlay's own cursor, then selectModalRow), so the
+// dispatched event/result is identical to enter's. A press anywhere outside
+// the box dismisses it exactly as esc does. A press inside the box but off any
+// row is inert, like a click on the base list's own chrome.
+func (m *Model) modalMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+	if mouse.Button != tea.MouseLeft && mouse.Button != tea.MouseRight {
+		return m, nil
+	}
+	if zone, ok := m.modalZones.at(mouse.X, mouse.Y); ok && zone.kind == zoneModalRow {
+		m.modal.cursor = zone.row
+		return m.selectModalRow()
+	}
+	if !m.modalBox.contains(mouse.X, mouse.Y) {
+		m.closeModal()
+		m.armPinRelease()
+		return m, tea.ClearScreen
 	}
 	return m, nil
 }
@@ -350,7 +389,7 @@ func (m *Model) dispatchAction(action protocol.PickAction) (tea.Model, tea.Cmd) 
 // moving the mouse across the list can never steal it.
 func (m *Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 	if m.modal != nil {
-		return m, nil
+		return m.modalMouseMotion(msg)
 	}
 	mouse := msg.Mouse()
 	zone, ok := m.zones.at(mouse.X, mouse.Y)
@@ -358,6 +397,21 @@ func (m *Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 		m.hover = zone.row
 	} else {
 		m.hover = -1
+	}
+	return m, nil
+}
+
+// modalMouseMotion tracks which overlay row the pointer is over, the modal's
+// counterpart to handleMouseMotion: it sets modalHover (a render hint
+// modalRowLine paints HoverBg on) and never the overlay's keyboard cursor,
+// so moving the mouse across the menu can no more steal its cursor than it
+// can the base list's.
+func (m *Model) modalMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+	if zone, ok := m.modalZones.at(mouse.X, mouse.Y); ok && zone.kind == zoneModalRow {
+		m.modalHover = zone.row
+	} else {
+		m.modalHover = -1
 	}
 	return m, nil
 }

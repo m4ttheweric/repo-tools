@@ -166,7 +166,7 @@ func (m *Model) registryMenuHeight() int {
 	}
 	ms := &modalState{kind: modalRegistry, rows: modalRowsFromMenu(rows)}
 	ms.refilter()
-	return lipgloss.Height(renderModalBox(ms, m.width))
+	return lipgloss.Height(renderModalBox(ms, m.width, -1))
 }
 
 // setReserved re-derives the floor from the current pane, dropping it when a
@@ -254,6 +254,7 @@ func (m *Model) openRegistryMenu() {
 	ms := &modalState{kind: modalRegistry, title: title, rows: modalRowsFromMenu(rows)}
 	ms.refilter()
 	m.modal = ms
+	m.modalHover = -1
 }
 
 // openTSModal opens the overlay from a wire PickModal message, rendering
@@ -273,6 +274,7 @@ func (m *Model) openTSModal(pm protocol.PickModal) {
 	ms := &modalState{kind: modalTSDriven, title: pm.Message, rows: modalRowsFromPick(pm.Rows)}
 	ms.refilter()
 	m.modal = ms
+	m.modalHover = -1
 }
 
 // modalRowsFromMenu flattens deriveMenu's ordered rows (item rows, an
@@ -430,7 +432,9 @@ const modalMinWidth = 24
 // bounds, so nothing outside the box has to be repainted by hand.
 func renderModal(m *Model, parent string) string {
 	dimmed := dimForeground(parent)
-	box := renderModalBox(m.modal, m.width)
+	inner := modalInner(m.modal, m.width)
+	lines, rowLines := modalBoxLines(m.modal, inner, m.modalHover)
+	box := modalBoxFrame(lines)
 
 	pw := m.width
 	ph := lipgloss.Height(dimmed)
@@ -446,9 +450,35 @@ func renderModal(m *Model, parent string) string {
 		y = 0
 	}
 
+	m.recordModalZones(x, y, mw, mh, inner, rowLines)
+
 	parentLayer := lipgloss.NewLayer(dimmed).X(0).Y(0).Z(0)
 	modalLayer := lipgloss.NewLayer(box).X(x).Y(y).Z(1)
 	return lipgloss.NewCompositor(parentLayer, modalLayer).Render()
+}
+
+// recordModalZones rebuilds m.modalZones and m.modalBox for the overlay
+// currently composited at frame origin (boxX, boxY) with size (boxW, boxH),
+// off the same rowLines the box was painted from.
+//
+// Offset invariant: the box is a centered compositor layer, not inline
+// content, so a modal row's frame line is the box origin plus one border
+// line plus that row's content-line offset (boxY + 1 + rowLines[i]), and its
+// clickable column span is the box origin plus one border column across the
+// inner width ([boxX+1, boxX+1+inner)). Mapping a mouse cell straight against
+// the base list's row coordinates (which start at frame line 0) would miss
+// the box entirely -- honoring this origin is the whole point of recording
+// here, where the compositor's own centering offset is known.
+func (m *Model) recordModalZones(boxX, boxY, boxW, boxH, inner int, rowLines []int) {
+	zones := hitZones{}
+	xStart := boxX + 1
+	xEnd := xStart + inner
+	for i, cl := range rowLines {
+		frameY := boxY + 1 + cl
+		zones.addAll(frameY, []mouseZone{{kind: zoneModalRow, xStart: xStart, xEnd: xEnd, row: i}})
+	}
+	m.modalZones = zones
+	m.modalBox = modalBoxRect{x0: boxX, y0: boxY, x1: boxX + boxW, y1: boxY + boxH, valid: true}
 }
 
 // surfaceBg is the overlay's own background -- every line painted inside
@@ -463,31 +493,49 @@ func sfg(c color.Color) lipgloss.Style {
 	return surfaceBg.Foreground(c)
 }
 
-// renderModalBox paints the overlay's own header/filter/rows onto a fixed
-// inner width, then wraps it in the Panel-colored rounded border.
-func renderModalBox(ms *modalState, parentWidth int) string {
+// modalInner is the overlay's inner content width, capped to the pane and
+// floored to modalMinWidth -- shared by renderModalBox and recordModalZones
+// so a row's clickable column span can never drift from the width it paints
+// at.
+func modalInner(ms *modalState, parentWidth int) int {
 	maxInner := parentWidth - 4
 	if maxInner < modalMinWidth {
 		maxInner = modalMinWidth
 	}
-	inner := modalContentWidth(ms, maxInner)
+	return modalContentWidth(ms, maxInner)
+}
 
-	lines := []string{
+// modalBoxLines builds the overlay's inner lines and, in the same pass, the
+// content-line offset each visible row lands on (rowLines[i] for match i).
+// The two are returned together so recordModalZones can position a row's
+// hit-zone against exactly the line this appended it on, never a second walk
+// that could order the header/filter/rule/divider run differently. hover is
+// the match index the pointer is over (-1 = none), painted HoverBg unless it
+// is also the keyboard cursor.
+func modalBoxLines(ms *modalState, inner, hover int) (lines []string, rowLines []int) {
+	lines = []string{
 		modalHeaderLine(ms, inner),
 		modalFilterLine(ms, inner),
 		modalRuleLine(inner),
 	}
 	if len(ms.matches) == 0 {
 		lines = append(lines, modalNoMatchLine(inner))
-	} else {
-		for i, mt := range ms.matches {
-			if modalDividerBefore(ms, i) {
-				lines = append(lines, modalRuleLine(inner))
-			}
-			lines = append(lines, modalRowLine(ms.rows[mt.Index], inner, i == ms.cursor))
-		}
+		return lines, nil
 	}
+	rowLines = make([]int, len(ms.matches))
+	for i, mt := range ms.matches {
+		if modalDividerBefore(ms, i) {
+			lines = append(lines, modalRuleLine(inner))
+		}
+		rowLines[i] = len(lines)
+		lines = append(lines, modalRowLine(ms.rows[mt.Index], inner, i == ms.cursor, i == hover))
+	}
+	return lines, rowLines
+}
 
+// modalBoxFrame wraps the overlay's content lines in the Panel-colored
+// rounded border on the Surface background.
+func modalBoxFrame(lines []string) string {
 	content := strings.Join(lines, "\n")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -495,6 +543,15 @@ func renderModalBox(ms *modalState, parentWidth int) string {
 		BorderBackground(theme.Surface).
 		Background(theme.Surface).
 		Render(content)
+}
+
+// renderModalBox paints the overlay's own header/filter/rows onto a fixed
+// inner width, then wraps it in the Panel-colored rounded border. hover is
+// the match index the pointer is over (-1 for the measuring callers, which
+// never paint a hover).
+func renderModalBox(ms *modalState, parentWidth, hover int) string {
+	lines, _ := modalBoxLines(ms, modalInner(ms, parentWidth), hover)
+	return modalBoxFrame(lines)
 }
 
 // modalDividerBefore reports whether a rule belongs between matches[i-1]
@@ -592,14 +649,20 @@ func modalNoMatchLine(width int) string {
 // Actions board's registry menu renders global (structural, always-there)
 // actions quieter than the item-scope ones a caller declared for this row;
 // a TS-driven row (never isGlobal) always reads at the brighter tone.
-func modalRowLine(row modalRow, width int, cursor bool) string {
+// A hovered non-cursor row carries HoverBg, the same mouse hint the base
+// list paints (see rowLineWidth); the keyboard cursor's SelBg always wins,
+// so hover and cursor never both style one row.
+func modalRowLine(row modalRow, width int, cursor, hover bool) string {
 	rowBg := surfaceBg
 	gutterGlyph := " "
 	gutterStyle := surfaceBg
-	if cursor {
+	switch {
+	case cursor:
 		rowBg = lipgloss.NewStyle().Background(theme.SelBg)
 		gutterGlyph = theme.GlyphBar
 		gutterStyle = rowBg.Foreground(theme.Pink)
+	case hover:
+		rowBg = lipgloss.NewStyle().Background(theme.HoverBg)
 	}
 	gutter := gutterStyle.Render(gutterGlyph)
 

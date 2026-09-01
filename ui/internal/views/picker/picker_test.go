@@ -2538,6 +2538,206 @@ func TestMouseRightClickOpensMenuAtRow(t *testing.T) {
 	}
 }
 
+// modalRowCell returns a frame cell (x,y) inside the recorded hit-zone of
+// modal match `index`, for driving a mouse event straight at that overlay
+// row. It reads the zones recordModalZones laid down on the last render, so
+// a test never has to re-derive the compositor's centering offset by hand --
+// exactly the offset math the code under test owns.
+func modalRowCell(m *Model, index int) (x, y int, ok bool) {
+	for yy, zs := range m.modalZones.byY {
+		for _, z := range zs {
+			if z.kind == zoneModalRow && z.row == index {
+				return z.xStart + 1, yy, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// TestModalMouseMotionHoversAndRendersHoverBg pins mouse hover inside the
+// overlay: motion over a non-cursor menu row sets modalHover and paints that
+// row with HoverBg, the same #251E3D the base list hover uses. Fails on the
+// pre-fix mouse-inert modal (motion early-returned, modalRowLine had no hover
+// tone at all).
+func TestModalMouseMotionHoversAndRendersHoverBg(t *testing.T) {
+	const hoverBgSGR = "48;2;37;30;61"
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+	m.width = 60
+	m.openTSModal(protocol.PickModal{
+		Message: "Sort by",
+		Rows: []protocol.PickRow{
+			{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}},
+			{Value: "name", Left: []protocol.PickSegment{{Text: "Name"}}},
+		},
+	})
+	renderView(m) // records the overlay's frame-space hit-zones
+
+	x, y, ok := modalRowCell(m, 1)
+	if !ok {
+		t.Fatal("setup: expected a hit-zone for modal row 1")
+	}
+
+	next, _ := m.Update(tea.MouseMotionMsg{X: x, Y: y})
+	m = next.(*Model)
+	if m.modalHover != 1 {
+		t.Fatalf("motion over modal row 1 should set modalHover=1, got %d", m.modalHover)
+	}
+	if m.modal.cursor != 0 {
+		t.Fatalf("modal hover must never move the overlay's keyboard cursor, got %d", m.modal.cursor)
+	}
+
+	lines := strings.Split(renderView(m), "\n")
+	if y >= len(lines) || !strings.Contains(lines[y], hoverBgSGR) {
+		t.Fatalf("the hovered modal row (frame line %d) should carry HoverBg %s: %q", y, hoverBgSGR, lines[y])
+	}
+}
+
+// TestModalMouseClickOnRowActivatesLikeKeyboard pins click-activate parity:
+// clicking a menu row dispatches through the very path a keyboard select of
+// that same row takes, so the terminal result is byte-identical. Fails on the
+// pre-fix modal (click early-returned, leaving the overlay open with no
+// result).
+func TestModalMouseClickOnRowActivatesLikeKeyboard(t *testing.T) {
+	newModel := func() *Model {
+		req := protocol.PickRequest{
+			T: "pick", Protocol: protocol.Version,
+			Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+			Actions: []protocol.PickAction{
+				{ID: "editor", Label: "open in editor", Scope: "item"},
+				{ID: "dispose", Label: "dispose", Scope: "item"},
+			},
+		}
+		m := New(req)
+		m.width = 60
+		return m
+	}
+
+	// Keyboard baseline: open the menu, move to row 1 (dispose), enter.
+	kb := newModel()
+	next, _ := kb.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	kb = next.(*Model)
+	next, _ = kb.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	kb = next.(*Model)
+	next, kbCmd := kb.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	kb = next.(*Model)
+
+	// Mouse: open the menu, click the same row (match index 1).
+	ms := newModel()
+	next, _ = ms.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	ms = next.(*Model)
+	renderView(ms)
+	x, y, ok := modalRowCell(ms, 1)
+	if !ok {
+		t.Fatal("setup: expected a hit-zone for modal row 1")
+	}
+	next, msCmd := ms.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	ms = next.(*Model)
+
+	if ms.modal != nil {
+		t.Fatal("clicking a menu row should close the overlay")
+	}
+	if kb.result == nil || ms.result == nil {
+		t.Fatalf("both paths should set a result: kb=%+v mouse=%+v", kb.result, ms.result)
+	}
+	if ms.result.Action != kb.result.Action || ms.result.Action != "dispose" {
+		t.Fatalf("mouse-click result %q must match keyboard-select 'dispose' (kb=%q)", ms.result.Action, kb.result.Action)
+	}
+	if _, ok := msCmd().(tea.QuitMsg); !ok {
+		t.Fatalf("mouse activation of a non-event action should quit, got %v", msCmd())
+	}
+	if _, ok := kbCmd().(tea.QuitMsg); !ok {
+		t.Fatalf("keyboard activation of a non-event action should quit, got %v", kbCmd())
+	}
+}
+
+// TestModalMouseClickOutsideDismissesLikeEsc pins outside-click dismissal: a
+// press outside the box closes the overlay exactly as esc does, answering a
+// TS-driven modal null and repainting rather than quitting. Fails on the
+// pre-fix modal (click early-returned, the box stayed open).
+func TestModalMouseClickOutsideDismissesLikeEsc(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}}}
+	m := New(req)
+	m.width = 60
+	m.events = make(chan []byte, 4)
+	m.openTSModal(protocol.PickModal{
+		Message: "Sort by",
+		Rows: []protocol.PickRow{
+			{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}},
+			{Value: "name", Left: []protocol.PickSegment{{Text: "Name"}}},
+		},
+	})
+	renderView(m)
+
+	if m.modalBox.contains(0, 0) {
+		t.Fatal("setup: the frame's top-left corner should be outside the centered modal box")
+	}
+
+	next, cmd := m.Update(tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if m.modal != nil {
+		t.Fatal("a press outside the box should dismiss the overlay")
+	}
+	if _, ok := cmd().(tea.QuitMsg); ok {
+		t.Fatal("dismissing the overlay must not quit the picker")
+	}
+
+	var line []byte
+	select {
+	case line = <-m.events:
+	default:
+		t.Fatal("dismissing a TS modal should enqueue a null modal-result, the same as esc")
+	}
+	var mr protocol.PickModalResult
+	if err := json.Unmarshal(line, &mr); err != nil {
+		t.Fatalf("modal-result line not valid JSON: %v (%s)", err, line)
+	}
+	if mr.T != "modal-result" || mr.Value != nil {
+		t.Fatalf("an outside-click dismissal should answer null, got %+v", mr)
+	}
+}
+
+// TestModalMouseClickInsideOffRowIsInert pins the middle case: a press inside
+// the box but not on any row (the header line) neither activates nor
+// dismisses -- it is inert, like a click on the base list's own chrome.
+func TestModalMouseClickInsideOffRowIsInert(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}}}
+	m := New(req)
+	m.width = 60
+	m.events = make(chan []byte, 4)
+	m.openTSModal(protocol.PickModal{
+		Message: "Sort by",
+		Rows:    []protocol.PickRow{{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}}},
+	})
+	renderView(m)
+
+	// The header line sits one row below the box's top border, inside it.
+	headerX, headerY := m.modalBox.x0+2, m.modalBox.y0+1
+	if _, ok := m.modalZones.at(headerX, headerY); ok {
+		t.Fatalf("setup: the header cell (%d,%d) should carry no row hit-zone", headerX, headerY)
+	}
+	if !m.modalBox.contains(headerX, headerY) {
+		t.Fatalf("setup: the header cell (%d,%d) should be inside the box", headerX, headerY)
+	}
+
+	next, cmd := m.Update(tea.MouseClickMsg{X: headerX, Y: headerY, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("a press on the box's own chrome must not dismiss the overlay")
+	}
+	if cmd != nil {
+		t.Fatal("an inert modal press must return no command")
+	}
+	select {
+	case <-m.events:
+		t.Fatal("an inert modal press must not enqueue a modal-result")
+	default:
+	}
+}
+
 // TestMouseClickMapsThroughGroupHeadersToTheCorrectMatchIndex is the
 // hit-zone regression guard the reviewer will scrutinize hardest: Y→row
 // cannot be a fixed-chrome-offset subtraction, because an interleaved group
