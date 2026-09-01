@@ -359,12 +359,11 @@ func wireModalFullGridRequest() (reqLine, modalLine []byte) {
 //
 // This harness's own terminal emulation was confirmed, across many
 // configurations, not to reproduce the specific residue a real tmux
-// session showed for this same sequence -- see the fix report's own notes
-// on that investigation -- so this golden is not a RED-before/GREEN-after
-// proof of the fix by itself. It is kept because the invariant it checks
-// (the full grid, not just the live frame slice) is strictly stronger than
-// what came before, and it does catch any residue this harness is capable
-// of producing at all.
+// session shows for this same sequence, so this golden is not a
+// RED-before/GREEN-after proof of the underlying bug by itself. It is
+// kept because the invariant it checks (the full grid, not just the live
+// frame slice) is strictly stronger than what came before, and it does
+// catch any residue this harness is capable of producing at all.
 func TestFullGridStaysCleanAcrossASettledWireModalCycle(t *testing.T) {
 	const cols, rows = 110, 34
 	reqLine, modalLine := wireModalFullGridRequest()
