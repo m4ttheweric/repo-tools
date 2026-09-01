@@ -1,0 +1,55 @@
+<script src="./support.js"></script>
+<style>
+:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--panel:#34304E;--pink:#FF6B9D;--mint:#62E6A8;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#A8A0C6;--dimmer:#8B84A8;--faint:#6E668C}
+html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px;color:var(--text);padding:26px}
+.term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45);margin-bottom:20px;position:relative}
+.ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
+.selrow{flex:1;display:flex;background:var(--sel)}
+.t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
+.p{color:var(--pink)}.m{color:var(--mint)}.cy{color:var(--cyan)}.lv{color:var(--lav)}
+.b{font-weight:700}.hl{color:var(--cyan);font-weight:700}
+.rule{border-top:1px solid var(--rule);margin:7px 0 5px}
+.lbl{display:inline-block;min-width:24ch}
+.sb{position:absolute;right:6px;width:4px;border-radius:2px;background:var(--panel)}
+h1{font:600 16px/1.3 system-ui;color:var(--text);margin:0 0 3px}
+p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:82ch;white-space:normal}
+table.gram{border-collapse:collapse;font:12px/1.7 system-ui;color:var(--dim);margin:0 0 20px}
+table.gram td{padding:2px 18px 2px 0;vertical-align:top}
+table.gram td:first-child{color:var(--soft);font-family:"SF Mono",Menlo,monospace;font-size:12px;white-space:nowrap}
+</style>
+<title>Scrolling</title>
+<h1>Height cap &amp; scrolling</h1>
+<p class="note">The viewport is <span class="cy" style="font-family:inherit">min( caller cap, list length, pane height − chrome )</span>. The cap defaults to 14 and is a per-call knob — a content-heavy command may raise it, a submenu may lower it — but the pane is always the hard ceiling: ask for 40 rows in a 20-row pane and you get what fits, scrolling. A short list still collapses to its content. Beyond the viewport the list scrolls inside the card: a 1-column thumb rail on the right edge (Panel, no track), edge fades where content continues, and the header count is always the truth. The cursor scrolls with a 2-row margin (scrolloff) so context is never lost.</p>
+
+<table class="gram">
+  <tr><td>↑/↓ · ctrl-j/k</td><td>move cursor; viewport follows, keeping 2 rows of margin</td></tr>
+  <tr><td>wheel</td><td>scrolls the viewport only — cursor and filter stay put</td></tr>
+  <tr><td>pgup / pgdn</td><td>viewport page jumps; cursor clamps into view</td></tr>
+  <tr><td>drag thumb</td><td>direct scroll (mouse)</td></tr>
+  <tr><td>filtering</td><td>list rebinds to top; cap and rail recompute live</td></tr>
+  <tr><td>pane resize</td><td>viewport re-derives from the new pane height (SIGWINCH-live)</td></tr>
+</table>
+
+<div class="term" style="width:84ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">cd</span><span class="sp"></span><span class="f">118/118</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">app-kit</span></span><span class="dr">~/Documents/GitHub/app-kit</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">assured-dev</span></span><span class="dr">~/Documents/GitHub/assured-dev</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">board</span></span><span class="dr">~/Documents/GitHub/board</span></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="lbl"><span class="t b">chat</span></span><span class="d">~/Documents/GitHub/chat</span><span class="sp"></span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">console</span></span><span class="dr">~/Documents/GitHub/console</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">deck</span></span><span class="dr">~/Documents/GitHub/deck</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">forge-leaderboard</span></span><span class="dr">~/Documents/GitHub/forge-leaderboard</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">gitq</span></span><span class="dr">~/Documents/GitHub/gitq</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">mattstack-marketplace</span></span><span class="dr">~/Documents/GitHub/mattstack-marketplace</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">mattstack-skills</span></span><span class="dr">~/Documents/GitHub/mattstack-skills</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">mr-board</span></span><span class="dr">~/Documents/GitHub/board ⇢ symlink</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">repo-tools</span></span><span class="dr">~/Documents/GitHub/repo-tools</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">workforge</span></span><span class="dr">~/Documents/GitHub/workforge</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="dr">rt-rewritten-clean</span></span><span class="dr" style="opacity:.55">~/Documents/GitHub/rt-rewritten-clean</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">cd</span><span class="f"> enter</span><span class="d"> select</span><span class="f">  ctrl-r</span><span class="d"> refresh</span><span class="sp"></span><span class="cy">4–17</span><span class="f"> of 118</span><span class="f">  ·  esc</span><span class="d"> quit</span></div>
+  <div class="sb" style="top:96px;height:38px"></div>
+</div>
+<p class="note" style="margin-top:0">Last visible row fades (content continues below); the rail thumb sizes to viewport÷total and rides the right edge inside the card; the footer's <span class="cy" style="font-family:inherit">4–17 of 118</span> range replaces guesswork on long lists (hidden when everything fits).</p>

@@ -1,0 +1,63 @@
+<script src="./support.js"></script>
+<style>
+:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--pink:#FF6B9D;--mint:#62E6A8;--coral:#FF7979;--peach:#FFB77A;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#A8A0C6;--dimmer:#8B84A8;--faint:#6E668C;--blue:#6B9DFF}
+html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px;color:var(--text);padding:26px}
+.term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45);margin-bottom:22px}
+.ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
+.selrow{flex:1;display:flex;background:var(--sel)}
+.t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
+.p{color:var(--pink)}.m{color:var(--mint)}.co{color:var(--coral)}.pe{color:var(--peach)}.cy{color:var(--cyan)}.lv{color:var(--lav)}.bl{color:var(--blue)}
+.b{font-weight:700}.hl{color:var(--cyan);font-weight:700}
+.rule{border-top:1px solid var(--rule);margin:7px 0 5px}
+.name{display:inline-block;min-width:10ch}
+h1{font:600 16px/1.3 system-ui;color:var(--text);margin:0 0 3px}
+p.note{font:12px/1.55 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:84ch;white-space:normal}
+h2{font:600 12px/1.4 system-ui;color:var(--lav);margin:18px 0 8px;text-transform:uppercase;letter-spacing:.08em}
+pre.code{background:var(--bgs);border:1px solid var(--rule);border-radius:8px;padding:12px 16px;font-size:12px;line-height:1.65;color:var(--soft);margin:0 0 12px;overflow-x:auto}
+pre.code .k{color:var(--cyan)}pre.code .str{color:var(--mint)}pre.code .c{color:var(--faint)}
+table.gram{border-collapse:collapse;font:12px/1.7 system-ui;color:var(--dim);margin:0 0 6px}
+table.gram td{padding:1px 16px 1px 0;vertical-align:top}
+table.gram td:first-child{font-family:"SF Mono",Menlo,monospace;font-size:12.5px;white-space:nowrap}
+</style>
+<title>Enriched rows</title>
+<h1>Enriched rows — the flatten step dies with fzf</h1>
+<p class="note">lib/enrich.ts already produces a split row (<span style="font-family:inherit">leading + right-pinned trailing</span>) for the runner; the fzf path flattens it into one string because fzf can't do anything else. The new row model consumes the split form natively: the status cluster is pinned to the right edge and never truncates, the title clips instead — the exact behavior the runner already has. Ticket state badges keep <b>Linear's own stateColor</b> (dynamic hex, not a theme token) — the row model must carry arbitrary hex per segment, not just theme tones.</p>
+
+<h2>rt cd — assured-dev worktrees, redesigned</h2>
+<div class="term" style="width:96ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">cd</span><span class="f"> · </span><span class="dr">assured-dev worktrees</span><span class="sp"></span><span class="f">11/11</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="t b name">hogwarts</span><span class="f"> · </span><span class="d">master</span><span class="sp"></span><span class="m">✓</span><span> </span><span class="co">○</span><span> </span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">neville</span><span class="f"> · </span><span class="s">CVI Claim Chat Sidebar for GEICO </span><span class="bl">[Done]</span><span class="sp"></span><span class="m">✓</span><span> </span><span class="co">○</span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">seamus</span><span class="f"> · </span><span class="s">Improve vehicles and occupants hierarchy and navigation </span><span class="co">[Code Review]</span><span class="sp"></span><span class="m">✓</span><span> </span><span class="m">◉</span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">hedwig</span><span class="f"> · </span><span class="d">cvi-p6-token-pipeline</span><span class="sp"></span><span class="cy">⟳</span><span> </span><span class="m">◉</span><span> </span><span class="dr">CVI-812</span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">gitq-1</span><span class="sp"></span><span class="f">[Local Only]</span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">bill</span><span class="f"> · </span><span class="d">on-deck/bill</span><span class="sp"></span><span class="f">[Local Only]</span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">cho</span><span class="f"> · </span><span class="d">on-deck/cho</span><span class="sp"></span><span class="f">[Local Only]</span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">snape</span><span class="f"> · </span><span class="d">on-deck/snape</span><span class="sp"></span><span class="f">[Local Only]</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">cd</span><span class="f"> enter</span><span class="d"> select</span><span class="f">  ctrl-r</span><span class="d"> refresh</span><span class="sp"></span><span class="f">ctrl-up</span><span class="d"> back</span><span class="f">  esc</span><span class="d"> quit</span></div>
+</div>
+
+<h2>Glyph vocabulary (from lib/enrich.ts, mapped onto theme tones)</h2>
+<table class="gram">
+  <tr><td><span class="m">✓</span> <span class="pe">✓</span> <span class="co">✗</span> <span class="cy">⟳</span> <span class="f">⟳ ○ ✗</span></td><td>pipeline: success · warnings · failed · running · pending / created / canceled</td></tr>
+  <tr><td><span class="m">◉</span> <span class="bl">●</span> <span class="co">○</span></td><td>MR state: open · merged · closed</td></tr>
+  <tr><td><span class="bl">[Done]</span> <span class="co">[Code Review]</span></td><td>Linear workflow state, in Linear's own stateColor (arbitrary hex)</td></tr>
+  <tr><td><span class="f">[Local Only] · [main branch]</span></td><td>no remote / default branch — faint, right-pinned</td></tr>
+  <tr><td><span class="dr">CVI-812</span></td><td>ticket id when there's no title to show</td></tr>
+</table>
+
+<h2>Row model (architecture)</h2>
+<pre class="code">row = {
+  value: <span class="str">"/Users/matt/…/hogwarts"</span>,
+  left:  [ {text:<span class="str">"hogwarts"</span>, tone:<span class="k">"text"</span>, bold:<span class="k">true</span>}, {text:<span class="str">" · "</span>, tone:<span class="k">"faint"</span>}, {text:<span class="str">"master"</span>, tone:<span class="k">"dim"</span>} ],
+  right: [ {text:<span class="str">"✓"</span>, tone:<span class="k">"mint"</span>}, {text:<span class="str">"○"</span>, tone:<span class="k">"coral"</span>} ],   <span class="c">// pinned; never truncates</span>
+  match: <span class="str">"hogwarts master"</span>,          <span class="c">// what filtering sees (defaults to left's plain text)</span>
+}
+<span class="c">// segment = { text, tone? | hex? , bold? } — hex exists for Linear stateColor;</span>
+<span class="c">// tones are the theme ramp. label+hint callers are sugar over two segments.</span></pre>
+
+<h2>Progressive enrichment</h2>
+<p class="note" style="margin-bottom:2px">Today rt cd blocks on a spinner before the picker opens (unless the daemon cache hits). The component's row-update channel (the same one watch/reload use) makes the better story free: <b>open instantly</b> with dirName · branch, then the enrichment push lands and rows gain titles, badges, and glyph clusters in place — filter and cursor untouched. One mechanism, three consumers: watch, reload, enrich.</p>
