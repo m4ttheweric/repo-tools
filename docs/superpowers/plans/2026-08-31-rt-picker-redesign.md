@@ -23,7 +23,7 @@
 - Viewport = min(caller cap [default 14], list length, pane height − chrome); content-anchored; 2-row scrolloff; wheel moves viewport only; footer range only when overflowing; no edge fades.
 - No `|`/`!` search syntax. No preview panes. No emoji. Never em/en dashes in any output. Clean-code comments only. Commit trailer: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` (executor's model name if different).
 - After any change under `ui/`: `bun run ui:build`. Never run the compiled `rt` binary outside an isolated HOME. Tests never touch live herdr/tmux/daemon or the real `~/.rt`.
-- Gate per phase: `bun test <touched areas>`, `bun run tsc --noEmit`, `bun run picker:check`, and (Go) `cd ui && go test ./...`.
+- Gate per phase: `bun test <touched areas>`, `bun run tsc --noEmit`, `bun run picker:check`, and (Go) `bun run ui:test`.
 
 ## Model tiering (per Matt's request)
 
@@ -37,7 +37,7 @@
 - `ui/internal/views/picker/` — `picker.go` (model/update), `render.go` (layout zones), `match.go` (fzf algo wrapper), `actions.go` (registry→keybar/menus/keymap), `modal.go` (overlay stack), `mouse.go`, `scroll.go` (pure viewport math), `picker_test.go` + golden tests.
 - `ui/internal/theme/theme.go` — +3 tokens, 2 comment fixes.
 - `ui/cmd/rt-ui/main.go` — `pick` verb wiring.
-- `lib/ui/protocol.ts` — pick message types (mirrored Go structs in `ui/internal/wire/`, fixtures in `ui/fixtures/`).
+- `lib/ui/protocol.ts` — pick message types (mirrored Go structs in `ui/internal/protocol/`, fixtures in `ui/fixtures/`).
 - `lib/ui/pick.ts` (new) — spawn + stream + gates. `lib/ui/pick-fake.ts` (new, test double).
 - `lib/pick-wrappers.ts` (new) — `filterableSelect`, `filterableMultiselect`, `runNavPicker`, arg-collector picker, re-exported from their current homes so import sites don't move.
 - Rewritten in place: `lib/command-tree.ts` `showPicker`, `commands/commit.ts` picker, `commands/skills.ts` palette, `commands/nav.ts` loop (events model), `commands/cd.ts` (ctrl-r event; `formatBranchSegments` consumption), `lib/pickers.ts`.
@@ -56,7 +56,7 @@
 **Phase 7 — cutover sweep:** Task 22 (deletion inventory + rt-health/deps + test fates + docs).
 **Phase 8 — parity:** Task 23 (board-parity review + Ghostty captures + CLAUDE.md).
 
-Tasks within a phase are sequential; phases are sequential (each phase leaves the tree green — fzf paths keep working until Phase 6 flips call sites, Phase 7 deletes).
+Tasks within a phase are sequential; phases are sequential. Green-tree caveat, stated so nobody debugs it as a regression: Task 14s wrapper swap flips every filterableSelect/filterableMultiselect caller at once in Phase 5 (unit suites must stay green via the fake), and the 7 fzf-driving Termwright e2e suites go red from Phase 5 until Task 22 deletes them — expected, not a defect. Direct-spawn surfaces (commit, skills, nav, showPicker, arg-collector) stay on fzf until their own task.
 
 ---
 
@@ -103,7 +103,7 @@ func TestRankExactMode(t *testing.T) {
 
 ### Task 3: Wire protocol (TS + Go + fixtures)
 
-**Model:** sonnet; reviewer opus. **Files:** Modify `lib/ui/protocol.ts`; Create `ui/internal/wire/pick.go` (or extend the existing wire structs file — match how board messages live); Create fixtures `ui/fixtures/pick-request.json`, `pick-update.json`, `pick-modal.json`, `pick-event.json`, `pick-modal-result.json`, `pick-result.json`; extend both golden tests (`lib/ui/__tests__/protocol-golden.test.ts` pattern and the Go side) the same way board fixtures are tested.
+**Model:** sonnet; reviewer opus. **Files:** Modify `lib/ui/protocol.ts`; Create `ui/internal/protocol/pick.go` (the existing protocol package — messages discriminate on `t` and requests carry `protocol: 1`, exactly like the session/board messages; `DecodeSessionLine`-style probing applies); Create fixtures `ui/fixtures/pick-request.json`, `pick-update.json`, `pick-modal.json`, `pick-event.json`, `pick-modal-result.json`, `pick-result.json`; extend both golden tests (`lib/ui/__tests__/protocol-golden.test.ts` pattern and the Go side) the same way board fixtures are tested.
 
 **Produces (verbatim TS; Go structs mirror with json tags):**
 ```ts
@@ -111,19 +111,19 @@ export interface PickSegment { text: string; tone?: string; hex?: string; bold?:
 export interface PickRow { value: string; left: PickSegment[]; right?: PickSegment[]; match?: string; group?: string }
 export interface PickAction { id: string; label: string; key?: string; scope: "item" | "global"; group?: string; primary?: boolean }
 export interface PickRequest {
-  kind: "pick"; message: string; breadcrumb?: string[]; rows: PickRow[]; actions?: PickAction[];
+  t: "pick"; protocol: 1; message: string; breadcrumb?: string[]; rows: PickRow[]; actions?: PickAction[];
   multi?: boolean; initialValues?: string[]; initialQuery?: string; resumeValue?: string;
   exact?: boolean; cap?: number; selectedPanel?: boolean;
 }
-export interface PickUpdate { kind: "update"; rows?: PickRow[]; message?: string; actions?: PickAction[] }
-export interface PickModal { kind: "modal"; message: string; rows: PickRow[] }
-export interface PickEvent { kind: "event"; action: string; value: string | null; query: string }
-export interface PickModalResult { kind: "modal-result"; value: string | null }
-export interface PickResult { kind: "result"; action: string; value: string | null; values?: string[]; query: string }
+export interface PickUpdate { t: "update"; rows?: PickRow[]; message?: string; actions?: PickAction[] }
+export interface PickModal { t: "modal"; message: string; rows: PickRow[] }
+export interface PickEvent { t: "event"; action: string; value: string | null; query: string }
+export interface PickModalResult { t: "modal-result"; value: string | null }
+export interface PickResult { t: "result"; action: string; value: string | null; values?: string[]; query: string }
 ```
 
 - [ ] Step 1: fixtures written first (one realistic instance each — use the worktree palette rows from the Branch board); failing golden tests on both sides (TS parses fixture into the type; Go unmarshals into the struct and re-marshals byte-stably like the board fixtures do).
-- [ ] Step 2: FAIL both sides → Step 3: add types/structs → Step 4: `bun test lib/ui` + `go test ./internal/wire/...` PASS → Step 5: commit.
+- [ ] Step 2: FAIL both sides → Step 3: add types/structs → Step 4: `bun test lib/ui` + `bun run ui:test` PASS → Step 5: commit.
 
 ### Task 4: Verb scaffold (`rt-ui pick`)
 
@@ -237,7 +237,16 @@ Spawns `rt-ui pick` via the same resolution as `lib/ui/spawn.ts` (source checkou
 
 **Model:** sonnet; reviewer opus. **Files:** Create `lib/pick-wrappers.ts`; Modify `lib/fzf-select.ts` to re-export from it (spawn code deleted in Phase 7; until then the old path stays for un-migrated callers — the wrapper flip happens per call site in Phases 5-6 via the re-export switch); Test `lib/__tests__/pick-wrappers.test.ts`.
 
-Same signatures as today (spec: wrappers keep names/signatures). Translation: options→rows (`label` bold text segment + `hint` dim right? NO — hint is a second left segment per the boards' two-column look: label padded via a `minWidth` computed from the longest label, hint as dim segment; the component's segment model carries the padding as spaces in the label segment text). `backLabel` → back action + throw `BackNavigation` on `result.action==="back"`. `stderr` flag → today's semantics (all chrome already goes to the TTY; the flag only gates which stream any pre/post prints use — preserve per-call behavior). Non-TTY guard REPLICATED from today's call sites: wrappers check `interactive()` exactly where the old code did and fall through identically.
+Same signatures as today (spec: wrappers keep names/signatures), plus ONE optional trailing param shared by both:
+```ts
+export interface PickerExtras {
+  rows?: PickRow[];            // segment-form rows override options rendering (commit stats, run groups)
+  actions?: PickAction[];      // extra registry entries (ctrl-d discard, queue footers)
+  onOpen?: (h: PickHandle) => void;  // live handle for update() pushes (cd enrichment/refresh)
+  cap?: number;
+}
+```
+Surfaces use wrappers + extras; NOTHING bypasses to runPick directly except lib/command-tree.ts showPicker (T15) and commands/nav.ts (T20), which own richer flows. Translation: options→rows. Both label and hint are LEFT segments (the boards' two-column look): label as a bold segment padded to the longest label via trailing spaces in the segment text, hint as a dim segment after it. `right` stays empty for plain option callers. `backLabel` → back action + throw `BackNavigation` on `result.action==="back"`. `stderr` flag → today's semantics (all chrome already goes to the TTY; the flag only gates which stream any pre/post prints use — preserve per-call behavior). Non-TTY guard REPLICATED from today's call sites: wrappers check `interactive()` exactly where the old code did and fall through identically.
 
 - [ ] Step 1: failing tests with the fake: value returned; null on cancel; BackNavigation thrown; multi initialValues preselect passthrough; exact flag passthrough.
 - [ ] Steps 2-5: implement, PASS, commit.
@@ -252,7 +261,7 @@ showPicker: breadcrumb array passed through (component renders `rt › worktree`
 
 ### Task 16: Wrapper — `runNavPicker`
 
-**Model:** sonnet; reviewer opus. **Files:** Modify `lib/navigate.ts` (keep `NavOption`/`NavResult`/`NavPickerOpts` shapes; body now translates to `runPick`); tests.
+**Model:** sonnet; reviewer opus. **Files:** implementation lives in `lib/pick-wrappers.ts` (per the locked File Structure); `lib/navigate.ts` keeps `NavOption`/`NavResult`/`NavPickerOpts` type homes and re-exports `runNavPicker` so import sites dont move; tests.
 
 Translation table: `options` (+`separator`→`group` boundaries: a separator becomes the `group` name for subsequent rows, auto-labeled), `headerParts`→actions-derived footer (headerParts become label-only global actions so the keybar shows them; their keys parsed from the `"key: label"` strings), `expectKeys`→actions with `event:false` (exits, preserving each caller's key contract), `initialQuery`/`resumeValue`/`initialPos`, `exact`, `captureQueryOnNoMatch` (enter on no-match → result `{action:"select", value:null, query}` when set — add a `acceptNoMatch?: boolean` request flag to protocol+fixtures in this task), `colorOverrides` DROPPED (tone/hex segments supersede; delete the option and its uses). `preview`/`previewHidden`/`helpHeader`/`resizeHeaderCommand`/`watch` become no-ops here — their callers are rebuilt in Phase 6 before Phase 7 deletes the options.
 
@@ -260,13 +269,17 @@ Translation table: `options` (+`separator`→`group` boundaries: a separator bec
 
 ### Task 17: Migrate `rt commit`
 
-**Model:** sonnet. **Files:** Modify `commands/commit.ts` (delete `buildPreviewCmd`/delta plumbing; picker = `filterableMultiselect` with rows: staged marker + path left, right segments `+adds` mint / `-dels` coral / `new` faint tag from `git diff --numstat` it already computes); test with the fake.
+**Model:** sonnet. **Files:** Modify `commands/commit.ts` (delete `buildPreviewCmd`/delta plumbing), `lib/commit-ops.ts` (ADD `numstatCounts(cwd): Map<string,{adds:number;dels:number}>` — `git diff --numstat HEAD` parse; binary rows (`-`) map to 0/0); test with the fake.
+
+Picker = `filterableMultiselect` with extras.rows: staged marker + path as left segments; right segments `+adds` mint / `-dels` coral for tracked files. Untracked files get ONLY the faint `new` tag (numstat cannot report them; do not fake counts). Defaults preserved: `initialValues` = ALL files (todays load:select-all). Todays ctrl-d discard exit survives as extras.actions `{id:"discard", key:"ctrl-d", scope:"global"}` (an exit); the caller keeps the `{exitKey, paths}`-equivalent branch into the existing discard flow in lib/commit-ops.ts.
 
 - [ ] Steps: failing test (rows carry stats right-pinned; ctrl-a; selection returns paths) → implement → PASS → commit. Board: Commit.
 
 ### Task 18: Migrate `rt skills surface` palette
 
-**Model:** sonnet. **Files:** Modify `commands/skills.ts` (the direct fzf spawn → `filterableSelect`), test.
+**Model:** sonnet. **Files:** Modify `commands/skills.ts` (the direct fzf spawn → `filterableMultiselect` — the palette is a multi-TOGGLE with the public rows preselected via `initialValues`, consumed by `decidePaletteAction` as a public/internal set), test.
+
+Notes: the non-TTY fallback line drops its fzf mention (becomes `no tty -- edit one at a time: ...`; the byte-identical constraint covers gates/exit codes, and this string names a tool that no longer exists). `decidePaletteAction` stays as the seam, but its comment about fzf --multi emitting the cursor row when nothing is marked goes stale — that quirk dies with fzf, so "uncheck everything" now round-trips correctly; update the comment.
 
 - [ ] Steps: red → green → commit.
 
@@ -278,9 +291,9 @@ Translation table: `options` (+`separator`→`group` boundaries: a separator bec
 
 ### Task 20: Rebuild `rt nav` on the events model
 
-**Model:** sonnet; reviewer opus (the largest migration). **Files:** Modify `commands/nav.ts`; Modify `lib/nav-fs.ts` (delete preview/help-header builders; keep listing/sort); tests with the fake.
+**Model:** sonnet; reviewer opus (the largest migration). **Files:** Modify `commands/nav.ts`; Modify `lib/nav-fs.ts` (delete preview/help-header builders AND the deep-jump machinery the spec cut: `deepList`, `DeepListOpts`, the fd path, and their ~7 cases in `nav-fs.test.ts`; keep `listEntries`/sort); tests with the fake. There is deliberately NO ctrl-r in navs registry (deep-jump is cut; cds ctrl-r is unrelated).
 
-One `runPick` per cwd (not per interaction). Registry: enter(open — event for files, exit... NO: enter on a folder must descend = TS logic + full re-request? Descend re-lists rows for the new cwd and updates message — an EVENT (`update` rows+message), picker stays live. Enter on a file = event (`open`, returns immediately). So `enter` is `event:true`; the handler branches d:/f: values); ctrl-t event (toggle+update rows+actions with flipped label), ctrl-f event, ctrl-s event (sort modal via `handle.modal(...)`, reverse-on-reselect logic in TS, then update rows+message with sort suffix), ctrl-up event (up-dir → update; at root no-op), ctrl-h exit (cd here → prints path), ctrl-space exit (cd selected), ctrl-o exit (editor; re-invoke with resume), ctrl-k registry menu with Open with…(exit)/Quick Look(exit)/Reveal(event)/Copy path(event)/Terminal here(exit), ctrl-/ event (expanded keybar = actions update swapping to the two-line grouped registry). Watcher: `fs.watch(cwd)` → debounce 150ms → `handle.update({rows})`; closed on descend/exit. Empty dir: the inline empty-folder request per NavMenus board. stdout/stderr path discipline preserved verbatim (the `cdAndExit` dance).
+One `runPick` per cwd (not per interaction). Registry: `enter` is `event:true` for both row kinds — on a folder the handler descends by re-listing and sending one `update` (rows + message; picker stays live), on a file it spawns `open` (returns immediately); ctrl-t event (toggle+update rows+actions with flipped label), ctrl-f event, ctrl-s event (sort modal via `handle.modal(...)`, reverse-on-reselect logic in TS, then update rows+message with sort suffix), ctrl-up event (up-dir → update; at root no-op), ctrl-h exit (cd here → prints path), ctrl-space exit (cd selected), ctrl-o exit (editor; re-invoke with resume), ctrl-k registry menu with Open with…(exit)/Quick Look(exit)/Reveal(event)/Copy path(event)/Terminal here(exit), ctrl-/ event (expanded keybar = actions update swapping to the two-line grouped registry). Watcher: `fs.watch(cwd)` → debounce 150ms → `handle.update({rows})`; closed on descend/exit. Empty dir: the inline empty-folder request per NavMenus board. stdout/stderr path discipline preserved verbatim (the `cdAndExit` dance).
 
 - [ ] Step 1: failing tests: descend-updates-in-place (no respawn), ctrl-t flips rows+label, sort modal→update with suffix, watcher push, exits produce path on real stdout, Quick Look/terminal exits re-invoke with resume.
 - [ ] Steps 2-5: implement, PASS, commit. Boards: Nav, NavMenus, Actions, Mouse.
@@ -293,11 +306,16 @@ One `runPick` per cwd (not per interaction). Registry: enter(open — event for 
 
 ### Task 22: Cutover sweep (the deletion inventory)
 
-**Model:** sonnet; reviewer sonnet (mechanical but broad). **Files:** execute the spec's "Deleted at cutover" list verbatim; Modify `lib/setup/validators/rt-health.ts` (+ its test), `lib/__tests__/deps-lock-file.test.ts`, `deps-lock-live.test.ts`, `e2e/tests/verify.test.ts`, `setup.test.ts`, `e2e/interactive.ts`; Delete the 7 Termwright picker/nav suites + the listed unit tests; remove fzf from deps-lock/bundling (`scripts/` deps-lock entries, bundle layout).
+**Model:** sonnet; reviewer sonnet (mechanical but broad). **Files:** execute the specs "Deleted at cutover" list verbatim, with these plan-level rulings:
 
-- [ ] Step 1: `rg -l "fzf" lib commands scripts e2e ui --glob '!*.md'` inventory BEFORE, saved to the ledger.
-- [ ] Step 2: execute deletions/updates; the AFTER rg must show zero non-comment fzf references outside `ui/go.*` (the matcher dep) and historical docs.
-- [ ] Step 3: full gate: `bun test lib commands scripts`, `tsc --noEmit`, `picker:check`, `cd ui && go test ./...`, `bun run ui:build`.
+- `lib/fzf-select.ts` is DELETED (not kept as a shim): its surviving exports already live in `lib/pick-wrappers.ts` since Phase 5; this task repoints the ~11 `./fzf-select.ts` import sites to `lib/pick-wrappers.ts` (mechanical) and deletes the file. `lib/navigate.ts` stays as the home of `NavOption`/`NavResult`/`runNavPicker` (re-exporting from pick-wrappers where needed).
+- The fzf DEPENDENCY record is `rt-tray/deps.lock` (the 0.74.3 entry with `bundlePath: Contents/Helpers/fzf`) — remove it and its bundle-layout linkage; also `.github/workflows/e2e.yml`s `brew install fzf`, `Dockerfile.sandbox-base`s fzf install, and the fzf text in `website/docs/reference/nav.mdx`, `getting-started/install.mdx`, `reference/skills/surface.mdx`, plus `lib/command-tree-def.ts` description strings (:527, :1293, :1298 today).
+- Additional test updates beyond the specs list: DELETE `lib/__tests__/nav-watch.test.ts` (its module dies); UPDATE `lib/__tests__/no-eager-tui.test.ts`s banned-basename list (`fzf.ts`/`fzf-select.ts` → `pick-wrappers.ts` + `lib/ui/pick.ts` so the startup guard keeps covering the picker chain), `commands/__tests__/skills-surface.test.ts`, `commands/__tests__/verify-mapping.test.ts` (tool.fzf rows).
+- rt-health/deps updates per the spec (tool.fzf row, LINK_BUNDLED_FZF, rt deps entry) + their tests (`validators-rt-health.test.ts`, `deps-lock-file.test.ts`, `deps-lock-live.test.ts`).
+
+- [ ] Step 1: BEFORE inventory saved to the ledger: `rg -n --hidden -g "!node_modules" -g "!.git" -i fzf .` from the repo root (covers rt-tray, .github, Dockerfile, website).
+- [ ] Step 2: execute. AFTER criterion (scoped): zero fzf references that SPAWN, INSTALL, BUNDLE, or REQUIRE fzf. Allowed survivors: `ui/go.mod`/`go.sum` + `match.go` (the headless matcher dep), synthetic fixture names in `bundle-layout.test.ts`/`bundled-tool.test.ts`/`scripts/__tests__/deps-lock.test.ts`/`scripts/bundle-ci/__tests__/plan-matrix.test.ts`/`scripts/lib/__tests__/deps-lock-cli.test.ts` (rename the fixture tool name only if trivial), and historical docs/specs/plans.
+- [ ] Step 3: full gate: `bun test lib commands scripts`, `tsc --noEmit`, `picker:check`, `bun run docs:check`, `bun run ui:test`, `bun run ui:build`.
 - [ ] Step 4: commit.
 
 ### Task 23: Board-parity review + docs
