@@ -1,24 +1,19 @@
 #!/usr/bin/env bun
 
 /**
- * rt nav — Filesystem navigator using fzf.
+ * rt nav — Filesystem navigator.
  *
  * Browse folders and files. Selecting a folder descends into it; selecting a
  * file opens it in its default app and stays open (like a persistent Finder).
- * "→ cd here" cds to the displayed directory. esc quits.
+ * "cd here" cds to the displayed directory. esc quits.
  * ctrl-o on a folder opens it in your code editor. ctrl-up goes up a directory.
  * ctrl-k opens an action menu on the highlighted item (Open with…, Reveal in
  * Finder, Quick Look, Copy path, Open terminal here).
  *
- * Dotfiles are shown by default; ctrl-t toggles hiding them. ctrl-r toggles
- * deep-jump mode, recursively listing everything under the current directory
- * so you can filter across nested paths. ctrl-p toggles a preview pane
- * (hidden by default) showing the highlighted folder's contents or file's text.
+ * Dotfiles are shown by default; ctrl-t toggles hiding them.
  *
- * In browse mode the listing refreshes itself: files that appear or disappear
- * while the picker is open show up without leaving and re-entering. Deep-jump
- * mode stays a static snapshot. Image files preview as images when chafa (or
- * kitten, or imgcat) is installed.
+ * The listing refreshes itself: files that appear or disappear while the
+ * picker is open show up without leaving and re-entering.
  *
  * ctrl-s picks the sort order: Name (the default), Date Modified, Date Created,
  * Size, or Kind. Choosing the sort that is already active reverses it. Folders
@@ -26,18 +21,28 @@
  * the session and resets on the next run.
  *
  * Optional first arg sets the starting directory (defaults to cwd).
+ *
+ * One picker session spans the whole browse: descending into a folder,
+ * toggling hidden files, and re-sorting all re-render the same session in
+ * place rather than closing and reopening it. A session only ends when the
+ * user actually leaves nav (cd, quit) or an action needs the real terminal
+ * (an external editor, Quick Look, a spawned shell) — those close the
+ * session, run their side effect, then open a fresh one back where the user
+ * left off.
  */
 
 import { join, dirname, resolve } from "path";
-import { spawnSync } from "child_process";
+import { spawnSync as realSpawnSync } from "child_process";
 import { homedir } from "os";
-import { openDirectoryInEditor } from "./code.ts";
+import { openDirectoryInEditor as realOpenDirectoryInEditor } from "./code.ts";
 import { runNavPicker, type NavOption } from "../lib/navigate.ts";
 import {
-  listEntries, deepList, buildPreviewCommand, buildHelpHeaderCommand, renderHelpHeader,
+  listEntries, startDirWatch as realStartDirWatch,
   DEFAULT_SORT, SORT_OPTIONS, sortLabel, isDefaultSort,
   type SortState, type SortKey,
 } from "../lib/nav-fs.ts";
+import { runPick, type PickHandle } from "../lib/ui/pick.ts";
+import type { PickAction, PickEvent, PickRow } from "../lib/ui/protocol.ts";
 
 function tildeify(p: string): string {
   const home = homedir();
@@ -48,7 +53,116 @@ function tildeify(p: string): string {
 
 type ItemKind = "file" | "folder";
 
-async function pickOpenWith(target: string, kind: ItemKind): Promise<boolean> {
+/** Sentinel row value for the empty-directory notice (see buildRows). */
+const EMPTY_VALUE = "__empty__";
+
+/** Injectable side effects, so tests never spawn real processes or poll the real filesystem. */
+export interface NavDeps {
+  spawnSync: typeof realSpawnSync;
+  startDirWatch: typeof realStartDirWatch;
+  openDirectoryInEditor: (dirPath: string) => Promise<void>;
+}
+
+const defaultDeps: NavDeps = {
+  spawnSync: realSpawnSync,
+  startDirWatch: realStartDirWatch,
+  openDirectoryInEditor: realOpenDirectoryInEditor,
+};
+
+// ─── Rows / actions ──────────────────────────────────────────────────────────
+
+// Nerd Font nf-fa-folder (U+F07B): terminals with the font render a proper
+// folder glyph; others fall back to whatever their own font stack
+// substitutes. No emoji, matching the picker's visual language elsewhere.
+const FOLDER_GLYPH = "\uf07b";
+
+function folderRow(name: string): PickRow {
+  return { value: "d:" + name, left: [{ text: `${FOLDER_GLYPH} `, tone: "cyan" }, { text: name, bold: true }] };
+}
+
+function fileRow(name: string): PickRow {
+  return { value: "f:" + name, left: [{ text: name }] };
+}
+
+function emptyRow(): PickRow {
+  return { value: EMPTY_VALUE, left: [{ text: "empty folder", tone: "faint" }] };
+}
+
+function buildRows(cwd: string, showHidden: boolean, sort: SortState): { rows: PickRow[]; empty: boolean } {
+  const { folders, files } = listEntries(cwd, showHidden, sort);
+  if (folders.length === 0 && files.length === 0) {
+    return { rows: [emptyRow()], empty: true };
+  }
+  return { rows: [...folders.map(folderRow), ...files.map(fileRow)], empty: false };
+}
+
+function headerMessage(cwd: string, sort: SortState): string {
+  return tildeify(cwd) + (isDefaultSort(sort) ? "" : ` (${sortLabel(sort)})`);
+}
+
+/**
+ * The registry for the current cwd. Deliberately rebuilt (not patched) on
+ * every rows update: the empty-directory state binds "enter" to a different,
+ * terminal action than normal browsing does, so the two action sets can never
+ * be allowed to drift out of sync with which row set is on screen.
+ */
+function buildActions(empty: boolean, opts: { showHidden: boolean; expanded: boolean }): PickAction[] {
+  const hiddenLabel = opts.showHidden ? "hide hidden" : "show hidden";
+
+  if (empty) {
+    return [
+      { id: "cd-here", label: "cd here", key: "enter", scope: "item", primary: true, group: "nav" },
+      { id: "up", label: "up", key: "ctrl-up", scope: "global", event: true, group: "nav" },
+      { id: "toggle-hidden", label: hiddenLabel, key: "ctrl-t", scope: "global", event: true, group: "view" },
+    ];
+  }
+
+  return [
+    { id: "open", label: "open", key: "enter", scope: "item", primary: true, event: true, group: "nav" },
+    { id: "cd-selected", label: "cd selected", key: "ctrl-space", scope: "item", group: "nav" },
+    { id: "cd-here", label: "cd here", key: "ctrl-h", scope: "global", group: "nav" },
+    { id: "up", label: "up", key: "ctrl-up", scope: "global", event: true, group: "nav" },
+    { id: "editor", label: "open in editor", key: "ctrl-o", scope: "item", group: "act" },
+    { id: "finder", label: "finder", key: "ctrl-f", scope: "global", event: true, group: "act" },
+    // No key: ctrl-k / right-click menu only.
+    { id: "open-with", label: "open with…", scope: "item", group: "act" },
+    { id: "quicklook", label: "quick look", scope: "item", group: "act" },
+    { id: "reveal", label: "reveal in finder", scope: "item", event: true, group: "act" },
+    { id: "copy-path", label: "copy path", scope: "item", event: true, group: "act" },
+    { id: "terminal", label: "open terminal here", scope: "item", group: "act" },
+    { id: "toggle-hidden", label: hiddenLabel, key: "ctrl-t", scope: "global", event: true, group: "view" },
+    { id: "sort", label: "sort", key: "ctrl-s", scope: "global", event: true, group: "view" },
+    { id: "expand", label: opts.expanded ? "less" : "commands", key: "ctrl-/", scope: "global", event: true, group: "view" },
+  ];
+}
+
+// ─── Sort modal ──────────────────────────────────────────────────────────────
+
+function sortModalRows(current: SortState): PickRow[] {
+  return SORT_OPTIONS.map((o) => {
+    const active = o.key === current.key;
+    return {
+      value: o.key,
+      left: [
+        { text: active ? "● " : "  ", ...(active ? { tone: "mint" } : {}) },
+        { text: o.label, bold: active, tone: active ? "text" : "textsoft" },
+      ],
+      right: [{ text: active ? `${current.reverse ? o.reversed : o.forward}  (select to reverse)` : o.forward, tone: "dim" }],
+    };
+  });
+}
+
+/** Choosing the already-active sort reverses it, matching what clicking a Finder column header does. */
+async function runSortModal(handle: PickHandle, current: SortState): Promise<SortState> {
+  const choice = await handle.modal("Sort by", sortModalRows(current));
+  if (!choice) return current;
+  const key = choice as SortKey;
+  return key === current.key ? { key, reverse: !current.reverse } : { key, reverse: false };
+}
+
+// ─── Open with… (ctrl-k, needs the real terminal) ───────────────────────────
+
+async function pickOpenWith(target: string, kind: ItemKind, deps: NavDeps): Promise<boolean> {
   const name = target.split("/").pop() || target;
   const defaultLabel = kind === "folder" ? "Finder" : "Default app";
   const options: NavOption[] = [
@@ -60,119 +174,204 @@ async function pickOpenWith(target: string, kind: ItemKind): Promise<boolean> {
   const result = await runNavPicker({
     options, message: `Open ${name} with`, header: "esc: cancel", expectKeys: [],
   });
-  // ctrl-up is always in fzf's --expect (it means "back" everywhere in rt) —
+  // ctrl-up is always in the expect set and means "back" everywhere in rt —
   // treat it as cancel here, not as accepting the highlighted row.
   if (!result || !result.value || result.key === "ctrl-up") return false;
-  const app = result.value;
-
-  spawnSync(app, [target], { stdio: "inherit" });
+  deps.spawnSync(result.value, [target], { stdio: "inherit" });
   return true;
 }
 
-async function runActionMenu(target: string, kind: ItemKind): Promise<{ exit: boolean }> {
-  const name = target.split("/").pop() || target;
-  const options: NavOption[] = [
-    { value: "open-with", label: "Open with…", hint: "" },
-    { value: "reveal", label: "Reveal in Finder", hint: kind === "file" ? "open -R" : "open" },
-    ...(kind === "file"
-      ? [{ value: "quicklook", label: "Quick Look", hint: "qlmanage -p" }]
-      : []),
-    { value: "copy-path", label: "Copy path", hint: "pbcopy" },
-    ...(kind === "folder"
-      ? [{ value: "terminal", label: "Open terminal here", hint: "$SHELL" }]
-      : []),
-  ];
+// ─── One browse session (one runPick call) ──────────────────────────────────
 
-  const result = await runNavPicker({
-    options, message: `Actions for ${name}`, header: "esc: cancel", expectKeys: [],
-  });
-  // ctrl-up means "back", not "run the highlighted action" (see pickOpenWith).
-  if (!result || result.key === "ctrl-up") return { exit: false };
-  const { value: action } = result;
+type SessionOutcome =
+  | { type: "cd"; path: string }
+  | { type: "quit" }
+  | { type: "resume"; cwd: string; showHidden: boolean; sort: SortState; resumeValue?: string; initialQuery?: string };
 
-  switch (action) {
-    case "open-with":
-      return { exit: await pickOpenWith(target, kind) };
+interface SessionState {
+  cwd: string;
+  showHidden: boolean;
+  sort: SortState;
+  resumeValue?: string;
+  initialQuery?: string;
+}
 
-    case "reveal":
-      spawnSync("open", kind === "file" ? ["-R", target] : [target], { stdio: "inherit" });
-      return { exit: false };
+/** "d:name" / "f:name" -> the absolute path and its kind. */
+function targetOf(cwd: string, value: string): { kind: ItemKind; target: string } {
+  return { kind: value[0] === "d" ? "folder" : "file", target: join(cwd, value.slice(2)) };
+}
 
-    case "quicklook": {
-      // qlmanage blocks until the preview window is dismissed, and fzf has
-      // already torn down by the time it runs, so without this line the
-      // terminal just sits empty with nothing to explain the wait. Discarding
-      // every stream on top of that made a real failure look exactly like
-      // success: a blank screen either way.
-      console.error(`  Quick Look: ${name}  (close the preview to return)`);
-      const r = spawnSync("qlmanage", ["-p", target], {
-        stdio: ["ignore", "pipe", "pipe"],
-        encoding: "utf8",
-      });
-      // status is null when the user closes the window, which is the normal exit.
-      if (r.error || (r.status !== null && r.status !== 0)) {
-        const detail =
-          r.error?.message ?? (r.stderr || r.stdout || "").trim() ?? "";
-        console.error(
-          `  Quick Look failed${detail ? `: ${detail.split("\n")[0]}` : ` (exit ${r.status})`}`,
-        );
+async function runNavSession(state: SessionState, deps: NavDeps): Promise<SessionOutcome> {
+  let { cwd, showHidden, sort } = state;
+  let expanded = false;
+  let empty = false;
+  // A ref object, not a bare `let`: the watcher is only ever assigned from
+  // inside rearmWatch's closure, and TS won't carry that assignment's
+  // narrowing back out to the read at session end otherwise.
+  const watcherRef: { current: { stop(): void } | null } = { current: null };
+
+  const pushRows = (handle: PickHandle) => {
+    const built = buildRows(cwd, showHidden, sort);
+    empty = built.empty;
+    handle.update({ rows: built.rows, message: headerMessage(cwd, sort), actions: buildActions(empty, { showHidden, expanded }) });
+  };
+
+  const rearmWatch = (handle: PickHandle) => {
+    watcherRef.current?.stop();
+    watcherRef.current = deps.startDirWatch({ dir: cwd, onChange: () => pushRows(handle) });
+  };
+
+  const initial = buildRows(cwd, showHidden, sort);
+  empty = initial.empty;
+
+  const handle = runPick(
+    {
+      message: headerMessage(cwd, sort),
+      rows: initial.rows,
+      actions: buildActions(empty, { showHidden, expanded }),
+      ...(state.resumeValue ? { resumeValue: state.resumeValue } : {}),
+      ...(state.initialQuery ? { initialQuery: state.initialQuery } : {}),
+    },
+    { onEvent: (evt) => handleEvent(evt) },
+  );
+
+  async function handleEvent(evt: PickEvent): Promise<void> {
+    switch (evt.action) {
+      case "open": {
+        if (!evt.value) return;
+        const { kind, target } = targetOf(cwd, evt.value);
+        if (kind === "folder") {
+          cwd = target;
+          pushRows(handle);
+          rearmWatch(handle);
+        } else {
+          // Returns immediately; browsing continues.
+          deps.spawnSync("open", [target], { stdio: "ignore" });
+        }
+        return;
       }
-      return { exit: false };
-    }
-
-    case "copy-path":
-      spawnSync("pbcopy", [], { input: target });
-      console.error(`  copied: ${target}`);
-      return { exit: false };
-
-    case "terminal": {
-      const shell = process.env.SHELL || "/bin/zsh";
-      spawnSync(shell, [], { cwd: target, stdio: "inherit" });
-      return { exit: true };
+      case "up": {
+        if (cwd !== "/") {
+          cwd = dirname(cwd);
+          pushRows(handle);
+          rearmWatch(handle);
+        }
+        return;
+      }
+      case "toggle-hidden": {
+        showHidden = !showHidden;
+        pushRows(handle);
+        return;
+      }
+      case "sort": {
+        sort = await runSortModal(handle, sort);
+        pushRows(handle);
+        return;
+      }
+      case "finder": {
+        deps.spawnSync("open", [cwd], { stdio: "ignore" });
+        return;
+      }
+      case "reveal": {
+        if (!evt.value || evt.value === EMPTY_VALUE) return;
+        const { kind, target } = targetOf(cwd, evt.value);
+        deps.spawnSync("open", kind === "file" ? ["-R", target] : [target], { stdio: "ignore" });
+        return;
+      }
+      case "copy-path": {
+        if (!evt.value || evt.value === EMPTY_VALUE) return;
+        const { target } = targetOf(cwd, evt.value);
+        deps.spawnSync("pbcopy", [], { input: target });
+        return;
+      }
+      case "expand": {
+        expanded = !expanded;
+        handle.update({ actions: buildActions(empty, { showHidden, expanded }) });
+        return;
+      }
     }
   }
-  return { exit: false };
+
+  rearmWatch(handle);
+
+  const result = await handle.result;
+  watcherRef.current?.stop();
+
+  switch (result.action) {
+    case "cd-here":
+      return { type: "cd", path: cwd };
+
+    case "cd-selected": {
+      if (!result.value || result.value === EMPTY_VALUE) return { type: "cd", path: cwd };
+      const { kind, target } = targetOf(cwd, result.value);
+      return { type: "cd", path: kind === "folder" ? target : dirname(target) };
+    }
+
+    case "editor": {
+      if (result.value) {
+        const { kind, target } = targetOf(cwd, result.value);
+        if (kind === "folder") {
+          await deps.openDirectoryInEditor(target);
+        } else {
+          // ctrl-o on a file has no editor-specific meaning; opening it with
+          // its default app matches what enter would have done.
+          deps.spawnSync("open", [target], { stdio: "ignore" });
+        }
+      }
+      return { type: "resume", cwd, showHidden, sort, resumeValue: result.value ?? undefined, initialQuery: result.query || undefined };
+    }
+
+    case "quicklook": {
+      if (result.value) {
+        const { target } = targetOf(cwd, result.value);
+        const name = target.split("/").pop() || target;
+        // qlmanage blocks until the preview window is dismissed, and the
+        // picker has already torn down by the time it runs, so without this
+        // line the terminal just sits empty with nothing to explain the wait.
+        console.error(`  Quick Look: ${name}  (close the preview to return)`);
+        const r = deps.spawnSync("qlmanage", ["-p", target], {
+          stdio: ["ignore", "pipe", "pipe"],
+          encoding: "utf8",
+        });
+        if (r.error || (r.status !== null && r.status !== 0)) {
+          const detail = r.error?.message ?? (r.stderr || r.stdout || "").trim() ?? "";
+          console.error(`  Quick Look failed${detail ? `: ${detail.split("\n")[0]}` : ` (exit ${r.status})`}`);
+        }
+      }
+      return { type: "resume", cwd, showHidden, sort, resumeValue: result.value ?? undefined, initialQuery: result.query || undefined };
+    }
+
+    case "terminal": {
+      if (result.value) {
+        const { kind, target } = targetOf(cwd, result.value);
+        const shellCwd = kind === "folder" ? target : dirname(target);
+        const shell = process.env.SHELL || "/bin/zsh";
+        deps.spawnSync(shell, [], { cwd: shellCwd, stdio: "inherit" });
+      }
+      return { type: "quit" };
+    }
+
+    case "open-with": {
+      if (!result.value) return { type: "quit" };
+      const { kind, target } = targetOf(cwd, result.value);
+      const launched = await pickOpenWith(target, kind, deps);
+      if (launched) return { type: "quit" };
+      return { type: "resume", cwd, showHidden, sort, resumeValue: result.value, initialQuery: result.query || undefined };
+    }
+
+    default:
+      // "cancel" (esc), or anything else Go's own fallback might produce.
+      return { type: "quit" };
+  }
 }
 
-/**
- * Sort menu, opened with ctrl-s.
- *
- * A menu rather than a cycling key so the options stay named and discoverable,
- * and so the active one and its direction are visible. Choosing the sort that
- * is already active reverses it, which is what clicking a Finder column header
- * does. Cancelling returns the current sort unchanged.
- */
-async function runSortMenu(current: SortState): Promise<SortState> {
-  const options: NavOption[] = SORT_OPTIONS.map((o) => {
-    const active = o.key === current.key;
-    return {
-      value: o.key,
-      label: (active ? "● " : "  ") + o.label,
-      hint: active
-        ? `${current.reverse ? o.reversed : o.forward}  (select to reverse)`
-        : o.forward,
-    };
-  });
+// ─── Entry ───────────────────────────────────────────────────────────────────
 
-  const result = await runNavPicker({
-    options,
-    message: "Sort by",
-    header: "enter: apply  esc: cancel",
-    expectKeys: [],
-    resumeValue: current.key,
-  });
-  // ctrl-up is always in fzf's --expect and means "back" everywhere in rt, so
-  // treat it as cancel rather than as accepting the highlighted row.
-  if (!result || !result.value || result.key === "ctrl-up") return current;
+export async function navigate(args: string[], depsOverride: Partial<NavDeps> = {}): Promise<void> {
+  const deps: NavDeps = { ...defaultDeps, ...depsOverride };
 
-  const key = result.value as SortKey;
-  return key === current.key
-    ? { key, reverse: !current.reverse }
-    : { key, reverse: false };
-}
-
-export async function navigate(args: string[]): Promise<void> {
-  // Redirect stdout → stderr so TUI output doesn't contaminate the path output
+  // Redirect stdout → stderr so the picker's own chrome never contaminates
+  // the path output a shell wrapper reads.
   const realStdoutWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
 
@@ -181,215 +380,19 @@ export async function navigate(args: string[]): Promise<void> {
     realStdoutWrite(path + "\n");
   };
 
-  let cwd = resolve(args[0] ?? process.cwd());
-  let showHidden = true;
-  let deepMode = false;
-  // ctrl-p round-trips (rather than fzf's internal toggle-preview) so this
-  // state survives navigation and the help layout can use the real width.
-  let previewOn = false;
-  // Session state like showHidden: survives descending into directories, resets
-  // next time you run rt nav.
-  let sort: SortState = { ...DEFAULT_SORT };
-  // Preserved across ctrl-k/ctrl-t/ctrl-f round trips so the user's filter and
-  // cursor position survive. Reset on any cwd-changing navigation.
-  let resumeQuery = "";
-  let resumeValue = "";
+  let state: SessionState = {
+    cwd: resolve(args[0] ?? process.cwd()),
+    showHidden: true,
+    sort: { ...DEFAULT_SORT },
+  };
 
   while (true) {
-    const atRoot = cwd === "/";
-    // Shared by the initial render and by the live-refresh watcher, so the two
-    // cannot drift apart.
-    const buildOptions = (): NavOption[] => {
-      const { folders, files } = deepMode
-        ? deepList(cwd, { showHidden, sort })
-        : listEntries(cwd, showHidden, sort);
-      return [
-        ...folders.map((name) => ({ value: "d:" + name, label: "📁 " + name, hint: "" })),
-        ...files.map((name) => ({ value: "f:" + name, label: name, hint: "" })),
-      ];
-    };
-    const options: NavOption[] = buildOptions();
-
-    const hiddenHint = showHidden ? "ctrl-t: hide hidden" : "ctrl-t: show hidden";
-
-    if (options.length === 0) {
-      // Deep mode with zero results (everything ignored/hidden): fall back to
-      // browse mode rather than rendering an empty picker.
-      if (deepMode) {
-        deepMode = false;
-        continue;
-      }
-      // Empty directory: nothing to descend into. Instead of dead-ending
-      // (which would print no path and leave the shell wrapper with nowhere
-      // to cd), surface a notice so the user can land here or back out.
-      const result = await runNavPicker({
-        options: [{ value: "__cd_here__", label: "📭 empty folder", hint: "" }],
-        message: tildeify(cwd),
-        header: `enter: cd here  ctrl-up: up  ${hiddenHint}  esc: cancel`,
-        expectKeys: ["ctrl-t"],
-      });
-      if (!result) return; // esc
-      const { value: choice, key } = result;
-      if (key === "ctrl-up") {
-        if (!atRoot) cwd = dirname(cwd);
-        continue;
-      }
-      if (key === "ctrl-t") {
-        showHidden = !showHidden;
-        continue;
-      }
-      if (choice === null) return; // esc — cancel without cd
-      cdAndExit(cwd); // enter on the notice → cd into this (empty) directory
+    const outcome = await runNavSession(state, deps);
+    if (outcome.type === "cd") {
+      cdAndExit(outcome.path);
       return;
     }
-
-    const modeHint = deepMode ? "ctrl-r: browse" : "ctrl-r: deep jump";
-    const upHint = deepMode ? "ctrl-up: browse" : "ctrl-up: up";
-    // Revealed by ctrl-/. Laid out by buildHelpHeaderCommand — run once here
-    // for the initial header, and re-run by fzf on terminal resize.
-    const helpHints = [
-      "enter: open", "ctrl-space: cd selected", "ctrl-h: cd here", upHint, "esc: quit",
-      "ctrl-k: actions", "ctrl-o: editor", "ctrl-f: finder", modeHint, hiddenHint,
-      previewOn ? "ctrl-p: hide preview" : "ctrl-p: preview", "ctrl-s: sort",
-    ];
-    const helpCommand = buildHelpHeaderCommand(helpHints, previewOn);
-    const helpHeader = renderHelpHeader(helpCommand, process.stderr.columns || 80);
-    const result = await runNavPicker({
-      options,
-      message:
-        tildeify(cwd) +
-        (deepMode ? " (deep)" : "") +
-        (isDefaultSort(sort) ? "" : ` (${sortLabel(sort)})`),
-      helpHeader,
-      resizeHeaderCommand: helpCommand,
-      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t", "ctrl-p", "ctrl-s"],
-      initialQuery: resumeQuery,
-      resumeValue: resumeValue || undefined,
-      preview: buildPreviewCommand(cwd),
-      previewHidden: !previewOn,
-      // Browse mode only. Deep mode re-runs fd over the whole tree, so watching
-      // it would mean a recursive watch plus a full rescan per event.
-      watch: deepMode ? undefined : { dir: cwd, render: buildOptions },
-    });
-    if (!result) return;
-    const { value: choice, key, query } = result;
-
-    // Clear resume state by default; round-trip branches re-set it below.
-    resumeQuery = "";
-    resumeValue = "";
-
-    // ctrl-t: toggle hidden files, preserving filter (cursor value may vanish
-    // from the new list — findResumePosition returns null and that's fine)
-    if (key === "ctrl-t") {
-      showHidden = !showHidden;
-      resumeQuery = query;
-      resumeValue = choice ?? "";
-      continue;
-    }
-
-    // ctrl-p: toggle the preview pane, preserving filter and cursor
-    if (key === "ctrl-p") {
-      previewOn = !previewOn;
-      resumeQuery = query;
-      resumeValue = choice ?? "";
-      continue;
-    }
-
-    // ctrl-s: pick a sort order. Keeps the filter and cursor, since the same
-    // entries are still listed, only reordered.
-    if (key === "ctrl-s") {
-      sort = await runSortMenu(sort);
-      resumeQuery = query;
-      resumeValue = choice ?? "";
-      continue;
-    }
-
-    // ctrl-r: toggle deep-jump mode. Keep the typed filter (likely still
-    // relevant) but not the cursor value (row set changes entirely).
-    if (key === "ctrl-r") {
-      deepMode = !deepMode;
-      resumeQuery = query;
-      continue;
-    }
-
-    // ctrl-k: open action menu on highlighted item (skip on empty rows)
-    if (key === "ctrl-k") {
-      if (choice === null) {
-        resumeQuery = query;
-        resumeValue = "";
-        continue;
-      }
-      const kind: ItemKind = choice[0] === "d" ? "folder" : "file";
-      const target = join(cwd, choice.slice(2));
-      const { exit } = await runActionMenu(target, kind);
-      if (exit) return;
-      resumeQuery = query;
-      resumeValue = choice;
-      continue;
-    }
-
-    // ctrl-up: in deep mode, back to browse; otherwise go up a directory
-    if (key === "ctrl-up") {
-      if (deepMode) {
-        deepMode = false;
-      } else if (!atRoot) {
-        cwd = dirname(cwd);
-      }
-      continue;
-    }
-
-    // ctrl-h: cd to the currently displayed directory
-    if (key === "ctrl-h") {
-      cdAndExit(cwd);
-      return;
-    }
-
-    // ctrl-f: open current directory in Finder
-    if (key === "ctrl-f") {
-      spawnSync("open", [cwd], { stdio: "inherit" });
-      resumeQuery = query;
-      resumeValue = choice ?? "";
-      continue;
-    }
-
-    if (choice === null) return;
-
-    const kind = choice[0];
-    const name = choice.slice(2);
-    const target = join(cwd, name);
-
-    if (kind === "d") {
-      if (key === "ctrl-space") {
-        cdAndExit(target);
-        return;
-      }
-      if (key === "ctrl-o") {
-        await openDirectoryInEditor(target);
-        resumeQuery = query;
-        resumeValue = choice;
-        continue;
-      }
-      // Descending always lands in browse mode: deep jump is a travel
-      // accelerator, not a permanent view.
-      cwd = target;
-      deepMode = false;
-      continue;
-    }
-
-    // File: ctrl-space cds to its containing directory (== cwd in browse
-    // mode; the parent of a nested match in deep mode)
-    if (key === "ctrl-space") {
-      cdAndExit(dirname(target));
-      return;
-    }
-
-    // Opening a file is a round trip like ctrl-k or ctrl-f, not navigation:
-    // the same directory is still listed afterwards, so keep the filter and
-    // put the cursor back on the file that was just opened rather than
-    // dropping it to the top of the list.
-    spawnSync("open", [target], { stdio: "inherit" });
-    resumeQuery = query;
-    resumeValue = choice;
-    continue;
+    if (outcome.type === "quit") return;
+    state = outcome;
   }
 }
