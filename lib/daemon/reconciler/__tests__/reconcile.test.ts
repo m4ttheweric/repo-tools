@@ -7,7 +7,7 @@ import type { Logger } from "pino";
 import { closeStateDb } from "../../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../../worktree/registry.ts";
 import { healLegacyPoolRoots, reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
-import { legacyWorktreePoolRoot, worktreePoolRoot } from "../../../rt-paths.ts";
+import { legacyWorktreePoolRoots, worktreePoolRoot } from "../../../rt-paths.ts";
 
 function fakeLog(): Logger {
   return { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as Logger;
@@ -102,12 +102,13 @@ describe("reconcile.ts: healLegacyPoolRoots (RT-95)", () => {
   }
 
   test("flips only on-deck trees under the legacy colon root to disposable", () => {
-    const legacy = legacyWorktreePoolRoot(identity);
+    const [colonRoot, pctRoot] = legacyWorktreePoolRoots(identity);
     const current = worktreePoolRoot(identity);
     const events: Array<{ type: string; data: any }> = [];
     saveRegistry(identity, [
-      seed("on-deck", legacy, "fred"),
-      seed("claimed", legacy, "snape"),
+      seed("on-deck", colonRoot!, "fred"),
+      seed("on-deck", pctRoot!, "bill"),
+      seed("claimed", colonRoot!, "snape"),
       seed("on-deck", current, "tonks"),
     ]);
 
@@ -117,14 +118,15 @@ describe("reconcile.ts: healLegacyPoolRoots (RT-95)", () => {
     const byName = Object.fromEntries(trees.map((t) => [t.name, t]));
     expect(byName.fred!.state).toBe("disposable");
     expect(byName.fred!.disposableReason).toContain("legacy pool root");
+    expect(byName.bill!.state).toBe("disposable");
     expect(byName.snape!.state).toBe("claimed");
     expect(byName.tonks!.state).toBe("on-deck");
-    expect(events.filter((e) => e.type === "worktree:disposable").length).toBe(1);
+    expect(events.filter((e) => e.type === "worktree:disposable").length).toBe(2);
   });
 
   test("second run is a no-op", () => {
-    const legacy = legacyWorktreePoolRoot(identity);
-    saveRegistry(identity, [seed("on-deck", legacy, "fred")]);
+    const [colonRoot] = legacyWorktreePoolRoots(identity);
+    saveRegistry(identity, [seed("on-deck", colonRoot!, "fred")]);
     healLegacyPoolRoots({ repoName: identity, emit: () => {}, log: fakeLog() });
     const events: unknown[] = [];
     healLegacyPoolRoots({ repoName: identity, emit: (t) => events.push(t), log: fakeLog() });

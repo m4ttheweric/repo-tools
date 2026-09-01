@@ -10,6 +10,7 @@
 
 import { isAbsolute, join, relative, resolve } from "path";
 import type { Logger } from "pino";
+import { legacyWorktreePoolRoots } from "../rt-paths.ts";
 import { loadRegistry } from "../worktree/registry.ts";
 import { MR_TERMINAL_STATES } from "../enrich.ts";
 import { ensureWorktreeRegistryRekeyed } from "../repo-index.ts";
@@ -119,7 +120,7 @@ function isRootAnAncestorOfRepo(repoPath: string, root: string): boolean {
 async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Logger }): Promise<void> {
   const { repoName, repoPath, log } = deps;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  const roots = [join(repoPath, ".worktrees")];
+  const roots = [join(repoPath, ".worktrees"), ...legacyWorktreePoolRoots(repoName)];
   if (isRootAnAncestorOfRepo(repoPath, cfg.root)) {
     log.warn({ repo: repoName, root: cfg.root, repoPath }, "worktree trash sweep refused a configured root that is an ancestor of the repo");
   } else {

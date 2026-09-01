@@ -10,6 +10,7 @@
  */
 
 import { cpSync, existsSync } from "fs";
+import { legacyWorktreePoolRoots } from "../rt-paths.ts";
 import { readdir } from "fs/promises";
 import { join } from "path";
 import { loadRegistry, saveRegistry, type TreeRecord } from "./registry.ts";
@@ -62,8 +63,12 @@ export interface RestorableEntry {
  * dispose time (trash.ts retireTree), so both must be searched... there is
  * no migration step that moves an old entry when the config changes.
  */
-function retentionRootsFor(repoPath: string, cfg: WorktreeRepoConfig): string[] {
-  return [retainedTrashRoot(join(repoPath, ".worktrees")), retainedTrashRoot(cfg.root)];
+function retentionRootsFor(repoName: string, repoPath: string, cfg: WorktreeRepoConfig): string[] {
+  return [
+    retainedTrashRoot(join(repoPath, ".worktrees")),
+    retainedTrashRoot(cfg.root),
+    ...legacyWorktreePoolRoots(repoName).map((root) => retainedTrashRoot(root)),
+  ];
 }
 
 interface FoundEntry {
@@ -104,7 +109,7 @@ async function findRetainedEntry(roots: string[], treeName: string): Promise<Fou
  */
 export async function listRestorableEntries(repoName: string, repoPath: string): Promise<RestorableEntry[]> {
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  const roots = retentionRootsFor(repoPath, cfg);
+  const roots = retentionRootsFor(repoName, repoPath, cfg);
   const out: RestorableEntry[] = [];
   for (const root of new Set(roots)) {
     let entries: string[];
@@ -211,7 +216,7 @@ async function copyRetainedContent(entryPath: string, destPath: string): Promise
 export async function restoreTree(deps: RestoreDeps, treeName: string): Promise<RestoreResult> {
   const { repoName, repoPath, emit, log } = deps;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
-  const roots = retentionRootsFor(repoPath, cfg);
+  const roots = retentionRootsFor(repoName, repoPath, cfg);
 
   const found = await findRetainedEntry(roots, treeName);
   if (!found) return { ok: false, reason: "not-found" };
