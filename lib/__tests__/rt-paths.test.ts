@@ -567,6 +567,19 @@ describe("worktreePoolRoot (friendly PATH-safe identity segment)", () => {
     expect(root.includes(":")).toBe(false);
   });
 
+  test("segments are percent-free and colon-free: colons split PATH, %2F breaks node's ESM loader, %25 breaks import.meta.url pathname", () => {
+    for (const wire of [
+      "remote:github.com%2Facme%2Frepo",
+      "remote:gitlab.example.com%3A8443%2Fteam%2Fsub%2Frepo",
+      "path:%2FUsers%2Fdev%2Fscratch",
+      "not-a-wire-with-%25-junk",
+    ]) {
+      const root = worktreePoolRoot(wire);
+      expect(root.includes(":")).toBe(false);
+      expect(root.includes("%")).toBe(false);
+    }
+  });
+
   test("path-kind identity becomes local-<basename>-<hash>, distinct paths never collide", () => {
     const a = basename(worktreePoolRoot("path:%2FUsers%2Fdev%2Fscratch"));
     const b = basename(worktreePoolRoot("path:%2Ftmp%2Fscratch"));
