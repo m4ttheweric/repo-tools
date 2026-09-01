@@ -65,6 +65,21 @@ jobs:
           gh repo clone "$APP_REPO" app -- --depth 1 --branch main
           SOURCE_SHA=$(git -C app rev-parse HEAD)
           echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+      # Some apps depend on private @mattstack packages, which bun cannot
+      # resolve without a token: the failure is a bare 404 that reads like a
+      # missing package rather than a missing credential. The token is
+      # deliberately READ-only and org-scoped, because the recipe this job
+      # runs next can read the file it is written to.
+      - name: Authenticate npm for private packages
+        env:
+          NPM_READ_TOKEN: ${{ secrets.NPM_READ_TOKEN }}
+        run: |
+          if [ -z "$NPM_READ_TOKEN" ]; then
+            echo "::warning::NPM_READ_TOKEN is not set; an app with private deps will fail to install"
+            exit 0
+          fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_READ_TOKEN" >> "$HOME/.npmrc"
+          chmod 600 "$HOME/.npmrc"
       - name: Read and validate bundle recipe
         run: |
           bun scripts/bundle-ci/validate-manifest.ts app/mattstack.deck.json > recipe.json

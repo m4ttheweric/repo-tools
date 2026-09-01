@@ -181,9 +181,17 @@ copies the checkout's `skills/` whole to `Contents/Helpers/skills/rt/`,
 including `skills/.skillsignore`, the file `rt skills link` reads to keep
 maintainer-only skills off user machines.
 
-Manual precondition, once: a fine-grained org PAT with contents read+write
-on the m4ttstack app repos and contents write plus pull-requests write on repo-tools,
-stored as the `MATTSTACK_RELEASE_TOKEN` Actions secret on repo-tools.
+Manual preconditions, once, both Actions secrets on repo-tools:
+
+- `MATTSTACK_RELEASE_TOKEN` ... a fine-grained org PAT with contents
+  read+write on the m4ttstack app repos and contents write plus
+  pull-requests write on repo-tools.
+- `NPM_READ_TOKEN` ... an npm token with READ access to the private
+  `@mattstack` org packages (deck and board depend on `@mattstack/tui-kit`,
+  published private). Read-only on purpose: the build job writes it to
+  `~/.npmrc` and then runs the app's own build recipe, which can read that
+  file. Without it those apps fail with a bare `404` on the package, which
+  reads like a missing package rather than a missing credential.
 
 Recovery: a release that published but whose PR step failed is durable and
 safe... re-run the pr job, or hand-edit deps.lock from the url and sha in
