@@ -504,10 +504,7 @@ export function createChatDeliverySweep(opts: {
       } catch (err) {
         // One target's delivery throwing (a programming error, a DB hiccup)
         // must not abort the rest of this tick's targets.
-        const { crossedCeiling, count } = recordSweepFailure(failureCounts, key, entry, target, tick, maxConsecutiveFailures);
-        if (crossedCeiling) {
-          log.warn({ recipient: target.handle, room: target.room, consecutiveFailures: count }, "chat: sweep pair crossed its consecutive-failure ceiling; backing off, never permanently stopping");
-        }
+        noteFailure();
         log.warn({ err, recipient: target.handle, room: target.room }, "chat: sweep delivery threw; continuing with the remaining targets");
       }
     }
