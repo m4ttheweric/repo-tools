@@ -544,7 +544,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `lib/runs/__tests__/write.test.ts` (append)
 
 **Interfaces:**
-- Consumes: `packProvenance`, `composePackCommits` (Task 2); `recordIdentity` (Task 3); `isPathComponent` from `store.ts`.
+- Consumes: `packProvenance`, `composePackCommits` (Task 2); `recordIdentity` (Task 3); `isPathComponent` from `paths.ts` (Task 1).
 - Produces:
 
 ```ts
@@ -1826,7 +1826,7 @@ and data to the run DB through `rt runs`. The contract:
   four calls below are unconditional.
 ```
 
-Re-run both greps: the only remaining hits are the work engine's export line (next step) and the files this task deletes.
+Re-run both greps: the only remaining hits are the work engine's export line and allowed-tools line (Step 3), README line 344 (Step 4), and the files this task deletes (Step 4).
 
 - [ ] **Step 3: Edit the work engine**
 
