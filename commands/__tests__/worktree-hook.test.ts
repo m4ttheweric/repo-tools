@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { parseHookStdin, recordClaudeHookAnswer, shouldOfferClaudeHook } from "../worktree-hook.ts";
+import { hookRepoIdentity, parseHookStdin, recordClaudeHookAnswer, shouldOfferClaudeHook } from "../worktree-hook.ts";
 import { loadWorktreeAppConfig } from "../../lib/worktree/config.ts";
 import { getSetting } from "../../lib/settings/resolve.ts";
 
@@ -19,6 +19,32 @@ describe("parseHookStdin", () => {
   });
   test("garbage is an error result, not a throw", () => {
     expect(parseHookStdin("not json").event).toBe("invalid");
+  });
+});
+
+describe("hookRepoIdentity", () => {
+  test("derivable identity not in the index: null (routes decideCreate to fallback)", () => {
+    const result = hookRepoIdentity("/scratch/repo", {
+      identityFor: () => "path:%2Fscratch%2Frepo",
+      isRegistered: () => false,
+    });
+    expect(result).toBeNull();
+  });
+
+  test("identity already in the index: returned (routes decideCreate to provision)", () => {
+    const result = hookRepoIdentity("/known/repo", {
+      identityFor: () => "remote:example%2Fr",
+      isRegistered: (identity) => identity === "remote:example%2Fr",
+    });
+    expect(result).toBe("remote:example%2Fr");
+  });
+
+  test("no derivable identity at all: null without consulting the index", () => {
+    const result = hookRepoIdentity("/not-a-repo", {
+      identityFor: () => undefined,
+      isRegistered: () => { throw new Error("must not be called"); },
+    });
+    expect(result).toBeNull();
   });
 });
 

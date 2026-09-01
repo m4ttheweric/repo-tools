@@ -307,6 +307,15 @@ export function removeIndexRow(key: string): void {
   deleteKvValue(REPO_INDEX_NS, key);
 }
 
+/**
+ * Read-only membership check: is this serialized identity already a row in
+ * the index? Callers that must not treat "derivable" as "known" (the Claude
+ * Code worktree hook) gate on this rather than deriving-and-registering.
+ */
+export function isRepoRegistered(identity: string): boolean {
+  return loadRepoIndex()[identity] !== undefined;
+}
+
 /** Rewrite ~/.mattstack/rt/repos.json from the current rows — a FILE write, so it runs after a transaction commits, never inside one. */
 export function refreshRepoIndexMirror(): void {
   try {

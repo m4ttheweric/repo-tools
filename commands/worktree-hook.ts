@@ -10,6 +10,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { currentRepoIdentityFor } from "../lib/repo-arg.ts";
+import { isRepoRegistered } from "../lib/repo-index.ts";
 import { claudeWorktreeHookStatus, installClaudeWorktreeHooks, uninstallClaudeWorktreeHooks } from "../lib/claude-settings.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
@@ -186,6 +187,26 @@ export function parseHookStdin(raw: string): ParsedStdin {
   return { event: "invalid" };
 }
 
+/**
+ * The `repoIdentity` dep `decideCreate` calls: read-only end to end. It
+ * derives the identity without ever registering it, then answers "rt's
+ * repo" only if that identity is already an index row. A repo that is
+ * derivable but not indexed returns null, which `decideCreate` already
+ * routes to the stock fallback. Deps are overridable purely so a unit test
+ * can exercise the "not indexed" and "indexed" branches without a real git
+ * repo or a live index.
+ */
+export function hookRepoIdentity(
+  cwd: string,
+  deps: { identityFor: (cwd: string) => string | undefined; isRegistered: (identity: string) => boolean } = {
+    identityFor: currentRepoIdentityFor,
+    isRegistered: isRepoRegistered,
+  },
+): string | null {
+  const identity = deps.identityFor(cwd);
+  return identity !== undefined && deps.isRegistered(identity) ? identity : null;
+}
+
 export async function claudeHookCommand(args: string[], _ctx: unknown): Promise<void> {
   const removeMode = args.includes("--remove");
   const parsed = parseHookStdin(await Bun.stdin.text());
@@ -208,7 +229,7 @@ export async function claudeHookCommand(args: string[], _ctx: unknown): Promise<
   const decision = await decideCreate(
     { cwd: parsed.cwd, name: parsed.name },
     {
-      repoIdentity: (cwd) => currentRepoIdentityFor(cwd) ?? null,
+      repoIdentity: hookRepoIdentity,
       provision: (repoName, intent) =>
         daemonQuery("worktree:provision", { repoName, owner: "claude", ...intent }, HOOK_PROVISION_TIMEOUT_MS),
       stockAdd: stockWorktreeAdd,
