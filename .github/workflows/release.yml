@@ -167,13 +167,21 @@ jobs:
       # so a hang is visible, retried, and never eats the build step's budget.
       - name: Resolve Swift packages (bounded)
         working-directory: rt-tray
+        env:
+          # A credential prompt on a non-TTY hangs git forever and silently —
+          # the exact shape of the tag-run wedge. Fail fast instead; the retry
+          # loop owns recovery. (macOS runners have no GNU timeout; perl alarm
+          # is the portable bound. No pipe on the if: sed's exit code was
+          # swallowing a 127 and turning this step into an 85ms no-op.)
+          GIT_TERMINAL_PROMPT: "0"
         run: |
+          set -o pipefail
           for i in 1 2 3; do
-            if timeout 180 swift package resolve 2>&1 | sed 's/^/  /'; then
+            if /usr/bin/perl -e 'alarm 240; exec @ARGV' swift package resolve --verbose; then
               exit 0
             fi
             echo "::warning::swift package resolve attempt $i failed or timed out; clearing SPM caches and retrying"
-            rm -rf .build/repositories ~/Library/Caches/org.swift.swiftpm 2>/dev/null || true
+            rm -rf .build/repositories ~/Library/Caches/org.swift.swiftpm || true
           done
           echo "::error::swift package resolve failed after 3 bounded attempts"
           exit 1
