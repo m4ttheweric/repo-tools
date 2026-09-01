@@ -4,7 +4,7 @@ export type PackProvenance = { dirty: 0 | 1; commits: string[] };
 
 function gitOut(dir: string, args: string[]): string | null {
   try {
-    const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "ignore" });
+    const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "ignore", env: process.env });
     return r.exitCode === 0 ? r.stdout.toString().trim() : null;
   } catch {
     return null;

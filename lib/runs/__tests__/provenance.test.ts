@@ -60,7 +60,7 @@ describe("packProvenance", () => {
     const dir = repo("nogit");
     const saved = process.env.PATH;
     try {
-      process.env.PATH = "";
+      process.env.PATH = "/nonexistent/git/path";
       const p = packProvenance([dir]);
       expect(p).toEqual({ dirty: 0, commits: [] });
     } finally {
