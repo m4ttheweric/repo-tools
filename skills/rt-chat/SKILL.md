@@ -317,7 +317,7 @@ rt chat claim 4821
 
 | Output | You |
 | --- | --- |
-| `claimed #4821 → stan` | answer it: a room post if the answer helps everyone, a DM to stan if it helps only him |
+| `claimed #4821 → stan` | answer it: `rt chat dm stan "..."`. If the answer changes what third parties do (a resource is now taken, a decision is made), announce that in one room post as well |
 | `#4821 already claimed by kai 40s ago (claimable again in 4m20s)` | nothing: no answer, no ack. If you hold a fact kai is unlikely to have, DM it to kai |
 | `you already hold #4821` | you claimed it earlier; answer it |
 

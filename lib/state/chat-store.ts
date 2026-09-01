@@ -668,15 +668,18 @@ export function claimMessage(
 ): ClaimResult {
   const { messageId, handle } = args;
   const now = args.nowMs ?? Date.now();
-  const msg = db.query("SELECT room, handle, body FROM chat_messages WHERE id = ?;").get(messageId) as MessageOwner | null;
-  if (!msg) return { ok: false, reason: "unknown-message" };
-  if (dmParticipants(msg.room, db)) return { ok: false, reason: "dm" };
-  if (msg.handle === handle) return { ok: false, reason: "own-message" };
-  const member = db.query("SELECT 1 AS present FROM chat_members WHERE room = ? AND handle = ?;").get(msg.room, handle) as { present: number } | null;
-  if (!member) return { ok: false, reason: "not-a-member" };
-
-  const won = { ok: true as const, outcome: "claimed" as const, author: msg.handle, room: msg.room, body: msg.body };
+  // Every read sits inside one immediate (write-locked) transaction, so a
+  // second connection can never observe "unclaimed" and then lose the write
+  // with SQLITE_BUSY_SNAPSHOT; it waits, re-reads, and is told "lost".
   const run = db.transaction((): ClaimResult => {
+    const msg = db.query("SELECT room, handle, body FROM chat_messages WHERE id = ?;").get(messageId) as MessageOwner | null;
+    if (!msg) return { ok: false, reason: "unknown-message" };
+    if (dmParticipants(msg.room, db)) return { ok: false, reason: "dm" };
+    if (msg.handle === handle) return { ok: false, reason: "own-message" };
+    const member = db.query("SELECT 1 AS present FROM chat_members WHERE room = ? AND handle = ?;").get(msg.room, handle) as { present: number } | null;
+    if (!member) return { ok: false, reason: "not-a-member" };
+
+    const won = { ok: true as const, outcome: "claimed" as const, author: msg.handle, room: msg.room, body: msg.body };
     const existing = db.query("SELECT handle, claimed_at AS claimedAt FROM chat_claims WHERE message_id = ?;").get(messageId) as
       | { handle: string; claimedAt: number }
       | null;
@@ -692,7 +695,7 @@ export function claimMessage(
     db.query("UPDATE chat_claims SET handle = ?, claimed_at = ? WHERE message_id = ?;").run(handle, now, messageId);
     return existing.handle === handle ? won : { ...won, previousHolder: existing.handle };
   });
-  return run();
+  return run.immediate();
 }
 
 export type ReleaseResult =
@@ -702,14 +705,14 @@ export type ReleaseResult =
 /** The holder hands a claim back; the message's author may also pull it back, so an asker can un-stick their own question without finding the holder. */
 export function releaseClaim(args: { messageId: number; handle: string }, db: Database = getStateDb()): ReleaseResult {
   const { messageId, handle } = args;
-  const msg = db.query("SELECT room, handle, body FROM chat_messages WHERE id = ?;").get(messageId) as MessageOwner | null;
-  if (!msg) return { ok: false, reason: "unknown-message" };
   const run = db.transaction((): ReleaseResult => {
+    const msg = db.query("SELECT handle FROM chat_messages WHERE id = ?;").get(messageId) as { handle: string } | null;
+    if (!msg) return { ok: false, reason: "unknown-message" };
     const existing = db.query("SELECT handle FROM chat_claims WHERE message_id = ?;").get(messageId) as { handle: string } | null;
     if (!existing) return { ok: false, reason: "not-claimed" };
     if (existing.handle !== handle && msg.handle !== handle) return { ok: false, reason: "not-holder" };
     db.query("DELETE FROM chat_claims WHERE message_id = ?;").run(messageId);
     return { ok: true, holder: existing.handle };
   });
-  return run();
+  return run.immediate();
 }
