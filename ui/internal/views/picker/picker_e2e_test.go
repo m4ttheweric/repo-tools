@@ -10,12 +10,11 @@ import (
 	"rt-ui/internal/testutil"
 )
 
-// TestOverlayCloseLeavesNoResidueAfterAnotherOverlayOpens is the Fix-2
-// golden. It drives the real rt-ui pick binary over a pty -- not just
-// renderView's own logical string, which is a pure function of Model state
-// and can never show a stale-frame artifact -- because the residue this
-// pins is a property of the actual terminal renderer's frame-to-frame diff,
-// not of what render() computes.
+// TestOverlayCloseLeavesNoResidueAfterAnotherOverlayOpens drives the real
+// rt-ui pick binary over a pty -- not just renderView's own logical string,
+// which is a pure function of Model state and can never show a stale-frame
+// artifact -- because the residue this pins is a property of the actual
+// terminal renderer's frame-to-frame diff, not of what render() computes.
 //
 // It captures the base frame, opens the ctrl-k menu, dismisses it, opens a
 // TS-driven modal taller than the list underneath it, dismisses that too,

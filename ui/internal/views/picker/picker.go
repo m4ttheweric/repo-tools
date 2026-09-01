@@ -215,6 +215,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectCursor()
 			return m, tea.Quit
 		}
+		if key == "esc" {
+			// Reached only once a declared esc action has already had its
+			// chance via actionForKey above, so this is the fallback that
+			// keeps the keybar's own "esc quit" honest for a request that
+			// declares nothing: cancel is otherwise unreachable from the
+			// keyboard on a bare picker.
+			m.result = &protocol.PickResult{Action: idCancel, Query: m.query}
+			return m, tea.Quit
+		}
 		if key == "backspace" {
 			if r := []rune(m.query); len(r) > 0 {
 				m.setQuery(string(r[:len(r)-1]))

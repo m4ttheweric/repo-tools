@@ -325,6 +325,81 @@ func TestNonEventActionKeyProducesTerminalResult(t *testing.T) {
 	}
 }
 
+// TestEscCancelsABareRequest covers the keybar's own promise: a request
+// that declares nothing still shows "esc quit" in its footer, so esc has to
+// actually be reachable from the keyboard, not just advertised.
+func TestEscCancelsABareRequest(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}},
+	}
+	m := New(req)
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = next.(*Model)
+
+	if m.result == nil || m.result.Action != "cancel" || m.result.Value != nil {
+		t.Fatalf("got %+v", m.result)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to end the session")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected the cmd to quit the program")
+	}
+}
+
+// TestDeclaredEscActionWinsOverTheBuiltinCancel covers the override: a
+// caller that declares its own esc-keyed action gets that action dispatched
+// instead of the built-in cancel.
+func TestDeclaredEscActionWinsOverTheBuiltinCancel(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}},
+		Actions: []protocol.PickAction{
+			{ID: "back", Label: "back", Key: "esc", Scope: "global"},
+		},
+	}
+	m := New(req)
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = next.(*Model)
+
+	if m.result == nil || m.result.Action != "back" {
+		t.Fatalf("declared esc action should have fired instead of the built-in cancel: %+v", m.result)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd to end the session")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected the cmd to quit the program")
+	}
+}
+
+// TestEscWithModalOpenClosesTheModalNotThePicker covers the ordering: the
+// modal-open check runs ahead of the base esc case, so esc while an overlay
+// is open dismisses the overlay and leaves the picker running.
+func TestEscWithModalOpenClosesTheModalNotThePicker(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
+	m := New(req)
+	m.events = make(chan []byte, 4)
+	m.openTSModal(protocol.PickModal{
+		Message: "Sort by",
+		Rows:    []protocol.PickRow{{Value: "size", Left: []protocol.PickSegment{{Text: "Size"}}}},
+	})
+
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = next.(*Model)
+
+	if m.modal != nil {
+		t.Fatal("esc should close the modal")
+	}
+	if m.result != nil {
+		t.Fatalf("esc closing a modal must not produce a terminal result: %+v", m.result)
+	}
+	mustNotQuit(t, cmd)
+}
+
 func TestFilteredListBreadcrumbCountAndHighlight(t *testing.T) {
 	req := protocol.PickRequest{
 		T:            "pick",
@@ -872,10 +947,10 @@ func TestKeybarLegendIntegratesWithTheScrollRangeOnTheSameFooterLine(t *testing.
 	}
 }
 
-// TestKeybarTruncatesAtGroupBoundaryNeverMidWord is the Fix-3 golden: at a
-// width too narrow for every declared group to fit, the right-pinned
-// esc/quit cluster still renders in full, and the left legend gives up
-// whole trailing groups rather than clipping a key or a label mid-word.
+// TestKeybarTruncatesAtGroupBoundaryNeverMidWord covers a width too narrow
+// for every declared group to fit: the right-pinned esc/quit cluster still
+// renders in full, and the left legend gives up whole trailing groups
+// rather than clipping a key or a label mid-word.
 func TestKeybarTruncatesAtGroupBoundaryNeverMidWord(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
@@ -887,7 +962,7 @@ func TestKeybarTruncatesAtGroupBoundaryNeverMidWord(t *testing.T) {
 		},
 	}
 	m := New(req)
-	m.width = 45 // fits "pick" and "mark" but not "view" alongside esc/quit
+	m.width = 45 // budget is 34 once "esc quit" is reserved; only "pick" (17) fits, "mark" and "view" both drop
 
 	lines := strings.Split(render(m), "\n")
 	footer := ansi.Strip(lines[len(lines)-1])
@@ -1062,12 +1137,11 @@ func TestDeriveMenuSkipsMenuHiddenActions(t *testing.T) {
 	}
 }
 
-// TestCtrlKMenuShowsOnlyDeclaredActionsNeverInjectedDefaults is the ruling
-// (a) golden: opening the overlay from a live model must build the menu
-// from the request's own declared Actions only, never from
-// effectiveActions' injected select/cancel/back -- even when the breadcrumb
-// is deep enough that back would once have been synthesized into the
-// keybar right alongside it.
+// TestCtrlKMenuShowsOnlyDeclaredActionsNeverInjectedDefaults covers opening
+// the overlay from a live model: it must build the menu from the request's
+// own declared Actions only, never from effectiveActions' injected
+// select/cancel/back -- even when the breadcrumb is deep enough that back
+// would once have been synthesized into the keybar right alongside it.
 func TestCtrlKMenuShowsOnlyDeclaredActionsNeverInjectedDefaults(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
@@ -1094,10 +1168,10 @@ func TestCtrlKMenuShowsOnlyDeclaredActionsNeverInjectedDefaults(t *testing.T) {
 	}
 }
 
-// TestCtrlKMenuOpensNothingWithNoDeclaredActions covers the other half of
-// ruling (a): a request that declares no registry at all has nothing for
-// ctrl-k to show, so it must leave the picker untouched rather than opening
-// a menu of nothing but injected defaults.
+// TestCtrlKMenuOpensNothingWithNoDeclaredActions covers the other half: a
+// request that declares no registry at all has nothing for ctrl-k to show,
+// so it must leave the picker untouched rather than opening a menu of
+// nothing but injected defaults.
 func TestCtrlKMenuOpensNothingWithNoDeclaredActions(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
@@ -1730,11 +1804,11 @@ func TestMultiSelectGolden(t *testing.T) {
 	}
 }
 
-// TestSelectedPanelShowsLabelsOnlyNotTheFullLeftTextWithHint is the Fix-5
-// golden: a row whose own Left carries a label segment followed by a hint
-// segment (the board convention for "bill · on-deck/bill") lists only the
-// label in the selected panel -- the hint is part of the row's own display,
-// not the pick the panel is confirming.
+// TestSelectedPanelShowsLabelsOnlyNotTheFullLeftTextWithHint covers a row
+// whose own Left carries a label segment followed by a hint segment (the
+// board convention for "bill · on-deck/bill"): the selected panel lists
+// only the label -- the hint is part of the row's own display, not the
+// pick the panel is confirming.
 func TestSelectedPanelShowsLabelsOnlyNotTheFullLeftTextWithHint(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version, Multi: true,
@@ -1811,10 +1885,10 @@ func TestSelectedPanelCountsAsChromeInHeaderBudget(t *testing.T) {
 	}
 }
 
-// TestMultiZeroSelectedHidesChipAndPanel is the Fix-4 golden: with nothing
-// selected, both the header's N-selected chip and the selected panel line
-// stay off the frame entirely, and the panel's absence gives the row window
-// its line back -- rather than a permanently-reserved but empty strip.
+// TestMultiZeroSelectedHidesChipAndPanel covers the zero-selected case:
+// both the header's N-selected chip and the selected panel line stay off
+// the frame entirely, and the panel's absence gives the row window its
+// line back -- rather than a permanently-reserved but empty strip.
 func TestMultiZeroSelectedHidesChipAndPanel(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version, Multi: true,
