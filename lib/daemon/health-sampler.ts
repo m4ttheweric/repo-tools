@@ -4,6 +4,7 @@
  *  disk under RT_DIR. Pure helpers are unit-tested; the timer just calls sample. */
 import { statfsSync } from "fs";
 import type { Logger } from "pino";
+import { HEALTH_THRESHOLDS } from "./health.ts";
 
 export function rollRssBaseline(
   prev: { rss: number; at: number } | null,
@@ -48,7 +49,7 @@ export function createHealthSampler(opts: {
     sample() {
       const mem = process.memoryUsage();
       const now = Date.now();
-      baseline = rollRssBaseline(baseline, { rss: mem.rss, at: now }, 60 * 60_000);
+      baseline = rollRssBaseline(baseline, { rss: mem.rss, at: now }, HEALTH_THRESHOLDS.rssGrowthWindowMs);
       free = statfsFree(opts.rtDir);
       opts.log.info(
         {
