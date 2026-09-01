@@ -25,6 +25,17 @@ func fg(c color.Color) lipgloss.Style {
 // from the pane height to find how many rows actually fit.
 const chromeRows = 5
 
+// totalChromeRows is chromeRows plus the pinned selected panel's own line,
+// when a multi session is showing one -- the panel sits between the filter
+// line and the top rule, so it eats into the same pane budget every other
+// chrome line already claims.
+func (m *Model) totalChromeRows() int {
+	if m.showSelectedPanel() {
+		return chromeRows + 1
+	}
+	return chromeRows
+}
+
 func render(m *Model) string {
 	// pick.ts never opens the picker for a zero-row request, so this is not
 	// a UI state to design for -- just insurance against the empty slice
@@ -34,8 +45,12 @@ func render(m *Model) string {
 	}
 
 	n := len(m.matches)
-	lines := make([]string, 0, n+chromeRows)
-	lines = append(lines, breadcrumbLine(m), filterLine(m), rule(m.width))
+	lines := make([]string, 0, n+m.totalChromeRows())
+	lines = append(lines, breadcrumbLine(m), filterLine(m))
+	if m.showSelectedPanel() {
+		lines = append(lines, selectedPanelLine(m, m.width))
+	}
+	lines = append(lines, rule(m.width))
 
 	if n == 0 {
 		lines = append(lines, noMatchLine())
@@ -200,10 +215,21 @@ func breadcrumbLine(m *Model) string {
 	return justify(m.width, left.String(), countText(m))
 }
 
-// countText turns cyan only while a query is narrowing the list to at least
-// one match; an empty query or a query with no matches reads as one flat
-// faint fraction, matching the Branch and zero-match Filtering boards.
+// countText is the breadcrumb line's right-aligned count area. A multi
+// session leads with the mint selected-count glyph ahead of the ordinary
+// fraction; a plain session is just the fraction.
 func countText(m *Model) string {
+	if m.multiMode() {
+		return fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
+			fg(theme.Faint).Render(" selected  ·  ") + countFraction(m)
+	}
+	return countFraction(m)
+}
+
+// countFraction turns cyan only while a query is narrowing the list to at
+// least one match; an empty query or a query with no matches reads as one
+// flat faint fraction, matching the Branch and zero-match Filtering boards.
+func countFraction(m *Model) string {
 	total := len(m.req.Rows)
 	n := len(m.matches)
 	if m.query != "" && n > 0 {
@@ -220,6 +246,76 @@ func filterLine(m *Model) string {
 		left += fg(theme.Text).Render(m.query)
 	}
 	return justify(m.width, left, "")
+}
+
+// selectedPanelLine paints the pinned BgSubtle strip under the filter line:
+// a faint "selected" label followed by every currently selected row's label
+// in mint, joined by a faint middle dot and clipped to width -- the panel
+// that lets a multi session see its picks without them scrolling out of
+// the row list.
+func selectedPanelLine(m *Model, width int) string {
+	bg := lipgloss.NewStyle().Background(theme.BgSubtle)
+	labels := selectedLabelsInOrder(m)
+
+	const prefix = "  selected  "
+	plain := prefix + strings.Join(labels, " · ")
+
+	kept, truncated := clipRunes(plain, width)
+	rendered := renderPanelRun(prefix, labels, len([]rune(kept)), bg)
+	used := lipgloss.Width(kept)
+	if truncated {
+		rendered += bg.Foreground(theme.Faint).Render("…")
+		used++
+	}
+
+	pad := width - used
+	if pad < 0 {
+		pad = 0
+	}
+	return rendered + bg.Render(strings.Repeat(" ", pad))
+}
+
+// selectedLabelsInOrder lists every selected row's own left text, in
+// request order -- the same order selectMulti's Values result carries, so
+// the panel a user sees while filtering matches what enter will confirm.
+func selectedLabelsInOrder(m *Model) []string {
+	labels := make([]string, 0, len(m.selected))
+	for _, row := range m.req.Rows {
+		if m.selected[row.Value] {
+			labels = append(labels, leftPlainText(row))
+		}
+	}
+	return labels
+}
+
+// renderPanelRun re-styles the panel's prefix/label/separator runs -- faint
+// prefix and separators against mint labels -- stopping at keptRunes so a
+// clipped panel never colors past what clipRunes decided actually fits.
+func renderPanelRun(prefix string, labels []string, keptRunes int, bg lipgloss.Style) string {
+	var out strings.Builder
+	runeIdx := 0
+	write := func(s string, style lipgloss.Style) bool {
+		for _, r := range s {
+			if runeIdx >= keptRunes {
+				return false
+			}
+			out.WriteString(style.Render(string(r)))
+			runeIdx++
+		}
+		return true
+	}
+	if !write(prefix, bg.Foreground(theme.Faint)) {
+		return out.String()
+	}
+	for i, label := range labels {
+		if i > 0 && !write(" · ", bg.Foreground(theme.Faint)) {
+			return out.String()
+		}
+		if !write(label, bg.Foreground(theme.Mint)) {
+			return out.String()
+		}
+	}
+	return out.String()
 }
 
 // justify mirrors the board header/keybar convention: a 2-column left
@@ -282,12 +378,27 @@ func rowLineWidth(m *Model, i int, width int) string {
 	}
 	gutter := gutterStyle.Render(gutterGlyph)
 
+	// The selection marker sits inside the row's own background (rowBg),
+	// unlike the gutter -- it's part of the highlighted span on the board,
+	// not the outer cursor indicator -- so it costs 2 columns out of the
+	// same budget the left text and right segments share.
+	selMarker := ""
+	selMarkerWidth := 0
+	if m.multiMode() {
+		glyph, markColor := theme.GlyphStopped, theme.Faint
+		if m.selected[row.Value] {
+			glyph, markColor = theme.GlyphOn, theme.Mint
+		}
+		selMarker = rowBg.Foreground(markColor).Render(glyph + " ")
+		selMarkerWidth = 2
+	}
+
 	rightPlain := plainConcat(row.Right)
 	rightWidth := lipgloss.Width(rightPlain)
 
 	// Budget: 1 gutter column + 1 separator column, plus a gap column ahead
 	// of any right segments so they never touch the left text directly.
-	leftBudget := width - 2 - rightWidth
+	leftBudget := width - 2 - selMarkerWidth - rightWidth
 	if rightWidth > 0 {
 		leftBudget--
 	}
@@ -304,14 +415,14 @@ func rowLineWidth(m *Model, i int, width int) string {
 		usedLeftWidth++
 	}
 
-	spacer := width - 2 - usedLeftWidth - rightWidth
+	spacer := width - 2 - selMarkerWidth - usedLeftWidth - rightWidth
 	if spacer < 0 {
 		spacer = 0
 	}
 
 	rightRendered := renderSegments(row.Right, rowBg)
 
-	return gutter + rowBg.Render(" ") + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
+	return gutter + rowBg.Render(" ") + selMarker + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
 }
 
 // renderHighlightedLeft re-styles matched runes cyan bold while walking the

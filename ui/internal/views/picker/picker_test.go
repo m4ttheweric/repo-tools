@@ -1315,3 +1315,318 @@ func TestCtrlKMenuNonEventActionYieldsTerminalResult(t *testing.T) {
 		t.Fatal("expected the cmd to quit the program")
 	}
 }
+
+// TestInitialValuesPreselectAtConstruction covers InitialValues: a multi
+// request that opens with some rows already picked must have them in
+// m.selected before the first frame renders, not only once a key is
+// pressed.
+func TestInitialValuesPreselectAtConstruction(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		InitialValues: []string{"b", "d"},
+		Rows:          []protocol.PickRow{{Value: "a"}, {Value: "b"}, {Value: "c"}, {Value: "d"}},
+	}
+	m := New(req)
+	if !m.selected["b"] || !m.selected["d"] {
+		t.Fatalf("InitialValues should preselect at construction: %+v", m.selected)
+	}
+	if m.selected["a"] || m.selected["c"] {
+		t.Fatalf("only the InitialValues rows should be preselected: %+v", m.selected)
+	}
+}
+
+// TestSpaceTogglesCursorRowSelection covers space's whole contract: it
+// flips the cursor row's own selection state and, unlike tab, never moves
+// the cursor.
+func TestSpaceTogglesCursorRowSelection(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}},
+	}
+	m := New(req)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	m = next.(*Model)
+	if !m.selected["a"] {
+		t.Fatalf("space should select the cursor row: %+v", m.selected)
+	}
+	if m.cursor != 0 {
+		t.Fatalf("space must not move the cursor, got %d", m.cursor)
+	}
+
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	m = next.(*Model)
+	if m.selected["a"] {
+		t.Fatalf("a second space should deselect the cursor row: %+v", m.selected)
+	}
+}
+
+// TestSpaceTypesIntoTheFilterWhenNotMulti is the negative case: a
+// non-multi picker never intercepts space, so it still types a literal
+// space character into the query exactly as it did before this task.
+func TestSpaceTypesIntoTheFilterWhenNotMulti(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a b"}},
+	}
+	m := New(req)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	m = next.(*Model)
+	if m.query != " " {
+		t.Fatalf("space should type into the filter when not multi, query = %q", m.query)
+	}
+}
+
+// TestTabTogglesCursorRowAndAdvances covers tab's compound behavior: it
+// toggles the row under the cursor, same as space, then moves to the next
+// row -- so a run of tabs walks the whole list toggling each row in turn.
+func TestTabTogglesCursorRowAndAdvances(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}, {Value: "c"}},
+	}
+	m := New(req)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = next.(*Model)
+	if !m.selected["a"] {
+		t.Fatalf("tab should toggle the cursor row before advancing: %+v", m.selected)
+	}
+	if m.cursor != 1 {
+		t.Fatalf("tab should advance the cursor, got %d", m.cursor)
+	}
+
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = next.(*Model)
+	if !m.selected["b"] {
+		t.Fatalf("tab should also toggle the new cursor row: %+v", m.selected)
+	}
+	if m.cursor != 2 {
+		t.Fatalf("cursor should advance again, got %d", m.cursor)
+	}
+	if !m.selected["a"] {
+		t.Fatalf("earlier toggles must not be undone by a later tab: %+v", m.selected)
+	}
+}
+
+// TestCtrlAAllVisibleThenNoneRoundTrip is the all/none half of ctrl-a: any
+// unselected row still in the match set means "select everything visible";
+// pressing it again once everything visible is already selected clears the
+// visible set instead.
+func TestCtrlAAllVisibleThenNoneRoundTrip(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}, {Value: "c"}},
+	}
+	m := New(req)
+	m.selected["a"] = true
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'a'})
+	m = next.(*Model)
+	for _, v := range []string{"a", "b", "c"} {
+		if !m.selected[v] {
+			t.Fatalf("ctrl-a with any unselected row visible should select every visible row, missing %q: %+v", v, m.selected)
+		}
+	}
+
+	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'a'})
+	m = next.(*Model)
+	if len(m.selected) != 0 {
+		t.Fatalf("ctrl-a with everything visible already selected should clear the visible set, got %+v", m.selected)
+	}
+}
+
+// TestCtrlAOnlyTouchesVisibleRows covers the filtered half of the rule: a
+// row the active query is hiding must never be touched by ctrl-a in either
+// direction, only the rows still in the match set.
+func TestCtrlAOnlyTouchesVisibleRows(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{
+			{Value: "apple", Left: []protocol.PickSegment{{Text: "apple"}}},
+			{Value: "banana", Left: []protocol.PickSegment{{Text: "banana"}}},
+			{Value: "apricot", Left: []protocol.PickSegment{{Text: "apricot"}}},
+		},
+	}
+	m := New(req)
+	m.setQuery("ap")
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'a'})
+	m = next.(*Model)
+
+	if !m.selected["apple"] || !m.selected["apricot"] {
+		t.Fatalf("ctrl-a should select every currently visible row: %+v", m.selected)
+	}
+	if m.selected["banana"] {
+		t.Fatalf("a row hidden by the active filter must not be touched: %+v", m.selected)
+	}
+}
+
+// TestSelectionSurvivesRefiltering is the keyed-by-value regression guard:
+// a re-filter reorders and shrinks m.matches, but m.selected is keyed by
+// row value, not match index, so a selection made before a filter narrows
+// the list is still there once the filter widens back out.
+func TestSelectionSurvivesRefiltering(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{
+			{Value: "apple", Left: []protocol.PickSegment{{Text: "apple"}}},
+			{Value: "banana", Left: []protocol.PickSegment{{Text: "banana"}}},
+		},
+	}
+	m := New(req)
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	m = next.(*Model)
+	if !m.selected["apple"] {
+		t.Fatalf("setup: apple should be selected")
+	}
+
+	m.setQuery("ban")
+	if !m.selected["apple"] {
+		t.Fatalf("selection must survive a re-filter that hides the row: %+v", m.selected)
+	}
+
+	m.setQuery("")
+	if len(m.matches) != 2 {
+		t.Fatalf("setup: both rows should be back after clearing the query")
+	}
+	if !m.selected["apple"] {
+		t.Fatalf("selection must still be there once the row is visible again: %+v", m.selected)
+	}
+}
+
+// TestMultiEnterResultCarriesValuesInInputOrder is the result golden: enter
+// answers with Values, not Value, and Values lists selections in the order
+// the request declared its rows -- not the order they were toggled in --
+// so a caller can zip the result against its own row list positionally.
+func TestMultiEnterResultCarriesValuesInInputOrder(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}, {Value: "c"}, {Value: "d"}},
+	}
+	m := New(req)
+	m.selected["d"] = true
+	m.selected["a"] = true
+	m.selected["c"] = true
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(*Model)
+
+	if m.result == nil {
+		t.Fatal("no result produced")
+	}
+	want := []string{"a", "c", "d"}
+	if len(m.result.Values) != len(want) {
+		t.Fatalf("got %+v, want %v", m.result.Values, want)
+	}
+	for i, v := range want {
+		if m.result.Values[i] != v {
+			t.Fatalf("Values must list selections in request order, got %v, want %v", m.result.Values, want)
+		}
+	}
+	if m.result.Value != nil {
+		t.Fatalf("a multi result must not also carry a single Value: %+v", m.result.Value)
+	}
+}
+
+// mintSGR is theme.Mint's (#62E6A8) truecolor SGR fragment, matching the
+// cyanSGR/dimSGR convention already used elsewhere in this file.
+const mintSGR = "38;2;98;230;168"
+
+// TestMultiSelectGolden is the render golden for the whole feature at once:
+// the Multi board's header count, pinned selected panel, and per-row
+// ◉/○ prefixes, for a small multi request with 2 preselected rows.
+func TestMultiSelectGolden(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb:    []string{"rt", "worktree", "dispose"},
+		Multi:         true,
+		InitialValues: []string{"rt-94-deck-dev-mode", "chat-qol"},
+		Rows: []protocol.PickRow{
+			{Value: "rt-94-deck-dev-mode", Left: []protocol.PickSegment{{Text: "rt-94-deck-dev-mode", Tone: "text"}}},
+			{Value: "chat-qol", Left: []protocol.PickSegment{{Text: "chat-qol", Tone: "text"}}},
+			{Value: "bundle-ci", Left: []protocol.PickSegment{{Text: "bundle-ci", Tone: "text"}}},
+			{Value: "chat-invite", Left: []protocol.PickSegment{{Text: "chat-invite", Tone: "text"}}},
+			{Value: "post-wt", Left: []protocol.PickSegment{{Text: "post-wt", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 88
+	m.cursor = 2 // bundle-ci
+
+	plain := ansi.Strip(render(m))
+
+	if !strings.Contains(plain, "◉ 2 selected  ·  5/5") {
+		t.Fatalf("header missing the multi count: %q", plain)
+	}
+	if !strings.Contains(plain, "selected  rt-94-deck-dev-mode · chat-qol") {
+		t.Fatalf("selected panel missing or wrong: %q", plain)
+	}
+
+	lines := strings.Split(plain, "\n")
+	var selectedLine, cursorLine string
+	for _, l := range lines {
+		if strings.Contains(l, "rt-94-deck-dev-mode") {
+			selectedLine = l
+		}
+		if strings.Contains(l, "bundle-ci") {
+			cursorLine = l
+		}
+	}
+	if !strings.Contains(selectedLine, "◉") {
+		t.Fatalf("expected a mint ◉ prefix on the selected row: %q", selectedLine)
+	}
+	if !strings.Contains(cursorLine, "○") {
+		t.Fatalf("expected a faint ○ prefix on the unselected cursor row: %q", cursorLine)
+	}
+
+	raw := render(m)
+	if !strings.Contains(raw, mintSGR) {
+		t.Fatalf("expected mint coloring somewhere in the render: %q", raw)
+	}
+}
+
+// TestMultiFooterLegendMatchesTheBoard pins the Multi board's exact footer
+// grammar: a lav "mark" cluster for space/tab/ctrl-a/enter, with quit still
+// pinned to the far right exactly as the non-multi footer does.
+func TestMultiFooterLegendMatchesTheBoard(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+	m.width = 88
+
+	lines := strings.Split(ansi.Strip(render(m)), "\n")
+	footer := lines[len(lines)-1]
+	if !strings.Contains(footer, "mark space toggle  tab toggle & next  ctrl-a all/none  enter confirm") {
+		t.Fatalf("footer legend mismatch: %q", footer)
+	}
+	if !strings.HasSuffix(strings.TrimRight(footer, " "), "esc quit") {
+		t.Fatalf("quit should stay pinned right: %q", footer)
+	}
+}
+
+// TestSelectedPanelCountsAsChromeInHeaderBudget guards the viewport-budget
+// half of the requirement: the panel occupies a real line between the
+// filter and the top rule, so a height-bounded pane has to give the row
+// window back one more line of budget than a non-multi request would, or
+// the frame overflows the pane by exactly the panel's own line.
+func TestSelectedPanelCountsAsChromeInHeaderBudget(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Multi: true, Rows: rows}
+	m := New(req)
+	m.width = 60
+	m.height = 19
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+	if len(lines) > 19 {
+		t.Fatalf("rendered frame must fit the pane height (19) once the selected panel is counted as chrome: got %d lines:\n%s", len(lines), plain)
+	}
+}

@@ -19,8 +19,31 @@ const (
 // cancel is always the last word (the terminal escape hatch), and back only
 // exists once the breadcrumb has somewhere to return to.
 func defaultActions(req protocol.PickRequest) []protocol.PickAction {
+	if isMultiRequest(req) {
+		return multiDefaultActions(req)
+	}
 	defaults := []protocol.PickAction{
 		{ID: idSelect, Label: "select", Key: "enter", Scope: "item"},
+	}
+	if len(req.Breadcrumb) > 1 {
+		defaults = append(defaults, protocol.PickAction{ID: idBack, Label: "back", Key: "ctrl-up", Scope: "global"})
+	}
+	defaults = append(defaults, protocol.PickAction{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"})
+	return defaults
+}
+
+// multiDefaultActions is the Multi board's "mark" footer cluster. space,
+// tab, and ctrl-a never reach the registry dispatch path -- Update handles
+// them directly, ahead of actionForKey -- so these entries exist purely to
+// put them in the footer legend and the ctrl-k menu; enter still dispatches
+// through the registry as idSelect, just labeled "confirm" here instead of
+// "select".
+func multiDefaultActions(req protocol.PickRequest) []protocol.PickAction {
+	defaults := []protocol.PickAction{
+		{ID: "toggle", Label: "toggle", Key: "space", Scope: "item", Group: "mark"},
+		{ID: "toggle-next", Label: "toggle & next", Key: "tab", Scope: "item", Group: "mark"},
+		{ID: "toggle-all", Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark"},
+		{ID: idSelect, Label: "confirm", Key: "enter", Scope: "item", Group: "mark", Primary: true},
 	}
 	if len(req.Breadcrumb) > 1 {
 		defaults = append(defaults, protocol.PickAction{ID: idBack, Label: "back", Key: "ctrl-up", Scope: "global"})

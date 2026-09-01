@@ -74,8 +74,29 @@ func New(req protocol.PickRequest) *Model {
 		selected: make(map[string]bool),
 		hover:    -1,
 	}
+	for _, v := range req.InitialValues {
+		m.selected[v] = true
+	}
 	m.refilter()
 	return m
+}
+
+// isMultiRequest reports whether a request wants multi-select interactions:
+// either the caller asked for Multi outright, or asked for the pinned
+// selected panel on its own, which still needs a way to add rows to it.
+func isMultiRequest(req protocol.PickRequest) bool {
+	return req.Multi || req.SelectedPanel
+}
+
+func (m *Model) multiMode() bool {
+	return isMultiRequest(m.req)
+}
+
+// showSelectedPanel mirrors multiMode: the panel and the interactions that
+// populate it are gated by the same condition, so a panel is never shown
+// with no way to change what it lists.
+func (m *Model) showSelectedPanel() bool {
+	return m.multiMode()
 }
 
 // refilter re-ranks matches against the current query. Rank itself already
@@ -112,6 +133,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up":
 			m.moveCursor(-1)
 			return m, nil
+		case "space":
+			if m.multiMode() {
+				m.toggleCursor()
+				return m, nil
+			}
+		case "tab":
+			if m.multiMode() {
+				m.toggleCursor()
+				m.moveCursor(1)
+				return m, nil
+			}
+		case "ctrl+a":
+			if m.multiMode() {
+				m.toggleAllVisible()
+				return m, nil
+			}
 		}
 		if action, ok := m.actionForKey(key); ok {
 			if action.Event {
@@ -232,12 +269,68 @@ func (m *Model) cursorRowValue() (string, bool) {
 
 // resultForAction terminates the session with a registry action's id as the
 // result's Action, mirroring selectCursor's shape for the built-in "select".
+// The confirm action in a multi session is the one exception: it carries the
+// whole selected set, not the cursor row alone.
 func (m *Model) resultForAction(actionID string) {
+	if actionID == idSelect && m.multiMode() {
+		m.selectMulti()
+		return
+	}
 	var value *string
 	if v, ok := m.cursorRowValue(); ok {
 		value = &v
 	}
 	m.result = &protocol.PickResult{Action: actionID, Value: value, Query: m.query}
+}
+
+// toggleCursor flips the selection state of the row under the cursor,
+// keyed by value so it survives the row reordering a re-filter causes.
+func (m *Model) toggleCursor() {
+	value, ok := m.cursorRowValue()
+	if !ok {
+		return
+	}
+	if m.selected[value] {
+		delete(m.selected, value)
+	} else {
+		m.selected[value] = true
+	}
+}
+
+// toggleAllVisible is ctrl-a's all/none rule: any unselected row still in
+// the current (filtered) match set means "select everything visible";
+// otherwise every visible row is already selected, so the same key clears
+// them. A row hidden by the active filter is never touched either way.
+func (m *Model) toggleAllVisible() {
+	anyUnselected := false
+	for _, mt := range m.matches {
+		if !m.selected[m.req.Rows[mt.Index].Value] {
+			anyUnselected = true
+			break
+		}
+	}
+	for _, mt := range m.matches {
+		value := m.req.Rows[mt.Index].Value
+		if anyUnselected {
+			m.selected[value] = true
+		} else {
+			delete(m.selected, value)
+		}
+	}
+}
+
+// selectMulti terminates a multi session: Values lists every selected row
+// in request order (the order m.req.Rows was declared in), not selection
+// order, so a caller can zip the result against its own row list
+// positionally without re-deriving an order of its own.
+func (m *Model) selectMulti() {
+	values := make([]string, 0, len(m.selected))
+	for _, row := range m.req.Rows {
+		if m.selected[row.Value] {
+			values = append(values, row.Value)
+		}
+	}
+	m.result = &protocol.PickResult{Action: idSelect, Values: values, Query: m.query}
 }
 
 // emitEvent reports an event:true action without ending the session. It
@@ -342,14 +435,15 @@ func (m *Model) moveCursor(delta int) {
 // rows, so a window dense with group boundaries can still paint more lines
 // than the pane has room for unless it's trimmed again here.
 func (m *Model) viewport() (top, h int) {
+	rows := m.totalChromeRows()
 	pane := m.height
 	bounded := pane > 0
 	if !bounded {
-		pane = len(m.matches) + chromeRows
+		pane = len(m.matches) + rows
 	}
-	top, h = Viewport(m.cursor, m.viewportTop, len(m.matches), m.req.Cap, pane, chromeRows)
+	top, h = Viewport(m.cursor, m.viewportTop, len(m.matches), m.req.Cap, pane, rows)
 	if bounded {
-		top, h = m.fitHeaderBudget(h, pane-chromeRows)
+		top, h = m.fitHeaderBudget(h, pane-rows)
 	}
 	m.viewportTop = top
 	return top, h
@@ -382,13 +476,19 @@ func (m *Model) fitHeaderBudget(h, budget int) (top, finalH int) {
 
 // selectCursor terminates the session with the row under the cursor. The
 // bounds guard covers a zero-row request, which moveCursor never lets the
-// cursor leave but Update's enter case can still reach directly.
+// cursor leave but Update's enter case can still reach directly. A multi
+// session defers entirely to selectMulti: enter confirms the selected set,
+// not whatever row the cursor happens to be sitting on.
 func (m *Model) selectCursor() {
+	if m.multiMode() {
+		m.selectMulti()
+		return
+	}
 	if m.cursor < 0 || m.cursor >= len(m.matches) {
 		return
 	}
 	value := m.req.Rows[m.matches[m.cursor].Index].Value
-	m.result = &protocol.PickResult{Action: "select", Value: &value, Query: m.query}
+	m.result = &protocol.PickResult{Action: idSelect, Value: &value, Query: m.query}
 }
 
 // renderView is the frame View() paints: the plain list render, composited
