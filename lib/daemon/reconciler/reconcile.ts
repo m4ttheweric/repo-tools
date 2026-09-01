@@ -138,7 +138,14 @@ export async function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName"
     const current = await currentBranchAsync(rec.path);
     const poolBranch = typeof rec.branch === "string" && rec.branch.startsWith("on-deck/") ? rec.branch : null;
     const backToPool = poolBranch !== null && current === poolBranch;
+    // Mirror of markHandoffDelivered's CAS: the git await above yielded the
+    // event loop, so the handler may have delivered this claim in the gap.
+    // Re-check inside the same synchronous load-mutate-save; losing means
+    // the caller owns the tree and this pass must not touch it.
+    let released = false;
     const flipped = patchTree(deps.repoName, rec.path, (r) => {
+      if (r.state !== "claimed" || r.handoff !== "pending") return;
+      released = true;
       delete r.handoff;
       delete r.claimedAt;
       delete r.owner;
@@ -151,7 +158,7 @@ export async function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName"
         r.disposableReason = "stranded claim (provision died before handover)";
       }
     });
-    if (!flipped) continue;
+    if (!flipped || !released) continue;
     deps.log.warn({ repo: deps.repoName, tree: rec.name, backToPool }, "reconcile: released a stranded claim");
     if (!backToPool) {
       deps.emit("worktree:disposable", {

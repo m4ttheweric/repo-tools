@@ -8,6 +8,7 @@ import { closeStateDb } from "../../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../../worktree/registry.ts";
 import { healLegacyPoolRoots, releaseStrandedClaims, reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
 import { tryLockTree } from "../../../worktree/locks.ts";
+import { markHandoffDelivered } from "../../../worktree/patch.ts";
 import { legacyWorktreePoolRoot, worktreePoolRoot } from "../../../rt-paths.ts";
 
 function fakeLog(): Logger {
@@ -205,6 +206,18 @@ describe("reconcile.ts: releaseStrandedClaims (RT-99)", () => {
     seedTree("hedwig", "acme-3-work");
     await releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
     for (const rec of loadRegistry(identity)) expect(rec.state).toBe("claimed");
+  });
+
+  test("delivery landing mid-release wins: the row survives untouched", async () => {
+    const row = seedTree("luna", "acme-5-work", "pending");
+    // The release awaits git between its pending-read and its patch; simulate
+    // the handler's CAS landing in that gap by delivering before the call.
+    // The release's own in-callback re-check must then refuse to mutate.
+    markHandoffDelivered(identity, row.path);
+    await releaseStrandedClaims({ repoName: identity, emit: () => { throw new Error("must not emit"); }, log: fakeLog() });
+    const stored = loadRegistry(identity)[0]!;
+    expect(stored.state).toBe("claimed");
+    expect(stored.handoff).toBe("done");
   });
 
   test("a locked pending claim is skipped (provision still in flight)", async () => {
