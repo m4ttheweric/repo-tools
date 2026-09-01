@@ -14,12 +14,12 @@ import { identityFromRemote, serializeIdentity } from "./settings/identity.ts";
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
 export { getRepoRoot, getCurrentBranch, getRemoteUrl } from "./git.ts";
-export { updateRepoIndex, getKnownRepos, getKnownReposCached, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "./repo-index.ts";
+export { updateRepoIndex, getKnownRepos, getKnownReposCached, findKnownRepo, repoCarriesWorktree, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "./repo-index.ts";
 
 // ─── Internal imports ────────────────────────────────────────────────────────
 
 import { getRepoRoot, getRemoteUrl } from "./git.ts";
-import { updateRepoIndex, getKnownRepos, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
+import { updateRepoIndex, getKnownRepos, findKnownRepo, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
 import { repoLabel } from "./repo-label.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -377,7 +377,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
   // Find current repo (if any)
   const currentIdentity = getRepoIdentity();
   const currentRepo = currentIdentity
-    ? repos.find((r) => r.repoName === currentIdentity.repoName)
+    ? findKnownRepo(repos, currentIdentity)
     : null;
 
   let selectedPath: string;

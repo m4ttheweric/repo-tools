@@ -8,12 +8,13 @@
  * docs/superpowers/specs/2026-08-20-rt-statedb.md — "Tables (v1)"
  * (`branch_cache`), "Store-by-store" item 1, and "New: branch-cache GC".
  *
- * `branch_cache` keeps the bare BRANCH NAME as its primary key (not
- * `(repo, branch)`): the bare branch is the cache's semantic key today, and
- * `enrichBranches`' `fetchAndCache` path has no repoName to offer. `repo`
- * stays a nullable attribute, exactly as `CacheEntry.repoName?` is optional
- * today. Consumer rewiring (daemon, enrich.ts, handlers) is Task 3 — this
- * module only produces the store; nothing outside lib/state/ imports it yet.
+ * `branch_cache`'s primary key is the COMPOSITE `composeKey(repo, branch)`:
+ * `${identity}:${branch}`, degrading to the bare branch only when the entry
+ * carries no repo, so two repos sharing a branch name get two rows instead of
+ * overwriting each other. `repo` is the same identity kept as its own nullable
+ * column, so it can be queried and GC'd on. The two therefore have to move
+ * together: re-keying `repo` alone strands the row behind a key naming the old
+ * repo (see `repairCompositeKeys`).
  *
  * SQLITE_BUSY policy: every row write here goes through `persistOrWarn`
  * (lib/state/busy.ts), for BOTH connection flavors, deliberately. The store
@@ -50,8 +51,57 @@ export interface CacheEntry {
  * identities. Exported for the daemon-boot migration runner; this module
  * does not wire the boot call.
  */
-export function rekeyBranchCacheTable(): Promise<RekeyReport> {
-  return rekeyTableColumn("branch_cache", "repo");
+export async function rekeyBranchCacheTable(): Promise<RekeyReport> {
+  const report = await rekeyTableColumn("branch_cache", "repo");
+  report.migrated.push(...repairCompositeKeys());
+  return report;
+}
+
+/**
+ * Second pass: the PRIMARY KEY, which `rekeyTableColumn` cannot reach.
+ *
+ * The `branch` column holds the composite `${repo}:${branch}` every reader
+ * composes, so rewriting `repo` alone leaves the key naming the OLD repo, or,
+ * for a row written under the original bare-PK schema, naming no repo at all.
+ * Either way exact lookup misses and readers fall through to `getByBranch`'s
+ * suffix scan, which can hand back ANOTHER repo's row for a branch name two
+ * repos share.
+ *
+ * Deliberately NOT gated on the repo column having just been re-keyed: a bare
+ * key whose repo an earlier boot already fixed is the common stranded shape.
+ * Returns the keys it rewrote, so the boot runner knows to reload the map.
+ */
+function repairCompositeKeys(): string[] {
+  const db = getStateDb();
+  const rows = db
+    .query("SELECT rowid AS id, branch, repo FROM branch_cache WHERE repo IS NOT NULL;")
+    .all() as { id: number; branch: string; repo: string }[];
+
+  const repaired: string[] = [];
+  for (const { id, branch, repo } of rows) {
+    const want = composeKey(repo, branchOf(branch));
+    if (want === branch) continue;
+    try {
+      persistOrWarn("branch-cache", () => {
+        db.query("UPDATE branch_cache SET branch = ? WHERE rowid = ?;").run(want, id);
+      }, { op: "repair-key", from: branch, to: want });
+    } catch (err) {
+      if (!(err as { code?: string } | undefined)?.code?.startsWith("SQLITE_CONSTRAINT")) throw err;
+      // The correct key is already taken, so this row is the stale
+      // pre-migration copy, same drop policy as rekeyTableColumn's.
+      db.query("DELETE FROM branch_cache WHERE rowid = ?;").run(id);
+      console.warn(`rt: branch_cache key ${branch} collided with an existing ${want} row; dropped the stale duplicate`);
+    }
+    // Verify-persisted, matching rekeyTableColumn: persistOrWarn swallows
+    // SQLITE_BUSY, so a row still under its old key was NOT repaired, and
+    // reporting it would have the boot runner reload a map that is still wrong.
+    if (db.query("SELECT 1 FROM branch_cache WHERE branch = ? LIMIT 1;").get(branch)) {
+      console.warn(`rt: branch_cache key repair ${branch} -> ${want} did not persist, leaving it`);
+      continue;
+    }
+    repaired.push(branch);
+  }
+  return repaired;
 }
 
 /** state.db keys the branch cache on `${serializedIdentity}:${branch}`. Split

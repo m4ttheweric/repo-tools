@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { resolve, join } from "path";
 import { setSetting } from "../settings/write.ts";
@@ -117,6 +117,11 @@ describe("getKnownReposAsync parity", () => {
     realRepo(gonePath);
     indexRepo("gone-repo", gonePath);
     rmSync(goneParent, { recursive: true, force: true });
+    // Instrument for the CI-only flake (room hunt 2026-09-01): both sync and
+    // async classifiers agreed the dir was LIVE in every failing run, which
+    // points at this delete not taking rather than at existsSync. If this
+    // fires on CI, the root cause is settled in one firing.
+    expect(existsSync(goneParent)).toBe(false);
 
     const syncResult = getKnownRepos({ includeMissing: true });
     const asyncResult = await getKnownReposAsync({ includeMissing: true });
@@ -136,6 +141,14 @@ describe("getKnownReposAsync parity", () => {
     const multi = syncResult.find((r) => r.repoName === "multi-repo");
     expect(multi?.worktrees.length).toBe(2);
     const gone = syncResult.find((r) => r.repoName === "gone-repo");
+    if (gone?.missing !== true) {
+      // Same hunt: dump the evidence the room could never see — the row's
+      // recorded path spelling and whether that exact path exists right now.
+      // ALL matching rows, not the first: a live/scanned duplicate shadowing
+      // the lost row via find() is one of the two standing theories.
+      const goneRows = syncResult.filter((r) => r.repoName === "gone-repo");
+      throw new Error(`gone-repo not classified missing: ${JSON.stringify({ goneRows, gonePath, existsNow: existsSync(gonePath) })}`);
+    }
     expect(gone?.missing).toBe(true);
 
     void candidate;

@@ -9,6 +9,7 @@
 import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join, resolve } from "path";
+import { fileURLToPath } from "url";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import { detectEditors } from "../lib/editors.ts";
 
@@ -21,7 +22,7 @@ function findVsix(): string | null {
   if (existsSync(bundledVsix)) return bundledVsix;
 
   // 2. Check relative to source repo (development mode only — skip in compiled binary)
-  const metaUrl = new URL(import.meta.url).pathname;
+  const metaUrl = fileURLToPath(import.meta.url);
   if (metaUrl.startsWith("/$bunfs")) return null; // compiled binary — no source access
 
   const sourceDir = resolve(metaUrl, "../../extensions/vscode/rt-context");

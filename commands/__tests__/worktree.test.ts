@@ -9,7 +9,7 @@ import { execSync } from "child_process";
 import { mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
-import { repoLabel, worktreeList, worktreeProvision } from "../worktree.ts";
+import { repoLabel, worktreeAwaitReady, worktreeList, worktreeProvision } from "../worktree.ts";
 import { getRepoIdentity } from "../../lib/repo.ts";
 import { closeStateDb } from "../../lib/state/index.ts";
 import { deriveRepoIdentity, serializeIdentity } from "../../lib/settings/identity.ts";
@@ -133,6 +133,64 @@ describe("worktree CLI identity plumbing", () => {
 
     const call = calls.find((c) => c.cmd === "worktree:list");
     expect(call?.payload?.repoName).toBe(identity);
+  });
+
+  test("provision --wait sends wait:true; without the flag the payload carries no wait", async () => {
+    const repoPath = makeGitRepo("provision-wait-repo");
+    process.chdir(repoPath);
+    const calls = installFakeDaemon({
+      ok: true,
+      data: { tree: "t", path: "p", branch: "b", branchState: "new" },
+    });
+
+    await worktreeProvision(["--branch", "rt-96-x", "--wait", "--json"], {});
+    await worktreeProvision(["--branch", "rt-96-y", "--json"], {});
+
+    const [withWait, withoutWait] = calls.filter((c) => c.cmd === "worktree:provision");
+    expect(withWait!.payload!.wait).toBe(true);
+    expect(withoutWait!.payload!.wait).toBeUndefined();
+  });
+
+  test("await-ready sends the serialized identity and tree name to worktree:await-ready", async () => {
+    const repoPath = makeGitRepo("await-repo");
+    process.chdir(repoPath);
+    const identity = serializeIdentity(await deriveRepoIdentity(repoPath));
+    const calls = installFakeDaemon({
+      ok: true,
+      data: { tree: "alpha", path: "p", ready: true, readyAt: "2026-09-01T00:00:00.000Z" },
+    });
+
+    await worktreeAwaitReady(["alpha", "--json"], {});
+
+    const call = calls.find((c) => c.cmd === "worktree:await-ready");
+    expect(call).toBeDefined();
+    expect(call!.payload!.repoName).toBe(identity);
+    expect(call!.payload!.tree).toBe("alpha");
+  });
+
+  test("await-ready reports unfinished readiness without printing an undefined step name", async () => {
+    const repoPath = makeGitRepo("await-pending-repo");
+    process.chdir(repoPath);
+    // Not-ready with no failedStep is the still-pending case (the settle never
+    // got the tree lock), not a failed step.
+    installFakeDaemon({
+      ok: true,
+      data: { tree: "alpha", path: "p", ready: false, readyAt: null },
+    });
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+    try {
+      await worktreeAwaitReady(["alpha"], {});
+    } finally {
+      console.log = origLog;
+      process.exitCode = 0;
+    }
+
+    const out = lines.join("\n");
+    expect(out).not.toContain("undefined");
+    expect(out).toContain("alpha");
   });
 
   test("an unresolvable --repo exits with a clear message instead of sending a bogus key to the daemon", async () => {

@@ -25,6 +25,7 @@ rt worktree provision [flags]
 | `--branch` | text |  | Explicit branch name (overrides --ticket) |
 | `--owner` | text |  | Who's claiming this tree |
 | `--disposal` | text |  | Disposal mode: merge (default) or job |
+| `--wait` | boolean | `false` | Block until background ready steps (installs, migrations) settle instead of returning immediately |
 | [`--json`](/guides/common-flags) | boolean | `false` | Print the raw result as JSON |
 
 _See code: [commands/worktree.ts › worktreeProvision](https://github.com/m4ttstack/rt/blob/main/commands/worktree.ts)_

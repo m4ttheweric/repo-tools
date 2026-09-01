@@ -8,7 +8,8 @@
  *   rt settings list [--repo <name>] [--json]
  *   rt settings explain <key> [--repo <name>]
  *
- * `--repo <name>` resolves a repo NAME to a path via ~/.mattstack/rt/repos.json,
+ * `--repo <name>` resolves through lib/repo-arg.ts (name, path, or serialized
+ * identity) to the identity the index keys on, then that key to a path,
  * derives its identity (async — never a sync spawn), and feeds the resolver
  * `expandCtx.repoRoot` (so a `${repoRoot}` value in a `get` never throws when
  * --repo was given). Without --repo, an unexpandable `${repoRoot}` is the
@@ -25,6 +26,7 @@
 import { parse, type ParseError } from "jsonc-parser";
 import { bold, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { loadRepoIndex } from "../lib/repo-index.ts";
+import { resolveRepoArg } from "../lib/repo-arg.ts";
 import { repoDataDir } from "../lib/rt-paths.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import {
@@ -100,7 +102,10 @@ function repoIndex(): Record<string, string> {
  */
 async function resolveRepoContext(repoName: string | undefined): Promise<RepoContext> {
   if (!repoName) return { repoIdentity: null };
-  const repoPath = repoIndex()[repoName];
+  // The index keys on serialized identities, so a typed name has to resolve to
+  // one before it can be looked up. Every registered repo reads as
+  // unregistered otherwise.
+  const repoPath = repoIndex()[await resolveRepoArg(repoName, fail)];
   if (!repoPath) fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);
   const derived = await deriveRepoIdentity(repoPath);
   const identity = derived.kind === "remote" ? derived.id : null;
@@ -221,8 +226,14 @@ export async function settingsSet(args: string[]): Promise<void> {
   const repoName = flagValue(args, "--repo");
   let repoPath: string | undefined;
   let repoIdentity: string | undefined;
+  // Three forms, never interchangeable: `repoKey` is the SERIALIZED identity
+  // the index and the data dirs key on, `repoIdentity` is the RAW host/path
+  // form settings sections key on, and `repoName` is the label the user typed
+  // and the only one safe to print back.
+  let repoKey: string | undefined;
   if (repoName) {
-    repoPath = repoIndex()[repoName];
+    repoKey = await resolveRepoArg(repoName, fail);
+    repoPath = repoIndex()[repoKey];
     if (!repoPath) fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);
     const derived = await deriveRepoIdentity(repoPath);
     if (derived.kind !== "remote") fail(`repo "${repoName}"'s remote does not normalize to an identity — repo-scoped settings are unreachable for it (see \`rt settings explain\`)`);
@@ -256,9 +267,9 @@ export async function settingsSet(args: string[]): Promise<void> {
   // command) in an affected repo refreshes its cache the next time it runs;
   // there is no detector for the gap in between yet (a natural home would be
   // `rt verify`, not built here).
-  if (key === "rt.hooks" && repoPath && repoIdentity) {
+  if (key === "rt.hooks" && repoPath && repoIdentity && repoKey) {
     const { regenerateHooksCache } = await import("./hooks.ts");
-    const wrote = regenerateHooksCache(repoPath, repoDataDir(repoName as string), repoIdentity);
+    const wrote = regenerateHooksCache(repoPath, repoDataDir(repoKey), repoIdentity);
     if (wrote) {
       console.log(`  ${dim}hooks.json regenerated (${repoName})${reset}`);
     } else {

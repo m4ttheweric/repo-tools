@@ -1,6 +1,5 @@
-import { join } from "path";
 import { canon } from "../fs-canon.ts";
-import { repoDataDir } from "../rt-paths.ts";
+import { legacyRepoFile } from "../legacy-repo-data.ts";
 import { deleteKvValue, getKvValue, hasKvValue, importLegacyJsonFile, listKvValues, setKvValue, setKvValueCritical } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
@@ -19,6 +18,9 @@ export interface TreeRecord {
   claimedAt?: string;
   readyAt?: string; // last successful full readiness (ISO)
   readyStamp?: string; // commit sha the ready steps last ran against
+  readyPendingAt?: string; // ISO; claim-time steps queued to a background task (RT-96)
+  handoff?: "pending" | "done"; // claim delivery marker; still "pending" after the handler replied means the provision died mid-flight (RT-99)
+  readyFailure?: string; // failed step name from the last background settle
   disposableReason?: string;
   retryFailures?: number; // shared backoff counter (create/freshen)
   nextRetryAt?: string; // ISO; skip mutating work until then
@@ -29,7 +31,7 @@ const WORKTREE_REGISTRY_NS = "worktree-registry";
 
 /** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function registryPath(repoName: string): string {
-  return join(repoDataDir(repoName), "worktrees.json");
+  return legacyRepoFile(repoName, "worktrees.json");
 }
 
 export interface Registry {

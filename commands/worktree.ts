@@ -79,12 +79,14 @@ export interface ProvisionArgs {
   branch?: string;
   owner?: string;
   disposal?: string;
+  wait: boolean;
   json: boolean;
 }
 
 export function parseProvisionArgs(args: string[]): ProvisionArgs {
   let rest = args;
   const json = takeBoolFlag(rest, "--json"); rest = json.rest;
+  const wait = takeBoolFlag(rest, "--wait"); rest = wait.rest;
   const repo = takeFlag(rest, "--repo"); rest = repo.rest;
   const ticket = takeFlag(rest, "--ticket"); rest = ticket.rest;
   const title = takeFlag(rest, "--title"); rest = title.rest;
@@ -98,6 +100,7 @@ export function parseProvisionArgs(args: string[]): ProvisionArgs {
     branch: branch.value,
     owner: owner.value,
     disposal: disposal.value,
+    wait: wait.present,
     json: json.present,
   };
 }
@@ -365,6 +368,7 @@ export async function worktreeProvision(args: string[], _ctx: unknown): Promise<
   const payload: Record<string, unknown> = { repoName };
   if (parsed.owner) payload.owner = parsed.owner;
   if (parsed.disposal) payload.disposal = parsed.disposal;
+  if (parsed.wait) payload.wait = true;
   if (parsed.branch) {
     payload.branch = parsed.branch;
   } else if (parsed.ticket) {
@@ -381,11 +385,80 @@ export async function worktreeProvision(args: string[], _ctx: unknown): Promise<
   console.log("");
   console.log(`  ${green}✓${reset} ${bold}${d.tree}${reset}  ${dim}${d.path}${reset}`);
   console.log(`  branch ${cyan}${d.branch}${reset} ${dim}(${d.branchState}${d.wasOnDeck ? ", from the on-deck pool" : ""})${reset}`);
+  if (d.readyHeld) {
+    console.log(`  ${yellow}⚠${reset} team ready steps held pending approval — run ${cyan}rt worktree ready-approve${reset}`);
+  }
+  if (d.readyPending) {
+    console.log(`  ${dim}⧗ settling in background: ${(d.readySteps ?? []).join(", ")}${reset}`);
+    console.log(`  ${dim}  rt worktree await-ready ${d.tree} — wait for it before running anything that needs deps${reset}`);
+  }
   if (d.readyFailed) {
     console.log(`  ${yellow}⚠${reset} ready step "${d.failedStep}" failed — tree is usable but dependencies may be stale`);
   }
   console.log("");
   await maybeOfferClaudeHook(parsed.json);
+}
+
+// ─── await-ready ─────────────────────────────────────────────────────────────
+
+/** Settles can legitimately run for minutes (installs, migrations); give the
+ *  join more headroom than the steps' own timeouts before daemonUnavailable. */
+const AWAIT_READY_TIMEOUT_MS = 10 * 60_000;
+
+export interface AwaitReadyArgs {
+  tree?: string;
+  repoName?: string;
+  json: boolean;
+}
+
+export function parseAwaitReadyArgs(args: string[]): AwaitReadyArgs {
+  let rest = args;
+  const json = takeBoolFlag(rest, "--json"); rest = json.rest;
+  const repo = takeFlag(rest, "--repo"); rest = repo.rest;
+  return { tree: rest[0], repoName: repo.value, json: json.present };
+}
+
+export async function worktreeAwaitReady(args: string[], _ctx: unknown): Promise<void> {
+  const parsed = parseAwaitReadyArgs(args);
+  let treeName = parsed.tree;
+  let repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m)) : undefined;
+
+  if (!treeName) {
+    if (!process.stdin.isTTY || parsed.json || process.env.RT_BATCH) {
+      failText(parsed.json, "no tree — pass a tree name (no TTY for the picker)");
+    }
+    // Only claimed trees carry a claim-time settle to wait on.
+    const rows = (await fetchTreeRows(parsed.json, repoName)).filter((r) => r.state === "claimed");
+    const picked = await pickOneTree(rows, "Await which worktree's readiness?");
+    if (!picked) { console.log(`\n  ${dim}nothing selected${reset}\n`); return; }
+    treeName = picked.name;
+    repoName = picked.repoName;
+  }
+  if (!repoName) {
+    repoName = currentRepoIdentity() ?? undefined;
+    if (!repoName) failText(parsed.json, "no repo — pass --repo <name> or run from inside a registered repo");
+  }
+
+  const res = await daemonQuery("worktree:await-ready", { repoName, tree: treeName }, AWAIT_READY_TIMEOUT_MS);
+  const ok = requireQueryResult(parsed.json, res);
+
+  if (parsed.json) { console.log(JSON.stringify(ok.data, null, 2)); return; }
+
+  const d = ok.data;
+  console.log("");
+  if (d.ready) {
+    console.log(`  ${green}✓${reset} ${bold}${d.tree}${reset} ready ${dim}(${d.readyAt ?? "no steps to run"})${reset}`);
+  } else {
+    process.exitCode = 1;
+    // Not-ready with no failedStep means the steps never got to run (the
+    // settle could not take the tree lock), which is a different state from
+    // a step that ran and failed.
+    const why = d.failedStep
+      ? `step "${d.failedStep}" failed`
+      : "readiness did not complete";
+    console.log(`  ${yellow}⚠${reset} ${bold}${d.tree}${reset} not ready — ${why}; tree is usable but dependencies may be stale`);
+  }
+  console.log("");
 }
 
 // ─── create ──────────────────────────────────────────────────────────────────

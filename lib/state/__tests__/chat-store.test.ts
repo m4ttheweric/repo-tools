@@ -27,6 +27,7 @@ import {
   markRead,
   parseMentions,
   pendingMessages,
+  ackMessage,
   postMessage,
   readUnread,
   recipientsFor,
@@ -38,6 +39,34 @@ let n = 0;
 function freshDb() {
   return openStateDb(join(tmpdir(), `chat-test-${process.pid}-${n++}.db`));
 }
+
+test("ackMessage records an ack and reports the author it belongs to", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  const posted = postMessage({ room: "build", handle: "a", body: "taking the picker branch" }, db);
+  const res = ackMessage({ messageId: posted!.id, handle: "b" }, db);
+  expect(res).toEqual({ ok: true, author: "a", room: "build", body: "taking the picker branch", already: false });
+});
+
+test("acking twice is idempotent and says so, so a re-ack never wakes the author again", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  const posted = postMessage({ room: "build", handle: "a", body: "hi" }, db);
+  ackMessage({ messageId: posted!.id, handle: "b" }, db);
+  expect(ackMessage({ messageId: posted!.id, handle: "b" }, db)).toMatchObject({ ok: true, already: true });
+});
+
+test("ackMessage refuses an unknown message, a non-member, and your own message", () => {
+  const db = freshDb();
+  joinRoom({ room: "build", handle: "a" }, db);
+  joinRoom({ room: "build", handle: "b" }, db);
+  const posted = postMessage({ room: "build", handle: "a", body: "hi" }, db);
+  expect(ackMessage({ messageId: 9999, handle: "b" }, db)).toEqual({ ok: false, reason: "unknown-message" });
+  expect(ackMessage({ messageId: posted!.id, handle: "stranger" }, db)).toEqual({ ok: false, reason: "not-a-member" });
+  expect(ackMessage({ messageId: posted!.id, handle: "a" }, db)).toEqual({ ok: false, reason: "own-message" });
+});
 
 test("rejects names outside the charset", () => {
   expect(isValidChatName("build")).toBe(true);

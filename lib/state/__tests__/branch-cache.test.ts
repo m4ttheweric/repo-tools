@@ -558,3 +558,128 @@ describe("rekeyBranchCacheTable", () => {
     expect(report.retained).toEqual([]);
   });
 });
+
+// The `branch` column IS the composite key every reader composes, but the
+// re-key only ever rewrote `repo`. A row left with a pre-composite bare key
+// (written under the older bare-PK schema, its repo re-keyed by a later boot)
+// is unreachable by exact lookup, so readers fall through to getByBranch's
+// suffix scan -- which can hand back ANOTHER repo's row for a branch name two
+// repos share.
+describe("rekeyBranchCacheTable: composite primary key repair", () => {
+  const origHome = process.env.HOME;
+  const WIRE = "remote:gitlab.com%2Fg%2Fr";
+  const OTHER = "remote:gitlab.com%2Fg%2Fother";
+  let home: string;
+  let warnSpy: ReturnType<typeof spyOn<Console, "warn">>;
+
+  function insertRaw(branch: string, repo: string | null, linearId = "L-1", fetchedAt = 1000): void {
+    getStateDb()
+      .query("INSERT INTO branch_cache (branch, repo, ticket, linear_id, mr, fetched_at) VALUES (?, ?, NULL, ?, NULL, ?);")
+      .run(branch, repo, linearId, fetchedAt);
+  }
+
+  function keys(): string[] {
+    return (getStateDb().query("SELECT branch FROM branch_cache ORDER BY branch;").all() as { branch: string }[])
+      .map(r => r.branch);
+  }
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-branch-cache-pk-"));
+    process.env.HOME = home;
+    closeStateDb();
+    warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    process.env.HOME = origHome;
+    closeStateDb();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("rebuilds a bare key onto the composite its repo already carries", async () => {
+    insertRaw("master", WIRE);
+
+    await rekeyBranchCacheTable();
+
+    expect(keys()).toEqual([composeKey(WIRE, "master")]);
+  });
+
+  test("reports the repair, so the boot runner reloads the in-memory map", async () => {
+    insertRaw("master", WIRE);
+
+    const report = await rekeyBranchCacheTable();
+
+    expect(report.migrated).toContain("master");
+  });
+
+  test("the repaired row keeps its payload", async () => {
+    insertRaw("master", WIRE, "LIN-7", 4242);
+
+    await rekeyBranchCacheTable();
+
+    const row = getStateDb().query("SELECT linear_id, fetched_at FROM branch_cache WHERE branch = ?;")
+      .get(composeKey(WIRE, "master")) as { linear_id: string; fetched_at: number };
+    expect(row.linear_id).toBe("LIN-7");
+    expect(row.fetched_at).toBe(4242);
+  });
+
+  test("a bare row does not clobber another repo's row for the same branch", async () => {
+    insertRaw("master", WIRE);
+    insertRaw(composeKey(OTHER, "master"), OTHER, "OTHER-1");
+
+    await rekeyBranchCacheTable();
+
+    expect(keys()).toEqual([composeKey(OTHER, "master"), composeKey(WIRE, "master")].sort());
+    const other = getStateDb().query("SELECT linear_id FROM branch_cache WHERE branch = ?;")
+      .get(composeKey(OTHER, "master")) as { linear_id: string };
+    expect(other.linear_id).toBe("OTHER-1");
+  });
+
+  test("a bare row colliding with its own repo's composite row is dropped, not duplicated", async () => {
+    insertRaw("master", WIRE, "STALE");
+    insertRaw(composeKey(WIRE, "master"), WIRE, "CURRENT");
+
+    await rekeyBranchCacheTable();
+
+    expect(keys()).toEqual([composeKey(WIRE, "master")]);
+    const row = getStateDb().query("SELECT linear_id FROM branch_cache WHERE branch = ?;")
+      .get(composeKey(WIRE, "master")) as { linear_id: string };
+    expect(row.linear_id).toBe("CURRENT");
+  });
+
+  // persistOrWarn swallows SQLITE_BUSY, so a "repaired" key can still be sitting
+  // under its old spelling. Reporting it migrated makes the boot runner reload a
+  // map that is still wrong. rekeyTableColumn verifies persistence; so must this.
+  test("does not report a repair whose write never landed", async () => {
+    insertRaw("master", WIRE);
+    const db = getStateDb();
+    const realQuery = db.query.bind(db);
+    const querySpy = spyOn(db, "query").mockImplementation(((sql: string) =>
+      sql.startsWith("UPDATE branch_cache SET branch")
+        ? ({ run: () => {} } as never)
+        : realQuery(sql)) as never);
+
+    const report = await rekeyBranchCacheTable();
+    querySpy.mockRestore();
+
+    expect(report.migrated).not.toContain("master");
+  });
+
+  test("leaves a NULL-repo row's bare key alone, having nothing to attribute it to", async () => {
+    insertRaw("orphan-branch", null);
+
+    await rekeyBranchCacheTable();
+
+    expect(keys()).toEqual(["orphan-branch"]);
+  });
+
+  test("an already-composite row is untouched", async () => {
+    insertRaw(composeKey(WIRE, "feature/x"), WIRE);
+
+    const report = await rekeyBranchCacheTable();
+
+    expect(keys()).toEqual([composeKey(WIRE, "feature/x")]);
+    expect(report.migrated).toEqual([]);
+  });
+});
