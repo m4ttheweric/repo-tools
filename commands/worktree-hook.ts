@@ -1,17 +1,79 @@
 /**
- * rt worktree claude-hook — Claude Code WorktreeCreate/WorktreeRemove hook.
+ * rt worktree claude-hook (Claude Code WorktreeCreate/WorktreeRemove hook).
  * Protocol (probed 2026-09-01): stdin JSON; stdout = absolute tree path on
  * create; non-zero exit surfaces stderr verbatim in the Claude session.
  * The WorktreeRemove stdin shape is UNVERIFIED (never observed firing), so
  * the parser accepts worktree_path or path and treats absence as a noop.
  */
+import { homedir } from "os";
+import { join } from "path";
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { currentRepoIdentityFor } from "../lib/repo-arg.ts";
+import { claudeWorktreeHookStatus, installClaudeWorktreeHooks, uninstallClaudeWorktreeHooks } from "../lib/claude-settings.ts";
 import { decideCreate, decideRemove, stockWorktreeAdd } from "../lib/worktree/claude-hook.ts";
 import { explainError } from "./worktree.ts";
 import { findTreeByPath } from "../lib/worktree/registry.ts";
 
 const HOOK_PROVISION_TIMEOUT_MS = 240_000;
+
+export function claudeSettingsPath(): string {
+  return join(process.env.HOME ?? homedir(), ".claude", "settings.json");
+}
+
+function emit(json: boolean, data: Record<string, unknown>, text: string): void {
+  console.log(json ? JSON.stringify(data) : `\n  ${text}\n`);
+}
+
+function settingsFail(json: boolean, err: unknown): never {
+  emit(json, { error: String(err) }, `✗ ${String(err)}`);
+  process.exit(1);
+}
+
+export async function hookInstallCommand(args: string[], _ctx: unknown): Promise<void> {
+  const json = args.includes("--json");
+  const rtBin = Bun.which("rt");
+  if (!rtBin) {
+    emit(json, { error: "rt-not-on-path" }, "✗ rt is not on PATH; install rt first");
+    process.exit(1);
+  }
+  try {
+    const r = installClaudeWorktreeHooks(claudeSettingsPath(), rtBin);
+    emit(json, { installed: true, changed: r.changed, rtBin }, r.changed ? `✓ hook installed (${rtBin})` : "✓ already installed");
+  } catch (err) {
+    settingsFail(json, err);
+  }
+}
+
+export async function hookUninstallCommand(args: string[], _ctx: unknown): Promise<void> {
+  const json = args.includes("--json");
+  try {
+    const r = uninstallClaudeWorktreeHooks(claudeSettingsPath());
+    emit(json, { installed: false, changed: r.changed }, r.changed ? "✓ hook entries removed" : "nothing to remove");
+  } catch (err) {
+    settingsFail(json, err);
+  }
+}
+
+export async function hookStatusCommand(args: string[], _ctx: unknown): Promise<void> {
+  const json = args.includes("--json");
+  try {
+    const s = claudeWorktreeHookStatus(claudeSettingsPath());
+    if (json) {
+      console.log(JSON.stringify(s));
+      return;
+    }
+    if (!s.installed) {
+      console.log("\n  hook not installed (rt worktree hook install)\n");
+      return;
+    }
+    console.log(`\n  installed: ${s.command}`);
+    console.log(s.binaryExists
+      ? "  binary: ok\n"
+      : "  ✗ binary missing (EnterWorktree will fail everywhere); escape hatch: rt worktree hook uninstall\n");
+  } catch (err) {
+    settingsFail(json, err);
+  }
+}
 
 type ParsedStdin =
   | { event: "create"; cwd: string; name: string }

@@ -18,9 +18,9 @@ export function currentRepoIdentity(): string | undefined {
 
 /**
  * Same as `currentRepoIdentity()`, but resolves against an explicit `cwd`
- * instead of `process.cwd()` — for callers (the Claude Code worktree hook)
- * that receive a cwd out-of-band and cannot trust the process's own cwd to
- * match it.
+ * instead of `process.cwd()` (for callers, such as the Claude Code worktree
+ * hook, that receive a cwd out-of-band and cannot trust the process's own
+ * cwd to match it).
  */
 export function currentRepoIdentityFor(cwd: string): string | undefined {
   const repoRoot = getRepoRoot(cwd);

@@ -561,6 +561,38 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Remove", flag: "--remove", type: "boolean", default: false, hint: "Handle a WorktreeRemove event (courtesy guarded dispose)" },
         ],
       },
+      hook: {
+        description: "Claude Code worktree hook: install, remove, or inspect the WorktreeCreate/WorktreeRemove wiring",
+        subcommands: {
+          install: {
+            description: "Write the hook pair into ~/.claude/settings.json",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookInstallCommand",
+            context: "worktree",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+          uninstall: {
+            description: "Remove rt's hook entries from ~/.claude/settings.json",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookUninstallCommand",
+            context: "worktree",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+          status: {
+            description: "Report whether the hook is installed and healthy",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookStatusCommand",
+            context: "worktree",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+        },
+      },
       create: {
         description: "Create a fresh worktree (optionally straight into the on-deck pool)",
         module: "./commands/worktree.ts",
