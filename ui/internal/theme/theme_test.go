@@ -63,3 +63,17 @@ func TestCardWidthIsTheDesignCap(t *testing.T) {
 		t.Fatalf("CardWidth = %d, want 88", CardWidth)
 	}
 }
+
+func TestPickerTokens(t *testing.T) {
+	want := map[string]string{
+		"hoverBg": "#251E3D", "surface": "#221A35", "blue": "#6B9DFF",
+	}
+	got := map[string]string{
+		"hoverBg": Hex(HoverBg), "surface": Hex(Surface), "blue": Hex(Blue),
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %s, want %s", k, got[k], v)
+		}
+	}
+}

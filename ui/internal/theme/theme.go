@@ -13,6 +13,8 @@ import (
 var (
 	Bg       = lipgloss.Color("#161224")
 	BgSubtle = lipgloss.Color("#1C162C")
+	Surface  = lipgloss.Color("#221A35")
+	HoverBg  = lipgloss.Color("#251E3D")
 	SelBg    = lipgloss.Color("#37284B")
 	WarnBg   = lipgloss.Color("#2A2033")
 	Rule     = lipgloss.Color("#2A2340")
@@ -24,6 +26,7 @@ var (
 	Coral    = lipgloss.Color("#FF7979")
 	Peach    = lipgloss.Color("#FFB77A")
 	Cyan     = lipgloss.Color("#5AAAFF")
+	Blue     = lipgloss.Color("#6B9DFF")
 	Lav      = lipgloss.Color("#BD93F9")
 
 	Text     = lipgloss.Color("#E6E0FF")
@@ -48,8 +51,8 @@ const (
 var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"}
 
 // CardWidth caps the prompt card so it reads as a card on a wide terminal
-// rather than a stripe across it. The fzf pickers stay full width: fzf has no
-// max-width, and a fixed --margin collapses the box when the window narrows.
+// rather than a stripe across it. The picker card is content-anchored and
+// sizes itself independently of this cap.
 const CardWidth = 88
 
 // Hex renders a palette color back as #RRGGBB; used by tests and the --version banner.
@@ -59,11 +62,11 @@ func Hex(c color.Color) string {
 }
 
 // Huh returns the huh theme that makes its four fields paint with rt's tokens.
-// The form base is the prompt bar: a ▌ edge in the accent, the same edge rt's
-// fzf pickers draw (--border=left, patched glyph). It has to live there because
-// huh renders Group.Base around the group footer alone, which would put the
-// edge beside an empty footer instead of beside the prompt. The group title is
-// the prompt title and the group description is the key legend Go composes.
+// The form base carries the prompt bar edge: a ▌ in the accent color. It has
+// to live there because huh renders Group.Base around the group footer alone,
+// which would put the edge beside an empty footer instead of beside the
+// prompt. The group title is the prompt title and the group description is
+// the key legend Go composes.
 func Huh() huh.Theme { return themed(Pink) }
 
 // HuhDestructive is the same bar with peach accents: the default-no confirm.
