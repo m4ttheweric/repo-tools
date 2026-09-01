@@ -1,7 +1,7 @@
 {
   "t": "pick",
   "protocol": 1,
-  "message": "rt worktree dispose — on-deck pool",
+  "message": "rt worktree dispose (on-deck pool)",
   "breadcrumb": ["rt", "worktree", "dispose"],
   "rows": [
     {

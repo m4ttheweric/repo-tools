@@ -1,6 +1,6 @@
 {
   "t": "update",
-  "message": "rt cd — assured-dev worktrees",
+  "message": "rt cd (assured-dev worktrees)",
   "rows": [
     {
       "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/hedwig",
