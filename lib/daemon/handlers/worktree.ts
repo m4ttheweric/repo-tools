@@ -269,6 +269,7 @@ export function createWorktreeHandlers(
         delete r.owner;
         delete r.disposal;
         delete r.claimedAt;
+        delete r.handoff;
       });
       return;
     }
@@ -276,6 +277,7 @@ export function createWorktreeHandlers(
       r.state = "disposable";
       r.branch = current;
       r.disposableReason = reason;
+      delete r.handoff;
     });
     opts.emit("worktree:disposable", {
       repo: repoName, tree: rec.name, path: rec.path, branch: current, reason,
@@ -377,6 +379,7 @@ export function createWorktreeHandlers(
         const claimWritten = patchTree(repoName, tree.path, (r) => {
           r.state = "claimed";
           r.disposal = disposal;
+          r.handoff = "pending";
           r.claimedAt = new Date().toISOString();
           if (typeof payload.owner === "string" && payload.owner.length > 0) r.owner = payload.owner;
         });
@@ -524,6 +527,12 @@ export function createWorktreeHandlers(
             outcome.data.failedStep = settled.readyFailure;
           }
         }
+      }
+      // Last act before the reply: the caller is about to own this claim.
+      // Still "pending" on a later reconcile pass means this reply never
+      // happened (daemon died mid-provision) and the claim is released (RT-99).
+      if (outcome.ok) {
+        patchTree(repoName, outcome.data.path, (r) => { r.handoff = "done"; });
       }
       return outcome;
     },

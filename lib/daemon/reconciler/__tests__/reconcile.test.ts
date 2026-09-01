@@ -6,7 +6,8 @@ import { join } from "path";
 import type { Logger } from "pino";
 import { closeStateDb } from "../../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../../worktree/registry.ts";
-import { healLegacyPoolRoots, reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
+import { healLegacyPoolRoots, releaseStrandedClaims, reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
+import { tryLockTree } from "../../../worktree/locks.ts";
 import { legacyWorktreePoolRoot, worktreePoolRoot } from "../../../rt-paths.ts";
 
 function fakeLog(): Logger {
@@ -136,5 +137,65 @@ describe("reconcile.ts: healLegacyPoolRoots (RT-95)", () => {
     saveRegistry(plain, [seed("on-deck", worktreePoolRoot(plain), "fred")]);
     healLegacyPoolRoots({ repoName: plain, emit: () => {}, log: fakeLog() });
     expect(loadRegistry(plain)[0]!.state).toBe("on-deck");
+  });
+});
+
+describe("reconcile.ts: releaseStrandedClaims (RT-99)", () => {
+  const identity = "remote:example.com%2Facme%2Frepo";
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtstrand-home-")));
+    closeStateDb();
+  });
+
+  function claimedRow(name: string, branch: string, handoff?: "pending" | "done"): TreeRecord {
+    return {
+      name,
+      path: join(worktreePoolRoot(identity), name),
+      kind: "ephemeral",
+      state: "claimed",
+      branch,
+      createdAt: new Date().toISOString(),
+      claimedAt: new Date().toISOString(),
+      disposal: "merge",
+      ...(handoff ? { handoff } : {}),
+    };
+  }
+
+  test("pending claim still on its pool branch goes back on-deck", () => {
+    saveRegistry(identity, [claimedRow("fred", "on-deck/fred", "pending")]);
+    releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+    const rec = loadRegistry(identity)[0]!;
+    expect(rec.state).toBe("on-deck");
+    expect(rec.claimedAt).toBeUndefined();
+    expect(rec.handoff).toBeUndefined();
+  });
+
+  test("pending claim whose branch moved flips disposable with a stranded reason", () => {
+    const events: Array<{ type: string }> = [];
+    saveRegistry(identity, [claimedRow("bill", "acme-1-work", "pending")]);
+    releaseStrandedClaims({ repoName: identity, emit: (type) => events.push({ type }), log: fakeLog() });
+    const rec = loadRegistry(identity)[0]!;
+    expect(rec.state).toBe("disposable");
+    expect(rec.disposableReason).toContain("stranded claim");
+    expect(events.some((e) => e.type === "worktree:disposable")).toBe(true);
+  });
+
+  test("delivered (done) and pre-marker claims are never touched", () => {
+    saveRegistry(identity, [claimedRow("neville", "acme-2-work", "done"), claimedRow("hedwig", "acme-3-work")]);
+    releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+    for (const rec of loadRegistry(identity)) expect(rec.state).toBe("claimed");
+  });
+
+  test("a locked pending claim is skipped (provision still in flight)", () => {
+    const row = claimedRow("tonks", "acme-4-work", "pending");
+    saveRegistry(identity, [row]);
+    const release = tryLockTree(row.path);
+    try {
+      releaseStrandedClaims({ repoName: identity, emit: () => {}, log: fakeLog() });
+      expect(loadRegistry(identity)[0]!.state).toBe("claimed");
+    } finally {
+      release?.();
+    }
   });
 });

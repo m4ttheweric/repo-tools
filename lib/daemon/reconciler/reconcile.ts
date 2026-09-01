@@ -118,8 +118,47 @@ export function healLegacyPoolRoots(deps: Pick<ReconcileDeps, "repoName" | "emit
  *... a pass that keeps losing simply skips its save and lets the next tick redo
  * it, since every correction here is derived from ground truth and idempotent.
  */
+
+/**
+ * A claim whose handoff marker is still "pending" was written by a provision
+ * that never replied: the daemon died (or was restarted) between the claim
+ * write and the handover, so no caller owns the tree. Release it the way
+ * rollbackClaim would have. Keyed ONLY on the marker: RT-96's
+ * readyPendingAt marks healthy delivered claims mid-background-install and
+ * must never match. A held tree lock means the provision is still alive in
+ * THIS process; skip it, its own handler will finish or roll back.
+ */
+export function releaseStrandedClaims(deps: Pick<ReconcileDeps, "repoName" | "emit" | "log">): void {
+  for (const rec of loadRegistry(deps.repoName)) {
+    if (rec.state !== "claimed" || rec.handoff !== "pending") continue;
+    if (isTreeLocked(rec.path)) continue;
+    const backToPool = typeof rec.branch === "string" && rec.branch.startsWith("on-deck/");
+    const flipped = patchTree(deps.repoName, rec.path, (r) => {
+      delete r.handoff;
+      delete r.claimedAt;
+      delete r.owner;
+      delete r.disposal;
+      if (backToPool) {
+        r.state = "on-deck";
+      } else {
+        r.state = "disposable";
+        r.disposableReason = "stranded claim (provision died before handover)";
+      }
+    });
+    if (!flipped) continue;
+    deps.log.warn({ repo: deps.repoName, tree: rec.name, backToPool }, "reconcile: released a stranded claim");
+    if (!backToPool) {
+      deps.emit("worktree:disposable", {
+        repo: deps.repoName, tree: rec.name, path: rec.path, branch: rec.branch,
+        reason: "stranded claim (provision died before handover)",
+      });
+    }
+  }
+}
+
 export async function reconcileRepo(deps: ReconcileDeps): Promise<TreeRecord[]> {
   healLegacyPoolRoots(deps);
+  releaseStrandedClaims(deps);
   for (let attempt = 1; attempt <= RECONCILE_MAX_ATTEMPTS; attempt++) {
     const result = await reconcilePass(deps, attempt);
     if (!("conflict" in result)) return result.trees;
