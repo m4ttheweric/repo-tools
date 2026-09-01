@@ -521,6 +521,88 @@ test("release frees the id for the next claimant and wakes nobody", async () => 
   expect(calls.map(([sock]) => sock)).toEqual([calls[0]![0]]);
 });
 
+/** Two mention-mode members with live inboxes, plus the human (matt) as a member with no session. */
+async function mentionRoom() {
+  const calls: Array<[string, string]> = [];
+  const sockA = fakeSocketPath();
+  const sockB = fakeSocketPath();
+  const socks: Record<string, string> = { "sess-a": sockA, "sess-b": sockB };
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => {
+      const socketPath = socks[sessionId];
+      return socketPath ? { pid: process.pid, socketPath, status: "idle" } : null;
+    },
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-a", baseHandle: "a" });
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  for (const handle of ["a", "b", "matt"]) await h["chat:join"]({ room: "general", handle, wakeOn: "mention" });
+  return { h, calls, sockA, sockB };
+}
+
+test("the human's room post wakes every mention-mode member, as if it carried @here", async () => {
+  const { h, calls, sockA, sockB } = await mentionRoom();
+  const posted = await h["chat:post"]({ room: "general", handle: "matt", body: "one of you: write the TLDR" });
+  if (!posted.ok) throw new Error("unreachable");
+  expect(posted.data.recipients).toEqual(["a", "b"]);
+  await Bun.sleep(0);
+  expect(calls.map(([sock]) => sock).sort()).toEqual([sockA, sockB].sort());
+  const stored = h.db.query("SELECT mentions FROM chat_messages WHERE id = ?;").get(posted.data.id) as { mentions: string };
+  expect(JSON.parse(stored.mentions)).toEqual(["here"]);
+});
+
+test("an agent's room post that names nobody wakes nobody in a mention-mode room, and stays on the record", async () => {
+  const { h, calls } = await mentionRoom();
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "status: picker lane at 60%" });
+  if (!posted.ok) throw new Error("unreachable");
+  expect(posted.data.recipients).toEqual([]);
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+  const unread = await h["chat:read"]({ handle: "b" });
+  if (!unread.ok) throw new Error("unreachable");
+  expect(unread.data.rooms[0]?.messages.map((m) => m.body)).toEqual(["status: picker lane at 60%"]);
+});
+
+test("the human's --quiet post wakes nobody: quiet outranks the author rule", async () => {
+  const { h, calls } = await mentionRoom();
+  const posted = await h["chat:post"]({ room: "general", handle: "matt", body: "for the record", quiet: true });
+  if (!posted.ok) throw new Error("unreachable");
+  expect(posted.data.recipients).toEqual([]);
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+});
+
+test("the human's post reaches a mention-mode member through the sweep when the live push missed", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let resolverReady = false;
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? binding : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const registryDeps: RegistryDeps = {
+    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? binding : null),
+    alive: () => true,
+    resolveAll: () => new Map(resolverReady ? [["sess-b", binding] as const] : []),
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "matt", wakeOn: "mention" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "mention" });
+  const signIn = (await import("../../state/index.ts")).signIn;
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+  const posted = await h["chat:post"]({ room: "general", handle: "matt", body: "restart in 60s" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+  resolverReady = true;
+  expect(await sweep()).toEqual({ sweptPairs: 1, recoveredMessages: 1 });
+  expect(calls).toHaveLength(1);
+});
+
 test("chat:claim refuses a DM message and your own message", async () => {
   const { h, id } = await claimScenario();
   expect(await h["chat:claim"]({ id, handle: "a" })).toEqual({ ok: false, error: `message #${id} is your own` });

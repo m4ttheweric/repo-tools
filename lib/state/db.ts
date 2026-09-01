@@ -21,8 +21,8 @@ import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8 + v9 + v10). */
-export const SCHEMA_VERSION = 10;
+/** PRAGMA user_version target for the combined schema below (v1 + v2 + v3 + v4 + v6 + v7 + v8 + v9 + v10 + v11). */
+export const SCHEMA_VERSION = 11;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -564,6 +564,15 @@ function runMigrations(db: Database, dir: string): void {
     if (user_version < 10) {
       db.exec("UPDATE chat_members SET wake_on = 'all' WHERE wake_on = 'mention';");
       db.exec("UPDATE chat_room_defaults SET wake_on = 'all' WHERE wake_on = 'mention';");
+    }
+    // v11 reverses v10 for rooms: "all" made an 8-agent room N wakes per
+    // message. An agent's post now wakes who it names; the human's post is
+    // stored as @here by the chat:post handler. DM rooms keep "all" (their
+    // recipient is always mentioned, so the mode is moot there) and an
+    // explicit "none" stays a choice. Same version gate, same one-shot rule.
+    if (user_version < 11) {
+      db.exec("UPDATE chat_members SET wake_on = 'mention' WHERE wake_on = 'all' AND room NOT IN (SELECT room FROM chat_dms);");
+      db.exec("UPDATE chat_room_defaults SET wake_on = 'mention' WHERE wake_on = 'all' AND room NOT IN (SELECT room FROM chat_dms);");
     }
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
     db.exec("COMMIT;");
