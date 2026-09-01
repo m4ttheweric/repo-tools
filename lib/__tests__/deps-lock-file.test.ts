@@ -14,7 +14,7 @@ describe("rt-tray/deps.lock", () => {
   });
   test("every suite app is bundled; only the proxy helper stays pending; sparkle is a build tool", () => {
     const by = Object.fromEntries(lock.tools.map((t) => [t.name, t]));
-    for (const n of ["fzf", "jq", "gh", "glab", "bun", "node", "fast-browser", "gitq", "age-keygen", "sops", "deck", "board", "console", "chat", "cloudflared"])
+    for (const n of ["jq", "gh", "glab", "bun", "node", "fast-browser", "gitq", "age-keygen", "sops", "deck", "board", "console", "chat", "cloudflared"])
       expect(by[n]?.status).toBe("bundled");
     for (const n of ["mattstack-proxy-install"]) expect(by[n]?.status).toBe("pending");
     expect(by["sparkle"]?.kind).toBe("buildtool");
@@ -27,6 +27,6 @@ describe("rt-tray/deps.lock", () => {
     const by = Object.fromEntries(lock.tools.map((t) => [t.name, t]));
     expect(by["bun"]?.entitlements).toBe("jit");
     expect(by["node"]?.entitlements).toBe("jit");
-    for (const n of ["fzf", "jq", "gh", "glab"]) expect(by[n]?.entitlements).toBe("none");
+    for (const n of ["jq", "gh", "glab"]) expect(by[n]?.entitlements).toBe("none");
   });
 });

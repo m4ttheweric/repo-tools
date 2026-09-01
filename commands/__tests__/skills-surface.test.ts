@@ -808,7 +808,7 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     const { rows } = computeRows(packDir, new Set(), surface, new Set());
     const previousPublic = new Set(surface.public);
 
-    // Simulates the palette round trip: the fzf row for "ghost" exists and stays
+    // Simulates the palette round trip: the "ghost" row exists and stays
     // preselected because the user never touched it.
     const resultRows = rows.map((r) => ({ name: r.name, status: r.status }));
 

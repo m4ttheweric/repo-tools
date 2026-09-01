@@ -37,7 +37,7 @@ describe("live deps.lock buildable set", () => {
   });
 
   test("third-party pins carry no repo", () => {
-    for (const name of ["fzf", "jq", "node", "bun", "cloudflared", "sparkle"]) {
+    for (const name of ["jq", "node", "bun", "cloudflared", "sparkle"]) {
       expect(lock.tools.find((t) => t.name === name)?.repo, name).toBeUndefined();
     }
   });

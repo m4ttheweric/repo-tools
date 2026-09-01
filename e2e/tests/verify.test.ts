@@ -74,12 +74,6 @@ describe("verify", () => {
     expect(check!.status).toBe("pass");
   });
 
-  test("fzf check passes", () => {
-    const check = findCheck("tool.fzf");
-    expect(check).toBeDefined();
-    expect(check!.status).toBe("pass");
-  });
-
   test("active flavor's tray app: hard-fails when genuinely nowhere on this machine", () => {
     // installedTrayAppPath (Item 5) also checks the real, absolute
     // /Applications — a location the fixture `home` (passed as the

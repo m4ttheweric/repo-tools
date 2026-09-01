@@ -40,7 +40,7 @@ describe("rowsToChecks", () => {
   });
 
   test("required row missing -> fail, critical", () => {
-    const check = oneCheck([baseRow({ id: "tool.fzf", status: "missing", required: true, detail: "fzf not found" })], { ci: false });
+    const check = oneCheck([baseRow({ id: "tool.jq", status: "missing", required: true, detail: "jq not found" })], { ci: false });
     expect(check.status).toBe("fail");
     expect(check.severity).toBe("critical");
   });
@@ -101,8 +101,8 @@ describe("rowsToChecks", () => {
   });
 
   // Not a blanket tool.* exemption: an unrelated bundled tool must still fail.
-  test("a bundled tool like fzf still fails in ci", () => {
-    expect(oneCheck([baseRow({ id: "tool.fzf", status: "missing", required: true })], { ci: true }).status).toBe("fail");
+  test("a bundled tool like jq still fails in ci", () => {
+    expect(oneCheck([baseRow({ id: "tool.jq", status: "missing", required: true })], { ci: true }).status).toBe("fail");
   });
 
   test("perm.fda needs-you in ci -> warn, never critical", () => {
@@ -167,16 +167,16 @@ describe("rowsToChecks", () => {
     const check = oneCheck(
       [
         baseRow({
-          id: "tool.fzf",
+          id: "tool.jq",
           status: "missing",
           required: true,
-          detail: "fzf not found",
-          action: { type: "link-bundled", label: "Use mattstack's", tool: "fzf" },
+          detail: "jq not found",
+          action: { type: "link-bundled", label: "Use mattstack's", tool: "jq" },
         }),
       ],
       { ci: false },
     );
-    expect(check.detail).toBe("fzf not found — Use mattstack's");
+    expect(check.detail).toBe("jq not found — Use mattstack's");
   });
 
   test("no action on the row leaves detail untouched", () => {
@@ -189,18 +189,18 @@ describe("rowsToChecks", () => {
       TEAM,
       [
         { id: "mac", title: "Your Mac", rows: [baseRow({ id: "tool.macos", status: "ready", required: true, detail: "15.6" })] },
-        { id: "tools", title: "Tools", rows: [baseRow({ id: "tool.fzf", status: "ready", required: true, detail: "fzf 0.50" })] },
+        { id: "tools", title: "Tools", rows: [baseRow({ id: "tool.jq", status: "ready", required: true, detail: "jq 1.8" })] },
       ],
       new Date("2026-01-01T00:00:00.000Z"),
     );
     const checks = rowsToChecks(plan, { ci: false });
-    expect(checks.map((c) => c.name)).toEqual(["tool.macos", "tool.fzf"]);
+    expect(checks.map((c) => c.name)).toEqual(["tool.macos", "tool.jq"]);
   });
 
   test("JSON summary counts match a mix of pass/fail/warn/skip", () => {
     const plan = planOf([
       baseRow({ id: "tool.rt", status: "ready", required: true, detail: "ready" }),
-      baseRow({ id: "tool.fzf", status: "missing", required: true, detail: "missing" }),
+      baseRow({ id: "tool.jq", status: "missing", required: true, detail: "missing" }),
       baseRow({ id: "tool.editor", status: "missing", required: false, detail: "missing" }),
       baseRow({ id: "tool.legacy-dirs", status: "skipped", required: false, detail: "skipped" }),
     ]);

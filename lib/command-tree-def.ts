@@ -370,7 +370,7 @@ export const TREE: Record<string, CommandNode> = {
     omitBehavior: "picker",
     context: "worktree",
     requiresTTY: true,
-    // Every stage (fzf pickers, the launched board) owns the alt-screen, so the
+    // Every stage (pickers, the launched board) owns the alt-screen, so the
     // dispatcher header would only leak into the normal buffer behind them.
     fullscreen: true,
     args: [

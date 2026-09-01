@@ -1,6 +1,6 @@
 # rt user plugins
 
-Add your own commands to rt. A plugin is a folder under `~/.mattstack/rt/plugins/<name>/` with a declarative `plugin.json` manifest and either TypeScript files (run in-process with an injected API) or existing executables (run as subprocesses). Plugin commands live in the root command tree next to built-ins and inherit everything the tree provides: fzf navigation, breadcrumbs, repo/worktree context resolution, alt-enter arg forms, invocation logging, and error capture.
+Add your own commands to rt. A plugin is a folder under `~/.mattstack/rt/plugins/<name>/` with a declarative `plugin.json` manifest and either TypeScript files (run in-process with an injected API) or existing executables (run as subprocesses). Plugin commands live in the root command tree next to built-ins and inherit everything the tree provides: picker navigation, breadcrumbs, repo/worktree context resolution, alt-enter arg forms, invocation logging, and error capture.
 
 Two properties worth knowing up front:
 

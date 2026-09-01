@@ -5,7 +5,7 @@ description: Use when asked to create, extend, debug, or validate an rt user plu
 
 # Building rt user plugins
 
-rt supports user plugins: a folder at `~/.rt/plugins/<name>/` with a declarative `plugin.json` manifest whose commands are TypeScript modules (run in-process with an injected API) or existing executables (spawned as subprocesses). Plugin commands mount into rt's root command tree and inherit fzf navigation, context resolution, logging, and error capture for free.
+rt supports user plugins: a folder at `~/.rt/plugins/<name>/` with a declarative `plugin.json` manifest whose commands are TypeScript modules (run in-process with an injected API) or existing executables (spawned as subprocesses). Plugin commands mount into rt's root command tree and inherit picker navigation, context resolution, logging, and error capture for free.
 
 Two contract references, in order of authority:
 
