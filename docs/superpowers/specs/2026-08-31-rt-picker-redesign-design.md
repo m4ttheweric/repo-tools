@@ -10,8 +10,9 @@ ratified by updating the board in the same change. Never silent drift.
 
 Replace every fzf surface in rt with one core picker component rendered by
 rt-ui (Go/Bubble Tea), styled to the runner board's design language, plus thin
-TypeScript wrappers so ~30 call sites keep their current APIs. Big bang, hard
-cutover: fzf is fully retired from rt.
+TypeScript wrappers so the existing call sites (46 awaited picker calls across
+~30 modules) keep their current APIs. Big bang, hard cutover: fzf is fully
+retired from rt.
 
 ## Why
 
@@ -30,10 +31,13 @@ importable Go, so ranking quality is kept, not reimplemented.
 - Same process shape as `prompt`: spawn, one NDJSON request on stdin, one
   NDJSON result on stdout, exit. `/dev/tty` for the screen; the existing
   never-spawn-without-a-TTY gate applies unchanged.
-- stdin stays open after the request: the TS side may push `rows` messages
-  mid-flight (full row-set replacement; query and cursor preserved by value).
-  One mechanism, three consumers: nav's live-refresh watcher, cd's ctrl-r
-  reload, progressive enrichment.
+- stdin stays open after the request: the TS side may push `update` messages
+  mid-flight — a state patch carrying any of `rows` (full row-set
+  replacement; query and cursor preserved by value), `message` (header, e.g.
+  nav's sort suffix), and `actions` (registry replacement, e.g. the ctrl-t
+  label flip). One mechanism; consumers: nav's live-refresh watcher,
+  progressive enrichment, and event-driven re-lists/chrome updates (nav's
+  ctrl-t and sort, cd's ctrl-r — see Events vs exits).
 - View code lives in `ui/internal/views/picker/`. New wire messages follow the
   protocol.ts ↔ Go struct + golden fixture discipline (`ui/fixtures/`).
 - Matching: import `github.com/junegunn/fzf/src/algo` (FuzzyMatchV2) and
@@ -57,13 +61,33 @@ importable Go, so ranking quality is kept, not reimplemented.
   (command-tree), plus the arg-collector picker. Internally they translate
   options → rows/actions and result → today's return shapes (including
   `BackNavigation` on ctrl-up when `backLabel` is set).
-- Deleted at cutover: `lib/fzf.ts` (and the patched fzf binary + its bundling),
-  fzf spawn paths in `lib/fzf-select.ts`/`lib/navigate.ts`/`lib/command-tree.ts`
-  /`lib/arg-collector.ts`/`commands/commit.ts`, `navSeparator` skip machinery,
-  `RT_FZF_ALT_SCREEN`, nav's `resumeQuery`/`resumeValue` plumbing.
+- Deleted at cutover (the complete inventory):
+  - `lib/fzf.ts` + the patched fzf binary and its bundling/linking.
+  - fzf spawn paths in `lib/fzf-select.ts`, `lib/navigate.ts`,
+    `lib/command-tree.ts`, `lib/arg-collector.ts`, `commands/commit.ts`, and
+    `commands/skills.ts` (the `rt skills surface` palette spawns fzf directly;
+    it migrates to the wrapper like everything else).
+  - `lib/nav-watch.ts` entirely (it is fzf's `--listen` socket protocol);
+    live-refresh becomes a TS `fs.watch` that pushes `update` messages over the open pipe.
+  - `lib/nav-fs.ts`'s fzf-specific builders (`buildPreviewCommand` — previews
+    are cut; `buildHelpHeaderCommand`/`renderHelpHeader` — the expanded keybar
+    is component-rendered). Listing/sort logic in `nav-fs.ts` stays.
+  - `lib/setup/validators/rt-health.ts`'s required `tool.fzf` row and the
+    `LINK_BUNDLED_FZF` repair action (otherwise `rt verify` reports a missing
+    required tool forever), plus `rt deps`' fzf entry.
+  - `navSeparator` skip machinery, `RT_FZF_ALT_SCREEN` (including its
+    handling in `e2e/interactive.ts`), `buildFzfRows`, the `reloadCommand`
+    option, `CD_RELOAD_COMMAND`, and cd's hidden `--emit-rows` verb (see
+    Reload below).
+  - Unit tests of deleted modules die with them: `lib/__tests__/fzf.test.ts`,
+    `fzf-select.test.ts`, `navigate.test.ts`, `pickers-reload.test.ts`,
+    `cd-emit-rows.test.ts`, and the fzf-specific parts of `nav-fs.test.ts`.
 - Sacred, untouched logic: `commands/run.ts` (queue, presets, variations,
-  resolve), `commands/cd.ts` (two-step repo→package, auto-select-when-one,
-  reload), `lib/enrich.ts` (data + caching). They only render differently.
+  resolve) and `commands/cd.ts`'s decisions (two-step repo→package,
+  auto-select-when-one). `lib/enrich.ts`'s data pipeline (fetching, caching,
+  daemon-first reads) is sacred; it gains one presentational addition (see
+  Enrichment). The reload/emit-rows *mechanism* in cd.ts is fzf plumbing and
+  is replaced (the decision logic around it is not).
 
 ## The component contract
 
@@ -80,12 +104,22 @@ segment = { text, tone? | hex?, bold? }
 - `right[]` pins to the row's right edge and never truncates; `left` clips at
   real overflow only. No pre-baked ellipses anywhere.
 - `match` is what filtering sees (default: `left`'s plain text concatenated).
+- No-match state (per the Filtering board): count shows `0/N`, an inline faint
+  "no matches" row replaces the list, footer swaps to `backspace edit filter ·
+  esc quit`. This is the interactive-typed-query state only — an EMPTY
+  candidate set still falls through to the caller's existing non-picker error
+  path (the picker-conformance convention is unchanged).
 - `group` renders a real group header (faint uppercase) — never a focusable
   row, no skip-bindings.
-- Enrichment consumes `lib/enrich.ts`'s `BranchLabelParts` natively:
-  leading → `left`, trailing → `right`. The `formatBranchLabel` flatten dies.
-  Glyph vocabulary per the Enriched-rows board (pipeline ✓/⟳/✗, MR ◉/●/○,
-  `[Local Only]`/`[main branch]` faint, ticket ids dimmer).
+- Enrichment: today's `formatBranchLabelParts` returns ANSI-escaped strings,
+  which the segment model cannot consume. `lib/enrich.ts` gains ONE
+  presentational sibling, `formatBranchSegments(eb): { left: Segment[];
+  right: Segment[] }`, built from the same `EnrichedBranch` fields (Linear
+  stateColor as segment `hex`); existing exports stay untouched (the runner
+  keeps `BranchLabelParts` until it migrates). The fzf `formatBranchLabel`
+  flatten dies. Glyph vocabulary per the Enriched-rows board (pipeline ✓/⟳/✗,
+  MR ◉ open / ● merged / ○ closed, `[Local Only]`/`[main branch]` faint,
+  ticket ids dimmer).
 
 ### Action registry
 
@@ -93,7 +127,7 @@ segment = { text, tone? | hex?, bold? }
 action = { id, label, key?, scope: "item"|"global", group?, primary? }
 ```
 
-Declared once per picker; the component derives: grouped keybar (lav group ·
+Declared once per picker (replaceable mid-flight via `update`); the component derives: grouped keybar (lav group ·
 faint key · dim label · right-pinned quit), right-click context menu (item
 scope above the rule, globals below), ctrl-k menu on the cursor row (same
 modal), the ⌃-held key map, and clickable keybar keys. Keyless actions appear
@@ -115,8 +149,51 @@ Sort, ctrl-k, and right-click share one modal layer over the live picker:
 parent dims (fg re-rendered dimmer), modal sits on **Surface #221A35** with a
 Panel border and box-drawing rounded corners. esc or click-outside dismisses.
 The parent never tears down — filter and cursor survive by construction.
-Modal submenus are themselves pick requests (nested, over the same pipe) so
-their logic (e.g. sort's reverse-on-reselect) stays in TS.
+Two menu mechanisms, by ownership: registry-derived menus (ctrl-k,
+right-click) render Go-locally from the registry the component already holds
+— no TS round trip; caller-defined submenus with TS logic (sort's
+reverse-on-reselect) arrive as nested `modal` pick requests over the pipe.
+
+### Events vs exits (the terminal-ownership rule)
+
+One test decides every action: does its handler need the terminal? 
+- **Events** (picker stays live; Go sends `event`, TS handles, optionally
+  pushes an `update`): nav's ctrl-t (toggle + re-list, with the flipped keybar label in the same patch), ctrl-f (`open` returns
+  immediately), enter-on-a-file (`open`, then keep browsing — today's
+  reopen-with-resume dance becomes simply never closing), cd's ctrl-r
+  (TS recomputes rows in-process and pushes them), and menu actions like
+  reveal/copy-path.
+- **Exits** (terminal `result`; caller may re-invoke with `initialQuery`/
+  `resumeValue`): ctrl-o (editor — `openDirectoryInEditor` can prompt),
+  and ctrl-k's terminal-owning actions: Open with… (the app may be a
+  terminal editor), Quick Look (blocks with a stderr notice), Open
+  terminal here (`$SHELL`).
+Resume plumbing therefore survives only for the exit cases; everything else
+keeps state by never closing.
+
+Pipe message vocabulary (the whole protocol):
+- TS→Go: the initial `pick` request; `update` (state patch, any time: any of
+  `rows` full replacement, `message` header text, `actions` registry
+  replacement — live chrome like nav's sort suffix and the ctrl-t keybar
+  label ride this); `modal` (a nested pick rendered as an overlay on the
+  live picker).
+- Go→TS: `event` (a registry action whose logic lives in TS and must not
+  close the picker — e.g. ctrl-s pressed; carries `{action, value, query}`);
+  `modal-result` (the overlay's selection or dismissal); and the terminal
+  `result`, which flows exactly once and ends the process.
+- Worked example (sort): ctrl-s → Go sends `event(sort)` → TS sends `modal`
+  with the sort options → user picks → Go sends `modal-result`, overlay
+  closes → TS re-sorts and sends one `update` (rows + the header sort suffix) → picker continues live. Actions
+  whose handler must own the terminal (editor, shell, Quick Look) are NOT
+  events — they return as the terminal `result` and the caller re-invokes.
+
+### Reload (cd's ctrl-r)
+
+`ctrl-r` is a registry action handled as an `event`: cd recomputes rows
+in-process and pushes them; the picker never closes. The fzf-exec mechanism
+dies with fzf: the hidden `rt cd --emit-rows` verb, `CD_RELOAD_COMMAND`,
+`buildFzfRows`, and the `reloadCommand` option are all deleted (their tests
+with them).
 
 ### Mouse
 
@@ -139,15 +216,25 @@ caller may raise or lower the cap; the pane is the hard ceiling; SIGWINCH
 re-derives live. Content-anchored: short lists collapse to content (no
 full-pane void). 2-row scrolloff; wheel moves viewport only; pgup/pgdn; drag
 the 1-cell Panel thumb rail; footer range `4–17 of 118` only when overflowing.
-Filtering rebinds to top.
+Filtering rebinds to top. The board's "edge fade" where content continues is
+RULED OUT (a CSS effect; the thumb rail + range indicator carry that signal).
+Note the global behavior change: today every picker fills the pane
+(`--height=-3`); content-anchoring at the 14-row default cap applies to ALL
+callers, not just nav/cd.
 
 ### Theme
 
-Board tokens (`ui/internal/theme/theme.go`) plus two new: **HoverBg #251E3D**,
-**Surface #221A35** (ramp: Bg → BgSubtle → Surface → HoverBg → SelBg). The
-full-height left edge is retired for pickers (accent lives in the selection);
-huh prompts keep their pink bar. Breadcrumb = board header grammar. Match
-highlight = cyan bold. Filter prompt = pink `❯`. Nav folder icon = Nerd Font
+Board tokens (`ui/internal/theme/theme.go`) plus three new: **HoverBg
+#251E3D**, **Surface #221A35** (ramp: Bg → BgSubtle → Surface → HoverBg →
+SelBg), and **Blue #6B9DFF** (merged-MR ●, matching `lib/enrich.ts`'s blue
+and the Enriched-rows board). There is no shared edge token to migrate: the
+huh prompt bar is `GlyphBar` ("▌") painted Pink/Peach by `themed()` and is
+untouched; the pickers' full-height edge was fzf's `--border=left` + patched
+glyph and dies with fzf. Two stale theme.go comments must be updated at
+cutover: `Huh()`'s "the same edge rt's fzf pickers draw" comparison and
+`CardWidth`'s "The fzf pickers stay full width".
+Breadcrumb = board header grammar. Match
+highlight = cyan bold. Filter prompt = pink `❯` (accent lives in the selection: pink ▌ + SelBg). Nav folder icon = Nerd Font
 U+F07B (Ghostty builtin symbols fallback; `▸` degrade). No emoji anywhere.
 
 ## Surface-by-surface (see the boards for exact renders)
@@ -159,7 +246,8 @@ U+F07B (Ghostty builtin symbols fallback; `▸` degrade). No emoji anywhere.
   `Save as preset…`; presets hidden); script stage with mint `↻ last run`
   sentinel (age hint) + command-preview hints; variations with `+ Add
   variation…`. Footers swap with queue state exactly as today.
-- **rt cd**: repo picker (ctrl-r refresh re-requests rows); worktree picker
+- **rt cd**: repo picker (ctrl-r as an event: TS recomputes and pushes an update,
+  picker stays live); worktree picker
   with full enrichment + progressive enrichment (instant open, rows upgrade
   in place).
 - **Multi-selects** (worktree dispose, daemon, settings, port, extension):
@@ -168,7 +256,8 @@ U+F07B (Ghostty builtin symbols fallback; `▸` degrade). No emoji anywhere.
   `new` tag), ctrl-a. Diff preview cut.
 - **rt nav**: browse with cwd-as-clickmap header, sort suffix, live-refresh,
   ctrl-t hidden, ctrl-s sort modal, ctrl-k actions modal (= right-click),
-  ctrl-/ help overlay, empty-folder inline state, ctrl-space/ctrl-o/ctrl-f.
+  ctrl-/ expanded keybar (in-card second keybar row, NOT a modal; labels
+  `commands`/`less`), empty-folder inline state, ctrl-space/ctrl-o/ctrl-f.
   **Cut:** deep-jump, preview pane, image previews.
 - **Recent runs / arg-collector / simple selects**: the plain patterns.
 
@@ -182,8 +271,26 @@ stderr output discipline (`stderr: true` callers), exit codes.
 
 One focused test suite for the picker component (Go side: golden-render +
 behavior tests against fixtures; TS side: wrapper translation + gate tests
-with a fake rt-ui). Termwright e2e rewrite is explicitly deferred (Matt).
-Ranking parity: golden tests over FuzzyMatchV2 at the pinned version.
+with a fake rt-ui). Ranking parity: golden tests over FuzzyMatchV2 at the
+pinned version.
+
+Existing-suite fates at cutover (deferring the e2e *rewrite* is not deferring
+these decisions):
+- DELETED with the cutover commit: the fzf-driving Termwright suites —
+  `e2e/tests/picker-basics`, `picker-identity`, `picker-navigation`,
+  `picker-separators`, `nav-cycle`, `nav-live-refresh`, `nav-sort` — plus the
+  unit tests listed in the deletion inventory. Replacement e2e suites are the
+  deferred follow-up (Matt's call on timing).
+- UPDATED, not deleted: `e2e/tests/verify.test.ts` and `setup.test.ts` (their
+  fzf assertions track rt-health's new reality), `e2e/interactive.ts`
+  (RT_FZF_ALT_SCREEN handling removed), and the unit suites that assert fzf's
+  presence in the toolchain: `lib/setup/__tests__/validators-rt-health.test.ts`
+  (the `tool.fzf` block + required-ids list), `lib/__tests__/deps-lock-file.test.ts`
+  (fzf bundled-status assertions), `lib/__tests__/deps-lock-live.test.ts`
+  (fzf among live-verified deps).
+- Release-gate stance: `bun test` (unit) and `picker:check` must be green at
+  cutover; `test:all`'s e2e count shrinks by the deleted suites and that is
+  accepted until the replacement suites land.
 
 ## Terminal-fidelity deltas (ratified)
 
