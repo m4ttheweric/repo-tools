@@ -61,6 +61,7 @@ import { createHooksGuard } from "./daemon/hooks-guard.ts";
 import { runBootIdentityMigration } from "./daemon/boot-migrate.ts";
 import { runCapture } from "./subprocess.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
+import { createChatDeliverySweep } from "./daemon/handlers/chat.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, withApiPortParkRetry, broadcast, apiWsClientCount, clearWsClients } from "./daemon/api-server.ts";
 import { deriveFailure } from "./daemon/failure.ts";
@@ -289,6 +290,10 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let freshnessInitTimer: ReturnType<typeof setTimeout> | null = null;
 
   const sweepHandles: Array<{ stop(): void }> = [];
+  // Shared with buildRoutedHandlers (phase 7) below, so the delivery sweep
+  // (phase 6) and a normal chat:post/chat:dm push serialize through the
+  // same per-(room,handle) chain instead of racing each other.
+  const chatDeliveryChains = new Map<string, Promise<void>>();
 
   // ─── Plain, non-arming shared refs ─────────────────────────────────────────
   const systemProcessScanner = new SystemProcessScanner();
@@ -645,6 +650,20 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           { bootDelayMs: 60_000, intervalMs: 24 * 60 * 60 * 1000 },
           log,
         ));
+        // Catches a chat delivery that neither deliverPost's own retry nor a
+        // later post to the same recipient recovered -- the case a 2-party
+        // DM at a wait-point can hit, since neither side sends again.
+        const chatDeliverySweep = createChatDeliverySweep({
+          db: getStateDb("daemon"),
+          deliveryChains: chatDeliveryChains,
+          log: loggerHandle.childLogger("chat"),
+        });
+        sweepHandles.push(scheduleSweep(
+          "chat-delivery-sweep",
+          async () => { await chatDeliverySweep(); },
+          { bootDelayMs: 30_000, intervalMs: 30_000 },
+          log,
+        ));
         // Keeps cd-cache.json warm for `rt cd`; uses the async repo-index
         // builder, never execSync, since this runs on the daemon thread.
         sweepHandles.push(scheduleSweep(
@@ -769,6 +788,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
             refreshWatchedRepos: hooksGuard.refreshWatchedRepos,
           },
           stateDb: getStateDb("daemon"),
+          chatDeliveryChains,
         });
       },
       stop() {},
