@@ -1,7 +1,7 @@
 /**
  * Bundled-tool resolution: where a tool actually runs from — the app
  * bundle's deps.lock, or a copy the user already has on PATH — expressed as
- * pure lookups over the Probes seam so `rt deps` and the fzf resolver share
+ * pure lookups over the Probes seam so `rt deps` and other resolvers share
  * one answer without either touching the real machine directly in tests.
  *
  * Which helpers exist comes entirely from the bundle's deps.lock via

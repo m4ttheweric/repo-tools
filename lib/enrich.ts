@@ -227,7 +227,7 @@ export function formatBranchLabelParts(eb: EnrichedBranch): BranchLabelParts {
 }
 
 /**
- * Flat-string label for picker (fzf) inputs where the selection layer can't
+ * Flat-string label for picker inputs where the selection layer can't
  * consume a split shape. Just joins the parts with the standard separator.
  *
  * Format (ticket branch):   `dirname · Ticket Title [In Progress] · ✓ ◉`

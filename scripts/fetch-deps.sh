@@ -102,9 +102,8 @@ unpack() { # name archive-file archive-kind extract-path dest
       fi
       rm -rf "$tmp" ;;
     go-src)
-      # Built from source so rt-tray/patches/<name>.patch can restyle
-      # it; the patched fzf draws the half-block left border the whole rt
-      # chrome shares. Version is stamped so check-bundle's smoke matches.
+      # Built from source so rt-tray/patches/<name>.patch can restyle it.
+      # Version is stamped so check-bundle's smoke matches.
       command -v go >/dev/null || { echo "  x $name: go toolchain required for go-src builds" >&2; exit 1; }
       tmp="$(mktemp -d)"
       tar -xf "$file" -C "$tmp"

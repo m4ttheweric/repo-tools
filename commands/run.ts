@@ -1087,7 +1087,7 @@ export async function runCommand(
 // ─── rt run again ──────────────────────────────────────────────────────────
 
 /**
- * rt run again — flat fzf picker of recently-run scripts across all known repos.
+ * rt run again — flat picker of recently-run scripts across all known repos.
  *
  * No repo/worktree resolution step. Reads every known repo's run history,
  * merges newest-first, and shows one flat list. The hint tells you where each

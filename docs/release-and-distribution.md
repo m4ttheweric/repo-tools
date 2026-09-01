@@ -156,7 +156,7 @@ runs.
 Two declarations drive it, each owned by the party that knows it:
 
 - `repo` on the deps.lock row (`"m4ttstack/<repo>"`) marks the app
-  buildable. Rows without it (fzf, node, cloudflared...) are third-party
+  buildable. Rows without it (jq, node, cloudflared...) are third-party
   pins the pipeline never touches.
 - `bundle: { build, artifact }` in the app repo's `mattstack.deck.json` is
   the compile recipe, run verbatim at the repo root. A dispatched app whose

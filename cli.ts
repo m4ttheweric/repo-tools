@@ -5,7 +5,7 @@
  *
  * All command navigation is handled by the command tree dispatcher.
  * Commands register declaratively; the dispatcher handles screen clearing,
- * breadcrumb headers, fzf pickers, and repo context.
+ * breadcrumb headers, pickers, and repo context.
  *
  * Usage:
  *   rt                        interactive menu

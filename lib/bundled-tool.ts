@@ -22,7 +22,7 @@ const defaultWhich: Which = (b) => Bun.which(b);
 /**
  * `bundledHelperPath` throws on a row mislabeled `kind: "buildtool"`. A bad
  * deps.lock entry must degrade to the PATH fallback rather than crash every
- * spawn — same reasoning as resolveFzf's own guard.
+ * spawn.
  */
 function bundled(name: string): string | null {
   try {

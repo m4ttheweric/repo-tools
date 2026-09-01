@@ -4,7 +4,7 @@
  * Every command registers as a node in a tree. The dispatcher handles:
  *  - Screen clearing between steps
  *  - Breadcrumb headers (rt › daemon › status)
- *  - fzf pickers for subcommand navigation
+ *  - Pickers for subcommand navigation
  *  - Context resolution (repo/worktree identity)
  *  - TTY guards
  *  - Lazy module loading for fast startup
@@ -127,7 +127,7 @@ export interface CommandNode {
    * "omit args → interactive affordance" convention made explicit and
    * checkable, since the behavior lives in the handler, not the dispatcher.
    *
-   *  - "picker" → an fzf/ink picker over a listable set (the default shape)
+   *  - "picker" → a picker over a listable set (the default shape)
    *  - "list"   → prints the set; the no-arg call is itself a useful read
    *  - "prompt" → a free-text / no-echo interactive prompt for the value
    *  - { exempt } → deliberately errors instead; the reason is documented here
@@ -146,7 +146,7 @@ export type OmitBehavior = "picker" | "list" | "prompt" | { exempt: string };
  * Navigate the command tree and execute the resolved handler.
  *
  * - Direct args: `rt daemon status` → resolve daemon → resolve status → execute
- * - No args at branch: show fzf picker
+ * - No args at branch: show picker
  * - Leaf node: clear screen, show breadcrumb, execute handler
  */
 export async function dispatch(

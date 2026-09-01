@@ -1,7 +1,7 @@
 /**
  * Non-interactive git primitives behind `rt commit`: change listing, discard,
- * staging sync, and commit. Kept free of fzf/prompt concerns so they are unit
- * testable against real repos.
+ * staging sync, and commit. Kept free of picker/prompt concerns so they are
+ * unit testable against real repos.
  */
 
 import { execFileSync } from "node:child_process";

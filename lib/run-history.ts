@@ -2,7 +2,7 @@
  * Per-repo history of `rt run` invocations — thin wrapper over
  * lib/state/run-history-store.ts's `run_history` table.
  *
- * Consumed by `rt run again` (the fzf picker of recents) and the `rt`
+ * Consumed by `rt run again` (the picker of recents) and the `rt`
  * no-arg menu's Recent section.
  *
  * Every `repoName`/`repo` parameter below is actually the serialized repo
