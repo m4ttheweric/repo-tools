@@ -423,7 +423,8 @@ export interface Commands {
   "runs:abandon": { payload: { runId: string; repo?: string; reason?: string }; data: { ok: boolean } };
   "chat:join": { payload: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string }; data: { handle: string; memberCount: number; unread: number } };
   "chat:leave": { payload: { room: string; handle: string }; data: Record<string, never> };
-  "chat:post": { payload: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean }; data: { id: number; recipients: string[] } };
+  /** `others` counts the room's members besides the author, so a caller can tell "woke nobody of 7" from "nobody else is here". */
+  "chat:post": { payload: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean }; data: { id: number; recipients: string[]; others: number } };
   "chat:ack": { payload: { id: number; handle: string }; data: { author: string; room: string; already: boolean } };
   "chat:claim": { payload: { id: number; handle: string }; data: ChatClaimOutcome };
   "chat:release": { payload: { id: number; handle: string }; data: { holder: string } };

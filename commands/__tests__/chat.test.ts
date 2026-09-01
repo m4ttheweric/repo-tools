@@ -205,7 +205,7 @@ describe("rt chat CLI", () => {
   test("post reports who was woken; a room with only the author says nobody", async () => {
     await runChat(["join", "r"]);
     expect(await runChat(["post", "r", "hello"])).toBe(
-      "delivered to nobody (no member was woken; rt chat who <room> shows who is listening)",
+      "on the record for 0 members, woke nobody: @handle or @here wakes someone, rt chat dm reaches one",
     );
   });
 
@@ -256,9 +256,29 @@ describe("rt chat CLI — additional verb behavior", () => {
   test("post's body is every word after the room, joined back with spaces", async () => {
     await runChat(["join", "r", "--as", "a"]);
     await runChat(["join", "r", "--as", "b"]);
-    expect(await runChat(["post", "r", "hello", "world"])).toBe("delivered to a, b"); // wake-on all: both members woken
+    expect(await runChat(["post", "r", "@b", "hello", "world"])).toBe("delivered to b");
     const read = JSON.parse(await runChat(["read", "r", "--as", "b", "--json"]));
-    expect(read.rooms[0].messages[0].body).toBe("hello world");
+    expect(read.rooms[0].messages[0].body).toBe("@b hello world");
+  });
+
+  test("an agent's post that names nobody tells the poster it woke nobody and how to wake someone", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    await runChat(["join", "r", "--as", "b"]);
+    await runChat(["join", "r", "--as", "c"]);
+    expect(await runChat(["post", "r", "status: lane at 60%", "--as", "a"])).toBe(
+      "on the record for 2 members, woke nobody: @handle or @here wakes someone, rt chat dm reaches one",
+    );
+    await runChat(["join", "solo", "--as", "a"]);
+    expect(await runChat(["post", "solo", "alone", "--as", "a"])).toBe(
+      "on the record for 0 members, woke nobody: @handle or @here wakes someone, rt chat dm reaches one",
+    );
+  });
+
+  test("the human's post wakes every member without a mention", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    await runChat(["join", "r", "--as", "b"]);
+    await runChat(["join", "r", "--as", "matt"]);
+    expect(await runChat(["post", "r", "one of you: TLDR", "--as", "matt"])).toBe("delivered to a, b");
   });
 
   test("post --file reads the body from a file and keeps its line breaks", async () => {
@@ -324,11 +344,11 @@ describe("rt chat CLI — additional verb behavior", () => {
     expect(stderr).toContain("no line breaks");
     expect(stderr).toContain("<<'EOF'");
     expect(await runChat(["post", "r", wall, "--as", "a", "--as-is"])).toBe(
-      "delivered to nobody (no member was woken; rt chat who <room> shows who is listening)",
+      "on the record for 0 members, woke nobody: @handle or @here wakes someone, rt chat dm reaches one",
     );
     const long = "y".repeat(300) + "\n" + "z".repeat(300);
     expect(await runChat(["post", "r", long, "--as", "a"])).toBe(
-      "delivered to nobody (no member was woken; rt chat who <room> shows who is listening)",
+      "on the record for 0 members, woke nobody: @handle or @here wakes someone, rt chat dm reaches one",
     );
   });
 

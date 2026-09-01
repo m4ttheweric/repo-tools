@@ -909,7 +909,8 @@ export function createChatHandlers(opts: {
       const effectiveMentions = handle === getSetting<string>("chat.humanHandle").value ? [...(mentions ?? []), "here"] : mentions;
       const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions: effectiveMentions, quiet }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
-      return { ok: true, data: posted };
+      const others = listMembers(room, db).filter((m) => m.handle !== handle).length;
+      return { ok: true, data: { ...posted, others } };
     },
 
     "chat:ack": async (rawPayload: unknown): Promise<CommandResult<"chat:ack">> => {

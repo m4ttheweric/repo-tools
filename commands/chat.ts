@@ -693,10 +693,12 @@ async function runPost(args: string[]): Promise<void> {
     return;
   }
   // A quiet post's empty recipient list is the point, not the "woke nobody"
-  // failure the line below reports.
+  // outcome the last line reports. That line is where rooms defaulting to
+  // wake-on mention puts the correction: the poster, still in the turn that
+  // posted, reads that nobody will act and picks a mention, @here, or a DM.
   if (quiet) console.log("posted quietly (on the record, unread for every member, nobody woken)");
   else if (data.recipients.length > 0) console.log(`delivered to ${data.recipients.join(", ")}`);
-  else console.log("delivered to nobody (no member was woken; rt chat who <room> shows who is listening)");
+  else console.log(`on the record for ${data.others} member${data.others === 1 ? "" : "s"}, woke nobody: @handle or @here wakes someone, rt chat dm reaches one`);
   if (url) console.log(`posted → ${url}`);
 }
 

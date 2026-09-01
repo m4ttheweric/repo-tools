@@ -961,7 +961,7 @@ test("the sweep is a no-op when nothing is stale", async () => {
   };
   const { db, sweep } = freshSweep(inboxDeps);
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
   const result = await sweep();
   expect(result).toEqual({ sweptPairs: 0, recoveredMessages: 0 });
   expect(calls).toEqual([]);
@@ -992,8 +992,8 @@ test("the sweep re-delivers a stale cursor for a signed-in, alive-bound recipien
   const { log, infoCalls } = fakeLogger();
   const { db, sweep } = freshSweep(inboxDeps, { log, registryDeps });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
 
   const signIn = (await import("../../state/index.ts")).signIn;
   signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
@@ -1021,7 +1021,7 @@ test("the sweep never re-delivers a poster's own message back to themselves", as
   };
   const { db, sweep } = freshSweep(inboxDeps);
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
 
   const signIn = (await import("../../state/index.ts")).signIn;
   signIn({ sessionId: "sess-a", baseHandle: "a" }, db);
@@ -1048,7 +1048,7 @@ test("the sweep never delivers to a wake_on:none member even with a genuinely st
   };
   const { db, sweep } = freshSweep(inboxDeps);
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
   await h["chat:join"]({ room: "general", handle: "b", wakeOn: "none" });
 
   const signIn = (await import("../../state/index.ts")).signIn;
@@ -1074,7 +1074,7 @@ test("the sweep never delivers to a wake_on:mention member who was never mention
   };
   const { db, sweep } = freshSweep(inboxDeps);
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
   await h["chat:join"]({ room: "general", handle: "b", wakeOn: "mention" });
 
   const signIn = (await import("../../state/index.ts")).signIn;
@@ -1107,7 +1107,7 @@ test("the sweep DOES deliver to a wake_on:mention member once a pending message 
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
   await h["chat:join"]({ room: "general", handle: "b", wakeOn: "mention" });
 
   const signIn = (await import("../../state/index.ts")).signIn;
@@ -1134,8 +1134,8 @@ test("the sweep skips a signed-out recipient and a recipient with a dead binding
   };
   const { db, sweep } = freshSweep(inboxDeps);
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
   await h["chat:join"]({ room: "general", handle: "c" });
 
   const { signIn, signOut } = await import("../../state/index.ts");
@@ -1175,8 +1175,8 @@ test("the sweep resolves the registry once per run, not once per stale candidate
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
   await h["chat:join"]({ room: "general", handle: "c" });
   await h["chat:join"]({ room: "general", handle: "d" });
 
@@ -1209,8 +1209,8 @@ test("the sweep never scans the registry when no stale handle has a presence row
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" }); // never signs in -- no presence row at all
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" }); // never signs in -- no presence row at all
   await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
   await Bun.sleep(0);
 
@@ -1237,7 +1237,7 @@ test("the sweep never checks binding-aliveness for a signed-out presence", async
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
   await h["chat:join"]({ room: "general", handle: "away" });
 
   const { signIn, signOut } = await import("../../state/index.ts");
@@ -1273,8 +1273,8 @@ test("the sweep backs off a pair for one tick immediately after its consecutive-
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps, retryDelayMs: 0, maxConsecutiveFailures: 2 });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
 
   const { signIn } = await import("../../state/index.ts");
   signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
@@ -1311,8 +1311,8 @@ test("a pair's consecutive-failure streak does not cap a different, healthy pair
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps, retryDelayMs: 0, maxConsecutiveFailures: 2 });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
   await h["chat:join"]({ room: "general", handle: "c" });
 
   const { signIn } = await import("../../state/index.ts");
@@ -1348,8 +1348,8 @@ test("a delivery that succeeds before the ceiling resets the pair's failure coun
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps, retryDelayMs: 0, maxConsecutiveFailures: 2 });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
 
   const { signIn } = await import("../../state/index.ts");
   signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
@@ -1381,8 +1381,8 @@ test("a capped pair's failure counter is forgotten once it stops being stale", a
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps, retryDelayMs: 0, maxConsecutiveFailures: 1 });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
 
   const { signIn, markDelivered } = await import("../../state/index.ts");
   signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
@@ -1431,8 +1431,8 @@ test("a pair past the ceiling backs off, then retries and delivers on the next e
   const { log, warnCalls } = fakeLogger();
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps, retryDelayMs: 0, maxConsecutiveFailures: 2, log });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
 
   const { signIn } = await import("../../state/index.ts");
   signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
@@ -1482,8 +1482,8 @@ test("a sweep re-delivery chains behind an in-flight post delivery to the same r
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps, deliveryChains }), { db });
   const sweep = createChatDeliverySweep({ db, deliveryChains, inboxDeps });
 
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
   const { signIn } = await import("../../state/index.ts");
   signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
 
@@ -1520,8 +1520,8 @@ test("a sweep tick landing while the previous one is still running is skipped, n
   };
   const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps: { resolve: () => null, deliver: async () => ({ ok: true }) } }), { db });
-  await h["chat:join"]({ room: "general", handle: "a" });
-  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "a", wakeOn: "all" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
   const { signIn } = await import("../../state/index.ts");
   signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
 
