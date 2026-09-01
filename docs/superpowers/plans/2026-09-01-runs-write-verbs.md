@@ -32,6 +32,7 @@
 rt (worktree `joyful-feather`):
 
 - Create `lib/runs/write.ts`: schema SQL, `createRunDb`, `openRunDb`, `migrate`, `KNOWN_SCHEMA_VERSION`, and the mutations `runStart`, `runStatus`, `stageStart`, `stageEnd`, `fieldSet`, `fieldGet`, `decisionRecord`, `snapshot`, plus the `Ok`/`Fail` result types.
+- Create `lib/runs/paths.ts`: `runsRoot()` and `isPathComponent()`, moved out of `store.ts` so the read and write modules share them without a cycle; `store.ts` re-exports both.
 - Create `lib/runs/provenance.ts`: `packProvenance(dirs)` and `composePackCommits(...)`.
 - Create `lib/runs/identity.ts`: `recordIdentity(db, env, now)`.
 - Create `lib/runs/emit.ts`: `emitRunUpdated(update, env, timeoutMs)`.
@@ -58,7 +59,7 @@ mattstack-skills (main):
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `KNOWN_SCHEMA_VERSION: 2`; `createRunDb(path: string): Database`; `openRunDb(path: string): Database`; `migrate(db: Database): void`; `type Fail = { ok: false; error: string; code: 1 | 2 | 3 }`; `type Ok<T extends object = {}> = { ok: true } & T`. Later tasks add mutations to this file.
+- Produces: `KNOWN_SCHEMA_VERSION: 2`; `createRunDb(path: string): Database`; `openRunDb(path: string): Database`; `migrate(db: Database): void`; `type Fail = { ok: false; error: string; code: 1 | 2 | 3 }`; `type Ok<T extends object = {}> = { ok: true } & T`; and from `paths.ts`, `runsRoot(): string` and `isPathComponent(s: string): boolean`. Later tasks add mutations to `write.ts`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -224,7 +225,25 @@ export function openRunDb(path: string): Database {
 }
 ```
 
-Then in `lib/runs/store.ts` replace lines 1-13 (the header comment through the constant) with:
+Then create `lib/runs/paths.ts` so `write.ts` and `store.ts` share the path helpers without importing each other:
+
+```ts
+import { homedir } from "os";
+import { join } from "path";
+
+export function runsRoot(): string {
+  return process.env.RT_RUNS_ROOT ?? join(homedir(), ".mattstack", "runs");
+}
+
+// repo/runId reach a path join straight from a network-reachable readonly
+// seam (runs:get via REST decodes %2F): reject anything that could step
+// outside <runsRoot>/<repo>/<runId> before it ever hits the filesystem.
+export function isPathComponent(s: string): boolean {
+  return s.length > 0 && s !== "." && s !== ".." && !s.includes("/") && !s.includes("\\");
+}
+```
+
+Then in `lib/runs/store.ts` replace lines 1-32 (the header comment through the end of `isPathComponent`) with:
 
 ```ts
 /**
@@ -233,14 +252,24 @@ Then in `lib/runs/store.ts` replace lines 1-13 (the header comment through the c
  */
 import { Database } from "bun:sqlite";
 import { existsSync, readdirSync, statSync, type Dirent } from "fs";
-import { homedir } from "os";
 import { join } from "path";
 import type { Attention, RunDetail, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
 import { computeAttention, fieldValue, lastEventAt, type RunLiveness } from "./attention.ts";
+import { isPathComponent, runsRoot } from "./paths.ts";
 import { KNOWN_SCHEMA_VERSION } from "./write.ts";
 
-export { KNOWN_SCHEMA_VERSION };
+export { isPathComponent, KNOWN_SCHEMA_VERSION, runsRoot };
+
+function dirs(path: string): string[] {
+  try {
+    return readdirSync(path, { withFileTypes: true }).filter((d: Dirent) => d.isDirectory()).map((d: Dirent) => d.name);
+  } catch {
+    return [];
+  }
+}
 ```
+
+Existing importers of `runsRoot` and `isPathComponent` from `store.ts` keep working through the re-export.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -250,7 +279,7 @@ Expected: all PASS (store tests still green after the re-export).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/runs/write.ts lib/runs/store.ts lib/runs/__tests__/write.test.ts
+git add lib/runs/write.ts lib/runs/paths.ts lib/runs/store.ts lib/runs/__tests__/write.test.ts
 git commit -m "runs: write.ts owns the run DB schema and migration
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -616,7 +645,7 @@ Expected: FAIL, `runStart` is not exported.
 
 - [ ] **Step 3: Write the implementation**
 
-Append to `lib/runs/write.ts` (add `import { join } from "path";`, `import { isPathComponent } from "./store.ts";`, `import { composePackCommits, packProvenance } from "./provenance.ts";`, `import { recordIdentity } from "./identity.ts";` at the top):
+Append to `lib/runs/write.ts` (add `import { join } from "path";`, `import { isPathComponent } from "./paths.ts";`, `import { composePackCommits, packProvenance } from "./provenance.ts";`, `import { recordIdentity } from "./identity.ts";` at the top; never import from `store.ts` here, it imports this file):
 
 ```ts
 export type RunStartOpts = {
@@ -1632,10 +1661,11 @@ Then in `lib/command-tree-def.ts`, add to `runsSubcommands` after `abandon`:
     description: "Pipeline: field set KEY VALUE --stage NAME | field get KEY (reads RT_RUN_DB)",
     module: "./commands/runs-write.ts",
     fn: "runsField",
+    omitBehavior: { exempt: "agent-facing; the work engine names the verb and key explicitly and RT_RUN_DB is its context" },
     args: [
       { name: "Verb", type: "text", placeholder: "set", hint: "set | get" },
       { name: "Key", type: "text", placeholder: "branch", hint: "Field key" },
-      { name: "Value", type: "text", placeholder: "cv-1-slug", hint: "set only" },
+      { name: "Value", type: "text", optional: true, placeholder: "cv-1-slug", hint: "set only" },
       { name: "Stage", flag: "--stage", type: "text", placeholder: "provision", hint: "set only: producing stage" },
     ],
   },
@@ -1643,6 +1673,7 @@ Then in `lib/command-tree-def.ts`, add to `runsSubcommands` after `abandon`:
     description: "Pipeline: decision record --contract C --scope S --selection JSON --decided-by W (reads RT_RUN_DB)",
     module: "./commands/runs-write.ts",
     fn: "runsDecision",
+    omitBehavior: { exempt: "agent-facing; the stage skill passes record and every flag explicitly and RT_RUN_DB is its context" },
     args: [
       { name: "Verb", type: "text", placeholder: "record", hint: "record" },
       { name: "Contract", flag: "--contract", type: "text", placeholder: "execution-strategy@1", hint: "Slot contract" },
@@ -1663,8 +1694,8 @@ and change the `runs` node's description to `"Pipeline run state: list, show, an
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `bun test commands/__tests__/runs-write.test.ts lib/runs commands/__tests__/runs-resolve.test.ts`
-Expected: all pass. Then `bun run typecheck` (or the repo's `tsc` script; see `package.json`) with zero errors, and `bun test lib commands packages scripts` fully green.
+Run: `bun test commands/__tests__/runs-write.test.ts lib/runs commands/__tests__/run-resolve.test.ts lib/__tests__/picker-conformance.test.ts`
+Expected: all pass, including the picker conformance test (the two `exempt` declarations above are what satisfy it). Then `bunx tsc --noEmit` with zero errors, `bun run picker:check` clean, and `bun test lib commands packages scripts` fully green. `bun run docs:check` stays red until Task 10 regenerates the command reference; that is expected here.
 
 - [ ] **Step 5: Smoke the real CLI**
 
@@ -1771,7 +1802,31 @@ grep -rn 'RT_PIPELINE_STATE' attachments plugin skills README.md
 grep -rn 'pipeline-state' --exclude-dir=.git --exclude-dir=.local-dev --exclude-dir=.worktrees --exclude-dir=node_modules . | grep -v '^./docs/'
 ```
 
-Expected after the sed: the first grep's only hit is the `export RT_PIPELINE_STATE=` line in `attachments/pipeline/work/SKILL.md` (removed in the next step). The second grep should hit only the files this task deletes or edits (the script, its two tests, the work engine's allowed-tools line, README); any other hit is a call site this plan missed and gets the same rename.
+Expected after the sed: the first grep hits the `export RT_PIPELINE_STATE=` line in `attachments/pipeline/work/SKILL.md` (removed in the next step) and the prose on line 377 of `attachments/parameterized-skills/references/convention.md` (fixed below). The second grep hits the script, its two tests, the work engine's allowed-tools line, README line 344, and convention.md line 374 (fixed below). Any other hit is a call site this plan missed: a quoted-variable call gets the same rename, and prose that names the script or the variable is rewritten to say `rt runs`.
+
+Then fix the two prose lines in `attachments/parameterized-skills/references/convention.md`. Replace
+
+```
+Alongside `stage-consumes`/`stage-produces`, every stage reports lifecycle
+and data to the run DB through the `pipeline-state.sh` helper. The contract:
+
+- A compiled stage always runs under `work`, which exports `RT_RUN_DB` and
+  `RT_PIPELINE_STATE` before the first stage. There is no standalone stage
+  invocation, so the four calls below are unconditional.
+```
+
+with
+
+```
+Alongside `stage-consumes`/`stage-produces`, every stage reports lifecycle
+and data to the run DB through `rt runs`. The contract:
+
+- A compiled stage always runs under `work`, which exports `RT_RUN_DB`
+  before the first stage. There is no standalone stage invocation, so the
+  four calls below are unconditional.
+```
+
+Re-run both greps: the only remaining hits are the work engine's export line (next step) and the files this task deletes.
 
 - [ ] **Step 3: Edit the work engine**
 
