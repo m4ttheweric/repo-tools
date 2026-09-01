@@ -10,7 +10,7 @@
  * ctrl-k opens an action menu on the highlighted item (Open with…, Reveal in
  * Finder, Quick Look, Copy path, Open terminal here).
  *
- * Dotfiles are shown by default; ctrl-t toggles hiding them.
+ * Dotfiles are hidden by default; ctrl-t toggles showing them.
  *
  * The listing refreshes itself: files that appear or disappear while the
  * picker is open show up without leaving and re-entering.
@@ -42,6 +42,7 @@ import {
   type SortState, type SortKey,
 } from "../lib/nav-fs.ts";
 import { runPick, type PickHandle } from "../lib/ui/pick.ts";
+import { printAborted } from "../lib/ui/abort.ts";
 import type { PickAction, PickEvent, PickRow } from "../lib/ui/protocol.ts";
 
 function tildeify(p: string): string {
@@ -200,7 +201,10 @@ async function pickOpenWith(target: string, kind: ItemKind, deps: NavDeps): Prom
 
 type SessionOutcome =
   | { type: "cd"; path: string }
-  | { type: "quit" }
+  // `aborted` distinguishes esc/cancel-to-shell from a deliberate quit (opening
+  // a terminal, launching "open with…") — only the former prints the
+  // "aborted" line.
+  | { type: "quit"; aborted?: boolean }
   | { type: "resume"; cwd: string; showHidden: boolean; sort: SortState; resumeValue?: string; initialQuery?: string };
 
 interface SessionState {
@@ -383,7 +387,7 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
 
     default:
       // "cancel" (esc), or anything else Go's own fallback might produce.
-      return { type: "quit" };
+      return { type: "quit", aborted: true };
   }
 }
 
@@ -404,7 +408,7 @@ export async function navigate(args: string[], depsOverride: Partial<NavDeps> = 
 
   let state: SessionState = {
     cwd: resolve(args[0] ?? process.cwd()),
-    showHidden: true,
+    showHidden: false,
     sort: { ...DEFAULT_SORT },
   };
 
@@ -414,7 +418,10 @@ export async function navigate(args: string[], depsOverride: Partial<NavDeps> = 
       cdAndExit(outcome.path);
       return;
     }
-    if (outcome.type === "quit") return;
+    if (outcome.type === "quit") {
+      if (outcome.aborted) printAborted();
+      return;
+    }
     state = outcome;
   }
 }

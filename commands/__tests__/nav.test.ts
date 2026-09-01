@@ -7,7 +7,7 @@
  * shell is the exception: it is a deliberate full exit, no reopen.
  */
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -204,8 +204,24 @@ describe("rt nav: descend in place", () => {
   });
 });
 
-describe("rt nav: ctrl-t toggle hidden", () => {
-  test("flips rows and the action label in the same update", async () => {
+describe("rt nav: hidden files default + ctrl-t toggle", () => {
+  test("dotfiles are hidden on the initial listing (regression: they used to show by default)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    writeFileSync(join(root, ".env"), "x");
+    writeFileSync(join(root, "visible.txt"), "x");
+
+    fake = installFakePick([resultStep("cancel", null)]);
+
+    await withRealStdoutRestore(() => navigate([root], baseDeps()));
+
+    const initialRows = fake.calls[0]!.request.rows;
+    expect(initialRows.some((r: PickRow) => r.value === "f:.env")).toBe(false);
+    expect(initialRows.some((r: PickRow) => r.value === "f:visible.txt")).toBe(true);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("ctrl-t flips rows and the action label in the same update", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));
     writeFileSync(join(root, ".env"), "x");
     writeFileSync(join(root, "visible.txt"), "x");
@@ -220,9 +236,72 @@ describe("rt nav: ctrl-t toggle hidden", () => {
     const updates = fake.calls[0]!.updates;
     const toggle = updates.find((u) => u.actions?.some((a) => a.id === "toggle-hidden"));
     expect(toggle).toBeDefined();
-    expect(toggle!.rows?.some((r: PickRow) => r.value === "f:.env")).toBe(false);
+    // Starting hidden (the fixed default), one ctrl-t press now shows dotfiles.
+    expect(toggle!.rows?.some((r: PickRow) => r.value === "f:.env")).toBe(true);
     const toggleAction = toggle!.actions!.find((a) => a.id === "toggle-hidden")!;
-    expect(toggleAction.label).toBe("show hidden");
+    expect(toggleAction.label).toBe("hide hidden");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("rt nav: esc/cancel prints the shared 'aborted' line, TTY-only", () => {
+  test("esc at the top level prints faint 'aborted' on stderr when it's a TTY", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    writeFileSync(join(root, "a.txt"), "x");
+    fake = installFakePick([resultStep("cancel", null)]);
+
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await withRealStdoutRestore(() => navigate([root], baseDeps()));
+      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+    } finally {
+      stderrSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("esc off a TTY prints no 'aborted' decoration", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    writeFileSync(join(root, "a.txt"), "x");
+    fake = installFakePick([resultStep("cancel", null)]);
+
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: false, configurable: true });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await withRealStdoutRestore(() => navigate([root], baseDeps()));
+      expect(stderrSpy.mock.calls.flat().join("")).not.toContain("aborted");
+    } finally {
+      stderrSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a deliberate quit (open terminal here) prints no 'aborted' decoration, even on a TTY", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    mkdirSync(join(root, "sub"));
+    fake = installFakePick([resultStep("terminal", "d:sub", "")]);
+
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await withRealStdoutRestore(() => navigate([root], baseDeps()));
+      expect(stderrSpy.mock.calls.flat().join("")).not.toContain("aborted");
+    } finally {
+      stderrSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
 
     rmSync(root, { recursive: true, force: true });
   });
