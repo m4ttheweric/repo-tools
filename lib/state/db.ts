@@ -329,6 +329,15 @@ function addHandleColumnIfMissing(db: Database): void {
   db.exec("ALTER TABLE agents ADD COLUMN handle TEXT;");
 }
 
+/** chat_messages.quiet: a post that must never CAUSE a wake (it still rides
+    along in a bundle some other message causes). Same conditional-exec rule as
+    `sections`, `archived_at` and `handle` above. */
+function addQuietColumnIfMissing(db: Database): void {
+  const columns = db.query("PRAGMA table_info(chat_messages);").all() as { name: string }[];
+  if (columns.some((c) => c.name === "quiet")) return;
+  db.exec("ALTER TABLE chat_messages ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0;");
+}
+
 /**
  * endpoint_claims.start_time (S068): the claiming pid's start-time, so a
  * recycled pid across a reboot reads as dead rather than pinning a port
@@ -519,6 +528,7 @@ function runMigrations(db: Database, dir: string): void {
     addSectionsColumnIfMissing(db);
     addArchivedAtColumnIfMissing(db);
     addHandleColumnIfMissing(db);
+    addQuietColumnIfMissing(db);
     // Legacy-JSON import is single-shot and only correct from a true
     // v0 (never-migrated) database: branch-cache's UPSERT would silently
     // overwrite current rows with stale ones, and project-mrs-store's

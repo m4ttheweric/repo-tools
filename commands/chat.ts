@@ -667,25 +667,29 @@ async function runPost(args: string[]): Promise<void> {
   // so a bare args.slice(1).join(" ") would splice the flag back into the post.
   const rest = positionals(args);
   const room = rest[0];
-  if (!room) fail("usage: rt chat post <room> <text | <<'EOF'> [--file <path>] [--as-is]");
+  if (!room) fail("usage: rt chat post <room> <text | <<'EOF'> [--file <path>] [--as-is] [--quiet]");
   requireValidName("room", room);
-  const body = await resolveBody(rest.slice(1), args, "usage: rt chat post <room> <text | <<'EOF'> [--file <path>] [--as-is]");
+  const body = await resolveBody(rest.slice(1), args, "usage: rt chat post <room> <text | <<'EOF'> [--file <path>] [--as-is] [--quiet]");
   requireReadable(body, args);
 
   const handle = resolveHandle(args);
   requireValidName("handle", handle);
 
-  const res = await chatPost({ room, handle, body });
+  const quiet = args.includes("--quiet");
+  const res = await chatPost({ room, handle, body, quiet });
   const data = unwrap(res, "post");
   // Output stays to a line or two: who was actually woken (a post that
   // delivered to nobody used to be silent, indistinguishable from success
   // at the prompt that caused it), plus the viewer link when configured.
   const url = chatViewerUrl(readChatViewerUrlSetting(), room, data.id);
   if (args.includes("--json")) {
-    console.log(JSON.stringify({ ok: true, id: data.id, recipients: data.recipients, url: url ?? null }));
+    console.log(JSON.stringify({ ok: true, id: data.id, quiet, recipients: data.recipients, url: url ?? null }));
     return;
   }
-  if (data.recipients.length > 0) console.log(`delivered to ${data.recipients.join(", ")}`);
+  // A quiet post's empty recipient list is the point, not the "woke nobody"
+  // failure the line below reports.
+  if (quiet) console.log("posted quietly (on the record, unread for every member, nobody woken)");
+  else if (data.recipients.length > 0) console.log(`delivered to ${data.recipients.join(", ")}`);
   else console.log("delivered to nobody (no member was woken; rt chat who <room> shows who is listening)");
   if (url) console.log(`posted → ${url}`);
 }

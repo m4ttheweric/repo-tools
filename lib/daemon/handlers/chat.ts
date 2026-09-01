@@ -314,11 +314,12 @@ export function planSweepTargets(
  * Mirrors recipientsFromMembers' per-member filter (lib/state/chat-store.ts)
  * applied to one already-fetched message instead of a room's member list:
  * true when `handle` would have been a recipient of `message` under the
- * normal push rules for `wakeOn` (never the author; "all" is unconditional;
- * "mention" needs an exact handle mention or @here).
+ * normal push rules for `wakeOn` (never the author; never a quiet post, which
+ * may only ride along in a bundle another message causes; "all" is
+ * unconditional; "mention" needs an exact handle mention or @here).
  */
-function isRecipientUnderWakeRules(message: { handle: string; mentions: string[] }, handle: string, wakeOn: WakeMode): boolean {
-  if (message.handle === handle || wakeOn === "none") return false;
+function isRecipientUnderWakeRules(message: { handle: string; mentions: string[]; quiet?: boolean }, handle: string, wakeOn: WakeMode): boolean {
+  if (message.handle === handle || message.quiet || wakeOn === "none") return false;
   return wakeOn === "all" || message.mentions.includes("here") || message.mentions.includes(handle);
 }
 
@@ -332,7 +333,7 @@ function isRecipientUnderWakeRules(message: { handle: string; mentions: string[]
  * decides whether the recipient should be swept at all, not which
  * individual messages in the batch they "should" see.
  */
-export function pendingIncludesRecipient(pending: Array<{ handle: string; mentions: string[] }>, handle: string, wakeOn: WakeMode): boolean {
+export function pendingIncludesRecipient(pending: Array<{ handle: string; mentions: string[]; quiet?: boolean }>, handle: string, wakeOn: WakeMode): boolean {
   return pending.some((m) => isRecipientUnderWakeRules(m, handle, wakeOn));
 }
 
@@ -674,15 +675,15 @@ async function findPaneSessionRetrying(
 function postAndNotify(
   db: Database,
   emitEvent: (topic: string, payload?: unknown) => unknown,
-  args: { room: string; handle: string; body: string; mentions?: string[] },
+  args: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean },
   inboxDeps: InboxDeps,
   herdr: typeof herdrRequest,
   deliveryChains: Map<string, Promise<void>>,
   log: Logger,
   retryDelayMs: number,
 ): { id: number; recipients: string[] } | undefined {
-  const { room, handle, body, mentions } = args;
-  const posted = postMessage({ room, handle, body, mentions }, db);
+  const { room, handle, body, mentions, quiet } = args;
+  const posted = postMessage({ room, handle, body, mentions, quiet }, db);
   if (!posted) return undefined;
   // The row is durable at this point. The msg emit is best-effort: a throw
   // here (a full disk, an orphan daemon holding an events.db lock) must
@@ -694,6 +695,11 @@ function postAndNotify(
     log.warn({ err, id: posted.id, room }, "chat: emit for the posted message threw; message is durable, this emit was not");
   }
   const dm = dmParticipants(room, db);
+  // A quiet post is the record without the interruption: it stays unread (so
+  // peek and the viewer still surface it) and catches up inside whatever
+  // bundle a later ordinary message causes, but it wakes nobody itself --
+  // neither an agent's inbox below nor the human's desk further down.
+  if (quiet) return { id: posted.id, recipients: [] };
   for (const recipient of posted.recipients) {
     queueMicrotask(() => {
       deliverSerialized(deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
@@ -801,7 +807,7 @@ export function createChatHandlers(opts: {
 
     "chat:post": async (rawPayload: unknown): Promise<CommandResult<"chat:post">> => {
       const payload = rawPayload as Commands["chat:post"]["payload"];
-      const { room, handle, body, mentions } = payload;
+      const { room, handle, body, mentions, quiet } = payload;
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
       if (!isValidBody(body)) return { ok: false, error: `body must be a non-empty string under ${MAX_BODY_BYTES} bytes` };
@@ -815,7 +821,7 @@ export function createChatHandlers(opts: {
         const nearby = closestRoomNames(room, handle, db);
         return { ok: false, error: `unknown room "${room}"${nearby.length ? ` — did you mean: ${nearby.join(", ")}` : ""}` };
       }
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions, quiet }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
     },

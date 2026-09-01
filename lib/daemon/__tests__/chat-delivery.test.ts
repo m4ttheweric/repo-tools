@@ -395,6 +395,51 @@ test("a bundle never replays the recipient's own posts back into their own pane"
   expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
 });
 
+test("a quiet post reaches the room record but wakes nobody", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "taking the picker branch", quiet: true });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+  // Still unread, so peek and the viewer both show it.
+  expect(lastReadId(h.db, "general", "b")).toBe(0);
+});
+
+test("a quiet post rides along in the next bundle a normal post causes", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "quiet note", quiet: true });
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+  const loud = await h["chat:post"]({ room: "general", handle: "a", body: "loud one" });
+  if (!loud.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]![1]).toBe(
+    `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: quiet note\n[#general] a: loud one\n${STEER}\n</cross-session-message>`,
+  );
+  expect(lastReadId(h.db, "general", "b")).toBe(loud.data.id);
+});
+
 test("concurrent posts to the same recipient serialize delivery so a held first send never duplicates the backlog", async () => {
   const calls: Array<[string, string]> = [];
   const sock = fakeSocketPath();
