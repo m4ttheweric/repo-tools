@@ -31,6 +31,12 @@ over anything remembered or written here.
 
 ## Driving it as an agent
 
+- In a Claude Code session, when `rt worktree hook status` reports installed,
+  calling `EnterWorktree` with a `name` provisions through rt and moves the
+  session into the tree, promptless (the hook routes it; non-rt repos fall
+  back to stock `.claude/worktrees`). Prefer that over provision followed by
+  `EnterWorktree` with a `path`, which always prompts. Disposal stays rt's
+  either way; `ExitWorktree` never removes an rt tree.
 - Pass explicit args and `--json`. Omitted args open interactive pickers in a
   TTY and exit with usage otherwise.
 - `rt worktree list --json` is ground truth for what exists and where. Tree
