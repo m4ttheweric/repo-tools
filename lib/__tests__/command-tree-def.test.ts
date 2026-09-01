@@ -50,18 +50,21 @@ test("picker-hosting leaves suppress the dispatcher header (fullscreen), like ru
   expect(TREE.commit!.fullscreen).toBe(true);
   expect(TREE.nav!.fullscreen).toBe(true);
   expect(TREE.skills!.subcommands!.surface!.fullscreen).toBe(true);
-  // cd's picker (routed through lib/pickers.ts) now carries its own in-card
+  // cd's picker (routed through lib/pickers.ts) carries its own in-card
   // breadcrumb, so its dispatcher header is suppressed too.
   expect(TREE.cd!.fullscreen).toBe(true);
 });
 
-test("all six worktree picker leaves suppress the dispatcher header (fullscreen)", () => {
+test("the five worktree leaves that open a picker suppress the dispatcher header (fullscreen)", () => {
   const wt = TREE.worktree!.subcommands!;
-  for (const leaf of ["provision", "dispose", "restore", "ready-approve", "freshen", "await-ready"]) {
+  for (const leaf of ["dispose", "restore", "ready-approve", "freshen", "await-ready"]) {
     expect(wt[leaf]!.fullscreen).toBe(true);
   }
-  // create/list/adopt/each/hook/claude-hook aren't in scope -- they either
+  // provision has no interactive picker of its own today -- suppressing its
+  // header would drop it with nothing to carry the context instead.
+  // create/list/adopt/each/hook/claude-hook aren't in scope either -- they
   // never show a picker or aren't leaf-argument pickers at all.
+  expect(wt.provision!.fullscreen).toBeUndefined();
   expect(wt.create!.fullscreen).toBeUndefined();
   expect(wt.list!.fullscreen).toBeUndefined();
 });

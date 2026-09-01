@@ -553,7 +553,6 @@ export const TREE: Record<string, CommandNode> = {
         description: "Claim a worktree for a ticket or branch (from the on-deck pool, or freshly created)",
         module: "./commands/worktree.ts",
         fn: "worktreeProvision",
-        fullscreen: true,
         args: [
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
           { name: "Ticket", flag: "--ticket", type: "text", placeholder: "RT-40", hint: "Linear ticket id — derives the branch name" },
