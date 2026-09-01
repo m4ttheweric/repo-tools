@@ -40,6 +40,7 @@ import {
   snapshotRegistryDeps,
   type BuddyStatus,
   type RegistryDeps,
+  type WakeMode,
 } from "../../state/index.ts";
 import { CHAT_NOTIFICATION_CATEGORY, notifyEnabled } from "../../notifier.ts";
 import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.ts";
@@ -271,6 +272,8 @@ function deliverSerialized(
 /** The presence shape planSweepTargets actually needs -- a subset of PresenceRow, spelled out so the planner stays pure and testable with plain object literals instead of a full store row. */
 type SweepPresence = { sessionId: string; signedOutAt?: number };
 
+type SweepCandidate = { room: string; handle: string; maxId: number; wakeOn: WakeMode };
+
 /**
  * Pure: given stalePendingPairs' raw candidates plus a presence snapshot and
  * which of those sessions have an alive registry binding, decides which
@@ -278,18 +281,51 @@ type SweepPresence = { sessionId: string; signedOutAt?: number };
  * presence row, a signed-out one, or a signed-in one whose binding is dead
  * is dropped -- deliverPost would reach the same conclusion itself, but
  * checking here means the sweep never even builds a delivery chain entry
- * for a candidate that can't receive anything.
+ * for a candidate that can't receive anything. A wake_on:"none" candidate is
+ * also dropped here, cheaply and unconditionally: no pending message can
+ * ever make a "none" member a recipient, so there is nothing a per-message
+ * check downstream could find. wake_on:"mention" is NOT resolved here --
+ * that needs each pending message's author/mentions, which this function
+ * deliberately does not have; see pendingIncludesRecipient, applied once
+ * pendingMessages is fetched for a candidate that survives this filter.
  */
 export function planSweepTargets(
-  stale: Array<{ room: string; handle: string; maxId: number }>,
+  stale: SweepCandidate[],
   presenceByHandle: Map<string, SweepPresence>,
   aliveSessionIds: Set<string>,
-): Array<{ room: string; handle: string; maxId: number }> {
+): SweepCandidate[] {
   return stale.filter((pair) => {
+    if (pair.wakeOn === "none") return false;
     const presence = presenceByHandle.get(pair.handle);
     if (!presence || presence.signedOutAt !== undefined) return false;
     return aliveSessionIds.has(presence.sessionId);
   });
+}
+
+/**
+ * Mirrors recipientsFromMembers' per-member filter (lib/state/chat-store.ts)
+ * applied to one already-fetched message instead of a room's member list:
+ * true when `handle` would have been a recipient of `message` under the
+ * normal push rules for `wakeOn` (never the author; "all" is unconditional;
+ * "mention" needs an exact handle mention or @here).
+ */
+function isRecipientUnderWakeRules(message: { handle: string; mentions: string[] }, handle: string, wakeOn: WakeMode): boolean {
+  if (message.handle === handle || wakeOn === "none") return false;
+  return wakeOn === "all" || message.mentions.includes("here") || message.mentions.includes(handle);
+}
+
+/**
+ * True when at least one of `pending` would have named `handle` a recipient
+ * under `wakeOn` -- the sweep's own analog of recipientsFor, needed because
+ * (unlike a normal post, which only ever calls deliverPost for handles
+ * recipientsFor already vetted) a sweep candidate arrives with no such
+ * guarantee. Bundling still delivers the WHOLE pending range once this gate
+ * passes, same as a normal post's own catch-up batching -- this only
+ * decides whether the recipient should be swept at all, not which
+ * individual messages in the batch they "should" see.
+ */
+export function pendingIncludesRecipient(pending: Array<{ handle: string; mentions: string[] }>, handle: string, wakeOn: WakeMode): boolean {
+  return pending.some((m) => isRecipientUnderWakeRules(m, handle, wakeOn));
 }
 
 /**
@@ -342,7 +378,7 @@ export function createChatDeliverySweep(opts: {
     let recovered = 0;
     for (const target of targets) {
       const pending = pendingMessages(target.room, target.handle, target.maxId, db);
-      if (pending.length === 0 || pending.every((m) => m.handle === target.handle)) continue;
+      if (!pendingIncludesRecipient(pending, target.handle, target.wakeOn)) continue;
       const dm = dmParticipants(target.room, db) !== null;
       swept++;
       const result = await deliverSerialized(
