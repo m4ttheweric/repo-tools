@@ -3237,6 +3237,7 @@ func TestKeybarKeyClickTogglesForBuiltinMultiMarkActions(t *testing.T) {
 func TestModifierPressAndReleaseTracksHeldState(t *testing.T) {
 	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
 	m := New(req)
+	enableKittyProtocol(m) // real press/release path, so held may engage
 
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftAlt})
 	m = next.(*Model)
@@ -3315,6 +3316,7 @@ func TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim(t *testing.T) {
 	}
 	m := New(req)
 	m.width = 92
+	enableKittyProtocol(m) // real press/release path, so held may engage
 
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftAlt})
 	m = next.(*Model)
@@ -3419,6 +3421,7 @@ func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
 	// but not wide enough for "act" to join it there -- pinning the
 	// group-boundary wrap the assertions below check for.
 	m.width = 90
+	enableKittyProtocol(m) // real press/release path, so held may engage
 
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
 	m = next.(*Model)
@@ -3967,6 +3970,7 @@ func TestCtrlKeysBadgeGatesOnPhysicalHoldNotToggle(t *testing.T) {
 	// Physical hold: the same badge is present.
 	held := New(req)
 	held.width = 90
+	enableKittyProtocol(held) // real press/release path, so held may engage
 	next, _ = held.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
 	held = next.(*Model)
 	if !held.held.ctrl {
@@ -3974,6 +3978,74 @@ func TestCtrlKeysBadgeGatesOnPhysicalHoldNotToggle(t *testing.T) {
 	}
 	if !strings.Contains(header(held), "⌃ keys") {
 		t.Fatalf("the ⌃ keys badge must be present on a physical ctrl hold: %q", header(held))
+	}
+}
+
+// enableKittyProtocol feeds the model the terminal's Kitty keyboard-protocol
+// handshake -- the terminal confirming it reports key event types, which means
+// a bare modifier's release will arrive as its own event. held only ever
+// engages behind this confirmation (see applyModifierHeld), so the
+// physical-hold goldens send it first to stand in for a Kitty terminal.
+func enableKittyProtocol(m *Model) {
+	m.Update(tea.KeyboardEnhancementsMsg{Flags: ansi.KittyReportEventTypes})
+}
+
+// TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles pins the
+// fallback-input path the real tmux drive caught: a terminal that never
+// confirmed the Kitty keyboard protocol reports a bare modifier press but
+// never its matching release, so held must never engage there -- otherwise the
+// "⌃ keys" badge and the auto-expand latch true with nothing held. The ctrl-/
+// sticky toggle is a discrete keypress, independent of held, so it must still
+// reach the two-line keybar -- just without the badge.
+func TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles(t *testing.T) {
+	rows := make([]protocol.PickRow, 6)
+	for i := range rows {
+		v := fmt.Sprintf("row%d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows,
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+		},
+	}
+	header := func(m *Model) string { return ansi.Strip(strings.Split(render(m), "\n")[0]) }
+
+	// No enableKittyProtocol: this model never saw the handshake, so it is a
+	// fallback terminal and no bare-modifier release will ever arrive.
+	m := New(req)
+	m.width = 90
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
+	m = next.(*Model)
+	if m.held.ctrl {
+		t.Fatal("a bare ctrl press on a fallback terminal must never latch held.ctrl")
+	}
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeftAlt})
+	m = next.(*Model)
+	if m.held.alt {
+		t.Fatal("a bare alt press on a fallback terminal must never latch held.alt")
+	}
+	if strings.Contains(header(m), "⌃ keys") {
+		t.Fatalf("the ⌃ keys badge must never render on a fallback terminal: %q", header(m))
+	}
+	if m.showExpandedKeybar() {
+		t.Fatal("held must not auto-expand the keybar on a fallback terminal")
+	}
+
+	// The ctrl-/ toggle is a discrete keypress and must still reach the
+	// two-line keybar, badge still absent.
+	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
+	m = next.(*Model)
+	if !m.expanded {
+		t.Fatal("ctrl-/ must still toggle the expanded keybar on a fallback terminal")
+	}
+	lines := strings.Split(render(m), "\n")
+	if !strings.Contains(ansi.Strip(lines[len(lines)-2]), "held: showing all keys") {
+		t.Fatalf("ctrl-/ must still show the two-line keybar on a fallback terminal: %q", ansi.Strip(lines[len(lines)-2]))
+	}
+	if strings.Contains(header(m), "⌃ keys") {
+		t.Fatalf("the ⌃ keys badge must stay absent after ctrl-/ on a fallback terminal: %q", header(m))
 	}
 }
 

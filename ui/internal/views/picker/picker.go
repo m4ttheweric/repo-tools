@@ -20,11 +20,12 @@ import (
 // heldModifiers tracks whether alt/ctrl are currently physically held, for
 // the Modifiers board's reactive chrome (the "with args" badge, the
 // expanded keybar). A bare modifier key's own KeyPressMsg sets the
-// corresponding field; its KeyReleaseMsg clears it. A terminal that never
-// reports key release events also never reports a bare modifier press as
-// its own key event in the first place, so on such a terminal these fields
-// simply never flip -- there is no stuck-held state to guard against, only
-// an absent one.
+// corresponding field; its KeyReleaseMsg clears it. Both only ever fire once
+// the terminal has confirmed the Kitty keyboard protocol's event-type
+// reporting (Model.reportsKeyReleases): a fallback terminal can still deliver
+// a bare modifier press but never the matching release, so held is gated on
+// that confirmation to keep a press there from latching a field true with
+// nothing ever arriving to clear it.
 type heldModifiers struct {
 	alt  bool
 	ctrl bool
@@ -42,6 +43,12 @@ type Model struct {
 	selected    map[string]bool
 	modal       *modalState
 	held        heldModifiers
+	// reportsKeyReleases records that the terminal answered the Kitty keyboard
+	// protocol handshake with event-type reporting, i.e. it delivers a bare
+	// modifier's release as its own event. held (above) only engages once this
+	// is true: without it a fallback terminal's bare-modifier press would latch
+	// held true forever, since no release ever arrives to clear it.
+	reportsKeyReleases bool
 	// expanded is the ctrl-/ sticky toggle for the two-line grouped keybar,
 	// distinct from held.ctrl's physical-hold state: a terminal that never
 	// reports a bare ctrl press still gets the expanded legend on ctrl-/.
@@ -230,6 +237,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouseMotion(msg)
 	case tea.MouseWheelMsg:
 		return m.handleMouseWheel(msg)
+	case tea.KeyboardEnhancementsMsg:
+		// The terminal answered the Kitty keyboard protocol handshake; event-type
+		// reporting is the one flag that means a bare modifier's release will
+		// arrive as its own event, which is the condition held engages behind
+		// (see applyModifierHeld).
+		if msg.SupportsEventTypes() {
+			m.reportsKeyReleases = true
+		}
 	case tea.KeyReleaseMsg:
 		m.applyModifierHeld(msg.Code, false)
 	case tea.KeyPressMsg:

@@ -231,13 +231,23 @@ func (m *Model) now() time.Time {
 // still carries alt only in that event's own Mod field, never as its own
 // Code, so this never fires for a normal keystroke -- only for the
 // modifier's own, separate key event.
+//
+// A press (down) only engages held once reportsKeyReleases confirms the
+// terminal delivers the matching release; a fallback terminal can still
+// deliver the press but never the release, so latching held true there would
+// strand the badge and the auto-expand on with nothing held. A release always
+// clears, so it can never latch and is never gated.
 func (m *Model) applyModifierHeld(code rune, down bool) bool {
 	switch code {
 	case tea.KeyLeftAlt, tea.KeyRightAlt:
-		m.held.alt = down
+		if m.reportsKeyReleases || !down {
+			m.held.alt = down
+		}
 		return true
 	case tea.KeyLeftCtrl, tea.KeyRightCtrl:
-		m.held.ctrl = down
+		if m.reportsKeyReleases || !down {
+			m.held.ctrl = down
+		}
 		return true
 	}
 	return false

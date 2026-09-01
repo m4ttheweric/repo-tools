@@ -76,6 +76,82 @@ func TestRealTmuxWireModalOpenAndDismissLeavesNoResidueAboveFrame(t *testing.T) 
 	}
 }
 
+// TestRealTmuxCtrlSlashTogglesKeybarWithoutLatchingHeldBadge is the fallback-
+// terminal gate the ctrl-/ latch fix lands behind. A real tmux pane speaks no
+// Kitty keyboard protocol, so a bare modifier there reports a press but never a
+// release: the buggy build inferred held from that lone press and stranded the
+// "⌃ keys" physical-hold badge on forever. This drives the exact input -- a
+// bare left-ctrl press (Kitty keycode 57442, which bubbletea decodes whether or
+// not the handshake ever completed) followed by ctrl-/ -- and asserts the badge
+// never appears while the ctrl-/ toggle still reaches the two-line grouped
+// keybar. Only a real tmux VT delivers a press with no matching release; the
+// bundled x/vt emulator the model tests use cannot.
+func TestRealTmuxCtrlSlashTogglesKeybarWithoutLatchingHeldBadge(t *testing.T) {
+	const cols, rows = 110, 20
+
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("REAL-TMUX REPLAY GATE SKIPPED: no `tmux` binary found on PATH. " +
+			"This gate needs a real tmux VT interpreter to deliver a bare " +
+			"modifier press with no matching release -- the bare-pty (x/vt) " +
+			"emulator every other e2e test in this package uses cannot. " +
+			"Install tmux to run this test; a skip here is not a pass.")
+	}
+
+	sess := startRealTmuxPicker(t, tmuxBin, cols, rows)
+
+	sess.send(t, ctrlSlashReproRequest())
+	sess.waitFor(t, "row0")
+	time.Sleep(300 * time.Millisecond) // let the base frame settle
+
+	if grid := sess.capture(t); strings.Contains(grid, "showing all keys") || strings.Contains(grid, "⌃ keys") {
+		t.Fatalf("setup: neither the expanded keybar nor the held badge should show before any key:\n%s", grid)
+	}
+
+	// A bare left-ctrl press with no release. On the buggy build this latches
+	// held.ctrl true; the fix leaves it clear because tmux never confirmed it
+	// can deliver the release.
+	sess.pressBareLeftCtrl(t)
+	time.Sleep(300 * time.Millisecond)
+	if grid := sess.capture(t); strings.Contains(grid, "⌃ keys") {
+		t.Fatalf("a bare ctrl press must not latch the ⌃ keys badge in a fallback tmux (no key releases):\n%s", grid)
+	}
+
+	// ctrl-/ is a discrete keypress and must still toggle the two-line keybar,
+	// badge still absent.
+	sess.pressCtrlSlash(t)
+	sess.waitFor(t, "showing all keys")
+	time.Sleep(300 * time.Millisecond)
+
+	grid := sess.capture(t)
+	if !strings.Contains(grid, "showing all keys") {
+		t.Fatalf("ctrl-/ must toggle the two-line keybar on in a fallback tmux:\n%s", grid)
+	}
+	if strings.Contains(grid, "⌃ keys") {
+		t.Fatalf("the ⌃ keys physical-hold badge must never latch on in a fallback tmux:\n%s", grid)
+	}
+}
+
+// ctrlSlashReproRequest is a plain grouped-action row list wide enough to paint
+// the two-line grouped keybar (and the "held: showing all keys" indicator) once
+// ctrl-/ expands it, and the "⌃ keys" header badge if a hold ever engaged.
+func ctrlSlashReproRequest() []byte {
+	rows := make([]protocol.PickRow, 6)
+	for i := range rows {
+		v := fmt.Sprintf("row%d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Bold: true}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows,
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
+		},
+	}
+	line, _ := json.Marshal(req)
+	return line
+}
+
 // tmuxReproRequest mirrors the request/modal shape a live 110x34 tmux drive
 // actually reported the residue against: a three-segment breadcrumb, a
 // grouped row list with a right-aligned tag, and a short wire-driven modal
@@ -201,6 +277,36 @@ func (s *realTmuxPickerSession) pressEscape(t *testing.T) {
 	t.Helper()
 	if out, err := exec.Command(s.tmuxBin, "-S", s.sock, "send-keys", "Escape").CombinedOutput(); err != nil {
 		t.Fatalf("tmux send-keys Escape: %v: %s", err, out)
+	}
+}
+
+// pressBareLeftCtrl sends the Kitty keyboard protocol's own bare left-ctrl
+// press sequence (CSI 57442 u) as literal bytes into the pane's input -- a
+// press with no matching release, the input a real fallback tmux delivers when
+// its outer terminal forwards Kitty presses but tmux never confirmed the
+// protocol to this program. bubbletea decodes 57442 to KeyLeftCtrl regardless
+// of whether the handshake completed.
+func (s *realTmuxPickerSession) pressBareLeftCtrl(t *testing.T) {
+	t.Helper()
+	// ESC [ 5 7 4 4 2 u
+	s.sendHex(t, "1b", "5b", "35", "37", "34", "34", "32", "75")
+}
+
+// pressCtrlSlash sends ctrl-/ (byte 0x1F) as a literal byte into the pane's
+// input -- the discrete keypress that toggles the two-line grouped keybar,
+// independent of any physical-hold state.
+func (s *realTmuxPickerSession) pressCtrlSlash(t *testing.T) {
+	t.Helper()
+	s.sendHex(t, "1f")
+}
+
+// sendHex sends the given hex byte values into the pane's input literally
+// (send-keys -H), the raw-byte counterpart to pressEscape's named-key send.
+func (s *realTmuxPickerSession) sendHex(t *testing.T, hexBytes ...string) {
+	t.Helper()
+	args := append([]string{"-S", s.sock, "send-keys", "-H"}, hexBytes...)
+	if out, err := exec.Command(s.tmuxBin, args...).CombinedOutput(); err != nil {
+		t.Fatalf("tmux send-keys -H %v: %v: %s", hexBytes, err, out)
 	}
 }
 
