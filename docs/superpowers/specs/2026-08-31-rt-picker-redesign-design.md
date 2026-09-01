@@ -261,6 +261,25 @@ U+F07B (Ghostty builtin symbols fallback; `▸` degrade). No emoji anywhere.
   **Cut:** deep-jump, preview pane, image previews.
 - **Recent runs / arg-collector / simple selects**: the plain patterns.
 
+## Embeddable core (seam contract; addendum, Matt 2026-09-01)
+
+The picker's core is an embeddable Bubble Tea component, not logic welded to
+the verb. `picker.Model` is self-contained: pure Init/Update/View; NO direct
+stdout/tty IO from Update or View — outbound protocol traffic (`event`,
+`modal-result`, the terminal `result`) surfaces as typed emissions that the
+HOST translates and writes; dimensions and anchor are injected, never assumed;
+termios/keyboard-enhancement/program setup lives in the host. `rt-ui pick`
+is the first host (a thin one). This exists so another rt-ui view (the runner
+board) can later host the picker as an overlay layer in ITS program — two
+tea.Programs can never share a tty, so embedding is the only route.
+Acceptance: the existing headless model tests double as the seam's proof; an
+audit of Tasks 4-12 fixes any IO-in-model violations.
+
+**Named follow-up (out of scope here): "board-hosted picker modal"** — a new
+board wire message that opens an embedded picker overlay on the runner board,
+returning the choice as an intent. Own spec+plan after cutover, once a runner
+flow concretely needs it. Depends on the residue fix being settled.
+
 ## Contracts preserved byte-identical
 
 Non-TTY / `--json` / `RT_BATCH` gating (picker-conformance suite must stay
