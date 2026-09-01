@@ -42,8 +42,26 @@ fetch() { # url sha → prints cached path
   if [ ! -f "$dest" ]; then
     curl -fsSL --retry 3 -o "$dest.part" "$url" || {
       rm -f "$dest.part"
-      echo "  x download failed: $url" >&2
-      exit 1
+      # A private repo's release asset (console, chat) refuses bare curl;
+      # gh carries the caller's token (GH_TOKEN in CI, keychain locally).
+      # The sha gate below still judges whatever arrives.
+      case "$url" in
+        https://github.com/*/releases/download/*)
+          local path="${url#https://github.com/}"
+          local owner_repo="${path%%/releases/download/*}"
+          local rest="${path#*/releases/download/}"
+          local tag="${rest%%/*}" file="${rest#*/}"
+          echo "  → bare download refused; retrying $name via gh ($owner_repo $tag)" >&2
+          command -v gh >/dev/null 2>&1 || { echo "  x download failed and gh is not available: $url" >&2; exit 1; }
+          gh release download "$tag" --repo "$owner_repo" --pattern "$file" --output "$dest.part" --clobber || {
+            rm -f "$dest.part"
+            echo "  x download failed (curl and gh): $url" >&2
+            exit 1
+          } ;;
+        *)
+          echo "  x download failed: $url" >&2
+          exit 1 ;;
+      esac
     }
     mv "$dest.part" "$dest"
   fi

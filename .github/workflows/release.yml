@@ -136,6 +136,11 @@ jobs:
         continue-on-error: true
 
       - name: Fetch bundled dependencies
+        # GH_TOKEN: console and chat are private repos, so their release
+        # assets refuse bare curl; fetch-deps falls back to gh, which needs
+        # a token that can read the m4ttstack app repos.
+        env:
+          GH_TOKEN: ${{ secrets.MATTSTACK_RELEASE_TOKEN }}
         run: scripts/fetch-deps.sh arm64
 
       # bunx vsce package runs a Node CLI under Bun's Node-compat shim, which
