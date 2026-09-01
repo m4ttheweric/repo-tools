@@ -12,7 +12,7 @@ import { join } from "path";
 import type { Logger } from "pino";
 import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
-import { startReadyTask, readyTaskFor } from "../ready-async.ts";
+import { recoverPendingReady, startReadyTask, readyTaskFor } from "../ready-async.ts";
 
 const repoName = "remote:acme";
 
@@ -117,6 +117,36 @@ describe("startReadyTask", () => {
     expect(a).toEqual(b);
     expect(readFileSync(marker, "utf8").trim().split("\n")).toHaveLength(1);
     expect(readyTaskFor(path)).toBeNull();
+  });
+
+  test("recoverPendingReady restarts the settle for an orphaned pending tree", async () => {
+    const path = makeTreeDir();
+    seedPending(path);
+    const { emit, events } = collector();
+
+    const kicked = await recoverPendingReady({ repoName, repoPath: path, emit, log: fakeLog() });
+
+    expect(kicked).toEqual(["alpha"]);
+    const task = readyTaskFor(path);
+    if (task) await task;
+    const rec = loadRegistry(repoName).find((t) => t.path === path)!;
+    expect(rec.readyPendingAt).toBeUndefined();
+    expect(rec.readyAt).toBeTruthy();
+    expect(events.find((e) => e.type === "worktree:ready-settled")?.data).toMatchObject({ ok: true });
+  });
+
+  test("recoverPendingReady leaves a tree with a live settle task alone", async () => {
+    const path = makeTreeDir();
+    seedPending(path);
+    const { emit } = collector();
+    const live = startReadyTask({
+      repoName, path, steps: [{ run: "sleep 0.3" }], emit, log: fakeLog(),
+    });
+
+    const kicked = await recoverPendingReady({ repoName, repoPath: path, emit, log: fakeLog() });
+
+    expect(kicked).toEqual([]);
+    await live;
   });
 
   test("skips settling when the tree left the registry before the task ran", async () => {

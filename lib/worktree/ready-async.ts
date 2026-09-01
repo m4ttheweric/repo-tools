@@ -7,8 +7,8 @@
  */
 
 import type { Logger } from "pino";
-import type { ReadyStep } from "./config.ts";
-import { runReadySteps } from "./ready.ts";
+import { evaluateReadyGate, loadWorktreeRepoConfig, type ReadyStep } from "./config.ts";
+import { changedSince, runReadySteps, stepsToRun } from "./ready.ts";
 import { findByPath, loadRegistry } from "./registry.ts";
 import { patchTree } from "./patch.ts";
 import { withTreeLock } from "./locks.ts";
@@ -102,4 +102,50 @@ async function runTask(deps: ReadyTaskDeps): Promise<ReadySettle> {
 
   log.warn({ repo: repoName, path }, "ready task: tree lock stayed busy; leaving steps pending for recovery");
   return { ok: false, skipped: "busy" };
+}
+
+/**
+ * The claim-time step set, recomputed from current config and the tree's
+ * stamp — what provision would queue right now. Used when the queue itself
+ * was lost (daemon restart) and by await-ready's orphan recovery.
+ */
+export async function computeClaimReadySteps(
+  repoName: string,
+  repoPath: string,
+  treePath: string,
+): Promise<ReadyStep[]> {
+  const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
+  const { steps } = await evaluateReadyGate(cfg, repoName, repoPath);
+  const stamp = findByPath(loadRegistry(repoName), treePath)?.readyStamp;
+  const changed = stamp ? await changedSince(treePath, stamp) : null;
+  return stepsToRun(steps, changed);
+}
+
+export interface RecoverDeps {
+  repoName: string;
+  repoPath: string;
+  emit: (type: string, data: unknown) => void;
+  log: Logger;
+}
+
+/**
+ * Restart recovery: a claimed tree still marked pending with no in-flight
+ * task lost its settle to a daemon death. Steps are idempotent by the RT-34
+ * contract, so the whole recomputed set re-runs. Fire-and-forget per tree —
+ * a reconcile pass must never block on installs.
+ */
+export async function recoverPendingReady(deps: RecoverDeps): Promise<string[]> {
+  const { repoName, repoPath, emit, log } = deps;
+  const kicked: string[] = [];
+  for (const rec of loadRegistry(repoName)) {
+    if (rec.state !== "claimed" || !rec.readyPendingAt || readyTaskFor(rec.path)) continue;
+    const steps = await computeClaimReadySteps(repoName, repoPath, rec.path);
+    log.info(
+      { repo: repoName, tree: rec.name, steps: steps.map((s) => s.run) },
+      "ready task: recovering steps left pending by a daemon restart",
+    );
+    startReadyTask({ repoName, path: rec.path, steps, emit, log });
+    kicked.push(rec.name);
+  }
+  return kicked;
 }

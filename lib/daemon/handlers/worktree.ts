@@ -65,7 +65,7 @@ import {
   WORKTREE_APP_ENABLE_COMMAND,
 } from "../../worktree/config.ts";
 import { changedSince, stepsToRun } from "../../worktree/ready.ts";
-import { startReadyTask } from "../../worktree/ready-async.ts";
+import { computeClaimReadySteps, readyTaskFor, startReadyTask } from "../../worktree/ready-async.ts";
 import type { ReadyStep } from "../../worktree/config.ts";
 import { freshenRepo, reconcileRepoRegistry, withCreateLock } from "../worktree-reconciler.ts";
 import { repoDataDir, rtDir } from "../../rt-paths.ts";
@@ -696,6 +696,41 @@ export function createWorktreeHandlers(
         }
         return { ok: true, data: { ran } };
       });
+    },
+
+    "worktree:await-ready": async (payload: any) => {
+      const decoded = decodeRepo(payload);
+      if (!decoded.ok) return decoded;
+      const repoName: SerializedIdentity = decoded.repo;
+      const repoPath = ctx.repoIndex()[repoName];
+      if (!repoPath) return { ok: false, error: "repo-unknown" };
+      const treeName = typeof payload?.tree === "string" ? payload.tree : undefined;
+      if (!treeName) return { ok: false, error: "tree-required" };
+      const rec = loadRegistry(repoName).find((t) => t.name === treeName);
+      if (!rec) return { ok: false, error: "tree-unknown" };
+
+      // Join the live settle when there is one; a pending marker with no task
+      // is a settle lost to a daemon restart, recovered right here so the
+      // caller's wait still ends in a real outcome.
+      let task = readyTaskFor(rec.path);
+      if (!task && rec.readyPendingAt) {
+        const steps = await computeClaimReadySteps(repoName, repoPath, rec.path);
+        task = startReadyTask({ repoName, path: rec.path, steps, emit: opts.emit, log: ctx.log });
+      }
+      if (task) await task;
+
+      const final = loadRegistry(repoName).find((t) => t.path === rec.path);
+      if (!final) return { ok: false, error: "tree-unknown" };
+      return {
+        ok: true,
+        data: {
+          tree: final.name,
+          path: final.path,
+          ready: !final.readyFailure && !final.readyPendingAt,
+          readyAt: final.readyAt ?? null,
+          ...(final.readyFailure ? { failedStep: final.readyFailure } : {}),
+        },
+      };
     },
 
     /**
