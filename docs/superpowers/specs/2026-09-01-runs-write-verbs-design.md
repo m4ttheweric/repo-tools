@@ -48,6 +48,7 @@ Contract, identical to the script's v2 except where marked new:
 - `snapshot` prints `{ok, run, stages, fields, decisions}` as raw `SELECT *` rows from the open `RT_RUN_DB` handle, with the same ordering the script used (stages by `started_at, attempt`; fields by `at`; decisions by `decided_at`). It is implemented in `write.ts` beside the mutations, not through `store.ts`'s `readRun`, which keys on `(repo, runId)` under `runsRoot()` and returns the enriched `RunDetail` shape rather than raw rows.
 - `rt runs` with a positional argument that is not a known subcommand prints a usage error and exits 2. Today the dispatcher runs a node's own handler when the first argument matches no subcommand, so `rt runs stage-start` on an rt without these verbs silently prints the run list and exits 0; `runsList` rejecting positionals closes that on any rt carrying this change.
 - Output is JSON on stdout for every outcome of every subcommand except `field get`. Exit codes: 0 ok, 1 sqlite failure, 2 usage or environment, 3 not found.
+- An empty string for a required flag (`--stage ""`) is a usage error, exit 2, same as the flag being absent; it never inserts a row named the empty string. An empty string for an optional flag (`--spawned-by ""`, `--reason ""`, `--detail-path ""`) stores NULL, matching what the script did.
 - Bare `rt runs` (the list), `rt runs show`, and `rt runs abandon` are unchanged. `list` was never a registered subcommand; it only worked through the fallthrough closed below, and nothing invokes it literally.
 
 `--repo` on `run-start` is the run-dir key (the string `runs:list` hands out), not a parsed identity; the write side treats it as an opaque path component exactly as the read side does, validated with `isPathComponent`.
@@ -58,7 +59,7 @@ Contract, identical to the script's v2 except where marked new:
 - `lib/runs/start.ts` (new): `runStart(root, opts)` alone, because it is the one operation that spawns git (pack provenance) and the daemon's import graph must never reach a synchronous spawn (`lib/__tests__/no-daemon-sync-exec.test.ts`). The daemon reaches `write.ts` through `store.ts` and `reconcile.ts`; only the CLI imports `start.ts`.
 - `lib/runs/paths.ts` (new): `runsRoot()` and `isPathComponent()`, shared by the read and write sides without a cycle; `store.ts` re-exports them.
 - `lib/runs/store.ts`: keeps the read side. `KNOWN_SCHEMA_VERSION` becomes the write side's number and is re-exported for `schemaAhead`.
-- `lib/runs/reconcile.ts`: `abandonRun` calls `write.ts` instead of running its own SQL, so the daemon's `runs:abandon` and the CLI share one implementation.
+- `lib/runs/reconcile.ts`: `abandonRun` calls `write.ts` instead of running its own SQL, so the daemon's `runs:abandon` and the CLI share one implementation. It now opens the run DB through `openRunDb`, so a v1 run DB reached only through abandon is migrated to v2 in place, the same idempotent migration the CLI runs; a failing open or migration returns `{ ok: false, error }` rather than throwing.
 - `lib/runs/provenance.ts` (new): `packProvenance(dirs)` returns `{dirty, commits}` from `git rev-parse --short HEAD` and `git status --porcelain` per dir; non-git dirs are skipped.
 - `lib/runs/identity.ts` (new, small): `recordIdentity(db)` upserts `claude-session` and `herdr-pane` under `produced_by = 'run'` from `CLAUDE_CODE_SESSION_ID` and `HERDR_PANE_ID`, change-guarded so an unchanged value never bumps `fields.at`.
 - `commands/runs-write.ts` (new): one exported function per subcommand doing argument parsing, `RT_RUN_DB` resolution, the call into `write.ts` or `start.ts`, emission, and printing; `commands/runs.ts` keeps the read verbs and gains the positional rejection. Registered in `lib/command-tree-def.ts` under `runsSubcommands` beside `show` and `abandon`, with help text matching the surface above, and in `lib/module-registry.ts` so the compiled binary resolves the module. The `runs` node's description drops "read-only".
@@ -67,7 +68,7 @@ Contract, identical to the script's v2 except where marked new:
 
 ## Errors
 
-No subcommand throws to a stack trace. A caught sqlite error prints `{"ok":false,"error":"sqlite write failed: <message>"}` and exits 1. Argument problems print the usage line for that subcommand as the error string and exit 2. Values are bound as parameters, never interpolated, so the script's quote-escaping helper has no counterpart.
+No subcommand throws to a stack trace. A caught sqlite error, including a run DB at an existing path that fails to open or migrate (corrupt, or not a sqlite file), prints `{"ok":false,"error":"sqlite write failed: <message>"}` and exits 1. Argument problems print a JSON usage error naming the flag as the error string and exit 2. Values are bound as parameters, never interpolated, so the script's quote-escaping helper has no counterpart.
 
 ## Testing
 
