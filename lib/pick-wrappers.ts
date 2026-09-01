@@ -8,6 +8,7 @@
 import { runPick, type PickHandle } from "./ui/pick.ts";
 import type { PickAction, PickRow, PickSegment } from "./ui/protocol.ts";
 import { BackNavigation } from "./back-navigation.ts";
+import type { NavOption, NavPickerOpts, NavResult } from "./navigate.ts";
 
 export { BackNavigation } from "./back-navigation.ts";
 
@@ -111,4 +112,106 @@ export async function filterableMultiselect(
 
   if (result.action === "cancel") return null;
   return result.values ?? [];
+}
+
+// ─── runNavPicker ───────────────────────────────────────────────────────────
+//
+// Translates NavPickerOpts (lib/navigate.ts, which keeps the type homes and
+// re-exports this function) onto runPick. preview/previewHidden/helpHeader/
+// resizeHeaderCommand/watch are accepted but no-op here -- their fzf-only
+// callers are rebuilt on the pick verb before those options are deleted.
+// colorOverrides is dropped: tone/hex row segments replace it, and nothing
+// here reads the field (it stays declared on NavPickerOpts only because the
+// fzf-backed buildNavArgs in navigate.ts still consumes it).
+
+/** Bold label, padded to the widest label across the whole option list, plus a dim hint -- same look as the fzf-backed picker. */
+function navOptionsToRows(options: NavOption[]): PickRow[] {
+  const real = options.filter((o) => !o.separator);
+  const labelWidth = real.reduce((w, o) => Math.max(w, o.label.length), 0);
+
+  const rows: PickRow[] = [];
+  let group: string | undefined;
+  for (const o of options) {
+    // A separator carries no row of its own -- its label names the group for
+    // every real option that follows, until the next separator.
+    if (o.separator) {
+      group = o.label;
+      continue;
+    }
+    const left: PickSegment[] = [{ text: o.label.padEnd(labelWidth), bold: true }];
+    if (o.hint) left.push({ text: `  ${o.hint}`, tone: "dim" });
+    rows.push({ value: o.value, left, ...(group ? { group } : {}) });
+  }
+  return rows;
+}
+
+function parseHeaderPart(part: string): { key: string; label: string } {
+  const sep = part.indexOf(": ");
+  return sep < 0 ? { key: part, label: part } : { key: part.slice(0, sep), label: part.slice(sep + 2) };
+}
+
+// Result actions this wrapper treats as the built-in select/cancel outcomes,
+// whether Go's own defaults produced them or a headerPart claimed the same
+// key under its own id -- see navActions.
+const CANCEL_ACTION_IDS = new Set(["cancel", "esc"]);
+const SELECT_ACTION_IDS = new Set(["select", "enter"]);
+
+/**
+ * ctrl-up (always) plus every caller expectKey become exit actions --
+ * event:false, id equal to the key itself, so a press ends the picker with
+ * that key as the result action (mirrors fzf's --expect contract). Every
+ * headerPart names a key too: one that an exit action already claims just
+ * relabels it (the caller's own footer wording wins over the raw key name);
+ * any other headerPart becomes its own label-only global action.
+ */
+function navActions(opts: NavPickerOpts): PickAction[] | undefined {
+  const headerLabels = new Map((opts.headerParts ?? []).map(parseHeaderPart).map((h) => [h.key, h.label] as const));
+  const exitKeys = new Set<string>(["ctrl-up", ...(opts.expectKeys ?? [])]);
+
+  const actions: PickAction[] = [];
+  for (const key of exitKeys) {
+    actions.push({ id: key, label: headerLabels.get(key) ?? key, key, scope: "global", event: false });
+  }
+  for (const [key, label] of headerLabels) {
+    if (exitKeys.has(key)) continue;
+    actions.push({ id: key, label, key, scope: "global" });
+  }
+  return actions.length > 0 ? actions : undefined;
+}
+
+/** initialPos is a 1-based index into the full option list; resumeValue (a value to search for) always wins when both are set. */
+function resolveResumeValue(opts: NavPickerOpts): string | undefined {
+  if (opts.resumeValue) return opts.resumeValue;
+  if (opts.initialPos != null) return opts.options[opts.initialPos - 1]?.value;
+  return undefined;
+}
+
+function toNavResult(result: { action: string; value: string | null; query: string }): NavResult | null {
+  if (CANCEL_ACTION_IDS.has(result.action)) return null;
+  const key = SELECT_ACTION_IDS.has(result.action) ? "" : result.action;
+  return { value: result.value ?? null, key, query: result.query };
+}
+
+/**
+ * Run a picker built from NavPickerOpts and return its NavResult, or null on
+ * cancel -- same signature and return shape as the fzf-backed original, so
+ * every existing call site keeps working unchanged.
+ */
+export async function runNavPicker(opts: NavPickerOpts): Promise<NavResult | null> {
+  const rows = navOptionsToRows(opts.options);
+  const actions = navActions(opts);
+  const resumeValue = resolveResumeValue(opts);
+
+  const handle = runPick({
+    message: opts.message,
+    rows,
+    ...(actions ? { actions } : {}),
+    ...(opts.initialQuery ? { initialQuery: opts.initialQuery } : {}),
+    ...(resumeValue ? { resumeValue } : {}),
+    ...(opts.exact ? { exact: true } : {}),
+    ...(opts.captureQueryOnNoMatch ? { acceptNoMatch: true } : {}),
+  });
+
+  const result = await handle.result;
+  return toNavResult(result);
 }

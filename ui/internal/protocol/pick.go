@@ -66,6 +66,9 @@ type PickRequest struct {
 	// the breadcrumb is inert, since a caller that never wired a listener
 	// for it would otherwise have no way to know a crumb click happened.
 	CrumbEvents bool `json:"crumbEvents,omitempty"`
+	// AcceptNoMatch: enter on a no-match filter resolves with
+	// {action:"select", value:null, query} instead of leaving the picker open.
+	AcceptNoMatch bool `json:"acceptNoMatch,omitempty"`
 }
 
 type PickUpdate struct {

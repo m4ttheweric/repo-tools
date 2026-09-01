@@ -117,6 +117,7 @@ test("pick request fixture carries protocol 1 and round-trips through encodeLine
   expect(req.actions?.find((a) => a.id === "dispose")?.event).toBe(true);
   expect(req.actions?.find((a) => a.id === "refresh")?.event).toBeUndefined();
   expect(req.crumbEvents).toBe(true);
+  expect(req.acceptNoMatch).toBe(true);
   const line = encodeLine(req);
   expect(line.endsWith("\n")).toBe(true);
   expect(JSON.parse(line)).toEqual(req);

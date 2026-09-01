@@ -31,5 +31,6 @@
   ],
   "multi": true,
   "initialQuery": "on-deck",
-  "crumbEvents": true
+  "crumbEvents": true,
+  "acceptNoMatch": true
 }

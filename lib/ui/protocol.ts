@@ -184,6 +184,8 @@ export interface PickRequest {
   exact?: boolean;
   cap?: number;
   selectedPanel?: boolean;
+  /** Enter on a no-match filter resolves with `{action:"select", value:null, query}` instead of leaving the picker open. */
+  acceptNoMatch?: boolean;
   // Opts a breadcrumb segment click into emitting a {action:"crumb",
   // value:"<segment index>"} event; without it a crumb click is inert.
   crumbEvents?: boolean;
