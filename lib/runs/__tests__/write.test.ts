@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createRunDb, KNOWN_SCHEMA_VERSION, migrate, openRunDb, runStart, runStatus, stageStart, stageEnd } from "../write.ts";
+import { createRunDb, KNOWN_SCHEMA_VERSION, migrate, openRunDb, runStart, runStatus, stageStart, stageEnd, fieldSet, fieldGet, decisionRecord, snapshot } from "../write.ts";
 import { seedRun } from "./fixtures.ts";
 
 function tmp(): string {
@@ -196,6 +196,60 @@ describe("stage lifecycle", () => {
     expect(stageEnd(db, "plan", "done")).toEqual({ ok: false, error: "stage never started: plan", code: 3 });
     expect(stageEnd(db, "gates", "failed", { reason: "boom" })).toEqual({ ok: false, error: "stage never started: gates", code: 3 });
     expect(db.query("SELECT COUNT(*) AS n FROM stages").get()).toEqual({ n: 0 });
+    db.close();
+  });
+});
+
+describe("fields", () => {
+  test("field set/get round-trips a value with single quotes; a missing key is exit 3", () => {
+    const db = started();
+    expect(fieldSet(db, "mr-url", "https://x/1?a='b'", "ship", 10)).toEqual({ ok: true });
+    expect(fieldGet(db, "mr-url")).toEqual({ ok: true, value: "https://x/1?a='b'" });
+    expect(db.query("SELECT produced_by, at FROM fields WHERE key='mr-url'").get()).toEqual({ produced_by: "ship", at: 10 });
+    expect(fieldGet(db, "nope")).toMatchObject({ ok: false, code: 3 });
+    db.close();
+  });
+
+  test("field set replaces an existing key", () => {
+    const db = started();
+    fieldSet(db, "branch", "a", "provision", 10);
+    fieldSet(db, "branch", "b", "provision", 20);
+    expect(db.query("SELECT value, at FROM fields WHERE key='branch'").get()).toEqual({ value: "b", at: 20 });
+    db.close();
+  });
+});
+
+describe("decisions", () => {
+  test("decision record upserts on (contract, scope) and refuses a selection that is not JSON", () => {
+    const db = started();
+    const rec = (selection: string) => decisionRecord(db, { contract: "execution-strategy@1", scope: "run", selection, decidedBy: "stage-plan" });
+    expect(rec('{"tier":"direct-tdd"}')).toEqual({ ok: true });
+    expect(rec('{"tier":"superpowers"}')).toEqual({ ok: true });
+    const rows = db.query("SELECT selection FROM decisions").all() as { selection: string }[];
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.selection).tier).toBe("superpowers");
+    expect(rec("not json")).toMatchObject({ ok: false, code: 2 });
+    db.close();
+  });
+});
+
+describe("snapshot", () => {
+  test("returns raw rows in the script's order", () => {
+    const db = started();
+    stageStart(db, "plan", {}, 10);
+    stageEnd(db, "plan", "done", { now: 20 });
+    stageStart(db, "gates", {}, 30);
+    fieldSet(db, "b", "2", "plan", 50);
+    fieldSet(db, "a", "1", "plan", 40);
+    decisionRecord(db, { contract: "c@1", scope: "run", selection: "{}", decidedBy: "x", now: 60 });
+    const s = snapshot(db);
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    expect(s.run).toMatchObject({ status: "running", current_stage: "gates" });
+    expect(s.stages.map((r) => r.name)).toEqual(["plan", "gates"]);
+    expect(s.fields.map((r) => r.key)).toEqual(["a", "b"]);
+    expect(s.decisions).toHaveLength(1);
+    expect(s.stages[0]).toHaveProperty("run_id");
     db.close();
   });
 });

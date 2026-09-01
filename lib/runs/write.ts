@@ -187,3 +187,57 @@ export function stageEnd(
     return { ok: false, error: `sqlite write failed: ${String(err)}`, code: 1 };
   }
 }
+
+export function fieldSet(db: Database, key: string, value: string, stage: string, now: number = Date.now()): Ok | Fail {
+  try {
+    db.run("INSERT OR REPLACE INTO fields (run_id, key, value, produced_by, at) SELECT id, ?, ?, ?, ? FROM runs", [key, value, stage, now]);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `sqlite write failed: ${String(err)}`, code: 1 };
+  }
+}
+
+export function fieldGet(db: Database, key: string): Ok<{ value: string }> | Fail {
+  const row = db.query("SELECT value FROM fields WHERE key=?").get(key) as { value: string } | undefined;
+  if (!row || row.value === "") return { ok: false, error: `no field ${key}`, code: 3 };
+  return { ok: true, value: row.value };
+}
+
+export function decisionRecord(
+  db: Database,
+  o: { contract: string; scope: string; selection: string; decidedBy: string; now?: number },
+): Ok | Fail {
+  try {
+    JSON.parse(o.selection);
+  } catch {
+    return { ok: false, error: "--selection must be JSON", code: 2 };
+  }
+  try {
+    db.run(
+      "INSERT OR REPLACE INTO decisions (run_id, contract, scope, selection, decided_by, decided_at) SELECT id, ?, ?, ?, ?, ? FROM runs",
+      [o.contract, o.scope, o.selection, o.decidedBy, o.now ?? Date.now()],
+    );
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `sqlite write failed: ${String(err)}`, code: 1 };
+  }
+}
+
+export type Row = Record<string, unknown>;
+
+// Raw rows from the open handle, not store.ts's readRun: that one keys on
+// (repo, runId) under runsRoot() and returns the enriched RunDetail shape,
+// while callers of snapshot expect the table rows the script printed.
+export function snapshot(db: Database): Ok<{ run: Row | null; stages: Row[]; fields: Row[]; decisions: Row[] }> | Fail {
+  try {
+    return {
+      ok: true,
+      run: (db.query("SELECT * FROM runs LIMIT 1").get() as Row | undefined) ?? null,
+      stages: db.query("SELECT * FROM stages ORDER BY started_at, attempt").all() as Row[],
+      fields: db.query("SELECT * FROM fields ORDER BY at").all() as Row[],
+      decisions: db.query("SELECT * FROM decisions ORDER BY decided_at").all() as Row[],
+    };
+  } catch (err) {
+    return { ok: false, error: `sqlite read failed: ${String(err)}`, code: 1 };
+  }
+}
