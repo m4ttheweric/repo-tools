@@ -19,7 +19,7 @@ table.gram td:first-child{color:var(--soft);font-family:"SF Mono",Menlo,monospac
 </style>
 <title>Scrolling</title>
 <h1>Height cap &amp; scrolling</h1>
-<p class="note">The viewport is <span class="cy" style="font-family:inherit">min( caller cap, list length, pane height − chrome )</span>. The cap defaults to 14 and is a per-call knob — a content-heavy command may raise it, a submenu may lower it — but the pane is always the hard ceiling: ask for 40 rows in a 20-row pane and you get what fits, scrolling. A short list still collapses to its content. Beyond the viewport the list scrolls inside the card: a 1-column thumb rail on the right edge (Panel, no track), edge fades where content continues, and the header count is always the truth. The cursor scrolls with a 2-row margin (scrolloff) so context is never lost.</p>
+<p class="note">The viewport is <span class="cy" style="font-family:inherit">min( caller cap, list length, pane height − chrome )</span>. The cap defaults to 14 and is a per-call knob — a content-heavy command may raise it, a submenu may lower it — but the pane is always the hard ceiling: ask for 40 rows in a 20-row pane and you get what fits, scrolling. A short list still collapses to its content. Beyond the viewport the list scrolls inside the card: a 1-column thumb rail on the right edge (Panel, no track), and the header count is always the truth. The cursor scrolls with a 2-row margin (scrolloff) so context is never lost.</p>
 
 <table class="gram">
   <tr><td>↑/↓ · ctrl-j/k</td><td>move cursor; viewport follows, keeping 2 rows of margin</td></tr>
@@ -47,9 +47,9 @@ table.gram td:first-child{color:var(--soft);font-family:"SF Mono",Menlo,monospac
   <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">mr-board</span></span><span class="dr">~/Documents/GitHub/board ⇢ symlink</span></div>
   <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">repo-tools</span></span><span class="dr">~/Documents/GitHub/repo-tools</span></div>
   <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">workforge</span></span><span class="dr">~/Documents/GitHub/workforge</span></div>
-  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="dr">rt-rewritten-clean</span></span><span class="dr" style="opacity:.55">~/Documents/GitHub/rt-rewritten-clean</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">rt-rewritten-clean</span></span><span class="dr">~/Documents/GitHub/rt-rewritten-clean</span></div>
   <div class="rule"></div>
-  <div class="ln"><span class="lv">cd</span><span class="f"> enter</span><span class="d"> select</span><span class="f">  ctrl-r</span><span class="d"> refresh</span><span class="sp"></span><span class="cy">4–17</span><span class="f"> of 118</span><span class="f">  ·  esc</span><span class="d"> quit</span></div>
+  <div class="ln"><span class="lv">cd</span><span class="f"> enter</span><span class="d"> select</span><span class="f">  ctrl-r</span><span class="d"> refresh</span><span class="sp"></span><span class="cy">4-17</span><span class="f"> of 118</span><span class="f">  ·  esc</span><span class="d"> quit</span></div>
   <div class="sb" style="top:96px;height:38px"></div>
 </div>
-<p class="note" style="margin-top:0">Last visible row fades (content continues below); the rail thumb sizes to viewport÷total and rides the right edge inside the card; the footer's <span class="cy" style="font-family:inherit">4–17 of 118</span> range replaces guesswork on long lists (hidden when everything fits).</p>
+<p class="note" style="margin-top:0">The rail thumb sizes to viewport÷total and rides the right edge inside the card; the footer's <span class="cy" style="font-family:inherit">4-17 of 118</span> range replaces guesswork on long lists (hidden when everything fits).</p>
