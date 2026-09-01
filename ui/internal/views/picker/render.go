@@ -125,7 +125,15 @@ func rowLine(m *Model, i int) string {
 
 	leftPlain := leftPlainText(row)
 	kept, truncated := clipRunes(leftPlain, leftBudget)
-	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), match.Positions, rowBg)
+	// match.Positions index the text Rank scored (row.Match when the caller
+	// set one, e.g. an alias or a string folding in right-segment text) --
+	// only when that text is identical to what's actually on screen do
+	// those rune indices land on the runes they were computed against.
+	positions := match.Positions
+	if matchText(row) != leftPlain {
+		positions = nil
+	}
+	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), positions, rowBg)
 	usedLeftWidth := lipgloss.Width(kept)
 	if truncated {
 		leftRendered += rowBg.Foreground(theme.Faint).Render("…")

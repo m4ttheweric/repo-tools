@@ -97,3 +97,60 @@ func TestFilteredListBreadcrumbCountAndHighlight(t *testing.T) {
 		t.Fatalf("right segment not pinned at the line end: %q", cursorLine)
 	}
 }
+
+// cyanSGR is theme.Cyan's (#5AAAFF) truecolor SGR fragment, as lipgloss
+// actually renders it; presence/absence of this substring is how the two
+// tests below tell a highlighted rune from a plain one without needing a
+// terminal to interpret the escape codes.
+const cyanSGR = "38;2;90;170;255"
+
+func TestHighlightAppliesCyanWhenPositionsIndexTheVisibleLeftText(t *testing.T) {
+	req := protocol.PickRequest{
+		T:            "pick",
+		Protocol:     protocol.Version,
+		InitialQuery: "re",
+		Rows: []protocol.PickRow{
+			{Value: "restore", Left: []protocol.PickSegment{{Text: "restore", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 40
+
+	if !strings.Contains(rowLine(m, 0), cyanSGR) {
+		t.Fatalf("matched runes of the visible left text should carry the cyan highlight: %q", rowLine(m, 0))
+	}
+}
+
+// TestHighlightSkippedWhenMatchFieldDivergesFromLeftText is the regression
+// guard for a row whose match field is an alias that differs from what's
+// on screen (row.Left has no "e" at all here, so it can only be found via
+// the alias): match.Positions then index the alias, not the visible left
+// text, so applying them there would highlight the wrong runes.
+func TestHighlightSkippedWhenMatchFieldDivergesFromLeftText(t *testing.T) {
+	req := protocol.PickRequest{
+		T:            "pick",
+		Protocol:     protocol.Version,
+		InitialQuery: "re",
+		Rows: []protocol.PickRow{
+			{
+				Value: "provision",
+				Left:  []protocol.PickSegment{{Text: "provision", Tone: "text"}},
+				Match: "reprovision",
+			},
+		},
+	}
+	m := New(req)
+	m.width = 40
+
+	if len(m.matches) != 1 || len(m.matches[0].Positions) == 0 {
+		t.Fatalf("the query should still match via the match field override: %+v", m.matches)
+	}
+
+	raw := rowLine(m, 0)
+	if strings.Contains(raw, cyanSGR) {
+		t.Fatalf("positions computed against an overriding match field must not paint the visible left text: %q", raw)
+	}
+	if !strings.Contains(ansi.Strip(raw), "provision") {
+		t.Fatalf("the left text should still render, just unhighlighted: %q", raw)
+	}
+}
