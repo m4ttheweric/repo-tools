@@ -1,563 +1,460 @@
-# rt: repo tools
+# rt
 
-rt is a developer CLI for git-worktree-based monorepo workflows: worktree
-navigation, smart git rebase/reset, a live MR status dashboard, port
-scanning, and StrongDM connections, all backed by a background daemon. It
-ships alongside a macOS menu bar tray app for daemon health and
-notifications, a VS Code/Cursor extension that shows your branch and linked
-ticket in the status bar, and a plugin system for adding your own commands
-that can never crash rt itself.
+rt is a macOS developer CLI for git worktree workflows. It gives you fuzzy
+worktree navigation, safer git rebase and reset, worktree lifecycle management,
+a zero-config port killer, and StrongDM connections, all backed by a background
+daemon. A menu bar app, an editor status-bar extension, and a plugin system for
+your own commands ship with it.
 
-Full documentation: **https://rt.cool**
+Full documentation lives at **[rt.cool](https://rt.cool)**.
 
 ![rt --help output](docs/assets/rt-help.png)
 
-## Install
+rt is the command line piece of mattstack, a small estate of tools that share
+its daemon and settings: [gitq](https://github.com/m4ttstack/gitq) for stacked
+branches, [board](https://github.com/m4ttstack/board) for reviewing merge
+requests, [glance](https://github.com/m4ttstack/glance) for one GitHub and
+GitLab client, [deck](https://github.com/m4ttstack/deck) for local app hosting,
+[fast-browser](https://github.com/m4ttstack/fast-browser) for driving Chrome,
+[skills](https://github.com/m4ttstack/skills) and the
+[marketplace](https://github.com/m4ttstack/mattstack-marketplace) that installs
+them, and [herdr-chat](https://github.com/m4ttstack/herdr-chat) for agents
+living on [herdr](https://github.com/herdrdev/herdr).
 
-Download `mattstack-<version>.dmg` from
+## Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quickstart](#quickstart)
+- [Everyday commands](#everyday-commands)
+- [Configuration](#configuration)
+- [Plugins](#plugins)
+- [The menu bar app and editor extension](#the-menu-bar-app-and-editor-extension)
+- [Requirements](#requirements)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Features
+
+- **Worktree-first navigation.** `rt cd` and the `rtcd` shell alias are one
+  fuzzy picker across every repo and worktree on disk. `rt nav` walks the
+  filesystem with image previews; `ctrl-o` opens the selection in your editor.
+- **Worktree lifecycle.** `rt worktree provision` claims a tree for a ticket or
+  branch, from a warm on-deck pool or freshly created. `dispose`, `restore`,
+  `freshen`, and `each` cover the rest.
+- **Safer git operations.** `rt git rebase` auto-resolves what it safely can
+  onto `origin/master`; `rt git push force` uses `--force-with-lease`;
+  `rt sync` rebases and pushes the current worktree in one step.
+- **Zero-config port scanning.** `rt port` finds and kills processes on stale
+  dev ports with no setup at all.
+- **A background daemon.** It caches branch and merge-request data, scans
+  ports, guards git hooks, snapshots your home repo, and runs cron triggers, so
+  commands stay fast from anywhere on your machine.
+- **Agent plumbing.** `rt agent` hands a prompt to a Claude Code session and
+  keeps the receipt, `rt chat` is group chat for the agents and their human,
+  and `rt events` is an event bus panes and skills can wait on.
+- **StrongDM connections.** `rt sdm connect` reads your real StrongDM catalog
+  and connects with friendly names, with no list to maintain.
+- **A safe plugin system.** Drop a folder under `~/.mattstack/rt/plugins/` to
+  add your own commands. A broken plugin is skipped with a warning and can
+  never crash rt itself.
+- **Pickers everywhere, and none in the way.** Omitting a subcommand or a
+  required argument shows a picker; a non-TTY, `--json`, or `RT_BATCH` run gets
+  the plain error and the plain output instead, so scripts and agents drive the
+  same commands humans do.
+
+## Installation
+
+rt is distributed inside **mattstack.app**, a macOS menu bar app. Download
+`mattstack-<version>.dmg` from
 [GitHub Releases](https://github.com/m4ttstack/rt/releases), drag
-**mattstack.app** to Applications, and open it. The app walks you through
-setup and installs `rt`, the editor extension, the daemon, and shell
+**mattstack.app** to `/Applications`, and open it. The app walks you through
+setup and installs `rt`, the daemon, the editor extension, and shell
 integration.
 
-`rt` is not a separate download: it ships inside the bundle at
-`Contents/MacOS/rt` and gets linked onto your PATH during setup. Updates come
-through the app (Sparkle), not by fetching a tarball.
+`rt` is not a separate download. It ships inside the bundle at
+`Contents/MacOS/rt` and gets linked onto your `PATH` during setup. Updates
+arrive through the app via Sparkle.
 
-To drive the same install from a terminal — a fresh machine, a VM, CI:
+To drive the same install from a terminal, on a fresh machine, a VM, or CI:
 
 ```bash
 /Applications/mattstack.app/Contents/MacOS/rt --post-install
-rt verify                  # reports the health of each piece
-```
-
-`rt verify` runs setup on first use and then reports the health of each piece:
-use it any time you want to confirm the install is in good shape.
-
-Then configure your API tokens:
-
-```bash
-rt settings linear token   # Linear API key (for ticket lookup)
-rt settings gitlab token   # GitLab PAT (for MR status)
-```
-
-For detailed diagnostics:
-
-```bash
 rt verify
 ```
 
-### What Gets Installed
+Run it from `/Applications`, not from the mounted DMG. rt refuses to install
+itself from a disk image or a Gatekeeper-translocated copy.
+
+### What gets installed
 
 | Component | Description |
 |---|---|
-| `rt` binary | Ships inside mattstack.app (`Contents/MacOS/rt`), linked onto your PATH |
+| `rt` binary | Ships inside mattstack.app (`Contents/MacOS/rt`), linked at `~/.local/bin/rt` |
 | `mattstack.app` | Menu bar app: daemon health, notifications, auto-updates |
-| `rt-context` extension | VS Code/Cursor: branch + ticket in status bar |
-| Background daemon | Caches MR/branch data, scans ports, guards git hooks |
-| Bundled helpers | `fzf`, `jq`, `gh`, `glab`, `bun`, `node`, `fast-browser` — pinned and shipped inside the app, not installed onto your system |
-| Shell alias | `rtcd`: fast worktree directory switching |
+| Background daemon | Caches branch and MR data, scans ports, guards git hooks, snapshots the home repo |
+| `rt-context` extension | VS Code / Cursor: worktree, branch, and linked ticket in the status bar |
+| Shell integration | `~/.local/bin` on `PATH` plus the `rtcd` alias, for zsh, bash, and fish |
+| Bundled helpers | `fzf`, `jq`, `gh`, `glab`, `bun`, `node`, `sops`, `age-keygen`, `cloudflared`, `fast-browser`, and `gitq`, among others, pinned and shipped inside the app rather than installed onto your system |
 
-### Upgrade
+Most helpers stay inside `Contents/Helpers/` and are resolved by absolute path.
+Only the ones meant to be typed (`rt`, `fast-browser`, `gitq`, `deck`) are
+exposed as links in `~/.local/bin`.
+
+### Upgrading
 
 ```bash
 rt update
 ```
 
 mattstack.app owns the whole upgrade lifecycle through Sparkle: signature
-verification, staged install, restart. `rt update` asks the app to check —
-it never downloads or installs anything itself, and points you at the latest
-release if the app isn't running.
+verification, staged install, restart. `rt update` only asks the app to check.
+It never downloads or installs anything itself, and it points you at the latest
+release if the app is not running.
 
----
+## Quickstart
 
-## Highlights
-
-- **Worktree-first navigation**: `rt cd` and the `rtcd` shell alias are a
-  fuzzy picker across every repo and worktree on disk.
-- **Smart git operations**: `rt git rebase` auto-resolves what it safely can
-  onto `origin/master`; `rt sync` rebases and pushes the current worktree in
-  one step.
-- **Live MR dashboard**: `rt status` shows pipeline and review status with
-  inline MR actions, backed by a background daemon that keeps GitLab data
-  warm.
-- **Zero-config port scanning**: `rt port` finds and kills processes on
-  stale dev ports without any setup.
-- **macOS menu bar app**: mattstack.app shows daemon health at a glance and
-  delivers native notifications.
-- **Editor status bar**: the `rt-context` VS Code/Cursor extension shows
-  your worktree, branch, and linked Linear ticket.
-- **Safe plugin system**: drop a folder under `~/.rt/plugins/` to add your
-  own commands; a broken plugin is skipped with a warning and can never
-  crash rt itself.
-- **StrongDM integration**: `rt sdm connect` reads your real StrongDM
-  catalog and connects with friendly names, no maintained list required.
-
----
-
-## Onboarding a repo
-
-There's no explicit "add repo" step: any git repo with an `origin` remote is
-picked up automatically the first time you run an `rt` command inside it:
+Set your tokens once. They apply to every repo:
 
 ```bash
-cd ~/code/my-repo
-rt status            # or rt cd, anything repo-aware
+rt settings linear token     # Linear API key, for ticket lookup
+rt settings gitlab token     # GitLab personal access token, for MR data
+rt settings linear team      # default Linear team
 ```
 
-On first invocation rt will:
-
-1. Derive the repo name from `git remote get-url origin`
-2. Register the repo in `~/.rt/repos.json`
-3. Create a data dir at `~/.rt/<repo-name>/`
-4. Start the daemon watching it for MR / branch / port state
-
-If the daemon was already running, the next refresh cycle picks it up (MR data
-refreshes every 5 min, port scans every ~30s). From then on `rt status`,
-`rt run`, ticket lookup, port scanning, and MR notifications all work from
-anywhere on your machine.
-
-### Optional per-repo config
-
-| Command | When you need it |
-|---|---|
-| `rt hooks` | Repo uses husky and you want a quick on/off toggle |
-| `rt settings extension` | Install the `rt-context` status-bar extension into local editors |
-
-### Global settings that affect every repo
-
-Set these once; they apply to all repos:
+Then check the install is healthy and start using it:
 
 ```bash
-rt settings gitlab token       # required for rt status, MR actions, notifications
-rt settings linear token       # required for ticket lookup in rt status
-rt settings linear team        # Set default Linear team
-rt settings notifications      # pick which events fire native macOS notifications
+rt verify        # read-only health report for every piece of the install
+rt              # interactive menu: repo, then worktree, then action
+rt cd           # fuzzy picker across every repo and worktree
+rt port         # list dev ports; `rt port kill` to reclaim one
 ```
 
----
-
-## Commands
-
-Run `rt` with no arguments for an interactive menu. All commands support direct invocation:
+Every command also works as a direct invocation, so once you know the shape you
+can skip the picker:
 
 ```bash
 rt <command> [subcommand] [args]
 ```
 
+### Onboarding a repo
+
+There is no explicit "add repo" step for everyday use. Any git repo is indexed
+the first time you run a repo-aware `rt` command inside it:
+
+```bash
+cd ~/code/my-repo
+rt cd
+```
+
+On that first invocation rt derives a stable identity for the repo from
+`git config --get remote.origin.url` (a repo with no origin gets a
+path-based identity instead), records it in the index inside
+`~/.mattstack/rt/state.db`, and creates a per-repo data directory under
+`~/.mattstack/rt/repos/`.
+
+Indexing is not the same as background tracking. The daemon only refreshes
+data for repos you have explicitly granted:
+
+```bash
+rt repos register --track live     # index this repo and grant background tracking
+rt daemon track                    # per-repo tracking: live, poll, or off
+rt repos prune                     # drop repos that no longer exist on disk
+```
+
+Once a repo is tracked, merge-request data refreshes every 5 minutes and port
+scans run about every 30 seconds while something is asking for them.
+
+## Everyday commands
+
+Run `rt` with no arguments for the interactive menu. Every command below also
+takes its arguments directly.
+
 ### Navigation
 
 ```bash
-rt cd                     # Fuzzy worktree/repo directory picker
+rt cd                     # fuzzy worktree/repo directory picker
+rt cd --worktree feat/x   # jump straight to a worktree by branch prefix
+rt nav                    # filesystem picker; ctrl-o opens in your editor
+rt code                   # open a worktree in your preferred editor
+rtcd                      # shell alias: cd into a picked worktree
 ```
 
-In `rt nav`, `ctrl-o` opens the selected folder in your preferred editor.
+`rtcd` is the one that changes your shell's directory. `rt cd` prints the path,
+and the alias installed by setup does the `cd`.
 
-Shell alias added by install:
-```bash
-rtcd                      # cd into a picked worktree (wraps rt cd)
-```
-
-### Run
+### Worktrees
 
 ```bash
-rt run                    # Interactive script runner: repo → worktree → package → script
+rt worktree provision     # claim a worktree for a ticket or branch
+rt worktree create        # create a fresh worktree, optionally into the on-deck pool
+rt worktree list          # list worktrees
+rt worktree freshen       # bring worktrees up to date
+rt worktree dispose       # dispose a worktree (recoverable)
+rt worktree restore       # restore a disposed worktree from its trash entry
+rt worktree each <cmd>    # run a command in each worktree
+rt worktree adopt         # one-shot: adopt an unmanaged repo's worktrees
 ```
 
 ### Git
 
 ```bash
-rt git rebase             # Smart rebase onto origin/master with auto-resolve
-rt git rebase onto        # Rebase onto a specific branch
-rt git reset origin       # Sync with origin after a remote rebase
-rt git reset soft         # Soft reset to HEAD (unstage files)
-rt git reset hard         # Hard reset to HEAD (discard all changes)
-rt git commit             # Interactive staging + commit with live diff preview
-rt git backup             # Back up current branch to a backup ref
-rt git restore            # Restore from a backup branch
+rt git rebase             # smart rebase onto origin/master with auto-resolve
+rt git rebase onto        # rebase onto a specific branch
+rt git pull               # pull from origin
+rt git push               # push to origin/<branch>, fixing a wrong upstream
+rt git push force         # push with --force-with-lease, after a rebase or amend
+rt git upstream           # fix the branch upstream to track origin/<branch>
+rt git reset origin       # sync with origin after a remote rebase
+rt git reset soft         # soft reset to HEAD (unstage files)
+rt git reset hard         # hard reset to HEAD (discard all changes)
+rt git commit             # interactive staging + commit with live diff preview
+rt git backup             # back up the current branch to a backup ref
+rt git restore            # restore from a backup branch
 ```
-
-### Sync
 
 ```bash
-rt sync                   # Rebase current worktree onto master + push
-rt sync all               # Sync all worktrees in the repo
+rt sync                   # rebase the current worktree onto master, then push
+rt sync all               # sync every worktree in the repo
 ```
 
-
-
-### Status
+### Running things
 
 ```bash
-rt status                 # Live branch dashboard: MR actions, pipeline & review status
-rt port                   # Port scanner + killer (daemon-powered, zero-config)
+rt run                    # interactive script runner: repo, worktree, package, script
+rt runner                 # board of long-running commands in tmux or herdr panes
+rt port                   # port scanner and killer
+rt hooks                  # toggle git hooks on and off (husky)
 ```
-
 
 ### Daemon
 
-The daemon runs in the background, caching MR data, scanning ports, and guarding git hooks.
-
 ```bash
-rt daemon install         # Install and start the daemon (launchd or background process)
-rt daemon uninstall       # Stop and remove the daemon
-rt daemon start           # Start the daemon
-rt daemon stop            # Stop the daemon
-rt daemon restart         # Restart the daemon
-rt daemon status          # Show daemon status (pid, uptime, repos, ports)
-rt daemon logs            # Tail daemon log
+rt daemon install         # install and start the daemon (launchd)
+rt daemon uninstall       # stop and remove it
+rt daemon start|stop|restart
+rt daemon status          # pid, uptime, tracked repos, ports
+rt daemon track           # per-repo background tracking: live, poll, off
+rt daemon logs            # tail the log stream
+rt daemon log-level       # show or set the live log level
 ```
 
-### Home repo
-
-`~/.mattstack/user` is a personal git repo, provisioned by `rt home init`.
-While the daemon is running, it watches that repo and auto-commits (and
-pushes) everything in it except paths inside a claimed zone — you never run
-`git add`/`git commit` there yourself for ordinary changes.
-
-`rt home init` does three things in order, every time it runs (idempotent —
-safe on a fresh machine or an already-provisioned one): clone/provision the
-`user/` repo and this machine's `user/local/<key>/` profile (picking one
-interactively on a fresh, keyless machine, or via `--profile`/`--new-profile`);
-ensure the age key exists and `.sops.yaml` matches it; then **materialize** —
-regenerate everything re-derivable from settings, as its last phase. That's rt's
-own PATH shims (`rt intercept install`) and daemon registration
-(`rt daemon install`, only when not already installed), then each
-locally-installed tool's own setup verb (`deck setup` when `deck` is on
-`PATH` and NOT already healthy — `deck setup` re-bootstraps deck under
-launchd, restarting the live proxy and blipping every `*.localhost` app, so
-an already-healthy deck is reported as skipped instead of re-run). A tracked
-repo (`rt.repoTracking`) not present on disk is reported by
-name, never cloned. `mr-board`'s setup is interactive (GitLab token, Slack
-OAuth) — materialize only prints the command to run by hand, never runs it.
-A missing tool is silently skipped, not a failure; only an rt-owned step
-failing exits `rt home init` non-zero. Pass `--no-materialize` to skip this
-phase entirely. Separately, if `claude.marketplaces`/`claude.plugins` resolve
-to a value, `rt home init` prints a pointer to the mattstack installer, which
-owns replaying them — init never does that itself.
+### Everything else
 
 ```bash
-rt home init                                        # Provision this machine's ~/.mattstack tree (+ materialize)
-rt home init --no-materialize                       # Provision only — skip the last (materialize) phase
-rt home init --profile <key> [--new-profile]        # Fresh/keyless machine: adopt (or start) a machine profile without the interactive picker
-rt home snapshot                                    # Run the auto-commit cycle right now (reason: manual)
-rt home snapshot --status                           # Show daemon state: enabled, last run/commit, push state, claimed zones
-rt home claim <zone> [--owner] [--note] [--force]    # Tell the daemon to stop auto-committing a path
-rt home release <zone>                               # Let the daemon resume auto-committing a path
-rt home key export                                   # Print the age private key once, for your password manager
-rt home key import [--stdin] [--force]               # Bring an external age key into the keychain
+rt verify                 # installation health, --ci and --json variants
+rt version                # version plus mode (dev or prod)
+rt --version              # just the version string
+rt update                 # ask mattstack.app to check for an update
+rt uninstall              # reverse setup: services, links, plugins
 ```
 
-A **zone** is a path relative to `~/.mattstack/user`, and is either a
-**directory** (claims everything under it) or a **single file** (claims
-exactly that path and nothing else). Via `rt home claim`, either `prefs/`
-or just `prefs` works for a directory — it stats the real path and decides
-for you, no trailing slash required. Hand-editing `snapshot-owners.jsonc`
-directly is stricter: the trailing slash IS the marker there, so write
-`"prefs/"` for a directory and `"scripts/deploy.sh"` (no slash) for a file
-— a bare `"prefs"` with no slash is read back as a file zone named
-literally `prefs`, not a directory. `release` works either way without
-needing to guess.
-Claim a zone when you're mid-edit on something and don't want the daemon
-committing a half-finished state out from under you — `--owner` defaults to
-`<you>@<machine-key>`, and `--note` is a free-text reason anyone reading the
-owners file can see. Claiming a zone someone else already owns refuses
-(naming them) unless you pass `--force`. Claiming and releasing write
-`user/snapshot-owners.jsonc` directly (no daemon round trip); the daemon then
-snapshots that file itself, like any other change.
+The [`board`](https://github.com/m4ttstack/board) app is where merge requests
+get reviewed; rt keeps the data it needs warm but no longer renders a dashboard
+of its own.
 
-A claimed zone left dirty past a threshold is still committed — the
-**janitor rule** — under its own `snapshot (janitor): …` message, so an
-abandoned claim can't block the zone from ever being backed up. The daemon's
-behavior is configured by the `rt.homeSnapshot` settings key (machine-scoped):
+## Configuration
 
-```jsonc
-{
-  "enabled": true,             // false disables watching and auto-commits entirely
-  "debounceSec": 20,           // quiet period after a change before committing
-  "pushDelaySec": 60,          // coalescing delay before pushing a commit
-  "janitorThresholdHours": 6,  // a claimed zone dirty this long gets janitor-committed
-  "janitorIntervalMin": 30     // how often the janitor sweep runs
-}
-```
-
-Flipping `enabled` to `false` is a kill switch: the daemon stops committing
-AND cancels any already-scheduled push (including a pending retry) on its
-very next cycle — nothing new reaches `origin` while it's off, though a
-commit already pushed stays pushed. Re-enabling picks a pending push back up
-on the next run.
-
-`rt home snapshot` (manual) reuses an already-in-flight run instead of
-queuing its own: if it lands while the watcher is mid-cycle, it returns THAT
-run's result — which can report `reason: "watch"` and skip janitor zones
-(gated to `"janitor"`/`"manual"`) even though you asked for a manual run.
-Run it again for a fresh manual cycle.
-
-### Settings
+### Global settings
 
 ```bash
-rt settings linear token      # Set Linear API key
-rt settings linear team       # Set default Linear team
-rt settings gitlab token      # Set GitLab personal access token
-rt settings extension         # Install RT Context extension into local editors
-rt settings notifications     # Toggle notification preferences
-rt settings dev-mode          # Toggle between local source and the installed binary
+rt settings linear token       # Linear API key
+rt settings linear team        # default Linear team
+rt settings gitlab token       # GitLab personal access token
+rt settings notifications      # which events fire native macOS notifications
+rt settings runaway            # runaway process detection thresholds
+rt settings extension          # install the rt-context extension into local editors
+rt settings dev-mode           # toggle between local source and the installed binary
 ```
 
-### Other
+Every key any mattstack app reads goes through one settings resolver, with
+user, team, and machine scopes layered weakest first:
 
 ```bash
-rt hooks                  # Toggle git hooks on/off
-rt verify                 # Installation verification
-rt version                # Print version + mode (dev/prod)
-rt update                 # Upgrade to the latest GitHub release
-rt --version              # Print version (short)
+rt settings list                            # every registered setting and its resolved value
+rt settings get <key>                       # a value plus where it came from
+rt settings set <key> <value> --scope user  # write into one store: user, team, or machine
+rt settings explain <key>                   # the full scope chain, weakest first
 ```
 
----
+`docs/settings-architecture.md` covers the scope model and the registry.
 
-## User plugins
+### Per-repo settings
 
-Add your own commands to rt. A plugin is a folder under `~/.rt/plugins/<name>/`
-with a `plugin.json` manifest and TypeScript files (or existing executables).
-Plugin commands get rt's navigation, repo/worktree context resolution, arg
-forms, and logging for free, and a broken plugin can never break rt itself.
+| Command | When you need it |
+|---|---|
+| `rt hooks` | The repo uses husky and you want a quick on/off toggle |
+| `rt repos register --track` | You want the daemon refreshing this repo in the background |
+
+### Where rt keeps state
+
+Everything lives under `~/.mattstack/`, and rt never writes anything into the
+repos it manages.
+
+| Path | Contents |
+|---|---|
+| `~/.mattstack/rt/state.db` | The repo index, settings, run state, and key-value store |
+| `~/.mattstack/rt/repos/` | Per-repo data directories, keyed by repo identity |
+| `~/.mattstack/rt/plugins/` | Your plugins |
+| `~/.mattstack/rt/logs/` | JSON-lines logs per surface, readable via `rt daemon logs` |
+| `~/.mattstack/user/` | The git-backed personal repo, see [docs/home-repo.md](docs/home-repo.md) |
+
+An older `~/.rt` tree is migrated into place automatically on first run.
+
+### The home repo
+
+`~/.mattstack/user` is a personal git repo that the daemon keeps committed and
+pushed for you, minus any paths you have claimed while mid-edit. See
+[docs/home-repo.md](docs/home-repo.md) for `rt home init`, zones, the janitor
+rule, and the `rt.homeSnapshot` configuration key.
+
+### StrongDM
+
+`rt sdm connect` reads your live StrongDM catalog, so there is nothing to
+configure. An optional declarative file can add friendly labels, tiers, and
+connect defaults. See [docs/strongdm.md](docs/strongdm.md).
+
+## Plugins
+
+Add your own commands to rt. A plugin is a folder under
+`~/.mattstack/rt/plugins/<name>/` with a `plugin.json` manifest and TypeScript
+files, or existing executables. Plugin commands get rt's navigation,
+repo and worktree context resolution, argument forms, and logging for free.
 
 ```bash
-rt plugin new my-tool     # scaffold + IDE types (autocomplete on ctx.rt.*)
-rt my-tool                # run it: edit ~/.rt/plugins/my-tool/my-tool.ts and rerun
-rt plugin list            # see installed plugins and their health
+rt plugin new my-tool     # scaffold the folder + IDE types
+rt my-tool                # run it: edit the .ts file and rerun, no build step
+rt plugin list            # installed plugins and their health
 rt plugin validate        # deep checks: files exist, modules import, exports match
 ```
 
-A command is TypeScript (`"module": "./my-tool.ts"`, gets the injected `ctx.rt`
-API: pick/prompt/confirm, scoped storage, logging) or any executable
-(`"exec": "./scripts/deploy.sh"`, gets `RT_*` env vars). Commands merge into
-the root tree; name collisions are flagged and built-ins always win. Notes:
+A command is either TypeScript (`"module": "./my-tool.ts"`, which receives an
+injected `ctx.rt` API for pickers, prompts, scoped storage, and logging) or any
+executable (`"exec": "./scripts/deploy.sh"`, which receives `RT_*` environment
+variables). Commands merge into the root tree; name collisions are flagged and
+built-ins always win.
 
-- Runtime contract: standard library + injected API only (no npm deps in v1).
+Three things worth knowing:
+
+- The runtime contract is the standard library plus the injected API. npm
+  dependencies in plugin runtime code are not supported in v1.
 - Plugin code runs in-process with rt's privileges. Only install plugin
-  directories you trust; reading a third-party plugin before installing it is
+  directories you trust. Reading a third-party plugin before installing it is
   reading the code you are about to run.
 - `apiVersion: 1` is required in every manifest.
 
-Full guide (manifest reference, injected API, exec env vars, troubleshooting): [docs/plugins.md](docs/plugins.md)
+Full guide, with the manifest reference, the injected API, exec environment
+variables, and troubleshooting: [docs/plugins.md](docs/plugins.md).
 
----
+## The menu bar app and editor extension
 
-## StrongDM
+mattstack.app sits in the menu bar and shows daemon health at a glance:
 
-`rt sdm` is a StrongDM auth-and-connect module: it logs you in, lists the datasources you can reach, and connects you fast with friendly names.
+| Dot | Meaning |
+|---|---|
+| Green | Daemon running normally |
+| Yellow | Daemon starting |
+| Orange | Pending notifications, or a runaway process detected |
+| Pink | Daemon reachable but reporting itself unhealthy |
+| Red | Daemon not reachable |
+| Grey | State unknown |
 
-```bash
-rt sdm connect            # pick a datasource and connect (auto-logs-in if your session expired)
-rt sdm status             # StrongDM auth health + connected tunnels
-rt sdm login              # log in (browser popup, terminal fallback)
-rt sdm set-email <email>  # set the email rt logs in with
-rt sdm refresh            # re-scan the catalog
-rt sdm enrichment [init]  # show or scaffold the enrichment map
-```
+From its menu you can restart or stop the daemon, toggle launch-at-login, and
+check for updates.
 
-rt reads your resources straight from the StrongDM CLI (`sdm access catalog` + `sdm status`), so there is nothing to configure and no list to maintain. Every real datasource you can reach shows up in the picker. If `rt sdm connect` only shows recents, your session expired; it logs you back in automatically before listing.
-
-### Enrichment (optional, declarative)
-
-Raw StrongDM names (`example-alpha-staging`) work as-is, but you can give them nicer labels, group them by tier, and set connect defaults with a **declarative file you own** at `~/.rt/sdm/enrichment.jsonc`. Nothing runs to enrich; rt just reads this JSON and overlays it on the live catalog.
-
-Scaffold it from your current catalog, then fill in the labels:
-
-```bash
-rt sdm enrichment init    # writes ~/.rt/sdm/enrichment.jsonc: every resource, blank labels
-rt sdm enrichment         # show the file path + how many resources are enriched vs raw
-```
-
-```jsonc
-{
-  // map a StrongDM resource name to a nicer label + connect metadata
-  "example-alpha-staging": { "label": "alpha staging", "tier": "staging",    "db": { "schema": "public" } },
-  "example-alpha-prod":    { "label": "alpha prod",    "tier": "production", "production": true }
-}
-```
-
-| field | meaning |
-|-------|---------|
-| `label` | shown in the picker (defaults to the raw resource name) |
-| `tier` | `development` / `qa` / `staging` / `production` / anything: groups the picker |
-| `production` | `true` adds a confirm guard before connecting |
-| `reasonSuggestion` | prefill for the access-request reason prompt |
-| `db` | `{ database, schema, user }` hints used to verify the tunnel after connecting |
-
-A resource missing from the file just shows its raw name and connects with Postgres defaults. Keep the file in your own repo and copy or symlink it to `~/.rt/sdm/enrichment.jsonc` to share it with your team.
-
----
-
-## RT Context Extension
-
-The `rt-context` VS Code/Cursor extension shows your current worktree, branch, and linked Linear ticket in the status bar. The installer (`rt --post-install`) installs it into every detected editor.
-
-To reinstall or install into additional editors:
-
-```bash
-rt settings extension
-```
-
-This opens a fuzzy picker to select which editors (Cursor, VS Code, Antigravity, etc.) to install into.
-
-### Status Bar
+The `rt-context` extension for VS Code and Cursor puts your worktree, branch,
+and linked ticket in the editor status bar:
 
 ```
 📁 main-worktree  │  🔖 ACME-1287: Add damage photo uploads
 ```
 
-Clicking the item opens the linked Linear ticket directly.
-
----
-
-## RT Tray App
-
-The `rt-tray` menu bar app shows daemon health and delivers native notifications.
-
-- **Green dot**: daemon running normally
-- **Yellow dot**: daemon starting
-- **Orange dot**: pending notifications
-- **Red dot**: daemon not reachable
-
-From the menu you can restart the daemon, stop it, toggle launch-at-login, and check for updates.
-
----
+Clicking the item opens the linked ticket. Setup installs it into every
+detected editor; `rt settings extension` reinstalls it or adds more editors
+through a fuzzy picker.
 
 ## Requirements
 
 | Dependency | Notes |
 |---|---|
-| macOS | Required (Apple Silicon or Intel) |
-| `fzf` | 0.71.0 or newer (`--listen` and `--id-nth`, used by `rt nav`'s live refresh); `brew install fzf` |
-| `tmux` | `brew install tmux` |
-| `chafa` | Optional, renders image previews in `rt nav` as colored character art (`brew install chafa`) |
-| `kitten` | Optional, upgrades `rt nav` image previews to true pixels on Kitty-protocol terminals such as Ghostty. Ships with Kitty (`brew install --cask kitty`) |
-
----
+| macOS on Apple silicon | Required. rt ships an arm64 build only; Intel Macs are not supported |
+| Xcode Command Line Tools | Required. `rt verify` reports a missing installation |
+| `fzf` | Required, and bundled inside the app. A system copy is used if you already have one |
+| `tmux` | Optional. Only `rt runner`'s default backend needs it; `rt runner --herdr` does not |
+| `chafa` | Optional. Renders image previews in `rt nav` as colored character art |
+| `kitten` | Optional. Upgrades `rt nav` previews to true pixels on Kitty-protocol terminals such as Ghostty |
 
 ## Development
 
-This repo uses [Bun](https://bun.sh).
-
-
-### Day-to-day dev (source mode)
-
-The normal way to develop: no compile step, changes are instant.
+rt is built with [Bun](https://bun.sh). Day-to-day development runs the CLI
+straight from source, with no compile step:
 
 ```bash
 git clone https://github.com/m4ttstack/rt.git
 cd rt
 bun install
-bun run cli.ts          # runs the CLI from source
-bun run cli.ts verify   # run any subcommand the same way
+bun run cli.ts            # run the CLI from source
+bun run cli.ts verify     # any subcommand works the same way
 ```
 
-`rt --version` will report `dev` when running from source.
+`rt --version` reports `dev` when running from source. If mattstack.app is
+already installed alongside your checkout, `rt settings dev-mode` swaps
+`~/.local/bin/rt` between your source tree and the compiled binary.
 
-### Switching between dev and production
-
-Once mattstack.app is installed alongside your source checkout, use the built-in toggle:
+### Tests and checks
 
 ```bash
-rt settings dev-mode        # interactive picker: dev ↔ prod
-rt settings dev-mode dev    # switch to local source
-rt settings dev-mode prod   # switch back to the installed binary
+bun run test              # unit tests across lib, commands, packages, scripts
+bun run test:e2e          # end-to-end suite
+bun run ui:test           # go vet ./... && go test ./... for the rt-ui helper
+bunx tsc --noEmit         # typecheck
+bun run docs:check        # the generated command reference is in sync
+bun run picker:check      # every required positional declares its omit behavior
+scripts/repo-purity.sh    # no employer or customer references in the tracked tree
 ```
 
-**How it works:**
-- `dev` mode writes a wrapper script at `~/.local/bin/rt` that calls `bun run /path/to/cli.ts "$@"` and hands the tray over to `mattstack-dev.app`
-- `prod` mode installs the compiled binary carried inside `mattstack.app` at that same path and hands the tray back to `mattstack.app`
-- `~/.local/bin` is added to your PATH automatically (in your shell rc file) by the installer and on first `dev-mode dev`
-- The source path is remembered in `~/.mattstack/rt/state.db` (a `kv` row, ns `dev-mode`), so there's no re-entry needed when toggling back
+CI runs all of these on every pull request.
 
-`rt version` tells you which is active (and the source path in dev mode);
-`rt --version` is the short form that just prints the version string.
+### Layout
 
-### Testing the installer
+| Path | What lives there |
+|---|---|
+| `cli.ts`, `commands/`, `lib/` | The CLI: dispatch, command handlers, and shared logic |
+| `lib/command-tree-def.ts` | The single source of truth for command names, args, and structure |
+| `ui/` | The Go `rt-ui` helper that renders prompts, spinners, and the runner board |
+| `rt-tray/` | The Swift menu bar app and the bundle build |
+| `extensions/vscode/rt-context/` | The editor status-bar extension |
+| `packages/rt-client/` | The published client other mattstack apps use |
+| `website/` | The rt.cool documentation site |
+| `docs/` | Design and operations documents |
 
-Run the post-install script manually to test the full setup flow on your machine:
+The TypeScript CLI renders no UI itself. Prompts, spinners, and boards go
+through the Go helper; pickers go through `fzf`. That boundary is enforced by a
+test.
 
-```bash
-rt --post-install
-```
+For dev mode, the installer, local compiled builds, the editor extension, the
+menu bar app, and the release pipeline, see
+[docs/development.md](docs/development.md).
 
-This is the same code that `rt` auto-runs on its first invocation (and that
-`rt update` runs from the freshly downloaded release). Run from an extracted
-release tarball it:
-1. Installs the `rt` binary at `~/.local/bin/rt`
-2. Copies `mattstack.app` to `~/Applications`
-3. Installs `rt-context.vsix` into all detected editors
-4. Installs the daemon as a launchd agent
-5. Writes shell integration to your rc file (PATH + rtcd, idempotent, supports zsh, bash, fish)
+## Contributing
 
-### Verifying an installation
+Issues and pull requests are welcome at
+[github.com/m4ttstack/rt](https://github.com/m4ttstack/rt).
 
-```bash
-rt verify           # human output, exits 1 on critical failures
-rt verify --ci      # same output, no ANSI colors (for CI logs)
-rt verify --json    # structured JSON for tooling
-```
+Before opening one:
 
-Critical checks: binary on PATH, fzf, tray app, vsix, daemon installed + running + API responding.
+- Run `bun run test`, `bunx tsc --noEmit`, and `bun run picker:check`.
+- Run `scripts/repo-purity.sh`. This repo is public, and the gate keeps
+  employer, customer, and internal-system references out of the tracked tree.
+  Use neutral placeholders such as `acme`, `ACME-1234`, and
+  `gitlab.example.com`.
+- Add a new command to `lib/command-tree-def.ts`, register its module in
+  `lib/module-registry.ts`, and run `bun run docs:gen` so the reference page
+  exists.
+- Keep the commit message short and imperative.
 
-### Building a local compiled binary
+## License
 
-Use this to test how the release binary behaves (compiled mode, no bun dependency):
-
-```bash
-bun build --compile ./cli.ts --outfile /tmp/rt-local
-/tmp/rt-local --version
-/tmp/rt-local verify
-```
-
-### rt-context extension
-
-```bash
-cd extensions/vscode/rt-context
-bun install
-bun run watch       # live rebuild during development
-
-# Package a .vsix manually
-bun run package     # outputs rt-context-x.x.x.vsix
-
-# Install into local editors
-bun run install-local   # packages + installs into Cursor
-# or via the CLI:
-rt settings extension
-```
-
-### rt-tray
-
-```bash
-cd rt-tray
-./build.sh debug    # build and open in Xcode simulator
-./build.sh release  # build release mattstack.app (prod)
-./build.sh dev      # build release mattstack-dev.app (dev, runs the daemon from source)
-./build.sh install  # build + copy mattstack.app to ~/Applications
-```
-
-The tray app reads its version from `Info.plist` (`CFBundleShortVersionString`), which the CI build injects via `git describe`. Local builds report the version as whatever is in the plist at build time.
-
-### Release process
-
-Push a version tag; CI handles everything else:
-
-```bash
-git tag v1.2.3
-git push --tags
-```
-
-GitHub Actions will:
-1. Compile `rt` for arm64 + x64
-2. Build `mattstack.app` with version baked into `Info.plist`
-3. Package `rt-context.vsix`
-4. Create a GitHub Release with bundled tarballs
-5. Install from the published tarball on a fresh `macos-latest` runner and run `rt verify --ci`
-
-Setup lives in the binary itself: `cli.ts` detects a missing
-`~/.mattstack/rt/daemon.json` on first invocation and transparently runs
-`commands/post-install.ts`, which is also what `rt --post-install` and
-`rt update` invoke.
+MIT. See [LICENSE](LICENSE).
