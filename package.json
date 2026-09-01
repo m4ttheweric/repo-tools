@@ -1,6 +1,7 @@
 {
   "name": "repo-tools",
   "private": true,
+  "license": "MIT",
   "workspaces": [
     "packages/*"
   ],
