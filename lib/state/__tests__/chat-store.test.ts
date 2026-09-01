@@ -259,6 +259,21 @@ test("stalePendingPairs excludes a member whose entire pending backlog is self-a
     .toBeLessThan(posted.id);
 });
 
+// Review round 3 finding B: dm-store adds the human as a silent
+// wake_on:"none" third member (last_read_id 0, forever) to EVERY DM room
+// where he isn't one of the two named participants -- without this filter,
+// that row alone would make stalePendingPairs' idle early-out never fire
+// for a real estate (every DM room always has a permanently-lagging
+// wake_on:none row), so every 30s tick would pay a presence lookup and a
+// full registry scan for a candidate that can never be delivered to.
+test("stalePendingPairs never returns a wake_on:none member, even with a genuinely lagging cursor", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "silent", wakeOn: "none" }, db);
+  postMessage({ room: "r", handle: "a", body: "hi" }, db);
+  expect(stalePendingPairs(db)).toEqual([]);
+});
+
 test("stalePendingPairs still includes a member once someone ELSE has posted, even if the member also has an unread post of their own", () => {
   const db = freshDb();
   joinRoom({ room: "r", handle: "a" }, db);

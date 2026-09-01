@@ -158,11 +158,19 @@ const UPDATE_LAST_READ_CLAMPED_SQL = `UPDATE chat_members SET last_read_id = MAX
 // author's own cursor): no wake_on setting ever makes a message a recipient
 // of itself, so that row can never become a delivery target and is worth
 // dropping before a presence lookup or pendingMessages call, not just
-// before deliverSerialized. `wakeOn` rides along so the sweep planner can
-// apply the same wake_on rules recipientsFromMembers uses without a second
-// query. This is the sweep's only store read -- it discovers candidates, it
-// does not decide who is deliverable (presence/binding liveness and the
-// wake_on/mention match are the sweep planner's job, not a store concern).
+// before deliverSerialized. The wake_on <> 'none' leg is the SAME idle
+// early-out for a different permanent row: dm-store adds the human as a
+// silent wake_on:"none" third member (last_read_id 0, forever) to every DM
+// room he isn't a named participant of -- without this leg that row alone
+// would make the idle path never fire for a real estate (every DM room
+// always has one), even though the planner-level wake_on:"none" check
+// (createChatDeliverySweep's own contract, kept as the pure source of
+// truth) would drop it anyway. `wakeOn` rides along so the sweep planner
+// can apply the same wake_on rules recipientsFromMembers uses without a
+// second query. This is the sweep's only store read -- it discovers
+// candidates, it does not decide who is deliverable (presence/binding
+// liveness and the wake_on/mention match are the sweep planner's job, not
+// a store concern).
 const SELECT_STALE_PENDING_SQL = `
 SELECT chat_members.room AS room, chat_members.handle AS handle, maxes.maxId AS maxId, chat_members.wake_on AS wakeOn
 FROM chat_members
@@ -171,6 +179,7 @@ JOIN (SELECT room, MAX(id) AS maxId FROM chat_messages GROUP BY room) AS maxes
 JOIN chat_rooms ON chat_rooms.name = chat_members.room
 WHERE chat_members.last_read_id < maxes.maxId
   AND chat_rooms.archived_at IS NULL
+  AND chat_members.wake_on <> 'none'
   AND EXISTS (
     SELECT 1 FROM chat_messages m
     WHERE m.room = chat_members.room
