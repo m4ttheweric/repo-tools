@@ -45,7 +45,7 @@ const STATUS_TONES: Record<string, string> = {
   U: "lav",
 };
 
-/** Path + marker left segments. Segment 0 is the row's label — the selected
+/** Path + marker left segments. Segment 0 is the row's label: the selected
  *  panel (rt-ui) reads only Left[0].Text for its mint dot-joined summary, so
  *  the marker must trail rather than lead. Staged changes color by status
  *  letter; unstaged changes render dim. */
