@@ -368,6 +368,33 @@ test("a failed delivery (both attempts) batches with the next successful one, ca
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
 });
 
+test("a bundle never replays the recipient's own posts back into their own pane", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  // postMessage never self-advances the author's cursor, so b's own post sits
+  // in b's pending range forever and the next post by anyone else sweeps it up.
+  const own = await h["chat:post"]({ room: "general", handle: "b", body: "mine" });
+  if (!own.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  calls.length = 0;
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "yours" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toEqual([
+    [sock, `<cross-session-message from-name="a (#general)">\n[#general] a: yours\n${STEER}\n</cross-session-message>`],
+  ]);
+  expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
+});
+
 test("concurrent posts to the same recipient serialize delivery so a held first send never duplicates the backlog", async () => {
   const calls: Array<[string, string]> = [];
   const sock = fakeSocketPath();

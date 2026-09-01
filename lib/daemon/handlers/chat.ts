@@ -206,8 +206,13 @@ async function deliverPost(
   const binding = deps.resolve(presence.sessionId);
   if (!binding || !inboxAlive(binding)) return { delivered: false, count: 0 };
   const pending = pendingMessages(msg.room, recipient, msg.id, db);
-  if (pending.length === 0) return { delivered: false, count: 0 };
-  const items = pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
+  // postMessage never self-advances the author's cursor, so a recipient's own
+  // posts stay in their pending range and every later bundle would render them
+  // back into their own pane. Presentational only -- markDelivered below still
+  // advances the cursor past them.
+  const others = pending.filter((m) => m.handle !== recipient);
+  if (others.length === 0) return { delivered: false, count: 0 };
+  const items = others.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
   const content = wrapCrossSession(deliveryLabel(items), `${renderDeliveries(items)}\n${REPLY_STEER}`);
   let result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) {
@@ -218,7 +223,7 @@ async function deliverPost(
     // The error STRING (e.g. "timeout" vs a connect errno), not just a
     // boolean -- this is exactly what the incident's silent hour lacked.
     log.warn({ recipient, room: msg.room, err: result.error }, "chat: delivery push failed after retry");
-    await reportUnreadBadge(herdr, presence.pane, pending.length);
+    await reportUnreadBadge(herdr, presence.pane, others.length);
     return { delivered: false, count: 0 };
   }
   markDelivered(msg.room, recipient, msg.id, db);
@@ -226,7 +231,7 @@ async function deliverPost(
   // that chat:pulse is gone -- so a recipient actively receiving messages
   // never goes stale enough for prunePresence to delete its row.
   touchLastSeen(presence.sessionId, Date.now(), db);
-  return { delivered: true, count: pending.length };
+  return { delivered: true, count: others.length };
 }
 
 function chainKey(room: string, handle: string): string {
