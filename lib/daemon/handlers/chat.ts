@@ -902,9 +902,15 @@ export function createChatHandlers(opts: {
         const nearby = closestRoomNames(room, handle, db);
         return { ok: false, error: `unknown room "${room}"${nearby.length ? ` — did you mean: ${nearby.join(", ")}` : ""}` };
       }
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions, quiet }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
+      // The human's post is the coordinator's: it wakes the whole room without
+      // him having to mention anyone. Stored as an explicit @here so the live
+      // push, the sweep, and the record all see the same thing. Rooms default
+      // to wake-on mention, so an agent's un-addressed post wakes nobody.
+      const effectiveMentions = handle === getSetting<string>("chat.humanHandle").value ? [...(mentions ?? []), "here"] : mentions;
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions: effectiveMentions, quiet }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
-      return { ok: true, data: posted };
+      const others = listMembers(room, db).filter((m) => m.handle !== handle).length;
+      return { ok: true, data: { ...posted, others } };
     },
 
     "chat:ack": async (rawPayload: unknown): Promise<CommandResult<"chat:ack">> => {

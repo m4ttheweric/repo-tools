@@ -348,7 +348,7 @@ test("a creating join with wake-on stamps the room default and later joins inher
   expect(byHandle).toEqual({ a: "all", b: "all", c: "mention" });
   joinRoom({ room: "calm", handle: "a" }, db); // creating join WITHOUT a flag stamps nothing
   joinRoom({ room: "calm", handle: "b" }, db);
-  expect(listMembers("calm", db).map((m) => m.wakeOn)).toEqual(["all", "all"]);
+  expect(listMembers("calm", db).map((m) => m.wakeOn)).toEqual(["mention", "mention"]);
 });
 
 test("a repeat sign-in from the same session, same base, retakes its own seat", () => {

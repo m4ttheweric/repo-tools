@@ -315,14 +315,14 @@ describe("rt chat inbox delivery (e2e)", () => {
     await waitForFrame(inboxA.frames, (f) => frameContent(f).includes("You're signed in"));
     await waitForFrame(inboxB.frames, (f) => frameContent(f).includes("You're signed in"));
 
-    const posted = await post(home, "testroom", "one of you: write the TLDR", sessionA);
+    const posted = await post(home, "testroom", "@here one of you: write the TLDR", sessionA);
     await waitForFrame(inboxB.frames, (f) => frameContent(f).includes("write the TLDR"));
 
     const won = await claim(home, posted.id, sessionB);
     expect(won).toEqual({ exitCode: 0, stdout: `claimed #${posted.id} → asker` });
     const receipt = await waitForFrame(inboxA.frames, (f) => frameContent(f).includes("(claim)"));
     expect(frameContent(receipt)).toBe(
-      `<cross-session-message from-name="b (claim)">\nb claimed your message #${posted.id}: "one of you: write the TLDR"\n</cross-session-message>`,
+      `<cross-session-message from-name="b (claim)">\nb claimed your message #${posted.id}: "@here one of you: write the TLDR"\n</cross-session-message>`,
     );
 
     const lost = await claim(home, posted.id, "sess-c");
@@ -332,5 +332,32 @@ describe("rt chat inbox delivery (e2e)", () => {
     await Bun.sleep(300);
     expect(inboxB.frames.some((f) => frameContent(f).includes("(claim)"))).toBe(false);
     expect(inboxA.frames.filter((f) => frameContent(f).includes("(claim)")).length).toBe(1);
+  }, 30_000);
+
+  test("rooms default to wake-on mention: the human's plain post wakes a member, an agent's plain post does not", async () => {
+    const sessionB = "66666666-6666-6666-6666-666666666666";
+    const { sock: herdrSock, stop: stopHerdr } = fakeHerdrForPanes([{ paneId: "w1:pb", sessionId: sessionB }]);
+    stops.push(stopHerdr);
+    const inboxB = startFakeInbox();
+    stops.push(inboxB.stop);
+    registerFakeInbox(home, sessionB, inboxB.socketPath);
+
+    await startDaemonForHome(home, { HERDR_SOCKET_PATH: herdrSock });
+    await signInPane(home, "w1:pb", "b", "testroom");
+    await waitForFrame(inboxB.frames, (f) => frameContent(f).includes("You're signed in"));
+    await signIn(home, "sess-a", "a", "testroom");
+    await signIn(home, "sess-m", "matt", "testroom");
+
+    const fromAgent = await post(home, "testroom", "status: lane at 60%", "sess-a");
+    expect(fromAgent.recipients).toEqual([]);
+    const fromHuman = await post(home, "testroom", "one of you: write the TLDR", "sess-m");
+    expect(fromHuman.recipients).toEqual(["a", "b"]);
+
+    const frame = await waitForFrame(inboxB.frames, (f) => frameContent(f).includes("write the TLDR"));
+    // The agent's earlier post rides along in the same bundle: seen at the next wake, never lost.
+    expect(frameContent(frame)).toBe(
+      `<cross-session-message from-name="rt chat (2 messages)">\n[#testroom] a #${fromAgent.id}: status: lane at 60%\n[#testroom] matt #${fromHuman.id}: one of you: write the TLDR\n` +
+        'reply via rt chat post <room> "..." or rt chat dm <handle> "..." (never SendMessage; this arrived through rt chat)\n</cross-session-message>',
+    );
   }, 30_000);
 });
