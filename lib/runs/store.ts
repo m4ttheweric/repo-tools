@@ -1,20 +1,16 @@
 /**
- * Read-only access to pipeline run DBs written by mattstack-skills'
- * pipeline-state.sh. rt never writes run state; every open here is readonly
- * and per-call — no held connections, so a run dir can be pruned under us.
+ * The run DB's read side. Every open here is readonly and per-call, no held
+ * connections, so a run dir can be pruned under us. Writes live in write.ts.
  */
 import { Database } from "bun:sqlite";
 import { existsSync, readdirSync, statSync, type Dirent } from "fs";
-import { homedir } from "os";
 import { join } from "path";
 import type { Attention, RunDetail, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
 import { computeAttention, fieldValue, lastEventAt, type RunLiveness } from "./attention.ts";
+import { isPathComponent, runsRoot } from "./paths.ts";
+import { KNOWN_SCHEMA_VERSION } from "./write.ts";
 
-export const KNOWN_SCHEMA_VERSION = 2;
-
-export function runsRoot(): string {
-  return process.env.RT_RUNS_ROOT ?? join(homedir(), ".mattstack", "runs");
-}
+export { isPathComponent, KNOWN_SCHEMA_VERSION, runsRoot };
 
 function dirs(path: string): string[] {
   try {
@@ -22,13 +18,6 @@ function dirs(path: string): string[] {
   } catch {
     return [];
   }
-}
-
-// repo/runId reach a path join straight from a network-reachable readonly
-// seam (runs:get via REST decodes %2F) — reject anything that could step
-// outside <runsRoot>/<repo>/<runId> before it ever hits the filesystem.
-export function isPathComponent(s: string): boolean {
-  return s.length > 0 && s !== "." && s !== ".." && !s.includes("/") && !s.includes("\\");
 }
 
 function openRun(repo: string, runId: string): { db: Database; schemaAhead: boolean } | null {
