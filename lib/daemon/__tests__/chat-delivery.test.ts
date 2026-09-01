@@ -1204,3 +1204,49 @@ test("a sweep re-delivery chains behind an in-flight post delivery to the same r
   await sweepResult;
   expect(calls).toHaveLength(1); // the sweep found nothing left stale once it finally ran
 });
+
+test("a sweep tick landing while the previous one is still running is skipped, not run concurrently", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  let releaseFirst: (() => void) | undefined;
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? binding : null),
+    deliver: async (socketPath, content) => {
+      calls.push([socketPath, content]);
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return { ok: true };
+    },
+  };
+  const registryDeps: RegistryDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? binding : null),
+    alive: () => true,
+    resolveAll: () => new Map([["sess-b", binding] as const]),
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps: { resolve: () => null, deliver: async () => ({ ok: true }) } }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const { signIn } = await import("../../state/index.ts");
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+
+  const first = sweep();
+  await waitFor(() => calls.length === 1); // the first tick is now parked inside deliver
+
+  // The overlapping tick must settle on its own, without waiting for the
+  // held delivery. Racing a timer catches the unguarded case as a clean
+  // assertion instead of a hang: unguarded, this second call chains behind
+  // the in-flight delivery and cannot settle until releaseFirst runs.
+  const second = sweep();
+  const raced = await Promise.race([second, Bun.sleep(50).then(() => "still-pending" as const)]);
+  expect(raced).toEqual({ sweptPairs: 0, recoveredMessages: 0 });
+  expect(calls).toHaveLength(1); // the skipped tick pushed nothing of its own
+
+  releaseFirst?.();
+  expect(await first).toEqual({ sweptPairs: 1, recoveredMessages: 1 });
+  await second;
+});

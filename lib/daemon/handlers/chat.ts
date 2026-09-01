@@ -424,8 +424,26 @@ export function createChatDeliverySweep(opts: {
   // deterministic for a test calling sweep() directly, independent of
   // whatever real interval scheduleSweep ends up driving it at.
   let tick = 0;
+  // scheduleSweep drives this off a bare setInterval that never awaits the
+  // tick, and one run is sequential over its targets at up to a retry pair
+  // of inbox timeouts each -- so a slow run CAN outlive the interval. Two
+  // overlapping runs would share `tick` (draining a backoff window in half
+  // the wall-clock time it encodes) and interleave their read-modify-write
+  // of `failureCounts`, letting a stale `entry` clobber the other run's
+  // streak. Skipping is always safe: the next tick rescans from the store.
+  let inFlight = false;
 
   return async function sweepPendingDeliveries(): Promise<{ sweptPairs: number; recoveredMessages: number }> {
+    if (inFlight) return { sweptPairs: 0, recoveredMessages: 0 };
+    inFlight = true;
+    try {
+      return await runSweep();
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  async function runSweep(): Promise<{ sweptPairs: number; recoveredMessages: number }> {
     tick += 1;
     const stale = stalePendingPairs(db);
     if (stale.length === 0) {
@@ -509,7 +527,7 @@ export function createChatDeliverySweep(opts: {
       }
     }
     return { sweptPairs, recoveredMessages };
-  };
+  }
 }
 
 // Not a real room -- isValidChatName forbids '_' -- so this key can never
