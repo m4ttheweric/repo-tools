@@ -48,5 +48,8 @@ export function legacyRepoFile(identity: string, file: string): string {
   } catch {
     return current; // unreadable index: never guess at an owner
   }
-  return claimants.length === 1 ? legacy : current;
+  // One claimant is not enough, it has to be THIS repo. An identity the index
+  // has never seen would otherwise adopt a same-labelled repo's legacy dir, and
+  // the importers rename the source file out from under its real owner.
+  return claimants.length === 1 && claimants[0] === identity ? legacy : current;
 }

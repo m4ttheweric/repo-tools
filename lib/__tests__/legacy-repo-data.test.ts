@@ -61,6 +61,15 @@ describe("legacyRepoFile", () => {
     expect(legacyRepoFile(SKILLS, FILE)).toBe(join(repoDataDir(SKILLS), FILE));
   });
 
+  // One claimant is not enough: it has to be THIS repo. Otherwise a repo the
+  // index has never seen adopts a same-labelled repo's legacy dir, and the
+  // importers rename the source file out from under its real owner.
+  test("refuses a legacy dir whose only claimant is a different repo", () => {
+    seedFile("skills");
+
+    expect(legacyRepoFile(OTHER_SKILLS, FILE)).toBe(join(repoDataDir(OTHER_SKILLS), FILE));
+  });
+
   test("returns the identity path when no legacy file exists", () => {
     expect(legacyRepoFile(SKILLS, FILE)).toBe(join(repoDataDir(SKILLS), FILE));
   });

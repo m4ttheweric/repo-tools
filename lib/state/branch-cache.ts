@@ -92,6 +92,13 @@ function repairCompositeKeys(): string[] {
       db.query("DELETE FROM branch_cache WHERE rowid = ?;").run(id);
       console.warn(`rt: branch_cache key ${branch} collided with an existing ${want} row; dropped the stale duplicate`);
     }
+    // Verify-persisted, matching rekeyTableColumn: persistOrWarn swallows
+    // SQLITE_BUSY, so a row still under its old key was NOT repaired, and
+    // reporting it would have the boot runner reload a map that is still wrong.
+    if (db.query("SELECT 1 FROM branch_cache WHERE branch = ? LIMIT 1;").get(branch)) {
+      console.warn(`rt: branch_cache key repair ${branch} -> ${want} did not persist, leaving it`);
+      continue;
+    }
     repaired.push(branch);
   }
   return repaired;

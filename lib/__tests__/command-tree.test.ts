@@ -194,6 +194,45 @@ describe("dispatch --repo flag scoping", () => {
     expect(reached).toBe(true);
   });
 
+  // An ambiguous label plus a legacy row spelled the same is the trap: falling
+  // back to the raw key there runs the command against whichever repo that row
+  // happens to name, silently and in the wrong place.
+  test('context:"worktree" node: --repo <ambiguous label> refuses instead of taking a legacy row', async () => {
+    const real = realRepoModule;
+    const legacyRow: KnownRepo = {
+      repoName: "app",
+      worktrees: [{ path: process.cwd(), branch: "main", isBare: false }],
+      dataDir: "/fake/app-data",
+    };
+    mock.module("../repo.ts", () => ({
+      ...real,
+      getKnownRepos: () => [legacyRow],
+      pickWorktreeFromRepo: async () => null,
+      getRepoIdentity: () => null,
+    }));
+    mock.module("../repo-arg.ts", () => ({
+      ...realRepoArgModule,
+      tryResolveRepoArg: async () => ({
+        kind: "ambiguous",
+        matches: ["remote:github.com%2Fa%2Fapp", "remote:github.com%2Fb%2Fapp"],
+      }),
+    }));
+
+    let reached = false;
+    const exitSpy = spyOn(process, "exit").mockImplementation((() => { throw new Error("exited"); }) as never);
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    const tree: Record<string, CommandNode> = {
+      cmd: { description: "test", context: "worktree", handler: async () => { reached = true; } },
+    };
+
+    await dispatch(tree, ["cmd", "--repo", "app"]).catch(() => {});
+
+    expect(reached).toBe(false);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    exitSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
   test('node without context: --repo survives untouched in its own args (no repo.ts mocking needed)', async () => {
     let capturedArgs: string[] | undefined;
     const tree: Record<string, CommandNode> = {

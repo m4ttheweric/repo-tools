@@ -293,10 +293,15 @@ export async function dispatch(
       // The typed name is a LABEL and the index keys on identities, so resolve
       // before matching. The raw spelling stays as the fallback: an
       // unregistered scanned row is basename-keyed and never reaches the index.
+      // The raw-spelling fallback is for kind "none" ONLY. Applying it to an
+      // ambiguous label would pick whichever repo a legacy row spelled that way
+      // happens to name, and run the command there.
       const resolution = await tryResolveRepoArg(repoFlag);
-      const repo = (resolution.kind === "resolved"
+      const repo = resolution.kind === "resolved"
         ? repos.find(r => r.repoName === resolution.identity)
-        : undefined) ?? repos.find(r => r.repoName === repoFlag);
+        : resolution.kind === "none"
+          ? repos.find(r => r.repoName === repoFlag)
+          : undefined;
       if (!repo) {
         const { yellow } = await import("./tui.ts");
         const { repoLabel, repoLabelQualified } = await import("./repo-label.ts");

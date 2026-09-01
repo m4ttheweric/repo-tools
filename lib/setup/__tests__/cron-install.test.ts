@@ -40,6 +40,14 @@ describe("resolveBoardTriage", () => {
     expect(result).toEqual({ kind: "checkout", run: ["bun", "run", "/repos/board/bin/triage.ts"] });
   });
 
+  test("two repos both labelled board: no arbitrary pick, fall back to bundled", () => {
+    const a = { repoName: "remote:github.com%2Fm4ttstack%2Fboard", worktrees: [{ path: "/repos/board-a", branch: "main", isBare: false }] };
+    const b = { repoName: "remote:github.com%2Fsomeone%2Fboard", worktrees: [{ path: "/repos/board-b", branch: "main", isBare: false }] };
+    const p = { exists: () => true };
+
+    expect(resolveBoardTriage(p, [a, b], ["/opt/board"])).toEqual({ kind: "bundled", run: ["/opt/board", "triage"] });
+  });
+
   test("checkout wins even when a bundled board also resolves", () => {
     const p = { exists: () => true };
     const result = resolveBoardTriage(p, [boardRepo], ["/opt/board"]);

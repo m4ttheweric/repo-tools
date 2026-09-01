@@ -1029,8 +1029,14 @@ export function findKnownRepo(
   const byIdentity = repos.find((r) => r.repoName === identity.identity);
   if (byIdentity) return byIdentity;
 
-  const root = safeRealpath(identity.repoRoot);
-  return repos.find((r) => r.worktrees.some((w) => safeRealpath(w.path) === root));
+  return repos.find((r) => repoCarriesWorktree(r, identity.repoRoot));
+}
+
+/** True when `repo` lists `path` among its worktrees, compared through realpath
+    so one directory reached by two spellings still matches. */
+export function repoCarriesWorktree(repo: KnownRepo, path: string): boolean {
+  const target = safeRealpath(path);
+  return repo.worktrees.some((w) => safeRealpath(w.path) === target);
 }
 
 /**

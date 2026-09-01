@@ -66,6 +66,20 @@ describe("resolveReposForIdentity", () => {
     expect(resolved).not.toBe(cached);
   });
 
+  // Making the cache actually hit exposed this: a row matched by identity can
+  // still predate a worktree added since it was written, and serving it hides
+  // that worktree from `rt cd --worktree <branch>` and from the picker.
+  test("rescans when the cached row predates a worktree added since", () => {
+    const cached = [repo(SKILLS_ID, "/repos/matt-skills")];
+
+    const resolved = resolveReposForIdentity(
+      { identity: SKILLS_ID, repoRoot: "/trees/brand-new" },
+      cached,
+    );
+
+    expect(resolved).not.toBe(cached);
+  });
+
   test("serves the cached rows unchanged with no identity to resolve", () => {
     const cached = [repo(SKILLS_ID, "/repos/matt-skills")];
 

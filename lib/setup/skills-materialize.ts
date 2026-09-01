@@ -89,11 +89,16 @@ export async function materializeSkills(p: Probes, opts: { repo?: string }): Pro
   let targets: { name: string; path: string }[];
   if (opts.repo) {
     // Rows are keyed by serialized identity, so a typed name resolves to one
-    // before matching; the raw spelling stays as the fallback.
+    // before matching. The raw-spelling fallback is for kind "none" ONLY: on an
+    // ambiguous label a legacy row spelled that way would otherwise decide
+    // which repo gets materialized.
     const resolution = await tryResolveRepoArg(opts.repo);
-    const match = (resolution.kind === "resolved"
+    if (resolution.kind === "ambiguous") {
+      throw new UserActionableError("repo-ambiguous", `"${opts.repo}" matches more than one repo: ${resolution.matches.join(", ")}... pass the full identity`);
+    }
+    const match = resolution.kind === "resolved"
       ? known.find((r) => r.repoName === resolution.identity)
-      : undefined) ?? known.find((r) => r.repoName === opts.repo);
+      : known.find((r) => r.repoName === opts.repo);
     if (!match) {
       throw new UserActionableError("repo-not-registered", `"${opts.repo}" is not a registered repo (rt repos register first)`);
     }

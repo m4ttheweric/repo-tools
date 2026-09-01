@@ -648,6 +648,24 @@ describe("rekeyBranchCacheTable: composite primary key repair", () => {
     expect(row.linear_id).toBe("CURRENT");
   });
 
+  // persistOrWarn swallows SQLITE_BUSY, so a "repaired" key can still be sitting
+  // under its old spelling. Reporting it migrated makes the boot runner reload a
+  // map that is still wrong. rekeyTableColumn verifies persistence; so must this.
+  test("does not report a repair whose write never landed", async () => {
+    insertRaw("master", WIRE);
+    const db = getStateDb();
+    const realQuery = db.query.bind(db);
+    const querySpy = spyOn(db, "query").mockImplementation(((sql: string) =>
+      sql.startsWith("UPDATE branch_cache SET branch")
+        ? ({ run: () => {} } as never)
+        : realQuery(sql)) as never);
+
+    const report = await rekeyBranchCacheTable();
+    querySpy.mockRestore();
+
+    expect(report.migrated).not.toContain("master");
+  });
+
   test("leaves a NULL-repo row's bare key alone, having nothing to attribute it to", async () => {
     insertRaw("orphan-branch", null);
 
