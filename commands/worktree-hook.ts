@@ -11,7 +11,7 @@ import { join } from "path";
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { currentRepoIdentityFor } from "../lib/repo-arg.ts";
 import { isRepoRegistered } from "../lib/repo-index.ts";
-import { claudeWorktreeHookStatus, installClaudeWorktreeHooks, uninstallClaudeWorktreeHooks } from "../lib/claude-settings.ts";
+import { claudeWorktreeHookStatus, HOOK_TIMEOUT_SECONDS, installClaudeWorktreeHooks, uninstallClaudeWorktreeHooks } from "../lib/claude-settings.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { decideCreate, decideRemove, stockWorktreeAdd } from "../lib/worktree/claude-hook.ts";
@@ -19,7 +19,11 @@ import { loadWorktreeAppConfig } from "../lib/worktree/config.ts";
 import { explainError } from "./worktree.ts";
 import { findTreeByPath } from "../lib/worktree/registry.ts";
 
-const HOOK_PROVISION_TIMEOUT_MS = 240_000;
+// One shared number with lib/claude-settings.ts's HOOK_TIMEOUT_SECONDS (the
+// installed hook entries' Claude Code `timeout` field) so the two can never
+// drift apart: the daemon call this constant bounds must never outlive the
+// hook process Claude Code itself is willing to wait on.
+const HOOK_PROVISION_TIMEOUT_MS = HOOK_TIMEOUT_SECONDS * 1000;
 
 export function claudeSettingsPath(): string {
   return join(process.env.HOME ?? homedir(), ".claude", "settings.json");

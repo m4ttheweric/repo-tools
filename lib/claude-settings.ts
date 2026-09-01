@@ -10,8 +10,17 @@ export type ClaudeHookStatus = { installed: false } | { installed: true; command
 const CREATE_SUFFIX = " worktree claude-hook";
 const REMOVE_SUFFIX = " worktree claude-hook --remove";
 
+/**
+ * Claude Code's hook `timeout` field is in SECONDS (default 600 for a
+ * `command` hook: https://code.claude.com/docs/en/hooks). Set to match
+ * commands/worktree-hook.ts's HOOK_PROVISION_TIMEOUT_MS (240_000ms) so
+ * Claude Code never cancels the hook process before the daemon call inside
+ * it times out on its own.
+ */
+export const HOOK_TIMEOUT_SECONDS = 240;
+
 interface HookEntry {
-  hooks: Array<{ type: string; command: string }>;
+  hooks: Array<{ type: string; command: string; timeout: number }>;
 }
 
 interface ClaudeSettings {
@@ -57,11 +66,11 @@ export function installClaudeWorktreeHooks(settingsPath: string, rtBin: string):
 
   settings.hooks ??= {};
   const create = dropOwned(settings.hooks.WorktreeCreate, CREATE_SUFFIX);
-  create.push({ hooks: [{ type: "command", command: `${rtBin} worktree claude-hook` }] });
+  create.push({ hooks: [{ type: "command", command: `${rtBin} worktree claude-hook`, timeout: HOOK_TIMEOUT_SECONDS }] });
   settings.hooks.WorktreeCreate = create;
 
   const remove = dropOwned(settings.hooks.WorktreeRemove, REMOVE_SUFFIX);
-  remove.push({ hooks: [{ type: "command", command: `${rtBin} worktree claude-hook --remove` }] });
+  remove.push({ hooks: [{ type: "command", command: `${rtBin} worktree claude-hook --remove`, timeout: HOOK_TIMEOUT_SECONDS }] });
   settings.hooks.WorktreeRemove = remove;
 
   const after = JSON.stringify(settings);

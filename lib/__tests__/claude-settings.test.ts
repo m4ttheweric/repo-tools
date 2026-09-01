@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { claudeWorktreeHookStatus, installClaudeWorktreeHooks, uninstallClaudeWorktreeHooks } from "../claude-settings.ts";
+import { claudeWorktreeHookStatus, HOOK_TIMEOUT_SECONDS, installClaudeWorktreeHooks, uninstallClaudeWorktreeHooks } from "../claude-settings.ts";
 
 function scratchSettings(content: object): string {
   const p = join(mkdtempSync(join(tmpdir(), "claude-settings-")), "settings.json");
@@ -25,7 +25,9 @@ describe("installClaudeWorktreeHooks", () => {
     expect(after.permissions).toEqual(FOREIGN.permissions);
     expect(after.hooks.PreToolUse).toEqual(FOREIGN.hooks.PreToolUse);
     expect(after.hooks.WorktreeCreate[0].hooks[0].command).toBe("/usr/local/bin/rt worktree claude-hook");
+    expect(after.hooks.WorktreeCreate[0].hooks[0].timeout).toBe(HOOK_TIMEOUT_SECONDS);
     expect(after.hooks.WorktreeRemove[0].hooks[0].command).toBe("/usr/local/bin/rt worktree claude-hook --remove");
+    expect(after.hooks.WorktreeRemove[0].hooks[0].timeout).toBe(HOOK_TIMEOUT_SECONDS);
   });
   test("idempotent: second install is a no-op", () => {
     const p = scratchSettings({});
