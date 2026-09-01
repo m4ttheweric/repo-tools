@@ -10,9 +10,12 @@ import (
 // Built-in action ids the picker offers even when a request declares no
 // registry at all.
 const (
-	idSelect = "select"
-	idCancel = "cancel"
-	idBack   = "back"
+	idSelect     = "select"
+	idCancel     = "cancel"
+	idBack       = "back"
+	idToggle     = "toggle"
+	idToggleNext = "toggle-next"
+	idToggleAll  = "toggle-all"
 )
 
 // defaultActions is what a bare request renders: select always exists,
@@ -43,9 +46,9 @@ func defaultActions(req protocol.PickRequest) []protocol.PickAction {
 // instead of "select".
 func multiDefaultActions(req protocol.PickRequest) []protocol.PickAction {
 	defaults := []protocol.PickAction{
-		{ID: "toggle", Label: "toggle", Key: "space", Scope: "item", Group: "mark", MenuHidden: true},
-		{ID: "toggle-next", Label: "toggle & next", Key: "tab", Scope: "item", Group: "mark", MenuHidden: true},
-		{ID: "toggle-all", Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark", MenuHidden: true},
+		{ID: idToggle, Label: "toggle", Key: "space", Scope: "item", Group: "mark", MenuHidden: true},
+		{ID: idToggleNext, Label: "toggle & next", Key: "tab", Scope: "item", Group: "mark", MenuHidden: true},
+		{ID: idToggleAll, Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark", MenuHidden: true},
 		{ID: idSelect, Label: "confirm", Key: "enter", Scope: "item", Group: "mark", Primary: true},
 	}
 	if len(req.Breadcrumb) > 1 {
@@ -147,6 +150,12 @@ func renderKeybarLeft(groups []keybarCluster) string {
 	return strings.Join(parts, "  ")
 }
 
+// keybarRightSep joins the range/held indicator to the ungrouped action run
+// on the footer's right side. mouse.go's zone layout reuses this exact
+// literal to find where the ungrouped run starts, so the two must never
+// drift apart into separately-hand-tuned spacing.
+const keybarRightSep = "  ·  "
+
 // renderKeybarRight composes the footer's right-pinned side: the scroll
 // range (when the list overflows the viewport) and the ungrouped action
 // run, separated by a faint middle dot when both are present -- the
@@ -158,7 +167,7 @@ func renderKeybarRight(rangeText, actionsText string) string {
 	case actionsText == "":
 		return rangeText
 	default:
-		return rangeText + fg(theme.Faint).Render("  ·  ") + actionsText
+		return rangeText + fg(theme.Faint).Render(keybarRightSep) + actionsText
 	}
 }
 

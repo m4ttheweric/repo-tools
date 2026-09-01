@@ -63,6 +63,9 @@ func TestPickRequestFixtureFields(t *testing.T) {
 	if !r.Multi || r.InitialQuery == "" {
 		t.Fatalf("multi=%v initialQuery=%q", r.Multi, r.InitialQuery)
 	}
+	if !r.CrumbEvents {
+		t.Fatalf("crumbEvents=%v, want true", r.CrumbEvents)
+	}
 	var dispose, refresh *PickAction
 	for i := range r.Actions {
 		switch r.Actions[i].ID {

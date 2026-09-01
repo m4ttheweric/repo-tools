@@ -9,6 +9,19 @@ const defaultCap = 14
 // top/bottom edge whenever the window is tall enough to afford it.
 const scrolloff = 2
 
+// scrollMargin shrinks scrolloff symmetrically once a window is too short to
+// afford it on both edges at once -- shared by placeTop (keyboard/cursor
+// scrolling) and mouse.go's wheel handler, which has to predict this same
+// margin to know whether a wheel-scrolled top will hold on the next render
+// or get immediately overridden by placeTop re-centering on the cursor.
+func scrollMargin(h int) int {
+	off := scrolloff
+	if lim := (h - 1) / 2; lim < off {
+		off = lim
+	}
+	return off
+}
+
 // Viewport returns [top, top+h) given cursor, list length, caller cap, pane
 // rows, chrome rows. The pane is always the hard ceiling on h: a caller cap
 // or a long list can ask for more rows than the terminal actually has, and
@@ -65,10 +78,7 @@ func placeTop(cursor, prevTop, n, h int) int {
 		top = maxTop
 	}
 
-	off := scrolloff
-	if lim := (h - 1) / 2; lim < off {
-		off = lim
-	}
+	off := scrollMargin(h)
 
 	switch pos := cursor - top; {
 	case pos < off:

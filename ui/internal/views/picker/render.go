@@ -36,25 +36,42 @@ func (m *Model) totalChromeRows() int {
 	return chromeRows
 }
 
+// render paints one frame and, as a side effect, rebuilds m.zones from the
+// lines it actually draws -- the render pass is the only place that knows
+// which Y lines are group headers (no zone) versus rows, and where the
+// breadcrumb/keybar runs actually landed once justified, so hit-zones are
+// recorded here rather than recomputed against a click's since-changed
+// model state later.
 func render(m *Model) string {
 	// pick.ts never opens the picker for a zero-row request, so this is not
 	// a UI state to design for -- just insurance against the empty slice
 	// below producing an out-of-range panic if that invariant ever slips.
 	if m.width == 0 || len(m.req.Rows) == 0 {
+		m.zones = hitZones{}
 		return ""
 	}
 
+	zones := hitZones{}
+	y := 0
+
 	n := len(m.matches)
 	lines := make([]string, 0, n+m.totalChromeRows())
-	lines = append(lines, breadcrumbLine(m), filterLine(m))
+	lines = append(lines, breadcrumbLine(m))
+	zones.addAll(y, breadcrumbZones(m))
+	y++
+	lines = append(lines, filterLine(m))
+	y++
 	if m.showSelectedPanel() {
 		lines = append(lines, selectedPanelLine(m, m.width))
+		y++
 	}
 	lines = append(lines, rule(m.width))
+	y++
 
 	if n == 0 {
 		lines = append(lines, noMatchLine())
 		lines = append(lines, rule(m.width), noMatchKeybarLine(m))
+		m.zones = zones
 		return strings.Join(lines, "\n")
 	}
 
@@ -69,15 +86,24 @@ func render(m *Model) string {
 	for i := top; i < top+h; i++ {
 		if group, ok := headerBoundary(m, i); ok {
 			lines = append(lines, groupHeaderLine(group))
+			y++ // a header consumes a display line but is never a hit-zone
 		}
 		line := rowLineWidth(m, i, rowWidth)
+		zones.addAll(y, rowZones(m, i, rowWidth))
 		if scrolling {
 			line += thumbCell(i-top, thumbTop, thumbH)
 		}
 		lines = append(lines, line)
+		y++
 	}
 
-	lines = append(lines, rule(m.width), keybarLine(m, top, h, n))
+	lines = append(lines, rule(m.width))
+	y++
+	keybarStr, keyZones := keybarLineZones(m, top, h, n)
+	zones.addAll(y, keyZones)
+	lines = append(lines, keybarStr)
+
+	m.zones = zones
 	return strings.Join(lines, "\n")
 }
 
@@ -186,16 +212,8 @@ func thumbCell(rowInWindow, thumbTop, thumbH int) string {
 // hyphen, not an en/em dash -- a rendered-output constraint that applies
 // everywhere, including here.
 func keybarLine(m *Model, top, h, n int) string {
-	left, ungrouped := keybarClusters(effectiveActions(m.req))
-
-	rangeText := ""
-	if n > h {
-		rangeText = fg(theme.Cyan).Render(fmt.Sprintf("%d-%d", top+1, top+h)) +
-			fg(theme.Faint).Render(fmt.Sprintf(" of %d", n))
-	}
-	right := renderKeybarRight(rangeText, renderKeybarCluster(keybarCluster{actions: ungrouped}))
-
-	return justify(m.width, renderKeybarLeft(left), right)
+	line, _ := keybarLineZones(m, top, h, n)
+	return line
 }
 
 func rule(width int) string {
@@ -217,13 +235,18 @@ func breadcrumbLine(m *Model) string {
 
 // countText is the breadcrumb line's right-aligned count area. A multi
 // session leads with the mint selected-count glyph ahead of the ordinary
-// fraction; a plain session is just the fraction.
+// fraction; a plain session is just the fraction. Alt held prepends the
+// Modifiers board's "with args" badge ahead of either.
 func countText(m *Model) string {
+	prefix := ""
+	if m.held.alt {
+		prefix = fg(theme.Lav).Bold(true).Render("⌥ with args") + fg(theme.Faint).Render("  ·  ")
+	}
 	if m.multiMode() {
-		return fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
+		return prefix + fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
 			fg(theme.Faint).Render(" selected  ·  ") + countFraction(m)
 	}
-	return countFraction(m)
+	return prefix + countFraction(m)
 }
 
 // countFraction turns cyan only while a query is narrowing the list to at
@@ -393,7 +416,15 @@ func rowLineWidth(m *Model, i int, width int) string {
 		selMarkerWidth = 2
 	}
 
+	// The cursor row's own right segments are replaced by the Modifiers
+	// board's "enter → pick args" pill while alt is held -- it previews what
+	// enter now does, so it has to sit exactly where the row's usual right
+	// text does, sharing the same width budget below.
+	altBadge := cursorRow && m.held.alt
 	rightPlain := plainConcat(row.Right)
+	if altBadge {
+		rightPlain = " enter → pick args "
+	}
 	rightWidth := lipgloss.Width(rightPlain)
 
 	// Budget: 1 gutter column + 1 separator column, plus a gap column ahead
@@ -421,6 +452,9 @@ func rowLineWidth(m *Model, i int, width int) string {
 	}
 
 	rightRendered := renderSegments(row.Right, rowBg)
+	if altBadge {
+		rightRendered = lipgloss.NewStyle().Background(theme.Lav).Foreground(theme.Bg).Bold(true).Render(rightPlain)
+	}
 
 	return gutter + rowBg.Render(" ") + selMarker + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
 }

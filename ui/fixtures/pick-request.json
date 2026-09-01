@@ -30,5 +30,6 @@
     { "id": "refresh", "label": "refresh", "key": "ctrl-r", "scope": "global", "group": "nav" }
   ],
   "multi": true,
-  "initialQuery": "on-deck"
+  "initialQuery": "on-deck",
+  "crumbEvents": true
 }

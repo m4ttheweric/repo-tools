@@ -61,6 +61,11 @@ type PickRequest struct {
 	Exact         bool         `json:"exact,omitempty"`
 	Cap           int          `json:"cap,omitempty"`
 	SelectedPanel bool         `json:"selectedPanel,omitempty"`
+	// CrumbEvents opts into a breadcrumb segment click emitting a
+	// {action:"crumb", value:"<segment index>"} event; without it a click on
+	// the breadcrumb is inert, since a caller that never wired a listener
+	// for it would otherwise have no way to know a crumb click happened.
+	CrumbEvents bool `json:"crumbEvents,omitempty"`
 }
 
 type PickUpdate struct {

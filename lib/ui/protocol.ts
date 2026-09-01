@@ -184,6 +184,9 @@ export interface PickRequest {
   exact?: boolean;
   cap?: number;
   selectedPanel?: boolean;
+  // Opts a breadcrumb segment click into emitting a {action:"crumb",
+  // value:"<segment index>"} event; without it a crumb click is inert.
+  crumbEvents?: boolean;
 }
 
 export interface PickUpdate {

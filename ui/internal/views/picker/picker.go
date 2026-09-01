@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -14,10 +15,18 @@ import (
 	"rt-ui/internal/tty"
 )
 
-// heldModifiers is cross-event modifier tracking (shift/alt held across
-// mouse and key events, driving range-select); left empty until that
-// behavior is built, so the field exists without shaping what it will hold.
-type heldModifiers struct{}
+// heldModifiers tracks whether alt/ctrl are currently physically held, for
+// the Modifiers board's reactive chrome (the "with args" badge, the
+// expanded keybar). A bare modifier key's own KeyPressMsg sets the
+// corresponding field; its KeyReleaseMsg clears it. A terminal that never
+// reports key release events also never reports a bare modifier press as
+// its own key event in the first place, so on such a terminal these fields
+// simply never flip -- there is no stuck-held state to guard against, only
+// an absent one.
+type heldModifiers struct {
+	alt  bool
+	ctrl bool
+}
 
 // Model is the picker's Bubble Tea model. Every field the later render,
 // filter, action, modal, and mouse tasks need is scaffolded now so each one
@@ -34,6 +43,22 @@ type Model struct {
 	hover       int
 	width       int
 	height      int
+
+	// zones is the render pass's own record of what each rendered line's
+	// columns target, rebuilt every render() call; mouse.go's click/motion
+	// handlers only ever read it, never recompute layout themselves.
+	zones hitZones
+	// lastClickRow/lastClickAt pair a row click with whatever click preceded
+	// it, the only way to detect a double-click: MouseMsg carries no click
+	// timestamp of its own. -1 is "no previous click" (never a valid match
+	// index), so the very first click on a session can never read as one
+	// half of a pair.
+	lastClickRow int
+	lastClickAt  time.Time
+	// nowFn stands in for time.Now so a test can drive double-click timing
+	// deterministically; nil (a bare &Model{} a test builds directly, not
+	// through New) falls back to the real clock in now().
+	nowFn func() time.Time
 
 	// output is where the event writer and the final result write land;
 	// Run wires the real stdout, tests wire a buffer directly.
@@ -69,10 +94,12 @@ type ModalMsg struct {
 // its real matches on the first frame rather than the identity order.
 func New(req protocol.PickRequest) *Model {
 	m := &Model{
-		req:      req,
-		query:    req.InitialQuery,
-		selected: make(map[string]bool),
-		hover:    -1,
+		req:          req,
+		query:        req.InitialQuery,
+		selected:     make(map[string]bool),
+		hover:        -1,
+		lastClickRow: -1,
+		nowFn:        time.Now,
 	}
 	for _, v := range req.InitialValues {
 		m.selected[v] = true
@@ -121,7 +148,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyUpdate(msg.Update)
 	case ModalMsg:
 		m.openTSModal(msg.Modal)
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
+	case tea.MouseMotionMsg:
+		return m.handleMouseMotion(msg)
+	case tea.MouseWheelMsg:
+		return m.handleMouseWheel(msg)
+	case tea.KeyReleaseMsg:
+		m.applyModifierHeld(msg.Code, false)
 	case tea.KeyPressMsg:
+		if m.applyModifierHeld(msg.Code, true) {
+			return m, nil
+		}
 		if m.modal != nil {
 			return m.updateModal(msg)
 		}

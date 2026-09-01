@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -1737,5 +1738,538 @@ func TestCtrlKMenuHidesBuiltinMultiMarkActionsButKeepsCallerActions(t *testing.T
 	}
 	if ev.Action != "dispose" {
 		t.Fatalf("caller action should dispatch as itself, got %+v", ev)
+	}
+}
+
+// ─── mouse ──────────────────────────────────────────────────────────────
+
+// TestMouseHoverSetsHoverNotCursor is the Mouse board's central invariant:
+// motion over a row updates the render hint (m.hover) but never steals the
+// keyboard's own place in the list.
+func TestMouseHoverSetsHoverNotCursor(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	render(m)
+
+	next, _ := m.Update(tea.MouseMotionMsg{X: 2, Y: 4})
+	m = next.(*Model)
+	if m.hover != 1 {
+		t.Fatalf("hovering row 1's line should set hover=1, got %d", m.hover)
+	}
+	if m.cursor != 0 {
+		t.Fatalf("hover must never move the keyboard cursor, got cursor=%d", m.cursor)
+	}
+
+	next, _ = m.Update(tea.MouseMotionMsg{X: 2, Y: 1})
+	m = next.(*Model)
+	if m.hover != -1 {
+		t.Fatalf("motion off any row should clear hover, got %d", m.hover)
+	}
+}
+
+// TestMouseClickSetsCursorNotAccept pins the single-click half of the
+// board's click/double-click split: a click moves focus only, it never
+// terminates the session.
+func TestMouseClickSetsCursorNotAccept(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	render(m)
+
+	next, cmd := m.Update(tea.MouseClickMsg{X: 2, Y: 4, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if cmd != nil {
+		t.Fatal("a single click must not end the session")
+	}
+	if m.cursor != 1 {
+		t.Fatalf("click should move the cursor to row 1, got %d", m.cursor)
+	}
+	if m.result != nil {
+		t.Fatalf("a single click must not produce a result: %+v", m.result)
+	}
+}
+
+// TestMouseDoubleClickAcceptsTheRowWithinTheWindow pins the double-click
+// half: two clicks on the same row inside doubleClickWindow accept exactly
+// like enter would.
+func TestMouseDoubleClickAcceptsTheRowWithinTheWindow(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	render(m)
+	now := time.Now()
+	m.nowFn = func() time.Time { return now }
+
+	next, cmd := m.Update(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if cmd != nil {
+		t.Fatal("the first click of a pair must not accept")
+	}
+
+	now = now.Add(100 * time.Millisecond)
+	next, cmd = m.Update(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if cmd == nil {
+		t.Fatal("a second click on the same row within the window should accept")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected a quit command, got %v", cmd())
+	}
+	if m.result == nil || m.result.Value == nil || *m.result.Value != "a" {
+		t.Fatalf("expected a select result for row a, got %+v", m.result)
+	}
+}
+
+// TestMouseClicksFarApartDoNotDoubleClick is the negative case: two clicks
+// on the same row outside doubleClickWindow are two independent single
+// clicks, not a pair.
+func TestMouseClicksFarApartDoNotDoubleClick(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	render(m)
+	now := time.Now()
+	m.nowFn = func() time.Time { return now }
+
+	m.Update(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+
+	now = now.Add(2 * time.Second)
+	next, cmd := m.Update(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if cmd != nil {
+		t.Fatal("clicks outside the double-click window must not accept")
+	}
+	if m.cursor != 0 {
+		t.Fatalf("the second click should still move the cursor, got %d", m.cursor)
+	}
+}
+
+// TestMouseClickMarkerCellTogglesSelectionAndFocusesRow covers the multi
+// board's marker column: it toggles the row's selection, distinct from
+// accepting, and per the Mouse board also focuses that row.
+func TestMouseClickMarkerCellTogglesSelectionAndFocusesRow(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	render(m)
+
+	next, cmd := m.Update(tea.MouseClickMsg{X: 2, Y: 5, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if cmd != nil {
+		t.Fatal("a marker click must not end the session")
+	}
+	if !m.selected["b"] {
+		t.Fatalf("clicking the marker cell should toggle selection, got selected=%+v", m.selected)
+	}
+	if m.cursor != 1 {
+		t.Fatalf("a marker click should also focus its row, got cursor=%d", m.cursor)
+	}
+}
+
+// TestMouseRightClickOpensMenuAtRow pins right-click: it focuses the row
+// under the pointer and opens the same overlay ctrl-k does.
+func TestMouseRightClickOpensMenuAtRow(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	render(m)
+
+	next, _ := m.Update(tea.MouseClickMsg{X: 2, Y: 4, Button: tea.MouseRight})
+	m = next.(*Model)
+	if m.cursor != 1 {
+		t.Fatalf("right-click should focus the clicked row, got cursor=%d", m.cursor)
+	}
+	if m.modal == nil {
+		t.Fatal("right-click should open the registry menu")
+	}
+}
+
+// TestMouseClickMapsThroughGroupHeadersToTheCorrectMatchIndex is the
+// hit-zone regression guard the reviewer will scrutinize hardest: Y→row
+// cannot be a fixed-chrome-offset subtraction, because an interleaved group
+// header consumes a display line without being a row itself. The exact
+// chrome layout here (breadcrumb=0, filter=1, rule=2, header=3, row=4,
+// header=5, row=6, row=7) is pinned by
+// TestGroupHeadersRenderAboveFirstRowOfEachGroup already; this test reuses
+// it to prove clicks resolve against it correctly.
+func TestMouseClickMapsThroughGroupHeadersToTheCorrectMatchIndex(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "adjuster+backend", Group: "presets", Left: []protocol.PickSegment{{Text: "adjuster + backend", Tone: "text"}}},
+			{Value: "backend", Group: "packages", Left: []protocol.PickSegment{{Text: "backend", Tone: "text"}}},
+			{Value: "adjuster", Group: "packages", Left: []protocol.PickSegment{{Text: "adjuster", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+	if !strings.Contains(lines[3], "PRESETS") || !strings.Contains(lines[4], "adjuster + backend") ||
+		!strings.Contains(lines[5], "PACKAGES") || !strings.Contains(lines[6], "backend") || !strings.Contains(lines[7], "adjuster") {
+		t.Fatalf("setup: unexpected chrome layout:\n%s", plain)
+	}
+
+	next, _ := m.Update(tea.MouseClickMsg{X: 5, Y: 4, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if m.cursor != 0 {
+		t.Fatalf("a click just below the filter/rule (the row area's first line) should select match 0, got cursor=%d", m.cursor)
+	}
+
+	next, _ = m.Update(tea.MouseClickMsg{X: 5, Y: 5, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if m.cursor != 0 {
+		t.Fatalf("a click on a group header line must be inert, got cursor=%d", m.cursor)
+	}
+
+	next, _ = m.Update(tea.MouseClickMsg{X: 5, Y: 6, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if m.cursor != 1 {
+		t.Fatalf("the row right below the PACKAGES header is match 1 (backend), not match 2 -- a naive Y-offset would miscount the header line, got cursor=%d", m.cursor)
+	}
+
+	next, _ = m.Update(tea.MouseClickMsg{X: 5, Y: 7, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if m.cursor != 2 {
+		t.Fatalf("expected match 2 (adjuster), got cursor=%d", m.cursor)
+	}
+}
+
+// TestMouseClickAccountsForViewportScrollOffset covers the other half of
+// the hit-zone math: once the window has scrolled, the row under a given Y
+// is top+i, not i -- render() records zones against the actual scrolled
+// window, not the unscrolled match order.
+func TestMouseClickAccountsForViewportScrollOffset(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5}
+	m := New(req)
+	m.width = 60
+	m.cursor = 10
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+	top := m.viewportTop
+	if top == 0 {
+		t.Fatalf("setup: expected the window to have scrolled, top=%d", top)
+	}
+	wantRow := fmt.Sprintf("row%02d", top)
+	if !strings.Contains(lines[3], wantRow) {
+		t.Fatalf("setup: expected %q on the row area's first line, got %q", wantRow, lines[3])
+	}
+
+	next, _ := m.Update(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if m.cursor != top {
+		t.Fatalf("clicking the window's first row line should select match index %d (the scrolled-to row), got cursor=%d", top, m.cursor)
+	}
+}
+
+// TestMouseWheelMovesViewportButLeavesCursorInPlace pins the board's wheel
+// rule: a modest scroll (the cursor stays comfortably within the window's
+// scrolloff margin) moves only m.viewportTop.
+func TestMouseWheelMovesViewportButLeavesCursorInPlace(t *testing.T) {
+	rows := make([]protocol.PickRow, 30)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 10}
+	m := New(req)
+	m.width = 60
+	m.cursor = 15
+	render(m)
+	if m.viewportTop != 8 {
+		t.Fatalf("setup: expected top=8 once placeTop centers on cursor=15, got %d", m.viewportTop)
+	}
+
+	next, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	m = next.(*Model)
+	if m.viewportTop != 11 {
+		t.Fatalf("wheel down should move the viewport by wheelStep, got top=%d", m.viewportTop)
+	}
+	if m.cursor != 15 {
+		t.Fatalf("the cursor must stay put while it's still within the window's margin, got cursor=%d", m.cursor)
+	}
+}
+
+// TestMouseWheelClampsCursorWhenItWouldScrollOffscreen covers the edge
+// case: scrolling far enough that the cursor's row would leave the window
+// moves the cursor to the nearest row still inside it, and that new
+// position must hold across the very next render (placeTop must not
+// silently re-center the window back toward where the cursor used to sit).
+func TestMouseWheelClampsCursorWhenItWouldScrollOffscreen(t *testing.T) {
+	rows := make([]protocol.PickRow, 30)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 10}
+	m := New(req)
+	m.width = 60
+	render(m)
+	if m.cursor != 0 || m.viewportTop != 0 {
+		t.Fatalf("setup: expected cursor=0 top=0, got cursor=%d top=%d", m.cursor, m.viewportTop)
+	}
+
+	next, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	m = next.(*Model)
+	if m.viewportTop != 3 {
+		t.Fatalf("expected the viewport to move by wheelStep, got top=%d", m.viewportTop)
+	}
+	if m.cursor != 5 {
+		t.Fatalf("row 0 scrolled out of view, so the cursor should clamp to the window's own scrolloff-safe edge (top+2=5), got cursor=%d", m.cursor)
+	}
+
+	render(m)
+	if m.viewportTop != 3 {
+		t.Fatalf("re-rendering after the wheel scroll must not snap the viewport back toward the cursor: top=%d", m.viewportTop)
+	}
+}
+
+// TestBreadcrumbClickEmitsCrumbEventOnlyWhenOptedIn pins the protocol gate:
+// a breadcrumb segment click emits {action:"crumb", value:"<index>"} only
+// when the request set crumbEvents, and is otherwise inert.
+func TestBreadcrumbClickEmitsCrumbEventOnlyWhenOptedIn(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb:  []string{"rt", "worktree", "dispose"},
+		Rows:        []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+		CrumbEvents: true,
+	}
+	m := New(req)
+	m.width = 60
+	m.events = make(chan []byte, 4)
+
+	plain := ansi.Strip(render(m))
+	idx := strings.Index(plain, "worktree")
+	if idx < 0 {
+		t.Fatalf("setup: expected worktree in the breadcrumb: %q", plain)
+	}
+
+	next, _ := m.Update(tea.MouseClickMsg{X: idx, Y: 0, Button: tea.MouseLeft})
+	m = next.(*Model)
+
+	var line []byte
+	select {
+	case line = <-m.events:
+	default:
+		t.Fatal("expected a crumb event to be enqueued")
+	}
+	var ev protocol.PickEvent
+	if err := json.Unmarshal(line, &ev); err != nil {
+		t.Fatalf("event line not valid JSON: %v (%s)", err, line)
+	}
+	if ev.Action != "crumb" || ev.Value == nil || *ev.Value != "1" {
+		t.Fatalf("expected a crumb event for segment 1 (worktree), got %+v", ev)
+	}
+
+	optedOut := req
+	optedOut.CrumbEvents = false
+	m2 := New(optedOut)
+	m2.width = 60
+	m2.events = make(chan []byte, 4)
+	render(m2)
+
+	next2, _ := m2.Update(tea.MouseClickMsg{X: idx, Y: 0, Button: tea.MouseLeft})
+	m2 = next2.(*Model)
+	select {
+	case line := <-m2.events:
+		t.Fatalf("a crumb click must be inert without crumbEvents, got %s", line)
+	default:
+	}
+}
+
+// TestKeybarKeyClickDispatchesTheAction pins keybar keys as buttons: a
+// click on a registry action's key+label run dispatches it exactly as its
+// bound key would.
+func TestKeybarKeyClickDispatchesTheAction(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+	m.width = 60
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+	footer := lines[len(lines)-1]
+	keybarY := len(lines) - 1
+	idx := strings.Index(footer, "esc")
+	if idx < 0 {
+		t.Fatalf("setup: expected esc in the footer: %q", footer)
+	}
+
+	next, cmd := m.Update(tea.MouseClickMsg{X: idx, Y: keybarY, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if cmd == nil {
+		t.Fatal("clicking esc should end the session")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected a quit command, got %v", cmd())
+	}
+	if m.result == nil || m.result.Action != "cancel" {
+		t.Fatalf("expected a cancel result, got %+v", m.result)
+	}
+}
+
+// TestKeybarKeyClickTogglesForBuiltinMultiMarkActions covers dispatchAction's
+// special case: the built-in mark-cluster actions (toggle/toggle-next/
+// toggle-all) run their hardcoded handler on a keybar click exactly as
+// their real key does, rather than mis-firing through the generic
+// event/result dispatch the way a caller-declared action would.
+func TestKeybarKeyClickTogglesForBuiltinMultiMarkActions(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+	m.width = 88
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+	footer := lines[len(lines)-1]
+	keybarY := len(lines) - 1
+	idx := strings.Index(footer, "space")
+	if idx < 0 {
+		t.Fatalf("setup: expected space in the footer: %q", footer)
+	}
+
+	next, cmd := m.Update(tea.MouseClickMsg{X: idx, Y: keybarY, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if cmd != nil {
+		t.Fatal("toggle must not end the session")
+	}
+	if !m.selected["a"] {
+		t.Fatalf("clicking the space key should toggle the cursor row, got selected=%+v", m.selected)
+	}
+}
+
+// TestModifierPressAndReleaseTracksHeldState pins the held-state seam
+// itself: a bare modifier key's press sets it, its release clears it, and
+// it is never mistaken for typed input.
+func TestModifierPressAndReleaseTracksHeldState(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
+	m := New(req)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftAlt})
+	m = next.(*Model)
+	if !m.held.alt {
+		t.Fatal("a bare alt press should set held.alt")
+	}
+	if m.query != "" {
+		t.Fatalf("a bare modifier press must never be typed into the query, got %q", m.query)
+	}
+
+	next, _ = m.Update(tea.KeyReleaseMsg{Code: tea.KeyLeftAlt})
+	m = next.(*Model)
+	if m.held.alt {
+		t.Fatal("alt release should clear held.alt")
+	}
+
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRightCtrl})
+	m = next.(*Model)
+	if !m.held.ctrl {
+		t.Fatal("a bare right-ctrl press should set held.ctrl")
+	}
+	next, _ = m.Update(tea.KeyReleaseMsg{Code: tea.KeyRightCtrl})
+	m = next.(*Model)
+	if m.held.ctrl {
+		t.Fatal("ctrl release should clear held.ctrl")
+	}
+}
+
+// TestAltHeldRendersHeaderBadgeAndCursorRowBadge is the alt-held golden:
+// the Modifiers board's header badge and the cursor row's "pick args" badge
+// both appear while alt is held.
+func TestAltHeldRendersHeaderBadgeAndCursorRowBadge(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "worktree"},
+		Rows: []protocol.PickRow{
+			{Value: "provision", Left: []protocol.PickSegment{{Text: "provision"}}},
+			{Value: "list", Left: []protocol.PickSegment{{Text: "list"}}},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	m.held.alt = true
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+
+	if !strings.Contains(lines[0], "⌥ with args") {
+		t.Fatalf("breadcrumb line should carry the alt-held badge: %q", lines[0])
+	}
+
+	var cursorLine string
+	for _, l := range lines {
+		if strings.Contains(l, "▌") {
+			cursorLine = l
+			break
+		}
+	}
+	if !strings.Contains(cursorLine, "enter → pick args") {
+		t.Fatalf("the cursor row should carry the pick-args badge while alt is held: %q", cursorLine)
+	}
+}
+
+// TestCtrlHeldSwapsKeybarRangeToHeldIndicator is the ctrl-held golden: the
+// footer's range/held indicator swaps to the Modifiers board's "showing all
+// keys" cue while ctrl is held.
+func TestCtrlHeldSwapsKeybarRangeToHeldIndicator(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+	m.width = 92
+	m.held.ctrl = true
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+	footer := lines[len(lines)-1]
+	if !strings.Contains(footer, "held: showing all keys") {
+		t.Fatalf("footer should show the ctrl-held indicator: %q", footer)
 	}
 }
