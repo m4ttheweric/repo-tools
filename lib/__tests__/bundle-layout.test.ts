@@ -130,6 +130,52 @@ describe("parseDepsLock malformed rows", () => {
   });
 });
 
+describe("parseDepsLock repo field and pending-url rule", () => {
+  function lockWith(tool: Record<string, unknown>): string {
+    return JSON.stringify({
+      schema: 1, arch: "arm64",
+      tools: [{
+        name: "x", version: "1.0.0", license: "MIT",
+        url: "https://example.com/x.tgz",
+        sha256: "a".repeat(64),
+        archive: "tar.gz", extract: "x",
+        bundlePath: "Contents/Helpers/x", exec: ["Contents/Helpers/x"],
+        exposeByDefault: false, entitlements: "none",
+        status: "bundled", kind: "helper",
+        ...tool,
+      }],
+    });
+  }
+
+  test("repo field: valid m4ttstack slug parses and round-trips", () => {
+    const lock = parseDepsLock(lockWith({ repo: "m4ttstack/deck" }));
+    expect(lock.tools[0]!.repo).toBe("m4ttstack/deck");
+  });
+
+  test("repo field: absent stays undefined", () => {
+    expect(parseDepsLock(lockWith({})).tools[0]!.repo).toBeUndefined();
+  });
+
+  test("repo field: wrong org rejected", () => {
+    expect(() => parseDepsLock(lockWith({ repo: "someoneelse/deck" }))).toThrow(/repo/);
+  });
+
+  test("repo field: non-string rejected", () => {
+    expect(() => parseDepsLock(lockWith({ repo: 7 }))).toThrow(/repo/);
+  });
+
+  test("pending row carrying a url is rejected", () => {
+    expect(() =>
+      parseDepsLock(lockWith({ status: "pending", url: "https://example.com/x.tgz", sha256: "", version: "" })),
+    ).toThrow(/pending/);
+  });
+
+  test("pending row with empty url parses", () => {
+    const lock = parseDepsLock(lockWith({ status: "pending", url: "", sha256: "", version: "" }));
+    expect(lock.tools[0]!.status).toBe("pending");
+  });
+});
+
 describe("bundleRootFromExec", () => {
   test("finds the .app root from Contents/MacOS/<bin>", () => {
     const root = fakeApp();

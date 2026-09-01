@@ -38,6 +38,8 @@ export interface DepsLockTool {
   entitlements: DepsLockEntitlements;
   status: DepsLockStatus;
   kind: DepsLockKind;
+  /** m4ttstack source repo for CI-built helpers; absent for third-party pins. */
+  repo?: string;
 }
 
 export interface DepsLock {
@@ -86,6 +88,12 @@ export function parseDepsLock(text: string): DepsLock {
     }
     if (typeof t.exposeByDefault !== "boolean") throw new Error(`deps.lock: ${name} exposeByDefault must be boolean`);
 
+    if (t.repo !== undefined) {
+      if (typeof t.repo !== "string" || !/^m4ttstack\/[A-Za-z0-9._-]+$/.test(t.repo)) {
+        throw new Error(`deps.lock: ${name} repo must be "m4ttstack/<repo>", got ${String(t.repo)}`);
+      }
+    }
+
     if (isUnsafeRelativePath(t.bundlePath)) {
       throw new Error(`deps.lock: ${name} bundlePath must be relative with no ".." segments, got ${t.bundlePath}`);
     }
@@ -108,6 +116,8 @@ export function parseDepsLock(text: string): DepsLock {
       if (!t.url) throw new Error(`deps.lock: bundled tool ${name} needs a url`);
       if (!SHA256.test(t.sha256)) throw new Error(`deps.lock: bundled tool ${name} needs a 64-hex sha256`);
       if (!t.version) throw new Error(`deps.lock: bundled tool ${name} needs a version`);
+    } else if (t.status === "pending" && t.url !== "") {
+      throw new Error(`deps.lock: pending tool ${name} must not carry a url`);
     } else if (t.url || t.sha256) {
       throw new Error(`deps.lock: pending tool ${name} must not carry a url or sha256`);
     }
