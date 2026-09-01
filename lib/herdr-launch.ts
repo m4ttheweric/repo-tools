@@ -6,6 +6,7 @@
  * items sequentially in the current process when not inside a herdr session.
  */
 import { execSync } from "child_process";
+import { decidePlacement } from "../packages/rt-client/src/smart-pane.ts";
 import { green, dim, red, reset, bold } from "./tui.ts";
 
 export interface LaunchItem {
@@ -31,21 +32,34 @@ export function getSelfPaneId(): string {
   return focused.pane_id;
 }
 
-function pickSplitDirection(): "right" | "down" {
-  const cols = process.stdout.columns ?? 80;
-  const rows = process.stdout.rows ?? 24;
-  return cols >= rows * 2 ? "right" : "down";
+export type HerdrExec = (cmd: string) => string;
+
+const defaultExec: HerdrExec = (cmd) => execSync(cmd, { encoding: "utf8", stdio: "pipe" });
+
+/** The parent pane's real rect, or null on any lookup/parse failure (decidePlacement then falls back to a right split). */
+function parentRect(parentPaneId: string, exec: HerdrExec): { width: number; height: number } | null {
+  try {
+    const parsed = JSON.parse(exec(`herdr pane layout --pane ${parentPaneId}`));
+    const panes: Array<{ pane_id: string; rect?: { width: number; height: number } }> = parsed.result?.layout?.panes ?? [];
+    const rect = panes.find((p) => p.pane_id === parentPaneId)?.rect;
+    return rect ? { width: rect.width, height: rect.height } : null;
+  } catch {
+    return null;
+  }
 }
 
-function splitPane(parentPaneId: string): string {
-  const direction = pickSplitDirection();
-  const raw = execSync(
-    `herdr pane split ${parentPaneId} --direction ${direction} --no-focus`,
-    { encoding: "utf8", stdio: "pipe" },
-  );
-  const parsed = JSON.parse(raw);
-  const newId = parsed.result?.pane?.pane_id;
-  if (!newId) throw new Error("herdr pane split did not return a pane_id");
+export function splitPane(parentPaneId: string, exec: HerdrExec = defaultExec): string {
+  const placement = decidePlacement(parentRect(parentPaneId, exec));
+  if (placement.kind === "split") {
+    const raw = exec(`herdr pane split ${parentPaneId} --direction ${placement.direction} --no-focus`);
+    const newId = JSON.parse(raw).result?.pane?.pane_id;
+    if (!newId) throw new Error("herdr pane split did not return a pane_id");
+    return newId;
+  }
+  const workspaceId = parentPaneId.split(":")[0];
+  const raw = exec(`herdr tab create --workspace ${workspaceId} --no-focus`);
+  const newId = JSON.parse(raw).result?.root_pane?.pane_id;
+  if (!newId) throw new Error("herdr tab create did not return a pane_id");
   return newId;
 }
 
