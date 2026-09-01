@@ -161,6 +161,23 @@ jobs:
           [ -n "$RT_VSIX" ] || { echo "::error::no .vsix produced by bun run package"; exit 1; }
           echo "RT_VSIX=$RT_VSIX" >> "$GITHUB_ENV"
 
+      # SPM resolution (Sparkle over https) is swift build's first, silent act
+      # — tag runs sat 40+ minutes with zero output there, three times, while
+      # dispatch runs resolved in seconds. Resolve it as its own bounded step
+      # so a hang is visible, retried, and never eats the build step's budget.
+      - name: Resolve Swift packages (bounded)
+        working-directory: rt-tray
+        run: |
+          for i in 1 2 3; do
+            if timeout 180 swift package resolve 2>&1 | sed 's/^/  /'; then
+              exit 0
+            fi
+            echo "::warning::swift package resolve attempt $i failed or timed out; clearing SPM caches and retrying"
+            rm -rf .build/repositories ~/Library/Caches/org.swift.swiftpm 2>/dev/null || true
+          done
+          echo "::error::swift package resolve failed after 3 bounded attempts"
+          exit 1
+
       # ── The app (build.sh signs inside-out with the imported identity) ───────
       - name: Build mattstack.app
         env:
