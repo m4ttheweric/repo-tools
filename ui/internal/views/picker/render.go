@@ -26,15 +26,25 @@ func fg(c color.Color) lipgloss.Style {
 const chromeRows = 5
 
 func render(m *Model) string {
-	if m.width == 0 {
+	// pick.ts never opens the picker for a zero-row request, so this is not
+	// a UI state to design for -- just insurance against the empty slice
+	// below producing an out-of-range panic if that invariant ever slips.
+	if m.width == 0 || len(m.req.Rows) == 0 {
 		return ""
 	}
-	top, h := m.viewport()
-	n := len(m.matches)
-	scrolling := n > h
 
-	lines := make([]string, 0, h+chromeRows)
+	n := len(m.matches)
+	lines := make([]string, 0, n+chromeRows)
 	lines = append(lines, breadcrumbLine(m), filterLine(m), rule(m.width))
+
+	if n == 0 {
+		lines = append(lines, noMatchLine())
+		lines = append(lines, rule(m.width), noMatchKeybarLine(m))
+		return strings.Join(lines, "\n")
+	}
+
+	top, h := m.viewport()
+	scrolling := n > h
 
 	rowWidth := m.width
 	if scrolling {
@@ -42,6 +52,13 @@ func render(m *Model) string {
 	}
 	thumbTop, thumbH := thumbSpan(top, h, n)
 	for i := top; i < top+h; i++ {
+		// Group boundaries are computed against the full match order, not
+		// just the visible window, so scrolling into the middle of a group
+		// never repeats its header and scrolling to a group's first row
+		// (even as the window's own top line) still shows one.
+		if group := groupOf(m, i); group != "" && (i == 0 || groupOf(m, i-1) != group) {
+			lines = append(lines, groupHeaderLine(group))
+		}
 		line := rowLineWidth(m, i, rowWidth)
 		if scrolling {
 			line += thumbCell(i-top, thumbTop, thumbH)
@@ -51,6 +68,38 @@ func render(m *Model) string {
 
 	lines = append(lines, rule(m.width), keybarLine(m, top, h, n))
 	return strings.Join(lines, "\n")
+}
+
+// noMatchLine is the Filtering board's zero-match row: a single inline
+// faint line replacing the list rather than an empty row area, so the user
+// sees the query took effect instead of wondering if the picker is stuck.
+func noMatchLine() string {
+	return onBg.Render("  ") + fg(theme.Faint).Render("no matches")
+}
+
+// noMatchKeybarLine replaces the whole footer legend rather than composing
+// it alongside the normal one: enter/tab/ctrl-up all act on a row, and there
+// are none, so the only live keys are backing out of the filter or quitting.
+func noMatchKeybarLine(m *Model) string {
+	left := fg(theme.Faint).Render("backspace") + fg(theme.Dim).Render(" edit filter") +
+		fg(theme.Faint).Render(" · ") + fg(theme.Faint).Render("esc") + fg(theme.Dim).Render(" quit")
+	return justify(m.width, left, "")
+}
+
+// groupOf reads the group label backing matches[i]. Group headers are
+// render-only: the cursor indexes m.matches directly and this function is
+// never consulted by cursor movement, so a header can never become the
+// selected row.
+func groupOf(m *Model, i int) string {
+	return m.req.Rows[m.matches[i].Index].Group
+}
+
+// groupHeaderLine paints a group boundary as a faint uppercase label at the
+// row gutter's own two-column indent -- the board renders lowercase source
+// text uppercased purely by CSS, which a terminal has no equivalent for, so
+// the case conversion has to happen here instead.
+func groupHeaderLine(group string) string {
+	return onBg.Render("  ") + fg(theme.Faint).Render(strings.ToUpper(group))
 }
 
 // thumbSpan sizes the rail to the visible fraction of the list (h*h/n,

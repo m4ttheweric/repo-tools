@@ -277,3 +277,111 @@ func TestLongListWindowsWithThumbRailAndFooterRange(t *testing.T) {
 		}
 	}
 }
+
+// TestNoMatchState is the golden for the Filtering board's zero-match frame:
+// the breadcrumb count reads 0/N (N total rows, not 0/0), the row area
+// collapses to a single inline faint "no matches" line, and the footer
+// swaps its whole legend to the edit-filter/quit pair since nothing below
+// enter/tab/ctrl-up applies when there is nothing to act on.
+func TestNoMatchState(t *testing.T) {
+	req := protocol.PickRequest{
+		T:            "pick",
+		Protocol:     protocol.Version,
+		Breadcrumb:   []string{"rt", "worktree"},
+		InitialQuery: "zzz",
+		Rows: []protocol.PickRow{
+			{Value: "restore", Left: []protocol.PickSegment{{Text: "restore", Tone: "text"}}},
+			{Value: "list", Left: []protocol.PickSegment{{Text: "list", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+
+	plain := ansi.Strip(render(m))
+
+	if !strings.Contains(plain, "0/2") {
+		t.Fatalf("breadcrumb count should read 0/2 (0 matches of 2 total rows):\n%s", plain)
+	}
+	if strings.Contains(plain, "restore") || strings.Contains(plain, "list") {
+		t.Fatalf("no row should render once the query matches nothing:\n%s", plain)
+	}
+	if !strings.Contains(plain, "backspace edit filter · esc quit") {
+		t.Fatalf("footer should swap to the no-match legend:\n%s", plain)
+	}
+
+	lines := strings.Split(plain, "\n")
+	noMatchLines := 0
+	for _, l := range lines {
+		if strings.Contains(l, "no matches") {
+			noMatchLines++
+		}
+	}
+	if noMatchLines != 1 {
+		t.Fatalf("want exactly one inline no-matches row, got %d:\n%s", noMatchLines, plain)
+	}
+}
+
+// TestGroupHeadersRenderAboveFirstRowOfEachGroup is the golden for the
+// RunChain board's group headers: a faint uppercase label prints once above
+// each group's first row, never repeats for the group's later rows, and the
+// cursor -- which indexes m.matches, not the printed lines -- still lands on
+// the first real row rather than a header.
+func TestGroupHeadersRenderAboveFirstRowOfEachGroup(t *testing.T) {
+	req := protocol.PickRequest{
+		T:        "pick",
+		Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "adjuster+backend", Group: "presets", Left: []protocol.PickSegment{{Text: "adjuster + backend", Tone: "text"}}},
+			{Value: "backend", Group: "packages", Left: []protocol.PickSegment{{Text: "backend", Tone: "text"}}},
+			{Value: "adjuster", Group: "packages", Left: []protocol.PickSegment{{Text: "adjuster", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+
+	// breadcrumb(0), filter(1), rule(2) precede the row area.
+	if !strings.Contains(lines[3], "PRESETS") {
+		t.Fatalf("expected a PRESETS header above the first row:\n%s", plain)
+	}
+	if !strings.Contains(lines[4], "adjuster + backend") {
+		t.Fatalf("first real row should follow its header:\n%s", plain)
+	}
+	if !strings.Contains(lines[5], "PACKAGES") {
+		t.Fatalf("expected a PACKAGES header once the group changes:\n%s", plain)
+	}
+	if !strings.Contains(lines[6], "backend") {
+		t.Fatalf("first packages row should follow its header:\n%s", plain)
+	}
+	if strings.Contains(lines[7], "PACKAGES") {
+		t.Fatalf("second packages row must not repeat the header:\n%s", plain)
+	}
+
+	if m.cursor != 0 {
+		t.Fatalf("cursor should start on match index 0, not a header: %d", m.cursor)
+	}
+	var cursorLine string
+	for _, l := range strings.Split(render(m), "\n") {
+		if strings.Contains(l, "▌") {
+			cursorLine = l
+			break
+		}
+	}
+	if !strings.Contains(ansi.Strip(cursorLine), "adjuster + backend") {
+		t.Fatalf("cursor gutter should mark the first real row, not a header: %q", cursorLine)
+	}
+}
+
+// TestZeroRowModelDoesNotPanic covers the defensive guard only: pick.ts
+// never spawns the picker for a zero-row request, so this is not the
+// no-match UI, just insurance against a nil/empty-slice panic if that
+// invariant is ever violated.
+func TestZeroRowModelDoesNotPanic(t *testing.T) {
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{}}
+	m := New(req)
+	m.width = 60
+
+	_ = render(m)
+}
