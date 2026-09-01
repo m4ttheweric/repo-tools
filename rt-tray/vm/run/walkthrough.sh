@@ -168,11 +168,19 @@ if [ "$SCENARIO" = headless ]; then
   # an admin user; ~2 min, idempotent when CLT is already present.
   vm_ssh_try "$VM_ADMIN_USER" "$RUN_VM" "/Applications/mattstack.app/Contents/MacOS/rt tools install apple-clt" >>"$VM_RUN_DIR/logs/clt.log" 2>&1 \
     || { vm_phase_end screens fail "headless CLT install failed (logs/clt.log)"; exit 1; }
+  # Quit the app for the recipe: app-needs ride the app's own stdout pipe
+  # when the app drives setup, so a standalone rt with the app RUNNING waits
+  # on services.register until it times out — with the app absent the step
+  # degrades and `rt daemon install` covers registration (CI's proven path).
+  # Relaunched below before the assert phase, which expects the tray up.
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "osascript -e 'tell application \"mattstack\" to quit' 2>/dev/null; sleep 2; pkill -x mattstack 2>/dev/null; true" >>"$VM_RUN_DIR/logs/screens.log" 2>&1
   # An ssh session's login keychain is locked, unlike the GUI session a real
   # install runs in — home.init's age-key store needs it open.
   if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "security unlock-keychain -p '$VM_TESTER_PASS' ~/Library/Keychains/login.keychain-db && GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/e2e-cleanroom.sh --app /Applications/mattstack.app --allow-existing-install --artifacts-dir '$GUEST_RUN/logs/cleanroom'" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
     vm_phase_end screens pass "headless: scripts/e2e-cleanroom.sh in guest"
   else vm_phase_end screens fail "headless recipe failed (logs/screens.log)"; fi
+  # The assert phase expects the tray up; relaunch what the recipe quit.
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "open -a /Applications/mattstack.app; sleep 8" >>"$VM_RUN_DIR/logs/screens.log" 2>&1 || true
 else
   CODE_ARG=""; [ -n "$CODE_FILE" ] && { cp "$CODE_FILE" "$VM_RUN_DIR/in/invite-code.txt"; CODE_ARG="--invite-code-file '$GUEST_RUN/in/invite-code.txt'"; }
   if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' VM_ADMIN_PASS='$VM_ADMIN_PASS' DRIVER_LAUNCH_ARGS='$LAUNCH_ARGS' $PAT_ENV='${!PAT_ENV:-}' bash $GUEST_BIN/drive-setup.sh $SCENARIO --team-slug $SLUG --pat-env $PAT_ENV $CODE_ARG" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
