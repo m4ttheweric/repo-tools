@@ -206,7 +206,16 @@ check_signed() { # path label want-ent(none|jit)
     codesign --verify --strict "$p" 2>/dev/null && pass "$label signature verifies" || fail "$label signature does not verify"
     assert_hardened_runtime "$p" "$label"
     if ent_has "$p" 'allow-jit'; then [ "$want" = jit ] && pass "$label has allow-jit" || fail "$label unexpectedly has allow-jit"; else [ "$want" = none ] && pass "$label has no jit entitlement" || fail "$label missing allow-jit"; fi
-    ent_has "$p" 'allow-unsigned-executable-memory' && fail "$label carries allow-unsigned-executable-memory (JIT-only entitlements only)" || pass "$label has no allow-unsigned-executable-memory"
+    # allow-unsigned-executable-memory rides WITH allow-jit and never alone:
+    # bun's JIT emits into plain malloc'd pages (not MAP_JIT), so a
+    # long-running bun-compiled service is CODESIGNING-killed mid-run
+    # without it (the daemon crash-looped 15 times in the VM clean room;
+    # version-check smokes never warm the JIT, so only a soak catches it).
+    if ent_has "$p" 'allow-unsigned-executable-memory'; then
+        [ "$want" = jit ] && pass "$label has allow-unsigned-executable-memory (with jit)" || fail "$label unexpectedly has allow-unsigned-executable-memory"
+    else
+        [ "$want" = jit ] && fail "$label missing allow-unsigned-executable-memory (bun JIT dies mid-run without it)" || pass "$label has no allow-unsigned-executable-memory"
+    fi
 }
 APPS=("$PROD")
 [ -n "$DEV" ] && APPS+=("$DEV")
