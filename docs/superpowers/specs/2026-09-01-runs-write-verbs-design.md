@@ -48,7 +48,7 @@ Contract, identical to the script's v2 except where marked new:
 - `snapshot` prints `{ok, run, stages, fields, decisions}` as raw `SELECT *` rows from the open `RT_RUN_DB` handle, with the same ordering the script used (stages by `started_at, attempt`; fields by `at`; decisions by `decided_at`). It is implemented in `write.ts` beside the mutations, not through `store.ts`'s `readRun`, which keys on `(repo, runId)` under `runsRoot()` and returns the enriched `RunDetail` shape rather than raw rows.
 - `rt runs` with a positional argument that is not a known subcommand prints a usage error and exits 2. Today the dispatcher runs a node's own handler when the first argument matches no subcommand, so `rt runs stage-start` on an rt without these verbs silently prints the run list and exits 0; `runsList` rejecting positionals closes that on any rt carrying this change.
 - Output is JSON on stdout for every outcome of every subcommand except `field get`. Exit codes: 0 ok, 1 sqlite failure, 2 usage or environment, 3 not found.
-- `rt runs list`, `show`, and `abandon` are unchanged.
+- Bare `rt runs` (the list), `rt runs show`, and `rt runs abandon` are unchanged. `list` was never a registered subcommand; it only worked through the fallthrough closed below, and nothing invokes it literally.
 
 `--repo` on `run-start` is the run-dir key (the string `runs:list` hands out), not a parsed identity; the write side treats it as an opaque path component exactly as the read side does, validated with `isPathComponent`.
 
@@ -82,7 +82,7 @@ In the same bump, through the writing-skills skill:
 
 - Delete `attachments/pipeline/work/scripts/pipeline-state.sh`, `attachments/pipeline/work/scripts/tests/pipeline-state-run-start.test.sh`, and `tests/pipeline-state.test.ts`; drop the test from the list in `README.md`.
 - Work engine (`attachments/pipeline/work/SKILL.md`): drop the `export RT_PIPELINE_STATE=` line (the `PACK_DIRS` computation stays, `run-start` still takes it); in allowed-tools, `Bash(${CLAUDE_SKILL_DIR}/scripts/pipeline-state.sh:*)` becomes `Bash(rt runs:*)` and `Bash(git -C *:*)` stays; every `"$RT_PIPELINE_STATE"` becomes `rt runs`.
-- The `run-start` step gains the version gate: the response must parse as JSON with `ok: true` and a `runDb`. Anything else (a run listing, usage text) means this rt predates the write verbs; the agent stops and tells the user to update rt before continuing. This is the only enforcement; `rt --version` reads `dev` on dev-mode machines, so a numeric check is not reliable.
+- The `run-start` step gains the version gate: the response must parse as JSON with `ok: true` and a `runDb`. Anything else (a run listing, usage text) means this rt predates the write verbs; the agent stops and tells the user to update rt before continuing. This is the only enforcement; `rt --version` prints `rt dev` under the dev-mode launcher (observed on this machine on 2026-09-01), so a numeric check is not reliable.
 - The eight stage engines under `attachments/pipeline/stage-*/SKILL.md` and `attachments/parameterized-skills/references/convention.md`: `"$RT_PIPELINE_STATE"` becomes `rt runs`.
 - `RT_RUN_DB` is still exported after `run-start`, as its own step, exactly as today.
 - Certify the touched dirs, bump `plugin.json`.
@@ -92,7 +92,7 @@ In the same bump, through the writing-skills skill:
 1. rt: merge to main, then release, so teammates' rt carries the verbs.
 2. mattstack-skills: the bump above. Local sessions on `rt` dev mode see the verbs as soon as main has them.
 3. `claude plugin update mattstack@mattstack`; `rt skills compile --pack claimview` (the plain form, `--json` does not write today); bump the pack; push; `claude plugin update claimview@assured`. The compiled pack's script disappears from a machine at that machine's own `claude plugin update`, so each person runs it with no pipeline in flight; the recompile and push do not touch anyone's installed copy.
-4. On an rt without these verbs, `rt runs stage-start` and every other write call falls through to `runs list` and exits 0, recording nothing: the dispatcher runs a node's own handler when the first argument matches no subcommand. That is the silent failure this spec exists to remove, and it is reachable by anyone whose pack updates before their rt. The `run-start` gate in the work engine (above) is what catches it: no `{"ok":true,...,"runDb":...}`, no pipeline. rt has no self-update verb, so updating rt is a manual step per machine and the gate's message says so.
+4. On an rt without these verbs, `rt runs stage-start` and every other write call falls through to the bare `rt runs` list and exits 0, recording nothing: the dispatcher runs a node's own handler when the first argument matches no subcommand. That is the silent failure this spec exists to remove, and it is reachable by anyone whose pack updates before their rt. The `run-start` gate in the work engine (above) is what catches it: no `{"ok":true,...,"runDb":...}`, no pipeline. rt has no self-update verb, so updating rt is a manual step per machine and the gate's message says so.
 
 ## Non-goals
 
