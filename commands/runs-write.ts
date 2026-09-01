@@ -89,6 +89,7 @@ async function dispatch(verb: WriteVerb, args: string[], env: NodeJS.ProcessEnv)
       const workType = required(args, "--work-type");
       const pipeline = required(args, "--pipeline");
       const dirty = flagValue(args, "--mattstack-dirty");
+      if (dirty !== undefined && dirty !== "0" && dirty !== "1") throw new Usage("--mattstack-dirty must be 0 or 1");
       const packDirs = (flagValue(args, "--pack-dirs") ?? "").split(":").filter((d) => d !== "");
       const r = runStart(env.RT_RUNS_ROOT ?? runsRoot(), {
         repo, workType, pipeline,

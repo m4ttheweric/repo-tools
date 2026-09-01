@@ -33,6 +33,13 @@ describe("rt runs write verbs", () => {
     expect(JSON.parse(r.out)).toMatchObject({ ok: false });
   });
 
+  test("run-start rejects a --mattstack-dirty value outside 0|1", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const r = await runWriteVerb("run-start", ["--repo", "demo", "--work-type", "fix", "--pipeline", "default", "--mattstack-dirty", "2"], { RT_RUNS_ROOT: root, ...QUIET });
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.out)).toMatchObject({ ok: false });
+  });
+
   test("a value flag with no value is exit 2", async () => {
     const { env } = await startRun();
     const r = await runWriteVerb("stage-start", ["--stage"], env);
