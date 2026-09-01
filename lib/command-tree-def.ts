@@ -551,6 +551,45 @@ export const TREE: Record<string, CommandNode> = {
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
         ],
       },
+      "claude-hook": {
+        description: "Claude Code WorktreeCreate/WorktreeRemove hook endpoint (stdin JSON in, tree path out)",
+        module: "./commands/worktree-hook.ts",
+        fn: "claudeHookCommand",
+        hidden: true,
+        omitBehavior: { exempt: "agent-facing; driven by Claude Code over stdin, never interactively" },
+        args: [
+          { name: "Remove", flag: "--remove", type: "boolean", default: false, hint: "Handle a WorktreeRemove event (courtesy guarded dispose)" },
+        ],
+      },
+      hook: {
+        description: "Claude Code worktree hook: install, remove, or inspect the WorktreeCreate/WorktreeRemove wiring",
+        subcommands: {
+          install: {
+            description: "Write the hook pair into ~/.claude/settings.json",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookInstallCommand",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+          uninstall: {
+            description: "Remove rt's hook entries from ~/.claude/settings.json",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookUninstallCommand",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+          status: {
+            description: "Report whether the hook is installed and healthy",
+            module: "./commands/worktree-hook.ts",
+            fn: "hookStatusCommand",
+            args: [
+              { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
+            ],
+          },
+        },
+      },
       create: {
         description: "Create a fresh worktree (optionally straight into the on-deck pool)",
         module: "./commands/worktree.ts",

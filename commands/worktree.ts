@@ -21,6 +21,7 @@ import { getRepoIdentity } from "../lib/repo.ts";
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { currentRepoIdentity, repoLabel, resolveRepoArg } from "../lib/repo-arg.ts";
 import { loadWorktreeRepoConfig, inspectReadyGate } from "../lib/worktree/config.ts";
+import { maybeOfferClaudeHook } from "./worktree-hook.ts";
 import { writeReadyApproval } from "../lib/worktree/ready-approval.ts";
 import { daemonQuery, lastQueryTimedOut, type DaemonResponse } from "../lib/daemon-client.ts";
 import { listWorktrees } from "../lib/git-worktrees.ts";
@@ -213,7 +214,7 @@ function failText(json: boolean, message: string): never {
   process.exit(1);
 }
 
-function explainError(error: string): string {
+export function explainError(error: string): string {
   if (error === "busy") return "that worktree is locked by another operation right now — try again shortly";
   if (error === "repo-unknown") return "unknown repo — pass --repo <name> or run from inside a registered repo";
   if (error === "branch-unresolved") return "need --branch <name> or --ticket <id> to name the work branch";
@@ -384,6 +385,7 @@ export async function worktreeProvision(args: string[], _ctx: unknown): Promise<
     console.log(`  ${yellow}⚠${reset} ready step "${d.failedStep}" failed — tree is usable but dependencies may be stale`);
   }
   console.log("");
+  await maybeOfferClaudeHook(parsed.json);
 }
 
 // ─── create ──────────────────────────────────────────────────────────────────
@@ -401,6 +403,7 @@ export async function worktreeCreate(args: string[], _ctx: unknown): Promise<voi
   console.log("");
   console.log(`  ${green}✓${reset} ${bold}${ok.data.tree}${reset}  ${dim}${ok.data.path}${reset}${parsed.onDeck ? `  ${dim}(on-deck)${reset}` : ""}`);
   console.log("");
+  await maybeOfferClaudeHook(parsed.json);
 }
 
 // ─── dispose ─────────────────────────────────────────────────────────────────
@@ -455,6 +458,7 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
   }
   if (disposed.length === 0 && refused.length === 0) console.log(`  ${dim}nothing to dispose${reset}`);
   console.log("");
+  await maybeOfferClaudeHook(parsed.json);
 }
 
 // ─── restore ─────────────────────────────────────────────────────────────────
@@ -528,6 +532,7 @@ export async function worktreeRestore(args: string[], _ctx: unknown): Promise<vo
     console.log(`  ${yellow}⚠${reset} ready step "${d.failedStep}" failed... tree is usable but dependencies may be stale`);
   }
   console.log("");
+  await maybeOfferClaudeHook(parsed.json);
 }
 
 // ─── list ────────────────────────────────────────────────────────────────────
@@ -692,6 +697,7 @@ export async function worktreeFreshen(args: string[], _ctx: unknown): Promise<vo
   if (ran.length === 0) console.log(`  ${dim}nothing needed freshening${reset}`);
   else for (const name of ran) console.log(`  ${green}✓${reset} ${name} freshened`);
   console.log("");
+  await maybeOfferClaudeHook(parsed.json);
 }
 
 // ─── adopt ───────────────────────────────────────────────────────────────────

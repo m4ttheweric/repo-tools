@@ -1,7 +1,7 @@
 import { join } from "path";
 import { canon } from "../fs-canon.ts";
 import { repoDataDir } from "../rt-paths.ts";
-import { deleteKvValue, getKvValue, hasKvValue, importLegacyJsonFile, setKvValue, setKvValueCritical } from "../state/index.ts";
+import { deleteKvValue, getKvValue, hasKvValue, importLegacyJsonFile, listKvValues, setKvValue, setKvValueCritical } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
 export type TreeState = "creating" | "on-deck" | "claimed" | "disposable";
@@ -153,6 +153,22 @@ export function findByPath(
   path: string
 ): TreeRecord | undefined {
   return trees.find((t) => t.path === path);
+}
+
+/**
+ * Reverse lookup across every repo's registry: given an absolute worktree
+ * path, find which repo owns it and the tree's name. Reads the kv store
+ * directly (rather than looping `loadRepoIndex()`) so this module doesn't
+ * import `../repo-index.ts`, which already imports `mergeRegistries` from
+ * here.
+ */
+export function findTreeByPath(path: string): { repoName: string; tree: string } | null {
+  const byRepo = listKvValues<TreeRecord[]>(WORKTREE_REGISTRY_NS);
+  for (const [repoName, trees] of Object.entries(byRepo)) {
+    const hit = trees.find((t) => t.path === path);
+    if (hit) return { repoName, tree: hit.name };
+  }
+  return null;
 }
 
 export function findByBranch(trees: TreeRecord[], branch: string): TreeRecord[] {

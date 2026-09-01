@@ -118,29 +118,40 @@ function mainWorktreeRoot(repoRoot: string): string {
 }
 
 /**
+ * The identity computation shared by `getRepoIdentityForRoot` (which then
+ * mints a data dir and registers the index row) and `identityForRootReadOnly`
+ * (which does neither), kept as one function so the two can never diverge
+ * on what a repo's identity IS.
+ *
+ * A repo is identified by its origin remote when it has one. Local-only repos
+ * (no remote) still get an identity derived from the main worktree's realpath
+ * so local commands (run, commit, nav, code) work. Remote-oriented
+ * commands (mr, open) gate themselves on remoteUrl/baseUrl being non-empty.
+ *
+ * The origin URL is read once, via `git config --get remote.origin.url` (the
+ * raw stored value). The identity MUST key on that raw value to match
+ * rt-client's async deriveRepoIdentity and to stay stable under an insteadOf
+ * rewrite, so the same value feeds the name and the display URLs too rather
+ * than a second `git remote get-url` spawn whose rewritten spelling could
+ * diverge.
+ */
+function computeIdentity(repoRoot: string): { remoteUrl: string | null; repoName: string; identity: string } {
+  const remoteUrl = readOriginRemoteForIdentity(repoRoot);
+  const repoName = remoteUrl ? deriveRepoName(remoteUrl) : basename(repoRoot);
+  const remoteIdentity = remoteUrl ? identityFromRemote(remoteUrl) : null;
+  const identity = serializeIdentity(
+    remoteIdentity ?? { kind: "path", id: mainWorktreeRoot(repoRoot) },
+  );
+  return { remoteUrl, repoName, identity };
+}
+
+/**
  * Core identity derivation for an arbitrary repo root (does not depend on
  * cwd). `getRepoIdentity()` is the cwd-based entry point every existing
  * caller uses.
  */
 export function getRepoIdentityForRoot(repoRoot: string): RepoIdentity | null {
-  // A repo is identified by its origin remote when it has one. Local-only repos
-  // (no remote) still get an identity derived from the main worktree's realpath
-  // so local commands (run, commit, nav, code) work. Remote-oriented
-  // commands (mr, open) gate themselves on remoteUrl/baseUrl being non-empty.
-  //
-  // The origin URL is read once, via `git config --get remote.origin.url` (the
-  // raw stored value). The identity MUST key on that raw value to match
-  // rt-client's async deriveRepoIdentity and to stay stable under an insteadOf
-  // rewrite, so the same value feeds the name and the display URLs too rather
-  // than a second `git remote get-url` spawn whose rewritten spelling could
-  // diverge.
-  const remoteUrl = readOriginRemoteForIdentity(repoRoot);
-  const repoName = remoteUrl ? deriveRepoName(remoteUrl) : basename(repoRoot);
-
-  const remoteIdentity = remoteUrl ? identityFromRemote(remoteUrl) : null;
-  const identity = serializeIdentity(
-    remoteIdentity ?? { kind: "path", id: mainWorktreeRoot(repoRoot) },
-  );
+  const { remoteUrl, repoName, identity } = computeIdentity(repoRoot);
 
   const dataDir = repoDataDir(identity);
   mkdirSync(dataDir, { recursive: true });
@@ -155,6 +166,16 @@ export function getRepoIdentityForRoot(repoRoot: string): RepoIdentity | null {
     remoteUrl: remoteUrl ?? "",
     baseUrl: remoteUrl ? deriveBaseUrl(remoteUrl) : "",
   };
+}
+
+/**
+ * Same identity as `getRepoIdentityForRoot`, but never creates the data dir
+ * and never writes the repo index row (for a caller, the Claude Code
+ * worktree hook, that must be able to check a repo's identity without ever
+ * being the reason that repo becomes known to rt).
+ */
+export function identityForRootReadOnly(repoRoot: string): string {
+  return computeIdentity(repoRoot).identity;
 }
 
 export function getRepoIdentity(): RepoIdentity | null {
