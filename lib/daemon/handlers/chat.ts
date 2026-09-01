@@ -346,19 +346,56 @@ export function pendingIncludesRecipient(pending: Array<{ handle: string; mentio
  * everything wake_on rules out -- so every target this function ever calls
  * deliverSerialized for is one a normal push would also have delivered to.
  */
-/** How many consecutive sweep-triggered failures a (room, handle) pair tolerates before the sweep stops attempting it -- a permanently-broken pair must not cost a fresh deliverPost attempt (retry + warn log) on every tick forever. */
+/** How many consecutive sweep-triggered failures a (room, handle) pair tolerates before the sweep starts backing off it -- a permanently-broken pair must not cost a fresh deliverPost attempt (retry + warn log) on every tick forever. */
 const DEFAULT_MAX_CONSECUTIVE_SWEEP_FAILURES = 5;
 
 /**
- * The failure streak is scoped to the maxId it was accumulated against, not
- * just the (room, handle) pair: a pair capped while stuck on an old message
- * gets a fresh streak the moment a NEWER message makes it stale again (the
- * room's maxId advanced), since that is a materially different situation
- * worth its own attempts -- deliverPost bundles the whole pending range
- * regardless, so the new message deserves its own chance rather than
- * inheriting an old ceiling that had nothing to do with it.
+ * Backoff, once past the ceiling, doubles per further failure (2^(count -
+ * max) ticks) and saturates here -- about 60 minutes at the daemon's
+ * current 30s sweep interval. The ceiling is a THROTTLE, never a permanent
+ * stop: "eventually delivered" is the invariant a 2-party DM wait-point
+ * depends on (the incident's own shape -- nobody posts again to shake a
+ * stuck pair loose), so a saturated pair still gets retried roughly hourly
+ * forever, not muted outright.
  */
-type SweepFailureEntry = { count: number; maxId: number };
+const MAX_SWEEP_BACKOFF_TICKS = 120;
+
+/**
+ * The failure streak is scoped to the maxId it was accumulated against, not
+ * just the (room, handle) pair: a pair backing off while stuck on an old
+ * message gets a fresh streak the moment a NEWER message makes it stale
+ * again (the room's maxId advanced), since that is a materially different
+ * situation worth its own immediate attempt -- deliverPost bundles the
+ * whole pending range regardless, so the new message deserves its own
+ * chance rather than inheriting an old backoff window that had nothing to
+ * do with it. `skipUntilTick` is only ever meaningful once `count` has
+ * reached the ceiling; below it, every tick attempts.
+ */
+type SweepFailureEntry = { count: number; maxId: number; skipUntilTick: number };
+
+/**
+ * Records one sweep-triggered failure for `key` and returns whether this is
+ * the exact tick the streak crossed the ceiling (the caller's cue to warn
+ * once, not on every later backed-off retry that also fails).
+ */
+function recordSweepFailure(
+  failureCounts: Map<string, SweepFailureEntry>,
+  key: string,
+  entry: SweepFailureEntry | undefined,
+  target: StalePendingRow,
+  tick: number,
+  maxConsecutiveFailures: number,
+): { crossedCeiling: boolean; count: number } {
+  const priorStreak = entry && entry.maxId === target.maxId ? entry.count : 0;
+  const count = priorStreak + 1;
+  let skipUntilTick = tick;
+  if (count >= maxConsecutiveFailures) {
+    const backoffTicks = Math.min(2 ** (count - maxConsecutiveFailures), MAX_SWEEP_BACKOFF_TICKS);
+    skipUntilTick = tick + backoffTicks;
+  }
+  failureCounts.set(key, { count, maxId: target.maxId, skipUntilTick });
+  return { crossedCeiling: priorStreak < maxConsecutiveFailures && count >= maxConsecutiveFailures, count };
+}
 
 export function createChatDeliverySweep(opts: {
   db: Database;
@@ -380,10 +417,16 @@ export function createChatDeliverySweep(opts: {
   const maxConsecutiveFailures = opts.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_SWEEP_FAILURES;
   // One map per sweep instance (one daemon), persisting across ticks --
   // that persistence is the whole point: a streak must survive from one
-  // scheduleSweep call to the next to ever reach the ceiling.
+  // scheduleSweep call to the next to ever reach the ceiling and back off.
   const failureCounts = new Map<string, SweepFailureEntry>();
+  // One tick per sweepPendingDeliveries() call -- the backoff clock. Counting
+  // invocations rather than wall-clock time keeps the whole mechanism
+  // deterministic for a test calling sweep() directly, independent of
+  // whatever real interval scheduleSweep ends up driving it at.
+  let tick = 0;
 
   return async function sweepPendingDeliveries(): Promise<{ sweptPairs: number; recoveredMessages: number }> {
+    tick += 1;
     const stale = stalePendingPairs(db);
     if (stale.length === 0) {
       failureCounts.clear(); // nothing stale at all: no streak is worth remembering
@@ -432,8 +475,9 @@ export function createChatDeliverySweep(opts: {
 
       const key = chainKey(target.room, target.handle);
       const entry = failureCounts.get(key);
-      if (entry && entry.count >= maxConsecutiveFailures && entry.maxId >= target.maxId) {
-        log.debug({ recipient: target.handle, room: target.room, consecutiveFailures: entry.count }, "chat: sweep skipping a pair past its consecutive-failure ceiling");
+      const backingOff = entry && entry.maxId === target.maxId && entry.count >= maxConsecutiveFailures;
+      if (backingOff && tick <= entry.skipUntilTick) {
+        log.debug({ recipient: target.handle, room: target.room, consecutiveFailures: entry.count, retryTick: entry.skipUntilTick + 1 }, "chat: sweep backing off a pair past its consecutive-failure ceiling");
         continue;
       }
 
@@ -449,14 +493,18 @@ export function createChatDeliverySweep(opts: {
           recoveredMessages += result.count;
           log.info({ recipient: target.handle, room: target.room, recovered: result.count }, "chat: sweep recovered a stale delivery");
         } else {
-          const streak = entry && entry.maxId === target.maxId ? entry.count : 0;
-          failureCounts.set(key, { count: streak + 1, maxId: target.maxId });
+          const { crossedCeiling, count } = recordSweepFailure(failureCounts, key, entry, target, tick, maxConsecutiveFailures);
+          if (crossedCeiling) {
+            log.warn({ recipient: target.handle, room: target.room, consecutiveFailures: count }, "chat: sweep pair crossed its consecutive-failure ceiling; backing off, never permanently stopping");
+          }
         }
       } catch (err) {
         // One target's delivery throwing (a programming error, a DB hiccup)
         // must not abort the rest of this tick's targets.
-        const streak = entry && entry.maxId === target.maxId ? entry.count : 0;
-        failureCounts.set(key, { count: streak + 1, maxId: target.maxId });
+        const { crossedCeiling, count } = recordSweepFailure(failureCounts, key, entry, target, tick, maxConsecutiveFailures);
+        if (crossedCeiling) {
+          log.warn({ recipient: target.handle, room: target.room, consecutiveFailures: count }, "chat: sweep pair crossed its consecutive-failure ceiling; backing off, never permanently stopping");
+        }
         log.warn({ err, recipient: target.handle, room: target.room }, "chat: sweep delivery threw; continuing with the remaining targets");
       }
     }
