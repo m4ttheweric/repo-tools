@@ -37,6 +37,14 @@ construction, so it always fits in one URL path segment and is a legal
 directory name. `encodeURIComponent` it again when it rides in a URL
 (`/api/runs/${encodeURIComponent(identity)}/${runId}`).
 
+Legal directory name is NOT PATH-safe: the delimiter colon splits any PATH
+entry the directory ends up inside (a worktree's `node_modules/.bin` during
+installs, RT-95). Any identity-keyed directory whose subtree can land in
+PATH must use the pool segment form instead: the wire with its first colon
+as `%3A` (`worktreePoolRoot` in `lib/rt-paths.ts` does this; id-embedded
+`%3A` is untouched, so the mapping stays unambiguous). State.db keys, kv
+namespaces, payloads, and URLs keep the raw wire.
+
 Never swap the forms: settings lookups miss on the wire form, and daemon
 verbs refuse the raw one (silently — see below). A `path`-kind repo has no
 `host/path`, so it gets no repo-scoped settings sections at all

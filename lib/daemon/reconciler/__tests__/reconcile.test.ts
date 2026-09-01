@@ -6,7 +6,8 @@ import { join } from "path";
 import type { Logger } from "pino";
 import { closeStateDb } from "../../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../../worktree/registry.ts";
-import { reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
+import { healLegacyPoolRoots, reconcileRepo, MISSING_PRUNE_PASSES } from "../reconcile.ts";
+import { legacyWorktreePoolRoot, worktreePoolRoot } from "../../../rt-paths.ts";
 
 function fakeLog(): Logger {
   return { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as Logger;
@@ -78,5 +79,62 @@ describe("reconcile.ts: reconcileRepo", () => {
     const held = loadRegistry(repoName).find((t) => t.name === "amber");
     expect(held).toBeDefined();
     expect(held?.missCount ?? 0).toBe(0); // a held pass never accrues a miss
+  });
+});
+
+describe("reconcile.ts: healLegacyPoolRoots (RT-95)", () => {
+  const identity = "remote:example.com%2Facme%2Frepo";
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtheal-home-")));
+    closeStateDb();
+  });
+
+  function seed(state: "on-deck" | "claimed", root: string, name: string): TreeRecord {
+    return {
+      name,
+      path: join(root, name),
+      kind: "ephemeral",
+      state,
+      branch: `on-deck/${name}`,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  test("flips only on-deck trees under the legacy colon root to disposable", () => {
+    const legacy = legacyWorktreePoolRoot(identity);
+    const current = worktreePoolRoot(identity);
+    const events: Array<{ type: string; data: any }> = [];
+    saveRegistry(identity, [
+      seed("on-deck", legacy, "fred"),
+      seed("claimed", legacy, "snape"),
+      seed("on-deck", current, "tonks"),
+    ]);
+
+    healLegacyPoolRoots({ repoName: identity, emit: (type, data) => events.push({ type, data }), log: fakeLog() });
+
+    const trees = loadRegistry(identity);
+    const byName = Object.fromEntries(trees.map((t) => [t.name, t]));
+    expect(byName.fred!.state).toBe("disposable");
+    expect(byName.fred!.disposableReason).toContain("legacy pool root");
+    expect(byName.snape!.state).toBe("claimed");
+    expect(byName.tonks!.state).toBe("on-deck");
+    expect(events.filter((e) => e.type === "worktree:disposable").length).toBe(1);
+  });
+
+  test("second run is a no-op", () => {
+    const legacy = legacyWorktreePoolRoot(identity);
+    saveRegistry(identity, [seed("on-deck", legacy, "fred")]);
+    healLegacyPoolRoots({ repoName: identity, emit: () => {}, log: fakeLog() });
+    const events: unknown[] = [];
+    healLegacyPoolRoots({ repoName: identity, emit: (t) => events.push(t), log: fakeLog() });
+    expect(events.length).toBe(0);
+  });
+
+  test("colon-free identity (legacy root equals current) heals nothing", () => {
+    const plain = "acme";
+    saveRegistry(plain, [seed("on-deck", worktreePoolRoot(plain), "fred")]);
+    healLegacyPoolRoots({ repoName: plain, emit: () => {}, log: fakeLog() });
+    expect(loadRegistry(plain)[0]!.state).toBe("on-deck");
   });
 });
