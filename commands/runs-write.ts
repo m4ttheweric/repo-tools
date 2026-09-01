@@ -19,9 +19,10 @@
 import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 import { emitRunUpdated } from "../lib/runs/emit.ts";
+import { runStart } from "../lib/runs/start.ts";
 import { runsRoot } from "../lib/runs/store.ts";
 import {
-  decisionRecord, fieldGet, fieldSet, openRunDb, runStart, runStatus, snapshot, stageEnd, stageStart,
+  decisionRecord, fieldGet, fieldSet, openRunDb, runStatus, snapshot, stageEnd, stageStart,
   type Fail,
 } from "../lib/runs/write.ts";
 
