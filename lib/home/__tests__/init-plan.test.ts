@@ -295,6 +295,17 @@ describe("chooseMachineProfile", () => {
     expect(result).toEqual({ key: "mbp-14", source: "existing" });
   });
 
+  test("exactly one profile matching this machine's own hostname slug, non-interactive: adopts it — a partial install's retry (or the app's own first launch) created it moments earlier", () => {
+    const result = chooseMachineProfile({ ...BASE, hostnameSlug: "mbp-14", profiles: ["mbp-14"], interactive: false });
+    expect(result).toEqual({ key: "mbp-14", source: "existing" });
+  });
+
+  test("exactly one profile NOT matching the hostname slug, non-interactive: still throws — adopting another machine's profile is never a silent default", () => {
+    expect(() => chooseMachineProfile({ ...BASE, hostnameSlug: "mbp-14", profiles: ["desktop"], interactive: false })).toThrow(
+      ProfileChoiceRequiredError,
+    );
+  });
+
   test("existing profiles, no flags, non-interactive: throws, directs to --profile/--new-profile", () => {
     expect(() => chooseMachineProfile({ ...BASE, profiles: ["desktop", "laptop"], interactive: false })).toThrow(
       ProfileChoiceRequiredError,
