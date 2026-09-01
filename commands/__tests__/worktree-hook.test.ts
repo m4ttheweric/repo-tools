@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { hookRepoIdentity, parseHookStdin, recordClaudeHookAnswer, shouldOfferClaudeHook } from "../worktree-hook.ts";
+import { hookInstallCommand, hookRepoIdentity, parseHookStdin, recordClaudeHookAnswer, shouldOfferClaudeHook } from "../worktree-hook.ts";
 import { loadWorktreeAppConfig } from "../../lib/worktree/config.ts";
 import { getSetting } from "../../lib/settings/resolve.ts";
 
@@ -86,5 +86,24 @@ describe("recordClaudeHookAnswer", () => {
     expect(loadWorktreeAppConfig()).toEqual({ enabled: false, killProcesses: true });
     const stored = getSetting<Record<string, unknown> | undefined>("rt.worktreeApp").value;
     expect(stored?.claudeHook).toBe("declined");
+  });
+});
+
+describe("hookInstallCommand", () => {
+  const REAL_HOME = process.env.HOME;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rt-hookinstall-home-")));
+  });
+
+  afterEach(() => {
+    if (REAL_HOME === undefined) delete process.env.HOME;
+    else process.env.HOME = REAL_HOME;
+  });
+
+  test("a successful install records the answer so the one-time offer never re-fires", async () => {
+    await hookInstallCommand(["--json"], undefined, { which: () => "/usr/local/bin/rt" });
+    const stored = getSetting<Record<string, unknown> | undefined>("rt.worktreeApp").value;
+    expect(stored?.claudeHook).toBe("installed");
   });
 });

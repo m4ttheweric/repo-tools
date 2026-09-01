@@ -122,15 +122,20 @@ function settingsFail(json: boolean, err: unknown): never {
   process.exit(1);
 }
 
-export async function hookInstallCommand(args: string[], _ctx: unknown): Promise<void> {
+export async function hookInstallCommand(
+  args: string[],
+  _ctx: unknown,
+  deps: { which: (cmd: string) => string | null } = { which: (cmd) => Bun.which(cmd) },
+): Promise<void> {
   const json = args.includes("--json");
-  const rtBin = Bun.which("rt");
+  const rtBin = deps.which("rt");
   if (!rtBin) {
     emit(json, { error: "rt-not-on-path" }, "✗ rt is not on PATH; install rt first");
     process.exit(1);
   }
   try {
     const r = installClaudeWorktreeHooks(claudeSettingsPath(), rtBin);
+    recordClaudeHookAnswer("installed");
     emit(json, { installed: true, changed: r.changed, rtBin }, r.changed ? `✓ hook installed (${rtBin})` : "✓ already installed");
   } catch (err) {
     settingsFail(json, err);
