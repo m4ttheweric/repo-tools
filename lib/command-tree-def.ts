@@ -568,7 +568,6 @@ export const TREE: Record<string, CommandNode> = {
             description: "Write the hook pair into ~/.claude/settings.json",
             module: "./commands/worktree-hook.ts",
             fn: "hookInstallCommand",
-            context: "worktree",
             args: [
               { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
             ],
@@ -577,7 +576,6 @@ export const TREE: Record<string, CommandNode> = {
             description: "Remove rt's hook entries from ~/.claude/settings.json",
             module: "./commands/worktree-hook.ts",
             fn: "hookUninstallCommand",
-            context: "worktree",
             args: [
               { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
             ],
@@ -586,7 +584,6 @@ export const TREE: Record<string, CommandNode> = {
             description: "Report whether the hook is installed and healthy",
             module: "./commands/worktree-hook.ts",
             fn: "hookStatusCommand",
-            context: "worktree",
             args: [
               { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Print the result as JSON" },
             ],
