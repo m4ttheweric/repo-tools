@@ -338,16 +338,18 @@ export function pendingIncludesRecipient(pending: Array<{ handle: string; mentio
  * `deliveryChains` opt) is what keeps a sweep re-delivery from racing a
  * post's own in-flight delivery to the same recipient.
  *
- * A candidate whose entire pending backlog is self-authored is skipped
- * before it ever reaches deliverSerialized: postMessage never advances the
- * poster's own cursor (see stalePendingPairs), so a poster is a legitimate
- * "stale" row that nonetheless has nothing worth pushing back to itself.
+ * stalePendingPairs already excludes a self-authored-only backlog (its own
+ * EXISTS clause), and planSweepTargets/pendingIncludesRecipient exclude
+ * everything wake_on rules out -- so every target this function ever calls
+ * deliverSerialized for is one a normal push would also have delivered to.
  */
 export function createChatDeliverySweep(opts: {
   db: Database;
   deliveryChains: Map<string, Promise<void>>;
   herdr?: typeof herdrRequest;
   inboxDeps?: InboxDeps;
+  /** The registry probe for the sweep's OWN presence/binding pre-check, snapshotted once per run via snapshotRegistryDeps -- deliberately separate from `inboxDeps.resolve`, which stays a per-recipient call at actual delivery time (deliverPost). Real by default, fakeable the same way createChatHandlers' registryDeps is. */
+  registryDeps?: RegistryDeps;
   log?: Logger;
   retryDelayMs?: number;
 }): () => Promise<{ swept: number; recovered: number }> {
@@ -367,10 +369,20 @@ export function createChatDeliverySweep(opts: {
       const presence = presenceForHandle(handle, db);
       if (presence) presenceByHandle.set(handle, presence);
     }
+    // ONE registry scan for the whole run (snapshotRegistryDeps calls
+    // deps.resolveAll() exactly once), not one resolveInbox call per stale
+    // candidate -- resolveInbox itself is resolveAllInboxes().get(id), so a
+    // per-candidate loop would have re-scanned the whole registry directory
+    // per candidate (claude-registry.ts's own doc on resolveAllInboxes
+    // names this exact multi-lookup case). A signed-out presence is
+    // skipped before even doing the (now cheap, in-memory) alive check --
+    // its binding can never matter, so there is nothing to spend a lookup on.
+    const scoped = snapshotRegistryDeps(opts.registryDeps);
     const aliveSessionIds = new Set<string>();
     for (const presence of presenceByHandle.values()) {
-      const binding = inboxDeps.resolve(presence.sessionId);
-      if (binding && inboxAlive(binding)) aliveSessionIds.add(presence.sessionId);
+      if (presence.signedOutAt !== undefined) continue;
+      const binding = scoped.resolve(presence.sessionId);
+      if (binding && scoped.alive(binding)) aliveSessionIds.add(presence.sessionId);
     }
 
     const targets = planSweepTargets(stale, presenceByHandle, aliveSessionIds);

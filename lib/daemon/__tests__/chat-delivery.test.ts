@@ -3,7 +3,8 @@ import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { Logger } from "pino";
-import { openStateDb, presenceForSession } from "../../state/index.ts";
+import { openStateDb, presenceForSession, type RegistryDeps } from "../../state/index.ts";
+import type { InboxBinding } from "../../claude-registry.ts";
 import { createChatDeliverySweep, createChatHandlers, pendingIncludesRecipient, planSweepTargets, type InboxDeps } from "../handlers/chat.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 import { setSetting } from "../../settings/write.ts";
@@ -650,7 +651,7 @@ test("pendingIncludesRecipient is false for wake_on:mention when nothing pending
 
 // ─── createChatDeliverySweep (wiring) ───────────────────────────────────────
 
-function freshSweep(inboxDeps: InboxDeps, opts?: { herdr?: typeof herdrRequest; log?: Logger; retryDelayMs?: number }) {
+function freshSweep(inboxDeps: InboxDeps, opts?: { herdr?: typeof herdrRequest; log?: Logger; retryDelayMs?: number; registryDeps?: RegistryDeps }) {
   const db = openStateDb(join(tmpdir(), `chat-sweep-${process.pid}-${n++}.db`));
   const deliveryChains = new Map<string, Promise<void>>();
   const sweep = createChatDeliverySweep({ db, deliveryChains, inboxDeps, ...opts });
@@ -680,12 +681,21 @@ test("the sweep re-delivers a stale cursor for a signed-in, alive-bound recipien
   // never gets a chance to advance the cursor, so it is genuinely stuck
   // until the sweep discovers it.
   let resolverReady = false;
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
   const inboxDeps: InboxDeps = {
-    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? binding : null),
     deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
   };
+  // The sweep's own presence/binding pre-check goes through registryDeps
+  // (finding 2), separately from inboxDeps -- gated on the same
+  // resolverReady flag so both come alive together.
+  const registryDeps: RegistryDeps = {
+    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? binding : null),
+    alive: () => true,
+    resolveAll: () => new Map(resolverReady ? [["sess-b", binding] as const] : []),
+  };
   const { log, infoCalls } = fakeLogger();
-  const { db, sweep } = freshSweep(inboxDeps, { log });
+  const { db, sweep } = freshSweep(inboxDeps, { log, registryDeps });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
   await h["chat:join"]({ room: "general", handle: "a" });
   await h["chat:join"]({ room: "general", handle: "b" });
@@ -790,11 +800,17 @@ test("the sweep DOES deliver to a wake_on:mention member once a pending message 
   const calls: Array<[string, string]> = [];
   const sock = fakeSocketPath();
   let resolverReady = false;
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
   const inboxDeps: InboxDeps = {
-    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? binding : null),
     deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
   };
-  const { db, sweep } = freshSweep(inboxDeps);
+  const registryDeps: RegistryDeps = {
+    resolve: (sessionId) => (resolverReady && sessionId === "sess-b" ? binding : null),
+    alive: () => true,
+    resolveAll: () => new Map(resolverReady ? [["sess-b", binding] as const] : []),
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
   const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
   await h["chat:join"]({ room: "general", handle: "a" });
   await h["chat:join"]({ room: "general", handle: "b", wakeOn: "mention" });
@@ -838,6 +854,80 @@ test("the sweep skips a signed-out recipient and a recipient with a dead binding
   const result = await sweep();
   expect(result).toEqual({ swept: 0, recovered: 0 });
   expect(calls).toEqual([]);
+});
+
+// Review finding 2 (SHOULD-FIX): resolveInbox does a full registry directory
+// scan per call (see claude-registry.ts's own doc on resolveAllInboxes --
+// "the batch form callers with more than one lookup ... must use instead of
+// calling resolveInbox once per id"). The sweep must scan once per run, not
+// once per stale candidate.
+test("the sweep resolves the registry once per run, not once per stale candidate", async () => {
+  const sock = fakeSocketPath();
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
+  // inboxDeps never resolves anyone at post time, so all three stay
+  // genuinely stale into the sweep -- if it resolved eagerly, the normal
+  // per-post push would deliver to everyone before the sweep ever ran,
+  // leaving nothing stale to exercise the once-per-run registry scan.
+  const inboxDeps: InboxDeps = {
+    resolve: () => null,
+    deliver: async () => ({ ok: true }),
+  };
+  let resolveAllCalls = 0;
+  const registryDeps: RegistryDeps = {
+    resolve: () => binding,
+    alive: () => true,
+    resolveAll: () => { resolveAllCalls++; return new Map([["sess-b", binding], ["sess-c", binding], ["sess-d", binding]]); },
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  await h["chat:join"]({ room: "general", handle: "c" });
+  await h["chat:join"]({ room: "general", handle: "d" });
+
+  const { signIn } = await import("../../state/index.ts");
+  signIn({ sessionId: "sess-b", baseHandle: "b" }, db);
+  signIn({ sessionId: "sess-c", baseHandle: "c" }, db);
+  signIn({ sessionId: "sess-d", baseHandle: "d" }, db);
+
+  await h["chat:post"]({ room: "general", handle: "a", body: "hi" }); // 3 stale candidates (b, c, d) in one run
+  await Bun.sleep(0);
+
+  await sweep();
+  expect(resolveAllCalls).toBe(1);
+});
+
+// Review finding 2: a signed-out presence must never even reach the
+// registry alive-check -- it's excluded regardless of what the registry
+// says, so checking it first is pure waste on top of being (before this
+// fix) a per-candidate registry scan.
+test("the sweep never checks binding-aliveness for a signed-out presence", async () => {
+  const sock = fakeSocketPath();
+  const binding: InboxBinding = { pid: process.pid, socketPath: sock, status: "idle" };
+  const inboxDeps: InboxDeps = {
+    resolve: () => binding,
+    deliver: async () => ({ ok: true }),
+  };
+  const aliveChecked: string[] = [];
+  const registryDeps: RegistryDeps = {
+    resolve: () => binding,
+    alive: (b) => { aliveChecked.push(b.socketPath); return true; },
+    resolveAll: () => new Map([["sess-away", binding]]),
+  };
+  const { db, sweep } = freshSweep(inboxDeps, { registryDeps });
+  const h = Object.assign(createChatHandlers({ db, emitEvent: () => 0, inboxDeps }), { db });
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "away" });
+
+  const { signIn, signOut } = await import("../../state/index.ts");
+  signIn({ sessionId: "sess-away", baseHandle: "away" }, db);
+  signOut("sess-away", undefined, db);
+
+  await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  await Bun.sleep(0);
+
+  await sweep();
+  expect(aliveChecked).toEqual([]);
 });
 
 test("a sweep re-delivery chains behind an in-flight post delivery to the same recipient instead of racing it", async () => {
