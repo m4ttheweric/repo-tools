@@ -1730,6 +1730,34 @@ func TestMultiSelectGolden(t *testing.T) {
 	}
 }
 
+// TestSelectedPanelShowsLabelsOnlyNotTheFullLeftTextWithHint is the Fix-5
+// golden: a row whose own Left carries a label segment followed by a hint
+// segment (the board convention for "bill · on-deck/bill") lists only the
+// label in the selected panel -- the hint is part of the row's own display,
+// not the pick the panel is confirming.
+func TestSelectedPanelShowsLabelsOnlyNotTheFullLeftTextWithHint(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		InitialValues: []string{"bill"},
+		Rows: []protocol.PickRow{
+			{Value: "bill", Left: []protocol.PickSegment{
+				{Text: "bill", Tone: "text", Bold: true},
+				{Text: " · on-deck/bill", Tone: "faint"},
+			}},
+		},
+	}
+	m := New(req)
+	m.width = 60
+
+	plain := ansi.Strip(render(m))
+	if !strings.Contains(plain, "selected  bill") {
+		t.Fatalf("expected the panel to list the bare label: %q", plain)
+	}
+	if strings.Contains(plain, "selected  bill · on-deck/bill") {
+		t.Fatalf("panel must not carry the row's hint segment: %q", plain)
+	}
+}
+
 // TestMultiFooterLegendMatchesTheBoard pins the Multi board's exact footer
 // grammar: a lav "mark" cluster for space/tab/ctrl-a/enter, with quit still
 // pinned to the far right exactly as the non-multi footer does.
@@ -1752,25 +1780,66 @@ func TestMultiFooterLegendMatchesTheBoard(t *testing.T) {
 }
 
 // TestSelectedPanelCountsAsChromeInHeaderBudget guards the viewport-budget
-// half of the requirement: the panel occupies a real line between the
-// filter and the top rule, so a height-bounded pane has to give the row
-// window back one more line of budget than a non-multi request would, or
-// the frame overflows the pane by exactly the panel's own line.
+// half of the requirement: once at least one row is selected and the panel
+// is actually showing, it occupies a real line between the filter and the
+// top rule, so a height-bounded pane has to give the row window back one
+// more line of budget than a non-multi request would, or the frame
+// overflows the pane by exactly the panel's own line. InitialValues is what
+// makes the panel show at all -- see TestMultiZeroSelectedHidesChipAndPanel
+// for the 0-selected case this no longer covers.
 func TestSelectedPanelCountsAsChromeInHeaderBudget(t *testing.T) {
 	rows := make([]protocol.PickRow, 20)
 	for i := range rows {
 		v := fmt.Sprintf("row%02d", i)
 		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
 	}
-	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Multi: true, Rows: rows}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true, Rows: rows,
+		InitialValues: []string{"row00"},
+	}
 	m := New(req)
 	m.width = 60
 	m.height = 19
 
 	plain := ansi.Strip(render(m))
 	lines := strings.Split(plain, "\n")
+	if !strings.Contains(plain, "selected  row00") {
+		t.Fatalf("setup: expected the selected panel to actually be showing: %q", plain)
+	}
 	if len(lines) > 19 {
 		t.Fatalf("rendered frame must fit the pane height (19) once the selected panel is counted as chrome: got %d lines:\n%s", len(lines), plain)
+	}
+}
+
+// TestMultiZeroSelectedHidesChipAndPanel is the Fix-4 golden: with nothing
+// selected, both the header's N-selected chip and the selected panel line
+// stay off the frame entirely, and the panel's absence gives the row window
+// its line back -- rather than a permanently-reserved but empty strip.
+func TestMultiZeroSelectedHidesChipAndPanel(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Multi: true,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+	m.width = 60
+
+	plain := ansi.Strip(render(m))
+	if strings.Contains(plain, "selected") {
+		t.Fatalf("0 selected must hide both the chip and the panel: %q", plain)
+	}
+	zeroLines := len(strings.Split(plain, "\n"))
+
+	m.selected["a"] = true
+	plainSelected := ansi.Strip(render(m))
+	if !strings.Contains(plainSelected, "1 selected") {
+		t.Fatalf("expected the header chip once something is selected: %q", plainSelected)
+	}
+	if !strings.Contains(plainSelected, "selected  a") {
+		t.Fatalf("expected the selected panel once something is selected: %q", plainSelected)
+	}
+	selectedLines := len(strings.Split(plainSelected, "\n"))
+	if selectedLines != zeroLines+1 {
+		t.Fatalf("the panel line should be the only difference in chrome row count: zero=%d selected=%d", zeroLines, selectedLines)
 	}
 }
 
@@ -1780,9 +1849,10 @@ func TestSelectedPanelCountsAsChromeInHeaderBudget(t *testing.T) {
 // synthesized toggle/toggle-next/toggle-all rows (space/tab/ctrl-a are
 // hardcoded in Update and never meant to be selected from a menu -- doing
 // so used to fall through resultForAction's generic branch and silently
-// terminate the session with a bogus PickResult{Action:"toggle"}), while a
-// caller's own declared action still appears and still dispatches through
-// its real path (event stays open, non-event ends the session).
+// terminate the session with a bogus PickResult{Action:"toggle"}), nor the
+// keybar-only select/cancel/back defaults, while a caller's own declared
+// action still appears and still dispatches through its real path (event
+// stays open, non-event ends the session).
 func TestCtrlKMenuHidesBuiltinMultiMarkActionsButKeepsCallerActions(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version, Multi: true,
@@ -1991,7 +2061,10 @@ func TestMouseClickMarkerCellTogglesSelectionAndFocusesRow(t *testing.T) {
 	m.width = 60
 	render(m)
 
-	next, cmd := m.Update(tea.MouseClickMsg{X: 2, Y: 5, Button: tea.MouseLeft})
+	// Y=4, not 5: with nothing selected yet, the selected panel line is
+	// hidden (see showSelectedPanel), so row b sits one line higher than a
+	// permanently-shown panel would have put it.
+	next, cmd := m.Update(tea.MouseClickMsg{X: 2, Y: 4, Button: tea.MouseLeft})
 	m = next.(*Model)
 	if cmd != nil {
 		t.Fatal("a marker click must not end the session")

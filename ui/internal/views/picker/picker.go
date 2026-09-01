@@ -119,11 +119,13 @@ func (m *Model) multiMode() bool {
 	return isMultiRequest(m.req)
 }
 
-// showSelectedPanel mirrors multiMode: the panel and the interactions that
-// populate it are gated by the same condition, so a panel is never shown
-// with no way to change what it lists.
+// showSelectedPanel mirrors multiMode, gated further by at least one row
+// actually being selected: an empty panel would render as a bare "selected"
+// label with nothing after it, so it -- and the header's own N-selected
+// chip, see countText -- wait for the first pick instead of occupying
+// chrome nobody has used yet.
 func (m *Model) showSelectedPanel() bool {
-	return m.multiMode()
+	return m.multiMode() && len(m.selected) > 0
 }
 
 // refilter re-ranks matches against the current query. Rank itself already

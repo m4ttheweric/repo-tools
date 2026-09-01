@@ -244,7 +244,7 @@ func breadcrumbLine(m *Model) string {
 // wire this badge in once the command-palette work adds that per-row data,
 // rather than claiming a capability a plain picker can't honor.
 func countText(m *Model) string {
-	if m.multiMode() {
+	if m.multiMode() && len(m.selected) > 0 {
 		return fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
 			fg(theme.Faint).Render(" selected  ·  ") + countFraction(m)
 	}
@@ -300,17 +300,29 @@ func selectedPanelLine(m *Model, width int) string {
 	return rendered + bg.Render(strings.Repeat(" ", pad))
 }
 
-// selectedLabelsInOrder lists every selected row's own left text, in
-// request order -- the same order selectMulti's Values result carries, so
-// the panel a user sees while filtering matches what enter will confirm.
+// selectedLabelsInOrder lists every selected row's own label, in request
+// order -- the same order selectMulti's Values result carries, so the panel
+// a user sees while filtering matches what enter will confirm.
 func selectedLabelsInOrder(m *Model) []string {
 	labels := make([]string, 0, len(m.selected))
 	for _, row := range m.req.Rows {
 		if m.selected[row.Value] {
-			labels = append(labels, leftPlainText(row))
+			labels = append(labels, rowLabel(row))
 		}
 	}
 	return labels
+}
+
+// rowLabel is a row's own label: the first left segment's text. A row's
+// full left text can carry further segments after it (a hint, e.g. a
+// worktree path) that the row itself renders alongside the label but the
+// selected panel deliberately leaves out -- it lists picks, not their
+// hints.
+func rowLabel(row protocol.PickRow) string {
+	if len(row.Left) == 0 {
+		return ""
+	}
+	return row.Left[0].Text
 }
 
 // renderPanelRun re-styles the panel's prefix/label/separator runs -- faint
