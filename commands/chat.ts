@@ -7,6 +7,9 @@
  *   rt chat post <room> <<'EOF' ... EOF          the body on stdin; <text> for a one-liner
  *   rt chat read [room] [--limit 20] [--full] [--since <dur>]
  *   rt chat read <room> --last <n>                 newest N regardless of cursor, then marks read
+ *   rt chat ack <messageId>                        wake only the author with a receipt
+ *   rt chat claim <messageId>                      test-and-set on who answers; losing is exit 0
+ *   rt chat release <messageId>                    hand a claim back (holder or the author)
  *   rt chat rooms
  *   rt chat who [room]
  *   rt chat mark [room]
@@ -71,6 +74,8 @@ import {
   chatMark,
   chatMessages,
   chatAck,
+  chatClaim,
+  chatRelease,
   chatPost,
   chatRead,
   chatRooms,
@@ -720,6 +725,64 @@ async function runAck(args: string[]): Promise<void> {
   else console.log(`acked #${id} → ${data.author}`);
 }
 
+function parseMessageId(raw: string | undefined, verb: string): number {
+  if (!raw) fail(`usage: rt chat ${verb} <messageId>`);
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) fail(`not a message id: ${raw} (the delivered line shows it as "#<id>")`);
+  return id;
+}
+
+function humanDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
+}
+
+/**
+ * Losing is exit 0: "someone else has it" is the answer the caller asked for,
+ * and a non-zero exit would read to an agent as a failure to retry rather
+ * than a signal to stand down.
+ */
+async function runClaim(args: string[]): Promise<void> {
+  const id = parseMessageId(positionals(args)[0], "claim");
+  const handle = resolveHandle(args);
+  requireValidName("handle", handle);
+
+  const res = await chatClaim({ id, handle }, sockOpts(args));
+  const data = unwrap(res, "claim");
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, id, ...data }));
+    return;
+  }
+  if (data.outcome === "lost") {
+    const now = Date.now();
+    console.log(`#${id} already claimed by ${data.holder} ${humanDuration(now - data.claimedAt)} ago (claimable again in ${humanDuration(data.expiresAt - now)})`);
+    return;
+  }
+  if (data.outcome === "held") {
+    console.log(`you already hold #${id}`);
+    return;
+  }
+  const takeover = data.previousHolder ? ` (took over from ${data.previousHolder})` : "";
+  console.log(`claimed #${id} → ${data.author}${takeover}`);
+}
+
+async function runRelease(args: string[]): Promise<void> {
+  const id = parseMessageId(positionals(args)[0], "release");
+  const handle = resolveHandle(args);
+  requireValidName("handle", handle);
+
+  const res = await chatRelease({ id, handle }, sockOpts(args));
+  const data = unwrap(res, "release");
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ ok: true, id, holder: data.holder }));
+    return;
+  }
+  console.log(`released #${id} (was held by ${data.holder})`);
+}
+
 async function runRead(args: string[]): Promise<void> {
   const room = positional(args);
   if (room) requireValidName("room", room);
@@ -1133,10 +1196,12 @@ async function runBack(args: string[]): Promise<void> {
 // ─── dispatcher ────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "usage: rt chat <join|leave|archive|post|read|ack|rooms|who|mark|prune|sign-in|sign-out|away|back|buddies|dm|invite> ...";
+  "usage: rt chat <join|leave|archive|post|read|ack|claim|release|rooms|who|mark|prune|sign-in|sign-out|away|back|buddies|dm|invite> ...";
 
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   ack: runAck,
+  claim: runClaim,
+  release: runRelease,
   join: runJoin,
   leave: runLeave,
   archive: runArchive,
@@ -1158,6 +1223,8 @@ const VERBS: Record<string, (args: string[]) => Promise<void>> = {
 const VERB_HINTS: Record<string, string> = {
   read: "show recent messages",
   ack: "acknowledge one message, waking only its author",
+  claim: "claim the answer to one room message; first claimant wins",
+  release: "hand a claim back (holder or the message's author)",
   post: "send a message to a room",
   dm: "send a direct message to a handle",
   rooms: "list rooms",
