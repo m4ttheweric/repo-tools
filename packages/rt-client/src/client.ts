@@ -18,6 +18,7 @@ import type {
   WakeMode,
   ChatMember,
   ChatMessage,
+  ChatClaimOutcome,
   RoomSummary,
   BuddyStatus,
   PresenceRow,
@@ -184,6 +185,14 @@ export function chatAck(
     { id: a.id, handle: a.handle },
     { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 },
   );
+}
+
+export function chatClaim(a: { id: number; handle: string }, o: RtClientOptions = {}): Promise<RtResponse<ChatClaimOutcome>> {
+  return rtCommand<ChatClaimOutcome>("chat:claim", { id: a.id, handle: a.handle }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function chatRelease(a: { id: number; handle: string }, o: RtClientOptions = {}): Promise<RtResponse<{ holder: string }>> {
+  return rtCommand<{ holder: string }>("chat:release", { id: a.id, handle: a.handle }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function chatRead(
