@@ -55,6 +55,18 @@ describe("packProvenance", () => {
     const p = packProvenance([plain, ""]);
     expect(p).toEqual({ dirty: 0, commits: [] });
   });
+
+  test("git not on PATH reads as absent provenance", () => {
+    const dir = repo("nogit");
+    const saved = process.env.PATH;
+    try {
+      process.env.PATH = "";
+      const p = packProvenance([dir]);
+      expect(p).toEqual({ dirty: 0, commits: [] });
+    } finally {
+      process.env.PATH = saved;
+    }
+  });
 });
 
 describe("composePackCommits", () => {

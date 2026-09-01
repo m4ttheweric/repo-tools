@@ -3,8 +3,12 @@ import { basename } from "path";
 export type PackProvenance = { dirty: 0 | 1; commits: string[] };
 
 function gitOut(dir: string, args: string[]): string | null {
-  const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "ignore" });
-  return r.exitCode === 0 ? r.stdout.toString().trim() : null;
+  try {
+    const r = Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "ignore" });
+    return r.exitCode === 0 ? r.stdout.toString().trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 // A directory that is not a git checkout records nothing: unknown provenance
