@@ -14,14 +14,14 @@ import (
 	"rt-ui/internal/tty"
 )
 
-// modalState is Task 10's submenu overlay (opened by a PickModal message,
-// closed with a PickModalResult); left empty until that task defines what
-// it needs to render and dismiss.
+// modalState is the picker's submenu overlay, opened by a PickModal message
+// and closed with a PickModalResult; left empty until that behavior is
+// built, so the field exists without shaping what it will hold.
 type modalState struct{}
 
-// heldModifiers is Task 12's cross-event modifier tracking (shift/alt held
-// across mouse and key events, driving range-select); left empty until that
-// task defines its fields.
+// heldModifiers is cross-event modifier tracking (shift/alt held across
+// mouse and key events, driving range-select); left empty until that
+// behavior is built, so the field exists without shaping what it will hold.
 type heldModifiers struct{}
 
 // Model is the picker's Bubble Tea model. Every field the later render,
@@ -40,14 +40,16 @@ type Model struct {
 	width       int
 	height      int
 
-	// output is where an event:true action writes its PickEvent line while
-	// the model keeps running; Run wires the real stdout, tests wire a
-	// buffer directly since they drive Update without a live tea.Program.
-	// Bubble Tea runs every returned Cmd on its own goroutine, so two
-	// event writes fired close together -- or an event write racing Run's
-	// own final result write after the program exits -- would interleave
-	// on output without outputMu serializing them.
-	output   io.Writer
+	// output is where the event writer and the final result write land;
+	// Run wires the real stdout, tests wire a buffer directly.
+	output io.Writer
+	// events carries an event:true action's encoded PickEvent line from
+	// Update (which enqueues synchronously, on the single goroutine tea
+	// runs Update on) to the one writer goroutine Run starts, which drains
+	// it in order. Nil in a bare model test that never dispatches an
+	// event: emitEvent checks before sending so it never blocks on a
+	// channel nobody is reading.
+	events   chan []byte
 	outputMu sync.Mutex
 
 	result *protocol.PickResult
@@ -107,7 +109,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if action, ok := m.actionForKey(key); ok {
 			if action.Event {
-				return m, m.emitEvent(action.ID)
+				m.emitEvent(action.ID)
+				return m, nil
 			}
 			m.resultForAction(action.ID)
 			return m, tea.Quit
@@ -202,25 +205,70 @@ func (m *Model) resultForAction(actionID string) {
 	m.result = &protocol.PickResult{Action: actionID, Value: value, Query: m.query}
 }
 
-// emitEvent reports an event:true action without ending the session. The
-// write happens inside the returned tea.Cmd, not here directly, so it runs
-// on bubbletea's command goroutine rather than racing the render loop that
-// called Update -- the same discipline session.Emitter.Emit documents for
-// the analogous mid-session write there.
-func (m *Model) emitEvent(actionID string) tea.Cmd {
+// emitEvent reports an event:true action without ending the session. It
+// encodes and enqueues onto m.events synchronously, inside Update's own
+// call -- not inside a returned tea.Cmd. Bubble Tea does not wait for a
+// still-running Cmd's goroutine on shutdown (it leaks them intentionally so
+// shutdown isn't held up by a slow one), so a write left to run inside a
+// Cmd has no guaranteed order against whatever runs after the program
+// exits; a synchronous enqueue here, ahead of the terminal key press's own
+// later Update call, does. The one writer goroutine startEventWriter starts
+// is what actually performs the output write, in the order things were
+// enqueued.
+func (m *Model) emitEvent(actionID string) {
+	if m.events == nil {
+		return
+	}
 	var value *string
 	if v, ok := m.cursorRowValue(); ok {
 		value = &v
 	}
 	ev := protocol.PickEvent{Action: actionID, Value: value, Query: m.query}
-	return func() tea.Msg {
-		if m.output != nil {
+	m.events <- protocol.EncodePickEvent(ev)
+}
+
+// startEventWriter starts the single goroutine that drains m.events onto
+// output, one line per event, in the order Update enqueued them. Returns a
+// channel that closes once the drain loop has exited -- after m.events is
+// closed and every already-buffered event has been written -- so a caller
+// can block until it is safe to write the terminal result.
+func (m *Model) startEventWriter(output io.Writer) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for line := range m.events {
 			m.outputMu.Lock()
-			_, _ = m.output.Write(protocol.EncodePickEvent(ev))
+			_, _ = output.Write(line)
 			m.outputMu.Unlock()
 		}
-		return nil
+	}()
+	return done
+}
+
+// drainEvents closes m.events and blocks until the writer goroutine has
+// finished writing every event that was buffered before the close. Only
+// call this once Update can no longer be invoked (Bubble Tea's event loop
+// has stopped): closing a channel that a later Update might still send on
+// would panic.
+func (m *Model) drainEvents(writerDone <-chan struct{}) {
+	close(m.events)
+	<-writerDone
+}
+
+// writeResult writes the terminal PickResult. Call only after drainEvents,
+// so every event line the session enqueued is already on output ahead of
+// it -- the wire contract event lines are additional lines before the
+// single terminal result depends on that ordering, not merely on the bytes
+// of any one line staying intact.
+func (m *Model) writeResult(output io.Writer) error {
+	result := m.result
+	if result == nil {
+		result = &protocol.PickResult{Action: "cancel", Query: m.query}
 	}
+	m.outputMu.Lock()
+	_, err := output.Write(protocol.EncodePickResult(*result))
+	m.outputMu.Unlock()
+	return err
 }
 
 func (m *Model) moveCursor(delta int) {
@@ -318,6 +366,8 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 
 	m := New(req)
 	m.output = output
+	m.events = make(chan []byte, eventBufferSize)
+	writerDone := m.startEventWriter(output)
 
 	p := tea.NewProgram(m,
 		tea.WithInput(term),
@@ -326,24 +376,26 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 		tea.WithoutSignalHandler(),
 	)
 
-	// Task 10 defines the modal overlay itself; readPatches already sees
+	// The modal overlay itself is not built yet; readPatches already sees
 	// "modal" lines on the wire and drops them rather than forwarding an
 	// undefined shape into the program.
 	go readPatches(p, input)
 
 	if _, err := p.Run(); err != nil {
+		m.drainEvents(writerDone)
 		return err
 	}
 
-	result := m.result
-	if result == nil {
-		result = &protocol.PickResult{Action: "cancel", Query: m.query}
-	}
-	m.outputMu.Lock()
-	_, err = output.Write(protocol.EncodePickResult(*result))
-	m.outputMu.Unlock()
-	return err
+	m.drainEvents(writerDone)
+	return m.writeResult(output)
 }
+
+// eventBufferSize is how many event lines Update can enqueue ahead of the
+// writer goroutine before a send blocks. It only needs to smooth over the
+// ordinary case; a full buffer applies brief backpressure to the event loop
+// rather than losing or reordering anything, since the writer keeps
+// draining independently of how fast events arrive.
+const eventBufferSize = 16
 
 // readPatches decodes update messages off input and forwards them into the
 // running program via p.Send, which is safe to call from any goroutine --

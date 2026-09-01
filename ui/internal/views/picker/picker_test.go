@@ -105,11 +105,12 @@ func TestUpdateReplacesMessageAndActions(t *testing.T) {
 	}
 }
 
-// TestEventActionKeyWritesEventAndStaysOpen is the golden for the
+// TestEventActionKeyEnqueuesEventAndStaysOpen is the golden for the
 // event:true dispatch path: the key is matched against the registry (not
-// the hardcoded enter/select path), the write happens on the returned
-// tea.Cmd rather than inline, and the model produces no terminal result.
-func TestEventActionKeyWritesEventAndStaysOpen(t *testing.T) {
+// the hardcoded enter/select path), the encoded line is enqueued onto
+// m.events synchronously inside Update itself (no returned cmd carries it),
+// and the model produces no terminal result.
+func TestEventActionKeyEnqueuesEventAndStaysOpen(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}},
@@ -118,8 +119,7 @@ func TestEventActionKeyWritesEventAndStaysOpen(t *testing.T) {
 		},
 	}
 	m := New(req)
-	var buf bytes.Buffer
-	m.output = &buf
+	m.events = make(chan []byte, 4)
 	m.cursor = 1 // sits on "b"
 
 	next, cmd := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
@@ -128,24 +128,96 @@ func TestEventActionKeyWritesEventAndStaysOpen(t *testing.T) {
 	if m.result != nil {
 		t.Fatalf("event action must not terminate the session: %+v", m.result)
 	}
-	if cmd == nil {
-		t.Fatal("expected a cmd to write the event")
+	if cmd != nil {
+		t.Fatalf("event dispatch enqueues synchronously and returns no cmd, got %#v", cmd)
 	}
-	if msg := cmd(); msg != nil {
-		t.Fatalf("event cmd should return no further message, got %#v", msg)
+
+	var line []byte
+	select {
+	case line = <-m.events:
+	default:
+		t.Fatal("expected an event enqueued onto m.events")
 	}
 
 	var ev protocol.PickEvent
-	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &ev); err != nil {
-		t.Fatalf("event line not valid JSON: %v (%s)", err, buf.String())
+	if err := json.Unmarshal(line, &ev); err != nil {
+		t.Fatalf("event line not valid JSON: %v (%s)", err, line)
 	}
 	if ev.T != "event" || ev.Action != "refresh" || ev.Value == nil || *ev.Value != "b" || ev.Query != "" {
 		t.Fatalf("got %+v", ev)
 	}
 }
 
+// TestEventActionWithNoEventsChannelDoesNotBlock covers the bare-model case
+// (m.events left nil, as every other test in this file that never presses
+// an event key constructs the model): emitEvent must not block forever
+// trying to send on a channel nobody is reading.
+func TestEventActionWithNoEventsChannelDoesNotBlock(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}},
+		Actions: []protocol.PickAction{
+			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global", Event: true},
+		},
+	}
+	m := New(req)
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
+	m = next.(*Model)
+
+	if m.result != nil {
+		t.Fatalf("event action must not terminate the session: %+v", m.result)
+	}
+}
+
+// TestEventLinesLandBeforeTheTerminalResult is the ordering regression
+// guard: Bubble Tea leaks a still-running Cmd's goroutine on shutdown
+// rather than waiting for it, so a write left inside a returned Cmd has no
+// guaranteed order against a result write that runs after the program
+// exits. drainEvents closes m.events and blocks until the writer goroutine
+// has drained everything buffered before the close, so the ordering here
+// holds deterministically -- not just usually -- which is what makes this
+// safe to run under -count=N without flaking.
+func TestEventLinesLandBeforeTheTerminalResult(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}},
+		Actions: []protocol.PickAction{
+			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global", Event: true},
+		},
+	}
+	m := New(req)
+	var buf bytes.Buffer
+	m.events = make(chan []byte, 4)
+	writerDone := m.startEventWriter(&buf)
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'}) // the event action
+	m = next.(*Model)
+	next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // the terminal action
+	m = next.(*Model)
+
+	m.drainEvents(writerDone)
+	if err := m.writeResult(&buf); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want exactly 2 lines (event then result), got %d: %q", len(lines), buf.String())
+	}
+	var first, second struct {
+		T string `json:"t"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil || first.T != "event" {
+		t.Fatalf("first line should be the event, got %q (err=%v)", lines[0], err)
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil || second.T != "result" {
+		t.Fatalf("second line should be the result, got %q (err=%v)", lines[1], err)
+	}
+}
+
 // TestNonEventActionKeyProducesTerminalResult covers the opposite branch: a
-// registry action without event:true ends the session, exactly as Task 4's
+// registry action without event:true ends the session, exactly as the
 // hardcoded "enter" path does for the built-in select, but carrying the
 // action's own id rather than "select".
 func TestNonEventActionKeyProducesTerminalResult(t *testing.T) {
