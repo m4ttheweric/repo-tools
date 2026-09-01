@@ -73,8 +73,12 @@ type MarketplaceEntry = { name?: string; source?: string | { source?: string; pa
 function pluginDirOf(marketDir: string, source: MarketplaceEntry["source"]): string | null {
   const path = typeof source === "string" ? source : source?.path;
   if (path) return isAbsolute(path) ? path : resolve(marketDir, path);
-  if (typeof source === "object" && source?.source === "url" && source.url?.startsWith("file://")) return fileURLToPath(source.url);
-  return null;
+  if (typeof source !== "object" || source?.source !== "url" || typeof source.url !== "string" || !source.url.startsWith("file://")) return null;
+  try {
+    return fileURLToPath(source.url);
+  } catch {
+    return null;
+  }
 }
 
 /**

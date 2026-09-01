@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
+import { pathToFileURL } from "url";
 import { detectLayout, discoverPacks } from "../packs.ts";
 
 function writeFile(path: string, content: string): void {
@@ -94,7 +95,7 @@ describe("discoverPacks", () => {
       join(market, ".claude-plugin", "marketplace.json"),
       JSON.stringify({
         plugins: [
-          { name: "local-clone", source: { source: "url", url: `file://${checkout}`, ref: "main" } },
+          { name: "local-clone", source: { source: "url", url: pathToFileURL(checkout).href, ref: "main" } },
           { name: "remote-clone", source: { source: "url", url: "https://github.com/someone/pack.git", ref: "main" } },
         ],
       }),
@@ -105,6 +106,26 @@ describe("discoverPacks", () => {
     const packs = discoverPacks({ settingsPath });
     expect(packs.map((p) => p.name)).toEqual(["local-clone"]);
     expect(packs[0]!.dir).toBe(checkout);
+  });
+
+  test("a malformed url entry is skipped without hiding the packs listed after it", () => {
+    const checkout = tmp("rt-packs-after-bad-");
+    writeFile(join(checkout, "surface.jsonc"), `{ "public": [] }\n`);
+    const market = tmp("rt-packs-bad-market-");
+    writeFile(
+      join(market, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({
+        plugins: [
+          { name: "host-url", source: { source: "url", url: "file://somehost/pack" } },
+          { name: "non-string-url", source: { source: "url", url: 42 } },
+          { name: "good", source: { source: "url", url: pathToFileURL(checkout).href } },
+        ],
+      }),
+    );
+    const settingsPath = join(tmp("rt-packs-bad-settings-"), "settings.json");
+    writeFile(settingsPath, JSON.stringify({ extraKnownMarketplaces: { local: { source: { source: "directory", path: market } } } }));
+
+    expect(discoverPacks({ settingsPath }).map((p) => p.name)).toEqual(["good"]);
   });
 });
 
