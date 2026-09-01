@@ -164,18 +164,23 @@ func thumbCell(rowInWindow, thumbTop, thumbH int) string {
 	return onBg.Render(" ")
 }
 
-// keybarLine currently renders only the right-pinned visible-range
-// indicator, shown whenever the list overflows the window; the left-side
-// key legend is filled in by later work. The separator between the two
-// numbers is a plain ASCII hyphen, not an en/em dash -- a rendered-output
-// constraint that applies everywhere, including here.
+// keybarLine renders the footer's grouped action legend on the left and,
+// on the right, the visible-range indicator (shown whenever the list
+// overflows the window) alongside the ungrouped action run -- back/cancel
+// by default. The separator between the two range numbers is a plain ASCII
+// hyphen, not an en/em dash -- a rendered-output constraint that applies
+// everywhere, including here.
 func keybarLine(m *Model, top, h, n int) string {
-	right := ""
+	left, ungrouped := keybarClusters(effectiveActions(m.req))
+
+	rangeText := ""
 	if n > h {
-		right = fg(theme.Cyan).Render(fmt.Sprintf("%d-%d", top+1, top+h)) +
+		rangeText = fg(theme.Cyan).Render(fmt.Sprintf("%d-%d", top+1, top+h)) +
 			fg(theme.Faint).Render(fmt.Sprintf(" of %d", n))
 	}
-	return justify(m.width, "", right)
+	right := renderKeybarRight(rangeText, renderKeybarCluster(keybarCluster{actions: ungrouped}))
+
+	return justify(m.width, renderKeybarLeft(left), right)
 }
 
 func rule(width int) string {

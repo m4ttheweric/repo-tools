@@ -786,6 +786,183 @@ func TestGroupHeadersRenderAboveFirstRowOfEachGroup(t *testing.T) {
 // never spawns the picker for a zero-row request, so this is not the
 // no-match UI, just insurance against a nil/empty-slice panic if that
 // invariant is ever violated.
+// TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight is the golden for
+// the Branch board's footer: a caller-declared group ("pick", holding
+// select/enter and with-args/alt-enter) renders lav-labeled on the left, and
+// the injected back/cancel defaults -- ungrouped, since this request never
+// claims a group for them -- pin to the right with no group label.
+func TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "worktree"},
+		Rows:       []protocol.PickRow{{Value: "provision"}},
+		Actions: []protocol.PickAction{
+			{ID: "select", Label: "select", Key: "enter", Scope: "item", Group: "pick", Primary: true},
+			{ID: "with-args", Label: "with args", Key: "alt-enter", Scope: "item", Group: "pick"},
+		},
+	}
+	m := New(req)
+	m.width = 92
+
+	lines := strings.Split(render(m), "\n")
+	footer := lines[len(lines)-1]
+	plain := ansi.Strip(footer)
+
+	if !strings.HasPrefix(strings.TrimLeft(plain, " "), "pick enter select  alt-enter with args") {
+		t.Fatalf("left legend mismatch: %q", plain)
+	}
+	if !strings.HasSuffix(strings.TrimRight(plain, " "), "ctrl-up back  esc quit") {
+		t.Fatalf("right legend mismatch: %q", plain)
+	}
+
+	const lavSGR = "38;2;189;147;249"
+	const faintSGR = "38;2;110;102;140"
+	if !strings.Contains(footer, lavSGR) {
+		t.Fatalf("group label should be lav-colored: %q", footer)
+	}
+	if !strings.Contains(footer, faintSGR) {
+		t.Fatalf("keys should be faint-colored: %q", footer)
+	}
+	if !strings.Contains(footer, dimSGR) {
+		t.Fatalf("labels should be dim-colored: %q", footer)
+	}
+}
+
+// TestKeybarLegendIntegratesWithTheScrollRangeOnTheSameFooterLine mirrors
+// the Scrolling board: when the list overflows the viewport, the range
+// indicator sits between the (empty, here) grouped legend and the pinned
+// action run, joined by a faint middle dot -- never a second footer line.
+func TestKeybarLegendIntegratesWithTheScrollRangeOnTheSameFooterLine(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5}
+	m := New(req)
+	m.width = 60
+
+	lines := strings.Split(render(m), "\n")
+	footer := ansi.Strip(lines[len(lines)-1])
+
+	if !strings.Contains(footer, "1-5 of 20") {
+		t.Fatalf("range missing from footer: %q", footer)
+	}
+	if !strings.Contains(footer, "1-5 of 20  ·  enter select") {
+		t.Fatalf("range and action legend should join on a faint middle dot: %q", footer)
+	}
+}
+
+// TestDefaultActionsCoverTheBareRequest pins the case a request declares no
+// registry at all: select and cancel always exist, but back only once the
+// breadcrumb has somewhere to return to.
+func TestDefaultActionsCoverTheBareRequest(t *testing.T) {
+	flat := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
+	actions := effectiveActions(flat)
+	byID := map[string]protocol.PickAction{}
+	for _, a := range actions {
+		byID[a.ID] = a
+	}
+	if a, ok := byID["select"]; !ok || a.Key != "enter" {
+		t.Fatalf("want a default select bound to enter, got %+v (ok=%v)", a, ok)
+	}
+	if a, ok := byID["cancel"]; !ok || a.Key != "esc" {
+		t.Fatalf("want a default cancel bound to esc, got %+v (ok=%v)", a, ok)
+	}
+	if _, ok := byID["back"]; ok {
+		t.Fatalf("a flat breadcrumb (depth <= 1) must not get a back default: %+v", actions)
+	}
+
+	nested := flat
+	nested.Breadcrumb = []string{"rt", "worktree"}
+	nestedActions := effectiveActions(nested)
+	var sawBack bool
+	for _, a := range nestedActions {
+		if a.ID == "back" {
+			sawBack = true
+			if a.Key != "ctrl-up" {
+				t.Fatalf("back should bind ctrl-up, got %q", a.Key)
+			}
+		}
+	}
+	if !sawBack {
+		t.Fatalf("breadcrumb depth > 1 should inject a back default: %+v", nestedActions)
+	}
+}
+
+// TestDeclaredSelectIsNotDuplicatedByTheDefault covers the dedupe half of
+// injection: a request that already claims the "select" id (or the "enter"
+// key under a different id) must not also get the generic default.
+func TestDeclaredSelectIsNotDuplicatedByTheDefault(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}},
+		Actions: []protocol.PickAction{
+			{ID: "select", Label: "select", Key: "enter", Scope: "item", Group: "pick"},
+		},
+	}
+	actions := effectiveActions(req)
+	var enterCount int
+	for _, a := range actions {
+		if a.Key == "enter" {
+			enterCount++
+		}
+	}
+	if enterCount != 1 {
+		t.Fatalf("declared select must not be duplicated by the default: %+v", actions)
+	}
+}
+
+// TestDeriveMenuOrdersItemAboveRuleAboveGlobal is the golden for the
+// Actions board's ctrl-k/right-click menu: item-scope rows (including a
+// keyless, menu-only action) come first in declaration order, then a rule,
+// then global-scope rows.
+func TestDeriveMenuOrdersItemAboveRuleAboveGlobal(t *testing.T) {
+	actions := []protocol.PickAction{
+		{ID: "open", Label: "open", Key: "enter", Scope: "item", Primary: true},
+		{ID: "cd-sel", Label: "cd selected", Key: "ctrl-space", Scope: "item"},
+		{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
+		{ID: "reveal", Label: "reveal in finder", Scope: "item", Group: "act"},
+		{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global"},
+		{ID: "sort", Label: "sort", Key: "ctrl-s", Scope: "global", Group: "view"},
+	}
+
+	rows := deriveMenu(actions, 0)
+
+	wantIDs := []string{"open", "cd-sel", "editor", "reveal", "", "cd-here", "sort"}
+	if len(rows) != len(wantIDs) {
+		t.Fatalf("got %d rows, want %d: %+v", len(rows), len(wantIDs), rows)
+	}
+	for i, want := range wantIDs {
+		if want == "" {
+			if !rows[i].Rule {
+				t.Fatalf("row %d should be the item/global rule, got %+v", i, rows[i])
+			}
+			continue
+		}
+		if rows[i].Rule || rows[i].ActionID != want {
+			t.Fatalf("row %d = %+v, want action %q", i, rows[i], want)
+		}
+	}
+	if rows[3].ActionID != "reveal" || rows[3].Key != "" {
+		t.Fatalf("the keyless action must still appear, menu-only: %+v", rows[3])
+	}
+}
+
+// TestDeriveMenuDropsItemScopeWithNoCursorRow covers ctrl-k with nothing
+// under the cursor (an empty list): item-scope actions have no row to act
+// on, so only the global half survives, with no dangling rule.
+func TestDeriveMenuDropsItemScopeWithNoCursorRow(t *testing.T) {
+	actions := []protocol.PickAction{
+		{ID: "open", Label: "open", Key: "enter", Scope: "item"},
+		{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global"},
+	}
+	rows := deriveMenu(actions, -1)
+	if len(rows) != 1 || rows[0].ActionID != "cd-here" {
+		t.Fatalf("want only the global row with no cursor row, got %+v", rows)
+	}
+}
+
 func TestZeroRowModelDoesNotPanic(t *testing.T) {
 	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{}}
 	m := New(req)

@@ -1,0 +1,174 @@
+package picker
+
+import (
+	"strings"
+
+	"rt-ui/internal/protocol"
+	"rt-ui/internal/theme"
+)
+
+// Built-in action ids the picker offers even when a request declares no
+// registry at all.
+const (
+	idSelect = "select"
+	idCancel = "cancel"
+	idBack   = "back"
+)
+
+// defaultActions is what a bare request renders: select always exists,
+// cancel is always the last word (the terminal escape hatch), and back only
+// exists once the breadcrumb has somewhere to return to.
+func defaultActions(req protocol.PickRequest) []protocol.PickAction {
+	defaults := []protocol.PickAction{
+		{ID: idSelect, Label: "select", Key: "enter", Scope: "item"},
+	}
+	if len(req.Breadcrumb) > 1 {
+		defaults = append(defaults, protocol.PickAction{ID: idBack, Label: "back", Key: "ctrl-up", Scope: "global"})
+	}
+	defaults = append(defaults, protocol.PickAction{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"})
+	return defaults
+}
+
+// effectiveActions is the request's declared registry plus whichever
+// defaults it hasn't already claimed -- by id or by key, so a caller that
+// renames "select" or rebinds enter to its own action owns that slot
+// instead of getting a duplicate alongside it.
+func effectiveActions(req protocol.PickRequest) []protocol.PickAction {
+	out := append([]protocol.PickAction(nil), req.Actions...)
+
+	claimedID := make(map[string]bool, len(req.Actions))
+	claimedKey := make(map[string]bool, len(req.Actions))
+	for _, a := range req.Actions {
+		claimedID[a.ID] = true
+		if a.Key != "" {
+			claimedKey[a.Key] = true
+		}
+	}
+
+	for _, d := range defaultActions(req) {
+		if claimedID[d.ID] || claimedKey[d.Key] {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// keybarCluster is one lav-labeled run of key/label pairs in the footer
+// legend: a caller-declared group (label set) or the ungrouped run that
+// pins to the right (label empty, no lav prefix).
+type keybarCluster struct {
+	label   string
+	actions []protocol.PickAction
+}
+
+// keybarClusters splits the keyed actions into the left side's declared
+// groups (in first-seen order) and the right side's ungrouped run. The
+// built-in defaults land in the ungrouped run unless a caller gives them a
+// group of their own, which is what pins back/cancel to the right by
+// default. Keyless actions never reach the footer; they are menu-only.
+func keybarClusters(actions []protocol.PickAction) (left []keybarCluster, right []protocol.PickAction) {
+	order := make([]string, 0, len(actions))
+	byGroup := make(map[string][]protocol.PickAction, len(actions))
+	for _, a := range actions {
+		if a.Key == "" {
+			continue
+		}
+		if a.Group == "" {
+			right = append(right, a)
+			continue
+		}
+		if _, ok := byGroup[a.Group]; !ok {
+			order = append(order, a.Group)
+		}
+		byGroup[a.Group] = append(byGroup[a.Group], a)
+	}
+	for _, g := range order {
+		left = append(left, keybarCluster{label: g, actions: byGroup[g]})
+	}
+	return left, right
+}
+
+// renderKeybarCluster paints one cluster's key/label run: a lav group label
+// (skipped when unlabeled) followed by each action's faint key and dim
+// label, double-spaced ahead of the next action -- the grammar both the
+// Branch and Scrolling boards render.
+func renderKeybarCluster(c keybarCluster) string {
+	var b strings.Builder
+	if c.label != "" {
+		b.WriteString(fg(theme.Lav).Render(c.label))
+	}
+	for i, a := range c.actions {
+		if i == 0 {
+			if c.label != "" {
+				b.WriteString(" ")
+			}
+		} else {
+			b.WriteString("  ")
+		}
+		b.WriteString(fg(theme.Faint).Render(a.Key))
+		b.WriteString(fg(theme.Dim).Render(" " + a.Label))
+	}
+	return b.String()
+}
+
+// renderKeybarLeft joins every declared group's cluster, left to right.
+func renderKeybarLeft(groups []keybarCluster) string {
+	parts := make([]string, len(groups))
+	for i, g := range groups {
+		parts[i] = renderKeybarCluster(g)
+	}
+	return strings.Join(parts, "  ")
+}
+
+// renderKeybarRight composes the footer's right-pinned side: the scroll
+// range (when the list overflows the viewport) and the ungrouped action
+// run, separated by a faint middle dot when both are present -- the
+// Scrolling board's footer integration.
+func renderKeybarRight(rangeText, actionsText string) string {
+	switch {
+	case rangeText == "":
+		return actionsText
+	case actionsText == "":
+		return rangeText
+	default:
+		return rangeText + fg(theme.Faint).Render("  ·  ") + actionsText
+	}
+}
+
+// MenuRow is one row of a ctrl-k / right-click menu: either an action
+// (ActionID set) or the rule separating item-scope rows from global ones
+// (Rule true, every other field zero). The modal that paints these rows is
+// built separately; this only orders and shapes the data.
+type MenuRow struct {
+	ActionID string
+	Label    string
+	Key      string
+	Rule     bool
+}
+
+// deriveMenu orders a ctrl-k/right-click menu's rows from the action
+// registry: item-scope actions (the row under the cursor) first, in
+// declaration order, then a rule, then global-scope actions -- keyless
+// actions included, since the menu is the only surface that shows them.
+// cursorRow < 0 means there is no row to act on, so the item half is
+// dropped entirely rather than rendering an empty section above the rule.
+func deriveMenu(actions []protocol.PickAction, cursorRow int) []MenuRow {
+	var item, global []MenuRow
+	for _, a := range actions {
+		row := MenuRow{ActionID: a.ID, Label: a.Label, Key: a.Key}
+		switch a.Scope {
+		case "item":
+			if cursorRow >= 0 {
+				item = append(item, row)
+			}
+		case "global":
+			global = append(global, row)
+		}
+	}
+	rows := item
+	if len(item) > 0 && len(global) > 0 {
+		rows = append(rows, MenuRow{Rule: true})
+	}
+	return append(rows, global...)
+}
