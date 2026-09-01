@@ -14,6 +14,7 @@ import { needsToken, tokenOk, getApiToken, resolveOriginTrust, isTokenPreflight 
 import { deriveFailure } from "./failure.ts";
 import { getAggregatedConnection } from "./freshness.ts";
 import { MAX_REQUEST_BODY_SIZE } from "./request-limits.ts";
+import { parseIdentity } from "../settings/identity.ts";
 import { runCapture } from "../subprocess.ts";
 
 function buildApiIndex(port: number) {
@@ -185,16 +186,75 @@ export function buildCorsHeaders(origin: string | null, trusted: boolean): Recor
  * every route using this helper instead gets a clean 400.
  */
 export function pathParam(pathname: string, prefix: string, suffix = ""): string | undefined {
-  if (!pathname.startsWith(prefix)) return undefined;
-  if (suffix && !pathname.endsWith(suffix)) return undefined;
-  const end = suffix ? pathname.length - suffix.length : pathname.length;
-  if (end <= prefix.length) return undefined;
-  const raw = pathname.slice(prefix.length, end);
+  const raw = rawPathParam(pathname, prefix, suffix);
+  if (raw === undefined) return undefined;
   try {
     return decodeURIComponent(raw);
   } catch {
     return undefined;
   }
+}
+
+/** `pathParam`'s shape checks and slicing, without the decode. */
+function rawPathParam(pathname: string, prefix: string, suffix = ""): string | undefined {
+  if (!pathname.startsWith(prefix)) return undefined;
+  if (suffix && !pathname.endsWith(suffix)) return undefined;
+  const end = suffix ? pathname.length - suffix.length : pathname.length;
+  if (end <= prefix.length) return undefined;
+  return pathname.slice(prefix.length, end);
+}
+
+/** `decodeURIComponent`, undefined on malformed %-encoding. */
+function decodeOrUndefined(raw: string): string | undefined {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A repo path segment. A serialized identity is ALREADY one slash-free
+ * segment, which is what `serializeIdentity`'s percent-encoding buys, so the
+ * raw segment IS the key, and decoding it turns its `%2F` back into route
+ * separators. That silently destroyed the identity: `hooks:repair` refused the
+ * non-canonical result and still answered ok, and `runs:get` split the repo in
+ * half and never found the run.
+ *
+ * A client that re-encoded the wire anyway still resolves, because the two
+ * spellings are disjoint: a canonical wire never decodes to another canonical
+ * wire, since `parseIdentity` requires the id to re-encode to itself. A string
+ * canonical under neither reading (a legacy plain name) decodes as before.
+ */
+export function repoPathParam(pathname: string, prefix: string, suffix = ""): string | undefined {
+  const raw = rawPathParam(pathname, prefix, suffix);
+  if (raw === undefined) return undefined;
+  return parseIdentity(raw) ? raw : decodeOrUndefined(raw);
+}
+
+/**
+ * `/api/<thing>/:repo/:rest`. The repo is split off the RAW path so a wire
+ * identity survives whole; only `rest` is decoded. Splitting after a
+ * whole-remainder decode (what this replaced) could not tell the wire's own
+ * `%2F` from the route separator.
+ *
+ * `undefined` is a shape mismatch (the caller falls through to its 404);
+ * `"malformed"` is bad %-encoding, which keeps the clean 400 every other
+ * parameterized route answers.
+ */
+export function splitRepoAndRest(
+  pathname: string,
+  prefix: string,
+): { repo: string; rest: string } | "malformed" | undefined {
+  const raw = rawPathParam(pathname, prefix);
+  if (raw === undefined) return undefined;
+  const slash = raw.indexOf("/");
+  if (slash <= 0 || slash >= raw.length - 1) return undefined;
+
+  const rawRepo = raw.slice(0, slash);
+  const repo = parseIdentity(rawRepo) ? rawRepo : decodeOrUndefined(rawRepo);
+  const rest = decodeOrUndefined(raw.slice(slash + 1));
+  return repo === undefined || rest === undefined ? "malformed" : { repo, rest };
 }
 
 const PLAIN_NUMBER_RE = /^-?\d+(\.\d+)?$/;
@@ -397,7 +457,7 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
 
         // Hooks repair: /api/hooks/:repo/repair
         if (url.pathname.startsWith("/api/hooks/") && url.pathname.endsWith("/repair") && req.method === "POST") {
-          const repo = pathParam(url.pathname, "/api/hooks/", "/repair");
+          const repo = repoPathParam(url.pathname, "/api/hooks/", "/repair");
           if (repo === undefined) {
             return Response.json({ ok: false, error: "malformed path parameter" }, { status: 400, headers: corsHeaders });
           }
@@ -407,13 +467,12 @@ export async function startApiServer(deps: ApiServerDeps): Promise<Server<any>> 
 
         // Runs detail: /api/runs/:repo/:runId
         if (url.pathname.startsWith("/api/runs/") && req.method === "GET") {
-          const rest = pathParam(url.pathname, "/api/runs/");
-          if (rest === undefined) {
+          const split = splitRepoAndRest(url.pathname, "/api/runs/");
+          if (split === "malformed") {
             return Response.json({ ok: false, error: "malformed path parameter" }, { status: 400, headers: corsHeaders });
           }
-          const slash = rest.indexOf("/");
-          if (slash > 0 && slash < rest.length - 1) {
-            const result = await handleCommand("runs:get", { repo: rest.slice(0, slash), runId: rest.slice(slash + 1) }, req.signal);
+          if (split) {
+            const result = await handleCommand("runs:get", { repo: split.repo, runId: split.rest }, req.signal);
             return Response.json(result, { headers: corsHeaders });
           }
           // falls through to the 404 path below for a shape mismatch, e.g. "/api/runs/onlyonesegment"
