@@ -34,6 +34,7 @@ answer for it.
 | Situation | What happens |
 | --- | --- |
 | Repo identity resolves and the daemon provisions cleanly | Claude lands in the real rt-managed tree; stdout is that tree's path. |
+| rt's worktree app is disabled on this machine (`rt.worktreeApp` `enabled: false`), even for a registered repo | Same fallback as an unregistered repo: a provisioned tree with the app's reconciler off would be half-managed, so the hook never asks the daemon at all. |
 | Daemon unreachable (not installed, socket gone, restart attempt fails) | Silent fallback to `git worktree add` under `.claude/worktrees/<name>`. |
 | Daemon answers `repo-unknown` for the identity | Same fallback as above. |
 | Daemon answers any other refusal (branch already attached, validation failure, provisioning step failure) | Loud refusal: Claude's `EnterWorktree` call fails and shows the error, with the escape hatch named in the message. |

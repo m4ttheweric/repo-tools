@@ -199,19 +199,29 @@ export function parseHookStdin(raw: string): ParsedStdin {
 /**
  * The `repoIdentity` dep `decideCreate` calls: read-only end to end. It
  * derives the identity without ever registering it, then answers "rt's
- * repo" only if that identity is already an index row. A repo that is
- * derivable but not indexed returns null, which `decideCreate` already
- * routes to the stock fallback. Deps are overridable purely so a unit test
- * can exercise the "not indexed" and "indexed" branches without a real git
- * repo or a live index.
+ * repo" only if that identity is already an index row AND the worktree app
+ * is enabled on this machine (`loadWorktreeAppConfig().enabled`) -- a
+ * disabled app means rt's reconciler will never pick up a provisioned tree,
+ * so a registered repo is routed to the same stock fallback as an
+ * unregistered one rather than left half-managed. A repo that is derivable
+ * but not indexed, or whose app toggle is off, returns null, which
+ * `decideCreate` already routes to the stock fallback. Deps are overridable
+ * purely so a unit test can exercise each branch without a real git repo,
+ * a live index, or a real settings store.
  */
 export function hookRepoIdentity(
   cwd: string,
-  deps: { identityFor: (cwd: string) => string | undefined; isRegistered: (identity: string) => boolean } = {
+  deps: {
+    identityFor: (cwd: string) => string | undefined;
+    isRegistered: (identity: string) => boolean;
+    appEnabled: () => boolean;
+  } = {
     identityFor: currentRepoIdentityFor,
     isRegistered: isRepoRegistered,
+    appEnabled: () => loadWorktreeAppConfig().enabled,
   },
 ): string | null {
+  if (!deps.appEnabled()) return null;
   const identity = deps.identityFor(cwd);
   return identity !== undefined && deps.isRegistered(identity) ? identity : null;
 }

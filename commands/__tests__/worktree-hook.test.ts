@@ -27,6 +27,7 @@ describe("hookRepoIdentity", () => {
     const result = hookRepoIdentity("/scratch/repo", {
       identityFor: () => "path:%2Fscratch%2Frepo",
       isRegistered: () => false,
+      appEnabled: () => true,
     });
     expect(result).toBeNull();
   });
@@ -35,6 +36,7 @@ describe("hookRepoIdentity", () => {
     const result = hookRepoIdentity("/known/repo", {
       identityFor: () => "remote:example%2Fr",
       isRegistered: (identity) => identity === "remote:example%2Fr",
+      appEnabled: () => true,
     });
     expect(result).toBe("remote:example%2Fr");
   });
@@ -43,6 +45,16 @@ describe("hookRepoIdentity", () => {
     const result = hookRepoIdentity("/not-a-repo", {
       identityFor: () => undefined,
       isRegistered: () => { throw new Error("must not be called"); },
+      appEnabled: () => true,
+    });
+    expect(result).toBeNull();
+  });
+
+  test("worktree app disabled: null even for a registered repo, without consulting the index", () => {
+    const result = hookRepoIdentity("/known/repo", {
+      identityFor: () => "remote:example%2Fr",
+      isRegistered: () => { throw new Error("must not be called"); },
+      appEnabled: () => false,
     });
     expect(result).toBeNull();
   });
