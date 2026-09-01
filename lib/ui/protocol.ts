@@ -157,6 +157,8 @@ export interface PickRow {
   right?: PickSegment[];
   match?: string;
   group?: string;
+  /** Marks a row whose primary action can run with extra arguments; render.go's alt-held with-args chrome keys off this. */
+  withArgs?: boolean;
 }
 
 export interface PickAction {

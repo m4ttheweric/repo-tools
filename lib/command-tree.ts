@@ -584,6 +584,7 @@ export async function showPicker(
       { text: name.padEnd(labelWidth), bold: true },
       { text: `  ${node.description}`, tone: "dim" },
     ],
+    ...(node.args?.length ? { withArgs: true } : {}),
   }));
 
   const actions: PickAction[] = [

@@ -136,6 +136,14 @@ describe("showPicker", () => {
     expect(listRow.left[1]!.text).toContain("list worktrees");
   });
 
+  test("sets withArgs on rows that can take args and leaves it off on those that cannot", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    const rows = fake.calls[0]!.request.rows;
+    expect(rows.find((r) => r.value === "provision")!.withArgs).toBe(true);
+    expect(rows.find((r) => r.value === "list")!.withArgs).toBeUndefined();
+  });
+
   test("registers the with-args action only when some node declares args", async () => {
     fake = installFakePick([resultStep({ action: "select", value: "list" })]);
     await showPicker(PICKER_TREE, ["rt", "worktree"]);

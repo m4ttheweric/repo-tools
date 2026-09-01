@@ -86,6 +86,35 @@ func TestPickRequestFixtureFields(t *testing.T) {
 	}
 }
 
+// TestPickRowWithArgsFixtureFields pins the Go/TS parity fixture for
+// PickRow.WithArgs: one row claims it, the other omits it (defaulting to
+// false), so a schema drift between the two languages' decoders shows up as
+// a fixture assertion failure here rather than a silent divergence.
+func TestPickRowWithArgsFixtureFields(t *testing.T) {
+	var r PickRequest
+	if err := json.Unmarshal(fixture(t, "pick-request.json"), &r); err != nil {
+		t.Fatal(err)
+	}
+	var bill, cho *PickRow
+	for i := range r.Rows {
+		switch {
+		case strings.HasSuffix(r.Rows[i].Value, "/bill"):
+			bill = &r.Rows[i]
+		case strings.HasSuffix(r.Rows[i].Value, "/cho"):
+			cho = &r.Rows[i]
+		}
+	}
+	if bill == nil || !bill.WithArgs {
+		t.Fatalf("bill row should carry withArgs:true: %+v", bill)
+	}
+	if cho == nil || cho.WithArgs {
+		t.Fatalf("cho row should default withArgs to false (omitted on the wire): %+v", cho)
+	}
+	if strings.Contains(string(fixture(t, "pick-request.json")), `"withArgs":false`) {
+		t.Fatal("withArgs must never be written false on the wire (omitempty)")
+	}
+}
+
 func TestPickUpdateFixtureActionsCarryEventFlag(t *testing.T) {
 	var u PickUpdate
 	if err := json.Unmarshal(fixture(t, "pick-update.json"), &u); err != nil {

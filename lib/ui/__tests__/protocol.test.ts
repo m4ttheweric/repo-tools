@@ -123,6 +123,14 @@ test("pick request fixture carries protocol 1 and round-trips through encodeLine
   expect(JSON.parse(line)).toEqual(req);
 });
 
+test("pick request fixture's withArgs field matches the Go parity fixture (PickRow.WithArgs)", () => {
+  const req = fixture("pick-request.json") as PickRequest;
+  const bill = req.rows.find((r) => r.value.endsWith("/bill"));
+  const cho = req.rows.find((r) => r.value.endsWith("/cho"));
+  expect(bill?.withArgs).toBe(true);
+  expect(cho?.withArgs).toBeUndefined();
+});
+
 test("pick update and modal fixtures match their typed shape and round-trip", () => {
   const update = fixture("pick-update.json") as PickUpdate;
   expect(update.t).toBe("update");

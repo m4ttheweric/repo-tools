@@ -24,6 +24,11 @@ type PickRow struct {
 	Right []PickSegment `json:"right,omitempty"`
 	Match string        `json:"match,omitempty"`
 	Group string        `json:"group,omitempty"`
+	// WithArgs marks a row whose primary action can run with extra
+	// arguments -- render.go's alt-held with-args header badge, cursor-row
+	// badge, and per-row dim all key off this. showPicker
+	// (lib/command-tree.ts) is the only setter on the wire.
+	WithArgs bool `json:"withArgs,omitempty"`
 }
 
 type PickAction struct {

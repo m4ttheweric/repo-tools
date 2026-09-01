@@ -3,6 +3,7 @@ package picker
 import (
 	"fmt"
 	"image/color"
+	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -28,12 +29,18 @@ const chromeRows = 5
 // totalChromeRows is chromeRows plus the pinned selected panel's own line,
 // when a multi session is showing one -- the panel sits between the filter
 // line and the top rule, so it eats into the same pane budget every other
-// chrome line already claims.
+// chrome line already claims -- plus one more line while ctrl is held, when
+// the keybar itself grows from one line to the Modifiers board's two-line
+// grouped legend.
 func (m *Model) totalChromeRows() int {
+	rows := chromeRows
 	if m.showSelectedPanel() {
-		return chromeRows + 1
+		rows++
 	}
-	return chromeRows
+	if m.held.ctrl {
+		rows++
+	}
+	return rows
 }
 
 // render paints one frame and, as a side effect, rebuilds m.zones from the
@@ -99,9 +106,17 @@ func render(m *Model) string {
 
 	lines = append(lines, rule(m.width))
 	y++
-	keybarStr, keyZones := keybarLineZones(m, top, h, n)
-	zones.addAll(y, keyZones)
-	lines = append(lines, keybarStr)
+	if m.held.ctrl {
+		line1, zones1, line2, zones2 := expandedKeybarLines(m, top, h, n)
+		zones.addAll(y, zones1)
+		y++
+		zones.addAll(y, zones2)
+		lines = append(lines, line1, line2)
+	} else {
+		keybarStr, keyZones := keybarLineZones(m, top, h, n)
+		zones.addAll(y, keyZones)
+		lines = append(lines, keybarStr)
+	}
 
 	m.zones = zones
 	return strings.Join(lines, "\n")
@@ -216,6 +231,46 @@ func keybarLine(m *Model, top, h, n int) string {
 	return line
 }
 
+// expandedKeybarLines renders the ctrl-held keybar as the Modifiers board's
+// "⌃ held" two-line grouped legend, in place of keybarLineZones's own
+// single truncated line. Every declared group is placed whole (never split
+// mid-group): as many as fit the first line, the rest carried to the
+// second and truncated there the same way a single line would give up
+// trailing groups -- so a registry too big even for two lines still never
+// clips a key or label mid-word. The scroll range (when the list overflows)
+// survives on the first line's right edge alongside the "held: showing all
+// keys" indicator -- the ctrl swap this replaces once dropped the range
+// silently, which is exactly what pinning it here prevents. The ordinary
+// right-pinned action run (quit, by default) closes the second line, same
+// as it would the single-line footer.
+func expandedKeybarLines(m *Model, top, h, n int) (line1 string, zones1 []mouseZone, line2 string, zones2 []mouseZone) {
+	left, ungrouped := keybarClusters(effectiveActions(m.req))
+
+	rangeText := ""
+	if n > h {
+		rangeText = fg(theme.Cyan).Render(strconv.Itoa(top+1)+"-"+strconv.Itoa(top+h)) +
+			fg(theme.Faint).Render(" of "+strconv.Itoa(n))
+	}
+	right1 := renderKeybarRight(rangeText, fg(theme.Cyan).Render("held: showing all keys"))
+	right2 := renderKeybarCluster(keybarCluster{actions: ungrouped})
+
+	firstGroups := truncateKeybarGroups(left, keybarLeftBudget(m.width, right1))
+	secondGroups := truncateKeybarGroups(left[len(firstGroups):], keybarLeftBudget(m.width, right2))
+
+	line1 = justify(m.width, renderKeybarLeft(firstGroups), right1)
+	line2 = justify(m.width, renderKeybarLeft(secondGroups), right2)
+
+	_, zones1 = layoutKeybarLeft(2, firstGroups)
+	_, zones2 = layoutKeybarLeft(2, secondGroups)
+	if len(ungrouped) > 0 {
+		rightStart := m.width - 1 - lipgloss.Width(right2)
+		_, ungroupedZones := layoutKeybarCluster(rightStart, keybarCluster{actions: ungrouped})
+		zones2 = append(zones2, ungroupedZones...)
+	}
+
+	return line1, zones1, line2, zones2
+}
+
 func rule(width int) string {
 	return fg(theme.Rule).Render(strings.Repeat("─", width))
 }
@@ -233,22 +288,22 @@ func breadcrumbLine(m *Model) string {
 	return justify(m.width, left.String(), countText(m))
 }
 
-// countText is the breadcrumb line's right-aligned count area. A multi
-// session leads with the mint selected-count glyph ahead of the ordinary
-// fraction; a plain session is just the fraction.
-//
-// The Modifiers board's alt-held "with args" badge is not rendered here:
-// asserting a with-args affordance requires knowing whether this request's
-// rows actually carry one, which the protocol doesn't model yet (actions
-// are registry-wide, not per-row). m.held.alt is still tracked (mouse.go);
-// wire this badge in once the command-palette work adds that per-row data,
-// rather than claiming a capability a plain picker can't honor.
+// countText is the breadcrumb line's right-aligned count area. Alt held
+// prepends the Modifiers board's "with args" badge ahead of either the
+// multi-selection prefix or the plain fraction -- a session-level "args
+// preview is live" indicator; the per-row claim (which rows actually have
+// one) is rowLineWidth's own cursor badge and dim, keyed off
+// PickRow.WithArgs.
 func countText(m *Model) string {
+	prefix := ""
+	if m.held.alt {
+		prefix = fg(theme.Lav).Bold(true).Render("⌥ with args") + fg(theme.Faint).Render(keybarRightSep)
+	}
 	if m.multiMode() && len(m.selected) > 0 {
-		return fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
+		return prefix + fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
 			fg(theme.Faint).Render(" selected  ·  ") + countFraction(m)
 	}
-	return countFraction(m)
+	return prefix + countFraction(m)
 }
 
 // countFraction turns cyan only while a query is narrowing the list to at
@@ -430,12 +485,20 @@ func rowLineWidth(m *Model, i int, width int) string {
 		selMarkerWidth = 2
 	}
 
-	// The Modifiers board's alt-held "enter → pick args" cursor-row badge is
-	// not rendered here: it previews a with-args action, and the protocol
-	// has no per-row way to say a given row actually has one (see
-	// countText's header-badge note). m.held.alt is still tracked; wire the
-	// badge in once the command-palette work supplies that data.
+	// The Modifiers board's alt-held "enter → pick args" cursor-row badge
+	// previews what enter now does, so it replaces the cursor row's own
+	// right segments outright -- but only for a row PickRow.WithArgs
+	// actually claims; a row without one keeps its ordinary right text even
+	// while alt is held. argsDim is the board's "no args" fade: any row
+	// that doesn't claim WithArgs steps its whole line down to Faint while
+	// alt is held, cursor or not, independent of the badge.
+	argsBadge := cursorRow && m.held.alt && row.WithArgs
+	argsDim := m.held.alt && !row.WithArgs
+
 	rightPlain := plainConcat(row.Right)
+	if argsBadge {
+		rightPlain = " enter → pick args "
+	}
 	rightWidth := lipgloss.Width(rightPlain)
 
 	// Budget: 1 gutter column + 1 separator column, plus a gap column ahead
@@ -450,7 +513,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 
 	leftPlain := leftPlainText(row)
 	kept, truncated := clipRunes(leftPlain, leftBudget)
-	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow)
+	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow, argsDim)
 	usedLeftWidth := lipgloss.Width(kept)
 	if truncated {
 		leftRendered += rowBg.Foreground(theme.Faint).Render("…")
@@ -462,7 +525,10 @@ func rowLineWidth(m *Model, i int, width int) string {
 		spacer = 0
 	}
 
-	rightRendered := renderSegments(row.Right, rowBg)
+	rightRendered := renderSegments(row.Right, rowBg, argsDim)
+	if argsBadge {
+		rightRendered = lipgloss.NewStyle().Background(theme.Lav).Foreground(theme.Bg).Bold(true).Render(rightPlain)
+	}
 
 	return gutter + rowBg.Render(" ") + selMarker + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
 }
@@ -472,8 +538,12 @@ func rowLineWidth(m *Model, i int, width int) string {
 // boundary) so a truncated row never highlights past what it actually
 // shows. positions index by rune, not byte -- fzf's Chars falls back to a
 // byte offset only when the target is pure ASCII, where the two coincide,
-// so non-ASCII targets would misalign under byte-slicing.
-func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool) string {
+// so non-ASCII targets would misalign under byte-slicing. dim is the
+// Modifiers board's alt-held "no args" fade: every segment's own
+// tone/hex/bold and any match highlight are overridden to a flat Faint, so
+// a row the current modifier can't act on never competes for attention
+// against one that can.
+func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool, dim bool) string {
 	matched := make(map[int]bool, len(positions))
 	for _, p := range positions {
 		matched[p] = true
@@ -482,13 +552,16 @@ func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int,
 	runeIdx := 0
 	for _, seg := range row.Left {
 		color, bold := leftSegColor(seg, cursorRow)
+		if dim {
+			color, bold = theme.Faint, false
+		}
 		base := rowBg.Foreground(color).Bold(bold)
 		for _, r := range seg.Text {
 			if runeIdx >= keptRunes {
 				return out.String()
 			}
 			style := base
-			if matched[runeIdx] {
+			if !dim && matched[runeIdx] {
 				style = rowBg.Foreground(theme.Cyan).Bold(true)
 			}
 			out.WriteString(style.Render(string(r)))
@@ -498,10 +571,16 @@ func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int,
 	return out.String()
 }
 
-func renderSegments(segs []protocol.PickSegment, rowBg lipgloss.Style) string {
+// renderSegments paints Right's own tone/hex/bold as declared, except while
+// dim overrides every segment to a flat Faint -- see renderHighlightedLeft.
+func renderSegments(segs []protocol.PickSegment, rowBg lipgloss.Style, dim bool) string {
 	var out strings.Builder
 	for _, seg := range segs {
-		out.WriteString(rowBg.Foreground(segColor(seg)).Bold(seg.Bold).Render(seg.Text))
+		color, bold := segColor(seg), seg.Bold
+		if dim {
+			color, bold = theme.Faint, false
+		}
+		out.WriteString(rowBg.Foreground(color).Bold(bold).Render(seg.Text))
 	}
 	return out.String()
 }

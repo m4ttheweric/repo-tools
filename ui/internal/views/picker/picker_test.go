@@ -2836,47 +2836,92 @@ func TestModifierPressAndReleaseTracksHeldState(t *testing.T) {
 	}
 }
 
-// TestAltHeldTracksStateButRendersNoBadge pins the deferred-rendering
-// ruling: alt-held is still tracked (mouse.go's applyModifierHeld), but
-// neither the header "with args" badge nor the cursor row's "pick args"
-// badge render, since the protocol has no per-row way to say a row
-// actually has a with-args action -- rendering either would assert an
-// affordance a plain picker (worktree dispose, settings) can't honor.
-func TestAltHeldTracksStateButRendersNoBadge(t *testing.T) {
+// TestAltNotHeldRendersIdenticallyRegardlessOfWithArgs pins the additive-mode
+// guarantee: a request whose rows carry PickRow.WithArgs renders byte
+// identically whether or not any row claims it, as long as alt itself is
+// never held -- the with-args chrome must never leak in through the data
+// alone.
+func TestAltNotHeldRendersIdenticallyRegardlessOfWithArgs(t *testing.T) {
+	plain := func(withArgs bool) string {
+		req := protocol.PickRequest{
+			T: "pick", Protocol: protocol.Version,
+			Breadcrumb: []string{"rt", "worktree"},
+			Rows: []protocol.PickRow{
+				{Value: "provision", Left: []protocol.PickSegment{{Text: "provision"}}, WithArgs: withArgs},
+				{Value: "list", Left: []protocol.PickSegment{{Text: "list"}}},
+			},
+		}
+		m := New(req)
+		m.width = 92
+		return render(m)
+	}
+	if got, want := plain(true), plain(false); got != want {
+		t.Fatalf("alt-not-held render must not vary with WithArgs:\nwith:    %q\nwithout: %q", got, want)
+	}
+	if strings.Contains(ansi.Strip(plain(true)), "with args") {
+		t.Fatalf("no with-args affordance should render while alt is not held: %q", ansi.Strip(plain(true)))
+	}
+}
+
+// TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim is the Modifiers board's
+// "⌥ held" golden: the header carries the "with args" badge, the cursor row
+// (WithArgs true) swaps its right side for the "pick args" badge, a
+// non-cursor WithArgs row keeps its ordinary styling, and the WithArgs-false
+// row fades to Faint -- all three only once alt is actually held.
+func TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Breadcrumb: []string{"rt", "worktree"},
 		Rows: []protocol.PickRow{
-			{Value: "provision", Left: []protocol.PickSegment{{Text: "provision"}}},
-			{Value: "list", Left: []protocol.PickSegment{{Text: "list"}}},
+			{Value: "provision", Left: []protocol.PickSegment{{Text: "provision", Tone: "text", Bold: true}}, WithArgs: true},
+			{Value: "create", Left: []protocol.PickSegment{{Text: "create", Tone: "text", Bold: true}}, WithArgs: true},
+			{Value: "list", Left: []protocol.PickSegment{{Text: "list", Tone: "text", Bold: true}}},
 		},
 	}
 	m := New(req)
 	m.width = 92
 
-	before := render(m)
-
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftAlt})
 	m = next.(*Model)
 	if !m.held.alt {
-		t.Fatal("setup: alt press should still set held.alt")
+		t.Fatal("setup: alt press should set held.alt")
 	}
 
-	after := render(m)
-	if after != before {
-		t.Fatalf("holding alt must not change the rendered frame while no badge is wired:\nbefore: %q\nafter:  %q", before, after)
+	lines := strings.Split(render(m), "\n")
+	header := lines[0]
+	cursorLine := lines[3] // rule, then the cursor row (provision) first
+	createLine := lines[4] // non-cursor, WithArgs true
+	listLine := lines[5]   // non-cursor, WithArgs false
+	const lavSGR = "38;2;189;147;249"
+	const faintSGR = "38;2;110;102;140"
+
+	if !strings.Contains(ansi.Strip(header), "with args") {
+		t.Fatalf("header should carry the with-args badge while alt is held: %q", ansi.Strip(header))
 	}
-	plain := ansi.Strip(after)
-	if strings.Contains(plain, "with args") || strings.Contains(plain, "pick args") {
-		t.Fatalf("no with-args affordance should render for a request with no with-args data: %q", plain)
+	if !strings.Contains(header, lavSGR) {
+		t.Fatalf("with-args badge should be lav-colored: %q", header)
+	}
+
+	if !strings.Contains(ansi.Strip(cursorLine), "enter → pick args") {
+		t.Fatalf("cursor row (WithArgs) should carry the pick-args badge: %q", ansi.Strip(cursorLine))
+	}
+
+	if strings.Contains(ansi.Strip(createLine), "enter → pick args") {
+		t.Fatalf("only the cursor row gets the pick-args badge: %q", ansi.Strip(createLine))
+	}
+	if strings.Contains(createLine, faintSGR) {
+		t.Fatalf("a WithArgs row must not dim while alt is held: %q", createLine)
+	}
+
+	if !strings.Contains(listLine, faintSGR) {
+		t.Fatalf("a row without WithArgs should fade to Faint while alt is held: %q", listLine)
 	}
 }
 
-// TestCtrlHeldTracksStateButKeepsTheNormalKeybar pins the deferred-rendering
-// ruling: ctrl-held is still tracked, but the footer renders exactly as it
-// would unheld -- no fabricated "showing all keys" claim, and (on a
-// scrolling list) the real range indicator is never dropped.
-func TestCtrlHeldTracksStateButKeepsTheNormalKeybar(t *testing.T) {
+// TestCtrlNotHeldRendersTheSingleLineKeybar pins today's baseline: the
+// footer stays one line, the real range indicator renders when the list
+// overflows, and nothing claims an expanded keymap.
+func TestCtrlNotHeldRendersTheSingleLineKeybar(t *testing.T) {
 	rows := make([]protocol.PickRow, 20)
 	for i := range rows {
 		v := fmt.Sprintf("row%02d", i)
@@ -2886,23 +2931,74 @@ func TestCtrlHeldTracksStateButKeepsTheNormalKeybar(t *testing.T) {
 	m := New(req)
 	m.width = 60
 
-	before := render(m)
+	lines := strings.Split(render(m), "\n")
+	footer := ansi.Strip(lines[len(lines)-1])
+	if strings.Contains(footer, "showing all keys") {
+		t.Fatalf("no expansion claim should render while ctrl is not held: %q", footer)
+	}
+	if !strings.Contains(footer, "1-5 of 20") {
+		t.Fatalf("the range indicator must render: %q", footer)
+	}
+}
+
+// TestCtrlHeldRendersTwoLineGroupedKeybar is the Modifiers board's "⌃ held"
+// golden: the footer grows to two lines, each declared group renders whole
+// (never split mid-group) across them, "held: showing all keys" pins to the
+// first line's right edge alongside the still-live range indicator, and the
+// ordinary right-pinned action run (quit) closes the second line.
+func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5,
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
+		},
+	}
+	m := New(req)
+	// Wide enough for the "nav" group plus the range+held run on line one,
+	// but not wide enough for "act" to join it there -- pinning the
+	// group-boundary wrap the assertions below check for.
+	m.width = 90
 
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
 	m = next.(*Model)
 	if !m.held.ctrl {
-		t.Fatal("setup: ctrl press should still set held.ctrl")
+		t.Fatal("setup: ctrl press should set held.ctrl")
 	}
 
-	after := render(m)
-	if after != before {
-		t.Fatalf("holding ctrl must not change the rendered frame while no expanded keymap is wired:\nbefore: %q\nafter:  %q", before, after)
+	lines := strings.Split(render(m), "\n")
+	// breadcrumb, filter, rule, 5 rows, rule, keybar line 1, keybar line 2:
+	// one more line than the single-line footer's own 10, for the second
+	// keybar line totalChromeRows now budgets for.
+	if want := 11; len(lines) != want {
+		t.Fatalf("expected %d lines with the two-line keybar, got %d:\n%s", want, len(lines), render(m))
 	}
-	footer := ansi.Strip(strings.Split(after, "\n")[len(strings.Split(after, "\n"))-1])
-	if strings.Contains(footer, "showing all keys") {
-		t.Fatalf("no fabricated expansion claim should render: %q", footer)
+	line1 := ansi.Strip(lines[len(lines)-2])
+	line2 := ansi.Strip(lines[len(lines)-1])
+
+	if !strings.Contains(line1, "nav") || !strings.Contains(line1, "enter") || !strings.Contains(line1, "cd here") {
+		t.Fatalf("first keybar line should carry the nav group whole: %q", line1)
 	}
-	if !strings.Contains(footer, "1-5 of 20") {
-		t.Fatalf("the real range indicator must survive while ctrl is held: %q", footer)
+	if !strings.Contains(line1, "held: showing all keys") {
+		t.Fatalf("first keybar line should carry the held indicator: %q", line1)
+	}
+	if !strings.Contains(line1, "1-5 of 20") {
+		t.Fatalf("the range indicator must survive alongside the held indicator: %q", line1)
+	}
+	if strings.Contains(line1, "act") {
+		t.Fatalf("the act group belongs on the second line, not the first: %q", line1)
+	}
+
+	if !strings.Contains(line2, "act") || !strings.Contains(line2, "open in editor") {
+		t.Fatalf("second keybar line should carry the act group: %q", line2)
+	}
+	if !strings.Contains(line2, "esc") || !strings.Contains(line2, "quit") {
+		t.Fatalf("second keybar line should still pin quit to the right: %q", line2)
 	}
 }

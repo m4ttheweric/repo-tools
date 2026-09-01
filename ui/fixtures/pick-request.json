@@ -12,7 +12,8 @@
         { "text": "on-deck/bill", "tone": "dim" }
       ],
       "right": [{ "text": "[Local Only]", "tone": "faint" }],
-      "match": "bill on-deck/bill"
+      "match": "bill on-deck/bill",
+      "withArgs": true
     },
     {
       "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho",
