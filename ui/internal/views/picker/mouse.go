@@ -65,23 +65,13 @@ func (z *hitZones) addAll(y int, zs []mouseZone) {
 // rowZones), so a click inside the narrower marker span resolves to the
 // marker rather than falling through to the row underneath it.
 //
-// UNRESOLVED: every caller (handleMouseClick, handleMouseMotion) passes
-// mouse.Y straight through, treating it as content-relative (0 = the
-// picker's own first rendered line, matching how render() numbers its
-// zones). bubbletea v2 actually delivers terminal-absolute coordinates --
-// translateInputEvent does no translation -- and this picker renders
-// inline, anchored wherever the terminal's cursor sat when the frame
-// started, not at absolute row 0. On a live terminal every click's Y is
-// therefore off by that frame's start row. The contained fix, once that
-// start row is known: subtract it from y here before comparing against
-// zone.xStart/xEnd. tea.RequestCursorPosition/CursorPositionMsg is the
-// candidate way to measure it (issue the request once before the first
-// render, before any picker content is drawn), but its reliability across
-// terminals and its behavior once inline content grows past the bottom of
-// the screen and the terminal auto-scrolls (which would move the anchor
-// again, mid-session, with no further signal) are unverified without a
-// live terminal -- do not guess a formula here. This must be measured and
-// closed against a real terminal, not reasoned out from the client source.
+// Every caller (handleMouseClick, handleMouseMotion) passes mouse.Y straight
+// through as content-relative (0 = the picker's own first rendered line,
+// matching how render() numbers its zones): measured on a live terminal at
+// two different frame anchors (frame starting at the screen's top row, and
+// pushed down by prior scrollback), the absolute-vs-content Y delta was
+// zero at both -- bubbletea v2's inline mouse coordinates are already
+// frame-relative, so no translation is needed here.
 func (z hitZones) at(x, y int) (mouseZone, bool) {
 	for _, zone := range z.byY[y] {
 		if x >= zone.xStart && x < zone.xEnd {
