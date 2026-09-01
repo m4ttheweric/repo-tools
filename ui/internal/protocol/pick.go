@@ -50,6 +50,13 @@ type PickAction struct {
 	// since selecting it there would dispatch through the generic registry
 	// path instead of the hardcoded handler that key actually runs.
 	MenuHidden bool `json:"-"`
+	// FooterHidden keeps an action bound and dispatchable but out of the
+	// footer keybar legend: the command-tree root sets it on the ctrl-up back
+	// action so that key still cancels while no bare "ctrl-up" advertises a
+	// back with nowhere to go. Unlike MenuHidden this rides the wire (showPicker
+	// sets it), so it carries a json tag; omitempty keeps every other request
+	// byte-identical.
+	FooterHidden bool `json:"footerHidden,omitempty"`
 }
 
 type PickRequest struct {

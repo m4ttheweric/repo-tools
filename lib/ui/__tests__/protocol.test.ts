@@ -10,6 +10,7 @@ import {
   type StepEvent,
   type BoardModel,
   type PickRequest,
+  type PickAction,
   type PickUpdate,
   type PickModal,
   type PickEvent,
@@ -178,6 +179,18 @@ test("pick event, modal-result, and result fixtures match their typed shape", ()
     "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/bill",
     "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho",
   ]);
+});
+
+test("pick action footerHidden rides the wire when set and is absent otherwise (Go/TS parity)", () => {
+  const hidden: PickAction = { id: "back", label: "back", key: "ctrl-up", scope: "global", footerHidden: true };
+  const line = encodeLine(hidden);
+  expect(line).toContain('"footerHidden":true');
+  expect(JSON.parse(line)).toEqual(hidden);
+
+  // An action that never sets it must not emit the key, so every other
+  // request stays byte-identical -- the omitempty contract the Go side pins.
+  const plain: PickAction = { id: "refresh", label: "refresh", key: "ctrl-r", scope: "global" };
+  expect(encodeLine(plain)).not.toContain("footerHidden");
 });
 
 test("pick result value accepts null and round-trips through encodeLine", () => {

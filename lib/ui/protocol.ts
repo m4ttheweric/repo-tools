@@ -170,6 +170,8 @@ export interface PickAction {
   primary?: boolean;
   /** True: the picker stays open and reports an event; absent/false: it closes with a result. */
   event?: boolean;
+  /** Keeps the action bound and dispatchable but out of the footer keybar legend; the command-tree root sets it on the ctrl-up back action so that key still cancels without advertising a back with nowhere to go. */
+  footerHidden?: boolean;
 }
 
 export interface PickRequest {

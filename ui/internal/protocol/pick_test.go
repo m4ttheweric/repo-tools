@@ -195,6 +195,34 @@ func TestPickActionEventOmitEmptyRoundTrips(t *testing.T) {
 	}
 }
 
+// TestPickActionFooterHiddenOmitEmptyRoundTrips pins the footer-hide flag's
+// wire contract on the Go side: a false FooterHidden is omitted entirely (so
+// every request that does not set it stays byte-identical), and a true one
+// rides the wire under "footerHidden" for the TS side to decode.
+func TestPickActionFooterHiddenOmitEmptyRoundTrips(t *testing.T) {
+	off := PickAction{ID: "x", Label: "x", Scope: "item"}
+	b, err := json.Marshal(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "footerHidden") {
+		t.Fatalf("footerHidden must be omitted when false: %s", b)
+	}
+
+	on := PickAction{ID: "back", Label: "back", Key: "ctrl-up", Scope: "global", FooterHidden: true}
+	b, err = json.Marshal(on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"footerHidden":true`) {
+		t.Fatalf("footerHidden:true must ride the wire: %s", b)
+	}
+	var back PickAction
+	if err := json.Unmarshal(b, &back); err != nil || !back.FooterHidden {
+		t.Fatalf("footerHidden round-trip drift: %+v err=%v", back, err)
+	}
+}
+
 func TestPickResultValueNullRoundTrips(t *testing.T) {
 	raw := []byte(`{"t":"result","action":"cancel","value":null,"query":""}`)
 	var r PickResult
