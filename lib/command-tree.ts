@@ -592,9 +592,9 @@ export async function showPicker(
   if (anyHasArgs) {
     actions.push({ id: "with-args", label: "with args", key: "alt-enter", scope: "item", group: "pick" });
   }
-  if (breadcrumb.length > 1) {
-    actions.push({ id: "back", label: "back", key: "ctrl-up", scope: "global" });
-  }
+  // ctrl-up is always bound: at the root it has nowhere to go back to, so it
+  // cancels (same as Esc) rather than going silently unbound.
+  actions.push({ id: "back", label: "back", key: "ctrl-up", scope: "global" });
 
   const handle = runPick({
     message: breadcrumb.join(" "),
@@ -605,7 +605,7 @@ export async function showPicker(
 
   const result = await handle.result;
 
-  if (result.action === "back") return BACK;
+  if (result.action === "back") return breadcrumb.length > 1 ? BACK : null;
   if (result.action === "cancel" || !result.value) return null;
 
   return { command: result.value, withArgs: result.action === "with-args" };

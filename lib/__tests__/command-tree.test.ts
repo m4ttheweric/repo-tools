@@ -150,10 +150,12 @@ describe("showPicker", () => {
     expect(fake.calls[0]!.request.actions?.some((a) => a.id === "with-args")).toBe(false);
   });
 
-  test("registers the back action only when breadcrumb depth is greater than one", async () => {
+  test("registers the ctrl-up-bound back action at every depth, including the root", async () => {
     fake = installFakePick([resultStep({ action: "select", value: "list" })]);
     await showPicker(PICKER_TREE, ["rt"]);
-    expect(fake.calls[0]!.request.actions?.some((a) => a.id === "back")).toBe(false);
+    expect(fake.calls[0]!.request.actions).toContainEqual({
+      id: "back", label: "back", key: "ctrl-up", scope: "global",
+    });
 
     fake.restore();
     fake = installFakePick([resultStep({ action: "select", value: "list" })]);
@@ -161,6 +163,17 @@ describe("showPicker", () => {
     expect(fake.calls[0]!.request.actions).toContainEqual({
       id: "back", label: "back", key: "ctrl-up", scope: "global",
     });
+  });
+
+  // The old fzf-backed showPicker captured ctrl-up unconditionally and, at
+  // the root (nowhere to go back to), treated it as an outright cancel --
+  // same as Esc -- rather than a no-op. The Go picker drops any key with no
+  // bound action, so the root case depends on showPicker mapping the
+  // "back" result to null itself rather than on depth-gated registration.
+  test("ctrl-up at the root cancels (returns null), matching the old exit-on-ctrl-up-at-root behavior", async () => {
+    fake = installFakePick([resultStep({ action: "back", value: null })]);
+    const picked = await showPicker(PICKER_TREE, ["rt"]);
+    expect(picked).toBeNull();
   });
 });
 
