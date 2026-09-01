@@ -11,10 +11,11 @@ piece was proven; `docs/architecture.md` links the governing design docs.
 
 One tag (`v*`) produces, via `.github/workflows/release.yml` on macos-15:
 
-- `rt-darwin-{arm64,x64}-<tag>.tar.gz` — the compiled rt CLI (what
-  `rt --post-install` and mattstack.app install)
 - `mattstack-<ver>.dmg` and `.zip` — the app, signed + notarized + stapled
-  (`scripts/release/make-dmg.sh`, `make-zip.sh`)
+  (`scripts/release/make-dmg.sh`, `make-zip.sh`); the compiled rt CLI ships
+  inside the bundle, there is no separate `rt-darwin-*.tar.gz` asset
+- Sparkle `.delta` files and `SHA256SUMS` over the dmg/zip/deltas
+  (the workflow's Checksums step)
 - `appcast.xml` — the Sparkle feed (`scripts/release/appcast.sh`)
 - the published plugin marketplace (`scripts/release/marketplace.sh`,
   generated from `marketplace/marketplace.json`; url-pinned sources resolve
