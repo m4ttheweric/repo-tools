@@ -12,6 +12,8 @@
 
 import { lazyChildLogger } from "../daemon-logger.ts";
 import { repoLabel } from "../repo-label.ts";
+import { reverseLookupByName } from "../repo-name-lookup.ts";
+import { parseIdentity } from "../settings/identity.ts";
 import { inspectReadyGate, loadWorktreeRepoConfig } from "./config.ts";
 
 const log = lazyChildLogger("worktree-ready-held");
@@ -44,17 +46,46 @@ export function resetHeldReadyLaddersCache(): void {
 
 /**
  * The argument `rt worktree ready-approve` will actually resolve. A label is
- * what a human would type, but `resolveRepoArg` rejects one that matches two
- * registered repos... so a colliding label falls back to the identity, which
- * always parses. Rows pointing at the same directory are the additive-heal
- * legacy/identity pair, not a collision.
+ * what a human would type, so emit one whenever it resolves back to THIS repo,
+ * and fall back to the identity (which always parses) when it does not.
+ *
+ * The matching runs through `reverseLookupByName`, the same rule
+ * `resolveRepoArg` applies when the human runs the command, rather than a
+ * second copy of it. A local copy drifted from that rule in two ways worth
+ * naming: it matched only an identity TAIL, missing a collision with another
+ * checkout's directory basename (which the resolver does match, and would call
+ * ambiguous); and it deduped by raw path string rather than realpath.
+ *
+ * Deliberately NOT `tryResolveRepoArg`, though it is the resolver's own entry
+ * point: this runs on the polled tray:status path, and that entry point
+ * re-reads the repo index per call and routes a path-shaped argument through
+ * `deriveRepoIdentity`, which spawns git. Taking the index the caller already
+ * holds makes both impossible here rather than merely unlikely.
  */
 function approveArg(repo: string, label: string, repoIndex: Record<string, string>): string {
-  const paths = new Set<string>();
-  for (const [key, path] of Object.entries(repoIndex)) {
-    if (repoLabel(key) === label) paths.add(path);
+  const canonical = canonicalKey(repo, repoIndex);
+  const matches = reverseLookupByName(label, repoIndex);
+  return matches.length === 1 && matches[0]![0] === canonical ? label : canonical;
+}
+
+/**
+ * The identity for an index row: the key itself when it already parses, else a
+ * sibling key naming the same directory that does.
+ *
+ * The fallback above leans on "the identity always parses", and that premise
+ * fails for an unpruned legacy row, whose key is a plain name. Emitting one
+ * produces a command that cannot resolve the moment any other checkout shares
+ * the label, which is exactly when the fallback fires. No derivation here: a
+ * sibling lookup is pure, and `deriveRepoIdentity` would spawn git on the
+ * polled tray:status path.
+ */
+function canonicalKey(repo: string, repoIndex: Record<string, string>): string {
+  if (parseIdentity(repo)) return repo;
+  const path = repoIndex[repo];
+  for (const [key, keyPath] of Object.entries(repoIndex)) {
+    if (keyPath === path && parseIdentity(key)) return key;
   }
-  return paths.size > 1 ? repo : label;
+  return repo;
 }
 
 async function compute(repoIndex: Record<string, string>): Promise<ReadyHeldRepo[]> {
