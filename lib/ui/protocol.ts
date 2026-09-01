@@ -186,6 +186,10 @@ export interface PickRequest {
   exact?: boolean;
   cap?: number;
   selectedPanel?: boolean;
+  /** Faint count-slot text shown while the query is empty (nav's "N folders · M files"); a non-empty query falls back to the cyan matched-count. */
+  idleCount?: string;
+  /** Faint run appended after the bold breadcrumb segments (nav's non-default sort suffix), so it never reads as another bold segment. */
+  crumbSuffix?: string;
   /** Enter on a no-match filter resolves with `{action:"select", value:null, query}` instead of leaving the picker open. */
   acceptNoMatch?: boolean;
   // Opts a breadcrumb segment click into emitting a {action:"crumb",
@@ -200,6 +204,10 @@ export interface PickUpdate {
   actions?: PickAction[];
   /** Replaces the rendered header (Go renders Breadcrumb, not Message) on an in-place row swap. */
   breadcrumb?: string[];
+  /** Patches the empty-query count slot (nav's "N folders · M files"). See PickRequest.idleCount. */
+  idleCount?: string;
+  /** Patches the faint breadcrumb suffix; rides with `breadcrumb`, so an update carrying a breadcrumb but no suffix clears it. See PickRequest.crumbSuffix. */
+  crumbSuffix?: string;
   /** Clears the typed query and re-ranks against the (possibly also-patched) rows. */
   resetQuery?: boolean;
 }

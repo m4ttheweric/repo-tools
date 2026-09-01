@@ -321,7 +321,9 @@ func rule(width int) string {
 }
 
 // breadcrumbLine joins Breadcrumb in the board header's grammar: bold
-// segments separated by a faint chevron, with the live count pinned right.
+// segments separated by a faint chevron, an optional faint suffix (nav's
+// sort tail, painted faint so it never reads as another bold segment), and
+// the live count pinned right.
 func breadcrumbLine(m *Model) string {
 	var left strings.Builder
 	for i, part := range m.req.Breadcrumb {
@@ -329,6 +331,9 @@ func breadcrumbLine(m *Model) string {
 			left.WriteString(fg(theme.Faint).Render(" › "))
 		}
 		left.WriteString(fg(theme.Text).Bold(true).Render(part))
+	}
+	if m.req.CrumbSuffix != "" {
+		left.WriteString(fg(theme.Faint).Render(m.req.CrumbSuffix))
 	}
 	return justify(m.width, left.String(), countText(m))
 }
@@ -358,13 +363,18 @@ func countText(m *Model) string {
 }
 
 // countFraction turns cyan only while a query is narrowing the list to at
-// least one match; an empty query or a query with no matches reads as one
-// flat faint fraction, matching the Branch and zero-match Filtering boards.
+// least one match. An empty query reads as the caller's faint IdleCount when
+// one is supplied (nav's "N folders · M files"), else a flat faint fraction;
+// a query with no matches always reads as the flat faint fraction, matching
+// the Branch and zero-match Filtering boards.
 func countFraction(m *Model) string {
 	total := len(m.req.Rows)
 	n := len(m.matches)
 	if m.query != "" && n > 0 {
 		return fg(theme.Cyan).Render(fmt.Sprintf("%d", n)) + fg(theme.Faint).Render(fmt.Sprintf("/%d", total))
+	}
+	if m.query == "" && m.req.IdleCount != "" {
+		return fg(theme.Faint).Render(m.req.IdleCount)
 	}
 	return fg(theme.Faint).Render(fmt.Sprintf("%d/%d", n, total))
 }

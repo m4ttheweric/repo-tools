@@ -66,6 +66,16 @@ type PickRequest struct {
 	Exact         bool         `json:"exact,omitempty"`
 	Cap           int          `json:"cap,omitempty"`
 	SelectedPanel bool         `json:"selectedPanel,omitempty"`
+	// IdleCount is the count-slot text painted faint while the query is empty,
+	// standing in for the generic match fraction -- nav's "N folders · M
+	// files". A non-empty query falls back to the cyan matched-count. nav is
+	// the only setter; every other surface omits it and keeps the fraction.
+	IdleCount string `json:"idleCount,omitempty"`
+	// CrumbSuffix is a faint run painted after the bold breadcrumb segments --
+	// nav's non-default sort suffix, which must read faint rather than inherit
+	// the breadcrumb's uniform bold. Replaced wholesale with the Breadcrumb it
+	// annotates (see applyUpdate), so an update omitting it clears it.
+	CrumbSuffix string `json:"crumbSuffix,omitempty"`
 	// CrumbEvents opts into a breadcrumb segment click emitting a
 	// {action:"crumb", value:"<segment index>"} event; without it a click on
 	// the breadcrumb is inert, since a caller that never wired a listener
@@ -85,6 +95,14 @@ type PickUpdate struct {
 	// reads it, not Message) on an in-place row swap -- e.g. nav's descend/up
 	// keeping the header's cwd path current without a close+reopen.
 	Breadcrumb []string `json:"breadcrumb,omitempty"`
+	// IdleCount patches the empty-query count slot -- nav supplies its "N
+	// folders · M files" on every rows update. See PickRequest.IdleCount.
+	IdleCount string `json:"idleCount,omitempty"`
+	// CrumbSuffix patches the faint breadcrumb suffix. It rides with the
+	// Breadcrumb it annotates -- an update carrying a Breadcrumb but no
+	// CrumbSuffix clears the suffix (nav returning to the default sort). See
+	// PickRequest.CrumbSuffix.
+	CrumbSuffix string `json:"crumbSuffix,omitempty"`
 	// ResetQuery clears the typed query and re-ranks against the (possibly
 	// also-patched) rows, same as a fresh directory's first render -- e.g.
 	// nav's descend/up, where a filter typed in the parent must not carry

@@ -1,0 +1,20 @@
+{
+  "t": "update",
+  "breadcrumb": ["~/Documents/GitHub"],
+  "idleCount": "10 folders · 2 files",
+  "crumbSuffix": " (Size, largest first)",
+  "resetQuery": true,
+  "rows": [
+    {
+      "value": "d:repo-tools",
+      "left": [{ "text": "repo-tools", "tone": "text", "bold": true }]
+    },
+    {
+      "value": "f:notes.md",
+      "left": [{ "text": "notes.md" }]
+    }
+  ],
+  "actions": [
+    { "id": "open", "label": "open", "key": "enter", "scope": "item", "primary": true, "event": true }
+  ]
+}

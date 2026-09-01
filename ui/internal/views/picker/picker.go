@@ -345,8 +345,15 @@ func (m *Model) applyUpdate(u protocol.PickUpdate) {
 	if u.Message != "" {
 		m.req.Message = u.Message
 	}
+	if u.IdleCount != "" {
+		m.req.IdleCount = u.IdleCount
+	}
 	if u.Breadcrumb != nil {
 		m.req.Breadcrumb = u.Breadcrumb
+		// The faint sort suffix is a tail on the breadcrumb, so it is replaced
+		// with it (and cleared when the update omits it -- nav returning to the
+		// default sort), never merged in on its own.
+		m.req.CrumbSuffix = u.CrumbSuffix
 	}
 	if u.Actions != nil {
 		m.req.Actions = u.Actions

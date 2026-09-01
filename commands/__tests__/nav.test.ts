@@ -354,6 +354,54 @@ describe("rt nav: ctrl-s sort", () => {
   });
 });
 
+describe("rt nav: header idle count + faint sort suffix", () => {
+  test("supplies the folders/files idle count on the initial request, and a faint sort suffix on the sort update", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    mkdirSync(join(root, "alpha"));
+    mkdirSync(join(root, "beta"));
+    writeFileSync(join(root, "notes.txt"), "x");
+
+    const updates: Array<{ idleCount?: string; crumbSuffix?: string }> = [];
+    let requestIdleCount: string | undefined;
+    let requestCrumbSuffix: string | undefined;
+    let resolveResult!: (r: PickResult) => void;
+    const result = new Promise<PickResult>((res) => { resolveResult = res; });
+
+    const impl: PickImpl = (req, cb) => {
+      requestIdleCount = (req as PickRequest).idleCount;
+      requestCrumbSuffix = (req as PickRequest).crumbSuffix;
+      queueMicrotask(async () => {
+        await cb.onEvent?.({ t: "event", action: "sort", value: null, query: "" });
+        resolveResult({ t: "result", action: "cancel", value: null, query: "" });
+      });
+      return {
+        update(patch) { updates.push(patch); },
+        modal() { return Promise.resolve("size"); },
+        result,
+      } satisfies PickHandle;
+    };
+
+    pickTest.setImpl(impl);
+    try {
+      await withRealStdoutRestore(() => navigate([root], baseDeps()));
+    } finally {
+      pickTest.setImpl(undefined);
+    }
+
+    // Initial open: 2 folders, 1 file (dotfiles hidden), default Name sort.
+    expect(requestIdleCount).toBe("2 folders · 1 file");
+    expect(requestCrumbSuffix).toBeUndefined();
+
+    // The sort-to-Size update carries the faint suffix and keeps the count.
+    const sorted = updates.find((u) => u.crumbSuffix !== undefined);
+    expect(sorted).toBeDefined();
+    expect(sorted!.crumbSuffix).toBe(" (Size, largest first)");
+    expect(sorted!.idleCount).toBe("2 folders · 1 file");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
 describe("rt nav: live-refresh watcher", () => {
   test("a debounced directory change pushes a rows update", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));

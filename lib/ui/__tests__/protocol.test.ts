@@ -147,6 +147,19 @@ test("pick update and modal fixtures match their typed shape and round-trip", ()
   expect(JSON.parse(encodeLine(modal))).toEqual(modal);
 });
 
+test("pick nav update fixture carries the faint idle count + sort suffix and round-trips (Go/TS parity)", () => {
+  const nav = fixture("pick-update-nav.json") as PickUpdate;
+  expect(nav.t).toBe("update");
+  expect(nav.idleCount).toBe("10 folders · 2 files");
+  expect(nav.crumbSuffix).toBe(" (Size, largest first)");
+  expect(JSON.parse(encodeLine(nav))).toEqual(nav);
+
+  // The non-nav cd update omits both, so its golden stays additive/untouched.
+  const cd = fixture("pick-update.json") as PickUpdate;
+  expect(cd.idleCount).toBeUndefined();
+  expect(cd.crumbSuffix).toBeUndefined();
+});
+
 test("pick event, modal-result, and result fixtures match their typed shape", () => {
   const event = fixture("pick-event.json") as PickEvent;
   expect(event).toEqual({

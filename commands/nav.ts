@@ -89,28 +89,36 @@ function emptyRow(): PickRow {
   return { value: EMPTY_VALUE, left: [{ text: "empty folder", tone: "faint" }] };
 }
 
-function buildRows(cwd: string, showHidden: boolean, sort: SortState): { rows: PickRow[]; empty: boolean } {
+function buildRows(cwd: string, showHidden: boolean, sort: SortState): { rows: PickRow[]; empty: boolean; folders: number; files: number } {
   const { folders, files } = listEntries(cwd, showHidden, sort);
   if (folders.length === 0 && files.length === 0) {
-    return { rows: [emptyRow()], empty: true };
+    return { rows: [emptyRow()], empty: true, folders: 0, files: 0 };
   }
-  return { rows: [...folders.map(folderRow), ...files.map(fileRow)], empty: false };
+  return { rows: [...folders.map(folderRow), ...files.map(fileRow)], empty: false, folders: folders.length, files: files.length };
 }
 
 function headerMessage(cwd: string, sort: SortState): string {
-  return tildeify(cwd) + (isDefaultSort(sort) ? "" : ` (${sortLabel(sort)})`);
+  return tildeify(cwd) + headerSuffix(sort);
+}
+
+/** The header's cwd breadcrumb: one bold segment. The faint sort suffix is carried separately (crumbSuffix), not folded into this segment. */
+function headerBreadcrumb(cwd: string): string[] {
+  return [tildeify(cwd)];
 }
 
 /**
- * A single breadcrumb segment carrying headerMessage's own text: the design
- * board (docs/design/picker/Nav.dc.html) renders the sort suffix in a
- * non-bold faint tone rather than the breadcrumb model's chevron-joined bold
- * segments, and a multi-segment breadcrumb would insert an unwanted " › "
- * between the path and the suffix, so one segment is the minimal fit rather
- * than a new header layout.
+ * The faint sort suffix, empty on the default sort. The picker paints it faint
+ * (PickRequest.crumbSuffix), separate from the bold cwd breadcrumb, per
+ * docs/design/picker/Nav.dc.html.
  */
-function headerBreadcrumb(cwd: string, sort: SortState): string[] {
-  return [headerMessage(cwd, sort)];
+function headerSuffix(sort: SortState): string {
+  return isDefaultSort(sort) ? "" : ` (${sortLabel(sort)})`;
+}
+
+/** The header's idle count in the design board's grammar: "N folders · M files". */
+function idleCountLabel(folders: number, files: number): string {
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  return `${plural(folders, "folder")} · ${plural(files, "file")}`;
 }
 
 /**
@@ -235,7 +243,9 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
     handle.update({
       rows: built.rows,
       message: headerMessage(cwd, sort),
-      breadcrumb: headerBreadcrumb(cwd, sort),
+      breadcrumb: headerBreadcrumb(cwd),
+      idleCount: idleCountLabel(built.folders, built.files),
+      ...(headerSuffix(sort) ? { crumbSuffix: headerSuffix(sort) } : {}),
       actions: buildActions(empty, { showHidden, expanded }),
       ...(opts.resetQuery ? { resetQuery: true } : {}),
     });
@@ -252,7 +262,9 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
   const handle = runPick(
     {
       message: headerMessage(cwd, sort),
-      breadcrumb: headerBreadcrumb(cwd, sort),
+      breadcrumb: headerBreadcrumb(cwd),
+      idleCount: idleCountLabel(initial.folders, initial.files),
+      ...(headerSuffix(sort) ? { crumbSuffix: headerSuffix(sort) } : {}),
       rows: initial.rows,
       actions: buildActions(empty, { showHidden, expanded }),
       ...(state.resumeValue ? { resumeValue: state.resumeValue } : {}),

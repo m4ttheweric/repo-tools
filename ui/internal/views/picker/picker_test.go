@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"rt-ui/internal/protocol"
+	"rt-ui/internal/theme"
 )
 
 // mustNotQuit fails t if cmd is the program's own quit signal. A non-nil cmd
@@ -547,6 +548,115 @@ func TestFilteredListBreadcrumbCountAndHighlight(t *testing.T) {
 	}
 	if !strings.HasSuffix(strings.TrimRight(cursorLine, " "), "wt") {
 		t.Fatalf("right segment not pinned at the line end: %q", cursorLine)
+	}
+}
+
+// TestNavHeaderIdleCountShowsFoldersFilesWhenQueryEmpty is the golden for
+// RULING #2's idle state (Nav.dc.html): an empty query paints the caller's
+// faint "N folders · M files" in the count slot in place of the generic
+// match fraction.
+func TestNavHeaderIdleCountShowsFoldersFilesWhenQueryEmpty(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"~/Documents/GitHub"},
+		IdleCount:  "10 folders · 2 files",
+		Rows: []protocol.PickRow{
+			{Value: "d:repo-tools", Left: []protocol.PickSegment{{Text: "repo-tools", Tone: "text", Bold: true}}},
+			{Value: "f:notes.md", Left: []protocol.PickSegment{{Text: "notes.md", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 86
+
+	out := render(m)
+	header := strings.Split(out, "\n")[0]
+	plain := ansi.Strip(header)
+
+	if !strings.Contains(plain, "10 folders · 2 files") {
+		t.Fatalf("idle count missing from the header: %q", plain)
+	}
+	// The idle count stands in for the fraction: no "2/2" reaches the header.
+	if strings.Contains(plain, "2/2") {
+		t.Fatalf("idle header must not also show the generic fraction: %q", plain)
+	}
+	// It reads faint, not cyan.
+	if !strings.Contains(header, fg(theme.Faint).Render("10 folders · 2 files")) {
+		t.Fatalf("idle count should render as a faint run: %q", header)
+	}
+	if strings.Contains(header, cyanSGR) {
+		t.Fatalf("the idle count must not read cyan (that is the filtering state): %q", header)
+	}
+}
+
+// TestNavHeaderFilteringShowsCyanMatchedCountNotIdleCount is the golden for
+// RULING #2's filtering state: a non-empty query falls back to the universal
+// cyan matched-count, never the idle folders/files string, even when an idle
+// count is supplied.
+func TestNavHeaderFilteringShowsCyanMatchedCountNotIdleCount(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb:   []string{"~/Documents/GitHub"},
+		IdleCount:    "10 folders · 2 files",
+		InitialQuery: "al",
+		Rows: []protocol.PickRow{
+			{Value: "d:alpha", Left: []protocol.PickSegment{{Text: "alpha", Tone: "text", Bold: true}}},
+			{Value: "f:beta", Left: []protocol.PickSegment{{Text: "beta", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 86
+
+	out := render(m)
+	header := strings.Split(out, "\n")[0]
+	plain := ansi.Strip(header)
+
+	if strings.Contains(plain, "folders") {
+		t.Fatalf("filtering header must fall back to the fraction, not the idle count: %q", plain)
+	}
+	if !strings.Contains(plain, "1/2") {
+		t.Fatalf("filtering header should show the matched fraction 1/2: %q", plain)
+	}
+	if !strings.Contains(header, cyanSGR) {
+		t.Fatalf("the matched count should read cyan while filtering: %q", header)
+	}
+}
+
+// TestNavHeaderSortSuffixRendersFaintNotBold is the golden for RULING #3
+// (Nav.dc.html): the non-default sort suffix reads faint, never inheriting
+// the breadcrumb's uniform bold, and is absent entirely on the default sort.
+func TestNavHeaderSortSuffixRendersFaintNotBold(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb:  []string{"~/Documents/GitHub"},
+		CrumbSuffix: " (Size, largest first)",
+		IdleCount:   "10 folders · 2 files",
+		Rows:        []protocol.PickRow{{Value: "d:repo-tools", Left: []protocol.PickSegment{{Text: "repo-tools", Tone: "text", Bold: true}}}},
+	}
+	m := New(req)
+	m.width = 86
+
+	out := render(m)
+	header := strings.Split(out, "\n")[0]
+
+	if !strings.Contains(ansi.Strip(header), "~/Documents/GitHub (Size, largest first)") {
+		t.Fatalf("header should carry the cwd and the sort suffix: %q", ansi.Strip(header))
+	}
+	// The suffix must render as a faint run, and must NOT be wrapped in the
+	// breadcrumb's bold Text -- that bold treatment is exactly RULING #3.
+	if !strings.Contains(header, fg(theme.Faint).Render(" (Size, largest first)")) {
+		t.Fatalf("sort suffix must render faint: %q", header)
+	}
+	if strings.Contains(header, fg(theme.Text).Bold(true).Render(" (Size, largest first)")) {
+		t.Fatalf("sort suffix must not inherit the breadcrumb's bold: %q", header)
+	}
+
+	// Default sort (no suffix supplied): nothing but the bold cwd.
+	def := req
+	def.CrumbSuffix = ""
+	md := New(def)
+	md.width = 86
+	if strings.Contains(ansi.Strip(render(md)), "(Size") {
+		t.Fatalf("the default sort must render no suffix at all")
 	}
 }
 
