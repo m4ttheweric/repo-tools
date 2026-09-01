@@ -10,6 +10,7 @@ import { join } from "path";
 import { getRepoIdentity, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchSegments, type EnrichedBranch } from "./enrich.ts";
 import { repoLabel } from "./repo-label.ts";
+import { printAborted } from "./ui/abort.ts";
 import type { PickHandle } from "./ui/pick.ts";
 import type { PickAction, PickRow, PickSegment } from "./ui/protocol.ts";
 
@@ -70,13 +71,13 @@ const RELOAD_ACTION: PickAction = { id: "reload", label: "refresh", key: "ctrl-r
  */
 export async function pickRepo(
   repos: KnownRepo[],
-  opts?: { onReload?: () => KnownRepo[] | Promise<KnownRepo[]> },
+  opts?: { onReload?: () => KnownRepo[] | Promise<KnownRepo[]>; breadcrumb?: string[] },
 ): Promise<string | null> {
   const { filterableSelect, optionsToRows } = await import("./pick-wrappers.ts");
 
   let handle: PickHandle | undefined;
   return filterableSelect(
-    { message: "Pick a repo", options: repoOptionsFromList(repos) },
+    { message: "Pick a repo", options: repoOptionsFromList(repos), ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}) },
     {
       ...(opts?.onReload ? { actions: [RELOAD_ACTION] } : {}),
       onOpen: (h) => { handle = h; },
@@ -98,7 +99,7 @@ export async function pickRepo(
 export async function pickWorktreeWithSwitch(
   repo: KnownRepo,
   currentPath: string,
-  opts?: { stderr?: boolean },
+  opts?: { stderr?: boolean; breadcrumb?: string[] },
 ): Promise<string | typeof SWITCH_REPO> {
   const { filterableSelect, BackNavigation } = await import("./pick-wrappers.ts");
 
@@ -113,6 +114,7 @@ export async function pickWorktreeWithSwitch(
       options,
       backLabel: "Switch to a different repo",
       ...(opts?.stderr ? { stderr: true } : {}),
+      ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb, crumbSuffix: ` · ${repoLabel(repo.repoName)} worktrees` } : {}),
     },
     {
       rows: repo.worktrees.map((wt) => cheapWorktreeRow(wt, currentPath)),
@@ -133,7 +135,7 @@ export async function pickWorktreeWithSwitch(
     const picked = await resultPromise;
     // Esc/Ctrl-C → null; exit cleanly rather than leaking null through the
     // string return type (callers do selectedPath.split(...) etc.).
-    if (!picked) process.exit(0);
+    if (!picked) { printAborted(); process.exit(0); }
     return picked;
   } catch (err) {
     if (err instanceof BackNavigation) return SWITCH_REPO;
@@ -153,6 +155,7 @@ export async function pickFromAllRepos(
     includePackages?: boolean;
     /** In-process ctrl-r reload: re-lists repos and pushes fresh rows without closing the picker. */
     onReload?: () => KnownRepo[] | Promise<KnownRepo[]>;
+    breadcrumb?: string[];
   },
 ): Promise<string> {
   const writer = opts?.stderr ? console.error : console.log;
@@ -179,8 +182,8 @@ export async function pickFromAllRepos(
     if (repos.length === 1) {
       selectedRepo = repos[0]!;
     } else {
-      const picked = await pickRepo(repos, { onReload: opts?.onReload });
-      if (!picked) process.exit(1);
+      const picked = await pickRepo(repos, { onReload: opts?.onReload, breadcrumb: opts?.breadcrumb });
+      if (!picked) { printAborted(); process.exit(1); }
       selectedRepo = repoFromOptionValue(repos, picked)!;
     }
     if (selectedRepo.missing) refuse(selectedRepo);
@@ -194,13 +197,16 @@ export async function pickFromAllRepos(
         worktreePath = await pickWorktreeFromRepo(
           selectedRepo,
           `${repoLabel(selectedRepo.repoName)} worktrees`,
-          { backLabel: repos.length > 1 ? "Switch repo" : undefined },
+          {
+            backLabel: repos.length > 1 ? "Switch repo" : undefined,
+            ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb, crumbSuffix: ` · ${repoLabel(selectedRepo.repoName)} worktrees` } : {}),
+          },
         );
       } catch (err) {
         if (err instanceof BackNavigation) continue;
         throw err;
       }
-      if (!worktreePath) process.exit(0);
+      if (!worktreePath) { printAborted(); process.exit(0); }
     }
 
     // If caller wants package-level navigation and this is a monorepo, go one
@@ -239,7 +245,7 @@ export async function pickPackageWithEscape(
   repo: KnownRepo,
   worktreePath: string,
   allRepos: KnownRepo[],
-  opts?: { stderr?: boolean },
+  opts?: { stderr?: boolean; breadcrumb?: string[] },
 ): Promise<string> {
   const { filterableSelect, BackNavigation } = await import("./pick-wrappers.ts");
 
@@ -272,9 +278,10 @@ export async function pickPackageWithEscape(
         options,
         backLabel,
         ...(opts?.stderr ? { stderr: true } : {}),
+        ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb, crumbSuffix: ` · ${repoLabel(repo.repoName)}` } : {}),
       });
 
-      if (!picked) process.exit(1);
+      if (!picked) { printAborted(); process.exit(1); }
       return picked;
 
     } catch (err) {
@@ -283,14 +290,16 @@ export async function pickPackageWithEscape(
           // ctrl-up → "Switch worktree"
           if (hasMultipleRepos) {
             const wtResult = await pickWorktreeWithSwitch(repo, worktreePath, opts);
-            if (!wtResult) process.exit(0); // esc
+            if (!wtResult) { printAborted(); process.exit(0); } // esc
             if (isSwitchRepo(wtResult)) {
               return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
             }
             worktreePath = wtResult;
           } else {
-            const newPath = await pickWorktreeFromRepo(repo, `${repoLabel(repo.repoName)} worktrees`);
-            if (!newPath) process.exit(0); // esc
+            const newPath = await pickWorktreeFromRepo(repo, `${repoLabel(repo.repoName)} worktrees`, {
+              ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb, crumbSuffix: ` · ${repoLabel(repo.repoName)} worktrees` } : {}),
+            });
+            if (!newPath) { printAborted(); process.exit(0); } // esc
             worktreePath = newPath;
           }
           // Re-enter the loop with the new worktree's packages
@@ -318,7 +327,7 @@ export async function pickPackageWithEscape(
 export async function resolveWorktreeByBranch(
   branch: string,
   repos: KnownRepo[],
-  opts?: { stderr?: boolean },
+  opts?: { stderr?: boolean; breadcrumb?: string[] },
 ): Promise<string> {
   const { filterableSelect } = await import("./pick-wrappers.ts");
 
@@ -350,8 +359,9 @@ export async function resolveWorktreeByBranch(
       hint: repos.length > 1 ? m.repoName : m.path.replace(process.env.HOME ?? "", "~"),
     })),
     ...(opts?.stderr ? { stderr: true } : {}),
+    ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
   });
 
-  if (!picked) process.exit(1);
+  if (!picked) { printAborted(); process.exit(1); }
   return picked;
 }

@@ -50,9 +50,20 @@ test("picker-hosting leaves suppress the dispatcher header (fullscreen), like ru
   expect(TREE.commit!.fullscreen).toBe(true);
   expect(TREE.nav!.fullscreen).toBe(true);
   expect(TREE.skills!.subcommands!.surface!.fullscreen).toBe(true);
-  // cd stays flagless until its picker (routed through lib/pickers.ts) carries
-  // an in-card breadcrumb; suppressing its header before then would blank it.
-  expect(TREE.cd!.fullscreen).toBeUndefined();
+  // cd's picker (routed through lib/pickers.ts) now carries its own in-card
+  // breadcrumb, so its dispatcher header is suppressed too.
+  expect(TREE.cd!.fullscreen).toBe(true);
+});
+
+test("all six worktree picker leaves suppress the dispatcher header (fullscreen)", () => {
+  const wt = TREE.worktree!.subcommands!;
+  for (const leaf of ["provision", "dispose", "restore", "ready-approve", "freshen", "await-ready"]) {
+    expect(wt[leaf]!.fullscreen).toBe(true);
+  }
+  // create/list/adopt/each/hook/claude-hook aren't in scope -- they either
+  // never show a picker or aren't leaf-argument pickers at all.
+  expect(wt.create!.fullscreen).toBeUndefined();
+  expect(wt.list!.fullscreen).toBeUndefined();
 });
 
 test("the bare skills branch node is not flagged fullscreen -- only the surface leaf is", () => {

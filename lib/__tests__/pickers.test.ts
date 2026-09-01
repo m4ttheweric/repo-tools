@@ -104,6 +104,66 @@ describe("pickFromAllRepos: ctrl-r reload", () => {
   });
 });
 
+describe("cd in-card breadcrumb (Cd.dc.html / Enrichment.dc.html)", () => {
+  test("pickFromAllRepos: repo stage carries breadcrumb only, no crumbSuffix", async () => {
+    const { pickFromAllRepos } = await import("../pickers.ts");
+    fake = installFakePick([resultStep({ action: "select", value: "repo-a" })]);
+
+    await pickFromAllRepos(
+      [repoFixture("repo-a", "/a"), repoFixture("repo-b", "/b")],
+      { breadcrumb: ["rt", "cd"] },
+    );
+
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "cd"]);
+    expect(fake.calls[0]!.request.crumbSuffix).toBeUndefined();
+  });
+
+  test("pickFromAllRepos: worktree stage carries breadcrumb plus the repo crumbSuffix", async () => {
+    const { pickFromAllRepos } = await import("../pickers.ts");
+    const repo: KnownRepo = {
+      repoName: "solo",
+      worktrees: [
+        { path: "/a/wt1", branch: "main", isBare: false },
+        { path: "/a/wt2", branch: "feature", isBare: false },
+      ],
+      dataDir: "/d",
+    };
+    fake = installFakePick([resultStep({ action: "select", value: "/a/wt1" })]);
+
+    await pickFromAllRepos([repo], { breadcrumb: ["rt", "cd"] });
+
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "cd"]);
+    expect(fake.calls[0]!.request.crumbSuffix).toBe(" · solo worktrees");
+  });
+
+  test("pickFromAllRepos: no breadcrumb given (rt code) leaves the request flagless", async () => {
+    const { pickFromAllRepos } = await import("../pickers.ts");
+    fake = installFakePick([resultStep({ action: "select", value: "repo-a" })]);
+
+    await pickFromAllRepos([repoFixture("repo-a", "/a"), repoFixture("repo-b", "/b")]);
+
+    expect(fake.calls[0]!.request.breadcrumb).toBeUndefined();
+  });
+
+  test("pickWorktreeWithSwitch: carries the cd breadcrumb and repo crumbSuffix when given one", async () => {
+    const { pickWorktreeWithSwitch } = await import("../pickers.ts");
+    const repo: KnownRepo = {
+      repoName: "solo",
+      worktrees: [
+        { path: "/a/wt1", branch: "main", isBare: false },
+        { path: "/a/wt2", branch: "feature", isBare: false },
+      ],
+      dataDir: "/d",
+    };
+    fake = installFakePick([resultStep({ action: "select", value: "/a/wt1" })]);
+
+    await pickWorktreeWithSwitch(repo, "/a/wt1", { breadcrumb: ["rt", "cd"] });
+
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "cd"]);
+    expect(fake.calls[0]!.request.crumbSuffix).toBe(" · solo worktrees");
+  });
+});
+
 describe("pickWorktreeWithSwitch: never gets a reload action", () => {
   test("has no ctrl-r action registered (reload is repo-picker-only)", async () => {
     const { pickWorktreeWithSwitch } = await import("../pickers.ts");

@@ -250,6 +250,11 @@ export async function worktreePicker(args: string[]): Promise<void> {
 
   let selectedPath: string;
 
+  // The dispatcher header is suppressed for `rt cd` (command-tree-def.ts
+  // `fullscreen: true`) -- every picker below carries this instead, per
+  // Cd.dc.html/Enrichment.dc.html.
+  const CD_BREADCRUMB = ["rt", "cd"];
+
   // ── --repo flag: always go to repo picker ────────────────────────────────────
   if (forceRepo) {
     if (wtBranch) {
@@ -259,7 +264,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
       // a dead path.
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
-        : await pickRepo(repos, { onReload: reloadRepos });
+        : await pickRepo(repos, { onReload: reloadRepos, breadcrumb: CD_BREADCRUMB });
       if (!pickedRepoName) {
         printAborted();
         process.exit(0); // Esc on repo picker
@@ -276,10 +281,10 @@ export async function worktreePicker(args: string[]): Promise<void> {
       if (hit.length === 1) {
         selectedPath = hit[0]!.path;
       } else {
-        selectedPath = await resolveWorktreeByBranch(wtBranch, [pickedRepo], { stderr: true });
+        selectedPath = await resolveWorktreeByBranch(wtBranch, [pickedRepo], { stderr: true, breadcrumb: CD_BREADCRUMB });
       }
     } else {
-      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos });
+      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos, breadcrumb: CD_BREADCRUMB });
     }
 
   // ── --worktree flag only: resolve branch in current repo (then all repos) ──
@@ -289,24 +294,24 @@ export async function worktreePicker(args: string[]): Promise<void> {
     const inCurrent = currentRepo?.worktrees.filter((wt) => wt.branch.toLowerCase().startsWith(lower)) ?? [];
     // If not found in current repo, broaden to all repos
     const finalRepos = inCurrent.length > 0 ? searchRepos : repos;
-    selectedPath = await resolveWorktreeByBranch(wtBranch, finalRepos, { stderr: true });
+    selectedPath = await resolveWorktreeByBranch(wtBranch, finalRepos, { stderr: true, breadcrumb: CD_BREADCRUMB });
 
   // ── --package in a monorepo: package picker (opt-in) ─────────────────────
   } else if (wantPackages && currentRepo && getWorkspacePackages(identity!.repoRoot).length > 0) {
-    selectedPath = await pickPackageWithEscape(currentRepo, identity!.repoRoot, repos, { stderr: true });
+    selectedPath = await pickPackageWithEscape(currentRepo, identity!.repoRoot, repos, { stderr: true, breadcrumb: CD_BREADCRUMB });
 
   // ── In a multi-worktree repo: worktree picker ────────────────────────────
   } else if (currentRepo && currentRepo.worktrees.length > 1) {
     // pickWorktreeWithSwitch exits internally on cancel (its abort line rides
     // the shared lib/pickers.ts cancel path), so result is never falsy here.
-    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
+    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true, breadcrumb: CD_BREADCRUMB });
     selectedPath = isSwitchRepo(result)
-      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos })
+      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos, breadcrumb: CD_BREADCRUMB })
       : result;
 
   // ── Not in a tracked repo or single-worktree: repo picker ───────────────
   } else {
-    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos });
+    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos, breadcrumb: CD_BREADCRUMB });
   }
 
   // Restore stdout and print just the path

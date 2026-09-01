@@ -329,7 +329,14 @@ export async function pickWorktree(prompt: string): Promise<string> {
  * Pick a worktree from a specific repo (enriched with Linear ticket info).
  * Returns null when the picker is cancelled (Esc / Ctrl-C).
  */
-export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opts?: { backLabel?: string }): Promise<string | null> {
+export async function pickWorktreeFromRepo(
+  repo: KnownRepo,
+  prompt?: string,
+  // breadcrumb/crumbSuffix stay unset for callers whose dispatcher header is
+  // still printed (e.g. `rt code --pick`) -- only a fullscreen leaf (`rt cd`)
+  // needs this picker to carry its own in-card context.
+  opts?: { backLabel?: string; breadcrumb?: string[]; crumbSuffix?: string },
+): Promise<string | null> {
   const { filterableSelect } = await import("./pick-wrappers.ts");
   const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
 
@@ -355,6 +362,8 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opt
     message: prompt || `${repoLabel(repo.repoName)} worktrees`,
     options,
     backLabel: opts?.backLabel,
+    ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
+    ...(opts?.crumbSuffix ? { crumbSuffix: opts.crumbSuffix } : {}),
   });
 }
 

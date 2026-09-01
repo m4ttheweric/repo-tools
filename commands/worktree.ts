@@ -330,7 +330,7 @@ async function enrichTrailingByPath(rows: TreeRow[]): Promise<Map<string, string
   return byPath;
 }
 
-async function pickOneTree(rows: TreeRow[], message: string): Promise<TreeRow | null> {
+async function pickOneTree(rows: TreeRow[], message: string, breadcrumb: string[]): Promise<TreeRow | null> {
   if (rows.length === 0) return null;
   const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const trailingByPath = await enrichTrailingByPath(rows);
@@ -347,7 +347,7 @@ async function pickOneTree(rows: TreeRow[], message: string): Promise<TreeRow | 
     const hint = trailing ? `${base}  ${trailing}` : base;
     return { value: r.path, label: r.name.padEnd(nameWidth), hint };
   });
-  const picked = await filterableSelect({ message, options, stderr: true });
+  const picked = await filterableSelect({ message, options, stderr: true, breadcrumb });
   if (!picked) return null;
   return rows.find((r) => r.path === picked) ?? null;
 }
@@ -429,7 +429,7 @@ export async function worktreeAwaitReady(args: string[], _ctx: unknown): Promise
     }
     // Only claimed trees carry a claim-time settle to wait on.
     const rows = (await fetchTreeRows(parsed.json, repoName)).filter((r) => r.state === "claimed");
-    const picked = await pickOneTree(rows, "Await which worktree's readiness?");
+    const picked = await pickOneTree(rows, "Await which worktree's readiness?", ["rt", "worktree", "await-ready"]);
     if (!picked) { console.log(`\n  ${dim}nothing selected${reset}\n`); return; }
     treeName = picked.name;
     repoName = picked.repoName;
@@ -495,7 +495,7 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
     const rows = sortDisposableFirst(
       (await fetchTreeRows(parsed.json, repoName)).filter((r) => r.kind === "ephemeral"),
     );
-    const picked = await pickOneTree(rows, "Dispose which worktree?");
+    const picked = await pickOneTree(rows, "Dispose which worktree?", ["rt", "worktree", "dispose"]);
     if (!picked) { console.log(`\n  ${dim}nothing selected${reset}\n`); return; }
     treeName = picked.name;
     repoName = picked.repoName;
@@ -562,7 +562,7 @@ async function pickRestorableEntry(entries: Awaited<ReturnType<typeof fetchResto
     label: e.name.padEnd(nameWidth),
     hint: `${e.branch ?? "(detached)"}  disposed ${e.disposedAt.slice(0, 10)} (${e.reason}), kept until ${e.keptUntil.slice(0, 10)}`,
   }));
-  return filterableSelect({ message: "Restore which worktree?", options, stderr: true });
+  return filterableSelect({ message: "Restore which worktree?", options, stderr: true, breadcrumb: ["rt", "worktree", "restore"] });
 }
 
 export async function worktreeRestore(args: string[], _ctx: unknown): Promise<void> {
@@ -659,6 +659,7 @@ async function pickRepoName(repoIndex: Record<string, string>): Promise<string |
     message: "Approve team ready steps for which repo?",
     options: names.map((n) => ({ value: n, label: repoLabel(n) })),
     stderr: true,
+    breadcrumb: ["rt", "worktree", "ready-approve"],
   });
   return picked ?? undefined;
 }
@@ -672,6 +673,7 @@ async function confirmApprove(): Promise<boolean> {
       { value: "cancel", label: "Cancel" },
     ],
     stderr: true,
+    breadcrumb: ["rt", "worktree", "ready-approve"],
   });
   return picked === "approve";
 }
@@ -750,7 +752,7 @@ export async function worktreeFreshen(args: string[], _ctx: unknown): Promise<vo
     const rows = (await fetchTreeRows(parsed.json, repoName))
       .filter((r) => (r.kind === "ephemeral" && r.state === "on-deck") || r.kind === "main")
       .sort((a, b) => a.name.localeCompare(b.name));
-    const picked = await pickOneTree(rows, "Freshen which worktree?");
+    const picked = await pickOneTree(rows, "Freshen which worktree?", ["rt", "worktree", "freshen"]);
     if (!picked) { console.log(`\n  ${dim}nothing selected${reset}\n`); return; }
     treeName = picked.name;
     repoName = picked.repoName;

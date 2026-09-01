@@ -506,6 +506,10 @@ export const TREE: Record<string, CommandNode> = {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
     fn: "worktreePicker",
+    // Same inline-frame constraint as commitNode above: the picker owns the
+    // top region and draws its own in-card breadcrumb, so the dispatcher
+    // header is suppressed here.
+    fullscreen: true,
     // The hidden --emit-rows reload path (commands/cd.ts) is deliberately
     // non-interactive, so it must clear the TTY gate on a plain pipe even
     // without RT_BATCH set. It is not declared in `args` below, so it never
@@ -549,6 +553,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Claim a worktree for a ticket or branch (from the on-deck pool, or freshly created)",
         module: "./commands/worktree.ts",
         fn: "worktreeProvision",
+        fullscreen: true,
         args: [
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
           { name: "Ticket", flag: "--ticket", type: "text", placeholder: "RT-40", hint: "Linear ticket id — derives the branch name" },
@@ -614,6 +619,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeDispose",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to dispose; omit to pick interactively" },
           { name: "Owner", flag: "--owner", type: "text", placeholder: "matt", hint: "Dispose every tree owned by this owner (can span repos)" },
@@ -627,6 +633,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeRestore",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Tree", type: "text", optional: true, placeholder: "my-tree", hint: "Disposed tree name to restore; omit to pick interactively" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
@@ -639,6 +646,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeReadyApprove",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Repo", type: "text", optional: true, placeholder: "repo-tools", hint: "Repo whose team `ready` ladder to approve; omit to pick interactively" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
@@ -658,6 +666,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeFreshen",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to freshen; omit to pick interactively (or run for every repo, headless)" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Narrow to this registered repo" },
@@ -669,6 +678,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeAwaitReady",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Claimed tree to wait on; omit to pick interactively" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },

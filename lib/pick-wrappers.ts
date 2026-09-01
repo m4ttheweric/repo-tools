@@ -66,6 +66,8 @@ export async function filterableSelect(
     exact?: boolean;
     /** Header-left breadcrumb (e.g. ["rt", "commit"]); Go renders this, not `message`. */
     breadcrumb?: string[];
+    /** Faint run appended after the bold breadcrumb segments (e.g. " · <repo> worktrees"); rides with `breadcrumb`, ignored without it. */
+    crumbSuffix?: string;
   },
   extras: PickerExtras = {},
 ): Promise<string | null> {
@@ -79,7 +81,7 @@ export async function filterableSelect(
       ...(actions ? { actions } : {}),
       ...(opts.exact ? { exact: true } : {}),
       ...(extras.cap !== undefined ? { cap: extras.cap } : {}),
-      ...(opts.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
+      ...(opts.breadcrumb ? { breadcrumb: opts.breadcrumb, ...(opts.crumbSuffix ? { crumbSuffix: opts.crumbSuffix } : {}) } : {}),
     },
     extras.onEvent ? { onEvent: extras.onEvent } : undefined,
   );
