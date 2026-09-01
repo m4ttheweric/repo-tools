@@ -161,10 +161,11 @@ jobs:
           [ -n "$RT_VSIX" ] || { echo "::error::no .vsix produced by bun run package"; exit 1; }
           echo "RT_VSIX=$RT_VSIX" >> "$GITHUB_ENV"
 
-      # SPM resolution (Sparkle over https) is swift build's first, silent act
-      # — tag runs sat 40+ minutes with zero output there, three times, while
-      # dispatch runs resolved in seconds. Resolve it as its own bounded step
-      # so a hang is visible, retried, and never eats the build step's budget.
+      # Sparkle now vendors through deps.lock as a local binaryTarget — SPM's
+      # own download of the binary-artifact zip hung indefinitely on tag runs
+      # (five in a row; git resolve itself took seconds). With no remote deps
+      # this step is near-instant, and stays as the tripwire: any future remote
+      # dependency that hangs fails here, bounded and visible, not in the build.
       - name: Resolve Swift packages (bounded)
         working-directory: rt-tray
         env:
