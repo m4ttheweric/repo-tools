@@ -102,7 +102,9 @@ export async function runUninstallCommand(args: string[], _ctx: CommandContext =
       secrets: deps.secrets,
       relay: deps.relay,
       secretPresence: deps.secretPresence,
-      flags: { nonInteractive: !deps.isTTY(), teamOfOne: true, ci: process.env.CI === "true" },
+      // appMayDrive: a non-TTY uninstall is normally the app itself driving
+      // (the Settings sheet spawns it and services its needs off stdout).
+      flags: { nonInteractive: !deps.isTTY(), teamOfOne: true, ci: process.env.CI === "true", appMayDrive: true },
       needOpts: deps.needOpts,
     });
 
