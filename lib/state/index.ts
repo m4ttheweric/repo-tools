@@ -105,6 +105,7 @@ export {
 } from "./run-history-store.ts";
 
 export {
+  ackMessage,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -126,6 +127,7 @@ export {
   pruneMessages,
   CHAT_RETENTION_MS,
   CHAT_ROOM_FLOOR,
+  type AckResult,
   type ChatMember,
   type ChatMessage,
   type WakeMode,

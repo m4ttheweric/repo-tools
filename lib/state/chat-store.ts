@@ -46,6 +46,8 @@ export interface ChatMessage {
   mentions: string[];
   replyTo?: number;
   postedAt: number;
+  /** Set only on a quiet post, so an ordinary message's shape is unchanged. */
+  quiet?: boolean;
 }
 
 interface MemberRow {
@@ -83,6 +85,7 @@ interface MessageRow {
   mentions: string | null;
   reply_to: number | null;
   posted_at: number;
+  quiet: number;
 }
 
 function rowToMessage(row: MessageRow): ChatMessage {
@@ -95,6 +98,7 @@ function rowToMessage(row: MessageRow): ChatMessage {
     postedAt: row.posted_at,
   };
   if (row.reply_to !== null) message.replyTo = row.reply_to;
+  if (row.quiet) message.quiet = true;
   return message;
 }
 
@@ -128,8 +132,8 @@ export const CHAT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 /** The newest N messages per room that pruneMessages never deletes, age floor notwithstanding -- a live room is never emptied. */
 export const CHAT_ROOM_FLOOR = 200;
 
-const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at";
-const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at) VALUES (?, ?, ?, ?, ?, ?);`;
+const MESSAGE_COLUMNS = "id, room, handle, body, mentions, reply_to, posted_at, quiet";
+const INSERT_MESSAGE_SQL = `INSERT INTO chat_messages (room, handle, body, mentions, reply_to, posted_at, quiet) VALUES (?, ?, ?, ?, ?, ?, ?);`;
 // Ranks each room's own messages newest-first (rn=1 is the newest); a row is
 // only a delete candidate once it falls outside the per-room floor AND past
 // the age cutoff -- either condition alone must keep it.
@@ -185,6 +189,7 @@ WHERE chat_members.last_read_id < maxes.maxId
     WHERE m.room = chat_members.room
       AND m.id > chat_members.last_read_id
       AND m.handle <> chat_members.handle
+      AND m.quiet = 0
   );
 `;
 
@@ -431,16 +436,16 @@ export function recipientsFor(
 }
 
 export function postMessage(
-  args: { room: string; handle: string; body: string; mentions?: string[] },
+  args: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean },
   db: Database = getStateDb(),
 ): { id: number; recipients: string[] } | undefined {
-  const { room, handle, body } = args;
+  const { room, handle, body, quiet } = args;
   const mentions = mergeMentions(body, args.mentions);
 
   const run = db.transaction((): { id: number; recipients: string[] } => {
     const now = Date.now();
     db.query(REVIVE_ROOM_SQL).run(room);
-    const result = db.query(INSERT_MESSAGE_SQL).run(room, handle, body, JSON.stringify(mentions), null, now);
+    const result = db.query(INSERT_MESSAGE_SQL).run(room, handle, body, JSON.stringify(mentions), null, now, quiet ? 1 : 0);
     const recipients = recipientsFor(room, handle, mentions, db);
     return { id: Number(result.lastInsertRowid), recipients };
   });
@@ -598,4 +603,34 @@ export interface StalePendingRow {
  */
 export function stalePendingPairs(db: Database = getStateDb()): StalePendingRow[] {
   return db.query(SELECT_STALE_PENDING_SQL).all() as StalePendingRow[];
+}
+
+export type AckResult =
+  | { ok: true; author: string; room: string; body: string; already: boolean }
+  | { ok: false; reason: "unknown-message" | "not-a-member" | "own-message" };
+
+/**
+ * Records that `handle` has acknowledged one message. `already` is what keeps
+ * a re-ack from waking the author a second time: the INSERT is OR IGNORE
+ * against the (message_id, handle) primary key, so the second call reports
+ * the same success without a new notification being owed.
+ */
+export function ackMessage(
+  args: { messageId: number; handle: string },
+  db: Database = getStateDb(),
+): AckResult {
+  const { messageId, handle } = args;
+  const msg = db
+    .query("SELECT room, handle, body FROM chat_messages WHERE id = ?;")
+    .get(messageId) as { room: string; handle: string; body: string } | null;
+  if (!msg) return { ok: false, reason: "unknown-message" };
+  if (msg.handle === handle) return { ok: false, reason: "own-message" };
+  const member = db
+    .query("SELECT 1 AS present FROM chat_members WHERE room = ? AND handle = ?;")
+    .get(msg.room, handle) as { present: number } | null;
+  if (!member) return { ok: false, reason: "not-a-member" };
+  const result = db
+    .query("INSERT OR IGNORE INTO chat_acks (message_id, handle, acked_at) VALUES (?, ?, ?);")
+    .run(messageId, handle, Date.now());
+  return { ok: true, author: msg.handle, room: msg.room, body: msg.body, already: result.changes === 0 };
 }

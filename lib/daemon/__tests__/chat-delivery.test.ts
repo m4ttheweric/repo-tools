@@ -101,7 +101,7 @@ test("posting to a room delivers the body to a signed-in recipient's inbox and a
   if (!posted.ok) throw new Error("unreachable");
   await Bun.sleep(0);
   expect(calls).toEqual([
-    [sock, `<cross-session-message from-name="a (#general)">\n[#general] a: @b hi\n${STEER}\n</cross-session-message>`],
+    [sock, `<cross-session-message from-name="a (#general)">\n[#general] a #1: @b hi\n${STEER}\n</cross-session-message>`],
   ]);
   expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
 });
@@ -301,7 +301,7 @@ test("one retry on a failed push: fails once then succeeds -- single frame, curs
   await waitFor(() => calls.length >= 2);
   expect(calls).toHaveLength(2); // the failed attempt, then the retry
   expect(calls[1]![1]).toBe(
-    `<cross-session-message from-name="a (#general)">\n[#general] a: hi\n${STEER}\n</cross-session-message>`,
+    `<cross-session-message from-name="a (#general)">\n[#general] a #1: hi\n${STEER}\n</cross-session-message>`,
   );
   expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
   await Bun.sleep(20); // give a stray badge/warn time to land before asserting their absence
@@ -363,9 +363,136 @@ test("a failed delivery (both attempts) batches with the next successful one, ca
   releaseFirst?.();
   await waitFor(() => calls.length >= 3); // attempt1 (held, fails), attempt2 (retry, fails), attempt3 (post two, succeeds and catches up both)
   expect(calls[2]![1]).toBe(
-    `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: one\n[#general] a: two\n${STEER}\n</cross-session-message>`,
+    `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a #1: one\n[#general] a #2: two\n${STEER}\n</cross-session-message>`,
   );
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
+});
+
+test("a bundle never replays the recipient's own posts back into their own pane", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  // postMessage never self-advances the author's cursor, so b's own post sits
+  // in b's pending range forever and the next post by anyone else sweeps it up.
+  const own = await h["chat:post"]({ room: "general", handle: "b", body: "mine" });
+  if (!own.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  calls.length = 0;
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "yours" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toEqual([
+    [sock, `<cross-session-message from-name="a (#general)">\n[#general] a #2: yours\n${STEER}\n</cross-session-message>`],
+  ]);
+  expect(lastReadId(h.db, "general", "b")).toBe(posted.data.id);
+});
+
+test("an ack wakes only the message's author, with a one-line receipt", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-a" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-a", baseHandle: "a" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "taking the picker branch" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  calls.length = 0;
+  const acked = await h["chat:ack"]({ id: posted.data.id, handle: "b" });
+  expect(acked.ok).toBe(true);
+  await Bun.sleep(0);
+  expect(calls).toEqual([
+    [sock, `<cross-session-message from-name="b (ack)">\nb acknowledged your message #${posted.data.id}: "taking the picker branch"\n</cross-session-message>`],
+  ]);
+});
+
+test("a repeat ack never wakes the author a second time", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-a" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-a", baseHandle: "a" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b" });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "hi" });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  await h["chat:ack"]({ id: posted.data.id, handle: "b" });
+  await Bun.sleep(0);
+  calls.length = 0;
+  const again = await h["chat:ack"]({ id: posted.data.id, handle: "b" });
+  expect(again.ok).toBe(true);
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+});
+
+test("a quiet post reaches the room record but wakes nobody", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  const posted = await h["chat:post"]({ room: "general", handle: "a", body: "taking the picker branch", quiet: true });
+  if (!posted.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+  // Still unread, so peek and the viewer both show it.
+  expect(lastReadId(h.db, "general", "b")).toBe(0);
+});
+
+test("a non-boolean quiet is rejected, never coerced into silencing the post", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "general", handle: "a" });
+  const res = await h["chat:post"]({ room: "general", handle: "a", body: "hi", quiet: "false" as unknown as boolean });
+  expect(res).toEqual({ ok: false, error: "quiet must be a boolean" });
+});
+
+test("a quiet post rides along in the next bundle a normal post causes", async () => {
+  const calls: Array<[string, string]> = [];
+  const sock = fakeSocketPath();
+  const inboxDeps: InboxDeps = {
+    resolve: (sessionId) => (sessionId === "sess-b" ? { pid: process.pid, socketPath: sock, status: "idle" } : null),
+    deliver: async (socketPath, content) => { calls.push([socketPath, content]); return { ok: true }; },
+  };
+  const h = freshHandlers(inboxDeps);
+  await h["chat:sign-in"]({ sessionId: "sess-b", baseHandle: "b" });
+  await settleWelcome(calls);
+  await h["chat:join"]({ room: "general", handle: "a" });
+  await h["chat:join"]({ room: "general", handle: "b", wakeOn: "all" });
+  await h["chat:post"]({ room: "general", handle: "a", body: "quiet note", quiet: true });
+  await Bun.sleep(0);
+  expect(calls).toEqual([]);
+  const loud = await h["chat:post"]({ room: "general", handle: "a", body: "loud one" });
+  if (!loud.ok) throw new Error("unreachable");
+  await Bun.sleep(0);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]![1]).toBe(
+    `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a #1: quiet note\n[#general] a #2: loud one\n${STEER}\n</cross-session-message>`,
+  );
+  expect(lastReadId(h.db, "general", "b")).toBe(loud.data.id);
 });
 
 test("concurrent posts to the same recipient serialize delivery so a held first send never duplicates the backlog", async () => {
@@ -408,8 +535,8 @@ test("concurrent posts to the same recipient serialize delivery so a held first 
   await Bun.sleep(0);
 
   expect(calls).toHaveLength(2);
-  expect(calls[0]![1]).toBe(`<cross-session-message from-name="a (#general)">\n[#general] a: one\n${STEER}\n</cross-session-message>`);
-  expect(calls[1]![1]).toBe(`<cross-session-message from-name="a (#general)">\n[#general] a: two\n${STEER}\n</cross-session-message>`);
+  expect(calls[0]![1]).toBe(`<cross-session-message from-name="a (#general)">\n[#general] a #1: one\n${STEER}\n</cross-session-message>`);
+  expect(calls[1]![1]).toBe(`<cross-session-message from-name="a (#general)">\n[#general] a #2: two\n${STEER}\n</cross-session-message>`);
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
 });
 
@@ -455,7 +582,7 @@ test("a held first delivery that ultimately fails still lets the second carry bo
   await waitFor(() => calls.length >= 3); // held attempt fails, retry fails, then post two's own send catches up both
 
   expect(calls[2]![1]).toBe(
-    `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a: one\n[#general] a: two\n${STEER}\n</cross-session-message>`,
+    `<cross-session-message from-name="rt chat (2 messages)">\n[#general] a #1: one\n[#general] a #2: two\n${STEER}\n</cross-session-message>`,
   );
   expect(lastReadId(h.db, "general", "b")).toBe(second.data.id);
 });
@@ -530,7 +657,7 @@ test("a dm post renders with the [dm] tag, not the room hash", async () => {
   await settleWelcome(calls);
   await h["chat:dm"]({ from: "a", to: "b", body: "hi" });
   await Bun.sleep(0);
-  expect(calls).toEqual([[sock, `<cross-session-message from-name="a (dm)">\n[dm] a: hi\n${STEER}\n</cross-session-message>`]]);
+  expect(calls).toEqual([[sock, `<cross-session-message from-name="a (dm)">\n[dm] a #1: hi\n${STEER}\n</cross-session-message>`]]);
 });
 
 test("the desk-notification path still fires on a mention, independent of inbox delivery", async () => {

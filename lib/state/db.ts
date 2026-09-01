@@ -288,6 +288,15 @@ CREATE INDEX IF NOT EXISTS agents_repo_created ON agents(repo, created_at);
 CREATE INDEX IF NOT EXISTS agents_created ON agents(created_at);
 `;
 
+const V8_SCHEMA = `
+CREATE TABLE IF NOT EXISTS chat_acks (
+  message_id INTEGER NOT NULL,
+  handle     TEXT NOT NULL,
+  acked_at   INTEGER NOT NULL,
+  PRIMARY KEY (message_id, handle)
+);
+`;
+
 /**
  * Every schema block, in version order. `runMigrations` execs
  * `SCHEMAS.join("")` unconditionally on EVERY open (R015/R056): every
@@ -297,7 +306,7 @@ CREATE INDEX IF NOT EXISTS agents_created ON agents(created_at);
  * A future schema block joins this array; leaving one out is caught by the
  * dynamic table-presence test in db-schema-convergence.test.ts.
  */
-const SCHEMAS = [V1_SCHEMA, V2_SCHEMA, V3_SCHEMA, V4_SCHEMA, V6_SCHEMA, V7_SCHEMA];
+const SCHEMAS = [V1_SCHEMA, V2_SCHEMA, V3_SCHEMA, V4_SCHEMA, V6_SCHEMA, V7_SCHEMA, V8_SCHEMA];
 
 /** project_mr_demands.sections (v6): SQLite's ALTER TABLE ADD COLUMN has no
     IF NOT EXISTS, so unlike every statement in the V*_SCHEMA strings above it
@@ -327,6 +336,15 @@ function addHandleColumnIfMissing(db: Database): void {
   const columns = db.query("PRAGMA table_info(agents);").all() as { name: string }[];
   if (columns.some((c) => c.name === "handle")) return;
   db.exec("ALTER TABLE agents ADD COLUMN handle TEXT;");
+}
+
+/** chat_messages.quiet: a post that must never CAUSE a wake (it still rides
+    along in a bundle some other message causes). Same conditional-exec rule as
+    `sections`, `archived_at` and `handle` above. */
+function addQuietColumnIfMissing(db: Database): void {
+  const columns = db.query("PRAGMA table_info(chat_messages);").all() as { name: string }[];
+  if (columns.some((c) => c.name === "quiet")) return;
+  db.exec("ALTER TABLE chat_messages ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0;");
 }
 
 /**
@@ -519,6 +537,7 @@ function runMigrations(db: Database, dir: string): void {
     addSectionsColumnIfMissing(db);
     addArchivedAtColumnIfMissing(db);
     addHandleColumnIfMissing(db);
+    addQuietColumnIfMissing(db);
     // Legacy-JSON import is single-shot and only correct from a true
     // v0 (never-migrated) database: branch-cache's UPSERT would silently
     // overwrite current rows with stale ones, and project-mrs-store's

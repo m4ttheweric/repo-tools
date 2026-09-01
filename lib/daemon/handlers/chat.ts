@@ -7,6 +7,7 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
 import {
+  ackMessage,
   isValidChatName,
   joinRoom,
   leaveRoom,
@@ -64,6 +65,7 @@ const defaultInboxDeps: InboxDeps = { resolve: resolveInbox, deliver: deliverToI
 const defaultLog = lazyChildLogger("chat");
 
 const CHAT_COMMANDS = [
+  "chat:ack",
   "chat:join",
   "chat:leave",
   "chat:post",
@@ -206,8 +208,13 @@ async function deliverPost(
   const binding = deps.resolve(presence.sessionId);
   if (!binding || !inboxAlive(binding)) return { delivered: false, count: 0 };
   const pending = pendingMessages(msg.room, recipient, msg.id, db);
-  if (pending.length === 0) return { delivered: false, count: 0 };
-  const items = pending.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body }));
+  // postMessage never self-advances the author's cursor, so a recipient's own
+  // posts stay in their pending range and every later bundle would render them
+  // back into their own pane. Presentational only -- markDelivered below still
+  // advances the cursor past them.
+  const others = pending.filter((m) => m.handle !== recipient);
+  if (others.length === 0) return { delivered: false, count: 0 };
+  const items = others.map((m) => ({ room: msg.room, dm: msg.dm, handle: m.handle, body: m.body, id: m.id }));
   const content = wrapCrossSession(deliveryLabel(items), `${renderDeliveries(items)}\n${REPLY_STEER}`);
   let result = await deps.deliver(binding.socketPath, content);
   if (!result.ok) {
@@ -218,7 +225,7 @@ async function deliverPost(
     // The error STRING (e.g. "timeout" vs a connect errno), not just a
     // boolean -- this is exactly what the incident's silent hour lacked.
     log.warn({ recipient, room: msg.room, err: result.error }, "chat: delivery push failed after retry");
-    await reportUnreadBadge(herdr, presence.pane, pending.length);
+    await reportUnreadBadge(herdr, presence.pane, others.length);
     return { delivered: false, count: 0 };
   }
   markDelivered(msg.room, recipient, msg.id, db);
@@ -226,7 +233,34 @@ async function deliverPost(
   // that chat:pulse is gone -- so a recipient actively receiving messages
   // never goes stale enough for prunePresence to delete its row.
   touchLastSeen(presence.sessionId, Date.now(), db);
-  return { delivered: true, count: pending.length };
+  return { delivered: true, count: others.length };
+}
+
+const ACK_BODY_PREVIEW = 80;
+
+/**
+ * A receipt, not a message: no chat_messages row, no cursor movement, no room
+ * fan-out. It reaches exactly one inbox, the author's, which is the whole
+ * point -- acknowledging costs one wake instead of the room-wide one a posted
+ * "ack" costs. The preview is whitespace-collapsed so a heredoc body cannot
+ * turn a one-line receipt into a paragraph.
+ */
+async function deliverAck(
+  db: Database,
+  deps: InboxDeps,
+  log: Logger,
+  args: { author: string; acker: string; messageId: number; body: string },
+): Promise<void> {
+  const { author, acker, messageId, body } = args;
+  const presence = presenceForHandle(author, db);
+  if (!presence || presence.signedOutAt !== undefined) return;
+  const binding = deps.resolve(presence.sessionId);
+  if (!binding || !inboxAlive(binding)) return;
+  const flat = body.replace(/\s+/g, " ").trim();
+  const preview = flat.length > ACK_BODY_PREVIEW ? `${flat.slice(0, ACK_BODY_PREVIEW)}...` : flat;
+  const content = wrapCrossSession(`${acker} (ack)`, `${acker} acknowledged your message #${messageId}: "${preview}"`);
+  const result = await deps.deliver(binding.socketPath, content);
+  if (!result.ok) log.warn({ author, acker, id: messageId, err: result.error }, "chat: ack receipt push failed");
 }
 
 function chainKey(room: string, handle: string): string {
@@ -309,11 +343,12 @@ export function planSweepTargets(
  * Mirrors recipientsFromMembers' per-member filter (lib/state/chat-store.ts)
  * applied to one already-fetched message instead of a room's member list:
  * true when `handle` would have been a recipient of `message` under the
- * normal push rules for `wakeOn` (never the author; "all" is unconditional;
- * "mention" needs an exact handle mention or @here).
+ * normal push rules for `wakeOn` (never the author; never a quiet post, which
+ * may only ride along in a bundle another message causes; "all" is
+ * unconditional; "mention" needs an exact handle mention or @here).
  */
-function isRecipientUnderWakeRules(message: { handle: string; mentions: string[] }, handle: string, wakeOn: WakeMode): boolean {
-  if (message.handle === handle || wakeOn === "none") return false;
+function isRecipientUnderWakeRules(message: { handle: string; mentions: string[]; quiet?: boolean }, handle: string, wakeOn: WakeMode): boolean {
+  if (message.handle === handle || message.quiet || wakeOn === "none") return false;
   return wakeOn === "all" || message.mentions.includes("here") || message.mentions.includes(handle);
 }
 
@@ -327,7 +362,7 @@ function isRecipientUnderWakeRules(message: { handle: string; mentions: string[]
  * decides whether the recipient should be swept at all, not which
  * individual messages in the batch they "should" see.
  */
-export function pendingIncludesRecipient(pending: Array<{ handle: string; mentions: string[] }>, handle: string, wakeOn: WakeMode): boolean {
+export function pendingIncludesRecipient(pending: Array<{ handle: string; mentions: string[]; quiet?: boolean }>, handle: string, wakeOn: WakeMode): boolean {
   return pending.some((m) => isRecipientUnderWakeRules(m, handle, wakeOn));
 }
 
@@ -669,15 +704,15 @@ async function findPaneSessionRetrying(
 function postAndNotify(
   db: Database,
   emitEvent: (topic: string, payload?: unknown) => unknown,
-  args: { room: string; handle: string; body: string; mentions?: string[] },
+  args: { room: string; handle: string; body: string; mentions?: string[]; quiet?: boolean },
   inboxDeps: InboxDeps,
   herdr: typeof herdrRequest,
   deliveryChains: Map<string, Promise<void>>,
   log: Logger,
   retryDelayMs: number,
 ): { id: number; recipients: string[] } | undefined {
-  const { room, handle, body, mentions } = args;
-  const posted = postMessage({ room, handle, body, mentions }, db);
+  const { room, handle, body, mentions, quiet } = args;
+  const posted = postMessage({ room, handle, body, mentions, quiet }, db);
   if (!posted) return undefined;
   // The row is durable at this point. The msg emit is best-effort: a throw
   // here (a full disk, an orphan daemon holding an events.db lock) must
@@ -689,6 +724,11 @@ function postAndNotify(
     log.warn({ err, id: posted.id, room }, "chat: emit for the posted message threw; message is durable, this emit was not");
   }
   const dm = dmParticipants(room, db);
+  // A quiet post is the record without the interruption: it stays unread (so
+  // peek and the viewer still surface it) and catches up inside whatever
+  // bundle a later ordinary message causes, but it wakes nobody itself --
+  // neither an agent's inbox below nor the human's desk further down.
+  if (quiet) return { id: posted.id, recipients: [] };
   for (const recipient of posted.recipients) {
     queueMicrotask(() => {
       deliverSerialized(deliveryChains, db, inboxDeps, herdr, log, retryDelayMs, recipient, { room, dm: dm !== null, id: posted.id }).catch((err) => {
@@ -796,11 +836,14 @@ export function createChatHandlers(opts: {
 
     "chat:post": async (rawPayload: unknown): Promise<CommandResult<"chat:post">> => {
       const payload = rawPayload as Commands["chat:post"]["payload"];
-      const { room, handle, body, mentions } = payload;
+      const { room, handle, body, mentions, quiet } = payload;
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
       if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
       if (!isValidBody(body)) return { ok: false, error: `body must be a non-empty string under ${MAX_BODY_BYTES} bytes` };
       if (mentions !== undefined && !Array.isArray(mentions)) return { ok: false, error: "mentions must be an array of handles" };
+      // Rejected rather than coerced: a truthy non-boolean (the string
+      // "false", say) would silently suppress every wake this post owes.
+      if (quiet !== undefined && typeof quiet !== "boolean") return { ok: false, error: "quiet must be a boolean" };
       const invalidMention = mentions?.find((m) => !isValidChatName(m));
       if (invalidMention !== undefined) return { ok: false, error: `invalid handle "${invalidMention}"` };
       // A typo'd room previously no-op'd through postMessage's REVIVE (a
@@ -810,9 +853,37 @@ export function createChatHandlers(opts: {
         const nearby = closestRoomNames(room, handle, db);
         return { ok: false, error: `unknown room "${room}"${nearby.length ? ` — did you mean: ${nearby.join(", ")}` : ""}` };
       }
-      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
+      const posted = postAndNotify(db, emitEvent, { room, handle, body, mentions, quiet }, inboxDeps, herdr, deliveryChains, log, retryDelayMs);
       if (!posted) return { ok: false, error: "chat: post failed (retry budget exhausted)" };
       return { ok: true, data: posted };
+    },
+
+    "chat:ack": async (rawPayload: unknown): Promise<CommandResult<"chat:ack">> => {
+      const payload = rawPayload as Commands["chat:ack"]["payload"];
+      const { id, handle } = payload;
+      if (!isValidChatName(handle)) return { ok: false, error: `invalid handle "${handle}"` };
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "id must be a positive message id" };
+      const res = ackMessage({ messageId: id, handle }, db);
+      if (!res.ok) {
+        const why =
+          res.reason === "unknown-message"
+            ? `no message #${id}`
+            : res.reason === "own-message"
+              ? `message #${id} is your own`
+              : `you are not a member of the room message #${id} is in`;
+        return { ok: false, error: why };
+      }
+      // Only a first ack owes a receipt: a repeat is already recorded, and
+      // re-waking the author is exactly the noise this verb exists to avoid.
+      if (!res.already) {
+        const { author, body } = res;
+        queueMicrotask(() => {
+          deliverAck(db, inboxDeps, log, { author, acker: handle, messageId: id, body }).catch((err) => {
+            log.warn({ err, id, handle }, "chat: ack delivery failed");
+          });
+        });
+      }
+      return { ok: true, data: { author: res.author, room: res.room, already: res.already } };
     },
 
     "chat:read": async (rawPayload: unknown): Promise<CommandResult<"chat:read">> => {
