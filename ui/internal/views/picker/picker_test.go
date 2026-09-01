@@ -551,8 +551,8 @@ func TestFilteredListBreadcrumbCountAndHighlight(t *testing.T) {
 	}
 }
 
-// TestNavHeaderIdleCountShowsFoldersFilesWhenQueryEmpty is the golden for
-// RULING #2's idle state (Nav.dc.html): an empty query paints the caller's
+// TestNavHeaderIdleCountShowsFoldersFilesWhenQueryEmpty is the golden for the
+// idle-count state (Nav.dc.html): an empty query paints the caller's
 // faint "N folders · M files" in the count slot in place of the generic
 // match fraction.
 func TestNavHeaderIdleCountShowsFoldersFilesWhenQueryEmpty(t *testing.T) {
@@ -588,8 +588,8 @@ func TestNavHeaderIdleCountShowsFoldersFilesWhenQueryEmpty(t *testing.T) {
 	}
 }
 
-// TestNavHeaderFilteringShowsCyanMatchedCountNotIdleCount is the golden for
-// RULING #2's filtering state: a non-empty query falls back to the universal
+// TestNavHeaderFilteringShowsCyanMatchedCountNotIdleCount is the golden for the
+// filtering state: a non-empty query falls back to the universal
 // cyan matched-count, never the idle folders/files string, even when an idle
 // count is supplied.
 func TestNavHeaderFilteringShowsCyanMatchedCountNotIdleCount(t *testing.T) {
@@ -621,8 +621,8 @@ func TestNavHeaderFilteringShowsCyanMatchedCountNotIdleCount(t *testing.T) {
 	}
 }
 
-// TestNavHeaderSortSuffixRendersFaintNotBold is the golden for RULING #3
-// (Nav.dc.html): the non-default sort suffix reads faint, never inheriting
+// TestNavHeaderSortSuffixRendersFaintNotBold is the golden for the faint sort
+// suffix (Nav.dc.html): the non-default sort suffix reads faint, never inheriting
 // the breadcrumb's uniform bold, and is absent entirely on the default sort.
 func TestNavHeaderSortSuffixRendersFaintNotBold(t *testing.T) {
 	req := protocol.PickRequest{
@@ -642,7 +642,7 @@ func TestNavHeaderSortSuffixRendersFaintNotBold(t *testing.T) {
 		t.Fatalf("header should carry the cwd and the sort suffix: %q", ansi.Strip(header))
 	}
 	// The suffix must render as a faint run, and must NOT be wrapped in the
-	// breadcrumb's bold Text -- that bold treatment is exactly RULING #3.
+	// breadcrumb's bold Text; the faint suffix is what replaces that treatment.
 	if !strings.Contains(header, fg(theme.Faint).Render(" (Size, largest first)")) {
 		t.Fatalf("sort suffix must render faint: %q", header)
 	}
