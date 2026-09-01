@@ -14,6 +14,7 @@ import { resetHeldReadyLaddersCache } from "../../worktree/ready-held.ts";
 import { createStatusHandlers } from "../handlers/status.ts";
 
 const IDENTITY = "gitlab.com/acme/tray-held";
+const WIRE = "remote:gitlab.com%2Facme%2Ftray-held";
 const REMOTE = "git@gitlab.com:acme/tray-held.git";
 const LADDER = [{ run: "make setup" }];
 
@@ -63,19 +64,24 @@ describe("tray:status worktreeReadyHeld", () => {
 
   test("a held team ladder is published with the repo and the hash to approve", async () => {
     const repoPath = repoWithTeamLadder();
-    const h = createStatusHandlers(fakeCtx({ [IDENTITY]: repoPath }));
+    const h = createStatusHandlers(fakeCtx({ [WIRE]: repoPath }));
 
     const res = (await h["tray:status"]!({}, undefined as any)) as any;
 
     expect(res.data.worktreeReadyHeld).toEqual([
-      { repo: IDENTITY, hash: readyLadderHash(LADDER) },
+      {
+        repo: WIRE,
+        label: "tray-held",
+        hash: readyLadderHash(LADDER),
+        approveCommand: "rt worktree ready-approve tray-held",
+      },
     ]);
   });
 
   test("an approved ladder publishes an empty list, not an omitted field", async () => {
     const repoPath = repoWithTeamLadder();
     writeReadyApproval(IDENTITY, readyLadderHash(LADDER));
-    const h = createStatusHandlers(fakeCtx({ [IDENTITY]: repoPath }));
+    const h = createStatusHandlers(fakeCtx({ [WIRE]: repoPath }));
 
     const res = (await h["tray:status"]!({}, undefined as any)) as any;
 

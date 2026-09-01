@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import MattstackCore
 import UserNotifications
 
 // MARK: - NotificationManager
@@ -71,6 +72,14 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             options: []
         )
 
+        // Copying rather than running it: approving team-authored shell is a
+        // deliberate act, and the TTY prompt is where the ladder is shown.
+        let copyApproveCommand = UNNotificationAction(
+            identifier: "COPY_APPROVE_COMMAND",
+            title: "Copy Command",
+            options: []
+        )
+
         let categories: [UNNotificationCategory] = [
             UNNotificationCategory(
                 identifier: "keyboard_conflict",
@@ -132,6 +141,11 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 actions: [killProcesses, showProcesses],
                 intentIdentifiers: []
             ),
+            UNNotificationCategory(
+                identifier: Self.readyHeldCategory,
+                actions: [copyApproveCommand],
+                intentIdentifiers: []
+            ),
         ]
 
         center.setNotificationCategories(Set(categories))
@@ -161,7 +175,8 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         switch category {
         case "pipeline_passed", "mr_approved", "mr_merged", "mr_ready":
             return .positive
-        case "pipeline_failed", "mr_closed", "merge_conflicts", "merge_error", "runaway_process":
+        case "pipeline_failed", "mr_closed", "merge_conflicts", "merge_error", "runaway_process",
+             readyHeldCategory:
             return .warning
         default:
             return .neutral
@@ -280,6 +295,53 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    // MARK: - Held ready ladder (RT-98)
+
+    static let readyHeldCategory = "ready_held"
+
+    /// Fire the held-ladder alert.
+    ///
+    /// Unlike `fire`, this has no daemon `NotificationEvent` behind it: a hold
+    /// is a state read off the status poll, not a queued transition, so the
+    /// tray composes and de-dupes it (see `ReadyHeldNotifier`).
+    ///
+    /// `.timeSensitive` is a request, not a guarantee — without the
+    /// time-sensitive entitlement macOS quietly downgrades it to `.active`.
+    /// The panel badge, not this level, is what makes a hold impossible to miss.
+    func fireReadyHeld(_ repo: ReadyHeldRepo) {
+        let content = UNMutableNotificationContent()
+        content.title = "Team ready steps held: \(repo.label)"
+        content.body = "Worktree claims skip the declared steps until you run: \(repo.approveCommand)"
+        content.sound = nil
+        content.categoryIdentifier = Self.readyHeldCategory
+        content.interruptionLevel = .timeSensitive
+        content.userInfo["approveCommand"] = repo.approveCommand
+
+        Self.playSound(for: Self.readyHeldCategory)
+
+        // Identified by (hash, repo) so a re-nag replaces the previous banner
+        // for the same hold rather than stacking a second copy in the centre.
+        let request = UNNotificationRequest(
+            identifier: "\(Self.readyHeldCategory):\(ReadyHeldNotifier.ledgerKey(repo))",
+            content: content,
+            trigger: nil
+        )
+
+        center.add(request) { error in
+            if let error = error {
+                TrayLog.error("ready-held notification error", ["err": String(describing: error)])
+            }
+        }
+    }
+
+    /// Put the approve command on the pasteboard. Approving team-authored
+    /// shell stays a deliberate act in a TTY, where the ladder is displayed.
+    private static func copyApproveCommand(_ command: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
+        TrayLog.info("copied ready-approve command")
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
 
     /// Show notifications even when the app is in the foreground.
@@ -310,8 +372,15 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             let category = response.notification.request.content.categoryIdentifier
             if category == "keyboard_conflict" {
                 NotificationCenter.default.post(name: .showKeyboardConflict, object: nil)
+            } else if category == Self.readyHeldCategory {
+                NotificationCenter.default.post(name: .showProcessPanel, object: nil)
             } else if let urlStr = url, let urlObj = URL(string: urlStr) {
                 NSWorkspace.shared.open(urlObj)
+            }
+
+        case "COPY_APPROVE_COMMAND":
+            if let command = userInfo["approveCommand"] as? String {
+                Self.copyApproveCommand(command)
             }
 
         case "VIEW_PIPELINE":

@@ -256,8 +256,12 @@ export interface StatusData {
 
 /** Duplicated shape on purpose: mirrors lib/worktree/ready-held.ts's ReadyHeldRepo. */
 export interface ReadyHeldRepo {
+  /** Serialized repo identity. A key, never displayed. */
   repo: string;
+  /** Decoded display name. Never sent back as a key. */
+  label: string;
   hash: string;
+  approveCommand: string;
 }
 
 export interface TrayStatusData {

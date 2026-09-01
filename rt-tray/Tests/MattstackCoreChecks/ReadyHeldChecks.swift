@@ -2,8 +2,12 @@ import Foundation
 import MattstackCore
 
 private let epoch = Date(timeIntervalSince1970: 1_700_000_000)
-private let acme = ReadyHeldRepo(repo: "gitlab.com/acme/acme-dev", hash: "aaa")
-private let acmeEdited = ReadyHeldRepo(repo: "gitlab.com/acme/acme-dev", hash: "bbb")
+private func held(_ hash: String) -> ReadyHeldRepo {
+    ReadyHeldRepo(repo: "remote:gitlab.com%2Facme%2Facme-dev", label: "acme-dev", hash: hash,
+                  approveCommand: "rt worktree ready-approve acme-dev")
+}
+private let acme = held("aaa")
+private let acmeEdited = held("bbb")
 
 let readyHeldChecks: [Check] = [
     Check("a newly held ladder notifies once and is recorded") { c in

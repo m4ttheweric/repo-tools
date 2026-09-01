@@ -11,6 +11,7 @@
  */
 
 import { lazyChildLogger } from "../daemon-logger.ts";
+import { repoLabel } from "../repo-label.ts";
 import { inspectReadyGate, loadWorktreeRepoConfig } from "./config.ts";
 
 const log = lazyChildLogger("worktree-ready-held");
@@ -19,10 +20,14 @@ const log = lazyChildLogger("worktree-ready-held");
 const DEFAULT_TTL_MS = 60_000;
 
 export interface ReadyHeldRepo {
-  /** The repo-index key: a serialized repo identity. */
+  /** The repo-index key: a serialized repo identity. Never displayed. */
   repo: string;
+  /** Display name, decoded from the identity. Never sent back as a key. */
+  label: string;
   /** Content hash of the held ladder; a team edit changes it and re-arms. */
   hash: string;
+  /** The exact command that clears this hold, resolvable as spelled. */
+  approveCommand: string;
 }
 
 export interface HeldReadyLaddersOpts {
@@ -37,13 +42,35 @@ export function resetHeldReadyLaddersCache(): void {
   cache = null;
 }
 
+/**
+ * The argument `rt worktree ready-approve` will actually resolve. A label is
+ * what a human would type, but `resolveRepoArg` rejects one that matches two
+ * registered repos... so a colliding label falls back to the identity, which
+ * always parses. Rows pointing at the same directory are the additive-heal
+ * legacy/identity pair, not a collision.
+ */
+function approveArg(repo: string, label: string, repoIndex: Record<string, string>): string {
+  const paths = new Set<string>();
+  for (const [key, path] of Object.entries(repoIndex)) {
+    if (repoLabel(key) === label) paths.add(path);
+  }
+  return paths.size > 1 ? repo : label;
+}
+
 async function compute(repoIndex: Record<string, string>): Promise<ReadyHeldRepo[]> {
   const held: ReadyHeldRepo[] = [];
   for (const [repo, repoPath] of Object.entries(repoIndex)) {
     try {
       const cfg = await loadWorktreeRepoConfig(repo, repoPath);
       const info = await inspectReadyGate(cfg, repoPath);
-      if (info.teamOwned && !info.approved) held.push({ repo, hash: info.hash });
+      if (!info.teamOwned || info.approved) continue;
+      const label = repoLabel(repo);
+      held.push({
+        repo,
+        label,
+        hash: info.hash,
+        approveCommand: `rt worktree ready-approve ${approveArg(repo, label, repoIndex)}`,
+      });
     } catch (err) {
       // One unreadable repo (moved, TCC-blocked) must not blank the snapshot
       // for every other repo on the machine.

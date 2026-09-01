@@ -11,11 +11,15 @@ import { mkdtempSync, realpathSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { teamSettingsPath, userSettingsPath } from "../../rt-paths.ts";
+import { deriveRepoIdentity, serializeIdentity } from "../../settings/identity.ts";
 import { loadWorktreeRepoConfig } from "../config.ts";
 import { readyLadderHash, writeReadyApproval } from "../ready-approval.ts";
 import { heldReadyLadders, resetHeldReadyLaddersCache } from "../ready-held.ts";
 
+/** The raw host/path form: what the settings store's `repos.<identity>` keys on. */
 const IDENTITY = "gitlab.com/acme/held-snapshot";
+/** The serialized wire form: what the daemon's repo index keys on. */
+const WIRE = "remote:gitlab.com%2Facme%2Fheld-snapshot";
 const REMOTE = "git@gitlab.com:acme/held-snapshot.git";
 const LADDER = [{ run: "make setup" }];
 
@@ -44,7 +48,7 @@ describe("heldReadyLadders", () => {
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtheld-home-")));
     repoPath = repoWithRemote();
-    index = { [IDENTITY]: repoPath };
+    index = { [WIRE]: repoPath };
     resetHeldReadyLaddersCache();
   });
 
@@ -58,8 +62,30 @@ describe("heldReadyLadders", () => {
     const cfg = await loadWorktreeRepoConfig(IDENTITY, repoPath);
 
     expect(await heldReadyLadders(index)).toEqual([
-      { repo: IDENTITY, hash: readyLadderHash(cfg.ready) },
+      {
+        repo: WIRE,
+        label: "held-snapshot",
+        hash: readyLadderHash(cfg.ready),
+        approveCommand: "rt worktree ready-approve held-snapshot",
+      },
     ]);
+  });
+
+  test("a label shared by two registered repos falls back to the identity the command can resolve", async () => {
+    teamReady(LADDER);
+    const twin = realpathSync(mkdtempSync(join(tmpdir(), "rtheld-twin-")));
+    execSync("git init -q && git remote add origin git@gitlab.com:other/held-snapshot.git", {
+      cwd: twin,
+      shell: "/bin/zsh",
+    });
+
+    const held = await heldReadyLadders({
+      ...index,
+      [serializeIdentity(await deriveRepoIdentity(twin))]: twin,
+    });
+
+    expect(held).toHaveLength(1);
+    expect(held[0]!.approveCommand).toBe(`rt worktree ready-approve ${WIRE}`);
   });
 
   test("an approved ladder is absent", async () => {

@@ -3,12 +3,19 @@ import Foundation
 /// One repo whose team-authored `ready` ladder the daemon is holding pending
 /// approval. Mirrors the `worktreeReadyHeld` entries on `tray:status`.
 public struct ReadyHeldRepo: Equatable, Sendable, Codable {
+    /// Serialized repo identity. The ledger keys on it; nothing displays it.
     public let repo: String
+    /// Decoded display name, as the daemon labelled it.
+    public let label: String
     public let hash: String
+    /// The exact command that clears this hold, resolvable as spelled.
+    public let approveCommand: String
 
-    public init(repo: String, hash: String) {
+    public init(repo: String, label: String, hash: String, approveCommand: String) {
         self.repo = repo
+        self.label = label
         self.hash = hash
+        self.approveCommand = approveCommand
     }
 }
 
