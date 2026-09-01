@@ -196,6 +196,10 @@ export interface PickUpdate {
   rows?: PickRow[];
   message?: string;
   actions?: PickAction[];
+  /** Replaces the rendered header (Go renders Breadcrumb, not Message) on an in-place row swap. */
+  breadcrumb?: string[];
+  /** Clears the typed query and re-ranks against the (possibly also-patched) rows. */
+  resetQuery?: boolean;
 }
 
 export interface PickModal {

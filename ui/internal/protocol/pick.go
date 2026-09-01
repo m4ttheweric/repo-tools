@@ -76,6 +76,15 @@ type PickUpdate struct {
 	Rows    []PickRow    `json:"rows,omitempty"`
 	Message string       `json:"message,omitempty"`
 	Actions []PickAction `json:"actions,omitempty"`
+	// Breadcrumb replaces the rendered header (render.go's breadcrumbLine
+	// reads it, not Message) on an in-place row swap -- e.g. nav's descend/up
+	// keeping the header's cwd path current without a close+reopen.
+	Breadcrumb []string `json:"breadcrumb,omitempty"`
+	// ResetQuery clears the typed query and re-ranks against the (possibly
+	// also-patched) rows, same as a fresh directory's first render -- e.g.
+	// nav's descend/up, where a filter typed in the parent must not carry
+	// into a child it may not match at all.
+	ResetQuery bool `json:"resetQuery,omitempty"`
 }
 
 type PickModal struct {

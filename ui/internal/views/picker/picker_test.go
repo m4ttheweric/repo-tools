@@ -185,6 +185,95 @@ func TestUpdateReplacesMessageAndActions(t *testing.T) {
 	}
 }
 
+// TestUpdateResetQueryClearsFilterReranksAndResetsCursor is the golden for
+// ResetQuery's own patch path (nav's descend/up): a query typed against the
+// parent directory must not survive into the child's row set.
+func TestUpdateResetQueryClearsFilterReranksAndResetsCursor(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "bin", Left: []protocol.PickSegment{{Text: "bin"}}},
+			{Value: "bill", Left: []protocol.PickSegment{{Text: "bill"}}},
+			{Value: "other", Left: []protocol.PickSegment{{Text: "other"}}},
+		},
+	}
+	m := New(req)
+	m.setQuery("bil")
+	if len(m.matches) != 1 {
+		t.Fatalf("setup: want 1 match for query %q, got %d", m.query, len(m.matches))
+	}
+
+	next, _ := m.Update(UpdateMsg{Update: protocol.PickUpdate{ResetQuery: true}})
+	m = next.(*Model)
+
+	if m.query != "" {
+		t.Fatalf("query not cleared: %q", m.query)
+	}
+	if len(m.matches) != 3 {
+		t.Fatalf("want all 3 rows to match after reset, got %d", len(m.matches))
+	}
+	if m.cursor != 0 {
+		t.Fatalf("cursor should reset to top, got %d", m.cursor)
+	}
+}
+
+// TestUpdateResetQueryOverridesCursorPreservationFromRowSwap covers
+// ResetQuery combined with a row patch in the same message (nav sends both
+// together on descend): the row patch's own by-value cursor tracking would
+// otherwise keep the cursor on "b" since it survives into the new set, but a
+// query reset means a fresh directory, where that continuity is wrong.
+func TestUpdateResetQueryOverridesCursorPreservationFromRowSwap(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a"}, {Value: "b"}, {Value: "c"}},
+	}
+	m := New(req)
+	m.cursor = 1 // sits on "b"
+
+	next, _ := m.Update(UpdateMsg{Update: protocol.PickUpdate{
+		Rows:       []protocol.PickRow{{Value: "z"}, {Value: "b"}},
+		ResetQuery: true,
+	}})
+	m = next.(*Model)
+
+	if m.cursor != 0 {
+		t.Fatalf("resetQuery must pin the cursor to the top even though row b survived into the new set, got cursor=%d", m.cursor)
+	}
+}
+
+// TestUpdateBreadcrumbReplacesRenderedHeader is the golden for the second
+// parity gap: render.go's breadcrumbLine reads m.req.Breadcrumb, so a
+// PickUpdate carrying a new one must change what View() actually paints, not
+// just what the model stores.
+func TestUpdateBreadcrumbReplacesRenderedHeader(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "nav"},
+		Rows:       []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
+	}
+	m := New(req)
+	m.width = 60
+
+	before := ansi.Strip(render(m))
+	if !strings.Contains(before, "rt › nav") {
+		t.Fatalf("setup: initial breadcrumb missing:\n%s", before)
+	}
+	if strings.Contains(before, "assured-dev") {
+		t.Fatalf("setup: unexpected breadcrumb content:\n%s", before)
+	}
+
+	next, _ := m.Update(UpdateMsg{Update: protocol.PickUpdate{Breadcrumb: []string{"assured-dev", "worktrees"}}})
+	m = next.(*Model)
+
+	after := ansi.Strip(render(m))
+	if !strings.Contains(after, "assured-dev › worktrees") {
+		t.Fatalf("header did not update to the new breadcrumb:\n%s", after)
+	}
+	if strings.Contains(after, "rt › nav") {
+		t.Fatalf("old breadcrumb still present after update:\n%s", after)
+	}
+}
+
 // TestEventActionKeyEnqueuesEventAndStaysOpen is the golden for the
 // event:true dispatch path: the key is matched against the registry (not
 // the hardcoded enter/select path), the encoded line is enqueued onto

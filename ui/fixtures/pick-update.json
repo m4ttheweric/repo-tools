@@ -1,6 +1,8 @@
 {
   "t": "update",
   "message": "rt cd (assured-dev worktrees)",
+  "breadcrumb": ["rt", "cd", "assured-dev worktrees"],
+  "resetQuery": true,
   "rows": [
     {
       "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/hedwig",

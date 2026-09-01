@@ -101,6 +101,18 @@ function headerMessage(cwd: string, sort: SortState): string {
 }
 
 /**
+ * A single breadcrumb segment carrying headerMessage's own text: the design
+ * board (docs/design/picker/Nav.dc.html) renders the sort suffix in a
+ * non-bold faint tone rather than the breadcrumb model's chevron-joined bold
+ * segments, and a multi-segment breadcrumb would insert an unwanted " › "
+ * between the path and the suffix, so one segment is the minimal fit rather
+ * than a new header layout.
+ */
+function headerBreadcrumb(cwd: string, sort: SortState): string[] {
+  return [headerMessage(cwd, sort)];
+}
+
+/**
  * The registry for the current cwd. Deliberately rebuilt (not patched) on
  * every rows update: the empty-directory state binds "enter" to a different,
  * terminal action than normal browsing does, so the two action sets can never
@@ -210,10 +222,16 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
   // narrowing back out to the read at session end otherwise.
   const watcherRef: { current: { stop(): void } | null } = { current: null };
 
-  const pushRows = (handle: PickHandle) => {
+  const pushRows = (handle: PickHandle, opts: { resetQuery?: boolean } = {}) => {
     const built = buildRows(cwd, showHidden, sort);
     empty = built.empty;
-    handle.update({ rows: built.rows, message: headerMessage(cwd, sort), actions: buildActions(empty, { showHidden, expanded }) });
+    handle.update({
+      rows: built.rows,
+      message: headerMessage(cwd, sort),
+      breadcrumb: headerBreadcrumb(cwd, sort),
+      actions: buildActions(empty, { showHidden, expanded }),
+      ...(opts.resetQuery ? { resetQuery: true } : {}),
+    });
   };
 
   const rearmWatch = (handle: PickHandle) => {
@@ -227,6 +245,7 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
   const handle = runPick(
     {
       message: headerMessage(cwd, sort),
+      breadcrumb: headerBreadcrumb(cwd, sort),
       rows: initial.rows,
       actions: buildActions(empty, { showHidden, expanded }),
       ...(state.resumeValue ? { resumeValue: state.resumeValue } : {}),
@@ -242,7 +261,7 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
         const { kind, target } = targetOf(cwd, evt.value);
         if (kind === "folder") {
           cwd = target;
-          pushRows(handle);
+          pushRows(handle, { resetQuery: true });
           rearmWatch(handle);
         } else {
           // Returns immediately; browsing continues.
@@ -253,7 +272,7 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
       case "up": {
         if (cwd !== "/") {
           cwd = dirname(cwd);
-          pushRows(handle);
+          pushRows(handle, { resetQuery: true });
           rearmWatch(handle);
         }
         return;

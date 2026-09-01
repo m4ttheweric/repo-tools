@@ -286,6 +286,9 @@ func (m *Model) applyUpdate(u protocol.PickUpdate) {
 	if u.Message != "" {
 		m.req.Message = u.Message
 	}
+	if u.Breadcrumb != nil {
+		m.req.Breadcrumb = u.Breadcrumb
+	}
 	if u.Actions != nil {
 		m.req.Actions = u.Actions
 	}
@@ -295,6 +298,13 @@ func (m *Model) applyUpdate(u protocol.PickUpdate) {
 		m.req.Rows = u.Rows
 		m.refilter()
 		m.cursor = m.resolveCursor(value, hadCursor, prevCursor)
+	}
+	// Runs after the row patch above, whose own resolveCursor tracks the
+	// cursor's prior value across the swap: a query reset means a fresh
+	// directory, where that value has no continuity to preserve, so this
+	// deliberately overrides it back to the top.
+	if u.ResetQuery {
+		m.setQuery("")
 	}
 }
 

@@ -158,6 +158,50 @@ describe("rt nav: descend in place", () => {
 
     rmSync(root, { recursive: true, force: true });
   });
+
+  test("a filter typed in the parent is reset on descend, and the header breadcrumb follows the new cwd", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    mkdirSync(join(root, "alpha"));
+    writeFileSync(join(root, "alpha", "inner.txt"), "x");
+
+    // query "al" stands in for a filter the user had typed against the
+    // parent listing before hitting enter on "alpha".
+    fake = installFakePick([
+      eventStep("open", "d:alpha", "al"),
+      resultStep("cancel", null),
+    ]);
+
+    await withRealStdoutRestore(() => navigate([root], baseDeps()));
+
+    const updates = fake.calls[0]!.updates;
+    const descendUpdate = updates.find((u) => u.rows?.some((r) => r.value === "f:inner.txt"));
+    expect(descendUpdate).toBeDefined();
+    expect(descendUpdate!.resetQuery).toBe(true);
+    expect(descendUpdate!.breadcrumb).toEqual([join(root, "alpha")]);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("ctrl-up resets the query and updates the breadcrumb to the parent directory", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    mkdirSync(join(root, "alpha"));
+    writeFileSync(join(root, "top.txt"), "x");
+
+    fake = installFakePick([
+      eventStep("up", null, "fi"),
+      resultStep("cancel", null),
+    ]);
+
+    await withRealStdoutRestore(() => navigate([join(root, "alpha")], baseDeps()));
+
+    const updates = fake.calls[0]!.updates;
+    const upUpdate = updates.find((u) => u.rows?.some((r) => r.value === "f:top.txt"));
+    expect(upUpdate).toBeDefined();
+    expect(upUpdate!.resetQuery).toBe(true);
+    expect(upUpdate!.breadcrumb).toEqual([root]);
+
+    rmSync(root, { recursive: true, force: true });
+  });
 });
 
 describe("rt nav: ctrl-t toggle hidden", () => {

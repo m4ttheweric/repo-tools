@@ -106,6 +106,12 @@ func TestPickUpdateFixtureActionsCarryEventFlag(t *testing.T) {
 	if refresh == nil || !refresh.Event {
 		t.Fatalf("refresh action should carry event:true: %+v", refresh)
 	}
+	if len(u.Breadcrumb) == 0 {
+		t.Fatalf("breadcrumb missing: %+v", u.Breadcrumb)
+	}
+	if !u.ResetQuery {
+		t.Fatalf("resetQuery=%v, want true", u.ResetQuery)
+	}
 }
 
 // TestPickActionEventOmitEmptyRoundTrips pins the false/absent case

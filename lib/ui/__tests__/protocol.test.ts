@@ -129,6 +129,8 @@ test("pick update and modal fixtures match their typed shape and round-trip", ()
   expect(update.rows?.[0]?.right?.some((seg) => seg.hex !== undefined)).toBe(true);
   expect(update.actions?.find((a) => a.id === "refresh")?.event).toBe(true);
   expect(update.actions?.find((a) => a.id === "cd")?.event).toBeUndefined();
+  expect(update.breadcrumb?.length).toBeGreaterThan(0);
+  expect(update.resetQuery).toBe(true);
   expect(JSON.parse(encodeLine(update))).toEqual(update);
 
   const modal = fixture("pick-modal.json") as PickModal;
