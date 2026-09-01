@@ -49,6 +49,7 @@ function sourceDir(plugins: Plugin[]): string {
   const dir = scratch("src");
   writeFileSync(join(dir, "marketplace.json"), catalog(plugins));
   writeFileSync(join(dir, "README.md"), "# test\n");
+  writeFileSync(join(dir, "LICENSE"), "MIT\n");
   return dir;
 }
 
@@ -167,7 +168,7 @@ describe("marketplace.sh publish", () => {
     const r = run([sourceDir([urlPlugin("fast-browser")])], { RT_MARKETPLACE_REPO: bare });
     expect(r.out).toContain("no main yet");
     expect(r.code).toBe(0);
-    expect(publishedFiles(bare)).toEqual([".claude-plugin/marketplace.json", "README.md"]);
+    expect(publishedFiles(bare)).toEqual([".claude-plugin/marketplace.json", "LICENSE", "README.md"]);
   });
 
   test("republishing identical content makes no commit", () => {
@@ -196,7 +197,7 @@ describe("marketplace.sh publish", () => {
     expect(publishedFiles(bare)).toContain("plugins/inline/.claude-plugin/plugin.json");
 
     run([sourceDir([urlPlugin("fast-browser")])], { RT_MARKETPLACE_REPO: bare });
-    expect(publishedFiles(bare)).toEqual([".claude-plugin/marketplace.json", "README.md"]);
+    expect(publishedFiles(bare)).toEqual([".claude-plugin/marketplace.json", "LICENSE", "README.md"]);
     // History is kept rather than force-pushed away.
     expect(git(bare, "rev-list", "--count", "main")).toBe("2");
   });

@@ -105,6 +105,7 @@ git init -q -b main "$STAGE"
 mkdir -p "$STAGE/.claude-plugin"
 cp "$CATALOG" "$STAGE/.claude-plugin/marketplace.json"
 if [ -f "$SRC/README.md" ]; then cp "$SRC/README.md" "$STAGE/README.md"; fi
+if [ -f "$SRC/LICENSE" ]; then cp "$SRC/LICENSE" "$STAGE/LICENSE"; fi
 # Plugins with no repo of their own ship inline; everything else is a pinned URL.
 if [ -d "$SRC/plugins" ]; then cp -R "$SRC/plugins" "$STAGE/plugins"; fi
 
