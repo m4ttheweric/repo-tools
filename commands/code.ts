@@ -21,7 +21,7 @@ import { homedir } from "os";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { dim, green, red, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, findKnownRepo } from "../lib/repo.ts";
 import { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo } from "../lib/pickers.ts";
 
 // ─── Preference storage (rt.workspacePrefs, machine-scoped) ────────────────
@@ -326,7 +326,7 @@ export async function openInEditor(args: string[]): Promise<void> {
   const identity = getRepoIdentity();
   const repos = getKnownRepos();
   const currentRepo = identity
-    ? repos.find(r => r.repoName === identity.repoName) ?? null
+    ? findKnownRepo(repos, identity) ?? null
     : null;
 
   let selectedPath: string;

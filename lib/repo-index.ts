@@ -1010,6 +1010,30 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
 }
 
 /**
+ * The row in `repos` for the repo you are standing in, or undefined.
+ *
+ * Three key forms coexist in `repoName`: a serialized identity (every row
+ * written post-cutover), a legacy plain name, and a directory basename (an
+ * unregistered scanned row). `RepoIdentity.repoName` is a LABEL, never a key,
+ * so matching it against any of them silently finds nothing — the caller then
+ * decides it is nowhere and falls through to a picker or a full rescan. Every
+ * "am I here?" check goes through this function so that cannot recur.
+ *
+ * Identity first; then the repo root, which pins a legacy or unregistered row
+ * without trusting its spelling.
+ */
+export function findKnownRepo(
+  repos: KnownRepo[],
+  identity: { identity: string; repoRoot: string },
+): KnownRepo | undefined {
+  const byIdentity = repos.find((r) => r.repoName === identity.identity);
+  if (byIdentity) return byIdentity;
+
+  const root = safeRealpath(identity.repoRoot);
+  return repos.find((r) => r.worktrees.some((w) => safeRealpath(w.path) === root));
+}
+
+/**
  * Cached read path `rt cd` serves from. A cache hit returns its rows as-is
  * (no git, no fs scan); a miss (missing file, corrupt JSON, or a stale
  * `version`) falls back to the same live `getKnownRepos` scan cd always did.
