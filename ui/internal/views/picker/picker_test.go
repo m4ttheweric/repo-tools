@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -23,10 +24,7 @@ import (
 // not merely whether one was returned.
 func mustNotQuit(t *testing.T, cmd tea.Cmd) {
 	t.Helper()
-	if cmd == nil {
-		return
-	}
-	if _, ok := cmd().(tea.QuitMsg); ok {
+	if isQuitCmd(cmd) {
 		t.Fatal("expected the session to stay open, got a quit cmd")
 	}
 }
@@ -408,7 +406,7 @@ func TestNonEventActionKeyProducesTerminalResult(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a cmd to end the session")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(cmd) {
 		t.Fatalf("expected the cmd to quit the program")
 	}
 }
@@ -432,7 +430,7 @@ func TestEscCancelsABareRequest(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a cmd to end the session")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(cmd) {
 		t.Fatal("expected the cmd to quit the program")
 	}
 }
@@ -459,7 +457,7 @@ func TestDeclaredEscActionWinsOverTheBuiltinCancel(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a cmd to end the session")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(cmd) {
 		t.Fatal("expected the cmd to quit the program")
 	}
 }
@@ -1560,7 +1558,7 @@ func TestWireModalReplacesAnOpenRegistryMenuCleanly(t *testing.T) {
 	if len(m.modal.rows) != 1 || m.modal.rows[0].text != "Size" {
 		t.Fatalf("the menu's own rows must not survive into the wire modal: %+v", m.modal.rows)
 	}
-	if _, ok := cmd().(tea.QuitMsg); ok {
+	if isQuitCmd(cmd) {
 		t.Fatal("replacing the overlay must not end the session")
 	}
 	select {
@@ -1789,7 +1787,7 @@ func TestCtrlKMenuNonEventActionYieldsTerminalResult(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a cmd to end the session")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(cmd) {
 		t.Fatal("expected the cmd to quit the program")
 	}
 }
@@ -2295,7 +2293,7 @@ func TestMultiExitActionCarriesTheCheckedSelectionAsValues(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a cmd to end the session")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(cmd) {
 		t.Fatal("expected the cmd to quit the program")
 	}
 }
@@ -2326,7 +2324,7 @@ func TestAcceptNoMatchEnterOnNoMatchResolvesWithNilValueAndQuery(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a cmd to end the session")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(cmd) {
 		t.Fatal("expected the cmd to quit the program")
 	}
 }
@@ -2442,7 +2440,7 @@ func TestMouseDoubleClickAcceptsTheRowWithinTheWindow(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("a second click on the same row within the window should accept")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(cmd) {
 		t.Fatalf("expected a quit command, got %v", cmd())
 	}
 	if m.result == nil || m.result.Value == nil || *m.result.Value != "a" {
@@ -2646,10 +2644,10 @@ func TestModalMouseClickOnRowActivatesLikeKeyboard(t *testing.T) {
 	if ms.result.Action != kb.result.Action || ms.result.Action != "dispose" {
 		t.Fatalf("mouse-click result %q must match keyboard-select 'dispose' (kb=%q)", ms.result.Action, kb.result.Action)
 	}
-	if _, ok := msCmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(msCmd) {
 		t.Fatalf("mouse activation of a non-event action should quit, got %v", msCmd())
 	}
-	if _, ok := kbCmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(kbCmd) {
 		t.Fatalf("keyboard activation of a non-event action should quit, got %v", kbCmd())
 	}
 }
@@ -2681,7 +2679,7 @@ func TestModalMouseClickOutsideDismissesLikeEsc(t *testing.T) {
 	if m.modal != nil {
 		t.Fatal("a press outside the box should dismiss the overlay")
 	}
-	if _, ok := cmd().(tea.QuitMsg); ok {
+	if isQuitCmd(cmd) {
 		t.Fatal("dismissing the overlay must not quit the picker")
 	}
 
@@ -2962,7 +2960,7 @@ func TestKeybarKeyClickDispatchesTheAction(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("clicking esc should end the session")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
+	if !isQuitCmd(cmd) {
 		t.Fatalf("expected a quit command, got %v", cmd())
 	}
 	if m.result == nil || m.result.Action != "cancel" {
@@ -3236,14 +3234,35 @@ func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
 	}
 }
 
-// isQuitCmd reports whether cmd is the program's own quit signal, mirroring
-// mustNotQuit's check in the positive direction for the exit-path tests.
+// isQuitCmd reports whether running cmd yields the program's own quit signal,
+// mirroring mustNotQuit's check in the positive direction for the exit-path
+// tests. quit() now returns tea.Sequence(tea.ClearScreen, tea.Quit) so the
+// card erases in-loop before shutdown, so a plain tea.QuitMsg assertion no
+// longer holds; this unwraps the sequence (its message type is unexported, so
+// it is reached by reflection over the slice of Cmds it carries) and every
+// batch/sequence within it to find the QuitMsg.
 func isQuitCmd(cmd tea.Cmd) bool {
 	if cmd == nil {
 		return false
 	}
-	_, ok := cmd().(tea.QuitMsg)
-	return ok
+	return msgYieldsQuit(cmd())
+}
+
+func msgYieldsQuit(msg tea.Msg) bool {
+	if _, ok := msg.(tea.QuitMsg); ok {
+		return true
+	}
+	v := reflect.ValueOf(msg)
+	if v.Kind() != reflect.Slice {
+		return false
+	}
+	for i := 0; i < v.Len(); i++ {
+		inner, ok := v.Index(i).Interface().(tea.Cmd)
+		if ok && inner != nil && msgYieldsQuit(inner()) {
+			return true
+		}
+	}
+	return false
 }
 
 // stableHeightReq is an n-row request under a breadcrumb whose rows all

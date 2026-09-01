@@ -74,11 +74,12 @@ type Model struct {
 	pinnedHeight  int
 	pinHoldFrames int
 
-	// closing collapses the final frame to zero rows on quit (renderView
-	// returns empty), so the picker leaves clean scrollback the way legacy
-	// fzf does rather than a dead card the next chained stage stacks under.
-	// bubbletea's graceful-shutdown render paints that empty View; nothing
-	// here writes to the tty.
+	// closing makes renderView return empty on quit. quit() erases the card
+	// via an in-loop tea.ClearScreen ahead of tea.Quit (see quit); closing is
+	// what keeps the render right after that clear empty, so the reserved frame
+	// is not immediately repainted over the erase. The picker then leaves clean
+	// scrollback the way legacy fzf does rather than a dead card the next
+	// chained stage stacks under. Nothing here writes to the tty.
 	closing bool
 
 	// zones is the render pass's own record of what each rendered line's
@@ -655,26 +656,40 @@ func (m *Model) selectCursor() {
 	m.result = &protocol.PickResult{Action: idSelect, Value: &value, Query: m.query}
 }
 
-// renderView is the frame View() paints: composeFrame's own plain-list-or-
-// composited-overlay content, padded to m.pinnedHeight when an overlay
-// open/close transition has one active. A separate function from render()
-// so a test can assert on the modal-composited frame without going through
-// tea.View's own wrapper.
+// renderView is the frame View() paints. The base list is filled INTERIOR to
+// the reserved floor (renderFrame) so the keybar is the last rendered line and
+// the on-screen footprint holds steady as the match set shrinks; the modal
+// overlay, when open, composites on top. The final padToHeight is the pin's
+// trailing string-height pad: it only adds lines while pinnedHeight exceeds
+// the reserved floor (a wire modal taller than the list, held through its
+// close), and those TRAILING blanks are what clearBottom strips off screen --
+// so they satisfy bubbletea's frame-line-count contract across the close
+// without inflating the visible frame once the overlay is gone. Kept a
+// separate function from render() so the height tests can tell the constant
+// painted frame from render()'s own varying natural one.
 func renderView(m *Model) string {
 	if m.closing {
 		return ""
 	}
-	return padToHeight(composeFrame(m), m.pinnedHeight)
+	body := renderFrame(m, m.reservedHeight)
+	if m.modal != nil && body != "" {
+		body = renderModal(m, body)
+	}
+	return padToHeight(body, m.pinnedHeight)
 }
 
-// quit ends the session and collapses the final frame to zero rows. The
-// host's own graceful-shutdown render paints the empty View this produces,
-// erasing the reserved height so the picker leaves clean scrollback rather
-// than a dead card the next chained stage stacks under -- an effect the host
-// runs, never a write from here.
+// quit ends the session and erases the frame in-loop before shutting down.
+// tea.ClearScreen is handled inside the event loop -- move to the frame's own
+// top-left and erase from there -- so the whole fixed-height card is cleared
+// while the renderer's cursor model is still in sync, ahead of tea.Quit. The
+// shutdown flush alone only erased below the cursor with no cursor-up, which
+// left the card on screen for the next chained stage (run package->script, an
+// arg collector) to stack under. closing is what makes the render that follows
+// the clear paint the empty View, so the clear is not immediately overpainted
+// by the frame; the sequence runs the two in order, never a write from here.
 func (m *Model) quit() (tea.Model, tea.Cmd) {
 	m.closing = true
-	return m, tea.Quit
+	return m, tea.Sequence(tea.ClearScreen, tea.Quit)
 }
 
 func (m *Model) View() tea.View {

@@ -105,9 +105,14 @@ func composeFrame(m *Model) string {
 	return body
 }
 
-// padToHeight appends blank trailing lines until body reaches target
-// lines. target <= 0 means no pin is active, so the frame renders at its
-// own natural height, unpadded.
+// padToHeight appends blank TRAILING lines until body reaches target lines.
+// renderView reaches the reserved floor with renderFrame's interior filler
+// (the keybar stays the last visible line); this only fires for the pin's
+// extra height (pinnedHeight above the floor, hosting a wire modal taller than
+// the list and held through its close), where trailing blanks are wanted --
+// clearBottom strips them off screen, so bubbletea's frame line count holds
+// across the close without the visible frame inflating once the overlay is
+// gone. target <= body's height leaves body unpadded.
 func padToHeight(body string, target int) string {
 	if target <= 0 || body == "" {
 		return body

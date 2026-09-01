@@ -43,13 +43,31 @@ func (m *Model) totalChromeRows() int {
 	return rows
 }
 
-// render paints one frame and, as a side effect, rebuilds m.zones from the
-// lines it actually draws -- the render pass is the only place that knows
-// which Y lines are group headers (no zone) versus rows, and where the
-// breadcrumb/keybar runs actually landed once justified, so hit-zones are
-// recorded here rather than recomputed against a click's since-changed
-// model state later.
+// render paints one frame at its natural (unpadded) height. renderView pads
+// to the reserved floor; keeping render itself unpadded is what lets the
+// height tests distinguish the varying natural frame from the constant painted
+// one.
 func render(m *Model) string {
+	return renderFrame(m, 0)
+}
+
+// renderFrame paints one frame padded to target lines and, as a side effect,
+// rebuilds m.zones from the lines it actually draws -- the render pass is the
+// only place that knows which Y lines are group headers (no zone) versus rows,
+// and where the breadcrumb/keybar runs actually landed once justified, so
+// hit-zones are recorded here rather than recomputed against a click's
+// since-changed model state later.
+//
+// The reserved-height filler lands INTERIOR -- between the last content row
+// and the bottom rule -- so the keybar is the last rendered line. bubbletea's
+// inline renderer strips TRAILING blank lines on every flush (clearBottom),
+// which collapsed a trailing pad back to content height and rode the keybar up
+// and down with the match count; interior blanks with the keybar below them
+// are content it cannot strip, so the on-screen footprint holds target. A
+// target at or below the natural height adds no filler. Zones are recorded at
+// the padded positions because the filler shifts the bottom chrome down and
+// the footer's clickable columns must match what is on screen.
+func renderFrame(m *Model, target int) string {
 	// pick.ts never opens the picker for a zero-row request, so this is not
 	// a UI state to design for -- just insurance against the empty slice
 	// below producing an out-of-range panic if that invariant ever slips.
@@ -77,6 +95,7 @@ func render(m *Model) string {
 
 	if n == 0 {
 		lines = append(lines, noMatchLine())
+		appendInteriorFiller(&lines, target, 2) // bottom rule + keybar still to come
 		lines = append(lines, rule(m.width), noMatchKeybarLine(m))
 		m.zones = zones
 		return strings.Join(lines, "\n")
@@ -104,6 +123,15 @@ func render(m *Model) string {
 		y++
 	}
 
+	keybarLines := 1
+	if m.showExpandedKeybar() {
+		keybarLines = 2
+	}
+	// The filler advances y past its blank lines so the keybar's own zones
+	// land on the padded rows the terminal actually paints them on, not the
+	// natural rows they would sit on unpadded.
+	y += appendInteriorFiller(&lines, target, 1+keybarLines) // + bottom rule
+
 	lines = append(lines, rule(m.width))
 	y++
 	if m.showExpandedKeybar() {
@@ -120,6 +148,23 @@ func render(m *Model) string {
 
 	m.zones = zones
 	return strings.Join(lines, "\n")
+}
+
+// appendInteriorFiller appends the blank lines needed so that, once the
+// bottomChrome lines still to come are added, the frame reaches target lines.
+// It returns how many it appended (0 when target does not exceed the natural
+// height), so the caller can advance its zone cursor past them. The blanks are
+// interior (the keybar follows), never trailing -- see renderFrame for why the
+// inline renderer would strip a trailing pad.
+func appendInteriorFiller(lines *[]string, target, bottomChrome int) int {
+	filler := target - len(*lines) - bottomChrome
+	if filler <= 0 {
+		return 0
+	}
+	for i := 0; i < filler; i++ {
+		*lines = append(*lines, "")
+	}
+	return filler
 }
 
 // noMatchLine is the Filtering board's zero-match row: a single inline
