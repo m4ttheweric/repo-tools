@@ -54,7 +54,7 @@ function flagValue(args: string[], flag: string): string | undefined {
 
 function required(args: string[], flag: string): string {
   const v = flagValue(args, flag);
-  if (v === undefined) throw new Usage(`${flag} is required`);
+  if (v === undefined || v === "") throw new Usage(`${flag} is required`);
   return v;
 }
 

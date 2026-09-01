@@ -130,6 +130,14 @@ describe("stage lifecycle", () => {
     db.close();
   });
 
+  test("stage-fail with an empty reason stores NULL, not an empty string", () => {
+    const db = started();
+    stageStart(db, "gates", {}, 10);
+    stageEnd(db, "gates", "failed", { reason: "" });
+    expect(db.query("SELECT reason FROM stages WHERE name='gates'").get()).toEqual({ reason: null });
+    db.close();
+  });
+
   test("stage-done and stage-fail on a stage that was never started are exit 3 and write nothing", () => {
     const db = started();
     expect(stageEnd(db, "plan", "done")).toEqual({ ok: false, error: "stage never started: plan", code: 3 });

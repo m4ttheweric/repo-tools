@@ -45,7 +45,7 @@ export function runStart(root: string, o: RunStartOpts): Ok<{ runId: string; run
     try {
       db.run(
         "INSERT INTO runs (id, repo, work_type, pipeline, status, spawned_by, started_at, pack_commits, pack_dirty) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)",
-        [runId, o.repo, o.workType, o.pipeline, o.spawnedBy ?? null, now, packCommits, packDirty],
+        [runId, o.repo, o.workType, o.pipeline, o.spawnedBy || null, now, packCommits, packDirty],
       );
     } catch {
       return { ok: false, error: `run id already exists: ${runId}`, code: 1 };

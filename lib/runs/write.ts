@@ -120,7 +120,7 @@ export function stageEnd(
     db.run(
       `UPDATE stages SET status=?, ended_at=?, reason=?, detail_path=?
        WHERE name=? AND attempt=(SELECT MAX(attempt) FROM stages WHERE name=?)`,
-      [status, opts.now ?? Date.now(), opts.reason ?? null, opts.detailPath ?? null, name, name],
+      [status, opts.now ?? Date.now(), opts.reason || null, opts.detailPath || null, name, name],
     );
     if (changes(db) === 0) return { ok: false, error: `stage never started: ${name}`, code: 3 };
     return { ok: true };

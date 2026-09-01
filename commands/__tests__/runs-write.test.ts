@@ -40,6 +40,16 @@ describe("rt runs write verbs", () => {
     expect(JSON.parse(r.out).error).toContain("--stage");
   });
 
+  test("an empty required flag value is a usage error, not a stage named the empty string", async () => {
+    const { env, runDb } = await startRun();
+    const r = await runWriteVerb("stage-start", ["--stage", ""], env);
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.out).ok).toBe(false);
+    const db = new Database(runDb, { readonly: true });
+    expect(db.query("SELECT COUNT(*) AS n FROM stages").get()).toEqual({ n: 0 });
+    db.close();
+  });
+
   test("subcommands without RT_RUN_DB fail with a JSON error, exit 2", async () => {
     const r = await runWriteVerb("run-status", ["--status", "done"], QUIET);
     expect(r.code).toBe(2);
