@@ -144,7 +144,10 @@ function buildActions(empty: boolean, opts: { showHidden: boolean; expanded: boo
     { id: "terminal", label: "open terminal here", scope: "item", group: "act" },
     { id: "toggle-hidden", label: hiddenLabel, key: "ctrl-t", scope: "global", event: true, group: "view" },
     { id: "sort", label: "sort", key: "ctrl-s", scope: "global", event: true, group: "view" },
-    { id: "expand", label: opts.expanded ? "less" : "commands", key: "ctrl-/", scope: "global", event: true, group: "view" },
+    // Ungrouped so it pins to the always-visible right run next to esc, the
+    // one place a truncated left cluster can never drop it -- NavMenus.dc.html
+    // advertises "ctrl-/ commands" there so the ctrl-k/t/s menus stay findable.
+    { id: "expand", label: opts.expanded ? "less" : "commands", key: "ctrl-/", scope: "global", event: true },
   ];
 }
 

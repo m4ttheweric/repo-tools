@@ -376,4 +376,25 @@ describe("rt nav: terminal-owning exits re-invoke with resume", () => {
     seq.restore();
     rmSync(root, { recursive: true, force: true });
   });
+
+  test("the footer advertises ctrl-/ as an ungrouped, right-pinned action (F-n1)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
+    mkdirSync(join(root, "sub"));
+    writeFileSync(join(root, "a.txt"), "x");
+
+    fake = installFakePick([resultStep("cancel", null)]);
+
+    await withRealStdoutRestore(() => navigate([root], baseDeps()));
+
+    const actions = fake.calls[0]!.request.actions ?? [];
+    const expand = actions.find((a) => a.id === "expand");
+    expect(expand).toBeDefined();
+    expect(expand!.key).toBe("ctrl-/");
+    expect(expand!.label).toBe("commands");
+    // Ungrouped so a truncated left cluster can never drop it: the minimal
+    // footer always advertises it next to esc (NavMenus.dc.html).
+    expect(expand!.group).toBeUndefined();
+
+    rmSync(root, { recursive: true, force: true });
+  });
 });
