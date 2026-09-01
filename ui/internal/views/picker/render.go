@@ -232,6 +232,27 @@ func rowLine(m *Model, i int) string {
 	return rowLineWidth(m, i, m.width)
 }
 
+// highlightPositions re-ranks the live query against a row's own visible
+// left text, so the returned positions always index runes that are
+// actually on screen. Filtering ranks against matchText (row.Match when
+// the caller supplies one, e.g. a separator-stripped alias) which can
+// differ from leftPlain -- reusing that match's positions for highlight
+// would then land on the wrong runes, or (worse) get suppressed outright
+// wherever the two diverged, which is what left every override-match row
+// with no highlight at all. An empty query has nothing to highlight, and
+// a row that only matched via the alias (its visible text doesn't
+// contain the query) correctly gets no positions back from Rank.
+func highlightPositions(m *Model, leftPlain string) []int {
+	if m.query == "" {
+		return nil
+	}
+	hl := Rank(m.query, []string{leftPlain}, m.req.Exact)
+	if len(hl) == 0 {
+		return nil
+	}
+	return hl[0].Positions
+}
+
 // rowLineWidth paints one matched row within an explicit width: a 1-column
 // gutter outside the highlight (pink bar on the cursor row, blank
 // otherwise), then a SelBg/HoverBg-filled span carrying the left segments,
@@ -239,8 +260,7 @@ func rowLine(m *Model, i int) string {
 // edge. The width is explicit (rather than always m.width) because a
 // scrolling list shrinks it by one column to make room for the thumb rail.
 func rowLineWidth(m *Model, i int, width int) string {
-	match := m.matches[i]
-	row := m.req.Rows[match.Index]
+	row := m.req.Rows[m.matches[i].Index]
 	cursorRow := i == m.cursor
 	hoverRow := !cursorRow && i == m.hover
 
@@ -272,15 +292,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 
 	leftPlain := leftPlainText(row)
 	kept, truncated := clipRunes(leftPlain, leftBudget)
-	// match.Positions index the text Rank scored (row.Match when the caller
-	// set one, e.g. an alias or a string folding in right-segment text) --
-	// only when that text is identical to what's actually on screen do
-	// those rune indices land on the runes they were computed against.
-	positions := match.Positions
-	if matchText(row) != leftPlain {
-		positions = nil
-	}
-	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), positions, rowBg, cursorRow)
+	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow)
 	usedLeftWidth := lipgloss.Width(kept)
 	if truncated {
 		leftRendered += rowBg.Foreground(theme.Faint).Render("…")

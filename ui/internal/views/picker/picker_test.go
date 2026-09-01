@@ -395,37 +395,98 @@ func TestHighlightAppliesCyanWhenPositionsIndexTheVisibleLeftText(t *testing.T) 
 	}
 }
 
-// TestHighlightSkippedWhenMatchFieldDivergesFromLeftText is the regression
-// guard for a row whose match field is an alias that differs from what's
-// on screen (row.Left has no "e" at all here, so it can only be found via
-// the alias): match.Positions then index the alias, not the visible left
-// text, so applying them there would highlight the wrong runes.
-func TestHighlightSkippedWhenMatchFieldDivergesFromLeftText(t *testing.T) {
+// TestHighlightMatchesVisibleTextEvenWhenMatchFieldDiverges replaces the
+// old "diverges => always suppress" contract: reusing the filter's own
+// match.Positions (which index matchText -- row.Match when the caller set
+// one) meant ANY row with an overriding Match field lost its highlight
+// entirely, even when the query plainly appeared in what's on screen.
+// Highlighting is now recomputed per row against its own visible leftPlain
+// text, so a diverging Match field only suppresses highlight when the
+// query genuinely isn't present in the visible text (the alias-only case),
+// not merely because the two strings differ.
+func TestHighlightMatchesVisibleTextEvenWhenMatchFieldDiverges(t *testing.T) {
 	req := protocol.PickRequest{
 		T:            "pick",
 		Protocol:     protocol.Version,
-		InitialQuery: "re",
+		InitialQuery: "pro",
 		Rows: []protocol.PickRow{
 			{
-				Value: "provision",
-				Left:  []protocol.PickSegment{{Text: "provision", Tone: "text"}},
-				Match: "reprovision",
+				Value: "provincial",
+				Left:  []protocol.PickSegment{{Text: "provincial", Tone: "text"}},
+				Match: "provincial (region)",
+			},
+			{
+				Value: "district",
+				Left:  []protocol.PickSegment{{Text: "district", Tone: "text"}},
+				Match: "province office",
 			},
 		},
 	}
 	m := New(req)
 	m.width = 40
 
-	if len(m.matches) != 1 || len(m.matches[0].Positions) == 0 {
-		t.Fatalf("the query should still match via the match field override: %+v", m.matches)
+	if len(m.matches) != 2 {
+		t.Fatalf("both rows should match via their (possibly overriding) match text, got %d: %+v", len(m.matches), m.matches)
+	}
+
+	var provincialLine, districtLine string
+	for i := range m.matches {
+		switch m.req.Rows[m.matches[i].Index].Value {
+		case "provincial":
+			provincialLine = rowLine(m, i)
+		case "district":
+			districtLine = rowLine(m, i)
+		}
+	}
+
+	if !strings.Contains(provincialLine, cyanSGR) {
+		t.Fatalf("visible text %q contains the query and must highlight cyan: %q", "provincial", provincialLine)
+	}
+	if strings.Contains(districtLine, cyanSGR) {
+		t.Fatalf("%q only matched via its alias Match field -- the query isn't in its visible text, so it must not highlight: %q", "district", districtLine)
+	}
+	if !strings.Contains(ansi.Strip(districtLine), "district") {
+		t.Fatalf("the left text should still render, just unhighlighted: %q", districtLine)
+	}
+}
+
+// TestTypedQueryHighlightsAgainstVisibleTextIntegration is the integration
+// golden for the same bug: it builds a fixture-shaped row (bold label,
+// faint separator, dim branch name, with Match set to the same
+// separator-stripped form pick.ts sends), drives a REAL typed query
+// through Update -- not a seeded InitialQuery -- and asserts the cyan
+// highlight lands on the visible "o" inside "on-deck". This is the path
+// that actually shipped broken: the guarded code suppressed every
+// highlight on this row because Match ("bill on-deck/bill") never equals
+// the visible leftPlain ("bill · on-deck/bill").
+func TestTypedQueryHighlightsAgainstVisibleTextIntegration(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{
+				Value: "/repo/.worktrees/on-deck/bill",
+				Left: []protocol.PickSegment{
+					{Text: "bill", Tone: "text", Bold: true},
+					{Text: " · ", Tone: "faint"},
+					{Text: "on-deck/bill", Tone: "dim"},
+				},
+				Match: "bill on-deck/bill",
+			},
+		},
+	}
+	m := New(req)
+	m.width = 92
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
+	m = next.(*Model)
+
+	if m.query != "o" {
+		t.Fatalf("setup: query should be %q after typing, got %q", "o", m.query)
 	}
 
 	raw := rowLine(m, 0)
-	if strings.Contains(raw, cyanSGR) {
-		t.Fatalf("positions computed against an overriding match field must not paint the visible left text: %q", raw)
-	}
-	if !strings.Contains(ansi.Strip(raw), "provision") {
-		t.Fatalf("the left text should still render, just unhighlighted: %q", raw)
+	if !strings.Contains(raw, cyanSGR) {
+		t.Fatalf("typed query %q should highlight the visible %q in on-deck: %q", "o", "o", raw)
 	}
 }
 
