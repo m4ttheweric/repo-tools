@@ -1,0 +1,3 @@
+{
+  "mattstack.tracking": { "repos": { "gitlab.com/m4tthew-dev/glance-test-repo": { "caches": ["branches"] } } }
+}

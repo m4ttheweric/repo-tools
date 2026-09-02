@@ -1,0 +1,6 @@
+{
+  "name": "vmtest-hello",
+  "version": "0.1.0",
+  "description": "Team-authored plugin used by the VM join walkthrough to prove a team marketplace propagates to a joiner.",
+  "skills": ["./skills/hello"]
+}

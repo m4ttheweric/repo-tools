@@ -75,6 +75,11 @@ esac
 launchctl print "gui/$(id -u)/com.mattstack.daemon" > "$LOGS/launchctl.txt" 2>&1
 if grep -qE 'pid = [0-9]+' "$LOGS/launchctl.txt"; then ok "com.mattstack.daemon running (pid $(grep -oE 'pid = [0-9]+' "$LOGS/launchctl.txt" | head -1 | awk '{print $3}'))"; else bad "com.mattstack.daemon not running"; fi
 launchctl print "gui/$(id -u)/com.rt.daemon" >/dev/null 2>&1 && bad "legacy com.rt.daemon job present" || ok "no legacy com.rt.daemon job"
+# Every deck-managed job holds a pid: a spawn-failed job (exit 78, e.g. a
+# missing WorkingDirectory) is a crash loop launchd never logs anywhere.
+for label in $(launchctl print "gui/$(id -u)" 2>/dev/null | grep -oE 'com\.mattstack\.deck\.[a-z]+' | sort -u); do
+  if launchctl print "gui/$(id -u)/$label" 2>/dev/null | grep -qE '^\s*pid = [0-9]+'; then ok "$label running"; else bad "$label not running ($(launchctl print "gui/$(id -u)/$label" 2>/dev/null | grep -oE 'last exit code = [^,]*' | head -1))"; fi
+done
 [ -e "$HOME/.rt" ] && bad "~/.rt exists (legacy)" || ok "no ~/.rt"
 if [ -e /Applications/rt-tray.app ] || [ -e "$HOME/Applications/rt-tray.app" ]; then bad "rt-tray.app present (legacy)"; else ok "no rt-tray.app"; fi
 

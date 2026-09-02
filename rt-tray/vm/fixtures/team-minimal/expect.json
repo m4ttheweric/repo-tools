@@ -1,0 +1,5 @@
+{
+  "repos": ["glance-test-repo"],
+  "plugins": ["vmtest-hello@vmtest"],
+  "secrets": [{ "domain": "board", "key": "vmtestKey", "value": "vmtest-minimal-secret" }]
+}

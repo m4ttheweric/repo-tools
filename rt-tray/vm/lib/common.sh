@@ -142,6 +142,13 @@ vm_scp() {
   scp -r "${VM_SSH_OPTS[@]}" -i "$VM_SSH_KEY" "$src" "$user@$ip:$dest"
 }
 
+# Guest → host copy; the mirror of vm_scp.
+vm_scp_from() {
+  local user="$1" vm="$2" src="$3" dest="$4"
+  local ip; ip=$(vm_ip "$vm" 1) || vm_die "no ip for $vm"
+  scp "${VM_SSH_OPTS[@]}" -i "$VM_SSH_KEY" "$user@$ip:$src" "$dest"
+}
+
 vm_ssh_pw() {
   vm_require_cmd sshpass "brew install cirruslabs/cli/sshpass"
   vm_ssh_pw_try "$@" || vm_die "ssh failed for $1@$3"
