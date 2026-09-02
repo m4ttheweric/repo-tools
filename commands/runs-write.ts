@@ -18,6 +18,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
+import { flagValue, required, Usage } from "../lib/cli-args.ts";
 import { emitRunUpdated } from "../lib/runs/emit.ts";
 import { runStart } from "../lib/runs/start.ts";
 import { runsRoot } from "../lib/runs/store.ts";
@@ -29,31 +30,12 @@ import {
 export type WriteVerb = "run-start" | "run-status" | "stage-start" | "stage-done" | "stage-fail" | "field" | "decision" | "snapshot";
 export type CliResult = { out: string; code: number };
 
-class Usage extends Error {}
-
 function json(value: unknown): string {
   return JSON.stringify(value);
 }
 
 function fail(f: Fail): CliResult {
   return { out: json({ ok: false, error: f.error }), code: f.code };
-}
-
-// A value flag followed by nothing, or by another flag, is a usage error:
-// silently taking the next flag as the value is how `--mattstack-dirty`
-// once became a sha.
-function flagValue(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  if (i < 0) return undefined;
-  const v = args[i + 1];
-  if (v === undefined || v.startsWith("--")) throw new Usage(`${flag} requires a value`);
-  return v;
-}
-
-function required(args: string[], flag: string): string {
-  const v = flagValue(args, flag);
-  if (v === undefined || v === "") throw new Usage(`${flag} is required`);
-  return v;
 }
 
 function positionals(args: string[]): string[] {

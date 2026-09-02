@@ -24,7 +24,15 @@ function openRun(repo: string, runId: string): { db: Database; schemaAhead: bool
   if (!isPathComponent(repo) || !isPathComponent(runId)) return null;
   const path = join(runsRoot(), repo, runId, "state.db");
   if (!existsSync(path)) return null;
-  const db = new Database(path, { readonly: true });
+  // Bun's sqlite constructor itself throws for a state.db that isn't a
+  // readable database file (a directory, a permission-denied path) --
+  // one bad run dir must not abort every caller's scan of the rest.
+  let db: Database;
+  try {
+    db = new Database(path, { readonly: true });
+  } catch {
+    return null;
+  }
   try {
     const ver = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
     return { db, schemaAhead: ver > KNOWN_SCHEMA_VERSION };
@@ -189,11 +197,14 @@ export function findRunsBySession(sessionId: string): RunSessionMatch[] {
       const opened = openRun(repo, id);
       if (!opened) continue;
       try {
+        // A Stop hook walks every run DB with no mtime cache on this path,
+        // so a non-matching run must skip runRow's SELECT * and every
+        // enrichment query beyond this one, not just the ones after it.
+        const hit = opened.db.query("SELECT value FROM fields WHERE key = 'claude-session'").get() as { value: string } | undefined;
+        if (!hit || hit.value !== sessionId) continue;
         const row = runRow(opened.db);
         if (!row) continue;
-        const fields = opened.db.query("SELECT key, value, produced_by, at FROM fields").all() as RunFieldRow[];
-        if (fieldValue(fields, "claude-session") !== sessionId) continue;
-        out.push({ summary: row, runDb: join(runsRoot(), repo, id, "state.db") });
+        out.push({ summary: withAttention(opened.db, row), runDb: join(runsRoot(), repo, id, "state.db") });
       } catch {
         continue;
       } finally {

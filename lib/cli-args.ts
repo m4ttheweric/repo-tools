@@ -26,3 +26,26 @@ export function flagValues(args: string[], flag: string): string[] {
   }
   return values;
 }
+
+/** A command module's usage error: caught at the dispatch boundary and turned into a JSON error plus exit 2. */
+export class Usage extends Error {}
+
+/**
+ * A value flag followed by nothing, or by another flag, is a usage error:
+ * silently taking the next flag as the value is how `--mattstack-dirty`
+ * once became a sha. Returns undefined only when the flag is absent
+ * entirely.
+ */
+export function flagValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  if (i < 0) return undefined;
+  const v = args[i + 1];
+  if (v === undefined || v.startsWith("--")) throw new Usage(`${flag} requires a value`);
+  return v;
+}
+
+export function required(args: string[], flag: string): string {
+  const v = flagValue(args, flag);
+  if (v === undefined || v === "") throw new Usage(`${flag} is required`);
+  return v;
+}
