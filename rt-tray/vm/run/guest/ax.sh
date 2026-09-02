@@ -277,7 +277,8 @@ using terms from application \"System Events\"
 end using terms from
 tell application \"System Events\" to tell process \"System Settings\"
   set sw to missing value
-  repeat 40 times
+  set deadline to (current date) + ${AX_SETTINGS_SWITCH_WAIT:-60}
+  repeat while (current date) < deadline
     if exists window 1 then
       set sw to my findSwitch(window 1, \"$lbl\", true)
       if sw is missing value then set sw to my findSwitch(window 1, \"$lbl\", false)
@@ -339,9 +340,18 @@ tell application \"System Events\" to tell process \"System Settings\"
 end tell" 2>/dev/null | sed 's/^/    settings row: /' >>"$AX_LOG"
 }
 
-ax_toggle_in_system_settings() {  # <row label e.g. mattstack>
+ax_toggle_in_system_settings() {  # <row label e.g. mattstack> [deep link to reopen on a pane that never populated]
   local v0 after
-  v0=$(ax_settings_row_checkbox "$1" click) || { ax_settings_dump_rows; return 1; }
+  # One full-window walk costs seconds on a busy guest, so the lookup loop
+  # is wall-clock; a pane that still shows only the sidebar gets reopened
+  # through its own deep link once before giving up.
+  if ! v0=$(ax_settings_row_checkbox "$1" click); then
+    ax_settings_dump_rows
+    [ -n "${2:-}" ] || return 1
+    ax_log "System Settings: $1 switch not found; reopening $2"
+    open "$2"; sleep 3
+    v0=$(ax_settings_row_checkbox "$1" click) || { ax_settings_dump_rows; return 1; }
+  fi
   ax_log "System Settings: $1 switch was $v0, clicked"
   ax_admin_auth || ax_log "System Settings: no admin prompt appeared within 30s"
   sleep 2

@@ -1,0 +1,11 @@
+{
+  "mattstack.tracking": {
+    "repos": {
+      "gitlab.com/m4tthew-dev/glance-test-repo": { "caches": ["branches"] },
+      "gitlab.com/m4tthew-dev/vmtest-sink-repo": { "caches": ["branches"] }
+    }
+  },
+  "claude.marketplaces": ["https://github.com/anthropics/claude-plugins-official"],
+  "claude.plugins": ["superpowers@claude-plugins-official"],
+  "board.title": "vmtest kitchen sink"
+}

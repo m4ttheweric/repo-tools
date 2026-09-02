@@ -1,0 +1,4 @@
+[
+  { "name": "vmtest-hello", "source": "./plugins/vmtest-hello", "description": "Propagation probe" },
+  { "name": "vmtest-tools", "source": "./plugins/vmtest-tools", "description": "Propagation probe with a command" }
+]

@@ -72,7 +72,7 @@ screen_readiness() {
   # Full Disk Access: button → System Settings → toggle (admin auth for a standard user) → Relaunch.
   if [ "$(ax_status perm.fda || true)" != ready ]; then
     ax_click setup.checklist.row.perm.fda.action
-    ax_toggle_in_system_settings mattstack || ax_fail "could not toggle FDA in System Settings"
+    ax_toggle_in_system_settings mattstack "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" || ax_fail "could not toggle FDA in System Settings"
     ax_shot 03-fda-toggled
     # Relaunch re-execs the app in place with its current arguments + environment, so the appcast
     # override survives.
@@ -105,7 +105,7 @@ screen_readiness() {
     ax_click setup.checklist.row.perm.login-items.action
     sleep 2
     if [ "$(ax_status perm.login-items || true)" != ready ]; then
-      ax_toggle_in_system_settings mattstack || ax_log "login items toggle not found (may already be enabled)"
+      ax_toggle_in_system_settings mattstack "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" || ax_log "login items toggle not found (may already be enabled)"
     fi
     ax_wait_status perm.login-items ready 60 || ax_fail "login items row not ready"
   fi

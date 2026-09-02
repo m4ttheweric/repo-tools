@@ -1,0 +1,7 @@
+{
+  "name": "vmtest-tools",
+  "version": "0.1.0",
+  "description": "Second team-authored plugin for the kitchen-sink walkthrough: a skill and a slash command.",
+  "skills": ["./skills/inventory"],
+  "commands": "./commands"
+}

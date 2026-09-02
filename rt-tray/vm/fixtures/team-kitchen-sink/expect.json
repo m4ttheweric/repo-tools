@@ -1,0 +1,9 @@
+{
+  "repos": ["glance-test-repo", "vmtest-sink-repo"],
+  "plugins": ["vmtest-hello@vmtest", "vmtest-tools@vmtest", "superpowers@claude-plugins-official"],
+  "secrets": [
+    { "domain": "board", "key": "vmtestKey", "value": "vmtest-sink-board" },
+    { "domain": "sink", "key": "apiKey", "value": "vmtest-sink-api" },
+    { "domain": "sink", "key": "webhook", "value": "vmtest-sink-webhook" }
+  ]
+}
