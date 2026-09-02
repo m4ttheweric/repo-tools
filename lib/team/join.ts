@@ -47,6 +47,7 @@ export class JoinKeyExchangeError extends Error {}
 
 const NO_TEAM: JoinResult["team"] = { slug: "", name: "", owner: "" };
 
+const NO_CREDENTIAL_PATTERN = /could not read Username/;
 const GIT_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_PROTOCOL_FROM_USER: "0" };
 
 function inviteUnknownError(message = "invite not recognized or expired: ask the team owner for a new one"): UserActionableError {
@@ -208,12 +209,20 @@ export async function joinDryRun(p: Probes, relay: RelayClient, code: string): P
   // still-empty team repo) into exit 2, not a failure — both 0 and 2 mean the
   // joiner can read the repo.
   const lsRemote = await p.exec(["git", "ls-remote", "--exit-code", pointer.remote, "HEAD"], { env: GIT_ENV });
-  if (lsRemote.code !== 0 && lsRemote.code !== 2) {
+  // A joiner has connected no forge token yet at this screen, so a private
+  // repo answers "could not read Username": nothing was refused, git had
+  // nothing to offer. The checklist's access.team-repo row, which does hold
+  // the token, is what proves access before Install.
+  const noCredential = lsRemote.code === 128 && NO_CREDENTIAL_PATTERN.test(lsRemote.stderr);
+  if (lsRemote.code !== 0 && lsRemote.code !== 2 && !noCredential) {
     return gitAccessResult(pointer, lsRemote);
   }
 
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "join", join: { id: idHex, keyB64: Buffer.from(key).toString("base64"), pointer } });
-  return { team: teamRefFrom(pointer), access: "ok", peering: "idle", message: `Joining ${pointer.name} (owner ${pointer.owner})` };
+  const message = noCredential
+    ? `Joining ${pointer.name} (owner ${pointer.owner}) — access to the team repo is checked on the next screen, once your forge token is connected`
+    : `Joining ${pointer.name} (owner ${pointer.owner})`;
+  return { team: teamRefFrom(pointer), access: "ok", peering: "idle", message };
 }
 
 export interface JoinRedeemOpts {

@@ -849,6 +849,17 @@ async function connectCredential(id: Integration, args: string[], deps: ConnectD
   // Only reached once the host just validated a real credential against a
   // real service — never persisted on the strength of the flag alone.
   if (hostFlag !== undefined) deps.writeSetting("rt.integrations", confirmedOverrides, "user");
+  // A team that declares the provider's own public host needs no separate
+  // confirmation: the credential was just validated against exactly that
+  // host, which is the act --host stands for. A self-hosted declaration
+  // still needs --host (ctxFor refused it above without one).
+  else if (id === "github" || id === "gitlab") {
+    const declared = snapshotFor(deps).integrations.forge;
+    const publicHost = id === "github" ? "github.com" : "gitlab.com";
+    if (declared?.provider === id && declared.host === publicHost && overrides.forgeHost === undefined) {
+      deps.writeSetting("rt.integrations", { ...overrides, forgeHost: publicHost }, "user");
+    }
+  }
 
   let staged = false;
   if (def.secret) {

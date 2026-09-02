@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { join as pathJoin } from "path";
 import { fakeProbes } from "../../setup/__tests__/fakes.ts";
 import { UserActionableError } from "../../setup/errors.ts";
-import { intentPath, type InvitePointer, type SetupIntent } from "../../setup/intent.ts";
+import { intentPath, readIntent, type InvitePointer, type SetupIntent } from "../../setup/intent.ts";
 import type { Probes } from "../../setup/probes.ts";
 import type { SettingsReader } from "../../setup/team-settings.ts";
 import { decodeCode, encodeCode, openReply, seal } from "../invite-crypto.ts";
@@ -239,6 +239,20 @@ describe("joinDryRun", () => {
 
     const result = await joinDryRun(p, relay.client, CODE);
     expect(result.access).toBe("ok");
+  });
+
+  // At Team Continue the joiner has connected no forge token yet (that is the
+  // next screen), so a private team repo answers "could not read Username":
+  // nothing was refused, git simply had nothing to offer. The checklist's
+  // access.team-repo row, which has the token, is what gates Install.
+  test("no credential at all (could not read Username) is not denied: access ok, intent written, message defers to the next screen", async () => {
+    const p = fakeProbes({ home: HOME, now: NOW, exec: () => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://gitlab.com': terminal prompts disabled" }) });
+    const relay = fakeRelay();
+
+    const result = await joinDryRun(p, relay.client, CODE);
+    expect(result.access).toBe("ok");
+    expect(result.message).toContain("next screen");
+    expect(readIntent(p)?.mode).toBe("join");
   });
 
   test("a non-auth git failure reports access:unreachable, message says the network, not a guess", async () => {

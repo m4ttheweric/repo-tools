@@ -87,6 +87,35 @@ describe("integrationConnect — gitlab (generic token flow)", () => {
     expect(staged.gitlabToken).toBe("glpat-x");
   });
 
+  // A joiner's team declares its forge host; the access.forge row waits for
+  // the user to confirm that host before rt reaches out to it. Validating a
+  // credential against the provider's own public host IS that confirmation,
+  // so a plain connect records it; a self-hosted declaration still needs --host.
+  test("team declares gitlab.com, connect without --host -> forgeHost gitlab.com is written as confirmed", async () => {
+    const written: [string, unknown, string][] = [];
+    const deps = baseDeps({
+      probes: fakeProbes({ fetch: gitlabUserOk }),
+      stdin: async () => ({ token: "glpat-x" }),
+      writer: { storeReady: async () => false, write: neverCalled("writer.write") },
+      teamSnapshot: () => ({ ...slackTeamSnapshot(), integrations: { forge: { host: "gitlab.com", provider: "gitlab" } } }),
+      writeSetting: ((key: string, value: unknown, scope: string) => { written.push([key, value, scope]); }) as unknown as ConnectDeps["writeSetting"],
+    });
+    await integrationConnect("gitlab", ["--json"], deps);
+    expect(written).toEqual([["rt.integrations", { forgeHost: "gitlab.com" }, "user"]]);
+  });
+
+  test("team declares a self-hosted GitLab, connect without --host -> nothing confirmed, nothing written", async () => {
+    const deps = baseDeps({
+      probes: fakeProbes({ fetch: gitlabUserOk }),
+      stdin: async () => ({ token: "glpat-x" }),
+      writer: { storeReady: async () => false, write: neverCalled("writer.write") },
+      teamSnapshot: () => ({ ...slackTeamSnapshot(), integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } }),
+    });
+    await expectExit(() => integrationConnect("gitlab", ["--json"], deps));
+    expect(deps.exitCodes).toEqual([2]);
+    expect(deps.lines.join("\n")).toContain("unverified");
+  });
+
   test("age key present -> writer.write called instead of staging", async () => {
     const writes: [string, string, string][] = [];
     const probes = fakeProbes({ fetch: gitlabUserOk });
