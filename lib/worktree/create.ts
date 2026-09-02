@@ -122,16 +122,10 @@ async function runCreate(
     return fail(`git worktree add -b ${branch} ${path} ${defaultRef}`, addResult.stdout + addResult.stderr);
   }
 
-  const { steps: readySteps, held } = await evaluateReadyGate(cfg, repoName, repoPath);
-  if (held) {
-    log.warn({ repo: repoName, tree: name }, "worktree create: team `ready` steps held pending approval; run `rt worktree ready-approve`");
-    emit("worktree:ready-held", { repo: repoName, tree: name });
-  }
-  const readyResult = await runReadySteps(path, readySteps);
-  if (!readyResult.ok) {
-    return fail(readyResult.failedStep, readyResult.output);
-  }
-
+  // Scopes before ready steps: a step may shell out to `doppler`, which resolves
+  // its project from this tree's path and fails "must specify a project" until
+  // the path is scoped. The periodic cache-refresh reconcile would scope it
+  // later, but only after this create has already failed and scrapped the tree.
   const gitEntries = await listWorktreesAsync(repoPath);
   if (gitEntries === null) {
     log.warn({ repo: repoName, tree: name, path }, "worktree create: git worktree list failed; skipping doppler sync");
@@ -140,6 +134,16 @@ async function runCreate(
     const derived = await deriveRepoIdentity(repoPath);
     const repoIdentity = derived.kind === "remote" ? derived.id : null;
     await reconcileForRepo({ repoIdentity, worktreeRoots });
+  }
+
+  const { steps: readySteps, held } = await evaluateReadyGate(cfg, repoName, repoPath);
+  if (held) {
+    log.warn({ repo: repoName, tree: name }, "worktree create: team `ready` steps held pending approval; run `rt worktree ready-approve`");
+    emit("worktree:ready-held", { repo: repoName, tree: name });
+  }
+  const readyResult = await runReadySteps(path, readySteps);
+  if (!readyResult.ok) {
+    return fail(readyResult.failedStep, readyResult.output);
   }
 
   // A held team ladder means the excluded steps never ran — stamping
