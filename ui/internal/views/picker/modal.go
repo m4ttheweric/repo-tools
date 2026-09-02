@@ -363,7 +363,7 @@ func (m *Model) updateModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// precedence, and a plain character always filters, so an action's key
 	// only ever reaches here as a modifier combo or a special key.
 	if m.modal.kind == modalRegistry {
-		if action, ok := m.actionForKey(msg.String()); ok {
+		if action, ok := m.actionForKey(canonicalKey(msg)); ok {
 			return m.dispatchRegistryAction(action)
 		}
 	}

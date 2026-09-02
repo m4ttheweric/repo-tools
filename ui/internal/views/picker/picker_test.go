@@ -1453,6 +1453,7 @@ func TestCtrlKMenuAcceleratorsFireFromTheMenu(t *testing.T) {
 		Actions: []protocol.PickAction{
 			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "item"},
 			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global", Event: true},
+			{ID: "hidden", Label: "hidden files", Key: "ctrl-/", Scope: "global", Event: true},
 		},
 	}
 	open := func() *Model {
@@ -1491,6 +1492,16 @@ func TestCtrlKMenuAcceleratorsFireFromTheMenu(t *testing.T) {
 	if m.result != nil {
 		t.Fatal("an event action must not produce a terminal result")
 	}
+
+	// A legacy terminal spells ctrl-/ as ctrl+_; the menu resolves it against
+	// the same canonical spelling the main list does.
+	m = open()
+	next, cmd = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
+	m = next.(*Model)
+	if m.modal != nil {
+		t.Fatal("a registered ctrl-/ action must fire from the menu on the legacy ctrl+_ spelling")
+	}
+	mustNotQuit(t, cmd)
 
 	// A plain character is filter input, never an accelerator.
 	m = open()
