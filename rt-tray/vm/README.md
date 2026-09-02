@@ -16,20 +16,46 @@ Every run's deliverable is `artifacts/<run-id>/` (screenshots, logs,
 ## Status
 
 `--scenario create` is green end to end on the `mattstack-golden-26` image
-(run `20260901-232641`): every setup screen, the FDA dance with the app's
-own relaunch, the Apple CLT install, the herdr and Claude Code vendor
-installs, the full Install pipeline, and the Done screen. `--scenario
-headless` is green too. Still unproven: `--scenario join` (mint a real
-invite with `run/team-setup.sh invite`, then `--invite-code-file`) and the
-`update` phase (`--update-dir`).
+on GitHub (run `20260901-232641`) and GitLab (run `20260902-110714`):
+every setup screen, the FDA dance with the app's own relaunch, the Apple
+CLT install, the herdr and Claude Code vendor installs, the full Install
+pipeline, and the Done screen. `--scenario join` is green unattended on a
+second guest (run `20260902-114519`, `--forge gitlab`), and the team-level
+pass is green too: an owner guest loads `fixtures/team-minimal` through
+`run/host/team-load.sh` (one tracked repo, one team plugin, one team
+secret), two joiners join from fresh guests, and
+`run/host/team-propagate.sh` + `run/guest/assert-team.sh` prove the repo
+cloned, the plugin installed, and the secret decrypting with each joiner's
+own key (runs `20260902-121519`, `20260902-124007`). `--scenario headless`
+is green too. Still unproven: `fixtures/team-kitchen-sink` and the `update`
+phase (`--update-dir`).
+
+The team pass has two hand steps the product does not do yet (MAT-405):
+the owner's commit + `rt team publish` after `members sync`, and the
+joiner's pull. `team-propagate.sh` performs both so the assertions measure
+propagation, not the missing daemon half.
+
+Facts a join run depends on:
+
+- One PAT per run, the joiner's own, through `--pat-env`; `--forge gitlab`
+  when the invite is not derivable from a remote. Invite codes come from
+  `team-load.sh` (`--out <dir>/code-<handle>.txt`) or, for the bare
+  scaffold, `rt team invite --handle <h> --json` over ssh in the kept owner
+  guest with a scp'd `dist/rt` (a stderr reminder line precedes the JSON).
+- Never replace the bundle's `rt` inside a guest to replay a step:
+  SMAppService's code requirement stops matching and the daemon spawn-fails
+  with exit 78, which reads exactly like a product bug. scp a fresh binary
+  to `/tmp` and run verbs from there, or rebuild the app and rerun.
 
 Facts a create run depends on:
 
 - **Every create run needs an EMPTY team repo** (`rt team create` refuses a
   remote with commits). `run/team-setup.sh reset` retires and recreates the
   standard pair; or create a fresh one (`gh repo create <org>/<name>
-  --private`) and pass `MATTSTACK_VMTEST_TEAM_REPO=<name>`. The walkthrough
-  derives `--team-remote` from that name.
+  --private`, or the GitLab projects API) and pass `--team-remote <url>`
+  (the walkthrough otherwise derives a GitHub URL from
+  `MATTSTACK_VMTEST_TEAM_REPO`). A pasted remote leaves
+  `rtMayManageMembership` off, so grant the joiners on the forge yourself.
 - Prefer `--no-graphics`: the Tart window otherwise takes keyboard focus on
   the host mid-run (a stray keystroke lands in the token field), and every
   failure already logs the windows and AXIdentifiers on screen.
