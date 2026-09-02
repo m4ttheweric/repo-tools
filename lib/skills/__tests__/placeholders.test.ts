@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { assertNoPlaceholders, findPlaceholders, substitute } from "../placeholders.ts";
 import type { AttachmentSource, PlaceholderContext } from "../types.ts";
 
@@ -48,6 +51,9 @@ function ctx(over: Partial<PlaceholderContext> = {}): PlaceholderContext {
     ] },
     repoKey: "my-repo", mattstackSha: "abc1234", mattstackDirty: 0, packSha: "acme=abc1234",
     stageDir: null, stageMeta: null, compiledFrom: "mattstack@1.0.0 + acme:plan-policy@0.4.0",
+    verbSides: { work: "skills", checkout: "skills", "stage-plan": "attachments", "receive-review": "attachments" },
+    side: "skills",
+    packRoot: null,
     ...over,
   };
 }
@@ -189,7 +195,7 @@ describe("substitute", () => {
     expect(substitute("{{stage.dir}}", stage, "stage-plan").body).toBe("${CLAUDE_SKILL_DIR}/../../attachments/stage-plan");
     expect(substitute("{{stage.fields}}", stage, "stage-plan").body)
       .toBe("You consume `ticket`. You must produce `approach`, `evidence-plan`.");
-    expect(() => substitute("{{stage.dir}}", ctx(), "work")).toThrow("work: {{stage.dir}} used outside a stage");
+    expect(() => substitute("{{stage.dir}}", ctx(), "work")).toThrow("work: {{stage.dir}} used in a public verb");
   });
 
   test("compiled-from substitutes the provenance string", () => {
@@ -212,6 +218,140 @@ describe("substitute", () => {
   test("a fill may not carry a slot or any other placeholder", () => {
     const bad = { ...fill, body: "x\n{{slot:tiering}}" };
     expect(() => substitute("{{slot:domain}}", ctx({ fills: { domain: bad } }), "stage-plan"))
-      .toThrow("acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}} only (line 2)");
+      .toThrow("acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}}, {{verb.path}} or {{pack.path}} only (line 2)");
+  });
+});
+
+describe("verb.path", () => {
+  test("same side renders a sibling path relative to this file", () => {
+    expect(substitute("read {{verb.path:checkout}} first", ctx(), "work").body).toBe("read ../checkout/SKILL.md first");
+  });
+
+  test("across sides renders through the pack root, in both directions", () => {
+    expect(substitute("{{verb.path:receive-review}}", ctx(), "work").body).toBe("../../attachments/receive-review/SKILL.md");
+    expect(substitute("{{verb.path:work}}", ctx({ side: "attachments" }), "receive-review").body).toBe("../../skills/work/SKILL.md");
+  });
+
+  test("an unknown name is an error naming the placeholder", () => {
+    expect(() => substitute("{{verb.path:nope}}", ctx(), "work")).toThrow("work: {{verb.path:nope}} -- nope is not a compiled verb of this pack");
+  });
+
+  test("an argument that is not a bare verb name is an error", () => {
+    expect(() => substitute("{{verb.path:Check_Out}}", ctx(), "work")).toThrow("work: {{verb.path:Check_Out}} -- verb name must match [a-z][a-z0-9-]*");
+    expect(() => substitute("{{verb.path}}", ctx(), "work")).toThrow("work: {{verb.path}} -- verb name must match [a-z][a-z0-9-]*");
+  });
+
+  test("a fill may carry it", () => {
+    const withPath = { ...fill, body: "then read {{verb.path:checkout}}" };
+    expect(substitute("{{slot:domain}}", ctx({ fills: { domain: withPath } }), "work").body).toContain("then read ../checkout/SKILL.md");
+  });
+});
+
+describe("pack.path", () => {
+  function packRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "rt-pack-path-"));
+    mkdirSync(join(root, "attachments", "evidence", "scripts"), { recursive: true });
+    writeFileSync(join(root, "attachments", "evidence", "scripts", "capture.sh"), "#!/bin/sh\n");
+    return root;
+  }
+
+  test("renders the host-anchored path from an attachments-side and a skills-side target alike", () => {
+    const root = packRoot();
+    const want = "run ${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh";
+    expect(substitute("run {{pack.path:evidence/scripts/capture.sh}}", ctx({ packRoot: root, side: "attachments" }), "stage-ship").body).toBe(want);
+    expect(substitute("run {{pack.path:evidence/scripts/capture.sh}}", ctx({ packRoot: root, side: "skills" }), "ship").body).toBe(want);
+  });
+
+  test("an attachment that lives under skills/ renders under skills/", () => {
+    const root = packRoot();
+    mkdirSync(join(root, "skills", "helper"), { recursive: true });
+    writeFileSync(join(root, "skills", "helper", "notes.md"), "notes\n");
+    expect(substitute("{{pack.path:helper/notes.md}}", ctx({ packRoot: root }), "ship").body).toBe("${CLAUDE_SKILL_DIR}/../../skills/helper/notes.md");
+  });
+
+  test("returns the rendered paths beside used", () => {
+    const root = packRoot();
+    const { used } = substitute("a {{pack.path:evidence/scripts/capture.sh}} b", ctx({ packRoot: root }), "ship");
+    expect(used.packPaths).toEqual(["${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh"]);
+  });
+
+  test("rejects a .. segment", () => {
+    const root = packRoot();
+    expect(() => substitute("{{pack.path:evidence/../secrets.md}}", ctx({ packRoot: root }), "ship"))
+      .toThrow('ship: {{pack.path:evidence/../secrets.md}} -- <file> may not contain "..", "." or empty segments');
+  });
+
+  test("rejects a missing attachment", () => {
+    const root = packRoot();
+    expect(() => substitute("{{pack.path:nope/x.sh}}", ctx({ packRoot: root }), "ship"))
+      .toThrow("ship: {{pack.path:nope/x.sh}} -- nope is not a directory under attachments/ or skills/");
+  });
+
+  test("rejects a missing file, naming the path it looked for", () => {
+    const root = packRoot();
+    expect(() => substitute("{{pack.path:evidence/scripts/nope.sh}}", ctx({ packRoot: root }), "ship"))
+      .toThrow("ship: {{pack.path:evidence/scripts/nope.sh}} -- attachments/evidence/scripts/nope.sh does not exist");
+  });
+
+  test("rejects an attachment present on both sides", () => {
+    const root = packRoot();
+    mkdirSync(join(root, "skills", "evidence"), { recursive: true });
+    expect(() => substitute("{{pack.path:evidence/scripts/capture.sh}}", ctx({ packRoot: root }), "ship"))
+      .toThrow("ship: {{pack.path:evidence/scripts/capture.sh}} -- evidence exists under both attachments/ and skills/");
+  });
+
+  test("rejects a compiled verb, whose output exists only after a compile", () => {
+    const root = packRoot();
+    expect(() => substitute("{{pack.path:work/SKILL.md}}", ctx({ packRoot: root }), "ship"))
+      .toThrow("ship: {{pack.path:work/SKILL.md}} -- work is a compiled verb; pack.path names source files only");
+  });
+
+  test("rejects an argument without a file part", () => {
+    const root = packRoot();
+    expect(() => substitute("{{pack.path:evidence}}", ctx({ packRoot: root }), "ship"))
+      .toThrow("ship: {{pack.path:evidence}} -- pack.path takes <attachment>/<file>");
+  });
+
+  test("a fill may carry it, and the parts rewrite never touches the rendered path", () => {
+    const root = packRoot();
+    const withPath = { ...fill, body: "config ${CLAUDE_SKILL_DIR}/ci.json; capture {{pack.path:evidence/scripts/capture.sh}}", extraFiles: ["ci.json"] };
+    const inStage = ctx({
+      fills: { domain: withPath }, packRoot: root, side: "attachments",
+      stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan",
+      partsPrefix: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts",
+    });
+    const { body, used } = substitute("{{slot:domain}}", inStage, "stage-plan");
+    expect(body).toContain("config ${CLAUDE_SKILL_DIR}/../../attachments/stage-plan/parts/domain/ci.json; capture ${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh");
+    expect(used.packPaths).toEqual(["${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh"]);
+  });
+});
+
+describe("a heading above an unbound slot", () => {
+  const unbound = () => ctx({ fills: { domain: null } });
+
+  test("is dropped with the blank lines around the slot", () => {
+    expect(substitute("a\n\n## Reviewer\n\n{{slot:domain}}\n\nb", unbound(), "x").body).toBe("a\n\nb");
+  });
+
+  test("is dropped when nothing separates heading, slot and prose", () => {
+    expect(substitute("a\n## Reviewer\n{{slot:domain}}\nb", unbound(), "x").body).toBe("a\nb");
+  });
+
+  test("a slot with no heading above it still renders as an empty line", () => {
+    expect(substitute("a\n{{slot:domain}}\nb", unbound(), "x").body).toBe("a\n\nb");
+  });
+
+  test("stays above a bound slot, another placeholder, or prose", () => {
+    expect(substitute("## Reviewer\n{{slot:domain}}", ctx(), "x").body).toContain("## Reviewer\n<!-- part: slot:domain");
+    expect(substitute("## Provenance\n{{compiled-from}}", unbound(), "x").body).toBe("## Provenance\nmattstack@1.0.0 + acme:plan-policy@0.4.0");
+    expect(substitute("## Notes\nplain prose", unbound(), "x").body).toBe("## Notes\nplain prose");
+  });
+
+  test("a shell comment inside a fence above a slot is not a heading", () => {
+    expect(substitute("```sh\n# not a heading\n{{slot:domain}}\n```", unbound(), "x").body).toBe("```sh\n# not a heading\n\n```");
+  });
+
+  test("the dropped slot still counts as placed", () => {
+    expect(substitute("## Reviewer\n{{slot:domain}}", unbound(), "x").used.slots).toEqual(["domain"]);
   });
 });

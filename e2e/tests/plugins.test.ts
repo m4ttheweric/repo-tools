@@ -146,7 +146,7 @@ export async function run(args: string[], ctx: RtCommandContext) {
   test("rt plugin new scaffolds a working, typecheckable plugin", async () => {
     const created = await rt(["plugin", "new", "fresh-tool"], { home });
     expect(created.exitCode).toBe(0);
-    const dir = join(home, ".mattstack", "rt", "plugins", "fresh-tool");
+    const dir = join(home, ".mattstack", "user", "plugins", "fresh-tool");
     expect(existsSync(join(dir, "plugin.json"))).toBe(true);
     expect(existsSync(join(home, ".mattstack", "rt", "plugin-api", "index.d.ts"))).toBe(true);
 

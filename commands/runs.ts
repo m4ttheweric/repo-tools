@@ -42,7 +42,7 @@ function positional(args: string[]): string | undefined {
   return undefined;
 }
 
-const STATUS_ICON: Record<string, string> = { running: "●", done: "✓", failed: "✗", abandoned: "○" };
+const STATUS_ICON: Record<string, string> = { running: "●", done: "✓", failed: "✗", abandoned: "○", redirected: "»" };
 
 export function formatRunLine(r: RunSummary): string {
   const icon = STATUS_ICON[r.status] ?? "?";
@@ -110,7 +110,7 @@ async function pickRunId(runs: RunSummary[], message: string): Promise<string | 
 export async function runsList(args: string[]): Promise<void> {
   const stray = positional(args);
   if (stray) {
-    console.error(`rt runs: unknown subcommand "${stray}"\nusage: rt runs [--repo R] [--json] | rt runs <show|abandon|run-start|run-status|stage-start|stage-done|stage-fail|field|decision|snapshot> ...`);
+    console.error(`rt runs: unknown subcommand "${stray}"\nusage: rt runs [--repo R] [--json] | rt runs <show|abandon|run-start|run-status|stage-start|stage-done|stage-fail|stage-redirect|field|decision|snapshot> ...`);
     process.exit(2);
   }
   const repoArg = flagValue(args, "--repo");

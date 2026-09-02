@@ -29,6 +29,7 @@ rt runs run-status  --status done|failed|abandoned
 rt runs stage-start --stage NAME
 rt runs stage-done  --stage NAME
 rt runs stage-fail  --stage NAME [--reason TEXT] [--detail-path PATH]
+rt runs stage-redirect --stage FROM --to TO [--reason TEXT]
 rt runs field set   KEY VALUE --stage NAME
 rt runs field get   KEY
 rt runs decision record --contract C --scope S --selection JSON --decided-by W
@@ -43,8 +44,10 @@ Contract, identical to the script's v2 except where marked new:
 - `run-status` sets `runs.status` and `runs.ended_at`; any status outside the three is exit 2.
 - `stage-start` inserts a `running` row with `attempt = max(attempt)+1` for that name and sets `runs.current_stage`. Records identity.
 - `stage-done` / `stage-fail` update the latest attempt of the named stage with status, `ended_at`, and the optional reason and detail path. **New in rt, carried from today's script fix:** zero rows updated is `{"ok":false,"error":"stage never started: NAME"}`, exit 3.
+- `stage-redirect` (added 2026-09-02, issue 181) closes the latest attempt of `--stage` as `redirected`, `reason` defaulting to `redirected to <to>`. The attempt must be `running`: anything else is `{"ok":false,"error":"stage <from> is <status>, not running"}`, exit 3; a never-started stage is the existing zero-row exit 3. A missing `--stage` or `--to` is exit 2. Stage statuses are therefore `running | done | failed | redirected`; `computeAttention` keeps treating only `failed` as a reason.
 - `field set` upserts `(run_id, key)` with producer `--stage` and `at = now`. `field get` prints the raw value, no JSON; a missing key is exit 3 with no output.
 - `decision record` upserts `(run_id, contract, scope)`. `--selection` that is not valid JSON is exit 2 (new; the script stored anything).
+- Scopes are free-form (added 2026-09-02, issue 181). A gate that can fire more than once per attempt (watch-ci called once per branch by sync-open-mrs) appends a discriminator after the attempt, `ci:<stage>:<attempt>:<branch>`, so its rows do not overwrite each other; `snapshot` returns every row. No schema change: widening the primary key would be a versioned migration with three duplicated DDL copies to keep in step (`lib/runs/__tests__/fixtures.ts`, `prune.test.ts`).
 - `snapshot` prints `{ok, run, stages, fields, decisions}` as raw `SELECT *` rows from the open `RT_RUN_DB` handle, with the same ordering the script used (stages by `started_at, attempt`; fields by `at`; decisions by `decided_at`). It is implemented in `write.ts` beside the mutations, not through `store.ts`'s `readRun`, which keys on `(repo, runId)` under `runsRoot()` and returns the enriched `RunDetail` shape rather than raw rows.
 - `rt runs` with a positional argument that is not a known subcommand prints a usage error and exits 2. Today the dispatcher runs a node's own handler when the first argument matches no subcommand, so `rt runs stage-start` on an rt without these verbs silently prints the run list and exits 0; `runsList` rejecting positionals closes that on any rt carrying this change.
 - Output is JSON on stdout for every outcome of every subcommand except `field get`. Exit codes: 0 ok, 1 sqlite failure, 2 usage or environment, 3 not found.

@@ -74,3 +74,11 @@ test("the bare skills branch node is not flagged fullscreen -- only the surface 
   expect(TREE.skills!.subcommands!.check!.fullscreen).toBeUndefined();
   expect(TREE.skills!.subcommands!.compile!.fullscreen).toBeUndefined();
 });
+
+test("runs stage-redirect is a registered leaf with its three flags, so it never falls through to the list", () => {
+  const leaf = TREE.runs!.subcommands!["stage-redirect"]!;
+  expect(leaf.module).toBe("./commands/runs-write.ts");
+  expect(leaf.fn).toBe("runsStageRedirect");
+  expect(leaf.args!.map((a) => a.flag)).toEqual(["--stage", "--to", "--reason"]);
+  expect(leaf.args!.every((a) => a.flag)).toBe(true);
+});

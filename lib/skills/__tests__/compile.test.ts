@@ -174,7 +174,7 @@ describe("compileSkill", () => {
     };
 
     expect(() => compileSkill(verb, step, { domain: domainWithSlot, forge: forgeFill }, roster)).toThrow(
-      'acme:watch-ci-domain: {{slot:tiering}} -- a fill may carry {{include}} only (line 2)',
+      'acme:watch-ci-domain: {{slot:tiering}} -- a fill may carry {{include}}, {{verb.path}} or {{pack.path}} only (line 2)',
     );
   });
 
@@ -511,7 +511,7 @@ describe("compileSkill with placeholders", () => {
 
   test("a placeholder that cannot be filled is a compile error", () => {
     const bad = { ...placeholderStep, body: "{{slot:domain}}\n{{stage.dir}}" };
-    expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), {})).toThrow("{{stage.dir}} used outside a stage");
+    expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), {})).toThrow("{{stage.dir}} used in a public verb");
   });
 
   test("a fill's file references resolve under the stage's parts dir inside a stage", () => {
@@ -581,6 +581,24 @@ describe("compileSkill with placeholders", () => {
       emittedSiblingDirs: ["${CLAUDE_SKILL_DIR}/../../attachments/stage-plan"],
     });
     expect(r.warnings.filter((w) => w.includes("not an emitted file"))).toEqual([]);
+  });
+
+  test("an internal roster verb's vendored include lints clean when its host dir is exempt", () => {
+    const withRef: AttachmentSource = {
+      ...domainFill,
+      binding: "mattstack:review-core-body",
+      provides: "",
+      body: "shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md",
+      extraFiles: ["references/adjudicator.md"],
+    };
+    const host = "${CLAUDE_SKILL_DIR}/../../attachments/receive-review";
+    const r = compileSkill(verb, { ...slotless, body: "Act on it.\n{{include:review-core-body}}" }, {}, new Set(), {
+      includes: { "review-core-body": withRef },
+      stageDir: host,
+      emittedSiblingDirs: [host],
+    });
+    expect(skillMd(r)).toContain(`shape at ${host}/parts/include-review-core-body/references/adjudicator.md`);
+    expect(r.warnings).toEqual([]);
   });
 
   test("a relative read escaping the pack root is a compile error naming verb, path and source line", () => {
@@ -699,5 +717,70 @@ describe("compileSkill with placeholders", () => {
     const md = skillMd(compileSkill(verb, step, { domain: domainFill, forge: forgeFill }, new Set(), {}));
     expect(md).toContain("part: slot:domain");
     expect(md).toContain("part: slot:forge");
+  });
+
+  test("verb.path renders against the target's side and lints clean when the sibling is emitted", () => {
+    const packRoot = tempPackRoot();
+    const r = compileSkill(verb, { ...slotless, body: "Read {{verb.path:receive-review}} first, then {{verb.path:checkout}}." }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "watch-ci"),
+      side: "skills",
+      verbSides: { "watch-ci": "skills", checkout: "skills", "receive-review": "attachments" },
+      emittedTargetDirs: [join(packRoot, "skills", "watch-ci"), join(packRoot, "skills", "checkout"), join(packRoot, "attachments", "receive-review")],
+    });
+    expect(skillMd(r)).toContain("Read ../../attachments/receive-review/SKILL.md first, then ../checkout/SKILL.md.");
+    expect(r.warnings).toEqual([]);
+  });
+
+  function packWithEvidence(): string {
+    const packRoot = tempPackRoot();
+    mkdirSync(join(packRoot, "attachments", "evidence", "scripts"), { recursive: true });
+    writeFileSync(join(packRoot, "attachments", "evidence", "scripts", "capture.sh"), "#!/bin/sh\n");
+    return packRoot;
+  }
+
+  test("pack.path in a fill survives the parts rewrite inside a stage and lints clean", () => {
+    const packRoot = packWithEvidence();
+    const capturing: AttachmentSource = {
+      ...domainFill,
+      body: "Config at ${CLAUDE_SKILL_DIR}/ci-config.json; capture with {{pack.path:evidence/scripts/capture.sh}}.",
+    };
+    const host = "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci";
+    const r = compileSkill(verb, placeholderStep, { domain: capturing }, new Set(), {
+      stageDir: host,
+      packRoot,
+      compiledDir: join(packRoot, "attachments", "stage-watch-ci"),
+      side: "attachments",
+      emittedSiblingDirs: [host],
+    });
+    expect(skillMd(r)).toContain(
+      `Config at ${host}/parts/domain/ci-config.json; capture with \${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh.`,
+    );
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("pack.path in a public verb renders the same anchored path and lints clean", () => {
+    const packRoot = packWithEvidence();
+    const r = compileSkill(verb, { ...slotless, body: "Run {{pack.path:evidence/scripts/capture.sh}} after the diff." }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "watch-ci"),
+      side: "skills",
+    });
+    expect(skillMd(r)).toContain("Run ${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh after the diff.");
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("pack.path naming a compiled target's output is a compile error", () => {
+    const packRoot = packWithEvidence();
+    mkdirSync(join(packRoot, "skills", "work"), { recursive: true });
+    writeFileSync(join(packRoot, "skills", "work", "SKILL.md"), "compiled earlier\n");
+    expect(() =>
+      compileSkill(verb, { ...slotless, body: "see {{pack.path:work/SKILL.md}}" }, {}, new Set(), {
+        packRoot,
+        compiledDir: join(packRoot, "skills", "watch-ci"),
+        side: "skills",
+        verbSides: { work: "skills", "watch-ci": "skills" },
+      }),
+    ).toThrow("{{pack.path:work/SKILL.md}} -- work is a compiled verb; pack.path names source files only");
   });
 });

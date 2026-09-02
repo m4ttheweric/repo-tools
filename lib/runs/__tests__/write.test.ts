@@ -145,6 +145,31 @@ describe("stage lifecycle", () => {
     expect(db.query("SELECT COUNT(*) AS n FROM stages").get()).toEqual({ n: 0 });
     db.close();
   });
+
+  test("stage-redirect closes the latest running attempt as redirected with the default reason", () => {
+    const db = started();
+    stageStart(db, "implement", {}, 10);
+    expect(stageEnd(db, "implement", "redirected", { reason: "redirected to plan", requireRunning: true, now: 20 })).toEqual({ ok: true });
+    expect(db.query("SELECT status, reason, ended_at FROM stages WHERE name='implement'").get()).toEqual({ status: "redirected", reason: "redirected to plan", ended_at: 20 });
+    db.close();
+  });
+
+  test("stage-redirect refuses a done attempt and leaves it untouched", () => {
+    const db = started();
+    stageStart(db, "implement", {}, 10);
+    stageEnd(db, "implement", "done", { now: 20 });
+    expect(stageEnd(db, "implement", "redirected", { reason: "redirected to plan", requireRunning: true, now: 30 }))
+      .toEqual({ ok: false, error: "stage implement is done, not running", code: 3 });
+    expect(db.query("SELECT status, ended_at FROM stages WHERE name='implement'").get()).toEqual({ status: "done", ended_at: 20 });
+    db.close();
+  });
+
+  test("stage-redirect on a never-started stage is exit 3", () => {
+    const db = started();
+    expect(stageEnd(db, "implement", "redirected", { reason: "redirected to plan", requireRunning: true }))
+      .toEqual({ ok: false, error: "stage never started: implement", code: 3 });
+    db.close();
+  });
 });
 
 describe("fields", () => {
@@ -176,6 +201,18 @@ describe("decisions", () => {
     expect(rows).toHaveLength(1);
     expect(JSON.parse(rows[0]!.selection).tier).toBe("superpowers");
     expect(rec("not json")).toMatchObject({ ok: false, code: 2 });
+    db.close();
+  });
+
+  test("scopes are free-form: a per-branch discriminator keeps every row", () => {
+    const db = started();
+    const rec = (scope: string, now: number) =>
+      decisionRecord(db, { contract: "ci-outcome@1", scope, selection: '{"ok":true}', decidedBy: "watch-ci", now });
+    expect(rec("ci:sync-open-mrs:1:feature-a", 10)).toEqual({ ok: true });
+    expect(rec("ci:sync-open-mrs:1:feature-b", 20)).toEqual({ ok: true });
+    const s = snapshot(db);
+    if (!s.ok) throw new Error(s.error);
+    expect(s.decisions.map((d) => d.scope)).toEqual(["ci:sync-open-mrs:1:feature-a", "ci:sync-open-mrs:1:feature-b"]);
     db.close();
   });
 });

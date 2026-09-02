@@ -1,3 +1,5 @@
+export type Side = "skills" | "attachments";
+
 export type SlotSpec = { contract: string; required?: boolean };
 
 export type StepSource = {
@@ -52,4 +54,7 @@ export type PlaceholderContext = {
   stageDir: string | null;
   stageMeta: StepSource["stageMeta"];
   compiledFrom: string;
+  verbSides: Record<string, Side>;
+  side: Side;
+  packRoot: string | null;
 };

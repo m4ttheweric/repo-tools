@@ -76,9 +76,10 @@ describe("rt runs write verbs", () => {
   });
 
   test("subcommands without RT_RUN_DB fail with a JSON error, exit 2", async () => {
-    const r = await runWriteVerb("run-status", ["--status", "done"], QUIET);
+    const empty = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const r = await runWriteVerb("run-status", ["--status", "done"], { RT_RUNS_ROOT: empty, ...QUIET });
     expect(r.code).toBe(2);
-    expect(JSON.parse(r.out)).toEqual({ ok: false, error: "RT_RUN_DB is not set" });
+    expect(JSON.parse(r.out)).toEqual({ ok: false, error: "RT_RUN_DB is not set and no running run matches this session or directory" });
     const missing = await runWriteVerb("snapshot", [], { RT_RUN_DB: "/nowhere/state.db", ...QUIET });
     expect(missing.code).toBe(2);
     expect(JSON.parse(missing.out).error).toContain("run DB not found");
@@ -102,6 +103,36 @@ describe("rt runs write verbs", () => {
     expect((await runWriteVerb("stage-fail", ["--stage", "plan", "--reason", "boom", "--detail-path", "/tmp/x.log"], env)).code).toBe(0);
     const db = new Database(runDb, { readonly: true });
     expect(db.query("SELECT attempt, status, reason FROM stages ORDER BY attempt").all()).toEqual([{ attempt: 1, status: "done", reason: null }, { attempt: 2, status: "failed", reason: "boom" }]);
+    db.close();
+  });
+
+  test("stage-redirect closes the running attempt as redirected with the default reason", async () => {
+    const { env, runDb } = await startRun();
+    await runWriteVerb("stage-start", ["--stage", "implement"], env);
+    expect(await runWriteVerb("stage-redirect", ["--stage", "implement", "--to", "plan"], env)).toEqual({ out: '{"ok":true}', code: 0 });
+    const db = new Database(runDb, { readonly: true });
+    expect(db.query("SELECT status, reason FROM stages WHERE name='implement'").get()).toEqual({ status: "redirected", reason: "redirected to plan" });
+    db.close();
+  });
+
+  test("stage-redirect: no --to is exit 2; a never-started or closed stage is exit 3; --reason is stored verbatim", async () => {
+    const { env, runDb } = await startRun();
+    const usage = await runWriteVerb("stage-redirect", ["--stage", "implement"], env);
+    expect(usage.code).toBe(2);
+    expect(JSON.parse(usage.out).error).toContain("--to");
+    expect(await runWriteVerb("stage-redirect", ["--stage", "implement", "--to", "plan"], env))
+      .toEqual({ out: JSON.stringify({ ok: false, error: "stage never started: implement" }), code: 3 });
+    await runWriteVerb("stage-start", ["--stage", "implement"], env);
+    await runWriteVerb("stage-done", ["--stage", "implement"], env);
+    expect(await runWriteVerb("stage-redirect", ["--stage", "implement", "--to", "plan"], env))
+      .toEqual({ out: JSON.stringify({ ok: false, error: "stage implement is done, not running" }), code: 3 });
+    await runWriteVerb("stage-start", ["--stage", "implement"], env);
+    expect((await runWriteVerb("stage-redirect", ["--stage", "implement", "--to", "plan", "--reason", "the approach needs a rethink"], env)).code).toBe(0);
+    const db = new Database(runDb, { readonly: true });
+    expect(db.query("SELECT attempt, status, reason FROM stages ORDER BY attempt").all()).toEqual([
+      { attempt: 1, status: "done", reason: null },
+      { attempt: 2, status: "redirected", reason: "the approach needs a rethink" },
+    ]);
     db.close();
   });
 
@@ -147,6 +178,7 @@ describe("rt runs write verbs", () => {
     ["run-status", ["--status", "done"], [], { stage: null, kind: "run-status" }],
     ["stage-done", ["--stage", "plan"], [["stage-start", "--stage", "plan"]], { stage: "plan", kind: "stage-done" }],
     ["stage-fail", ["--stage", "plan"], [["stage-start", "--stage", "plan"]], { stage: "plan", kind: "stage-fail" }],
+    ["stage-redirect", ["--stage", "plan", "--to", "ship"], [["stage-start", "--stage", "plan"]], { stage: "plan", kind: "stage-redirect" }],
     ["field", ["set", "mr-url", "https://x", "--stage", "ship"], [], { stage: "ship", kind: "field-set" }],
     ["decision", ["record", "--contract", "c@1", "--scope", "run", "--selection", "{}", "--decided-by", "w"], [], { stage: "run", kind: "decision" }],
   ] as [string, string[], string[][], { stage: string | null; kind: string }][])(
@@ -163,6 +195,55 @@ describe("rt runs write verbs", () => {
       });
     },
   );
+});
+
+describe("RT_RUN_DB fallback", () => {
+  const RUN = ["--repo", "demo", "--work-type", "fix", "--pipeline", "default"];
+
+  test("field set without RT_RUN_DB resolves by session and reports runDbResolved", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const env = { RT_RUNS_ROOT: root, CLAUDE_CODE_SESSION_ID: "sess-cli-1", ...QUIET };
+    const started = JSON.parse((await runWriteVerb("run-start", RUN, env)).out);
+    expect(await runWriteVerb("field", ["set", "branch", "x", "--stage", "provision"], env)).toEqual({ out: '{"ok":true,"runDbResolved":"session"}', code: 0 });
+    const db = new Database(started.runDb, { readonly: true });
+    expect(db.query("SELECT value FROM fields WHERE key='branch'").get()).toEqual({ value: "x" });
+    db.close();
+  });
+
+  test("with RT_RUN_DB set the envelope is unchanged", async () => {
+    const { env } = await startRun();
+    expect(await runWriteVerb("field", ["set", "branch", "x", "--stage", "provision"], { ...env, CLAUDE_CODE_SESSION_ID: "sess-cli-2" })).toEqual({ out: '{"ok":true}', code: 0 });
+    const snap = JSON.parse((await runWriteVerb("snapshot", [], env)).out);
+    expect(Object.keys(snap)).toEqual(["ok", "run", "stages", "fields", "decisions"]);
+  });
+
+  test("field get without RT_RUN_DB still prints the raw value", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const env = { RT_RUNS_ROOT: root, CLAUDE_CODE_SESSION_ID: "sess-cli-3", ...QUIET };
+    await runWriteVerb("run-start", [...RUN, "--ticket", "ABC-9"], env);
+    expect(await runWriteVerb("field", ["get", "ticket"], env)).toEqual({ out: "ABC-9", code: 0 });
+  });
+
+  test("snapshot without RT_RUN_DB appends runDbResolved after the rows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const env = { RT_RUNS_ROOT: root, CLAUDE_CODE_SESSION_ID: "sess-cli-5", ...QUIET };
+    await runWriteVerb("run-start", RUN, env);
+    const snap = JSON.parse((await runWriteVerb("snapshot", [], env)).out);
+    expect(Object.keys(snap)).toEqual(["ok", "run", "stages", "fields", "decisions", "runDbResolved"]);
+    expect(snap.runDbResolved).toBe("session");
+  });
+
+  test("two running runs on one session is exit 2 naming both candidates", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const env = { RT_RUNS_ROOT: root, CLAUDE_CODE_SESSION_ID: "sess-cli-4", ...QUIET };
+    await runWriteVerb("run-start", [...RUN, "--run-id", "20260902-100000-aaaa-1"], env);
+    await runWriteVerb("run-start", [...RUN, "--run-id", "20260902-100001-bbbb-1"], env);
+    const r = await runWriteVerb("run-status", ["--status", "done"], env);
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.out).error).toBe(
+      "RT_RUN_DB is not set and no running run matches this session or directory; candidates: 20260902-100000-aaaa-1, 20260902-100001-bbbb-1",
+    );
+  });
 });
 
 describe("rt runs positional rejection", () => {

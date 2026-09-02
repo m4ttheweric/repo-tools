@@ -129,6 +129,16 @@ const runsSubcommands: Record<string, CommandNode> = {
       { name: "Detail path", flag: "--detail-path", type: "text", placeholder: "/tmp/gates.log", hint: "Log or report for this failure" },
     ],
   },
+  "stage-redirect": {
+    description: "Pipeline: leave the latest running attempt of a stage as redirected (reads RT_RUN_DB)",
+    module: "./commands/runs-write.ts",
+    fn: "runsStageRedirect",
+    args: [
+      { name: "Stage", flag: "--stage", type: "text", placeholder: "implement", hint: "Stage being left; its latest attempt must be running" },
+      { name: "To", flag: "--to", type: "text", placeholder: "plan", hint: "Stage the run moves to" },
+      { name: "Reason", flag: "--reason", type: "text", placeholder: "the approach needs a rethink", hint: "Recorded on the attempt; defaults to \"redirected to <to>\"" },
+    ],
+  },
   field: {
     description: "Pipeline: field set KEY VALUE --stage NAME | field get KEY (reads RT_RUN_DB)",
     module: "./commands/runs-write.ts",

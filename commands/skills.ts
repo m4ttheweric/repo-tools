@@ -33,7 +33,7 @@ import { compileSkill, HEADER_COMMENT, isInlined } from "../lib/skills/compile.t
 import { skillMdDriftCauses, type DriftCause } from "../lib/skills/drift.ts";
 import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
-import { buildStageEntries, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
+import { buildStageEntries, hostDir, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
 import { computePackSha, maskProvenance, mattstackProvenance, packPluginIdentity } from "../lib/skills/provenance.ts";
 import {
   invocableRoster,
@@ -51,7 +51,7 @@ import {
   type PluginRoots,
   type SurfaceConfig,
 } from "../lib/skills/sources.ts";
-import type { AttachmentSource, CompileResult, StageEntry, StepSource, VerbDef } from "../lib/skills/types.ts";
+import type { AttachmentSource, CompileResult, Side, StageEntry, StepSource, VerbDef } from "../lib/skills/types.ts";
 
 /**
  * Marks an error as an expected, user-facing condition (bad flags, absent
@@ -571,7 +571,7 @@ function stageAllowedToolsFor(resolved: Resolved, entries: Record<string, StageE
   return rules;
 }
 
-function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[] = []): CompileResult {
+function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[], verbSides: Record<string, Side>): CompileResult {
   const { isPublic, isStage } = target;
   let verb = target.verb;
   const where = `${isStage ? "stage" : "verb"} "${verb.name}"`;
@@ -585,7 +585,15 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
 
   const entries = resolved.stageEntries;
   const allStageDirs = Object.values(entries).flat().map((e) => e.dir);
-  const stageDir = isStage ? allStageDirs.find((d) => d.endsWith(`/${verb.name}`)) ?? null : null;
+  const stageNames = new Set(resolved.stages.map((s) => s.name));
+  // Only a public roster verb is ever invoked by name, so only its ${CLAUDE_SKILL_DIR}
+  // is its own directory; every other target is read as a file from a public skill.
+  const stageDir = isStage
+    ? allStageDirs.find((d) => d.endsWith(`/${verb.name}`)) ?? null
+    : isPublic ? null : hostDir(verb.name, "attachments");
+  const internalVerbDirs = Object.entries(verbSides)
+    .filter(([name, side]) => side === "attachments" && !stageNames.has(name))
+    .map(([name]) => hostDir(name, "attachments"));
   const isOrchestrator = findPlaceholders(step.body).some((p) => p.kind === "pipeline.stages");
 
   try {
@@ -600,11 +608,13 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
       packSha: resolved.packSha,
       stageDir,
       stageAllowedTools: isOrchestrator ? stageAllowedToolsFor(resolved, entries) : [],
-      emittedSiblingDirs: allStageDirs,
+      emittedSiblingDirs: [...allStageDirs, ...internalVerbDirs],
       packRoot: resolved.packDir,
       compiledDir: outDirFor(resolved.packDir, verb.name, isPublic),
       emittedTargetDirs,
       where,
+      verbSides,
+      side: isPublic ? "skills" : "attachments",
     });
   } catch (err) {
     const message = (err as Error).message;
@@ -640,7 +650,7 @@ type CompileVerbRow = {
   files: { path: string }[];
   warnings: string[];
   errors: string[];
-  side: "skills" | "attachments";
+  side: Side;
 };
 
 type CompileOutcome = { ok: true; result: CompileResult } | { ok: false; message: string };
@@ -654,10 +664,10 @@ type CompileOutcome = { ok: true; result: CompileResult } | { ok: false; message
  * verdict before touching disk -- so this is the one place that catches both.
  * skillsCheck is the lone caller left that lets compileVerb throw.
  */
-function tryCompileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[] = []): CompileOutcome {
+function tryCompileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDirs: string[], verbSides: Record<string, Side>): CompileOutcome {
   const { verb, isStage } = target;
   try {
-    const result = compileVerb(target, resolved, emittedTargetDirs);
+    const result = compileVerb(target, resolved, emittedTargetDirs, verbSides);
     if (result.errors.length > 0) {
       return { ok: false, message: `${isStage ? "stage" : "verb"} "${verb.name}": ${result.errors.join("; ")}` };
     }
@@ -678,6 +688,8 @@ function pipelineChainErrors(resolved: Resolved): string[] {
 
 type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
 
+type CompilePlan = { targets: CompileTarget[]; verbSides: Record<string, Side>; knownTargetDirs: string[] };
+
 /**
  * A roster verb keeps today's default-public rule; a stage is internal
  * unless surface.jsonc names it explicitly. `verbFilter` (--verb) scopes
@@ -685,9 +697,11 @@ type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
  * targets exactly that stage, `--verb work` targets exactly that roster
  * verb -- neither pulls in every stage a pipeline declares, which is what
  * `resolved.stages` being unfiltered would otherwise do to --preview's
- * one-body contract and to a scoped compile/check.
+ * one-body contract and to a scoped compile/check. `verbSides` is built
+ * before the filter applies: a scoped compile still exempts the host dirs
+ * of, and renders {{verb.path}} to, targets it is not emitting.
  */
-function compileTargets(resolved: Resolved, publicSet: Set<string> | null, verbFilter: string[] | null): CompileTarget[] {
+function compileTargets(resolved: Resolved, publicSet: Set<string> | null, verbFilter: string[] | null): CompilePlan {
   const rosterNames = new Set(resolved.fullRoster.map((v) => v.name));
   for (const stage of resolved.stages) {
     if (rosterNames.has(stage.name)) {
@@ -699,14 +713,18 @@ function compileTargets(resolved: Resolved, publicSet: Set<string> | null, verbF
     ...resolved.fullRoster.map((verb) => ({ verb, isPublic: !publicSet || publicSet.has(verb.name), isStage: false })),
     ...resolved.stages.map((verb) => ({ verb, isPublic: publicSet?.has(verb.name) ?? false, isStage: true })),
   ];
-  if (!verbFilter) return all;
+  const verbSides: Record<string, Side> = {};
+  for (const t of all) verbSides[t.verb.name] = t.isPublic ? "skills" : "attachments";
+  const knownTargetDirs = targetOutDirs(resolved, all);
+  if (!verbFilter) return { targets: all, verbSides, knownTargetDirs };
 
   const byName = new Map(all.map((t) => [t.verb.name, t]));
-  return verbFilter.map((name) => {
+  const targets = verbFilter.map((name) => {
     const target = byName.get(name);
     if (!target) throw new SkillsUsageError(`verb "${name}" not found in roster or pipeline stages`);
     return target;
   });
+  return { targets, verbSides, knownTargetDirs };
 }
 
 export async function skillsCompile(args: string[]): Promise<void> {
@@ -722,15 +740,17 @@ export async function skillsCompile(args: string[]): Promise<void> {
     const chainErrors = pipelineChainErrors(resolved);
     if (chainErrors.length > 0) throw new SkillsUsageError(chainErrors.join("\n"));
 
-    const targets = compileTargets(resolved, publicSet, flags.verbs);
-    const emittedTargetDirs = targetOutDirs(resolved, targets);
+    const { targets, verbSides, knownTargetDirs } = compileTargets(resolved, publicSet, flags.verbs);
+    // Lint accepts a relative path to any KNOWN target, not only emitted ones: a
+    // scoped compile still renders {{verb.path}} to siblings it is not writing.
+    const emittedTargetDirs = knownTargetDirs;
 
     if (flags.json) {
       const rows: CompileVerbRow[] = [];
       for (const target of targets) {
         const { verb, isPublic } = target;
-        const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
-        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
+        const side: Side = isPublic ? "skills" : "attachments";
+        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs, verbSides);
         if (!outcome.ok) {
           rows.push({ name: verb.name, status: "errored", files: [], warnings: [], errors: [outcome.message], side });
         } else {
@@ -755,7 +775,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
     if (flags.preview) {
       for (const target of targets) {
         const { verb } = target;
-        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
+        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs, verbSides);
         if (!outcome.ok) {
           // A lint-erroring verb has no previewable body -- say so on stderr
           // and leave stdout empty rather than silently producing nothing.
@@ -780,7 +800,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
     const planned: { target: CompileTarget; result: CompileResult }[] = [];
     const failures: string[] = [];
     for (const target of targets) {
-      const outcome = tryCompileVerb(target, resolved, emittedTargetDirs);
+      const outcome = tryCompileVerb(target, resolved, emittedTargetDirs, verbSides);
       if (outcome.ok) planned.push({ target, result: outcome.result });
       else failures.push(outcome.message);
     }
@@ -791,7 +811,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
 
     for (const { target, result } of planned) {
       const { verb, isPublic } = target;
-      const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
+      const side: Side = isPublic ? "skills" : "attachments";
 
       if (flags.dryRun) {
         console.log(`would write ${result.files.length} files for ${verb.name}`);
@@ -826,7 +846,7 @@ type CheckVerbRow = {
   status: CheckVerbStatus;
   staleFiles: string[];
   orphanFiles: string[];
-  side: "skills" | "attachments";
+  side: Side;
   staleBecause?: DriftCause[];
 };
 
@@ -848,13 +868,15 @@ export async function skillsCheck(args: string[]): Promise<void> {
     if (chainErrors.length > 0) anyStale = true;
     if (!flags.json) for (const chainError of chainErrors) console.log(chainError);
 
-    const targets = compileTargets(resolved, publicSet, flags.verbs);
-    const emittedTargetDirs = targetOutDirs(resolved, targets);
+    const { targets, verbSides, knownTargetDirs } = compileTargets(resolved, publicSet, flags.verbs);
+    // Lint accepts a relative path to any KNOWN target, not only emitted ones: a
+    // scoped compile still renders {{verb.path}} to siblings it is not writing.
+    const emittedTargetDirs = knownTargetDirs;
 
     for (const target of targets) {
       const { verb, isPublic } = target;
       const outDir = outDirFor(resolved.packDir, verb.name, isPublic);
-      const side: "skills" | "attachments" = isPublic ? "skills" : "attachments";
+      const side: Side = isPublic ? "skills" : "attachments";
 
       if (!existsSync(outDir)) {
         anyStale = true;
@@ -863,7 +885,7 @@ export async function skillsCheck(args: string[]): Promise<void> {
         continue;
       }
 
-      const result = compileVerb(target, resolved, emittedTargetDirs);
+      const result = compileVerb(target, resolved, emittedTargetDirs, verbSides);
       const staleFiles: string[] = [];
       const orphanFiles: string[] = [];
       const expectedPaths = new Set(result.files.map((f) => f.path));

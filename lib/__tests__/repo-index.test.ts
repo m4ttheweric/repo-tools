@@ -830,11 +830,11 @@ describe("repoOptions labels", () => {
     const repos = [
       known("remote:github.com%2Fm4ttstack%2Frt"),
       known("remote:github.com%2Fm4ttstack%2FZeta"),
-      known("remote:github.com%2Fm4ttstack%2Fassured"),
+      known("remote:github.com%2Fm4ttstack%2Facme"),
       known("path:%2FUsers%2Fmatt%2FDocuments%2FGitHub%2Fbeta"),
     ];
     const options = repoOptions(repos);
-    expect(options.map((o) => o.label)).toEqual(["assured", "beta", "rt", "Zeta"]);
+    expect(options.map((o) => o.label)).toEqual(["acme", "beta", "rt", "Zeta"]);
     for (const o of options) {
       expect(repoFromOptionValue(repos, o.value)?.repoName).toBe(o.value);
     }

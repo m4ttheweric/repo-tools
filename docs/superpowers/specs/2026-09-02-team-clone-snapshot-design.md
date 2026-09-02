@@ -24,11 +24,11 @@ user half only.
 
 1. **Multi-writer.** Any member's local team commits push; the daemon
    rebases its own commits onto the remote; a real conflict is a
-   needs-you row. (ClaimView's teammates hold Developer on the team repo.)
+   needs-you row. (The team's members hold Developer on the team repo.)
 2. **Pull cadence:** every 5 minutes, before every push, and at daemon
    boot. `rt team pull` for the impatient.
 3. **Commit scope:** only `mattstack/`, `.sops.yaml` and
-   `.claude-plugin/`. The rest of a team clone (claimview-tools carries
+   `.claude-plugin/`. The rest of a team clone (acme-tools carries
    `src/`, `docs/`) stays hand-committed.
 4. **Conflict:** abort the rebase, stop pushing that clone, surface a
    needs-you row; the clone keeps working locally.
