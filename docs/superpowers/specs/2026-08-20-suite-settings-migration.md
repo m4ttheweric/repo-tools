@@ -195,6 +195,28 @@ must be preserved; hot-reload semantics unchanged — deck restart applies edits
 gitq's `GITQ_CONFIG_DIR` import-time snapshot and the four frozen legacy constants
 must be handled so tests keep isolating (bunfig preload contract preserved).
 
+## boxscore
+
+| Item | Disposition | Scope |
+|---|---|---|
+| config.ts users + settings.json users | `mattstack.roster` (suite-wide `[{username, name?}]`) | team |
+| config.ts currentUser | DELETE (the token's own user via GitLab `/user`) | |
+| config.ts projectPaths | `boxscore.projects` | team |
+| config.ts groupPath | DELETE (never used; projects is the only scope) | |
+| config.ts sizeBand | `boxscore.sizeBand` | team |
+| config.ts defaultRange | `boxscore.defaultRange` | user |
+| config.ts concurrency | code constant (6) | |
+| settings.json linearTeam | field `linear.teamKey` of `mattstack.integrations` | team |
+| settings.json doneStates | `boxscore.linearDoneStates` | team |
+| settings.json bots.extraPatterns | `boxscore.botPatterns` | team |
+| settings.json excludeFilePatterns | `boxscore.excludeFilePatterns` | team |
+| settings.json ignoredMrs | `boxscore.ignoredMrs` | team |
+| per-user hides | `boxscore.hiddenMembers` | user |
+| .env GITLAB_BASE_URL | field `forge.host` of `mattstack.integrations` | team |
+| .env GITLAB_TOKEN / LINEAR_API_KEY | rt secrets domain via `secrets:read` scope extension (`gitlabToken`, `linearApiKey`) | |
+| .env PORT | deck's PORT env is authoritative | |
+| settings page + /api/settings* routes | DELETE (rt settings is the editor; bot scan survives as `bun server/cli.ts --format bots`) | |
+
 ## Installer-lane keys (handoff-2026-08-20-installer-needs-from-settings-lane.md)
 
 The installer consumes whatever this lane rules; these are the rulings:

@@ -288,6 +288,16 @@ export const REGISTRY: readonly SettingDef[] = [
       "User-confirmed integration hosts (forgeHost, switchboardUrl), written only by an explicit `rt setup <id> connect --host` after that host validates a real credential. The one trusted source a credential is ever sent to — mattstack.integrations' team-declared host is shown to the user but never auto-used for a fetch.",
   },
 
+  // --- mattstack (shared team truth) ---------------------------------------
+  {
+    key: "mattstack.roster",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description:
+      "The suite-wide team roster: [{username, name?}] GitLab usernames with optional display names. Any suite app that lists people reads this; hiding someone is the app's own overlay (e.g. boxscore.hiddenMembers).",
+  },
+
   // --- claude (installer-lane) --------------------------------------------
   {
     key: "claude.marketplaces",
@@ -351,7 +361,7 @@ export const REGISTRY: readonly SettingDef[] = [
     type: "array",
     scopes: ["team"],
     merge: "replace",
-    description: "The authors tab's roster: whose MRs the classic board lists, including hidden-by-default entries. Codeowners tabs list MRs from anyone.",
+    description: "The authors tab's roster: whose MRs the classic board lists, including hidden-by-default entries. Codeowners tabs list MRs from anyone. The cross-app roster successor is mattstack.roster; this key remains the board's own list until the board adopts it.",
   },
   {
     key: "board.title",
@@ -468,6 +478,66 @@ export const REGISTRY: readonly SettingDef[] = [
     scopes: ["machine"],
     merge: "replace",
     description: "Local switchboard URL the board's POST /peer/join writer targets.",
+  },
+
+  // --- boxscore -------------------------------------------------------------
+  // No `default` on any boxscore row: fallbacks live in boxscore's app-side
+  // read (server/config), so an unset key resolves as absent here.
+  {
+    key: "boxscore.projects",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "GitLab projects boxscore scores, as full paths (\"group/project\").",
+  },
+  {
+    key: "boxscore.linearDoneStates",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "Linear workflow state names that count as done. Empty means the completed and canceled state types.",
+  },
+  {
+    key: "boxscore.sizeBand",
+    type: "object",
+    scopes: ["team"],
+    merge: "deep",
+    description: "MR size health band in changed lines: {tooSmall, tooLarge}. At or below tooSmall, or above tooLarge, is outside the healthy band.",
+  },
+  {
+    key: "boxscore.excludeFilePatterns",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "Glob patterns for files excluded from addition/deletion counts (e.g. \"**/*.json\").",
+  },
+  {
+    key: "boxscore.ignoredMrs",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "MRs excluded from all metrics: \"!123\" or \"group/project!123\".",
+  },
+  {
+    key: "boxscore.botPatterns",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "Extra regex sources treated as bot accounts, beyond boxscore's built-in detection.",
+  },
+  {
+    key: "boxscore.hiddenMembers",
+    type: "array",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Usernames from mattstack.roster hidden from this developer's leaderboard.",
+  },
+  {
+    key: "boxscore.defaultRange",
+    type: "string",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Default comparison window for the API and CLI when none is given: \"7d\", \"30d\", or \"90d\".",
   },
 
   // --- gitq ------------------------------------------------------------------

@@ -228,6 +228,7 @@ describe("settings/registry", () => {
         "mattstack.tracking",
         "mattstack.appPath",
         "mattstack.mode",
+        "mattstack.roster",
         "claude.marketplaces",
         "claude.plugins",
         "deck.apps",
@@ -252,6 +253,14 @@ describe("settings/registry", () => {
         "board.cwds",
         "board.triageMaxConcurrent",
         "board.switchboardUrl",
+        "boxscore.projects",
+        "boxscore.linearDoneStates",
+        "boxscore.sizeBand",
+        "boxscore.excludeFilePatterns",
+        "boxscore.ignoredMrs",
+        "boxscore.botPatterns",
+        "boxscore.hiddenMembers",
+        "boxscore.defaultRange",
         "gitq.workSlots",
         "gitq.forges",
         "gitq.board",
@@ -268,7 +277,7 @@ describe("settings/registry", () => {
         "rt.trustedBrowserOrigins",
         "rt.daemonPath",
       ];
-      expect(suiteKeys).toHaveLength(43);
+      expect(suiteKeys).toHaveLength(52);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),
