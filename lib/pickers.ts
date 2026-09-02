@@ -129,7 +129,9 @@ export async function pickWorktreeWithSwitch(
     const remoteUrl = await getRemoteUrl(repo.worktrees[0]?.path || currentPath);
     const enriched = await enrichBranches(repo.worktrees, remoteUrl, { silent: true });
     liveHandle?.update({ rows: enriched.map((eb) => enrichedWorktreeRow(eb, currentPath)) });
-  })();
+  })().catch(() => {
+    // Best-effort enrichment; the cheap rows already on screen stand as-is.
+  });
 
   try {
     const picked = await resultPromise;

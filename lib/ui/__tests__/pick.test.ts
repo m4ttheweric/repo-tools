@@ -113,6 +113,27 @@ test("a stream error rejects result instead of hanging forever", async () => {
   await expect(withTimeout(result, 500, "result")).rejects.toThrow("stream blew up");
 });
 
+test("an outstanding modal settles with null instead of hanging when the stream closes", async () => {
+  async function* linesSrc(): AsyncGenerator<string> {
+    yield JSON.stringify({ t: "result", action: "select", value: "x", query: "" });
+  }
+  const { pendingModals } = pickInternals.driveReaderForTest(linesSrc());
+  const modal = new Promise<string | null>((resolve) => { pendingModals.push(resolve); });
+  const v = await withTimeout(modal, 500, "modal");
+  expect(v).toBeNull();
+});
+
+test("an outstanding modal settles with null instead of hanging when the stream errors", async () => {
+  async function* throwingLines(): AsyncGenerator<string> {
+    throw new Error("stream blew up");
+  }
+  const { result, pendingModals } = pickInternals.driveReaderForTest(throwingLines());
+  void result.catch(() => { /* asserted separately by the sibling stream-error test */ });
+  const modal = new Promise<string | null>((resolve) => { pendingModals.push(resolve); });
+  const v = await withTimeout(modal, 500, "modal");
+  expect(v).toBeNull();
+});
+
 test("a throwing onEvent is contained: later events and the result still settle", async () => {
   const seen: string[] = [];
   async function* linesSrc(): AsyncGenerator<string> {

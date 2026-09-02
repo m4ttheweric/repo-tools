@@ -119,6 +119,11 @@ async function driveReader(
       sink.settled = true;
       sink.reject(err instanceof Error ? err : new Error(String(err)));
     }
+  } finally {
+    // The child can no longer answer a modal once the stream is closed or
+    // errored; unblock every caller awaiting PickHandle.modal() with null
+    // rather than leaving it pending forever.
+    while (pendingModals.length) pendingModals.shift()!(null);
   }
 }
 
