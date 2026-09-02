@@ -197,6 +197,7 @@ describe("rt cd --repo --worktree: esc on the inline repo picker", () => {
     Object.defineProperty(process.stderr, "isTTY", { value: isTTY, configurable: true });
 
     let stderr = "";
+    const origStdoutWrite = process.stdout.write;
     const chdirSpy = spyOn(process, "chdir").mockImplementation(() => {});
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
       stderr += String(chunk);
@@ -211,6 +212,7 @@ describe("rt cd --repo --worktree: esc on the inline repo picker", () => {
     } catch {
       return { exitCode: exitSpy.mock.calls.at(-1)?.[0] as number | undefined, stderr };
     } finally {
+      process.stdout.write = origStdoutWrite;
       chdirSpy.mockRestore();
       stderrSpy.mockRestore();
       exitSpy.mockRestore();

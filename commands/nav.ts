@@ -429,16 +429,20 @@ export async function navigate(args: string[], depsOverride: Partial<NavDeps> = 
     sort: { ...DEFAULT_SORT },
   };
 
-  while (true) {
-    const outcome = await runNavSession(state, deps);
-    if (outcome.type === "cd") {
-      cdAndExit(outcome.path);
-      return;
+  try {
+    while (true) {
+      const outcome = await runNavSession(state, deps);
+      if (outcome.type === "cd") {
+        cdAndExit(outcome.path);
+        return;
+      }
+      if (outcome.type === "quit") {
+        if (outcome.aborted) printAborted();
+        return;
+      }
+      state = outcome;
     }
-    if (outcome.type === "quit") {
-      if (outcome.aborted) printAborted();
-      return;
-    }
-    state = outcome;
+  } finally {
+    process.stdout.write = realStdoutWrite;
   }
 }
