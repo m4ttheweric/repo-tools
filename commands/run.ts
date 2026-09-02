@@ -902,12 +902,9 @@ export async function resolveRun(
         if (!selectedRepo) {
           if (knownRepos.length === 1) throw new RunAborted(0); // back-propagated past last level
           const { runNavPicker } = await import("../lib/navigate.ts");
+          const { repoOptions, repoFromOptionValue } = await import("../lib/repo-index.ts");
           const repoResult = await runNavPicker({
-            options: knownRepos.map((r) => ({
-              value: r.repoName,
-              label: repoLabel(r.repoName),
-              hint: `${r.worktrees.length} worktrees`,
-            })),
+            options: repoOptions(knownRepos),
             message: "Select repo",
             headerParts: ["enter: select", "esc: quit"],
           });
@@ -917,7 +914,7 @@ export async function resolveRun(
           // selects whatever row the cursor was on, so with more than one known
           // repo there is no way out of Select repo <-> Select package.
           if (repoResult.key === "ctrl-up") throw new RunAborted(0);
-          selectedRepo = knownRepos.find((r) => r.repoName === repoResult.value)!;
+          selectedRepo = repoFromOptionValue(knownRepos, repoResult.value!)!;
         }
 
         const worktrees = selectedRepo.worktrees.filter((wt) =>
