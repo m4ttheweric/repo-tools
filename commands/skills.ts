@@ -800,8 +800,11 @@ export async function skillsCompile(args: string[]): Promise<void> {
         continue;
       }
 
+      // A pack's own engine source may live at attachments/<verb>/SKILL.md while
+      // its door compiles into skills/<verb>/: the other side is only stale when
+      // it carries the compiler header, never when it is the hand-written source.
       const stale = otherSideDir(resolved.packDir, verb.name, isPublic);
-      if (existsSync(stale)) rmSync(stale, { recursive: true, force: true });
+      if (existsSync(stale) && !isHandWrittenDir(stale)) rmSync(stale, { recursive: true, force: true });
       writeCompiledVerb(outDirFor(resolved.packDir, verb.name, isPublic), result);
       console.log(`compiled ${verb.name} -> ${side} (${result.files.length} files, ${result.warnings.length} warnings)`);
       for (const warning of result.warnings) console.log(`  ${warning}`);
@@ -1313,6 +1316,10 @@ async function resolveSurfacePaths(flags: SurfaceFlags): Promise<{ packDir: stri
   flags.team = target.team;
   flags.packDir = target.packDir;
   return { packDir: target.packDir };
+}
+
+function isHandWrittenDir(dir: string): boolean {
+  return existsSync(join(dir, "SKILL.md")) && !isCompiledDir(dir);
 }
 
 function isCompiledDir(dir: string): boolean {

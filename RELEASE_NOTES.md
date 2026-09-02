@@ -29,6 +29,7 @@ Two big moves in one release. rt's pickers leave fzf for an in-house picker with
 
 - pack discovery reads packs served as file:// url sources, since Claude Code 2.1.257 refuses plugin paths that resolve through a symlink outside the marketplace; a malformed file:// entry is skipped instead of aborting discovery (#173)
 - `{{run-start.flags:<verb>}}` renders one run-start line for a standalone verb, so review, ship, and watch-ci verbs can start a single-stage run of their own (#175)
+- `rt skills compile` keeps a pack's own engine source at `attachments/<verb>/SKILL.md` when that verb compiles as public into `skills/<verb>/`; only a directory carrying the compiler header is swept as a flipped prior compile (#177)
 
 ### Setup and teams
 
