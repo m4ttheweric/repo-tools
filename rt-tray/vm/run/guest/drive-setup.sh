@@ -73,7 +73,17 @@ screen_readiness() {
     # Relaunch re-execs the app in place with its current arguments + environment, so the appcast
     # override survives.
     ax_wait_status perm.fda needs-you 20 || true
-    ax_click setup.checklist.relaunch
+    if ax_find setup.checklist.relaunch >/dev/null 2>&1; then
+      ax_click setup.checklist.relaunch
+    else
+      # A granted switch the running process cannot see: the app shows no
+      # relaunch hint, so a real user would be stuck here. Quit and reopen the
+      # way they eventually would, and leave the finding in the log.
+      ax_log "FINDING: FDA is on in System Settings but the app offers no setup.checklist.relaunch; quitting and reopening it"
+      ax_osa 'tell application "mattstack" to quit' >/dev/null 2>&1 || true
+      sleep 3
+      relaunch_app || ax_fail "app did not come back after the driver's FDA relaunch"
+    fi
     sleep 3
     if ! ax_wait_window "mattstack" 60; then
       ax_log "app did not come back by itself after FDA relaunch — relaunching with the driver's env/args"

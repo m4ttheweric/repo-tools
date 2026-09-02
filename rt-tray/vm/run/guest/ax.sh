@@ -247,10 +247,58 @@ tell application \"System Events\" to tell process \"System Settings\"
 end tell"
 }
 
+# Every "<static text> = <nearest checkbox value>" pair in System Settings' window 1, one per
+# line: the evidence for which row a toggle matched. Bounded by the pane's own row count.
+ax_settings_dump_rows() {
+  ax_osa "
+using terms from application \"System Events\"
+  on findCheckbox(el)
+    try
+      if class of el is checkbox then return el
+    end try
+    try
+      repeat with c in UI elements of el
+        set r to my findCheckbox(c)
+        if r is not missing value then return r
+      end repeat
+    end try
+    return missing value
+  end findCheckbox
+  on walkTexts(el, acc)
+    try
+      if class of el is static text then
+        set anc to el
+        set cb to missing value
+        repeat 4 times
+          set anc to value of attribute \"AXParent\" of anc
+          set cb to my findCheckbox(anc)
+          if cb is not missing value then exit repeat
+        end repeat
+        set v to \"-\"
+        if cb is not missing value then set v to (value of cb as text)
+        set end of acc to ((value of el as text) & \" = \" & v)
+      end if
+    end try
+    try
+      repeat with c in UI elements of el
+        my walkTexts(c, acc)
+      end repeat
+    end try
+  end walkTexts
+end using terms from
+tell application \"System Events\" to tell process \"System Settings\"
+  set acc to {}
+  if exists window 1 then my walkTexts(window 1, acc)
+  set AppleScript's text item delimiters to linefeed
+  return acc as text
+end tell" 2>/dev/null | sed 's/^/    settings row: /' >>"$AX_LOG"
+}
+
 ax_toggle_in_system_settings() {  # <row label e.g. mattstack>
   local before after
-  before=$(ax_settings_row_checkbox "$1" click) || return 1
+  before=$(ax_settings_row_checkbox "$1" click) || { ax_settings_dump_rows; return 1; }
   ax_log "System Settings: $1 checkbox was $before, clicked"
+  ax_settings_dump_rows
   ax_admin_auth || true
   sleep 2
   after=$(ax_settings_row_checkbox "$1") || return 1
