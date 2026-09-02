@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { HEADER_COMMENT } from "../../lib/skills/compile.ts";
 import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "fs";
 import { Readable } from "node:stream";
@@ -294,7 +295,7 @@ describe("skillsSurface set", () => {
   test("--internal on a compiled stub verb: surface.jsonc updated, apply recompiles it into attachments/ (never git-mv'd)", async () => {
     const packDir = makePackDir();
     writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
-    writeFile(join(packDir, "skills", "my-verb", "SKILL.md"), "---\nname: my-verb\n---\nold compiled content\n");
+    writeFile(join(packDir, "skills", "my-verb", "SKILL.md"), `---\nname: my-verb\n---\n${HEADER_COMMENT}\nold compiled content\n`);
     const { mattstackDir, manifestPath } = makeEngineFixture();
 
     await skillsSurface([

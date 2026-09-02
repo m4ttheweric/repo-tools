@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { HEADER_COMMENT } from "../compile.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -310,7 +311,7 @@ describe("skillsCompile with a surface config", () => {
     const mattstackDir = makeMattstackDir();
     const surfaceJsonc = `{ "public": ["watch-ci"] }\n`;
     const packDir = makePackDir(STUBS_TWO_VERBS, surfaceJsonc);
-    writeFile(join(packDir, "skills", "old-verb", "SKILL.md"), "stale compiled output\n");
+    writeFile(join(packDir, "skills", "old-verb", "SKILL.md"), `${HEADER_COMMENT}\nstale compiled output\n`);
     const manifestPath = makeManifest("t");
 
     await skillsCompile([
