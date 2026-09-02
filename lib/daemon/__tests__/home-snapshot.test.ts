@@ -10,7 +10,7 @@ import type { Owners } from "../../home/snapshot-owners.ts";
 import { openStateDb } from "../../state/db.ts";
 import { closeStateDb, getKvValue } from "../../state/index.ts";
 import { readHomePushRecord } from "../../home/push-record.ts";
-import { homeSnapshotSpec, startHomeSnapshot, startSnapshot, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
+import { homeSnapshotSpec, startHomeSnapshot, startSnapshot, teamScope, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
 
 // ─── test doubles ────────────────────────────────────────────────────────────
 
@@ -2035,6 +2035,22 @@ describe("startSnapshot — spec", () => {
     await handle.runNow("manual");
     expect(broadcasts[0]?.type).toBe("team:snapshot");
     expect(getKvValue("team-snapshot:acme", "state", null, deps.db!)).not.toBeNull();
+    handle.stop();
+  });
+
+  test("a scoped spec stages and commits only scoped paths, and the pathspec is exactly those paths", async () => {
+    const statusZ = " M mattstack/settings.team.jsonc\0 D .sops.yaml\0 M src/index.ts\0";
+    const { fn, calls } = makeFakeExec(defaultResponders({ statusZ }));
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot({ ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", scope: teamScope }, specDeps);
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.paths).toEqual(["mattstack/settings.team.jsonc", ".sops.yaml"]);
+    const add = calls.find((c) => gitVerb(c) === "add")!;
+    expect(add).toEqual(["git", "add", "-A", "--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
+    const commit = calls.find((c) => gitVerb(c) === "commit")!;
+    expect(commit.slice(-3)).toEqual(["--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
     handle.stop();
   });
 });

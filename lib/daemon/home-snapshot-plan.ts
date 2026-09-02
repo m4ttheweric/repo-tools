@@ -117,6 +117,11 @@ function buildMessage(autoPaths: string[]): string {
   return `snapshot: ${shown.join(", ")}${extra > 0 ? ` +${extra} more` : ""}`;
 }
 
+/** Entries a spec may stage; undefined keeps every entry (the home repo's rule is "everything outside claimed zones"). */
+export function scopeEntries(entries: StatusEntry[], scope: ((relPath: string) => boolean) | undefined): StatusEntry[] {
+  return scope ? entries.filter((e) => scope(e.path)) : entries;
+}
+
 export function planSnapshot(input: PlanSnapshotInput): SnapshotPlan {
   const zones = Object.keys(input.owners.zones);
 

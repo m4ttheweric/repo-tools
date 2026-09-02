@@ -41,7 +41,7 @@ import {
 } from "../state/index.ts";
 import { readOwners as readOwnersReal, type Owners } from "../home/snapshot-owners.ts";
 import { HOME_SNAPSHOT_NS, recordHomePush, type HomePushRecord } from "../home/push-record.ts";
-import { parsePorcelainZ, planSnapshot } from "./home-snapshot-plan.ts";
+import { parsePorcelainZ, planSnapshot, scopeEntries } from "./home-snapshot-plan.ts";
 
 export type SnapshotReason = "manual" | "watch" | "janitor";
 
@@ -284,6 +284,13 @@ function persistPushRecord(spec: SnapshotSpec, db: Database, record: HomePushRec
   } catch (err) {
     log.warn({ err }, "home-snapshot: failed to persist the last-push record");
   }
+}
+
+export const TEAM_SCOPE_ROOTS = ["mattstack", ".sops.yaml", ".claude-plugin"] as const;
+
+/** A team clone can also be a working repo (claimview-tools carries src/ and docs/); only the store, the recipients file and the marketplace are the daemon's to commit. */
+export function teamScope(relPath: string): boolean {
+  return TEAM_SCOPE_ROOTS.some((root) => relPath === root || relPath.startsWith(`${root}/`));
 }
 
 export function homeSnapshotSpec(repoDir: string = join(mattstackHome(), "user")): SnapshotSpec {
@@ -736,7 +743,16 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       timeoutMs: GIT_TIMEOUT_MS,
       stderr: "pipe",
     });
-    const entries = parsePorcelainZ(statusResult.stdout);
+    const entries = scopeEntries(parsePorcelainZ(statusResult.stdout), spec.scope);
+    // A scoped spec's pathspec is the scoped entries' own paths, never the
+    // scope's roots: `git add -A -- mattstack .sops.yaml .claude-plugin`
+    // exits 128 and stages nothing when any root is absent from both tree
+    // and index, and a clone that lost its marketplace would then fail
+    // every cycle as add-failed. A rename's origPath rides along too, so
+    // the old path's deletion lands in the same commit as the new path.
+    const scopeArgs: string[] = spec.scope
+      ? [...new Set(entries.flatMap((e) => (e.origPath ? [e.origPath, e.path] : [e.path])))]
+      : ["."];
 
     const plan = planSnapshot({
       entries,
@@ -781,7 +797,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // whatever changed on disk between the status read and this add/commit
       // pair is governed by the live pathspec, not by the stale path list.
       const excludeArgs = plan.excludedZones.map((zone) => `:(exclude)${zone}`);
-      const addResult = await deps.exec(["git", "add", "-A", "--", ".", ...excludeArgs], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      const addResult = await deps.exec(["git", "add", "-A", "--", ...scopeArgs, ...excludeArgs], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
       if (addResult.exitCode !== 0) {
         const addSkipped: SkipReason = addResult.stderr.toLowerCase().includes("index.lock") ? "index-locked" : "add-failed";
         if (addResult.stderr !== lastLoggedAddError) {
@@ -807,7 +823,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // about an unattended backup commit needs a signature. (Git identity
       // is confirmed once, above, before either commit site runs.)
       const message = reason === "manual" ? plan.message!.replace(/^snapshot:/, "snapshot (manual):") : plan.message!;
-      const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
+      const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", ...scopeArgs, ...excludeArgs], {
         cwd: deps.repoDir,
         timeoutMs: GIT_TIMEOUT_MS,
         stderr: "pipe",

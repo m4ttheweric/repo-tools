@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parsePorcelainZ, planSnapshot, type StatusEntry } from "../home-snapshot-plan.ts";
+import { parsePorcelainZ, planSnapshot, scopeEntries, type StatusEntry } from "../home-snapshot-plan.ts";
+import { teamScope } from "../home-snapshot.ts";
 import type { Owners } from "../../home/snapshot-owners.ts";
 
 const NOW = 1_000_000;
@@ -291,5 +292,29 @@ describe("planSnapshot", () => {
 
       expect(plan.autoPaths).toEqual(["notes.md"]);
     });
+  });
+});
+
+describe("scopeEntries", () => {
+  const entries: StatusEntry[] = [
+    { xy: " M", path: "mattstack/settings.team.jsonc" },
+    { xy: "??", path: ".sops.yaml" },
+    { xy: " M", path: ".claude-plugin/marketplace.json" },
+    { xy: " M", path: "src/index.ts" },
+    { xy: "??", path: "docs/plan.md" },
+  ];
+  test("undefined scope keeps everything", () => {
+    expect(scopeEntries(entries, undefined)).toHaveLength(5);
+  });
+  test("teamScope keeps only the team store, the recipients file and the marketplace", () => {
+    expect(scopeEntries(entries, teamScope).map((e) => e.path)).toEqual([
+      "mattstack/settings.team.jsonc", ".sops.yaml", ".claude-plugin/marketplace.json",
+    ]);
+  });
+  test("teamScope is prefix-safe: mattstack-tools/ is not mattstack/", () => {
+    expect(teamScope("mattstack-tools/x")).toBe(false);
+    expect(teamScope("mattstack/secrets/board.json")).toBe(true);
+    expect(teamScope(".sops.yaml")).toBe(true);
+    expect(teamScope(".sops.yaml.bak")).toBe(false);
   });
 });
