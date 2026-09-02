@@ -281,12 +281,15 @@ export interface SetupResult {
   detail: string;
 }
 
-async function setupFastBrowser(p: Probes, seams: ToolsInstallSeams): Promise<SetupResult> {
+async function setupFastBrowser(p: Probes, seams: ToolsInstallSeams, marketplaceSource: string | undefined): Promise<SetupResult> {
   const resolved = seams.resolveTool(p, "fast-browser");
   if (!resolved.exec) throw new UserActionableError("tool-missing", "fast-browser is not resolvable (not bundled, no user copy on PATH)");
 
-  // Non-interactive setup refuses to guess a host even when only one is detected.
-  const res = await p.exec([...resolved.exec, "setup", "--host", "claude"], { timeoutMs: INSTALL_TIMEOUT_MS });
+  // Non-interactive setup refuses to guess a host even when only one is
+  // detected, and refuses a "mattstack" marketplace registered from any
+  // source but the one it is told — so it is told the one plugins.install used.
+  const args = ["setup", "--host", "claude", ...(marketplaceSource ? ["--source", marketplaceSource] : [])];
+  const res = await p.exec([...resolved.exec, ...args], { timeoutMs: INSTALL_TIMEOUT_MS });
   if (res.code === 124) return { ok: false, detail: "fast-browser setup timed out" };
   if (res.code !== 0) return { ok: false, detail: `fast-browser setup failed (exit ${res.code}): ${firstLine(res.stderr || res.stdout)}` };
   return { ok: true, detail: "fast-browser setup complete" };
@@ -335,8 +338,8 @@ async function setupExtension(p: Probes, seams: ToolsInstallSeams): Promise<Setu
   return { ok, detail };
 }
 
-export async function setupTool(p: Probes, tool: string, opts: { configDirs: string[] }, seams: ToolsInstallSeams = REAL_SEAMS): Promise<SetupResult> {
-  if (tool === "fast-browser") return setupFastBrowser(p, seams);
+export async function setupTool(p: Probes, tool: string, opts: { configDirs: string[]; marketplaceSource?: string }, seams: ToolsInstallSeams = REAL_SEAMS): Promise<SetupResult> {
+  if (tool === "fast-browser") return setupFastBrowser(p, seams, opts.marketplaceSource);
   if (tool === "herdr") return setupHerdr(p, opts.configDirs);
   if (tool === "extension") return setupExtension(p, seams);
   throw new UserActionableError("unknown-tool-setup", `no setup routine for "${tool}"`);

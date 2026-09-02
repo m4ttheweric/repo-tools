@@ -285,18 +285,16 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       const p = fakeProbes({ home, env: { PATH: "/usr/local/bin" }, files: { "/usr/local/bin/fast-browser": "bin" }, exec: async () => ok("") });
       const { ctx } = makeCtx(p);
       expect(await fastbrowserSetupStep.run(ctx)).toEqual({ state: "done", detail: "fast-browser setup complete" });
-      expect(p.calls.exec).toEqual([["/usr/local/bin/fast-browser", "setup"]]);
+      expect(p.calls.exec).toEqual([["/usr/local/bin/fast-browser", "setup", "--host", "claude", "--source", "https://github.com/m4ttstack/mattstack-marketplace.git"]]);
     });
 
     test("idempotent re-run: two independent setups each make their own real call — nothing memoized between runs", async () => {
       const p = fakeProbes({ home, env: { PATH: "/usr/local/bin" }, files: { "/usr/local/bin/fast-browser": "bin" }, exec: async () => ok("") });
       expect(await fastbrowserSetupStep.run(makeCtx(p).ctx)).toEqual({ state: "done", detail: "fast-browser setup complete" });
-      expect(p.calls.exec).toEqual([["/usr/local/bin/fast-browser", "setup"]]);
+      expect(p.calls.exec).toEqual([["/usr/local/bin/fast-browser", "setup", "--host", "claude", "--source", "https://github.com/m4ttstack/mattstack-marketplace.git"]]);
       expect(await fastbrowserSetupStep.run(makeCtx(p).ctx)).toEqual({ state: "done", detail: "fast-browser setup complete" });
-      expect(p.calls.exec).toEqual([
-        ["/usr/local/bin/fast-browser", "setup"],
-        ["/usr/local/bin/fast-browser", "setup"],
-      ]);
+      const call = ["/usr/local/bin/fast-browser", "setup", "--host", "claude", "--source", "https://github.com/m4ttstack/mattstack-marketplace.git"];
+      expect(p.calls.exec).toEqual([call, call]);
     });
 
     test("not bundled, no user copy -> skipped honestly, never execs", async () => {

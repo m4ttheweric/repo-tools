@@ -328,6 +328,9 @@ describe("setupTool — fast-browser", () => {
     const result = await setupTool(p, "fast-browser", { configDirs: [] }, seams);
     // Non-interactive fast-browser setup demands the host; rt wires Claude Code.
     expect(p.calls.exec).toContainEqual(["node", "fast-browser.mjs", "setup", "--host", "claude"]);
+    const withSource = fakeProbes({ exec: async () => ok("") });
+    await setupTool(withSource, "fast-browser", { configDirs: [], marketplaceSource: "https://github.com/m4ttstack/mattstack-marketplace.git" }, seams);
+    expect(withSource.calls.exec).toContainEqual(["node", "fast-browser.mjs", "setup", "--host", "claude", "--source", "https://github.com/m4ttstack/mattstack-marketplace.git"]);
     expect(result.ok).toBe(true);
   });
 

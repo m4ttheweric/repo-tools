@@ -12,6 +12,7 @@ import { resolveTool } from "../../deps/resolve.ts";
 import type { SnapshotResult } from "../../daemon/home-snapshot.ts";
 import { withoutUrls } from "../../team/redact.ts";
 import type { ApplyContext } from "../apply.ts";
+import { MATTSTACK_MARKETPLACE_SOURCE } from "./plugins.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import { hasRemote } from "../home-git.ts";
 import type { Probes } from "../probes.ts";
@@ -35,7 +36,11 @@ async function fastbrowserSetupRun(ctx: ApplyContext): Promise<StepOutcome> {
   const resolved = resolveTool(ctx.p, "fast-browser");
   if (!resolved.exec) return { state: "skipped", detail: "fast-browser not bundled" };
 
-  const result = await setupTool(ctx.p, "fast-browser", { configDirs: [] });
+  // Claude Code records a git marketplace source with its .git suffix, and
+  // fast-browser compares that string exactly.
+  const registered = ctx.p.env.RT_MATTSTACK_MARKETPLACE || MATTSTACK_MARKETPLACE_SOURCE;
+  const marketplaceSource = registered.endsWith(".git") ? registered : `${registered}.git`;
+  const result = await setupTool(ctx.p, "fast-browser", { configDirs: [], marketplaceSource });
   if (result.ok) return { state: "done", detail: result.detail };
 
   // fast-browser integrates INTO a host (Claude Code / Codex) and refuses to
