@@ -64,10 +64,40 @@ ax_shot() {
   for _ in $(seq 1 40); do [ -f "$done" ] && { ax_log "shot $name"; return 0; }; sleep 0.5; done
   ax_log "shot $name: host did not respond within 20s"; return 0
 }
-ax_fail() { ax_log "FAIL: $*"; ax_shot "fail-$(date +%s)"; exit 1; }
+ax_fail() {
+  ax_log "FAIL: $*"
+  # Screenshots are host-side and can fail on their own; the identifiers on
+  # screen are the evidence that survives that.
+  ax_log "windows: $(ax_osa "tell application \"System Events\" to tell process \"$AX_APP\" to get name of every window" 2>/dev/null)"
+  ax_log "axids on screen: $(ax_dump_ids | tr '\n' ' ')"
+  ax_shot "fail-$(date +%s)"
+  exit 1
+}
 
-ax_dump_ids() {  # every AXIdentifier currently present in window 1, one per line
-  ax_osa "tell application \"System Events\" to tell process \"$AX_APP\" to get value of attribute \"AXIdentifier\" of every UI element of entire contents of window 1" 2>/dev/null | tr ',' '\n'
+# Every AXIdentifier currently present in window 1, one per line. Walked
+# recursively: `every UI element of entire contents` is not coercible to a
+# specifier on every OS, so it is never used here.
+ax_dump_ids() {
+  ax_osa "
+using terms from application \"System Events\"
+  on walkIds(el, acc)
+    try
+      set i to value of attribute \"AXIdentifier\" of el
+      if i is not missing value and (i as text) is not \"\" then set end of acc to (i as text)
+    end try
+    try
+      repeat with c in UI elements of el
+        my walkIds(c, acc)
+      end repeat
+    end try
+  end walkIds
+end using terms from
+tell application \"System Events\" to tell process \"$AX_APP\"
+  set acc to {}
+  if exists window 1 then my walkIds(window 1, acc)
+  set AppleScript's text item delimiters to linefeed
+  return acc as text
+end tell" 2>/dev/null
 }
 
 ax_wait_window() {  # <title-substring> <timeout-s>
