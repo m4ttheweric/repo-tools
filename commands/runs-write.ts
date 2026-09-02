@@ -16,14 +16,17 @@
  * scope), so a gate that can fire more than once inside one attempt appends
  * its own discriminator after the attempt (`ci:<stage>:<attempt>:<branch>`);
  * snapshot returns every row.
- * Every verb but run-start reads RT_RUN_DB. Output is JSON on stdout for
- * every outcome except `field get`. Exit 1 sqlite, 2 usage or environment,
- * 3 not found.
+ * Every verb but run-start reads RT_RUN_DB; when it is unset, the running run
+ * this session recorded, else the newest running run whose worktree holds the
+ * cwd, stands in (lib/runs/resolve-db.ts) and JSON envelopes gain
+ * "runDbResolved". Output is JSON on stdout for every outcome except
+ * `field get`. Exit 1 sqlite, 2 usage or environment, 3 not found.
  */
 import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 import { flagValue, required, Usage } from "../lib/cli-args.ts";
 import { emitRunUpdated } from "../lib/runs/emit.ts";
+import { resolveRunDb, type RunDbSource } from "../lib/runs/resolve-db.ts";
 import { runStart } from "../lib/runs/start.ts";
 import { runsRoot } from "../lib/runs/store.ts";
 import {
@@ -40,6 +43,12 @@ function json(value: unknown): string {
 
 function fail(f: Fail): CliResult {
   return { out: json({ ok: false, error: f.error }), code: f.code };
+}
+
+// A caller who exported RT_RUN_DB sees the envelope the fallback never existed for.
+function ok(resolved: RunDbSource, payload: object = {}): CliResult {
+  const body = resolved === "env" ? { ok: true, ...payload } : { ok: true, ...payload, runDbResolved: resolved };
+  return { out: json(body), code: 0 };
 }
 
 function positionals(args: string[]): string[] {
@@ -92,20 +101,20 @@ async function dispatch(verb: WriteVerb, args: string[], env: NodeJS.ProcessEnv)
     }
     case "run-status": {
       const status = required(args, "--status");
-      return withRunDbAsync(env, async (db) => {
+      return withRunDbAsync(env, async ({ db, resolved }) => {
         const r = runStatus(db, status);
         if (!r.ok) return fail(r);
         await emitted(env, runIdentity(db), null, "run-status");
-        return { out: json({ ok: true }), code: 0 };
+        return ok(resolved);
       });
     }
     case "stage-start": {
       const stage = required(args, "--stage");
-      return withRunDbAsync(env, async (db) => {
+      return withRunDbAsync(env, async ({ db, resolved }) => {
         const r = stageStart(db, stage, env);
         if (!r.ok) return fail(r);
         await emitted(env, runIdentity(db), stage, "stage-start");
-        return { out: json({ ok: true }), code: 0 };
+        return ok(resolved);
       });
     }
     case "stage-done":
@@ -113,11 +122,11 @@ async function dispatch(verb: WriteVerb, args: string[], env: NodeJS.ProcessEnv)
       const stage = required(args, "--stage");
       const reason = flagValue(args, "--reason");
       const detailPath = flagValue(args, "--detail-path");
-      return withRunDbAsync(env, async (db) => {
+      return withRunDbAsync(env, async ({ db, resolved }) => {
         const r = stageEnd(db, stage, verb === "stage-done" ? "done" : "failed", { reason, detailPath });
         if (!r.ok) return fail(r);
         await emitted(env, runIdentity(db), stage, verb);
-        return { out: json({ ok: true }), code: 0 };
+        return ok(resolved);
       });
     }
     case "field": {
@@ -125,16 +134,16 @@ async function dispatch(verb: WriteVerb, args: string[], env: NodeJS.ProcessEnv)
       if (sub === "set") {
         if (!key || value === undefined) throw new Usage("field set needs KEY VALUE");
         const stage = required(args, "--stage");
-        return withRunDbAsync(env, async (db) => {
+        return withRunDbAsync(env, async ({ db, resolved }) => {
           const r = fieldSet(db, key, value, stage);
           if (!r.ok) return fail(r);
           await emitted(env, runIdentity(db), stage, "field-set");
-          return { out: json({ ok: true }), code: 0 };
+          return ok(resolved);
         });
       }
       if (sub === "get") {
         if (!key) throw new Usage("field get needs KEY");
-        return withRunDbAsync(env, async (db) => {
+        return withRunDbAsync(env, async ({ db }) => {
           const r = fieldGet(db, key);
           return r.ok ? { out: r.value, code: 0 } : { out: "", code: 3 };
         });
@@ -150,29 +159,31 @@ async function dispatch(verb: WriteVerb, args: string[], env: NodeJS.ProcessEnv)
         selection: required(args, "--selection"),
         decidedBy: required(args, "--decided-by"),
       };
-      return withRunDbAsync(env, async (db) => {
+      return withRunDbAsync(env, async ({ db, resolved }) => {
         const r = decisionRecord(db, o);
         if (!r.ok) return fail(r);
         await emitted(env, runIdentity(db), o.scope, "decision");
-        return { out: json({ ok: true }), code: 0 };
+        return ok(resolved);
       });
     }
     case "snapshot":
-      return withRunDbAsync(env, async (db) => {
+      return withRunDbAsync(env, async ({ db, resolved }) => {
         const r = snapshot(db);
-        return r.ok ? { out: json(r), code: 0 } : fail(r);
+        return r.ok ? ok(resolved, { run: r.run, stages: r.stages, fields: r.fields, decisions: r.decisions }) : fail(r);
       });
   }
 }
 
-async function withRunDbAsync(env: NodeJS.ProcessEnv, body: (db: Database) => Promise<CliResult>): Promise<CliResult> {
-  const path = env.RT_RUN_DB;
-  if (!path) return { out: json({ ok: false, error: "RT_RUN_DB is not set" }), code: 2 };
-  if (!existsSync(path)) return { out: json({ ok: false, error: `run DB not found: ${path}` }), code: 2 };
+type RunDbHandle = { db: Database; resolved: RunDbSource };
+
+async function withRunDbAsync(env: NodeJS.ProcessEnv, body: (run: RunDbHandle) => Promise<CliResult>): Promise<CliResult> {
+  const found = resolveRunDb(env, process.cwd());
+  if (!found.ok) return { out: json({ ok: false, error: found.error }), code: 2 };
+  if (!existsSync(found.db)) return { out: json({ ok: false, error: `run DB not found: ${found.db}` }), code: 2 };
   let db: Database | undefined;
   try {
-    db = openRunDb(path);
-    return await body(db);
+    db = openRunDb(found.db);
+    return await body({ db, resolved: found.resolved });
   } catch (err) {
     return { out: json({ ok: false, error: `sqlite write failed: ${String(err)}` }), code: 1 };
   } finally {

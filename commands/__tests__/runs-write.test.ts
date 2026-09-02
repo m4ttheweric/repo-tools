@@ -76,9 +76,10 @@ describe("rt runs write verbs", () => {
   });
 
   test("subcommands without RT_RUN_DB fail with a JSON error, exit 2", async () => {
-    const r = await runWriteVerb("run-status", ["--status", "done"], QUIET);
+    const empty = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const r = await runWriteVerb("run-status", ["--status", "done"], { RT_RUNS_ROOT: empty, ...QUIET });
     expect(r.code).toBe(2);
-    expect(JSON.parse(r.out)).toEqual({ ok: false, error: "RT_RUN_DB is not set" });
+    expect(JSON.parse(r.out)).toEqual({ ok: false, error: "RT_RUN_DB is not set and no running run matches this session or directory" });
     const missing = await runWriteVerb("snapshot", [], { RT_RUN_DB: "/nowhere/state.db", ...QUIET });
     expect(missing.code).toBe(2);
     expect(JSON.parse(missing.out).error).toContain("run DB not found");
@@ -163,6 +164,55 @@ describe("rt runs write verbs", () => {
       });
     },
   );
+});
+
+describe("RT_RUN_DB fallback", () => {
+  const RUN = ["--repo", "demo", "--work-type", "fix", "--pipeline", "default"];
+
+  test("field set without RT_RUN_DB resolves by session and reports runDbResolved", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const env = { RT_RUNS_ROOT: root, CLAUDE_CODE_SESSION_ID: "sess-cli-1", ...QUIET };
+    const started = JSON.parse((await runWriteVerb("run-start", RUN, env)).out);
+    expect(await runWriteVerb("field", ["set", "branch", "x", "--stage", "provision"], env)).toEqual({ out: '{"ok":true,"runDbResolved":"session"}', code: 0 });
+    const db = new Database(started.runDb, { readonly: true });
+    expect(db.query("SELECT value FROM fields WHERE key='branch'").get()).toEqual({ value: "x" });
+    db.close();
+  });
+
+  test("with RT_RUN_DB set the envelope is unchanged", async () => {
+    const { env } = await startRun();
+    expect(await runWriteVerb("field", ["set", "branch", "x", "--stage", "provision"], { ...env, CLAUDE_CODE_SESSION_ID: "sess-cli-2" })).toEqual({ out: '{"ok":true}', code: 0 });
+    const snap = JSON.parse((await runWriteVerb("snapshot", [], env)).out);
+    expect(Object.keys(snap)).toEqual(["ok", "run", "stages", "fields", "decisions"]);
+  });
+
+  test("field get without RT_RUN_DB still prints the raw value", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const env = { RT_RUNS_ROOT: root, CLAUDE_CODE_SESSION_ID: "sess-cli-3", ...QUIET };
+    await runWriteVerb("run-start", [...RUN, "--ticket", "ABC-9"], env);
+    expect(await runWriteVerb("field", ["get", "ticket"], env)).toEqual({ out: "ABC-9", code: 0 });
+  });
+
+  test("snapshot without RT_RUN_DB appends runDbResolved after the rows", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const env = { RT_RUNS_ROOT: root, CLAUDE_CODE_SESSION_ID: "sess-cli-5", ...QUIET };
+    await runWriteVerb("run-start", RUN, env);
+    const snap = JSON.parse((await runWriteVerb("snapshot", [], env)).out);
+    expect(Object.keys(snap)).toEqual(["ok", "run", "stages", "fields", "decisions", "runDbResolved"]);
+    expect(snap.runDbResolved).toBe("session");
+  });
+
+  test("two running runs on one session is exit 2 naming both candidates", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-runs-cli-"));
+    const env = { RT_RUNS_ROOT: root, CLAUDE_CODE_SESSION_ID: "sess-cli-4", ...QUIET };
+    await runWriteVerb("run-start", [...RUN, "--run-id", "20260902-100000-aaaa-1"], env);
+    await runWriteVerb("run-start", [...RUN, "--run-id", "20260902-100001-bbbb-1"], env);
+    const r = await runWriteVerb("run-status", ["--status", "done"], env);
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.out).error).toBe(
+      "RT_RUN_DB is not set and no running run matches this session or directory; candidates: 20260902-100000-aaaa-1, 20260902-100001-bbbb-1",
+    );
+  });
 });
 
 describe("rt runs positional rejection", () => {
