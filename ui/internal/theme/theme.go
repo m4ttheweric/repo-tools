@@ -31,9 +31,18 @@ var (
 
 	Text     = lipgloss.Color("#E6E0FF")
 	TextSoft = lipgloss.Color("#D2CDEB")
-	Dim      = lipgloss.Color("#A8A0C6")
-	Dimmer   = lipgloss.Color("#8B84A8")
-	Faint    = lipgloss.Color("#6E668C")
+	Dim      = lipgloss.Color("#B4ADD1")
+	Dimmer   = lipgloss.Color("#9992B5")
+	Faint    = lipgloss.Color("#7F78A0")
+
+	// Keybar roles. The help bar reads as key (accent) · label (text) ·
+	// group (lav), the same grammar cswap's footer uses, rather than
+	// borrowing the low end of the type ramp: on a neutral terminal ground
+	// faint keys sank below legibility. Change the role here, never at a
+	// render site.
+	KeybarKey   = PinkSoft
+	KeybarLabel = TextSoft
+	KeybarGroup = Lav
 )
 
 const (

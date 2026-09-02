@@ -160,8 +160,8 @@ func noMatchLine() string {
 // it alongside the normal one: enter/tab/ctrl-up all act on a row, and there
 // are none, so the only live keys are backing out of the filter or quitting.
 func noMatchKeybarLine(m *Model) string {
-	left := fg(theme.Faint).Render("backspace") + fg(theme.Dim).Render(" edit filter") +
-		fg(theme.Faint).Render(" · ") + fg(theme.Faint).Render("esc") + fg(theme.Dim).Render(" quit")
+	left := fg(theme.KeybarKey).Render("backspace") + fg(theme.KeybarLabel).Render(" edit filter") +
+		fg(theme.Faint).Render(" · ") + fg(theme.KeybarKey).Render("esc") + fg(theme.KeybarLabel).Render(" quit")
 	return justify(m.width, left, "")
 }
 

@@ -203,14 +203,14 @@ func keybarClusters(actions []protocol.PickAction) (left []keybarCluster, right 
 	return left, right
 }
 
-// renderKeybarCluster paints one cluster's key/label run: a lav group label
-// (skipped when unlabeled) followed by each action's faint key and dim
-// label, double-spaced ahead of the next action -- the grammar both the
-// Branch and Scrolling boards render.
+// renderKeybarCluster paints one cluster's key/label run: a group label
+// (skipped when unlabeled) followed by each action's key and label in the
+// theme's keybar roles, double-spaced ahead of the next action -- the
+// grammar both the Branch and Scrolling boards render.
 func renderKeybarCluster(c keybarCluster) string {
 	var b strings.Builder
 	if c.label != "" {
-		b.WriteString(fg(theme.Lav).Render(c.label))
+		b.WriteString(fg(theme.KeybarGroup).Render(c.label))
 	}
 	for i, a := range c.actions {
 		if i == 0 {
@@ -220,8 +220,8 @@ func renderKeybarCluster(c keybarCluster) string {
 		} else {
 			b.WriteString("  ")
 		}
-		b.WriteString(fg(theme.Faint).Render(a.Key))
-		b.WriteString(fg(theme.Dim).Render(" " + a.Label))
+		b.WriteString(fg(theme.KeybarKey).Render(a.Key))
+		b.WriteString(fg(theme.KeybarLabel).Render(" " + a.Label))
 	}
 	return b.String()
 }

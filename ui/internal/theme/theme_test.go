@@ -10,7 +10,7 @@ import (
 func TestPaletteMatchesTokenSheet(t *testing.T) {
 	want := map[string]string{
 		"pink": "#FF6B9D", "mint": "#62E6A8", "coral": "#FF7979", "peach": "#FFB77A",
-		"cyan": "#5AAAFF", "lav": "#BD93F9", "text": "#E6E0FF", "dim": "#A8A0C6",
+		"cyan": "#5AAAFF", "lav": "#BD93F9", "text": "#E6E0FF", "dim": "#B4ADD1",
 		"bg": "#161224", "selBg": "#37284B", "warnBg": "#2A2033", "panel": "#34304E",
 	}
 	got := map[string]string{

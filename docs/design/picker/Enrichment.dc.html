@@ -1,12 +1,13 @@
 <!doctype html>
 <script src="./support.js"></script>
 <style>
-:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--pink:#FF6B9D;--mint:#62E6A8;--coral:#FF7979;--peach:#FFB77A;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#A8A0C6;--dimmer:#8B84A8;--faint:#6E668C;--blue:#6B9DFF}
+:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--pink:#FF6B9D;--mint:#62E6A8;--coral:#FF7979;--peach:#FFB77A;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#B4ADD1;--dimmer:#9992B5;--faint:#7F78A0;--kkey:#FF9EC0;--klabel:#D2CDEB;--kgroup:#BD93F9;--blue:#6B9DFF}
 html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px;color:var(--text);padding:26px}
 .term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45);margin-bottom:22px}
 .ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
 .selrow{flex:1;display:flex;background:var(--sel)}
 .t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
+.kk{color:var(--kkey)}.kl{color:var(--klabel)}.kg{color:var(--kgroup)}
 .p{color:var(--pink)}.m{color:var(--mint)}.co{color:var(--coral)}.pe{color:var(--peach)}.cy{color:var(--cyan)}.lv{color:var(--lav)}.bl{color:var(--blue)}
 .b{font-weight:700}.hl{color:var(--cyan);font-weight:700}
 .rule{border-top:1px solid var(--rule);margin:7px 0 5px}
@@ -38,7 +39,7 @@ table.gram td:first-child{font-family:"SF Mono",Menlo,monospace;font-size:12.5px
   <div class="ln"><span> </span><span> </span><span class="s name">cho</span><span class="f"> · </span><span class="d">on-deck/cho</span><span class="sp"></span><span class="f">[Local Only]</span></div>
   <div class="ln"><span> </span><span> </span><span class="s name">snape</span><span class="f"> · </span><span class="d">on-deck/snape</span><span class="sp"></span><span class="f">[Local Only]</span></div>
   <div class="rule"></div>
-  <div class="ln"><span class="lv">cd</span><span class="f"> enter</span><span class="d"> select</span><span class="sp"></span><span class="f">esc</span><span class="d"> quit</span></div>
+  <div class="ln"><span class="kg">cd</span><span class="kk"> enter</span><span class="kl"> select</span><span class="sp"></span><span class="kk">esc</span><span class="kl"> quit</span></div>
 </div>
 
 <h2>Glyph vocabulary (from lib/enrich.ts, mapped onto theme tones)</h2>

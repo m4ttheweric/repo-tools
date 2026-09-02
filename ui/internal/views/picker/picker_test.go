@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"reflect"
 	"regexp"
 	"strings"
@@ -817,15 +818,26 @@ func TestTypedQueryHighlightsAgainstVisibleTextIntegration(t *testing.T) {
 }
 
 // textSGR/textSoftSGR/dimSGR/dimmerSGR are theme.Text/TextSoft/Dim/Dimmer's
-// truecolor SGR fragments, as lipgloss actually renders them -- the same
-// way cyanSGR above pins the highlight color without needing a terminal to
-// interpret the escape codes.
-const (
-	textSGR     = "38;2;230;224;255"
-	textSoftSGR = "38;2;210;205;235"
-	dimSGR      = "38;2;168;160;198"
-	dimmerSGR   = "38;2;139;132;168"
+// truecolor SGR fragments, as lipgloss actually renders them, derived from
+// the theme so a token change (the ramp, a keybar role) re-pins these
+// goldens instead of breaking them: what they guard is which role a run
+// wears, never a literal byte value.
+var (
+	textSGR      = fgSGR(theme.Text)
+	textSoftSGR  = fgSGR(theme.TextSoft)
+	dimSGR       = fgSGR(theme.Dim)
+	dimmerSGR    = fgSGR(theme.Dimmer)
+	faintSGR     = fgSGR(theme.Faint)
+	lavSGR       = fgSGR(theme.Lav)
+	keybarKeySGR = fgSGR(theme.KeybarKey)
+	keybarLblSGR = fgSGR(theme.KeybarLabel)
 )
+
+// fgSGR is the truecolor foreground SGR fragment lipgloss emits for c.
+func fgSGR(c color.Color) string {
+	r, g, b, _ := c.RGBA()
+	return fmt.Sprintf("38;2;%d;%d;%d", r>>8, g>>8, b>>8)
+}
 
 // TestFocusDimsNonCursorRowsButNotTheCursorRow is the golden for row-level
 // focus: the cursor row keeps today's bold Text label / Dim hint, while
@@ -884,7 +896,6 @@ func TestFocusDimsNonCursorRowsButNotTheCursorRow(t *testing.T) {
 	// The faint separator is an explicit semantic tone, not a default
 	// text/dim tone, so focus must leave it exactly as segColor would
 	// render it on either row.
-	const faintSGR = "38;2;110;102;140"
 	if !strings.Contains(cursorRow, faintSGR) || !strings.Contains(nonCursorRow, faintSGR) {
 		t.Fatalf("the faint separator must render identically on both rows:\ncursor: %q\nnon-cursor: %q", cursorRow, nonCursorRow)
 	}
@@ -1148,16 +1159,14 @@ func TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight(t *testing.T) {
 		t.Fatalf("chords must wait for their modifier: %q", plain)
 	}
 
-	const lavSGR = "38;2;189;147;249"
-	const faintSGR = "38;2;110;102;140"
 	if !strings.Contains(footer, lavSGR) {
 		t.Fatalf("group label should be lav-colored: %q", footer)
 	}
-	if !strings.Contains(footer, faintSGR) {
-		t.Fatalf("keys should be faint-colored: %q", footer)
+	if !strings.Contains(footer, keybarKeySGR) {
+		t.Fatalf("keys should wear the keybar key role: %q", footer)
 	}
-	if !strings.Contains(footer, dimSGR) {
-		t.Fatalf("labels should be dim-colored: %q", footer)
+	if !strings.Contains(footer, keybarLblSGR) {
+		t.Fatalf("labels should wear the keybar label role: %q", footer)
 	}
 }
 
@@ -3708,7 +3717,6 @@ func TestAltHeldRendersCursorBadgeAndRowDim(t *testing.T) {
 	cursorLine := lines[3] // rule, then the cursor row (provision) first
 	createLine := lines[4] // non-cursor, WithArgs true
 	listLine := lines[5]   // non-cursor, WithArgs false
-	const faintSGR = "38;2;110;102;140"
 
 	if strings.Contains(ansi.Strip(header), "with args") || strings.Contains(header, "⌥") {
 		t.Fatalf("the header must not badge the held modifier: %q", ansi.Strip(header))
