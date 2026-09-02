@@ -16,6 +16,10 @@ type PickSegment struct {
 	Tone string `json:"tone,omitempty"`
 	Hex  string `json:"hex,omitempty"`
 	Bold bool   `json:"bold,omitempty"`
+	// Column marks a label segment: the picker pads it to the widest Column
+	// segment in the list (capped), so what follows starts at one shared
+	// column on every row. Callers mark the name in a name·hint row.
+	Column bool `json:"column,omitempty"`
 }
 
 type PickRow struct {

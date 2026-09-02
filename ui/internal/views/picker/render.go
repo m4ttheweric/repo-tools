@@ -443,6 +443,45 @@ func highlightPositions(m *Model, leftPlain string) []int {
 // matched-character highlight, spacer, and right segments pinned to the far
 // edge. The width is explicit (rather than always m.width) because a
 // scrolling list shrinks it by one column to make room for the thumb rail.
+// labelColumnCap bounds the label column: a Column segment wider than this
+// neither widens the column for everyone else nor pads itself.
+const labelColumnCap = 28
+
+// paddedLeft is row.Left with every Column segment right-padded to
+// labelWidth, and, per segment, how many runes the pad added: what the row
+// paints, and what highlight positions computed on the unpadded text have
+// to be shifted by past each padded segment.
+func paddedLeft(row protocol.PickRow, labelWidth int) ([]protocol.PickSegment, []int) {
+	segs := make([]protocol.PickSegment, len(row.Left))
+	pads := make([]int, len(row.Left))
+	for i, seg := range row.Left {
+		segs[i] = seg
+		if w := lipgloss.Width(seg.Text); seg.Column && w < labelWidth {
+			pads[i] = labelWidth - w
+			segs[i].Text = seg.Text + strings.Repeat(" ", pads[i])
+		}
+	}
+	return segs, pads
+}
+
+// shiftPositions remaps match positions computed on the unpadded left text
+// onto the padded text: a position past a padded segment's end moves by
+// the runes that segment's pad added.
+func shiftPositions(positions []int, left []protocol.PickSegment, pads []int) []int {
+	out := make([]int, len(positions))
+	for i, p := range positions {
+		shift, runes := 0, 0
+		for j, seg := range left {
+			runes += len([]rune(seg.Text))
+			if p >= runes {
+				shift += pads[j]
+			}
+		}
+		out[i] = p + shift
+	}
+	return out
+}
+
 // groupIndent is how far a grouped list's rows step in past the gutter, so
 // entries read as children of the faint header above them (which sits at
 // the gutter's own indent) rather than as its peers.
@@ -542,8 +581,16 @@ func rowLineWidth(m *Model, i int, width int) string {
 	}
 
 	leftPlain := leftPlainText(row)
+	positions := highlightPositions(m, leftPlain)
+	painted := row
+	if m.labelWidth > 0 {
+		segs, pads := paddedLeft(row, m.labelWidth)
+		positions = shiftPositions(positions, row.Left, pads)
+		painted.Left = segs
+		leftPlain = leftPlainText(painted)
+	}
 	kept, truncated := clipRunes(leftPlain, leftBudget)
-	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow, argsDim, accentFor(action, accent))
+	leftRendered := renderHighlightedLeft(painted, len([]rune(kept)), positions, rowBg, cursorRow, argsDim, accentFor(action, accent))
 	usedLeftWidth := lipgloss.Width(kept)
 	if truncated {
 		leftRendered += rowBg.Foreground(theme.Faint).Render("…")

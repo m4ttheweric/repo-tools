@@ -138,10 +138,9 @@ function presetRow(p: Preset): PickRow {
   };
 }
 
-/** Bold label plus a dim hint -- the plain two-column look every simple row shares. `labelWidth` pads the label so hints align down a row group; omit it for a standalone row. */
-function plainRow(entry: { value: string; label: string; hint?: string }, group?: string, labelWidth?: number): PickRow {
-  const label = labelWidth != null ? entry.label.padEnd(labelWidth) : entry.label;
-  const left: PickSegment[] = [{ text: label, bold: true }];
+/** Bold label in the picker's label column plus a dim hint -- the plain two-column look every simple row shares. */
+function plainRow(entry: { value: string; label: string; hint?: string }, group?: string): PickRow {
+  const left: PickSegment[] = [{ text: entry.label, bold: true, column: true }];
   if (entry.hint) left.push({ text: `  ${entry.hint}`, tone: "dim" });
   // Filtering sees the name only (the old fzf --nth=1); the hint is display.
   return { value: entry.value, match: entry.label, left, ...(group ? { group } : {}) };
@@ -405,8 +404,7 @@ async function selectPackageAndScript(
             hint: p.path,
           })),
         ];
-        const packageLabelWidth = packageOptions.reduce((w, o) => Math.max(w, o.label.length), 0);
-        packageOptions.forEach((entry) => rows.push(plainRow(entry, "packages", packageLabelWidth)));
+        packageOptions.forEach((entry) => rows.push(plainRow(entry, "packages")));
 
         const queueHeaderParts = q.length > 0
           ? [
@@ -675,9 +673,8 @@ async function selectPackageAndScript(
           ...existing.map((v) => ({ value: v.command, label: v.name, hint: v.command.slice(0, 60) })),
           { value: ADD_SENTINEL, label: "+ Add variation…", hint: "" },
         ];
-        const varLabelWidth = varOptions.reduce((w, o) => Math.max(w, o.label.length), 0);
         const varResult = await runSegmentPicker({
-          rows: varOptions.map((o) => plainRow(o, undefined, varLabelWidth)),
+          rows: varOptions.map((o) => plainRow(o)),
           message: `Variation for "${scriptName}"`,
           headerParts: varHeaderParts,
           groupLabel: q.length > 0 ? "queue" : "run",

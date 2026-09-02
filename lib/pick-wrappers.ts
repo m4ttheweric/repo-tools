@@ -37,9 +37,8 @@ const BACK_ACTION_ID = "back";
 
 /** Two-column look: bold label padded to the widest label, then a dim hint. */
 export function optionsToRows(options: SelectOption[]): PickRow[] {
-  const labelWidth = options.reduce((w, o) => Math.max(w, o.label.length), 0);
   return options.map((o) => {
-    const left: PickSegment[] = [{ text: o.label.padEnd(labelWidth), bold: true }];
+    const left: PickSegment[] = [{ text: o.label, bold: true, column: true }];
     if (o.hint) left.push({ text: `  ${o.hint}`, tone: "dim" });
     return { value: o.value, left };
   });
@@ -135,10 +134,8 @@ export async function filterableMultiselect(
 // Translates NavPickerOpts (lib/navigate.ts, which keeps the type homes and
 // re-exports this function) onto runPick.
 
-/** Bold label, padded to the widest label across the whole option list, plus a dim hint -- same look as the fzf-backed picker. */
+/** Bold label in the picker's label column, plus a dim hint -- same look as the fzf-backed picker. */
 function navOptionsToRows(options: NavOption[]): PickRow[] {
-  const real = options.filter((o) => !o.separator);
-  const labelWidth = real.reduce((w, o) => Math.max(w, o.label.length), 0);
 
   const rows: PickRow[] = [];
   let group: string | undefined;
@@ -149,7 +146,7 @@ function navOptionsToRows(options: NavOption[]): PickRow[] {
       group = o.label;
       continue;
     }
-    const left: PickSegment[] = [{ text: o.label.padEnd(labelWidth), bold: true }];
+    const left: PickSegment[] = [{ text: o.label, bold: true, column: true }];
     if (o.hint) left.push({ text: `  ${o.hint}`, tone: "dim" });
     // Filtering sees the label only; the hint is display (the old fzf nav
     // primitive matched a single column with --nth=1).

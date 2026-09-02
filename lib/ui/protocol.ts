@@ -149,6 +149,8 @@ export interface PickSegment {
   tone?: string;
   hex?: string;
   bold?: boolean;
+  /** A label segment: the picker pads it to the widest column segment in the list (capped), so the hint after it starts at one shared column on every row. */
+  column?: boolean;
 }
 
 /** A button-like row: leads with `glyph` (or the picker's generic action glyph) and wears the action tokens instead of the entry ones. */

@@ -57,7 +57,7 @@ describe("filterableSelect", () => {
     expect(fake.calls[0]!.request.exact).toBe(true);
   });
 
-  test("translates options into padded bold-label / dim-hint rows", async () => {
+  test("translates options into bold column-label / dim-hint rows", async () => {
     fake = installFakePick([resultStep({ action: "select", value: "a" })]);
     await filterableSelect({
       message: "Pick one",
@@ -69,7 +69,7 @@ describe("filterableSelect", () => {
     const rows = fake.calls[0]!.request.rows;
     expect(rows).toHaveLength(2);
     expect(rows[0]!.value).toBe("a");
-    expect(rows[0]!.left[0]).toEqual({ text: "A".padEnd("Longer".length), bold: true });
+    expect(rows[0]!.left[0]).toEqual({ text: "A", bold: true, column: true });
     expect(rows[0]!.left[1]).toMatchObject({ tone: "dim" });
     expect(rows[0]!.left[1]!.text).toContain("short");
     expect(rows[0]!.right ?? []).toHaveLength(0);

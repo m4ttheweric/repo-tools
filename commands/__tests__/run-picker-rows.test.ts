@@ -66,27 +66,15 @@ test("lastRunRow: mint glyph + age hint, no group (script rows aren't grouped)",
   expect(row.left[1]?.tone).toBe("dim");
 });
 
-test("plainRow: bold label plus a dim hint, group optional", () => {
+test("plainRow: bold label in the picker's label column plus a dim hint, group optional", () => {
   const row = runTest.plainRow({ value: "v", label: "ui", hint: "packages/ui" }, "packages");
   expect(row.group).toBe("packages");
   expect(row.left).toEqual([
-    { text: "ui", bold: true },
+    { text: "ui", bold: true, column: true },
     { text: "  packages/ui", tone: "dim" },
   ]);
   // The hint is display only: typing part of "packages/ui" must not match.
   expect(row.match).toBe("ui");
-});
-
-test("plainRow: labelWidth pads the label so hints line up down a group", () => {
-  const short = runTest.plainRow({ value: "v", label: "ui", hint: "packages/ui" }, "packages", 6);
-  expect(short.left[0]).toEqual({ text: "ui    ", bold: true });
-
-  const exact = runTest.plainRow({ value: "v", label: "backend", hint: "apps/backend" }, "packages", 7);
-  expect(exact.left[0]).toEqual({ text: "backend", bold: true });
-
-  // Omitted width leaves the label unpadded (a standalone row has nothing to align against).
-  const unpadded = runTest.plainRow({ value: "v", label: "ui", hint: "packages/ui" }, "packages");
-  expect(unpadded.left[0]).toEqual({ text: "ui", bold: true });
 });
 
 test("footerActions: exit keys close with event:false, other header parts are label-only", () => {
@@ -448,7 +436,7 @@ test("variations picker breadcrumb stays 'rt run'; crumbSuffix reads variation f
 
 // ─── package row alignment ───────────────────────────────────────────────────
 
-test("package picker rows: the label column is padded so hints line up (board parity)", async () => {
+test("package picker rows: labels are column segments so hints line up (board parity)", async () => {
   const root = mkdtempSync(join(tmpdir(), "rt-run-align-"));
   fixtureDir = root;
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "root", workspaces: ["packages/*"] }));
@@ -477,12 +465,12 @@ test("package picker rows: the label column is padded so hints line up (board pa
   await resolveRun([], ctx);
   const packageRows = fake.calls[0]!.rows.filter((r) => r.group === "packages");
   expect(packageRows).toHaveLength(2);
-  const labelTexts = packageRows.map((r) => r.left[0]!.text as string);
-  // Every label in the group pads to the same width -- the hint column starts
-  // at the same offset on every row, matching the board.
-  const widths = new Set(labelTexts.map((t) => t.length));
-  expect(widths.size).toBe(1);
-  expect(Math.max(...labelTexts.map((t) => t.length))).toBe("config-service".length);
+  // Every label is a column segment: the picker pads them to one shared width
+  // so the hint column starts at the same offset on every row (the board).
+  for (const r of packageRows) {
+    expect(r.left[0]).toMatchObject({ column: true });
+    expect((r.left[0]!.text as string).trimEnd()).toBe(r.left[0]!.text);
+  }
 });
 
 // ─── formatBranchLabel -> formatBranchSegments migration ─────────────────────

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
@@ -56,9 +57,12 @@ type Model struct {
 	// grouped records whether any row carries a Group: a grouped list steps
 	// every row in under its header (see rowIndent).
 	grouped bool
-	hover   int
-	width   int
-	height  int
+	// labelWidth is the shared width every Column segment pads to: the widest
+	// one in the list, capped at labelColumnCap. 0 when no row has one.
+	labelWidth int
+	hover      int
+	width      int
+	height     int
 
 	// reservedHeight is the session-long floor renderView pads every frame to,
 	// set the moment the pane size is known and re-derived only on a resize.
@@ -235,11 +239,17 @@ func (m *Model) refilter() {
 	groups := make([]string, len(m.req.Rows))
 	m.argsRows = false
 	m.grouped = false
+	m.labelWidth = 0
 	for i, row := range m.req.Rows {
 		targets[i] = matchText(row)
 		groups[i] = row.Group
 		m.argsRows = m.argsRows || row.WithArgs
 		m.grouped = m.grouped || row.Group != ""
+		for _, seg := range row.Left {
+			if w := lipgloss.Width(seg.Text); seg.Column && w > m.labelWidth && w <= labelColumnCap {
+				m.labelWidth = w
+			}
+		}
 	}
 	m.matches = GroupContiguous(Rank(m.query, targets, m.req.Exact), groups)
 }

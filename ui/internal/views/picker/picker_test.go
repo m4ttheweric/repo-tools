@@ -1210,6 +1210,69 @@ func TestNoMatchState(t *testing.T) {
 // each group's first row, never repeats for the group's later rows, and the
 // cursor -- which indexes m.matches, not the printed lines -- still lands on
 // the first real row rather than a header.
+// TestColumnSegmentsAlignAcrossRows pins the label column: a segment
+// marked Column pads to the widest Column segment in the list (capped at
+// labelColumnCap), so whatever follows it starts at one shared column on
+// every row. A label past the cap pads nothing and pushes only its own
+// hint. Match highlights on text after the label still land on the right
+// runes, and a row with no Column segment is untouched.
+func TestColumnSegmentsAlignAcrossRows(t *testing.T) {
+	row := func(label, hint string) protocol.PickRow {
+		return protocol.PickRow{Value: label, Left: []protocol.PickSegment{
+			{Text: label, Tone: "text", Column: true},
+			{Text: "  " + hint, Tone: "dim"},
+		}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			row("start", "pnpm run dev"),
+			row("type-check:lite", "scripts/typecheck-lite.sh"),
+			row("a-name-well-past-the-twenty-eight-cap", "node x.js"),
+			{Value: "plain", Left: []protocol.PickSegment{{Text: "plain", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 90
+	lines := strings.Split(ansi.Strip(render(m)), "\n")
+	hintCol := func(l, hint string) int {
+		i := strings.Index(l, hint)
+		if i < 0 {
+			return -1
+		}
+		return len([]rune(l[:i]))
+	}
+	if a, b := hintCol(lines[3], "pnpm run dev"), hintCol(lines[4], "scripts/typecheck-lite.sh"); a != b || a < 0 {
+		t.Fatalf("hints should start at one shared column: %d vs %d\n%s\n%s", a, b, lines[3], lines[4])
+	}
+	// gutter(1) + separator(1) + 15 ("type-check:lite") + the hint's own two-space lead.
+	if want := 2 + 15 + 2; hintCol(lines[3], "pnpm run dev") != want {
+		t.Fatalf("the column is the widest label under the cap: hint at %d, want %d: %q", hintCol(lines[3], "pnpm run dev"), want, lines[3])
+	}
+	if got := hintCol(lines[5], "node x.js"); got != 2+len("a-name-well-past-the-twenty-eight-cap")+2 {
+		t.Fatalf("a label past the cap pads nothing: %q", lines[5])
+	}
+	if !strings.HasPrefix(lines[6], "  plain") || strings.TrimRight(lines[6], " ") != "  plain" {
+		t.Fatalf("a row with no column segment is untouched: %q", lines[6])
+	}
+
+	// A query matching the hint highlights the hint's runes, not the pad.
+	for _, r := range "dev" {
+		next, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = next.(*Model)
+	}
+	frame := strings.Split(render(m), "\n")
+	var startLine string
+	for _, l := range frame {
+		if strings.Contains(ansi.Strip(l), "pnpm run dev") {
+			startLine = l
+		}
+	}
+	if startLine == "" || strings.Count(startLine, cyanSGR) != 3 || strings.Contains(startLine, cyanSGR+";48;2;55;40;75m ") {
+		t.Fatalf("the highlight should land on the hint's three runes, never on the pad: %q", startLine)
+	}
+}
+
 // TestGroupedRowsIndentUnderTheirHeader pins the grouped list's rhythm: a
 // header sits at the gutter's own indent ("  PRESETS") and every row of a
 // grouped list steps in two more columns, cursor row included, so entries
