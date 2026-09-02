@@ -409,7 +409,7 @@ export async function navigate(args: string[], depsOverride: Partial<NavDeps> = 
 
   let state: SessionState = {
     cwd: resolve(args[0] ?? process.cwd()),
-    showHidden: false,
+    showHidden: true,
     sort: { ...DEFAULT_SORT },
   };
 

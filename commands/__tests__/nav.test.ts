@@ -205,7 +205,7 @@ describe("rt nav: descend in place", () => {
 });
 
 describe("rt nav: hidden files default + ctrl-t toggle", () => {
-  test("dotfiles are hidden on the initial listing (regression: they used to show by default)", async () => {
+  test("dotfiles show on the initial listing (the pre-cutover default)", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));
     writeFileSync(join(root, ".env"), "x");
     writeFileSync(join(root, "visible.txt"), "x");
@@ -215,8 +215,10 @@ describe("rt nav: hidden files default + ctrl-t toggle", () => {
     await withRealStdoutRestore(() => navigate([root], baseDeps()));
 
     const initialRows = fake.calls[0]!.request.rows;
-    expect(initialRows.some((r: PickRow) => r.value === "f:.env")).toBe(false);
+    expect(initialRows.some((r: PickRow) => r.value === "f:.env")).toBe(true);
     expect(initialRows.some((r: PickRow) => r.value === "f:visible.txt")).toBe(true);
+    const initialToggle = fake.calls[0]!.request.actions!.find((a) => a.id === "toggle-hidden")!;
+    expect(initialToggle.label).toBe("hide hidden");
     // Filtering sees the bare filename: not the "f:" routing prefix, not a glyph.
     const visible = initialRows.find((r: PickRow) => r.value === "f:visible.txt")!;
     expect(visible.match).toBe("visible.txt");
@@ -239,10 +241,10 @@ describe("rt nav: hidden files default + ctrl-t toggle", () => {
     const updates = fake.calls[0]!.updates;
     const toggle = updates.find((u) => u.actions?.some((a) => a.id === "toggle-hidden"));
     expect(toggle).toBeDefined();
-    // Starting hidden (the fixed default), one ctrl-t press now shows dotfiles.
-    expect(toggle!.rows?.some((r: PickRow) => r.value === "f:.env")).toBe(true);
+    // Starting shown, one ctrl-t press hides dotfiles and the label flips.
+    expect(toggle!.rows?.some((r: PickRow) => r.value === "f:.env")).toBe(false);
     const toggleAction = toggle!.actions!.find((a) => a.id === "toggle-hidden")!;
-    expect(toggleAction.label).toBe("hide hidden");
+    expect(toggleAction.label).toBe("show hidden");
 
     rmSync(root, { recursive: true, force: true });
   });
@@ -371,7 +373,7 @@ describe("rt nav: header idle count + faint sort suffix", () => {
       pickTest.setImpl(undefined);
     }
 
-    // Initial open: 2 folders, 1 file (dotfiles hidden), default Name sort.
+    // Initial open: 2 folders, 1 file, default Name sort.
     expect(requestIdleCount).toBe("2 folders · 1 file");
     expect(requestCrumbSuffix).toBeUndefined();
 
