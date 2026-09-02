@@ -937,7 +937,7 @@ async function connectSlack(args: string[], deps: ConnectDeps): Promise<void> {
     return;
   }
 
-  const { staged } = await storeCredential(deps, "board", "slackUserToken", accessToken);
+  const { staged } = await storeCredential(deps, "board", "slackToken", accessToken);
   printIntegrationResult(deps, json, {
     integration: "slack",
     status: "ready",

@@ -223,7 +223,7 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     title: "Slack",
     why: () => "Lets rt post and read messages in your team's Slack workspace.",
     fields: [],
-    secret: { domain: "board", key: "slackUserToken" },
+    secret: { domain: "board", key: "slackToken" },
     async validate(p, token) {
       const res = await p.fetch("https://slack.com/api/auth.test", {
         method: "POST",

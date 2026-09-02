@@ -397,7 +397,7 @@ describe("integrationConnect — slack (OAuth flow)", () => {
     expect(payload.error.message).toContain("state did not match");
   });
 
-  test("authorize URL carries the team's clientId, the manifest's user scopes, and the callback port + a state param; exchange POSTs client_secret+code and stores board/slackUserToken only after success", async () => {
+  test("authorize URL carries the team's clientId, the manifest's user scopes, and the callback port + a state param; exchange POSTs client_secret+code and stores board/slackToken only after success", async () => {
     const teamSecretWrites: unknown[] = [];
     const writerWrites: [string, string, string][] = [];
     let openedUrl: string | undefined;
@@ -449,7 +449,7 @@ describe("integrationConnect — slack (OAuth flow)", () => {
     expect(exchangeBody).toContain("client_secret=client-secret-value");
     expect(exchangeBody).toContain("code=auth-code-123");
 
-    expect(writerWrites).toEqual([["board", "slackUserToken", "xoxp-user-token"]]);
+    expect(writerWrites).toEqual([["board", "slackToken", "xoxp-user-token"]]);
     expect(teamSecretWrites).toEqual([]);
 
     const body = JSON.parse(deps.lines[0]!) as { status: string; integration: string };

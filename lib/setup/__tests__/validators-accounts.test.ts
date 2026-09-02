@@ -247,7 +247,7 @@ describe("accountRows — account.slack + account.slack-app", () => {
   test("account.slack: app exists, token invalid -> invalid, oauth action still present (H2)", async () => {
     const team = baseTeam({ integrations: { slack: { clientId: "abc" } } });
     const fetch = async () => ({ status: 200, body: JSON.stringify({ ok: false, error: "invalid_auth" }), headers: {} });
-    const r = await pickRow(accountRows(fakeProbes({ fetch }), team, SLACK_REQS, fakeSecrets({ "board.slackUserToken": "tok" }), null), "account.slack");
+    const r = await pickRow(accountRows(fakeProbes({ fetch }), team, SLACK_REQS, fakeSecrets({ "board.slackToken": "tok" }), null), "account.slack");
     expect(r.status).toBe("invalid");
     expect(r.action).toEqual({ type: "oauth", label: "Connect", integration: "slack", verb: ["setup", "slack", "connect"] });
   });
@@ -386,7 +386,7 @@ describe("accountRows — secrets never leak", () => {
       "rt.gitlabToken": SENTINEL,
       "rt.linearApiKey": SENTINEL,
       "rt.switchboardToken": SENTINEL,
-      "board.slackUserToken": SENTINEL,
+      "board.slackToken": SENTINEL,
       "rt.githubToken": SENTINEL,
     });
 
