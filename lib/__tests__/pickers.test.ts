@@ -1,7 +1,7 @@
 /**
  * lib/pickers.ts on the rt-ui picker: the repo picker's ctrl-r reload (an
  * in-process event, not fzf's shell-exec `reload()` bind) and the worktree
- * picker's progressive enrichment (cheap rows first, segment rows pushed in
+ * picker's incremental enrichment (cheap rows first, segment rows pushed in
  * once enrichBranches resolves).
  */
 
@@ -254,7 +254,7 @@ describe("pickWorktreeWithSwitch: never gets a reload action", () => {
   });
 });
 
-describe("pickWorktreeWithSwitch: progressive enrichment", () => {
+describe("pickWorktreeWithSwitch: incremental enrichment", () => {
   test("opens with cheap dirName·branch rows, then pushes enriched segment rows once enrichBranches resolves", async () => {
     let resolveEnrich!: (v: EnrichedBranch[]) => void;
     const enrichPromise = new Promise<EnrichedBranch[]>((res) => { resolveEnrich = res; });

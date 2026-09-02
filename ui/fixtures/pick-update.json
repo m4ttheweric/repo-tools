@@ -1,23 +1,23 @@
 {
   "t": "update",
-  "message": "rt cd (assured-dev worktrees)",
-  "breadcrumb": ["rt", "cd", "assured-dev worktrees"],
+  "message": "rt cd (acme worktrees)",
+  "breadcrumb": ["rt", "cd", "acme worktrees"],
   "resetQuery": true,
   "rows": [
     {
-      "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/hedwig",
+      "value": "/Users/matt/Documents/GitHub/acme/.worktrees/hedwig",
       "left": [
         { "text": "hedwig", "tone": "text", "bold": true },
         { "text": " · ", "tone": "faint" },
-        { "text": "cvi-p6-token-pipeline", "tone": "dim" }
+        { "text": "acme-token-pipeline", "tone": "dim" }
       ],
       "right": [
         { "text": "⟳", "tone": "cyan" },
         { "text": "◉", "tone": "mint" },
         { "text": "In Review", "hex": "#FF7979" },
-        { "text": "CVI-812", "tone": "dimmer" }
+        { "text": "ACME-1234", "tone": "dimmer" }
       ],
-      "match": "hedwig cvi-p6-token-pipeline"
+      "match": "hedwig acme-token-pipeline"
     }
   ],
   "actions": [

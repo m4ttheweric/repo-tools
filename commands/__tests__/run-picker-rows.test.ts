@@ -24,12 +24,12 @@ import { appendRunHistory } from "../../lib/run-history.ts";
 
 test("queueRow: mint checkmark, plain package/script text, lavender variation suffix", () => {
   const withVariation = runTest.queueRow(
-    { packageRelPath: "apps/adjuster", packagePath: "/r/apps/adjuster", packageLabel: "adjuster", script: "start:dev", command: "x", variationName: "mock-sdm" },
+    { packageRelPath: "apps/web", packagePath: "/r/apps/web", packageLabel: "web", script: "start:dev", command: "x", variationName: "mock-sdm" },
     0,
   );
   expect(withVariation.group).toBe("queue");
   expect(withVariation.left[0]).toEqual({ text: "✓ ", tone: "mint" });
-  expect(withVariation.left[1]).toEqual({ text: "adjuster › start:dev" });
+  expect(withVariation.left[1]).toEqual({ text: "web › start:dev" });
   expect(withVariation.left.some((s) => s.tone === "lav" && s.text.includes("mock-sdm"))).toBe(true);
 
   const noVariation = runTest.queueRow(

@@ -1,10 +1,10 @@
 {
   "t": "result",
   "action": "dispose",
-  "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/bill",
+  "value": "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/bill",
   "values": [
-    "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/bill",
-    "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho"
+    "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/bill",
+    "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/cho"
   ],
   "query": "on-deck"
 }

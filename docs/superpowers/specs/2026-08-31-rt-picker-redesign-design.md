@@ -36,7 +36,7 @@ importable Go, so ranking quality is kept, not reimplemented.
   replacement; query and cursor preserved by value), `message` (header, e.g.
   nav's sort suffix), and `actions` (registry replacement, e.g. the ctrl-t
   label flip). One mechanism; consumers: nav's live-refresh watcher,
-  progressive enrichment, and event-driven re-lists/chrome updates (nav's
+  incremental enrichment, and event-driven re-lists/chrome updates (nav's
   ctrl-t and sort, cd's ctrl-r — see Events vs exits).
 - View code lives in `ui/internal/views/picker/`. New wire messages follow the
   protocol.ts ↔ Go struct + golden fixture discipline (`ui/fixtures/`).
@@ -248,7 +248,7 @@ U+F07B (Ghostty builtin symbols fallback; `▸` degrade). No emoji anywhere.
   variation…`. Footers swap with queue state exactly as today.
 - **rt cd**: repo picker (ctrl-r as an event: TS recomputes and pushes an update,
   picker stays live); worktree picker
-  with full enrichment + progressive enrichment (instant open, rows upgrade
+  with full enrichment + incremental enrichment (instant open, rows upgrade
   in place).
 - **Multi-selects** (worktree dispose, daemon, settings, port, extension):
   pinned panel + ctrl-a.

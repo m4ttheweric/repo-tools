@@ -166,7 +166,7 @@ test("pick event, modal-result, and result fixtures match their typed shape", ()
   expect(event).toEqual({
     t: "event",
     action: "dispose",
-    value: "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho",
+    value: "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/cho",
     query: "cho",
   });
 
@@ -176,8 +176,8 @@ test("pick event, modal-result, and result fixtures match their typed shape", ()
   const result = fixture("pick-result.json") as PickResult;
   expect(result.t).toBe("result");
   expect(result.values).toEqual([
-    "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/bill",
-    "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho",
+    "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/bill",
+    "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/cho",
   ]);
 });
 

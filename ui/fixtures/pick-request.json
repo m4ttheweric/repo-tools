@@ -5,7 +5,7 @@
   "breadcrumb": ["rt", "worktree", "dispose"],
   "rows": [
     {
-      "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/bill",
+      "value": "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/bill",
       "left": [
         { "text": "bill", "tone": "text", "bold": true },
         { "text": " · ", "tone": "faint" },
@@ -16,7 +16,7 @@
       "withArgs": true
     },
     {
-      "value": "/Users/matt/Documents/GitHub/assured-dev/.worktrees/on-deck/cho",
+      "value": "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/cho",
       "left": [
         { "text": "cho", "tone": "text", "bold": true },
         { "text": " · ", "tone": "faint" },

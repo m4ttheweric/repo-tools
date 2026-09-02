@@ -12,10 +12,10 @@ import type { LinearTicket } from "../linear.ts";
 function mkTicket(overrides: Partial<LinearTicket> = {}): LinearTicket {
   return {
     id: "t1",
-    identifier: "CVI-812",
-    title: "CVI Claim Chat Sidebar for GEICO",
+    identifier: "ACME-1234",
+    title: "Claim chat sidebar",
     description: null,
-    url: "https://linear.app/x/issue/CVI-812",
+    url: "https://linear.app/x/issue/ACME-1234",
     stateName: "In Progress",
     stateColor: null,
     branchName: null,
@@ -61,7 +61,7 @@ describe("formatBranchSegments", () => {
   test("ticket branch with a Linear stateColor rides as hex, not a tone", () => {
     const eb = mkBranch({
       dirName: "neville",
-      linearId: "CVI-812",
+      linearId: "ACME-1234",
       ticket: mkTicket({ stateName: "Done", stateColor: "#4CB782" }),
     });
     const { left } = formatBranchSegments(eb);
@@ -69,14 +69,14 @@ describe("formatBranchSegments", () => {
     expect(left).toEqual([
       { text: "neville", tone: "text", bold: true },
       { text: " · ", tone: "faint" },
-      { text: "CVI Claim Chat Sidebar for GEICO", tone: "text", bold: true },
+      { text: "Claim chat sidebar", tone: "text", bold: true },
       { text: " [Done]", hex: "#4CB782" },
     ]);
   });
 
   test("ticket branch with no stateColor falls back to the dim tone", () => {
     const eb = mkBranch({
-      linearId: "CVI-812",
+      linearId: "ACME-1234",
       ticket: mkTicket({ stateName: "Backlog", stateColor: null }),
     });
     const { left } = formatBranchSegments(eb);
@@ -102,14 +102,14 @@ describe("formatBranchSegments", () => {
   });
 
   test("default branch with no MR/ticket/linearId is [main branch], faint", () => {
-    const eb = mkBranch({ dirName: "hogwarts", branch: "main" });
+    const eb = mkBranch({ dirName: "harbor", branch: "main" });
     const { right } = formatBranchSegments(eb);
     expect(right).toEqual([{ text: "[main branch]", tone: "faint" }]);
   });
 
   test("default branch WITH icons never shows the [main branch] tag", () => {
     const eb = mkBranch({
-      dirName: "hogwarts",
+      dirName: "harbor",
       branch: "master",
       mr: mkMr({ state: "closed", pipeline: { status: "success" } as any }),
     });
@@ -150,16 +150,16 @@ describe("formatBranchSegments", () => {
   });
 
   test("non-ticket branch with only a linearId (no MR) shows it dimmer, right-pinned", () => {
-    const eb = mkBranch({ dirName: "hedwig", branch: "cvi-p6-token-pipeline", linearId: "CVI-812" });
+    const eb = mkBranch({ dirName: "hedwig", branch: "acme-token-pipeline", linearId: "ACME-1234" });
     const { right } = formatBranchSegments(eb);
-    expect(right).toEqual([{ text: "CVI-812", tone: "dimmer" }]);
+    expect(right).toEqual([{ text: "ACME-1234", tone: "dimmer" }]);
   });
 
   test("icons AND a linearId (no ticket) both appear, space-joined", () => {
     const eb = mkBranch({
       dirName: "hedwig",
-      branch: "cvi-p6-token-pipeline",
-      linearId: "CVI-812",
+      branch: "acme-token-pipeline",
+      linearId: "ACME-1234",
       mr: mkMr({ state: "opened", pipeline: { status: "running" } as any }),
     });
     const { right } = formatBranchSegments(eb);
@@ -168,7 +168,7 @@ describe("formatBranchSegments", () => {
       { text: " " },
       { text: "◉", tone: "mint" },
       { text: " " },
-      { text: "CVI-812", tone: "dimmer" },
+      { text: "ACME-1234", tone: "dimmer" },
     ]);
   });
 });

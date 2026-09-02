@@ -23,15 +23,15 @@ table.gram td:first-child{font-family:"SF Mono",Menlo,monospace;font-size:12.5px
 <h1>Enriched rows — the flatten step dies with fzf</h1>
 <p class="note">lib/enrich.ts already produces a split row (<span style="font-family:inherit">leading + right-pinned trailing</span>) for the runner; the fzf path flattens it into one string because fzf can't do anything else. The new row model consumes the split form natively: the status cluster is pinned to the right edge and never truncates, the title clips instead — the exact behavior the runner already has. Ticket state badges keep <b>Linear's own stateColor</b> (dynamic hex, not a theme token) — the row model must carry arbitrary hex per segment, not just theme tones.</p>
 
-<h2>rt cd — assured-dev worktrees, redesigned</h2>
+<h2>rt cd — acme worktrees, redesigned</h2>
 <div class="term" style="width:96ch">
-  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">cd</span><span class="f"> · </span><span class="dr">assured-dev worktrees</span><span class="sp"></span><span class="f">11/11</span></div>
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">cd</span><span class="f"> · </span><span class="dr">acme worktrees</span><span class="sp"></span><span class="f">11/11</span></div>
   <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
   <div class="rule"></div>
-  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="t b name">hogwarts</span><span class="f"> · </span><span class="d">master</span><span class="sp"></span><span class="m">✓</span><span> </span><span class="co">○</span><span> </span></span></div>
-  <div class="ln"><span> </span><span> </span><span class="s name">neville</span><span class="f"> · </span><span class="s">CVI Claim Chat Sidebar for GEICO </span><span class="bl">[Done]</span><span class="sp"></span><span class="m">✓</span><span> </span><span class="co">○</span></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="t b name">harbor</span><span class="f"> · </span><span class="d">master</span><span class="sp"></span><span class="m">✓</span><span> </span><span class="co">○</span><span> </span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">neville</span><span class="f"> · </span><span class="s">Claim chat sidebar </span><span class="bl">[Done]</span><span class="sp"></span><span class="m">✓</span><span> </span><span class="co">○</span></div>
   <div class="ln"><span> </span><span> </span><span class="s name">seamus</span><span class="f"> · </span><span class="s">Improve vehicles and occupants hierarchy and navigation </span><span class="co">[Code Review]</span><span class="sp"></span><span class="m">✓</span><span> </span><span class="m">◉</span></div>
-  <div class="ln"><span> </span><span> </span><span class="s name">hedwig</span><span class="f"> · </span><span class="d">cvi-p6-token-pipeline</span><span class="sp"></span><span class="cy">⟳</span><span> </span><span class="m">◉</span><span> </span><span class="dr">CVI-812</span></div>
+  <div class="ln"><span> </span><span> </span><span class="s name">hedwig</span><span class="f"> · </span><span class="d">acme-token-pipeline</span><span class="sp"></span><span class="cy">⟳</span><span> </span><span class="m">◉</span><span> </span><span class="dr">ACME-1234</span></div>
   <div class="ln"><span> </span><span> </span><span class="s name">gitq-1</span><span class="sp"></span><span class="f">[Local Only]</span></div>
   <div class="ln"><span> </span><span> </span><span class="s name">bill</span><span class="f"> · </span><span class="d">on-deck/bill</span><span class="sp"></span><span class="f">[Local Only]</span></div>
   <div class="ln"><span> </span><span> </span><span class="s name">cho</span><span class="f"> · </span><span class="d">on-deck/cho</span><span class="sp"></span><span class="f">[Local Only]</span></div>
@@ -46,18 +46,18 @@ table.gram td:first-child{font-family:"SF Mono",Menlo,monospace;font-size:12.5px
   <tr><td><span class="m">◉</span> <span class="bl">●</span> <span class="co">○</span></td><td>MR state: open · merged · closed</td></tr>
   <tr><td><span class="bl">[Done]</span> <span class="co">[Code Review]</span></td><td>Linear workflow state, in Linear's own stateColor (arbitrary hex)</td></tr>
   <tr><td><span class="f">[Local Only] · [main branch]</span></td><td>no remote / default branch — faint, right-pinned</td></tr>
-  <tr><td><span class="dr">CVI-812</span></td><td>ticket id when there's no title to show</td></tr>
+  <tr><td><span class="dr">ACME-1234</span></td><td>ticket id when there's no title to show</td></tr>
 </table>
 
 <h2>Row model (architecture)</h2>
 <pre class="code">row = {
-  value: <span class="str">"/Users/matt/…/hogwarts"</span>,
-  left:  [ {text:<span class="str">"hogwarts"</span>, tone:<span class="k">"text"</span>, bold:<span class="k">true</span>}, {text:<span class="str">" · "</span>, tone:<span class="k">"faint"</span>}, {text:<span class="str">"master"</span>, tone:<span class="k">"dim"</span>} ],
+  value: <span class="str">"/Users/matt/…/harbor"</span>,
+  left:  [ {text:<span class="str">"harbor"</span>, tone:<span class="k">"text"</span>, bold:<span class="k">true</span>}, {text:<span class="str">" · "</span>, tone:<span class="k">"faint"</span>}, {text:<span class="str">"master"</span>, tone:<span class="k">"dim"</span>} ],
   right: [ {text:<span class="str">"✓"</span>, tone:<span class="k">"mint"</span>}, {text:<span class="str">"○"</span>, tone:<span class="k">"coral"</span>} ],   <span class="c">// pinned; never truncates</span>
-  match: <span class="str">"hogwarts master"</span>,          <span class="c">// what filtering sees (defaults to left's plain text)</span>
+  match: <span class="str">"harbor master"</span>,          <span class="c">// what filtering sees (defaults to left's plain text)</span>
 }
 <span class="c">// segment = { text, tone? | hex? , bold? } — hex exists for Linear stateColor;</span>
 <span class="c">// tones are the theme ramp. label+hint callers are sugar over two segments.</span></pre>
 
-<h2>Progressive enrichment</h2>
+<h2>Incremental enrichment</h2>
 <p class="note" style="margin-bottom:2px">Today rt cd blocks on a spinner before the picker opens (unless the daemon cache hits). The component's row-update channel (the same one watch/reload use) makes the better story free: <b>open instantly</b> with dirName · branch, then the enrichment push lands and rows gain titles, badges, and glyph clusters in place — filter and cursor untouched. One mechanism, three consumers: watch, reload, enrich.</p>
