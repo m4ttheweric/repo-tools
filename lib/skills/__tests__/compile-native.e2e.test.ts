@@ -276,9 +276,9 @@ describe("verb.path end to end", () => {
     expect(logs.find((l) => l.startsWith("compiled checkout"))).toMatch(/0 warnings\)$/);
   });
 
-  test("a --verb compile still renders a path to a sibling it is not emitting", async () => {
+  test("a --verb compile still renders a path to a sibling it is not emitting, and lints it clean", async () => {
     const { pack, ms, manifest } = buildWithRosterVerbs();
-    const { errors, exitCode } = await compileCapturingLogs(pack, ms, manifest, ["--verb", "checkout"]);
+    const { logs, errors, exitCode } = await compileCapturingLogs(pack, ms, manifest, ["--verb", "checkout"]);
     expect(errors).toEqual([]);
     expect(exitCode).toBeUndefined();
 
@@ -286,6 +286,7 @@ describe("verb.path end to end", () => {
     expect(md).toContain("../../attachments/receive-review/SKILL.md");
     expect(md).toContain("../work/SKILL.md");
     expect(existsSync(join(pack, "attachments", "receive-review"))).toBe(false);
+    expect(logs.filter((l) => l.includes("not an emitted file"))).toEqual([]);
   });
 });
 

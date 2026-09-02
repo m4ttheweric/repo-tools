@@ -688,7 +688,7 @@ function pipelineChainErrors(resolved: Resolved): string[] {
 
 type CompileTarget = { verb: VerbDef; isPublic: boolean; isStage: boolean };
 
-type CompilePlan = { targets: CompileTarget[]; verbSides: Record<string, Side> };
+type CompilePlan = { targets: CompileTarget[]; verbSides: Record<string, Side>; knownTargetDirs: string[] };
 
 /**
  * A roster verb keeps today's default-public rule; a stage is internal
@@ -715,7 +715,8 @@ function compileTargets(resolved: Resolved, publicSet: Set<string> | null, verbF
   ];
   const verbSides: Record<string, Side> = {};
   for (const t of all) verbSides[t.verb.name] = t.isPublic ? "skills" : "attachments";
-  if (!verbFilter) return { targets: all, verbSides };
+  const knownTargetDirs = targetOutDirs(resolved, all);
+  if (!verbFilter) return { targets: all, verbSides, knownTargetDirs };
 
   const byName = new Map(all.map((t) => [t.verb.name, t]));
   const targets = verbFilter.map((name) => {
@@ -723,7 +724,7 @@ function compileTargets(resolved: Resolved, publicSet: Set<string> | null, verbF
     if (!target) throw new SkillsUsageError(`verb "${name}" not found in roster or pipeline stages`);
     return target;
   });
-  return { targets, verbSides };
+  return { targets, verbSides, knownTargetDirs };
 }
 
 export async function skillsCompile(args: string[]): Promise<void> {
@@ -739,8 +740,10 @@ export async function skillsCompile(args: string[]): Promise<void> {
     const chainErrors = pipelineChainErrors(resolved);
     if (chainErrors.length > 0) throw new SkillsUsageError(chainErrors.join("\n"));
 
-    const { targets, verbSides } = compileTargets(resolved, publicSet, flags.verbs);
-    const emittedTargetDirs = targetOutDirs(resolved, targets);
+    const { targets, verbSides, knownTargetDirs } = compileTargets(resolved, publicSet, flags.verbs);
+    // Lint accepts a relative path to any KNOWN target, not only emitted ones: a
+    // scoped compile still renders {{verb.path}} to siblings it is not writing.
+    const emittedTargetDirs = knownTargetDirs;
 
     if (flags.json) {
       const rows: CompileVerbRow[] = [];
@@ -865,8 +868,10 @@ export async function skillsCheck(args: string[]): Promise<void> {
     if (chainErrors.length > 0) anyStale = true;
     if (!flags.json) for (const chainError of chainErrors) console.log(chainError);
 
-    const { targets, verbSides } = compileTargets(resolved, publicSet, flags.verbs);
-    const emittedTargetDirs = targetOutDirs(resolved, targets);
+    const { targets, verbSides, knownTargetDirs } = compileTargets(resolved, publicSet, flags.verbs);
+    // Lint accepts a relative path to any KNOWN target, not only emitted ones: a
+    // scoped compile still renders {{verb.path}} to siblings it is not writing.
+    const emittedTargetDirs = knownTargetDirs;
 
     for (const target of targets) {
       const { verb, isPublic } = target;
