@@ -194,8 +194,12 @@ async function fastBrowserRow(p: Probes, seams: ToolsSeams): Promise<Row> {
   const runtimeOk = doctor.runtime?.ok === true;
   const extensionLoaded = doctor.extension?.loaded === true;
   if (runtimeOk && extensionLoaded) return row({ ...base, status: "ready", detail: "runtime ok, extension loaded" });
-  if (!extensionLoaded) return row({ ...base, status: "needs-you", detail: "Chrome extension not loaded", action: FAST_BROWSER_EXTENSION_STEPS });
-  return row({ ...base, status: "needs-you", detail: "runtime not ready", action: FAST_BROWSER_EXTENSION_STEPS });
+  // Loading the extension needs Chrome, and Chrome is optional: without it
+  // this row cannot gate Install, or a Chrome-less Mac never installs.
+  const chromeInstalled = CHROME_PATHS(p.home).some((path) => p.exists(path));
+  const gate = chromeInstalled ? {} : { required: false, optionalNote: "Works without this until Google Chrome is installed." };
+  if (!extensionLoaded) return row({ ...base, ...gate, status: "needs-you", detail: "Chrome extension not loaded", action: FAST_BROWSER_EXTENSION_STEPS });
+  return row({ ...base, ...gate, status: "needs-you", detail: "runtime not ready", action: FAST_BROWSER_EXTENSION_STEPS });
 }
 
 // ─── tool.editor ───────────────────────────────────────────────────────────

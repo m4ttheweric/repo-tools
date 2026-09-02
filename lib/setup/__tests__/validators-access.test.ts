@@ -110,6 +110,34 @@ describe("accessRows — access.team-repo", () => {
     expect(seenRemote).toBe(REMOTE);
   });
 
+  // rt keeps the forge token in its own store (or the setup stage), not in
+  // git's credential helper, so a clean machine's probe found no credential
+  // and the required row could never clear before Install.
+  test("a connected forge token is offered to ls-remote through an inline helper, never in argv or the URL", async () => {
+    const team = baseTeam({ remote: "https://github.com/acme/repo.git", integrations: { forge: { host: "github.com", provider: "github" } } });
+    let seen: { argv: string[]; env?: Record<string, string> } | undefined;
+    const exec: ExecScript = (argv, opts) => {
+      seen = { argv, env: opts?.env };
+      return ok();
+    };
+    const secrets = { has: async (domain: string, key: string) => (domain === "rt" && key === "githubToken" ? "ghp_secret" : null) };
+    const r = await pickRow(accessRows(fakeProbes({ exec }), team, null, {}, secrets), "access.team-repo");
+    expect(r.status).toBe("ready");
+    expect(seen!.argv.join(" ")).not.toContain("ghp_secret");
+    expect(seen!.argv.join(" ")).toContain("credential.helper=");
+    expect(seen!.env?.RT_GIT_TOKEN).toBe("ghp_secret");
+    expect(seen!.env?.GIT_TERMINAL_PROMPT).toBe("0");
+  });
+
+  test("with no token for the remote's forge the probe runs bare, as before", async () => {
+    const team = baseTeam({ remote: "https://gitlab.example.com/acme/repo.git", integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
+    let seen: string[] = [];
+    const exec: ExecScript = (argv) => { seen = argv; return ok(); };
+    const secrets = { has: async () => null };
+    await pickRow(accessRows(fakeProbes({ exec }), team, null, {}, secrets), "access.team-repo");
+    expect(seen.join(" ")).not.toContain("credential.helper");
+  });
+
   test("intent.join.pointer.remote is used when there's no intent.team", async () => {
     const intent: SetupIntent = {
       v: 1,
@@ -128,6 +156,35 @@ describe("accessRows — access.team-repo", () => {
 });
 
 describe("accessRows — access.forge", () => {
+  // Create mode: the user typed the remote themselves, so its host is not an
+  // inviter's claim to be confirmed — it is confirmed by construction.
+  test("create intent whose remote lives on the declared host -> probed without an override", async () => {
+    const team = baseTeam({ integrations: { forge: { host: "github.com", provider: "github" } } });
+    const intent: SetupIntent = { v: 1, at: "2026-08-21T00:00:00.000Z", mode: "create", team: { slug: "acme", name: "Acme", remote: "https://github.com/acme/mattstack-team-acme.git", others: false } };
+    const p = fakeProbes({ fetch: async () => ({ status: 200, body: "", headers: {} }) });
+    const r = await pickRow(accessRows(p, team, intent), "access.forge");
+    expect(r.status).toBe("ready");
+    expect(p.calls.fetch.length).toBe(1);
+  });
+
+  test("create intent whose remote is on a DIFFERENT host than the declared forge still needs confirmation", async () => {
+    const team = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
+    const intent: SetupIntent = { v: 1, at: "2026-08-21T00:00:00.000Z", mode: "create", team: { slug: "acme", name: "Acme", remote: "https://github.com/acme/repo.git", others: false } };
+    const p = fakeProbes();
+    const r = await pickRow(accessRows(p, team, intent), "access.forge");
+    expect(r.status).toBe("needs-you");
+    expect(p.calls.fetch).toEqual([]);
+  });
+
+  test("the confirmation steps name the declared forge's own connect verb", async () => {
+    const gh = baseTeam({ integrations: { forge: { host: "github.com", provider: "github" } } });
+    const r = await pickRow(accessRows(fakeProbes(), gh, null), "access.forge");
+    expect(JSON.stringify(r.action)).toContain("rt setup github connect --host github.com");
+    const gl = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
+    const r2 = await pickRow(accessRows(fakeProbes(), gl, null), "access.forge");
+    expect(JSON.stringify(r2.action)).toContain("rt setup gitlab connect --host gitlab.example.com");
+  });
+
   test("host reachable (status > 0), user-confirmed -> ready, recheck on-activate", async () => {
     const team = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
     const fetch = async () => ({ status: 200, body: "", headers: {} });

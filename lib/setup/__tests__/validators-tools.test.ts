@@ -244,6 +244,25 @@ describe("toolRows — tool.fast-browser", () => {
     });
   });
 
+  // The extension step needs Chrome, and Chrome is itself optional: a required
+  // fast-browser row on a Chrome-less Mac kept Install disabled forever.
+  test("extension not loaded and no Chrome installed -> optional (works without this), still needs-you", async () => {
+    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } })) : ok());
+    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+    expect(r.status).toBe("needs-you");
+    expect(r.required).toBe(false);
+    expect(r.optionalNote).toContain("Chrome");
+  });
+
+  test("extension not loaded with Chrome installed -> still required", async () => {
+    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } })) : ok());
+    const p = fakeProbes({ exec });
+    p.mkdirp("/Applications/Google Chrome.app");
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+    expect(r.status).toBe("needs-you");
+    expect(r.required).toBe(true);
+  });
+
   test("runtime ok and extension loaded -> ready", async () => {
     const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: true }, pairing: { ok: true } })) : ok());
     const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");

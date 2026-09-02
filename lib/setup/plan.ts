@@ -151,7 +151,7 @@ export async function composePlan(i: PlanInputs): Promise<Plan> {
       return [...permissionRows(permReply, tccSummary(tccRes)), ...macList];
     }),
     buildGroup("accounts", () => accountRows(i.p, snapshot, reqs, i.secrets, intent)),
-    buildGroup("access", () => accessRows(i.p, snapshot, intent, userOverrides)),
+    buildGroup("access", () => accessRows(i.p, snapshot, intent, userOverrides, i.secrets)),
     buildGroup("tools", async () => {
       const [hasBrew, healthRows] = await Promise.all([detectHasBrew(i.p), rtHealthRows(i.p, { ci: i.ci })]);
       const tools = await toolRows(i.p, reqs, { hasBrew });

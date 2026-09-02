@@ -10,8 +10,9 @@ import { row, type Action, type Row } from "../contract.ts";
 import { isValidHostname, isValidHttpsUrl } from "../host-validate.ts";
 import type { SetupIntent } from "../intent.ts";
 import type { Probes } from "../probes.ts";
-import type { TeamSnapshot, UserIntegrationOverrides } from "../team-settings.ts";
+import { forgeFromRemote, type TeamSnapshot, type UserIntegrationOverrides } from "../team-settings.ts";
 import { withoutUrls } from "../../team/redact.ts";
+import type { SecretPresence } from "./accounts.ts";
 
 const LS_REMOTE_TIMEOUT_MS = 15000;
 /** Never prompts for credentials on a headless probe — an interactive prompt would hang setup indefinitely instead of surfacing the honest "no access yet" row. */
@@ -27,9 +28,31 @@ interface LsRemoteOutcome {
   detail: string;
 }
 
-/** Shared by access.team-repo and access.repo.<slug> — same remote-reachability read, just a different remote per caller. */
-async function lsRemoteOutcome(p: Probes, remote: string): Promise<LsRemoteOutcome> {
-  const res = await p.exec(["git", "ls-remote", "--exit-code", remote, "HEAD"], { timeoutMs: LS_REMOTE_TIMEOUT_MS, env: GIT_ENV });
+/** The forge token rt itself holds for a remote's host (stored, or staged during setup), so the probe can answer on a machine whose git has no credential helper yet. */
+async function forgeTokenFor(remote: string, secrets: SecretPresence | undefined): Promise<string | null> {
+  if (!secrets) return null;
+  const forge = forgeFromRemote(remote);
+  if (!forge) return null;
+  const key = forge.provider === "github" ? "githubToken" : "gitlabToken";
+  try {
+    return await secrets.has("rt", key);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Shared by access.team-repo and access.repo.<slug> — same remote-reachability
+ * read, just a different remote per caller. A token rides in the environment
+ * and reaches git through an inline credential helper: never argv (visible in
+ * ps), never the URL (echoed into stderr).
+ */
+async function lsRemoteOutcome(p: Probes, remote: string, token: string | null = null): Promise<LsRemoteOutcome> {
+  const argv = token
+    ? ["git", "-c", "credential.helper=", "-c", "credential.helper=!f() { echo username=$RT_GIT_USER; echo password=$RT_GIT_TOKEN; }; f", "ls-remote", "--exit-code", remote, "HEAD"]
+    : ["git", "ls-remote", "--exit-code", remote, "HEAD"];
+  const env = token ? { ...GIT_ENV, RT_GIT_USER: "x-access-token", RT_GIT_TOKEN: token } : GIT_ENV;
+  const res = await p.exec(argv, { timeoutMs: LS_REMOTE_TIMEOUT_MS, env });
   if (res.code === 0) return { status: "ready", detail: "reachable" };
   if (res.code === 2) return { status: "ready", detail: "empty repo (will be initialized)" };
   if (res.code === 128) {
@@ -46,31 +69,36 @@ async function lsRemoteOutcome(p: Probes, remote: string): Promise<LsRemoteOutco
 }
 
 /** The canonical out-of-band row: a different human grants access, or the network/VPN changes — no file rt watches ever reflects that, so this only ever updates on an explicit re-check. */
-async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | null): Promise<Row> {
+async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, secrets: SecretPresence | undefined): Promise<Row> {
   const base = { id: "access.team-repo", kind: "access" as const, title: "Team repo", why: "rt needs read/write access to your team's home repo to sync settings and packs.", required: true, recheck: "on-activate" as const };
   const remote = intent?.team?.remote ?? intent?.join?.pointer.remote ?? team.remote;
   // Screen 2 recomputes the whole plan in-band once a remote exists — nothing to re-check here yet.
   if (!remote) return row({ ...base, status: "missing", detail: "no team remote yet (screen 2)" });
 
-  const outcome = await lsRemoteOutcome(p, remote);
+  const outcome = await lsRemoteOutcome(p, remote, await forgeTokenFor(remote, secrets));
   const action = outcome.status === "ready" ? null : RECHECK_ACTION;
   return row({ ...base, status: outcome.status, detail: outcome.detail, action });
 }
 
 /** A joined team names its own forge/switchboard host, but a team is not the user — probing (let alone authenticating against) that host is a network access rt takes on the user's behalf, so it waits for the same user-confirmed `rt.integrations` override ctxFor's credential validators require, rather than dialing an inviter-controlled host on its own. */
-function connectHostSteps(id: "gitlab" | "switchboard", declaredHost: string): Action {
+function connectHostSteps(id: "github" | "gitlab" | "switchboard", declaredHost: string): Action {
   return { type: "steps", label: "Show steps…", steps: [`Run: rt setup ${id} connect --host ${declaredHost}`, "This confirms the host yourself before rt talks to it"] };
 }
 
-async function forgeRow(p: Probes, team: TeamSnapshot, overrides: UserIntegrationOverrides): Promise<Row> {
+async function forgeRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, overrides: UserIntegrationOverrides): Promise<Row> {
   const base = { id: "access.forge", kind: "access" as const, title: "Forge reachability", why: "Confirms your network can reach the team's forge host before rt tries to open PRs/MRs there.", required: true, recheck: "on-activate" as const };
   const declaredHost = team.integrations.forge?.host;
   // No forge configured yet is resolved by an earlier screen, same as team-repo's missing branch.
   if (!declaredHost) return row({ ...base, status: "missing", detail: "no forge configured yet" });
 
-  const confirmedHost = overrides.forgeHost && isValidHostname(overrides.forgeHost) ? overrides.forgeHost : null;
+  // A team the user is creating declares only the host of the remote they
+  // pasted themselves — nothing an inviter chose, nothing left to confirm.
+  const ownRemoteHost = intent?.mode === "create" && intent.team?.remote ? forgeFromRemote(intent.team.remote)?.host ?? null : null;
+  const confirmedHost =
+    overrides.forgeHost && isValidHostname(overrides.forgeHost) ? overrides.forgeHost : ownRemoteHost === declaredHost ? declaredHost : null;
   if (!confirmedHost) {
-    return row({ ...base, status: "needs-you", detail: `your team declares forge host "${declaredHost}" — unverified; confirm it yourself before rt reaches out to it`, action: connectHostSteps("gitlab", declaredHost) });
+    const verb = team.integrations.forge?.provider === "github" ? "github" : "gitlab";
+    return row({ ...base, status: "needs-you", detail: `your team declares forge host "${declaredHost}" — unverified; confirm it yourself before rt reaches out to it`, action: connectHostSteps(verb, declaredHost) });
   }
 
   const res = await p.fetch(`https://${confirmedHost}/`, { method: "HEAD", timeoutMs: 5000 });
@@ -115,10 +143,10 @@ async function switchboardRow(p: Probes, team: TeamSnapshot, overrides: UserInte
 }
 
 /** Every probe here is independent (different remote/host/URL each), so they run concurrently — worst-case latency is the slowest single probe, not their sum; team-repo/forge/switchboard/each tracking identity all keep their own bounded timeout. */
-export async function accessRows(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, overrides: UserIntegrationOverrides = {}): Promise<Row[]> {
+export async function accessRows(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, overrides: UserIntegrationOverrides = {}, secrets?: SecretPresence): Promise<Row[]> {
   const [teamRepo, forge, switchboard, ...repos] = await Promise.all([
-    teamRepoRow(p, team, intent),
-    forgeRow(p, team, overrides),
+    teamRepoRow(p, team, intent, secrets),
+    forgeRow(p, team, intent, overrides),
     switchboardRow(p, team, overrides),
     ...team.trackingIdentities.map((identity) => repoRow(p, identity)),
   ]);
