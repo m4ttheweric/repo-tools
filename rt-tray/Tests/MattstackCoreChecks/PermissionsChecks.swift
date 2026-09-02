@@ -3,28 +3,38 @@ import MattstackCore
 
 let permissionsChecks: [Check] = [
     Check("FDAProbe: first readable path → granted with the path in detail") { c in
-        let s = FDAProbe.evaluate(home: "/Users/u") { path in path.hasSuffix("com.apple.stocks") ? .readable : .missing }
+        let s = FDAProbe.evaluate(home: "/Users/u") { path in path.hasSuffix("TCC.db") ? .readable : .missing }
         c.expectEqual(s.status, "granted")
-        c.expect(s.detail.contains("com.apple.stocks"))
+        c.expect(s.detail.contains("TCC.db"))
     },
-    Check("FDAProbe: EPERM/EACCES on any probe path → denied; exhausting all paths still terminates denied, never unknown") { c in
+    // macOS 26 refuses ~/Library/Containers/com.apple.stocks even WITH Full
+    // Disk Access (container protection sits above FDA), and a probe that
+    // stopped at the first refusal reported denied on every 26 machine.
+    Check("FDAProbe: a refused path does not decide — a later readable path still means granted") { c in
+        let s = FDAProbe.evaluate(home: "/Users/u") { path in path.hasSuffix("Bookmarks.plist") ? .readable : .permissionDenied }
+        c.expectEqual(s.status, "granted")
+        c.expect(s.detail.contains("Bookmarks.plist"))
+    },
+    Check("FDAProbe: every path refused/missing → denied, never unknown, with the refusal named") { c in
         let denied = FDAProbe.evaluate(home: "/Users/u") { _ in .permissionDenied }
         c.expectEqual(denied.status, "denied")
+        c.expect(denied.detail.contains("refused"))
+        let mixed = FDAProbe.evaluate(home: "/Users/u") { path in path.hasSuffix("Bookmarks.plist") ? .permissionDenied : .missing }
+        c.expectEqual(mixed.status, "denied")
+        c.expect(mixed.detail.contains("Bookmarks.plist refused"), "the refusal, not a later ENOENT, is the detail")
         let allMissing = FDAProbe.evaluate(home: "/Users/u") { _ in .missing }
         c.expectEqual(allMissing.status, "denied")
         c.expect(allMissing.detail.contains("ENOENT"), "ENOENT-ish exhaustion must still carry the error text in detail")
         let allOtherError = FDAProbe.evaluate(home: "/Users/u") { _ in .otherError(5) }
         c.expectEqual(allOtherError.status, "denied")
         c.expect(allOtherError.detail.contains("5"), "unexpected errno must land in detail")
-        // a missing first path must fall through to the MacPaw list
-        let second = FDAProbe.evaluate(home: "/Users/u") { path in path.hasSuffix("CloudTabs.db") ? .permissionDenied : .missing }
-        c.expectEqual(second.status, "denied")
     },
-    Check("FDAProbe paths are expanded against the given home, not the process's") { c in
+    Check("FDAProbe paths are expanded against the given home, start with TCC.db, and never touch an app container") { c in
         var seen: [String] = []
         _ = FDAProbe.evaluate(home: "/Users/zed") { seen.append($0); return .missing }
         c.expect(seen.allSatisfy { $0.hasPrefix("/Users/zed/") || $0.hasPrefix("/Library/") })
-        c.expectEqual(seen.first, "/Users/zed/Library/Containers/com.apple.stocks")
+        c.expectEqual(seen.first, "/Users/zed/Library/Application Support/com.apple.TCC/TCC.db")
+        c.expect(!seen.contains { $0.contains("/Library/Containers/") }, "container paths are refused above FDA on macOS 26")
     },
     Check("SystemSettingsLinks are the documented deep links") { c in
         c.expectEqual(SystemSettingsLinks.fullDiskAccess.absoluteString, "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
