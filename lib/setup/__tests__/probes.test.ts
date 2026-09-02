@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createRealProbes, readStdinJson } from "../probes.ts";
+import { createRealProbes, readStdinJson, withLocalBinFallback } from "../probes.ts";
 import { UserActionableError } from "../errors.ts";
 import { fakeProbes } from "./fakes.ts";
 
@@ -211,5 +211,27 @@ describe("readStdinJson", () => {
       expect(err).toBeInstanceOf(UserActionableError);
       expect((err as UserActionableError).code).toBe("bad-stdin");
     }
+  });
+});
+
+// ~/.local/bin is the directory rt manages and Install adds to the shell, so
+// a probe run before Install must still find what was linked or installed
+// there — but never ahead of a copy PATH already resolves.
+describe("withLocalBinFallback", () => {
+  const home = "/home/x";
+  const pathDirs = ["/usr/bin", "/opt/tools/bin"];
+  test("a bare command PATH resolves is left alone", () => {
+    const exists = (path: string) => path === "/usr/bin/herdr" || path === "/home/x/.local/bin/herdr";
+    expect(withLocalBinFallback(["herdr", "--version"], { home, pathDirs, exists })).toEqual(["herdr", "--version"]);
+  });
+  test("a bare command only ~/.local/bin has becomes that absolute path", () => {
+    const exists = (path: string) => path === "/home/x/.local/bin/herdr";
+    expect(withLocalBinFallback(["herdr", "--version"], { home, pathDirs, exists })).toEqual(["/home/x/.local/bin/herdr", "--version"]);
+  });
+  test("a bare command found nowhere, an absolute path, and an empty argv pass through", () => {
+    const exists = () => false;
+    expect(withLocalBinFallback(["nope"], { home, pathDirs, exists })).toEqual(["nope"]);
+    expect(withLocalBinFallback(["/usr/bin/env", "x"], { home, pathDirs, exists })).toEqual(["/usr/bin/env", "x"]);
+    expect(withLocalBinFallback([], { home, pathDirs, exists })).toEqual([]);
   });
 });

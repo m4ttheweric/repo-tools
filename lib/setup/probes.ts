@@ -7,6 +7,7 @@
 
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
+import { join } from "path";
 import { daemonSocketQuery, trayRequest, type DaemonResponse, type TrayClient } from "../daemon-client.ts";
 import { readWrapperPrefix } from "../dev-mode.ts";
 import { UserActionableError } from "./errors.ts";
@@ -156,9 +157,26 @@ export async function execWithTimeout(argv: string[], opts?: { cwd?: string; tim
   }
 }
 
+/**
+ * ~/.local/bin is the directory rt manages (links, vendor installs) and the
+ * one Install adds to the shell's PATH — so a probe running before Install
+ * resolves a bare command there when PATH itself has no copy. PATH always
+ * wins; the fallback only replaces a lookup that would have failed.
+ */
+export function withLocalBinFallback(argv: string[], opts: { home: string; pathDirs: string[]; exists: (path: string) => boolean }): string[] {
+  const cmd = argv[0];
+  if (!cmd || cmd.includes("/")) return argv;
+  if (opts.pathDirs.some((dir) => dir.length > 0 && opts.exists(join(dir, cmd)))) return argv;
+  const local = join(opts.home, ".local", "bin", cmd);
+  return opts.exists(local) ? [local, ...argv.slice(1)] : argv;
+}
+
 export function createRealProbes(): Probes {
   return {
-    exec: execWithTimeout,
+    exec(argv, opts) {
+      const resolved = withLocalBinFallback(argv, { home: process.env.HOME ?? homedir(), pathDirs: (process.env.PATH ?? "").split(":"), exists: existsSync });
+      return execWithTimeout(resolved, opts);
+    },
 
     exists(path) {
       return existsSync(path);
