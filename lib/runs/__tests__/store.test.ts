@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
-import { findRun, listRuns, readRun } from "../store.ts";
+import { findRun, findRunsBySession, listRuns, readRun } from "../store.ts";
 import { root, seedRun } from "./fixtures.ts";
 
 afterEach(() => { delete process.env.RT_RUNS_ROOT; });
@@ -123,5 +123,53 @@ describe("runs store", () => {
     const runs = listRuns();
     expect(runs.length).toBe(2);
     expect(runs.find((r) => r.id === "b")!.attention.needs).toBe(false);
+  });
+});
+
+function setSessionField(dir: string, repo: string, id: string, sessionId: string, at = 0): void {
+  const db = new Database(join(dir, repo, id, "state.db"));
+  db.exec(`INSERT INTO fields VALUES ('${id}', 'claude-session', '${sessionId}', 'plan', ${at});`);
+  db.close();
+}
+
+describe("findRunsBySession", () => {
+  test("matches only the run DB whose claude-session field equals the given id, newest first", () => {
+    const dir = root();
+    seedRun(dir, "alpha", "20260821-010101-aaaa", 1000);
+    seedRun(dir, "alpha", "20260821-020202-bbbb", 2000);
+    seedRun(dir, "beta", "20260821-030303-cccc", 3000);
+    setSessionField(dir, "alpha", "20260821-010101-aaaa", "sess-1");
+    setSessionField(dir, "beta", "20260821-030303-cccc", "sess-1");
+    setSessionField(dir, "alpha", "20260821-020202-bbbb", "sess-2");
+
+    const matches = findRunsBySession("sess-1");
+    expect(matches.map((m) => m.summary.id)).toEqual(["20260821-030303-cccc", "20260821-010101-aaaa"]);
+    expect(matches.map((m) => m.summary.repo)).toEqual(["beta", "alpha"]);
+    expect(matches[0]!.runDb).toBe(join(dir, "beta", "20260821-030303-cccc", "state.db"));
+    // A matched row is a real summary, not runRow's placeholder attention/
+    // last_event_at/ticket/branch -- those are only ever meant to be
+    // overwritten by withAttention before a row leaves the store.
+    expect(matches[0]!.summary.ticket).toBe("ACME-1");
+    expect(matches[0]!.summary.branch).toBe("goodwin/mat-1");
+    expect(matches[0]!.summary.stages).toEqual([{ name: "plan", status: "running", started_at: 3000 }]);
+  });
+
+  test("no match is an empty array, not an error", () => {
+    const dir = root();
+    seedRun(dir, "alpha", "20260821-010101-aaaa", 1000);
+    setSessionField(dir, "alpha", "20260821-010101-aaaa", "sess-1");
+    expect(findRunsBySession("sess-nope")).toEqual([]);
+  });
+
+  test("a state.db that is not a readable sqlite file does not stop a later valid match from being returned", () => {
+    const dir = root();
+    // A directory named state.db reproduces what a corrupt/permission-denied
+    // run dir does to Bun's sqlite constructor: it throws at open, before
+    // any query runs, which used to abort the whole scan.
+    mkdirSync(join(dir, "alpha", "corrupt", "state.db"), { recursive: true });
+    seedRun(dir, "alpha", "20260821-010101-aaaa", 1000);
+    setSessionField(dir, "alpha", "20260821-010101-aaaa", "sess-1");
+
+    expect(findRunsBySession("sess-1").map((m) => m.summary.id)).toEqual(["20260821-010101-aaaa"]);
   });
 });

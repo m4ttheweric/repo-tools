@@ -74,6 +74,16 @@ const runsSubcommands: Record<string, CommandNode> = {
       { name: "Reason", flag: "--reason", type: "text", placeholder: "no owning process", hint: "Recorded against the run" },
     ],
   },
+  find: {
+    description: "Runs whose claude-session field matches; read-side, no daemon",
+    module: "./commands/runs-find.ts",
+    fn: "runsFind",
+    args: [
+      { name: "Session", flag: "--session", type: "text", placeholder: "abcd1234-...", hint: "Claude Code session id to match against the claude-session field" },
+      { name: "Running", flag: "--running", type: "boolean", default: false, hint: "Keep only status = running matches" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Accepted and ignored; output is always JSON" },
+    ],
+  },
   "run-start": {
     description: "Pipeline: open a run DB and print its runId and runDb",
     module: "./commands/runs-write.ts",

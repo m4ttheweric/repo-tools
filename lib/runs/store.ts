@@ -24,7 +24,15 @@ function openRun(repo: string, runId: string): { db: Database; schemaAhead: bool
   if (!isPathComponent(repo) || !isPathComponent(runId)) return null;
   const path = join(runsRoot(), repo, runId, "state.db");
   if (!existsSync(path)) return null;
-  const db = new Database(path, { readonly: true });
+  // Bun's sqlite constructor itself throws for a state.db that isn't a
+  // readable database file (a directory, a permission-denied path) --
+  // one bad run dir must not abort every caller's scan of the rest.
+  let db: Database;
+  try {
+    db = new Database(path, { readonly: true });
+  } catch {
+    return null;
+  }
   try {
     const ver = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
     return { db, schemaAhead: ver > KNOWN_SCHEMA_VERSION };
@@ -174,4 +182,35 @@ export function findRun(runId: string, liveness?: RunLiveness): RunDetail | null
     if (dirs(join(runsRoot(), repo)).includes(runId)) return readRun(repo, runId, liveness);
   }
   return null;
+}
+
+// RunSummary carries no filesystem path, and widening the shared client type
+// for one CLI verb would leak a store-only detail into every consumer that
+// already destructures a RunSummary; pairing it with runDb here keeps that
+// contained.
+export type RunSessionMatch = { summary: RunSummary; runDb: string };
+
+export function findRunsBySession(sessionId: string): RunSessionMatch[] {
+  const out: RunSessionMatch[] = [];
+  for (const repo of dirs(runsRoot())) {
+    for (const id of dirs(join(runsRoot(), repo))) {
+      const opened = openRun(repo, id);
+      if (!opened) continue;
+      try {
+        // A Stop hook walks every run DB with no mtime cache on this path,
+        // so a non-matching run must skip runRow's SELECT * and every
+        // enrichment query beyond this one, not just the ones after it.
+        const hit = opened.db.query("SELECT value FROM fields WHERE key = 'claude-session'").get() as { value: string } | undefined;
+        if (!hit || hit.value !== sessionId) continue;
+        const row = runRow(opened.db);
+        if (!row) continue;
+        out.push({ summary: withAttention(opened.db, row), runDb: join(runsRoot(), repo, id, "state.db") });
+      } catch {
+        continue;
+      } finally {
+        opened.db.close();
+      }
+    }
+  }
+  return out.sort((a, b) => b.summary.started_at - a.summary.started_at);
 }
