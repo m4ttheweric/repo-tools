@@ -289,6 +289,22 @@ describe("forgeLogin", () => {
     expect(seenEnv).toEqual({ GITLAB_HOST: "gitlab.acme.internal" });
   });
 
+  test("a token rt holds reaches the CLI through its own env var, so a never-logged-in gh/glab still answers", async () => {
+    const seen: (Record<string, string> | undefined)[] = [];
+    const script: ExecScript = (_argv, opts) => {
+      seen.push(opts?.env);
+      return ok(JSON.stringify({ login: "octocat", username: "zaphod" }));
+    };
+    const p = fakeProbes({ exec: script });
+
+    expect(await forgeLogin(p, "github", "github.com", "ghp-secret")).toBe("octocat");
+    expect(await forgeLogin(p, "gitlab", "gitlab.acme.internal", "glpat-secret")).toBe("zaphod");
+    expect(await forgeLogin(p, "gitlab", "gitlab.com", null)).toBe("zaphod");
+
+    expect(seen).toEqual([{ GH_TOKEN: "ghp-secret" }, { GITLAB_HOST: "gitlab.acme.internal", GITLAB_TOKEN: "glpat-secret" }, undefined]);
+    expect(p.calls.exec.flat().join(" ")).not.toContain("secret");
+  });
+
   test("a malformed JSON response returns null rather than throwing", async () => {
     const script: ExecScript = () => ok("not json");
     const p = fakeProbes({ exec: script });

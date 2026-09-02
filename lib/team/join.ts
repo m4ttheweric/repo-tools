@@ -21,7 +21,7 @@
 
 import { join } from "path";
 import { type AgeKeySeam, createRealAgeKeySeam, ensureAgeKey } from "../home/age-key.ts";
-import { validateSlug } from "../secrets/store.ts";
+import { createRealSecretsExecSeam, readSecret, validateSlug } from "../secrets/store.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
 import { createRealTeamSecretsSeams, readTeamSecret } from "../secrets/team-store.ts";
 import { UserActionableError } from "../setup/errors.ts";
@@ -30,6 +30,7 @@ import type { ExecResult, Probes } from "../setup/probes.ts";
 import { forgeFromRemote, parseOriginUrl, readTeamSnapshot, stripUserinfo, type SettingsReader } from "../setup/team-settings.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { forgeLogin } from "./forge.ts";
+import { forgeTokenKey, gitWithToken } from "./git-credential.ts";
 import { decodeCode, open, sealReply } from "./invite-crypto.ts";
 import { AUTH_FAILURE_PATTERN } from "./publish.ts";
 import { withoutUrls } from "./redact.ts";
@@ -236,7 +237,19 @@ export interface JoinRedeemSeams {
   read: SettingsReader;
   readTeamSecret: typeof readTeamSecret;
   forgeLogin: typeof forgeLogin;
+  /** The forge token rt holds for `remote`'s host, or null: a fresh machine's git and gh/glab have nothing of their own to offer a private team repo. */
+  forgeToken: (p: Probes, remote: string) => Promise<string | null>;
   warn: (message: string) => void;
+}
+
+async function storedForgeToken(_p: Probes, remote: string): Promise<string | null> {
+  const key = forgeTokenKey(remote);
+  if (!key) return null;
+  try {
+    return await readSecret("rt", key, { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() });
+  } catch {
+    return null;
+  }
 }
 
 /** Degrades to `undefined` on a resolver-layer throw rather than taking the redeem down with it — mirrors invite.ts's own default reader. */
@@ -255,7 +268,7 @@ function defaultWarn(message: string): void {
 }
 
 export function realJoinRedeemSeams(): JoinRedeemSeams {
-  return { ageKeySeam: createRealAgeKeySeam(), read: defaultRead(), readTeamSecret, forgeLogin, warn: defaultWarn };
+  return { ageKeySeam: createRealAgeKeySeam(), read: defaultRead(), readTeamSecret, forgeLogin, forgeToken: storedForgeToken, warn: defaultWarn };
 }
 
 interface JoinSource {
@@ -332,6 +345,7 @@ export async function joinRedeem(
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "join", join: { id: idHex, keyB64: Buffer.from(key).toString("base64"), pointer } });
 
   const dir = join(p.home, ".mattstack", "teams", pointer.team);
+  const token = await seams.forgeToken(p, pointer.remote);
   const existingOrigin = p.exists(dir) ? readOrigin(p, dir) : null;
   let alreadyCloned = false;
 
@@ -345,7 +359,8 @@ export async function joinRedeem(
     alreadyCloned = true;
   } else {
     p.mkdirp(join(p.home, ".mattstack", "teams"));
-    const clone = await p.exec(["git", "clone", pointer.remote, dir], { env: GIT_ENV });
+    const git = gitWithToken(["clone", pointer.remote, dir], token, GIT_ENV);
+    const clone = await p.exec(git.argv, { env: git.env });
     if (clone.code !== 0) return gitAccessResult(pointer, clone);
   }
 
@@ -358,7 +373,7 @@ export async function joinRedeem(
   // would be the exact half-state R-T18-b exists to prevent.
   const snapshot = readTeamSnapshot(p, pointer.team, { read: seams.read, warn: seams.warn });
   const forge = snapshot.integrations.forge ?? forgeFromRemote(pointer.remote) ?? undefined;
-  const handle = forge ? await seams.forgeLogin(p, forge.provider, forge.host) : null;
+  const handle = forge ? await seams.forgeLogin(p, forge.provider, forge.host, token) : null;
   if (!handle) {
     const cli = forge?.provider === "gitlab" ? "glab" : "gh";
     throw new UserActionableError(

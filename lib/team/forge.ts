@@ -175,11 +175,22 @@ function parseStringField(stdout: string, field: string): string | null {
   }
 }
 
-export async function forgeLogin(p: Probes, provider: "github" | "gitlab", host: string): Promise<string | null> {
+/**
+ * The CLI's own token variable, so a machine whose gh/glab was never logged
+ * in still acts with the token rt holds. Env only: never argv, never a URL.
+ */
+function forgeAuthEnv(provider: "github" | "gitlab", host: string, token: string | null | undefined): Record<string, string> | undefined {
+  const base = provider === "gitlab" ? glabEnv(host) : undefined;
+  if (!token) return base;
+  return { ...base, ...(provider === "github" ? { GH_TOKEN: token } : { GITLAB_TOKEN: token }) };
+}
+
+export async function forgeLogin(p: Probes, provider: "github" | "gitlab", host: string, token?: string | null): Promise<string | null> {
+  const env = forgeAuthEnv(provider, host, token);
   if (provider === "github") {
-    const result = await p.exec(["gh", "api", "user"]);
+    const result = await p.exec(["gh", "api", "user"], env ? { env } : undefined);
     return result.code === 0 ? parseStringField(result.stdout, "login") : null;
   }
-  const result = await p.exec(["glab", "api", "user"], { env: glabEnv(host) });
+  const result = await p.exec(["glab", "api", "user"], { env });
   return result.code === 0 ? parseStringField(result.stdout, "username") : null;
 }

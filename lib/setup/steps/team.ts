@@ -103,7 +103,7 @@ async function teamJoinRun(ctx: ApplyContext): Promise<StepOutcome> {
   // fake) — so join's own key exchange never reaches for a second,
   // independently-real keychain seam. ctx.teamSecrets is the same discipline
   // for the team-secret (switchboard token) read.
-  const seams = { ...realJoinRedeemSeams(), ageKeySeam: ctx.secrets.ageKeySeam };
+  const seams = { ...realJoinRedeemSeams(), ageKeySeam: ctx.secrets.ageKeySeam, forgeToken: (_p, remote) => forgeTokenFor(ctx, remote) };
 
   try {
     const result = await joinRedeem(ctx.p, ctx.relay, ctx.teamSecrets, {}, seams);

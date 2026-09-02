@@ -130,6 +130,7 @@ function baseJoinRedeemSeams(overrides: Partial<JoinRedeemSeams> = {}): { seams:
       calls.forgeLogin.push(args);
       return "zaphod";
     }) as JoinRedeemSeams["forgeLogin"],
+    forgeToken: async () => null,
     warn: () => {},
     ...overrides,
   };
@@ -420,6 +421,27 @@ describe("joinRedeem", () => {
     const clone = calls.find((c) => c.argv[1] === "clone")!;
     expect(clone.opts?.env?.GIT_TERMINAL_PROMPT).toBe("0");
     expect(clone.opts?.env?.GIT_PROTOCOL_FROM_USER).toBe("0");
+  });
+
+  test("a forge token rt holds is offered to the clone through the env, never argv, and to the forge-login check", async () => {
+    const calls: { argv: string[]; opts?: Parameters<Probes["exec"]>[1] }[] = [];
+    const p = redeemProbes({
+      exec: (argv, opts) => {
+        calls.push({ argv, opts });
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    const relay = fakeRelay();
+    const { seams, calls: seamCalls } = baseJoinRedeemSeams({ forgeToken: async () => "glpat-secret" });
+
+    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    const clone = calls.find((c) => c.argv.includes("clone"))!;
+    expect(clone.argv.join(" ")).not.toContain("glpat-secret");
+    expect(clone.argv).toContain("credential.helper=");
+    expect(clone.opts?.env?.RT_GIT_TOKEN).toBe("glpat-secret");
+    expect(clone.opts?.env?.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(seamCalls.forgeLogin[0]?.[3]).toBe("glpat-secret");
   });
 
   test("checkpoints the resumable intent as soon as the pointer resolves, before cloning", async () => {

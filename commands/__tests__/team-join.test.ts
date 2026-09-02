@@ -59,6 +59,7 @@ function fakeJoinRedeemSeams(overrides: Partial<JoinRedeemSeams> = {}): JoinRede
     read: fakeRead(),
     readTeamSecret: async () => null,
     forgeLogin: async () => "zaphod",
+    forgeToken: async () => null,
     warn: () => {},
     ...overrides,
   };
