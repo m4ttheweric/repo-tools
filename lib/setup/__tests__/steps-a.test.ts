@@ -19,7 +19,7 @@ import type { RelayClient } from "../../team/relay-client.ts";
 import type { ApplyContext, StepOutcome } from "../apply.ts";
 import { AUTH_FAILURE_PATTERN } from "../../team/publish.ts";
 import { intentPath, type SetupIntent } from "../intent.ts";
-import { stagingDir } from "../staging.ts";
+import { stageSecret, stagingDir } from "../staging.ts";
 import { fakeProbes } from "./fakes.ts";
 
 import { homeInitStep, homeRestoreStep } from "../steps/home.ts";
@@ -364,6 +364,32 @@ describe("team.create", () => {
     const outcome = await teamCreateStep.run(ctx);
     expect(outcome.state).toBe("done");
     expect(p.exists("/fake-home/.mattstack/teams/personal/mattstack/mattstack.jsonc")).toBe(true);
+  });
+
+  // The push runs before secrets.write drains the stage, on a machine whose
+  // git has no credential helper: the token the checklist collected must
+  // reach git from the store or the stage, and only through the environment.
+  test("the push offers the staged forge token through an inline helper, never in argv", async () => {
+    const remote = "https://github.com/acme/mattstack-team-personal.git";
+    const seen: { argv: string[]; env?: Record<string, string> }[] = [];
+    const base = gitExecFor(remote);
+    const p = fakeProbes({
+      home: "/fake-home",
+      env: { RT_TEAM_REMOTE: remote },
+      exec: async (argv, opts) => {
+        seen.push({ argv, env: opts?.env });
+        return argv.includes("push") ? ok("main -> main") : base(argv, opts);
+      },
+    });
+    stageSecret(p, "rt", "githubToken", "ghp_staged");
+    const { ctx } = makeCtx(p, { teamOfOne: true, intent: null, team: { slug: "", name: "", mode: "none" } });
+
+    const outcome = await teamCreateStep.run(ctx);
+    expect(outcome.state).toBe("done");
+    const push = seen.find((c) => c.argv.includes("push"))!;
+    expect(push.argv.join(" ")).toContain("credential.helper=");
+    expect(push.argv.join(" ")).not.toContain("ghp_staged");
+    expect(push.env?.RT_GIT_TOKEN).toBe("ghp_staged");
   });
 
   test("idempotent re-run: a zone with a real matching clone on disk skips re-scaffolding entirely — proven by which exec calls the second run does NOT make", async () => {

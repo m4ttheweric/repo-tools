@@ -22,6 +22,23 @@ describe("publishTeam", () => {
     expect(result).toEqual({ remote: "https://github.com/acme/repo.git", pushed: true, detail: "pushed to https://github.com/acme/repo.git" });
   });
 
+  // Install pushes before git has any credential of its own on a fresh
+  // machine; the token rt holds rides in the environment, never argv.
+  test("with a token: push goes through an inline credential helper, token only in env", async () => {
+    const p = probesWithZone({ home: "/home/x" });
+    const seen: { argv: string[]; env?: Record<string, string> }[] = [];
+    p.exec = async (argv, opts) => {
+      seen.push({ argv, env: opts?.env });
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const result = await publishTeam(p, "acme", "https://github.com/acme/repo.git", { token: "ghp_secret" });
+    const push = seen.find((c) => c.argv.includes("push"))!;
+    expect(push.argv.join(" ")).toContain("credential.helper=");
+    expect(push.argv.join(" ")).not.toContain("ghp_secret");
+    expect(push.env?.RT_GIT_TOKEN).toBe("ghp_secret");
+    expect(result.pushed).toBe(true);
+  });
+
   test("falls back to remote add when set-url fails (no origin yet)", async () => {
     const p = probesWithZone({
       home: "/home/x",

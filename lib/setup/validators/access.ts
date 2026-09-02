@@ -11,6 +11,7 @@ import { isValidHostname, isValidHttpsUrl } from "../host-validate.ts";
 import type { SetupIntent } from "../intent.ts";
 import type { Probes } from "../probes.ts";
 import { forgeFromRemote, type TeamSnapshot, type UserIntegrationOverrides } from "../team-settings.ts";
+import { forgeTokenKey, gitWithToken } from "../../team/git-credential.ts";
 import { withoutUrls } from "../../team/redact.ts";
 import type { SecretPresence } from "./accounts.ts";
 
@@ -30,12 +31,10 @@ interface LsRemoteOutcome {
 
 /** The forge token rt itself holds for a remote's host (stored, or staged during setup), so the probe can answer on a machine whose git has no credential helper yet. */
 async function forgeTokenFor(remote: string, secrets: SecretPresence | undefined): Promise<string | null> {
-  if (!secrets) return null;
-  const forge = forgeFromRemote(remote);
-  if (!forge) return null;
-  const key = forge.provider === "github" ? "githubToken" : "gitlabToken";
+  const key = secrets ? forgeTokenKey(remote) : null;
+  if (!key) return null;
   try {
-    return await secrets.has("rt", key);
+    return await secrets!.has("rt", key);
   } catch {
     return null;
   }
@@ -48,11 +47,8 @@ async function forgeTokenFor(remote: string, secrets: SecretPresence | undefined
  * ps), never the URL (echoed into stderr).
  */
 async function lsRemoteOutcome(p: Probes, remote: string, token: string | null = null): Promise<LsRemoteOutcome> {
-  const argv = token
-    ? ["git", "-c", "credential.helper=", "-c", "credential.helper=!f() { echo username=$RT_GIT_USER; echo password=$RT_GIT_TOKEN; }; f", "ls-remote", "--exit-code", remote, "HEAD"]
-    : ["git", "ls-remote", "--exit-code", remote, "HEAD"];
-  const env = token ? { ...GIT_ENV, RT_GIT_USER: "x-access-token", RT_GIT_TOKEN: token } : GIT_ENV;
-  const res = await p.exec(argv, { timeoutMs: LS_REMOTE_TIMEOUT_MS, env });
+  const cmd = gitWithToken(["ls-remote", "--exit-code", remote, "HEAD"], token, GIT_ENV);
+  const res = await p.exec(cmd.argv, { timeoutMs: LS_REMOTE_TIMEOUT_MS, env: cmd.env });
   if (res.code === 0) return { status: "ready", detail: "reachable" };
   if (res.code === 2) return { status: "ready", detail: "empty repo (will be initialized)" };
   if (res.code === 128) {

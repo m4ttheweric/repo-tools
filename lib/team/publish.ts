@@ -5,6 +5,7 @@
  * expired between create and Install).
  */
 
+import { gitWithToken } from "./git-credential.ts";
 import { join } from "path";
 import { validateSlug } from "../secrets/store.ts";
 import { UserActionableError } from "../setup/errors.ts";
@@ -44,7 +45,7 @@ async function currentOrigin(p: Probes, dir: string): Promise<string | null> {
   return raw !== null ? parseOriginUrl(raw) : null;
 }
 
-export async function publishTeam(p: Probes, slug: string, remote: string | null): Promise<PublishTeamResult> {
+export async function publishTeam(p: Probes, slug: string, remote: string | null, opts: { token?: string | null } = {}): Promise<PublishTeamResult> {
   try {
     validateSlug(slug);
   } catch (err) {
@@ -70,7 +71,8 @@ export async function publishTeam(p: Probes, slug: string, remote: string | null
   }
 
   const activeRemote = remote ?? (await currentOrigin(p, dir)) ?? "";
-  const push = await p.exec(["git", "push", "-u", "origin", "main"], { cwd: dir });
+  const cmd = gitWithToken(["push", "-u", "origin", "main"], opts.token ?? null, { GIT_TERMINAL_PROMPT: "0" });
+  const push = await p.exec(cmd.argv, { cwd: dir, env: cmd.env });
 
   if (push.code !== 0) throw classifyPushFailure(push);
 
