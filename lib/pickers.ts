@@ -356,7 +356,7 @@ export async function resolveWorktreeByBranch(
     options: matches.map((m) => ({
       value: m.path,
       label: m.branch,
-      hint: repos.length > 1 ? m.repoName : m.path.replace(process.env.HOME ?? "", "~"),
+      hint: repos.length > 1 ? repoLabel(m.repoName) : m.path.replace(process.env.HOME ?? "", "~"),
     })),
     ...(opts?.stderr ? { stderr: true } : {}),
     ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
