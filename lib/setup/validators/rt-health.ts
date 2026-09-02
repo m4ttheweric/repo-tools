@@ -105,7 +105,16 @@ async function rtRow(p: Probes): Promise<Row> {
   const base = { id: "tool.rt", kind: "tool" as const, title: "rt binary", why: "rt itself must be on PATH before anything else can run.", required: true };
   const res = await p.exec(["rt", "--version"]);
   if (res.code === 0) return row({ ...base, status: "ready", detail: res.stdout.trim() });
-  if (res.code === 127) return row({ ...base, status: "missing", detail: "rt not found on PATH", action: LINK_BUNDLED_RT });
+  if (res.code === 127) {
+    // ~/.local/bin joins PATH only in Install's own path step, so before
+    // Install the link there is the only rt a fresh machine can have.
+    const linked = linkPath(p.home, "rt");
+    if (p.exists(linked)) {
+      const viaLink = await p.exec([linked, "--version"]);
+      if (viaLink.code === 0) return row({ ...base, status: "ready", detail: `${viaLink.stdout.trim()} at ~/.local/bin (PATH entry added by Install)` });
+    }
+    return row({ ...base, status: "missing", detail: "rt not found on PATH", action: LINK_BUNDLED_RT });
+  }
   return row({ ...base, status: "error", detail: `could not run rt (exit ${res.code})` });
 }
 

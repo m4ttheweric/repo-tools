@@ -72,6 +72,22 @@ describe("rtHealthRows — tool.rt", () => {
     expect(r.action).toEqual({ type: "link-bundled", label: "Use mattstack's", tool: "rt" });
   });
 
+  // ~/.local/bin joins PATH only in Install's own path step, so before Install
+  // the link is the only rt a clean Mac can have; the row must accept it.
+  test("rt not on PATH but linked at ~/.local/bin/rt -> ready via the link", async () => {
+    const exec: ExecScript = (argv) => {
+      if (argv[0] === "rt") return missing("rt");
+      if (argv[0] === "/home/x/.local/bin/rt" && argv[1] === "--version") return ok("rt v2.8.1\n");
+      return ok();
+    };
+    const p = fakeProbes({ home: "/home/x", exec });
+    p.writeFile("/home/x/.local/bin/rt", "");
+    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.rt");
+    expect(r.status).toBe("ready");
+    expect(r.detail).toContain("rt v2.8.1");
+    expect(r.detail).toContain("PATH");
+  });
+
   test("rt exists but crashes (exit 1) -> error, not missing", async () => {
     const exec: ExecScript = (argv) => (argv[0] === "rt" ? { code: 1, stdout: "", stderr: "boom" } : ok());
     const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }, NOOP_FZF), "tool.rt");
