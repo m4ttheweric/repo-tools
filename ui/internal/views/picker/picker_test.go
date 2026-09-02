@@ -1210,6 +1210,48 @@ func TestNoMatchState(t *testing.T) {
 // each group's first row, never repeats for the group's later rows, and the
 // cursor -- which indexes m.matches, not the printed lines -- still lands on
 // the first real row rather than a header.
+// TestCursorRowDetailPaintsAboveTheKeybar pins the detail slot: when any
+// row carries Detail, one extra chrome line sits between the bottom rule
+// and the keybar showing the cursor row's detail (blank for a row without
+// one), so the frame height never moves as the cursor does. A list with no
+// detail at all has no slot.
+func TestCursorRowDetailPaintsAboveTheKeybar(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "start", Left: []protocol.PickSegment{{Text: "start", Tone: "text"}}, Detail: "pnpm run-ts-node-dev src/app/server"},
+			{Value: "clean", Left: []protocol.PickSegment{{Text: "clean", Tone: "text"}}, Detail: "rm -rf build"},
+			{Value: "bare", Left: []protocol.PickSegment{{Text: "bare", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 80
+	lines := strings.Split(ansi.Strip(render(m)), "\n")
+	// breadcrumb, filter, rule, 3 rows, rule, detail, keybar
+	if len(lines) != 9 {
+		t.Fatalf("expected 9 lines with the detail slot, got %d:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if got := strings.TrimRight(lines[7], " "); got != "  pnpm run-ts-node-dev src/app/server" {
+		t.Fatalf("the slot should carry the cursor row's detail: %q", got)
+	}
+	m.cursor = 2
+	lines = strings.Split(ansi.Strip(render(m)), "\n")
+	if len(lines) != 9 || strings.TrimSpace(lines[7]) != "" {
+		t.Fatalf("a row without detail leaves the slot blank, never removes it: %d lines, slot %q", len(lines), lines[7])
+	}
+	if m.totalChromeRows() != chromeRows+1 {
+		t.Fatalf("the slot is chrome: %d, want %d", m.totalChromeRows(), chromeRows+1)
+	}
+
+	plain := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{
+		{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}},
+	}})
+	plain.width = 80
+	if got := len(strings.Split(render(plain), "\n")); got != 6 {
+		t.Fatalf("no detail anywhere, no slot: %d lines", got)
+	}
+}
+
 // TestColumnSegmentsAlignAcrossRows pins the label column: a segment
 // marked Column pads to the widest Column segment in the list (capped at
 // labelColumnCap), so whatever follows it starts at one shared column on

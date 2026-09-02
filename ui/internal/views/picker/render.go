@@ -34,7 +34,35 @@ func (m *Model) totalChromeRows() int {
 	if m.showSelectedPanel() {
 		rows++
 	}
+	if m.detailSlot {
+		rows++
+	}
 	return rows
+}
+
+// bottomChromeRows is how many lines follow the row area: the bottom rule,
+// the detail slot when the list reserves one, and the keybar.
+func (m *Model) bottomChromeRows() int {
+	if m.detailSlot {
+		return 3
+	}
+	return 2
+}
+
+// detailLine paints the detail slot: the cursor row's Detail, or blank.
+func detailLine(m *Model) string {
+	if m.cursor < 0 || m.cursor >= len(m.matches) {
+		return ""
+	}
+	detail := m.req.Rows[m.matches[m.cursor].Index].Detail
+	if detail == "" {
+		return ""
+	}
+	kept, truncated := clipRunes(detail, m.width-2)
+	if truncated {
+		kept += "…"
+	}
+	return onBg.Render("  ") + fg(theme.Dim).Render(kept)
 }
 
 // render paints one frame at its natural (unpadded) height. renderView pads
@@ -89,8 +117,12 @@ func renderFrame(m *Model, target int) string {
 
 	if n == 0 {
 		lines = append(lines, noMatchLine())
-		appendInteriorFiller(&lines, target, 2) // bottom rule + keybar still to come
-		lines = append(lines, rule(m.width), noMatchKeybarLine(m))
+		appendInteriorFiller(&lines, target, m.bottomChromeRows())
+		lines = append(lines, rule(m.width))
+		if m.detailSlot {
+			lines = append(lines, "")
+		}
+		lines = append(lines, noMatchKeybarLine(m))
 		m.zones = zones
 		return strings.Join(lines, "\n")
 	}
@@ -120,10 +152,14 @@ func renderFrame(m *Model, target int) string {
 	// The filler advances y past its blank lines so the keybar's own zones
 	// land on the padded rows the terminal actually paints them on, not the
 	// natural rows they would sit on unpadded.
-	y += appendInteriorFiller(&lines, target, 2) // bottom rule + keybar
+	y += appendInteriorFiller(&lines, target, m.bottomChromeRows())
 
 	lines = append(lines, rule(m.width))
 	y++
+	if m.detailSlot {
+		lines = append(lines, detailLine(m))
+		y++
+	}
 	keybarStr, keyZones := keybarLineZones(m, top, h, n)
 	zones.addAll(y, keyZones)
 	lines = append(lines, keybarStr)
