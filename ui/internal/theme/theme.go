@@ -44,6 +44,13 @@ var (
 	KeybarLabel = TextSoft
 	KeybarGroup = Lav
 
+	// Action rows (a picker's button-like rows: "Launch all") wear the
+	// chrome accent, lav, on glyph, text and cursor bar, over a lav-tinted
+	// highlight, so a row that operates on the list reads as chrome, not as
+	// one more entry. Pink stays the entry accent.
+	ActionFg    = Lav
+	ActionSelBg = lipgloss.Color("#2D2650")
+
 	// Meta is quiet text that still carries information: counts, group
 	// headers, a breadcrumb's sort suffix, "of N" in a scroll range. Faint
 	// is reserved for pure decoration (separators, ellipses, placeholders),
@@ -56,6 +63,7 @@ const (
 	GlyphStopped = "○"
 	GlyphCrashed = "✗"
 	GlyphBar     = "▌"
+	GlyphAction  = "▸" // an action row's fallback icon when the caller sets none
 	GlyphChevron = "❯"
 	GlyphOn      = "◉"
 	GlyphDone    = "✓"

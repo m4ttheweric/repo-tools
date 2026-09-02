@@ -24,6 +24,14 @@ type PickRow struct {
 	Right []PickSegment `json:"right,omitempty"`
 	Match string        `json:"match,omitempty"`
 	Group string        `json:"group,omitempty"`
+	// Kind marks a row that is not an entry. RowKindAction is a button-like
+	// row (run's "Launch all", "Save as preset…"): it leads with Glyph (or
+	// the theme's default action glyph) and wears the action tokens instead
+	// of the entry ones.
+	Kind string `json:"kind,omitempty"`
+	// Glyph is an action row's leading icon, a Nerd Font symbol by
+	// convention; empty falls back to the theme's generic action glyph.
+	Glyph string `json:"glyph,omitempty"`
 	// WithArgs marks a row whose primary action can run with extra
 	// arguments -- render.go's alt-held with-args header badge, cursor-row
 	// badge, and per-row dim all key off this. showPicker
@@ -58,6 +66,9 @@ type PickAction struct {
 	// byte-identical.
 	FooterHidden bool `json:"footerHidden,omitempty"`
 }
+
+// RowKindAction is PickRow.Kind for a button-like row.
+const RowKindAction = "action"
 
 // Layout values for PickRequest.Layout.
 const (

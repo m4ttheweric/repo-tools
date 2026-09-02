@@ -462,11 +462,16 @@ func rowLineWidth(m *Model, i int, width int) string {
 	cursorRow := i == m.cursor
 	hoverRow := !cursorRow && i == m.hover
 	indent := m.rowIndent()
+	action := row.Kind == protocol.RowKindAction
 
 	rowBg := onBg
 	gutterGlyph := " "
 	gutterStyle := onBg
 	switch {
+	case cursorRow && action:
+		rowBg = lipgloss.NewStyle().Background(theme.ActionSelBg)
+		gutterGlyph = theme.GlyphBar
+		gutterStyle = fg(theme.ActionFg)
 	case cursorRow:
 		rowBg = lipgloss.NewStyle().Background(theme.SelBg)
 		gutterGlyph = theme.GlyphBar
@@ -475,6 +480,19 @@ func rowLineWidth(m *Model, i int, width int) string {
 		rowBg = lipgloss.NewStyle().Background(theme.HoverBg)
 	}
 	gutter := gutterStyle.Render(gutterGlyph)
+
+	// An action row leads with its icon in the action color; it costs its
+	// own columns out of the same budget as the marker and left text.
+	icon := ""
+	iconWidth := 0
+	if action {
+		glyph := row.Glyph
+		if glyph == "" {
+			glyph = theme.GlyphAction
+		}
+		icon = rowBg.Foreground(theme.ActionFg).Bold(cursorRow).Render(glyph + " ")
+		iconWidth = lipgloss.Width(glyph) + 1
+	}
 
 	// The selection marker sits inside the row's own background (rowBg),
 	// unlike the gutter -- it's part of the highlighted span on the board,
@@ -514,7 +532,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 	// Budget: 1 gutter column + 1 separator column + the group indent, plus
 	// a gap column ahead of any right segments so they never touch the left
 	// text directly.
-	leftBudget := width - 2 - indent - selMarkerWidth - rightWidth
+	leftBudget := width - 2 - indent - selMarkerWidth - iconWidth - rightWidth
 	if rightWidth > 0 {
 		leftBudget--
 	}
@@ -524,14 +542,14 @@ func rowLineWidth(m *Model, i int, width int) string {
 
 	leftPlain := leftPlainText(row)
 	kept, truncated := clipRunes(leftPlain, leftBudget)
-	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow, argsDim)
+	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow, argsDim, action)
 	usedLeftWidth := lipgloss.Width(kept)
 	if truncated {
 		leftRendered += rowBg.Foreground(theme.Faint).Render("…")
 		usedLeftWidth++
 	}
 
-	spacer := width - 2 - indent - selMarkerWidth - usedLeftWidth - rightWidth
+	spacer := width - 2 - indent - selMarkerWidth - iconWidth - usedLeftWidth - rightWidth
 	if spacer < 0 {
 		spacer = 0
 	}
@@ -541,7 +559,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 		rightRendered = lipgloss.NewStyle().Background(theme.Lav).Foreground(theme.Bg).Bold(true).Render(rightPlain)
 	}
 
-	return gutter + rowBg.Render(strings.Repeat(" ", 1+indent)) + selMarker + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
+	return gutter + rowBg.Render(strings.Repeat(" ", 1+indent)) + selMarker + icon + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
 }
 
 // renderHighlightedLeft re-styles matched runes cyan bold while walking the
@@ -554,7 +572,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 // tone/hex/bold and any match highlight are overridden to a flat Faint, so
 // a row the current modifier can't act on never competes for attention
 // against one that can.
-func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool, dim bool) string {
+func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool, dim bool, action bool) string {
 	matched := make(map[int]bool, len(positions))
 	for _, p := range positions {
 		matched[p] = true
@@ -563,6 +581,9 @@ func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int,
 	runeIdx := 0
 	for _, seg := range row.Left {
 		color, bold := leftSegColor(seg, cursorRow)
+		if action && seg.Hex == "" && (seg.Tone == "" || seg.Tone == "text") {
+			color, bold = theme.ActionFg, cursorRow || seg.Bold
+		}
 		if dim {
 			color, bold = theme.Faint, false
 		}

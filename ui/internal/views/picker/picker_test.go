@@ -844,6 +844,70 @@ func fgSGR(c color.Color) string {
 // every other row steps its default text/dim tones down a shade (and
 // drops the label's bold) so focus reads from contrast rather than every
 // row painting at the cursor row's own weight.
+// TestActionRowsWearTheActionRole pins the button-like row: a row with
+// Kind "action" leads with the action glyph and paints its default-tone
+// text in the action color, and under the cursor its gutter bar and row
+// background take the action tokens instead of the entry ones (pink bar,
+// SelBg). A hint segment keeps its own tone, and an ordinary entry in the
+// same list is untouched. Right segments still pin to the edge.
+func TestActionRowsWearTheActionRole(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "entry", Left: []protocol.PickSegment{{Text: "backend", Tone: "text"}}},
+			{Value: "launch", Kind: protocol.RowKindAction, Left: []protocol.PickSegment{{Text: "Launch all", Bold: true}, {Text: "  2 queued", Tone: "dim"}}, Right: []protocol.PickSegment{{Text: "board", Tone: "dimmer"}}},
+		},
+	}
+	m := New(req)
+	m.width = 50
+
+	lines := strings.Split(render(m), "\n")
+	entry, action := lines[3], lines[4]
+	if !strings.Contains(entry, fgSGR(theme.Pink)+"m"+theme.GlyphBar) || !strings.Contains(entry, "48;2;55;40;75") {
+		t.Fatalf("the entry on the cursor keeps the pink bar and SelBg: %q", entry)
+	}
+	plainAction := ansi.Strip(action)
+	if !strings.HasPrefix(plainAction, "  "+theme.GlyphAction+" Launch all") {
+		t.Fatalf("an action row leads with the action glyph: %q", plainAction)
+	}
+	if !strings.Contains(action, fgSGR(theme.ActionFg)+"m"+theme.GlyphAction) {
+		t.Fatalf("the glyph wears the action color: %q", action)
+	}
+	if !strings.Contains(action, fgSGR(theme.ActionFg)+"mL") {
+		t.Fatalf("default-tone text wears the action color off-cursor: %q", action)
+	}
+	if !strings.Contains(action, dimmerSGR+"m ") && !strings.Contains(action, dimmerSGR+"m2") {
+		t.Fatalf("a dim hint keeps its own tone: %q", action)
+	}
+	if !strings.HasSuffix(strings.TrimRight(plainAction, " "), "board") || lipgloss.Width(plainAction) != 50 {
+		t.Fatalf("right segments still pin to the edge: %q", plainAction)
+	}
+
+	m.cursor = 1
+	action = strings.Split(render(m), "\n")[4]
+	if !strings.Contains(action, fgSGR(theme.ActionFg)+"m"+theme.GlyphBar) {
+		t.Fatalf("the cursor bar takes the action color on an action row: %q", action)
+	}
+	if !strings.Contains(action, bgSGR(theme.ActionSelBg)) || strings.Contains(action, "48;2;55;40;75") {
+		t.Fatalf("the cursor row background takes ActionSelBg, never SelBg: %q", action)
+	}
+	if !strings.Contains(action, "1;"+fgSGR(theme.ActionFg)) {
+		t.Fatalf("the focused action text is bold in the action color: %q", action)
+	}
+
+	// A caller-supplied glyph replaces the generic one.
+	m.req.Rows[1].Glyph = "\U000F040A"
+	if got := ansi.Strip(strings.Split(render(m), "\n")[4]); !strings.HasPrefix(got, "▌ \U000F040A Launch all") {
+		t.Fatalf("the row's own glyph leads: %q", got)
+	}
+}
+
+// bgSGR is fgSGR's background twin.
+func bgSGR(c color.Color) string {
+	r, g, b, _ := c.RGBA()
+	return fmt.Sprintf("48;2;%d;%d;%d", r>>8, g>>8, b>>8)
+}
+
 func TestFocusDimsNonCursorRowsButNotTheCursorRow(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,

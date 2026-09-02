@@ -151,6 +151,9 @@ export interface PickSegment {
   bold?: boolean;
 }
 
+/** A button-like row: leads with `glyph` (or the picker's generic action glyph) and wears the action tokens instead of the entry ones. */
+export type PickRowKind = "action";
+
 export interface PickRow {
   value: string;
   left: PickSegment[];

@@ -40,14 +40,18 @@ test("queueRow: mint checkmark, plain package/script text, lavender variation su
   expect(noVariation.value).toBe("__queued:1__");
 });
 
-test("launchAllRow and savePresetRow are bold plain rows in the queue group", () => {
+test("launchAllRow and savePresetRow are action rows in the queue group, each with its own icon", () => {
   const launch = runTest.launchAllRow(2);
   expect(launch.group).toBe("queue");
+  expect(launch.kind).toBe("action");
+  expect(launch.glyph).toBe("\u{F040A}"); // nf-md-play
   expect(launch.left[0]).toMatchObject({ text: "Launch all", bold: true });
   expect(launch.left.some((s) => s.text.includes("2 queued"))).toBe(true);
 
   const save = runTest.savePresetRow();
   expect(save.group).toBe("queue");
+  expect(save.kind).toBe("action");
+  expect(save.glyph).toBe("\u{F0193}"); // nf-md-content-save
   expect(save.left[0]).toMatchObject({ text: "Save as preset…", bold: true });
 });
 

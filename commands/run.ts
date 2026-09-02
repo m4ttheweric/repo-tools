@@ -95,9 +95,16 @@ function queueRow(qi: QueuedItem, index: number): PickRow {
   return { value: `${QUEUED_PREFIX}${index}__`, left, group: "queue" };
 }
 
+// Nerd Font Material Design icons (Ghostty's bundled symbols fallback
+// renders them); the picker's generic ▸ stands in where the font is absent.
+const GLYPH_PLAY = "\u{F040A}";
+const GLYPH_SAVE = "\u{F0193}";
+
 function launchAllRow(queuedCount: number): PickRow {
   return {
     value: LAUNCH_ALL_SENTINEL,
+    kind: "action",
+    glyph: GLYPH_PLAY,
     left: [
       { text: "Launch all", bold: true },
       { text: `  ${queuedCount} queued → runner board`, tone: "dim" },
@@ -109,6 +116,8 @@ function launchAllRow(queuedCount: number): PickRow {
 function savePresetRow(): PickRow {
   return {
     value: SAVE_PRESET_SENTINEL,
+    kind: "action",
+    glyph: GLYPH_SAVE,
     left: [
       { text: "Save as preset…", bold: true },
       { text: "  save the current queue", tone: "dim" },
