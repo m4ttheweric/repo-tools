@@ -169,7 +169,7 @@ export function realMembersSeams(): MembersSeams {
   return { readTeamStore: defaultReadTeamStore, writeSetting: setSetting, revokeRead, readTeamLocal, forgeToken: storedForgeToken, warn: defaultWarn };
 }
 
-function teamRemote(p: Probes, slug: string): string | null {
+export function teamRemote(p: Probes, slug: string): string | null {
   const raw = p.readFile(`${p.home}/.mattstack/teams/${slug}/.git/config`);
   return raw !== null ? parseOriginUrl(raw) : null;
 }

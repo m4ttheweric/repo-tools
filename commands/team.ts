@@ -33,8 +33,9 @@ import { readTeamSnapshot, stripUserinfo, type SettingsReader } from "../lib/set
 import { createTeam } from "../lib/team/create.ts";
 import { mintInvite } from "../lib/team/invite.ts";
 import { JoinKeyExchangeError, joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
-import { membersRemove, membersSync } from "../lib/team/members.ts";
+import { membersRemove, membersSync, teamRemote } from "../lib/team/members.ts";
 import { publishTeam } from "../lib/team/publish.ts";
+import { storedForgeToken } from "../lib/team/stored-forge-token.ts";
 import { createRelayClient, inviteRelayUrl } from "../lib/team/relay-client.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
@@ -49,6 +50,8 @@ export interface TeamDeps {
   joinRedeemSeams?: Partial<JoinRedeemSeams>;
   /** Overrides `teamStatus`'s `board.title`/`board.members` reads — real by default, so a test never has to seed a real settings store just to check envelope shape. */
   statusRead?: SettingsReader;
+  /** The forge token rt holds for a remote's host — real store by default. */
+  forgeToken?: typeof storedForgeToken;
 }
 
 async function defaultReadCode(json: boolean): Promise<string> {
@@ -160,7 +163,9 @@ export async function teamPublish(args: string[], _ctx: CommandContext = {}, dep
 
   try {
     const slug = resolveTeamSlug(args);
-    const result = await publishTeam(deps.probes, slug, remote);
+    const target = remote ?? teamRemote(deps.probes, slug);
+    const token = target ? await (deps.forgeToken ?? storedForgeToken)(deps.probes, target) : null;
+    const result = await publishTeam(deps.probes, slug, remote, { token });
     if (json) {
       deps.print(JSON.stringify(envelope(result)));
       return;

@@ -142,6 +142,26 @@ describe("teamPublish", () => {
     });
   });
 
+  test("the push carries the forge token rt holds for the remote, through the env", async () => {
+    const seen: { argv: string[]; env?: Record<string, string> }[] = [];
+    const probes = fakeProbes({
+      home: "/home/x",
+      dirs: { [ZONE_DIR]: [] },
+      exec: (argv, opts) => {
+        seen.push({ argv, env: opts?.env });
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    const deps = baseDeps({ probes, forgeToken: async (_p, remote) => (remote.includes("acme/repo") ? "ghp-secret" : null) });
+
+    await teamPublish(["--team", "acme", "--remote", "https://github.com/acme/repo.git"], {}, deps);
+
+    const push = seen.find((c) => c.argv.includes("push"))!;
+    expect(push.argv).toContain("credential.helper=");
+    expect(push.env?.RT_GIT_TOKEN).toBe("ghp-secret");
+    expect(push.argv.join(" ")).not.toContain("ghp-secret");
+  });
+
   test("no --team and no local team clone exits 2 with no-team", async () => {
     const deps = baseDeps();
     const code = await runExpectingProcessExit(() => teamPublish(["--remote", "https://github.com/acme/repo.git", "--json"], {}, deps));
