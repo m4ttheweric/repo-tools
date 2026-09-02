@@ -1339,10 +1339,12 @@ function repoOptionValue(r: KnownRepo, i: number, duplicated: Set<string>): stri
   return duplicated.has(r.repoName) ? `${r.repoName}#${i}` : r.repoName;
 }
 
-/** Picker options for a repo list: short labels, upgraded to owner/name where
-    two repos would otherwise render identically, and to the full decoded id
-    when even owner/name collides (same owner/name on two hosts; two path
-    repos sharing a basename). Resolve what the picker returns with
+/** Picker options for a repo list, alphabetical by label: short labels,
+    upgraded to owner/name where two repos would otherwise render identically,
+    and to the full decoded id when even owner/name collides (same owner/name
+    on two hosts; two path repos sharing a basename). Values are computed
+    against the caller's list order before sorting, so a `name#i` qualifier
+    still indexes the list it came from. Resolve what the picker returns with
     `repoFromOptionValue` — the values are list-scoped, not bare index keys. */
 export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOption>> {
   const shortCounts = new Map<string, number>();
@@ -1354,7 +1356,7 @@ export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOpt
     qualifiedCounts.set(qualified, (qualifiedCounts.get(qualified) ?? 0) + 1);
   }
   const duplicated = duplicateRepoNames(repos);
-  return repos.map((r, i) => {
+  const options = repos.map((r, i) => {
     const short = repoLabel(r.repoName);
     const qualified = repoLabelQualified(r.repoName);
     const label = (shortCounts.get(short) ?? 0) <= 1
@@ -1362,6 +1364,7 @@ export function repoOptions(repos: KnownRepo[]): Array<ReturnType<typeof repoOpt
       : (qualifiedCounts.get(qualified) ?? 0) > 1 ? repoLabelFull(r.repoName) : qualified;
     return { ...repoOption(r, label), value: repoOptionValue(r, i, duplicated) };
   });
+  return options.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
 }
 
 /** The row a `repoOptions` value came from. The list must be the one the

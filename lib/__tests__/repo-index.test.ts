@@ -787,7 +787,7 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
 });
 
 describe("repoOptions labels", () => {
-  const { repoOption, repoOptions } = require("../repo-index.ts") as typeof import("../repo-index.ts");
+  const { repoOption, repoOptions, repoFromOptionValue } = require("../repo-index.ts") as typeof import("../repo-index.ts");
 
   function known(repoName: string): import("../repo-index.ts").KnownRepo {
     return { repoName, worktrees: [{ path: "/tmp/x", branch: "main", isBare: false }] } as import("../repo-index.ts").KnownRepo;
@@ -814,7 +814,7 @@ describe("repoOptions labels", () => {
       known("path:%2Fa%2Fapp"),
       known("path:%2Fb%2Fapp"),
     ]).map((o) => o.label);
-    expect(labels).toEqual(["github.com/acme/app", "gitlab.com/acme/app", "/a/app", "/b/app"]);
+    expect(labels).toEqual(["/a/app", "/b/app", "github.com/acme/app", "gitlab.com/acme/app"]);
   });
 
   test("colliding last segments upgrade to owner/name; others stay short", () => {
@@ -823,7 +823,21 @@ describe("repoOptions labels", () => {
       known("remote:github.com%2Fm4ttheweric%2Fglance"),
       known("remote:github.com%2Fm4ttstack%2Frt"),
     ]).map((o) => o.label);
-    expect(labels).toEqual(["m4ttstack/glance", "m4ttheweric/glance", "rt"]);
+    expect(labels).toEqual(["m4ttheweric/glance", "m4ttstack/glance", "rt"]);
+  });
+
+  test("options sort alphabetically by label, case-insensitively, and values still resolve", () => {
+    const repos = [
+      known("remote:github.com%2Fm4ttstack%2Frt"),
+      known("remote:github.com%2Fm4ttstack%2FZeta"),
+      known("remote:github.com%2Fm4ttstack%2Fassured"),
+      known("path:%2FUsers%2Fmatt%2FDocuments%2FGitHub%2Fbeta"),
+    ];
+    const options = repoOptions(repos);
+    expect(options.map((o) => o.label)).toEqual(["assured", "beta", "rt", "Zeta"]);
+    for (const o of options) {
+      expect(repoFromOptionValue(repos, o.value)?.repoName).toBe(o.value);
+    }
   });
 
   describe("13. updateRepoIndex no-op on unchanged row", () => {
