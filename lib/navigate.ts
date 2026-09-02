@@ -37,7 +37,7 @@ export interface NavPickerOpts {
   breadcrumb?: string[];
   /** Faint run appended after the bold breadcrumb segments; rides with `breadcrumb`, ignored without it. */
   crumbSuffix?: string;
-  /** Full custom header string. Overrides `headerParts` if both are set. */
+  /** Unused by runNavPicker (lib/pick-wrappers.ts reads only `headerParts`); kept for callers that still set it, but it renders nothing on the rt-ui path. */
   header?: string;
   /** Header segments joined with "  ". Ignored if `header` is set. */
   headerParts?: string[];
