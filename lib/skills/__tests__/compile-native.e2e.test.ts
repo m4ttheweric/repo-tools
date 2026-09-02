@@ -288,3 +288,25 @@ describe("verb.path end to end", () => {
     expect(existsSync(join(pack, "attachments", "receive-review"))).toBe(false);
   });
 });
+
+describe("pack.path end to end", () => {
+  test("a fill's pack.path compiles into a stage and a public verb with the anchored path intact, lint clean", async () => {
+    const { pack, ms, manifest } = buildWithRosterVerbs();
+    mkdirSync(join(pack, "attachments", "evidence", "scripts"), { recursive: true });
+    writeFileSync(join(pack, "attachments", "evidence", "scripts", "capture.sh"), "#!/bin/sh\n");
+    const policyPath = join(pack, "attachments", "plan-policy", "SKILL.md");
+    writeFileSync(policyPath, readFileSync(policyPath, "utf8").replace("policy text", "policy text\n\nCapture with {{pack.path:evidence/scripts/capture.sh}}."));
+    const checkoutPath = join(ms, "plugins", "mattstack", "attachments", "checkout", "SKILL.md");
+    writeFileSync(checkoutPath, CHECKOUT_ENGINE.replace("then {{verb.path:work}}.", "then {{verb.path:work}}, then {{pack.path:evidence/scripts/capture.sh}}."));
+
+    const { logs, errors, exitCode } = await compileCapturingLogs(pack, ms, manifest);
+    expect(errors).toEqual([]);
+    expect(exitCode).toBeUndefined();
+
+    const anchored = "${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh";
+    expect(readFileSync(join(pack, "attachments", "stage-plan", "SKILL.md"), "utf8")).toContain(`Capture with ${anchored}.`);
+    expect(readFileSync(join(pack, "skills", "checkout", "SKILL.md"), "utf8")).toContain(`then ${anchored}.`);
+    expect(logs.find((l) => l.startsWith("compiled stage-plan"))).toMatch(/0 warnings\)$/);
+    expect(logs.find((l) => l.startsWith("compiled checkout"))).toMatch(/0 warnings\)$/);
+  });
+});

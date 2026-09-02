@@ -56,4 +56,5 @@ export type PlaceholderContext = {
   compiledFrom: string;
   verbSides: Record<string, Side>;
   side: Side;
+  packRoot: string | null;
 };

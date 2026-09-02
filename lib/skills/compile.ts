@@ -299,7 +299,7 @@ function assertNoStrayBraces(body: string, engineName: string): void {
   }
 }
 
-function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): { body: string; notes: string[] } {
+function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): { body: string; notes: string[]; packPaths: string[] } {
   const notes: string[] = [];
   const sections: string[] = [HEADER_COMMENT];
   sections.push(`<!-- part: step source=${step.plugin}:${step.name} version=${step.version} ${span(step)} -->`);
@@ -322,11 +322,12 @@ function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): 
       if (!used.slots.includes(slotName)) notes.push(`slot "${slotName}" is bound but never placed in the body`);
     }
     sections.push(body);
-    return { body: sections.join("\n\n"), notes };
+    return { body: sections.join("\n\n"), notes, packPaths: used.packPaths };
   }
 
   assertNoStrayBraces(stepBody, step.name);
   sections.push(stepBody);
+  const packPaths: string[] = [];
   for (const { slotName, fill } of boundSlots) {
     if (!isInlined(fill, opts.internalRoster)) {
       // Registered, surface-public skills stay singly-canonical: reference, never inline.
@@ -350,12 +351,14 @@ function buildBody(step: StepSource, boundSlots: BoundSlot[], opts: BuildOpts): 
     sections.push(
       `<!-- part: slot:${slotName} binding=${fill.binding} version=${fill.version} ${span(fill)} -->`,
     );
-    sections.push(substituteIncludesOnly(rewriteSkillDirRefs(fill.body, slotName), opts.ctx, fill.binding));
+    const inlined = substituteIncludesOnly(rewriteSkillDirRefs(fill.body, slotName), opts.ctx, fill.binding);
+    packPaths.push(...inlined.packPaths);
+    sections.push(inlined.body);
   }
 
   const body = sections.join("\n\n");
   assertNoStrayBraces(body, step.name);
-  return { body, notes };
+  return { body, notes, packPaths };
 }
 
 function buildVendoredFiles(
@@ -412,6 +415,7 @@ function lintReferences(
   opts: {
     where: string;
     exemptPrefixes?: string[];
+    exemptPaths?: string[];
     layout?: CompiledLayout | null;
     emittedTargetDirs?: string[];
   },
@@ -419,6 +423,7 @@ function lintReferences(
   const warnings: string[] = [];
   const lintableBody = stripCompilerComments(body);
   const exemptPrefixes = opts.exemptPrefixes ?? [];
+  const exemptPaths = opts.exemptPaths ?? [];
   const emittedTargetDirs = opts.emittedTargetDirs ?? [];
 
   const seenNames = new Set<string>();
@@ -443,7 +448,7 @@ function lintReferences(
     }
     if (!namesFile || seenPaths.has(text)) continue;
     seenPaths.add(text);
-    if (kind === "token" && exemptPrefixes.some((p) => text.startsWith(p))) continue;
+    if (kind === "token" && (exemptPrefixes.some((p) => text.startsWith(p)) || exemptPaths.includes(text))) continue;
     if (kind === "relative" && opts.layout && packSatisfies(opts.layout, relPath, emittedTargetDirs)) continue;
     if (!emittedPaths.has(relPath)) {
       warnings.push(
@@ -532,10 +537,11 @@ export function compileSkill(
     compiledFrom,
     verbSides: opts.verbSides ?? {},
     side: opts.side ?? "skills",
+    packRoot: opts.packRoot ?? null,
   };
 
   const allowedTools = buildAllowedTools(step, boundSlots, opts.stageAllowedTools ?? [], ctx);
-  const { body, notes } = buildBody(step, boundSlots, {
+  const { body, notes, packPaths } = buildBody(step, boundSlots, {
     internalRoster,
     ctx,
     stageDir: opts.stageDir ?? null,
@@ -556,6 +562,7 @@ export function compileSkill(
     ...lintReferences(body, roster, files, fillBindings, {
       where,
       exemptPrefixes: opts.emittedSiblingDirs ?? [],
+      exemptPaths: packPaths,
       layout,
       emittedTargetDirs: opts.emittedTargetDirs ?? [],
     }),

@@ -20,3 +20,7 @@ Known limit: the `../../` hop assumes the reader's own skill lives at `<pack>/sk
 ## `{{verb.path:<name>}}`
 
 Renders the path from the current output file's directory to `<name>`'s compiled `SKILL.md`: `../<name>/SKILL.md` when both targets sit on the same side, `../../skills/<name>/SKILL.md` or `../../attachments/<name>/SKILL.md` across sides. It is a reading path, relative to the file that carries it, never a shell path. `<name>` must match `[a-z][a-z0-9-]*` and be a compiled target of this pack (roster verb or stage); a `--verb` or `--preview` compile still resolves paths to targets it is not emitting, and its lint may then report them as not emitted. Allowed in engine bodies and in fills.
+
+## `{{pack.path:<attachment>/<file>}}`
+
+Renders `${CLAUDE_SKILL_DIR}/../../<side>/<attachment>/<file>`, anchored on the invoking skill's dir so it works inside a shell command from any public skill in the pack. `<attachment>` must be an existing directory under exactly one of the pack's `attachments/` or `skills/` (that picks `<side>`; both is an error), must not name a compiled target (its output exists only after a compile), and `<pack>/<side>/<attachment>/<file>` must exist when the compile runs; `<file>` is one or more segments with no `..`. Rendered paths are exempt from the emitted-file lint. Allowed in engine bodies and in fills; a fill's `${CLAUDE_SKILL_DIR}` rewrite runs before substitution, so a rendered path is never rewritten to a parts dir.

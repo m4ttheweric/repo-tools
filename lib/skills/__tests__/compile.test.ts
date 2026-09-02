@@ -731,4 +731,56 @@ describe("compileSkill with placeholders", () => {
     expect(skillMd(r)).toContain("Read ../../attachments/receive-review/SKILL.md first, then ../checkout/SKILL.md.");
     expect(r.warnings).toEqual([]);
   });
+
+  function packWithEvidence(): string {
+    const packRoot = tempPackRoot();
+    mkdirSync(join(packRoot, "attachments", "evidence", "scripts"), { recursive: true });
+    writeFileSync(join(packRoot, "attachments", "evidence", "scripts", "capture.sh"), "#!/bin/sh\n");
+    return packRoot;
+  }
+
+  test("pack.path in a fill survives the parts rewrite inside a stage and lints clean", () => {
+    const packRoot = packWithEvidence();
+    const capturing: AttachmentSource = {
+      ...domainFill,
+      body: "Config at ${CLAUDE_SKILL_DIR}/ci-config.json; capture with {{pack.path:evidence/scripts/capture.sh}}.",
+    };
+    const host = "${CLAUDE_SKILL_DIR}/../../attachments/stage-watch-ci";
+    const r = compileSkill(verb, placeholderStep, { domain: capturing }, new Set(), {
+      stageDir: host,
+      packRoot,
+      compiledDir: join(packRoot, "attachments", "stage-watch-ci"),
+      side: "attachments",
+      emittedSiblingDirs: [host],
+    });
+    expect(skillMd(r)).toContain(
+      `Config at ${host}/parts/domain/ci-config.json; capture with \${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh.`,
+    );
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("pack.path in a public verb renders the same anchored path and lints clean", () => {
+    const packRoot = packWithEvidence();
+    const r = compileSkill(verb, { ...slotless, body: "Run {{pack.path:evidence/scripts/capture.sh}} after the diff." }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "watch-ci"),
+      side: "skills",
+    });
+    expect(skillMd(r)).toContain("Run ${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh after the diff.");
+    expect(r.warnings).toEqual([]);
+  });
+
+  test("pack.path naming a compiled target's output is a compile error", () => {
+    const packRoot = packWithEvidence();
+    mkdirSync(join(packRoot, "skills", "work"), { recursive: true });
+    writeFileSync(join(packRoot, "skills", "work", "SKILL.md"), "compiled earlier\n");
+    expect(() =>
+      compileSkill(verb, { ...slotless, body: "see {{pack.path:work/SKILL.md}}" }, {}, new Set(), {
+        packRoot,
+        compiledDir: join(packRoot, "skills", "watch-ci"),
+        side: "skills",
+        verbSides: { work: "skills", "watch-ci": "skills" },
+      }),
+    ).toThrow("{{pack.path:work/SKILL.md}} -- work is a compiled verb; pack.path names source files only");
+  });
 });
