@@ -22,7 +22,7 @@
 - No `execSync` on the daemon thread; all git through the injected `exec` (default `runCapture`).
 - Feature code logs domain events only (`log.info` on commit/pull/conflict); outcomes are logged at the daemon seams.
 - Comments state constraints the code cannot show; no narration, no ticket numbers in source.
-- Commit after every task; run `bun run test` + `bun x tsc --noEmit` + `bun run docs:check` before pushing to main. `main` currently has a peer's tsc error in `commands/run.ts`/`run-picker-rows.test.ts` (PickRow.kind); ignore those two files when judging tsc.
+- Commit after every task; run `bun run test` + `bun x tsc --noEmit` + `bun run docs:check` before pushing to main; tsc must print no errors.
 
 ---
 
@@ -169,7 +169,7 @@ Expected: all PASS, including the two new tests; no pre-existing assertion chang
 
 - [ ] **Step 5: Typecheck and commit**
 
-Run: `bun x tsc --noEmit 2>&1 | grep "error TS" | grep -v "run-picker-rows\|commands/run.ts"` → no lines.
+Run: `bun x tsc --noEmit` → no errors.
 
 ```bash
 git add lib/daemon/home-snapshot.ts lib/home/push-record.ts lib/daemon/__tests__/home-snapshot.test.ts lib/daemon/__tests__/home-handlers.test.ts commands/__tests__/home.test.ts
@@ -274,12 +274,12 @@ export function teamScope(relPath: string): boolean {
 In `doRun`: `const entries = scopeEntries(parsePorcelainZ(statusResult.stdout), spec.scope);` and build the pathspec once:
 
 ```ts
-const scopeArgs: string[] = spec.scope ? [...new Set(entries.map((e) => e.path))] : ["."];
+const scopeArgs: string[] = spec.scope ? [...new Set(entries.flatMap((e) => (e.origPath ? [e.origPath, e.path] : [e.path])))] : ["."];
 ```
 
 then `["git", "add", "-A", "--", ...scopeArgs, ...excludeArgs]` and the commit's trailing `"--", ...scopeArgs, ...excludeArgs`.
 
-A scoped spec's pathspec is the scoped entries' own paths (deduped, in status order), never the roots: `git add -A -- mattstack .sops.yaml .claude-plugin` exits 128 and stages nothing when any root is absent from both tree and index (verified), and a clone that lost its marketplace would then fail every cycle as `add-failed`. Entry paths always match (a ` D` entry names an index path; `??` names a worktree path). The home spec keeps `.` exactly as today.
+A scoped spec's pathspec is the scoped entries' own paths (deduped, in status order), never the roots: `git add -A -- mattstack .sops.yaml .claude-plugin` exits 128 and stages nothing when any root is absent from both tree and index (verified), and a clone that lost its marketplace would then fail every cycle as `add-failed`. Entry paths always match (a ` D` entry names an index path; `??` names a worktree path; a rename carries `origPath`, which rides along so the old path's deletion lands in the same commit). The home spec keeps `.` exactly as today.
 
 - [ ] **Step 4: Run the tests**
 
@@ -442,6 +442,24 @@ describe("startSnapshot — pull", () => {
     handle.stop();
   });
 
+  test("a failed fetch leaves lastPullAt untouched and records the error, so the row can call the clone stale", async () => {
+    const responders: Responder[] = [
+      (argv) => gitVerb(argv) === "fetch" ? { stdout: "", stderr: "remote: HTTP Basic: Access denied", exitCode: 128 } : undefined,
+      ...pullResponders({ behind: 0, ahead: 0 }),
+      ...defaultResponders(),
+    ];
+    const { fn } = makeFakeExec(responders);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    const result = await handle.pullNow();
+    expect(result.outcome).toBe("skipped");
+    expect(handle.status().lastPullAt).toBe(0);
+    expect(handle.status().lastPullError).toContain("Access denied");
+    handle.stop();
+  });
+
   test("the pull timer fires every pullIntervalSec and at boot", async () => {
     const { fn, calls } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
     const { deps, timers } = baseDeps({ exec: fn });
@@ -487,7 +505,19 @@ const FETCH_TIMEOUT_MS = 30_000;
 
 State inside `startSnapshot`: `let lastPullAt = 0; let lastPullError: string | null = null; let conflicted: { at: number; detail: string } | null = null; let pullTimer = null; let pullInFlight: Promise<PullResult> | null = null; let cachedToken: { value: string | null; at: number } | null = null;`. In `init()`, after `loadState`, load the conflict marker: `conflicted = getKvValue(spec.kvNamespace, CONFLICT_KEY, null, resolveDb())`. If `spec.pull` and enabled: `void pullNow()` then `schedulePull()`.
 
-One git operation at a time per clone: `runNow` and `pullNow` share a single `gitInFlight: Promise<unknown> | null` chain (each awaits the previous before starting; the existing `runInFlight`/`pushInFlight` coalescing stays as is on top of it), so a timer-driven rebase never overlaps `doRun`'s add/commit and never sees "index contains uncommitted changes". `doPushInner` calls `pullNow()` (through the guard), never `doPull()` directly.
+One git operation at a time per clone:
+
+```ts
+let gitLock: Promise<unknown> = Promise.resolve();
+/** Serializes the commit cycle and the pull; a timer-driven rebase never overlaps an add/commit. Push stays OUTSIDE the lock: it calls pullNow(), which takes the lock itself, so a push inside it would wait on itself. */
+function withGitLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = gitLock.then(fn, fn);
+  gitLock = run.catch(() => undefined);
+  return run;
+}
+```
+
+`runNow` wraps `doRun(reason)` in `withGitLock`; `pullNow` wraps `doPull()` in it; the existing `runInFlight`/`pushInFlight` coalescing stays as is on top. `doPushInner` calls `pullNow()` (which locks), never `doPull()` directly, and is itself never placed inside the lock.
 
 ```ts
 /** `runCapture` REPLACES the child's environment when `env` is given (lib/subprocess.ts:60), so the token vars ride on top of a full copy of process.env or git loses PATH and HOME. A spec without `tokenFor` (home) keeps today's plain exec, env untouched. The token is read once per pull interval, not per git call: `storedForgeToken` is a keychain read plus a sops decrypt. */
@@ -522,7 +552,6 @@ async function pullNow(): Promise<PullResult> {
 }
 
 async function doPull(): Promise<PullResult> {
-  lastPullAt = deps.now();
   if (!(await hasRemote(deps.exec, spec.repoDir))) return { outcome: "skipped", detail: "no remote" };
   const branchResult = await deps.exec(["git", "symbolic-ref", "--short", "HEAD"], { cwd: spec.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
   if (branchResult.exitCode !== 0) return { outcome: "skipped", detail: "detached HEAD" };
@@ -532,6 +561,8 @@ async function doPull(): Promise<PullResult> {
     lastPullError = redactCredentials(fetch.stderr);
     return { outcome: "skipped", detail: lastPullError };
   }
+  // Stamped only here: a pull that never reached the remote must read as stale, or a joiner with a bad token would look in sync.
+  lastPullAt = deps.now();
   lastPullError = null;
   const counts = await deps.exec(["git", "rev-list", "--left-right", "--count", `refs/remotes/origin/${branch}...HEAD`], { cwd: spec.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
   if (counts.exitCode !== 0) return { outcome: "skipped", detail: "no remote-tracking ref yet" };
@@ -553,8 +584,8 @@ async function doPull(): Promise<PullResult> {
   }
   // A rebase that never started (unstaged changes outside the scope, a lock) exits 1 too, but leaves no rebase-merge/rebase-apply behind; only a rebase that stopped mid-way is a conflict.
   const gitDir = await resolveGitDir();
-  const stopped = existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"));
-  if (!stopped) {
+  const rebaseStopped = existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"));
+  if (!rebaseStopped) {
     const reason = redactCredentials(rebase.stderr.trim() || "rebase refused");
     deps.log.warn({ id: spec.id, reason }, "snapshot: rebase refused; will retry next tick");
     return { outcome: "skipped", detail: reason };
@@ -903,8 +934,7 @@ export interface TeamSnapshotsHandle {
 }
 
 const RESCAN_DEBOUNCE_MS = 2000;
-/** A clone that gains its origin after boot (`rt team publish --remote`) edits .git/config, which the non-recursive teams/ watch never sees; the interval rescan is what picks it up. */
-const RESCAN_INTERVAL_MS = 5 * 60_000;
+/** A clone that gains its origin after boot (`rt team publish --remote`) edits .git/config, which the non-recursive teams/ watch never sees; the interval rescan, on the pull interval, is what picks it up. */
 
 function originOf(dir: string): string | null {
   try {
@@ -931,7 +961,7 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
 
   function scheduleRescan(): void {
     if (stopped) return;
-    interval = setTimer(() => { interval = null; void rescan().finally(scheduleRescan); }, RESCAN_INTERVAL_MS);
+    interval = setTimer(() => { interval = null; void rescan().finally(scheduleRescan); }, Math.max(30, settings().pullIntervalSec) * 1000);
   }
 
   function settings(): TeamSnapshotSettings {
@@ -1086,7 +1116,7 @@ describe("team snapshot handlers", () => {
 });
 ```
 
-Read `lib/daemon/handlers/home.ts` and copy its handler signature/return shape exactly (the `{ ok, data }` envelope and how errors are shaped there).
+Read `lib/daemon/handlers/home.ts` and copy its return type exactly (the `Record<..., (payload: any) => Promise<any>> & HandlerMap` shape) so the test's `h["team:snapshot-status"]({})` typechecks.
 
 - [ ] **Step 2: Run to see it fail**
 
@@ -1101,7 +1131,7 @@ Expected: FAIL, module not found.
 import { UserActionableError } from "../../setup/errors.ts";
 import type { TeamSnapshotsHandle } from "../team-snapshots.ts";
 
-export function createTeamSnapshotHandlers(teamSnapshots: TeamSnapshotsHandle) {
+export function createTeamSnapshotHandlers(teamSnapshots: TeamSnapshotsHandle): Record<"team:snapshot-status" | "team:pull", (payload: any) => Promise<any>> {
   return {
     "team:snapshot-status": async () => ({ ok: true as const, data: teamSnapshots.status() }),
     "team:pull": async (payload: { slug?: string }) => {
@@ -1127,8 +1157,8 @@ export function createTeamSnapshotHandlers(teamSnapshots: TeamSnapshotsHandle) {
 
 - [ ] **Step 4: Run tests + tsc**
 
-Run: `bun test lib/daemon; bun x tsc --noEmit 2>&1 | grep "error TS" | grep -v "run-picker-rows\|commands/run.ts"`
-Expected: PASS; no tsc lines.
+Run: `bun test lib/daemon; bun x tsc --noEmit`
+Expected: PASS; no tsc errors.
 
 - [ ] **Step 5: Commit**
 
@@ -1172,6 +1202,12 @@ describe("teamSyncRow", () => {
     expect(r?.detail).toContain("acme");
     expect(r?.detail).toContain("rebase");
   });
+  test("a standing fetch error is needs-you even when the last successful pull was recent", async () => {
+    const r = await teamSyncRow(["acme"], async () => [{ slug: "acme", lastPullAt: 900_000, lastPullError: "remote: HTTP Basic: Access denied", pushPending: false, lastPushError: null, conflicted: null } as never], now, 300);
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("fetch failing");
+  });
+
   test("a stale pull (older than two intervals) or a standing push error is needs-you", async () => {
     const stale = await teamSyncRow(["acme"], async () => [{ slug: "acme", lastPullAt: 0, pushPending: false, lastPushError: null, conflicted: null } as never], now, 300);
     expect(stale?.status).toBe("needs-you");
@@ -1212,6 +1248,7 @@ export async function teamSyncRow(
     if (!e) { problems.push(`${slug}: not watched (no origin?)`); continue; }
     if (e.conflicted) { problems.push(`${slug}: rebase conflict — ${e.conflicted.detail}; rebase the clone by hand, then rt team publish`); continue; }
     if (e.lastPushError) { problems.push(`${slug}: push failing — ${e.lastPushError}`); continue; }
+    if (e.lastPullError) { problems.push(`${slug}: fetch failing — ${e.lastPullError}`); continue; }
     if (e.lastPullAt === 0 || now() - e.lastPullAt > staleMs) problems.push(`${slug}: last pull ${e.lastPullAt === 0 ? "never" : `${Math.round((now() - e.lastPullAt) / 60_000)} min ago`}`);
   }
   if (problems.length > 0) return row({ ...base, status: "needs-you", detail: problems.join("; "), action: RECHECK_ACTION });
@@ -1372,7 +1409,7 @@ git commit -m "vm: the propagation pass waits for the daemon instead of committi
 - [ ] **Step 1: Run everything**
 
 Run: `bun run test && bun run test:e2e && bun x tsc --noEmit && bun run docs:check && bun run picker:check`
-Expected: green (except the peer's pre-existing `PickRow` tsc lines if still present on main).
+Expected: green.
 
 - [ ] **Step 2: Docs**
 

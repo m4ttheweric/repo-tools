@@ -133,12 +133,14 @@ Surfaces:
 
 - Checklist / verify row `team.sync` (kind `tool`, required: false,
   recheck `on-activate`): `ready` when every clone has no conflict, no
-  standing push error, and a pull within the last two pull intervals;
+  standing push or fetch error, and a successful fetch within the last two
+  pull intervals (a pull that never reached the remote does not count);
   `needs-you` naming the clone otherwise (conflict, push error, stale or
   never pulled, or a clone the daemon is not watching); `missing` when
   the daemon is down. Lives beside `home.backup` in
   `lib/setup/validators/rt-health.ts`.
-- `rt team status` gains `lastPull`, `lastPush`, `conflicted` per team.
+- `rt team status` gains `lastPull`, `lastPushAt`, `conflicted` per team
+  (`lastPush`, origin/main's commit date, already exists).
 - `rt team pull [--team <slug>]`: a manual cycle (fetch + rebase, no
   push); prints the same result the engine reports. `rt team publish`
   keeps its meaning (commit is the engine's job; publish pushes now and
