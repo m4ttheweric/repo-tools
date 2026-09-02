@@ -24,6 +24,7 @@ export const MODULE_REGISTRY: Record<string, () => Promise<any>> = {
   "./commands/run.ts": () => import("../commands/run.ts"),
   "./commands/runner.ts": () => import("../commands/runner.ts"),
   "./commands/runs.ts": () => import("../commands/runs.ts"),
+  "./commands/runs-find.ts": () => import("../commands/runs-find.ts"),
   "./commands/runs-write.ts": () => import("../commands/runs-write.ts"),
   "./commands/secrets.ts": () => import("../commands/secrets.ts"),
   "./commands/settings.ts": () => import("../commands/settings.ts"),

@@ -27,6 +27,7 @@ rt runs [flags]
 | --- | --- |
 | [`show`](show) | One run: stages, fields, decisions |
 | [`abandon`](abandon) | Mark a wedged run abandoned (the run died with its session and the DB still says running) |
+| [`find`](find) | Runs whose claude-session field matches; read-side, no daemon |
 | [`run-start`](run-start) | Pipeline: open a run DB and print its runId and runDb |
 | [`run-status`](run-status) | Pipeline: close the run (reads RT_RUN_DB) |
 | [`stage-start`](stage-start) | Pipeline: start a stage attempt (reads RT_RUN_DB) |

@@ -175,3 +175,31 @@ export function findRun(runId: string, liveness?: RunLiveness): RunDetail | null
   }
   return null;
 }
+
+// RunSummary carries no filesystem path, and widening the shared client type
+// for one CLI verb would leak a store-only detail into every consumer that
+// already destructures a RunSummary; pairing it with runDb here keeps that
+// contained.
+export type RunSessionMatch = { summary: RunSummary; runDb: string };
+
+export function findRunsBySession(sessionId: string): RunSessionMatch[] {
+  const out: RunSessionMatch[] = [];
+  for (const repo of dirs(runsRoot())) {
+    for (const id of dirs(join(runsRoot(), repo))) {
+      const opened = openRun(repo, id);
+      if (!opened) continue;
+      try {
+        const row = runRow(opened.db);
+        if (!row) continue;
+        const fields = opened.db.query("SELECT key, value, produced_by, at FROM fields").all() as RunFieldRow[];
+        if (fieldValue(fields, "claude-session") !== sessionId) continue;
+        out.push({ summary: row, runDb: join(runsRoot(), repo, id, "state.db") });
+      } catch {
+        continue;
+      } finally {
+        opened.db.close();
+      }
+    }
+  }
+  return out.sort((a, b) => b.summary.started_at - a.summary.started_at);
+}
