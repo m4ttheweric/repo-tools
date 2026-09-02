@@ -19,8 +19,8 @@ import (
 )
 
 // heldModifiers tracks whether alt/ctrl are currently physically held, for
-// the Modifiers board's reactive chrome (the "with args" badge, the
-// expanded keybar). A bare modifier key's own KeyPressMsg sets the
+// the Modifiers board's reactive chrome (the held legend, the with-args row
+// badge). A bare modifier key's own KeyPressMsg sets the
 // corresponding field; its KeyReleaseMsg clears it. Both only ever fire once
 // the terminal has confirmed the Kitty keyboard protocol's event-type
 // reporting (Model.reportsKeyReleases): a fallback terminal can still deliver
@@ -54,6 +54,9 @@ type Model struct {
 	// distinct from held.ctrl's physical-hold state: a terminal that never
 	// reports a bare ctrl press still gets the expanded legend on ctrl-/.
 	expanded bool
+	// argsRows records whether any row claims WithArgs, so the alt-held row
+	// chrome can gate on real behavior without walking the rows per line.
+	argsRows bool
 	hover    int
 	width    int
 	height   int
@@ -198,13 +201,36 @@ func (m *Model) showSelectedPanel() bool {
 	return m.multiMode() && len(m.selected) > 0
 }
 
-// showExpandedKeybar reports whether the footer paints the Modifiers board's
-// two-line grouped legend in place of the single line: either ctrl is
-// physically held (Kitty protocol) or ctrl-/ has toggled it on. Both drive
-// the same render, and reservedContentHeight already budgets the extra line
-// for either.
+// showExpandedKeybar reports whether the footer paints the two-line grouped
+// legend in place of the single line, which only the ctrl-/ toggle drives.
+// A physical hold never grows the footer: it swaps the single line's
+// contents (see heldModifier), so holding a modifier never shifts the list.
 func (m *Model) showExpandedKeybar() bool {
-	return m.held.ctrl || m.expanded
+	return m.expanded
+}
+
+// heldModifier names the modifier whose bound actions the footer is showing
+// in place of the ordinary legend: "alt" or "ctrl" while that key is
+// physically held AND at least one visible action is bound to it, else "".
+// A hold with nothing behind it reports "" so the frame stays exactly as it
+// was; chrome that hints at a modifier with no behavior is what that
+// prevents. Alt wins if both are somehow down at once.
+func (m *Model) heldModifier() string {
+	actions := effectiveActions(m.req)
+	switch {
+	case m.held.alt && len(modifierActions(actions, "alt")) > 0:
+		return "alt"
+	case m.held.ctrl && len(modifierActions(actions, "ctrl")) > 0:
+		return "ctrl"
+	}
+	return ""
+}
+
+// argsMode reports whether the alt-held row chrome (the cursor row's "pick
+// args" badge, the no-args fade) is live: alt is held and some row actually
+// claims WithArgs. Same rule as heldModifier, for the row side.
+func (m *Model) argsMode() bool {
+	return m.held.alt && m.argsRows
 }
 
 // refilter re-ranks matches against the current query, then partitions the
@@ -215,9 +241,11 @@ func (m *Model) showExpandedKeybar() bool {
 func (m *Model) refilter() {
 	targets := make([]string, len(m.req.Rows))
 	groups := make([]string, len(m.req.Rows))
+	m.argsRows = false
 	for i, row := range m.req.Rows {
 		targets[i] = matchText(row)
 		groups[i] = row.Group
+		m.argsRows = m.argsRows || row.WithArgs
 	}
 	m.matches = GroupContiguous(Rank(m.query, targets, m.req.Exact), groups)
 }

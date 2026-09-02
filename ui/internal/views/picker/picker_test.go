@@ -3403,17 +3403,17 @@ func TestAltNotHeldRendersIdenticallyRegardlessOfWithArgs(t *testing.T) {
 	}
 }
 
-// TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim is the Modifiers board's
-// "⌥ held" golden: the header carries the "with args" badge, the cursor row
-// (WithArgs true) swaps its right side for the "pick args" badge, a
-// non-cursor WithArgs row keeps its ordinary styling, and a non-cursor
-// WithArgs-false row fades to Faint -- all three only once alt is actually
-// held. A second pass moves the cursor onto a WithArgs-false row itself:
-// the board keeps the focused row full-strength under its own SelBg
-// highlight, so the cursor row's own left text must never dim, even though
-// it has no args to preview -- only a still-non-cursor no-args row (here,
-// "dispose") dims.
-func TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim(t *testing.T) {
+// TestAltHeldRendersCursorBadgeAndRowDim is the Modifiers board's "⌥ held"
+// golden: the cursor row (WithArgs true) swaps its right side for the "pick
+// args" badge, a non-cursor WithArgs row keeps its ordinary styling, and a
+// non-cursor WithArgs-false row fades to Faint -- all only once alt is
+// actually held. The header carries no badge: the hold itself is the
+// signal, so naming the modifier again is noise. A second pass moves the
+// cursor onto a WithArgs-false row itself: the board keeps the focused row
+// full-strength under its own SelBg highlight, so the cursor row's own left
+// text must never dim, even though it has no args to preview -- only a
+// still-non-cursor no-args row (here, "dispose") dims.
+func TestAltHeldRendersCursorBadgeAndRowDim(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Breadcrumb: []string{"rt", "worktree"},
@@ -3439,14 +3439,10 @@ func TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim(t *testing.T) {
 	cursorLine := lines[3] // rule, then the cursor row (provision) first
 	createLine := lines[4] // non-cursor, WithArgs true
 	listLine := lines[5]   // non-cursor, WithArgs false
-	const lavSGR = "38;2;189;147;249"
 	const faintSGR = "38;2;110;102;140"
 
-	if !strings.Contains(ansi.Strip(header), "with args") {
-		t.Fatalf("header should carry the with-args badge while alt is held: %q", ansi.Strip(header))
-	}
-	if !strings.Contains(header, lavSGR) {
-		t.Fatalf("with-args badge should be lav-colored: %q", header)
+	if strings.Contains(ansi.Strip(header), "with args") || strings.Contains(header, "⌥") {
+		t.Fatalf("the header must not badge the held modifier: %q", ansi.Strip(header))
 	}
 
 	if !strings.Contains(ansi.Strip(cursorLine), "enter → pick args") {
@@ -3480,6 +3476,170 @@ func TestAltHeldRendersHeaderBadgeCursorBadgeAndRowDim(t *testing.T) {
 	}
 }
 
+// TestAltHeldIsInertWithoutAltBehavior pins the no-behavior-no-chrome rule
+// for alt: a request with no WithArgs rows and no visible alt-keyed action
+// (nav's shape: its alt-enter exit key is FooterHidden) renders byte
+// identically whether or not alt is held. Chrome that hints at a modifier
+// with nothing behind it is what this guards against.
+func TestAltHeldIsInertWithoutAltBehavior(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "nav"},
+		Rows: []protocol.PickRow{
+			{Value: "d:src", Left: []protocol.PickSegment{{Text: "src", Tone: "text"}}},
+			{Value: "f:main.go", Left: []protocol.PickSegment{{Text: "main.go", Tone: "text"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+			{ID: "alt-enter", Key: "alt-enter", Scope: "item", FooterHidden: true},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	enableKittyProtocol(m)
+	before := render(m)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftAlt})
+	m = next.(*Model)
+	if !m.held.alt {
+		t.Fatal("setup: alt press should set held.alt")
+	}
+	if got := render(m); got != before {
+		t.Fatalf("alt held with nothing bound to alt must not change the frame:\nheld:   %q\nplain:  %q", ansi.Strip(got), ansi.Strip(before))
+	}
+}
+
+// TestAltHeldLegendShowsAltActionsByBareKey pins the held legend's grammar:
+// while alt is physically held the footer swaps to just the alt-bound
+// actions, each labeled by its bare key ("enter", never "alt-enter") because
+// the modifier is already under the user's finger. Nothing else survives
+// the swap: no ctrl actions, no plain enter, no pinned quit, and the footer
+// stays one line so holding a modifier never shifts the list.
+func TestAltHeldLegendShowsAltActionsByBareKey(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "pick", Primary: true},
+			{ID: "with-args", Label: "with args", Key: "alt-enter", Scope: "item", Group: "pick"},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	enableKittyProtocol(m)
+	plainLines := strings.Split(render(m), "\n")
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftAlt})
+	m = next.(*Model)
+	lines := strings.Split(render(m), "\n")
+	if len(lines) != len(plainLines) {
+		t.Fatalf("holding alt must not change the frame height: %d held vs %d plain", len(lines), len(plainLines))
+	}
+	footer := ansi.Strip(lines[len(lines)-1])
+	if !strings.Contains(footer, "pick enter with args") {
+		t.Fatalf("the held legend should carry the alt action under its bare key: %q", footer)
+	}
+	for _, gone := range []string{"alt-enter", "cd here", "ctrl", "open ", "quit", "⌥"} {
+		if strings.Contains(footer, gone) {
+			t.Fatalf("the held legend must show only alt-bound actions (found %q): %q", gone, footer)
+		}
+	}
+	if strings.Contains(ansi.Strip(lines[0]), "⌥") || strings.Contains(ansi.Strip(lines[0]), "with args") {
+		t.Fatalf("the header must not badge the held modifier: %q", ansi.Strip(lines[0]))
+	}
+
+	// A click on the bare-key legend entry still dispatches the real action.
+	found := false
+	for _, z := range m.zones.byY[len(lines)-1] {
+		if z.kind == zoneKeybarKey && z.action.ID == "with-args" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the held legend entry should register a keybar zone for with-args")
+	}
+}
+
+// TestCtrlHeldLegendShowsCtrlActionsByBareKey is the ctrl twin: the footer
+// swaps to the ctrl-bound actions under their bare keys, grouped as
+// declared, with the range indicator kept and no "held" caption or header
+// badge anywhere -- and it stays one line rather than growing into the
+// ctrl-/ two-line keymap.
+func TestCtrlHeldLegendShowsCtrlActionsByBareKey(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5,
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
+			{ID: "up", Key: "ctrl-up", Scope: "global", FooterHidden: true},
+		},
+	}
+	m := New(req)
+	m.width = 90
+	enableKittyProtocol(m)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
+	m = next.(*Model)
+	if !m.held.ctrl {
+		t.Fatal("setup: ctrl press should set held.ctrl")
+	}
+
+	lines := strings.Split(render(m), "\n")
+	if want := 10; len(lines) != want {
+		t.Fatalf("the held legend stays a single line (%d lines), got %d:\n%s", want, len(lines), render(m))
+	}
+	if strings.Contains(ansi.Strip(lines[0]), "⌃") {
+		t.Fatalf("the header must not badge the held modifier: %q", ansi.Strip(lines[0]))
+	}
+	footer := ansi.Strip(lines[len(lines)-1])
+	if !strings.Contains(footer, "nav h cd here") || !strings.Contains(footer, "act o open in editor") {
+		t.Fatalf("the held legend should carry each ctrl action under its bare key, grouped: %q", footer)
+	}
+	for _, gone := range []string{"ctrl", "enter", "quit", "showing all keys", "up"} {
+		if strings.Contains(footer, gone) {
+			t.Fatalf("the held legend must show only visible ctrl-bound actions (found %q): %q", gone, footer)
+		}
+	}
+	if !strings.Contains(footer, "1-5 of 20") {
+		t.Fatalf("the range indicator must survive the held swap: %q", footer)
+	}
+}
+
+// TestCtrlHeldIsInertWithoutCtrlActions: a request whose only ctrl bindings
+// are hidden exit keys (rt run's shape) shows nothing for a ctrl hold.
+func TestCtrlHeldIsInertWithoutCtrlActions(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Breadcrumb: []string{"rt", "run"},
+		Rows: []protocol.PickRow{
+			{Value: "build", Left: []protocol.PickSegment{{Text: "build", Tone: "text"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "up", Key: "ctrl-up", Scope: "global", FooterHidden: true},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	enableKittyProtocol(m)
+	before := render(m)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
+	m = next.(*Model)
+	if got := render(m); got != before {
+		t.Fatalf("ctrl held with nothing visible bound to ctrl must not change the frame:\nheld:  %q\nplain: %q", ansi.Strip(got), ansi.Strip(before))
+	}
+}
+
 // TestCtrlNotHeldRendersTheSingleLineKeybar pins today's baseline: the
 // footer stays one line, the real range indicator renders when the list
 // overflows, and nothing claims an expanded keymap.
@@ -3506,84 +3666,12 @@ func TestCtrlNotHeldRendersTheSingleLineKeybar(t *testing.T) {
 	}
 }
 
-// TestCtrlHeldRendersTwoLineGroupedKeybar is the Modifiers board's "⌃ held"
-// golden: the header carries the "⌃ keys" badge, the footer grows to two
-// lines, each declared group renders whole (never split mid-group) across
-// them, "held: showing all keys" pins to the first line's right edge
-// alongside the still-live range indicator, and the ordinary right-pinned
-// action run (quit) closes the second line.
-func TestCtrlHeldRendersTwoLineGroupedKeybar(t *testing.T) {
-	rows := make([]protocol.PickRow, 20)
-	for i := range rows {
-		v := fmt.Sprintf("row%02d", i)
-		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
-	}
-	req := protocol.PickRequest{
-		T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5,
-		Actions: []protocol.PickAction{
-			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
-			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
-			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
-		},
-	}
-	m := New(req)
-	// Wide enough for the "nav" group plus the range+held run on line one,
-	// but not wide enough for "act" to join it there -- pinning the
-	// group-boundary wrap the assertions below check for.
-	m.width = 90
-	enableKittyProtocol(m) // real press/release path, so held may engage
-
-	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
-	m = next.(*Model)
-	if !m.held.ctrl {
-		t.Fatal("setup: ctrl press should set held.ctrl")
-	}
-
-	lines := strings.Split(render(m), "\n")
-	// breadcrumb, filter, rule, 5 rows, rule, keybar line 1, keybar line 2:
-	// one more line than the single-line footer's own 10, for the second
-	// keybar line totalChromeRows now budgets for.
-	if want := 11; len(lines) != want {
-		t.Fatalf("expected %d lines with the two-line keybar, got %d:\n%s", want, len(lines), render(m))
-	}
-	header := lines[0]
-	if !strings.Contains(ansi.Strip(header), "⌃ keys") {
-		t.Fatalf("header should carry the ctrl-held badge while ctrl is held: %q", ansi.Strip(header))
-	}
-	if !strings.Contains(header, cyanSGR) {
-		t.Fatalf("ctrl-held badge should be cyan-colored: %q", header)
-	}
-
-	line1 := ansi.Strip(lines[len(lines)-2])
-	line2 := ansi.Strip(lines[len(lines)-1])
-
-	if !strings.Contains(line1, "nav") || !strings.Contains(line1, "enter") || !strings.Contains(line1, "cd here") {
-		t.Fatalf("first keybar line should carry the nav group whole: %q", line1)
-	}
-	if !strings.Contains(line1, "held: showing all keys") {
-		t.Fatalf("first keybar line should carry the held indicator: %q", line1)
-	}
-	if !strings.Contains(line1, "1-5 of 20") {
-		t.Fatalf("the range indicator must survive alongside the held indicator: %q", line1)
-	}
-	if strings.Contains(line1, "act") {
-		t.Fatalf("the act group belongs on the second line, not the first: %q", line1)
-	}
-
-	if !strings.Contains(line2, "act") || !strings.Contains(line2, "open in editor") {
-		t.Fatalf("second keybar line should carry the act group: %q", line2)
-	}
-	if !strings.Contains(line2, "esc") || !strings.Contains(line2, "quit") {
-		t.Fatalf("second keybar line should still pin quit to the right: %q", line2)
-	}
-}
-
-// TestExpandedKeybarHeldIndicatorGatesOnPhysicalHold pins the ctrl-/ TOGGLE
-// path: m.expanded renders the same two-line grouped keybar, but the
-// "held: showing all keys" indicator names a physical ctrl hold and must NOT
-// appear when only the toggle is on (no Kitty hold engaged). The range keeps
-// its slot either way. A fallback terminal reaches this exact state.
-func TestExpandedKeybarHeldIndicatorGatesOnPhysicalHold(t *testing.T) {
+// TestCtrlSlashToggleRendersTwoLineKeybarWithFullKeys pins the ctrl-/
+// TOGGLE path: m.expanded renders the two-line grouped keybar with every
+// key under its full name (nothing is physically held, so "ctrl-o" stays
+// "ctrl-o"), the range keeps its slot, and no held caption appears. A
+// fallback terminal reaches this exact state.
+func TestCtrlSlashToggleRendersTwoLineKeybarWithFullKeys(t *testing.T) {
 	rows := make([]protocol.PickRow, 20)
 	for i := range rows {
 		v := fmt.Sprintf("row%02d", i)
@@ -3622,11 +3710,12 @@ func TestExpandedKeybarHeldIndicatorGatesOnPhysicalHold(t *testing.T) {
 	if strings.Contains(line2, "open in editor") {
 		t.Fatalf("the groups belong on line one, not the pinned quit line: %q", line2)
 	}
-	// The held indicator names a physical hold, which is not engaged here.
-	if strings.Contains(line1, "held: showing all keys") {
-		t.Fatalf("the held indicator must not show on a ctrl-/ toggle: %q", line1)
+	if !strings.Contains(line1, "ctrl-o open in editor") {
+		t.Fatalf("the toggle path keeps full key names: %q", line1)
 	}
-	// The range keeps its slot regardless of the held indicator.
+	if strings.Contains(line1, "held") {
+		t.Fatalf("no held caption on a ctrl-/ toggle: %q", line1)
+	}
 	if !strings.Contains(line1, "1-5 of 20") {
 		t.Fatalf("the range indicator must survive on the toggle path: %q", line1)
 	}
@@ -4154,58 +4243,6 @@ func TestCtrlSlashTogglesExpandedKeybar(t *testing.T) {
 	}
 }
 
-// TestCtrlKeysBadgeGatesOnPhysicalHoldNotToggle pins the Modifiers board's
-// "⌃ keys" header badge as a physical-hold indicator: a bare ctrl hold shows
-// it, while the sticky ctrl-/ toggle shows the two-line keybar WITHOUT it. The
-// badge gates on m.held.ctrl, never on the toggle's own m.expanded, so the two
-// states stay visually distinct.
-func TestCtrlKeysBadgeGatesOnPhysicalHoldNotToggle(t *testing.T) {
-	rows := make([]protocol.PickRow, 6)
-	for i := range rows {
-		v := fmt.Sprintf("row%d", i)
-		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
-	}
-	req := protocol.PickRequest{
-		T: "pick", Protocol: protocol.Version, Rows: rows,
-		Actions: []protocol.PickAction{
-			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
-		},
-	}
-	header := func(m *Model) string { return ansi.Strip(strings.Split(render(m), "\n")[0]) }
-
-	// Sticky toggle: the two-line keybar shows, the badge does not, and the
-	// physical-hold flag was never set.
-	tog := New(req)
-	tog.width = 90
-	next, _ := tog.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
-	tog = next.(*Model)
-	if !tog.expanded || tog.held.ctrl {
-		t.Fatalf("setup: ctrl-/ should toggle expanded on without a physical hold: expanded=%v held=%v", tog.expanded, tog.held.ctrl)
-	}
-	togLines := strings.Split(render(tog), "\n")
-	// The two-line keybar renders (expanded), but "held: showing all keys" names
-	// a physical hold, which the toggle never engages... so it must be absent.
-	if strings.Contains(ansi.Strip(togLines[len(togLines)-2]), "held: showing all keys") {
-		t.Fatalf("the held indicator must not show on the sticky ctrl-/ toggle: %q", ansi.Strip(togLines[len(togLines)-2]))
-	}
-	if strings.Contains(header(tog), "⌃ keys") {
-		t.Fatalf("the ⌃ keys badge must be absent on the sticky ctrl-/ toggle: %q", header(tog))
-	}
-
-	// Physical hold: the same badge is present.
-	held := New(req)
-	held.width = 90
-	enableKittyProtocol(held) // real press/release path, so held may engage
-	next, _ = held.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
-	held = next.(*Model)
-	if !held.held.ctrl {
-		t.Fatal("setup: a bare ctrl press should set held.ctrl")
-	}
-	if !strings.Contains(header(held), "⌃ keys") {
-		t.Fatalf("the ⌃ keys badge must be present on a physical ctrl hold: %q", header(held))
-	}
-}
-
 // enableKittyProtocol feeds the model the terminal's Kitty keyboard-protocol
 // handshake -- the terminal confirming it reports key event types, which means
 // a bare modifier's release will arrive as its own event. held only ever
@@ -4218,10 +4255,10 @@ func enableKittyProtocol(m *Model) {
 // TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles pins the
 // fallback-input path the real tmux drive caught: a terminal that never
 // confirmed the Kitty keyboard protocol reports a bare modifier press but
-// never its matching release, so held must never engage there -- otherwise the
-// "⌃ keys" badge and the auto-expand latch true with nothing held. The ctrl-/
-// sticky toggle is a discrete keypress, independent of held, so it must still
-// reach the two-line keybar -- just without the badge.
+// never its matching release, so held must never engage there -- otherwise
+// the held legend would latch with nothing held. The ctrl-/ sticky toggle
+// is a discrete keypress, independent of held, so it must still reach the
+// two-line keybar.
 func TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles(t *testing.T) {
 	rows := make([]protocol.PickRow, 6)
 	for i := range rows {
@@ -4232,14 +4269,15 @@ func TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles(t *testing.T) 
 		T: "pick", Protocol: protocol.Version, Rows: rows,
 		Actions: []protocol.PickAction{
 			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
 		},
 	}
-	header := func(m *Model) string { return ansi.Strip(strings.Split(render(m), "\n")[0]) }
 
 	// No enableKittyProtocol: this model never saw the handshake, so it is a
 	// fallback terminal and no bare-modifier release will ever arrive.
 	m := New(req)
 	m.width = 90
+	before := render(m)
 
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
 	m = next.(*Model)
@@ -4251,28 +4289,20 @@ func TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles(t *testing.T) 
 	if m.held.alt {
 		t.Fatal("a bare alt press on a fallback terminal must never latch held.alt")
 	}
-	if strings.Contains(header(m), "⌃ keys") {
-		t.Fatalf("the ⌃ keys badge must never render on a fallback terminal: %q", header(m))
-	}
-	if m.showExpandedKeybar() {
-		t.Fatal("held must not auto-expand the keybar on a fallback terminal")
+	if got := render(m); got != before {
+		t.Fatalf("a bare modifier press on a fallback terminal must leave the frame untouched:\nafter:  %q\nbefore: %q", ansi.Strip(got), ansi.Strip(before))
 	}
 
 	// The ctrl-/ toggle is a discrete keypress and must still reach the
-	// two-line keybar, badge still absent.
+	// two-line keybar, keys under their full names.
 	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
 	m = next.(*Model)
 	if !m.expanded {
 		t.Fatal("ctrl-/ must still toggle the expanded keybar on a fallback terminal")
 	}
 	lines := strings.Split(render(m), "\n")
-	// The toggle expands the keybar (m.expanded above), but the held indicator
-	// names a physical hold, which a fallback terminal never engages.
-	if strings.Contains(ansi.Strip(lines[len(lines)-2]), "held: showing all keys") {
-		t.Fatalf("the held indicator must not show on the ctrl-/ toggle in a fallback terminal: %q", ansi.Strip(lines[len(lines)-2]))
-	}
-	if strings.Contains(header(m), "⌃ keys") {
-		t.Fatalf("the ⌃ keys badge must stay absent after ctrl-/ on a fallback terminal: %q", header(m))
+	if !strings.Contains(ansi.Strip(lines[len(lines)-2]), "ctrl-h cd here") {
+		t.Fatalf("the ctrl-/ keymap keeps full key names on a fallback terminal: %q", ansi.Strip(lines[len(lines)-2]))
 	}
 }
 

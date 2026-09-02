@@ -94,6 +94,36 @@ func effectiveActions(req protocol.PickRequest) []protocol.PickAction {
 	return out
 }
 
+// modifierActions returns the footer-visible actions bound to a chord of
+// mod ("alt" or "ctrl"), each copied with the chord prefix dropped from its
+// key ("ctrl-h" → "h"): the held legend labels a key by what is left to
+// press while the modifier is already down. Group and order are kept so the
+// held legend clusters exactly like the ordinary one.
+func modifierActions(actions []protocol.PickAction, mod string) []protocol.PickAction {
+	prefix := mod + "-"
+	var out []protocol.PickAction
+	for _, a := range actions {
+		if a.FooterHidden || !strings.HasPrefix(a.Key, prefix) {
+			continue
+		}
+		bare := a
+		bare.Key = strings.TrimPrefix(a.Key, prefix)
+		out = append(out, bare)
+	}
+	return out
+}
+
+// legendActions is what the footer paints: the held modifier's own actions
+// under bare keys while one is held with something bound to it, otherwise
+// every effective action under its full key.
+func legendActions(m *Model) []protocol.PickAction {
+	actions := effectiveActions(m.req)
+	if mod := m.heldModifier(); mod != "" {
+		return modifierActions(actions, mod)
+	}
+	return actions
+}
+
 // keybarCluster is one lav-labeled run of key/label pairs in the footer
 // legend: a caller-declared group (label set) or the ungrouped run that
 // pins to the right (label empty, no lav prefix).

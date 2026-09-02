@@ -204,10 +204,15 @@ navigation; keybar keys are clickable. SGR protocol, native BT v2.
 
 ### Modifier-held states (Kitty protocol; static fallback)
 
-- ⌥ held: header flips to `⌥ with args`, rows without args dim, cursor row
-  shows an `enter → pick args` badge (lav).
-- ⌃ held: the full key map (registry-derived) slides into the footer while
-  held.
+- While a modifier is physically held, the footer swaps to that modifier's
+  own actions under their bare keys (`ctrl-h cd here` reads `h cd here`);
+  the modifier is never named again, the header never badges, and the
+  footer never grows. A modifier with nothing visibly bound to it in the
+  request changes nothing.
+- ⌥ held with `withArgs` rows: rows without args dim, cursor row shows an
+  `enter → pick args` badge (lav).
+- The full key map is the ctrl-/ toggle (two lines, full key names), not a
+  hold.
 
 ### Sizing & scrolling
 
