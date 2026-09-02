@@ -119,6 +119,9 @@ screen_readiness() {
     ax_shot 03-clt-installed
   fi
   ax_shot 03-readiness-final
+  # Every row's status, before Install: the one record that explains a
+  # Continue that does not advance.
+  ax_log "checklist rows: $(for id in $(ax_dump_ids | grep -o 'setup\.checklist\.row\.[A-Za-z0-9._-]*' | sed -E 's/\.(action|status|error)$//' | sed 's/^setup\.checklist\.row\.//' | sort -u); do printf '%s=%s ' "$id" "$(ax_status "$id" 2>/dev/null || echo '?')"; done)"
   ax_find setup.checklist.continue >/dev/null || ax_fail "setup.checklist.continue axid missing"
   ax_click setup.checklist.continue
 }
