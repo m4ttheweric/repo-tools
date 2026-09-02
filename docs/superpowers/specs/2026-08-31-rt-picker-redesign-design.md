@@ -214,9 +214,21 @@ navigation; keybar keys are clickable. SGR protocol, native BT v2.
 - At rest the keybar lists only the keys that work as-is; there is no
   ctrl-/ keymap. The ctrl-k / right-click menu lists every action.
 
+### Layout
+
+`PickRequest.layout` selects `"fullscreen"` (default, also when omitted) or
+`"inline"`. Fullscreen takes the alternate screen: the frame fills the pane,
+the keybar docks to the bottom row, the row cap does not apply, and leaving
+the screen erases every trace (addendum, Matt 2026-09-02: cswap-style rooms
+everywhere). Inline is the content-anchored renderer the picker shipped
+with, kept intact behind the prop: it paints where invoked, holds a reserved
+floor so bubbletea's inline diff never strands a frame, and clears itself on
+quit. No caller sets the prop today.
+
 ### Sizing & scrolling
 
-`viewport = min(caller cap [default 14], list length, pane height − chrome)`;
+Inline: `viewport = min(caller cap [default 14], list length, pane height − chrome)`;
+fullscreen: `min(list length, pane height − chrome)`.
 caller may raise or lower the cap; the pane is the hard ceiling; SIGWINCH
 re-derives live. Content-anchored: short lists collapse to content (no
 full-pane void). 2-row scrolloff; wheel moves viewport only; pgup/pgdn; drag

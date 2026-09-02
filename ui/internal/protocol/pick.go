@@ -59,10 +59,24 @@ type PickAction struct {
 	FooterHidden bool `json:"footerHidden,omitempty"`
 }
 
+// Layout values for PickRequest.Layout.
+const (
+	// LayoutFullscreen takes the alternate screen: the frame fills the pane,
+	// the keybar docks to the bottom row, the row cap does not apply, and
+	// leaving the screen erases every trace. The default.
+	LayoutFullscreen = "fullscreen"
+	// LayoutInline is the content-anchored renderer: the picker paints where
+	// it was invoked, holds a reserved floor so bubbletea's inline diff never
+	// strands a frame, and clears itself on quit.
+	LayoutInline = "inline"
+)
+
 type PickRequest struct {
-	T             string       `json:"t"`
-	Protocol      int          `json:"protocol"`
-	Message       string       `json:"message"`
+	T        string `json:"t"`
+	Protocol int    `json:"protocol"`
+	Message  string `json:"message"`
+	// Layout selects fullscreen (default, also when empty) or inline.
+	Layout        string       `json:"layout,omitempty"`
 	Breadcrumb    []string     `json:"breadcrumb,omitempty"`
 	Rows          []PickRow    `json:"rows"`
 	Actions       []PickAction `json:"actions,omitempty"`

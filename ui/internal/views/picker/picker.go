@@ -669,7 +669,11 @@ func (m *Model) viewport() (top, h int) {
 	if !bounded {
 		pane = len(m.matches) + rows
 	}
-	top, h = Viewport(m.cursor, m.viewportTop, len(m.matches), m.req.Cap, pane, rows)
+	cap := m.req.Cap
+	if m.fullscreen() && bounded {
+		cap = pane // the list takes every row the chrome leaves
+	}
+	top, h = Viewport(m.cursor, m.viewportTop, len(m.matches), cap, pane, rows)
 	if bounded {
 		top, h = m.fitHeaderBudget(h, pane-rows)
 	}
@@ -751,6 +755,16 @@ func renderView(m *Model) string {
 	if m.closing {
 		return ""
 	}
+	if m.fullscreen() {
+		// The pane is the frame: fill it, keybar on the last row, and let
+		// the alternate screen's own teardown do the erasing. None of the
+		// inline floor/pin machinery applies.
+		body := renderFrame(m, m.height)
+		if m.modal != nil && body != "" {
+			body = renderModal(m, body)
+		}
+		return body
+	}
 	body := renderFrame(m, m.reservedHeight)
 	if m.modal != nil && body != "" {
 		body = renderModal(m, body)
@@ -769,13 +783,21 @@ func renderView(m *Model) string {
 // by the frame; the sequence runs the two in order, never a write from here.
 func (m *Model) quit() (tea.Model, tea.Cmd) {
 	m.closing = true
+	if m.fullscreen() {
+		return m, tea.Quit
+	}
 	return m, tea.Sequence(tea.ClearScreen, tea.Quit)
+}
+
+// fullscreen reports the request's layout: the alternate screen unless the
+// caller asked for inline. See protocol.LayoutFullscreen / LayoutInline.
+func (m *Model) fullscreen() bool {
+	return m.req.Layout != protocol.LayoutInline
 }
 
 func (m *Model) View() tea.View {
 	v := tea.NewView(renderView(m))
-	// Inline, not alt-screen: the picker is content-anchored, appearing
-	// where the caller invoked it rather than taking over the terminal.
+	v.AltScreen = m.fullscreen()
 	v.MouseMode = tea.MouseModeAllMotion
 	// The held-modifier chrome reads bare KeyLeftAlt/KeyLeftCtrl presses, which
 	// the Kitty protocol only emits under "report all keys as escape codes";

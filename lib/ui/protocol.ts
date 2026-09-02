@@ -178,6 +178,13 @@ export interface PickRequest {
   t: "pick";
   protocol: 1;
   message: string;
+  /**
+   * "fullscreen" (default) takes the alternate screen: the frame fills the
+   * pane, the keybar docks to the bottom, `cap` does not apply, and leaving
+   * the screen erases every trace. "inline" keeps the content-anchored
+   * renderer (paints where invoked, reserved floor, clears itself on quit).
+   */
+  layout?: "fullscreen" | "inline";
   breadcrumb?: string[];
   rows: PickRow[];
   actions?: PickAction[];

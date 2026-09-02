@@ -1723,7 +1723,7 @@ func TestModalMessageDimsTheParentAndPaintsASurfaceOverlay(t *testing.T) {
 		T: "pick", Protocol: protocol.Version,
 		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}}},
 	}
-	m := New(req)
+	m := newInline(req)
 	m.width = 60
 
 	base := render(m)
@@ -1943,7 +1943,7 @@ func TestOverlayCloseHoldsTheSameHeightAsWhileOpen(t *testing.T) {
 			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
 		},
 	}
-	m := New(req)
+	m := newInline(req)
 	m.width = 60
 
 	modalRows := make([]protocol.PickRow, 20)
@@ -1988,7 +1988,7 @@ type unrecognizedMsg struct{}
 // modal's own height throughout, never dipping to the shorter one's.
 func TestRacedRepeatedOverlayOpenNeverShrinks(t *testing.T) {
 	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a"}}}
-	m := New(req)
+	m := newInline(req)
 	m.width = 60
 
 	tallRows := make([]protocol.PickRow, 20)
@@ -2909,7 +2909,7 @@ func TestModalMouseMotionHoversAndRendersHoverBg(t *testing.T) {
 		T: "pick", Protocol: protocol.Version,
 		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
 	}
-	m := New(req)
+	m := newInline(req)
 	m.width = 60
 	m.openTSModal(protocol.PickModal{
 		Message: "Sort by",
@@ -2955,7 +2955,7 @@ func TestModalMouseClickOnRowActivatesLikeKeyboard(t *testing.T) {
 				{ID: "dispose", Label: "dispose", Scope: "item"},
 			},
 		}
-		m := New(req)
+		m := newInline(req)
 		m.width = 60
 		return m
 	}
@@ -3004,7 +3004,7 @@ func TestModalMouseClickOnRowActivatesLikeKeyboard(t *testing.T) {
 // pre-fix modal (click early-returned, the box stayed open).
 func TestModalMouseClickOutsideDismissesLikeEsc(t *testing.T) {
 	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}}}
-	m := New(req)
+	m := newInline(req)
 	m.width = 60
 	m.events = make(chan []byte, 4)
 	m.openTSModal(protocol.PickModal{
@@ -3049,7 +3049,7 @@ func TestModalMouseClickOutsideDismissesLikeEsc(t *testing.T) {
 // dismisses -- it is inert, like a click on the base list's own chrome.
 func TestModalMouseClickInsideOffRowIsInert(t *testing.T) {
 	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}}}
-	m := New(req)
+	m := newInline(req)
 	m.width = 60
 	m.events = make(chan []byte, 4)
 	m.openTSModal(protocol.PickModal{
@@ -3415,6 +3415,79 @@ func TestCtrlKIsReservedForTheMenu(t *testing.T) {
 		if a.Key == "ctrl-k" {
 			t.Fatalf("a patched registry must not keep a ctrl-k binding: %+v", a)
 		}
+	}
+}
+
+// TestFullscreenIsTheDefaultLayout pins the layout prop: a request that
+// says nothing takes the alternate screen; "inline" keeps the
+// content-anchored renderer (its reserved floor, its clear-on-quit).
+func TestFullscreenIsTheDefaultLayout(t *testing.T) {
+	rows := []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}}}
+	m := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows})
+	m.width, m.height = 80, 24
+	if !m.View().AltScreen {
+		t.Fatal("a request without a layout must take the alternate screen")
+	}
+	if _, cmd := m.quit(); !isQuitCmd(cmd) || msgYieldsClearScreen(cmd()) {
+		t.Fatal("fullscreen quit must not clear the screen in-loop; leaving the alt screen erases the frame")
+	}
+
+	inline := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows, Layout: protocol.LayoutInline})
+	inline.width, inline.height = 80, 24
+	if inline.View().AltScreen {
+		t.Fatal("layout inline must stay content-anchored")
+	}
+	if _, cmd := inline.quit(); !isQuitCmd(cmd) || !msgYieldsClearScreen(cmd()) {
+		t.Fatal("inline quit keeps its in-loop clear")
+	}
+}
+
+// TestFullscreenFrameFillsThePaneWithTheKeybarDocked: the painted frame is
+// exactly the pane height, the keybar is its last line, and the row cap no
+// longer applies: the list takes every row the chrome leaves. A resize
+// repaints to the new height on the next frame.
+func TestFullscreenFrameFillsThePaneWithTheKeybarDocked(t *testing.T) {
+	rows := make([]protocol.PickRow, 40)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	m := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5})
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(*Model)
+
+	frame := ansi.Strip(renderView(m))
+	lines := strings.Split(frame, "\n")
+	if len(lines) != 30 {
+		t.Fatalf("fullscreen frame should be exactly the pane height (30), got %d", len(lines))
+	}
+	if !strings.Contains(lines[29], "esc quit") {
+		t.Fatalf("the keybar must be the last line: %q", lines[29])
+	}
+	visible := 0
+	for _, l := range lines {
+		if strings.Contains(l, "row") {
+			visible++
+		}
+	}
+	if want := 30 - chromeRows; visible != want {
+		t.Fatalf("the list should fill the pane (%d rows), got %d; Cap must not apply fullscreen", want, visible)
+	}
+
+	// Filtering to one match keeps the frame at the pane height, keybar still docked.
+	for _, r := range "row07" {
+		next, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = next.(*Model)
+	}
+	lines = strings.Split(ansi.Strip(renderView(m)), "\n")
+	if len(lines) != 30 || !strings.Contains(lines[29], "esc quit") {
+		t.Fatalf("a narrowed list must keep the pane height with the keybar docked, got %d lines, last %q", len(lines), lines[len(lines)-1])
+	}
+
+	next, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = next.(*Model)
+	if got := len(strings.Split(ansi.Strip(renderView(m)), "\n")); got != 20 {
+		t.Fatalf("a resize should repaint to the new pane height (20), got %d", got)
 	}
 }
 
@@ -3970,13 +4043,39 @@ func msgYieldsQuit(msg tea.Msg) bool {
 	return false
 }
 
+// newInline builds a model on the inline (content-anchored) layout, the
+// path the reserved-floor and pin tests guard; fullscreen is the default.
+func newInline(req protocol.PickRequest) *Model {
+	req.Layout = protocol.LayoutInline
+	return New(req)
+}
+
+// msgYieldsClearScreen is msgYieldsQuit's twin for the in-loop clear the
+// inline quit sequences ahead of tea.Quit.
+func msgYieldsClearScreen(msg tea.Msg) bool {
+	if fmt.Sprintf("%T", msg) == "tea.clearScreenMsg" {
+		return true
+	}
+	v := reflect.ValueOf(msg)
+	if v.Kind() != reflect.Slice {
+		return false
+	}
+	for i := 0; i < v.Len(); i++ {
+		inner, ok := v.Index(i).Interface().(tea.Cmd)
+		if ok && inner != nil && msgYieldsClearScreen(inner()) {
+			return true
+		}
+	}
+	return false
+}
+
 // stableHeightReq is an n-row request under a breadcrumb whose rows all
 // contain "r" but none contain "z", so one query edit can collapse the match
 // set to zero while another leaves it full -- the natural frame height really
 // moves, which is what makes the constant-padded-height assertions non-vacuous.
 func stableHeightReq(n int) protocol.PickRequest {
 	return protocol.PickRequest{
-		T: "pick", Protocol: protocol.Version,
+		T: "pick", Protocol: protocol.Version, Layout: protocol.LayoutInline,
 		Breadcrumb: []string{"rt", "list"},
 		Rows:       stableHeightRows(n),
 	}
@@ -4000,7 +4099,7 @@ func stableHeightRows(n int) []protocol.PickRow {
 // terminal content. Pre-fix, with no floor, renderView tracked the natural
 // height and this changed.
 func TestFrameHeightStaysConstantWhenAQueryShrinksTheList(t *testing.T) {
-	next, _ := New(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	next, _ := newInline(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
 	m := next.(*Model)
 
 	before := lipgloss.Height(renderView(m))
@@ -4023,7 +4122,7 @@ func TestFrameHeightStaysConstantWhenAQueryShrinksTheList(t *testing.T) {
 // much shorter, so the natural frame shrinks, but the reserved floor keeps
 // renderView constant.
 func TestFrameHeightStaysConstantWhenADescendSwapsTheRows(t *testing.T) {
-	next, _ := New(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	next, _ := newInline(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
 	m := next.(*Model)
 
 	before := lipgloss.Height(renderView(m))
@@ -4045,7 +4144,7 @@ func TestFrameHeightStaysConstantWhenADescendSwapsTheRows(t *testing.T) {
 // other direction ctrl-t takes: a PickUpdate that grows the row set (revealing
 // hidden entries). The natural frame grows within the floor; renderView holds.
 func TestFrameHeightStaysConstantWhenAHiddenFilesToggleGrowsTheRowSet(t *testing.T) {
-	next, _ := New(stableHeightReq(5)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	next, _ := newInline(stableHeightReq(5)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
 	m := next.(*Model)
 
 	before := lipgloss.Height(renderView(m))
@@ -4069,7 +4168,7 @@ func TestFrameHeightStaysConstantWhenAHiddenFilesToggleGrowsTheRowSet(t *testing
 // the pane; on a short pane the reserve is clamped to the pane and never
 // paints past the terminal.
 func TestReservedFrameShowsCap14ContentAndRespectsThePaneCap(t *testing.T) {
-	next, _ := New(stableHeightReq(100)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	next, _ := newInline(stableHeightReq(100)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
 	tall := next.(*Model)
 
 	h := lipgloss.Height(renderView(tall))
@@ -4084,7 +4183,7 @@ func TestReservedFrameShowsCap14ContentAndRespectsThePaneCap(t *testing.T) {
 		t.Fatalf("cap-14 window should paint exactly %d row lines, painted %d:\n%s", defaultCap, rowLines, plain)
 	}
 
-	next, _ = New(stableHeightReq(100)).Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	next, _ = newInline(stableHeightReq(100)).Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	short := next.(*Model)
 	if sh := lipgloss.Height(renderView(short)); sh > 12 {
 		t.Fatalf("reserved frame exceeded the pane: height %d, pane 12", sh)
@@ -4096,7 +4195,7 @@ func TestReservedFrameShowsCap14ContentAndRespectsThePaneCap(t *testing.T) {
 // clean scrollback rather than a dead card the next chained stage stacks
 // under. Pre-fix, renderView still painted the reserved frame after the quit.
 func TestQuitCollapsesTheFrameToZeroRows(t *testing.T) {
-	next, _ := New(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	next, _ := newInline(stableHeightReq(30)).Update(tea.WindowSizeMsg{Width: 80, Height: 40})
 	m := next.(*Model)
 	if lipgloss.Height(renderView(m)) <= 1 {
 		t.Fatal("setup: the live frame should occupy the reserved height, not be empty")
@@ -4180,7 +4279,7 @@ func TestFrameHeightStaysConstantWhenAFuzzyQueryInterleavesGroups(t *testing.T) 
 			Breadcrumb: []string{"rt", "nav"},
 			Rows:       rows,
 		}
-		next, _ := New(req).Update(tea.WindowSizeMsg{Width: 80, Height: 60})
+		next, _ := newInline(req).Update(tea.WindowSizeMsg{Width: 80, Height: 60})
 		m := next.(*Model)
 		for _, r := range query {
 			n, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
@@ -4349,7 +4448,7 @@ func TestGroupedMatchesRenderContiguousUnderAFuzzyQuery(t *testing.T) {
 func TestGroupedReservationCountsOneHeaderPerGroup(t *testing.T) {
 	rows := queuePackagesInterleaveRows() // two groups
 	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows}
-	m := New(req)
+	m := newInline(req)
 	m.width = 80 // height 0: unbounded, so the reserve is not clamped to a pane
 
 	rowCap := defaultCap
