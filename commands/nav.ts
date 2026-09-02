@@ -134,7 +134,7 @@ function buildActions(empty: boolean, opts: { showHidden: boolean }): PickAction
   if (empty) {
     return [
       { id: "cd-here", label: "cd here", key: "enter", scope: "item", primary: true, group: "nav" },
-      { id: "up", label: "up", key: "ctrl-up", scope: "global", event: true, group: "nav" },
+      { id: "up", label: "back", key: "ctrl-up", scope: "global", event: true, group: "nav" },
       { id: "toggle-hidden", label: hiddenLabel, key: "ctrl-t", scope: "global", event: true, group: "view" },
     ];
   }
@@ -143,7 +143,7 @@ function buildActions(empty: boolean, opts: { showHidden: boolean }): PickAction
     { id: "open", label: "open", key: "enter", scope: "item", primary: true, event: true, group: "nav" },
     { id: "cd-selected", label: "cd selected", key: "ctrl-space", scope: "item", group: "nav" },
     { id: "cd-here", label: "cd here", key: "ctrl-h", scope: "global", group: "nav" },
-    { id: "up", label: "up", key: "ctrl-up", scope: "global", event: true, group: "nav" },
+    { id: "up", label: "back", key: "ctrl-up", scope: "global", event: true, group: "nav" },
     { id: "editor", label: "open in editor", key: "ctrl-o", scope: "item", group: "act" },
     { id: "finder", label: "finder", key: "ctrl-f", scope: "global", event: true, group: "act" },
     // No key: ctrl-k / right-click menu only.
