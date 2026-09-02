@@ -37,6 +37,8 @@ describe("options -> rows", () => {
     expect(rows[0]!.value).toBe("a");
     expect(rows[0]!.group).toBeUndefined();
     expect(rows[0]!.left[0]).toMatchObject({ bold: true });
+    // Filtering runs against the label, not the value or a hint.
+    expect(rows[0]!.match).toBe("Alpha");
   });
 
   test("a separator becomes a group boundary: its label names the group for the rows that follow, until the next separator", async () => {
@@ -123,9 +125,11 @@ describe("expectKeys -> exit actions", () => {
       expectKeys: ["ctrl-x", "alt-enter"],
     });
     const actions = fake.calls[0]!.request.actions ?? [];
-    expect(actions).toContainEqual({ id: "ctrl-x", label: "ctrl-x", key: "ctrl-x", scope: "global", event: false });
-    expect(actions).toContainEqual({ id: "alt-enter", label: "alt-enter", key: "alt-enter", scope: "global", event: false });
-    expect(actions).toContainEqual({ id: "ctrl-up", label: "ctrl-up", key: "ctrl-up", scope: "global", event: false });
+    // Bound with event:false, but with no headerPart naming them they stay off
+    // the legend (an advertised key would print as "ctrl-x ctrl-x").
+    expect(actions).toContainEqual({ id: "ctrl-x", label: "ctrl-x", key: "ctrl-x", scope: "global", event: false, footerHidden: true });
+    expect(actions).toContainEqual({ id: "alt-enter", label: "alt-enter", key: "alt-enter", scope: "global", event: false, footerHidden: true });
+    expect(actions).toContainEqual({ id: "ctrl-up", label: "ctrl-up", key: "ctrl-up", scope: "global", event: false, footerHidden: true });
   });
 
   test("pressing a declared expect key ends the picker with that key as result.key, preserving the value and query", async () => {

@@ -592,8 +592,12 @@ export async function showPicker(
   const anyHasArgs = visible.some(([_, n]) => n.args?.length);
   const labelWidth = Math.max(...visible.map(([name]) => name.length));
 
+  // Filtering sees only the command name (the old fzf palette's --nth=1): the
+  // description is display-only, or "git" would match every row whose prose
+  // happens to carry those letters in order.
   const rows: PickRow[] = visible.map(([name, node]) => ({
     value: name,
+    match: name,
     left: [
       { text: name.padEnd(labelWidth), bold: true },
       { text: `  ${node.description}`, tone: "dim" },

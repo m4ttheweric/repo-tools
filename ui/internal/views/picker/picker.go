@@ -266,14 +266,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.modal != nil {
 			return m.updateModal(msg)
 		}
-		key := msg.String()
-		// ctrl-/ is byte 0x1F; ultraviolet's legacy decode surfaces it as
-		// ctrl+_ (0x1F + 0x40 = '_'), Kitty as ctrl+/. Canonicalize so both
-		// the expanded-keybar toggle and a caller's own ctrl-/ registry action
-		// resolve against one spelling regardless of terminal.
-		if key == "ctrl+_" {
-			key = "ctrl+/"
-		}
+		key := canonicalKey(msg)
 		if key == "ctrl+/" {
 			// The two-line grouped keybar is a generic affordance every picker
 			// gets on ctrl-/; a caller that also registered ctrl-/ (nav's
@@ -442,6 +435,19 @@ func (m *Model) resolveCursor(value string, had bool, prev int) int {
 	default:
 		return prev
 	}
+}
+
+// canonicalKey is the one spelling every key lookup resolves against.
+// ctrl-/ is byte 0x1F; ultraviolet's legacy decode surfaces it as ctrl+_
+// (0x1F + 0x40 = '_'), Kitty as ctrl+/. Both the main list and the action
+// menu go through here so the expanded-keybar toggle and a caller's own
+// ctrl-/ registry action behave the same on either kind of terminal.
+func canonicalKey(msg tea.KeyPressMsg) string {
+	key := msg.String()
+	if key == "ctrl+_" {
+		return "ctrl+/"
+	}
+	return key
 }
 
 // actionForKey resolves a pressed key against the registry. The wire's key
@@ -748,7 +754,13 @@ func (m *Model) View() tea.View {
 	// Inline, not alt-screen: the picker is content-anchored, appearing
 	// where the caller invoked it rather than taking over the terminal.
 	v.MouseMode = tea.MouseModeAllMotion
+	// The held-modifier chrome reads bare KeyLeftAlt/KeyLeftCtrl presses, which
+	// the Kitty protocol only emits under "report all keys as escape codes";
+	// event types alone never deliver a lone modifier. Associated text keeps the
+	// filter's typed characters exact once keys arrive escape-coded.
 	v.KeyboardEnhancements.ReportEventTypes = true
+	v.KeyboardEnhancements.ReportAllKeysAsEscapeCodes = true
+	v.KeyboardEnhancements.ReportAssociatedText = true
 	return v
 }
 

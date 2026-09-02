@@ -151,7 +151,9 @@ function navOptionsToRows(options: NavOption[]): PickRow[] {
     }
     const left: PickSegment[] = [{ text: o.label.padEnd(labelWidth), bold: true }];
     if (o.hint) left.push({ text: `  ${o.hint}`, tone: "dim" });
-    rows.push({ value: o.value, left, ...(group ? { group } : {}) });
+    // Filtering sees the label only; the hint is display (the old fzf nav
+    // primitive matched a single column with --nth=1).
+    rows.push({ value: o.value, match: o.label, left, ...(group ? { group } : {}) });
   }
   return rows;
 }
@@ -181,7 +183,11 @@ function navActions(opts: NavPickerOpts): PickAction[] | undefined {
 
   const actions: PickAction[] = [];
   for (const key of exitKeys) {
-    actions.push({ id: key, label: headerLabels.get(key) ?? key, key, scope: "global", event: false });
+    // An exit key no headerPart names stays bound but off the legend: fzf
+    // never advertised an unlabeled expect key, and printing the key as its
+    // own label reads as "ctrl-up ctrl-up".
+    const label = headerLabels.get(key);
+    actions.push({ id: key, label: label ?? key, key, scope: "global", event: false, ...(label === undefined ? { footerHidden: true } : {}) });
   }
   for (const [key, label] of headerLabels) {
     if (exitKeys.has(key)) continue;

@@ -67,6 +67,8 @@ test("plainRow: bold label plus a dim hint, group optional", () => {
     { text: "ui", bold: true },
     { text: "  packages/ui", tone: "dim" },
   ]);
+  // The hint is display only: typing part of "packages/ui" must not match.
+  expect(row.match).toBe("ui");
 });
 
 test("plainRow: labelWidth pads the label so hints line up down a group", () => {
@@ -88,8 +90,9 @@ test("footerActions: exit keys close with event:false, other header parts are la
 
   const queueActive = runTest.footerActions(["enter: select", "ctrl-x: dequeue", "esc: cancel"], ["ctrl-x"], "queue");
   expect(queueActive).toContainEqual({ id: "ctrl-x", label: "dequeue", key: "ctrl-x", scope: "global", event: false, group: "queue" });
-  // ctrl-up is always an exit key even when no header part names it -- label falls back to the key itself.
-  expect(queueActive).toContainEqual({ id: "ctrl-up", label: "ctrl-up", key: "ctrl-up", scope: "global", event: false });
+  // ctrl-up is always an exit key even when no header part names it, but an
+  // unlabeled one stays off the legend rather than printing "ctrl-up ctrl-up".
+  expect(queueActive).toContainEqual({ id: "ctrl-up", label: "ctrl-up", key: "ctrl-up", scope: "global", event: false, footerHidden: true });
 });
 
 test("footerActions: primary keys cluster under the lav group label; ctrl-up and esc pin right (F-r1)", () => {
