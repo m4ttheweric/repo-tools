@@ -24,3 +24,7 @@ Renders the path from the current output file's directory to `<name>`'s compiled
 ## `{{pack.path:<attachment>/<file>}}`
 
 Renders `${CLAUDE_SKILL_DIR}/../../<side>/<attachment>/<file>`, anchored on the invoking skill's dir so it works inside a shell command from any public skill in the pack. `<attachment>` must be an existing directory under exactly one of the pack's `attachments/` or `skills/` (that picks `<side>`; both is an error), must not name a compiled target (its output exists only after a compile), and `<pack>/<side>/<attachment>/<file>` must exist when the compile runs; `<file>` is one or more segments with no `..`. Rendered paths are exempt from the emitted-file lint. Allowed in engine bodies and in fills; a fill's `${CLAUDE_SKILL_DIR}` rewrite runs before substitution, so a rendered path is never rewritten to a parts dir.
+
+## Headings above an unbound slot
+
+An unbound optional slot renders as nothing. When the only content under a markdown heading would have been that slot (a `#`-to-`######` heading, blank lines, then `{{slot:<name>}}` alone on its line), the heading, the blank lines between, the slot line, and one blank line after it are all dropped. Lines inside a fenced code block (opened and closed by lines starting with three backticks) are never read as headings. A slot with no heading above it still renders as an empty line.

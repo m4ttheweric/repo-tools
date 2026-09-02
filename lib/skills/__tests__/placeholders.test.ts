@@ -325,3 +325,33 @@ describe("pack.path", () => {
     expect(used.packPaths).toEqual(["${CLAUDE_SKILL_DIR}/../../attachments/evidence/scripts/capture.sh"]);
   });
 });
+
+describe("a heading above an unbound slot", () => {
+  const unbound = () => ctx({ fills: { domain: null } });
+
+  test("is dropped with the blank lines around the slot", () => {
+    expect(substitute("a\n\n## Reviewer\n\n{{slot:domain}}\n\nb", unbound(), "x").body).toBe("a\n\nb");
+  });
+
+  test("is dropped when nothing separates heading, slot and prose", () => {
+    expect(substitute("a\n## Reviewer\n{{slot:domain}}\nb", unbound(), "x").body).toBe("a\nb");
+  });
+
+  test("a slot with no heading above it still renders as an empty line", () => {
+    expect(substitute("a\n{{slot:domain}}\nb", unbound(), "x").body).toBe("a\n\nb");
+  });
+
+  test("stays above a bound slot, another placeholder, or prose", () => {
+    expect(substitute("## Reviewer\n{{slot:domain}}", ctx(), "x").body).toContain("## Reviewer\n<!-- part: slot:domain");
+    expect(substitute("## Provenance\n{{compiled-from}}", unbound(), "x").body).toBe("## Provenance\nmattstack@1.0.0 + acme:plan-policy@0.4.0");
+    expect(substitute("## Notes\nplain prose", unbound(), "x").body).toBe("## Notes\nplain prose");
+  });
+
+  test("a shell comment inside a fence above a slot is not a heading", () => {
+    expect(substitute("```sh\n# not a heading\n{{slot:domain}}\n```", unbound(), "x").body).toBe("```sh\n# not a heading\n\n```");
+  });
+
+  test("the dropped slot still counts as placed", () => {
+    expect(substitute("## Reviewer\n{{slot:domain}}", unbound(), "x").used.slots).toEqual(["domain"]);
+  });
+});

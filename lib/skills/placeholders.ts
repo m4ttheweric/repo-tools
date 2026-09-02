@@ -171,6 +171,23 @@ function stageFields(meta: NonNullable<PlaceholderContext["stageMeta"]>): string
 
 export type Used = { slots: string[]; includes: string[]; packPaths: string[] };
 
+const HEADING_RE = /^#{1,6}\s/;
+const SLOT_LINE_RE = /^\{\{slot:([^}\s]+)\}\}$/;
+
+/**
+ * A heading whose only content would have been an unbound slot: the slot's
+ * name and the index of the last line to drop with it (the slot line, or the
+ * one blank line after it), or null when the heading stays.
+ */
+function emptySlotAfter(lines: string[], heading: number, fills: PlaceholderContext["fills"]): { slot: string; end: number } | null {
+  let j = heading + 1;
+  while (j < lines.length && lines[j]!.trim() === "") j++;
+  const slot = lines[j]?.trim().match(SLOT_LINE_RE)?.[1];
+  if (!slot || !(slot in fills) || fills[slot] !== null) return null;
+  const end = j + 1 < lines.length && lines[j + 1]!.trim() === "" ? j + 1 : j;
+  return { slot, end };
+}
+
 // Global-regex `.replace` resets `lastIndex` per call, so PLACEHOLDER_RE is safe to share with findPlaceholders.
 function substituteLine(line: string, i: number, ctx: PlaceholderContext, where: string, used: Used): string {
   return line.replace(PLACEHOLDER_RE, (raw, kind: string, arg?: string) => {
@@ -217,6 +234,23 @@ function substituteLine(line: string, i: number, ctx: PlaceholderContext, where:
 
 export function substitute(body: string, ctx: PlaceholderContext, where: string): { body: string; used: Used } {
   const used: Used = { slots: [], includes: [], packPaths: [] };
-  const out = body.split("\n").map((line, i) => substituteLine(line, i, ctx, where, used));
+  const lines = body.split("\n");
+  const out: string[] = [];
+  let inFence = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith("```")) inFence = !inFence;
+    if (!inFence && HEADING_RE.test(line)) {
+      const empty = emptySlotAfter(lines, i, ctx.fills);
+      if (empty) {
+        used.slots.push(empty.slot);
+        i = empty.end;
+        continue;
+      }
+    }
+    out.push(substituteLine(line, i, ctx, where, used));
+  }
+
   return { body: out.join("\n"), used };
 }
