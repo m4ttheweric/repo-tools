@@ -127,6 +127,21 @@ describe("bundled-tool resolution", () => {
     expect(userCopyOnPath(p, "gh")).toBeNull();
   });
 
+  // Vendor installers (herdr, claude) land in ~/.local/bin next to rt's own
+  // links — a real binary there is a user copy, and it must be found even
+  // before Install has put that directory on PATH.
+  test("userCopyOnPath counts a real vendor binary in ~/.local/bin, even when PATH lacks that dir", () => {
+    const local = linkPath(home, "claude");
+    const p = bundleProbe({ env: { PATH: "/usr/bin" }, files: { [local]: "#!/bin/sh\nreal-claude\n" } });
+    expect(userCopyOnPath(p, "claude")).toBe(local);
+  });
+
+  test("userCopyOnPath still ignores rt's own tagged wrapper in ~/.local/bin", () => {
+    const local = linkPath(home, "gh");
+    const p = bundleProbe({ env: { PATH: "/usr/bin" }, files: { [local]: `#!/bin/sh\n${LINK_TAG} gh\nexec x\n` } });
+    expect(userCopyOnPath(p, "gh")).toBeNull();
+  });
+
   test("userCopyOnPath never counts the bundle's own Contents/Helpers dir on PATH (F1: the daemon's boot-time prepend must not self-shadow)", () => {
     const p = bundleProbe({ env: { PATH: join(appRoot, HELPERS_DIR) } });
     expect(userCopyOnPath(p, "gh")).toBeNull();

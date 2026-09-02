@@ -110,8 +110,9 @@ export function link(p: Probes, tool: string, opts: { force?: boolean } = {}, se
   }
 
   if (!ours && !opts.force) {
+    // A foreign file at the slot itself is "occupied" below, not a user copy elsewhere.
     const elsewhere = userCopyOnPath(p, tool);
-    if (elsewhere) return { ok: false, reason: "user-copy", detail: `${tool} is already on PATH at ${elsewhere}; pass --force to shadow it with the bundled copy` };
+    if (elsewhere && elsewhere !== path) return { ok: false, reason: "user-copy", detail: `${tool} is already on PATH at ${elsewhere}; pass --force to shadow it with the bundled copy` };
     if (present) return { ok: false, reason: "occupied", detail: `${path} exists and is not a mattstack-managed link; pass --force to replace it` };
   }
 

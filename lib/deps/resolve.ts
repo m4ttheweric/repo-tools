@@ -15,7 +15,7 @@
  * other option. links.ts re-exports all three under their documented name.
  */
 
-import { join } from "path";
+import { dirname, join } from "path";
 import { appBundleRoot, bundledExec, bundledHelperPath, RT_BUNDLE_PATH } from "../bundle-layout.ts";
 import { DEV_TRAY_APP_BUNDLE, TRAY_APP_BUNDLE } from "../rt-paths.ts";
 import type { Probes } from "../setup/probes.ts";
@@ -85,13 +85,18 @@ export function bundledToolExec(p: Pick<Probes, "exists" | "home">, tool: string
  * bundled npm-style tool's own install dir, e.g. Contents/Helpers/fast-browser,
  * is a directory on disk — never something PATH-execution would run).
  */
-export function userCopyOnPath(p: Pick<Probes, "exists" | "readlink" | "fileSize" | "env" | "home">, tool: string): string | null {
+export function userCopyOnPath(p: Pick<Probes, "exists" | "readlink" | "readFile" | "fileSize" | "env" | "home">, tool: string): string | null {
   const own = linkPath(p.home, tool);
   const roots = candidateBundleRoots(p);
-  const dirs = (p.env.PATH ?? "").split(":").filter((d) => d.length > 0);
+  // ~/.local/bin is scanned last whether or not PATH names it: vendor
+  // installers (herdr, claude) land there, and Install adds the dir to the
+  // shell's PATH only after the rows that need to find them have run.
+  const dirs = [...new Set([...(p.env.PATH ?? "").split(":").filter((d) => d.length > 0), dirname(own)])];
   for (const dir of dirs) {
     const candidate = join(dir, tool);
-    if (candidate === own) continue;
+    // rt's own slot counts only when it holds a real binary, not our tagged
+    // wrapper or link into the bundle.
+    if (candidate === own && isOurLink(p, tool)) continue;
     if (pointsIntoAnyBundle(candidate, roots)) continue; // the bundle's own copy, reached via a PATH entry the daemon itself prepended
     if (!p.exists(candidate)) continue;
     if (p.fileSize(candidate) === null) continue; // a directory (or something unreadable) is never an executable copy
