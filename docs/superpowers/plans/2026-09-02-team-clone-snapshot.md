@@ -265,7 +265,7 @@ export function scopeEntries(entries: StatusEntry[], scope: ((relPath: string) =
 ```ts
 export const TEAM_SCOPE_ROOTS = ["mattstack", ".sops.yaml", ".claude-plugin"] as const;
 
-/** A team clone can also be a working repo (claimview-tools carries src/ and docs/); only the store, the recipients file and the marketplace are the daemon's to commit. */
+/** A team clone can also be a working repo (acme-tools carries src/ and docs/); only the store, the recipients file and the marketplace are the daemon's to commit. */
 export function teamScope(relPath: string): boolean {
   return TEAM_SCOPE_ROOTS.some((root) => relPath === root || relPath.startsWith(`${root}/`));
 }
