@@ -118,6 +118,20 @@ screen_readiness() {
     ax_wait_status tool.clt ready 1200 || ax_fail "CLT install did not finish in 20 min"
     ax_shot 03-clt-installed
   fi
+  # Rows the checklist expects the user to act on before Install: rt itself
+  # links from the bundle; herdr and Claude Code install from their vendors
+  # (real network installs, minutes each).
+  if [ "$(ax_status tool.rt || true)" != ready ]; then
+    ax_click setup.checklist.row.tool.rt.action
+    ax_wait_status tool.rt ready 60 || ax_fail "tool.rt not ready after Use mattstack's"
+  fi
+  for tool in herdr claude; do
+    if [ "$(ax_status "tool.$tool" || true)" = missing ]; then
+      ax_click "setup.checklist.row.tool.$tool.action"
+      ax_wait_status "tool.$tool" ready 600 || ax_fail "tool.$tool install did not finish in 10 min"
+      ax_shot "03-$tool-installed"
+    fi
+  done
   ax_shot 03-readiness-final
   # Every row's status, before Install: the one record that explains a
   # Continue that does not advance.
