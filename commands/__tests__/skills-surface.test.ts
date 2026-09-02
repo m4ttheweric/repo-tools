@@ -708,9 +708,18 @@ describe("skillsSurface bare invocation (interactive palette)", () => {
 
     fake = installFakePick([resultStep({ action: "cancel", value: null })]);
 
-    await withPaletteTTY("n", () => skillsSurface(["--team", "t", "--pack-dir", packDir]));
-
-    expect(logs.join("\n")).toContain("cancelled -- no changes made");
+    // printAborted() is TTY-gated on process.stderr, not console.log.
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await withPaletteTTY("n", () => skillsSurface(["--team", "t", "--pack-dir", packDir]));
+      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+    } finally {
+      stderrSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
     expect(existsSync(join(packDir, "pack", "surface.jsonc"))).toBe(false);
   });
 });

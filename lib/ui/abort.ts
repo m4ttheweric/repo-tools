@@ -1,6 +1,6 @@
 /**
  * One "aborted" line every picker surface prints on esc/cancel-to-shell, so
- * the four surfaces (commit, run, nav, cd) stop disagreeing about whether
+ * the surfaces (commit, run, nav, cd, skills) stop disagreeing about whether
  * cancelling a flow says anything. TTY-only: a non-interactive caller
  * (--json, RT_BATCH, a piped stderr) never sees decoration mixed into its
  * output.
