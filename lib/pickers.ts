@@ -166,7 +166,7 @@ export async function pickFromAllRepos(
     process.exit(1);
   }
 
-  /** Refusing before the picker loads keeps a lost-repo-only index off the ink path entirely. */
+  /** Refusing before the picker loads keeps a lost-repo-only index off the picker path entirely. */
   const refuse = (repo: KnownRepo): never => {
     writer(`\n  ${missingRepoRefusal(repo)}\n`);
     process.exit(1);

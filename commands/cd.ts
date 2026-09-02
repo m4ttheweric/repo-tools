@@ -95,7 +95,7 @@ async function ensureShellFunction(): Promise<void> {
   const origWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
 
-  const { confirm: inkConfirm } = await import("../lib/rt-render.ts");
+  const { confirm } = await import("../lib/rt-render.ts");
   const hasLegacyRtcd = rcContent.includes("rtcd()");
   const hasOldRtWrapper = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes(".last-cwd");
   const hasPreRehashWrapper = rcContent.includes("rt() {") && rcContent.includes(".last-cwd") && !rcContent.includes("hash -r");
@@ -131,7 +131,7 @@ async function ensureShellFunction(): Promise<void> {
   const hasOldFunction2 = hasOldFunction || hasNoNav;
 
   const rcLabel = rcFile.replace(homedir(), "~");
-  const install = await inkConfirm({
+  const install = await confirm({
     message: hasOldFunction2
       ? `Upgrade rt shell wrapper in ${rcLabel}?`
       : `Add rt cd support to ${rcLabel}?`,
