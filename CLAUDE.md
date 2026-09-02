@@ -57,6 +57,16 @@ source checkout outranks the installed bundle when resolving the binary.
 `bun run ui:build` after any change under `ui/`; the shared fixtures in
 `ui/fixtures/` are golden-tested from both languages.
 
+Every picker is the one-shot `rt-ui pick` verb
+(`ui/internal/views/picker/`), driven from TS through the wrappers in
+`lib/pick-wrappers.ts` and `lib/ui/pick.ts`; it replaced fzf outright, so no
+fzf spawn path remains. Before touching picker rendering read the design
+boards in `docs/design/picker/` and the spec
+`docs/superpowers/specs/2026-08-31-rt-picker-redesign-design.md`: the row and
+segment wire protocol, the action registry that drives the keybar and menus, the
+modal overlay stack, and the headless fzf matcher (`match.go`) that is the one
+piece of fzf kept, as a ranking library, never a spawn.
+
 `rt runner` is the first `session` view: `commands/runner.ts` gates, selects
 the backend, and wires; `lib/runner/runner.ts` owns the entries and the
 intent loop; and `ui/internal/views/board/` paints. Services run in a
@@ -68,16 +78,15 @@ session. Read
 `docs/superpowers/specs/2026-08-29-rt-runner-design.md` before touching any
 of them: the board is ephemeral and pane-owned (quit closes the workspace),
 the exit code of a pane command comes only from the `__rt_exit` sentinel,
-and the add flow closes and reopens the session around the fzf picker.
+and the add flow closes and reopens the session around the rt-ui picker.
 
 ## The TypeScript CLI is UI-free
 
 The rt TS CLI (`commands/`, `lib/`, `cli.ts`, `scripts/`) is pure Bun/TypeScript
 orchestration and MUST NOT contain UI-rendering code: no UI frameworks (ink,
 `@inkjs/*`, react, react-dom, preact, vue, solid, svelte), no JSX, no `.tsx`
-files. All UI is rendered by the Go `rt-ui` helper (prompts, steps, board)
-and by external binaries (fzf); the TS layer only drives them over stdio and
-process spawn. `packages/` (for example `packages/settings-kit`, a react UI
+files. All UI is rendered by the Go `rt-ui` helper (prompts, steps, board,
+pickers); the TS layer only drives it over stdio and process spawn. `packages/` (for example `packages/settings-kit`, a react UI
 kit for the web console) is a separate concern and is exempt from this rule.
 
 Enforced by `lib/__tests__/no-ui-in-cli.test.ts`.
