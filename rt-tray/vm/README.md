@@ -13,24 +13,29 @@ Every run's deliverable is `artifacts/<run-id>/` (screenshots, logs,
 | (b) `run/walkthrough.sh` (Tart clone of a golden image) | real DMG → /Applications → first launch under Gatekeeper; five setup screens; FDA + Login Items + Notifications dances; `rt verify --json` green; tray.sock `/version`; Sparkle vN→vN+1 and daemon restart; screenshots per screen | the **"Background Items Added" notification** (a banner, not a dialog — it is neither clicked nor asserted; the Login Items row is asserted through `GET /services` / `rt setup status` instead); the **FDA relaunch** is driven (the app's own "Relaunch" button) but the OS applying FDA is asserted only via the app's probe row; notarisation/stapling of Matt's signing (a locally built DMG is unnotarised → run with `--no-quarantine`, reported in the ledger) |
 | (c) `run/second-user.sh` | layer (a) under a second real macOS user on Matt's Mac, with a live GUI session so SMAppService registration is real | nothing about the five screens; the user must be created and logged in once by Matt |
 
-## Status: what's built vs. gated
+## Status
 
-Everything below is written and runnable today except the two pieces still
-gated on other lanes:
+`--scenario create` is green end to end on the `mattstack-golden-26` image
+(run `20260901-232641`): every setup screen, the FDA dance with the app's
+own relaunch, the Apple CLT install, the herdr and Claude Code vendor
+installs, the full Install pipeline, and the Done screen. `--scenario
+headless` is green too. Still unproven: `--scenario join` (mint a real
+invite with `run/team-setup.sh invite`, then `--invite-code-file`) and the
+`update` phase (`--update-dir`).
 
-- **`run/guest/ax.sh` + `run/guest/drive-setup.sh`** (screens 1–5, FDA/Login
-  Items/Notifications dances) — both are in the tree, staged into the guest
-  by `walkthrough.sh` (copied into `$GUEST_BIN`, chmod'd) and invoked by the
-  `screens` phase. `--scenario create`/`join` still fails there today — not
-  because the guest scripts are missing, but because it's gated on L3's
-  setup screens fully wiring `AccessibilityIDs.swift`'s identifiers.
-  `--scenario headless` does not depend on this and is no longer blocked by
-  anything known — it has simply never been run against a golden image.
-- **`run/guest/trigger-update.sh`** (drives Sparkle, asserts vN→vN+1 +
-  daemon restart) — in the tree, staged the same way, and the update phase
-  runs it whenever `--update-dir` is passed; it reports `skip` ("no
-  --update-dir…") only when that flag is omitted. The remaining gate is L3's
-  `MATTSTACK_APPCAST_URL` hook.
+Facts a create run depends on:
+
+- **Every create run needs an EMPTY team repo** (`rt team create` refuses a
+  remote with commits). `run/team-setup.sh reset` retires and recreates the
+  standard pair; or create a fresh one (`gh repo create <org>/<name>
+  --private`) and pass `MATTSTACK_VMTEST_TEAM_REPO=<name>`. The walkthrough
+  derives `--team-remote` from that name.
+- Prefer `--no-graphics`: the Tart window otherwise takes keyboard focus on
+  the host mid-run (a stray keystroke lands in the token field), and every
+  failure already logs the windows and AXIdentifiers on screen.
+- The privileged proxy helper (`mattstack-proxy-install`) has not shipped, so
+  the Install pipeline's `proxy.install` step reports `skipped` with that
+  reason; apps serve on ports until it lands.
 
 `run/xcuitest.sh` (layer (b) via XCUITest instead of AppleScript) is in the
 tree and runnable today; it self-gates at runtime rather than depending on
@@ -133,7 +138,7 @@ Phases: preflight · clone · boot · stage · install · launch · screens · a
 - **Gatekeeper with unnotarised builds**: real today, in `run/guest/install-app.sh`. A locally built DMG is quarantined by default to exercise the real path; it will be blocked (`launch fail`, screenshot of the dialog). Use `--no-quarantine` for local builds and say so in the ticket.
 - **Apple CLT install** in the clean room is real (Apple's dialog, network, minutes) once T6 lands; the driver clicks Install/Agree and waits up to 20 min.
 - **Sparkle update** needs L4's signed zip + appcast, L3's `MATTSTACK_APPCAST_URL` hook (prod builds honour it only when launched with `--allow-appcast-override`), and `run/guest/trigger-update.sh` (T8); until all three land the phase is `skip` with that reason. The appcast is served on **loopback inside the guest** to stay clear of macOS 15's Local Network Privacy prompt; the real feed is the GitHub Release asset `https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml`. `CFBundleVersion` follows L4's `major*1000000+minor*1000+patch`.
-- **Invite/join** needs L1 + L6; `run/team-setup.sh invite` mints a stub code today (only a DEBUG app with `RT_STUB_SCENARIO=join-happy` accepts it).
+- **Invite/join**: `run/team-setup.sh invite` mints a real code through `rt team invite` on the host (the stub path is its fallback when that verb is absent); the join scenario itself has not been run yet.
 - **Second user**: Matt creates the user and logs it in once (launchd `gui/<uid>` needs a GUI session); the script never creates users.
 
 ## Test team
