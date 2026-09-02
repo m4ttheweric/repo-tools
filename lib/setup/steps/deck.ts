@@ -82,7 +82,9 @@ async function repointBoard(ctx: ApplyContext, port: number): Promise<string> {
   const boardBin = bundledToolPath(ctx.p, "board");
   if (boardBin === null) return "repoint skipped (board not bundled yet)";
 
-  const body = JSON.stringify({ command: [boardBin], workingDirectory: join(ctx.p.home, ".mattstack", "board") });
+  const boardDir = join(ctx.p.home, ".mattstack", "board");
+  ctx.p.mkdirp(boardDir);
+  const body = JSON.stringify({ command: [boardBin], workingDirectory: boardDir });
   const res = await ctx.p.fetch(`http://127.0.0.1:${port}/api/v1/apps/board`, { method: "PATCH", headers: { "content-type": "application/json" }, body });
   if (res.status < 200 || res.status >= 300) {
     throw new Error(`deck answered ${res.status} repointing board's record`);
@@ -120,7 +122,10 @@ async function registerManagedApp(ctx: ApplyContext, deckBin: string, name: stri
     return `${name} not registered: not bundled`;
   }
 
+  // launchd refuses to spawn a job whose WorkingDirectory is missing
+  // (EX_CONFIG, retried forever), and deck writes the dir into the plist as is.
   const dir = join(ctx.p.home, ".mattstack", name);
+  ctx.p.mkdirp(dir);
   // deck splits --cmd on whitespace into argv. A helper whose DEFAULT argv is
   // its CLI rather than its server needs the serving subcommand here, or deck
   // supervises a command that prints usage and exits.

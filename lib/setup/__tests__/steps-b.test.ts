@@ -414,6 +414,9 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(p.calls.exec[5]).toEqual([deckBin, "add", "chat", "--cmd", join(appRoot, HELPERS_DIR, "chat"), "--dir", join(home, ".mattstack", "chat")]);
       expect(p.calls.exec[6]).toEqual([deckBin, "adopt", "chat", "--managed-by", "rt", "--json"]);
       expect(p.calls.fetch).toContain("http://127.0.0.1:4100/api/v1/apps/board");
+      // launchd refuses to spawn (EX_CONFIG, forever) when a plist's
+      // WorkingDirectory does not exist, so every dir handed to deck exists first.
+      for (const name of ["board", "gitq", "console", "chat"]) expect(p.exists(join(home, ".mattstack", name))).toBe(true);
     });
 
     test("healthy + board NOT bundled: adopts, skips the repoint honestly", async () => {
