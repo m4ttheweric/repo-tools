@@ -1221,6 +1221,38 @@ describe("codeowner section sweep (deep)", () => {
       expect(store.read("bs4")!.scope!.sections).toEqual(["Acme", "Beta"]);
     });
 
+    test("records knownSections from the CODEOWNERS fetch", async () => {
+      const store = tmpStore();
+      store.fullSync("bs6", "g/p", [], Date.now() - 1000);
+      store.setScope("bs6", { authors: ["alice"], windowDays: 30 });
+      await backfillSections(
+        { repoIndex: () => ({ bs6: "/tmp/repo" }), broadcast: () => {} },
+        "bs6", ["Acme"],
+        {
+          store, windowDays: 30,
+          fetchRules: async () => ({ projectPath: "g/p", rules: [] }),
+          fetchKnownSections: async () => ["Acme", "Beta"],
+        },
+      );
+      expect(store.read("bs6")!.scope).toEqual({ authors: ["alice"], sections: ["Acme"], windowDays: 30, knownSections: ["Acme", "Beta"] });
+    });
+
+    test("a failed CODEOWNERS fetch keeps the stored knownSections and still unions sections", async () => {
+      const store = tmpStore();
+      store.fullSync("bs7", "g/p", [], Date.now() - 1000);
+      store.setScope("bs7", { authors: ["alice"], sections: ["Beta"], windowDays: 30, knownSections: ["Old"] });
+      await backfillSections(
+        { repoIndex: () => ({ bs7: "/tmp/repo" }), broadcast: () => {} },
+        "bs7", ["Acme"],
+        {
+          store, windowDays: 30,
+          fetchRules: async () => ({ projectPath: "g/p", rules: [] }),
+          fetchKnownSections: async () => { throw new Error("500"); },
+        },
+      );
+      expect(store.read("bs7")!.scope).toEqual({ authors: ["alice"], sections: ["Acme", "Beta"], windowDays: 30, knownSections: ["Old"] });
+    });
+
     test("with no existing scope leaves scope unset (the `if (scope)` guard)", async () => {
       const store = tmpStore();
       store.fullSync("bs5", "g/p", [], Date.now() - 1000);

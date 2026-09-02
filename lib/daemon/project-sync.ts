@@ -564,6 +564,10 @@ export async function backfillSections(
     const { provider } = await getRepoContext(repo, deps.repoIndex()[repo]);
     return provider.fetchSingleMR(pp, iid, null);
   });
+  const fetchKnownSections = overrides.fetchKnownSections ?? (async (repo: string) => {
+    const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    return provider.fetchCodeownerSections({ projectPath });
+  });
 
   const updatedAfter = new Date(Date.now() - windowDays * 86_400_000).toISOString();
   const { projectPath, rules } = await fetchRules(repoName, { updatedAfter });
@@ -586,7 +590,10 @@ export async function backfillSections(
   store.setSectionTags(repoName, Object.fromEntries(matched.map((m) => [m.iid, m.sections])));
   const union = new Set([...(store.read(repoName)?.scope?.sections ?? []), ...sections]);
   const scope = store.read(repoName)?.scope;
-  if (scope) store.setScope(repoName, { ...scope, sections: [...union].sort() });
+  if (scope) {
+    const knownSections = await readKnownSections(fetchKnownSections, repoName, scope.knownSections);
+    store.setScope(repoName, { ...scope, sections: [...union].sort(), ...(knownSections ? { knownSections } : {}) });
+  }
 
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });
