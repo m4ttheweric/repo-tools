@@ -136,7 +136,7 @@ const endpointSubcommands: Record<string, CommandNode> = {
 
 // Shared so `rt commit` and `rt git commit` are one node (enrich once, render once).
 const commitNode: CommandNode = {
-  description: "Interactive staged/unstaged commit picker with live diff preview",
+  description: "Interactive staged/unstaged commit picker",
   module: "./commands/commit.ts",
   fn: "commitFlow",
   context: "worktree",
