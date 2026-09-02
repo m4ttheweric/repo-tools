@@ -3825,6 +3825,27 @@ func groupBoundaries(ms []Match, groups []string) int {
 	return count
 }
 
+// TestViewRequestsBareModifierReporting pins the Kitty flags the held-modifier
+// chrome depends on. Bare KeyLeftAlt/KeyLeftCtrl presses only arrive under
+// "report all keys as escape codes"; with event types alone the terminal
+// never sends a lone modifier, so holding alt or ctrl did nothing live while
+// every model test (which injects the press directly) stayed green.
+func TestViewRequestsBareModifierReporting(t *testing.T) {
+	m := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}}})
+	m.width = 40
+	ke := m.View().KeyboardEnhancements
+	if !ke.ReportAllKeysAsEscapeCodes {
+		t.Fatal("View must request ReportAllKeysAsEscapeCodes: bare modifier presses are never delivered without it")
+	}
+	if !ke.ReportEventTypes {
+		t.Fatal("View must request ReportEventTypes so a held modifier's release clears the state")
+	}
+	if !ke.ReportAssociatedText {
+		t.Fatal("View must request ReportAssociatedText so escape-coded keys still carry exact typed text")
+	}
+}
+
 // TestResumeValuePositionsTheInitialCursor pins the ResumeValue wire field:
 // a respawned picker restores the cursor onto the named row instead of the
 // top. It once deserialized into the void here while every TS producer

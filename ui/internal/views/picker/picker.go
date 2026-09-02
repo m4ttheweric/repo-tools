@@ -748,7 +748,13 @@ func (m *Model) View() tea.View {
 	// Inline, not alt-screen: the picker is content-anchored, appearing
 	// where the caller invoked it rather than taking over the terminal.
 	v.MouseMode = tea.MouseModeAllMotion
+	// The held-modifier chrome reads bare KeyLeftAlt/KeyLeftCtrl presses, which
+	// the Kitty protocol only emits under "report all keys as escape codes";
+	// event types alone never deliver a lone modifier. Associated text keeps the
+	// filter's typed characters exact once keys arrive escape-coded.
 	v.KeyboardEnhancements.ReportEventTypes = true
+	v.KeyboardEnhancements.ReportAllKeysAsEscapeCodes = true
+	v.KeyboardEnhancements.ReportAssociatedText = true
 	return v
 }
 
