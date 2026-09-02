@@ -129,7 +129,7 @@ function idleCountLabel(folders: number, files: number): string {
  * terminal action than normal browsing does, so the two action sets can never
  * be allowed to drift out of sync with which row set is on screen.
  */
-function buildActions(empty: boolean, opts: { showHidden: boolean; expanded: boolean }): PickAction[] {
+function buildActions(empty: boolean, opts: { showHidden: boolean }): PickAction[] {
   const hiddenLabel = opts.showHidden ? "hide hidden" : "show hidden";
 
   if (empty) {
@@ -155,10 +155,6 @@ function buildActions(empty: boolean, opts: { showHidden: boolean; expanded: boo
     { id: "terminal", label: "open terminal here", scope: "item", group: "act" },
     { id: "toggle-hidden", label: hiddenLabel, key: "ctrl-t", scope: "global", event: true, group: "view" },
     { id: "sort", label: "sort", key: "ctrl-s", scope: "global", event: true, group: "view" },
-    // Ungrouped so it pins to the always-visible right run next to esc, the
-    // one place a truncated left cluster can never drop it -- NavMenus.dc.html
-    // advertises "ctrl-/ commands" there so the ctrl-k/t/s menus stay findable.
-    { id: "expand", label: opts.expanded ? "less" : "commands", key: "ctrl-/", scope: "global", event: true },
   ];
 }
 
@@ -233,7 +229,6 @@ function targetOf(cwd: string, value: string): { kind: ItemKind; target: string 
 
 async function runNavSession(state: SessionState, deps: NavDeps): Promise<SessionOutcome> {
   let { cwd, showHidden, sort } = state;
-  let expanded = false;
   let empty = false;
   // A ref object, not a bare `let`: the watcher is only ever assigned from
   // inside rearmWatch's closure, and TS won't carry that assignment's
@@ -249,7 +244,7 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
       breadcrumb: headerBreadcrumb(cwd),
       idleCount: idleCountLabel(built.folders, built.files),
       ...(headerSuffix(sort) ? { crumbSuffix: headerSuffix(sort) } : {}),
-      actions: buildActions(empty, { showHidden, expanded }),
+      actions: buildActions(empty, { showHidden }),
       ...(opts.resetQuery ? { resetQuery: true } : {}),
     });
   };
@@ -269,7 +264,7 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
       idleCount: idleCountLabel(initial.folders, initial.files),
       ...(headerSuffix(sort) ? { crumbSuffix: headerSuffix(sort) } : {}),
       rows: initial.rows,
-      actions: buildActions(empty, { showHidden, expanded }),
+      actions: buildActions(empty, { showHidden }),
       ...(state.resumeValue ? { resumeValue: state.resumeValue } : {}),
       ...(state.initialQuery ? { initialQuery: state.initialQuery } : {}),
     },
@@ -323,11 +318,6 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
         if (!evt.value || evt.value === EMPTY_VALUE) return;
         const { target } = targetOf(cwd, evt.value);
         deps.spawnSync("pbcopy", [], { input: target });
-        return;
-      }
-      case "expand": {
-        expanded = !expanded;
-        handle.update({ actions: buildActions(empty, { showHidden, expanded }) });
         return;
       }
     }

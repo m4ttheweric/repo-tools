@@ -1136,11 +1136,16 @@ func TestKeybarRendersGroupedLegendWithBackAndQuitPinnedRight(t *testing.T) {
 	footer := lines[len(lines)-1]
 	plain := ansi.Strip(footer)
 
-	if !strings.HasPrefix(strings.TrimLeft(plain, " "), "pick enter select  alt-enter with args") {
+	// At rest only the modifier-free keys show: alt-enter and ctrl-up wait
+	// for their modifier to be held.
+	if !strings.HasPrefix(strings.TrimLeft(plain, " "), "pick enter select ") {
 		t.Fatalf("left legend mismatch: %q", plain)
 	}
-	if !strings.HasSuffix(strings.TrimRight(plain, " "), "ctrl-up back  esc quit") {
+	if !strings.HasSuffix(strings.TrimRight(plain, " "), "esc quit") {
 		t.Fatalf("right legend mismatch: %q", plain)
+	}
+	if strings.Contains(plain, "alt-enter") || strings.Contains(plain, "ctrl-up") {
+		t.Fatalf("chords must wait for their modifier: %q", plain)
 	}
 
 	const lavSGR = "38;2;189;147;249"
@@ -2412,7 +2417,7 @@ func TestMultiFooterLegendMatchesTheBoard(t *testing.T) {
 
 	lines := strings.Split(ansi.Strip(render(m)), "\n")
 	footer := lines[len(lines)-1]
-	if !strings.Contains(footer, "mark space toggle  tab toggle & next  ctrl-a all/none  enter confirm") {
+	if !strings.Contains(footer, "mark space toggle  tab toggle & next  enter confirm") {
 		t.Fatalf("footer legend mismatch: %q", footer)
 	}
 	if !strings.HasSuffix(strings.TrimRight(footer, " "), "esc quit") {
@@ -3476,6 +3481,82 @@ func TestAltHeldRendersCursorBadgeAndRowDim(t *testing.T) {
 	}
 }
 
+// lastLine is a frame's footer line, the keybar.
+func lastLine(frame string) string {
+	lines := strings.Split(frame, "\n")
+	return lines[len(lines)-1]
+}
+
+// TestDefaultLegendShowsOnlyModifierFreeKeys pins the resting footer's
+// rule: with nothing held it lists only the keys that work as-is (enter,
+// esc, space, tab...). Every chord (ctrl-h, alt-enter, ctrl-a) waits for
+// its modifier to be held, or for the ctrl-k menu.
+func TestDefaultLegendShowsOnlyModifierFreeKeys(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
+			{ID: "with-args", Label: "with args", Key: "alt-enter", Scope: "item", Group: "pick"},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	footer := ansi.Strip(lastLine(render(m)))
+	if !strings.Contains(footer, "nav enter open") || !strings.Contains(footer, "esc quit") {
+		t.Fatalf("the resting legend should carry the modifier-free keys: %q", footer)
+	}
+	for _, gone := range []string{"ctrl", "alt", "cd here", "open in editor", "with args", "act", "pick"} {
+		if strings.Contains(footer, gone) {
+			t.Fatalf("the resting legend must not list a chord or its group (found %q): %q", gone, footer)
+		}
+	}
+
+	multi := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Multi: true, Rows: req.Rows})
+	multi.width = 92
+	footer = ansi.Strip(lastLine(render(multi)))
+	if !strings.Contains(footer, "space toggle") || !strings.Contains(footer, "tab toggle & next") {
+		t.Fatalf("multi's modifier-free defaults stay on the resting legend: %q", footer)
+	}
+	if strings.Contains(footer, "all/none") {
+		t.Fatalf("multi's ctrl-a waits for a ctrl hold: %q", footer)
+	}
+}
+
+// TestCtrlSlashIsNotABuiltIn: neither spelling of ctrl-/ does anything on
+// its own any more; the ctrl-k menu is the one discovery door. A caller may
+// still bind ctrl-/ like any other key (actionForKey), which canonicalKey
+// keeps terminal-independent.
+func TestCtrlSlashIsNotABuiltIn(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	before := render(m)
+	for _, code := range []rune{'_', '/'} {
+		next, cmd := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: code})
+		m = next.(*Model)
+		if cmd != nil {
+			t.Fatalf("ctrl+%c must be inert with nothing bound to it", code)
+		}
+		if got := render(m); got != before {
+			t.Fatalf("ctrl+%c must leave the frame untouched:\nafter:  %q\nbefore: %q", code, ansi.Strip(got), ansi.Strip(before))
+		}
+	}
+}
+
 // TestAltHeldIsInertWithoutAltBehavior pins the no-behavior-no-chrome rule
 // for alt: a request with no WithArgs rows and no visible alt-keyed action
 // (nav's shape: its alt-enter exit key is FooterHidden) renders byte
@@ -3663,61 +3744,6 @@ func TestCtrlNotHeldRendersTheSingleLineKeybar(t *testing.T) {
 	}
 	if !strings.Contains(footer, "1-5 of 20") {
 		t.Fatalf("the range indicator must render: %q", footer)
-	}
-}
-
-// TestCtrlSlashToggleRendersTwoLineKeybarWithFullKeys pins the ctrl-/
-// TOGGLE path: m.expanded renders the two-line grouped keybar with every
-// key under its full name (nothing is physically held, so "ctrl-o" stays
-// "ctrl-o"), the range keeps its slot, and no held caption appears. A
-// fallback terminal reaches this exact state.
-func TestCtrlSlashToggleRendersTwoLineKeybarWithFullKeys(t *testing.T) {
-	rows := make([]protocol.PickRow, 20)
-	for i := range rows {
-		v := fmt.Sprintf("row%02d", i)
-		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
-	}
-	req := protocol.PickRequest{
-		T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5,
-		Actions: []protocol.PickAction{
-			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
-			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
-			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
-		},
-	}
-	m := New(req)
-	m.width = 90
-	m.expanded = true // the ctrl-/ toggle, nothing physically held
-
-	lines := strings.Split(render(m), "\n")
-	if want := 11; len(lines) != want {
-		t.Fatalf("the ctrl-/ toggle should render the two-line keybar (%d lines), got %d:\n%s", want, len(lines), render(m))
-	}
-	if strings.Contains(ansi.Strip(lines[0]), "⌃ keys") {
-		t.Fatalf("no header badge while nothing is physically held: %q", ansi.Strip(lines[0]))
-	}
-	line1 := ansi.Strip(lines[len(lines)-2])
-	line2 := ansi.Strip(lines[len(lines)-1])
-	// Two-line keybar: the groups sit on line one and quit is pinned alone on
-	// line two. Without the held indicator's width the act group fits line one,
-	// but the second line (the ungrouped quit run) is what makes it two lines.
-	if !strings.Contains(line1, "act") || !strings.Contains(line1, "open in editor") {
-		t.Fatalf("the act group should render on the expanded keybar: %q", line1)
-	}
-	if !strings.Contains(line2, "esc") || !strings.Contains(line2, "quit") {
-		t.Fatalf("the second keybar line should pin quit to the right: %q", line2)
-	}
-	if strings.Contains(line2, "open in editor") {
-		t.Fatalf("the groups belong on line one, not the pinned quit line: %q", line2)
-	}
-	if !strings.Contains(line1, "ctrl-o open in editor") {
-		t.Fatalf("the toggle path keeps full key names: %q", line1)
-	}
-	if strings.Contains(line1, "held") {
-		t.Fatalf("no held caption on a ctrl-/ toggle: %q", line1)
-	}
-	if !strings.Contains(line1, "1-5 of 20") {
-		t.Fatalf("the range indicator must survive on the toggle path: %q", line1)
 	}
 }
 
@@ -4135,7 +4161,7 @@ func TestGroupedReservationCountsOneHeaderPerGroup(t *testing.T) {
 	m.width = 80 // height 0: unbounded, so the reserve is not clamped to a pane
 
 	rowCap := defaultCap
-	chrome := chromeRows + 1 // expanded keybar always reserved; this request is not multi
+	chrome := chromeRows // this request is not multi
 	want := chrome + rowCap + distinctGroupCount(rows)
 
 	got := m.reservedContentHeight()
@@ -4173,76 +4199,6 @@ func TestCursorRowLabelBoldOnExtrasRowsPath(t *testing.T) {
 	}
 }
 
-// TestCtrlSlashTogglesExpandedKeybar is the F-n1 golden: ctrl-/ toggles the
-// Modifiers-board two-line grouped keybar on and off, independent of the
-// physical-hold path. On a legacy terminal ctrl-/ arrives as ctrl+_ (byte
-// 0x1F + 0x40 = '_'); on Kitty as ctrl+/. Both must drive the toggle.
-func TestCtrlSlashTogglesExpandedKeybar(t *testing.T) {
-	rows := make([]protocol.PickRow, 20)
-	for i := range rows {
-		v := fmt.Sprintf("row%02d", i)
-		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
-	}
-	req := protocol.PickRequest{
-		T: "pick", Protocol: protocol.Version, Rows: rows, Cap: 5,
-		Actions: []protocol.PickAction{
-			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
-			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item", Group: "act"},
-		},
-	}
-	lastLine := func(frame string) string {
-		lines := strings.Split(frame, "\n")
-		return ansi.Strip(lines[len(lines)-1])
-	}
-
-	m := New(req)
-	m.width = 90
-	// Collapsed: the single-line keybar carries the act group inline.
-	if !strings.Contains(lastLine(render(m)), "open in editor") {
-		t.Fatalf("setup: the single-line keybar should carry the act group inline: %q", lastLine(render(m)))
-	}
-
-	// Legacy decode: ctrl-/ surfaces as ctrl+_.
-	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
-	m = next.(*Model)
-	if !m.expanded {
-		t.Fatal("ctrl-/ (ctrl+_) should toggle the expanded keybar on")
-	}
-	// Expanded lifts the groups to line one, leaving quit alone on the last
-	// line -- the two-line keybar, independent of the physical-hold path so the
-	// "held: showing all keys" indicator stays absent.
-	last := lastLine(render(m))
-	if strings.Contains(last, "open in editor") {
-		t.Fatalf("the expanded keybar should lift the act group off the last line: %q", last)
-	}
-	if !strings.Contains(last, "esc") || !strings.Contains(last, "quit") {
-		t.Fatalf("the expanded keybar should pin quit alone on the last line: %q", last)
-	}
-	if strings.Contains(last, "showing all keys") {
-		t.Fatalf("the held indicator must not show on a ctrl-/ toggle: %q", last)
-	}
-
-	// A second ctrl-/ toggles it back off.
-	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
-	m = next.(*Model)
-	if m.expanded {
-		t.Fatal("a second ctrl-/ should toggle the expanded keybar off")
-	}
-	if !strings.Contains(lastLine(render(m)), "open in editor") {
-		t.Fatalf("the single-line keybar should return after the second ctrl-/: %q", lastLine(render(m)))
-	}
-
-	// Kitty decode: ctrl-/ surfaces as ctrl+/ and must toggle the same state.
-	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '/'})
-	m = next.(*Model)
-	if !m.expanded {
-		t.Fatal("ctrl-/ (ctrl+/) should toggle the expanded keybar on")
-	}
-	if strings.Contains(lastLine(render(m)), "open in editor") {
-		t.Fatalf("ctrl-/ (ctrl+/) should re-expand the keybar: %q", lastLine(render(m)))
-	}
-}
-
 // enableKittyProtocol feeds the model the terminal's Kitty keyboard-protocol
 // handshake -- the terminal confirming it reports key event types, which means
 // a bare modifier's release will arrive as its own event. held only ever
@@ -4252,14 +4208,12 @@ func enableKittyProtocol(m *Model) {
 	m.Update(tea.KeyboardEnhancementsMsg{Flags: ansi.KittyReportEventTypes})
 }
 
-// TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles pins the
-// fallback-input path the real tmux drive caught: a terminal that never
-// confirmed the Kitty keyboard protocol reports a bare modifier press but
-// never its matching release, so held must never engage there -- otherwise
-// the held legend would latch with nothing held. The ctrl-/ sticky toggle
-// is a discrete keypress, independent of held, so it must still reach the
-// two-line keybar.
-func TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles(t *testing.T) {
+// TestFallbackTerminalNeverLatchesHeld pins the fallback-input path the
+// real tmux drive caught: a terminal that never confirmed the Kitty keyboard
+// protocol reports a bare modifier press but never its matching release, so
+// held must never engage there -- otherwise the held legend would latch
+// with nothing held.
+func TestFallbackTerminalNeverLatchesHeld(t *testing.T) {
 	rows := make([]protocol.PickRow, 6)
 	for i := range rows {
 		v := fmt.Sprintf("row%d", i)
@@ -4291,18 +4245,6 @@ func TestFallbackTerminalNeverLatchesHeldButCtrlSlashStillToggles(t *testing.T) 
 	}
 	if got := render(m); got != before {
 		t.Fatalf("a bare modifier press on a fallback terminal must leave the frame untouched:\nafter:  %q\nbefore: %q", ansi.Strip(got), ansi.Strip(before))
-	}
-
-	// The ctrl-/ toggle is a discrete keypress and must still reach the
-	// two-line keybar, keys under their full names.
-	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: '_'})
-	m = next.(*Model)
-	if !m.expanded {
-		t.Fatal("ctrl-/ must still toggle the expanded keybar on a fallback terminal")
-	}
-	lines := strings.Split(render(m), "\n")
-	if !strings.Contains(ansi.Strip(lines[len(lines)-2]), "ctrl-h cd here") {
-		t.Fatalf("the ctrl-/ keymap keeps full key names on a fallback terminal: %q", ansi.Strip(lines[len(lines)-2]))
 	}
 }
 

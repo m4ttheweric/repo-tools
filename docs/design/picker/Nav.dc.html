@@ -15,7 +15,7 @@ p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:80c
 </style>
 <title>rt nav</title>
 <h1>rt nav — browse (deep-jump and preview pane cut)</h1>
-<p class="note">Header = tildeified cwd (+ sort suffix when non-default) with a live folder/file count. Folders lead with a cyan folder glyph: Nerd Font U+F07B, which Ghostty renders via its built-in symbols fallback (the yazi/eza aesthetic); terminals without it fall back to ▸. No emoji. The default keybar is minimal; the full grouped keybar lives behind ctrl-/ (second card — board-grammar groups in lav, laid out on two lines, resize-aware for free in Bubble Tea). Live-refresh stays: rows update in place as the directory changes.</p>
+<p class="note">Header = tildeified cwd (+ sort suffix when non-default) with a live folder/file count. Folders lead with a cyan folder glyph: Nerd Font U+F07B, which Ghostty renders via its built-in symbols fallback (the yazi/eza aesthetic); terminals without it fall back to ▸. No emoji. The default keybar lists only the keys that work as-is; holding ctrl swaps it to this picker's ctrl chords under their bare keys (second card), and the ctrl-k menu lists everything. Live-refresh stays: rows update in place as the directory changes.</p>
 
 <div class="term" style="width:86ch">
   <div class="ln"><span class="t b">~/Documents/GitHub</span><span class="sp"></span><span class="f">10 folders · 2 files</span></div>
@@ -34,7 +34,7 @@ p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:80c
   <div class="ln"><span> </span><span> </span><span> </span><span> </span><span class="s">notes.md</span></div>
   <div class="ln"><span> </span><span> </span><span> </span><span> </span><span class="s">TODO.txt</span></div>
   <div class="rule"></div>
-  <div class="ln"><span class="lv">nav</span><span class="f"> enter</span><span class="d"> open</span><span class="f">  ctrl-h</span><span class="d"> cd here</span><span class="f">  ctrl-up</span><span class="d"> up</span><span class="sp"></span><span class="f">ctrl-/</span><span class="d"> commands</span><span class="f">  esc</span><span class="d"> quit</span></div>
+  <div class="ln"><span class="lv">nav</span><span class="f"> enter</span><span class="d"> open</span><span class="sp"></span><span class="f">esc</span><span class="d"> quit</span></div>
 </div>
 
 <div class="term" style="width:86ch">
@@ -46,6 +46,5 @@ p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:80c
   <div class="ln"><span> </span><span> </span><span class="fico"><svg width="13" height="11" viewBox="0 0 16 13" style="vertical-align:-1px"><path fill="#5AAAFF" d="M0.5 1.5 h5.2 l1.6 2 h8.2 a0.8 0.8 0 0 1 0.8 0.8 v7.4 a0.8 0.8 0 0 1 -0.8 0.8 h-15 a0.8 0.8 0 0 1 -0.8 -0.8 v-9.4 a0.8 0.8 0 0 1 0.8 -0.8 z"/></svg> </span><span class="s">workforge</span></div>
   <div class="ln"><span> </span><span> </span><span class="dr">…</span></div>
   <div class="rule"></div>
-  <div class="ln"><span class="lv">nav</span><span class="f"> enter</span><span class="d"> open</span><span class="f">  ctrl-space</span><span class="d"> cd selected</span><span class="f">  ctrl-h</span><span class="d"> cd here</span><span class="f">  ctrl-up</span><span class="d"> up</span><span class="sp"></span><span class="f">esc</span><span class="d"> quit</span></div>
-  <div class="ln"><span class="lv">act</span><span class="f"> ctrl-k</span><span class="d"> actions</span><span class="f">  ctrl-o</span><span class="d"> editor</span><span class="f">  ctrl-f</span><span class="d"> finder</span><span class="sp"></span><span class="lv">view</span><span class="f"> ctrl-t</span><span class="d"> hidden</span><span class="f">  ctrl-s</span><span class="d"> sort</span><span class="f">  ctrl-/</span><span class="d"> less</span></div>
+  <div class="ln"><span class="lv">nav</span><span class="f"> space</span><span class="d"> cd selected</span><span class="f">  h</span><span class="d"> cd here</span><span class="f">  up</span><span class="d"> up</span><span class="lv">  act</span><span class="f"> o</span><span class="d"> editor</span><span class="f">  f</span><span class="d"> finder</span><span class="lv">  view</span><span class="f"> t</span><span class="d"> hidden</span><span class="f">  s</span><span class="d"> sort</span></div>
 </div>

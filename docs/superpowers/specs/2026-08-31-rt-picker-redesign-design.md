@@ -211,8 +211,8 @@ navigation; keybar keys are clickable. SGR protocol, native BT v2.
   request changes nothing.
 - ⌥ held with `withArgs` rows: rows without args dim, cursor row shows an
   `enter → pick args` badge (lav).
-- The full key map is the ctrl-/ toggle (two lines, full key names), not a
-  hold.
+- At rest the keybar lists only the keys that work as-is; there is no
+  ctrl-/ keymap. The ctrl-k / right-click menu lists every action.
 
 ### Sizing & scrolling
 
@@ -261,8 +261,8 @@ U+F07B (Ghostty builtin symbols fallback; `▸` degrade). No emoji anywhere.
   `new` tag), ctrl-a. Diff preview cut.
 - **rt nav**: browse with cwd-as-clickmap header, sort suffix, live-refresh,
   ctrl-t hidden, ctrl-s sort modal, ctrl-k actions modal (= right-click),
-  ctrl-/ expanded keybar (in-card second keybar row, NOT a modal; labels
-  `commands`/`less`), empty-folder inline state, ctrl-space/ctrl-o/ctrl-f.
+  empty-folder inline state, ctrl-space/ctrl-o/ctrl-f. Chords surface only
+  while ctrl is held (bare keys) or in the ctrl-k menu.
   **Cut:** deep-jump, preview pane, image previews.
 - **Recent runs / arg-collector / simple selects**: the plain patterns.
 

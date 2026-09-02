@@ -576,7 +576,7 @@ describe("rt nav: terminal-owning exits re-invoke with resume", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("the footer advertises ctrl-/ as an ungrouped, right-pinned action (F-n1)", async () => {
+  test("nav binds no ctrl-/ action: the ctrl-k menu is the discovery door", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));
     mkdirSync(join(root, "sub"));
     writeFileSync(join(root, "a.txt"), "x");
@@ -586,13 +586,8 @@ describe("rt nav: terminal-owning exits re-invoke with resume", () => {
     await withRealStdoutRestore(() => navigate([root], baseDeps()));
 
     const actions = fake.calls[0]!.request.actions ?? [];
-    const expand = actions.find((a) => a.id === "expand");
-    expect(expand).toBeDefined();
-    expect(expand!.key).toBe("ctrl-/");
-    expect(expand!.label).toBe("commands");
-    // Ungrouped so a truncated left cluster can never drop it: the minimal
-    // footer always advertises it next to esc (NavMenus.dc.html).
-    expect(expand!.group).toBeUndefined();
+    expect(actions.find((a) => a.key === "ctrl-/")).toBeUndefined();
+    expect(actions.find((a) => a.id === "expand")).toBeUndefined();
 
     rmSync(root, { recursive: true, force: true });
   });

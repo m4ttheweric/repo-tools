@@ -135,10 +135,9 @@ func (m *Model) reservedContentHeight() int {
 	if rowCap <= 0 {
 		rowCap = defaultCap
 	}
-	// chromeRows counts one keybar line; the ctrl-held legend is two, and a
-	// multi session can reveal the selected panel -- reserve both so holding
-	// ctrl or checking a row never grows the frame.
-	chrome := chromeRows + 1
+	// A multi session can reveal the selected panel; reserve its line so
+	// checking a row never grows the frame.
+	chrome := chromeRows
 	if isMultiRequest(m.req) {
 		chrome++
 	}

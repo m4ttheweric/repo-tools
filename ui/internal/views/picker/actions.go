@@ -94,34 +94,48 @@ func effectiveActions(req protocol.PickRequest) []protocol.PickAction {
 	return out
 }
 
+// keyModifier names the modifier a key spelling chords with ("ctrl-h" →
+// "ctrl"), or "" for a key that works as-is.
+func keyModifier(key string) string {
+	for _, mod := range []string{"ctrl", "alt", "shift"} {
+		if strings.HasPrefix(key, mod+"-") {
+			return mod
+		}
+	}
+	return ""
+}
+
 // modifierActions returns the footer-visible actions bound to a chord of
-// mod ("alt" or "ctrl"), each copied with the chord prefix dropped from its
-// key ("ctrl-h" → "h"): the held legend labels a key by what is left to
-// press while the modifier is already down. Group and order are kept so the
-// held legend clusters exactly like the ordinary one.
+// mod ("alt" or "ctrl"; "" for the keys that work as-is), each copied with
+// the chord prefix dropped from its key ("ctrl-h" → "h"): the held legend
+// labels a key by what is left to press while the modifier is already
+// down. Group and order are kept so every legend clusters the same way.
 func modifierActions(actions []protocol.PickAction, mod string) []protocol.PickAction {
-	prefix := mod + "-"
 	var out []protocol.PickAction
 	for _, a := range actions {
-		if a.FooterHidden || !strings.HasPrefix(a.Key, prefix) {
+		if a.FooterHidden || keyModifier(a.Key) != mod {
 			continue
 		}
 		bare := a
-		bare.Key = strings.TrimPrefix(a.Key, prefix)
+		if mod != "" {
+			bare.Key = strings.TrimPrefix(a.Key, mod+"-")
+		}
 		out = append(out, bare)
 	}
 	return out
 }
 
-// legendActions is what the footer paints: the held modifier's own actions
-// under bare keys while one is held with something bound to it, otherwise
-// every effective action under its full key.
+// legendActions is what the footer paints: only what a keypress does right
+// now. At rest that is every action on a modifier-free key; while a
+// modifier is held with something bound to it, that modifier's own actions
+// under their bare keys. A chord never shows before its modifier is down;
+// the ctrl-k menu lists everything regardless.
 func legendActions(m *Model) []protocol.PickAction {
 	actions := effectiveActions(m.req)
 	if mod := m.heldModifier(); mod != "" {
 		return modifierActions(actions, mod)
 	}
-	return actions
+	return modifierActions(actions, "")
 }
 
 // keybarCluster is one lav-labeled run of key/label pairs in the footer

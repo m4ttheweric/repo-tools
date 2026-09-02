@@ -3,7 +3,6 @@ package picker
 import (
 	"fmt"
 	"image/color"
-	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -29,15 +28,10 @@ const chromeRows = 5
 // totalChromeRows is chromeRows plus the pinned selected panel's own line,
 // when a multi session is showing one -- the panel sits between the filter
 // line and the top rule, so it eats into the same pane budget every other
-// chrome line already claims -- plus one more line while the expanded keybar
-// shows (ctrl held or ctrl-/ toggled), when the keybar itself grows from one
-// line to the Modifiers board's two-line grouped legend.
+// chrome line already claims.
 func (m *Model) totalChromeRows() int {
 	rows := chromeRows
 	if m.showSelectedPanel() {
-		rows++
-	}
-	if m.showExpandedKeybar() {
 		rows++
 	}
 	return rows
@@ -123,28 +117,16 @@ func renderFrame(m *Model, target int) string {
 		y++
 	}
 
-	keybarLines := 1
-	if m.showExpandedKeybar() {
-		keybarLines = 2
-	}
 	// The filler advances y past its blank lines so the keybar's own zones
 	// land on the padded rows the terminal actually paints them on, not the
 	// natural rows they would sit on unpadded.
-	y += appendInteriorFiller(&lines, target, 1+keybarLines) // + bottom rule
+	y += appendInteriorFiller(&lines, target, 2) // bottom rule + keybar
 
 	lines = append(lines, rule(m.width))
 	y++
-	if m.showExpandedKeybar() {
-		line1, zones1, line2, zones2 := expandedKeybarLines(m, top, h, n)
-		zones.addAll(y, zones1)
-		y++
-		zones.addAll(y, zones2)
-		lines = append(lines, line1, line2)
-	} else {
-		keybarStr, keyZones := keybarLineZones(m, top, h, n)
-		zones.addAll(y, keyZones)
-		lines = append(lines, keybarStr)
-	}
+	keybarStr, keyZones := keybarLineZones(m, top, h, n)
+	zones.addAll(y, keyZones)
+	lines = append(lines, keybarStr)
 
 	m.zones = zones
 	return strings.Join(lines, "\n")
@@ -274,45 +256,6 @@ func thumbCell(rowInWindow, thumbTop, thumbH int) string {
 func keybarLine(m *Model, top, h, n int) string {
 	line, _ := keybarLineZones(m, top, h, n)
 	return line
-}
-
-// expandedKeybarLines renders the ctrl-/ keybar as the Modifiers board's
-// two-line grouped legend, in place of keybarLineZones's own single
-// truncated line. Every declared group is placed whole (never split
-// mid-group): as many as fit the first line, the rest carried to the
-// second and truncated there the same way a single line would give up
-// trailing groups -- so a registry too big even for two lines still never
-// clips a key or label mid-word. The scroll range (when the list overflows)
-// survives on the first line's right edge -- the ctrl swap this replaces
-// once dropped the range silently, which is exactly what pinning it here
-// prevents. The ordinary right-pinned action run (quit, by default) closes
-// the second line, same as it would the single-line footer.
-func expandedKeybarLines(m *Model, top, h, n int) (line1 string, zones1 []mouseZone, line2 string, zones2 []mouseZone) {
-	left, ungrouped := keybarClusters(legendActions(m))
-
-	rangeText := ""
-	if n > h {
-		rangeText = fg(theme.Cyan).Render(strconv.Itoa(top+1)+"-"+strconv.Itoa(top+h)) +
-			fg(theme.Faint).Render(" of "+strconv.Itoa(n))
-	}
-	right1 := rangeText
-	right2 := renderKeybarCluster(keybarCluster{actions: ungrouped})
-
-	firstGroups := truncateKeybarGroups(left, keybarLeftBudget(m.width, right1))
-	secondGroups := truncateKeybarGroups(left[len(firstGroups):], keybarLeftBudget(m.width, right2))
-
-	line1 = justify(m.width, renderKeybarLeft(firstGroups), right1)
-	line2 = justify(m.width, renderKeybarLeft(secondGroups), right2)
-
-	_, zones1 = layoutKeybarLeft(2, firstGroups)
-	_, zones2 = layoutKeybarLeft(2, secondGroups)
-	if len(ungrouped) > 0 {
-		rightStart := m.width - 1 - lipgloss.Width(right2)
-		_, ungroupedZones := layoutKeybarCluster(rightStart, keybarCluster{actions: ungrouped})
-		zones2 = append(zones2, ungroupedZones...)
-	}
-
-	return line1, zones1, line2, zones2
 }
 
 func rule(width int) string {

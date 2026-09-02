@@ -50,10 +50,6 @@ type Model struct {
 	// is true: without it a fallback terminal's bare-modifier press would latch
 	// held true forever, since no release ever arrives to clear it.
 	reportsKeyReleases bool
-	// expanded is the ctrl-/ sticky toggle for the two-line grouped keybar,
-	// distinct from held.ctrl's physical-hold state: a terminal that never
-	// reports a bare ctrl press still gets the expanded legend on ctrl-/.
-	expanded bool
 	// argsRows records whether any row claims WithArgs, so the alt-held row
 	// chrome can gate on real behavior without walking the rows per line.
 	argsRows bool
@@ -201,14 +197,6 @@ func (m *Model) showSelectedPanel() bool {
 	return m.multiMode() && len(m.selected) > 0
 }
 
-// showExpandedKeybar reports whether the footer paints the two-line grouped
-// legend in place of the single line, which only the ctrl-/ toggle drives.
-// A physical hold never grows the footer: it swaps the single line's
-// contents (see heldModifier), so holding a modifier never shifts the list.
-func (m *Model) showExpandedKeybar() bool {
-	return m.expanded
-}
-
 // heldModifier names the modifier whose bound actions the footer is showing
 // in place of the ordinary legend: "alt" or "ctrl" while that key is
 // physically held AND at least one visible action is bound to it, else "".
@@ -295,13 +283,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateModal(msg)
 		}
 		key := canonicalKey(msg)
-		if key == "ctrl+/" {
-			// The two-line grouped keybar is a generic affordance every picker
-			// gets on ctrl-/; a caller that also registered ctrl-/ (nav's
-			// "commands" relabel) still has its event dispatched by
-			// actionForKey below, so the toggle deliberately does not return.
-			m.expanded = !m.expanded
-		}
 		switch key {
 		case "down":
 			m.moveCursor(1)
@@ -458,8 +439,8 @@ func (m *Model) resolveCursor(value string, had bool, prev int) int {
 // canonicalKey is the one spelling every key lookup resolves against.
 // ctrl-/ is byte 0x1F; ultraviolet's legacy decode surfaces it as ctrl+_
 // (0x1F + 0x40 = '_'), Kitty as ctrl+/. Both the main list and the action
-// menu go through here so the expanded-keybar toggle and a caller's own
-// ctrl-/ registry action behave the same on either kind of terminal.
+// menu go through here so a caller's ctrl-/ registry action behaves the
+// same on either kind of terminal.
 func canonicalKey(msg tea.KeyPressMsg) string {
 	key := msg.String()
 	if key == "ctrl+_" {
