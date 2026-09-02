@@ -88,14 +88,15 @@ ax_wait_screen() {  # <welcome|team|checklist|install|done> <timeout-s> — wait
   return 1
 }
 
-# Find a UI element by AXIdentifier anywhere under window 1; prints a reference path usable in `tell`.
+# Find a UI element by AXIdentifier anywhere under window 1; prints its AX class. A UI element
+# reference cannot be coerced to text (-1700), so callers get existence + class, never a path.
 ax_find() {  # <axid>
   local id; id=$(ax_esc "$1")
   ax_osa "$AX_WALK_AS
     tell application \"System Events\" to tell process \"$AX_APP\"
       set r to my walk(window 1, \"$id\")
       if r is missing value then error \"axid not found: $id\"
-      return (r as text)
+      return (class of r as text)
     end tell" 2>/dev/null
 }
 
