@@ -171,11 +171,21 @@ export function withLocalBinFallback(argv: string[], opts: { home: string; pathD
   return opts.exists(local) ? [local, ...argv.slice(1)] : argv;
 }
 
+/** `env` with `~/.local/bin` first on PATH — the child's own lookups (fast-browser finding claude, an installer re-probing) see what rt links and vendor installs put there. */
+export function withLocalBinOnPath(env: Record<string, string>, home: string): Record<string, string> {
+  const local = join(home, ".local", "bin");
+  const current = env.PATH ?? "";
+  if (current.split(":").includes(local)) return env;
+  return { ...env, PATH: current ? `${local}:${current}` : local };
+}
+
 export function createRealProbes(): Probes {
   return {
     exec(argv, opts) {
-      const resolved = withLocalBinFallback(argv, { home: process.env.HOME ?? homedir(), pathDirs: (process.env.PATH ?? "").split(":"), exists: existsSync });
-      return execWithTimeout(resolved, opts);
+      const home = process.env.HOME ?? homedir();
+      const resolved = withLocalBinFallback(argv, { home, pathDirs: (process.env.PATH ?? "").split(":"), exists: existsSync });
+      const env = withLocalBinOnPath({ ...(process.env.PATH ? { PATH: process.env.PATH } : {}), ...opts?.env }, home);
+      return execWithTimeout(resolved, { ...opts, env });
     },
 
     exists(path) {

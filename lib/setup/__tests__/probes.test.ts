@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createRealProbes, readStdinJson, withLocalBinFallback } from "../probes.ts";
+import { createRealProbes, readStdinJson, withLocalBinFallback, withLocalBinOnPath } from "../probes.ts";
 import { UserActionableError } from "../errors.ts";
 import { fakeProbes } from "./fakes.ts";
 
@@ -233,5 +233,22 @@ describe("withLocalBinFallback", () => {
     expect(withLocalBinFallback(["nope"], { home, pathDirs, exists })).toEqual(["nope"]);
     expect(withLocalBinFallback(["/usr/bin/env", "x"], { home, pathDirs, exists })).toEqual(["/usr/bin/env", "x"]);
     expect(withLocalBinFallback([], { home, pathDirs, exists })).toEqual([]);
+  });
+});
+
+// Children rt spawns (fast-browser looking for claude, installers re-probing)
+// inherit the app's static PATH, which lacks ~/.local/bin until Install's own
+// path step — so every probe child gets that directory first on PATH.
+describe("withLocalBinOnPath", () => {
+  test("prepends ~/.local/bin when absent, keeps PATH as-is when present", () => {
+    expect(withLocalBinOnPath({ PATH: "/usr/bin:/bin" }, "/home/x")).toEqual({ PATH: "/home/x/.local/bin:/usr/bin:/bin" });
+    expect(withLocalBinOnPath({ PATH: "/usr/bin:/home/x/.local/bin" }, "/home/x")).toEqual({ PATH: "/usr/bin:/home/x/.local/bin" });
+    expect(withLocalBinOnPath({}, "/home/x")).toEqual({ PATH: "/home/x/.local/bin" });
+    expect(withLocalBinOnPath({ PATH: "/usr/bin", FOO: "1" }, "/home/x")).toEqual({ PATH: "/home/x/.local/bin:/usr/bin", FOO: "1" });
+  });
+
+  test("a real probe child sees ~/.local/bin first on its PATH", async () => {
+    const res = await createRealProbes().exec(["/bin/sh", "-c", "printf %s \"$PATH\""]);
+    expect(res.stdout.split(":")[0]).toBe(join(process.env.HOME ?? "", ".local", "bin"));
   });
 });
