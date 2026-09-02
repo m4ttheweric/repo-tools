@@ -16,7 +16,7 @@
 
 import { dispatch } from "./lib/command-tree.ts";
 import { TREE } from "./lib/command-tree-def.ts";
-import { rtDir, migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, trayAppPath } from "./lib/rt-paths.ts";
+import { rtDir, migrateLegacyRtDir, migrateLegacyPluginsDir, LEGACY_RT_LABEL, RT_DIR_LABEL, trayAppPath } from "./lib/rt-paths.ts";
 
 const args = process.argv.slice(2);
 
@@ -48,6 +48,12 @@ const isInterceptRun = args[0] === "intercept" && args[1] === "run";
   } else if (migration === "conflict") {
     console.error(`\n  rt: WARNING — state is split between ${LEGACY_RT_LABEL} and ${RT_DIR_LABEL}.`);
     console.error(`  rt reads only ${RT_DIR_LABEL}; merge the legacy ${LEGACY_RT_LABEL} directory into it by hand, then delete it.\n`);
+  }
+  const plugins = migrateLegacyPluginsDir();
+  if (!isInterceptRun && plugins === "migrated") {
+    console.error("  rt: moved your plugins from ~/.mattstack/rt/plugins to ~/.mattstack/user/plugins (they now travel with your home repo)");
+  } else if (!isInterceptRun && plugins === "conflict") {
+    console.error("\n  rt: WARNING — plugins exist in both ~/.mattstack/rt/plugins (retired) and ~/.mattstack/user/plugins; rt reads only user/plugins. Merge by hand, then delete rt/plugins.\n");
   }
 }
 

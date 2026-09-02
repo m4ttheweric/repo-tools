@@ -108,7 +108,7 @@ import { runUnits, stopUnits, type DaemonUnit } from "./daemon/lifecycle.ts";
 // conflict, so it is the first thing unit 1 does, above redirectNativeStderr.
 // Idempotent: the CLI entry (cli.ts) also runs it, but `bun run lib/daemon.ts`
 // skips cli.ts.
-import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, logsDir } from "./rt-paths.ts";
+import { migrateLegacyRtDir, migrateLegacyPluginsDir, LEGACY_RT_LABEL, RT_DIR_LABEL, logsDir } from "./rt-paths.ts";
 
 type HandleCommand = (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
 
@@ -457,6 +457,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       name: "logger",
       async start() {
         const rtMigration = migrateLegacyRtDir();
+        const pluginsMigration = migrateLegacyPluginsDir();
         seams.redirectNativeStderr();
         loggerHandle = await getDaemonLogger();
         log = loggerHandle.logger;
@@ -477,6 +478,8 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         setSettingsWarnSink((m) => log.warn({ src: "settings" }, m));
         seams.installCrashHandlers(loggerHandle, { booting: () => ctx.bootPhase === "booting" });
         setPhase("start");
+        if (pluginsMigration === "migrated") log.info("moved user plugins from rt/plugins to user/plugins");
+        else if (pluginsMigration === "conflict") log.warn("plugins exist in both rt/plugins (retired) and user/plugins; only user/plugins is read");
         if (rtMigration === "migrated") {
           log.info(`migrated legacy ${LEGACY_RT_LABEL} state to ${RT_DIR_LABEL}`);
         } else if (rtMigration === "conflict") {

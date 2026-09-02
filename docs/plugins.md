@@ -1,6 +1,6 @@
 # rt user plugins
 
-Add your own commands to rt. A plugin is a folder under `~/.mattstack/rt/plugins/<name>/` with a declarative `plugin.json` manifest and either TypeScript files (run in-process with an injected API) or existing executables (run as subprocesses). Plugin commands live in the root command tree next to built-ins and inherit everything the tree provides: picker navigation, breadcrumbs, repo/worktree context resolution, alt-enter arg forms, invocation logging, and error capture.
+Add your own commands to rt. A plugin is a folder under `~/.mattstack/user/plugins/<name>/` with a declarative `plugin.json` manifest and either TypeScript files (run in-process with an injected API) or existing executables (run as subprocesses). Plugin commands live in the root command tree next to built-ins and inherit everything the tree provides: picker navigation, breadcrumbs, repo/worktree context resolution, alt-enter arg forms, invocation logging, and error capture.
 
 Two properties worth knowing up front:
 
@@ -10,18 +10,18 @@ Two properties worth knowing up front:
 ## Quickstart
 
 ```bash
-rt plugin new my-tool     # scaffold ~/.mattstack/rt/plugins/my-tool/ + IDE types, runs bun install
+rt plugin new my-tool     # scaffold ~/.mattstack/user/plugins/my-tool/ + IDE types, runs bun install
 rt my-tool                # run it
 rt plugin list            # installed plugins and their health
 rt plugin validate        # deep checks: files exist, modules import, exports match
 ```
 
-`rt plugin new` leaves you with a working command. Open `~/.mattstack/rt/plugins/my-tool/` in your editor and you get full autocomplete on the injected API (see IDE setup below).
+`rt plugin new` leaves you with a working command. Open `~/.mattstack/user/plugins/my-tool/` in your editor and you get full autocomplete on the injected API (see IDE setup below).
 
 ## Plugin anatomy
 
 ```
-~/.mattstack/rt/plugins/my-tool/
+~/.mattstack/user/plugins/my-tool/
   plugin.json          # manifest (required): declares your commands
   my-tool.ts           # handler modules referenced by the manifest
   helper.ts            # relative imports between plugin files work

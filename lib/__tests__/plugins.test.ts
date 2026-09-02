@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { validateManifest, toCommandNode, ExecFailure, discoverPlugins, loadPluginTree, scaffoldPlugin, deepValidate } from "../plugins.ts";
+import { validateManifest, toCommandNode, ExecFailure, discoverPlugins, loadPluginTree, scaffoldPlugin, deepValidate, migrateLegacyPluginsDir } from "../plugins.ts";
 
 const valid = {
   name: "my-plugin",
@@ -109,7 +109,7 @@ describe("toCommandNode", () => {
     home = mkdtempSync(join(tmpdir(), "rt-plugins-"));
     savedHome = process.env.HOME;
     process.env.HOME = home;
-    dir = join(home, ".mattstack", "rt", "plugins", "test-plugin");
+    dir = join(home, ".mattstack", "user", "plugins", "test-plugin");
     mkdirSync(dir, { recursive: true });
   });
 
@@ -207,7 +207,7 @@ describe("toCommandNode", () => {
 });
 
 function writePlugin(home: string, dirName: string, manifest: unknown): void {
-  const dir = join(home, ".mattstack", "rt", "plugins", dirName);
+  const dir = join(home, ".mattstack", "user", "plugins", dirName);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "plugin.json"), typeof manifest === "string" ? manifest : JSON.stringify(manifest));
 }
@@ -315,8 +315,8 @@ describe("discovery + merge", () => {
   });
 
   test("plugins path that is a file (not a dir) reports an error instead of throwing", () => {
-    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
-    writeFileSync(join(home, ".mattstack", "rt", "plugins"), "not a directory");
+    mkdirSync(join(home, ".mattstack", "user"), { recursive: true });
+    writeFileSync(join(home, ".mattstack", "user", "plugins"), "not a directory");
     const found = discoverPlugins();
     expect(found).toHaveLength(1);
     expect(found[0]!.errors.join()).toContain("cannot read plugins directory");
@@ -340,7 +340,7 @@ describe("scaffoldPlugin", () => {
 
   test("creates a valid, discoverable plugin and the plugin-api dir", () => {
     const dir = scaffoldPlugin("my-tool");
-    expect(dir).toBe(join(home, ".mattstack", "rt", "plugins", "my-tool"));
+    expect(dir).toBe(join(home, ".mattstack", "user", "plugins", "my-tool"));
     for (const f of ["plugin.json", "my-tool.ts", "tsconfig.json", "package.json"]) {
       expect(existsSync(join(dir, f))).toBe(true);
     }
@@ -351,7 +351,7 @@ describe("scaffoldPlugin", () => {
     expect(manifest.commands["my-tool"].module).toBe("./my-tool.ts");
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-    expect(pkg.devDependencies["rt-plugin"]).toBe("file:../../plugin-api");
+    expect(pkg.devDependencies["rt-plugin"]).toBe("file:../../../rt/plugin-api");
   });
 
   test("rejects non-kebab-case names and existing dirs", () => {
@@ -377,7 +377,7 @@ describe("deepValidate", () => {
   });
 
   function plant(manifest: object, files: Record<string, string>): void {
-    const dir = join(home, ".mattstack", "rt", "plugins", "p");
+    const dir = join(home, ".mattstack", "user", "plugins", "p");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "plugin.json"), JSON.stringify(manifest));
     for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
@@ -409,5 +409,47 @@ describe("deepValidate", () => {
     expect(problems.join()).toContain('does not export "missing"');
     expect(problems.join()).toContain("failed to import");
     expect(problems.join()).toContain("exec target ./nowhere.sh not found");
+  });
+});
+
+describe("migrateLegacyPluginsDir", () => {
+  let home: string;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-plugins-migrate-"));
+    savedHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = savedHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("no legacy dir: none", () => {
+    expect(migrateLegacyPluginsDir()).toBe("none");
+  });
+
+  test("moves ~/.mattstack/rt/plugins to user/plugins and repoints each package.json's rt-plugin link", () => {
+    const legacy = join(home, ".mattstack", "rt", "plugins", "my-tool");
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "plugin.json"), "{}");
+    writeFileSync(join(legacy, "package.json"), JSON.stringify({ devDependencies: { "rt-plugin": "file:../../plugin-api" } }));
+
+    expect(migrateLegacyPluginsDir()).toBe("migrated");
+
+    const moved = join(home, ".mattstack", "user", "plugins", "my-tool");
+    expect(existsSync(join(moved, "plugin.json"))).toBe(true);
+    expect(existsSync(join(home, ".mattstack", "rt", "plugins"))).toBe(false);
+    const pkg = JSON.parse(readFileSync(join(moved, "package.json"), "utf8"));
+    expect(pkg.devDependencies["rt-plugin"]).toBe("file:../../../rt/plugin-api");
+  });
+
+  test("both dirs present: conflict, nothing touched", () => {
+    mkdirSync(join(home, ".mattstack", "rt", "plugins", "a"), { recursive: true });
+    mkdirSync(join(home, ".mattstack", "user", "plugins", "b"), { recursive: true });
+    expect(migrateLegacyPluginsDir()).toBe("conflict");
+    expect(existsSync(join(home, ".mattstack", "rt", "plugins", "a"))).toBe(true);
   });
 });

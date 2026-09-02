@@ -1,5 +1,5 @@
 /**
- * rt plugin (manage user plugins, ~/.mattstack/rt/plugins).
+ * rt plugin (manage user plugins, ~/.mattstack/user/plugins).
  * Discovery/merge lives in lib/plugins.ts; these are the management verbs.
  */
 

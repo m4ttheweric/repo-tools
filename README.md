@@ -56,7 +56,7 @@ living on [herdr](https://github.com/herdrdev/herdr).
   and `rt events` is an event bus panes and skills can wait on.
 - **StrongDM connections.** `rt sdm connect` reads your real StrongDM catalog
   and connects with friendly names, with no list to maintain.
-- **A safe plugin system.** Drop a folder under `~/.mattstack/rt/plugins/` to
+- **A safe plugin system.** Drop a folder under `~/.mattstack/user/plugins/` to
   add your own commands. A broken plugin is skipped with a warning and can
   never crash rt itself.
 - **Pickers everywhere, and none in the way.** Omitting a subcommand or a
@@ -297,7 +297,7 @@ repos it manages.
 |---|---|
 | `~/.mattstack/rt/state.db` | The repo index, settings, run state, and key-value store |
 | `~/.mattstack/rt/repos/` | Per-repo data directories, keyed by repo identity |
-| `~/.mattstack/rt/plugins/` | Your plugins |
+| `~/.mattstack/user/plugins/` | Your plugins |
 | `~/.mattstack/rt/logs/` | JSON-lines logs per surface, readable via `rt daemon logs` |
 | `~/.mattstack/user/` | The git-backed personal repo, see [docs/home-repo.md](docs/home-repo.md) |
 
@@ -319,7 +319,7 @@ connect defaults. See [docs/strongdm.md](docs/strongdm.md).
 ## Plugins
 
 Add your own commands to rt. A plugin is a folder under
-`~/.mattstack/rt/plugins/<name>/` with a `plugin.json` manifest and TypeScript
+`~/.mattstack/user/plugins/<name>/` with a `plugin.json` manifest and TypeScript
 files, or existing executables. Plugin commands get rt's navigation,
 repo and worktree context resolution, argument forms, and logging for free.
 

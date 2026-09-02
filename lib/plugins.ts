@@ -1,7 +1,8 @@
 /**
  * User plugins: discovery, validation, and command-tree integration.
  *
- * Plugins live at ~/.mattstack/rt/plugins/<name>/plugin.json. Discovery is structural
+ * Plugins live at ~/.mattstack/user/plugins/<name>/plugin.json, inside the
+ * home repo, so they follow their author to every machine. Discovery is structural
  * only (no plugin code executes); handlers are lazy import() closures, so a
  * broken plugin can only ever fail its own command, never rt itself.
  */
@@ -11,7 +12,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, resolve } from "path";
 import type { CommandArg, CommandNode, CommandContext } from "./command-tree.ts";
 import { makeApi, ensurePluginApiDir } from "./plugin-api.ts";
-import { rtDir } from "./rt-paths.ts";
+import { pluginsDir, rtDir } from "./rt-paths.ts";
 
 export interface PluginNode {
   description: string;
@@ -229,9 +230,10 @@ export interface DiscoveredPlugin {
   errors: string[];
 }
 
-export function pluginsDir(): string {
-  return join(rtDir(), "plugins");
-}
+export { pluginsDir, legacyPluginsDir, migrateLegacyPluginsDir, type PluginsMigrationResult } from "./rt-paths.ts";
+
+/** The scaffold's devDependency on rt's local API package, relative to a plugin dir. */
+const PLUGIN_API_LINK = "file:../../../rt/plugin-api";
 
 /** Structural discovery: readdir + parse + validate. Never executes plugin code, never throws. */
 export function discoverPlugins(): DiscoveredPlugin[] {
@@ -319,7 +321,7 @@ export function loadPluginTree(
   return tree;
 }
 
-/** Create ~/.mattstack/rt/plugins/<name>/ with a starter command, tsconfig, and package.json. */
+/** Create ~/.mattstack/user/plugins/<name>/ with a starter command, tsconfig, and package.json. */
 export function scaffoldPlugin(name: string): string {
   if (!KEBAB_RE.test(name)) throw new Error(`plugin name must be kebab-case (got "${name}")`);
   const dir = join(pluginsDir(), name);
@@ -356,7 +358,7 @@ export async function run(args: string[], ctx: RtCommandContext) {
   writeFileSync(join(dir, "package.json"), JSON.stringify({
     name, private: true,
     devDependencies: {
-      "rt-plugin": "file:../../plugin-api",
+      "rt-plugin": PLUGIN_API_LINK,
       "@types/bun": "^1.2.0",
       "typescript": "^5.5.0",
     },
