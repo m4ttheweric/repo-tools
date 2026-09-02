@@ -78,6 +78,24 @@ function sameSections(a: string[] | undefined, b: string[] | undefined): boolean
   return (a ?? []).length === (b ?? []).length && (a ?? []).every((s, i) => s === (b ?? [])[i]);
 }
 
+/**
+ * The live section list, or the previous one when the fetch fails: a flaky
+ * read must never clear a stored value, or a board would alarm on a section
+ * that still exists. `null` (no CODEOWNERS file) stores as [].
+ */
+async function readKnownSections(
+  fetch: (repoName: string) => Promise<string[] | null>,
+  repoName: string,
+  previous: string[] | undefined,
+): Promise<string[] | undefined> {
+  try {
+    return (await fetch(repoName)) ?? [];
+  } catch (err) {
+    log.warn({ err, repo: repoName }, "codeowner sections fetch failed");
+    return previous;
+  }
+}
+
 /** Drops PRs whose updatedAt is older than the window. A missing/unparseable timestamp is kept -- never guess-drop. */
 function withinWindow(prs: PullRequest[], windowDays: number, now: number): PullRequest[] {
   const cutoff = now - windowDays * 86_400_000;
@@ -109,6 +127,8 @@ export interface ProjectSyncOverrides {
   fetchAuthors?: (repoName: string, authors: string[]) => Promise<{ projectPath: string; prs: PullRequest[] }>;
   /** Codeowner section sweep's fetch, shared by the deep sweep and backfillSections. */
   fetchRules?: (repoName: string, opts: { updatedAfter?: string; iids?: number[] }) => Promise<{ projectPath: string; rules: MRApprovalRules[] }>;
+  /** Default-branch CODEOWNERS section headers; null when the project has none. Deep and backfillSections only. */
+  fetchKnownSections?: (repoName: string) => Promise<string[] | null>;
   /** Overrides the grants-resolved window (test seam); production always resolves it from repo-tracking. */
   windowDays?: number;
   /**
@@ -173,6 +193,10 @@ async function syncImpl(
     const rules = await provider.fetchApprovalRules({ projectPath, ...opts });
     return { projectPath, rules };
   });
+  const fetchKnownSections = overrides.fetchKnownSections ?? (async (repo: string) => {
+    const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    return provider.fetchCodeownerSections({ projectPath });
+  });
 
   if (isDeep) {
     // Idle demand clients (a board tab closed a week ago) must not keep
@@ -221,6 +245,7 @@ async function syncImpl(
         // drops its sections while the MR stays in scope (author-covered)
         // would then never trigger the rollback clear below.
         const hasStaleTags = Object.values(record?.mrs ?? {}).some((e) => e.codeownerSections?.length);
+        let knownSections = record?.scope?.knownSections;
         const { projectPath, prs } = await fetchAuthors(repoName, scopeAuthors);
         const kept = withinWindow(prs, windowDays, syncStartedAt);
         const byIid = new Map(kept.map((pr) => [pr.iid, pr]));
@@ -233,6 +258,7 @@ async function syncImpl(
           const sweepStartedAt = Date.now();
           const updatedAfter = new Date(syncStartedAt - windowDays * 86_400_000).toISOString();
           const { rules } = await fetchRules(repoName, { updatedAfter });
+          knownSections = await readKnownSections(fetchKnownSections, repoName, knownSections);
           sweep.candidates = rules.length;
           const matched = rules
             .map((r) => ({ iid: r.iid, sections: sectionsMatching(r.rules, sections) }))
@@ -274,7 +300,12 @@ async function syncImpl(
         if (sections.length > 0 || hasStaleTags) {
           store.setSectionTags(repoName, tags, { replaceAll: true });
         }
-        store.setScope(repoName, { authors: scopeAuthors, ...(sections.length > 0 ? { sections } : {}), windowDays });
+        store.setScope(repoName, {
+          authors: scopeAuthors,
+          ...(sections.length > 0 ? { sections } : {}),
+          windowDays,
+          ...(knownSections ? { knownSections } : {}),
+        });
         deepFailedAt.delete(repoName);
         log.debug(
           { repo: repoName, mode: "deep", scoped: true, authors: scopeAuthors.length, open: kept.length, changed: changed.length, durationMs: Date.now() - syncStartedAt },

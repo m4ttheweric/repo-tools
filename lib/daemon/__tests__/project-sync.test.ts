@@ -1003,6 +1003,56 @@ describe("codeowner section sweep (deep)", () => {
     expect(rec.scope).toMatchObject({ sections: ["Acme"] });
   });
 
+  test("deep with a sections demand records the CODEOWNERS header list as knownSections", async () => {
+    const store = tmpStore();
+    store.registerDemand("ks1", "board:1", ["ada"], 1, ["Acme"]);
+    await syncProjectMRs(deps("ks1"), "ks1", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [] }),
+      fetchKnownSections: async () => ["Beta", "Acme - #pod-acme"],
+    });
+    expect(store.read("ks1")!.scope).toMatchObject({ sections: ["Acme"], knownSections: ["Beta", "Acme - #pod-acme"] });
+  });
+
+  test("deep keeps the previous knownSections when the fetch throws, and still completes", async () => {
+    const store = tmpStore();
+    store.registerDemand("ks2", "board:1", ["ada"], 1, ["Acme"]);
+    const base = {
+      store, selfUsername: "self", windowDays: 30, mode: "deep" as const,
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [pr(1, { author: { username: "ada" } as any })] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [] }),
+    };
+    await syncProjectMRs(deps("ks2"), "ks2", { ...base, fetchKnownSections: async () => ["Acme"] });
+    await syncProjectMRs(deps("ks2"), "ks2", { ...base, fetchKnownSections: async () => { throw new Error("500"); } });
+    const rec = store.read("ks2")!;
+    expect(rec.scope!.knownSections).toEqual(["Acme"]);
+    expect(Object.keys(rec.mrs)).toEqual(["1"]);
+  });
+
+  test("deep stores [] as knownSections when the project has no CODEOWNERS file", async () => {
+    const store = tmpStore();
+    store.registerDemand("ks3", "board:1", ["ada"], 1, ["Acme"]);
+    await syncProjectMRs(deps("ks3"), "ks3", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchRules: async () => ({ projectPath: "g/p", rules: [] }),
+      fetchKnownSections: async () => null,
+    });
+    expect(store.read("ks3")!.scope!.knownSections).toEqual([]);
+  });
+
+  test("containment: a demand without sections never fetches knownSections", async () => {
+    const store = tmpStore();
+    store.registerDemand("ks4", "board:1", ["ada"], 1);
+    await syncProjectMRs(deps("ks4"), "ks4", {
+      store, selfUsername: "self", windowDays: 30, mode: "deep",
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchKnownSections: async () => { throw new Error("must not fetch"); },
+    });
+    expect(store.read("ks4")!.scope!.knownSections).toBeUndefined();
+  });
+
   test("deep sweep untags rows the sweep no longer matches (replaceAll)", async () => {
     const store = tmpStore();
     store.registerDemand("r2", "board:1", ["ada"], 1, ["Acme"]);
