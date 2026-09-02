@@ -317,6 +317,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.openMenu()
 		}
 		if action, ok := m.actionForKey(key); ok {
+			if action.Scope == "item" && m.cursorOnActionRow() {
+				return m, nil
+			}
 			return m.dispatchAction(action)
 		}
 		if key == "enter" {
@@ -792,6 +795,16 @@ func (m *Model) quit() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, tea.Sequence(tea.ClearScreen, tea.Quit)
+}
+
+// cursorOnActionRow reports whether the cursor sits on a button-like row
+// (PickRow.Kind action), which has no entry for item-scoped actions to act
+// on: those keys are inert there and the menu lists only globals.
+func (m *Model) cursorOnActionRow() bool {
+	if m.cursor < 0 || m.cursor >= len(m.matches) {
+		return false
+	}
+	return m.req.Rows[m.matches[m.cursor].Index].Kind == protocol.RowKindAction
 }
 
 // fullscreen reports the request's layout: the alternate screen unless the

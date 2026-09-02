@@ -913,6 +913,70 @@ func TestActionRowsWearTheActionRole(t *testing.T) {
 	}
 }
 
+// TestMenuOnAnActionRowListsOnlyGlobals: an action row is not an entry, so
+// the ctrl-k / right-click menu over it drops the item-scoped half (queue,
+// dequeue, open in editor...) and keeps the globals. The row's label still
+// titles the menu. On an ordinary entry the item half is back.
+func TestMenuOnAnActionRowListsOnlyGlobals(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "backend", Left: []protocol.PickSegment{{Text: "backend", Tone: "text"}}},
+			{Value: "launch", Kind: protocol.RowKindAction, Left: []protocol.PickSegment{{Text: "Launch all", Bold: true}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "queue", Label: "queue", Key: "tab", Scope: "item", Event: true},
+			{ID: "dequeue", Label: "dequeue", Key: "ctrl-x", Scope: "item", Event: true},
+			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global", Event: true},
+		},
+	}
+	m := New(req)
+	m.width, m.height = 80, 24
+	m.cursor = 1
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("the menu should still open on an action row (globals remain)")
+	}
+	ids := []string{}
+	for _, r := range m.modal.rows {
+		if r.actionID != "" {
+			ids = append(ids, r.actionID)
+		}
+	}
+	if len(ids) != 1 || ids[0] != "refresh" {
+		t.Fatalf("an action row's menu lists only global actions, got %v", ids)
+	}
+	if m.modal.title != "Launch all" {
+		t.Fatalf("the row's label still titles the menu: %q", m.modal.title)
+	}
+
+	// An item-scoped key on the action row is inert; a global one still fires.
+	m.modal = nil
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab}); cmd != nil || len(m.events) != 0 {
+		t.Fatal("tab (item-scoped queue) must do nothing on an action row")
+	}
+	m.events = make(chan []byte, 4)
+	m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
+	if len(m.events) != 1 {
+		t.Fatal("a global action still fires from an action row")
+	}
+
+	m.modal = nil
+	m.cursor = 0
+	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	ids = ids[:0]
+	for _, r := range m.modal.rows {
+		if r.actionID != "" {
+			ids = append(ids, r.actionID)
+		}
+	}
+	if len(ids) != 3 {
+		t.Fatalf("an entry's menu lists item and global actions, got %v", ids)
+	}
+}
+
 // bgSGR is fgSGR's background twin.
 func bgSGR(c color.Color) string {
 	r, g, b, _ := c.RGBA()

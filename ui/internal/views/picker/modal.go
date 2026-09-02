@@ -250,13 +250,20 @@ func (m *Model) armPinRelease() {
 // picker untouched rather than opening an empty box.
 func (m *Model) openRegistryMenu() {
 	cursorRow := m.menuCursorRow()
-	rows := deriveMenu(m.req.Actions, cursorRow)
-	if len(rows) == 0 {
-		return
-	}
+	itemRow := cursorRow
 	title := "Actions"
 	if cursorRow >= 0 {
 		title = leftPlainText(m.req.Rows[m.matches[cursorRow].Index])
+		// An action row is a button, not an entry: item-scoped actions
+		// (queue, open in editor...) have nothing to act on, so only the
+		// globals list under its label.
+		if m.cursorOnActionRow() {
+			itemRow = -1
+		}
+	}
+	rows := deriveMenu(m.req.Actions, itemRow)
+	if len(rows) == 0 {
+		return
 	}
 	ms := &modalState{kind: modalRegistry, title: title, rows: modalRowsFromMenu(rows)}
 	ms.refilter()
