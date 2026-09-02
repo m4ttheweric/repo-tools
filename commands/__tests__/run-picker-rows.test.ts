@@ -57,13 +57,48 @@ test("launchAllRow and savePresetRow are action rows in the queue group, each wi
   expect(save.left[0]).toMatchObject({ text: "Save as preset…", bold: true });
 });
 
-test("lastRunRow: mint glyph + age hint, no group (script rows aren't grouped)", () => {
-  const row = runTest.lastRunRow({ ts: new Date().toISOString(), cmd: "x", cwd: "/r", worktree: "/r", branch: "b", pkg: "p", script: "dev", exit: 0 });
-  expect(row.value).toBe("__rt:last-run__");
-  expect(row.group).toBeUndefined();
-  expect(row.left[0]).toMatchObject({ text: "↻ dev", tone: "mint" });
-  expect(row.left[1]?.text).toContain("last run ·");
-  expect(row.left[1]?.tone).toBe("dim");
+test("scriptRow: column label, runner tag on the right, the full command as the cursor detail", () => {
+  const row = runTest.scriptRow("start", "pnpm run-ts-node-dev src/app/server", "scripts");
+  expect(row.value).toBe("start");
+  expect(row.match).toBe("start");
+  expect(row.group).toBe("scripts");
+  expect(row.left).toEqual([{ text: "start", bold: true, column: true }, { text: "  pnpm", tone: "dimmer" }]);
+  expect(row.right).toBeUndefined();
+  expect(row.detail).toBe("pnpm run-ts-node-dev src/app/server");
+});
+
+test("scriptRunner: the first real token, skipping env assignments; shell constructs read as sh", () => {
+  expect(runTest.scriptRunner("pnpm run build")).toBe("pnpm");
+  expect(runTest.scriptRunner("UV_THREADPOOL_SIZE=$(nproc) node x.js")).toBe("node");
+  expect(runTest.scriptRunner("doppler run -- ts-node x")).toBe("doppler");
+  expect(runTest.scriptRunner('if [ -z "$X" ]; then echo; fi')).toBe("sh");
+  expect(runTest.scriptRunner("rm -rf build")).toBe("rm");
+  expect(runTest.scriptRunner("")).toBe("");
+});
+
+test("scriptGroups: recent first, colon families with 2+ members (the bare prefix joins), the rest under scripts, file order kept", () => {
+  const scripts = ["build", "start", "start:lite", "start:debug", "type-check", "worker-dev", "worker-dev:otel", "dts:only", "clean"];
+  const groups = runTest.scriptGroups(scripts, ["clean", "start:lite"]);
+  expect(groups).toEqual([
+    ["clean", "recent"],
+    ["start:lite", "recent"],
+    ["build", "scripts"],
+    ["start", "start"],
+    ["start:lite", "start"],
+    ["start:debug", "start"],
+    ["type-check", "scripts"],
+    ["worker-dev", "worker-dev"],
+    ["worker-dev:otel", "worker-dev"],
+    ["dts:only", "scripts"],
+    ["clean", "scripts"],
+  ]);
+});
+
+test("recentScripts: newest first, distinct, only scripts this package has, capped at 4", () => {
+  const e = (script: string, ts: string) => ({ ts, cmd: "x", cwd: "/p", worktree: "/r", branch: "b", pkg: "p", script, exit: 0 });
+  const history = [e("start", "2026-09-02T14:00:00Z"), e("clean", "2026-09-02T13:00:00Z"), e("start", "2026-09-02T12:00:00Z"), e("gone", "2026-09-02T11:00:00Z"), e("a", "1"), e("b", "1"), e("c", "1"), e("d", "1")];
+  expect(runTest.recentScripts(history, "/p", ["start", "clean", "a", "b", "c", "d"])).toEqual(["start", "clean", "a", "b"]);
+  expect(runTest.recentScripts(history, "/elsewhere", ["start"])).toEqual([]);
 });
 
 test("plainRow: bold label in the picker's label column plus a dim hint, group optional", () => {
@@ -187,11 +222,11 @@ test("package picker: queue-active state groups queue rows, adds Launch all + Sa
   expect(res.kind).toBe("cancelled");
   expect(fake.calls).toHaveLength(5);
 
-  // Call 1 (index 1): the script picker for package "a" shows the mint
-  // last-run sentinel first, ahead of the plain script rows.
+  // Call 1 (index 1): the script picker for package "a" lists the recently
+  // run script first, under the recent group, ahead of the file-order rows.
   const scriptCall = fake.calls[1]!;
-  expect(scriptCall.rows[0]!.value).toBe("__rt:last-run__");
-  expect(scriptCall.rows[0]!.left[0]).toMatchObject({ text: "↻ dev", tone: "mint" });
+  expect(scriptCall.rows[0]).toMatchObject({ value: "dev", group: "recent" });
+  expect(scriptCall.rows[0]!.left[0]).toMatchObject({ text: "dev", column: true });
 
   // Call 4 (index 4): package picker with 2 items queued (the "queue active" state).
   const queueCall = fake.calls[4]!;

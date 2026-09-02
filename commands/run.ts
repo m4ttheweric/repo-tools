@@ -48,7 +48,6 @@ import { runPick } from "../lib/ui/pick.ts";
 import type { PickAction, PickRow, PickSegment } from "../lib/ui/protocol.ts";
 import { runSeededBoard, tmuxAvailable, type SeedEntry } from "./runner.ts";
 
-const LAST_RUN_SENTINEL = "__rt:last-run__";
 const LAUNCH_ALL_SENTINEL = "__rt:launch-all__";
 const SAVE_PRESET_SENTINEL = "__rt:save-preset__";
 const PRESET_PREFIX = "__rt:preset:";
@@ -146,14 +145,57 @@ function plainRow(entry: { value: string; label: string; hint?: string }, group?
   return { value: entry.value, match: entry.label, left, ...(group ? { group } : {}) };
 }
 
-function lastRunRow(entry: RunHistoryEntry): PickRow {
+/** The token a script command runs under (pnpm, node, doppler...): the
+    first word that is not an env assignment; a shell construct reads as sh. */
+function scriptRunner(cmd: string): string {
+  const first = cmd.trim().split(/\s+/).find((w) => w !== "" && !w.includes("=")) ?? "";
+  return first === "if" || first === "[" || first === "test" || first === "sh" || first === "bash" ? "sh" : first;
+}
+
+/** One script: the name in the label column, the runner as a quiet tag
+    right after it, the full command as the cursor row's detail. */
+function scriptRow(name: string, cmd: string, group: string): PickRow {
+  const runner = scriptRunner(cmd);
   return {
-    value: LAST_RUN_SENTINEL,
-    left: [
-      { text: `↻ ${entry.script}`, tone: "mint" },
-      { text: `  last run · ${formatAge(entry.ts)}`, tone: "dim" },
-    ],
+    value: name,
+    match: name,
+    left: [{ text: name, bold: true, column: true }, ...(runner ? [{ text: `  ${runner}`, tone: "dimmer" }] : [])],
+    ...(cmd ? { detail: cmd } : {}),
+    group,
   };
+}
+
+const RECENT_SCRIPTS_CAP = 4;
+
+/** Distinct scripts this package ran most recently, newest first. */
+function recentScripts(history: RunHistoryEntry[], packagePath: string, scripts: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const e of history) {
+    if (e.cwd !== packagePath || !scripts.includes(e.script) || seen.has(e.script)) continue;
+    seen.add(e.script);
+    out.push(e.script);
+    if (out.length === RECENT_SCRIPTS_CAP) break;
+  }
+  return out;
+}
+
+/**
+ * [script, group] pairs in display order: the recent scripts first under
+ * "recent", then every script in file order under its colon family
+ * (`start:*` under "start", the bare `start` joining it) when that family
+ * has two or more members, else under "scripts".
+ */
+function scriptGroups(scripts: string[], recent: string[]): Array<[string, string]> {
+  const familyOf = (name: string) => name.split(":")[0]!;
+  const members = new Map<string, number>();
+  for (const name of scripts) members.set(familyOf(name), (members.get(familyOf(name)) ?? 0) + 1);
+  const out: Array<[string, string]> = recent.map((name) => [name, "recent"]);
+  for (const name of scripts) {
+    const family = familyOf(name);
+    out.push([name, (members.get(family) ?? 0) >= 2 ? family : "scripts"]);
+  }
+  return out;
 }
 
 /** `key: label` header parts become global footer actions -- exit keys (ctrl-up plus every expectKey) close the picker with that key as the action id; any other header part is a label-only action. Mirrors runNavPicker's own headerParts translation (lib/pick-wrappers.ts), which NavOption-based call sites get for free but a raw `rows` request has to build itself. */
@@ -301,7 +343,10 @@ export const __test__ = {
   savePresetRow,
   presetRow,
   plainRow,
-  lastRunRow,
+  scriptRow,
+  scriptRunner,
+  scriptGroups,
+  recentScripts,
   footerActions,
   formatFlatHint,
 };
@@ -567,17 +612,8 @@ async function selectPackageAndScript(
       /* skip hints */
     }
 
-    // Last-run sentinel
-    let lastRun: RunHistoryEntry | undefined;
-    if (repoName) {
-      lastRun = readRunHistory(repoName).find(
-        (e) => e.cwd === packagePath && scripts.includes(e.script),
-      );
-    }
-
-    const scriptRows: PickRow[] = [];
-    if (lastRun) scriptRows.push(lastRunRow(lastRun));
-    scripts.forEach((s) => scriptRows.push(plainRow({ value: s, label: s, hint: pkgScripts[s]?.slice(0, 60) })));
+    const recent = repoName ? recentScripts(readRunHistory(repoName), packagePath, scripts) : [];
+    const scriptRows: PickRow[] = scriptGroups(scripts, recent).map(([name, group]) => scriptRow(name, pkgScripts[name] ?? "", group));
 
     // Cursor advance: after a tab-queue re-enters this package, land on the
     // script after the queued one. Empty when the queued script isn't in this
@@ -622,10 +658,7 @@ async function selectPackageAndScript(
 
     if (!scriptResult) throw new RunAborted(1);
 
-    const scriptName =
-      scriptResult.value === LAST_RUN_SENTINEL
-        ? lastRun!.script
-        : scriptResult.value!;
+    const scriptName = scriptResult.value!;
 
     if (scriptResult.key === "ctrl-up") {
       if (packages.length > 1) {
