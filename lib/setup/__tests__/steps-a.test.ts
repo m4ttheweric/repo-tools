@@ -834,6 +834,29 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     expect(p.calls.exec).toEqual([["git", "clone", "https://gitlab.com/acme/acme-dev.git", dest]]);
   });
 
+  test("repos.clone: a private tracked repo is cloned with the forge token rt holds (staged before secrets.write), through the env", async () => {
+    setSetting("rt.repoRoots", [join(home, "code")], "machine");
+    mkdirSync(join(home, "code"), { recursive: true });
+    const seen: { argv: string[]; env?: Record<string, string> }[] = [];
+    const p = fakeProbes({
+      home,
+      exec: async (argv, opts) => {
+        seen.push({ argv, env: opts?.env });
+        return ok();
+      },
+    });
+    stageSecret(p, "rt", "gitlabToken", "glpat_staged");
+    const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
+
+    const outcome = await reposCloneStep.run(ctx);
+    expect(outcome.state).toBe("done");
+    const clone = seen.find((c) => c.argv.includes("clone"))!;
+    expect(clone.argv).toContain("credential.helper=");
+    expect(clone.argv.join(" ")).not.toContain("glpat_staged");
+    expect(clone.env?.RT_GIT_TOKEN).toBe("glpat_staged");
+    expect(clone.env?.GIT_TERMINAL_PROMPT).toBe("0");
+  });
+
   test("repos.clone: an already-present, genuinely-matching clone is skipped (idempotent re-run never re-clones)", async () => {
     setSetting("rt.repoRoots", [join(home, "code")], "machine");
     const dest = join(home, "code", "acme-dev");

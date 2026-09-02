@@ -8,10 +8,8 @@
 import { createTeam, type CreateTeamOpts } from "../../team/create.ts";
 import { forgeLogin } from "../../team/forge.ts";
 import { JoinKeyExchangeError, joinRedeem, realJoinRedeemSeams } from "../../team/join.ts";
-import { forgeTokenKey } from "../../team/git-credential.ts";
 import { publishTeam } from "../../team/publish.ts";
-import { NoAgeKeyError, readSecret } from "../../secrets/store.ts";
-import { readStagedSecret } from "../staging.ts";
+import { forgeTokenFor } from "./forge-token.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import { UserActionableError } from "../errors.ts";
@@ -42,19 +40,6 @@ async function resolveCreateOpts(ctx: ApplyContext): Promise<CreateTeamOpts | "n
   const createRepoOwner = envRemote ? undefined : ((await forgeLogin(p, "github", "github.com")) ?? undefined);
   if (!envRemote && !createRepoOwner) return "no-remote-source";
   return { name: p.env.RT_TEAM_NAME ?? "personal", remote: envRemote, createRepoOwner, others: false };
-}
-
-/** The forge token for `remote`'s host: the sops store when it exists, else what the checklist staged — this step runs before secrets.write drains the stage. Null when rt holds none. */
-async function forgeTokenFor(ctx: ApplyContext, remote: string): Promise<string | null> {
-  const key = forgeTokenKey(remote);
-  if (!key) return null;
-  try {
-    const stored = await readSecret("rt", key, ctx.secrets);
-    if (stored !== null) return stored;
-  } catch (err) {
-    if (!(err instanceof NoAgeKeyError)) return null;
-  }
-  return readStagedSecret(ctx.p, "rt", key);
 }
 
 async function teamCreateRun(ctx: ApplyContext): Promise<StepOutcome> {

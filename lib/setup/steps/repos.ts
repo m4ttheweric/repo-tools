@@ -10,9 +10,11 @@ import { join } from "path";
 import { getSetting } from "../../settings/resolve.ts";
 import { updateRepoIndexAsync } from "../../repo-index.ts";
 import { serializeIdentity } from "../../settings/identity.ts";
+import { gitWithToken } from "../../team/git-credential.ts";
 import { withoutUrls } from "../../team/redact.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
+import { forgeTokenFor } from "./forge-token.ts";
 import { toFailedOutcome } from "./step-utils.ts";
 
 /** Mirrors lib/team/join.ts's own clone env — never prompt for credentials in an unattended run, and never let a global gitconfig credential helper substitute one in behind the operator's back. */
@@ -107,7 +109,9 @@ async function reposCloneRunUnsafe(ctx: ApplyContext): Promise<StepOutcome> {
       continue;
     }
 
-    const result = await p.exec(["git", "clone", `https://${identity}.git`, dest], { env: CLONE_ENV, timeoutMs: CLONE_TIMEOUT_MS });
+    const remote = `https://${identity}.git`;
+    const git = gitWithToken(["clone", remote, dest], await forgeTokenFor(ctx, remote), CLONE_ENV);
+    const result = await p.exec(git.argv, { env: git.env, timeoutMs: CLONE_TIMEOUT_MS });
     if (result.code !== 0) {
       failed++;
       ctx.log("repos.clone", `${base}: clone failed — ${withoutUrls(`${result.stdout}\n${result.stderr}`.trim())}`);
