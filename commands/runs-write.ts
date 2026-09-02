@@ -12,6 +12,10 @@
  *   rt runs field get   KEY
  *   rt runs decision record --contract C --scope S --selection JSON --decided-by W
  *   rt runs snapshot
+ * Decision scopes are free-form. decisions upserts on (run_id, contract,
+ * scope), so a gate that can fire more than once inside one attempt appends
+ * its own discriminator after the attempt (`ci:<stage>:<attempt>:<branch>`);
+ * snapshot returns every row.
  * Every verb but run-start reads RT_RUN_DB. Output is JSON on stdout for
  * every outcome except `field get`. Exit 1 sqlite, 2 usage or environment,
  * 3 not found.

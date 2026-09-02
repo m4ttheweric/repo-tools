@@ -178,6 +178,18 @@ describe("decisions", () => {
     expect(rec("not json")).toMatchObject({ ok: false, code: 2 });
     db.close();
   });
+
+  test("scopes are free-form: a per-branch discriminator keeps every row", () => {
+    const db = started();
+    const rec = (scope: string, now: number) =>
+      decisionRecord(db, { contract: "ci-outcome@1", scope, selection: '{"ok":true}', decidedBy: "watch-ci", now });
+    expect(rec("ci:sync-open-mrs:1:feature-a", 10)).toEqual({ ok: true });
+    expect(rec("ci:sync-open-mrs:1:feature-b", 20)).toEqual({ ok: true });
+    const s = snapshot(db);
+    if (!s.ok) throw new Error(s.error);
+    expect(s.decisions.map((d) => d.scope)).toEqual(["ci:sync-open-mrs:1:feature-a", "ci:sync-open-mrs:1:feature-b"]);
+    db.close();
+  });
 });
 
 describe("snapshot", () => {
