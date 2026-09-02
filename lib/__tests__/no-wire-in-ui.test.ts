@@ -10,6 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { repoLabel, repoLabelQualified } from "../repo-label.ts";
 import { formatFreshnessParts } from "../../commands/daemon.ts";
+import { __test__ as runInternals } from "../../commands/run.ts";
 
 const WIRES = [
   "remote:github.com%2Fm4ttstack%2Frt",
@@ -38,4 +39,17 @@ describe("daemon status events line", () => {
     );
     for (const part of formatFreshnessParts(freshness, Date.now())) expectWireFree(part);
   });
+});
+
+describe("picker-row builders are wire-free", () => {
+  for (const wire of WIRES) {
+    test(`rt run again's formatFlatHint: ${wire.slice(0, 24)}...`, () => {
+      // worktree empty forces the repoName fallback branch.
+      const tagged = {
+        entry: { ts: new Date().toISOString(), cmd: "test", cwd: "/tmp", worktree: "", branch: "", pkg: "", script: "", exit: null },
+        repoName: wire,
+      };
+      expectWireFree(runInternals.formatFlatHint(tagged));
+    });
+  }
 });

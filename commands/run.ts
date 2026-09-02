@@ -291,6 +291,7 @@ export const __test__ = {
   plainRow,
   lastRunRow,
   footerActions,
+  formatFlatHint,
 };
 
 /**
@@ -1216,7 +1217,7 @@ function formatFlatHint(t: TaggedEntry): string {
   const age = formatAge(entry.ts);
   const worktreeName = entry.worktree ? basename(entry.worktree) : "";
   // Prefer worktree name over repo name when they differ (e.g. "acme-wktree-2").
-  const where = worktreeName || repoName;
+  const where = worktreeName || repoLabel(repoName);
   const sub =
     entry.pkg && entry.pkg !== "." && entry.pkg !== "root"
       ? ` · ${entry.pkg}`
