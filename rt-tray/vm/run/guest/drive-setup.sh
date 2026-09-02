@@ -72,7 +72,10 @@ screen_readiness() {
     ax_shot 03-fda-toggled
     # Relaunch re-execs the app in place with its current arguments + environment, so the appcast
     # override survives.
-    ax_wait_status perm.fda needs-you 20 || true
+    # The grant reaches the running process live; the app then offers its own
+    # relaunch (its probe flips denied → granted), which re-execs in place.
+    local n=20
+    while [ "$n" -gt 0 ] && ! ax_find setup.checklist.relaunch >/dev/null 2>&1; do sleep 1; n=$((n-1)); done
     if ax_find setup.checklist.relaunch >/dev/null 2>&1; then
       ax_click setup.checklist.relaunch
     else

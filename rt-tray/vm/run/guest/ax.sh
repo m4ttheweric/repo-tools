@@ -164,14 +164,34 @@ ax_wait_status() {  # <rowId> <status> <timeout-s>
 # form, not ax_admin_auth's own 30s wait-for-appearance — that form belongs only at call sites
 # that just triggered a privileged action and expect the dialog imminently.
 ax_admin_auth_once() {
-  ax_osa 'tell application "System Events" to exists window 1 of process "SecurityAgent"' 2>/dev/null | grep -q true || return 1
   local u p; u=$(ax_esc "$VM_ADMIN_USER"); p=$(ax_esc "$VM_ADMIN_PASS")
-  ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\" to tell window 1
-    set value of text field 1 to \"$u\"
-    set value of text field 2 to \"$p\"
-    click (first button whose name is \"OK\" or name is \"Unlock\" or name is \"Modify Settings\" or name is \"Install Helper\")
-  end tell" >/dev/null && { ax_log "admin auth filled"; return 0; }
+  if ax_osa 'tell application "System Events" to exists window 1 of process "SecurityAgent"' 2>/dev/null | grep -q true; then
+    ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\" to tell window 1
+      set value of text field 1 to \"$u\"
+      set value of text field 2 to \"$p\"
+      click (first button whose name is \"OK\" or name is \"Unlock\" or name is \"Modify Settings\" or name is \"Install Helper\")
+    end tell" >/dev/null && { ax_log "admin auth filled (SecurityAgent)"; return 0; }
+  fi
+  # macOS 26 asks inside System Settings itself: a sheet titled "Privacy &
+  # Security is trying to modify your system settings" with name/password
+  # fields and a Modify Settings button — no SecurityAgent process at all.
+  if ax_osa 'tell application "System Events" to tell process "System Settings" to exists (first button of sheet 1 of window 1 whose name is "Modify Settings")' 2>/dev/null | grep -q true; then
+    ax_osa "tell application \"System Events\" to tell process \"System Settings\" to tell sheet 1 of window 1
+      set value of text field 1 to \"$u\"
+      set value of text field 2 to \"$p\"
+      click (first button whose name is \"Modify Settings\")
+    end tell" >/dev/null && { ax_log "admin auth filled (System Settings sheet)"; return 0; }
+  fi
   return 1
+}
+
+# After a granted privacy toggle macOS offers to relaunch the app itself
+# ("… will not have full disk access until it is quit": Quit & Reopen /
+# Later). Later keeps the relaunch with the driver, which replays the app's
+# launch env and args; Quit & Reopen would drop them.
+ax_settings_dismiss_relaunch_sheet() {
+  ax_osa 'tell application "System Events" to tell process "System Settings" to click (first button of sheet 1 of window 1 whose name is "Later")' >/dev/null 2>&1 \
+    && ax_log "System Settings: dismissed the Quit & Reopen sheet with Later" || true
 }
 
 ax_admin_auth() {
@@ -189,61 +209,44 @@ ax_allow_notifications() {
 }
 
 
-# The row's checkbox value (0/1) for a System Settings privacy list entry, optionally clicking it
-# first. The pane's list loads well after window 1 exists, and the row layout (a group holding a
-# static text and a checkbox, nesting varies by OS) is not addressable by a fixed path across
-# 14/15/26: find the static text naming the app anywhere in the window, then climb AXParent until
-# an ancestor holds a checkbox.
+# The value (0/1) of a privacy-list row's switch in System Settings, optionally clicking it first.
+# The list loads well after window 1 exists, and on 14/15/26 alike the switch is a checkbox
+# (AXSwitch) NAMED after the app, a sibling of its label — so it is found by name, never by path.
 ax_settings_row_checkbox() {  # <row label> [click]
   local lbl; lbl=$(ax_esc "$1")
   local act="${2:-}"
   ax_osa "
 using terms from application \"System Events\"
-  on findText(el, lbl)
+  on findSwitch(el, lbl, exact)
     try
-      if class of el is static text then
-        if (value of el as text) contains lbl or (name of el as text) contains lbl then return el
+      if class of el is checkbox then
+        set n to name of el as text
+        if (exact and n is lbl) or ((not exact) and n contains lbl) then return el
       end if
     end try
     try
       repeat with c in UI elements of el
-        set r to my findText(c, lbl)
+        set r to my findSwitch(c, lbl, exact)
         if r is not missing value then return r
       end repeat
     end try
     return missing value
-  end findText
-  on findCheckbox(el)
-    try
-      if class of el is checkbox then return el
-    end try
-    try
-      repeat with c in UI elements of el
-        set r to my findCheckbox(c)
-        if r is not missing value then return r
-      end repeat
-    end try
-    return missing value
-  end findCheckbox
+  end findSwitch
 end using terms from
 tell application \"System Events\" to tell process \"System Settings\"
-  set txt to missing value
+  set sw to missing value
   repeat 40 times
-    if exists window 1 then set txt to my findText(window 1, \"$lbl\")
-    if txt is not missing value then exit repeat
+    if exists window 1 then
+      set sw to my findSwitch(window 1, \"$lbl\", true)
+      if sw is missing value then set sw to my findSwitch(window 1, \"$lbl\", false)
+    end if
+    if sw is not missing value then exit repeat
     delay 0.5
   end repeat
-  if txt is missing value then error \"no row for $lbl in System Settings\"
-  set anc to txt
-  set cb to missing value
-  repeat 5 times
-    set anc to value of attribute \"AXParent\" of anc
-    set cb to my findCheckbox(anc)
-    if cb is not missing value then exit repeat
-  end repeat
-  if cb is missing value then error \"no checkbox near $lbl\"
-  if \"$act\" is \"click\" and value of cb is 0 then click cb
-  return value of cb
+  if sw is missing value then error \"no switch named $lbl in System Settings\"
+  set v0 to value of sw
+  if \"$act\" is \"click\" and v0 is 0 then click sw
+  return v0
 end tell"
 }
 
@@ -295,15 +298,15 @@ end tell" 2>/dev/null | sed 's/^/    settings row: /' >>"$AX_LOG"
 }
 
 ax_toggle_in_system_settings() {  # <row label e.g. mattstack>
-  local before after
-  before=$(ax_settings_row_checkbox "$1" click) || { ax_settings_dump_rows; return 1; }
-  ax_log "System Settings: $1 checkbox was $before, clicked"
-  ax_settings_dump_rows
-  ax_admin_auth || true
+  local v0 after
+  v0=$(ax_settings_row_checkbox "$1" click) || { ax_settings_dump_rows; return 1; }
+  ax_log "System Settings: $1 switch was $v0, clicked"
+  ax_admin_auth || ax_log "System Settings: no admin prompt appeared within 30s"
   sleep 2
+  ax_settings_dismiss_relaunch_sheet
   after=$(ax_settings_row_checkbox "$1") || return 1
-  ax_log "System Settings: $1 checkbox now $after"
+  ax_log "System Settings: $1 switch now $after"
   # On failure System Settings stays open so the caller's screenshot shows the pane.
-  [ "$after" = 1 ] || return 1
+  [ "$after" = 1 ] || { ax_settings_dump_rows; return 1; }
   ax_osa 'tell application "System Settings" to quit' >/dev/null 2>&1 || true
 }
