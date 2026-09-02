@@ -900,6 +900,17 @@ func TestActionRowsWearTheActionRole(t *testing.T) {
 	if got := ansi.Strip(strings.Split(render(m), "\n")[4]); !strings.HasPrefix(got, "▌ \U000F040A Launch all") {
 		t.Fatalf("the row's own glyph leads: %q", got)
 	}
+
+	// A named accent recolors glyph, text and bar, and the highlight derives
+	// from it rather than from the default lav.
+	m.req.Rows[1].Accent = "mint"
+	action = strings.Split(render(m), "\n")[4]
+	if !strings.Contains(action, fgSGR(theme.Mint)+"m"+theme.GlyphBar) || !strings.Contains(action, "1;"+fgSGR(theme.Mint)) {
+		t.Fatalf("a mint accent should paint the bar and text mint: %q", action)
+	}
+	if !strings.Contains(action, bgSGR(theme.ActionHighlight(theme.Mint))) || strings.Contains(action, bgSGR(theme.ActionSelBg)) {
+		t.Fatalf("the highlight should derive from the mint accent: %q", action)
+	}
 }
 
 // bgSGR is fgSGR's background twin.

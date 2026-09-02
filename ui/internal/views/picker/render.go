@@ -463,15 +463,16 @@ func rowLineWidth(m *Model, i int, width int) string {
 	hoverRow := !cursorRow && i == m.hover
 	indent := m.rowIndent()
 	action := row.Kind == protocol.RowKindAction
+	accent := actionAccent(row)
 
 	rowBg := onBg
 	gutterGlyph := " "
 	gutterStyle := onBg
 	switch {
 	case cursorRow && action:
-		rowBg = lipgloss.NewStyle().Background(theme.ActionSelBg)
+		rowBg = lipgloss.NewStyle().Background(theme.ActionHighlight(accent))
 		gutterGlyph = theme.GlyphBar
-		gutterStyle = fg(theme.ActionFg)
+		gutterStyle = fg(accent)
 	case cursorRow:
 		rowBg = lipgloss.NewStyle().Background(theme.SelBg)
 		gutterGlyph = theme.GlyphBar
@@ -490,7 +491,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 		if glyph == "" {
 			glyph = theme.GlyphAction
 		}
-		icon = rowBg.Foreground(theme.ActionFg).Bold(cursorRow).Render(glyph + " ")
+		icon = rowBg.Foreground(accent).Bold(cursorRow).Render(glyph + " ")
 		iconWidth = lipgloss.Width(glyph) + 1
 	}
 
@@ -542,7 +543,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 
 	leftPlain := leftPlainText(row)
 	kept, truncated := clipRunes(leftPlain, leftBudget)
-	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow, argsDim, action)
+	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow, argsDim, accentFor(action, accent))
 	usedLeftWidth := lipgloss.Width(kept)
 	if truncated {
 		leftRendered += rowBg.Foreground(theme.Faint).Render("…")
@@ -572,7 +573,25 @@ func rowLineWidth(m *Model, i int, width int) string {
 // tone/hex/bold and any match highlight are overridden to a flat Faint, so
 // a row the current modifier can't act on never competes for attention
 // against one that can.
-func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool, dim bool, action bool) string {
+// actionAccent is an action row's accent color: its named tone, or the
+// theme's default when it names none (or names one the theme lacks).
+func actionAccent(row protocol.PickRow) color.Color {
+	if c, ok := toneColor(row.Accent); ok && row.Accent != "" {
+		return c
+	}
+	return theme.ActionFg
+}
+
+// accentFor is the accent renderHighlightedLeft paints default-tone text
+// in, or nil for an ordinary entry.
+func accentFor(action bool, accent color.Color) color.Color {
+	if action {
+		return accent
+	}
+	return nil
+}
+
+func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool, dim bool, accent color.Color) string {
 	matched := make(map[int]bool, len(positions))
 	for _, p := range positions {
 		matched[p] = true
@@ -581,8 +600,8 @@ func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int,
 	runeIdx := 0
 	for _, seg := range row.Left {
 		color, bold := leftSegColor(seg, cursorRow)
-		if action && seg.Hex == "" && (seg.Tone == "" || seg.Tone == "text") {
-			color, bold = theme.ActionFg, cursorRow || seg.Bold
+		if accent != nil && seg.Hex == "" && (seg.Tone == "" || seg.Tone == "text") {
+			color, bold = accent, cursorRow || seg.Bold
 		}
 		if dim {
 			color, bold = theme.Faint, false

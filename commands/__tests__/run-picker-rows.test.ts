@@ -45,6 +45,7 @@ test("launchAllRow and savePresetRow are action rows in the queue group, each wi
   expect(launch.group).toBe("queue");
   expect(launch.kind).toBe("action");
   expect(launch.glyph).toBe("\u{F040A}"); // nf-md-play
+  expect(launch.accent).toBe("mint"); // the go action; save keeps the default chrome accent
   expect(launch.left[0]).toMatchObject({ text: "Launch all", bold: true });
   expect(launch.left.some((s) => s.text.includes("2 queued"))).toBe(true);
 
@@ -52,6 +53,7 @@ test("launchAllRow and savePresetRow are action rows in the queue group, each wi
   expect(save.group).toBe("queue");
   expect(save.kind).toBe("action");
   expect(save.glyph).toBe("\u{F0193}"); // nf-md-content-save
+  expect(save.accent).toBeUndefined();
   expect(save.left[0]).toMatchObject({ text: "Save as preset…", bold: true });
 });
 

@@ -44,12 +44,13 @@ var (
 	KeybarLabel = TextSoft
 	KeybarGroup = Lav
 
-	// Action rows (a picker's button-like rows: "Launch all") wear the
-	// chrome accent, lav, on glyph, text and cursor bar, over a lav-tinted
-	// highlight, so a row that operates on the list reads as chrome, not as
-	// one more entry. Pink stays the entry accent.
+	// Action rows (a picker's button-like rows: "Launch all") wear an
+	// accent on glyph, text and cursor bar, over a highlight tinted from
+	// that same accent (ActionHighlight), so a row that operates on the
+	// list reads as chrome, not as one more entry. Lav is the default
+	// accent; a row may name another tone. Pink stays the entry accent.
 	ActionFg    = Lav
-	ActionSelBg = lipgloss.Color("#2D2650")
+	ActionSelBg = ActionHighlight(Lav)
 
 	// Meta is quiet text that still carries information: counts, group
 	// headers, a breadcrumb's sort suffix, "of N" in a scroll range. Faint
@@ -79,6 +80,22 @@ var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 const CardWidth = 88
 
 // Hex renders a palette color back as #RRGGBB; used by tests and the --version banner.
+// actionHighlightBlend is how far an action accent sinks toward Bg to
+// become that row's cursor highlight: deep enough to read as a background
+// under the accent's own bold text, light enough to still carry its hue.
+const actionHighlightBlend = 0.82
+
+// ActionHighlight is the cursor-row background for an action row whose
+// accent is c: c blended toward Bg by actionHighlightBlend.
+func ActionHighlight(c color.Color) color.Color {
+	r, g, b, _ := c.RGBA()
+	br, bg, bb, _ := Bg.RGBA()
+	mix := func(v, t uint32) uint8 {
+		return uint8(float64(v>>8) + (float64(t>>8)-float64(v>>8))*actionHighlightBlend)
+	}
+	return color.RGBA{R: mix(r, br), G: mix(g, bg), B: mix(b, bb), A: 0xFF}
+}
+
 func Hex(c color.Color) string {
 	r, g, b, _ := c.RGBA()
 	return fmt.Sprintf("#%02X%02X%02X", r>>8, g>>8, b>>8)

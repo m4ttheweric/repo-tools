@@ -105,6 +105,7 @@ function launchAllRow(queuedCount: number): PickRow {
     value: LAUNCH_ALL_SENTINEL,
     kind: "action",
     glyph: GLYPH_PLAY,
+    accent: "mint",
     left: [
       { text: "Launch all", bold: true },
       { text: `  ${queuedCount} queued → runner board`, tone: "dim" },

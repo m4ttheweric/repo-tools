@@ -160,6 +160,12 @@ export interface PickRow {
   right?: PickSegment[];
   match?: string;
   group?: string;
+  /** "action": a button-like row (run's "Launch all"). See PickRowKind. */
+  kind?: PickRowKind;
+  /** An action row's leading icon, a Nerd Font symbol by convention; omitted falls back to the picker's generic action glyph. */
+  glyph?: string;
+  /** An action row's tone (segment tone vocabulary) for glyph, text and cursor bar; its highlight derives from it. Omitted is the picker's default accent (lav). */
+  accent?: string;
   /** Marks a row whose primary action can run with extra arguments; render.go's alt-held with-args chrome keys off this. */
   withArgs?: boolean;
 }

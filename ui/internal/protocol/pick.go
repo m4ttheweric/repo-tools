@@ -32,6 +32,10 @@ type PickRow struct {
 	// Glyph is an action row's leading icon, a Nerd Font symbol by
 	// convention; empty falls back to the theme's generic action glyph.
 	Glyph string `json:"glyph,omitempty"`
+	// Accent is an action row's tone (the segment tone vocabulary: "mint",
+	// "cyan", ...) for its glyph, text and cursor bar; the cursor highlight
+	// derives from it. Empty is the theme's default action accent.
+	Accent string `json:"accent,omitempty"`
 	// WithArgs marks a row whose primary action can run with extra
 	// arguments -- render.go's alt-held with-args header badge, cursor-row
 	// badge, and per-row dim all key off this. showPicker
