@@ -28,6 +28,8 @@ jobs:
       - name: Release metadata
         id: meta
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             TAG="${GITHUB_REF_NAME}"
@@ -35,9 +37,15 @@ jobs:
             ARTIFACT_VERSION="$VERSION"
             PUBLISH=true
           else
-            TAG="v0.0.0-ci${GITHUB_RUN_NUMBER}"
-            VERSION="0.0.0"
-            ARTIFACT_VERSION="0.0.0-ci${GITHUB_RUN_NUMBER}"
+            # A rehearsal must sort ABOVE the live feed's newest item, or
+            # generate_appcast treats its zip as an old version, writes no
+            # enclosure for it, and the appcast step fails — exactly what a
+            # real tag never sees. Patch-bump the latest published release.
+            LATEST="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" -q .tag_name 2>/dev/null || echo v0.0.0)"
+            IFS=. read -r MAJ MIN PAT <<< "${LATEST#v}"
+            VERSION="${MAJ:-0}.${MIN:-0}.$(( ${PAT%%-*} + 1 ))"
+            TAG="v${VERSION}-ci${GITHUB_RUN_NUMBER}"
+            ARTIFACT_VERSION="${VERSION}-ci${GITHUB_RUN_NUMBER}"
             PUBLISH=false
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
