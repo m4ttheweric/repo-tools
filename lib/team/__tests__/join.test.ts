@@ -1,7 +1,8 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach } from "bun:test";
 import { join as pathJoin } from "path";
 import { fakeProbes } from "../../setup/__tests__/fakes.ts";
 import { UserActionableError } from "../../setup/errors.ts";
+import { resetCltCacheForTests } from "../../setup/home-git.ts";
 import { intentPath, readIntent, type InvitePointer, type SetupIntent } from "../../setup/intent.ts";
 import type { Probes } from "../../setup/probes.ts";
 import type { SettingsReader } from "../../setup/team-settings.ts";
@@ -139,7 +140,34 @@ function baseJoinRedeemSeams(overrides: Partial<JoinRedeemSeams> = {}): { seams:
 
 const NO_SECRETS: SecretsSeams = {} as SecretsSeams;
 
+/** A script for git's answer alone: the CLT guard (`xcode-select -p`) that precedes the git call answers ok. */
+function gitAnswers(script: Parameters<typeof fakeProbes>[0]["exec"] & object): Parameters<typeof fakeProbes>[0]["exec"] {
+  return (argv, opts) => (argv[0] === "xcode-select" ? { code: 0, stdout: "/Library/Developer/CommandLineTools", stderr: "" } : script(argv, opts));
+}
+
 describe("joinDryRun", () => {
+  beforeEach(() => resetCltCacheForTests());
+
+  test("no Command Line Tools yet: git is never run (the xcode-select shim fails and raises Apple's dialog); access ok, intent written, message defers to the next screen", async () => {
+    const seen: string[][] = [];
+    const p = fakeProbes({
+      home: HOME,
+      now: NOW,
+      exec: (argv) => {
+        seen.push(argv);
+        return argv[0] === "xcode-select" ? { code: 2, stdout: "", stderr: "xcode-select: error: unable to get active developer directory" } : { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    const relay = fakeRelay();
+
+    const result = await joinDryRun(p, relay.client, CODE);
+
+    expect(result.access).toBe("ok");
+    expect(result.message).toContain("next screen");
+    expect(readIntent(p)?.mode).toBe("join");
+    expect(seen.some((argv) => argv[0] === "git")).toBe(false);
+  });
+
   test("happy path: access ok, writes the resumable intent, exact message", async () => {
     const p = fakeProbes({ home: HOME, now: NOW, exec: () => ({ code: 0, stdout: "", stderr: "" }) });
     const relay = fakeRelay();
@@ -222,7 +250,7 @@ describe("joinDryRun", () => {
   test("ls-remote auth failure: access denied, message has no URL and no raw git output", async () => {
     const p = fakeProbes({
       home: HOME,
-      exec: () => ({ code: 128, stdout: "", stderr: "fatal: Authentication failed for 'https://github.com/acme/widgets.git/'" }),
+      exec: gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: Authentication failed for 'https://github.com/acme/widgets.git/'" })),
     });
     const relay = fakeRelay();
 
@@ -257,7 +285,7 @@ describe("joinDryRun", () => {
   });
 
   test("a non-auth git failure reports access:unreachable, message says the network, not a guess", async () => {
-    const p = fakeProbes({ home: HOME, exec: () => ({ code: 128, stdout: "", stderr: "fatal: Could not resolve host: github.com" }) });
+    const p = fakeProbes({ home: HOME, exec: gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: Could not resolve host: github.com" })) });
     const relay = fakeRelay();
 
     const result = await joinDryRun(p, relay.client, CODE);
@@ -278,10 +306,11 @@ describe("joinDryRun", () => {
 
     await joinDryRun(p, relay.client, CODE);
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.argv).toEqual(["git", "ls-remote", "--exit-code", REMOTE, "HEAD"]);
-    expect(calls[0]!.opts?.env?.GIT_TERMINAL_PROMPT).toBe("0");
-    expect(calls[0]!.opts?.env?.GIT_PROTOCOL_FROM_USER).toBe("0");
+    const git = calls.filter((c) => c.argv[0] === "git");
+    expect(git).toHaveLength(1);
+    expect(git[0]!.argv).toEqual(["git", "ls-remote", "--exit-code", REMOTE, "HEAD"]);
+    expect(git[0]!.opts?.env?.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(git[0]!.opts?.env?.GIT_PROTOCOL_FROM_USER).toBe("0");
   });
 
   describe("a hostile pointer is rejected before it ever reaches a path join or a git argv", () => {

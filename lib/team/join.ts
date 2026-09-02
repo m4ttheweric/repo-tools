@@ -25,6 +25,7 @@ import { validateSlug } from "../secrets/store.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
 import { createRealTeamSecretsSeams, readTeamSecret } from "../secrets/team-store.ts";
 import { UserActionableError } from "../setup/errors.ts";
+import { gitUsable } from "../setup/home-git.ts";
 import { clearIntent, readIntent, writeIntent, type InvitePointer } from "../setup/intent.ts";
 import type { ExecResult, Probes } from "../setup/probes.ts";
 import { forgeFromRemote, parseOriginUrl, readTeamSnapshot, stripUserinfo, type SettingsReader } from "../setup/team-settings.ts";
@@ -207,22 +208,27 @@ export async function joinDryRun(p: Probes, relay: RelayClient, code: string): P
     return unreachableResult(NO_TEAM, "could not reach the invite relay — check your network and try again");
   }
 
-  // --exit-code turns "repo reachable but HEAD doesn't resolve" (a brand new,
-  // still-empty team repo) into exit 2, not a failure — both 0 and 2 mean the
-  // joiner can read the repo.
-  const lsRemote = await p.exec(["git", "ls-remote", "--exit-code", pointer.remote, "HEAD"], { env: GIT_ENV });
-  // A joiner has connected no forge token yet at this screen, so a private
-  // repo answers "could not read Username": nothing was refused, git had
-  // nothing to offer. The checklist's access.team-repo row, which does hold
-  // the token, is what proves access before Install.
-  const noCredential = lsRemote.code === 128 && NO_CREDENTIAL_PATTERN.test(lsRemote.stderr);
-  if (lsRemote.code !== 0 && lsRemote.code !== 2 && !noCredential) {
-    return gitAccessResult(pointer, lsRemote);
+  // Two things defer the access check to the checklist's access.team-repo
+  // row: no Command Line Tools yet (git is the xcode-select shim, which
+  // fails and raises Apple's install dialog), and no forge token yet (a
+  // private repo answers "could not read Username": nothing was refused,
+  // git had nothing to offer). That row holds the token and runs after
+  // tool.clt, so it is what proves access before Install.
+  let deferred = !(await gitUsable(p.exec));
+  if (!deferred) {
+    // --exit-code turns "repo reachable but HEAD doesn't resolve" (a brand
+    // new, still-empty team repo) into exit 2, not a failure — both 0 and 2
+    // mean the joiner can read the repo.
+    const lsRemote = await p.exec(["git", "ls-remote", "--exit-code", pointer.remote, "HEAD"], { env: GIT_ENV });
+    deferred = lsRemote.code === 128 && NO_CREDENTIAL_PATTERN.test(lsRemote.stderr);
+    if (lsRemote.code !== 0 && lsRemote.code !== 2 && !deferred) {
+      return gitAccessResult(pointer, lsRemote);
+    }
   }
 
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "join", join: { id: idHex, keyB64: Buffer.from(key).toString("base64"), pointer } });
-  const message = noCredential
-    ? `Joining ${pointer.name} (owner ${pointer.owner}) — access to the team repo is checked on the next screen, once your forge token is connected`
+  const message = deferred
+    ? `Joining ${pointer.name} (owner ${pointer.owner}) — access to the team repo is checked on the next screen`
     : `Joining ${pointer.name} (owner ${pointer.owner})`;
   return { team: teamRefFrom(pointer), access: "ok", peering: "idle", message };
 }

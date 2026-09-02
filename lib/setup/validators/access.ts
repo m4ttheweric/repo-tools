@@ -8,6 +8,7 @@
 
 import { row, type Action, type Row } from "../contract.ts";
 import { isValidHostname, isValidHttpsUrl } from "../host-validate.ts";
+import { gitUsable } from "../home-git.ts";
 import type { SetupIntent } from "../intent.ts";
 import type { Probes } from "../probes.ts";
 import { forgeFromRemote, type TeamSnapshot, type UserIntegrationOverrides } from "../team-settings.ts";
@@ -70,6 +71,11 @@ async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | 
   const remote = intent?.team?.remote ?? intent?.join?.pointer.remote ?? team.remote;
   // Screen 2 recomputes the whole plan in-band once a remote exists — nothing to re-check here yet.
   if (!remote) return row({ ...base, status: "missing", detail: "no team remote yet (screen 2)" });
+  // Without the Command Line Tools, git is the xcode-select shim: it fails
+  // and raises Apple's install dialog on every probe.
+  if (!(await gitUsable(p.exec))) {
+    return row({ ...base, status: "missing", detail: "needs Apple's Command Line Tools first (see the tool row), then re-check", action: RECHECK_ACTION });
+  }
 
   const outcome = await lsRemoteOutcome(p, remote, await forgeTokenFor(remote, secrets));
   const action = outcome.status === "ready" ? null : RECHECK_ACTION;

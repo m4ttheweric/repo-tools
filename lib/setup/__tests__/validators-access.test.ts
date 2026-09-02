@@ -1,5 +1,6 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach } from "bun:test";
 import { accessRows } from "../validators/access.ts";
+import { resetCltCacheForTests } from "../home-git.ts";
 import { fakeProbes, ok } from "./fakes.ts";
 import type { ExecScript } from "./fakes.ts";
 import type { TeamSnapshot } from "../team-settings.ts";
@@ -18,9 +19,30 @@ async function pickRow(rowsP: ReturnType<typeof accessRows>, id: string) {
 }
 
 const REMOTE = "https://gitlab.example.com/acme/mattstack.git";
+
+/** A script for git's answer alone: the CLT guard (`xcode-select -p`) that precedes every git call answers ok. */
+function gitAnswers(script: ExecScript): ExecScript {
+  return (argv, opts) => (argv[0] === "xcode-select" ? ok() : script(argv, opts));
+}
 const RECHECK_ACTION: Action = { type: "run", label: "Re-check", verb: ["setup", "status"] };
 
 describe("accessRows — access.team-repo", () => {
+  beforeEach(() => resetCltCacheForTests());
+
+  test("no Command Line Tools yet -> the row waits on tool.clt and never runs git (the xcode-select shim would raise Apple's install dialog)", async () => {
+    const team = baseTeam({ remote: REMOTE });
+    const seen: string[][] = [];
+    const exec: ExecScript = (argv) => {
+      seen.push(argv);
+      return argv[0] === "xcode-select" ? { code: 2, stdout: "", stderr: "xcode-select: error: unable to get active developer directory" } : ok();
+    };
+    const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.team-repo");
+    expect(r.status).toBe("missing");
+    expect(r.detail).toContain("Command Line Tools");
+    expect(r.action).toEqual(RECHECK_ACTION);
+    expect(seen.some((argv) => argv[0] === "git")).toBe(false);
+  });
+
   test("ls-remote exit 0 -> ready, full row pinned (recheck on-activate, action null)", async () => {
     const team = baseTeam({ remote: REMOTE });
     const exec: ExecScript = () => ok();
@@ -41,7 +63,7 @@ describe("accessRows — access.team-repo", () => {
 
   test("exit 2 -> ready, empty repo will be initialized", async () => {
     const team = baseTeam({ remote: REMOTE });
-    const exec: ExecScript = () => ({ code: 2, stdout: "", stderr: "" });
+    const exec: ExecScript = gitAnswers(() => ({ code: 2, stdout: "", stderr: "" }));
     const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.team-repo");
     expect(r.status).toBe("ready");
     expect(r.detail).toBe("empty repo (will be initialized)");
@@ -49,7 +71,7 @@ describe("accessRows — access.team-repo", () => {
 
   test("exit 128 with an auth-refusal stderr -> needs-you, detail never echoes the remote URL, carries a re-check action (finding 5)", async () => {
     const team = baseTeam({ remote: REMOTE });
-    const exec: ExecScript = () => ({ code: 128, stdout: "", stderr: `remote: HTTP Basic: Access denied\nfatal: Authentication failed for '${REMOTE}/'` });
+    const exec: ExecScript = gitAnswers(() => ({ code: 128, stdout: "", stderr: `remote: HTTP Basic: Access denied\nfatal: Authentication failed for '${REMOTE}/'` }));
     const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.team-repo");
     expect(r.status).toBe("needs-you");
     expect(r.detail).not.toContain(REMOTE);
@@ -60,7 +82,7 @@ describe("accessRows — access.team-repo", () => {
 
   test("exit 128 with 'could not read Username' (no credential at all) -> error, NOT a permissions verdict (finding 6)", async () => {
     const team = baseTeam({ remote: REMOTE });
-    const exec: ExecScript = () => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://gitlab.example.com': terminal prompts disabled" });
+    const exec: ExecScript = gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://gitlab.example.com': terminal prompts disabled" }));
     const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.team-repo");
     expect(r.status).toBe("error");
     expect(r.detail).not.toContain("ask the owner");
@@ -69,14 +91,14 @@ describe("accessRows — access.team-repo", () => {
 
   test("a credential-bearing remote's stderr never leaks the token into detail (finding 7)", async () => {
     const team = baseTeam({ remote: REMOTE });
-    const exec: ExecScript = () => ({ code: 1, stdout: "", stderr: "fatal: unable to access 'https://user:sk-sentinel-token@gitlab.example.com/acme/mattstack.git/': The requested URL returned error: 403" });
+    const exec: ExecScript = gitAnswers(() => ({ code: 1, stdout: "", stderr: "fatal: unable to access 'https://user:sk-sentinel-token@gitlab.example.com/acme/mattstack.git/': The requested URL returned error: 403" }));
     const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.team-repo");
     expect(r.detail).not.toContain("sk-sentinel-token");
   });
 
   test("a genuinely unreachable host (exit 1, no auth marker) -> error, never invalid, with a re-check action", async () => {
     const team = baseTeam({ remote: REMOTE });
-    const exec: ExecScript = () => ({ code: 1, stdout: "", stderr: "fatal: could not resolve host" });
+    const exec: ExecScript = gitAnswers(() => ({ code: 1, stdout: "", stderr: "fatal: could not resolve host" }));
     const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.team-repo");
     expect(r.status).toBe("error");
     expect(r.detail).toBe("unreachable: fatal: could not resolve host");
@@ -85,7 +107,7 @@ describe("accessRows — access.team-repo", () => {
 
   test("ls-remote times out -> error, never hangs the row on missing/needs-you", async () => {
     const team = baseTeam({ remote: REMOTE });
-    const exec: ExecScript = () => ({ code: 124, stdout: "", stderr: "" });
+    const exec: ExecScript = gitAnswers(() => ({ code: 124, stdout: "", stderr: "" }));
     const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.team-repo");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("timed out");
@@ -235,7 +257,7 @@ describe("accessRows — access.repo.<slug>", () => {
 
   test("an auth failure on one repo -> needs-you for that row only", async () => {
     const team = baseTeam({ trackingIdentities: ["github.com/acme/repo"] });
-    const exec: ExecScript = () => ({ code: 128, stdout: "", stderr: "fatal: Authentication failed" });
+    const exec: ExecScript = gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: Authentication failed" }));
     const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.repo.github.com-acme-repo");
     expect(r.status).toBe("needs-you");
   });
