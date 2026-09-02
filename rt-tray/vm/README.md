@@ -26,9 +26,12 @@ pass is green too: an owner guest loads `fixtures/team-minimal` through
 secret), two joiners join from fresh guests, and
 `run/host/team-propagate.sh` + `run/guest/assert-team.sh` prove the repo
 cloned, the plugin installed, and the secret decrypting with each joiner's
-own key (runs `20260902-121519`, `20260902-124007`). `--scenario headless`
-is green too. Still unproven: `fixtures/team-kitchen-sink` and the `update`
-phase (`--update-dir`).
+own key (runs `20260902-121519`, `20260902-124007`), and
+`fixtures/team-kitchen-sink` (two private repos, two team plugins plus a
+team-chosen public-marketplace plugin, three secrets in two domains) is
+green on both joiners (runs `20260902-125703`, `20260902-130744`).
+`--scenario headless` is green too. Still unproven: the `update` phase
+(`--update-dir`).
 
 The team pass has two hand steps the product does not do yet (MAT-405):
 the owner's commit + `rt team publish` after `members sync`, and the
