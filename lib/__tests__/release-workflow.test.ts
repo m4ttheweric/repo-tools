@@ -53,12 +53,18 @@ describe("release.yml", () => {
     const step = wf.jobs.release.steps.find((s: any) => (s.name ?? "").startsWith("Appcast"));
     expect(step.if).toBeUndefined();
   });
-  test("dispatch runs stamp a clean semver (0.0.0), never the run-numbered tag, into RT_VERSION", () => {
+  test("dispatch runs stamp a clean semver above the latest release, never the run-numbered tag, into RT_VERSION", () => {
     const build = wf.jobs.release.steps.find((s: any) => s.name === "Build mattstack.app");
     expect(build.env.RT_VERSION).toBe("${{ steps.meta.outputs.version }}");
     const meta = wf.jobs.release.steps.find((s: any) => s.name === "Release metadata");
-    expect(meta.run).toContain('VERSION="0.0.0"');
-    expect(meta.run).toContain("ARTIFACT_VERSION=");
+    // A v0.0.0-ci rehearsal sorts below a real appcast item and generate_appcast
+    // then writes no enclosure for it: the synthetic version patch-bumps the
+    // latest published release instead, and reads it with the run's own token.
+    expect(meta.run).toContain("releases/latest");
+    expect(meta.run).toMatch(/VERSION="\$\{MAJ:-0\}\.\$\{MIN:-0\}\.\$\(\( \$\{PAT%%-\*\} \+ 1 \)\)"/);
+    expect(meta.run).not.toContain('VERSION="0.0.0"');
+    expect(meta.env.GH_TOKEN).toBe("${{ github.token }}");
+    expect(meta.run).toContain('ARTIFACT_VERSION="${VERSION}-ci${GITHUB_RUN_NUMBER}"');
   });
   test("Checksums uses nullglob + working-directory: out, and never fails on an absent class", () => {
     const step = wf.jobs.release.steps.find((s: any) => s.name === "Checksums");
