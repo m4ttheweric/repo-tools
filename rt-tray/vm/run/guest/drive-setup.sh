@@ -1,15 +1,19 @@
 #!/bin/bash
 # Drive the five setup screens of mattstack.app in the guest, as tester.
-# Usage: drive-setup.sh <create|join|restore> [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT] [--invite-code-file <p>] [--team-remote <url>]
+# Usage: drive-setup.sh <create|join|restore> [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT] [--invite-code-file <p>] [--team-remote <url>] [--forge github|gitlab]
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; source "$HERE/ax.sh"
 SCENARIO="${1:-create}"; shift || true
-SLUG=vmtest; PAT_ENV=MATTSTACK_VMTEST_PAT; CODE_FILE=""; TEAM_REMOTE="${TEAM_REMOTE:-}"
+SLUG=vmtest; PAT_ENV=MATTSTACK_VMTEST_PAT; CODE_FILE=""; TEAM_REMOTE="${TEAM_REMOTE:-}"; FORGE="${FORGE:-}"
 while [ $# -gt 0 ]; do case "$1" in
   --team-slug) SLUG="$2"; shift 2;; --pat-env) PAT_ENV="$2"; shift 2;; --invite-code-file) CODE_FILE="$2"; shift 2;;
-  --team-remote) TEAM_REMOTE="$2"; shift 2;;
+  --team-remote) TEAM_REMOTE="$2"; shift 2;; --forge) FORGE="$2"; shift 2;;
   *) ax_fail "unknown arg $1";; esac; done
 case "$SCENARIO" in create|join|restore) ;; *) ax_fail "unknown scenario: $SCENARIO (want create|join|restore)";; esac
+# The one PAT the run carries belongs to the team's forge: the remote's host
+# names it for create; join learns the forge from the invite, so it is passed.
+if [ -z "$FORGE" ]; then case "$TEAM_REMOTE" in *gitlab*) FORGE=gitlab;; *) FORGE=github;; esac; fi
+case "$FORGE" in github|gitlab) ;; *) ax_fail "unknown forge: $FORGE (want github|gitlab)";; esac
 PAT="${!PAT_ENV:-}"
 DRIVER_LAUNCH_ARGS="${DRIVER_LAUNCH_ARGS:-}"
 
@@ -53,17 +57,17 @@ screen_team() {
 
 screen_readiness() {
   ax_shot 03-readiness-initial
-  # Accounts → GitHub token (the guest has no gh; the PAT is typed, never logged, masked on screen).
-  if ax_find setup.checklist.row.account.github >/dev/null 2>&1; then
-    [ -n "$PAT" ] || ax_fail "account.github row present but \$$PAT_ENV is empty on the host"
-    ax_click setup.checklist.row.account.github.action
+  # Accounts → the forge token (the guest has no gh/glab; the PAT is typed, never logged, masked on screen).
+  if ax_find "setup.checklist.row.account.$FORGE" >/dev/null 2>&1; then
+    [ -n "$PAT" ] || ax_fail "account.$FORGE row present but \$$PAT_ENV is empty on the host"
+    ax_click "setup.checklist.row.account.$FORGE.action"
     ax_set_field setup.checklist.connect.field.token "$PAT"
     ax_click setup.checklist.connect.submit
-    ax_wait_status account.github ready 60 || ax_fail "github row not ready"
+    ax_wait_status "account.$FORGE" ready 60 || ax_fail "$FORGE row not ready"
   else
-    # account.github is an inferred row id; name what's actually there on the first live run
-    # instead of letting a wrong guess surface only as a much later checklist-continue timeout.
-    ax_log "account.github row not found; checklist rows present: $(ax_dump_ids | grep -o 'setup\.checklist\.row\.[A-Za-z0-9._-]*' | sed -E 's/\.(action|status|error)$//' | sort -u | tr '\n' ' ')"
+    # Name what's actually there instead of letting a wrong row guess surface
+    # only as a much later checklist-continue timeout.
+    ax_log "account.$FORGE row not found; checklist rows present: $(ax_dump_ids | grep -o 'setup\.checklist\.row\.[A-Za-z0-9._-]*' | sed -E 's/\.(action|status|error)$//' | sort -u | tr '\n' ' ')"
   fi
   # Full Disk Access: button → System Settings → toggle (admin auth for a standard user) → Relaunch.
   if [ "$(ax_status perm.fda || true)" != ready ]; then
@@ -174,6 +178,6 @@ screen_done() {
   ax_click setup.done.continue
 }
 
-ax_log "scenario=$SCENARIO slug=$SLUG"
+ax_log "scenario=$SCENARIO slug=$SLUG forge=$FORGE"
 screen_welcome; screen_team; screen_readiness; screen_install; screen_done
 ax_log "five screens complete"

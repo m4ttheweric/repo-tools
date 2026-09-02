@@ -42,6 +42,8 @@ t "ax_admin_auth_once returns fast with no SecurityAgent" env GUEST_RUN=/tmp/vmc
 t "ax_set_field escapes an embedded quote/backslash" env GUEST_RUN=/tmp/vmcheck-ax AX_APP=definitely-not-running bash -c 'source run/guest/ax.sh; ( ax_set_field setup.team.create.name "weird\"value\\here" ) 2>/dev/null; [ $? -eq 1 ] && ! grep -qi "script error\|Expected \|syntax error" "$AX_LOG"'
 t "drive-setup.sh refuses when GUEST_RUN unmounted" bash -c '! (env -u GUEST_RUN AX_APP=x bash run/guest/drive-setup.sh create >/dev/null 2>&1)'
 t "drive-setup.sh rejects unknown scenario"       bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh bogus >/dev/null 2>&1)'
+t "drive-setup.sh rejects unknown forge"          bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh create --forge bitbucket >/dev/null 2>&1)'
+t "drive-setup.sh derives gitlab from the remote" bash -c 'env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x TEAM_REMOTE=https://gitlab.com/g/r.git bash run/guest/drive-setup.sh create 2>&1 | grep -q "forge=gitlab"'
 t "drive-setup.sh rejects unknown flag"           bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh create --nope >/dev/null 2>&1)'
 
 rm -rf /tmp/vmcheck-tu

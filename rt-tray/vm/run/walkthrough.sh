@@ -6,12 +6,12 @@ source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
 usage() { sed -n '2p' "$0"; cat <<'EOF'
 usage: walkthrough.sh --ver <14|15|26> (--dmg <path> | --app <mattstack.app>)
          [--scenario create|join|headless] [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT]
-         [--invite-code-file <p>] [--team-remote <url>] [--update-dir <dir>] [--update-version <v>]
+         [--invite-code-file <p>] [--team-remote <url>] [--forge github|gitlab] [--update-dir <dir>] [--update-version <v>]
          [--no-quarantine] [--no-graphics] [--keep] [--dry-run] [--verify-golden]
 EOF
 exit 2; }
 
-VER=""; DMG=""; APP=""; SCENARIO=create; SLUG=vmtest; PAT_ENV=MATTSTACK_VMTEST_PAT; CODE_FILE=""
+VER=""; DMG=""; APP=""; SCENARIO=create; SLUG=vmtest; PAT_ENV=MATTSTACK_VMTEST_PAT; CODE_FILE=""; FORGE=""
 # The create card's pasted-URL path (a fresh guest has no gh identity yet): the throwaway
 # org's team repo, same naming as run/team-setup.sh.
 TEAM_REMOTE="${TEAM_REMOTE:-https://github.com/${MATTSTACK_VMTEST_ORG:-mattstack-vmtest}/${MATTSTACK_VMTEST_TEAM_REPO:-mattstack-vmtest-team}.git}"
@@ -19,7 +19,7 @@ UPD=""; UPDV=""; QUAR=1; GRAPHICS=1; KEEP=0; DRY=0; VERIFY_GOLDEN=0
 while [ $# -gt 0 ]; do case "$1" in
   --ver) VER="$2"; shift 2;; --dmg) DMG="$2"; shift 2;; --app) APP="$2"; shift 2;;
   --scenario) SCENARIO="$2"; shift 2;; --team-slug) SLUG="$2"; shift 2;; --pat-env) PAT_ENV="$2"; shift 2;;
-  --invite-code-file) CODE_FILE="$2"; shift 2;; --team-remote) TEAM_REMOTE="$2"; shift 2;;
+  --invite-code-file) CODE_FILE="$2"; shift 2;; --team-remote) TEAM_REMOTE="$2"; shift 2;; --forge) FORGE="$2"; shift 2;;
   --update-dir) UPD="$2"; shift 2;; --update-version) UPDV="$2"; shift 2;;
   --no-quarantine) QUAR=0; shift;; --no-graphics) GRAPHICS=0; shift;; --keep) KEEP=1; shift;; --dry-run) DRY=1; shift;;
   --verify-golden) VERIFY_GOLDEN=1; shift;; -h|--help) usage;; *) vm_warn "unknown arg $1"; usage;; esac; done
@@ -93,7 +93,7 @@ if [ -n "$UPD" ]; then
   fi
 fi
 [ "$SCENARIO" = join ] && [ ! -f "${CODE_FILE:-/nonexistent}" ] && { vm_phase_end preflight fail "join needs --invite-code-file"; exit 1; }
-if [ "$SCENARIO" != headless ] && [ -z "${!PAT_ENV:-}" ]; then vm_warn "\$$PAT_ENV empty — the GitHub account row cannot be connected; the screens phase will fail there if the app shows it"; fi
+if [ "$SCENARIO" != headless ] && [ -z "${!PAT_ENV:-}" ]; then vm_warn "\$$PAT_ENV empty — the forge account row cannot be connected; the screens phase will fail there if the app shows it"; fi
 cp -R "$VM_ROOT/run/guest" "$VM_RUN_DIR/in/guest"; cp "$VM_ROOT/../../scripts/e2e-cleanroom.sh" "$VM_RUN_DIR/in/guest/" 2>/dev/null || true
 # The headless recipe's check-bundle step parses deps.lock with bun; CI gets
 # bun from setup-bun, but a clean-room guest has none, so the harness hands it
@@ -187,7 +187,7 @@ if [ "$SCENARIO" = headless ]; then
   vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "open -a /Applications/mattstack.app; sleep 8" >>"$VM_RUN_DIR/logs/screens.log" 2>&1 || true
 else
   CODE_ARG=""; [ -n "$CODE_FILE" ] && { cp "$CODE_FILE" "$VM_RUN_DIR/in/invite-code.txt"; CODE_ARG="--invite-code-file '$GUEST_RUN/in/invite-code.txt'"; }
-  if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' VM_ADMIN_PASS='$VM_ADMIN_PASS' DRIVER_LAUNCH_ARGS='$LAUNCH_ARGS' $PAT_ENV='${!PAT_ENV:-}' TEAM_REMOTE='$TEAM_REMOTE' bash $GUEST_BIN/drive-setup.sh $SCENARIO --team-slug $SLUG --pat-env $PAT_ENV $CODE_ARG" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
+  if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' VM_ADMIN_PASS='$VM_ADMIN_PASS' DRIVER_LAUNCH_ARGS='$LAUNCH_ARGS' $PAT_ENV='${!PAT_ENV:-}' TEAM_REMOTE='$TEAM_REMOTE' FORGE='$FORGE' bash $GUEST_BIN/drive-setup.sh $SCENARIO --team-slug $SLUG --pat-env $PAT_ENV $CODE_ARG" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
     vm_phase_end screens pass "" $(cd "$VM_RUN_DIR" && ls screenshots/0[1-5]-*.png 2>/dev/null)
   else
     vm_phase_end screens fail "$(tail -1 "$VM_RUN_DIR/logs/drive.log" 2>/dev/null || echo 'see logs/screens.log')" $(cd "$VM_RUN_DIR" && ls screenshots/*.png 2>/dev/null)
