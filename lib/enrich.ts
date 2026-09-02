@@ -226,19 +226,6 @@ export function formatBranchLabelParts(eb: EnrichedBranch): BranchLabelParts {
   return { leading, trailing };
 }
 
-/**
- * Flat-string label for picker inputs where the selection layer can't
- * consume a split shape. Just joins the parts with the standard separator.
- *
- * Format (ticket branch):   `dirname · Ticket Title [In Progress] · ✓ ◉`
- * Format (normal branch):   `dirname · branch · ✓ ◉`
- */
-export function formatBranchLabel(eb: EnrichedBranch): string {
-  const sep = `${dim} · ${reset}`;
-  const { leading, trailing } = formatBranchLabelParts(eb);
-  return trailing ? `${leading}${sep}${trailing}` : leading;
-}
-
 // ─── Segment-form label (rt-ui picker rows) ──────────────────────────────────
 
 const PIPELINE_GLYPHS: Record<string, { glyph: string; tone: string }> = {
