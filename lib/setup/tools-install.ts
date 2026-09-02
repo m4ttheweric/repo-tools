@@ -285,7 +285,8 @@ async function setupFastBrowser(p: Probes, seams: ToolsInstallSeams): Promise<Se
   const resolved = seams.resolveTool(p, "fast-browser");
   if (!resolved.exec) throw new UserActionableError("tool-missing", "fast-browser is not resolvable (not bundled, no user copy on PATH)");
 
-  const res = await p.exec([...resolved.exec, "setup"], { timeoutMs: INSTALL_TIMEOUT_MS });
+  // Non-interactive setup refuses to guess a host even when only one is detected.
+  const res = await p.exec([...resolved.exec, "setup", "--host", "claude"], { timeoutMs: INSTALL_TIMEOUT_MS });
   if (res.code === 124) return { ok: false, detail: "fast-browser setup timed out" };
   if (res.code !== 0) return { ok: false, detail: `fast-browser setup failed (exit ${res.code}): ${firstLine(res.stderr || res.stdout)}` };
   return { ok: true, detail: "fast-browser setup complete" };

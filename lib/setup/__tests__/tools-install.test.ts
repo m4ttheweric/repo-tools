@@ -326,7 +326,8 @@ describe("setupTool — fast-browser", () => {
     const exec: ExecScript = (argv) => (argv[0] === "node" ? ok() : ok());
     const p = fakeProbes({ exec });
     const result = await setupTool(p, "fast-browser", { configDirs: [] }, seams);
-    expect(p.calls.exec).toContainEqual(["node", "fast-browser.mjs", "setup"]);
+    // Non-interactive fast-browser setup demands the host; rt wires Claude Code.
+    expect(p.calls.exec).toContainEqual(["node", "fast-browser.mjs", "setup", "--host", "claude"]);
     expect(result.ok).toBe(true);
   });
 
