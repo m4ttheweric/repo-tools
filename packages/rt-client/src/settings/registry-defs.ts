@@ -521,7 +521,8 @@ export const REGISTRY: readonly SettingDef[] = [
     type: "string",
     scopes: ["user"],
     merge: "replace",
-    description: "Base URL of the chat viewer, no trailing slash. When set, rt chat post and the tail's wake lines end with a link to the room or message.",
+    default: "https://chat.mattstack",
+    description: "Base URL of the chat viewer, no trailing slash; rt chat post and the tail's wake lines end with a link to the room or message. Defaults to the viewer deck serves on the mattstack TLD.",
   },
   {
     key: "chat.herdrWorkspace",

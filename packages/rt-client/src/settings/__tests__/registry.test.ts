@@ -74,6 +74,13 @@ describe("settings/registry", () => {
       expect(def?.default).toBe(14);
     });
 
+    test("chat.viewerUrl defaults to the deck-served viewer, so a fresh install's chat links work without a user setting", () => {
+      const def = getDef("chat.viewerUrl");
+
+      expect(def?.scopes).toEqual(["user"]);
+      expect(def?.default).toBe("https://chat.mattstack");
+    });
+
     test("rt.daemonPath is a machine-scoped string key with no default", () => {
       const def = getDef("rt.daemonPath");
       expect(def).toBeDefined();
