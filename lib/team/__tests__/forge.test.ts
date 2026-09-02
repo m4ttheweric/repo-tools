@@ -176,6 +176,24 @@ describe("grantRead", () => {
   });
 });
 
+describe("forge token env", () => {
+  test("grantRead and revokeRead hand a token rt holds to gh/glab through the env, never argv", async () => {
+    const seen: (Record<string, string> | undefined)[] = [];
+    const script: ExecScript = (argv, opts) => {
+      seen.push(opts?.env);
+      return argv[0] === "glab" && argv[2]?.startsWith("users?") ? ok(JSON.stringify([{ id: 42 }])) : ok();
+    };
+    const p = fakeProbes({ exec: script });
+
+    await grantRead(p, GITHUB_REMOTE, "octocat", "ghp-secret");
+    await grantRead(p, GITLAB_REMOTE, "zaphod", "glpat-secret");
+    await revokeRead(p, GITLAB_REMOTE, "zaphod", "glpat-secret");
+
+    expect(seen).toEqual([{ GH_TOKEN: "ghp-secret" }, { GITLAB_TOKEN: "glpat-secret" }, { GITLAB_TOKEN: "glpat-secret" }, { GITLAB_TOKEN: "glpat-secret" }, { GITLAB_TOKEN: "glpat-secret" }]);
+    expect(p.calls.exec.flat().join(" ")).not.toContain("secret");
+  });
+});
+
 describe("revokeRead", () => {
   test("github: DELETEs the collaborator", async () => {
     const script: ExecScript = () => ok();

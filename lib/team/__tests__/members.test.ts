@@ -171,6 +171,7 @@ function fakeMembersSeams(overrides: Partial<MembersSeams> = {}): { seams: Membe
     }) as MembersSeams["writeSetting"],
     revokeRead: async () => ({ access: "revoked", manualSteps: [] }),
     readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+    forgeToken: async () => null,
     warn: () => {},
     ...overrides,
   };
@@ -540,19 +541,20 @@ describe("membersRemove", () => {
     writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
     execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
 
-    const revokeCalls: { remote: string; handle: string }[] = [];
+    const revokeCalls: { remote: string; handle: string; token: string | null | undefined }[] = [];
     const { seams, writes } = fakeMembersSeams({
       readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
       readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
-      revokeRead: async (_p, r, h) => {
-        revokeCalls.push({ remote: r, handle: h });
+      forgeToken: async () => "ghp-secret",
+      revokeRead: async (_p, r, h, token) => {
+        revokeCalls.push({ remote: r, handle: h, token });
         return { access: "revoked", manualSteps: [] };
       },
     });
 
     const result = await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
 
-    expect(revokeCalls).toEqual([{ remote, handle: "alice" }]);
+    expect(revokeCalls).toEqual([{ remote, handle: "alice", token: "ghp-secret" }]);
     expect(result.forgeAccess).toBe("revoked");
     expect(result.rosterRemoved).toBe(true);
     const rosterWrite = writes.find((w) => w.key === "board.members");

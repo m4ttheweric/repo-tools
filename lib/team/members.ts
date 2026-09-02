@@ -34,6 +34,7 @@ import { UserActionableError } from "../setup/errors.ts";
 import type { Probes } from "../setup/probes.ts";
 import { parseOriginUrl } from "../setup/team-settings.ts";
 import { revokeRead, type RevokeAccess } from "./forge.ts";
+import { storedForgeToken } from "./stored-forge-token.ts";
 import { readTeamLocal } from "./team-local.ts";
 import { openReply } from "./invite-crypto.ts";
 import { readInviteRecords, removeInviteRecord } from "./invite-records.ts";
@@ -150,6 +151,8 @@ export interface MembersSeams {
   revokeRead: typeof revokeRead;
   /** Local, per-machine team record — carries the membership permission. Seamed like invite.ts's, so a test grants it explicitly rather than by writing a real home. */
   readTeamLocal: typeof readTeamLocal;
+  /** The forge token rt holds for the team remote's host, or null. */
+  forgeToken: typeof storedForgeToken;
   warn: (message: string) => void;
 }
 
@@ -163,7 +166,7 @@ function defaultWarn(message: string): void {
 }
 
 export function realMembersSeams(): MembersSeams {
-  return { readTeamStore: defaultReadTeamStore, writeSetting: setSetting, revokeRead, readTeamLocal, warn: defaultWarn };
+  return { readTeamStore: defaultReadTeamStore, writeSetting: setSetting, revokeRead, readTeamLocal, forgeToken: storedForgeToken, warn: defaultWarn };
 }
 
 function teamRemote(p: Probes, slug: string): string | null {
@@ -354,7 +357,7 @@ export async function membersRemove(
   const mayManage = seams.readTeamLocal(p, slug).rtMayManageMembership;
   const revoke =
     remote !== null && mayManage
-      ? await seams.revokeRead(p, remote, handle)
+      ? await seams.revokeRead(p, remote, handle, await seams.forgeToken(p, remote))
       : {
           access: "skipped" as RevokeAccess,
           manualSteps:

@@ -21,7 +21,7 @@
 
 import { join } from "path";
 import { type AgeKeySeam, createRealAgeKeySeam, ensureAgeKey } from "../home/age-key.ts";
-import { createRealSecretsExecSeam, readSecret, validateSlug } from "../secrets/store.ts";
+import { validateSlug } from "../secrets/store.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
 import { createRealTeamSecretsSeams, readTeamSecret } from "../secrets/team-store.ts";
 import { UserActionableError } from "../setup/errors.ts";
@@ -30,11 +30,12 @@ import type { ExecResult, Probes } from "../setup/probes.ts";
 import { forgeFromRemote, parseOriginUrl, readTeamSnapshot, stripUserinfo, type SettingsReader } from "../setup/team-settings.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { forgeLogin } from "./forge.ts";
-import { forgeTokenKey, gitWithToken } from "./git-credential.ts";
+import { gitWithToken } from "./git-credential.ts";
 import { decodeCode, open, sealReply } from "./invite-crypto.ts";
 import { AUTH_FAILURE_PATTERN } from "./publish.ts";
 import { withoutUrls } from "./redact.ts";
 import type { RelayClient } from "./relay-client.ts";
+import { storedForgeToken } from "./stored-forge-token.ts";
 
 export interface JoinResult {
   team: { slug: string; name: string; owner: string };
@@ -240,16 +241,6 @@ export interface JoinRedeemSeams {
   /** The forge token rt holds for `remote`'s host, or null: a fresh machine's git and gh/glab have nothing of their own to offer a private team repo. */
   forgeToken: (p: Probes, remote: string) => Promise<string | null>;
   warn: (message: string) => void;
-}
-
-async function storedForgeToken(_p: Probes, remote: string): Promise<string | null> {
-  const key = forgeTokenKey(remote);
-  if (!key) return null;
-  try {
-    return await readSecret("rt", key, { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() });
-  } catch {
-    return null;
-  }
 }
 
 /** Degrades to `undefined` on a resolver-layer throw rather than taking the redeem down with it — mirrors invite.ts's own default reader. */

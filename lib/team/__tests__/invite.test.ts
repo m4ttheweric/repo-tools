@@ -110,6 +110,7 @@ function baseSeams(overrides: Partial<MintInviteSeams> = {}): { seams: MintInvit
     // written for; the tests below cover the default-off behaviour explicitly.
     readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
     forgeLogin: async () => "octocat",
+    forgeToken: async () => null,
     warn: (m) => warnings.push(m),
     ...overrides,
   };
@@ -327,6 +328,27 @@ describe("mintInvite", () => {
 
     expect(result.forgeAccess).toBe("manual");
     expect(result.manualSteps).toEqual(["Open https://github.com/acme/widgets/settings/access", "Invite zaphod with Read"]);
+  });
+
+  test("the forge token rt holds reaches the owner lookup and the grant, so a never-logged-in gh/glab still works", async () => {
+    const p = probesWithRemote(REMOTE);
+    const seen: { login: unknown; grant: unknown } = { login: undefined, grant: undefined };
+    const { seams } = baseSeams({
+      forgeToken: async (_p, remote) => (remote === REMOTE ? "ghp-secret" : null),
+      forgeLogin: async (_p, _provider, _host, token) => {
+        seen.login = token;
+        return "octocat";
+      },
+      grantRead: async (_p, _remote, _handle, token) => {
+        seen.grant = token;
+        return { access: "granted", manualSteps: [] };
+      },
+    });
+    const relay = fakeRelayClient();
+
+    await mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(seen).toEqual({ login: "ghp-secret", grant: "ghp-secret" });
   });
 
   test("persists the mint record for later revoke/replace, 0600, BEFORE grantRead/addToRoster run", async () => {

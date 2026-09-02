@@ -19,6 +19,7 @@ import { forgeFromRemote, readTeamSnapshot, type SettingsReader } from "../setup
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
 import { forgeLogin, grantRead, type ForgeAccess } from "./forge.ts";
+import { storedForgeToken } from "./stored-forge-token.ts";
 import { readTeamLocal } from "./team-local.ts";
 import { encodeCode, generateId, generateKey, seal } from "./invite-crypto.ts";
 import { readInviteRecords, upsertInviteRecord } from "./invite-records.ts";
@@ -56,6 +57,8 @@ export interface MintInviteSeams {
   /** Local, per-machine team record — carries the membership permission. Seamed so a test can grant it without writing to a real home. */
   readTeamLocal: typeof readTeamLocal;
   forgeLogin: typeof forgeLogin;
+  /** The forge token rt holds for the team remote's host, or null. */
+  forgeToken: typeof storedForgeToken;
   warn: (message: string) => void;
 }
 
@@ -80,7 +83,7 @@ function defaultWarn(message: string): void {
 }
 
 export function realMintInviteSeams(): MintInviteSeams {
-  return { read: defaultRead(), readTeamStore: defaultReadTeamStore, writeSetting: setSetting, grantRead, readTeamLocal, forgeLogin, warn: defaultWarn };
+  return { read: defaultRead(), readTeamStore: defaultReadTeamStore, writeSetting: setSetting, grantRead, readTeamLocal, forgeLogin, forgeToken: storedForgeToken, warn: defaultWarn };
 }
 
 interface BoardMember {
@@ -113,7 +116,8 @@ export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInvite
   }
   const remote = snapshot.remote;
   const forge = snapshot.integrations.forge ?? forgeFromRemote(remote) ?? undefined;
-  const owner = (forge ? await seams.forgeLogin(p, forge.provider, forge.host) : null) ?? p.env.USER ?? "unknown";
+  const token = await seams.forgeToken(p, remote);
+  const owner = (forge ? await seams.forgeLogin(p, forge.provider, forge.host, token) : null) ?? p.env.USER ?? "unknown";
 
   const title = seams.read<string>("board.title");
   const pointer: InvitePointer = {
@@ -162,7 +166,7 @@ export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInvite
   // off and is never derivable from the remote URL, which cannot distinguish a
   // repo rt created from an employer's.
   const { access: forgeAccess, manualSteps } = seams.readTeamLocal(p, opts.slug).rtMayManageMembership
-    ? await seams.grantRead(p, remote, opts.handle)
+    ? await seams.grantRead(p, remote, opts.handle, token)
     : { access: "skipped" as ForgeAccess, manualSteps: [`Ask whoever administers ${remote} to give ${opts.handle} read access — mattstack does not manage membership on this repo`] };
 
   addToRoster(seams, opts.slug, opts.handle);
