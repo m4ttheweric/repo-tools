@@ -68,7 +68,7 @@ describe("rtHealthRows — tool.rt", () => {
     };
     const p = fakeProbes({ home: "/home/x", exec });
     p.writeFile("/home/x/.local/bin/rt", "");
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.rt");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.rt");
     expect(r.status).toBe("ready");
     expect(r.detail).toContain("rt v2.8.1");
     expect(r.detail).toContain("PATH");
