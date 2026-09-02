@@ -85,11 +85,13 @@ instance:
 
 - At boot, lists `~/.mattstack/teams/*`; each entry that is a git repo
   with an `origin` gets one engine instance with the team spec. A clone
-  without a remote is logged once and skipped (a `team publish --remote`
-  later makes it eligible on the next scan).
+  without a remote is logged once and skipped.
 - Watches `~/.mattstack/teams/` (non-recursive) so a clone created by
   `team.join` or `team.create` starts an instance within the debounce
-  window, and a removed clone stops its instance.
+  window, and a removed clone stops its instance. The watch cannot see an
+  origin added inside an existing clone (`rt team publish --remote`
+  edits `.git/config`), so the supervisor also rescans on a timer (the
+  pull interval); that is how a clone without a remote becomes eligible.
 - Settings: `rt.teamSnapshot` (machine scope, `merge: "deep"`,
   `migrated: true`) with the same fields as `rt.homeSnapshot` plus
   `pullIntervalSec` (default 300). Default `enabled: true`.
@@ -106,26 +108,35 @@ Pull runs at boot, on the interval, and immediately before every push:
 3. If local is ahead: `git rebase origin/<branch>` (the daemon's own
    commits are small store edits; rebasing them onto teammates' work is
    the multi-writer ruling).
-4. A rebase that stops on a conflict: `git rebase --abort`, persist
-   `{ conflicted: true, at, detail }` under the clone's kv namespace,
-   emit `team:conflict { slug, detail }`, and suspend pushes and pulls
-   for that clone until the marker clears. The working tree is back to
-   the local branch; nothing is lost, nothing propagates.
+4. A rebase that stops on a conflict (git leaves `rebase-merge` or
+   `rebase-apply` under the git dir): `git rebase --abort`, persist
+   `{ at, detail }` under the clone's kv namespace, emit
+   `team:conflict { id, detail }`, and suspend pushes and pulls for that
+   clone until the marker clears. The working tree is back to the local
+   branch; nothing is lost, nothing propagates. A rebase that never
+   started (exit 1 with no such directory: unstaged changes outside the
+   commit scope, an index lock) is not a conflict; it is skipped with
+   git's reason and retried on the next tick, since a dirty `src/` is
+   normal in a clone that is also a working repo.
 5. The marker clears when the local branch is no longer ahead of
    origin (a hand rebase then `rt team publish`, or a reset); the next
    tick notices and resumes.
 
 Push reuses the engine's existing scheduling and geometric backoff. A
 push rejected as non-fast-forward is not a failure: it triggers a pull
-and one immediate retry.
+and one immediate retry. One git operation runs at a time per clone: the
+commit cycle and the pull share a guard, so a timer-driven rebase never
+overlaps an add/commit. The forge token is read once per pull interval
+per clone (a keychain read plus a sops decrypt), not per git call.
 
 Surfaces:
 
 - Checklist / verify row `team.sync` (kind `tool`, required: false,
-  recheck `on-activate`): `ready` when every clone is clean and pushed
-  within the pull interval; `needs-you` with the clone's detail on a
-  conflict or a push failing past three retries; `missing` when the
-  daemon is down. Lives beside `home.backup` in
+  recheck `on-activate`): `ready` when every clone has no conflict, no
+  standing push error, and a pull within the last two pull intervals;
+  `needs-you` naming the clone otherwise (conflict, push error, stale or
+  never pulled, or a clone the daemon is not watching); `missing` when
+  the daemon is down. Lives beside `home.backup` in
   `lib/setup/validators/rt-health.ts`.
 - `rt team status` gains `lastPull`, `lastPush`, `conflicted` per team.
 - `rt team pull [--team <slug>]`: a manual cycle (fetch + rebase, no
@@ -136,11 +147,11 @@ Surfaces:
 ### 4. Join and Install
 
 `team.join` is unchanged. The supervisor's `teams/` watcher starts the
-new clone's instance during Install. `verify` (which already settles
-`tool.daemon` for ~15 s) also waits for the new clone's first pull to
-settle (up to one pull interval, polling `team:snapshot-status`), so a
-joiner whose owner ran `members sync` during Install still leaves Install
-able to decrypt.
+new clone's instance during Install, and the instance's first pull runs
+at once. `verify` (which already re-reads `tool.daemon` for up to 5 × 3 s)
+gives `team.sync` the same budget: it re-reads while the row says the
+clone has never pulled, so a joiner whose owner ran `members sync` during
+Install still leaves Install able to decrypt.
 
 ### Out of scope
 

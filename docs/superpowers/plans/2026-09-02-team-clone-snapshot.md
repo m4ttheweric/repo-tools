@@ -15,7 +15,9 @@
 - Every git call on a team clone that touches the remote (fetch, push) goes through `gitWithToken` from `lib/team/git-credential.ts` with the token from `lib/team/stored-forge-token.ts`: env only, never argv, never the URL.
 - A team spec stages only paths under `mattstack/`, `.sops.yaml`, `.claude-plugin/`; nothing else in a team clone is ever auto-committed.
 - A rebase conflict is aborted and surfaced (`team:conflict`, kv marker, `team.sync` row); neither side is discarded.
-- The home instance's behavior is byte-for-byte what it is today: the refactor commit must pass the existing `home-snapshot.test.ts` unchanged except for the import name.
+- The home instance's behavior is what it is today: no new git calls, no env change on its push (the token path applies only to specs with `tokenFor`). The refactor commit must pass the existing `home-snapshot.test.ts` with no assertion changed; typed test literals elsewhere may gain the new `SnapshotStatus`/handle fields (listed per task).
+- Daemon error envelopes are `{ ok: false, error: <message string>, failure: { code, message } }` (lib/daemon.ts:167); never `error: { code, message }`.
+- `daemonQuery` (lib/daemon-client.ts) returns `null` when the daemon is unreachable; every CLI caller handles `!res` before reading `res.ok`.
 - Pull cadence: `rt.teamSnapshot.pullIntervalSec` default 300; a pull precedes every push and runs once at boot.
 - No `execSync` on the daemon thread; all git through the injected `exec` (default `runCapture`).
 - Feature code logs domain events only (`log.info` on commit/pull/conflict); outcomes are logged at the daemon seams.
@@ -44,8 +46,9 @@
 ### Task 1: Spec-driven engine (pure refactor, behavior-preserving)
 
 **Files:**
-- Modify: `lib/daemon/home-snapshot.ts`
-- Modify: `lib/daemon/__tests__/home-snapshot.test.ts` (import name only)
+- Modify: `lib/daemon/home-snapshot.ts`, `lib/home/push-record.ts`
+- Modify: `lib/daemon/__tests__/home-snapshot.test.ts` (new describe block only)
+- Modify (typed literals gain `id`): `lib/daemon/__tests__/home-handlers.test.ts`, `commands/__tests__/home.test.ts` (~line 1619 `okStatus: SnapshotStatus`)
 - Test: `lib/daemon/__tests__/home-snapshot.test.ts`
 
 **Interfaces:**
@@ -83,7 +86,8 @@ describe("startSnapshot — spec", () => {
     expect(spec.pull).toBeUndefined();
     expect(spec.tokenFor).toBeUndefined();
 
-    const { deps, broadcasts } = baseDeps();
+    const { fn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, broadcasts } = baseDeps({ exec: fn });
     const { repoDir: _repoDir, ...specDeps } = deps;
     const handle = startSnapshot(spec, specDeps);
     await handle.ready;
@@ -95,7 +99,8 @@ describe("startSnapshot — spec", () => {
   });
 
   test("a spec's eventPrefix and kvNamespace name the broadcasts and the kv rows", async () => {
-    const { deps, broadcasts } = baseDeps();
+    const { fn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, broadcasts } = baseDeps({ exec: fn });
     const { repoDir: _repoDir, ...specDeps } = deps;
     const spec = { ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team" as const };
     const handle = startSnapshot(spec, specDeps);
@@ -159,15 +164,15 @@ Substitutions inside the body (mechanical, no behavior change):
 
 - [ ] **Step 4: Run the whole snapshot suite**
 
-Run: `bun test lib/daemon/__tests__/home-snapshot.test.ts lib/home`
-Expected: all PASS, including the two new tests; no pre-existing test changed beyond the import line.
+Run: `bun test lib/daemon/__tests__/home-snapshot.test.ts lib/daemon/__tests__/home-handlers.test.ts commands/__tests__/home.test.ts lib/home`
+Expected: all PASS, including the two new tests; no pre-existing assertion changed. `tsconfig.json` type-checks tests, so add `id: "home"` to the `SnapshotStatus` literals in `home-handlers.test.ts` and `commands/__tests__/home.test.ts`.
 
 - [ ] **Step 5: Typecheck and commit**
 
 Run: `bun x tsc --noEmit 2>&1 | grep "error TS" | grep -v "run-picker-rows\|commands/run.ts"` → no lines.
 
 ```bash
-git add lib/daemon/home-snapshot.ts lib/home/push-record.ts lib/daemon/__tests__/home-snapshot.test.ts
+git add lib/daemon/home-snapshot.ts lib/home/push-record.ts lib/daemon/__tests__/home-snapshot.test.ts lib/daemon/__tests__/home-handlers.test.ts commands/__tests__/home.test.ts
 git commit -m "snapshot: the engine takes a spec; the home instance is the same spec it always was"
 ```
 
@@ -194,11 +199,11 @@ import { teamScope } from "../home-snapshot.ts";
 
 describe("scopeEntries", () => {
   const entries: StatusEntry[] = [
-    { path: "mattstack/settings.team.jsonc", status: "M" } as StatusEntry,
-    { path: ".sops.yaml", status: "??" } as StatusEntry,
-    { path: ".claude-plugin/marketplace.json", status: "M" } as StatusEntry,
-    { path: "src/index.ts", status: "M" } as StatusEntry,
-    { path: "docs/plan.md", status: "??" } as StatusEntry,
+    { xy: " M", path: "mattstack/settings.team.jsonc" },
+    { xy: "??", path: ".sops.yaml" },
+    { xy: " M", path: ".claude-plugin/marketplace.json" },
+    { xy: " M", path: "src/index.ts" },
+    { xy: "??", path: "docs/plan.md" },
   ];
   test("undefined scope keeps everything", () => {
     expect(scopeEntries(entries, undefined)).toHaveLength(5);
@@ -217,24 +222,24 @@ describe("scopeEntries", () => {
 });
 ```
 
-Open `lib/daemon/home-snapshot-plan.ts` first and match `StatusEntry`'s real field names in the fixture (the shape is `{ path, ... }`; adjust the extra field to what `parsePorcelainZ` produces).
+(`StatusEntry` is `{ xy, path, origPath? }` in `home-snapshot-plan.ts`.)
 
 In `lib/daemon/__tests__/home-snapshot.test.ts` add to `describe("startSnapshot — spec")`:
 
 ```ts
-  test("a scoped spec stages and commits only scoped paths, and the pathspec names the scope roots", async () => {
-    const statusZ = " M mattstack/settings.team.jsonc\0 M src/index.ts\0";
+  test("a scoped spec stages and commits only scoped paths, and the pathspec is exactly those paths", async () => {
+    const statusZ = " M mattstack/settings.team.jsonc\0 D .sops.yaml\0 M src/index.ts\0";
     const { fn, calls } = makeFakeExec(defaultResponders({ statusZ }));
     const { deps } = baseDeps({ exec: fn });
     const { repoDir: _repoDir, ...specDeps } = deps;
     const handle = startSnapshot({ ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", scope: teamScope }, specDeps);
     await handle.ready;
     const result = await handle.runNow("manual");
-    expect(result.paths).toEqual(["mattstack/settings.team.jsonc"]);
-    const add = calls.find((c) => c[1] === "add")!;
-    expect(add).toEqual(["git", "add", "-A", "--", "mattstack", ".sops.yaml", ".claude-plugin"]);
-    const commit = calls.find((c) => c.includes("commit"))!;
-    expect(commit.slice(-4)).toEqual(["--", "mattstack", ".sops.yaml", ".claude-plugin"]);
+    expect(result.paths).toEqual(["mattstack/settings.team.jsonc", ".sops.yaml"]);
+    const add = calls.find((c) => gitVerb(c) === "add")!;
+    expect(add).toEqual(["git", "add", "-A", "--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
+    const commit = calls.find((c) => gitVerb(c) === "commit")!;
+    expect(commit.slice(-3)).toEqual(["--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
     handle.stop();
   });
 ```
@@ -269,10 +274,12 @@ export function teamScope(relPath: string): boolean {
 In `doRun`: `const entries = scopeEntries(parsePorcelainZ(statusResult.stdout), spec.scope);` and build the pathspec once:
 
 ```ts
-const scopeArgs: string[] = spec.scope ? [...TEAM_SCOPE_ROOTS] : ["."];
+const scopeArgs: string[] = spec.scope ? [...new Set(entries.map((e) => e.path))] : ["."];
 ```
 
-then `["git", "add", "-A", "--", ...scopeArgs, ...excludeArgs]` and the commit's trailing `"--", ...scopeArgs, ...excludeArgs`. (A spec with a custom `scope` function but no roots is not a case this plan supports; `scopeArgs` is derived from `TEAM_SCOPE_ROOTS` whenever `spec.scope` is set.)
+then `["git", "add", "-A", "--", ...scopeArgs, ...excludeArgs]` and the commit's trailing `"--", ...scopeArgs, ...excludeArgs`.
+
+A scoped spec's pathspec is the scoped entries' own paths (deduped, in status order), never the roots: `git add -A -- mattstack .sops.yaml .claude-plugin` exits 128 and stages nothing when any root is absent from both tree and index (verified), and a clone that lost its marketplace would then fail every cycle as `add-failed`. Entry paths always match (a ` D` entry names an index path; `??` names a worktree path). The home spec keeps `.` exactly as today.
 
 - [ ] **Step 4: Run the tests**
 
@@ -314,15 +321,30 @@ function teamSpecFor(tokenValue: string | null = "glpat-team") {
   };
 }
 
-/** Responders for the pull stage: `ahead`/`behind` are `git rev-list --left-right --count origin/main...HEAD` as "<behind>\t<ahead>". */
-function pullResponders(opts: { behind: number; ahead: number; rebaseExit?: number }): Responder[] {
+/**
+ * Responders for the pull stage. `gitVerb` (line ~29 of this file) skips the
+ * `-c` pairs `gitWithToken` and the rebase prepend, so `argv[1]` is never the
+ * verb here. `ahead`/`behind` are `git rev-list --left-right --count
+ * origin/main...HEAD` as "<behind>\t<ahead>". `rebase: "conflict"` makes the
+ * rebase exit 1 AND creates `<FAKE_REPO_DIR>/.git/rebase-merge` (the engine
+ * classifies by that directory, not by the exit code); `rebase: "refused"`
+ * exits 1 with "cannot rebase: You have unstaged changes" and no directory.
+ */
+function pullResponders(opts: { behind: number; ahead: number; rebase?: "ok" | "conflict" | "refused" }): Responder[] {
+  const rebaseDir = join(FAKE_REPO_DIR, ".git", "rebase-merge");
   return [
-    (argv) => argv[1] === "fetch" ? { stdout: "", stderr: "", exitCode: 0 } : undefined,
-    (argv) => argv[1] === "symbolic-ref" ? { stdout: "main\n", stderr: "", exitCode: 0 } : undefined,
-    (argv) => argv[1] === "rev-list" && argv.includes("--left-right") ? { stdout: `${opts.behind}\t${opts.ahead}\n`, stderr: "", exitCode: 0 } : undefined,
-    (argv) => argv[1] === "merge" && argv.includes("--ff-only") ? { stdout: "", stderr: "", exitCode: 0 } : undefined,
-    (argv) => argv[1] === "rebase" && !argv.includes("--abort") ? { stdout: "", stderr: opts.rebaseExit ? "CONFLICT (content): mattstack/settings.team.jsonc" : "", exitCode: opts.rebaseExit ?? 0 } : undefined,
-    (argv) => argv[1] === "rebase" && argv.includes("--abort") ? { stdout: "", stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "fetch" ? { stdout: "", stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "symbolic-ref" ? { stdout: "main\n", stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "rev-list" && argv.includes("--left-right") ? { stdout: `${opts.behind}\t${opts.ahead}\n`, stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "rev-parse" && argv.includes("--git-dir") ? { stdout: ".git\n", stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "merge" && argv.includes("--ff-only") ? { stdout: "", stderr: "", exitCode: 0 } : undefined,
+    (argv) => {
+      if (gitVerb(argv) !== "rebase" || argv.includes("--abort")) return undefined;
+      if (opts.rebase === "conflict") { mkdirSync(rebaseDir, { recursive: true }); return { stdout: "", stderr: "CONFLICT (content): mattstack/settings.team.jsonc", exitCode: 1 }; }
+      if (opts.rebase === "refused") return { stdout: "", stderr: "error: cannot rebase: You have unstaged changes.", exitCode: 1 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    },
+    (argv) => gitVerb(argv) === "rebase" && argv.includes("--abort") ? (rmSync(rebaseDir, { recursive: true, force: true }), { stdout: "", stderr: "", exitCode: 0 }) : undefined,
   ];
 }
 
@@ -334,7 +356,7 @@ describe("startSnapshot — pull", () => {
     const handle = startSnapshot(teamSpecFor("glpat-team"), specDeps);
     await handle.ready;
     await handle.pullNow();
-    const i = calls.findIndex((c) => c.includes("fetch"));
+    const i = calls.findIndex((c) => gitVerb(c) === "fetch");
     expect(calls[i]).toContain("credential.helper=");
     expect(calls[i]!.join(" ")).not.toContain("glpat-team");
     expect((optsLog[i] as { env?: Record<string, string> }).env?.RT_GIT_TOKEN).toBe("glpat-team");
@@ -349,14 +371,28 @@ describe("startSnapshot — pull", () => {
       const handle = startSnapshot(teamSpecFor(), specDeps);
       await handle.ready;
       expect((await handle.pullNow()).outcome).toBe(expected);
-      expect(calls.some((c) => c[1] === "merge")).toBe(expected === "fast-forwarded");
-      expect(calls.some((c) => c[1] === "rebase")).toBe(expected === "rebased");
+      expect(calls.some((c) => gitVerb(c) === "merge")).toBe(expected === "fast-forwarded");
+      expect(calls.some((c) => gitVerb(c) === "rebase")).toBe(expected === "rebased");
       handle.stop();
     }
   });
 
+  test("a rebase refused for unstaged out-of-scope changes is skipped with the reason, never a conflict", async () => {
+    const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 1, rebase: "refused" }), ...defaultResponders()]);
+    const { deps, broadcasts } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    const result = await handle.pullNow();
+    expect(result.outcome).toBe("skipped");
+    expect(result.detail).toContain("unstaged");
+    expect(handle.status().conflicted).toBeNull();
+    expect(broadcasts.some((b) => b.type === "team:conflict")).toBe(false);
+    handle.stop();
+  });
+
   test("a rebase conflict aborts, persists the marker, broadcasts once, suspends push and pull until it clears", async () => {
-    const exec = makeSwitchableExec([...pullResponders({ behind: 1, ahead: 1, rebaseExit: 1 }), ...defaultResponders()]);
+    const exec = makeSwitchableExec([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders()]);
     const { deps, broadcasts } = baseDeps({ exec: exec.fn });
     const { repoDir: _r, ...specDeps } = deps;
     const handle = startSnapshot(teamSpecFor(), specDeps);
@@ -364,14 +400,14 @@ describe("startSnapshot — pull", () => {
 
     const first = await handle.pullNow();
     expect(first.outcome).toBe("conflict");
-    expect(exec.calls.some((c) => c[1] === "rebase" && c.includes("--abort"))).toBe(true);
+    expect(exec.calls.some((c) => gitVerb(c) === "rebase" && c.includes("--abort"))).toBe(true);
     expect(handle.status().conflicted?.detail).toContain("settings.team.jsonc");
     expect(getKvValue("team-snapshot:acme", "conflict", null, deps.db!)).not.toBeNull();
     expect(broadcasts.filter((b) => b.type === "team:conflict")).toHaveLength(1);
 
-    const pushesBefore = exec.calls.filter((c) => c[1] === "push").length;
+    const pushesBefore = exec.calls.filter((c) => gitVerb(c) === "push").length;
     await handle.runNow("manual");
-    expect(exec.calls.filter((c) => c[1] === "push").length).toBe(pushesBefore);
+    expect(exec.calls.filter((c) => gitVerb(c) === "push").length).toBe(pushesBefore);
     expect((await handle.pullNow()).outcome).toBe("skipped");
     expect(broadcasts.filter((b) => b.type === "team:conflict")).toHaveLength(1);
 
@@ -386,10 +422,10 @@ describe("startSnapshot — pull", () => {
     let pushes = 0;
     const responders: Responder[] = [
       ...pullResponders({ behind: 0, ahead: 1 }),
-      (argv) => argv[1] === "push" ? (++pushes === 1
+      (argv) => gitVerb(argv) === "push" ? (++pushes === 1
         ? { stdout: "", stderr: "! [rejected] main -> main (fetch first)", exitCode: 1 }
         : { stdout: "", stderr: "", exitCode: 0 }) : undefined,
-      ...defaultResponders(),
+      ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" }),
     ];
     const { fn, calls } = makeFakeExec(responders);
     const { deps, timers } = baseDeps({ exec: fn });
@@ -399,7 +435,7 @@ describe("startSnapshot — pull", () => {
     await handle.runNow("manual");
     timers.fire(() => true);
     await flushAsync();
-    const order = calls.map((c) => c[1]).filter((v) => v === "fetch" || v === "push");
+    const order = calls.map((c) => gitVerb(c)).filter((v) => v === "fetch" || v === "push");
     expect(order[0]).toBe("fetch");
     expect(pushes).toBe(2);
     expect(handle.status().pushPending).toBe(false);
@@ -413,7 +449,7 @@ describe("startSnapshot — pull", () => {
     const handle = startSnapshot(teamSpecFor(), specDeps);
     await handle.ready;
     await flushAsync();
-    expect(calls.filter((c) => c[1] === "fetch")).toHaveLength(1);
+    expect(calls.filter((c) => gitVerb(c) === "fetch")).toHaveLength(1);
     expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
     handle.stop();
   });
@@ -424,13 +460,13 @@ describe("startSnapshot — pull", () => {
     const handle = startSnapshot(homeSnapshotSpec(FAKE_REPO_DIR), specDeps);
     await handle.ready;
     expect((await handle.pullNow()).outcome).toBe("skipped");
-    expect(execCalls.some((c) => c[1] === "fetch")).toBe(false);
+    expect(execCalls.some((c) => gitVerb(c) === "fetch")).toBe(false);
     handle.stop();
   });
 });
 ```
 
-`makeFakeTimers()` (line ~136 of the test file) returns `{ setTimeoutFn, clearTimeoutFn, pending, fire }`: `pending` is a `Map<number, { cb, ms }>` and `fire(predicate)` runs the matching timers; the snippets above use exactly those.
+`makeFakeTimers()` (line ~136 of the test file) returns `{ setTimeoutFn, clearTimeoutFn, pending, fire }`: `pending` is a `Map<number, { cb, ms }>` and `fire(predicate)` runs the matching timers; the snippets above use exactly those. `FAKE_REPO_DIR` is a real temp dir, so the conflict responder can create `.git/rebase-merge` under it; add `rmSync(join(FAKE_REPO_DIR, ".git", "rebase-merge"), { recursive: true, force: true })` at the top of each pull test.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -449,13 +485,17 @@ const CONFLICT_KEY = "conflict";
 const FETCH_TIMEOUT_MS = 30_000;
 ```
 
-State inside `startSnapshot`: `let lastPullAt = 0; let lastPullError: string | null = null; let conflicted: { at: number; detail: string } | null = null; let pullTimer = null; let pullInFlight: Promise<PullResult> | null = null;`. In `init()`, after `loadState`, load the conflict marker: `conflicted = getKvValue(spec.kvNamespace, CONFLICT_KEY, null, resolveDb())`. If `spec.pull` and enabled: `void pullNow()` then `schedulePull()`.
+State inside `startSnapshot`: `let lastPullAt = 0; let lastPullError: string | null = null; let conflicted: { at: number; detail: string } | null = null; let pullTimer = null; let pullInFlight: Promise<PullResult> | null = null; let cachedToken: { value: string | null; at: number } | null = null;`. In `init()`, after `loadState`, load the conflict marker: `conflicted = getKvValue(spec.kvNamespace, CONFLICT_KEY, null, resolveDb())`. If `spec.pull` and enabled: `void pullNow()` then `schedulePull()`.
+
+One git operation at a time per clone: `runNow` and `pullNow` share a single `gitInFlight: Promise<unknown> | null` chain (each awaits the previous before starting; the existing `runInFlight`/`pushInFlight` coalescing stays as is on top of it), so a timer-driven rebase never overlaps `doRun`'s add/commit and never sees "index contains uncommitted changes". `doPushInner` calls `pullNow()` (through the guard), never `doPull()` directly.
 
 ```ts
-/** `runCapture` REPLACES the child's environment when `env` is given (lib/subprocess.ts:60), so the token vars ride on top of a full copy of process.env or git loses PATH and HOME. */
+/** `runCapture` REPLACES the child's environment when `env` is given (lib/subprocess.ts:60), so the token vars ride on top of a full copy of process.env or git loses PATH and HOME. A spec without `tokenFor` (home) keeps today's plain exec, env untouched. The token is read once per pull interval, not per git call: `storedForgeToken` is a keychain read plus a sops decrypt. */
 async function remoteGit(args: string[], timeoutMs: number): Promise<RunResult> {
-  const token = spec.tokenFor ? await spec.tokenFor() : null;
-  const cmd = gitWithToken(args, token, { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" });
+  if (!spec.tokenFor) return deps.exec(["git", ...args] as [string, ...string[]], { cwd: spec.repoDir, timeoutMs, stderr: "pipe" });
+  const ttlMs = (spec.pull?.intervalSec ?? 300) * 1000;
+  if (!cachedToken || deps.now() - cachedToken.at > ttlMs) cachedToken = { value: await spec.tokenFor(), at: deps.now() };
+  const cmd = gitWithToken(args, cachedToken.value, { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" });
   return deps.exec(cmd.argv as [string, ...string[]], { cwd: spec.repoDir, timeoutMs, stderr: "pipe", env: cmd.env });
 }
 ```
@@ -511,6 +551,14 @@ async function doPull(): Promise<PullResult> {
     deps.log.info({ id: spec.id, behind, ahead }, "snapshot: rebased");
     return { outcome: "rebased", detail: null };
   }
+  // A rebase that never started (unstaged changes outside the scope, a lock) exits 1 too, but leaves no rebase-merge/rebase-apply behind; only a rebase that stopped mid-way is a conflict.
+  const gitDir = await resolveGitDir();
+  const stopped = existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"));
+  if (!stopped) {
+    const reason = redactCredentials(rebase.stderr.trim() || "rebase refused");
+    deps.log.warn({ id: spec.id, reason }, "snapshot: rebase refused; will retry next tick");
+    return { outcome: "skipped", detail: reason };
+  }
   await deps.exec(["git", "rebase", "--abort"], { cwd: spec.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
   const detail = redactCredentials(rebase.stderr.trim() || "rebase stopped");
   conflicted = { at: deps.now(), detail };
@@ -531,19 +579,19 @@ function clearConflict(): void {
 
 `deleteKvValue(ns, key, db)` lives in `lib/state/kv-blob.ts` and is re-exported through `lib/state/index.ts`, where the engine already imports `getKvValue`/`setKvValue`.
 
-Wire the push side in `doPushInner`: after the enabled and `hasRemote` checks, when `spec.pull` is set, `const pulled = await doPull(); if (pulled.outcome === "conflict" || conflicted) return;`. The push itself becomes `await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS)`. On failure, if `spec.pull` and `/\[rejected\]|non-fast-forward|fetch first/i.test(result.stderr)` and this is the first rejection of the streak (`pushRetryAttempt === 0`): `await doPull(); ` then retry once inline (`const again = await remoteGit([...])`; on success take the success branch; on failure fall through to the existing failure branch).
+Wire the push side in `doPushInner`: after the enabled and `hasRemote` checks, when `spec.pull` is set, `const pulled = await pullNow(); if (pulled.outcome === "conflict" || conflicted) return;`. The push itself becomes `await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS)` (for the home spec that is the same argv and env as today). On failure, if `spec.pull` and `/\[rejected\]|non-fast-forward|fetch first/i.test(result.stderr)` and this is the first rejection of the streak (`pushRetryAttempt === 0`): `await pullNow(); ` then retry once inline (`const again = await remoteGit([...])`; on success take the success branch; on failure fall through to the existing failure branch).
 
 `doRun` gates commits on `conflicted`: after the merge-in-progress check, `if (conflicted) return { committed: false, sha: null, paths: [], reason, skipped: "conflict" }` (add `"conflict"` to `SkipReason`). `status()` adds `lastPullAt, lastPullError, conflicted`. `stop()` clears `pullTimer`. Return `{ stop, runNow, pullNow, status, ready }`.
 
 - [ ] **Step 4: Run the suite**
 
-Run: `bun test lib/daemon lib/home lib/team`
-Expected: PASS.
+Run: `bun test lib/daemon lib/home lib/team commands/__tests__/home.test.ts`
+Expected: PASS. The handle gains `pullNow` and `SnapshotStatus` gains `lastPullAt`, `lastPullError`, `conflicted`: add them to the typed literals in `lib/daemon/__tests__/home-handlers.test.ts` and `commands/__tests__/home.test.ts` (`pullNow: async () => ({ outcome: "skipped", detail: null })`, `lastPullAt: 0, lastPullError: null, conflicted: null`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/daemon/home-snapshot.ts lib/daemon/__tests__/home-snapshot.test.ts lib/subprocess.ts
+git add lib/daemon/home-snapshot.ts lib/daemon/__tests__/home-snapshot.test.ts lib/daemon/__tests__/home-handlers.test.ts commands/__tests__/home.test.ts
 git commit -m "snapshot: a spec with a pull policy fetches, fast-forwards or rebases, and surfaces a conflict instead of resolving it"
 ```
 
@@ -561,7 +609,7 @@ git commit -m "snapshot: a spec with a pull policy fetches, fast-forwards or reb
 
 - [ ] **Step 1: Failing tests**
 
-`packages/rt-client/src/settings/__tests__/registry.test.ts`, beside the `rt.homeSnapshot` assertions (search the file for `rt.homeSnapshot`; add after it and bump the suite-key count assertion, currently 43, to 44):
+`packages/rt-client/src/settings/__tests__/registry.test.ts`, beside the `rt.homeSnapshot` assertions. The row is `migrated: true`, so it joins `migratedTrueKeys` (the list at ~line 219, 25 → 26, and the test title "has exactly the 25 migrated:true keys" → 26) and the migrated-key list around lines 57-63; `suiteKeys` stays at 43.
 
 ```ts
     test("rt.teamSnapshot mirrors rt.homeSnapshot plus a pull interval", () => {
@@ -728,7 +776,8 @@ function harness() {
       };
     }) as unknown as typeof import("../home-snapshot.ts").startSnapshot,
     watch: (_p: string, _o: unknown, l: (ev: string, f: string | null) => void) => { listener = l; return { close() {} }; },
-    setTimeout: (cb: () => void) => { cb(); return 0 as unknown as ReturnType<typeof setTimeout>; },
+    // Only the debounce timer fires synchronously; the interval rescan stays pending so tests drive rescan() themselves.
+    setTimeout: (cb: () => void, ms: number) => { if (ms < 10_000) cb(); return 0 as unknown as ReturnType<typeof setTimeout>; },
     clearTimeout: () => {},
   };
   return { root, started, deps, emit: (f: string) => listener?.("rename", f), cleanup: () => rmSync(root, { recursive: true, force: true }) };
@@ -772,6 +821,19 @@ describe("startTeamSnapshots", () => {
     expect(handle.status().map((s) => s.slug)).toEqual(["acme"]);
     expect((await handle.pullNow("acme")).outcome).toBe("up-to-date");
     await expect(handle.pullNow("nope")).rejects.toThrow(/not cloned/);
+    handle.stop();
+    h.cleanup();
+  });
+
+  test("a clone whose origin arrives later (team publish --remote) starts on the interval rescan", async () => {
+    const h = harness();
+    const dir = clone(h.root, "late-origin", false);
+    const handle = startTeamSnapshots(h.deps);
+    await handle.ready;
+    expect(h.started).toHaveLength(0);
+    writeFileSync(join(dir, ".git", "config"), `[remote "origin"]\n\turl = https://gitlab.com/acme/late-origin.git\n`);
+    await handle.rescan();
+    expect(h.started.map((s) => s.spec.id)).toEqual(["team:late-origin"]);
     handle.stop();
     h.cleanup();
   });
@@ -841,6 +903,8 @@ export interface TeamSnapshotsHandle {
 }
 
 const RESCAN_DEBOUNCE_MS = 2000;
+/** A clone that gains its origin after boot (`rt team publish --remote`) edits .git/config, which the non-recursive teams/ watch never sees; the interval rescan is what picks it up. */
+const RESCAN_INTERVAL_MS = 5 * 60_000;
 
 function originOf(dir: string): string | null {
   try {
@@ -862,7 +926,13 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
   const skippedNoRemote = new Set<string>();
   let watcher: { close(): void } | null = null;
   let debounce: ReturnType<typeof setTimeout> | null = null;
+  let interval: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+
+  function scheduleRescan(): void {
+    if (stopped) return;
+    interval = setTimer(() => { interval = null; void rescan().finally(scheduleRescan); }, RESCAN_INTERVAL_MS);
+  }
 
   function settings(): TeamSnapshotSettings {
     try {
@@ -895,7 +965,7 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
         const originUrl = originOf(dir);
         if (!originUrl) {
           if (!skippedNoRemote.has(slug)) {
-            rawDeps.log.warn({ slug, dir }, "team-snapshots: clone has no origin; not snapshotted until `rt team publish --remote`");
+            rawDeps.log.warn({ slug, dir }, "team-snapshots: clone has no origin; snapshotted once `rt team publish --remote` gives it one (picked up within the rescan interval)");
             skippedNoRemote.add(slug);
           }
           continue;
@@ -933,8 +1003,9 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
         debounce = setTimer(() => { debounce = null; void rescan(); }, RESCAN_DEBOUNCE_MS);
       });
     } catch (err) {
-      rawDeps.log.warn({ err, teamsDir }, "team-snapshots: cannot watch teams/; new clones are picked up at the next daemon start");
+      rawDeps.log.warn({ err, teamsDir }, "team-snapshots: cannot watch teams/; new clones are picked up on the interval rescan");
     }
+    scheduleRescan();
   });
 
   return {
@@ -944,6 +1015,7 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
       stopped = true;
       if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
       if (debounce) clearTimer(debounce);
+      if (interval) clearTimer(interval);
       for (const inst of instances.values()) inst.handle.stop();
       instances.clear();
     },
@@ -977,11 +1049,12 @@ git commit -m "daemon: one snapshot engine per team clone, discovered at boot an
 
 **Files:**
 - Create: `lib/daemon/handlers/team-snapshot.ts`
-- Modify: `lib/daemon.ts` (start/stop beside `homeSnapshot`; verb contracts), `lib/daemon/command-router.ts` (opts + spread)
+- Modify: `lib/daemon.ts` (start/stop beside `homeSnapshot`), `lib/daemon/handlers/types.ts` (`InternalCommands`, ~line 121: the verb contract map), `lib/daemon/command-router.ts` (opts + spread)
+- Modify (typed router opts gain `teamSnapshots`): `lib/daemon/__tests__/rt-client-commands.test.ts` (~line 99), `lib/daemon/__tests__/router-no-db-key.test.ts` (~line 66)
 - Test: `lib/daemon/__tests__/handlers-team-snapshot.test.ts`
 
 **Interfaces:**
-- Produces verbs: `team:snapshot-status` → `{ ok: true, data: TeamSnapshotEntry[] }`; `team:pull` payload `{ slug: string }` → `{ ok: true, data: PullResult }`, or `{ ok: false, error: { code: "no-team", message } }` for an unknown slug.
+- Produces verbs: `team:snapshot-status` → `{ ok: true, data: TeamSnapshotEntry[] }`; `team:pull` payload `{ slug: string }` → `{ ok: true, data: PullResult }`, or the daemon's standard failure envelope `{ ok: false, error: <message>, failure: { code: "no-team", message } }` for an unknown slug.
 
 - [ ] **Step 1: Failing test**
 
@@ -1007,7 +1080,8 @@ describe("team snapshot handlers", () => {
     expect(await h["team:pull"]({ slug: "acme" })).toEqual({ ok: true, data: { outcome: "up-to-date", detail: null } });
     const bad = await h["team:pull"]({ slug: "nope" });
     expect(bad.ok).toBe(false);
-    expect((bad as { error: { code: string } }).error.code).toBe("no-team");
+    expect((bad as { error: string; failure: { code: string } }).error).toContain("not cloned");
+    expect((bad as { error: string; failure: { code: string } }).failure.code).toBe("no-team");
   });
 });
 ```
@@ -1034,7 +1108,7 @@ export function createTeamSnapshotHandlers(teamSnapshots: TeamSnapshotsHandle) {
       try {
         return { ok: true as const, data: await teamSnapshots.pullNow(String(payload?.slug ?? "")) };
       } catch (err) {
-        if (err instanceof UserActionableError) return { ok: false as const, error: { code: err.code, message: err.message } };
+        if (err instanceof UserActionableError) return { ok: false as const, error: err.message, failure: { code: err.code, message: err.message } };
         throw err;
       }
     },
@@ -1042,14 +1116,14 @@ export function createTeamSnapshotHandlers(teamSnapshots: TeamSnapshotsHandle) {
 }
 ```
 
-`lib/daemon.ts`: declare `let teamSnapshots: ReturnType<typeof startTeamSnapshots>;`, start it right after `homeSnapshot = startHomeSnapshot({...})` with `startTeamSnapshots({ log: loggerHandle.childLogger("team-snapshots"), broadcast: emit })`, stop it in the same `stop()` as `homeSnapshot?.stop()`, pass `teamSnapshots` into the router opts, and add to the verb contract map:
+`lib/daemon.ts`: declare `let teamSnapshots: ReturnType<typeof startTeamSnapshots>;`, start it right after `homeSnapshot = startHomeSnapshot({...})` with `startTeamSnapshots({ log: loggerHandle.childLogger("team-snapshots"), broadcast: emit })`, stop it in the same `stop()` as `homeSnapshot?.stop()`, pass `teamSnapshots` into the router opts. In `lib/daemon/handlers/types.ts`, add to `InternalCommands`:
 
 ```ts
   "team:snapshot-status": { payload: Record<string, never>; data: TeamSnapshotEntry[] };
   "team:pull": { payload: { slug: string }; data: PullResult };
 ```
 
-`lib/daemon/command-router.ts`: `teamSnapshots: TeamSnapshotsHandle` in opts; `...createTeamSnapshotHandlers(opts.teamSnapshots)` beside the home spread.
+`lib/daemon/command-router.ts`: `teamSnapshots: TeamSnapshotsHandle` in opts; `...createTeamSnapshotHandlers(opts.teamSnapshots)` beside the home spread. The two router tests listed above construct opts literals; give them a stub `teamSnapshots: { stop() {}, rescan: async () => {}, status: () => [], pullNow: async () => ({ outcome: "skipped", detail: null }), ready: Promise.resolve() }`.
 
 - [ ] **Step 4: Run tests + tsc**
 
@@ -1059,7 +1133,7 @@ Expected: PASS; no tsc lines.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add lib/daemon/handlers/team-snapshot.ts lib/daemon.ts lib/daemon/command-router.ts lib/daemon/__tests__/handlers-team-snapshot.test.ts
+git add lib/daemon/handlers/team-snapshot.ts lib/daemon/handlers/types.ts lib/daemon.ts lib/daemon/command-router.ts lib/daemon/__tests__
 git commit -m "daemon: team:snapshot-status and team:pull; the team supervisor starts beside the home snapshot"
 ```
 
@@ -1145,9 +1219,9 @@ export async function teamSyncRow(
 }
 ```
 
-Wire it where `homeBackupRow` is called (line ~469): read status through the daemon client used elsewhere in the validators (`p.daemon?.(...)` or the probes' daemon call; find how `tool.daemon` reaches the daemon and reuse it; null on any failure), `slugs` from `discoverTeams(p)`, `pullIntervalSec` from `getSetting("rt.teamSnapshot").value?.pullIntervalSec ?? 300`. Push the row only when non-null.
+Wire it where `homeBackupRow` is called (line ~469): read status through `p.daemon` (the probes' daemon call the `tool.daemon` row already uses; null on any failure or a non-ok envelope), `slugs` from `discoverTeams(p)` (module-private in `lib/setup/apply.ts:246` today; export it), `pullIntervalSec` from `getSetting("rt.teamSnapshot").value?.pullIntervalSec ?? 300`. Push the row only when non-null.
 
-`verify.ts`: `const SETTLING_ROWS = new Set(["tool.daemon", "team.sync"]);` and, since the row is `required: false`, it never becomes a critical failure; the settle loop must also wait while `team.sync` is `needs-you` with `last pull never` right after a join: extend `settleChecks` to also keep re-reading while a check named `team.sync` has status `warn` and its detail contains `never` (up to `SETTLE_ATTEMPTS`). Assert this in the settle test.
+`verify.ts`: `const SETTLING_ROWS = new Set(["tool.daemon", "team.sync"]);` and, since the row is `required: false`, it never becomes a critical failure; the settle loop must also wait while `team.sync` is `needs-you` with `last pull never` right after a join: extend `settleChecks` to also keep re-reading while a check named `team.sync` has status `warn` and its detail contains `never` (up to `SETTLE_ATTEMPTS`, the same 5 × 3 s budget `tool.daemon` gets; the boot pull is immediate, so the wait is for the engine to start, not for a timer). Assert this in the settle test.
 
 - [ ] **Step 4: Run the tests**
 
@@ -1185,10 +1259,16 @@ describe("teamPull", () => {
     const { at, ...body } = JSON.parse(deps.lines[0]!);
     expect(body).toEqual({ contract: 1, slug: "acme", outcome: "fast-forwarded", detail: null });
   });
-  test("daemon unreachable exits 1 with a plain message, never a stack", async () => {
-    const deps = depsWithZone({ daemon: async () => { throw new Error("ECONNREFUSED"); } });
-    await runExpectingProcessExit(() => teamPull(["--team", "acme"], {}, deps));
+  test("daemon unreachable (daemonQuery returns null) exits 2 with a plain message, never a stack", async () => {
+    const deps = depsWithZone({ daemon: async () => null });
+    const code = await runExpectingProcessExit(() => teamPull(["--team", "acme"], {}, deps));
+    expect(code).toBe(2);
     expect(deps.lines.join("\n")).toContain("daemon");
+  });
+  test("a daemon failure envelope surfaces its code", async () => {
+    const deps = depsWithZone({ daemon: async () => ({ ok: false, error: "team \"acme\" is not cloned locally", failure: { code: "no-team", message: "team \"acme\" is not cloned locally" } }) });
+    await runExpectingProcessExit(() => teamPull(["--team", "acme", "--json"], {}, deps));
+    expect(JSON.parse(deps.lines[0]!).error.code).toBe("no-team");
   });
 });
 
@@ -1211,21 +1291,17 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-`commands/team.ts`: the real `daemon` seam is the same client `commands/home.ts` uses for `home:snapshot` (grep `home:snapshot` in `commands/home.ts` and reuse that call helper). Add:
+`commands/team.ts`: the real `daemon` seam is `daemonQuery` from `lib/daemon-client.ts` (what `commands/home.ts` uses; it returns `null` when the daemon is unreachable and a `DaemonResponse` otherwise). Add:
 
 ```ts
 export async function teamPull(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
   const json = args.includes("--json");
   try {
     const slug = resolveTeamSlug(args);
-    const call = deps.daemon ?? realDaemonCall;
-    let res: { ok: boolean; data?: { outcome: string; detail: string | null }; error?: { code: string; message: string } };
-    try {
-      res = (await call("team:pull", { slug })) as typeof res;
-    } catch (err) {
-      throw new UserActionableError("daemon-unreachable", `rt daemon is not reachable — start it with \`rt daemon start\`, or pull by hand with git in ~/.mattstack/teams/${slug}`);
-    }
-    if (!res.ok || !res.data) throw new UserActionableError(res.error?.code ?? "team-pull-failed", res.error?.message ?? "team pull failed");
+    const call = deps.daemon ?? daemonQuery;
+    const res = (await call("team:pull", { slug })) as { ok: boolean; data?: { outcome: string; detail: string | null }; error?: string; failure?: { code: string; message: string } } | null;
+    if (!res) throw new UserActionableError("daemon-unreachable", `rt daemon is not reachable — start it with \`rt daemon start\`, or pull by hand with git in ~/.mattstack/teams/${slug}`);
+    if (!res.ok || !res.data) throw new UserActionableError(res.failure?.code ?? "team-pull-failed", res.failure?.message ?? res.error ?? "team pull failed");
     if (json) { deps.print(JSON.stringify(envelope({ slug, outcome: res.data.outcome, detail: res.data.detail }))); return; }
     deps.print(`rt team pull: ${slug} — ${res.data.outcome}${res.data.detail ? ` (${res.data.detail})` : ""}`);
   } catch (err) {
