@@ -1,7 +1,9 @@
 /**
- * Home-repo snapshot daemon module: watches ~/.mattstack/user for changes,
- * auto-commits everything NOT inside a claimed zone, and janitor-commits a
- * claimed zone left dirty past its threshold. Zones stay owner-authored:
+ * Snapshot daemon engine, driven by a `SnapshotSpec`: watches a repo for
+ * changes, auto-commits everything NOT inside a claimed zone, and
+ * janitor-commits a claimed zone left dirty past its threshold. The home repo
+ * (~/.mattstack/user) is one instance of it — `homeSnapshotSpec` — and
+ * `startHomeSnapshot` is the wrapper that starts it. Zones stay owner-authored:
  * `runNow` never stages a claimed zone except through the janitor path, and
  * never on reason "watch" (only "janitor"/"manual" — see planSnapshot's
  * caller below).
@@ -65,6 +67,8 @@ export interface SnapshotResult {
 }
 
 export interface SnapshotStatus {
+  /** The spec this instance was started from ("home" for the home repo). */
+  id: string;
   enabled: boolean;
   /** True once the fs watcher is actually armed — false for a daemon that started with enabled:false and hasn't yet taken a manual run to lazily arm it (see doRun's `!watcher` check). */
   watching: boolean;
@@ -116,6 +120,26 @@ export interface HomeSnapshotDeps {
   readOwners?: (path: string) => Owners;
   db?: Database;
 }
+
+/** What distinguishes one snapshot instance from another. Everything else about a run is identical across instances. */
+export interface SnapshotSpec {
+  id: string;
+  repoDir: string;
+  kvNamespace: string;
+  eventPrefix: "home" | "team";
+  /** Paths (relative to repoDir) the engine may stage; undefined = everything outside claimed zones. */
+  scope?: (relPath: string) => boolean;
+  /** Fetch + rebase policy; absent = never pull (the home repo is single-writer). */
+  pull?: { intervalSec: number };
+  /** The forge token rt holds for origin; absent = git's own credentials. */
+  tokenFor?: () => Promise<string | null>;
+  /** The retired pre-kv state file to import once; home only. */
+  legacyStatePath?: string;
+}
+
+/** The spec carries repoDir, so an instance's deps never do. */
+export type SnapshotDeps = Omit<HomeSnapshotDeps, "repoDir">;
+export type SnapshotHandle = HomeSnapshotHandle;
 
 const GIT_TIMEOUT_MS = 15_000;
 const PUSH_TIMEOUT_MS = 30_000;
@@ -212,20 +236,15 @@ interface PersistedHomeSnapshotState {
   firstSeenDirty?: Record<string, number>;
 }
 
-/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
-function legacyStatePath(): string {
-  return join(rtDir(), "home-snapshot-state.json");
-}
-
 function firstSeenDirtyOf(raw: PersistedHomeSnapshotState | null | undefined): Record<string, number> {
   return raw && typeof raw.firstSeenDirty === "object" && raw.firstSeenDirty !== null ? raw.firstSeenDirty : {};
 }
 
 /** A missing row is the normal first-run case (silent); a present-but-unparseable row is a real loss of the janitor-threshold clock and must be loud, per the catch policy. */
-function loadState(db: Database, log: Logger): Record<string, number> {
-  if (hasKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, db)) {
+function loadState(spec: SnapshotSpec, db: Database, log: Logger): Record<string, number> {
+  if (hasKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, db)) {
     return firstSeenDirtyOf(getKvValue<PersistedHomeSnapshotState>(
-      HOME_SNAPSHOT_NS,
+      spec.kvNamespace,
       HOME_SNAPSHOT_KEY,
       {},
       db,
@@ -233,41 +252,57 @@ function loadState(db: Database, log: Logger): Record<string, number> {
     ));
   }
 
+  if (spec.legacyStatePath === undefined) return {};
   const result = importLegacyJsonFile<Record<string, number>>(
-    legacyStatePath(),
+    spec.legacyStatePath,
     (json) => {
       const firstSeenDirty = firstSeenDirtyOf(json as PersistedHomeSnapshotState | null);
-      setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
+      setKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
       return firstSeenDirty;
     },
     {
       onCorrupt: (err) => log.warn({ err }, "home-snapshot: legacy state file corrupt; starting from empty first-seen-dirty state"),
-      verifyPersisted: () => hasKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, db),
+      verifyPersisted: () => hasKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, db),
     },
   );
   return result.imported ? result.value! : {};
 }
 
-function persistState(db: Database, firstSeenDirty: Record<string, number>, log: Logger): void {
+function persistState(spec: SnapshotSpec, db: Database, firstSeenDirty: Record<string, number>, log: Logger): void {
   try {
-    setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
-    renameLegacyOutOfTheWay(legacyStatePath());
+    setKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
+    if (spec.legacyStatePath !== undefined) renameLegacyOutOfTheWay(spec.legacyStatePath);
   } catch (err) {
     log.warn({ err }, "home-snapshot: failed to persist state");
   }
 }
 
 /** The `home.backup` row's only source for WHY a push is failing — the one thing about a broken backup that git's own refs cannot show. Its own kv key, never HOME_SNAPSHOT_KEY, which persistState overwrites wholesale every cycle. */
-function persistPushRecord(db: Database, record: HomePushRecord, log: Logger): void {
+function persistPushRecord(spec: SnapshotSpec, db: Database, record: HomePushRecord, log: Logger): void {
   try {
-    recordHomePush(db, record);
+    recordHomePush(db, record, spec.kvNamespace);
   } catch (err) {
     log.warn({ err }, "home-snapshot: failed to persist the last-push record");
   }
 }
 
+export function homeSnapshotSpec(repoDir: string = join(mattstackHome(), "user")): SnapshotSpec {
+  return {
+    id: "home",
+    repoDir,
+    kvNamespace: HOME_SNAPSHOT_NS,
+    eventPrefix: "home",
+    legacyStatePath: join(rtDir(), "home-snapshot-state.json"),
+  };
+}
+
 export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle {
-  const repoDir = rawDeps.repoDir ?? join(mattstackHome(), "user");
+  const { repoDir, ...rest } = rawDeps;
+  return startSnapshot(homeSnapshotSpec(repoDir), rest);
+}
+
+export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): SnapshotHandle {
+  const repoDir = spec.repoDir;
   const rawReadSettings = rawDeps.readSettings ?? (() => getSetting<HomeSnapshotSettings>("rt.homeSnapshot").value);
   // Thunk, not a resolved value: module-scope construction (lib/daemon.ts)
   // must not open state.db before startDaemon() has opened it daemon-flavored
@@ -348,9 +383,9 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   }
 
   // Guarded: this runs at construction time, synchronously, in whatever
-  // calls startHomeSnapshot() (module scope in lib/daemon.ts) — an
-  // unregistered key or a broken settings store must degrade to "stay
-  // inert, warn", never throw out of the daemon's boot sequence.
+  // starts the instance (module scope in lib/daemon.ts, via
+  // startHomeSnapshot) — an unregistered key or a broken settings store must
+  // degrade to "stay inert, warn", never throw out of the daemon's boot sequence.
   let startupSettings: HomeSnapshotSettings | null = null;
   try {
     startupSettings = deps.readSettings();
@@ -428,7 +463,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // First real db touch: this await already put us past the daemon's
       // synchronous boot pass, so by now startDaemon() has opened state.db
       // daemon-flavored via openBranchCacheStore (see resolveDb above).
-      firstSeenDirty = loadState(resolveDb(), deps.log);
+      firstSeenDirty = loadState(spec, resolveDb(), deps.log);
       if (deps.readSettings().enabled !== false) {
         tryArm();
       }
@@ -589,7 +624,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       lastPushError = null;
       lastLoggedPushError = null;
       pushRetryAttempt = 0;
-      persistPushRecord(resolveDb(), { at: lastPushAt, ok: true }, deps.log);
+      persistPushRecord(spec, resolveDb(), { at: lastPushAt, ok: true }, deps.log);
       if (pushRetryTimer) {
         deps.clearTimeout(pushRetryTimer);
         pushRetryTimer = null;
@@ -606,7 +641,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // remote otherwise re-warns and re-persists identically on every
       // retry, indefinitely.
       if (redactedStderr !== lastLoggedPushError) {
-        persistPushRecord(resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
+        persistPushRecord(spec, resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
         deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
         lastLoggedPushError = redactedStderr;
       }
@@ -614,7 +649,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // storm (schedulePushRetry firing every pushDelaySec*5) would
       // otherwise spam every WS/socket client with the same event.
       if (!pushFailureBroadcast) {
-        deps.broadcast("home:push-failed", { error: redactedStderr, pushPending: true });
+        deps.broadcast(`${spec.eventPrefix}:push-failed`, { error: redactedStderr, pushPending: true });
         pushFailureBroadcast = true;
       }
       schedulePushRetry();
@@ -712,7 +747,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     });
 
     firstSeenDirty = plan.nextFirstSeenDirty;
-    persistState(resolveDb(), firstSeenDirty, deps.log);
+    persistState(spec, resolveDb(), firstSeenDirty, deps.log);
 
     let committed = false;
     let sha: string | null = null;
@@ -784,7 +819,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         lastCommitError = null;
         lastLoggedCommitError = null;
         deps.log.info({ sha, paths: plan.autoPaths.length, reason }, "home-snapshot: committed");
-        deps.broadcast("home:snapshot", { sha, paths: plan.autoPaths, reason });
+        deps.broadcast(`${spec.eventPrefix}:snapshot`, { sha, paths: plan.autoPaths, reason });
       } else {
         lastCommitError = commitResult.stderr;
         if (commitResult.stderr !== lastLoggedCommitError) {
@@ -816,7 +851,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
           lastCommitError = null;
           lastLoggedCommitError = null;
           deps.log.info({ sha, paths: 1, reason }, "home-snapshot: committed");
-          deps.broadcast("home:snapshot", { sha, paths: [jz.zone], reason });
+          deps.broadcast(`${spec.eventPrefix}:snapshot`, { sha, paths: [jz.zone], reason });
         } else {
           lastCommitError = commitResult.stderr;
           if (commitResult.stderr !== lastLoggedCommitError) {
@@ -881,6 +916,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       }
     }
     return {
+      id: spec.id,
       enabled: lastKnownEnabled,
       watching: watcher !== null,
       repoDir: deps.repoDir,

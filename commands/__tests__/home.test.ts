@@ -1617,6 +1617,7 @@ describe("homeSnapshot", () => {
   const okResult: SnapshotResult = { committed: true, sha: "abc123def456", paths: ["prefs/settings.json"], reason: "manual" };
   const skippedResult: SnapshotResult = { committed: false, sha: null, paths: [], reason: "manual", skipped: "no-changes" };
   const okStatus: SnapshotStatus = {
+    id: "home",
     enabled: true,
     watching: true,
     repoDir: "/home/.mattstack",

@@ -10,7 +10,7 @@ import type { Owners } from "../../home/snapshot-owners.ts";
 import { openStateDb } from "../../state/db.ts";
 import { closeStateDb, getKvValue } from "../../state/index.ts";
 import { readHomePushRecord } from "../../home/push-record.ts";
-import { startHomeSnapshot, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
+import { homeSnapshotSpec, startHomeSnapshot, startSnapshot, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
 
 // ─── test doubles ────────────────────────────────────────────────────────────
 
@@ -2003,4 +2003,38 @@ describe("startHomeSnapshot — local-only remote state", () => {
       handle.stop();
     }
   }, 15_000);
+});
+
+describe("startSnapshot — spec", () => {
+  test("homeSnapshotSpec is today's home values, and startSnapshot(homeSpec) equals startHomeSnapshot", async () => {
+    const spec = homeSnapshotSpec(FAKE_REPO_DIR);
+    expect(spec).toMatchObject({ id: "home", repoDir: FAKE_REPO_DIR, kvNamespace: "home-snapshot", eventPrefix: "home" });
+    expect(spec.scope).toBeUndefined();
+    expect(spec.pull).toBeUndefined();
+    expect(spec.tokenFor).toBeUndefined();
+
+    const { fn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, broadcasts } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot(spec, specDeps);
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.committed).toBe(true);
+    expect(broadcasts[0]?.type).toBe("home:snapshot");
+    expect(handle.status().id).toBe("home");
+    handle.stop();
+  });
+
+  test("a spec's eventPrefix and kvNamespace name the broadcasts and the kv rows", async () => {
+    const { fn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, broadcasts } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const spec = { ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team" as const };
+    const handle = startSnapshot(spec, specDeps);
+    await handle.ready;
+    await handle.runNow("manual");
+    expect(broadcasts[0]?.type).toBe("team:snapshot");
+    expect(getKvValue("team-snapshot:acme", "state", null, deps.db!)).not.toBeNull();
+    handle.stop();
+  });
 });
