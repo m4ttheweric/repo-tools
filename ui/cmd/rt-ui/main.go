@@ -36,6 +36,8 @@ func main() {
 		os.Exit(ExitOK)
 	case "prompt":
 		os.Exit(runPrompt())
+	case "pick":
+		os.Exit(runPick())
 	case "steps":
 		os.Exit(runSteps())
 	case "session":
@@ -47,5 +49,5 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rt-ui prompt | rt-ui steps | rt-ui session --view <kind> | rt-ui --version")
+	fmt.Fprintln(os.Stderr, "usage: rt-ui prompt | rt-ui pick | rt-ui steps | rt-ui session --view <kind> | rt-ui --version")
 }

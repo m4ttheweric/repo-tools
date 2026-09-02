@@ -1,6 +1,6 @@
 /**
- * Builds the fzf option list: Recent group first (top item preselected by
- * position), then tier groups in canonical order. A connection shown in
+ * Builds the picker's option list: Recent group first (top item preselected
+ * by position), then tier groups in canonical order. A connection shown in
  * Recent is promoted out of its tier group, so every connection appears
  * exactly once (no confusing duplicate rows when filtering).
  */

@@ -1332,8 +1332,8 @@ function duplicateRepoNames(repos: KnownRepo[]): Set<string> {
 /**
  * One list, one value per row. A lost legacy-name row and the scanned
  * directory that name moved to carry the SAME `repoName`, so an unqualified
- * value resolves the live directory to the dead row. The qualifier trails the
- * name because fzf matches on this field (`--nth=1`).
+ * value resolves the live directory to the dead row. The qualifier trails
+ * the name so the value still starts with the readable repo name.
  */
 function repoOptionValue(r: KnownRepo, i: number, duplicated: Set<string>): string {
   return duplicated.has(r.repoName) ? `${r.repoName}#${i}` : r.repoName;

@@ -1,9 +1,32 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "fs";
+import { Readable } from "node:stream";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
+import { installFakePick, type PickFakeStep } from "../../lib/ui/pick-fake.ts";
 import { computeRows, decidePaletteAction, skillsSurface } from "../skills.ts";
+
+function resultStep(result: Partial<{ action: string; value: string | null; values: string[]; query: string }>): PickFakeStep {
+  return { kind: "result", result: { action: "select", value: null, query: "", ...result } };
+}
+
+/**
+ * The palette needs process.stdin.isTTY to reach the picker branch at all,
+ * and confirmYesNo reads a real answer off process.stdin via readline once a
+ * delta exists -- swap in a Readable primed with the answer so that prompt
+ * resolves instead of hanging on the test runner's own (non-interactive) stdin.
+ */
+function withPaletteTTY<T>(answer: string, fn: () => Promise<T>): Promise<T> {
+  const previousStdin = process.stdin;
+  const fakeStdin = new Readable({ read() {} }) as unknown as NodeJS.ReadStream;
+  Object.defineProperty(fakeStdin, "isTTY", { value: true, configurable: true });
+  fakeStdin.push(`${answer}\n`);
+  Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
+  return fn().finally(() => {
+    Object.defineProperty(process, "stdin", { value: previousStdin, configurable: true });
+  });
+}
 
 function writeFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -562,14 +585,21 @@ describe("skillsSurface set/apply on a never-compiled pipeline stage", () => {
   });
 });
 
-describe("skillsSurface bare invocation (fzf palette)", () => {
-  test("non-tty: prints the list and the set-command hint, does not crash or write config", async () => {
+describe("skillsSurface bare invocation (interactive palette)", () => {
+  let fake: ReturnType<typeof installFakePick> | undefined;
+
+  afterEach(() => {
+    fake?.restore();
+    fake = undefined;
+  });
+
+  test("non-tty: prints the list and the set-command hint (no fzf mention), does not crash or write config", async () => {
     const packDir = makePackDir();
     writeStubs(packDir, {});
     writeFile(join(packDir, "skills", "my-skill", "SKILL.md"), "---\nname: s\n---\nbody\n");
 
     // bun test inherits stdin from the shell; force the non-tty fallback so this
-    // never spawns real fzf on an interactive run.
+    // never opens a real picker on an interactive run.
     const previousIsTTY = process.stdin.isTTY;
     Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
     try {
@@ -581,7 +611,8 @@ describe("skillsSurface bare invocation (fzf palette)", () => {
     expect(existsSync(join(packDir, "pack", "surface.jsonc"))).toBe(false);
     const out = logs.join("\n");
     expect(out).toContain("my-skill");
-    expect(out).toContain("rt skills surface set");
+    expect(out).toContain("no tty -- edit one at a time: rt skills surface set");
+    expect(out).not.toContain("fzf");
   });
 
   test("empty pack: prints a no-skills message instead of crashing", async () => {
@@ -601,13 +632,100 @@ describe("skillsSurface bare invocation (fzf palette)", () => {
     expect(errors[0]).toStartWith("rt skills: ");
     expect(errors[0]).toContain("bogus-mode");
   });
+
+  test("builds rows with public skills preselected via initialValues", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "skills", "pub-skill", "SKILL.md"), "---\nname: pub-skill\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "int-skill", "SKILL.md"), "---\nname: int-skill\n---\nbody\n");
+
+    fake = installFakePick([resultStep({ action: "select", values: ["pub-skill"] })]);
+
+    await withPaletteTTY("n", () => skillsSurface(["--team", "t", "--pack-dir", packDir]));
+
+    expect(fake.calls).toHaveLength(1);
+    const req = fake.calls[0]!.request;
+    expect(req.multi).toBe(true);
+    expect(req.initialValues?.slice().sort()).toEqual(["pub-skill"]);
+    expect(req.rows.map((r) => r.value).sort()).toEqual(["int-skill", "pub-skill"]);
+    // Dispatcher header is suppressed for this leaf (fullscreen: true in the
+    // tree), so the palette must carry its own in-card breadcrumb.
+    expect(req.breadcrumb).toEqual(["rt", "skills", "surface"]);
+  });
+
+  test("selecting exactly today's public set yields no-changes without writing surface.jsonc", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "skills", "pub-skill", "SKILL.md"), "---\nname: pub-skill\n---\nbody\n");
+
+    fake = installFakePick([resultStep({ action: "select", values: ["pub-skill"] })]);
+
+    await withPaletteTTY("n", () => skillsSurface(["--team", "t", "--pack-dir", packDir]));
+
+    expect(logs.join("\n")).toContain("no changes -- surface.jsonc left as is");
+    expect(existsSync(join(packDir, "pack", "surface.jsonc"))).toBe(false);
+  });
+
+  test("a real delta flows the checked set through decidePaletteAction and writes the correct public/internal split", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "skills", "a", "SKILL.md"), "---\nname: a\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "b", "SKILL.md"), "---\nname: b\n---\nbody\n");
+
+    // a starts public, b starts internal; checking only b swaps them.
+    fake = installFakePick([resultStep({ action: "select", values: ["b"] })]);
+
+    await withPaletteTTY("y", () => skillsSurface(["--team", "t", "--pack-dir", packDir]));
+
+    const surface = JSON.parse(readFileSync(join(packDir, "pack", "surface.jsonc"), "utf8").replace(/^\/\/.*\n/, ""));
+    expect(surface.public).toEqual(["b"]);
+    const out = logs.join("\n");
+    expect(out).toContain("+ public   b");
+    expect(out).toContain("- public   a");
+  });
+
+  test("unchecking everything is honored as an empty selection: every public name goes internal", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "skills", "a", "SKILL.md"), "---\nname: a\n---\nbody\n");
+    writeFile(join(packDir, "skills", "b", "SKILL.md"), "---\nname: b\n---\nbody\n");
+
+    fake = installFakePick([resultStep({ action: "select", values: [] })]);
+
+    await withPaletteTTY("y", () => skillsSurface(["--team", "t", "--pack-dir", packDir]));
+
+    const surface = JSON.parse(readFileSync(join(packDir, "pack", "surface.jsonc"), "utf8").replace(/^\/\/.*\n/, ""));
+    expect(surface.public).toEqual([]);
+    const out = logs.join("\n");
+    expect(out).toContain("- public   a");
+    expect(out).toContain("- public   b");
+  });
+
+  test("cancel makes no changes", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "skills", "a", "SKILL.md"), "---\nname: a\n---\nbody\n");
+
+    fake = installFakePick([resultStep({ action: "cancel", value: null })]);
+
+    // printAborted() is TTY-gated on process.stderr, not console.log.
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await withPaletteTTY("n", () => skillsSurface(["--team", "t", "--pack-dir", packDir]));
+      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+    } finally {
+      stderrSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
+    expect(existsSync(join(packDir, "pack", "surface.jsonc"))).toBe(false);
+  });
 });
 
 describe("decidePaletteAction", () => {
-  test("zero-marked cursor-row artifact shows as a +1 delta the user can decline", () => {
-    // Everything was internal; fzf's default --multi accept on Enter with
-    // nothing marked emits the cursor row anyway -- that row now reads
-    // "public" in resultRows even though the user meant to uncheck everything.
+  test("a single row read as public that was internal before surfaces as a +1 delta the user can decline", () => {
     const previousPublic = new Set<string>();
     const resultRows = [{ name: "x", status: "public" as const }];
 
@@ -617,6 +735,28 @@ describe("decidePaletteAction", () => {
     if (action.kind !== "no-changes") {
       expect(action.delta.toPublic).toEqual(["x"]);
       expect(action.delta.toInternal).toEqual([]);
+    }
+  });
+
+  test("unchecking everything (empty resultRows selection) demotes every previously-public name -- no stale cursor-row artifact", () => {
+    const previousPublic = new Set(["a", "b"]);
+    const resultRows = [
+      { name: "a", status: "internal" as const },
+      { name: "b", status: "internal" as const },
+    ];
+
+    const preview = decidePaletteAction(previousPublic, resultRows, false);
+    expect(preview.kind).toBe("declined");
+    if (preview.kind !== "no-changes") {
+      expect(preview.delta.toPublic).toEqual([]);
+      expect(preview.delta.toInternal).toEqual(["a", "b"]);
+    }
+
+    const decision = decidePaletteAction(previousPublic, resultRows, true);
+    expect(decision.kind).toBe("write");
+    if (decision.kind === "write") {
+      expect(decision.delta.toPublic).toEqual([]);
+      expect(decision.delta.toInternal).toEqual(["a", "b"]);
     }
   });
 
@@ -677,7 +817,7 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     const { rows } = computeRows(packDir, new Set(), surface, new Set());
     const previousPublic = new Set(surface.public);
 
-    // Simulates the palette round trip: the fzf row for "ghost" exists and stays
+    // Simulates the palette round trip: the "ghost" row exists and stays
     // preselected because the user never touched it.
     const resultRows = rows.map((r) => ({ name: r.name, status: r.status }));
 

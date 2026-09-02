@@ -67,8 +67,8 @@ describe("rt setup verbs (e2e, no live app/daemon)", () => {
     expect(events[events.length - 1]!.event).toBe("done");
   }, 45_000);
 
-  test("deps resolve fzf --json parses", async () => {
-    const res = await run(["deps", "resolve", "fzf", "--json"]);
+  test("deps resolve jq --json parses", async () => {
+    const res = await run(["deps", "resolve", "jq", "--json"]);
     expect(res.exitCode).toBe(0);
 
     const out = JSON.parse(res.stdout.trim());

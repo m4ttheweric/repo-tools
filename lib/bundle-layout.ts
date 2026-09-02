@@ -1,8 +1,8 @@
 /**
  * The mattstack.app bundle layout and deps.lock schema, as rt sees them.
  * build.sh writes this layout; check-bundle.sh asserts it; rt's deps command
- * and the fzf resolver read it through here. Paths are relative to the .app
- * root unless a function says "absolute".
+ * and the rt-ui binary resolver read it through here. Paths are relative to
+ * the .app root unless a function says "absolute".
  */
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join } from "path";
@@ -146,27 +146,28 @@ export function bundleRootFromExec(execPath: string = process.execPath): string 
 }
 
 // Only a successful resolution is cached: a miss is one getSetting() read plus
-// at most two existsSync() calls — negligible next to the fzf spawn this sits
-// in front of — so a daemon started before the app was installed still picks
-// it up on the next call instead of pinning "not installed" for its lifetime.
+// at most two existsSync() calls — negligible next to the rt-ui spawn this
+// sits in front of — so a daemon started before the app was installed still
+// picks it up on the next call instead of pinning "not installed" for its
+// lifetime.
 let appBundleRootMemo: string | null = null;
 
 /**
  * The bundle rt belongs to: the one it runs from, else the installed active
  * flavor. Memoized per process on success only, and ONLY for the true
  * default (`exists === existsSync`, i.e. a zero-arg call) — this sits on the
- * fzf-picker hot path (ensureFzf → appBundleRoot() with no args, on every
- * spawn) and that path is the memo's whole reason to exist. A caller that
- * INJECTS an `exists` (every Probes-driven caller, e.g.
- * `lib/deps/resolve.ts`'s `appBundlePath(p)` → `appBundleRoot(p.exists)`)
- * bypasses the memo entirely, both read and write: those callers exist
- * specifically so tests (and `rt deps`) can point resolution at a fake
- * bundle without touching real disk, and a shared process-wide cache keyed
- * by the FIRST such call would let one test's fake bundle pin every later
- * `appBundlePath(p)` call in the same process, real callers included. Reset
- * the default-path memo via __test__.resetBundleLayoutMemo() (still needed
- * between tests that call the zero-arg form, e.g. through `resolveFzf()`'s
- * own default).
+ * rt-ui picker/prompt hot path (`lib/ui/resolve.ts`'s `bundleRoot` seam →
+ * appBundleRoot() with no args, on every spawn) and that path is the memo's
+ * whole reason to exist. A caller that INJECTS an `exists` (every
+ * Probes-driven caller, e.g. `lib/deps/resolve.ts`'s `appBundlePath(p)` →
+ * `appBundleRoot(p.exists)`) bypasses the memo entirely, both read and write:
+ * those callers exist specifically so tests (and `rt deps`) can point
+ * resolution at a fake bundle without touching real disk, and a shared
+ * process-wide cache keyed by the FIRST such call would let one test's fake
+ * bundle pin every later `appBundlePath(p)` call in the same process, real
+ * callers included. Reset the default-path memo via
+ * __test__.resetBundleLayoutMemo() (still needed between tests that call the
+ * zero-arg form).
  */
 export function appBundleRoot(exists: (p: string) => boolean = existsSync): string | null {
   const usingDefaultExists = exists === existsSync;

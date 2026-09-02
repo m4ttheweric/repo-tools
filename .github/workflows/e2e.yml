@@ -18,7 +18,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install fzf
           bun install
 
       - name: Cache Cargo

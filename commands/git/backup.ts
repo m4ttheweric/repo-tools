@@ -65,9 +65,8 @@ export async function restoreCommand(
     return;
   }
 
-  const { filterableSelect, confirm: inkConfirm } = await import(
-    "../../lib/rt-render.ts"
-  );
+  const { filterableSelect } = await import("../../lib/pick-wrappers.ts");
+  const { confirm: inkConfirm } = await import("../../lib/rt-render.ts");
 
   const selected = await filterableSelect({
     message: "Select a backup to restore",

@@ -72,7 +72,7 @@ export async function installExtension(): Promise<void> {
   }
 
   // 3. Show fuzzy picker for editor selection
-  const { filterableMultiselect } = await import("../lib/rt-render.ts");
+  const { filterableMultiselect } = await import("../lib/pick-wrappers.ts");
 
   const selected = await filterableMultiselect({
     message: "Select editors to install RT Context into",

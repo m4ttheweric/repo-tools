@@ -1,0 +1,47 @@
+<!doctype html>
+<script src="./support.js"></script>
+<style>
+:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--pink:#FF6B9D;--pinks:#FF9EC0;--mint:#62E6A8;--peach:#FFB77A;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#A8A0C6;--dimmer:#8B84A8;--faint:#6E668C}
+html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px;color:var(--text);padding:26px}
+.term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45);margin-bottom:26px}
+.ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
+.selrow{flex:1;display:flex;background:var(--sel)}
+.t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
+.p{color:var(--pink)}.ps{color:var(--pinks)}.m{color:var(--mint)}.pe{color:var(--peach)}.cy{color:var(--cyan)}.lv{color:var(--lav)}
+.b{font-weight:700}
+.rule{border-top:1px solid var(--rule);margin:7px 0 5px}
+.lbl{display:inline-block;min-width:16ch}
+.badge{background:var(--lav);color:var(--bg);border-radius:4px;padding:0 6px;font-weight:700}
+.kbheld{background:var(--bgs)}
+h1{font:600 16px/1.3 system-ui;color:var(--text);margin:0 0 3px}
+p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:80ch;white-space:normal}
+h2{font:600 12px/1.4 system-ui;color:var(--lav);margin:18px 0 8px;text-transform:uppercase;letter-spacing:.08em}
+</style>
+<title>Modifier-held states</title>
+<h1>Modifier-reactive chrome (Kitty keyboard protocol)</h1>
+<p class="note">Ghostty reports bare modifier press/release; bubbletea v2.0.9 (our exact dep) surfaces them. While a modifier is physically held, the chrome answers. On terminals without the protocol the picker is exactly the static design — no feature gap, just no anticipation.</p>
+
+<h2>⌥ held — arg-pick preview</h2>
+<div class="term" style="width:92ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">worktree</span><span class="sp"></span><span class="lv b">⌥ with args</span><span class="f">  ·  9/9</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">▌</span><span class="selrow"><span> </span><span class="t b lbl">provision</span><span class="d">Claim a worktree for a ticket or branch (from the on-deck pool)</span><span class="sp"></span><span class="badge">enter → pick args</span><span> </span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="s lbl">create</span><span class="dr">Create a fresh worktree (has args)</span></div>
+  <div class="ln"><span> </span><span> </span><span class="dr lbl" style="opacity:.45">list</span><span class="dr" style="opacity:.45">List worktrees (no args — dims while ⌥ held)</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">do</span><span class="f"> enter</span><span class="d"> select</span><span class="f">  ⌥enter</span><span class="d"> with args</span><span class="f">  ⌃r</span><span class="d"> refresh</span><span class="sp"></span><span class="f">esc</span><span class="d"> quit</span></div>
+</div>
+
+<h2>⌃ held — live key map</h2>
+<div class="term" style="width:92ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">worktree</span><span class="sp"></span><span class="cy b">⌃ keys</span><span class="f">  ·  9/9</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="t b lbl">provision</span><span class="d">Claim a worktree for a ticket or branch (from the on-deck pool)</span><span class="sp"></span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="s lbl">create</span><span class="dr">Create a fresh worktree</span></div>
+  <div class="ln"><span> </span><span> </span><span class="s lbl">dispose</span><span class="dr">Dispose a worktree</span></div>
+  <div class="rule"></div>
+  <div class="ln kbheld" style="padding-top:3px"><span class="lv">nav</span><span class="f"> ⌃u</span><span class="d"> back</span><span class="f">  ⌃j/⌃k</span><span class="d"> move</span><span class="sp"></span><span class="cy">held: showing all keys</span></div>
+  <div class="ln kbheld" style="padding-bottom:3px"><span class="lv">do</span><span class="f"> enter</span><span class="d"> select</span><span class="f">  ⌥enter</span><span class="d"> with args</span><span class="f">  ⌃r</span><span class="d"> refresh</span><span class="sp"></span><span class="f">esc</span><span class="d"> quit</span></div>
+</div>

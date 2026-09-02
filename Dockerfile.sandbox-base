@@ -9,7 +9,7 @@
 #   docker buildx build --platform linux/amd64 -f Dockerfile.sandbox-base \
 #     -t <registry>/repo-tools-sandbox-base:<tag> --push .
 # Verify the bake before pushing a lane at it:
-#   docker run --rm <image> zsh -c 'fzf --version && termwright --version \
+#   docker run --rm <image> zsh -c 'termwright --version \
 #     && git -C /app remote get-url origin && git -C /app config core.sshCommand'
 
 # termwright builder: Debian's cargo (1.85) is too old for the crate, so a
@@ -31,15 +31,6 @@ RUN apt-get update \
   # zsh/file/lsof/procps: lane basics the first cloud lane had to self-provision
   && apt-get install -y --no-install-recommends nodejs python3 make g++ zsh file lsof procps \
   && rm -rf /var/lib/apt/lists/*
-# fzf from the pinned release binary: Debian ships 0.60, which rejects rt's
-# --expect=ctrl-up (needs >= 0.74).
-ARG FZF_VERSION=0.74.2
-ARG FZF_SHA256=b3648f48675612b69ee35371cf6dc99ca96d767e89b912d079080916ac8ba8bd
-RUN curl -fsSL -o /tmp/fzf.tar.gz \
-    "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz" \
-  && echo "${FZF_SHA256}  /tmp/fzf.tar.gz" | sha256sum -c - \
-  && tar -xzf /tmp/fzf.tar.gz -C /usr/local/bin fzf \
-  && rm /tmp/fzf.tar.gz
 COPY --from=termwright-build /root/.cargo/bin/termwright /usr/local/bin/termwright
 ENV HOME=/root
 WORKDIR /app

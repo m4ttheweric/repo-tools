@@ -212,11 +212,16 @@ const endpointSubcommands: Record<string, CommandNode> = {
 
 // Shared so `rt commit` and `rt git commit` are one node (enrich once, render once).
 const commitNode: CommandNode = {
-  description: "Interactive staged/unstaged commit picker with live diff preview",
+  description: "Interactive staged/unstaged commit picker",
   module: "./commands/commit.ts",
   fn: "commitFlow",
   context: "worktree",
   requiresTTY: true,
+  // The picker renders an inline frame, not an alt-screen, so it owns the top
+  // region of the terminal; a dispatcher header printed above it would get
+  // orphaned by the frame's own repaints. The picker renders its own
+  // in-card breadcrumb instead.
+  fullscreen: true,
   args: [],
 };
 
@@ -441,7 +446,7 @@ export const TREE: Record<string, CommandNode> = {
     omitBehavior: "picker",
     context: "worktree",
     requiresTTY: true,
-    // Every stage (fzf pickers, the launched board) owns the alt-screen, so the
+    // Every stage (pickers, the launched board) owns the alt-screen, so the
     // dispatcher header would only leak into the normal buffer behind them.
     fullscreen: true,
     args: [
@@ -577,11 +582,11 @@ export const TREE: Record<string, CommandNode> = {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
     fn: "worktreePicker",
-    // The hidden --emit-rows reload path (commands/cd.ts) is deliberately
-    // non-interactive, so it must clear the TTY gate on a plain pipe even
-    // without RT_BATCH set. It is not declared in `args` below, so it never
-    // shows up in help or a picker.
-    requiresTTY: (args) => !args.includes("--emit-rows"),
+    // Same inline-frame constraint as commitNode above: the picker owns the
+    // top region and draws its own in-card breadcrumb, so the dispatcher
+    // header is suppressed here.
+    fullscreen: true,
+    requiresTTY: true,
     args: [
       { name: "Repo picker", flag: "--repo", type: "boolean", default: false, hint: "Always show the repo picker instead of the current repo's worktree list" },
       { name: "Package picker", flag: "--package", type: "boolean", default: false, hint: "Opt into the monorepo package picker, one level deeper than the worktree root (alias --packages)" },
@@ -600,11 +605,14 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   nav: {
-    description: "Navigate filesystem with fzf; persistent picker, esc to quit",
+    description: "Navigate filesystem; persistent picker, esc to quit",
     module: "./commands/nav.ts",
     fn: "navigate",
     omitBehavior: "picker",
     requiresTTY: true,
+    // Same inline-frame constraint as commitNode above: the picker owns the
+    // top region, so suppress the dispatcher header.
+    fullscreen: true,
     args: [
       { name: "Path", type: "text", placeholder: ".", hint: "Starting directory; defaults to the current directory" },
     ],
@@ -682,6 +690,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeDispose",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to dispose; omit to pick interactively" },
           { name: "Owner", flag: "--owner", type: "text", placeholder: "matt", hint: "Dispose every tree owned by this owner (can span repos)" },
@@ -695,6 +704,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeRestore",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Tree", type: "text", optional: true, placeholder: "my-tree", hint: "Disposed tree name to restore; omit to pick interactively" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
@@ -707,6 +717,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeReadyApprove",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Repo", type: "text", optional: true, placeholder: "repo-tools", hint: "Repo whose team `ready` ladder to approve; omit to pick interactively" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
@@ -726,6 +737,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeFreshen",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to freshen; omit to pick interactively (or run for every repo, headless)" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Narrow to this registered repo" },
@@ -737,6 +749,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeAwaitReady",
         omitBehavior: "picker",
+        fullscreen: true,
         args: [
           { name: "Tree", type: "text", placeholder: "my-tree", hint: "Claimed tree to wait on; omit to pick interactively" },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
@@ -1429,12 +1442,15 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
       surface: {
-        description: "List, set, or apply the pack's public/internal skill surface (bare invocation opens an fzf multi-toggle palette)",
+        description: "List, set, or apply the pack's public/internal skill surface (bare invocation opens a multi-toggle palette)",
         module: "./commands/skills.ts",
         fn: "skillsSurface",
         omitBehavior: "picker",
+        // Same inline-frame constraint as commitNode above: the palette owns
+        // the top region, so suppress the dispatcher header.
+        fullscreen: true,
         args: [
-          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name>... --public|--internal | apply; omit for the fzf palette" },
+          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name>... --public|--internal | apply; omit for the palette" },
           { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
           SETUP_JSON_ARG,

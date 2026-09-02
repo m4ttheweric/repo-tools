@@ -8,7 +8,7 @@ import {
 
 // The picker convention's leaf half: any command that requires a positional
 // argument must, when that argument is omitted in a TTY, offer an interactive
-// affordance (an fzf/ink picker, a list, or a prompt) rather than error — or
+// affordance (a picker, a list, or a prompt) rather than error — or
 // declare, in the open, why it cannot. The dispatcher enforces the *subcommand*
 // picker for branch nodes structurally; this gate enforces the *argument*
 // picker, which lives in each handler and so can only be enforced by making the

@@ -3,9 +3,9 @@ import { readFileSync, readdirSync } from "fs";
 import { resolve, relative } from "path";
 
 // The rt TS CLI (commands/, lib/, cli.ts, scripts/) is pure orchestration:
-// all UI rendering lives in the Go rt-ui helper and external binaries (fzf).
-// packages/ (e.g. settings-kit, a react UI kit for the web console) is a
-// separate concern and is not scanned.
+// all UI rendering lives in the Go rt-ui helper. packages/ (e.g. settings-kit,
+// a react UI kit for the web console) is a separate concern and is not
+// scanned.
 const ROOT = resolve(import.meta.dir, "..", "..");
 const SCAN_ROOTS = ["commands", "lib", "cli.ts", "scripts"];
 const SELF = resolve(import.meta.dir, "no-ui-in-cli.test.ts");

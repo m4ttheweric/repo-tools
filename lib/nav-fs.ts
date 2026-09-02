@@ -1,5 +1,5 @@
 /**
- * Filesystem listing + preview helpers for rt nav.
+ * Filesystem listing + live-refresh helpers for rt nav.
  *
  * Pure helpers live here (not in commands/nav.ts) so `bun test lib`
  * covers them. commands/nav.ts owns the interactive loop.
@@ -7,21 +7,10 @@
 
 import { readdirSync, statSync } from "fs";
 import { join } from "path";
-import { spawnSync } from "child_process";
 
 export interface DirListing {
   folders: string[];
   files: string[];
-}
-
-export interface DeepListOpts {
-  showHidden: boolean;
-  /** Total entry cap (folders + files combined), enforced on both the fd path and the fallback walk. Default 5000. */
-  maxResults?: number;
-  /** Fallback-walk depth cap. Default 8. (fd path is capped by maxResults only.) */
-  maxDepth?: number;
-  /** Ordering within the folder group and the file group. Defaults to name, ascending. */
-  sort?: SortState;
 }
 
 export const cmp = (a: string, b: string) =>
@@ -113,9 +102,6 @@ export function sortEntries(entries: EntryMeta[], sort: SortState): string[] {
     .map((e) => e.name);
 }
 
-/** Directories the fallback walk never descends into, regardless of showHidden. */
-const WALK_SKIP_DIRS = new Set([".git", "node_modules"]);
-
 /**
  * List one directory level. Dotfiles are excluded unless showHidden.
  *
@@ -143,7 +129,7 @@ export function listEntries(
     try {
       st = statSync(join(dir, name));
     } catch {
-      continue; // broken symlink etc. — skip (matches prior nav behavior)
+      continue; // broken symlink etc: skip (matches prior nav behavior)
     }
     const meta: EntryMeta = {
       name,
@@ -156,247 +142,100 @@ export function listEntries(
   return { folders: sortEntries(folders, sort), files: sortEntries(files, sort) };
 }
 
-/**
- * Order relative paths from a deep listing.
- *
- * Name sorting needs no stats. The others stat every entry, which measures
- * about 15ms for the 5000-entry cap on APFS, so deep mode gets the full set of
- * sorts rather than an artificial name-only restriction.
- */
-function sortRelPaths(root: string, rels: string[], sort: SortState): string[] {
-  if (sort.key === "name") {
-    const out = [...rels].sort(cmp);
-    return sort.reverse ? out.reverse() : out;
-  }
-  const metas: EntryMeta[] = rels.map((name) => {
-    try {
-      const st = statSync(join(root, name));
-      return { name, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs, size: st.size };
-    } catch {
-      // Vanished between listing and stat: keep it, sorted as if empty/epoch.
-      return { name, mtimeMs: 0, birthtimeMs: 0, size: 0 };
-    }
-  });
-  return sortEntries(metas, sort);
-}
-
-/**
- * Recursively list everything under dir as relative paths.
- * Uses fd when available (honors .gitignore); otherwise a depth-capped
- * readdir walk that skips .git but does NOT parse .gitignore.
- */
-export function deepList(
-  dir: string,
-  opts: DeepListOpts,
-  resolveFd: () => string | null = () => Bun.which("fd"),
-): DirListing {
-  const maxResults = opts.maxResults ?? 5000;
-  const sort = opts.sort ?? DEFAULT_SORT;
-  const fd = resolveFd();
-  if (fd) {
-    const common = [
-      "--color=never",
-      `--max-results=${maxResults}`,
-      ...(opts.showHidden ? ["--hidden", "--exclude=.git"] : []),
-    ];
-    const run = (type: string): string[] => {
-      const r = spawnSync(fd, ["--type", type, ...common], {
-        cwd: dir,
-        encoding: "utf8",
-      });
-      if (r.status !== 0 || !r.stdout) return [];
-      return r.stdout
-        .split("\n")
-        .filter(Boolean)
-        .map((s) => s.replace(/\/$/, ""));
-    };
-    // Sort before capping, matching the previous behavior for the default sort.
-    const folders = sortRelPaths(dir, run("d"), sort).slice(0, maxResults);
-    const files = sortRelPaths(dir, run("f"), sort).slice(
-      0,
-      Math.max(0, maxResults - folders.length),
-    );
-    return { folders, files };
-  }
-  const walked = walkFallback(dir, opts.showHidden, opts.maxDepth ?? 8, maxResults);
-  return {
-    folders: sortRelPaths(dir, walked.folders, sort),
-    files: sortRelPaths(dir, walked.files, sort),
-  };
-}
-
-function walkFallback(
-  root: string,
-  showHidden: boolean,
-  maxDepth: number,
-  maxResults: number,
-): DirListing {
-  const folders: string[] = [];
-  const files: string[] = [];
-  const full = () => folders.length + files.length >= maxResults;
-
-  const walk = (rel: string, depth: number) => {
-    if (depth > maxDepth || full()) return;
-    let entries: string[];
-    try {
-      entries = readdirSync(join(root, rel));
-    } catch {
-      return;
-    }
-    entries.sort(cmp);
-    for (const name of entries) {
-      if (full()) return;
-      if (WALK_SKIP_DIRS.has(name)) continue;
-      if (!showHidden && name.startsWith(".")) continue;
-      const relPath = rel ? `${rel}/${name}` : name;
-      let isDir: boolean;
-      try {
-        isDir = statSync(join(root, relPath)).isDirectory();
-      } catch {
-        continue;
-      }
-      if (isDir) {
-        folders.push(relPath);
-        walk(relPath, depth + 1);
-      } else {
-        files.push(relPath);
-      }
-    }
-  };
-
-  walk("", 1);
-  return { folders, files };
-}
-
-/** POSIX single-quote escaping: ' -> '\'' wrapped in single quotes. */
+/** POSIX single-quote escaping: ' -> '\'' wrapped in single quotes. Still used by lib/nav-watch.ts. */
 export function shellQuote(s: string): string {
   return "'" + s.replaceAll("'", "'\\''") + "'";
 }
 
-/**
- * Build a shell snippet that lays out help hints column-major into as many
- * columns as fit the available width, reading $FZF_COLUMNS at run time.
- *
- * This is the single layout implementation: nav runs it once (with
- * FZF_COLUMNS faked to the current terminal width) for the initial header,
- * and binds it to fzf's resize event via transform-header so the layout
- * recomputes when the terminal size changes mid-session.
- *
- * With the preview pane open the header only has the left half of the
- * terminal; fzf truncates (not wraps) header lines that overflow.
- */
-export function buildHelpHeaderCommand(hints: string[], previewOn: boolean): string {
-  const quoted = hints.map(shellQuote).join(" ");
-  const cols = "${FZF_COLUMNS:-$(tput cols)}";
-  const width = previewOn ? `$(( ${cols} / 2 - 4 ))` : `$(( ${cols} - 4 ))`;
-  return (
-    `printf '%s\\n' ${quoted} | awk -v w=${width} '` +
-    `{ h[NR] = $0; if (length($0) > m) m = length($0) } ` +
-    `END { n = NR; nc = int(w / (m + 3)); if (nc < 1) nc = 1; if (nc > n) nc = n; ` +
-    `cw = int(w / nc); rows = int((n + nc - 1) / nc); ` +
-    `for (r = 1; r <= rows; r++) { line = ""; ` +
-    `for (c = 0; c < nc; c++) { i = c * rows + r; ` +
-    `if (i <= n) { s = h[i]; while (length(s) < cw) s = s " "; line = line s } } ` +
-    `sub(/ +$/, "", line); print line } }'`
-  );
+// ─── Live refresh ───────────────────────────────────────────────────────────
+
+export interface DirWatchDeps {
+  /** Registers `listener` against `dir`, returning a handle to unregister it. */
+  watch: (dir: string, listener: () => void) => { close(): void };
 }
 
-/** Run a buildHelpHeaderCommand snippet outside fzf, faking FZF_COLUMNS. */
-export function renderHelpHeader(command: string, cols: number): string {
-  const r = spawnSync("sh", ["-c", command], {
-    encoding: "utf8",
-    env: { ...process.env, FZF_COLUMNS: String(cols) },
-  });
-  return (r.stdout ?? "").trimEnd();
+export interface DirWatchOpts {
+  /** Directory to watch, non-recursively. */
+  dir: string;
+  /** Fires (after debouncing) when the directory changed. */
+  onChange: () => void;
+  debounceMs?: number;
+  onError?: (err: unknown) => void;
+  deps?: Partial<DirWatchDeps>;
 }
 
-/** Extensions routed to the image branch, as POSIX `case` classes (no subprocess). */
-const IMAGE_CASE_PATTERNS = [
-  "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif",
-  "heic", "avif", "ico", "svg", "jxl", "qoi",
-]
-  .map((ext) =>
-    "*." +
-    [...ext].map((c) => `[${c.toLowerCase()}${c.toUpperCase()}]`).join(""),
-  )
-  .join("|");
+const POLL_INTERVAL_MS = 250;
 
 /**
- * Shell fragment that renders "$p" as an image, sized to the preview pane.
- *
- * Renderer priority mirrors fzf's own bin/fzf-preview.sh: kitten icat, then
- * chafa, then imgcat, then `file` so an uninstalled machine still prints
- * something readable instead of binary noise.
- *
- * chafa runs with `--probe off` unconditionally: left to itself it probes
- * the controlling tty for protocol support, and inside a preview pane
- * that tty belongs to fzf in raw mode, so the query races fzf's input reader.
- * Probing costs nothing measurable, so there is no reason to allow it.
- *
- * chafa is also pinned to `-f symbols` rather than a graphics protocol. It has
- * no unicode-placeholder support, so anything it draws lands at the cursor and
- * fzf's next redraw erases it: verified as a silently blank preview pane under
- * Ghostty. Character art is the highest fidelity chafa can produce that fzf is
- * able to keep on screen. Install kitty's `kitten` for real pixels; the branch
- * above prefers it whenever it is present.
- *
- * `fmt` no longer picks a chafa format. It only records which real-image
- * renderer this terminal can use: kitty-protocol terminals get kitten, iTerm2
- * gets imgcat, and everything else falls through to chafa's character art.
+ * Polls the directory's mtime instead of subscribing to fs.watch. On Darwin
+ * 25 (macOS 26), directory-level fs.watch is backed by FSEvents, and FSEvents
+ * was confirmed to deliver zero add/remove notifications on this OS build.
+ * lib/nav-watch.ts hit the same wall (see its own defaultWatch for the full
+ * account). A directory's mtime changes whenever an
+ * entry is added, removed, or renamed, so polling it is a reliable substitute.
+ * Do not "optimize" this back to fs.watch(dir, ...) without first confirming
+ * FSEvents actually delivers directory events on the target OS.
  */
-export function buildImagePreviewSnippet(): string {
-  // Shell ${...} expansions are escaped as \${...} so TS does not interpolate
-  // them, matching the style already used in buildPreviewCommand.
-  return (
-    `d="\${FZF_PREVIEW_COLUMNS:-80}x\${FZF_PREVIEW_LINES:-24}"; ` +
-    `fmt=""; ` +
-    `case "\${TERM_PROGRAM:-}" in ` +
-    `ghostty|kitty|WezTerm) fmt=kitty;; ` +
-    `iTerm.app) fmt=iterm;; ` +
-    `esac; ` +
-    `[ -n "\${KITTY_WINDOW_ID:-}" ] && fmt=kitty; ` +
-    `[ "\${TERM:-}" = "xterm-kitty" ] && fmt=kitty; ` +
-    // Shared last resort, defined once and used from every failed branch.
-    `_rtfall() { if command -v chafa >/dev/null 2>&1; then ` +
-    `chafa --probe off -f symbols -s "$d" "$p"; echo; else file "$p"; fi; }; ` +
-    `if [ "$fmt" = kitty ] && command -v kitten >/dev/null 2>&1; then ` +
-    // kitten writes to a file first so its success can actually be judged.
-    // Piping straight into sed hides both the exit status and the failure
-    // text: kitten asks the terminal for its pixel dimensions, and inside a
-    // preview pane that query can go unanswered ("Terminal does not support
-    // reporting screen sizes"), which then renders as an error where the
-    // image should be. Empty or failed output falls through to character art.
-    `t="\${TMPDIR:-/tmp}/rt-nav-icat.$$"; ` +
-    `if kitten icat --clear --transfer-mode=memory --unicode-placeholder ` +
-    `--stdin=no --place="$d@0x0" "$p" >"$t" 2>/dev/null && [ -s "$t" ]; then ` +
-    // kitten's last line is a bare reset with no newline, which makes fzf draw
-    // a spurious scroll indicator. Drop it and re-attach the reset above.
-    // A literal ESC byte, not bash-only $'\e': fzf runs previews with $SHELL -c.
-    `sed '$d' "$t" | sed '$s/$/\x1b[m/'; else _rtfall; fi; rm -f "$t"; ` +
-    `elif [ "$fmt" = iterm ] && command -v imgcat >/dev/null 2>&1; then ` +
-    `imgcat -W "\${d%%x*}" -H "\${d##*x}" "$p"; ` +
-    `else _rtfall; fi`
-  );
-}
+const defaultWatch: DirWatchDeps["watch"] = (dir, listener) => {
+  const mtime = () => {
+    try {
+      return statSync(dir).mtimeMs;
+    } catch {
+      // Directory gone; report as a distinct value so its disappearance
+      // fires the listener once, then compares equal thereafter.
+      return -1;
+    }
+  };
+  let last = mtime();
+  const timer = setInterval(() => {
+    const curr = mtime();
+    if (curr !== last) {
+      last = curr;
+      listener();
+    }
+  }, POLL_INTERVAL_MS);
+  timer.unref();
+  return { close: () => clearInterval(timer) };
+};
 
 /**
- * Build the fzf --preview shell snippet for a nav picker rooted at baseDir.
- *
- * fzf substitutes {1} with the (already shell-quoted) value column, e.g.
- * 'd:src' or 'f:sub/readme.md'. The snippet strips the 2-char kind prefix
- * and joins with baseDir. eza/bat are soft deps; ls/cat are the fallbacks.
+ * Debounced directory-change notifier for a live nav session: a burst of
+ * filesystem events collapses into one `onChange` call, `debounceMs` after
+ * the last one arrives. The caller re-lists and pushes a `handle.update`
+ * from `onChange`; this module has no idea what a "row" is.
  */
-export function buildPreviewCommand(baseDir: string): string {
-  const base = shellQuote(baseDir);
-  return (
-    `v={1}; p=${base}"/\${v#??}"; ` +
-    `case "$v" in ` +
-    // One entry per line: long-format lines overflow the 50% pane and fzf
-    // truncates (not wraps), which chops off the filenames themselves.
-    `d:*) eza -a1 --color=always "$p" 2>/dev/null || ls -1AF "$p";; ` +
-    // Ordered after d:* so a directory named foo.png still lists as a directory.
-    `${IMAGE_CASE_PATTERNS}) ${buildImagePreviewSnippet()};; ` +
-    `*) bat --color=always --style=numbers "$p" 2>/dev/null || head -c 65536 "$p";; ` +
-    `esac`
-  );
+export function startDirWatch(opts: DirWatchOpts): { stop(): void } {
+  const watch = opts.deps?.watch ?? defaultWatch;
+  const debounceMs = opts.debounceMs ?? 150;
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  let watcher: { close(): void } | null = null;
+
+  try {
+    watcher = watch(opts.dir, () => {
+      if (stopped) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!stopped) opts.onChange();
+      }, debounceMs);
+    });
+  } catch (err) {
+    // Unsupported filesystem or missing permissions: nav just won't
+    // live-refresh this directory.
+    opts.onError?.(err);
+  }
+
+  return {
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      try {
+        watcher?.close();
+      } catch {
+        // Already closed.
+      }
+    },
+  };
 }

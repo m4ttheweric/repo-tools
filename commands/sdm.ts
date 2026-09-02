@@ -228,7 +228,12 @@ StrongDM CLI install:  ${dim}${SDM_INSTALL_URL}${reset}`);
   );
   const { runNavPicker } = await import("../lib/navigate.ts");
   const options = buildPickerOptions(connections, recents, connected);
-  const picked = await runNavPicker({ options, message: "sdm connections   ● connected   ✓ standing access" });
+  const picked = await runNavPicker({
+    options,
+    message: "sdm connections",
+    breadcrumb: ["rt", "sdm", "connections"],
+    crumbSuffix: "  ● connected   ✓ standing access",
+  });
   if (!picked || !picked.value) return;
 
   const target =

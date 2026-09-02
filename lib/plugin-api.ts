@@ -88,7 +88,7 @@ export function makeApi(pluginName: string): RtApi {
   const dataDir = join(rtDir(), "plugin-data", pluginName);
   return {
     async pick(items, opts) {
-      const { filterableSelect } = await import("./rt-render.ts");
+      const { filterableSelect } = await import("./pick-wrappers.ts");
       const options = items.map((i) =>
         typeof i === "string"
           ? { value: i, label: i }

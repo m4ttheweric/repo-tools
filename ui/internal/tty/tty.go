@@ -17,16 +17,26 @@ const (
 	WriteOnly
 )
 
-func Open(mode Mode) (*os.File, error) {
+// Open returns the tty handle and a close func that restores whatever
+// device-level termios state Open itself changed before closing the fd --
+// call it (via defer) instead of f.Close directly.
+func Open(mode Mode) (*os.File, func(), error) {
 	flag := os.O_RDWR
 	if mode == WriteOnly {
 		flag = os.O_WRONLY
 	}
 	f, err := os.OpenFile("/dev/tty", flag, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open /dev/tty: %w", err)
+		return nil, nil, fmt.Errorf("open /dev/tty: %w", err)
 	}
-	return f, nil
+	restore := expandTabs(int(f.Fd()))
+	closeFn := func() {
+		if restore != nil {
+			restore()
+		}
+		_ = f.Close()
+	}
+	return f, closeFn, nil
 }
 
 // WatchStdinEOF calls onEOF once when the parent closes our stdin. The parent

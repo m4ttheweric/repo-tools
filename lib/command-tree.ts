@@ -4,7 +4,7 @@
  * Every command registers as a node in a tree. The dispatcher handles:
  *  - Screen clearing between steps
  *  - Breadcrumb headers (rt › daemon › status)
- *  - fzf pickers for subcommand navigation
+ *  - Pickers for subcommand navigation
  *  - Context resolution (repo/worktree identity)
  *  - TTY guards
  *  - Lazy module loading for fast startup
@@ -16,13 +16,11 @@
  */
 
 import { bold, cyan, dim, reset, yellow } from "./tui.ts";
-import { fzfHeightArgs } from "./fzf-select.ts";
-import { spawnSync } from "child_process";
 import { resolve, join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { beginCommand, logCommand } from "./cli-logger.ts";
-import { toHex, toAnsiFg, T } from "./tui/palette.ts";
+import type { PickAction, PickRow } from "./ui/protocol.ts";
 
 // Dev mode is active when ~/.local/bin/rt exists (the wrapper script pointing
 // at local source). Same detection used by commands/version.ts.
@@ -129,7 +127,7 @@ export interface CommandNode {
    * "omit args → interactive affordance" convention made explicit and
    * checkable, since the behavior lives in the handler, not the dispatcher.
    *
-   *  - "picker" → an fzf/ink picker over a listable set (the default shape)
+   *  - "picker" → a picker over a listable set (the default shape)
    *  - "list"   → prints the set; the no-arg call is itself a useful read
    *  - "prompt" → a free-text / no-echo interactive prompt for the value
    *  - { exempt } → deliberately errors instead; the reason is documented here
@@ -148,7 +146,7 @@ export type OmitBehavior = "picker" | "list" | "prompt" | { exempt: string };
  * Navigate the command tree and execute the resolved handler.
  *
  * - Direct args: `rt daemon status` → resolve daemon → resolve status → execute
- * - No args at branch: show fzf picker
+ * - No args at branch: show picker
  * - Leaf node: clear screen, show breadcrumb, execute handler
  */
 export async function dispatch(
@@ -577,85 +575,59 @@ function nodeAtPath(root: Record<string, CommandNode>, path: string[]): CommandN
 }
 
 /** Sentinel: the user pressed ctrl-up at a subtree picker. */
-const BACK: unique symbol = Symbol("back");
+export const BACK: unique symbol = Symbol("back");
 
 interface PickerSelection {
   command: string;
   withArgs: boolean;
 }
 
-async function showPicker(
+export async function showPicker(
   tree: Record<string, CommandNode>,
   breadcrumb: string[],
 ): Promise<PickerSelection | typeof BACK | null> {
-  const { ensureFzf } = await import("./fzf.ts");
-  const fzf = ensureFzf();
+  const { runPick } = await import("./ui/pick.ts");
 
   const visible = Object.entries(tree).filter(([_, n]) => isNodeVisible(n, IS_DEV_MODE));
   const anyHasArgs = visible.some(([_, n]) => n.args?.length);
-
   const labelWidth = Math.max(...visible.map(([name]) => name.length));
-  const input = visible
-    .map(([name, node]) => {
-      const pad = " ".repeat(labelWidth - name.length);
-      return `${name}\t\x1b[1m${name}\x1b[22m${pad}\t  \x1b[2m${node.description}\x1b[22m`;
-    })
-    .join("\n");
 
-  const headerParts = ["enter: select", "|: OR", "!: exclude"];
-  if (breadcrumb.length > 1) headerParts.push("ctrl-up: back");
-  if (anyHasArgs) headerParts.push("alt-enter: with args");
+  const rows: PickRow[] = visible.map(([name, node]) => ({
+    value: name,
+    left: [
+      { text: name.padEnd(labelWidth), bold: true },
+      { text: `  ${node.description}`, tone: "dim" },
+    ],
+    ...(node.args?.length ? { withArgs: true } : {}),
+  }));
 
-  const expectKeys = ["ctrl-up"];
-  if (anyHasArgs) expectKeys.push("alt-enter");
+  const actions: PickAction[] = [
+    { id: "select", label: "select", key: "enter", scope: "item", group: "pick", primary: true },
+  ];
+  if (anyHasArgs) {
+    actions.push({ id: "with-args", label: "with args", key: "alt-enter", scope: "item", group: "pick" });
+  }
+  // ctrl-up is always bound: at the root it has nowhere to go back to, so it
+  // cancels (same as Esc) rather than going silently unbound. footerHidden at
+  // the root keeps it dispatchable but out of the keybar legend, so no bare
+  // "ctrl-up" advertises a back that only cancels; depth>1 keeps the visible
+  // "back" label.
+  const atRoot = breadcrumb.length <= 1;
+  actions.push({ id: "back", label: "back", key: "ctrl-up", scope: "global", ...(atRoot ? { footerHidden: true } : {}) });
 
-  const result = spawnSync(fzf, [
-    "--ansi",
-    "--with-nth=2..",
-    "--nth=1",
-    "--delimiter=\t",
-    "--tabstop=1",
-    "--layout=reverse",
-    ...fzfHeightArgs(),
-    "--border=left",
-    "--no-separator",
-    "--prompt=  filter: ",
-    `--header=${toAnsiFg(T.pink)}${breadcrumb.join(" › ")}\x1b[0m`,
-    "--header-first",
-    "--info=inline-right",
-    `--footer=${headerParts.join("  ")}`,
-    "--no-mouse",
-    "--print-query",
-    `--expect=${expectKeys.join(",")}`,
-    `--color=border:${toHex(T.pink)}`,
-  ], {
-    input,
-    stdio: ["pipe", "pipe", "inherit"],
-    encoding: "utf8",
+  const handle = runPick({
+    message: breadcrumb.join(" "),
+    breadcrumb,
+    rows,
+    actions,
   });
 
-  // fzf exits 1 ("no match") when an --expect key is pressed while no item is
-  // matched -- the list is still loading from stdin, or the query matches
-  // nothing. The query and key lines are still printed, and back-navigation
-  // doesn't depend on a selection existing, so read the key before consulting
-  // the exit status; otherwise a ctrl-up during list load or on an empty
-  // filter is silently rewritten into a cancel and rt exits instead of going
-  // back. Anything else non-zero (130 = Esc/ctrl-c abort, 2 = error) is a
-  // real cancel.
-  if (result.status !== 0 && result.status !== 1) return null;
+  const result = await handle.result;
 
-  const lines = (result.stdout ?? "").split("\n");
-  const key = lines[1]?.trim() || "";
-  const raw = lines[2]?.trim() ?? "";
-  const value = raw.split("\t")[0] || null;
+  if (result.action === "back") return breadcrumb.length > 1 ? BACK : null;
+  if (result.action === "cancel" || !result.value) return null;
 
-  if (key === "ctrl-up") {
-    return breadcrumb.length > 1 ? BACK : null;
-  }
-
-  if (result.status !== 0 || !value) return null;
-
-  return { command: value, withArgs: key === "alt-enter" };
+  return { command: result.value, withArgs: result.action === "with-args" };
 }
 
 // ─── Resolution ──────────────────────────────────────────────────────────────

@@ -1,0 +1,127 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "title": "Design system",
+      "x": 0,
+      "y": 0,
+      "w": 1000,
+      "h": 1010
+    },
+    {
+      "file": "TallPane.dc.html",
+      "title": "Content-anchored (tall pane)",
+      "x": 1120,
+      "y": 0,
+      "w": 580,
+      "h": 1120
+    },
+    {
+      "file": "Branch.dc.html",
+      "title": "Command palette",
+      "x": 0,
+      "y": 1260,
+      "w": 820,
+      "h": 680
+    },
+    {
+      "file": "Filtering.dc.html",
+      "title": "Filtering states",
+      "x": 940,
+      "y": 1260,
+      "w": 820,
+      "h": 950
+    },
+    {
+      "file": "Cd.dc.html",
+      "title": "rt cd + refresh",
+      "x": 1880,
+      "y": 1260,
+      "w": 760,
+      "h": 500
+    },
+    {
+      "file": "Multi.dc.html",
+      "title": "Multi-select + panel",
+      "x": 1880,
+      "y": 1900,
+      "w": 800,
+      "h": 620
+    },
+    {
+      "file": "RunChain.dc.html",
+      "title": "rt run groups + queue",
+      "x": 0,
+      "y": 2660,
+      "w": 810,
+      "h": 2000
+    },
+    {
+      "file": "Nav.dc.html",
+      "title": "rt nav browse + help",
+      "x": 920,
+      "y": 2660,
+      "w": 790,
+      "h": 1060
+    },
+    {
+      "file": "Commit.dc.html",
+      "title": "rt commit (no preview)",
+      "x": 1830,
+      "y": 2660,
+      "w": 820,
+      "h": 580
+    },
+    {
+      "file": "NavMenus.dc.html",
+      "title": "Modal submenus",
+      "x": 1830,
+      "y": 3380,
+      "w": 800,
+      "h": 1150
+    },
+    {
+      "file": "Modifiers.dc.html",
+      "title": "Modifier-held states",
+      "x": 0,
+      "y": 3920,
+      "w": 820,
+      "h": 900
+    },
+    {
+      "file": "Mouse.dc.html",
+      "title": "Mouse grammar",
+      "x": 940,
+      "y": 3920,
+      "w": 830,
+      "h": 1000
+    },
+    {
+      "file": "Actions.dc.html",
+      "title": "Action registry",
+      "x": 1890,
+      "y": 3920,
+      "w": 840,
+      "h": 1030
+    },
+    {
+      "file": "Scrolling.dc.html",
+      "title": "Height cap & scrolling",
+      "x": 0,
+      "y": 4960,
+      "w": 800,
+      "h": 1000
+    },
+    {
+      "file": "Enrichment.dc.html",
+      "title": "Enriched rows",
+      "x": 920,
+      "y": 4960,
+      "w": 900,
+      "h": 1120
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

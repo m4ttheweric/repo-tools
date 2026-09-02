@@ -96,7 +96,7 @@ itself from a disk image or a Gatekeeper-translocated copy.
 | Background daemon | Caches branch and MR data, scans ports, guards git hooks, snapshots the home repo |
 | `rt-context` extension | VS Code / Cursor: worktree, branch, and linked ticket in the status bar |
 | Shell integration | `~/.local/bin` on `PATH` plus the `rtcd` alias, for zsh, bash, and fish |
-| Bundled helpers | `fzf`, `jq`, `gh`, `glab`, `bun`, `node`, `sops`, `age-keygen`, `cloudflared`, `fast-browser`, and `gitq`, among others, pinned and shipped inside the app rather than installed onto your system |
+| Bundled helpers | `jq`, `gh`, `glab`, `bun`, `node`, `sops`, `age-keygen`, `cloudflared`, `fast-browser`, and `gitq`, among others, pinned and shipped inside the app rather than installed onto your system |
 
 Most helpers stay inside `Contents/Helpers/` and are resolved by absolute path.
 Only the ones meant to be typed (`rt`, `fast-browser`, `gitq`, `deck`) are
@@ -381,7 +381,6 @@ through a fuzzy picker.
 |---|---|
 | macOS on Apple silicon | Required. rt ships an arm64 build only; Intel Macs are not supported |
 | Xcode Command Line Tools | Required. `rt verify` reports a missing installation |
-| `fzf` | Required, and bundled inside the app. A system copy is used if you already have one |
 | `tmux` | Optional. Only `rt runner`'s default backend needs it; `rt runner --herdr` does not |
 | `chafa` | Optional. Renders image previews in `rt nav` as colored character art |
 | `kitten` | Optional. Upgrades `rt nav` previews to true pixels on Kitty-protocol terminals such as Ghostty |
@@ -430,9 +429,8 @@ CI runs all of these on every pull request.
 | `website/` | The rt.cool documentation site |
 | `docs/` | Design and operations documents |
 
-The TypeScript CLI renders no UI itself. Prompts, spinners, and boards go
-through the Go helper; pickers go through `fzf`. That boundary is enforced by a
-test.
+The TypeScript CLI renders no UI itself. Prompts, spinners, boards, and
+pickers all go through the Go helper. That boundary is enforced by a test.
 
 For dev mode, the installer, local compiled builds, the editor extension, the
 menu bar app, and the release pipeline, see

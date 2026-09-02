@@ -1,7 +1,4 @@
-import { spawnSync } from "child_process";
-import { fzfHeightArgs } from "./fzf-select.ts";
 import type { CommandArg } from "./command-tree.ts";
-import { T, toAnsiFg, toHex } from "./tui/palette.ts";
 
 export async function collectArgs(
   label: string,
@@ -9,53 +6,26 @@ export async function collectArgs(
 ): Promise<string[] | null> {
   if (!argDefs.length) return [];
 
-  const { ensureFzf } = await import("./fzf.ts");
-  const fzf = ensureFzf();
+  // label is the command context arg-collector already has (command-tree.ts
+  // builds it as `[...breadcrumb, resolvedName].join(" ")`), so splitting on
+  // " " recovers the same segments for the picker header.
+  const breadcrumb = label.split(" ");
 
   // Step 1: multi-select which args to include
-  const labelWidth = Math.max(...argDefs.map((a) => (a.flag ?? a.name).length));
-  const input = argDefs
-    .map((arg) => {
-      const display = arg.flag ?? arg.name;
-      const pad = " ".repeat(labelWidth - display.length);
-      const hint = arg.hint ? `\x1b[2m${arg.hint}\x1b[22m` : "";
-      return `${arg.name}\t\x1b[1m${display}\x1b[22m${pad}  ${hint}`;
-    })
-    .join("\n");
+  const { filterableMultiselect } = await import("./pick-wrappers.ts");
+  const options = argDefs.map((arg) => ({
+    value: arg.name,
+    label: arg.flag ?? arg.name,
+    hint: arg.hint,
+  }));
 
-  const result = spawnSync(fzf, [
-    "--multi",
-    "--ansi",
-    "--with-nth=2..",
-    "--delimiter=\t",
-    "--layout=reverse",
-    ...fzfHeightArgs(),
-    "--border=left",
-    "--no-separator",
-    "--prompt=  filter: ",
-    `--header=${toAnsiFg(T.pink)}${label} args\x1b[0m`,
-    "--header-first",
-    "--info=inline-right",
-    "--footer=space: toggle  tab: toggle & next  enter: confirm",
-    "--no-mouse",
-    "--bind=space:toggle,tab:toggle+down",
-    `--color=border:${toHex(T.pink)}`,
-  ], {
-    input,
-    stdio: ["pipe", "pipe", "inherit"],
-    encoding: "utf8",
+  const selectedNames = await filterableMultiselect({
+    message: `${label} args`,
+    options,
+    breadcrumb,
   });
 
-  if (result.status !== 0) return null;
-  if (!result.stdout?.trim()) return null;
-
-  const selectedNames = result.stdout
-    .trim()
-    .split("\n")
-    .map((line) => line.split("\t")[0]!)
-    .filter(Boolean);
-
-  if (selectedNames.length === 0) return null;
+  if (!selectedNames || selectedNames.length === 0) return null;
 
   // Step 2: for each selected text/select arg, prompt for value
   const { textInput } = await import("./rt-render.ts");
@@ -71,10 +41,13 @@ export async function collectArgs(
     }
 
     if (arg.type === "select" && arg.options?.length) {
-      const { filterableSelect } = await import("./rt-render.ts");
+      const { filterableSelect } = await import("./pick-wrappers.ts");
       const val = await filterableSelect({
         message: arg.name,
         options: arg.options,
+        // Appends the arg being collected as the final crumb, distinguishing
+        // this sub-stage from the multiselect stage's own breadcrumb.
+        breadcrumb: [...breadcrumb, arg.name],
       });
       if (!val) return null;
       values.set(name, val);

@@ -28,7 +28,7 @@ function fail(msg: string): never {
 }
 
 async function pickTool(message: string, tools: readonly string[]): Promise<string | null> {
-  const { filterableSelect } = await import("../lib/rt-render.ts");
+  const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   return filterableSelect({ message, options: tools.map((name) => ({ value: name, label: name })), stderr: true });
 }
 

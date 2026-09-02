@@ -8,6 +8,7 @@ import {
   discardChanges,
   syncStagingArea,
   commitStaged,
+  numstatCounts,
 } from "../commit-ops.ts";
 
 function git(cwd: string, ...args: string[]): string {
@@ -230,6 +231,53 @@ describe("commitStaged", () => {
   test("throws with git's stderr when there is nothing to commit", () => {
     const dir = makeRepo();
     expect(() => commitStaged(dir, "empty")).toThrow();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("numstatCounts", () => {
+  test("parses adds/dels for a modified tracked file", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "tracked.txt"), "base\nextra\n");
+
+    const counts = numstatCounts(dir);
+
+    expect(counts.get("tracked.txt")).toEqual({ adds: 1, dels: 0 });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("maps a binary file's numstat row (- -) to 0/0", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "bin.dat"), Buffer.from([0, 1, 2, 3]));
+    git(dir, "add", "bin.dat");
+    git(dir, "commit", "-qm", "add binary");
+    writeFileSync(join(dir, "bin.dat"), Buffer.from([4, 5, 6, 7, 8]));
+
+    const counts = numstatCounts(dir);
+
+    expect(counts.get("bin.dat")).toEqual({ adds: 0, dels: 0 });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("does not report untracked files — they never appear in `git diff HEAD`", () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, "loose.txt"), "x\n");
+
+    const counts = numstatCounts(dir);
+
+    expect(counts.has("loose.txt")).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("returns an empty map before the first commit (no HEAD to diff against)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-commit-ops-unborn-numstat-"));
+    git(dir, "init", "-q");
+    git(dir, "config", "user.email", "test@test");
+    git(dir, "config", "user.name", "test");
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    git(dir, "add", "a.txt");
+
+    expect(numstatCounts(dir)).toEqual(new Map());
     rmSync(dir, { recursive: true, force: true });
   });
 });

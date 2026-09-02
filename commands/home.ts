@@ -244,7 +244,7 @@ function parseProfileArg(args: string[]): string | undefined {
   return value;
 }
 
-/** Seam for the interactive machine-profile prompt — real impl below uses the repo's fzf-backed filterableSelect (lib/rt-render.ts); tests inject a fake so no real fzf/TTY is ever touched. */
+/** Seam for the interactive machine-profile prompt: real impl below uses filterableSelect (lib/pick-wrappers.ts); tests inject a fake so no real picker/TTY is ever touched. */
 export interface MachineProfilePickerSeam {
   /** Returns the chosen key, or null when the user backed out (Esc/Ctrl-C). */
   pick(profiles: string[], hostnameSlug: string): Promise<string | null>;
@@ -253,7 +253,7 @@ export interface MachineProfilePickerSeam {
 export function createRealMachineProfilePickerSeam(): MachineProfilePickerSeam {
   return {
     async pick(profiles, hostnameSlug) {
-      const { filterableSelect } = await import("../lib/rt-render.ts");
+      const { filterableSelect } = await import("../lib/pick-wrappers.ts");
       const options = [
         ...profiles.map((p) => ({ value: p, label: p })),
         { value: hostnameSlug, label: `new profile (${hostnameSlug})` },
@@ -1125,7 +1125,7 @@ export async function homeRelease(
   if (!zone) {
     const claimed = process.stdin.isTTY && !process.env.RT_BATCH ? Object.entries(readOwners(ownersPath).zones) : [];
     if (claimed.length > 0) {
-      const { filterableSelect } = await import("../lib/rt-render.ts");
+      const { filterableSelect } = await import("../lib/pick-wrappers.ts");
       zone =
         (await filterableSelect({
           message: "Zone to release",

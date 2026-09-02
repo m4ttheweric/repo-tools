@@ -50,9 +50,9 @@ the *installed* bundle from XCUITest is future L3-side work.
 A few other things worth knowing before running this layer:
 - **Homebrew-only tools no longer block a brew-less guest.** Every tool `rt
   verify` needs now ships inside the bundle under `Contents/Helpers/` per
-  `deps.lock` — fzf, jq, bun, node, gh, glab, gitq, age-keygen, sops, and
+  `deps.lock` — jq, bun, node, gh, glab, gitq, age-keygen, sops, and
   fast-browser — and `check-bundle.sh` asserts each one actually *runs* from
-  inside the signed bundle. `--scenario headless` is no longer gated on fzf.
+  inside the signed bundle. `--scenario headless` is not gated on any of them.
   It has still never been run end to end against a golden image; that is the
   outstanding verification, not a known failure.
 - **`scripts/e2e-cleanroom.sh --allow-existing-install`** is still only safe

@@ -44,3 +44,33 @@ test("worktree restore's Tree arg is marked optional, matching its picker/--list
   expect(treeArg.optional).toBe(true);
   expect(renderUsage(["worktree", "restore"], restore.args)).toContain("rt worktree restore [<tree>] [flags]");
 });
+
+test("picker-hosting leaves suppress the dispatcher header (fullscreen), like run", () => {
+  expect(TREE.run!.fullscreen).toBe(true); // existing reference case
+  expect(TREE.commit!.fullscreen).toBe(true);
+  expect(TREE.nav!.fullscreen).toBe(true);
+  expect(TREE.skills!.subcommands!.surface!.fullscreen).toBe(true);
+  // cd's picker (routed through lib/pickers.ts) carries its own in-card
+  // breadcrumb, so its dispatcher header is suppressed too.
+  expect(TREE.cd!.fullscreen).toBe(true);
+});
+
+test("the five worktree leaves that open a picker suppress the dispatcher header (fullscreen)", () => {
+  const wt = TREE.worktree!.subcommands!;
+  for (const leaf of ["dispose", "restore", "ready-approve", "freshen", "await-ready"]) {
+    expect(wt[leaf]!.fullscreen).toBe(true);
+  }
+  // provision has no interactive picker of its own today -- suppressing its
+  // header would drop it with nothing to carry the context instead.
+  // create/list/adopt/each/hook/claude-hook aren't in scope either -- they
+  // never show a picker or aren't leaf-argument pickers at all.
+  expect(wt.provision!.fullscreen).toBeUndefined();
+  expect(wt.create!.fullscreen).toBeUndefined();
+  expect(wt.list!.fullscreen).toBeUndefined();
+});
+
+test("the bare skills branch node is not flagged fullscreen -- only the surface leaf is", () => {
+  expect(TREE.skills!.fullscreen).toBeUndefined();
+  expect(TREE.skills!.subcommands!.check!.fullscreen).toBeUndefined();
+  expect(TREE.skills!.subcommands!.compile!.fullscreen).toBeUndefined();
+});

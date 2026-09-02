@@ -1,7 +1,7 @@
 /**
  * Raw brand palette — RGB tuples only. No runtime deps.
  *
- * The fzf pickers, the step runner and rt's plain ANSI output import them.
+ * The step runner (lib/ui/steps.ts) imports them for its ANSI output.
  *
  * To re-theme rt: edit this file.
  */

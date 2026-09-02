@@ -1,7 +1,22 @@
 import { test, expect } from "bun:test";
 import { readFileSync, readdirSync } from "fs";
 import { join, resolve } from "path";
-import { PROTOCOL_VERSION, encodeLine, parsePromptResult, parseSessionLine, type PromptSpec, type StepEvent, type BoardModel } from "../protocol.ts";
+import {
+  PROTOCOL_VERSION,
+  encodeLine,
+  parsePromptResult,
+  parseSessionLine,
+  type PromptSpec,
+  type StepEvent,
+  type BoardModel,
+  type PickRequest,
+  type PickAction,
+  type PickUpdate,
+  type PickModal,
+  type PickEvent,
+  type PickModalResult,
+  type PickResult,
+} from "../protocol.ts";
 
 const FIXTURES = resolve(import.meta.dir, "..", "..", "..", "ui", "fixtures");
 
@@ -90,4 +105,95 @@ test("the open fixture matches its view and BoardModel shape", () => {
 test("the close fixture has the close tag", () => {
   const close = fixture("session-close.json") as { t: string };
   expect(close.t).toBe("close");
+});
+
+// ─── pick ────────────────────────────────────────────────────────────────────
+
+test("pick request fixture carries protocol 1 and round-trips through encodeLine", () => {
+  const req = fixture("pick-request.json") as PickRequest;
+  expect(req.t).toBe("pick");
+  expect(req.protocol).toBe(1);
+  expect(req.rows.length).toBeGreaterThanOrEqual(2);
+  expect(req.actions?.length).toBeGreaterThan(0);
+  expect(req.actions?.find((a) => a.id === "dispose")?.event).toBe(true);
+  expect(req.actions?.find((a) => a.id === "refresh")?.event).toBeUndefined();
+  expect(req.crumbEvents).toBe(true);
+  expect(req.acceptNoMatch).toBe(true);
+  const line = encodeLine(req);
+  expect(line.endsWith("\n")).toBe(true);
+  expect(JSON.parse(line)).toEqual(req);
+});
+
+test("pick request fixture's withArgs field matches the Go parity fixture (PickRow.WithArgs)", () => {
+  const req = fixture("pick-request.json") as PickRequest;
+  const bill = req.rows.find((r) => r.value.endsWith("/bill"));
+  const cho = req.rows.find((r) => r.value.endsWith("/cho"));
+  expect(bill?.withArgs).toBe(true);
+  expect(cho?.withArgs).toBeUndefined();
+});
+
+test("pick update and modal fixtures match their typed shape and round-trip", () => {
+  const update = fixture("pick-update.json") as PickUpdate;
+  expect(update.t).toBe("update");
+  expect(update.rows?.[0]?.right?.some((seg) => seg.hex !== undefined)).toBe(true);
+  expect(update.actions?.find((a) => a.id === "refresh")?.event).toBe(true);
+  expect(update.actions?.find((a) => a.id === "cd")?.event).toBeUndefined();
+  expect(update.breadcrumb?.length).toBeGreaterThan(0);
+  expect(update.resetQuery).toBe(true);
+  expect(JSON.parse(encodeLine(update))).toEqual(update);
+
+  const modal = fixture("pick-modal.json") as PickModal;
+  expect(modal.t).toBe("modal");
+  expect(modal.rows.length).toBeGreaterThan(0);
+  expect(JSON.parse(encodeLine(modal))).toEqual(modal);
+});
+
+test("pick nav update fixture carries the faint idle count + sort suffix and round-trips (Go/TS parity)", () => {
+  const nav = fixture("pick-update-nav.json") as PickUpdate;
+  expect(nav.t).toBe("update");
+  expect(nav.idleCount).toBe("10 folders · 2 files");
+  expect(nav.crumbSuffix).toBe(" (Size, largest first)");
+  expect(JSON.parse(encodeLine(nav))).toEqual(nav);
+
+  // The non-nav cd update omits both, so its golden stays additive/untouched.
+  const cd = fixture("pick-update.json") as PickUpdate;
+  expect(cd.idleCount).toBeUndefined();
+  expect(cd.crumbSuffix).toBeUndefined();
+});
+
+test("pick event, modal-result, and result fixtures match their typed shape", () => {
+  const event = fixture("pick-event.json") as PickEvent;
+  expect(event).toEqual({
+    t: "event",
+    action: "dispose",
+    value: "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/cho",
+    query: "cho",
+  });
+
+  const modalResult = fixture("pick-modal-result.json") as PickModalResult;
+  expect(modalResult).toEqual({ t: "modal-result", value: "dispose" });
+
+  const result = fixture("pick-result.json") as PickResult;
+  expect(result.t).toBe("result");
+  expect(result.values).toEqual([
+    "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/bill",
+    "/Users/matt/Documents/GitHub/acme/.worktrees/on-deck/cho",
+  ]);
+});
+
+test("pick action footerHidden rides the wire when set and is absent otherwise (Go/TS parity)", () => {
+  const hidden: PickAction = { id: "back", label: "back", key: "ctrl-up", scope: "global", footerHidden: true };
+  const line = encodeLine(hidden);
+  expect(line).toContain('"footerHidden":true');
+  expect(JSON.parse(line)).toEqual(hidden);
+
+  // An action that never sets it must not emit the key, so every other
+  // request stays byte-identical -- the omitempty contract the Go side pins.
+  const plain: PickAction = { id: "refresh", label: "refresh", key: "ctrl-r", scope: "global" };
+  expect(encodeLine(plain)).not.toContain("footerHidden");
+});
+
+test("pick result value accepts null and round-trips through encodeLine", () => {
+  const cancel: PickResult = { t: "result", action: "cancel", value: null, query: "" };
+  expect(JSON.parse(encodeLine(cancel))).toEqual(cancel);
 });

@@ -1,0 +1,83 @@
+<!doctype html>
+<script src="./support.js"></script>
+<style>
+:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--pink:#FF6B9D;--mint:#62E6A8;--coral:#FF7979;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#A8A0C6;--dimmer:#8B84A8;--faint:#6E668C}
+html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px;color:var(--text);padding:26px}
+.term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45);margin-bottom:24px}
+.ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
+.selrow{flex:1;display:flex;background:var(--sel)}
+.t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
+.p{color:var(--pink)}.m{color:var(--mint)}.cy{color:var(--cyan)}.lv{color:var(--lav)}
+.b{font-weight:700}.hl{color:var(--cyan);font-weight:700}
+.rule{border-top:1px solid var(--rule);margin:7px 0 5px}
+.lbl{display:inline-block;min-width:26ch}
+.grp{color:var(--faint);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase}
+h1{font:600 16px/1.3 system-ui;color:var(--text);margin:0 0 3px}
+h2{font:600 12px/1.4 system-ui;color:var(--lav);margin:14px 0 8px;text-transform:uppercase;letter-spacing:.08em}
+p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:82ch;white-space:normal}
+</style>
+<title>rt run chain</title>
+<h1>rt run — every stage, every state</h1>
+<p class="note">The full chain: package (with presets), package with an active queue (queue rows pin to the top as a real group), script (with the ↻ last-run sentinel and command-preview hints), and variations (with the add sentinel). All queue/preset/variation logic stays in TS; groups are real headers, sentinel rows are just rows. Footers swap with queue state exactly as today.</p>
+
+<h2>1 · package — idle (presets shown when no queue)</h2>
+<div class="term" style="width:88ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">run</span><span class="f"> · </span><span class="dr">acme</span><span class="sp"></span><span class="f">7/7</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="grp">  presets</span></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="lbl"><span class="t b">web + backend</span></span><span class="d">2 entries</span><span class="sp"></span></span></div>
+  <div class="ln" style="height:8px"></div>
+  <div class="ln"><span class="grp">  packages</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">backend</span></span><span class="dr">apps/backend</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">web</span></span><span class="dr">apps/web</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">ui</span></span><span class="dr">packages/ui</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">config</span></span><span class="dr">packages/config</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">run</span><span class="f"> enter</span><span class="d"> select</span><span class="sp"></span><span class="f">ctrl-up</span><span class="d"> back</span><span class="f">  esc</span><span class="d"> quit</span></div>
+</div>
+
+<h2>2 · package — queue active (queue pins to the top; presets hide)</h2>
+<div class="term" style="width:88ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">run</span><span class="f"> · </span><span class="dr">acme</span><span class="sp"></span><span class="m">◉ 2 queued</span><span class="f">  ·  9/9</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="grp">  queue</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="m">✓ </span><span class="s">backend › dev</span></span><span class="dr">apps/backend</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="m">✓ </span><span class="s">web › start:dev </span><span class="lv">(mock-sdm)</span></span><span class="dr">apps/web</span></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="lbl"><span class="t b">Launch all</span></span><span class="d">2 queued → runner board</span><span class="sp"></span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">Save as preset…</span></span><span class="dr">save the current queue</span></div>
+  <div class="ln" style="height:8px"></div>
+  <div class="ln"><span class="grp">  packages</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">ui</span></span><span class="dr">packages/ui</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">config</span></span><span class="dr">packages/config</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">queue</span><span class="f"> enter</span><span class="d"> queue</span><span class="f">  tab</span><span class="d"> queue &amp; next</span><span class="f">  ctrl-x</span><span class="d"> clear</span><span class="sp"></span><span class="f">ctrl-up</span><span class="d"> back</span><span class="f">  esc</span><span class="d"> quit</span></div>
+</div>
+
+<h2>3 · script — last-run sentinel + command hints</h2>
+<div class="term" style="width:88ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">run</span><span class="f"> · </span><span class="dr">backend · apps/backend</span><span class="sp"></span><span class="f">5/5</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="lbl"><span class="m">↻ dev</span></span><span class="d">last run · 2h ago</span><span class="sp"></span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">dev</span></span><span class="dr">NODE_OPTIONS=--max-old-space-size=8192 nest start --watch</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">start:dev</span></span><span class="dr">nest start --watch</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">test:unit</span></span><span class="dr">jest --selectProjects unit</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">type-check:lite</span></span><span class="dr">tsgo -p tsconfig.lite.json</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">run</span><span class="f"> enter</span><span class="d"> run</span><span class="f">  tab</span><span class="d"> queue</span><span class="f">  alt-enter</span><span class="d"> variations</span><span class="sp"></span><span class="f">ctrl-up</span><span class="d"> back</span><span class="f">  esc</span><span class="d"> quit</span></div>
+</div>
+
+<h2>4 · variations — saved commands + add sentinel</h2>
+<div class="term" style="width:88ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">run</span><span class="f"> · </span><span class="dr">variation for "start:dev"</span><span class="sp"></span><span class="f">3/3</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="lbl"><span class="t b">mock-sdm</span></span><span class="d">SDM_MOCK=1 nest start --watch</span><span class="sp"></span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">debug</span></span><span class="dr">nest start --debug --watch</span></div>
+  <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">+ Add variation…</span></span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">run</span><span class="f"> enter</span><span class="d"> run</span><span class="f">  tab</span><span class="d"> queue</span><span class="sp"></span><span class="f">ctrl-up</span><span class="d"> back</span><span class="f">  esc</span><span class="d"> quit</span></div>
+</div>
+<p class="note" style="margin-top:0">Not pictured, by design: preset/variation name + command entry and "Run now?" are huh prompts (the rt-ui prompt verb, already themed) — not pickers. "Recent runs" (rt run again) is the plain simple-select pattern from the Command palette board. Repo → worktree entry (cross-repo rt run) is the Enriched rows board.</p>

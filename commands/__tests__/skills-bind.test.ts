@@ -2,8 +2,38 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
+import { __test__ as pickImplTest, type PickImpl } from "../../lib/ui/pick.ts";
+import type { PickRequest, PickResult } from "../../lib/ui/protocol.ts";
 import { readManifestBindings } from "../../lib/skills/sources.ts";
 import { skillsBind, skillsCompile } from "../skills.ts";
+
+/**
+ * pickBindArgs opens a separate runPick session per omitted positional
+ * (verb, then slot, then fill) -- installFakePick replays its whole script
+ * against every session, so answering three distinct prompts needs one
+ * result dispensed per session instead, in call order.
+ */
+function installFakePickSequence(results: Array<Omit<PickResult, "t">>) {
+  const calls: PickRequest[] = [];
+  let i = 0;
+  const fakeImpl: PickImpl = (req) => {
+    calls.push(req);
+    const chosen = results[Math.min(i, results.length - 1)]!;
+    i++;
+    return {
+      update() {},
+      modal: () => Promise.resolve(null),
+      result: Promise.resolve({ t: "result", ...chosen }),
+    };
+  };
+  pickImplTest.setImpl(fakeImpl);
+  return {
+    calls,
+    restore(): void {
+      pickImplTest.setImpl(undefined);
+    },
+  };
+}
 
 function writeFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -330,6 +360,33 @@ describe("skillsBind", () => {
     expect(bindings["mattstack:watch-ci"]?.domain).toBe("acme:watch-ci-domain-v2");
     const written = readFileSync(manifestPath, "utf8");
     expect(written).toContain("/* block comment about watch-ci */");
+  });
+
+  test("all three positionals omitted on a tty: chained verb/slot/fill pickers resolve the same bind as typing them", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, { "watch-ci": { engine: "watch-ci", description: "Watch CI" } });
+    const { mattstackDir, manifestPath } = makeEngineFixture();
+
+    const seq = installFakePickSequence([
+      { action: "select", value: "watch-ci", query: "" },
+      { action: "select", value: "domain", query: "" },
+      { action: "select", value: "acme:watch-ci-domain-v2", query: "" },
+    ]);
+
+    const previousIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    try {
+      await skillsBind([
+        "--pack", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+      ]);
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { value: previousIsTTY, configurable: true });
+      seq.restore();
+    }
+
+    expect(seq.calls).toHaveLength(3);
+    const bindings = readManifestBindings(manifestPath);
+    expect(bindings["mattstack:watch-ci"]?.domain).toBe("acme:watch-ci-domain-v2");
   });
 });
 

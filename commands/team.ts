@@ -297,7 +297,7 @@ export async function teamMembersRemove(args: string[], _ctx: CommandContext = {
   if (!handle) {
     const roster = process.stdin.isTTY && !json && !process.env.RT_BATCH ? rosterHandles(args) : [];
     if (roster.length > 0) {
-      const { filterableSelect } = await import("../lib/rt-render.ts");
+      const { filterableSelect } = await import("../lib/pick-wrappers.ts");
       const picked = await filterableSelect({
         message: "Remove which member?",
         options: roster.map((h) => ({ value: h, label: h })),

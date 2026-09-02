@@ -699,7 +699,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   // showing what they typed (`repoArg`).
   const resolved = await resolveTrackingIdentity(repoArg);
 
-  // ── rt daemon track <repo> — interactive editor (house style: fzf flow) ──
+  // ── rt daemon track <repo> — interactive editor (house style: picker flow) ──
   let interactiveLevel: string | undefined;
   let interactiveCaches: CacheKind[] | undefined;
   let interactiveWindowDays: number | null | undefined; // undefined = untouched, null = clear
@@ -709,7 +709,8 @@ export async function manageTracking(args: string[] = []): Promise<void> {
       return;
     }
     const identity = resolved.identity;
-    const { filterableSelect, filterableMultiselect, textInput } = await import("../lib/rt-render.ts");
+    const { filterableSelect, filterableMultiselect } = await import("../lib/pick-wrappers.ts");
+    const { textInput } = await import("../lib/rt-render.ts");
     const displayTracking = loadRepoTracking();
     const rawEntry = displayTracking[identity];
     const current = grants(displayTracking, identity);

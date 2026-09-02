@@ -22,17 +22,18 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, getKnownReposCached, findKnownRepo, repoCarriesWorktree, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
-import { buildFzfRows } from "../lib/fzf-select.ts";
+import { getRepoIdentity, getKnownRepos, getKnownReposCached, findKnownRepo, repoCarriesWorktree, getWorkspacePackages, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
 import { writeRepoCache } from "../lib/repo-cache.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
   pickPackageWithEscape,
   resolveWorktreeByBranch,
+  pickRepo,
   isSwitchRepo,
 } from "../lib/pickers.ts";
 import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
+import { printAborted } from "../lib/ui/abort.ts";
 
 // ─── Shell function setup ────────────────────────────────────────────────────
 
@@ -94,7 +95,7 @@ async function ensureShellFunction(): Promise<void> {
   const origWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
 
-  const { confirm: inkConfirm } = await import("../lib/rt-render.ts");
+  const { confirm } = await import("../lib/rt-render.ts");
   const hasLegacyRtcd = rcContent.includes("rtcd()");
   const hasOldRtWrapper = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes(".last-cwd");
   const hasPreRehashWrapper = rcContent.includes("rt() {") && rcContent.includes(".last-cwd") && !rcContent.includes("hash -r");
@@ -130,7 +131,7 @@ async function ensureShellFunction(): Promise<void> {
   const hasOldFunction2 = hasOldFunction || hasNoNav;
 
   const rcLabel = rcFile.replace(homedir(), "~");
-  const install = await inkConfirm({
+  const install = await confirm({
     message: hasOldFunction2
       ? `Upgrade rt shell wrapper in ${rcLabel}?`
       : `Add rt cd support to ${rcLabel}?`,
@@ -191,42 +192,18 @@ export function resolveReposForIdentity(
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 /**
- * Hidden, agent/reload-facing flag: not in command-tree-def.ts, so it never
- * appears in help or any picker. Task 6's `ctrl-r:reload(rt cd --emit-rows)`
- * fzf binding execs exactly this to refresh the visible row list, so its
- * stdout must stay byte-identical to what the interactive picker itself
- * would show fzf.
- *
- * Gated to the non-interactive path: a TTY invocation falls through to
- * normal cd behavior instead, since --emit-rows has no meaning as a picker
- * action.
+ * ctrl-r's in-process reload: a live re-scan plus a cache refresh, handed to
+ * the repo picker so it can push fresh rows via `handle.update` without
+ * closing (this replaced the old fzf `ctrl-r:reload(rt cd --emit-rows)`
+ * shell-exec bind).
  */
-function shouldEmitRows(args: string[]): boolean {
-  return args.includes("--emit-rows") && (!process.stdin.isTTY || !!process.env.RT_BATCH);
-}
-
-/**
- * The ctrl-r reload command for cd's fzf pickers. fzf execs reloads via
- * `sh -c`, which resolves `rt` from PATH only (the installed binary) -- the
- * dev-mode shell-function wrapper is not visible there, which is acceptable
- * since --emit-rows is a plain data path with no shell-integration behavior.
- */
-const CD_RELOAD_COMMAND = "rt cd --emit-rows";
-
-/** Live-scanned rows + a cache refresh, for --emit-rows. Never launches a picker. */
-function emitRows(): void {
+function reloadRepos(): KnownRepo[] {
   const repos = getKnownRepos({ includeMissing: true });
-  const rows = buildFzfRows(repoOptions(repos));
-  process.stdout.write(rows + "\n");
   writeRepoCache(repos);
+  return repos;
 }
 
 export async function worktreePicker(args: string[]): Promise<void> {
-  if (shouldEmitRows(args)) {
-    emitRows();
-    process.exit(0);
-  }
-
   await ensureShellFunction();
 
   // Redirect stdout → stderr so TUI prompts don’t contaminate the path output
@@ -273,6 +250,11 @@ export async function worktreePicker(args: string[]): Promise<void> {
 
   let selectedPath: string;
 
+  // The dispatcher header is suppressed for `rt cd` (command-tree-def.ts
+  // `fullscreen: true`) -- every picker below carries this instead, per
+  // Cd.dc.html/Enrichment.dc.html.
+  const CD_BREADCRUMB = ["rt", "cd"];
+
   // ── --repo flag: always go to repo picker ────────────────────────────────────
   if (forceRepo) {
     if (wtBranch) {
@@ -280,11 +262,13 @@ export async function worktreePicker(args: string[]): Promise<void> {
       // A missing row must be pickable here so it gets the clean
       // missingRepoRefusal below instead of resolving via branch name against
       // a dead path.
-      const { filterableSelect } = await import("../lib/fzf-select.ts");
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
-        : await filterableSelect({ message: "Pick a repo", options: repoOptions(repos), stderr: true, reloadCommand: CD_RELOAD_COMMAND });
-      if (!pickedRepoName) process.exit(0); // Esc on repo picker
+        : await pickRepo(repos, { onReload: reloadRepos, breadcrumb: CD_BREADCRUMB });
+      if (!pickedRepoName) {
+        printAborted();
+        process.exit(0); // Esc on repo picker
+      }
       const pickedRepo = repoFromOptionValue(repos, pickedRepoName)!;
       if (pickedRepo.missing) {
         console.error(`\n  ${missingRepoRefusal(pickedRepo)}\n`);
@@ -297,10 +281,10 @@ export async function worktreePicker(args: string[]): Promise<void> {
       if (hit.length === 1) {
         selectedPath = hit[0]!.path;
       } else {
-        selectedPath = await resolveWorktreeByBranch(wtBranch, [pickedRepo], { stderr: true });
+        selectedPath = await resolveWorktreeByBranch(wtBranch, [pickedRepo], { stderr: true, breadcrumb: CD_BREADCRUMB });
       }
     } else {
-      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND });
+      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos, breadcrumb: CD_BREADCRUMB });
     }
 
   // ── --worktree flag only: resolve branch in current repo (then all repos) ──
@@ -310,23 +294,24 @@ export async function worktreePicker(args: string[]): Promise<void> {
     const inCurrent = currentRepo?.worktrees.filter((wt) => wt.branch.toLowerCase().startsWith(lower)) ?? [];
     // If not found in current repo, broaden to all repos
     const finalRepos = inCurrent.length > 0 ? searchRepos : repos;
-    selectedPath = await resolveWorktreeByBranch(wtBranch, finalRepos, { stderr: true });
+    selectedPath = await resolveWorktreeByBranch(wtBranch, finalRepos, { stderr: true, breadcrumb: CD_BREADCRUMB });
 
   // ── --package in a monorepo: package picker (opt-in) ─────────────────────
   } else if (wantPackages && currentRepo && getWorkspacePackages(identity!.repoRoot).length > 0) {
-    selectedPath = await pickPackageWithEscape(currentRepo, identity!.repoRoot, repos, { stderr: true });
+    selectedPath = await pickPackageWithEscape(currentRepo, identity!.repoRoot, repos, { stderr: true, breadcrumb: CD_BREADCRUMB });
 
   // ── In a multi-worktree repo: worktree picker ────────────────────────────
   } else if (currentRepo && currentRepo.worktrees.length > 1) {
-    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
-    if (!result) process.exit(0);
+    // pickWorktreeWithSwitch exits internally on cancel (its abort line rides
+    // the shared lib/pickers.ts cancel path), so result is never falsy here.
+    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true, breadcrumb: CD_BREADCRUMB });
     selectedPath = isSwitchRepo(result)
-      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND })
+      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos, breadcrumb: CD_BREADCRUMB })
       : result;
 
   // ── Not in a tracked repo or single-worktree: repo picker ───────────────
   } else {
-    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, reloadCommand: CD_RELOAD_COMMAND });
+    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages, onReload: reloadRepos, breadcrumb: CD_BREADCRUMB });
   }
 
   // Restore stdout and print just the path

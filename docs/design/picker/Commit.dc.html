@@ -1,0 +1,34 @@
+<!doctype html>
+<script src="./support.js"></script>
+<style>
+:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--pink:#FF6B9D;--mint:#62E6A8;--coral:#FF7979;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#A8A0C6;--dimmer:#8B84A8;--faint:#6E668C}
+html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px;color:var(--text);padding:26px}
+.term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45)}
+.ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
+.selrow{flex:1;display:flex;background:var(--sel)}
+.t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
+.p{color:var(--pink)}.m{color:var(--mint)}.co{color:var(--coral)}.cy{color:var(--cyan)}.lv{color:var(--lav)}
+.b{font-weight:700}
+.rule{border-top:1px solid var(--rule);margin:7px 0 5px}
+.stat{display:inline-block;min-width:9ch;text-align:right}
+.tag{display:inline-block;min-width:5ch;text-align:right}
+h1{font:600 16px/1.3 system-ui;color:var(--text);margin:0 0 3px}
+p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:78ch;white-space:normal}
+</style>
+<title>rt commit</title>
+<h1>rt commit — changed files, no preview pane</h1>
+<p class="note">The delta preview is cut. Stats are a right-pinned column (the split-row trailing pattern — full width used, paths clip before stats ever do). ctrl-a toggles all/none as a registry action; the header count always shows the truth.</p>
+
+<div class="term" style="width:90ch">
+  <div class="ln"><span class="t b">rt</span><span class="f"> › </span><span class="t b">commit</span><span class="sp"></span><span class="m">◉ 3</span><span class="f"> selected  ·  6/6</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span> </span><span> </span><span class="m">◉ </span><span class="s">lib/runner/tmux-engine.ts</span><span class="sp"></span><span class="f tag">new</span><span class="stat"><span class="m">+174</span> <span class="co">-0</span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="m">◉ </span><span class="s">commands/runner.ts</span><span class="sp"></span><span class="f tag"></span><span class="stat"><span class="m">+68</span> <span class="co">-13</span></span></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="m">◉ </span><span class="t b">lib/runner/workspace-registry.ts</span><span class="sp"></span><span class="f tag"></span><span class="stat"><span class="m">+29</span> <span class="co">-11</span></span><span> </span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="f">○ </span><span class="s">CLAUDE.md</span><span class="sp"></span><span class="f tag"></span><span class="stat"><span class="m">+7</span> <span class="co">-5</span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="f">○ </span><span class="s">lib/runner/__tests__/tmux-engine.test.ts</span><span class="sp"></span><span class="f tag">new</span><span class="stat"><span class="m">+219</span> <span class="co">-0</span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="f">○ </span><span class="s">commands/__tests__/runner-command.test.ts</span><span class="sp"></span><span class="f tag"></span><span class="stat"><span class="m">+48</span> <span class="co">-8</span></span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">mark</span><span class="f"> space</span><span class="d"> toggle</span><span class="f">  tab</span><span class="d"> toggle &amp; next</span><span class="f">  ctrl-a</span><span class="d"> all/none</span><span class="f">  enter</span><span class="d"> commit</span><span class="sp"></span><span class="f">esc</span><span class="d"> quit</span></div>
+</div>

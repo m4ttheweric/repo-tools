@@ -46,7 +46,7 @@ scripts/e2e-cleanroom.sh --artifact ~/Downloads/mattstack-2.8.0.dmg --home "$(mk
 
 ## fetch-deps.sh
 
-Fetches and sha256-verifies rt-tray's bundled third-party helper tools (Sparkle, plus every `Contents/Helpers` binary — fzf, jq, bun, node, gh, glab, gitq, age-keygen, sops, fast-browser) per `rt-tray/deps.lock`.
+Fetches and sha256-verifies rt-tray's bundled third-party helper tools (Sparkle, plus every `Contents/Helpers` binary — jq, bun, node, gh, glab, gitq, age-keygen, sops, fast-browser) per `rt-tray/deps.lock`.
 
 ## release/
 

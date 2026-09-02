@@ -111,7 +111,7 @@ export async function servicesRestart(args: string[], _ctx: CommandContext = {},
   if (!label) {
     const agents = process.stdin.isTTY && !json && !process.env.RT_BATCH ? await registeredAgents(deps) : [];
     if (agents.length > 0) {
-      const { filterableSelect } = await import("../lib/rt-render.ts");
+      const { filterableSelect } = await import("../lib/pick-wrappers.ts");
       const picked = await filterableSelect({
         message: "Restart which service?",
         options: agents.map((a) => ({ value: a.label, label: a.label, hint: a.status })),

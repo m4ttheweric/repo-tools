@@ -3,7 +3,8 @@ import { spawnSync } from "child_process";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { dispatch, walkTree, type CommandContext, type CommandNode } from "../command-tree.ts";
+import { dispatch, walkTree, showPicker, BACK, type CommandContext, type CommandNode } from "../command-tree.ts";
+import { installFakePick, type PickFakeStep } from "../ui/pick-fake.ts";
 import type { KnownRepo, RepoIdentity } from "../repo.ts";
 
 // mock.module mutates the live "../repo.ts" namespace object IN PLACE, so
@@ -73,6 +74,122 @@ describe("walkTree", () => {
   test("returns null when the path ends on a leaf", () => {
     expect(walkTree(TREE, ["cd"])).toBeNull();
     expect(walkTree(TREE, ["daemon", "logs", "tail"])).toBeNull();
+  });
+});
+
+describe("showPicker", () => {
+  let fake: ReturnType<typeof installFakePick> | undefined;
+
+  afterEach(() => {
+    fake?.restore();
+    fake = undefined;
+  });
+
+  function resultStep(result: Partial<{ action: string; value: string | null; query: string }>): PickFakeStep {
+    return { kind: "result", result: { action: "select", value: null, query: "", ...result } };
+  }
+
+  const PICKER_TREE: Record<string, CommandNode> = {
+    provision: {
+      description: "provision a worktree",
+      handler: noop,
+      args: [{ name: "Branch", type: "text" }],
+    },
+    list: { description: "list worktrees", handler: noop },
+  };
+
+  test("select returns {command, withArgs:false}", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    const picked = await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    expect(picked).toEqual({ command: "list", withArgs: false });
+  });
+
+  test("alt-enter/with-args returns {command, withArgs:true}", async () => {
+    fake = installFakePick([resultStep({ action: "with-args", value: "provision" })]);
+    const picked = await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    expect(picked).toEqual({ command: "provision", withArgs: true });
+  });
+
+  test("ctrl-up returns BACK", async () => {
+    fake = installFakePick([resultStep({ action: "back", value: null })]);
+    const picked = await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    expect(picked).toBe(BACK);
+  });
+
+  test("cancel returns null", async () => {
+    fake = installFakePick([resultStep({ action: "cancel", value: null })]);
+    const picked = await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    expect(picked).toBeNull();
+  });
+
+  test("passes the breadcrumb through to the request untouched", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "worktree"]);
+  });
+
+  test("rows render the node name bold and its description dim", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    const rows = fake.calls[0]!.request.rows;
+    const listRow = rows.find((r) => r.value === "list")!;
+    expect(listRow.left[0]).toMatchObject({ bold: true });
+    expect(listRow.left[0]!.text).toContain("list");
+    expect(listRow.left[1]).toMatchObject({ tone: "dim" });
+    expect(listRow.left[1]!.text).toContain("list worktrees");
+  });
+
+  test("sets withArgs on rows that can take args and leaves it off on those that cannot", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    const rows = fake.calls[0]!.request.rows;
+    expect(rows.find((r) => r.value === "provision")!.withArgs).toBe(true);
+    expect(rows.find((r) => r.value === "list")!.withArgs).toBeUndefined();
+  });
+
+  test("registers the with-args action only when some node declares args", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    expect(fake.calls[0]!.request.actions).toContainEqual({
+      id: "with-args", label: "with args", key: "alt-enter", scope: "item", group: "pick",
+    });
+
+    fake.restore();
+    const noArgsTree: Record<string, CommandNode> = { list: { description: "list worktrees", handler: noop } };
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(noArgsTree, ["rt", "worktree"]);
+    expect(fake.calls[0]!.request.actions?.some((a) => a.id === "with-args")).toBe(false);
+  });
+
+  test("registers the ctrl-up-bound back action at every depth: footerHidden at the root, visible below it", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(PICKER_TREE, ["rt"]);
+    // At the root the back action stays bound (ctrl-up still cancels) but
+    // footerHidden keeps it out of the keybar legend.
+    expect(fake.calls[0]!.request.actions).toContainEqual({
+      id: "back", label: "back", key: "ctrl-up", scope: "global", footerHidden: true,
+    });
+
+    fake.restore();
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    expect(fake.calls[0]!.request.actions).toContainEqual({
+      id: "back", label: "back", key: "ctrl-up", scope: "global",
+    });
+    // depth>1 keeps the visible back label: footerHidden never rides the wire.
+    const back = fake.calls[0]!.request.actions!.find((a) => a.id === "back")!;
+    expect(back.footerHidden).toBeUndefined();
+  });
+
+  // The old fzf-backed showPicker captured ctrl-up unconditionally and, at
+  // the root (nowhere to go back to), treated it as an outright cancel --
+  // same as Esc -- rather than a no-op. The Go picker drops any key with no
+  // bound action, so the root case depends on showPicker mapping the
+  // "back" result to null itself rather than on depth-gated registration.
+  test("ctrl-up at the root cancels (returns null), matching the old exit-on-ctrl-up-at-root behavior", async () => {
+    fake = installFakePick([resultStep({ action: "back", value: null })]);
+    const picked = await showPicker(PICKER_TREE, ["rt"]);
+    expect(picked).toBeNull();
   });
 });
 

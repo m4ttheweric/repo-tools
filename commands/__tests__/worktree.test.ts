@@ -193,6 +193,37 @@ describe("worktree CLI identity plumbing", () => {
     expect(out).toContain("alpha");
   });
 
+  test("await-ready picker carries the rt worktree await-ready in-card breadcrumb (dispatcher header stays suppressed)", async () => {
+    const { installFakePick } = await import("../../lib/ui/pick-fake.ts");
+    const origIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+
+    mock.module("../../lib/daemon-client.ts", () => ({
+      ...realDaemonClient,
+      daemonQuery: async (cmd: string) => {
+        if (cmd === "worktree:list") {
+          return {
+            ok: true,
+            data: { trees: [{ name: "alpha", path: "/p/alpha", kind: "ephemeral", state: "claimed", branch: null, repoName: "r1" }] },
+          };
+        }
+        return { ok: true, data: { tree: "alpha", path: "/p/alpha", ready: true, readyAt: "2026-09-01T00:00:00.000Z" } };
+      },
+      lastQueryTimedOut: () => false,
+    }));
+
+    const fake = installFakePick([{ kind: "result", result: { action: "select", value: "/p/alpha", query: "" } }]);
+    try {
+      await worktreeAwaitReady([], {});
+    } finally {
+      fake.restore();
+      Object.defineProperty(process.stdin, "isTTY", { value: origIsTTY, configurable: true });
+    }
+
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]!.request.breadcrumb).toEqual(["rt", "worktree", "await-ready"]);
+  });
+
   test("an unresolvable --repo exits with a clear message instead of sending a bogus key to the daemon", async () => {
     const calls = installFakeDaemon({ ok: true, data: { trees: [] } });
     const exitSpy = mock(() => {

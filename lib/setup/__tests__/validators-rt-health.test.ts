@@ -13,25 +13,11 @@ import type { ExecScript } from "./fakes.ts";
 import { createRealProbes } from "../probes.ts";
 import type { Probes } from "../probes.ts";
 
-// Every test that isn't specifically exercising tool.fzf uses this: a real
-// resolveFzf() falls back to appBundleRoot()'s zero-arg default, which is
-// deliberately out of scope for these Probes-driven rows. (Prior to the
-// R-T7-c fix in lib/bundle-layout.ts, appBundleRoot() memoized ANY
-// successful resolution — including one derived from an injected `exists` —
-// across the whole test process, so a stray real resolveFzf() call here
-// could pin a real machine's mattstack.app for every later
-// `appBundlePath(p)` call. Now that the memo only ever reads/writes on the
-// true default (`exists === existsSync`), an injected-exists call like the
-// ones this file's `bundleProbe()` makes can never populate or consult it —
-// so the reset ceremony that used to be required here is gone.)
-const NOOP_FZF = { resolveFzf: () => null };
-
 const ROW_ORDER = [
   "tool.rt",
   "tool.rt-link",
   "tool.legacy-dirs",
   "tool.intercepts",
-  "tool.fzf",
   "tool.app",
   "tool.vsix",
   "tool.extension",
@@ -50,7 +36,7 @@ async function pickRow(rowsP: ReturnType<typeof rtHealthRows>, id: string) {
 
 describe("rtHealthRows — row order", () => {
   test("ids match the table order regardless of status", async () => {
-    const rows = await rtHealthRows(fakeProbes({ home: "/nonexistent-rt-health-order-fixture" }), { ci: false }, NOOP_FZF);
+    const rows = await rtHealthRows(fakeProbes({ home: "/nonexistent-rt-health-order-fixture" }), { ci: false });
     expect(rows.map((r) => r.id)).toEqual(ROW_ORDER);
   });
 });
@@ -58,7 +44,7 @@ describe("rtHealthRows — row order", () => {
 describe("rtHealthRows — tool.rt", () => {
   test("rt --version ok -> ready with stdout as detail", async () => {
     const exec: ExecScript = (argv) => (argv[0] === "rt" ? ok("rt 1.2.3\n") : ok());
-    const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }, NOOP_FZF), "tool.rt");
+    const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }), "tool.rt");
     expect(r.status).toBe("ready");
     expect(r.detail).toBe("rt 1.2.3");
     expect(r.required).toBe(true);
@@ -66,7 +52,7 @@ describe("rtHealthRows — tool.rt", () => {
 
   test("rt not on PATH (exit 127) -> missing, link-bundled action", async () => {
     const exec: ExecScript = (argv) => (argv[0] === "rt" ? missing("rt") : ok());
-    const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }, NOOP_FZF), "tool.rt");
+    const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }), "tool.rt");
     expect(r.status).toBe("missing");
     expect(r.detail).toBe("rt not found on PATH");
     expect(r.action).toEqual({ type: "link-bundled", label: "Use mattstack's", tool: "rt" });
@@ -90,7 +76,7 @@ describe("rtHealthRows — tool.rt", () => {
 
   test("rt exists but crashes (exit 1) -> error, not missing", async () => {
     const exec: ExecScript = (argv) => (argv[0] === "rt" ? { code: 1, stdout: "", stderr: "boom" } : ok());
-    const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }, NOOP_FZF), "tool.rt");
+    const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }), "tool.rt");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("1");
     expect(r.status).not.toBe("missing");
@@ -98,7 +84,7 @@ describe("rtHealthRows — tool.rt", () => {
 
   test("rt exec times out (probe code 124) -> error naming the code", async () => {
     const exec: ExecScript = (argv) => (argv[0] === "rt" ? { code: 124, stdout: "", stderr: "" } : ok());
-    const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }, NOOP_FZF), "tool.rt");
+    const r = await pickRow(rtHealthRows(fakeProbes({ exec }), { ci: false }), "tool.rt");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("124");
   });
@@ -137,7 +123,7 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
     test("readlink matches the bundle's Contents/MacOS/rt -> ready", async () => {
       const linkedPath = join(home, ".local", "bin", "rt");
       const p = bundleProbe({ links: { [linkedPath]: join(appRoot, "Contents", "MacOS", "rt") } });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.rt-link");
+      const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.rt-link");
       expect(r.status).toBe("ready");
       expect(r.detail).toBe("linked into the bundle");
       expect(r.required).toBe(false);
@@ -147,7 +133,7 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
     test("readlink points elsewhere -> needs-you, with a one-shot link-bundled action (never a run through the full apply chain)", async () => {
       const linkedPath = join(home, ".local", "bin", "rt");
       const p = bundleProbe({ links: { [linkedPath]: "/opt/homebrew/bin/rt" } });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.rt-link");
+      const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.rt-link");
       expect(r.status).toBe("needs-you");
       expect(r.detail).toContain("not a link into mattstack.app");
       expect(r.action).toEqual({ type: "link-bundled", label: "Use mattstack's", tool: "rt" });
@@ -158,58 +144,9 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
       mkdirSync(wrapperDir, { recursive: true });
       writeFileSync(join(wrapperDir, "rt"), `#!/bin/sh\n${DEV_MODE_TAG}\nexit 0\n`, { mode: 0o755 });
       const p = bundleProbe();
-      const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.rt-link");
+      const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.rt-link");
       expect(r.status).toBe("skipped");
       expect(r.detail).toContain("dev mode owns ~/.local/bin/rt");
-    });
-  });
-
-  describe("tool.fzf", () => {
-    test("resolveFzf resolves inside the bundle -> detail says bundled", async () => {
-      const fzfPath = join(appRoot, "Contents", "Helpers", "fzf");
-      const exec: ExecScript = (argv) => (argv[0] === fzfPath ? ok("0.44.1 (ff457a5)\n") : ok());
-      const p = bundleProbe({ exec });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, { resolveFzf: () => fzfPath }), "tool.fzf");
-      expect(r.status).toBe("ready");
-      expect(r.detail).toContain("bundled");
-      expect(r.detail).toContain("0.44.1");
-    });
-
-    test("resolveFzf resolves outside the bundle -> detail says PATH", async () => {
-      const exec: ExecScript = (argv) => (argv[0] === "/opt/homebrew/bin/fzf" ? ok("0.44.1 (ff457a5)\n") : ok());
-      const p = bundleProbe({ exec });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, { resolveFzf: () => "/opt/homebrew/bin/fzf" }), "tool.fzf");
-      expect(r.status).toBe("ready");
-      expect(r.detail).toContain("PATH");
-      expect(r.detail).not.toContain("bundled");
-    });
-
-    test("resolveFzf finds nothing -> missing, link-bundled action", async () => {
-      const p = bundleProbe();
-      const r = await pickRow(rtHealthRows(p, { ci: false }, { resolveFzf: () => null }), "tool.fzf");
-      expect(r.status).toBe("missing");
-      expect(r.detail).toBe("fzf not found");
-      expect(r.action).toEqual({ type: "link-bundled", label: "Use mattstack's", tool: "fzf" });
-      expect(r.required).toBe(true);
-    });
-
-    test("resolveFzf resolves but the binary won't run (exit 127) -> error, never ready", async () => {
-      const fzfPath = join(appRoot, "Contents", "Helpers", "fzf");
-      const exec: ExecScript = (argv) => (argv[0] === fzfPath ? missing(fzfPath) : ok());
-      const p = bundleProbe({ exec });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, { resolveFzf: () => fzfPath }), "tool.fzf");
-      expect(r.status).toBe("error");
-      expect(r.detail).toContain("127");
-      expect(r.status).not.toBe("ready");
-    });
-
-    test("resolveFzf resolves but the binary times out (probe code 124) -> error, never ready", async () => {
-      const fzfPath = join(appRoot, "Contents", "Helpers", "fzf");
-      const exec: ExecScript = (argv) => (argv[0] === fzfPath ? { code: 124, stdout: "", stderr: "" } : ok());
-      const p = bundleProbe({ exec });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, { resolveFzf: () => fzfPath }), "tool.fzf");
-      expect(r.status).toBe("error");
-      expect(r.detail).toContain("124");
     });
   });
 
@@ -217,7 +154,7 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
     test("app present -> ready, detail carries path and version, recheck on-activate", async () => {
       const exec: ExecScript = (argv) => (argv[0] === "/usr/libexec/PlistBuddy" ? ok("1.2.3\n") : ok());
       const p = bundleProbe({ exec });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.app");
+      const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.app");
       expect(r.status).toBe("ready");
       expect(r.detail).toContain(appRoot);
       expect(r.detail).toContain("1.2.3");
@@ -228,7 +165,7 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
     test("legacy rt-tray.app also present -> detail names the exact hit path(s), like verify does", async () => {
       const legacyPath = join(home, "Applications", "rt-tray.app");
       const p = bundleProbe({ dirs: { [legacyPath]: [] } });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.app");
+      const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.app");
       expect(r.status).toBe("ready");
       expect(r.detail).toContain("old bundle still present");
       expect(r.detail).toContain(legacyPath);
@@ -239,7 +176,7 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
     test("vsix present in the bundle -> ready", async () => {
       const vsix = join(appRoot, "Contents", "Resources", "rt-context.vsix");
       const p = bundleProbe({ files: { [vsix]: "" } });
-      const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.vsix");
+      const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.vsix");
       expect(r.status).toBe("ready");
       expect(r.detail).toBe("bundled extension present");
       expect(r.required).toBe(false);
@@ -248,7 +185,7 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
 
     test("vsix absent from an otherwise-present bundle -> skipped", async () => {
       const p = bundleProbe();
-      const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.vsix");
+      const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.vsix");
       expect(r.status).toBe("skipped");
       expect(r.detail).toContain("pre-bundle build");
     });
@@ -258,21 +195,21 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
 describe("rtHealthRows — no app installed", () => {
   test("tool.app -> missing", async () => {
     const p = fakeProbes({ home: "/nonexistent-rt-health-no-app" });
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.app");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.app");
     expect(r.status).toBe("missing");
     expect(r.detail).toBe("mattstack.app not found in /Applications or ~/Applications");
   });
 
   test("tool.vsix -> skipped, no app", async () => {
     const p = fakeProbes({ home: "/nonexistent-rt-health-no-app" });
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.vsix");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.vsix");
     expect(r.status).toBe("skipped");
     expect(r.detail).toBe("mattstack.app not found");
   });
 
   test("tool.rt-link -> skipped for lack of an app, not the dev-mode reason", async () => {
     const p = fakeProbes({ home: "/nonexistent-rt-health-no-app" });
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.rt-link");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.rt-link");
     expect(r.status).toBe("skipped");
     expect(r.detail).toContain("nothing to link into");
     expect(r.detail).not.toContain("dev mode");
@@ -300,14 +237,14 @@ describe("rtHealthRows — tool.legacy-dirs", () => {
   });
 
   test("no legacy dirs -> ready", async () => {
-    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }, NOOP_FZF), "tool.legacy-dirs");
+    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }), "tool.legacy-dirs");
     expect(r.status).toBe("ready");
     expect(r.required).toBe(true);
   });
 
   test("a real ~/.rt dir -> invalid, singular phrasing, with a merge-by-hand remedy (R-T7-b)", async () => {
     mkdirSync(join(home, ".rt"), { recursive: true });
-    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }, NOOP_FZF), "tool.legacy-dirs");
+    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }), "tool.legacy-dirs");
     expect(r.status).toBe("invalid");
     expect(r.detail).toContain("real legacy dir present");
     expect(r.detail).not.toContain("dirs present");
@@ -324,7 +261,7 @@ describe("rtHealthRows — tool.legacy-dirs", () => {
   test("two real legacy dirs (~/.rt and ~/.shepherdr) -> invalid, plural phrasing", async () => {
     mkdirSync(join(home, ".rt"), { recursive: true });
     mkdirSync(join(home, ".shepherdr"), { recursive: true });
-    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }, NOOP_FZF), "tool.legacy-dirs");
+    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }), "tool.legacy-dirs");
     expect(r.status).toBe("invalid");
     expect(r.detail).toContain("real legacy dirs present");
   });
@@ -345,7 +282,7 @@ describe("rtHealthRows — tool.intercepts", () => {
   });
 
   test("no rules declared -> skipped", async () => {
-    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }, NOOP_FZF), "tool.intercepts");
+    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }), "tool.intercepts");
     expect(r.status).toBe("skipped");
     expect(r.detail).toBe("no intercepts declared");
     expect(r.required).toBe(false);
@@ -363,8 +300,8 @@ describe("rtHealthRows — tool.intercepts", () => {
     // race lib/endpoint/__tests__/shim.test.ts when the full suite runs).
     mkdirSync(join(home, ".local", "bin", "ghosttool"), { recursive: true });
 
-    await expect(rtHealthRows(fakeProbes({ home }), { ci: false }, NOOP_FZF)).resolves.toBeTruthy();
-    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }, NOOP_FZF), "tool.intercepts");
+    await expect(rtHealthRows(fakeProbes({ home }), { ci: false })).resolves.toBeTruthy();
+    const r = await pickRow(rtHealthRows(fakeProbes({ home }), { ci: false }), "tool.intercepts");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("check failed");
   });
@@ -373,7 +310,7 @@ describe("rtHealthRows — tool.intercepts", () => {
 describe("rtHealthRows — tool.shell (fully Probes-driven)", () => {
   test("no SHELL set -> needs-you, honest 'can't write automatically' detail (finding #11)", async () => {
     const p = fakeProbes({ home: "/fake-home" });
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.shell");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.shell");
     expect(r.status).toBe("needs-you");
     expect(r.detail).toContain("can't write");
     expect(r.detail).not.toBe("shell integration missing — Install writes it");
@@ -382,21 +319,21 @@ describe("rtHealthRows — tool.shell (fully Probes-driven)", () => {
 
   test("an unrecognized shell (e.g. tcsh) -> the same honest 'can't write automatically' detail", async () => {
     const p = fakeProbes({ home: "/fake-home", env: { SHELL: "/bin/tcsh" } });
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.shell");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.shell");
     expect(r.status).toBe("needs-you");
     expect(r.detail).toContain("can't write");
   });
 
   test("zsh rc file contains rtcd -> ready", async () => {
     const p = fakeProbes({ home: "/fake-home", env: { SHELL: "/bin/zsh" }, files: { "/fake-home/.zshrc": "alias rtcd='rt-cd'\n" } });
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.shell");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.shell");
     expect(r.status).toBe("ready");
     expect(r.detail).toContain(".zshrc");
   });
 
   test("known shell, rc file exists but has no rtcd -> needs-you, Install-writes-it detail", async () => {
     const p = fakeProbes({ home: "/fake-home", env: { SHELL: "/bin/zsh" }, files: { "/fake-home/.zshrc": "# nothing here\n" } });
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.shell");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.shell");
     expect(r.status).toBe("needs-you");
     expect(r.detail).toBe("shell integration missing — Install writes it");
   });
@@ -405,7 +342,7 @@ describe("rtHealthRows — tool.shell (fully Probes-driven)", () => {
 describe("rtHealthRows — tool.extension (checkRtContextExtension over p.home)", () => {
   test("no editor dirs -> skipped", async () => {
     const p = fakeProbes({ home: "/nonexistent-rt-health-extension-fixture" });
-    const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.extension");
+    const r = await pickRow(rtHealthRows(p, { ci: false }), "tool.extension");
     expect(r.status).toBe("skipped");
     expect(r.required).toBe(false);
     expect(r.optionalNote).not.toBeNull();
@@ -436,7 +373,7 @@ describe("rtHealthRows — tool.daemon", () => {
 
   test("not installed -> missing", async () => {
     rmSync(DAEMON_CONFIG_PATH, { force: true });
-    const r = await pickRow(rtHealthRows(fakeProbes(), { ci: false }, NOOP_FZF), "tool.daemon");
+    const r = await pickRow(rtHealthRows(fakeProbes(), { ci: false }), "tool.daemon");
     expect(r.status).toBe("missing");
     expect(r.detail).toContain("Install");
     expect(r.required).toBe(true);
@@ -459,7 +396,7 @@ describe("rtHealthRows — tool.daemon", () => {
 
   test("installed, ping unreachable, ci:false -> needs-you, the SAME Login Items action permissions.ts uses (finding #10)", async () => {
     markInstalled();
-    const r = await pickRow(rtHealthRows(fakeProbes({ daemon: async () => null }), { ci: false }, NOOP_FZF), "tool.daemon");
+    const r = await pickRow(rtHealthRows(fakeProbes({ daemon: async () => null }), { ci: false }), "tool.daemon");
     expect(r.status).toBe("needs-you");
     expect(r.detail).toContain("Login Items");
     expect(r.action).toBe(LOGIN_ITEMS_SETTINGS_ACTION);
@@ -467,14 +404,14 @@ describe("rtHealthRows — tool.daemon", () => {
 
   test("installed, ping unreachable, ci:true -> needs-you mentioning CI", async () => {
     markInstalled();
-    const r = await pickRow(rtHealthRows(fakeProbes({ daemon: async () => null }), { ci: true }, NOOP_FZF), "tool.daemon");
+    const r = await pickRow(rtHealthRows(fakeProbes({ daemon: async () => null }), { ci: true }), "tool.daemon");
     expect(r.status).toBe("needs-you");
     expect(r.detail).toContain("CI");
   });
 
   test("installed, ping ok, launchd registered, worktrees responding -> ready, recheck on-activate", async () => {
     markInstalled();
-    const r = await pickRow(rtHealthRows(fakeProbes({ daemon: readyDaemon, exec: launchdOk }), { ci: false }, NOOP_FZF), "tool.daemon");
+    const r = await pickRow(rtHealthRows(fakeProbes({ daemon: readyDaemon, exec: launchdOk }), { ci: false }), "tool.daemon");
     expect(r.status).toBe("ready");
     expect(r.detail).toContain("pid 4242");
     expect(r.detail).toContain("uptime 65s");
@@ -486,7 +423,7 @@ describe("rtHealthRows — tool.daemon", () => {
 
   test("installed, ping ok, but NOT registered with launchd -> invalid, naming the failing fact (R-T7-a)", async () => {
     markInstalled();
-    const r = await pickRow(rtHealthRows(fakeProbes({ daemon: readyDaemon, exec: launchdMissing }), { ci: false }, NOOP_FZF), "tool.daemon");
+    const r = await pickRow(rtHealthRows(fakeProbes({ daemon: readyDaemon, exec: launchdMissing }), { ci: false }), "tool.daemon");
     expect(r.status).toBe("invalid");
     expect(r.detail).toContain("not registered with launchd");
   });
@@ -503,7 +440,7 @@ describe("rtHealthRows — tool.daemon", () => {
       if (cmd === "worktrees") return null; // dead endpoint
       return null;
     };
-    const r = await pickRow(rtHealthRows(fakeProbes({ daemon, exec: launchdOk }), { ci: false }, NOOP_FZF), "tool.daemon");
+    const r = await pickRow(rtHealthRows(fakeProbes({ daemon, exec: launchdOk }), { ci: false }), "tool.daemon");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("worktrees endpoint check failed");
   });
@@ -517,7 +454,7 @@ describe("rtHealthRows — tool.daemon", () => {
       return null;
     };
     const r = await pickRow(
-      rtHealthRows(fakeProbes({ daemon, exec: async (argv) => (argv[0] === "launchctl" ? { code: 124, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" }) }), { ci: false }, NOOP_FZF),
+      rtHealthRows(fakeProbes({ daemon, exec: async (argv) => (argv[0] === "launchctl" ? { code: 124, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" }) }), { ci: false }),
       "tool.daemon",
     );
     expect(r.status).toBe("error");
@@ -554,7 +491,7 @@ describe("rtHealthRows — tool.flavor", () => {
   test("live daemon of the wrong flavor: fail, names all three legs", async () => {
     writeDevWrapper(); // setting left unset -> intended derives from the wrapper -> dev; cli -> dev
     const daemon = (async (cmd: string) => (cmd === "ping" ? { ok: true, flavor: "prod", pid: 9 } : null)) as Probes["daemon"];
-    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon }), { ci: false }, NOOP_FZF), "tool.flavor");
+    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon }), { ci: false }), "tool.flavor");
     expect(r.status).toBe("invalid");
     expect(r.detail).toContain("prod");
     expect(r.detail).toContain("dev-mode");
@@ -566,7 +503,7 @@ describe("rtHealthRows — tool.flavor", () => {
     // Deliberately mismatched vs the dev wrapper: proves a down daemon
     // short-circuits before the cli/intended comparison ever runs.
     setSetting("mattstack.mode", "prod", "machine");
-    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon: async () => null }), { ci: false }, NOOP_FZF), "tool.flavor");
+    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon: async () => null }), { ci: false }), "tool.flavor");
     expect(r.status).toBe("ready");
     expect(r.detail).toContain("daemon n/a");
   });
@@ -574,7 +511,7 @@ describe("rtHealthRows — tool.flavor", () => {
   test("all legs agree: ready", async () => {
     writeDevWrapper();
     const daemon = (async (cmd: string) => (cmd === "ping" ? { ok: true, flavor: "dev" } : null)) as Probes["daemon"];
-    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon }), { ci: false }, NOOP_FZF), "tool.flavor");
+    const r = await pickRow(rtHealthRows(fakeProbes({ home, daemon }), { ci: false }), "tool.flavor");
     expect(r.status).toBe("ready");
     expect(r.detail).toContain("dev everywhere");
   });
@@ -765,7 +702,7 @@ describe("rtHealthRows — home.backup (real git)", () => {
     await attachRemote(repoDir);
     execFileSync("git", ["push", "-q", "origin", "HEAD"], { cwd: repoDir });
 
-    const rows = await rtHealthRows(fakeProbes({ home: root, exec: createRealProbes().exec }), { ci: false }, NOOP_FZF);
+    const rows = await rtHealthRows(fakeProbes({ home: root, exec: createRealProbes().exec }), { ci: false });
     const r = rows.find((x) => x.id === "home.backup");
     expect(r).toBeDefined();
     // A path join that drops ".mattstack" (or joins nothing at all) points

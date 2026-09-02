@@ -39,12 +39,12 @@ test("no command module has a static value import of rt-render or ink", () => {
   expect(offenders).toEqual([]);
 });
 
-test("daemon graph never transitively reaches the CLI picker chain (repo-arg, repo, fzf, rt-render, ink)", () => {
+test("daemon graph never transitively reaches the CLI picker chain (repo-arg, repo, pick-wrappers, rt-render, ink)", () => {
   // Full resolver walk from the daemon entry point, not a fixed file list --
   // a new daemon module that reaches one of these transitively must fail
   // this test without anyone remembering to extend a scanned set by hand.
   const libDir = resolve(import.meta.dir, "..");
-  const bannedRelativeBasenames = new Set(["repo-arg.ts", "repo.ts", "fzf.ts", "fzf-select.ts", "rt-render.ts", "spawn.ts", "prompts.ts", "steps.ts"]);
+  const bannedRelativeBasenames = new Set(["repo-arg.ts", "repo.ts", "pick-wrappers.ts", "pick.ts", "rt-render.ts", "spawn.ts", "prompts.ts", "steps.ts"]);
   const bannedBareSpecifiers = ["ink"];
 
   function resolveRelativeImport(fromFile: string, specifier: string): string | null {

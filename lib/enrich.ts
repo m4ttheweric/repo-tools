@@ -38,6 +38,7 @@ import {
   extractLinearId,
   type LinearTicket,
 } from "./linear.ts";
+import type { PickSegment } from "./ui/protocol.ts";
 
 /** Best-effort serialized identity for a remote URL; undefined with no remote. */
 function identityForRemote(remoteUrl: string | undefined): string | undefined {
@@ -225,17 +226,84 @@ export function formatBranchLabelParts(eb: EnrichedBranch): BranchLabelParts {
   return { leading, trailing };
 }
 
+// ─── Segment-form label (rt-ui picker rows) ──────────────────────────────────
+
+const PIPELINE_GLYPHS: Record<string, { glyph: string; tone: string }> = {
+  success: { glyph: "✓", tone: "mint" },
+  success_with_warnings: { glyph: "✓", tone: "peach" },
+  failed: { glyph: "✗", tone: "coral" },
+  running: { glyph: "⟳", tone: "cyan" },
+  pending: { glyph: "⟳", tone: "faint" },
+  created: { glyph: "○", tone: "faint" },
+  canceled: { glyph: "✗", tone: "faint" },
+};
+
+const MR_STATE_GLYPHS: Record<string, { glyph: string; tone: string }> = {
+  opened: { glyph: "◉", tone: "mint" },
+  merged: { glyph: "●", tone: "blue" },
+  closed: { glyph: "○", tone: "coral" },
+};
+
 /**
- * Flat-string label for picker (fzf) inputs where the selection layer can't
- * consume a split shape. Just joins the parts with the standard separator.
- *
- * Format (ticket branch):   `dirname · Ticket Title [In Progress] · ✓ ◉`
- * Format (normal branch):   `dirname · branch · ✓ ◉`
+ * Segment-form sibling of `formatBranchLabelParts` for the rt-ui picker's row
+ * model — same source fields and the same leading/trailing split, but tones
+ * and hex values replace ANSI escapes so the picker can recolor per-theme and
+ * step cursor-row weight itself. Linear's `stateColor` rides as `hex` because
+ * it's a workspace's own dynamic truecolor, not one of the picker's named
+ * theme tones.
  */
-export function formatBranchLabel(eb: EnrichedBranch): string {
-  const sep = `${dim} · ${reset}`;
-  const { leading, trailing } = formatBranchLabelParts(eb);
-  return trailing ? `${leading}${sep}${trailing}` : leading;
+export function formatBranchSegments(eb: EnrichedBranch): { left: PickSegment[]; right: PickSegment[] } {
+  const right: PickSegment[] = [];
+  if (eb.mr?.pipeline) {
+    const g = PIPELINE_GLYPHS[eb.mr.pipeline.status];
+    if (g) right.push({ text: g.glyph, tone: g.tone });
+  }
+  if (eb.mr) {
+    const g = MR_STATE_GLYPHS[eb.mr.state];
+    if (g) {
+      if (right.length > 0) right.push({ text: " " });
+      right.push({ text: g.glyph, tone: g.tone });
+    }
+  }
+
+  const isDefault = DEFAULT_BRANCHES.has(eb.branch);
+  const isTicketBranch = !!(eb.linearId && eb.ticket);
+
+  if (isTicketBranch) {
+    const left: PickSegment[] = [
+      { text: eb.dirName, tone: "text", bold: true },
+      { text: " · ", tone: "faint" },
+      { text: eb.ticket!.title, tone: "text", bold: true },
+    ];
+    if (eb.ticket!.stateName) {
+      left.push(
+        eb.ticket!.stateColor
+          ? { text: ` [${eb.ticket!.stateName}]`, hex: eb.ticket!.stateColor }
+          : { text: ` [${eb.ticket!.stateName}]`, tone: "dim" },
+      );
+    }
+    return { left, right };
+  }
+
+  const left: PickSegment[] = eb.branch
+    ? [
+        { text: eb.dirName, tone: "text", bold: true },
+        { text: " · ", tone: "faint" },
+        { text: eb.branch, tone: "dim" },
+      ]
+    : [{ text: eb.dirName, tone: "text", bold: true }];
+
+  if (right.length === 0) {
+    right.push(
+      eb.linearId
+        ? { text: eb.linearId, tone: "dimmer" }
+        : { text: isDefault ? "[main branch]" : "[Local Only]", tone: "faint" },
+    );
+  } else if (eb.linearId) {
+    right.push({ text: " " }, { text: eb.linearId, tone: "dimmer" });
+  }
+
+  return { left, right };
 }
 
 // ─── Public enrichment API ───────────────────────────────────────────────────

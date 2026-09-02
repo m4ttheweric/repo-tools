@@ -1,60 +1,81 @@
 /**
  * rt commit — GitHub Desktop-style staging, discarding, and commit flow.
  *
- * Presents an fzf multi-picker of all changed files (staged + unstaged).
- * All files are pre-selected; deselect what you don't want. The right-side
- * fzf preview pane shows a live diff for the focused file, rendered via delta
- * (with fallback to plain `git diff --color=always` if delta is not installed).
+ * Presents a multi-picker of all changed files (staged + unstaged). All
+ * files are pre-selected; deselect what you don't want. Each row's stats
+ * column shows +adds/-dels for tracked files (from `git diff --numstat`) or
+ * a `new` tag for untracked ones — no diff preview pane.
  *
  * Operations (mirrors GitHub Desktop's Changes tab):
  *   - space: stage/unstage (toggle inclusion in commit)
- *   - ctrl-d: discard working-tree changes for selected files
+ *   - ctrl-d: discard working-tree changes for the file under the cursor
  *   - enter: commit staged selection
  *   - esc: abort
  *
  * Git mechanics live in lib/commit-ops.ts (tested there):
  *   1. Parse `git status --porcelain -z` → build file list
- *   2. fzf multi-picker with diff preview on the right (60% width)
+ *   2. filterableMultiselect with a right-pinned stats column
  *   3a. ctrl-d → confirm → discardChanges → back to step 1
  *   3b. enter → syncStagingArea → commit message → commitStaged → done
  *   3c. esc → abort
  */
 
-import { spawnSync } from "child_process";
-import { fzfHeightArgs } from "../lib/fzf-select.ts";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { writeFileSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { ensureFzf } from "../lib/fzf.ts";
-import { T, toAnsiFg, toHex } from "../lib/tui/palette.ts";
+import { filterableMultiselect } from "../lib/pick-wrappers.ts";
+import { printAborted } from "../lib/ui/abort.ts";
+import type { PickResult, PickRow, PickSegment } from "../lib/ui/protocol.ts";
 import {
   getChangedFiles,
   discardChanges,
   syncStagingArea,
   commitStaged,
+  numstatCounts,
   type ChangedFile,
+  type NumstatCounts,
 } from "../lib/commit-ops.ts";
 
-// ─── Display ──────────────────────────────────────────────────────────────────
+// ─── Row building ─────────────────────────────────────────────────────────────
 
-const STATUS_COLORS: Record<string, string> = {
-  A: "32",
-  M: "33",
-  D: "31",
-  R: "34",
-  C: "34",
-  U: "35",
+const STATUS_TONES: Record<string, string> = {
+  A: "mint",
+  M: "peach",
+  D: "coral",
+  R: "blue",
+  C: "blue",
+  U: "lav",
 };
 
-/** Two-char status badge, colored by the dominant status letter. Handles any
- *  porcelain combination (M , MM, AM, RM, ...) instead of a fixed lookup. */
-function fileLabel(f: ChangedFile): string {
-  if (f.rawStatus === "??") return `  \x1b[2m??\x1b[0m  ${f.path}`;
+/** Path + marker left segments. Segment 0 is the row's label: the selected
+ *  panel (rt-ui) reads only Left[0].Text for its mint dot-joined summary, so
+ *  the marker must trail rather than lead. Staged changes color by status
+ *  letter; unstaged changes render dim. */
+function fileLeftSegments(f: ChangedFile): PickSegment[] {
+  if (f.rawStatus === "??") {
+    return [{ text: f.path }, { text: "  ??", tone: "faint" }];
+  }
   const letter = f.isStaged ? f.rawStatus[0]! : f.rawStatus[1]!;
-  const color = f.isStaged ? STATUS_COLORS[letter] ?? "0" : "2";
-  return `  \x1b[${color}m${f.rawStatus}\x1b[0m  ${f.path}`;
+  const tone = f.isStaged ? (STATUS_TONES[letter] ?? "text") : "dim";
+  return [{ text: f.path }, { text: `  ${f.rawStatus}`, tone }];
+}
+
+/** Stats right segments. Untracked files never appear in `git diff HEAD`, so
+ *  numstat has nothing to report for them — a `new` tag stands in rather
+ *  than a fabricated +0/-0. */
+function fileRightSegments(f: ChangedFile, numstat: Map<string, NumstatCounts>): PickSegment[] {
+  if (f.rawStatus === "??") {
+    return [{ text: "new", tone: "faint" }];
+  }
+  const counts = numstat.get(f.path) ?? { adds: 0, dels: 0 };
+  return [
+    { text: `+${counts.adds}`, tone: "mint" },
+    { text: " " },
+    { text: `-${counts.dels}`, tone: "coral" },
+  ];
+}
+
+function fileRow(f: ChangedFile, numstat: Map<string, NumstatCounts>): PickRow {
+  return { value: f.path, left: fileLeftSegments(f), right: fileRightSegments(f, numstat) };
 }
 
 function errMessage(err: unknown): string {
@@ -87,153 +108,51 @@ async function confirmDiscard(paths: string[]): Promise<boolean> {
   });
 }
 
-// ─── delta / diff detection ───────────────────────────────────────────────────
+// ─── picker ───────────────────────────────────────────────────────────────────
 
-/** Returns the diff command to pipe into for colorised output.
- *  Uses delta if available, otherwise falls back to nothing (git produces ANSI itself). */
-function deltaPipeCmd(): string {
-  const result = spawnSync("which", ["delta"], { stdio: "pipe" });
-  if (result.status !== 0) return "";
-  // delta flags tuned for the preview pane.
-  // --syntax-theme intentionally omitted — let delta use its configured default
-  // to avoid quote-escaping issues when the theme name contains spaces.
-  return "| delta --no-gitconfig --paging=never --width=variable --line-numbers";
-}
+const DISCARD_ACTION_ID = "discard";
 
-/**
- * Build the preview command for fzf's --preview flag.
- *
- * Writes the bash script to a temp file so that real newlines are preserved
- * exactly as written — bypassing the multi-layer quoting that occurs when a
- * script is embedded inline (JSON.stringify \n escapes collapse to 'n' when
- * the shell parser rescans them, producing errors like "thenn: not found").
- *
- * Returns { cmd, cleanup } — call cleanup() after fzf exits.
- */
-function buildPreviewCmd(
-  cwd: string,
-  pipe: string,
-): { cmd: string; cleanup: () => void } {
-  const script = [
-    `f="$1"`,
-    `xy="\${f%%:*}"`,
-    `p="\${f#*:}"`,
-    `cd ${JSON.stringify(cwd)}`,
-    `if [ "$xy" = "??" ]; then`,
-    `  git diff --color=always --no-index /dev/null "$p" 2>/dev/null ${pipe} || cat "$p"`,
-    `else`,
-    `  STAGED=$(git diff --cached --color=always -- "$p" 2>/dev/null ${pipe})`,
-    `  UNSTAGED=$(git diff --color=always -- "$p" 2>/dev/null ${pipe})`,
-    `  if [ -n "$STAGED" ] && [ -n "$UNSTAGED" ]; then`,
-    `    printf '\\e[1;34m── staged ──\\e[0m\\n'`,
-    `    printf '%s\\n' "$STAGED"`,
-    `    printf '\\n\\e[1;33m── unstaged ──\\e[0m\\n'`,
-    `    printf '%s\\n' "$UNSTAGED"`,
-    `  elif [ -n "$STAGED" ]; then`,
-    `    printf '%s\\n' "$STAGED"`,
-    `  else`,
-    `    printf '%s\\n' "$UNSTAGED"`,
-    `  fi`,
-    `fi`,
-  ].join("\n");
-
-  const scriptPath = join(tmpdir(), `rt-preview-${process.pid}.sh`);
-  writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}\n`, { mode: 0o755 });
-
-  const cleanup = () => {
-    process.removeListener("exit", cleanup);
-    try { unlinkSync(scriptPath); } catch { /* already gone — ignore */ }
-  };
-
-  // Safety net: delete the script if the process exits before fzf does.
-  process.once("exit", cleanup);
-
-  return { cmd: `bash ${JSON.stringify(scriptPath)} {1}`, cleanup };
-}
-
-// ─── fzf picker ───────────────────────────────────────────────────────────────
-
-interface PickerResult {
-  exitKey: string;  // "" = enter, "ctrl-d" = discard
+export interface PickerOutcome {
+  action: "select" | "discard";
   paths: string[];
 }
 
 /**
- * Show fzf multi-picker with live diff preview.
- * Returns { exitKey, paths } where exitKey is the key that dismissed fzf,
- * or null if the user cancelled (esc).
+ * Show the changed-files multiselect. ctrl-d is a global exit action outside
+ * filterableMultiselect's own value/cancel contract (it collapses any
+ * non-select action's result to `values ?? []`), so the live handle — given
+ * out via onOpen — is read directly for the terminal PickResult. That's the
+ * only way to tell "discard" apart from "select" or to reach the cursor row
+ * a discard fired on.
  */
-function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
-  const fzf = ensureFzf();
-  const pipe = deltaPipeCmd();
-  const { cmd: previewCmd, cleanup: cleanupPreview } = buildPreviewCmd(cwd, pipe);
+export async function runFilePicker(cwd: string, files: ChangedFile[]): Promise<PickerOutcome | null> {
+  const numstat = numstatCounts(cwd);
+  const rows = files.map((f) => fileRow(f, numstat));
 
-  // Build the input: "<xy>:<path>\t<displayLabel>"
-  const input = files
-    .map((f) => `${f.rawStatus}:${f.path}\t${fileLabel(f)}`)
-    .join("\n");
-
-  const result = spawnSync(
-    fzf,
-    [
-      "--multi",
-      "--ansi",
-      "--with-nth=2..",         // display label col; value col is hidden
-      "--delimiter=\t",
-      "--layout=reverse",
-      ...fzfHeightArgs(),
-      "--border=left",
-      "--no-separator",
-      "--prompt=  filter: ",
-      `--header=${toAnsiFg(T.pink)}rt commit\x1b[0m`,
-      "--header-first",
-      "--info=inline-right",
-      "--footer=space: stage  tab: toggle+next  ctrl-a: toggle-all  ctrl-d: discard  enter: commit  esc: abort",
-      "--no-mouse",
-      "--bind=space:toggle,tab:toggle+down,ctrl-a:toggle-all",
-      // GitHub Desktop style: everything checked by default. Must be the
-      // `load` event, not `start`: start fires before the piped input is
-      // read, so select-all would apply to an empty list and enter/ctrl-d
-      // would act on only the focused file.
-      "--bind=load:select-all",
-      "--expect=ctrl-d",        // detect discard key; printed as first output line
-      // Preview pane: right side, 60% width
-      `--preview=${previewCmd}`,
-      "--preview-window=right:60%:wrap:border-left",
-      "--preview-label= diff ",
-      // Highlight matched characters
-      `--color=hl:#ffb86c,hl+:#ffb86c,border:${toHex(T.pink)}`,
-    ],
+  let raw: PickResult | undefined;
+  const values = await filterableMultiselect(
     {
-      input,
-      stdio: ["pipe", "pipe", "inherit"],
-      encoding: "utf8",
-      cwd,
+      message: "rt commit",
+      options: [],
+      initialValues: files.map((f) => f.path),
+      breadcrumb: ["rt", "commit"],
+    },
+    {
+      rows,
+      actions: [{ id: DISCARD_ACTION_ID, label: "discard", key: "ctrl-d", scope: "global" }],
+      onOpen: (h) => {
+        void h.result.then((r) => {
+          raw = r;
+        });
+      },
     },
   );
 
-  cleanupPreview();
-
-  // fzf exits non-zero on ESC / Ctrl+C
-  if (result.status !== 0 || !result.stdout?.trim()) {
-    return null;
+  if (values === null) return null;
+  if (raw?.action === DISCARD_ACTION_ID) {
+    return { action: "discard", paths: raw.values ?? (raw.value ? [raw.value] : []) };
   }
-
-  // With --expect, fzf prints the exit key on the first line (empty string for
-  // enter). Only strip the trailing newline — a full trim() would eat the empty
-  // key line and shift the first selected file into the exitKey slot.
-  const lines = result.stdout.replace(/\n$/, "").split("\n");
-  const exitKey = lines[0] ?? "";
-
-  const paths = lines
-    .slice(1)
-    .map((line) => {
-      const value = line.split("\t")[0]!; // "<xy>:<path>"
-      return value.slice(value.indexOf(":") + 1); // "<path>"
-    })
-    .filter(Boolean);
-
-  return { exitKey, paths };
+  return { action: "select", paths: values };
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -250,50 +169,50 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
       process.exit(0);
     }
 
-    const result = runFilePicker(cwd, files);
+    const outcome = await runFilePicker(cwd, files);
 
-    if (!result) {
-      process.stderr.write("\n  \x1b[2maborted\x1b[0m\n\n");
+    if (!outcome) {
+      printAborted();
       process.exit(0);
     }
 
-    if (result.exitKey === "ctrl-d") {
-      if (result.paths.length === 0) {
-        process.stderr.write("\n  \x1b[33mno files selected — nothing to discard\x1b[0m\n\n");
+    if (outcome.action === "discard") {
+      if (outcome.paths.length === 0) {
+        process.stderr.write("\n  \x1b[33mno file under cursor — nothing to discard\x1b[0m\n\n");
         continue;
       }
 
-      const confirmed = await confirmDiscard(result.paths);
+      const confirmed = await confirmDiscard(outcome.paths);
       if (!confirmed) {
         process.stderr.write("  \x1b[2mcancelled\x1b[0m\n\n");
         continue;
       }
 
       try {
-        discardChanges(cwd, files, result.paths);
+        discardChanges(cwd, files, outcome.paths);
       } catch (err) {
         process.stderr.write(`  \x1b[31mdiscard failed:\x1b[0m ${errMessage(err)}\n`);
         continue;
       }
-      const label = result.paths.length === 1 ? result.paths[0] : `${result.paths.length} files`;
+      const label = outcome.paths.length === 1 ? outcome.paths[0] : `${outcome.paths.length} files`;
       process.stderr.write(`  \x1b[32mdiscarded\x1b[0m ${label}\n`);
       // Loop back — next iteration rebuilds the file list from fresh git status
       continue;
     }
 
-    if (result.paths.length === 0) {
+    if (outcome.paths.length === 0) {
       process.stderr.write("\n  \x1b[33mno files selected — nothing to commit\x1b[0m\n\n");
       process.exit(0);
     }
 
     try {
-      syncStagingArea(cwd, files, new Set(result.paths));
+      syncStagingArea(cwd, files, new Set(outcome.paths));
     } catch (err) {
       process.stderr.write(`\n  \x1b[31mstaging failed:\x1b[0m ${errMessage(err)}\n\n`);
       process.exit(1);
     }
 
-    const stagedList = result.paths.map((p) => `  \x1b[32m+\x1b[0m ${p}`).join("\n");
+    const stagedList = outcome.paths.map((p) => `  \x1b[32m+\x1b[0m ${p}`).join("\n");
     process.stderr.write(`\n${stagedList}\n\n`);
 
     const { textInput } = await import("../lib/rt-render.ts");

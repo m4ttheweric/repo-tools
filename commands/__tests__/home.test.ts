@@ -203,7 +203,7 @@ class FakeSeam implements ExecSeam {
   }
 }
 
-/** Never picks anything — used as the default injected picker so a test that doesn't expect the prompt fails loudly instead of hanging on a real fzf. */
+/** Never picks anything — used as the default injected picker so a test that doesn't expect the prompt fails loudly instead of hanging on a real picker. */
 class UnreachablePickerSeam implements MachineProfilePickerSeam {
   async pick(): Promise<string | null> {
     throw new Error("MachineProfilePickerSeam.pick should not have been called");

@@ -1,0 +1,78 @@
+<!doctype html>
+<script src="./support.js"></script>
+<style>
+:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--panel:#34304E;--pink:#FF6B9D;--mint:#62E6A8;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#A8A0C6;--dimmer:#8B84A8;--faint:#6E668C}
+html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px;color:var(--text);padding:26px}
+.term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45);margin-bottom:26px;position:relative}
+.ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
+.selrow{flex:1;display:flex;background:var(--sel)}
+.dimmed{opacity:.38}
+.t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
+.p{color:var(--pink)}.m{color:var(--mint)}.cy{color:var(--cyan)}.lv{color:var(--lav)}
+.b{font-weight:700}
+.rule{border-top:1px solid var(--rule);margin:7px 0 5px}
+.lbl{display:inline-block;min-width:20ch}
+.fico svg{vertical-align:-1px}
+h1{font:600 16px/1.3 system-ui;color:var(--text);margin:0 0 3px}
+p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:82ch;white-space:normal}
+.modal{position:absolute;left:50%;transform:translateX(-50%);background:#221A35;border:1px solid var(--panel);border-radius:10px;box-shadow:0 18px 50px rgba(0,0,0,.7);padding:8px 0 6px;z-index:3}
+.modal .ln{padding:0 14px}
+.modal .rule{margin:5px 0 4px}
+</style>
+<title>Modal submenus</title>
+<h1>rt nav — submenus are modal overlays</h1>
+<p class="note">Sort (ctrl-s), actions (ctrl-k), and right-click all render as the same modal layer over the live picker — the parent dims and the modal sits on its own elevated surface (Surface #221A35 — terminals have no shadows, so lift comes from the surface step + Panel border + the dim), and the parent never tears down, so the typed filter and cursor survive by construction (nav's resume-state plumbing stops existing). esc or clicking outside dismisses. The empty-folder notice stays inline: it's a state of the picker, not a menu.</p>
+
+<div class="term" style="width:88ch;height:352px">
+  <div class="dimmed">
+    <div class="ln"><span class="t b">~/Documents/GitHub</span><span class="sp"></span><span class="f">10 folders · 2 files</span></div>
+    <div class="ln"><span class="p">❯ </span><span class="t">re</span></div>
+    <div class="rule"></div>
+    <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="fico"><svg width="13" height="11" viewBox="0 0 16 13"><path fill="#5AAAFF" d="M0.5 1.5 h5.2 l1.6 2 h8.2 a0.8 0.8 0 0 1 0.8 0.8 v7.4 a0.8 0.8 0 0 1 -0.8 0.8 h-15 a0.8 0.8 0 0 1 -0.8 -0.8 v-9.4 a0.8 0.8 0 0 1 0.8 -0.8 z"/></svg> </span><span class="t b">repo-tools</span><span class="sp"></span></span></div>
+    <div class="ln"><span> </span><span> </span><span class="fico"><svg width="13" height="11" viewBox="0 0 16 13"><path fill="#5AAAFF" d="M0.5 1.5 h5.2 l1.6 2 h8.2 a0.8 0.8 0 0 1 0.8 0.8 v7.4 a0.8 0.8 0 0 1 -0.8 0.8 h-15 a0.8 0.8 0 0 1 -0.8 -0.8 v-9.4 a0.8 0.8 0 0 1 0.8 -0.8 z"/></svg> </span><span class="s">forge-leaderboard</span></div>
+    <div class="ln"><span> </span><span> </span><span> </span><span> </span><span class="s">restore-notes.md</span></div>
+    <div class="ln"><span> </span><span> </span><span> </span><span> </span><span class="s">README.md</span></div>
+    <div class="rule"></div>
+    <div class="ln"><span class="lv">nav</span><span class="f"> enter</span><span class="d"> open</span><span class="f">  ctrl-h</span><span class="d"> cd here</span><span class="sp"></span><span class="f">ctrl-/</span><span class="d"> commands</span><span class="f">  esc</span><span class="d"> quit</span></div>
+  </div>
+  <div class="modal" style="top:74px;width:54ch">
+    <div class="ln"><span class="t b">Sort by</span><span class="sp"></span><span class="f">esc dismiss</span></div>
+    <div class="rule"></div>
+    <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="lbl"><span class="m">● </span><span class="t b">Size</span></span><span class="d">largest first  (select to reverse)</span><span class="sp"></span></span></div>
+    <div class="ln"><span> </span><span> </span><span class="lbl"><span> </span><span> </span><span class="s">Name</span></span><span class="dr">A → Z</span></div>
+    <div class="ln"><span> </span><span> </span><span class="lbl"><span> </span><span> </span><span class="s">Date Modified</span></span><span class="dr">newest first</span></div>
+    <div class="ln"><span> </span><span> </span><span class="lbl"><span> </span><span> </span><span class="s">Date Created</span></span><span class="dr">newest first</span></div>
+    <div class="ln"><span> </span><span> </span><span class="lbl"><span> </span><span> </span><span class="s">Kind</span></span><span class="dr">grouped by type</span></div>
+  </div>
+</div>
+
+<div class="term" style="width:88ch;height:352px">
+  <div class="dimmed">
+    <div class="ln"><span class="t b">~/Documents/GitHub/repo-tools/lib/runner</span><span class="sp"></span><span class="f">2 folders · 6 files</span></div>
+    <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+    <div class="rule"></div>
+    <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="s b">tmux-engine.ts</span><span class="sp"></span></span></div>
+    <div class="ln"><span> </span><span> </span><span class="s">engine.ts</span></div>
+    <div class="ln"><span> </span><span> </span><span class="s">runner.ts</span></div>
+    <div class="ln"><span> </span><span> </span><span class="s">state.ts</span></div>
+    <div class="rule"></div>
+    <div class="ln"><span class="lv">nav</span><span class="f"> enter</span><span class="d"> open</span><span class="f">  ctrl-h</span><span class="d"> cd here</span><span class="sp"></span><span class="f">ctrl-/</span><span class="d"> commands</span><span class="f">  esc</span><span class="d"> quit</span></div>
+  </div>
+  <div class="modal" style="top:88px;width:44ch">
+    <div class="ln"><span class="t b">tmux-engine.ts</span><span class="sp"></span><span class="f">esc dismiss</span></div>
+    <div class="rule"></div>
+    <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="lbl"><span class="t b">Open with…</span></span><span class="sp"></span></span></div>
+    <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">Quick Look</span></span><span class="dr">qlmanage -p</span></div>
+    <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">Reveal in Finder</span></span><span class="dr">open -R</span></div>
+    <div class="ln"><span> </span><span> </span><span class="lbl"><span class="s">Copy path</span></span><span class="dr">pbcopy</span></div>
+  </div>
+  <div style="position:absolute;bottom:10px;right:16px;font:11.5px system-ui;color:var(--faint)">same layer as right-click &amp; ctrl-k — one modal system</div>
+</div>
+
+<div class="term" style="width:56ch">
+  <div class="ln"><span class="t b">~/Documents/GitHub/deck/dist</span><span class="sp"></span><span class="f">empty</span></div>
+  <div class="rule"></div>
+  <div class="ln" style="padding-top:4px;padding-bottom:4px"><span class="f">  empty folder</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="f">enter</span><span class="d"> cd here</span><span class="f">  ctrl-up</span><span class="d"> up</span><span class="f">  ctrl-t</span><span class="d"> hidden</span><span class="sp"></span><span class="f">esc</span><span class="d"> quit</span></div>
+</div>

@@ -75,7 +75,7 @@ rt verify --json    # structured JSON for tooling
 `rt verify` is a read-only render of the same plan `rt setup plan` computes. It
 does not install anything. Rows marked required are the critical ones: macOS
 version, Command Line Tools, arm64 architecture, the `rt` binary, absence of
-split legacy state dirs, fzf, the app bundle, the daemon, the install flavor,
+split legacy state dirs, the app bundle, the daemon, the install flavor,
 herdr, Claude, the browser helper, plus credential and forge-reachability
 groups. The editor extension, the vsix, shell integration, the `~/.local/bin`
 link, and intercepts are reported but not critical.

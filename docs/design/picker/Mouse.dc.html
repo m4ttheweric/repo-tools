@@ -1,0 +1,64 @@
+<!doctype html>
+<script src="./support.js"></script>
+<style>
+:root{--bg:#161224;--bgs:#1C162C;--sel:#37284B;--rule:#2A2340;--pink:#FF6B9D;--mint:#62E6A8;--cyan:#5AAAFF;--lav:#BD93F9;--text:#E6E0FF;--soft:#D2CDEB;--dim:#A8A0C6;--dimmer:#8B84A8;--faint:#6E668C}
+html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,monospace;font-size:13px;color:var(--text);padding:26px}
+.term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45);margin-bottom:26px}
+.ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
+.selrow{flex:1;display:flex;background:var(--sel)}
+.hovrow{flex:1;display:flex;background:#251E3D}
+.t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
+.p{color:var(--pink)}.m{color:var(--mint)}.cy{color:var(--cyan)}.lv{color:var(--lav)}
+.b{font-weight:700}
+.rule{border-top:1px solid var(--rule);margin:7px 0 5px}
+.lbl{display:inline-block;min-width:16ch}
+.u{text-decoration:underline;text-underline-offset:3px}
+.cursor{position:relative}
+.ptr{font-size:15px;position:relative;top:1px}
+h1{font:600 16px/1.3 system-ui;color:var(--text);margin:0 0 3px}
+p.note{font:12px/1.5 system-ui;color:var(--dimmer);margin:0 0 16px;max-width:80ch;white-space:normal}
+h2{font:600 12px/1.4 system-ui;color:var(--lav);margin:18px 0 8px;text-transform:uppercase;letter-spacing:.08em}
+table.gram{border-collapse:collapse;font:12px/1.7 system-ui;color:var(--dim);margin:0 0 22px}
+table.gram td{padding:2px 18px 2px 0;vertical-align:top}
+table.gram td:first-child{color:var(--soft);font-family:"SF Mono",Menlo,monospace;font-size:12px;white-space:nowrap}
+</style>
+<title>Mouse support</title>
+<h1>First-class mouse (SGR protocol, Bubble Tea native)</h1>
+<p class="note">fzf's --no-mouse dies with fzf. Hover is a distinct state from the keyboard cursor: hover gets its own token (HoverBg #251E3D — visible, but clearly below SelBg #37284B), the cursor keeps pink ▌ + SelBg — moving the mouse never steals the keyboard's place. Every interactive zone is a click target.</p>
+
+<table class="gram">
+  <tr><td>hover row</td><td>HoverBg #251E3D tint (keyboard cursor unaffected)</td></tr>
+  <tr><td>click row</td><td>move cursor there (single = focus, not accept)</td></tr>
+  <tr><td>double-click row</td><td>accept (enter)</td></tr>
+  <tr><td>click ◉ / ○</td><td>toggle in multi-select (row body still focuses)</td></tr>
+  <tr><td>right-click row</td><td>context menu from the action registry (see Action registry board)</td></tr>
+  <tr><td>wheel</td><td>scroll the list; filter and cursor stay put</td></tr>
+  <tr><td>click breadcrumb segment</td><td>navigate back to that level (rt › worktree: click "rt" = root picker)</td></tr>
+  <tr><td>click path segment (nav)</td><td>jump to that ancestor directory</td></tr>
+  <tr><td>click keybar key</td><td>press it (esc, ctrl-r, sort…) — keys are buttons</td></tr>
+</table>
+
+<h2>Hover vs cursor (they coexist)</h2>
+<div class="term" style="width:88ch">
+  <div class="ln"><span class="t b u">rt</span><span class="f"> › </span><span class="t b">worktree</span><span class="sp"></span><span class="f">9/9</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="t b lbl">provision</span><span class="d">Claim a worktree for a ticket or branch (from the on-deck pool)</span><span class="sp"></span><span class="f">keyboard cursor</span><span> </span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="s lbl">create</span><span class="dr">Create a fresh worktree</span></div>
+  <div class="ln"><span> </span><span class="hovrow"><span> </span><span class="s lbl">dispose</span><span class="dr">Dispose a worktree</span><span class="sp"></span><span class="ptr">🖱</span><span class="f"> hover</span><span> </span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="s lbl">restore</span><span class="dr">Restore a disposed worktree from its retained trash entry</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">pick</span><span class="f"> enter</span><span class="d"> select</span><span class="sp"></span><span class="f u">ctrl-up</span><span class="d u"> back</span><span class="f">  esc</span><span class="d"> quit</span><span class="f">   ← keys are clickable</span></div>
+</div>
+
+<h2>Nav: the path is a click map</h2>
+<div class="term" style="width:88ch">
+  <div class="ln"><span class="t b">~</span><span class="f">/</span><span class="t b u">Documents</span><span class="f">/</span><span class="t b">GitHub</span><span class="sp"></span><span class="ptr">🖱</span><span class="f"> click a segment → jump there</span></div>
+  <div class="ln"><span class="p">❯ </span><span class="f">filter…</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="p">▌</span><span class="selrow"><span> </span><span class="fico"><svg width="13" height="11" viewBox="0 0 16 13" style="vertical-align:-1px"><path fill="#5AAAFF" d="M0.5 1.5 h5.2 l1.6 2 h8.2 a0.8 0.8 0 0 1 0.8 0.8 v7.4 a0.8 0.8 0 0 1 -0.8 0.8 h-15 a0.8 0.8 0 0 1 -0.8 -0.8 v-9.4 a0.8 0.8 0 0 1 0.8 -0.8 z"/></svg> </span><span class="t b">repo-tools</span><span class="sp"></span></span></div>
+  <div class="ln"><span> </span><span class="hovrow"><span> </span><span class="fico"><svg width="13" height="11" viewBox="0 0 16 13" style="vertical-align:-1px"><path fill="#5AAAFF" d="M0.5 1.5 h5.2 l1.6 2 h8.2 a0.8 0.8 0 0 1 0.8 0.8 v7.4 a0.8 0.8 0 0 1 -0.8 0.8 h-15 a0.8 0.8 0 0 1 -0.8 -0.8 v-9.4 a0.8 0.8 0 0 1 0.8 -0.8 z"/></svg> </span><span class="s">acme</span><span class="sp"></span><span class="f">double-click descends</span><span> </span></span></div>
+  <div class="ln"><span> </span><span> </span><span class="fico"><svg width="13" height="11" viewBox="0 0 16 13" style="vertical-align:-1px"><path fill="#5AAAFF" d="M0.5 1.5 h5.2 l1.6 2 h8.2 a0.8 0.8 0 0 1 0.8 0.8 v7.4 a0.8 0.8 0 0 1 -0.8 0.8 h-15 a0.8 0.8 0 0 1 -0.8 -0.8 v-9.4 a0.8 0.8 0 0 1 0.8 -0.8 z"/></svg> </span><span class="s">gitq</span></div>
+  <div class="rule"></div>
+  <div class="ln"><span class="lv">nav</span><span class="f"> enter</span><span class="d"> open</span><span class="f">  ctrl-h</span><span class="d"> cd here</span><span class="sp"></span><span class="f">ctrl-/</span><span class="d"> commands</span><span class="f">  esc</span><span class="d"> quit</span></div>
+</div>

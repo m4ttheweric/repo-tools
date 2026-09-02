@@ -6,11 +6,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb, setKvValue } from "../../lib/state/index.ts";
 import { worktreePicker } from "../cd.ts";
+import { __test__ as pickImplTest, type PickImpl } from "../../lib/ui/pick.ts";
 
 // Satisfies ensureShellFunction()'s early-return check so worktreePicker
 // never reaches the interactive "install rt cd?" prompt.
@@ -129,6 +131,115 @@ describe("rt cd default picker with a missing repo", () => {
       chdirSpy.mockRestore();
       errSpy.mockRestore();
       exitSpy.mockRestore();
+    }
+  });
+});
+
+/**
+ * The `--repo --worktree <branch>` combo's own inline repo picker (cd.ts,
+ * not lib/pickers.ts) is one of the two places this file directly calls
+ * process.exit(0) on esc -- the shared "aborted" line belongs there too.
+ */
+describe("rt cd --repo --worktree: esc on the inline repo picker", () => {
+  const origHome = process.env.HOME;
+  const origShell = process.env.SHELL;
+  const origCwd = process.cwd();
+  let home: string;
+  let scratch: string;
+  let repoA: string;
+  let repoB: string;
+
+  function git(cwd: string, ...args: string[]): void {
+    execFileSync("git", args, { cwd, stdio: "pipe" });
+  }
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-cd-esc-home-")));
+    scratch = realpathSync(mkdtempSync(join(tmpdir(), "rt-cd-esc-repos-")));
+    process.env.HOME = home;
+    process.env.SHELL = "/bin/zsh";
+    writeFileSync(join(home, ".zshrc"), UP_TO_DATE_RC);
+    closeStateDb();
+    process.chdir(scratch);
+
+    repoA = join(scratch, "repo-a");
+    repoB = join(scratch, "repo-b");
+    for (const dir of [repoA, repoB]) {
+      execFileSync("mkdir", ["-p", dir]);
+      git(dir, "init", "-q");
+    }
+    // Two real, worktree-having repos so the picker has more than one row --
+    // with exactly one, cd.ts auto-selects and never opens a picker at all.
+    setKvValue("repo-index", "repo-a", repoA);
+    setKvValue("repo-index", "repo-b", repoB);
+  });
+
+  afterEach(() => {
+    process.chdir(origCwd);
+    process.env.HOME = origHome;
+    process.env.SHELL = origShell;
+    closeStateDb();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  function installCancelPick(): void {
+    const impl: PickImpl = () => ({
+      update() {},
+      modal: async () => null,
+      result: Promise.resolve({ t: "result", action: "cancel", value: null, query: "" }),
+    });
+    pickImplTest.setImpl(impl);
+  }
+
+  async function runCapturingExit(isTTY: boolean): Promise<{ exitCode: number | undefined; stderr: string }> {
+    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { value: isTTY, configurable: true });
+
+    let stderr = "";
+    const origStdoutWrite = process.stdout.write;
+    const chdirSpy = spyOn(process, "chdir").mockImplementation(() => {});
+    const stderrSpy = spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      stderr += String(chunk);
+      return true;
+    });
+    const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+      throw new Error("process.exit sentinel");
+    });
+    try {
+      await worktreePicker(["--repo", "--worktree", "anybranch"]);
+      return { exitCode: undefined, stderr };
+    } catch {
+      return { exitCode: exitSpy.mock.calls.at(-1)?.[0] as number | undefined, stderr };
+    } finally {
+      process.stdout.write = origStdoutWrite;
+      chdirSpy.mockRestore();
+      stderrSpy.mockRestore();
+      exitSpy.mockRestore();
+      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
+  }
+
+  test("prints the faint 'aborted' line when stderr is a TTY", async () => {
+    installCancelPick();
+    try {
+      const { exitCode, stderr } = await runCapturingExit(true);
+      expect(exitCode).toBe(0);
+      expect(stderr).toContain("aborted");
+    } finally {
+      pickImplTest.setImpl(undefined);
+    }
+  });
+
+  test("prints no 'aborted' decoration off a TTY", async () => {
+    installCancelPick();
+    try {
+      const { exitCode, stderr } = await runCapturingExit(false);
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("aborted");
+    } finally {
+      pickImplTest.setImpl(undefined);
     }
   });
 });

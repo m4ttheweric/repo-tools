@@ -21,6 +21,7 @@ export { updateRepoIndex, getKnownRepos, getKnownReposCached, findKnownRepo, rep
 import { getRepoRoot, getRemoteUrl } from "./git.ts";
 import { updateRepoIndex, getKnownRepos, findKnownRepo, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
 import { repoLabel } from "./repo-label.ts";
+import type { PickRow } from "./ui/protocol.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -248,7 +249,7 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
       process.exit(1);
     }
 
-    const { filterableSelect } = await import("./rt-render.ts");
+    const { filterableSelect } = await import("./pick-wrappers.ts");
     const picked = await filterableSelect({
       message: commandLabel ? `Pick a repo for ${commandLabel}` : "Pick a repo",
       options: repoOptions(choices),
@@ -302,7 +303,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
   if (choices.length === 1) {
     selectedRepo = choices[0]!;
   } else {
-    const { filterableSelect } = await import("./rt-render.ts");
+    const { filterableSelect } = await import("./pick-wrappers.ts");
     const options = repoOptions(choices);
 
     const picked = await filterableSelect({ message: "Select a repo", options });
@@ -329,9 +330,16 @@ export async function pickWorktree(prompt: string): Promise<string> {
  * Pick a worktree from a specific repo (enriched with Linear ticket info).
  * Returns null when the picker is cancelled (Esc / Ctrl-C).
  */
-export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opts?: { backLabel?: string }): Promise<string | null> {
-  const { filterableSelect } = await import("./rt-render.ts");
-  const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
+export async function pickWorktreeFromRepo(
+  repo: KnownRepo,
+  prompt?: string,
+  // breadcrumb/crumbSuffix stay unset for callers whose dispatcher header is
+  // still printed (e.g. `rt code --pick`) -- only a fullscreen leaf (`rt cd`)
+  // needs this picker to carry its own in-card context.
+  opts?: { backLabel?: string; breadcrumb?: string[]; crumbSuffix?: string },
+): Promise<string | null> {
+  const { filterableSelect } = await import("./pick-wrappers.ts");
+  const { enrichBranches, formatBranchSegments } = await import("./enrich.ts");
 
   let remoteUrl: string | undefined;
   try {
@@ -345,17 +353,19 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opt
     remoteUrl,
   );
 
-  const options = enriched.map(eb => ({
-    value: eb.path,
-    label: formatBranchLabel(eb),
-    hint: "",
-  }));
+  const options = enriched.map(eb => ({ value: eb.path, label: eb.branch || eb.dirName, hint: "" }));
+  const rows: PickRow[] = enriched.map(eb => {
+    const { left, right } = formatBranchSegments(eb);
+    return { value: eb.path, left, right };
+  });
 
   return filterableSelect({
     message: prompt || `${repoLabel(repo.repoName)} worktrees`,
     options,
     backLabel: opts?.backLabel,
-  });
+    ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
+    ...(opts?.crumbSuffix ? { crumbSuffix: opts.crumbSuffix } : {}),
+  }, { rows });
 }
 
 /**
@@ -366,7 +376,7 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opt
  * 3. Returns updated RepoIdentity after chdir
  */
 export async function pickRepoInteractive(): Promise<RepoIdentity> {
-  const { filterableSelect } = await import("./rt-render.ts");
+  const { filterableSelect } = await import("./pick-wrappers.ts");
   const repos = getKnownRepos();
 
   if (repos.length === 0) {
@@ -384,7 +394,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
 
   if (currentRepo && currentRepo.worktrees.length > 1) {
     // Show current repo's worktrees + escape hatch
-    const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
+    const { enrichBranches, formatBranchSegments } = await import("./enrich.ts");
 
     let remoteUrl: string | undefined;
     try {
@@ -398,22 +408,23 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
       remoteUrl,
     );
 
-    const options = enriched.map((eb) => ({
-      value: eb.path,
-      label: formatBranchLabel(eb),
-      hint: "",
-    }));
+    const options = enriched.map((eb) => ({ value: eb.path, label: eb.branch || eb.dirName, hint: "" }));
+    options.push({ value: "__all_repos__", label: "Pick from all repos", hint: `${repos.length} repos available` });
 
-    options.push({
+    const rows: PickRow[] = enriched.map((eb) => {
+      const { left, right } = formatBranchSegments(eb);
+      return { value: eb.path, left, right };
+    });
+    rows.push({
       value: "__all_repos__",
-      label: "Pick from all repos",
-      hint: `${repos.length} repos available`,
+      left: [{ text: "Pick from all repos", tone: "text", bold: true }],
+      right: [{ text: `${repos.length} repos available`, tone: "faint" }],
     });
 
     const picked = await filterableSelect({
       message: `${repoLabel(currentRepo.repoName)} worktrees`,
       options,
-    });
+    }, { rows });
 
     if (!picked) process.exit(0);            // Esc on worktree picker
     if (picked === "__all_repos__") {
@@ -436,7 +447,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
 }
 
 async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
-  const { filterableSelect } = await import("./rt-render.ts");
+  const { filterableSelect } = await import("./pick-wrappers.ts");
 
   const options = repoOptions(repos);
 
