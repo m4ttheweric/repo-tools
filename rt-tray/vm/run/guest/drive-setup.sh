@@ -125,10 +125,12 @@ screen_readiness() {
     ax_click setup.checklist.row.tool.rt.action
     ax_wait_status tool.rt ready 60 || ax_fail "tool.rt not ready after Use mattstack's"
   fi
+  # Installed is enough here: herdr's integration and Claude's sign-in are
+  # optional follow-ups the row reports as needs-you.
   for tool in herdr claude; do
     if [ "$(ax_status "tool.$tool" || true)" = missing ]; then
       ax_click "setup.checklist.row.tool.$tool.action"
-      ax_wait_status "tool.$tool" ready 600 || ax_fail "tool.$tool install did not finish in 10 min"
+      ax_wait_status_not "tool.$tool" missing 600 || ax_fail "tool.$tool install did not finish in 10 min"
       ax_shot "03-$tool-installed"
     fi
   done

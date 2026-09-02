@@ -179,14 +179,26 @@ ax_status() {  # <rowId> → status string (the app exposes it as the row status
     end tell" 2>/dev/null
 }
 
+# Each ax_status is an osascript round trip of a few seconds, so the bound
+# is wall-clock, not iterations.
 ax_wait_status() {  # <rowId> <status> <timeout-s>
-  local n="${3:-60}" s
-  while [ "$n" -gt 0 ]; do
+  local deadline=$((SECONDS + ${3:-60})) s
+  while [ "$SECONDS" -lt "$deadline" ]; do
     s=$(ax_status "$1" || true)
     [ "$s" = "$2" ] && { ax_log "row $1 = $2"; return 0; }
-    sleep 1; n=$((n-1))
+    sleep 1
   done
   ax_log "row $1 stuck at '${s:-?}' (wanted $2)"; return 1
+}
+
+ax_wait_status_not() {  # <rowId> <status-to-leave> <timeout-s>
+  local deadline=$((SECONDS + ${3:-60})) s
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    s=$(ax_status "$1" || true)
+    [ -n "$s" ] && [ "$s" != "$2" ] && { ax_log "row $1 = $s"; return 0; }
+    sleep 1
+  done
+  ax_log "row $1 still '${s:-?}'"; return 1
 }
 
 # SecurityAgent admin prompt (privileged step, FDA/Login Items toggles by a standard user).
