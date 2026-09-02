@@ -325,6 +325,10 @@ async function selectPackageAndScript(
   const derivedIdentity = await deriveRepoIdentity(worktreePath);
   const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   let cameFromScript = false;
+  // Set to the script just queued via tab, so the script picker re-opens with
+  // the cursor on the NEXT script rather than the one already queued (a
+  // repeated tab then walks down the list; move back to re-queue on purpose).
+  let advanceAfterScript: string | undefined;
   const q: QueuedItem[] = queue ?? [];
 
   while (true) {
@@ -564,6 +568,16 @@ async function selectPackageAndScript(
     if (lastRun) scriptRows.push(lastRunRow(lastRun));
     scripts.forEach((s) => scriptRows.push(plainRow({ value: s, label: s, hint: pkgScripts[s]?.slice(0, 60) })));
 
+    // Cursor advance: after a tab-queue re-enters this package, land on the
+    // script after the queued one. Empty when the queued script isn't in this
+    // package (e.g. the user switched packages) or was the last row.
+    let scriptResume: string | undefined;
+    if (advanceAfterScript) {
+      const i = scripts.indexOf(advanceAfterScript);
+      scriptResume = i >= 0 && i + 1 < scripts.length ? scripts[i + 1] : undefined;
+      advanceAfterScript = undefined;
+    }
+
     const scriptHeaderParts = q.length > 0
       ? [
           "enter: queue",
@@ -592,6 +606,7 @@ async function selectPackageAndScript(
       expectKeys: ["alt-enter", "tab"],
       breadcrumb,
       crumbSuffix: ` · ${packageSegment} · ${packagePathSegment}`,
+      ...(scriptResume ? { resumeValue: scriptResume } : {}),
     });
 
     if (!scriptResult) throw new RunAborted(1);
@@ -629,6 +644,7 @@ async function selectPackageAndScript(
     // ── Tab key or Enter-with-queue: queue the base script ──────────────
     if (scriptResult.key === "tab" || (scriptResult.key === "" && q.length > 0)) {
       enqueue(`${pm} run ${scriptName}`);
+      advanceAfterScript = scriptName;
       cameFromScript = true;
       continue; // bounce to package picker
     }

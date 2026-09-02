@@ -226,6 +226,30 @@ test("package picker: queue-active state groups queue rows, adds Launch all + Sa
   expect(queueActions).toContainEqual({ id: "ctrl-up", label: "back", key: "ctrl-up", scope: "global", event: false });
 });
 
+test("script picker: a tab-queue advances the cursor to the next script", async () => {
+  const { root, pkgAPath } = makeWorkspaceFixture();
+  fixtureDir = root;
+
+  fake = installSequentialPick([
+    { action: "select", value: pkgAPath, query: "" }, // 0: package picker -- pick a
+    { action: "tab", value: "dev", query: "" },        // 1: script picker -- queue "dev"
+    { action: "select", value: pkgAPath, query: "" }, // 2: package picker (1 queued) -- pick a again
+    { action: "cancel", value: null, query: "" },      // 3: script picker -- capture cursor, then bail
+  ]);
+
+  const ctx = {
+    identity: { repoName: "picker-fixture", identity: `test-picker-advance-${Date.now()}`, repoRoot: root, dataDir: "", remoteUrl: "", baseUrl: "" },
+  } as never;
+
+  const res: RunResolution = await resolveRun([], ctx);
+  expect(res.kind).toBe("cancelled");
+  expect(fake.calls).toHaveLength(4);
+  // Package a's scripts are {dev, build}; after tab-queueing dev the re-opened
+  // script picker lands on build, so a repeated tab queues the next script
+  // instead of the same one.
+  expect(fake.calls[3]!.resumeValue).toBe("build");
+});
+
 // ─── esc-abort contract (RunAborted, not a live picker or a launched run) ───
 
 test("esc at the package stage aborts to shell: RunAborted, no further picker call, nothing launched", async () => {
