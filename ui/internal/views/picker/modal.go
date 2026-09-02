@@ -356,6 +356,16 @@ func (m *Model) updateModal(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.Text != "" {
 		m.modal.query += msg.Text
 		m.modal.refilter()
+		return m, nil
+	}
+	// A key that types nothing is never filter input, so a registry binding
+	// for it fires straight from the menu. The menu's own keys above take
+	// precedence, and a plain character always filters, so an action's key
+	// only ever reaches here as a modifier combo or a special key.
+	if m.modal.kind == modalRegistry {
+		if action, ok := m.actionForKey(msg.String()); ok {
+			return m.dispatchRegistryAction(action)
+		}
 	}
 	return m, nil
 }
@@ -395,12 +405,24 @@ func (m *Model) selectModalRow() (tea.Model, tea.Cmd) {
 		return m, tea.ClearScreen
 	}
 
-	m.modal = nil
-	m.armPinRelease()
 	action, ok := actionByID(m.req.Actions, row.actionID)
 	if !ok {
+		m.modal = nil
+		m.armPinRelease()
 		return m, tea.ClearScreen
 	}
+	return m.dispatchRegistryAction(action)
+}
+
+// dispatchRegistryAction closes the registry menu and fires action against
+// the row the menu was opened for (the cursor: a right-click open moves it
+// there first), exactly as if the action's key had been pressed on the main
+// list. Shared by selecting a menu row and by pressing the action's own key
+// while the menu is open -- the hint the menu prints for it is a live
+// accelerator, not documentation.
+func (m *Model) dispatchRegistryAction(action protocol.PickAction) (tea.Model, tea.Cmd) {
+	m.modal = nil
+	m.armPinRelease()
 	if action.Event {
 		m.emitEvent(action.ID)
 		return m, tea.ClearScreen

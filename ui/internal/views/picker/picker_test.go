@@ -1438,6 +1438,72 @@ func TestCtrlKMenuShowsOnlyDeclaredActionsNeverInjectedDefaults(t *testing.T) {
 	}
 }
 
+// TestCtrlKMenuAcceleratorsFireFromTheMenu pins the menu's key hints as live
+// accelerators: with the registry menu open, an action's own key dispatches
+// it against the menu's target row exactly as selecting that row would. The
+// menu's own keys keep precedence and a plain character still filters, so
+// only a modifier combo or a special key can reach the registry this way.
+func TestCtrlKMenuAcceleratorsFireFromTheMenu(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}},
+			{Value: "b", Left: []protocol.PickSegment{{Text: "b"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "item"},
+			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global", Event: true},
+		},
+	}
+	open := func() *Model {
+		m := New(req)
+		m.cursor = 1 // the menu targets row "b"
+		next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+		m = next.(*Model)
+		if m.modal == nil {
+			t.Fatal("setup: ctrl-k should open the registry menu")
+		}
+		return m
+	}
+
+	// The action's key fires it against the menu's target row and closes the menu.
+	m := open()
+	next, cmd := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'h'})
+	m = next.(*Model)
+	if m.modal != nil {
+		t.Fatal("the accelerator should close the menu")
+	}
+	if !isQuitCmd(cmd) {
+		t.Fatal("a non-event action fired from the menu should end the session")
+	}
+	if m.result == nil || m.result.Action != "cd-here" || m.result.Value == nil || *m.result.Value != "b" {
+		t.Fatalf("ctrl-h from the menu should dispatch cd-here on row b, got %+v", m.result)
+	}
+
+	// An event action fires and the picker stays open, same as from the list.
+	m = open()
+	next, cmd = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
+	m = next.(*Model)
+	if m.modal != nil {
+		t.Fatal("the event accelerator should close the menu")
+	}
+	mustNotQuit(t, cmd)
+	if m.result != nil {
+		t.Fatal("an event action must not produce a terminal result")
+	}
+
+	// A plain character is filter input, never an accelerator.
+	m = open()
+	next, _ = m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m = next.(*Model)
+	if m.modal == nil || m.modal.query != "c" {
+		t.Fatal("a plain character should filter the menu, not fire an action")
+	}
+	if m.result != nil {
+		t.Fatal("typing into the menu must not dispatch")
+	}
+}
+
 // TestCtrlKMenuOpensNothingWithNoDeclaredActions covers the other half: a
 // request that declares no registry at all has nothing for ctrl-k to show,
 // so it must leave the picker untouched rather than opening a menu of
