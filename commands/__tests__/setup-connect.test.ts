@@ -34,7 +34,7 @@ function baseDeps(overrides: Partial<ConnectDeps> & { probes?: Probes } = {}): C
     stdin: async () => null,
     isTTY: () => false,
     promptField: neverCalled("promptField"),
-    writer: { hasAgeKey: async () => true, write: neverCalled("writer.write") } satisfies SecretWriter,
+    writer: { storeReady: async () => true, write: neverCalled("writer.write") } satisfies SecretWriter,
     teamSecrets: { read: neverCalled("teamSecrets.read"), write: neverCalled("teamSecrets.write") } satisfies TeamSecrets,
     writeSetting: neverCalled("writeSetting"),
     listen: neverCalled("listen"),
@@ -71,7 +71,7 @@ describe("integrationConnect — gitlab (generic token flow)", () => {
     const deps = baseDeps({
       probes,
       stdin: async () => ({ token: "glpat-x" }),
-      writer: { hasAgeKey: async () => false, write: neverCalled("writer.write") },
+      writer: { storeReady: async () => false, write: neverCalled("writer.write") },
     });
 
     await integrationConnect("gitlab", ["--json"], deps);
@@ -94,7 +94,7 @@ describe("integrationConnect — gitlab (generic token flow)", () => {
       probes,
       stdin: async () => ({ token: "glpat-y" }),
       writer: {
-        hasAgeKey: async () => true,
+        storeReady: async () => true,
         write: async (domain, key, value) => {
           writes.push([domain, key, value]);
         },
@@ -146,7 +146,7 @@ describe("integrationConnect — gitlab (generic token flow)", () => {
         expect(field.name).toBe("token");
         return "glpat-from-prompt";
       },
-      writer: { hasAgeKey: async () => true, write: async () => {} },
+      writer: { storeReady: async () => true, write: async () => {} },
     });
 
     await integrationConnect("gitlab", ["--json"], deps);
@@ -168,7 +168,7 @@ describe("integrationConnect — gitlab (generic token flow)", () => {
       probes,
       stdin: async () => ({ token: "glpat-z\n" }),
       writer: {
-        hasAgeKey: async () => true,
+        storeReady: async () => true,
         write: async (domain, key, value) => {
           writes.push([domain, key, value]);
         },
@@ -188,7 +188,7 @@ describe("integrationConnect — gitlab (generic token flow)", () => {
     const readyDeps = baseDeps({
       probes: readyProbes,
       stdin: async () => ({ token: SENTINEL }),
-      writer: { hasAgeKey: async () => false, write: neverCalled("writer.write") },
+      writer: { storeReady: async () => false, write: neverCalled("writer.write") },
     });
     await integrationConnect("gitlab", ["--json"], readyDeps);
     expect(readyDeps.lines.join("\n")).not.toContain(SENTINEL);
@@ -217,7 +217,7 @@ describe("integrationConnect — github --use-gh", () => {
     const deps = baseDeps({
       probes,
       writer: {
-        hasAgeKey: async () => true,
+        storeReady: async () => true,
         write: async (domain, key, value) => {
           writes.push([domain, key, value]);
         },
@@ -403,7 +403,7 @@ describe("integrationConnect — slack (OAuth flow)", () => {
         return "auth-code-123";
       },
       writer: {
-        hasAgeKey: async () => true,
+        storeReady: async () => true,
         write: async (domain, key, value) => {
           writerWrites.push([domain, key, value]);
         },
@@ -439,7 +439,7 @@ describe("integrationConnect — slack (OAuth flow)", () => {
       teamSnapshot: () => slackTeamSnapshot(),
       teamSecrets: { read: async () => "client-secret-value", write: neverCalled("teamSecrets.write") },
       listen: async () => "auth-code",
-      writer: { hasAgeKey: async () => true, write: async (...a: [string, string, string]) => void writerWrites.push(a) },
+      writer: { storeReady: async () => true, write: async (...a: [string, string, string]) => void writerWrites.push(a) },
     });
 
     await integrationConnect("slack", ["--json"], deps);
@@ -464,7 +464,7 @@ describe("integrationConnect — slack (OAuth flow)", () => {
       teamSnapshot: () => slackTeamSnapshot(),
       teamSecrets: { read: async () => CLIENT_SECRET_SENTINEL, write: neverCalled("teamSecrets.write") },
       listen: async () => "auth-code",
-      writer: { hasAgeKey: async () => true, write: async () => {} },
+      writer: { storeReady: async () => true, write: async () => {} },
     });
 
     await integrationConnect("slack", ["--json"], deps);

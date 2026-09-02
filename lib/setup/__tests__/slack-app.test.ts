@@ -68,7 +68,7 @@ function createAppDeps(opts: CreateAppDepsOpts = {}): ConnectDeps & { lines: str
     stdin: opts.stdin ?? (async () => ({ configToken: "app-config-tok" })),
     isTTY: opts.isTTY ?? (() => false),
     promptField: opts.promptField ?? neverCalled("promptField"),
-    writer: { hasAgeKey: async () => true, write: neverCalled("writer.write") } satisfies SecretWriter,
+    writer: { storeReady: async () => true, write: neverCalled("writer.write") } satisfies SecretWriter,
     teamSecrets: {
       read: neverCalled("teamSecrets.read"),
       write: opts.teamSecretsWrite ?? (async () => ({ staged: false })),

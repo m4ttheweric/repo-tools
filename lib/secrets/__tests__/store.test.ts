@@ -9,6 +9,7 @@ import {
   formatDebugLine,
   buildSecretsSpawnOptions,
   createRealSecretsExecSeam,
+  personalStoreReady,
   NoAgeKeyError,
   InvalidSecretsSegmentError,
   SecretsTimeoutError,
@@ -589,6 +590,31 @@ describe("real seam spawn timeout", () => {
     await expect(seam.run(["sops", "-d", "x"], { timeoutMs: 50 } as any))
       .rejects.toBeInstanceOf(SecretsTimeoutError);
   }, 2_000);
+});
+
+// The setup checklist collects credentials before Install runs `rt home init`
+// (which is what writes user/.sops.yaml). A key alone is not a writable store:
+// team create mints the key two screens earlier, and sops then fails with
+// "config file not found" on the very first connect.
+describe("personalStoreReady", () => {
+  const sopsYaml = join(mattstackHome(), "user", ".sops.yaml");
+
+  test("false with a key but no user/.sops.yaml — the connect verb must stage instead", async () => {
+    const execSeam = new FakeSecretsExecSeam();
+    expect(await personalStoreReady({ ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam })).toBe(false);
+  });
+
+  test("true once both the key and user/.sops.yaml exist", async () => {
+    const execSeam = new FakeSecretsExecSeam();
+    execSeam.writeFile(sopsYaml, "creation_rules:\n");
+    expect(await personalStoreReady({ ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam })).toBe(true);
+  });
+
+  test("false with .sops.yaml but no key", async () => {
+    const execSeam = new FakeSecretsExecSeam();
+    execSeam.writeFile(sopsYaml, "creation_rules:\n");
+    expect(await personalStoreReady({ ageKeySeam: fakeAgeKeySeamAbsent(), execSeam })).toBe(false);
+  });
 });
 
 describe("formatDebugLine (the debugLog path)", () => {

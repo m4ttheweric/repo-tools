@@ -14,9 +14,9 @@
 import { randomBytes } from "crypto";
 import { dim, green, red, reset, yellow } from "../lib/ansi.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { readAgeKey, createRealAgeKeySeam } from "../lib/home/age-key.ts";
+import { createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
-import { NoAgeKeyError, createRealSecretsExecSeam, writeSecret, type SecretsSeams } from "../lib/secrets/store.ts";
+import { NoAgeKeyError, createRealSecretsExecSeam, personalStoreReady, writeSecret, type SecretsSeams } from "../lib/secrets/store.ts";
 import { NoTeamRecipientsError, createRealTeamSecretsSeams, readTeamSecret, writeTeamSecret } from "../lib/secrets/team-store.ts";
 import { listTeams } from "../lib/settings/stores.ts";
 import { setSetting } from "../lib/settings/write.ts";
@@ -426,17 +426,17 @@ function exitWithUserError(err: UserActionableError, json: boolean, verb: string
   return (deps.exit ?? process.exit)(2);
 }
 
-/** Reads and writes user-scope credentials behind the age key: present → the real sops store; absent → the connect-verb caller stages instead. */
+/** Reads and writes user-scope credentials: store ready (age key + user/.sops.yaml) → the real sops store; otherwise the connect-verb caller stages instead. */
 export interface SecretWriter {
-  hasAgeKey(): Promise<boolean>;
+  storeReady(): Promise<boolean>;
   write(domain: "rt" | "board", key: string, value: string): Promise<void>;
 }
 
 export function realSecretWriter(): SecretWriter {
   const seams: SecretsSeams = { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() };
   return {
-    async hasAgeKey() {
-      return "key" in (await readAgeKey(seams.ageKeySeam));
+    async storeReady() {
+      return personalStoreReady(seams);
     },
     async write(domain, key, value) {
       await writeSecret(domain, key, value, seams);
@@ -770,7 +770,7 @@ async function ghAuthToken(p: Probes): Promise<string> {
 }
 
 async function storeCredential(deps: ConnectDeps, domain: "rt" | "board", key: string, value: string): Promise<{ staged: boolean }> {
-  if (await deps.writer.hasAgeKey()) {
+  if (await deps.writer.storeReady()) {
     await deps.writer.write(domain, key, value);
     return { staged: false };
   }
