@@ -708,13 +708,14 @@ describe("skillsSurface bare invocation (interactive palette)", () => {
 
     fake = installFakePick([resultStep({ action: "cancel", value: null })]);
 
-    // printAborted() is TTY-gated on process.stderr, not console.log.
+    // A TTY stderr is the one place a cancel decoration could show; pin
+    // that none does.
     const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
     Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       await withPaletteTTY("n", () => skillsSurface(["--team", "t", "--pack-dir", packDir]));
-      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+      expect(stderrSpy.mock.calls.flat().join("")).toBe("");
     } finally {
       stderrSpy.mockRestore();
       if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);

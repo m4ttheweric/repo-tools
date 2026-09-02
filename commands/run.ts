@@ -45,7 +45,6 @@ import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-pre
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
 import { runPick } from "../lib/ui/pick.ts";
-import { printAborted } from "../lib/ui/abort.ts";
 import type { PickAction, PickRow, PickSegment } from "../lib/ui/protocol.ts";
 import { runSeededBoard, tmuxAvailable, type SeedEntry } from "./runner.ts";
 
@@ -1036,10 +1035,7 @@ export async function runCommand(
 
   const res = await resolveRun(args, ctx);
   if (res.kind === "launched") return;
-  if (res.kind === "cancelled") {
-    printAborted();
-    process.exit(res.code);
-  }
+  if (res.kind === "cancelled") process.exit(res.code);
   const result = res.result;
 
   if (resolveOnly) {
@@ -1138,10 +1134,7 @@ export async function runAgainCommand(
     stderr: true,
   });
 
-  if (!chosen) {
-    printAborted();
-    process.exit(0);
-  }
+  if (!chosen) process.exit(0);
 
   const picked = entries.find((t) => taggedId(t) === chosen);
   if (!picked) process.exit(1);

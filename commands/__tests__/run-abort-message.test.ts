@@ -1,7 +1,7 @@
 /**
  * rt run's cancellation path (RunAborted -> resolveRun "cancelled" ->
- * runCommand's process.exit) now prints the same faint "aborted" line every
- * picker surface prints, TTY-only.
+ * runCommand's process.exit) leaves only the reason on stderr, TTY or not:
+ * a cancel itself is silent everywhere in rt.
  */
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
@@ -71,18 +71,20 @@ async function runCapturingExit(
   }
 }
 
-test("a no-known-repos cancellation prints the faint 'aborted' line when stderr is a TTY", async () => {
+test("a no-known-repos cancellation exits 1 with only the reason on stderr, even on a TTY", async () => {
   const ctx: CommandContext = { identity: undefined };
   const result = await runCapturingExit(true, () => runCommand([], ctx));
 
   expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain("aborted");
+  expect(result.stderr).toContain("No known repos");
+  expect(result.stderr).not.toContain("aborted");
 });
 
-test("the same cancellation prints no 'aborted' decoration off a TTY", async () => {
+test("the same cancellation reads the same off a TTY", async () => {
   const ctx: CommandContext = { identity: undefined };
   const result = await runCapturingExit(false, () => runCommand([], ctx));
 
   expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("No known repos");
   expect(result.stderr).not.toContain("aborted");
 });

@@ -138,7 +138,7 @@ describe("rt cd default picker with a missing repo", () => {
 /**
  * The `--repo --worktree <branch>` combo's own inline repo picker (cd.ts,
  * not lib/pickers.ts) is one of the two places this file directly calls
- * process.exit(0) on esc -- the shared "aborted" line belongs there too.
+ * process.exit(0) on esc -- and, like every picker cancel, says nothing.
  */
 describe("rt cd --repo --worktree: esc on the inline repo picker", () => {
   const origHome = process.env.HOME;
@@ -221,23 +221,12 @@ describe("rt cd --repo --worktree: esc on the inline repo picker", () => {
     }
   }
 
-  test("prints the faint 'aborted' line when stderr is a TTY", async () => {
+  test("esc exits 0 and prints nothing, even when stderr is a TTY", async () => {
     installCancelPick();
     try {
       const { exitCode, stderr } = await runCapturingExit(true);
       expect(exitCode).toBe(0);
-      expect(stderr).toContain("aborted");
-    } finally {
-      pickImplTest.setImpl(undefined);
-    }
-  });
-
-  test("prints no 'aborted' decoration off a TTY", async () => {
-    installCancelPick();
-    try {
-      const { exitCode, stderr } = await runCapturingExit(false);
-      expect(exitCode).toBe(0);
-      expect(stderr).not.toContain("aborted");
+      expect(stderr).toBe("");
     } finally {
       pickImplTest.setImpl(undefined);
     }

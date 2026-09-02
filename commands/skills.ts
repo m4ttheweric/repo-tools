@@ -52,7 +52,6 @@ import {
   type SurfaceConfig,
 } from "../lib/skills/sources.ts";
 import type { AttachmentSource, CompileResult, StageEntry, StepSource, VerbDef } from "../lib/skills/types.ts";
-import { printAborted } from "../lib/ui/abort.ts";
 
 /**
  * Marks an error as an expected, user-facing condition (bad flags, absent
@@ -1680,10 +1679,7 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
     initialValues,
   });
 
-  if (selected === null) {
-    printAborted();
-    return;
-  }
+  if (selected === null) return;
 
   const selectedSet = new Set(selected);
 

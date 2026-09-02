@@ -87,12 +87,12 @@ function installSequentialFakePick(scripts: PickFakeStep[][]): { calls: { reques
 }
 
 /**
- * Forces process.stderr.isTTY so printAborted() actually writes, mocks
- * process.exit to throw instead of killing the test process, and asserts
- * both: the process tried to exit, and the shared "aborted" line printed
- * before it did.
+ * Forces process.stderr.isTTY (the one state where any cancel decoration
+ * could show), mocks process.exit to throw instead of killing the test
+ * process, and asserts both: the process tried to exit, and nothing at all
+ * reached stderr on the way out -- esc is silent, like fzf's.
  */
-async function expectAbortedExit(fn: () => Promise<unknown>): Promise<void> {
+async function expectSilentExit(fn: () => Promise<unknown>): Promise<void> {
   const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
   Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
   const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -100,7 +100,7 @@ async function expectAbortedExit(fn: () => Promise<unknown>): Promise<void> {
   process.exit = ((): never => { throw new Error("process.exit sentinel"); }) as unknown as typeof process.exit;
   try {
     await expect(fn()).rejects.toThrow("process.exit sentinel");
-    expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+    expect(stderrSpy.mock.calls.flat().join("")).toBe("");
   } finally {
     process.exit = originalExit;
     stderrSpy.mockRestore();
@@ -318,47 +318,47 @@ describe("abort lines (item 5): user-cancel in lib/pickers.ts prints the shared 
     dataDir: "/d",
   };
 
-  test("pickWorktreeWithSwitch: esc/cancel prints aborted before exiting", async () => {
+  test("pickWorktreeWithSwitch: esc/cancel exits silently", async () => {
     const { pickWorktreeWithSwitch } = await import("../pickers.ts");
     fake = installFakePick([resultStep({ action: "cancel" })]);
-    await expectAbortedExit(() => pickWorktreeWithSwitch(twoWorktreeRepo, "/a/wt1"));
+    await expectSilentExit(() => pickWorktreeWithSwitch(twoWorktreeRepo, "/a/wt1"));
   });
 
-  test("pickFromAllRepos: cancelling the repo step prints aborted before exiting", async () => {
+  test("pickFromAllRepos: cancelling the repo step exits silently", async () => {
     const { pickFromAllRepos } = await import("../pickers.ts");
     fake = installFakePick([resultStep({ action: "cancel" })]);
-    await expectAbortedExit(() =>
+    await expectSilentExit(() =>
       pickFromAllRepos([repoFixture("repo-a", "/a"), repoFixture("repo-b", "/b")]),
     );
   });
 
-  test("pickFromAllRepos: cancelling the worktree step (single known repo) prints aborted before exiting", async () => {
+  test("pickFromAllRepos: cancelling the worktree step (single known repo) exits silently", async () => {
     const { pickFromAllRepos } = await import("../pickers.ts");
     fake = installFakePick([resultStep({ action: "cancel" })]);
-    await expectAbortedExit(() => pickFromAllRepos([twoWorktreeRepo]));
+    await expectSilentExit(() => pickFromAllRepos([twoWorktreeRepo]));
   });
 
-  test("pickPackageWithEscape: cancelling the package picker prints aborted before exiting", async () => {
+  test("pickPackageWithEscape: cancelling the package picker exits silently", async () => {
     const { pickPackageWithEscape } = await import("../pickers.ts");
     const repo = repoFixture("solo", "/a/wt1");
     fake = installFakePick([resultStep({ action: "cancel" })]);
-    await expectAbortedExit(() => pickPackageWithEscape(repo, "/a/wt1", [repo]));
+    await expectSilentExit(() => pickPackageWithEscape(repo, "/a/wt1", [repo]));
   });
 
-  test("pickPackageWithEscape: back to the worktree picker (single repo), then cancelling it prints aborted", async () => {
+  test("pickPackageWithEscape: back to the worktree picker (single repo), then cancelling it exits silently", async () => {
     const { pickPackageWithEscape } = await import("../pickers.ts");
     const seq = installSequentialFakePick([
       [resultStep({ action: "back" })], // package picker: ctrl-up
       [resultStep({ action: "cancel" })], // pickWorktreeFromRepo (lib/repo.ts): esc
     ]);
     try {
-      await expectAbortedExit(() => pickPackageWithEscape(twoWorktreeRepo, "/a/wt1", [twoWorktreeRepo]));
+      await expectSilentExit(() => pickPackageWithEscape(twoWorktreeRepo, "/a/wt1", [twoWorktreeRepo]));
     } finally {
       seq.restore();
     }
   });
 
-  test("pickPackageWithEscape: back to the repo-aware worktree picker (multi-repo), then cancelling it prints aborted", async () => {
+  test("pickPackageWithEscape: back to the repo-aware worktree picker (multi-repo), then cancelling it exits silently", async () => {
     const { pickPackageWithEscape } = await import("../pickers.ts");
     const other = repoFixture("other", "/b");
     const seq = installSequentialFakePick([
@@ -366,13 +366,13 @@ describe("abort lines (item 5): user-cancel in lib/pickers.ts prints the shared 
       [resultStep({ action: "cancel" })], // pickWorktreeWithSwitch: esc
     ]);
     try {
-      await expectAbortedExit(() => pickPackageWithEscape(twoWorktreeRepo, "/a/wt1", [twoWorktreeRepo, other]));
+      await expectSilentExit(() => pickPackageWithEscape(twoWorktreeRepo, "/a/wt1", [twoWorktreeRepo, other]));
     } finally {
       seq.restore();
     }
   });
 
-  test("resolveWorktreeByBranch: cancelling the ambiguous-match picker prints aborted before exiting", async () => {
+  test("resolveWorktreeByBranch: cancelling the ambiguous-match picker exits silently", async () => {
     const { resolveWorktreeByBranch } = await import("../pickers.ts");
     const repo: KnownRepo = {
       repoName: "solo",
@@ -383,6 +383,6 @@ describe("abort lines (item 5): user-cancel in lib/pickers.ts prints the shared 
       dataDir: "/d",
     };
     fake = installFakePick([resultStep({ action: "cancel" })]);
-    await expectAbortedExit(() => resolveWorktreeByBranch("feat", [repo]));
+    await expectSilentExit(() => resolveWorktreeByBranch("feat", [repo]));
   });
 });

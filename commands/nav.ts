@@ -42,7 +42,6 @@ import {
   type SortState, type SortKey,
 } from "../lib/nav-fs.ts";
 import { runPick, type PickHandle } from "../lib/ui/pick.ts";
-import { printAborted } from "../lib/ui/abort.ts";
 import type { PickAction, PickEvent, PickRow } from "../lib/ui/protocol.ts";
 
 function tildeify(p: string): string {
@@ -207,11 +206,7 @@ async function pickOpenWith(target: string, kind: ItemKind, deps: NavDeps): Prom
 
 type SessionOutcome =
   | { type: "cd"; path: string }
-  // `aborted` distinguishes esc/cancel-to-shell (and a terminal/open-with
-  // action that fired with nothing under the cursor to act on) from a
-  // deliberate quit that actually opened a terminal or launched an app;
-  // only the former prints the "aborted" line.
-  | { type: "quit"; aborted?: boolean }
+  | { type: "quit" }
   | { type: "resume"; cwd: string; showHidden: boolean; sort: SortState; resumeValue?: string; initialQuery?: string };
 
 interface SessionState {
@@ -368,8 +363,6 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
           const detail = r.error?.message ?? (r.stderr || r.stdout || "").trim() ?? "";
           console.error(`  Quick Look failed${detail ? `: ${detail.split("\n")[0]}` : ` (exit ${r.status})`}`);
         }
-      } else {
-        printAborted();
       }
       return { type: "resume", cwd, showHidden, sort, resumeValue: result.value ?? undefined, initialQuery: result.query || undefined };
     }
@@ -382,21 +375,20 @@ async function runNavSession(state: SessionState, deps: NavDeps): Promise<Sessio
         deps.spawnSync(shell, [], { cwd: shellCwd, stdio: "inherit" });
         return { type: "quit" };
       }
-      return { type: "quit", aborted: true };
+      return { type: "quit" };
     }
 
     case "open-with": {
-      if (!result.value) return { type: "quit", aborted: true };
+      if (!result.value) return { type: "quit" };
       const { kind, target } = targetOf(cwd, result.value);
       const launched = await pickOpenWith(target, kind, deps);
       if (launched) return { type: "quit" };
-      printAborted();
       return { type: "resume", cwd, showHidden, sort, resumeValue: result.value, initialQuery: result.query || undefined };
     }
 
     default:
       // "cancel" (esc), or anything else Go's own fallback might produce.
-      return { type: "quit", aborted: true };
+      return { type: "quit" };
   }
 }
 
@@ -428,10 +420,7 @@ export async function navigate(args: string[], depsOverride: Partial<NavDeps> = 
         cdAndExit(outcome.path);
         return;
       }
-      if (outcome.type === "quit") {
-        if (outcome.aborted) printAborted();
-        return;
-      }
+      if (outcome.type === "quit") return;
       state = outcome;
     }
   } finally {

@@ -248,8 +248,8 @@ describe("rt nav: hidden files default + ctrl-t toggle", () => {
   });
 });
 
-describe("rt nav: esc/cancel prints the shared 'aborted' line, TTY-only", () => {
-  test("esc at the top level prints faint 'aborted' on stderr when it's a TTY", async () => {
+describe("rt nav: esc/cancel is silent", () => {
+  test("esc at the top level prints nothing on stderr, even when it's a TTY", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));
     writeFileSync(join(root, "a.txt"), "x");
     fake = installFakePick([resultStep("cancel", null)]);
@@ -259,7 +259,7 @@ describe("rt nav: esc/cancel prints the shared 'aborted' line, TTY-only", () => 
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       await withRealStdoutRestore(() => navigate([root], baseDeps()));
-      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+      expect(stderrSpy.mock.calls.flat().join("")).toBe("");
     } finally {
       stderrSpy.mockRestore();
       if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
@@ -269,27 +269,7 @@ describe("rt nav: esc/cancel prints the shared 'aborted' line, TTY-only", () => 
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("esc off a TTY prints no 'aborted' decoration", async () => {
-    const root = mkdtempSync(join(tmpdir(), "nav-test-"));
-    writeFileSync(join(root, "a.txt"), "x");
-    fake = installFakePick([resultStep("cancel", null)]);
-
-    const isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
-    Object.defineProperty(process.stderr, "isTTY", { value: false, configurable: true });
-    const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
-    try {
-      await withRealStdoutRestore(() => navigate([root], baseDeps()));
-      expect(stderrSpy.mock.calls.flat().join("")).not.toContain("aborted");
-    } finally {
-      stderrSpy.mockRestore();
-      if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
-      else delete (process.stderr as { isTTY?: boolean }).isTTY;
-    }
-
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  test("a deliberate quit (open terminal here) prints no 'aborted' decoration, even on a TTY", async () => {
+  test("a deliberate quit (open terminal here) prints nothing either", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));
     mkdirSync(join(root, "sub"));
     fake = installFakePick([resultStep("terminal", "d:sub", "")]);
@@ -299,7 +279,7 @@ describe("rt nav: esc/cancel prints the shared 'aborted' line, TTY-only", () => 
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       await withRealStdoutRestore(() => navigate([root], baseDeps()));
-      expect(stderrSpy.mock.calls.flat().join("")).not.toContain("aborted");
+      expect(stderrSpy.mock.calls.flat().join("")).toBe("");
     } finally {
       stderrSpy.mockRestore();
       if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
@@ -468,7 +448,7 @@ describe("rt nav: exits print the path on real stdout", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("terminal fired with nothing under the cursor prints 'aborted' and quits (no shell spawned)", async () => {
+  test("terminal fired with nothing under the cursor quits silently (no shell spawned)", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));
     fake = installFakePick([resultStep("terminal", null, "")]);
     const spawn = fakeSpawnSync();
@@ -478,7 +458,7 @@ describe("rt nav: exits print the path on real stdout", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       await withRealStdoutRestore(() => navigate([root], baseDeps({ spawnSync: spawn.fn })));
-      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+      expect(stderrSpy.mock.calls.flat().join("")).toBe("");
       expect(spawn.calls).toHaveLength(0);
     } finally {
       stderrSpy.mockRestore();
@@ -489,7 +469,7 @@ describe("rt nav: exits print the path on real stdout", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("open-with fired with nothing under the cursor prints 'aborted' and quits", async () => {
+  test("open-with fired with nothing under the cursor quits silently", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));
     fake = installFakePick([resultStep("open-with", null, "")]);
 
@@ -498,7 +478,7 @@ describe("rt nav: exits print the path on real stdout", () => {
     const stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       await withRealStdoutRestore(() => navigate([root], baseDeps()));
-      expect(stderrSpy.mock.calls.flat().join("")).toContain("aborted");
+      expect(stderrSpy.mock.calls.flat().join("")).toBe("");
     } finally {
       stderrSpy.mockRestore();
       if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
@@ -508,7 +488,7 @@ describe("rt nav: exits print the path on real stdout", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("open-with cancelled at the app sub-picker prints 'aborted' and resumes nav (no exit)", async () => {
+  test("open-with cancelled at the app sub-picker resumes nav silently (no exit)", async () => {
     const root = mkdtempSync(join(tmpdir(), "nav-test-"));
     writeFileSync(join(root, "notes.txt"), "x");
 
@@ -525,8 +505,7 @@ describe("rt nav: exits print the path on real stdout", () => {
       await withRealStdoutRestore(() => navigate([root], baseDeps()));
       expect(seq.calls.length).toBe(3);
       expect(seq.calls[2]!.request.resumeValue).toBe("f:notes.txt");
-      const written = stderrSpy.mock.calls.flat().join("");
-      expect((written.match(/aborted/g) ?? []).length).toBe(2); // open-with cancel, then esc off the resumed session
+      expect(stderrSpy.mock.calls.flat().join("")).toBe("");
     } finally {
       stderrSpy.mockRestore();
       if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
