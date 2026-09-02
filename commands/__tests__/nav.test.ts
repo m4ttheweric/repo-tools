@@ -217,6 +217,9 @@ describe("rt nav: hidden files default + ctrl-t toggle", () => {
     const initialRows = fake.calls[0]!.request.rows;
     expect(initialRows.some((r: PickRow) => r.value === "f:.env")).toBe(false);
     expect(initialRows.some((r: PickRow) => r.value === "f:visible.txt")).toBe(true);
+    // Filtering sees the bare filename: not the "f:" routing prefix, not a glyph.
+    const visible = initialRows.find((r: PickRow) => r.value === "f:visible.txt")!;
+    expect(visible.match).toBe("visible.txt");
 
     rmSync(root, { recursive: true, force: true });
   });

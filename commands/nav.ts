@@ -77,12 +77,14 @@ const defaultDeps: NavDeps = {
 // substitutes. No emoji, matching the picker's visual language elsewhere.
 const FOLDER_GLYPH = "\uf07b";
 
+// Filtering sees the bare name: the folder glyph and the "d:"/"f:" value
+// prefix are routing, not search text.
 function folderRow(name: string): PickRow {
-  return { value: "d:" + name, left: [{ text: `${FOLDER_GLYPH} `, tone: "cyan" }, { text: name, bold: true }] };
+  return { value: "d:" + name, match: name, left: [{ text: `${FOLDER_GLYPH} `, tone: "cyan" }, { text: name, bold: true }] };
 }
 
 function fileRow(name: string): PickRow {
-  return { value: "f:" + name, left: [{ text: name }] };
+  return { value: "f:" + name, match: name, left: [{ text: name }] };
 }
 
 function emptyRow(): PickRow {

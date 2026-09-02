@@ -134,7 +134,8 @@ function plainRow(entry: { value: string; label: string; hint?: string }, group?
   const label = labelWidth != null ? entry.label.padEnd(labelWidth) : entry.label;
   const left: PickSegment[] = [{ text: label, bold: true }];
   if (entry.hint) left.push({ text: `  ${entry.hint}`, tone: "dim" });
-  return { value: entry.value, left, ...(group ? { group } : {}) };
+  // Filtering sees the name only (the old fzf --nth=1); the hint is display.
+  return { value: entry.value, match: entry.label, left, ...(group ? { group } : {}) };
 }
 
 function lastRunRow(entry: RunHistoryEntry): PickRow {

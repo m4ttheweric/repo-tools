@@ -139,6 +139,14 @@ describe("showPicker", () => {
     expect(listRow.left[1]!.text).toContain("list worktrees");
   });
 
+  test("rows filter on the command name only, never the description", async () => {
+    fake = installFakePick([resultStep({ action: "select", value: "list" })]);
+    await showPicker(PICKER_TREE, ["rt", "worktree"]);
+    for (const row of fake.calls[0]!.request.rows) {
+      expect(row.match).toBe(row.value);
+    }
+  });
+
   test("sets withArgs on rows that can take args and leaves it off on those that cannot", async () => {
     fake = installFakePick([resultStep({ action: "select", value: "list" })]);
     await showPicker(PICKER_TREE, ["rt", "worktree"]);

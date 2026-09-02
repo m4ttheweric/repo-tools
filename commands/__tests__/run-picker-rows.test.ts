@@ -67,6 +67,8 @@ test("plainRow: bold label plus a dim hint, group optional", () => {
     { text: "ui", bold: true },
     { text: "  packages/ui", tone: "dim" },
   ]);
+  // The hint is display only: typing part of "packages/ui" must not match.
+  expect(row.match).toBe("ui");
 });
 
 test("plainRow: labelWidth pads the label so hints line up down a group", () => {

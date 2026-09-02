@@ -151,7 +151,9 @@ function navOptionsToRows(options: NavOption[]): PickRow[] {
     }
     const left: PickSegment[] = [{ text: o.label.padEnd(labelWidth), bold: true }];
     if (o.hint) left.push({ text: `  ${o.hint}`, tone: "dim" });
-    rows.push({ value: o.value, left, ...(group ? { group } : {}) });
+    // Filtering sees the label only; the hint is display (the old fzf nav
+    // primitive matched a single column with --nth=1).
+    rows.push({ value: o.value, match: o.label, left, ...(group ? { group } : {}) });
   }
   return rows;
 }

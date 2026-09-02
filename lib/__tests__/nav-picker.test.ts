@@ -37,6 +37,8 @@ describe("options -> rows", () => {
     expect(rows[0]!.value).toBe("a");
     expect(rows[0]!.group).toBeUndefined();
     expect(rows[0]!.left[0]).toMatchObject({ bold: true });
+    // Filtering runs against the label, not the value or a hint.
+    expect(rows[0]!.match).toBe("Alpha");
   });
 
   test("a separator becomes a group boundary: its label names the group for the rows that follow, until the next separator", async () => {
