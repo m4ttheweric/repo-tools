@@ -26,7 +26,7 @@ import {
   servicesStartStep,
   snapshotPushStep,
 } from "../steps/tools.ts";
-import { outcomeFromChecks, verifyStep } from "../steps/verify.ts";
+import { outcomeFromChecks, settleChecks, verifyStep } from "../steps/verify.ts";
 
 // ─── shared fakes (mirrors steps-a/b.test.ts's trivial no-ops) ─────────────
 
@@ -643,6 +643,33 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       test("a warning-severity fail never counts against canInstall's check", () => {
         const checks = [{ name: "tool.shell", status: "fail" as const, detail: "", severity: "warning" as const }];
         expect(outcomeFromChecks(checks)).toEqual({ state: "done", detail: "0 checks passed" });
+      });
+
+      // verify runs seconds after services.start kickstarts the daemon; its
+      // launchctl/worktrees sub-probes can still be inconclusive then, which
+      // the row rightly reports as a failure — so verify re-reads while the
+      // daemon is the only thing failing, and never for anything else.
+      test("settleChecks re-reads while tool.daemon is the only critical failure, then returns the settled checks", async () => {
+        const daemonDown = [{ name: "tool.daemon", status: "fail" as const, detail: "worktrees endpoint check failed (daemon unreachable)", severity: "critical" as const }];
+        const daemonUp = [{ name: "tool.daemon", status: "pass" as const, detail: "pid 1", severity: "critical" as const }];
+        const reads = [daemonDown, daemonDown, daemonUp];
+        const slept: number[] = [];
+        const checks = await settleChecks(async () => reads.shift()!, { attempts: 5, intervalMs: 3000, sleep: async (ms) => { slept.push(ms); } });
+        expect(checks).toEqual(daemonUp);
+        expect(slept).toEqual([3000, 3000]);
+      });
+
+      test("settleChecks gives up after its attempts, and never waits when something other than the daemon fails", async () => {
+        const daemonDown = [{ name: "tool.daemon", status: "fail" as const, detail: "", severity: "critical" as const }];
+        let reads = 0;
+        const stuck = await settleChecks(async () => { reads++; return daemonDown; }, { attempts: 3, intervalMs: 1, sleep: async () => {} });
+        expect(stuck).toEqual(daemonDown);
+        expect(reads).toBe(3);
+        const other = [{ name: "tool.rt", status: "fail" as const, detail: "", severity: "critical" as const }, ...daemonDown];
+        let slept = 0;
+        const out = await settleChecks(async () => other, { attempts: 3, intervalMs: 1, sleep: async () => { slept++; } });
+        expect(out).toEqual(other);
+        expect(slept).toBe(0);
       });
 
       test("idempotent: same input twice -> identical output", () => {

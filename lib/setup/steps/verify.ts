@@ -26,16 +26,39 @@ export function outcomeFromChecks(checks: CheckResult[]): StepOutcome {
   return { state: "done", detail: `${passed} check${passed === 1 ? "" : "s"} passed` };
 }
 
-async function verifyRun(ctx: ApplyContext): Promise<StepOutcome> {
-  const plan = await composePlan({
-    p: ctx.p,
-    secrets: ctx.secretPresence,
-    ci: ctx.ci,
-    mode: "status",
-    teams: ctx.team.slug ? [ctx.team.slug] : [],
-  });
+/** Rows whose failure right after Install means "still booting", not "broken": services.start kickstarted the daemon seconds ago and its launchctl/worktrees sub-probes lag the ping. */
+const SETTLING_ROWS = new Set(["tool.daemon"]);
+const SETTLE_ATTEMPTS = 5;
+const SETTLE_INTERVAL_MS = 3000;
 
-  return outcomeFromChecks(rowsToChecks(plan, { ci: ctx.ci }));
+/** Re-reads the checks while the only critical failures are settling rows; any other failure is judged on the first read. */
+export async function settleChecks(
+  read: () => Promise<CheckResult[]>,
+  opts: { attempts: number; intervalMs: number; sleep: (ms: number) => Promise<void> },
+): Promise<CheckResult[]> {
+  let checks = await read();
+  for (let attempt = 1; attempt < opts.attempts; attempt++) {
+    const critical = checks.filter((c) => c.status === "fail" && c.severity === "critical");
+    if (critical.length === 0 || !critical.every((c) => SETTLING_ROWS.has(c.name))) break;
+    await opts.sleep(opts.intervalMs);
+    checks = await read();
+  }
+  return checks;
+}
+
+async function verifyRun(ctx: ApplyContext): Promise<StepOutcome> {
+  const read = async () => {
+    const plan = await composePlan({
+      p: ctx.p,
+      secrets: ctx.secretPresence,
+      ci: ctx.ci,
+      mode: "status",
+      teams: ctx.team.slug ? [ctx.team.slug] : [],
+    });
+    return rowsToChecks(plan, { ci: ctx.ci });
+  };
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  return outcomeFromChecks(await settleChecks(read, { attempts: SETTLE_ATTEMPTS, intervalMs: SETTLE_INTERVAL_MS, sleep }));
 }
 
 async function verifyRunSafe(ctx: ApplyContext): Promise<StepOutcome> {
