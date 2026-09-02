@@ -7,7 +7,7 @@ sidebar_label: runs
 
 `rt › runs`
 
-Pipeline run state (read-only, from the run DB)
+Pipeline run state: list, show, and the pipeline's write verbs
 
 ## Usage
 
@@ -27,6 +27,14 @@ rt runs [flags]
 | --- | --- |
 | [`show`](show) | One run: stages, fields, decisions |
 | [`abandon`](abandon) | Mark a wedged run abandoned (the run died with its session and the DB still says running) |
+| [`run-start`](run-start) | Pipeline: open a run DB and print its runId and runDb |
+| [`run-status`](run-status) | Pipeline: close the run (reads RT_RUN_DB) |
+| [`stage-start`](stage-start) | Pipeline: start a stage attempt (reads RT_RUN_DB) |
+| [`stage-done`](stage-done) | Pipeline: finish the latest attempt of a stage (reads RT_RUN_DB) |
+| [`stage-fail`](stage-fail) | Pipeline: fail the latest attempt of a stage (reads RT_RUN_DB) |
+| [`field`](field) | Pipeline: field set KEY VALUE --stage NAME \| field get KEY (reads RT_RUN_DB) |
+| [`decision`](decision) | Pipeline: decision record --contract C --scope S --selection JSON --decided-by W (reads RT_RUN_DB) |
+| [`snapshot`](snapshot) | Pipeline: the full run document as JSON (reads RT_RUN_DB) |
 
 _See code: [commands/runs.ts › runsList](https://github.com/m4ttstack/rt/blob/main/commands/runs.ts)_
 

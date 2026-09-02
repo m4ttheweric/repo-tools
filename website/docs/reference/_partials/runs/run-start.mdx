@@ -1,0 +1,8 @@
+`run-start` is the one write verb that does not read `RT_RUN_DB`: it creates the run DB and hands you the path. Every other write verb needs that path in the environment, so capture it from the JSON result and export it before calling anything else:
+
+```bash
+result=$(rt runs run-start --repo acme-dev --work-type feature --pipeline feature)
+export RT_RUN_DB=$(echo "$result" | jq -r .runDb)
+```
+
+From here, `rt runs stage-start`, `field`, `decision`, and the rest all read `$RT_RUN_DB` to find the open run.
