@@ -111,6 +111,10 @@ socket. The verbs and their payloads are specified in repo-tools
 `docs/superpowers/specs/2026-08-28-rt-chat-delivery-v2-design.md`; the
 agent-facing rules are `skills/rt-chat/SKILL.md`.
 
+## Runs
+
+`RunStageRow.status` is one of `running | done | failed | redirected`; `rt runs stage-redirect` writes the fourth when the work engine leaves a stage for another one, so a reader that maps statuses to icons or filters must handle all four.
+
 ## License
 
 MIT

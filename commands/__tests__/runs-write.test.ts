@@ -106,6 +106,36 @@ describe("rt runs write verbs", () => {
     db.close();
   });
 
+  test("stage-redirect closes the running attempt as redirected with the default reason", async () => {
+    const { env, runDb } = await startRun();
+    await runWriteVerb("stage-start", ["--stage", "implement"], env);
+    expect(await runWriteVerb("stage-redirect", ["--stage", "implement", "--to", "plan"], env)).toEqual({ out: '{"ok":true}', code: 0 });
+    const db = new Database(runDb, { readonly: true });
+    expect(db.query("SELECT status, reason FROM stages WHERE name='implement'").get()).toEqual({ status: "redirected", reason: "redirected to plan" });
+    db.close();
+  });
+
+  test("stage-redirect: no --to is exit 2; a never-started or closed stage is exit 3; --reason is stored verbatim", async () => {
+    const { env, runDb } = await startRun();
+    const usage = await runWriteVerb("stage-redirect", ["--stage", "implement"], env);
+    expect(usage.code).toBe(2);
+    expect(JSON.parse(usage.out).error).toContain("--to");
+    expect(await runWriteVerb("stage-redirect", ["--stage", "implement", "--to", "plan"], env))
+      .toEqual({ out: JSON.stringify({ ok: false, error: "stage never started: implement" }), code: 3 });
+    await runWriteVerb("stage-start", ["--stage", "implement"], env);
+    await runWriteVerb("stage-done", ["--stage", "implement"], env);
+    expect(await runWriteVerb("stage-redirect", ["--stage", "implement", "--to", "plan"], env))
+      .toEqual({ out: JSON.stringify({ ok: false, error: "stage implement is done, not running" }), code: 3 });
+    await runWriteVerb("stage-start", ["--stage", "implement"], env);
+    expect((await runWriteVerb("stage-redirect", ["--stage", "implement", "--to", "plan", "--reason", "the approach needs a rethink"], env)).code).toBe(0);
+    const db = new Database(runDb, { readonly: true });
+    expect(db.query("SELECT attempt, status, reason FROM stages ORDER BY attempt").all()).toEqual([
+      { attempt: 1, status: "done", reason: null },
+      { attempt: 2, status: "redirected", reason: "the approach needs a rethink" },
+    ]);
+    db.close();
+  });
+
   test("field set prints ok; field get prints the raw value or nothing with exit 3", async () => {
     const { env } = await startRun();
     expect(await runWriteVerb("field", ["set", "mr-url", "https://x/1?a='b'", "--stage", "ship"], env)).toEqual({ out: '{"ok":true}', code: 0 });
@@ -148,6 +178,7 @@ describe("rt runs write verbs", () => {
     ["run-status", ["--status", "done"], [], { stage: null, kind: "run-status" }],
     ["stage-done", ["--stage", "plan"], [["stage-start", "--stage", "plan"]], { stage: "plan", kind: "stage-done" }],
     ["stage-fail", ["--stage", "plan"], [["stage-start", "--stage", "plan"]], { stage: "plan", kind: "stage-fail" }],
+    ["stage-redirect", ["--stage", "plan", "--to", "ship"], [["stage-start", "--stage", "plan"]], { stage: "plan", kind: "stage-redirect" }],
     ["field", ["set", "mr-url", "https://x", "--stage", "ship"], [], { stage: "ship", kind: "field-set" }],
     ["decision", ["record", "--contract", "c@1", "--scope", "run", "--selection", "{}", "--decided-by", "w"], [], { stage: "run", kind: "decision" }],
   ] as [string, string[], string[][], { stage: string | null; kind: string }][])(

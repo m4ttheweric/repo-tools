@@ -145,6 +145,31 @@ describe("stage lifecycle", () => {
     expect(db.query("SELECT COUNT(*) AS n FROM stages").get()).toEqual({ n: 0 });
     db.close();
   });
+
+  test("stage-redirect closes the latest running attempt as redirected with the default reason", () => {
+    const db = started();
+    stageStart(db, "implement", {}, 10);
+    expect(stageEnd(db, "implement", "redirected", { reason: "redirected to plan", requireRunning: true, now: 20 })).toEqual({ ok: true });
+    expect(db.query("SELECT status, reason, ended_at FROM stages WHERE name='implement'").get()).toEqual({ status: "redirected", reason: "redirected to plan", ended_at: 20 });
+    db.close();
+  });
+
+  test("stage-redirect refuses a done attempt and leaves it untouched", () => {
+    const db = started();
+    stageStart(db, "implement", {}, 10);
+    stageEnd(db, "implement", "done", { now: 20 });
+    expect(stageEnd(db, "implement", "redirected", { reason: "redirected to plan", requireRunning: true, now: 30 }))
+      .toEqual({ ok: false, error: "stage implement is done, not running", code: 3 });
+    expect(db.query("SELECT status, ended_at FROM stages WHERE name='implement'").get()).toEqual({ status: "done", ended_at: 20 });
+    db.close();
+  });
+
+  test("stage-redirect on a never-started stage is exit 3", () => {
+    const db = started();
+    expect(stageEnd(db, "implement", "redirected", { reason: "redirected to plan", requireRunning: true }))
+      .toEqual({ ok: false, error: "stage never started: implement", code: 3 });
+    db.close();
+  });
 });
 
 describe("fields", () => {

@@ -107,16 +107,23 @@ function changes(db: Database): number {
   return (db.query("SELECT changes() AS n").get() as { n: number }).n;
 }
 
+export type StageEndStatus = "done" | "failed" | "redirected";
+
 // A zero-row update means stage-start never landed (skipped, or refused by
 // the caller's shell guard); answering ok there once left a run with no row
 // for the stage and nothing telling the agent to retry.
 export function stageEnd(
   db: Database,
   name: string,
-  status: "done" | "failed",
-  opts: { reason?: string; detailPath?: string; now?: number } = {},
+  status: StageEndStatus,
+  opts: { reason?: string; detailPath?: string; now?: number; requireRunning?: boolean } = {},
 ): Ok | Fail {
   try {
+    if (opts.requireRunning) {
+      const latest = db.query("SELECT status FROM stages WHERE name=? ORDER BY attempt DESC LIMIT 1").get(name) as { status: string } | undefined;
+      if (!latest) return { ok: false, error: `stage never started: ${name}`, code: 3 };
+      if (latest.status !== "running") return { ok: false, error: `stage ${name} is ${latest.status}, not running`, code: 3 };
+    }
     db.run(
       `UPDATE stages SET status=?, ended_at=?, reason=?, detail_path=?
        WHERE name=? AND attempt=(SELECT MAX(attempt) FROM stages WHERE name=?)`,

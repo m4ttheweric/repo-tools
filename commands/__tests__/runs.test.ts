@@ -77,6 +77,19 @@ describe("rt runs formatting", () => {
     expect(text).toContain("qa-islands assertion failed");
     expect(text).toContain("/tmp/gates.log");
   });
+
+  test("formatRunDetail renders a redirected stage with its own icon, never the unknown mark", () => {
+    const text = formatRunDetail({
+      run: run as any,
+      stages: [{ name: "implement", status: "redirected", attempt: 1, started_at: 1, ended_at: 2, reason: "redirected to plan", detail_path: null }],
+      fields: [],
+      decisions: [],
+      schemaAhead: false,
+    } as any);
+    expect(text).toContain("  » implement (attempt 1)");
+    expect(text).toContain("reason: redirected to plan");
+    expect(text).not.toContain("? implement");
+  });
 });
 
 describe("rt runs --repo flag validation", () => {

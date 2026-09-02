@@ -8,6 +8,7 @@
  *   rt runs stage-start --stage NAME
  *   rt runs stage-done  --stage NAME
  *   rt runs stage-fail  --stage NAME [--reason TEXT] [--detail-path PATH]
+ *   rt runs stage-redirect --stage FROM --to TO [--reason TEXT]
  *   rt runs field set   KEY VALUE --stage NAME
  *   rt runs field get   KEY
  *   rt runs decision record --contract C --scope S --selection JSON --decided-by W
@@ -34,7 +35,7 @@ import {
   type Fail,
 } from "../lib/runs/write.ts";
 
-export type WriteVerb = "run-start" | "run-status" | "stage-start" | "stage-done" | "stage-fail" | "field" | "decision" | "snapshot";
+export type WriteVerb = "run-start" | "run-status" | "stage-start" | "stage-done" | "stage-fail" | "stage-redirect" | "field" | "decision" | "snapshot";
 export type CliResult = { out: string; code: number };
 
 function json(value: unknown): string {
@@ -129,6 +130,17 @@ async function dispatch(verb: WriteVerb, args: string[], env: NodeJS.ProcessEnv)
         return ok(resolved);
       });
     }
+    case "stage-redirect": {
+      const stage = required(args, "--stage");
+      const to = required(args, "--to");
+      const reason = flagValue(args, "--reason") ?? `redirected to ${to}`;
+      return withRunDbAsync(env, async ({ db, resolved }) => {
+        const r = stageEnd(db, stage, "redirected", { reason, requireRunning: true });
+        if (!r.ok) return fail(r);
+        await emitted(env, runIdentity(db), stage, "stage-redirect");
+        return ok(resolved);
+      });
+    }
     case "field": {
       const [sub, key, value] = positionals(args);
       if (sub === "set") {
@@ -201,6 +213,7 @@ export async function runsRunStatus(args: string[]): Promise<void> { await finis
 export async function runsStageStart(args: string[]): Promise<void> { await finish(await runWriteVerb("stage-start", args)); }
 export async function runsStageDone(args: string[]): Promise<void> { await finish(await runWriteVerb("stage-done", args)); }
 export async function runsStageFail(args: string[]): Promise<void> { await finish(await runWriteVerb("stage-fail", args)); }
+export async function runsStageRedirect(args: string[]): Promise<void> { await finish(await runWriteVerb("stage-redirect", args)); }
 export async function runsField(args: string[]): Promise<void> { await finish(await runWriteVerb("field", args)); }
 export async function runsDecision(args: string[]): Promise<void> { await finish(await runWriteVerb("decision", args)); }
 export async function runsSnapshot(args: string[]): Promise<void> { await finish(await runWriteVerb("snapshot", args)); }
