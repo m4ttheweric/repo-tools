@@ -162,7 +162,10 @@ function footerActions(headerParts: string[], expectKeys: string[], groupLabel: 
   const groupOf = (key: string) => (key === "ctrl-up" || key === "esc" ? {} : { group: groupLabel });
   const actions: PickAction[] = [];
   for (const key of exitKeys) {
-    actions.push({ id: key, label: headerLabels.get(key) ?? key, key, scope: "global", event: false, ...groupOf(key) });
+    // An exit key no headerPart names stays bound but off the legend, or it
+    // prints as "ctrl-up ctrl-up".
+    const label = headerLabels.get(key);
+    actions.push({ id: key, label: label ?? key, key, scope: "global", event: false, ...groupOf(key), ...(label === undefined ? { footerHidden: true } : {}) });
   }
   for (const [key, label] of headerLabels) {
     if (exitKeys.has(key)) continue;
@@ -433,9 +436,10 @@ async function selectPackageAndScript(
         if (pkgResult.key === "ctrl-up") return null; // back to worktree
 
         // ── ctrl-x: dequeue last item ──────────────────────────────────────
+        // The re-shown picker's QUEUE group is the confirmation; a stderr
+        // line here would outlive the picker and read as stale on abort.
         if (pkgResult.key === "ctrl-x" && q.length > 0) {
-          const removed = q.pop()!;
-          process.stderr.write(`  ${dim}dequeued: ${removed.packageLabel} > ${removed.script}${reset}\n`);
+          q.pop();
           cameFromScript = true; // re-show picker
           continue;
         }
@@ -535,7 +539,6 @@ async function selectPackageAndScript(
           script: only,
           command: `${detectPackageManager(packagePath)} run ${only}`,
         });
-        process.stderr.write(`  ${green}+${reset} ${dim}queued: ${packageLabel} > ${only}${reset}\n`);
         cameFromScript = true;
         continue;
       }
@@ -638,8 +641,6 @@ async function selectPackageAndScript(
         command: cmd,
         variationName,
       });
-      const varSuffix = variationName ? ` (${variationName})` : "";
-      process.stderr.write(`  ${green}+${reset} ${dim}queued: ${packageLabel} > ${scriptName}${varSuffix}${reset}\n`);
     };
 
     // ── Tab key or Enter-with-queue: queue the base script ──────────────

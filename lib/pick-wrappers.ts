@@ -183,7 +183,11 @@ function navActions(opts: NavPickerOpts): PickAction[] | undefined {
 
   const actions: PickAction[] = [];
   for (const key of exitKeys) {
-    actions.push({ id: key, label: headerLabels.get(key) ?? key, key, scope: "global", event: false });
+    // An exit key no headerPart names stays bound but off the legend: fzf
+    // never advertised an unlabeled expect key, and printing the key as its
+    // own label reads as "ctrl-up ctrl-up".
+    const label = headerLabels.get(key);
+    actions.push({ id: key, label: label ?? key, key, scope: "global", event: false, ...(label === undefined ? { footerHidden: true } : {}) });
   }
   for (const [key, label] of headerLabels) {
     if (exitKeys.has(key)) continue;

@@ -125,9 +125,11 @@ describe("expectKeys -> exit actions", () => {
       expectKeys: ["ctrl-x", "alt-enter"],
     });
     const actions = fake.calls[0]!.request.actions ?? [];
-    expect(actions).toContainEqual({ id: "ctrl-x", label: "ctrl-x", key: "ctrl-x", scope: "global", event: false });
-    expect(actions).toContainEqual({ id: "alt-enter", label: "alt-enter", key: "alt-enter", scope: "global", event: false });
-    expect(actions).toContainEqual({ id: "ctrl-up", label: "ctrl-up", key: "ctrl-up", scope: "global", event: false });
+    // Bound with event:false, but with no headerPart naming them they stay off
+    // the legend (an advertised key would print as "ctrl-x ctrl-x").
+    expect(actions).toContainEqual({ id: "ctrl-x", label: "ctrl-x", key: "ctrl-x", scope: "global", event: false, footerHidden: true });
+    expect(actions).toContainEqual({ id: "alt-enter", label: "alt-enter", key: "alt-enter", scope: "global", event: false, footerHidden: true });
+    expect(actions).toContainEqual({ id: "ctrl-up", label: "ctrl-up", key: "ctrl-up", scope: "global", event: false, footerHidden: true });
   });
 
   test("pressing a declared expect key ends the picker with that key as result.key, preserving the value and query", async () => {
