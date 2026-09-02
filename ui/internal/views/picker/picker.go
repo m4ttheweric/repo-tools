@@ -117,9 +117,6 @@ type Model struct {
 	// through New) falls back to the real clock in now().
 	nowFn func() time.Time
 
-	// output is where the event writer and the final result write land;
-	// Run wires the real stdout, tests wire a buffer directly.
-	output io.Writer
 	// events carries an event:true action's encoded PickEvent line from
 	// Update (which enqueues synchronously, on the single goroutine tea
 	// runs Update on) to the one writer goroutine Run starts, which drains
@@ -742,7 +739,6 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 	}
 
 	m := New(req)
-	m.output = output
 	m.events = make(chan []byte, eventBufferSize)
 	writerDone := m.startEventWriter(output)
 
