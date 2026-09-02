@@ -247,6 +247,23 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(outcome).toEqual({ state: "done", detail: "proxy installed" });
     });
 
+    // The privileged helper has never shipped (deps.lock: pending); with the
+    // app installed but no helper inside it, the app can only refuse, and a
+    // failed step here stranded every fresh Install at step 8.
+    test("app bundle present without the proxy-install helper -> skipped with the reason, need never raised", async () => {
+      const p = fakeProbes({ home });
+      // Whichever flavor this host runs, the fake carries that bundle.
+      p.mkdirp("/Applications/mattstack.app");
+      p.mkdirp("/Applications/mattstack-dev.app");
+      let raised = false;
+      const { ctx } = makeCtx(p, { need: async () => { raised = true; return { ok: true, detail: "" }; } });
+
+      const outcome = await proxyInstallStep.run(ctx);
+      expect(raised).toBe(false);
+      expect(outcome.state).toBe("skipped");
+      expect(outcome.detail).toContain("not bundled");
+    });
+
     test("no-app + nonInteractive -> skipped; interactive -> failed with remedy", async () => {
       const { ctx: nonInteractive } = makeCtx(fakeProbes({ home }), { nonInteractive: true, need: async () => "no-app" });
       expect(await proxyInstallStep.run(nonInteractive)).toEqual({
