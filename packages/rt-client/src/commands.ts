@@ -25,6 +25,10 @@ export interface ProjectMRsScope {
   sections?: string[];
   /** Demanded sections not yet swept for this client. */
   uncoveredSections?: string[];
+  /** Section headers in the default-branch CODEOWNERS at the last deep or
+      backfill. `[]` when the project has none. Absent from a pre-knownSections
+      daemon or before the first sweep that demanded a section. */
+  knownSections?: string[];
 }
 
 export interface ProjectMRsData {
