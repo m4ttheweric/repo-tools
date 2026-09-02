@@ -54,6 +54,20 @@ func defaultActions(req protocol.PickRequest) []protocol.PickAction {
 	return append(out, protocol.PickAction{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"})
 }
 
+// reserveMenuKey takes ctrl-k away from any caller action bound to it:
+// the key opens the menu in every picker, so a registry that claimed it
+// would advertise a binding the keypress never honors. The action itself
+// survives, keyless, reachable from the menu by its label.
+func reserveMenuKey(actions []protocol.PickAction) []protocol.PickAction {
+	out := append([]protocol.PickAction(nil), actions...)
+	for i := range out {
+		if out[i].Key == menuAction.Key {
+			out[i].Key = ""
+		}
+	}
+	return out
+}
+
 // menuAction is the keybar's own "ctrl-k menu" entry. Update opens the menu
 // on the keypress itself; this exists so the legend can name the door to
 // every chord it hides, and so a click on it opens the same overlay

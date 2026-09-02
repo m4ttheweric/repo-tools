@@ -3362,6 +3362,62 @@ func TestRestingKeybarAdvertisesTheMenuNextToQuit(t *testing.T) {
 	}
 }
 
+// TestCtrlKIsReservedForTheMenu: ctrl-k is the picker's own key, in every
+// picker. A caller that binds it keeps the action, reachable from the menu
+// by its label, but the key is taken away at ingest (and again on an
+// actions patch): the keypress opens the menu, the legend advertises the
+// menu, and nothing on screen claims a binding the key will not honor.
+func TestCtrlKIsReservedForTheMenu(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "kill", Label: "kill", Key: "ctrl-k", Scope: "item", Event: true},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	m.height = 30
+
+	footer := strings.TrimRight(ansi.Strip(lastLine(render(m))), " ")
+	if !strings.HasSuffix(footer, "ctrl-k menu  esc quit") || strings.Contains(footer, "kill") {
+		t.Fatalf("the legend must advertise the menu, never the caller's ctrl-k: %q", footer)
+	}
+
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil || m.modal.kind != modalRegistry {
+		t.Fatalf("ctrl-k must open the menu even when a caller bound it, got %+v", m.modal)
+	}
+	if m.result != nil {
+		t.Fatalf("the caller's action must not fire on ctrl-k: %+v", m.result)
+	}
+	found := false
+	for _, r := range m.modal.rows {
+		if r.actionID == "kill" {
+			found = true
+			if strings.Contains(r.hint, "ctrl-k") {
+				t.Fatalf("the menu must not show ctrl-k as the caller action's key: %+v", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the caller's action stays reachable from the menu")
+	}
+
+	// An actions patch is ingested through the same reservation.
+	m.modal = nil
+	next, _ = m.Update(UpdateMsg{Update: protocol.PickUpdate{Actions: []protocol.PickAction{
+		{ID: "kill", Label: "kill", Key: "ctrl-k", Scope: "item", Event: true},
+	}}})
+	m = next.(*Model)
+	for _, a := range m.req.Actions {
+		if a.Key == "ctrl-k" {
+			t.Fatalf("a patched registry must not keep a ctrl-k binding: %+v", a)
+		}
+	}
+}
+
 // TestKeybarMenuEntryClickOpensTheMenu: the advertised entry is clickable
 // like every other keybar key, and opens the same overlay ctrl-k does.
 func TestKeybarMenuEntryClickOpensTheMenu(t *testing.T) {

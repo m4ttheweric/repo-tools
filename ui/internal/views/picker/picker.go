@@ -153,6 +153,7 @@ type ModalMsg struct {
 // InitialQuery immediately, so a request that opens pre-filtered renders
 // its real matches on the first frame rather than the identity order.
 func New(req protocol.PickRequest) *Model {
+	req.Actions = reserveMenuKey(req.Actions)
 	m := &Model{
 		req:          req,
 		query:        req.InitialQuery,
@@ -307,11 +308,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if action, ok := m.actionForKey(key); ok {
-			return m.dispatchAction(action)
-		}
 		if key == "ctrl+k" {
 			return m.openMenu()
+		}
+		if action, ok := m.actionForKey(key); ok {
+			return m.dispatchAction(action)
 		}
 		if key == "enter" {
 			return m.accept()
@@ -387,7 +388,7 @@ func (m *Model) applyUpdate(u protocol.PickUpdate) {
 		m.req.CrumbSuffix = u.CrumbSuffix
 	}
 	if u.Actions != nil {
-		m.req.Actions = u.Actions
+		m.req.Actions = reserveMenuKey(u.Actions)
 	}
 	if u.Rows != nil {
 		value, hadCursor := m.cursorRowValue()
