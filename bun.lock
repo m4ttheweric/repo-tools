@@ -5,7 +5,7 @@
     "": {
       "name": "repo-tools",
       "dependencies": {
-        "@mattstack/glance": "^0.20.0",
+        "@mattstack/glance": "^0.22.0",
         "cli-highlight": "^2.1.11",
         "jsonc-parser": "^3.3.1",
         "pino": "^10.3.1",
@@ -24,7 +24,7 @@
     },
     "packages/rt-client": {
       "name": "@mattstack/rt-client",
-      "version": "0.10.1",
+      "version": "0.11.0",
       "dependencies": {
         "jsonc-parser": "^3.3.1",
       },
@@ -58,7 +58,7 @@
 
     "@gitbeaker/rest": ["@gitbeaker/rest@43.8.0", "", { "dependencies": { "@gitbeaker/core": "^43.8.0", "@gitbeaker/requester-utils": "^43.8.0" } }, "sha512-xxqsNsUXaFang9b2e/NTIgqUeuUlifA2Opy1mOVqTDuJZZNIOTgUNyziwBJoleBhMC0XuvY3JNVMWthufcVjRw=="],
 
-    "@mattstack/glance": ["@mattstack/glance@0.20.0", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0", "@octokit/core": "^7.0.7", "@octokit/graphql": "^9.0.4", "@octokit/plugin-paginate-rest": "^15.0.0", "@octokit/plugin-retry": "^8.1.1", "@octokit/plugin-throttling": "^11.0.5", "@octokit/request-error": "^7.1.1" } }, "sha512-WaOLfpQPim4p/HHg1JdQ2wltLIU/YUkVN0Il+4Y1Df/+EQJsN1cUUWmAg+QAgd9xH6PJNOuHlVQt4t4pPecAYQ=="],
+    "@mattstack/glance": ["@mattstack/glance@0.22.0", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0", "@octokit/core": "^7.0.7", "@octokit/graphql": "^9.0.4", "@octokit/plugin-paginate-rest": "^15.0.0", "@octokit/plugin-retry": "^8.1.1", "@octokit/plugin-throttling": "^11.0.5", "@octokit/request-error": "^7.1.1" } }, "sha512-Hr8D86GeCSJrsWuOot1OVxyHELE1z0UIidfzF2yE8At8wpZFtvTF/5s0+zGvXDKFZ8hvwXiYQaPSFitr1fbXEg=="],
 
     "@mattstack/rt-client": ["@mattstack/rt-client@workspace:packages/rt-client"],
 

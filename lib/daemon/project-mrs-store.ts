@@ -50,6 +50,17 @@ export function rekeyProjectMrDemandsTable(): Promise<RekeyReport> {
 
 export interface ProjectMREntry { pr: PullRequest; fetchedAt: number; codeownerSections?: string[]; }
 export interface DemandEntry { authors: string[]; sections?: string[]; declaredAt: number; lastSeenAt: number; }
+
+/** A demand-scoped repo's sync scope. `knownSections` is the default-branch
+    CODEOWNERS header list at the last deep or backfill; absent until one has
+    run with a section demanded. */
+export interface ProjectScope {
+  authors: string[];
+  sections?: string[];
+  windowDays: number;
+  knownSections?: string[];
+}
+
 export interface ProjectMRStore {
   projectPath: string;
   mrs: Record<number, ProjectMREntry>;
@@ -57,7 +68,7 @@ export interface ProjectMRStore {
   deltaSyncedAt?: number;
   source: "poll" | "events" | "mutation";
   demands?: Record<string, DemandEntry>;
-  scope?: { authors: string[]; sections?: string[]; windowDays: number };
+  scope?: ProjectScope;
 }
 
 /** Read freshness = the more recent of a deep sync and a delta sync (spec §5.7). */
@@ -75,7 +86,7 @@ export interface ProjectMRs {
   registerDemand(repoName: string, client: string, authors: string[], declaredAt: number, sections?: string[]): boolean;
   expireDemands(repoName: string, maxIdleMs: number): string[];
   /** Passing null clears an existing scope (the demand that motivated it is gone). */
-  setScope(repoName: string, scope: { authors: string[]; sections?: string[]; windowDays: number } | null): void;
+  setScope(repoName: string, scope: ProjectScope | null): void;
   /** Per-iid replace; [] deletes the tag. replaceAll first clears every tag for the repo (deep sweep semantics). */
   setSectionTags(repoName: string, tags: Record<number, string[]>, opts?: { replaceAll?: boolean }): void;
 }
@@ -392,13 +403,18 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     return dropped;
   }
 
-  function setScope(repoName: string, scope: { authors: string[]; sections?: string[]; windowDays: number } | null): void {
+  function setScope(repoName: string, scope: ProjectScope | null): void {
     const store = data[repoName];
     if (!store) return;
     if (scope === null) {
       delete store.scope;
     } else {
-      store.scope = { authors: [...scope.authors], sections: scope.sections ? [...scope.sections] : undefined, windowDays: scope.windowDays };
+      store.scope = {
+        authors: [...scope.authors],
+        sections: scope.sections ? [...scope.sections] : undefined,
+        windowDays: scope.windowDays,
+        knownSections: scope.knownSections ? [...scope.knownSections] : undefined,
+      };
     }
     persistOrWarn("project-mrs", () => writeMeta(repoName, store), { repo: repoName, op: "setScope" });
   }
