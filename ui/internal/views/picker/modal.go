@@ -568,8 +568,18 @@ func modalDividerBefore(ms *modalState, i int) bool {
 	return cur.isGlobal && !prev.isGlobal
 }
 
+// modalTitleCap bounds how much the title can widen the overlay. The rows are
+// what size the box; a long cursor row (a full script command line) only
+// clips in the header (modalHeaderLine) rather than stretching the menu to
+// the pane.
+const modalTitleCap = 40
+
 func modalContentWidth(ms *modalState, maxInner int) int {
-	need := lipgloss.Width(ms.title) + lipgloss.Width("esc dismiss") + 4
+	titleW := lipgloss.Width(ms.title)
+	if titleW > modalTitleCap {
+		titleW = modalTitleCap
+	}
+	need := titleW + lipgloss.Width("esc dismiss") + 4
 	for _, r := range ms.rows {
 		w := 2 + lipgloss.Width(r.text)
 		if r.hint != "" {
