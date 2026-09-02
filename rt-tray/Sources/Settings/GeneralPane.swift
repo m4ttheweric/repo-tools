@@ -12,12 +12,12 @@ struct GeneralPane: View {
     var body: some View {
         Form {
             Section("Startup") {
-                Toggle("Start mattstack at login", isOn: $startAtLogin)
+                Toggle("Start mattstack at login", isOn: $startAtLogin).toggleStyle(.switch).controlSize(.small)
                     .onChange(of: startAtLogin) { _, on in toggleLogin(on) }
                     .accessibilityIdentifier(AXID.settingsGeneralStartAtLogin)
             }
             Section("Updates") {
-                Toggle("Check for updates automatically", isOn: $autoUpdates)
+                Toggle("Check for updates automatically", isOn: $autoUpdates).toggleStyle(.switch).controlSize(.small)
                     .disabled(!env.updater.isEnabled)
                     .onChange(of: autoUpdates) { _, on in env.updater.automaticallyChecks = on }
                     .accessibilityIdentifier(AXID.settingsGeneralAutoUpdates)

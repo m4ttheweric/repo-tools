@@ -29,7 +29,7 @@ struct UninstallPane: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("This will:").font(.headline)
                 ForEach(model.uninstallPlan?.actions ?? []) { a in Label(a.title, systemImage: "minus.circle") }
-                Toggle("Keep ~/.mattstack (your settings home repo, at ~/.mattstack/user, and other local data)", isOn: $keepData).accessibilityIdentifier(AXID.settingsUninstallKeepData)
+                Toggle("Keep ~/.mattstack (your settings home repo, at ~/.mattstack/user, and other local data)", isOn: $keepData).accessibilityIdentifier(AXID.settingsUninstallKeepData).toggleStyle(.switch).controlSize(.small)
                 HStack {
                     Spacer()
                     // The safe choice takes the Return key; the destructive

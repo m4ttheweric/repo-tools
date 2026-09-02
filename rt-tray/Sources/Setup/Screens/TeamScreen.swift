@@ -47,9 +47,9 @@ struct TeamScreen: View {
         Form {
             TextField("Team name", text: $model.teamName, prompt: Text("Acme")).accessibilityIdentifier(AXID.teamCreateName)
             LabeledContent("Slug") { Text(model.slugPreview.isEmpty ? "—" : model.slugPreview).foregroundStyle(.secondary) }
-            Toggle("Others will join later", isOn: $model.othersWillJoin).accessibilityIdentifier(AXID.teamCreateOthers)
+            Toggle("Others will join later", isOn: $model.othersWillJoin).toggleStyle(.switch).controlSize(.small).accessibilityIdentifier(AXID.teamCreateOthers)
             if model.ghHandle != nil {
-                Toggle("Create a private GitHub repo \(model.ghRepoPreview)", isOn: $model.useGhRepo).accessibilityIdentifier(AXID.teamCreateUseGh)
+                Toggle("Create a private GitHub repo \(model.ghRepoPreview)", isOn: $model.useGhRepo).toggleStyle(.switch).controlSize(.small).accessibilityIdentifier(AXID.teamCreateUseGh)
                 if model.useGhRepo {
                     Picker("Owner", selection: Binding(get: { model.ghOwner ?? "" }, set: { model.ghOwner = $0 })) {
                         ForEach(model.ghOwners, id: \.self) { Text($0).tag($0) }
