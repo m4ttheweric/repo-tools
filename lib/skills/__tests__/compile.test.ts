@@ -174,7 +174,7 @@ describe("compileSkill", () => {
     };
 
     expect(() => compileSkill(verb, step, { domain: domainWithSlot, forge: forgeFill }, roster)).toThrow(
-      'acme:watch-ci-domain: {{slot:tiering}} -- a fill may carry {{include}} only (line 2)',
+      'acme:watch-ci-domain: {{slot:tiering}} -- a fill may carry {{include}}, {{verb.path}} or {{pack.path}} only (line 2)',
     );
   });
 
@@ -717,5 +717,18 @@ describe("compileSkill with placeholders", () => {
     const md = skillMd(compileSkill(verb, step, { domain: domainFill, forge: forgeFill }, new Set(), {}));
     expect(md).toContain("part: slot:domain");
     expect(md).toContain("part: slot:forge");
+  });
+
+  test("verb.path renders against the target's side and lints clean when the sibling is emitted", () => {
+    const packRoot = tempPackRoot();
+    const r = compileSkill(verb, { ...slotless, body: "Read {{verb.path:receive-review}} first, then {{verb.path:checkout}}." }, {}, new Set(), {
+      packRoot,
+      compiledDir: join(packRoot, "skills", "watch-ci"),
+      side: "skills",
+      verbSides: { "watch-ci": "skills", checkout: "skills", "receive-review": "attachments" },
+      emittedTargetDirs: [join(packRoot, "skills", "watch-ci"), join(packRoot, "skills", "checkout"), join(packRoot, "attachments", "receive-review")],
+    });
+    expect(skillMd(r)).toContain("Read ../../attachments/receive-review/SKILL.md first, then ../checkout/SKILL.md.");
+    expect(r.warnings).toEqual([]);
   });
 });

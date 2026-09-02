@@ -613,6 +613,8 @@ function compileVerb(target: CompileTarget, resolved: Resolved, emittedTargetDir
       compiledDir: outDirFor(resolved.packDir, verb.name, isPublic),
       emittedTargetDirs,
       where,
+      verbSides,
+      side: isPublic ? "skills" : "attachments",
     });
   } catch (err) {
     const message = (err as Error).message;
@@ -697,7 +699,7 @@ type CompilePlan = { targets: CompileTarget[]; verbSides: Record<string, Side> }
  * `resolved.stages` being unfiltered would otherwise do to --preview's
  * one-body contract and to a scoped compile/check. `verbSides` is built
  * before the filter applies: a scoped compile still exempts the host dirs
- * of targets it is not emitting.
+ * of, and renders {{verb.path}} to, targets it is not emitting.
  */
 function compileTargets(resolved: Resolved, publicSet: Set<string> | null, verbFilter: string[] | null): CompilePlan {
   const rosterNames = new Set(resolved.fullRoster.map((v) => v.name));

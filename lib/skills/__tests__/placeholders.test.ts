@@ -48,6 +48,8 @@ function ctx(over: Partial<PlaceholderContext> = {}): PlaceholderContext {
     ] },
     repoKey: "my-repo", mattstackSha: "abc1234", mattstackDirty: 0, packSha: "acme=abc1234",
     stageDir: null, stageMeta: null, compiledFrom: "mattstack@1.0.0 + acme:plan-policy@0.4.0",
+    verbSides: { work: "skills", checkout: "skills", "stage-plan": "attachments", "receive-review": "attachments" },
+    side: "skills",
     ...over,
   };
 }
@@ -212,6 +214,31 @@ describe("substitute", () => {
   test("a fill may not carry a slot or any other placeholder", () => {
     const bad = { ...fill, body: "x\n{{slot:tiering}}" };
     expect(() => substitute("{{slot:domain}}", ctx({ fills: { domain: bad } }), "stage-plan"))
-      .toThrow("acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}} only (line 2)");
+      .toThrow("acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}}, {{verb.path}} or {{pack.path}} only (line 2)");
+  });
+});
+
+describe("verb.path", () => {
+  test("same side renders a sibling path relative to this file", () => {
+    expect(substitute("read {{verb.path:checkout}} first", ctx(), "work").body).toBe("read ../checkout/SKILL.md first");
+  });
+
+  test("across sides renders through the pack root, in both directions", () => {
+    expect(substitute("{{verb.path:receive-review}}", ctx(), "work").body).toBe("../../attachments/receive-review/SKILL.md");
+    expect(substitute("{{verb.path:work}}", ctx({ side: "attachments" }), "receive-review").body).toBe("../../skills/work/SKILL.md");
+  });
+
+  test("an unknown name is an error naming the placeholder", () => {
+    expect(() => substitute("{{verb.path:nope}}", ctx(), "work")).toThrow("work: {{verb.path:nope}} -- nope is not a compiled verb of this pack");
+  });
+
+  test("an argument that is not a bare verb name is an error", () => {
+    expect(() => substitute("{{verb.path:Check_Out}}", ctx(), "work")).toThrow("work: {{verb.path:Check_Out}} -- verb name must match [a-z][a-z0-9-]*");
+    expect(() => substitute("{{verb.path}}", ctx(), "work")).toThrow("work: {{verb.path}} -- verb name must match [a-z][a-z0-9-]*");
+  });
+
+  test("a fill may carry it", () => {
+    const withPath = { ...fill, body: "then read {{verb.path:checkout}}" };
+    expect(substitute("{{slot:domain}}", ctx({ fills: { domain: withPath } }), "work").body).toContain("then read ../checkout/SKILL.md");
   });
 });

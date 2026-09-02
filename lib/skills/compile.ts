@@ -6,6 +6,7 @@ import type {
   CompiledFile,
   CompileResult,
   PlaceholderContext,
+  Side,
   StageEntry,
   StepSource,
   VerbDef,
@@ -496,6 +497,8 @@ export function compileSkill(
     emittedTargetDirs?: string[];
     /** How the caller names this target in errors -- `stage "x"` for a pipeline stage. */
     where?: string;
+    verbSides?: Record<string, Side>;
+    side?: Side;
   } = {},
 ): CompileResult {
   const internalRoster = opts.internalRoster ?? new Set<string>();
@@ -527,6 +530,8 @@ export function compileSkill(
     stageDir: opts.stageDir ?? null,
     stageMeta: step.stageMeta,
     compiledFrom,
+    verbSides: opts.verbSides ?? {},
+    side: opts.side ?? "skills",
   };
 
   const allowedTools = buildAllowedTools(step, boundSlots, opts.stageAllowedTools ?? [], ctx);

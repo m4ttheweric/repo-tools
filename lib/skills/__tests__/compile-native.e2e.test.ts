@@ -150,7 +150,7 @@ describe("compile-native end to end", () => {
     );
     expect(exitCode).toBe(1);
     expect(errors.join("\n")).toContain(
-      'stage "stage-plan": acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}} only',
+      'stage "stage-plan": acme:plan-policy: {{slot:tiering}} -- a fill may carry {{include}}, {{verb.path}} or {{pack.path}} only',
     );
   });
 
@@ -200,8 +200,17 @@ Read the note, then act on it.
 {{include:gitlab-note}}
 `;
 
-/** The fixture plus an internal roster verb whose engine vendors an include. */
-function buildWithInternalVerb(): { pack: string; ms: string; manifest: string } {
+const CHECKOUT_ENGINE = `---
+name: checkout
+description: "checkout"
+type: pipeline-step
+---
+
+Read {{verb.path:receive-review}} first, then {{verb.path:work}}.
+`;
+
+/** The fixture plus a public `checkout` verb and an internal `receive-review` verb whose engine vendors an include. */
+function buildWithRosterVerbs(): { pack: string; ms: string; manifest: string } {
   const root = mkdtempSync(join(tmpdir(), "rt-e2e-"));
   cpSync(FIX, root, { recursive: true });
   const pack = join(root, "pack");
@@ -210,11 +219,15 @@ function buildWithInternalVerb(): { pack: string; ms: string; manifest: string }
   writeFileSync(join(pack, "pack", "stubs.jsonc"), JSON.stringify({
     verbs: {
       work: { engine: "work", description: "Run a unit of work" },
+      checkout: { engine: "checkout", description: "Check out the branch" },
       "receive-review": { engine: "receive-review", description: "Act on review feedback" },
     },
   }));
-  mkdirSync(join(ms, "plugins", "mattstack", "attachments", "receive-review"), { recursive: true });
-  writeFileSync(join(ms, "plugins", "mattstack", "attachments", "receive-review", "SKILL.md"), RECEIVE_REVIEW_ENGINE);
+  writeFileSync(join(pack, "pack", "surface.jsonc"), JSON.stringify({ public: ["work", "checkout"] }));
+  for (const [name, source] of [["receive-review", RECEIVE_REVIEW_ENGINE], ["checkout", CHECKOUT_ENGINE]] as const) {
+    mkdirSync(join(ms, "plugins", "mattstack", "attachments", name), { recursive: true });
+    writeFileSync(join(ms, "plugins", "mattstack", "attachments", name, "SKILL.md"), source);
+  }
   return { pack, ms, manifest };
 }
 
@@ -238,7 +251,7 @@ async function compileCapturingLogs(pack: string, ms: string, manifest: string, 
 
 describe("internal roster verbs", () => {
   test("an internal verb's vendored include is addressed from its attachments-side host dir and lints clean", async () => {
-    const { pack, ms, manifest } = buildWithInternalVerb();
+    const { pack, ms, manifest } = buildWithRosterVerbs();
     const { logs, errors, exitCode } = await compileCapturingLogs(pack, ms, manifest);
     expect(errors).toEqual([]);
     expect(exitCode).toBeUndefined();
@@ -248,5 +261,30 @@ describe("internal roster verbs", () => {
     expect(md).not.toContain("${CLAUDE_SKILL_DIR}/parts/");
     expect(existsSync(join(pack, "attachments", "receive-review", "parts", "include-gitlab-note", "scripts", "note.sh"))).toBe(true);
     expect(logs.find((l) => l.startsWith("compiled receive-review"))).toMatch(/0 warnings\)$/);
+  });
+});
+
+describe("verb.path end to end", () => {
+  test("a whole-pack compile renders sibling paths on both sides and lints clean", async () => {
+    const { pack, ms, manifest } = buildWithRosterVerbs();
+    const { logs, errors, exitCode } = await compileCapturingLogs(pack, ms, manifest);
+    expect(errors).toEqual([]);
+    expect(exitCode).toBeUndefined();
+
+    const md = readFileSync(join(pack, "skills", "checkout", "SKILL.md"), "utf8");
+    expect(md).toContain("Read ../../attachments/receive-review/SKILL.md first, then ../work/SKILL.md.");
+    expect(logs.find((l) => l.startsWith("compiled checkout"))).toMatch(/0 warnings\)$/);
+  });
+
+  test("a --verb compile still renders a path to a sibling it is not emitting", async () => {
+    const { pack, ms, manifest } = buildWithRosterVerbs();
+    const { errors, exitCode } = await compileCapturingLogs(pack, ms, manifest, ["--verb", "checkout"]);
+    expect(errors).toEqual([]);
+    expect(exitCode).toBeUndefined();
+
+    const md = readFileSync(join(pack, "skills", "checkout", "SKILL.md"), "utf8");
+    expect(md).toContain("../../attachments/receive-review/SKILL.md");
+    expect(md).toContain("../work/SKILL.md");
+    expect(existsSync(join(pack, "attachments", "receive-review"))).toBe(false);
   });
 });

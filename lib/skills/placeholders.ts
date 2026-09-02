@@ -66,11 +66,17 @@ function includeText(name: string, inc: AttachmentSource, ctx: PlaceholderContex
 export function substituteIncludesOnly(body: string, ctx: PlaceholderContext, where: string): string {
   return body.split("\n").map((line, i) =>
     line.replace(PLACEHOLDER_RE, (raw, kind: string, arg?: string) => {
-      if (kind !== "include") throw new Error(`${where}: ${raw} -- a fill may carry {{include}} only (line ${i + 1})`);
-      if (line.trim() !== raw) throw new Error(`${where}: ${raw} must be alone on its line (line ${i + 1})`);
-      const inc = arg ? ctx.includes[arg] : undefined;
-      if (!arg || !inc) throw new Error(`${where}: include "${arg}" is not a loaded attachment`);
-      return includeText(arg, inc, ctx);
+      switch (kind) {
+        case "include": {
+          if (line.trim() !== raw) throw new Error(`${where}: ${raw} must be alone on its line (line ${i + 1})`);
+          const inc = arg ? ctx.includes[arg] : undefined;
+          if (!arg || !inc) throw new Error(`${where}: include "${arg}" is not a loaded attachment`);
+          return includeText(arg, inc, ctx);
+        }
+        case "verb.path": return verbPath(ctx, arg, raw, where);
+        default:
+          throw new Error(`${where}: ${raw} -- a fill may carry {{include}}, {{verb.path}} or {{pack.path}} only (line ${i + 1})`);
+      }
     }),
   ).join("\n");
 }
@@ -83,7 +89,7 @@ function workTypeText(pipelines: Record<string, StageEntry[]>, where: string): s
   return `This pack declares several work types:\n\n${menu}\n\nAsk one structured question to pick one, then use that key in the stage list and run-start flags below.`;
 }
 
-const RUN_START_VERB_RE = /^[a-z][a-z0-9-]*$/;
+const VERB_NAME_RE = /^[a-z][a-z0-9-]*$/;
 
 function runStartFlags(ctx: PlaceholderContext, arg: string | undefined, raw: string, where: string): string {
   // run-start's flag parser takes the token after a flag as its value, so an empty
@@ -92,7 +98,7 @@ function runStartFlags(ctx: PlaceholderContext, arg: string | undefined, raw: st
   const pack = ctx.packSha ? ` --pack-sha ${ctx.packSha}` : "";
   const tail = `${sha} --mattstack-dirty ${ctx.mattstackDirty}${pack}`;
   if (arg !== undefined) {
-    if (!RUN_START_VERB_RE.test(arg)) throw new Error(`${where}: ${raw} -- verb must match [a-z][a-z0-9-]*`);
+    if (!VERB_NAME_RE.test(arg)) throw new Error(`${where}: ${raw} -- verb must match [a-z][a-z0-9-]*`);
     return fenced({ [arg]: `--repo ${ctx.repoKey} --work-type ${arg} --pipeline ${arg}${tail}` });
   }
   const out: Record<string, string> = {};
@@ -100,6 +106,14 @@ function runStartFlags(ctx: PlaceholderContext, arg: string | undefined, raw: st
     out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t}${tail}`;
   }
   return fenced(out);
+}
+
+/** A reading path from the current output file to a sibling target's SKILL.md: relative to this file, never a shell path. */
+function verbPath(ctx: PlaceholderContext, arg: string | undefined, raw: string, where: string): string {
+  if (arg === undefined || !VERB_NAME_RE.test(arg)) throw new Error(`${where}: ${raw} -- verb name must match [a-z][a-z0-9-]*`);
+  const side = ctx.verbSides[arg];
+  if (!side) throw new Error(`${where}: ${raw} -- ${arg} is not a compiled verb of this pack`);
+  return side === ctx.side ? `../${arg}/SKILL.md` : `../../${side}/${arg}/SKILL.md`;
 }
 
 function stageFields(meta: NonNullable<PlaceholderContext["stageMeta"]>): string {
@@ -142,6 +156,7 @@ export function substitute(
         case "pipeline.stages": return fenced(ctx.pipelines);
         case "work-type": return workTypeText(ctx.pipelines, where);
         case "run-start.flags": return runStartFlags(ctx, arg, raw, where);
+        case "verb.path": return verbPath(ctx, arg, raw, where);
         case "compiled-from": return ctx.compiledFrom;
         case "stage.dir":
           if (!ctx.stageDir) throw new Error(`${where}: {{stage.dir}} used in a public verb`);

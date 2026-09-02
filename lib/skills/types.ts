@@ -54,4 +54,6 @@ export type PlaceholderContext = {
   stageDir: string | null;
   stageMeta: StepSource["stageMeta"];
   compiledFrom: string;
+  verbSides: Record<string, Side>;
+  side: Side;
 };
