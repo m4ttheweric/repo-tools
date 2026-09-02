@@ -163,6 +163,26 @@ describe("substitute", () => {
     expect(json.feature).toBe("--repo my-repo --work-type feature --pipeline feature --mattstack-sha abc1234 --mattstack-dirty 0");
   });
 
+  test("run-start.flags:<verb> renders one line for a standalone verb, keyed by that verb", () => {
+    const body = substitute("{{run-start.flags:review}}", ctx(), "work").body;
+    const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
+    expect(json).toEqual({
+      review: "--repo my-repo --work-type review --pipeline review --mattstack-sha abc1234 --mattstack-dirty 0 --pack-sha acme=abc1234",
+    });
+  });
+
+  test("run-start.flags:<verb> still omits --mattstack-sha and --pack-sha when unknown", () => {
+    const body = substitute("{{run-start.flags:ship}}", ctx({ mattstackSha: "", packSha: "" }), "work").body;
+    const json = JSON.parse(body.replace(/^```json\n/, "").replace(/\n```$/, ""));
+    expect(json.ship).toBe("--repo my-repo --work-type ship --pipeline ship --mattstack-dirty 0");
+  });
+
+  test("run-start.flags:<verb> rejects an arg that is not a bare verb name", () => {
+    expect(() => substitute("{{run-start.flags:Ship_It}}", ctx(), "work")).toThrow(
+      "work: {{run-start.flags:Ship_It}} -- verb must match [a-z][a-z0-9-]*",
+    );
+  });
+
   test("stage.dir and stage.fields need a stage context", () => {
     const stage = ctx({ stageDir: "${CLAUDE_SKILL_DIR}/../../attachments/stage-plan",
       stageMeta: { stage: "plan", consumes: ["ticket"], produces: ["approach", "evidence-plan"] } });

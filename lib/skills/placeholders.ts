@@ -83,14 +83,21 @@ function workTypeText(pipelines: Record<string, StageEntry[]>, where: string): s
   return `This pack declares several work types:\n\n${menu}\n\nAsk one structured question to pick one, then use that key in the stage list and run-start flags below.`;
 }
 
-function runStartFlags(ctx: PlaceholderContext): string {
-  const out: Record<string, string> = {};
+const RUN_START_VERB_RE = /^[a-z][a-z0-9-]*$/;
+
+function runStartFlags(ctx: PlaceholderContext, arg: string | undefined, raw: string, where: string): string {
   // run-start's flag parser takes the token after a flag as its value, so an empty
   // sha must drop the flag entirely rather than leave `--mattstack-dirty` as the value.
   const sha = ctx.mattstackSha ? ` --mattstack-sha ${ctx.mattstackSha}` : "";
   const pack = ctx.packSha ? ` --pack-sha ${ctx.packSha}` : "";
+  const tail = `${sha} --mattstack-dirty ${ctx.mattstackDirty}${pack}`;
+  if (arg !== undefined) {
+    if (!RUN_START_VERB_RE.test(arg)) throw new Error(`${where}: ${raw} -- verb must match [a-z][a-z0-9-]*`);
+    return fenced({ [arg]: `--repo ${ctx.repoKey} --work-type ${arg} --pipeline ${arg}${tail}` });
+  }
+  const out: Record<string, string> = {};
   for (const t of Object.keys(ctx.pipelines)) {
-    out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t}${sha} --mattstack-dirty ${ctx.mattstackDirty}${pack}`;
+    out[t] = `--repo ${ctx.repoKey} --work-type ${t} --pipeline ${t}${tail}`;
   }
   return fenced(out);
 }
@@ -134,7 +141,7 @@ export function substitute(
         }
         case "pipeline.stages": return fenced(ctx.pipelines);
         case "work-type": return workTypeText(ctx.pipelines, where);
-        case "run-start.flags": return runStartFlags(ctx);
+        case "run-start.flags": return runStartFlags(ctx, arg, raw, where);
         case "compiled-from": return ctx.compiledFrom;
         case "stage.dir":
           if (!ctx.stageDir) throw new Error(`${where}: {{stage.dir}} used outside a stage`);
