@@ -1149,6 +1149,17 @@ describe("codeowner section sweep (deep)", () => {
     expect(store.read("r5")!.scope).toEqual({ authors: ["alice", "newbie"], sections: ["Acme"], windowDays: 30 });
   });
 
+  test("backfillAuthors preserves an existing scope's knownSections", async () => {
+    const store = tmpStore();
+    store.fullSync("ba-ks", "g/p", [], Date.now() - 1000);
+    store.setScope("ba-ks", { authors: ["alice"], sections: ["Acme"], windowDays: 30, knownSections: ["Acme", "Beta"] });
+    await backfillAuthors(
+      deps("ba-ks"), "ba-ks", ["bob"],
+      { store, windowDays: 30, fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }) },
+    );
+    expect(store.read("ba-ks")!.scope).toEqual({ authors: ["alice", "bob"], sections: ["Acme"], windowDays: 30, knownSections: ["Acme", "Beta"] });
+  });
+
   describe("backfillSections (finding 4)", () => {
     test("empty section list is a no-op: no fetch, no scope mutation, no broadcast", async () => {
       const store = tmpStore();

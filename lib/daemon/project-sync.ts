@@ -521,12 +521,13 @@ export async function backfillAuthors(
   const selfUsername = overrides.selfUsername !== undefined ? overrides.selfUsername : getSelfUsername();
   const union = new Set([...(record?.scope?.authors ?? []), ...authors]);
   if (selfUsername) union.add(selfUsername);
-  // setScope is a full replace -- an existing scope's sections (set by the
-  // deep sweep) must be carried forward explicitly or this call erases them
-  // until the next deep.
+  // setScope is a full replace -- an existing scope's sections and
+  // knownSections (set by the deep sweep) must be carried forward explicitly
+  // or this call erases them until the next deep.
   store.setScope(repoName, {
     authors: [...union].sort(),
     ...(record?.scope?.sections ? { sections: record.scope.sections } : {}),
+    ...(record?.scope?.knownSections ? { knownSections: record.scope.knownSections } : {}),
     windowDays,
   });
 
