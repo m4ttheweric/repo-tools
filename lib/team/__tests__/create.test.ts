@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { beforeEach, describe, test, expect } from "bun:test";
 import { join } from "path";
 import { mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -6,6 +6,7 @@ import { fakeProbes } from "../../setup/__tests__/fakes.ts";
 import { createTeam, scaffoldFiles } from "../create.ts";
 import { UserActionableError } from "../../setup/errors.ts";
 import { readIntent } from "../../setup/intent.ts";
+import { resetCltCacheForTests } from "../../setup/home-git.ts";
 import { createRealProbes } from "../../setup/probes.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
@@ -99,7 +100,9 @@ describe("scaffoldFiles", () => {
 });
 
 describe("createTeam", () => {
-  test("argv sequence is init → remote add → add → commit, never push", async () => {
+  beforeEach(() => resetCltCacheForTests());
+
+  test("argv sequence is CLT probe → init → remote add → add → commit, never push", async () => {
     const p = gitAwareFakeProbes("/home/x");
     const result = await createTeam(
       p,
@@ -116,6 +119,7 @@ describe("createTeam", () => {
     });
 
     expect(p.calls.exec).toEqual([
+      ["xcode-select", "-p"],
       ["git", "init", "-b", "main"],
       ["git", "remote", "add", "origin", "https://github.com/acme/mattstack-team-acme.git"],
       ["git", "add", "-A"],
@@ -138,6 +142,45 @@ describe("createTeam", () => {
       code: "remote-required",
     });
     expect(p.calls.exec).toEqual([]);
+  });
+
+  // The Team screen runs this before the checklist installs CLT; on a clean
+  // Mac /usr/bin/git is Apple's stub, which fails and pops the install dialog.
+  test("no CLT yet: scaffolds files and intent without touching git, and reports the deferral", async () => {
+    const noClt: Intercept = (argv) => (argv[0] === "xcode-select" ? { code: 2, stdout: "", stderr: "xcode-select: error: unable to get active developer directory" } : undefined);
+    const p = gitAwareFakeProbes("/home/x", noClt);
+    const result = await createTeam(p, { name: "Acme", remote: "https://github.com/acme/repo.git", others: false }, new FakeAgeKeySeam());
+
+    expect(result).toMatchObject({ slug: "acme", created: true, gitDeferred: true });
+    expect(p.calls.exec.filter((c) => c[0] === "git")).toEqual([]);
+    const dir = join("/home/x", ".mattstack", "teams", "acme");
+    expect(p.exists(join(dir, "mattstack", "mattstack.jsonc"))).toBe(true);
+    expect(p.exists(join(dir, ".git"))).toBe(false);
+    expect(readIntent(p)?.team).toEqual({ slug: "acme", name: "Acme", remote: "https://github.com/acme/repo.git", others: false });
+  });
+
+  test("the Install re-run finishes a git-deferred zone: init → remote add → add → commit, scaffold kept", async () => {
+    let cltInstalled = false;
+    const clt: Intercept = (argv) => (argv[0] === "xcode-select" && !cltInstalled ? { code: 2, stdout: "", stderr: "" } : undefined);
+    const p = gitAwareFakeProbes("/home/x", clt);
+    const opts = { name: "Acme", remote: "https://github.com/acme/repo.git", others: false };
+    await createTeam(p, opts, new FakeAgeKeySeam());
+    const dir = join("/home/x", ".mattstack", "teams", "acme");
+    p.writeFile(join(dir, "mattstack", "settings.team.jsonc"), "// edited before CLT arrived\n{}");
+    p.calls.exec.length = 0;
+
+    cltInstalled = true;
+    const result = await createTeam(p, opts, new FakeAgeKeySeam());
+
+    expect(result).toMatchObject({ created: true });
+    expect(result.gitDeferred).toBeUndefined();
+    expect(p.calls.exec.filter((c) => c[0] === "git")).toEqual([
+      ["git", "init", "-b", "main"],
+      ["git", "remote", "add", "origin", "https://github.com/acme/repo.git"],
+      ["git", "add", "-A"],
+      ["git", "commit", "-m", "team: scaffold acme"],
+    ]);
+    expect(p.readFile(join(dir, "mattstack", "settings.team.jsonc"))).toBe("// edited before CLT arrived\n{}");
   });
 
   test("--create-repo o creates o/mattstack-team-<slug> via gh and the printed URL becomes the remote", async () => {
