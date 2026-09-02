@@ -299,12 +299,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if action, ok := m.actionForKey(key); ok {
-			if action.Event {
-				m.emitEvent(action.ID)
-				return m, nil
-			}
-			m.resultForAction(action.ID)
-			return m.quit()
+			return m.dispatchAction(action)
 		}
 		if key == "ctrl+k" {
 			m.openRegistryMenu()
@@ -315,12 +310,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if key == "enter" {
-			if len(m.matches) == 0 && m.req.AcceptNoMatch {
-				m.result = &protocol.PickResult{Action: idSelect, Value: nil, Query: m.query}
-				return m.quit()
-			}
-			m.selectCursor()
-			return m.quit()
+			return m.accept()
 		}
 		if key == "esc" {
 			// Reached only once a declared esc action has already had its
@@ -694,6 +684,23 @@ func (m *Model) fitHeaderBudget(h, budget int) (top, finalH int) {
 		h--
 	}
 	return placeTop(m.cursor, m.viewportTop, n, h), h
+}
+
+// accept is what enter means on the cursor row: the caller's own enter action
+// when the registry binds one (nav's "open" is an event that descends and
+// keeps the picker up), else the built-in terminal select. Double-click
+// routes through here too, so the two can never diverge -- a double-click
+// that bypassed the registry closed nav on a folder instead of entering it.
+func (m *Model) accept() (tea.Model, tea.Cmd) {
+	if action, ok := m.actionForKey("enter"); ok {
+		return m.dispatchAction(action)
+	}
+	if len(m.matches) == 0 && m.req.AcceptNoMatch {
+		m.result = &protocol.PickResult{Action: idSelect, Value: nil, Query: m.query}
+		return m.quit()
+	}
+	m.selectCursor()
+	return m.quit()
 }
 
 // selectCursor terminates the session with the row under the cursor. The

@@ -333,9 +333,9 @@ func (m *Model) clickLeft(zone mouseZone) (tea.Model, tea.Cmd) {
 // whether this arrived within doubleClickWindow of the previous click on
 // that same row -- the only click-pairing signal available, since
 // MouseMsg carries no timestamp. A double-click accepts exactly like enter
-// would (selectCursor already knows the single-vs-multi difference), and
-// clears the pairing so a third rapid click starts a fresh pair rather than
-// re-triggering.
+// would (accept: the caller's own enter action if one is bound, else the
+// built-in select), and clears the pairing so a third rapid click starts a
+// fresh pair rather than re-triggering.
 func (m *Model) clickRow(row int) (tea.Model, tea.Cmd) {
 	now := m.now()
 	isDouble := row == m.lastClickRow && !m.lastClickAt.IsZero() && now.Sub(m.lastClickAt) <= doubleClickWindow
@@ -344,8 +344,7 @@ func (m *Model) clickRow(row int) (tea.Model, tea.Cmd) {
 	if isDouble {
 		m.lastClickRow = -1
 		m.lastClickAt = time.Time{}
-		m.selectCursor()
-		return m.quit()
+		return m.accept()
 	}
 	m.lastClickRow = row
 	m.lastClickAt = now

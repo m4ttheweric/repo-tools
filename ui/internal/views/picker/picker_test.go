@@ -2756,6 +2756,39 @@ func TestMouseDoubleClickAcceptsTheRowWithinTheWindow(t *testing.T) {
 	}
 }
 
+// TestMouseDoubleClickHonorsACallerBoundEnterAction pins double-click to the
+// same dispatch as the enter key. nav binds enter to an event ("open"
+// descends and keeps the picker up); a double-click that bypassed the
+// registry for the built-in select closed nav on a folder instead.
+func TestMouseDoubleClickHonorsACallerBoundEnterAction(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "d:src", Left: []protocol.PickSegment{{Text: "src/"}}},
+			{Value: "f:readme", Left: []protocol.PickSegment{{Text: "readme"}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Primary: true, Event: true},
+		},
+	}
+	m := New(req)
+	m.width = 60
+	render(m)
+	now := time.Now()
+	m.nowFn = func() time.Time { return now }
+
+	next, _ := m.Update(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+	m = next.(*Model)
+	now = now.Add(100 * time.Millisecond)
+	next, cmd := m.Update(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+	m = next.(*Model)
+
+	mustNotQuit(t, cmd)
+	if m.result != nil {
+		t.Fatalf("an event-bound enter must not produce a terminal result on double-click, got %+v", m.result)
+	}
+}
+
 // TestMouseClicksFarApartDoNotDoubleClick is the negative case: two clicks
 // on the same row outside doubleClickWindow are two independent single
 // clicks, not a pair.
