@@ -33,8 +33,10 @@ A9=$(printf "%s%s" "CV" "I")
 # its variants. Kept fragmented, like the rest, so this file stays clean of the
 # very term it bans.
 A10=$(printf "%s%s" "progres" "sive")
+# A second carrier name, caught in the same picker-branch scrub as A10.
+A11=$(printf '%s%s' 'gei' 'co')
 
-PATTERN="$A1|$A2|$A3|$A4|$A5|$A6|$A7|$A8|$A9|$A10"
+PATTERN="$A1|$A2|$A3|$A4|$A5|$A6|$A7|$A8|$A9|$A10|$A11"
 
 # Lockfiles are excluded: their base64 integrity hashes collide with the short
 # patterns often enough to be pure noise, and nothing is authored in them.
