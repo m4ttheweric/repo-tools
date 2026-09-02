@@ -143,7 +143,7 @@ func keybarLineZones(m *Model, top, h, n int) (string, []mouseZone) {
 	rangeText := ""
 	if n > h {
 		rangeText = fg(theme.Cyan).Render(strconv.Itoa(top+1)+"-"+strconv.Itoa(top+h)) +
-			fg(theme.Faint).Render(" of "+strconv.Itoa(n))
+			fg(theme.Meta).Render(" of "+strconv.Itoa(n))
 	}
 	ungroupedRendered := renderKeybarCluster(keybarCluster{actions: ungrouped})
 	right := renderKeybarRight(rangeText, ungroupedRendered)

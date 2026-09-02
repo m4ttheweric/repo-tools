@@ -618,9 +618,9 @@ func TestNavHeaderIdleCountShowsFoldersFilesWhenQueryEmpty(t *testing.T) {
 	if strings.Contains(plain, "2/2") {
 		t.Fatalf("idle header must not also show the generic fraction: %q", plain)
 	}
-	// It reads faint, not cyan.
-	if !strings.Contains(header, fg(theme.Faint).Render("10 folders · 2 files")) {
-		t.Fatalf("idle count should render as a faint run: %q", header)
+	// It reads as quiet meta text, not cyan.
+	if !strings.Contains(header, fg(theme.Meta).Render("10 folders · 2 files")) {
+		t.Fatalf("idle count should render in the meta role: %q", header)
 	}
 	if strings.Contains(header, cyanSGR) {
 		t.Fatalf("the idle count must not read cyan (that is the filtering state): %q", header)
@@ -680,10 +680,10 @@ func TestNavHeaderSortSuffixRendersFaintNotBold(t *testing.T) {
 	if !strings.Contains(ansi.Strip(header), "~/Documents/GitHub (Size, largest first)") {
 		t.Fatalf("header should carry the cwd and the sort suffix: %q", ansi.Strip(header))
 	}
-	// The suffix must render as a faint run, and must NOT be wrapped in the
-	// breadcrumb's bold Text; the faint suffix is what replaces that treatment.
-	if !strings.Contains(header, fg(theme.Faint).Render(" (Size, largest first)")) {
-		t.Fatalf("sort suffix must render faint: %q", header)
+	// The suffix must render as a quiet meta run, and must NOT be wrapped in
+	// the breadcrumb's bold Text; the quiet suffix is what replaces that.
+	if !strings.Contains(header, fg(theme.Meta).Render(" (Size, largest first)")) {
+		t.Fatalf("sort suffix must render in the meta role: %q", header)
 	}
 	if strings.Contains(header, fg(theme.Text).Bold(true).Render(" (Size, largest first)")) {
 		t.Fatalf("sort suffix must not inherit the breadcrumb's bold: %q", header)

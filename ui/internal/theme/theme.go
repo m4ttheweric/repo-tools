@@ -43,6 +43,12 @@ var (
 	KeybarKey   = PinkSoft
 	KeybarLabel = TextSoft
 	KeybarGroup = Lav
+
+	// Meta is quiet text that still carries information: counts, group
+	// headers, a breadcrumb's sort suffix, "of N" in a scroll range. Faint
+	// is reserved for pure decoration (separators, ellipses, placeholders),
+	// the one step allowed to sit under 4.5:1.
+	Meta = Dimmer
 )
 
 const (

@@ -652,7 +652,7 @@ func modalHeaderLine(ms *modalState, width int) string {
 		title += "…"
 	}
 	left := surfaceBg.Render(" ") + sfg(theme.Text).Bold(true).Render(title)
-	right := sfg(theme.Faint).Render(rightText)
+	right := sfg(theme.Meta).Render(rightText)
 	return modalJustify(width, surfaceBg, left, right)
 }
 
@@ -719,7 +719,7 @@ func modalRowLine(row modalRow, width int, cursor, hover bool) string {
 
 	hint := ""
 	if row.hint != "" {
-		hint = rowBg.Foreground(theme.Faint).Render(row.hint)
+		hint = rowBg.Foreground(theme.KeybarKey).Render(row.hint)
 	}
 
 	left := gutter + rowBg.Foreground(textColor).Render(text)

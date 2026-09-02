@@ -209,7 +209,7 @@ func headerCount(m *Model, top, h int) int {
 // text uppercased purely by CSS, which a terminal has no equivalent for, so
 // the case conversion has to happen here instead.
 func groupHeaderLine(group string) string {
-	return onBg.Render("  ") + fg(theme.Faint).Render(strings.ToUpper(group))
+	return onBg.Render("  ") + fg(theme.Meta).Render(strings.ToUpper(group))
 }
 
 // thumbSpan sizes the rail to the visible fraction of the list (h*h/n,
@@ -275,7 +275,7 @@ func breadcrumbLine(m *Model) string {
 		left.WriteString(fg(theme.Text).Bold(true).Render(part))
 	}
 	if m.req.CrumbSuffix != "" {
-		left.WriteString(fg(theme.Faint).Render(m.req.CrumbSuffix))
+		left.WriteString(fg(theme.Meta).Render(m.req.CrumbSuffix))
 	}
 	return justify(m.width, left.String(), countText(m))
 }
@@ -287,7 +287,7 @@ func breadcrumbLine(m *Model) string {
 func countText(m *Model) string {
 	if m.multiMode() && len(m.selected) > 0 {
 		return fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
-			fg(theme.Faint).Render(" selected  ·  ") + countFraction(m)
+			fg(theme.Meta).Render(" selected") + fg(theme.Faint).Render("  ·  ") + countFraction(m)
 	}
 	return countFraction(m)
 }
@@ -301,12 +301,12 @@ func countFraction(m *Model) string {
 	total := len(m.req.Rows)
 	n := len(m.matches)
 	if m.query != "" && n > 0 {
-		return fg(theme.Cyan).Render(fmt.Sprintf("%d", n)) + fg(theme.Faint).Render(fmt.Sprintf("/%d", total))
+		return fg(theme.Cyan).Render(fmt.Sprintf("%d", n)) + fg(theme.Meta).Render(fmt.Sprintf("/%d", total))
 	}
 	if m.query == "" && m.req.IdleCount != "" {
-		return fg(theme.Faint).Render(m.req.IdleCount)
+		return fg(theme.Meta).Render(m.req.IdleCount)
 	}
-	return fg(theme.Faint).Render(fmt.Sprintf("%d/%d", n, total))
+	return fg(theme.Meta).Render(fmt.Sprintf("%d/%d", n, total))
 }
 
 func filterLine(m *Model) string {

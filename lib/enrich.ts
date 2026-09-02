@@ -297,7 +297,7 @@ export function formatBranchSegments(eb: EnrichedBranch): { left: PickSegment[];
     right.push(
       eb.linearId
         ? { text: eb.linearId, tone: "dimmer" }
-        : { text: isDefault ? "[main branch]" : "[Local Only]", tone: "faint" },
+        : { text: isDefault ? "[main branch]" : "[Local Only]", tone: "dimmer" },
     );
   } else if (eb.linearId) {
     right.push({ text: " " }, { text: eb.linearId, tone: "dimmer" });

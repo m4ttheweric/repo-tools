@@ -83,7 +83,7 @@ describe("formatBranchSegments", () => {
     expect(left.at(-1)).toEqual({ text: " [Backlog]", tone: "dim" });
   });
 
-  test("non-ticket branch with no MR/ticket/linearId is [Local Only], faint", () => {
+  test("non-ticket branch with no MR/ticket/linearId is [Local Only], dimmer", () => {
     const eb = mkBranch({ dirName: "gitq-1", branch: "on-deck/bill" });
     const { left, right } = formatBranchSegments(eb);
 
@@ -92,7 +92,7 @@ describe("formatBranchSegments", () => {
       { text: " · ", tone: "faint" },
       { text: "on-deck/bill", tone: "dim" },
     ]);
-    expect(right).toEqual([{ text: "[Local Only]", tone: "faint" }]);
+    expect(right).toEqual([{ text: "[Local Only]", tone: "dimmer" }]);
   });
 
   test("a bare worktree with no branch renders dirName only", () => {
@@ -101,10 +101,10 @@ describe("formatBranchSegments", () => {
     expect(left).toEqual([{ text: "gitq-1", tone: "text", bold: true }]);
   });
 
-  test("default branch with no MR/ticket/linearId is [main branch], faint", () => {
+  test("default branch with no MR/ticket/linearId is [main branch], dimmer", () => {
     const eb = mkBranch({ dirName: "harbor", branch: "main" });
     const { right } = formatBranchSegments(eb);
-    expect(right).toEqual([{ text: "[main branch]", tone: "faint" }]);
+    expect(right).toEqual([{ text: "[main branch]", tone: "dimmer" }]);
   });
 
   test("default branch WITH icons never shows the [main branch] tag", () => {
