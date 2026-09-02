@@ -149,7 +149,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             // First-run Setup has no daemon dependency — show it now rather
             // than after the wait loop below, or a genuine first run (daemon
             // not installed yet) sits at a blank menu bar for the full 4s.
-            if let coordinator, !coordinator.setupIsComplete { coordinator.showSetup() }
+            if let coordinator, !coordinator.setupIsComplete {
+                coordinator.showSetup(step: SetupResume.step(from: CommandLine.arguments))
+            }
 
             // Wait for launchd to bring the daemon up
             for _ in 0..<8 {

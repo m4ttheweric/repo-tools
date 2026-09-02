@@ -28,7 +28,7 @@ struct ChecklistScreen: View {
                             HStack {
                                 Text("Full Disk Access was granted. Relaunch mattstack to apply it.").font(.caption)
                                 Spacer()
-                                Button("Relaunch mattstack") { AppRelaunch.relaunchInPlace() }.accessibilityIdentifier(AXID.checklistRelaunch)
+                                Button("Relaunch mattstack") { AppRelaunch.relaunchInPlace(resumeAt: .checklist) }.accessibilityIdentifier(AXID.checklistRelaunch)
                             }
                         }
                     }

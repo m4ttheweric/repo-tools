@@ -5,7 +5,7 @@ import MattstackCore
 /// (both prompt this after a permission grant that only takes effect on the
 /// next launch).
 enum AppRelaunch {
-    static func relaunchInPlace() {
+    static func relaunchInPlace(resumeAt step: SetupStep? = nil) {
         let path = Bundle.main.bundlePath
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -14,7 +14,7 @@ enum AppRelaunch {
         // survives the relaunch; `open` does not inherit either on its own.
         var args = ["-n", path]
         if let feed = ProcessInfo.processInfo.environment[UpdatePolicy.overrideEnv] { args += ["--env", "\(UpdatePolicy.overrideEnv)=\(feed)"] }
-        let passthrough = Array(CommandLine.arguments.dropFirst())
+        let passthrough = SetupResume.relaunchArguments(passthrough: Array(CommandLine.arguments.dropFirst()), resumeAt: step)
         if !passthrough.isEmpty { args += ["--args"] + passthrough }
         task.arguments = args
         try? task.run()
