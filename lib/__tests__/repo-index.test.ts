@@ -859,3 +859,22 @@ describe("repoOptions labels", () => {
     });
   });
 });
+
+describe("pickerWorktrees", () => {
+  const { pickerWorktrees } = require("../repo-index.ts") as typeof import("../repo-index.ts");
+  const wt = (path: string, branch: string) => ({ path, branch, isBare: false });
+
+  test("keeps the main worktree first, then the rest A→Z by branch (case-insensitive), dir name when detached", () => {
+    const repo = {
+      repoName: "x", dataDir: "/d",
+      worktrees: [wt("/r/main", "master"), wt("/r/tonks", "tonks"), wt("/r/Bill", "Bill"), wt("/r/dean", ""), wt("/r/alpha", "alpha")],
+    };
+    expect(pickerWorktrees(repo).map((w) => w.path)).toEqual(["/r/main", "/r/alpha", "/r/Bill", "/r/dean", "/r/tonks"]);
+  });
+
+  test("does not mutate the repo's own git-ordered list", () => {
+    const repo = { repoName: "x", dataDir: "/d", worktrees: [wt("/r/main", "master"), wt("/r/z", "z"), wt("/r/a", "a")] };
+    pickerWorktrees(repo);
+    expect(repo.worktrees.map((w) => w.path)).toEqual(["/r/main", "/r/z", "/r/a"]);
+  });
+});

@@ -14,12 +14,12 @@ import { identityFromRemote, serializeIdentity } from "./settings/identity.ts";
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
 export { getRepoRoot, getCurrentBranch, getRemoteUrl } from "./git.ts";
-export { updateRepoIndex, getKnownRepos, getKnownReposCached, findKnownRepo, repoCarriesWorktree, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "./repo-index.ts";
+export { updateRepoIndex, getKnownRepos, getKnownReposCached, findKnownRepo, repoCarriesWorktree, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, pickerWorktrees, type KnownRepo } from "./repo-index.ts";
 
 // ─── Internal imports ────────────────────────────────────────────────────────
 
 import { getRepoRoot, getRemoteUrl } from "./git.ts";
-import { updateRepoIndex, getKnownRepos, findKnownRepo, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo-index.ts";
+import { updateRepoIndex, getKnownRepos, findKnownRepo, repoOption, repoOptions, repoFromOptionValue, missingRepoRefusal, pickerWorktrees, type KnownRepo } from "./repo-index.ts";
 import { repoLabel } from "./repo-label.ts";
 import type { PickRow } from "./ui/protocol.ts";
 
@@ -349,7 +349,7 @@ export async function pickWorktreeFromRepo(
   } catch { /* no remote */ }
 
   const enriched = await enrichBranches(
-    repo.worktrees.map(wt => ({ path: wt.path, branch: wt.branch })),
+    pickerWorktrees(repo).map(wt => ({ path: wt.path, branch: wt.branch })),
     remoteUrl,
   );
 

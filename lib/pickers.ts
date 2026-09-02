@@ -7,7 +7,7 @@
 
 import { execSync } from "child_process";
 import { join } from "path";
-import { getRepoIdentity, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
+import { getRepoIdentity, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, pickerWorktrees, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchSegments, type EnrichedBranch } from "./enrich.ts";
 import { repoLabel } from "./repo-label.ts";
 import type { PickHandle } from "./ui/pick.ts";
@@ -105,7 +105,8 @@ export async function pickWorktreeWithSwitch(
   if (repo.worktrees.length === 0) return SWITCH_REPO;
 
   let liveHandle: PickHandle | undefined;
-  const options = repo.worktrees.map((wt) => ({ value: wt.path, label: wt.branch || dirNameOf(wt.path) }));
+  const worktrees = pickerWorktrees(repo);
+  const options = worktrees.map((wt) => ({ value: wt.path, label: wt.branch || dirNameOf(wt.path) }));
 
   const resultPromise = filterableSelect(
     {
@@ -116,7 +117,7 @@ export async function pickWorktreeWithSwitch(
       ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb, crumbSuffix: ` · ${repoLabel(repo.repoName)} worktrees` } : {}),
     },
     {
-      rows: repo.worktrees.map((wt) => cheapWorktreeRow(wt, currentPath)),
+      rows: worktrees.map((wt) => cheapWorktreeRow(wt, currentPath)),
       onOpen: (h) => { liveHandle = h; },
     },
   );
@@ -126,7 +127,7 @@ export async function pickWorktreeWithSwitch(
   // Silent mode keeps its fetch spinner from printing over the live frame.
   void (async () => {
     const remoteUrl = await getRemoteUrl(repo.worktrees[0]?.path || currentPath);
-    const enriched = await enrichBranches(repo.worktrees, remoteUrl, { silent: true });
+    const enriched = await enrichBranches(worktrees, remoteUrl, { silent: true });
     liveHandle?.update({ rows: enriched.map((eb) => enrichedWorktreeRow(eb, currentPath)) });
   })().catch(() => {
     // Best-effort enrichment; the cheap rows already on screen stand as-is.

@@ -301,7 +301,7 @@ describe("pickWorktreeWithSwitch: incremental enrichment", () => {
     expect(wt1Row.right).toEqual([{ text: "ENG-123", tone: "dimmer" }]);
     const wt2Row = updatedRows.find((r) => r.value === "/a/wt2")!;
     // currentPath ("/a/wt2") gets the right-pinned "(current)" marker appended.
-    expect(wt2Row.right).toEqual([{ text: "[Local Only]", tone: "faint" }, { text: "  " }, { text: "(current)", tone: "faint" }]);
+    expect(wt2Row.right).toEqual([{ text: "[Local Only]", tone: "dimmer" }, { text: "  " }, { text: "(current)", tone: "faint" }]);
 
     expect(enrichSpy).toHaveBeenCalledTimes(1);
     expect(enrichSpy.mock.calls[0]![2]).toEqual({ silent: true });

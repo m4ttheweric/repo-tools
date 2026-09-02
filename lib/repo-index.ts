@@ -1374,6 +1374,17 @@ export function repoFromOptionValue(repos: KnownRepo[], value: string): KnownRep
   return repos.find((r, i) => repoOptionValue(r, i, duplicated) === value);
 }
 
+/** A repo's worktrees in picker order: the main worktree (git lists it
+    first) stays first, the rest sort A→Z by branch, or directory name when
+    detached. A copy: `repo.worktrees` keeps git's own order for everything
+    agent-facing (`rt worktree list --json`). */
+export function pickerWorktrees(repo: Pick<KnownRepo, "worktrees">): KnownRepo["worktrees"] {
+  const [main, ...rest] = repo.worktrees;
+  if (!main) return [];
+  const label = (wt: KnownRepo["worktrees"][number]) => wt.branch || basename(wt.path);
+  return [main, ...rest.sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: "base" }))];
+}
+
 /** The one-line refusal every picker prints instead of cd-ing into a repo whose indexed path is gone. */
 export function missingRepoRefusal(r: KnownRepo): string {
   const gone = r.worktrees[0]?.path ?? "its indexed path";
