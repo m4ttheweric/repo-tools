@@ -13,6 +13,7 @@ import { dirname, join } from "path";
 import { parseRemoteUrl } from "../enrich.ts";
 import { type AgeKeySeam, createRealAgeKeySeam, ensureAgeKey, renderSopsYamlFor } from "../home/age-key.ts";
 import { TEAM_PATH_REGEX } from "../secrets/team-store.ts";
+import { forgeArgv } from "./forge.ts";
 import { updateTeamLocal } from "./team-local.ts";
 import { UserActionableError } from "../setup/errors.ts";
 import { readIntent, writeIntent } from "../setup/intent.ts";
@@ -121,7 +122,7 @@ async function resolveRemote(p: Probes, slug: string, opts: CreateTeamOpts): Pro
   }
 
   const repoPath = `${opts.createRepoOwner}/mattstack-team-${slug}`;
-  const result = await p.exec(["gh", "repo", "create", repoPath, "--private"]);
+  const result = await p.exec([...forgeArgv(p, "gh"), "repo", "create", repoPath, "--private"]);
   if (result.code !== 0) {
     const text = `${result.stdout}\n${result.stderr}`;
     if (/already exists/i.test(text)) {

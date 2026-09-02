@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { fakeProbes, ok, missing } from "../../setup/__tests__/fakes.ts";
-import { grantRead, revokeRead, forgeLogin } from "../forge.ts";
+import { grantRead, revokeRead, forgeLogin, forgeArgv } from "../forge.ts";
 import type { ExecScript } from "../../setup/__tests__/fakes.ts";
 
 const GITHUB_REMOTE = "git@github.com:acme/widgets.git";
@@ -173,6 +173,14 @@ describe("grantRead", () => {
     const result = await grantRead(p, "not-a-remote", "octocat");
     expect(result).toEqual({ access: "skipped", manualSteps: [] });
     expect(p.calls.exec).toEqual([]);
+  });
+});
+
+describe("forgeArgv", () => {
+  test("runs the bundled gh/glab when the app ships one (they are never on PATH: exposeByDefault is false), else the bare name", () => {
+    const p = fakeProbes({});
+    expect(forgeArgv(p, "glab", () => ["/Applications/mattstack.app/Contents/Helpers/glab"])).toEqual(["/Applications/mattstack.app/Contents/Helpers/glab"]);
+    expect(forgeArgv(p, "gh", () => null)).toEqual(["gh"]);
   });
 });
 

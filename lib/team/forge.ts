@@ -9,6 +9,7 @@
 import { parseRemoteUrl } from "../enrich.ts";
 import { forgeFromRemote } from "../setup/team-settings.ts";
 import type { ExecResult, Probes } from "../setup/probes.ts";
+import { bundledToolExec } from "../deps/resolve.ts";
 
 export type ForgeAccess = "granted" | "manual" | "skipped";
 /** Revoke has no "already effective, nothing to do" analog to "granted" — a completed revoke (including a no-op against an already-removed member) is "revoked", never the grant contract's "granted". */
@@ -93,7 +94,7 @@ function gitlabManualSteps(reason: FailureReason, host: string, path: string, ha
 type GitlabUserLookup = { id: number } | { id: null; reason: FailureReason };
 
 async function lookupGitlabUserId(p: Probes, host: string, handle: string, token: string | null | undefined): Promise<GitlabUserLookup> {
-  const result = await p.exec(["glab", "api", `users?username=${encodeURIComponent(handle)}`], { env: forgeAuthEnv("gitlab", host, token) });
+  const result = await p.exec([...forgeArgv(p, "glab"), "api", `users?username=${encodeURIComponent(handle)}`], { env: forgeAuthEnv("gitlab", host, token) });
   if (result.code !== 0) return { id: null, reason: classifyExecFailure(result) };
   try {
     const parsed: unknown = JSON.parse(result.stdout);
@@ -112,7 +113,7 @@ export async function grantRead(p: Probes, remote: string, handle: string, token
 
   if (parsed.provider === "github") {
     const { owner, repo } = splitOwnerRepo(parsed.path);
-    const result = await p.exec(["gh", "api", "-X", "PUT", `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(handle)}`, "-f", "permission=pull"], env ? { env } : undefined);
+    const result = await p.exec([...forgeArgv(p, "gh"), "api", "-X", "PUT", `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(handle)}`, "-f", "permission=pull"], env ? { env } : undefined);
     if (result.code === 0) {
       // gh prints the invitation object on a 201 (pending — access isn't effective until accepted) and nothing on a 204 (already effective) — the only signal this call exposes for telling the two apart.
       if (result.stdout.trim().length > 0) {
@@ -132,7 +133,7 @@ export async function grantRead(p: Probes, remote: string, handle: string, token
   }
 
   const result = await p.exec(
-    ["glab", "api", "-X", "POST", `projects/${encodeURIComponent(parsed.path)}/members`, "-f", `user_id=${lookup.id}`, "-f", "access_level=20"],
+    [...forgeArgv(p, "glab"), "api", "-X", "POST", `projects/${encodeURIComponent(parsed.path)}/members`, "-f", `user_id=${lookup.id}`, "-f", "access_level=20"],
     { env },
   );
   if (result.code === 0) return { access: "granted", manualSteps: [] };
@@ -147,7 +148,7 @@ export async function revokeRead(p: Probes, remote: string, handle: string, toke
   if (parsed.provider === "github") {
     const { owner, repo } = splitOwnerRepo(parsed.path);
     // DELETE collaborators is 204-idempotent on GitHub's side already — a non-collaborator DELETE still returns 204.
-    const result = await p.exec(["gh", "api", "-X", "DELETE", `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(handle)}`], env ? { env } : undefined);
+    const result = await p.exec([...forgeArgv(p, "gh"), "api", "-X", "DELETE", `/repos/${owner}/${repo}/collaborators/${encodeURIComponent(handle)}`], env ? { env } : undefined);
     if (result.code === 0) return { access: "revoked", manualSteps: [] };
     return { access: "manual", manualSteps: githubManualSteps(result, owner, repo, handle, "Remove") };
   }
@@ -159,7 +160,7 @@ export async function revokeRead(p: Probes, remote: string, handle: string, toke
     return { access: "manual", manualSteps: gitlabManualSteps(lookup.reason, parsed.host, parsed.path, handle, "Remove") };
   }
 
-  const result = await p.exec(["glab", "api", "-X", "DELETE", `projects/${encodeURIComponent(parsed.path)}/members/${lookup.id}`], { env });
+  const result = await p.exec([...forgeArgv(p, "glab"), "api", "-X", "DELETE", `projects/${encodeURIComponent(parsed.path)}/members/${lookup.id}`], { env });
   if (result.code === 0) return { access: "revoked", manualSteps: [] };
   // Unlike GitHub, GitLab's DELETE members/:id 404s for a non-member — parity with GitHub's own idempotent 204 means that 404 is success here too, not a failure to revoke.
   if (/HTTP 404|404 Not Found/i.test(`${result.stdout}\n${result.stderr}`)) return { access: "revoked", manualSteps: [] };
@@ -176,6 +177,15 @@ function parseStringField(stdout: string, field: string): string | null {
 }
 
 /**
+ * The argv prefix that runs gh or glab: the app's bundled copy when there is
+ * one (they ship with exposeByDefault false, so they are never on PATH),
+ * else the bare name for a machine without the app.
+ */
+export function forgeArgv(p: Probes, name: "gh" | "glab", bundled: typeof bundledToolExec = bundledToolExec): string[] {
+  return bundled(p, name) ?? [name];
+}
+
+/**
  * The CLI's own token variable, so a machine whose gh/glab was never logged
  * in still acts with the token rt holds. Env only: never argv, never a URL.
  */
@@ -188,9 +198,9 @@ function forgeAuthEnv(provider: "github" | "gitlab", host: string, token: string
 export async function forgeLogin(p: Probes, provider: "github" | "gitlab", host: string, token?: string | null): Promise<string | null> {
   const env = forgeAuthEnv(provider, host, token);
   if (provider === "github") {
-    const result = await p.exec(["gh", "api", "user"], env ? { env } : undefined);
+    const result = await p.exec([...forgeArgv(p, "gh"), "api", "user"], env ? { env } : undefined);
     return result.code === 0 ? parseStringField(result.stdout, "login") : null;
   }
-  const result = await p.exec(["glab", "api", "user"], { env });
+  const result = await p.exec([...forgeArgv(p, "glab"), "api", "user"], { env });
   return result.code === 0 ? parseStringField(result.stdout, "username") : null;
 }

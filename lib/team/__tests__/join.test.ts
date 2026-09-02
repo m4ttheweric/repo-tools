@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { join as pathJoin } from "path";
-import { fakeProbes } from "../../setup/__tests__/fakes.ts";
+import { fakeProbes, type ExecScript } from "../../setup/__tests__/fakes.ts";
 import { UserActionableError } from "../../setup/errors.ts";
 import { resetCltCacheForTests } from "../../setup/home-git.ts";
 import { intentPath, readIntent, type InvitePointer, type SetupIntent } from "../../setup/intent.ts";
@@ -141,7 +141,7 @@ function baseJoinRedeemSeams(overrides: Partial<JoinRedeemSeams> = {}): { seams:
 const NO_SECRETS: SecretsSeams = {} as SecretsSeams;
 
 /** A script for git's answer alone: the CLT guard (`xcode-select -p`) that precedes the git call answers ok. */
-function gitAnswers(script: Parameters<typeof fakeProbes>[0]["exec"] & object): Parameters<typeof fakeProbes>[0]["exec"] {
+function gitAnswers(script: ExecScript): ExecScript {
   return (argv, opts) => (argv[0] === "xcode-select" ? { code: 0, stdout: "/Library/Developer/CommandLineTools", stderr: "" } : script(argv, opts));
 }
 
