@@ -188,14 +188,15 @@ ax_allow_notifications() {
     && ax_log "notifications: Allow clicked" || ax_log "notifications: no prompt visible"
 }
 
-# System Settings: toggle the app's switch in a Privacy pane opened by the app's button.
-ax_toggle_in_system_settings() {  # <row label e.g. mattstack>
+
+# The row's checkbox value (0/1) for a System Settings privacy list entry, optionally clicking it
+# first. The pane's list loads well after window 1 exists, and the row layout (a group holding a
+# static text and a checkbox, nesting varies by OS) is not addressable by a fixed path across
+# 14/15/26: find the static text naming the app anywhere in the window, then climb AXParent until
+# an ancestor holds a checkbox.
+ax_settings_row_checkbox() {  # <row label> [click]
   local lbl; lbl=$(ax_esc "$1")
-  # The pane's list loads well after window 1 exists, and the row layout
-  # (a group holding a static text and a checkbox, nesting varies by OS)
-  # is not addressable by a fixed path across 14/15/26. Find the static
-  # text naming the app anywhere in the window, then climb AXParent until
-  # an ancestor holds a checkbox, and click that.
+  local act="${2:-}"
   ax_osa "
 using terms from application \"System Events\"
   on findText(el, lbl)
@@ -241,9 +242,20 @@ tell application \"System Events\" to tell process \"System Settings\"
     if cb is not missing value then exit repeat
   end repeat
   if cb is missing value then error \"no checkbox near $lbl\"
-  if value of cb is 0 then click cb
-end tell" >/dev/null || return 1
-  ax_log "System Settings: toggled $1"
+  if \"$act\" is \"click\" and value of cb is 0 then click cb
+  return value of cb
+end tell"
+}
+
+ax_toggle_in_system_settings() {  # <row label e.g. mattstack>
+  local before after
+  before=$(ax_settings_row_checkbox "$1" click) || return 1
+  ax_log "System Settings: $1 checkbox was $before, clicked"
   ax_admin_auth || true
+  sleep 2
+  after=$(ax_settings_row_checkbox "$1") || return 1
+  ax_log "System Settings: $1 checkbox now $after"
+  # On failure System Settings stays open so the caller's screenshot shows the pane.
+  [ "$after" = 1 ] || return 1
   ax_osa 'tell application "System Settings" to quit' >/dev/null 2>&1 || true
 }
