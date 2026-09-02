@@ -191,30 +191,58 @@ ax_allow_notifications() {
 # System Settings: toggle the app's switch in a Privacy pane opened by the app's button.
 ax_toggle_in_system_settings() {  # <row label e.g. mattstack>
   local lbl; lbl=$(ax_esc "$1")
-  ax_osa "tell application \"System Events\" to tell process \"System Settings\"
-    repeat 20 times
-      if exists window 1 then exit repeat
-      delay 0.5
-    end repeat
-    tell window 1
-      set tgt to first checkbox of (first group whose name contains \"$lbl\" or description contains \"$lbl\") of (first scroll area of group 1 of splitter group 1 of group 1)
-      if value of tgt is 0 then click tgt
-    end tell
-  end tell" >/dev/null 2>&1 || {
-    # Layout differs across 14/15/26; fall back to a breadth-first search for a checkbox near a static text with the label.
-    ax_osa "tell application \"System Events\" to tell process \"System Settings\" to tell window 1
-      set cbs to every checkbox of entire contents
-      repeat with cb in cbs
-        try
-          if (name of cb contains \"$lbl\") or (description of cb contains \"$lbl\") then
-            if value of cb is 0 then click cb
-            return
-          end if
-        end try
+  # The pane's list loads well after window 1 exists, and the row layout
+  # (a group holding a static text and a checkbox, nesting varies by OS)
+  # is not addressable by a fixed path across 14/15/26. Find the static
+  # text naming the app anywhere in the window, then climb AXParent until
+  # an ancestor holds a checkbox, and click that.
+  ax_osa "
+using terms from application \"System Events\"
+  on findText(el, lbl)
+    try
+      if class of el is static text then
+        if (value of el as text) contains lbl or (name of el as text) contains lbl then return el
+      end if
+    end try
+    try
+      repeat with c in UI elements of el
+        set r to my findText(c, lbl)
+        if r is not missing value then return r
       end repeat
-      error \"no checkbox for $lbl\"
-    end tell" >/dev/null || return 1
-  }
+    end try
+    return missing value
+  end findText
+  on findCheckbox(el)
+    try
+      if class of el is checkbox then return el
+    end try
+    try
+      repeat with c in UI elements of el
+        set r to my findCheckbox(c)
+        if r is not missing value then return r
+      end repeat
+    end try
+    return missing value
+  end findCheckbox
+end using terms from
+tell application \"System Events\" to tell process \"System Settings\"
+  set txt to missing value
+  repeat 40 times
+    if exists window 1 then set txt to my findText(window 1, \"$lbl\")
+    if txt is not missing value then exit repeat
+    delay 0.5
+  end repeat
+  if txt is missing value then error \"no row for $lbl in System Settings\"
+  set anc to txt
+  set cb to missing value
+  repeat 5 times
+    set anc to value of attribute \"AXParent\" of anc
+    set cb to my findCheckbox(anc)
+    if cb is not missing value then exit repeat
+  end repeat
+  if cb is missing value then error \"no checkbox near $lbl\"
+  if value of cb is 0 then click cb
+end tell" >/dev/null || return 1
   ax_log "System Settings: toggled $1"
   ax_admin_auth || true
   ax_osa 'tell application "System Settings" to quit' >/dev/null 2>&1 || true
