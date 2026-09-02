@@ -36,6 +36,7 @@ import {
   recipientsFor,
   releaseClaim,
   roomArchivedAt,
+  roomDefaultWake,
   stalePendingPairs,
 } from "../chat-store.ts";
 
@@ -195,12 +196,20 @@ test("rejoining from the same cwd keeps the handle rather than refusing", () => 
   expect(listMembers("build", db)).toHaveLength(1);
 });
 
-test("wakeOn defaults to all and round-trips when set", () => {
+test("wakeOn defaults to mention (no stamped room default) and round-trips when set", () => {
   const db = freshDb();
   joinRoom({ room: "build", handle: "a" }, db);
-  joinRoom({ room: "build", handle: "b", wakeOn: "mention" }, db);
+  joinRoom({ room: "build", handle: "b", wakeOn: "all" }, db);
   const byHandle = Object.fromEntries(listMembers("build", db).map(m => [m.handle, m.wakeOn]));
-  expect(byHandle).toEqual({ a: "all", b: "mention" });
+  expect(byHandle).toEqual({ a: "mention", b: "all" });
+  expect(roomDefaultWake("build", db)).toBeUndefined();
+});
+
+test("a room created with an explicit wakeOn keeps that as its default for later joiners", () => {
+  const db = freshDb();
+  joinRoom({ room: "firehose", handle: "a", wakeOn: "all" }, db);
+  joinRoom({ room: "firehose", handle: "b" }, db);
+  expect(listMembers("firehose", db).map((m) => m.wakeOn)).toEqual(["all", "all"]);
 });
 
 test("leave drops membership", () => {
@@ -381,8 +390,8 @@ test("stalePendingPairs never returns a wake_on:none member, even with a genuine
 
 test("stalePendingPairs still includes a member once someone ELSE has posted, even if the member also has an unread post of their own", () => {
   const db = freshDb();
-  joinRoom({ room: "r", handle: "a" }, db);
-  joinRoom({ room: "r", handle: "b" }, db);
+  joinRoom({ room: "r", handle: "a", wakeOn: "all" }, db);
+  joinRoom({ room: "r", handle: "b", wakeOn: "all" }, db);
   postMessage({ room: "r", handle: "a", body: "mine" }, db); // a's own post: alone, would exclude a
   const fromB = postMessage({ room: "r", handle: "b", body: "b posts too" }, db)!;
   // "a" is stale behind a message NOT authored by "a" (b's post) -- must appear.

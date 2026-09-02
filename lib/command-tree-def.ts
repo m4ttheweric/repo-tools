@@ -74,6 +74,82 @@ const runsSubcommands: Record<string, CommandNode> = {
       { name: "Reason", flag: "--reason", type: "text", placeholder: "no owning process", hint: "Recorded against the run" },
     ],
   },
+  "run-start": {
+    description: "Pipeline: open a run DB and print its runId and runDb",
+    module: "./commands/runs-write.ts",
+    fn: "runsRunStart",
+    args: [
+      { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Run-dir key for the repo" },
+      { name: "Work type", flag: "--work-type", type: "text", placeholder: "feature", hint: "feature | fix | ..." },
+      { name: "Pipeline", flag: "--pipeline", type: "text", placeholder: "feature", hint: "Pipeline name from the manifest" },
+      { name: "Run id", flag: "--run-id", type: "text", placeholder: "20260901-120000-abcd-1", hint: "Omit to mint one" },
+      { name: "Spawned by", flag: "--spawned-by", type: "text", placeholder: "shepherdr", hint: "Surface that spawned this run" },
+      { name: "Pack dirs", flag: "--pack-dirs", type: "text", placeholder: "/a:/b", hint: "Colon-separated pack checkouts for provenance" },
+      { name: "Ticket", flag: "--ticket", type: "text", placeholder: "ABC-1", hint: "Recorded under producer work" },
+      { name: "mattstack sha", flag: "--mattstack-sha", type: "text", placeholder: "deadbee", hint: "Appended to pack_commits" },
+      { name: "mattstack dirty", flag: "--mattstack-dirty", type: "text", placeholder: "0", hint: "1 forces pack_dirty" },
+      { name: "Pack sha", flag: "--pack-sha", type: "text", placeholder: "acme=abc1234", hint: "Appended verbatim to pack_commits" },
+    ],
+  },
+  "run-status": {
+    description: "Pipeline: close the run (reads RT_RUN_DB)",
+    module: "./commands/runs-write.ts",
+    fn: "runsRunStatus",
+    args: [{ name: "Status", flag: "--status", type: "text", placeholder: "done", hint: "done | failed | abandoned" }],
+  },
+  "stage-start": {
+    description: "Pipeline: start a stage attempt (reads RT_RUN_DB)",
+    module: "./commands/runs-write.ts",
+    fn: "runsStageStart",
+    args: [{ name: "Stage", flag: "--stage", type: "text", placeholder: "plan", hint: "Stage name" }],
+  },
+  "stage-done": {
+    description: "Pipeline: finish the latest attempt of a stage (reads RT_RUN_DB)",
+    module: "./commands/runs-write.ts",
+    fn: "runsStageDone",
+    args: [{ name: "Stage", flag: "--stage", type: "text", placeholder: "plan", hint: "Stage name" }],
+  },
+  "stage-fail": {
+    description: "Pipeline: fail the latest attempt of a stage (reads RT_RUN_DB)",
+    module: "./commands/runs-write.ts",
+    fn: "runsStageFail",
+    args: [
+      { name: "Stage", flag: "--stage", type: "text", placeholder: "gates", hint: "Stage name" },
+      { name: "Reason", flag: "--reason", type: "text", placeholder: "3 files exceed the loc budget", hint: "One sentence, what actually failed" },
+      { name: "Detail path", flag: "--detail-path", type: "text", placeholder: "/tmp/gates.log", hint: "Log or report for this failure" },
+    ],
+  },
+  field: {
+    description: "Pipeline: field set KEY VALUE --stage NAME | field get KEY (reads RT_RUN_DB)",
+    module: "./commands/runs-write.ts",
+    fn: "runsField",
+    omitBehavior: { exempt: "agent-facing; the work engine names the verb and key explicitly and RT_RUN_DB is its context" },
+    args: [
+      { name: "Verb", type: "text", placeholder: "set", hint: "set | get" },
+      { name: "Key", type: "text", placeholder: "branch", hint: "Field key" },
+      { name: "Value", type: "text", optional: true, placeholder: "acme-1-slug", hint: "set only" },
+      { name: "Stage", flag: "--stage", type: "text", placeholder: "provision", hint: "set only: producing stage" },
+    ],
+  },
+  decision: {
+    description: "Pipeline: decision record --contract C --scope S --selection JSON --decided-by W (reads RT_RUN_DB)",
+    module: "./commands/runs-write.ts",
+    fn: "runsDecision",
+    omitBehavior: { exempt: "agent-facing; the stage skill passes record and every flag explicitly and RT_RUN_DB is its context" },
+    args: [
+      { name: "Verb", type: "text", placeholder: "record", hint: "record" },
+      { name: "Contract", flag: "--contract", type: "text", placeholder: "execution-strategy@1", hint: "Slot contract" },
+      { name: "Scope", flag: "--scope", type: "text", placeholder: "run", hint: "Decision scope" },
+      { name: "Selection", flag: "--selection", type: "text", placeholder: '{"tier":"direct-tdd"}', hint: "JSON" },
+      { name: "Decided by", flag: "--decided-by", type: "text", placeholder: "stage-plan", hint: "Writer" },
+    ],
+  },
+  snapshot: {
+    description: "Pipeline: the full run document as JSON (reads RT_RUN_DB)",
+    module: "./commands/runs-write.ts",
+    fn: "runsSnapshot",
+    args: [],
+  },
 };
 
 const interceptSubcommands: Record<string, CommandNode> = {
@@ -847,7 +923,7 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   runs: {
-    description: "Pipeline run state (read-only, from the run DB)",
+    description: "Pipeline run state: list, show, and the pipeline's write verbs",
     module: "./commands/runs.ts",
     fn: "runsList",
     args: [

@@ -16,6 +16,7 @@ import { TEAM_PATH_REGEX } from "../secrets/team-store.ts";
 import { updateTeamLocal } from "./team-local.ts";
 import { UserActionableError } from "../setup/errors.ts";
 import { readIntent, writeIntent } from "../setup/intent.ts";
+import { gitUsable } from "../setup/home-git.ts";
 import type { ExecResult, Probes } from "../setup/probes.ts";
 import { forgeFromRemote, parseOriginUrl, stripUserinfo } from "../setup/team-settings.ts";
 import { withoutUrls } from "./redact.ts";
@@ -35,6 +36,9 @@ export interface CreateTeamResult {
   dir: string;
   /** false when the dir already existed — nothing was written or committed. */
   created: boolean;
+  /** Files and intent are on disk but no git ran: CLT was absent, so the
+   *  Install re-run owns init/remote/commit once the checklist installs it. */
+  gitDeferred?: true;
 }
 
 /** The scaffold's own marker: present only once the initial commit has actually happened, so a partially-built dir (mkdirp/git-init done, nothing committed yet) is never mistaken for a finished zone. */
@@ -174,6 +178,32 @@ export async function createTeam(p: Probes, opts: CreateTeamOpts, ageKeySeam: Ag
 
   p.mkdirp(dir);
 
+  const { publicKey } = await ensureAgeKey(ageKeySeam);
+  const writeScaffold = () => {
+    for (const [relPath, content] of Object.entries(scaffoldFiles(slug, opts.name, remote, [publicKey]))) {
+      const fullPath = join(dir, relPath);
+      if (p.exists(fullPath)) continue; // a resumed partial zone already has this file — never clobber real content with the scaffold's own placeholder
+      p.mkdirp(dirname(fullPath));
+      p.writeFile(fullPath, content);
+    }
+  };
+  const recordIntent = () =>
+    writeIntent(p, {
+      v: 1,
+      at: p.now().toISOString(),
+      mode: "create",
+      team: { slug, name: opts.name, remote, others: opts.others },
+    });
+
+  // The Team screen reaches here before the checklist installs CLT, when
+  // /usr/bin/git is Apple's stub: it fails and pops the install dialog. Leave
+  // the zone git-less; Install re-runs this once CLT exists and finishes it.
+  if (!p.exists(join(dir, ".git")) && !(await gitUsable(p.exec))) {
+    writeScaffold();
+    recordIntent();
+    return { slug, name: opts.name, remote: stripUserinfo(remote), dir, created: true, gitDeferred: true };
+  }
+
   if (!p.exists(join(dir, ".git"))) {
     const initResult = await p.exec(["git", "init", "-b", "main"], { cwd: dir });
     if (initResult.code !== 0) throw gitStepError("git-init-failed", "git init -b main", initResult);
@@ -184,13 +214,7 @@ export async function createTeam(p: Probes, opts: CreateTeamOpts, ageKeySeam: Ag
     if (remoteAddResult.code !== 0) throw gitStepError("git-remote-failed", "git remote add origin", remoteAddResult);
   }
 
-  const { publicKey } = await ensureAgeKey(ageKeySeam);
-  for (const [relPath, content] of Object.entries(scaffoldFiles(slug, opts.name, remote, [publicKey]))) {
-    const fullPath = join(dir, relPath);
-    if (p.exists(fullPath)) continue; // a resumed partial zone already has this file — never clobber real content with the scaffold's own placeholder
-    p.mkdirp(dirname(fullPath));
-    p.writeFile(fullPath, content);
-  }
+  writeScaffold();
 
   const addResult = await p.exec(["git", "add", "-A"], { cwd: dir });
   if (addResult.code !== 0) throw gitStepError("git-add-failed", "git add -A", addResult);
@@ -200,12 +224,7 @@ export async function createTeam(p: Probes, opts: CreateTeamOpts, ageKeySeam: Ag
     throw gitStepError("git-commit-failed", "git commit", commitResult);
   }
 
-  writeIntent(p, {
-    v: 1,
-    at: p.now().toISOString(),
-    mode: "create",
-    team: { slug, name: opts.name, remote, others: opts.others },
-  });
+  recordIntent();
 
   return { slug, name: opts.name, remote: stripUserinfo(remote), dir, created: true };
 }

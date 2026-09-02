@@ -1,12 +1,13 @@
 #!/bin/bash
 # Drive the five setup screens of mattstack.app in the guest, as tester.
-# Usage: drive-setup.sh <create|join|restore> [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT] [--invite-code-file <p>]
+# Usage: drive-setup.sh <create|join|restore> [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT] [--invite-code-file <p>] [--team-remote <url>]
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; source "$HERE/ax.sh"
 SCENARIO="${1:-create}"; shift || true
-SLUG=vmtest; PAT_ENV=MATTSTACK_VMTEST_PAT; CODE_FILE=""
+SLUG=vmtest; PAT_ENV=MATTSTACK_VMTEST_PAT; CODE_FILE=""; TEAM_REMOTE="${TEAM_REMOTE:-}"
 while [ $# -gt 0 ]; do case "$1" in
   --team-slug) SLUG="$2"; shift 2;; --pat-env) PAT_ENV="$2"; shift 2;; --invite-code-file) CODE_FILE="$2"; shift 2;;
+  --team-remote) TEAM_REMOTE="$2"; shift 2;;
   *) ax_fail "unknown arg $1";; esac; done
 case "$SCENARIO" in create|join|restore) ;; *) ax_fail "unknown scenario: $SCENARIO (want create|join|restore)";; esac
 PAT="${!PAT_ENV:-}"
@@ -29,8 +30,12 @@ screen_team() {
   ax_wait_screen team 10 || ax_fail "setup.team.screen did not appear"
   case "$SCENARIO" in
     create)
+      # A fresh guest has no gh identity at this step, so the card offers only
+      # the pasted-URL path; Continue stays disabled until the remote is filled.
+      [ -n "$TEAM_REMOTE" ] || ax_fail "create needs --team-remote (an empty repo URL the team zone will push to)"
       ax_click setup.team.card.create
       ax_set_field setup.team.create.name "$SLUG"
+      ax_set_field setup.team.create.remote "$TEAM_REMOTE"
       ax_shot 02-team-create
       ;;
     join)

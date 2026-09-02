@@ -1,13 +1,13 @@
 /**
- * The one writable path rt has into run state (SKILLS-54). Everything else in
- * lib/runs is readonly: the agent's helper owns writes. Reconciliation is the
- * exception because only a person can decide a run is dead, and the record has
- * to stop claiming otherwise.
+ * Reconciliation: only a person can decide a run is dead, and the record has
+ * to stop claiming otherwise. The write itself goes through write.ts like
+ * every other mutation.
  */
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 import { join } from "path";
 import { isPathComponent, runsRoot } from "./store.ts";
+import { fieldSet, openRunDb, runStatus } from "./write.ts";
 
 export type AbandonResult = { ok: true } | { ok: false; error: string };
 
@@ -16,23 +16,22 @@ export function abandonRun(repo: string, runId: string, reason: string): Abandon
   const path = join(runsRoot(), repo, runId, "state.db");
   if (!existsSync(path)) return { ok: false, error: `no run ${runId} in ${repo}` };
 
-  const db = new Database(path);
+  let db: Database | undefined;
   try {
-    db.run("PRAGMA busy_timeout=5000");
+    db = openRunDb(path);
     const row = db.query("SELECT status FROM runs LIMIT 1").get() as { status: string } | undefined;
     if (!row) return { ok: false, error: "run row missing" };
     if (row.status !== "running") return { ok: false, error: `run already ${row.status}` };
 
     const now = Date.now();
-    db.run("UPDATE runs SET status='abandoned', ended_at=?", [now]);
-    db.run(
-      "INSERT OR REPLACE INTO fields (run_id, key, value, produced_by, at) SELECT id, 'reconciled', ?, 'rt runs abandon', ? FROM runs",
-      [reason, now],
-    );
+    const closed = runStatus(db, "abandoned", now);
+    if (!closed.ok) return { ok: false, error: closed.error };
+    const noted = fieldSet(db, "reconciled", reason, "rt runs abandon", now);
+    if (!noted.ok) return { ok: false, error: noted.error };
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };
   } finally {
-    db.close();
+    db?.close();
   }
 }

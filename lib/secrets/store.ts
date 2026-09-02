@@ -391,6 +391,24 @@ export async function writeAtLocation(
   await encryptAtLocation(location, stagingKey, updated, key, value, env, seams.execSeam);
 }
 
+/** The recipients file `rt home init` writes; sops has no creation rule to encrypt against until it exists. */
+export function personalRecipientsPath(): string {
+  return join(mattstackHome(), "user", ".sops.yaml");
+}
+
+/**
+ * Whether `writeSecret` can succeed right now: the age key AND the user
+ * repo's `.sops.yaml` both exist. The key alone is not enough — `rt team
+ * create` mints it before `rt home init` has written the recipients file,
+ * and a write in that window fails inside sops. Callers that collect
+ * credentials ahead of Install (the setup checklist) stage them when this
+ * is false; the secrets.write step drains the stage after home init.
+ */
+export async function personalStoreReady(seams: SecretsSeams): Promise<boolean> {
+  if (!seams.execSeam.fileExists(personalRecipientsPath())) return false;
+  return "key" in (await readAgeKey(seams.ageKeySeam));
+}
+
 export async function writeSecret(domain: string, key: string, value: string, seams: SecretsSeams): Promise<void> {
   validateKey(key);
   const location = personalLocation(domain);

@@ -16,13 +16,18 @@ const dryRun = args.includes("--dry-run");
 const outIdx = args.indexOf("--out");
 const OUT = (outIdx >= 0 ? args[outIdx + 1] : undefined) ?? "website/docs/reference";
 
+// Partials are hand-written and live only under the real reference tree, never
+// under a --out override: check-docs.ts renders into a scratch tmpdir to diff
+// against the committed pages, and that tmpdir has no _partials of its own.
+const PARTIALS_DIR = "website/docs/reference/_partials";
+
 const COMMON_FLAGS = new Set(["--json", "--dry-run", "--repo", "--agent", "--no-agent"]);
 const opts: RenderOpts = {
   common: { flags: COMMON_FLAGS, href: "/guides/common-flags" },
   sourceBase:
     process.env.RT_DOCS_SOURCE_BASE ??
     "https://github.com/m4ttstack/rt/blob/main/",
-  hasPartial: (rel) => existsSync(join(OUT, "_partials", `${rel}.mdx`)),
+  hasPartial: (rel) => existsSync(join(PARTIALS_DIR, `${rel}.mdx`)),
 };
 
 const specs = walkTree(TREE);

@@ -19,7 +19,7 @@ const GIT_TIMEOUT_MS = 15_000;
 // cached: CLT can arrive mid-session (the headless installer), and a cached
 // negative would wedge status until the process restarts.
 let cltSeen = false;
-async function gitUsable(exec: Probes["exec"]): Promise<boolean> {
+export async function gitUsable(exec: Probes["exec"]): Promise<boolean> {
   if (cltSeen) return true;
   const res = await exec(["xcode-select", "-p"], { timeoutMs: GIT_TIMEOUT_MS });
   if (res.code === 0) cltSeen = true;

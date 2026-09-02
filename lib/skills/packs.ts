@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
+import { fileURLToPath } from "url";
 import { stripJsonc } from "./sources.ts";
 
 export type PackLayout = "flat" | "grouped";
@@ -62,7 +63,23 @@ function packFromDir(name: string, dir: string): PackInfo | null {
   return { name, dir: real, layout: detectLayout(real), surfacePath };
 }
 
-type MarketplaceEntry = { name?: string; source?: string | { source?: string; path?: string } };
+type MarketplaceEntry = { name?: string; source?: string | { source?: string; path?: string; url?: string } };
+
+/**
+ * A url source with a file:// url is the local dev marketplace's shape: Claude
+ * Code refuses symlinked plugin paths, so a checkout is served as a clone of
+ * itself, and the checkout (not the cache clone) is the pack to read.
+ */
+function pluginDirOf(marketDir: string, source: MarketplaceEntry["source"]): string | null {
+  const path = typeof source === "string" ? source : source?.path;
+  if (path) return isAbsolute(path) ? path : resolve(marketDir, path);
+  if (typeof source !== "object" || source?.source !== "url" || typeof source.url !== "string" || !source.url.startsWith("file://")) return null;
+  try {
+    return fileURLToPath(source.url);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A pack is any plugin served from a directory marketplace that carries a
@@ -95,9 +112,8 @@ export function discoverPacks(opts: DiscoverOpts = {}): PackInfo[] {
       }
       for (const entry of entries) {
         if (!entry.name) continue;
-        const rel = typeof entry.source === "string" ? entry.source : entry.source?.path;
-        if (!rel) continue;
-        const pluginDir = isAbsolute(rel) ? rel : resolve(marketDir, rel);
+        const pluginDir = pluginDirOf(marketDir, entry.source);
+        if (!pluginDir) continue;
         const pack = packFromDir(entry.name, pluginDir);
         if (pack && !found.has(pack.name)) found.set(pack.name, pack);
       }

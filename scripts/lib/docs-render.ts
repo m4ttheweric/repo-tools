@@ -16,6 +16,11 @@ export function escapeMdxText(s: string): string {
     .replace(/\}/g, "&#125;");
 }
 
+/** A `|` inside a table cell closes the cell early in GFM/MDX tables, so cell text needs it escaped on top of escapeMdxText's JSX-safety pass. */
+export function escapeMdxTableCell(s: string): string {
+  return escapeMdxText(s).replace(/\|/g, "\\|");
+}
+
 export function slugArg(name: string): string {
   return name.toLowerCase().trim().replace(/\s+/g, "-");
 }
@@ -42,7 +47,7 @@ export function renderArgsTable(
       ? `[\`${token}\`](${common.href})`
       : `\`${token}\``;
     const def = a.default === undefined ? "" : `\`${String(a.default)}\``;
-    const hint = escapeMdxText(a.hint ?? "");
+    const hint = escapeMdxTableCell(a.hint ?? "");
     return `| ${label} | ${a.type} | ${def} | ${hint} |`;
   });
   return [
@@ -75,7 +80,7 @@ export function renderSubcommandsTable(node: CommandNode, path: string[]): strin
   const visible = Object.entries(subs).filter(([, n]) => !n.hidden && !n.devOnly);
   if (visible.length === 0) return "";
   const rows = visible.map(
-    ([name, n]) => `| [\`${name}\`](${name}) | ${escapeMdxText(n.description)} |`,
+    ([name, n]) => `| [\`${name}\`](${name}) | ${escapeMdxTableCell(n.description)} |`,
   );
   return ["## Subcommands", "", "| Command | Description |", "| --- | --- |", ...rows, ""].join("\n");
 }

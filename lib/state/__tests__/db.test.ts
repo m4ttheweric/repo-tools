@@ -56,10 +56,10 @@ function userVersion(db: Database): number {
 }
 
 describe("openStateDb — fresh open", () => {
-  test("a fresh database reaches v10 directly, gaining every v1, v2, v3, v4, v6, v7, v8, v9, and v10 change", () => {
+  test("a fresh database reaches v11 directly, gaining every v1 through v11 change", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
-    expect(SCHEMA_VERSION).toBe(10);
+    expect(SCHEMA_VERSION).toBe(11);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
     // Full table-list coverage lives in db-schema-convergence.test.ts's
     // dynamic presence test, derived from db.ts's own CREATE TABLE
@@ -86,11 +86,11 @@ describe("openStateDb — fresh open", () => {
     expect(
       db.query("SELECT name FROM sqlite_master WHERE name IN ('chat_presence','chat_dms','chat_room_defaults')").all(),
     ).toHaveLength(3);
-    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: 10 });
+    expect(db.query("PRAGMA user_version").get()).toMatchObject({ user_version: SCHEMA_VERSION });
     db.close();
   });
 
-  test("v10 moves mention-gated wake rows to all, keeping an explicit none", () => {
+  test("a v9 database replays v10 then v11: every room row lands on mention, an explicit none stays", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
     db.exec("INSERT INTO chat_rooms (name, created_at) VALUES ('r', 1);");
@@ -101,12 +101,42 @@ describe("openStateDb — fresh open", () => {
     const re = openStateDb(dbPath, "cli");
     const modes = re.query("SELECT handle, wake_on FROM chat_members ORDER BY handle;").all();
     expect(modes).toEqual([
-      { handle: "a", wake_on: "all" },
+      { handle: "a", wake_on: "mention" },
       { handle: "b", wake_on: "none" },
-      { handle: "c", wake_on: "all" },
+      { handle: "c", wake_on: "mention" },
     ]);
-    expect(re.query("SELECT wake_on FROM chat_room_defaults WHERE room='r';").get()).toMatchObject({ wake_on: "all" });
+    expect(re.query("SELECT wake_on FROM chat_room_defaults WHERE room='r';").get()).toMatchObject({ wake_on: "mention" });
     re.close();
+  });
+
+  test("v11 moves room rows on all back to mention once, leaves DM rooms and none alone, and never re-flips a later explicit all", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.exec("INSERT INTO chat_rooms (name, created_at) VALUES ('r', 1), ('dm-x', 1);");
+    db.exec("INSERT INTO chat_dms (room, a, b, created_at) VALUES ('dm-x', 'a', 'b', 1);");
+    db.exec("INSERT INTO chat_members (room, handle, joined_at, last_read_id, wake_on) VALUES ('r','a',1,0,'all'), ('r','b',1,0,'none'), ('r','c',1,0,'mention'), ('dm-x','a',1,0,'all'), ('dm-x','b',1,0,'all'), ('dm-x','matt',1,0,'none');");
+    db.exec("INSERT INTO chat_room_defaults (room, wake_on) VALUES ('r','all');");
+    db.exec("PRAGMA user_version = 10;");
+    db.close();
+
+    const re = openStateDb(dbPath, "cli");
+    expect(re.query("SELECT handle, wake_on FROM chat_members WHERE room='r' ORDER BY handle;").all()).toEqual([
+      { handle: "a", wake_on: "mention" },
+      { handle: "b", wake_on: "none" },
+      { handle: "c", wake_on: "mention" },
+    ]);
+    expect(re.query("SELECT handle, wake_on FROM chat_members WHERE room='dm-x' ORDER BY handle;").all()).toEqual([
+      { handle: "a", wake_on: "all" },
+      { handle: "b", wake_on: "all" },
+      { handle: "matt", wake_on: "none" },
+    ]);
+    expect(re.query("SELECT wake_on FROM chat_room_defaults WHERE room='r';").get()).toMatchObject({ wake_on: "mention" });
+    re.exec("UPDATE chat_members SET wake_on = 'all' WHERE room='r' AND handle='c';");
+    re.close();
+
+    const again = openStateDb(dbPath, "cli");
+    expect(again.query("SELECT wake_on FROM chat_members WHERE room='r' AND handle='c';").get()).toMatchObject({ wake_on: "all" });
+    again.close();
   });
 });
 
@@ -654,7 +684,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     // unrelated exports (reading SCHEMA_VERSION, pushing to LEGACY_IMPORTS)
     // never opens or creates a db file on its own.
     const before = SCHEMA_VERSION;
-    expect(before).toBe(10);
+    expect(before).toBe(11);
     LEGACY_IMPORTS.push({ file: "x.json", import: () => {} });
     LEGACY_IMPORTS.length = 0;
     // No db.ts function that touches disk was called above; nothing to assert

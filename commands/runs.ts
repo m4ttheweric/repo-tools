@@ -1,9 +1,10 @@
 /**
- * rt runs — read-only pipeline run state (SKILLS-28).
+ * rt runs: the run DB.
  *   rt runs [--repo R] [--json]           list, newest first
  *   rt runs show <runId> [--repo R] [--json]
- * All data comes from the daemon's runs:* commands; rt never opens run DBs
- * from the CLI (single reader contract).
+ *   rt runs abandon <runId> [--repo R] [--reason TEXT]
+ * Reads go through the daemon's runs:* commands; the pipeline's write verbs
+ * live in runs-write.ts and open the run DB directly.
  */
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { resolveRepoArg } from "../lib/repo-arg.ts";
@@ -107,6 +108,11 @@ async function pickRunId(runs: RunSummary[], message: string): Promise<string | 
 }
 
 export async function runsList(args: string[]): Promise<void> {
+  const stray = positional(args);
+  if (stray) {
+    console.error(`rt runs: unknown subcommand "${stray}"\nusage: rt runs [--repo R] [--json] | rt runs <show|abandon|run-start|run-status|stage-start|stage-done|stage-fail|field|decision|snapshot> ...`);
+    process.exit(2);
+  }
   const repoArg = flagValue(args, "--repo");
   const repo = repoArg ? await resolveRunsRepoArg(repoArg) : undefined;
   const res = await daemonQuery("runs:list", { repo }, 10_000);
