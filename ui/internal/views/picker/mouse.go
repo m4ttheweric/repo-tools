@@ -133,15 +133,12 @@ func breadcrumbZones(m *Model) []mouseZone {
 // alongside the string it describes, not recomputed later against a stale
 // frame. keybarLine itself delegates here and discards the zones, so the
 // two can never drift into two different ideas of where a key landed.
-// The Modifiers board's ctrl-held expanded keymap (a second footer row
-// surfacing keys -- built-in navigation, alt-enter -- that the registry
-// doesn't carry today) is not built here: it needs the same registry
-// groundwork the nav ctrl-/ task lands, and a footer that silently grows a
-// line while held has real chrome-budget implications this task didn't
-// scope. m.held.ctrl is still tracked (see applyModifierHeld); wire the
-// expanded keymap in alongside ctrl-/.
+// keybarLineZones paints the single-line footer: the ordinary legend, or
+// the held modifier's own actions under bare keys while one is held (see
+// legendActions). Either way it is one line, so a hold never shifts the
+// list the way a footer that grew while held would.
 func keybarLineZones(m *Model, top, h, n int) (string, []mouseZone) {
-	left, ungrouped := keybarClusters(effectiveActions(m.req))
+	left, ungrouped := keybarClusters(legendActions(m))
 
 	rangeText := ""
 	if n > h {
@@ -333,9 +330,9 @@ func (m *Model) clickLeft(zone mouseZone) (tea.Model, tea.Cmd) {
 // whether this arrived within doubleClickWindow of the previous click on
 // that same row -- the only click-pairing signal available, since
 // MouseMsg carries no timestamp. A double-click accepts exactly like enter
-// would (selectCursor already knows the single-vs-multi difference), and
-// clears the pairing so a third rapid click starts a fresh pair rather than
-// re-triggering.
+// would (accept: the caller's own enter action if one is bound, else the
+// built-in select), and clears the pairing so a third rapid click starts a
+// fresh pair rather than re-triggering.
 func (m *Model) clickRow(row int) (tea.Model, tea.Cmd) {
 	now := m.now()
 	isDouble := row == m.lastClickRow && !m.lastClickAt.IsZero() && now.Sub(m.lastClickAt) <= doubleClickWindow
@@ -344,8 +341,7 @@ func (m *Model) clickRow(row int) (tea.Model, tea.Cmd) {
 	if isDouble {
 		m.lastClickRow = -1
 		m.lastClickAt = time.Time{}
-		m.selectCursor()
-		return m.quit()
+		return m.accept()
 	}
 	m.lastClickRow = row
 	m.lastClickAt = now
@@ -384,6 +380,8 @@ func (m *Model) dispatchAction(action protocol.PickAction) (tea.Model, tea.Cmd) 
 	case idToggleAll:
 		m.toggleAllVisible()
 		return m, nil
+	case idMenu:
+		return m.openMenu()
 	}
 	if action.Event {
 		m.emitEvent(action.ID)

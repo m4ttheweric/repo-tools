@@ -10,7 +10,6 @@ import { join } from "path";
 import { getRepoIdentity, pickWorktreeFromRepo, getWorkspacePackages, repoOptions, repoFromOptionValue, missingRepoRefusal, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchSegments, type EnrichedBranch } from "./enrich.ts";
 import { repoLabel } from "./repo-label.ts";
-import { printAborted } from "./ui/abort.ts";
 import type { PickHandle } from "./ui/pick.ts";
 import type { PickAction, PickRow, PickSegment } from "./ui/protocol.ts";
 
@@ -137,7 +136,7 @@ export async function pickWorktreeWithSwitch(
     const picked = await resultPromise;
     // Esc/Ctrl-C → null; exit cleanly rather than leaking null through the
     // string return type (callers do selectedPath.split(...) etc.).
-    if (!picked) { printAborted(); process.exit(0); }
+    if (!picked) process.exit(0);
     return picked;
   } catch (err) {
     if (err instanceof BackNavigation) return SWITCH_REPO;
@@ -185,7 +184,7 @@ export async function pickFromAllRepos(
       selectedRepo = repos[0]!;
     } else {
       const picked = await pickRepo(repos, { onReload: opts?.onReload, breadcrumb: opts?.breadcrumb });
-      if (!picked) { printAborted(); process.exit(1); }
+      if (!picked) process.exit(1);
       selectedRepo = repoFromOptionValue(repos, picked)!;
     }
     if (selectedRepo.missing) refuse(selectedRepo);
@@ -208,7 +207,7 @@ export async function pickFromAllRepos(
         if (err instanceof BackNavigation) continue;
         throw err;
       }
-      if (!worktreePath) { printAborted(); process.exit(0); }
+      if (!worktreePath) process.exit(0);
     }
 
     // If caller wants package-level navigation and this is a monorepo, go one
@@ -283,7 +282,7 @@ export async function pickPackageWithEscape(
         ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb, crumbSuffix: ` · ${repoLabel(repo.repoName)}` } : {}),
       });
 
-      if (!picked) { printAborted(); process.exit(1); }
+      if (!picked) process.exit(1);
       return picked;
 
     } catch (err) {
@@ -292,7 +291,7 @@ export async function pickPackageWithEscape(
           // ctrl-up → "Switch worktree"
           if (hasMultipleRepos) {
             const wtResult = await pickWorktreeWithSwitch(repo, worktreePath, opts);
-            if (!wtResult) { printAborted(); process.exit(0); } // esc
+            if (!wtResult) process.exit(0); // esc
             if (isSwitchRepo(wtResult)) {
               return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
             }
@@ -301,7 +300,7 @@ export async function pickPackageWithEscape(
             const newPath = await pickWorktreeFromRepo(repo, `${repoLabel(repo.repoName)} worktrees`, {
               ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb, crumbSuffix: ` · ${repoLabel(repo.repoName)} worktrees` } : {}),
             });
-            if (!newPath) { printAborted(); process.exit(0); } // esc
+            if (!newPath) process.exit(0); // esc
             worktreePath = newPath;
           }
           // Re-enter the loop with the new worktree's packages
@@ -364,6 +363,6 @@ export async function resolveWorktreeByBranch(
     ...(opts?.breadcrumb ? { breadcrumb: opts.breadcrumb } : {}),
   });
 
-  if (!picked) { printAborted(); process.exit(1); }
+  if (!picked) process.exit(1);
   return picked;
 }

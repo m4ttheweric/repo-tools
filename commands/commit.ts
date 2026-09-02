@@ -23,7 +23,6 @@
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { filterableMultiselect } from "../lib/pick-wrappers.ts";
-import { printAborted } from "../lib/ui/abort.ts";
 import type { PickResult, PickRow, PickSegment } from "../lib/ui/protocol.ts";
 import {
   getChangedFiles,
@@ -171,10 +170,7 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
 
     const outcome = await runFilePicker(cwd, files);
 
-    if (!outcome) {
-      printAborted();
-      process.exit(0);
-    }
+    if (!outcome) process.exit(0);
 
     if (outcome.action === "discard") {
       if (outcome.paths.length === 0) {

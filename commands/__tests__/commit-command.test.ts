@@ -288,7 +288,7 @@ describe("commitFlow routing", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("cancel aborts without touching git state, printing the faint 'aborted' line on a TTY", async () => {
+  test("cancel aborts without touching git state and prints nothing, even on a TTY", async () => {
     const dir = makeRepo();
     writeFileSync(join(dir, "tracked.txt"), "changed\n");
 
@@ -299,7 +299,7 @@ describe("commitFlow routing", () => {
     try {
       const { exitCode, stderr } = await runCapturingExit(() => commitFlow([], ctxFor(dir)));
       expect(exitCode).toBe(0);
-      expect(stderr).toContain("aborted");
+      expect(stderr).toBe("");
     } finally {
       if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
       else delete (process.stderr as { isTTY?: boolean }).isTTY;
@@ -307,7 +307,7 @@ describe("commitFlow routing", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("cancel off a TTY (--json/RT_BATCH/piped) exits clean but prints no 'aborted' decoration", async () => {
+  test("cancel off a TTY (--json/RT_BATCH/piped) exits clean and silent", async () => {
     const dir = makeRepo();
     writeFileSync(join(dir, "tracked.txt"), "changed\n");
 
@@ -318,7 +318,7 @@ describe("commitFlow routing", () => {
     try {
       const { exitCode, stderr } = await runCapturingExit(() => commitFlow([], ctxFor(dir)));
       expect(exitCode).toBe(0);
-      expect(stderr).not.toContain("aborted");
+      expect(stderr).toBe("");
     } finally {
       if (isTTYDescriptor) Object.defineProperty(process.stderr, "isTTY", isTTYDescriptor);
       else delete (process.stderr as { isTTY?: boolean }).isTTY;

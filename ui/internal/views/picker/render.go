@@ -3,7 +3,6 @@ package picker
 import (
 	"fmt"
 	"image/color"
-	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -29,15 +28,10 @@ const chromeRows = 5
 // totalChromeRows is chromeRows plus the pinned selected panel's own line,
 // when a multi session is showing one -- the panel sits between the filter
 // line and the top rule, so it eats into the same pane budget every other
-// chrome line already claims -- plus one more line while the expanded keybar
-// shows (ctrl held or ctrl-/ toggled), when the keybar itself grows from one
-// line to the Modifiers board's two-line grouped legend.
+// chrome line already claims.
 func (m *Model) totalChromeRows() int {
 	rows := chromeRows
 	if m.showSelectedPanel() {
-		rows++
-	}
-	if m.showExpandedKeybar() {
 		rows++
 	}
 	return rows
@@ -123,28 +117,16 @@ func renderFrame(m *Model, target int) string {
 		y++
 	}
 
-	keybarLines := 1
-	if m.showExpandedKeybar() {
-		keybarLines = 2
-	}
 	// The filler advances y past its blank lines so the keybar's own zones
 	// land on the padded rows the terminal actually paints them on, not the
 	// natural rows they would sit on unpadded.
-	y += appendInteriorFiller(&lines, target, 1+keybarLines) // + bottom rule
+	y += appendInteriorFiller(&lines, target, 2) // bottom rule + keybar
 
 	lines = append(lines, rule(m.width))
 	y++
-	if m.showExpandedKeybar() {
-		line1, zones1, line2, zones2 := expandedKeybarLines(m, top, h, n)
-		zones.addAll(y, zones1)
-		y++
-		zones.addAll(y, zones2)
-		lines = append(lines, line1, line2)
-	} else {
-		keybarStr, keyZones := keybarLineZones(m, top, h, n)
-		zones.addAll(y, keyZones)
-		lines = append(lines, keybarStr)
-	}
+	keybarStr, keyZones := keybarLineZones(m, top, h, n)
+	zones.addAll(y, keyZones)
+	lines = append(lines, keybarStr)
 
 	m.zones = zones
 	return strings.Join(lines, "\n")
@@ -276,53 +258,6 @@ func keybarLine(m *Model, top, h, n int) string {
 	return line
 }
 
-// expandedKeybarLines renders the ctrl-held keybar as the Modifiers board's
-// "⌃ held" two-line grouped legend, in place of keybarLineZones's own
-// single truncated line. Every declared group is placed whole (never split
-// mid-group): as many as fit the first line, the rest carried to the
-// second and truncated there the same way a single line would give up
-// trailing groups -- so a registry too big even for two lines still never
-// clips a key or label mid-word. The scroll range (when the list overflows)
-// survives on the first line's right edge alongside the "held: showing all
-// keys" indicator -- the ctrl swap this replaces once dropped the range
-// silently, which is exactly what pinning it here prevents. The ordinary
-// right-pinned action run (quit, by default) closes the second line, same
-// as it would the single-line footer.
-func expandedKeybarLines(m *Model, top, h, n int) (line1 string, zones1 []mouseZone, line2 string, zones2 []mouseZone) {
-	left, ungrouped := keybarClusters(effectiveActions(m.req))
-
-	rangeText := ""
-	if n > h {
-		rangeText = fg(theme.Cyan).Render(strconv.Itoa(top+1)+"-"+strconv.Itoa(top+h)) +
-			fg(theme.Faint).Render(" of "+strconv.Itoa(n))
-	}
-	// The "held" indicator names the physical-ctrl state only. A ctrl-/ toggle
-	// (m.expanded) shows this same two-line keybar without it; the range keeps
-	// its slot either way.
-	heldLabel := ""
-	if m.held.ctrl {
-		heldLabel = fg(theme.Cyan).Render("held: showing all keys")
-	}
-	right1 := renderKeybarRight(rangeText, heldLabel)
-	right2 := renderKeybarCluster(keybarCluster{actions: ungrouped})
-
-	firstGroups := truncateKeybarGroups(left, keybarLeftBudget(m.width, right1))
-	secondGroups := truncateKeybarGroups(left[len(firstGroups):], keybarLeftBudget(m.width, right2))
-
-	line1 = justify(m.width, renderKeybarLeft(firstGroups), right1)
-	line2 = justify(m.width, renderKeybarLeft(secondGroups), right2)
-
-	_, zones1 = layoutKeybarLeft(2, firstGroups)
-	_, zones2 = layoutKeybarLeft(2, secondGroups)
-	if len(ungrouped) > 0 {
-		rightStart := m.width - 1 - lipgloss.Width(right2)
-		_, ungroupedZones := layoutKeybarCluster(rightStart, keybarCluster{actions: ungrouped})
-		zones2 = append(zones2, ungroupedZones...)
-	}
-
-	return line1, zones1, line2, zones2
-}
-
 func rule(width int) string {
 	return fg(theme.Rule).Render(strings.Repeat("─", width))
 }
@@ -345,28 +280,16 @@ func breadcrumbLine(m *Model) string {
 	return justify(m.width, left.String(), countText(m))
 }
 
-// countText is the breadcrumb line's right-aligned count area. Alt held
-// prepends the Modifiers board's "with args" badge ahead of either the
-// multi-selection prefix or the plain fraction -- a session-level "args
-// preview is live" indicator; the per-row claim (which rows actually have
-// one) is rowLineWidth's own cursor badge and dim, keyed off
-// PickRow.WithArgs. Ctrl held prepends the same board's "⌃ keys" badge the
-// same way, mirroring the alt badge's color/separator grammar with cyan in
-// place of lav. The two are mutually exclusive on the boards, so alt wins
-// if somehow both are held at once.
+// countText is the breadcrumb line's right-aligned count area: the
+// multi-selection prefix, when any, ahead of the fraction. A held modifier
+// never badges here; the footer's held legend and the rows' own with-args
+// chrome carry that, and only where the modifier actually does something.
 func countText(m *Model) string {
-	prefix := ""
-	switch {
-	case m.held.alt:
-		prefix = fg(theme.Lav).Bold(true).Render("⌥ with args") + fg(theme.Faint).Render(keybarRightSep)
-	case m.held.ctrl:
-		prefix = fg(theme.Cyan).Bold(true).Render("⌃ keys") + fg(theme.Faint).Render(keybarRightSep)
-	}
 	if m.multiMode() && len(m.selected) > 0 {
-		return prefix + fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
+		return fg(theme.Mint).Render(fmt.Sprintf("%s %d", theme.GlyphOn, len(m.selected))) +
 			fg(theme.Faint).Render(" selected  ·  ") + countFraction(m)
 	}
-	return prefix + countFraction(m)
+	return countFraction(m)
 }
 
 // countFraction turns cyan only while a query is narrowing the list to at
@@ -562,9 +485,10 @@ func rowLineWidth(m *Model, i int, width int) string {
 	// alt is held. The cursor row is excluded regardless of WithArgs -- the
 	// board keeps the focused row full-strength under its SelBg highlight
 	// even when it has no args to preview, same as the badge's own
-	// cursor-only gate.
-	argsBadge := cursorRow && m.held.alt && row.WithArgs
-	argsDim := m.held.alt && !row.WithArgs && !cursorRow
+	// cursor-only gate. Both hang off argsMode, so a list with no WithArgs
+	// row at all never fades under a hold it has nothing to offer.
+	argsBadge := cursorRow && m.argsMode() && row.WithArgs
+	argsDim := m.argsMode() && !row.WithArgs && !cursorRow
 
 	rightPlain := plainConcat(row.Right)
 	if argsBadge {

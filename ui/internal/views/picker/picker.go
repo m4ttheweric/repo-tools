@@ -19,8 +19,8 @@ import (
 )
 
 // heldModifiers tracks whether alt/ctrl are currently physically held, for
-// the Modifiers board's reactive chrome (the "with args" badge, the
-// expanded keybar). A bare modifier key's own KeyPressMsg sets the
+// the Modifiers board's reactive chrome (the held legend, the with-args row
+// badge). A bare modifier key's own KeyPressMsg sets the
 // corresponding field; its KeyReleaseMsg clears it. Both only ever fire once
 // the terminal has confirmed the Kitty keyboard protocol's event-type
 // reporting (Model.reportsKeyReleases): a fallback terminal can still deliver
@@ -50,10 +50,9 @@ type Model struct {
 	// is true: without it a fallback terminal's bare-modifier press would latch
 	// held true forever, since no release ever arrives to clear it.
 	reportsKeyReleases bool
-	// expanded is the ctrl-/ sticky toggle for the two-line grouped keybar,
-	// distinct from held.ctrl's physical-hold state: a terminal that never
-	// reports a bare ctrl press still gets the expanded legend on ctrl-/.
-	expanded bool
+	// argsRows records whether any row claims WithArgs, so the alt-held row
+	// chrome can gate on real behavior without walking the rows per line.
+	argsRows bool
 	hover    int
 	width    int
 	height   int
@@ -154,6 +153,7 @@ type ModalMsg struct {
 // InitialQuery immediately, so a request that opens pre-filtered renders
 // its real matches on the first frame rather than the identity order.
 func New(req protocol.PickRequest) *Model {
+	req.Actions = reserveMenuKey(req.Actions)
 	m := &Model{
 		req:          req,
 		query:        req.InitialQuery,
@@ -198,13 +198,28 @@ func (m *Model) showSelectedPanel() bool {
 	return m.multiMode() && len(m.selected) > 0
 }
 
-// showExpandedKeybar reports whether the footer paints the Modifiers board's
-// two-line grouped legend in place of the single line: either ctrl is
-// physically held (Kitty protocol) or ctrl-/ has toggled it on. Both drive
-// the same render, and reservedContentHeight already budgets the extra line
-// for either.
-func (m *Model) showExpandedKeybar() bool {
-	return m.held.ctrl || m.expanded
+// heldModifier names the modifier whose bound actions the footer is showing
+// in place of the ordinary legend: "alt" or "ctrl" while that key is
+// physically held AND at least one visible action is bound to it, else "".
+// A hold with nothing behind it reports "" so the frame stays exactly as it
+// was; chrome that hints at a modifier with no behavior is what that
+// prevents. Alt wins if both are somehow down at once.
+func (m *Model) heldModifier() string {
+	actions := effectiveActions(m.req)
+	switch {
+	case m.held.alt && len(modifierActions(actions, "alt")) > 0:
+		return "alt"
+	case m.held.ctrl && len(modifierActions(actions, "ctrl")) > 0:
+		return "ctrl"
+	}
+	return ""
+}
+
+// argsMode reports whether the alt-held row chrome (the cursor row's "pick
+// args" badge, the no-args fade) is live: alt is held and some row actually
+// claims WithArgs. Same rule as heldModifier, for the row side.
+func (m *Model) argsMode() bool {
+	return m.held.alt && m.argsRows
 }
 
 // refilter re-ranks matches against the current query, then partitions the
@@ -215,9 +230,11 @@ func (m *Model) showExpandedKeybar() bool {
 func (m *Model) refilter() {
 	targets := make([]string, len(m.req.Rows))
 	groups := make([]string, len(m.req.Rows))
+	m.argsRows = false
 	for i, row := range m.req.Rows {
 		targets[i] = matchText(row)
 		groups[i] = row.Group
+		m.argsRows = m.argsRows || row.WithArgs
 	}
 	m.matches = GroupContiguous(Rank(m.query, targets, m.req.Exact), groups)
 }
@@ -267,13 +284,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateModal(msg)
 		}
 		key := canonicalKey(msg)
-		if key == "ctrl+/" {
-			// The two-line grouped keybar is a generic affordance every picker
-			// gets on ctrl-/; a caller that also registered ctrl-/ (nav's
-			// "commands" relabel) still has its event dispatched by
-			// actionForKey below, so the toggle deliberately does not return.
-			m.expanded = !m.expanded
-		}
 		switch key {
 		case "down":
 			m.moveCursor(1)
@@ -298,29 +308,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if action, ok := m.actionForKey(key); ok {
-			if action.Event {
-				m.emitEvent(action.ID)
-				return m, nil
-			}
-			m.resultForAction(action.ID)
-			return m.quit()
-		}
 		if key == "ctrl+k" {
-			m.openRegistryMenu()
-			if m.modal != nil {
-				m.pinFrameHeight()
-				return m, tea.ClearScreen
-			}
-			return m, nil
+			return m.openMenu()
+		}
+		if action, ok := m.actionForKey(key); ok {
+			return m.dispatchAction(action)
 		}
 		if key == "enter" {
-			if len(m.matches) == 0 && m.req.AcceptNoMatch {
-				m.result = &protocol.PickResult{Action: idSelect, Value: nil, Query: m.query}
-				return m.quit()
-			}
-			m.selectCursor()
-			return m.quit()
+			return m.accept()
 		}
 		if key == "esc" {
 			// Reached only once a declared esc action has already had its
@@ -393,7 +388,7 @@ func (m *Model) applyUpdate(u protocol.PickUpdate) {
 		m.req.CrumbSuffix = u.CrumbSuffix
 	}
 	if u.Actions != nil {
-		m.req.Actions = u.Actions
+		m.req.Actions = reserveMenuKey(u.Actions)
 	}
 	if u.Rows != nil {
 		value, hadCursor := m.cursorRowValue()
@@ -438,10 +433,21 @@ func (m *Model) resolveCursor(value string, had bool, prev int) int {
 }
 
 // canonicalKey is the one spelling every key lookup resolves against.
+// openMenu opens the ctrl-k / right-click overlay and pins the frame for
+// it; a request with nothing to list leaves the frame untouched.
+func (m *Model) openMenu() (tea.Model, tea.Cmd) {
+	m.openRegistryMenu()
+	if m.modal != nil {
+		m.pinFrameHeight()
+		return m, tea.ClearScreen
+	}
+	return m, nil
+}
+
 // ctrl-/ is byte 0x1F; ultraviolet's legacy decode surfaces it as ctrl+_
 // (0x1F + 0x40 = '_'), Kitty as ctrl+/. Both the main list and the action
-// menu go through here so the expanded-keybar toggle and a caller's own
-// ctrl-/ registry action behave the same on either kind of terminal.
+// menu go through here so a caller's ctrl-/ registry action behaves the
+// same on either kind of terminal.
 func canonicalKey(msg tea.KeyPressMsg) string {
 	key := msg.String()
 	if key == "ctrl+_" {
@@ -694,6 +700,23 @@ func (m *Model) fitHeaderBudget(h, budget int) (top, finalH int) {
 		h--
 	}
 	return placeTop(m.cursor, m.viewportTop, n, h), h
+}
+
+// accept is what enter means on the cursor row: the caller's own enter action
+// when the registry binds one (nav's "open" is an event that descends and
+// keeps the picker up), else the built-in terminal select. Double-click
+// routes through here too, so the two can never diverge -- a double-click
+// that bypassed the registry closed nav on a folder instead of entering it.
+func (m *Model) accept() (tea.Model, tea.Cmd) {
+	if action, ok := m.actionForKey("enter"); ok {
+		return m.dispatchAction(action)
+	}
+	if len(m.matches) == 0 && m.req.AcceptNoMatch {
+		m.result = &protocol.PickResult{Action: idSelect, Value: nil, Query: m.query}
+		return m.quit()
+	}
+	m.selectCursor()
+	return m.quit()
 }
 
 // selectCursor terminates the session with the row under the cursor. The
