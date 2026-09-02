@@ -32,6 +32,7 @@ import { mattstackHome, rtDir } from "../rt-paths.ts";
 import { runCapture, type RunResult } from "../subprocess.ts";
 import { getSetting } from "../settings/resolve.ts";
 import {
+  deleteKvValue,
   getKvValue,
   getStateDb,
   hasKvValue,
@@ -39,6 +40,7 @@ import {
   renameLegacyOutOfTheWay,
   setKvValue,
 } from "../state/index.ts";
+import { gitWithToken } from "../team/git-credential.ts";
 import { readOwners as readOwnersReal, type Owners } from "../home/snapshot-owners.ts";
 import { HOME_SNAPSHOT_NS, recordHomePush, type HomePushRecord } from "../home/push-record.ts";
 import { parsePorcelainZ, planSnapshot, scopeEntries } from "./home-snapshot-plan.ts";
@@ -56,7 +58,8 @@ export type SkipReason =
   | "owners-read-error"
   | "index-locked"
   | "add-failed"
-  | "no-changes";
+  | "no-changes"
+  | "conflict";
 
 export interface SnapshotResult {
   committed: boolean;
@@ -64,6 +67,11 @@ export interface SnapshotResult {
   paths: string[];
   reason: SnapshotReason;
   skipped?: SkipReason;
+}
+
+export interface PullResult {
+  outcome: "up-to-date" | "fast-forwarded" | "rebased" | "conflict" | "skipped";
+  detail: string | null;
 }
 
 export interface SnapshotStatus {
@@ -80,6 +88,13 @@ export interface SnapshotStatus {
   pushPending: boolean;
   lastPushAt: number;
   lastPushError: string | null;
+  /** Stamped only by a fetch that actually reached the remote — a clone whose token stopped working reads as stale rather than in sync. */
+  lastPullAt: number;
+  lastPullError: string | null;
+  /** The most recent pull's skip reason (e.g. a rebase refused for a dirty `src/`); null after any non-skipped pull. */
+  lastPullSkipped: string | null;
+  /** A rebase that stopped mid-way. Set until a human rebases or resets the clone; pushes and pulls stay suspended while it is. */
+  conflicted: { at: number; detail: string } | null;
   claimedZones: string[];
   firstSeenDirty: Record<string, number>;
   /** Set (and cleared) each time status() re-reads the owners file — surfaces a fail-closed readOwners throw without hiding it behind a stale cache. */
@@ -89,6 +104,8 @@ export interface SnapshotStatus {
 export interface HomeSnapshotHandle {
   stop(): void;
   runNow(reason: SnapshotReason): Promise<SnapshotResult>;
+  /** Fetch, then fast-forward or rebase. A spec without a `pull` policy always skips. */
+  pullNow(): Promise<PullResult>;
   status(): SnapshotStatus;
   /** Resolves once startup arming (the enabled + is-a-repo checks) has settled. Not needed by the daemon (which just fires and forgets); tests await it so assertions don't race the async repo check. */
   ready: Promise<void>;
@@ -102,7 +119,7 @@ export interface HomeSnapshotSettings {
   janitorIntervalMin: number;
 }
 
-type ExecFn = (argv: [string, ...string[]], opts?: { cwd?: string; timeoutMs?: number; stderr?: "ignore" | "pipe" }) => Promise<RunResult>;
+type ExecFn = (argv: [string, ...string[]], opts?: { cwd?: string; timeoutMs?: number; stderr?: "ignore" | "pipe"; env?: Record<string, string> }) => Promise<RunResult>;
 type WatchFn = (path: string, options: { recursive: boolean }, listener: (eventType: string, filename: string | null) => void) => { close(): void };
 type TimeoutFn = (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
 type ClearTimeoutFn = (handle: ReturnType<typeof setTimeout>) => void;
@@ -143,6 +160,7 @@ export type SnapshotHandle = HomeSnapshotHandle;
 
 const GIT_TIMEOUT_MS = 15_000;
 const PUSH_TIMEOUT_MS = 30_000;
+const FETCH_TIMEOUT_MS = 30_000;
 /** Cap for schedulePushRetry's geometric backoff (R042): an unreachable
  *  remote must not keep spawning git and re-warning every base retry
  *  window forever. */
@@ -231,6 +249,7 @@ async function unpushedAgainstOrigin(exec: ExecFn, cwd: string): Promise<boolean
 }
 
 const HOME_SNAPSHOT_KEY = "state";
+const CONFLICT_KEY = "conflict";
 
 interface PersistedHomeSnapshotState {
   firstSeenDirty?: Record<string, number>;
@@ -338,7 +357,16 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
   let pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let janitorTimer: ReturnType<typeof setTimeout> | null = null;
+  let pullTimer: ReturnType<typeof setTimeout> | null = null;
   let runInFlight: Promise<SnapshotResult> | null = null;
+  let pullInFlight: Promise<PullResult> | null = null;
+
+  let lastPullAt = 0;
+  let lastPullError: string | null = null;
+  let lastPullSkipped: string | null = null;
+  let conflicted: { at: number; detail: string } | null = null;
+  /** `spec.tokenFor` is a keychain read plus a sops decrypt, so it is resolved once per pull interval rather than per git call. */
+  let cachedToken: { value: string | null; at: number } | null = null;
 
   let lastRunAt = 0;
   let lastCommit: { sha: string; message: string; at: number } | null = null;
@@ -387,6 +415,33 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       }
       return { enabled: lastKnownEnabled, ...SETTINGS_FALLBACK };
     }
+  }
+
+  let gitLock: Promise<unknown> = Promise.resolve();
+  /**
+   * Serializes the commit cycle and the pull, so a timer-driven rebase never
+   * overlaps an add/commit on the same clone. Push stays OUTSIDE the lock: it
+   * calls pullNow(), which takes the lock itself, so a push held inside it
+   * would wait on itself.
+   */
+  function withGitLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = gitLock.then(fn, fn);
+    gitLock = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * `runCapture` REPLACES the child's environment when `env` is given
+   * (lib/subprocess.ts), so the token vars ride on top of a full copy of
+   * process.env or git loses PATH and HOME. A spec without `tokenFor` (home)
+   * keeps today's plain exec, env untouched.
+   */
+  async function remoteGit(args: string[], timeoutMs: number): Promise<RunResult> {
+    if (!spec.tokenFor) return deps.exec(["git", ...args] as [string, ...string[]], { cwd: deps.repoDir, timeoutMs, stderr: "pipe" });
+    const ttlMs = (spec.pull?.intervalSec ?? 300) * 1000;
+    if (!cachedToken || deps.now() - cachedToken.at > ttlMs) cachedToken = { value: await spec.tokenFor(), at: deps.now() };
+    const cmd = gitWithToken(args, cachedToken.value, { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" });
+    return deps.exec(cmd.argv as [string, ...string[]], { cwd: deps.repoDir, timeoutMs, stderr: "pipe", env: cmd.env });
   }
 
   // Guarded: this runs at construction time, synchronously, in whatever
@@ -471,8 +526,15 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // synchronous boot pass, so by now startDaemon() has opened state.db
       // daemon-flavored via openBranchCacheStore (see resolveDb above).
       firstSeenDirty = loadState(spec, resolveDb(), deps.log);
+      // A conflict outlives the daemon: a restart must not resume pushing a
+      // clone whose rebase a human has not yet finished.
+      conflicted = getKvValue<{ at: number; detail: string } | null>(spec.kvNamespace, CONFLICT_KEY, null, resolveDb());
       if (deps.readSettings().enabled !== false) {
         tryArm();
+        if (spec.pull && !disabledReason) {
+          void pullNow();
+          schedulePull();
+        }
       }
     } catch (err) {
       // The is-inside-work-tree exec call itself never throws per its own
@@ -533,6 +595,100 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
         if (!stopped) scheduleJanitor();
       });
     }, intervalMs);
+  }
+
+  function schedulePull(): void {
+    if (!spec.pull || stopped) return;
+    if (pullTimer) deps.clearTimeout(pullTimer);
+    pullTimer = deps.setTimeout(() => {
+      pullTimer = null;
+      void pullNow().finally(() => { if (!stopped) schedulePull(); });
+    }, spec.pull.intervalSec * 1000);
+  }
+
+  async function pullNow(): Promise<PullResult> {
+    await readyPromise;
+    if (!spec.pull || disabledReason || safeReadSettings().enabled === false) {
+      return { outcome: "skipped", detail: "pull not enabled for this repo" };
+    }
+    if (pullInFlight) return pullInFlight;
+    const p = withGitLock(() => doPull());
+    pullInFlight = p;
+    try {
+      const result = await p;
+      lastPullSkipped = result.outcome === "skipped" ? result.detail : null;
+      return result;
+    } finally {
+      pullInFlight = null;
+    }
+  }
+
+  async function doPull(): Promise<PullResult> {
+    if (!(await hasRemote(deps.exec, deps.repoDir))) return { outcome: "skipped", detail: "no remote" };
+    const branchResult = await deps.exec(["git", "symbolic-ref", "--short", "HEAD"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    if (branchResult.exitCode !== 0) return { outcome: "skipped", detail: "detached HEAD" };
+    const branch = branchResult.stdout.trim();
+    const fetch = await remoteGit(["fetch", "-q", "origin", branch], FETCH_TIMEOUT_MS);
+    if (fetch.exitCode !== 0) {
+      lastPullError = redactCredentials(fetch.stderr);
+      return { outcome: "skipped", detail: lastPullError };
+    }
+    // Stamped only here: a pull that never reached the remote must read as
+    // stale, or a joiner with a bad token would look in sync.
+    lastPullAt = deps.now();
+    lastPullError = null;
+    const counts = await deps.exec(["git", "rev-list", "--left-right", "--count", `refs/remotes/origin/${branch}...HEAD`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    if (counts.exitCode !== 0) return { outcome: "skipped", detail: "no remote-tracking ref yet" };
+    const [behind, ahead] = counts.stdout.trim().split(/\s+/).map(Number);
+    // A conflict marker clears itself only once local is no longer ahead: the
+    // human's rebase or reset happened.
+    if (conflicted && ahead === 0) clearConflict();
+    if (conflicted) return { outcome: "skipped", detail: conflicted.detail };
+    if (behind === 0) return { outcome: "up-to-date", detail: null };
+    if (ahead === 0) {
+      const ff = await deps.exec(["git", "merge", "-q", "--ff-only", `refs/remotes/origin/${branch}`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      if (ff.exitCode !== 0) return { outcome: "skipped", detail: redactCredentials(ff.stderr) };
+      deps.log.info({ id: spec.id, behind }, "snapshot: fast-forwarded");
+      return { outcome: "fast-forwarded", detail: null };
+    }
+    const rebase = await deps.exec(["git", "-c", "commit.gpgsign=false", "rebase", "-q", `refs/remotes/origin/${branch}`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    if (rebase.exitCode === 0) {
+      deps.log.info({ id: spec.id, behind, ahead }, "snapshot: rebased");
+      return { outcome: "rebased", detail: null };
+    }
+    // A rebase that never started (unstaged changes outside the scope, a lock)
+    // exits 1 too, but leaves no rebase-merge/rebase-apply behind; only a
+    // rebase that stopped mid-way is a conflict.
+    const gitDir = await resolveGitDir();
+    const rebaseStopped = existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"));
+    if (!rebaseStopped) {
+      const reason = redactCredentials(rebase.stderr.trim() || "rebase refused");
+      deps.log.warn({ id: spec.id, reason }, "snapshot: rebase refused; will retry next tick");
+      return { outcome: "skipped", detail: reason };
+    }
+    await deps.exec(["git", "rebase", "--abort"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    const detail = redactCredentials(rebase.stderr.trim() || "rebase stopped");
+    conflicted = { at: deps.now(), detail };
+    try {
+      setKvValue(spec.kvNamespace, CONFLICT_KEY, conflicted, resolveDb());
+    } catch (err) {
+      deps.log.warn({ err }, "snapshot: failed to persist the conflict marker");
+    }
+    if (pushTimer) { deps.clearTimeout(pushTimer); pushTimer = null; }
+    if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
+    deps.log.warn({ id: spec.id, detail }, "snapshot: rebase conflict; pushes and pulls suspended until the clone is rebased by hand");
+    deps.broadcast(`${spec.eventPrefix}:conflict`, { id: spec.id, detail });
+    return { outcome: "conflict", detail };
+  }
+
+  function clearConflict(): void {
+    conflicted = null;
+    try {
+      deleteKvValue(spec.kvNamespace, CONFLICT_KEY, resolveDb());
+    } catch (err) {
+      deps.log.warn({ err }, "snapshot: failed to clear the conflict marker");
+    }
+    deps.log.info({ id: spec.id }, "snapshot: conflict cleared");
   }
 
   function schedulePush(): void {
@@ -619,11 +775,21 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       lastPushError = null;
       return;
     }
-    const result = await deps.exec(["git", "push", "-q", "origin", "HEAD"], {
-      cwd: deps.repoDir,
-      timeoutMs: PUSH_TIMEOUT_MS,
-      stderr: "pipe",
-    });
+    // A pulling spec is multi-writer: replaying the remote first is what keeps
+    // a clone from diverging, and a conflict suspends the push rather than
+    // resolving it in either direction.
+    if (spec.pull) {
+      const pulled = await pullNow();
+      if (pulled.outcome === "conflict" || conflicted) return;
+    }
+    let result = await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS);
+    if (result.exitCode !== 0 && spec.pull && pushRetryAttempt === 0 && /\[rejected\]|non-fast-forward|fetch first/i.test(result.stderr)) {
+      // The remote moved between the pull above and this push; one inline
+      // replay beats waiting out a whole retry-backoff window.
+      await pullNow();
+      if (conflicted) return;
+      result = await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS);
+    }
     if (result.exitCode === 0) {
       pushPending = false;
       pushFailureBroadcast = false;
@@ -723,6 +889,11 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     if (existsSync(join(gitDir, "MERGE_HEAD")) || existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"))) {
       deps.log.warn("home-snapshot: a merge or rebase is in progress; skipping cycle");
       return { committed: false, sha: null, paths: [], reason, skipped: "merge-in-progress" };
+    }
+    // Committing on top of a conflicted clone only buries the divergence
+    // deeper: nothing more lands until a human rebases it.
+    if (conflicted) {
+      return { committed: false, sha: null, paths: [], reason, skipped: "conflict" };
     }
 
     let owners: Owners;
@@ -902,7 +1073,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       return { committed: false, sha: null, paths: [], reason, skipped: disabledReason };
     }
     if (runInFlight) return runInFlight;
-    const p = doRun(reason);
+    const p = withGitLock(() => doRun(reason));
     runInFlight = p;
     try {
       return await p;
@@ -942,6 +1113,10 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       pushPending,
       lastPushAt,
       lastPushError,
+      lastPullAt,
+      lastPullError,
+      lastPullSkipped,
+      conflicted,
       claimedZones,
       firstSeenDirty: { ...firstSeenDirty },
       ownersError,
@@ -956,7 +1131,8 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     if (pushTimer) deps.clearTimeout(pushTimer);
     if (pushRetryTimer) deps.clearTimeout(pushRetryTimer);
     if (janitorTimer) deps.clearTimeout(janitorTimer);
+    if (pullTimer) deps.clearTimeout(pullTimer);
   }
 
-  return { stop, runNow, status, ready: readyPromise };
+  return { stop, runNow, pullNow, status, ready: readyPromise };
 }

@@ -22,6 +22,10 @@ function fakeHandle(overrides: Partial<HomeSnapshotHandle> = {}): { handle: Home
     pushPending: false,
     lastPushAt: 123,
     lastPushError: null,
+    lastPullAt: 0,
+    lastPullError: null,
+    lastPullSkipped: null,
+    conflicted: null,
     claimedZones: ["prefs/"],
     firstSeenDirty: {},
     ownersError: null,
@@ -30,6 +34,7 @@ function fakeHandle(overrides: Partial<HomeSnapshotHandle> = {}): { handle: Home
     stop: () => {},
     ready: Promise.resolve(),
     runNow: async (reason) => { runNowCalls.push(reason); return result; },
+    pullNow: async () => ({ outcome: "skipped", detail: null }),
     status: () => status,
     ...overrides,
   };
@@ -72,6 +77,7 @@ describe("home handlers", () => {
       status: () => ({
         id: "home", enabled: true, watching: true, repoDir: "/fake/repo", lastRunAt: 0, lastCommit: null, lastCommitError: null,
         pushPending: false, lastPushAt: 0, lastPushError: null,
+        lastPullAt: 0, lastPullError: null, lastPullSkipped: null, conflicted: null,
         claimedZones: [], firstSeenDirty: {}, ownersError: "malformed jsonc",
       }),
     });
