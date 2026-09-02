@@ -302,7 +302,7 @@ git commit -m "snapshot: a spec can scope what the engine stages; the team scope
 - Test: `lib/daemon/__tests__/home-snapshot.test.ts`
 
 **Interfaces:**
-- Produces on `SnapshotHandle`: `pullNow(): Promise<PullResult>`; `export type PullResult = { outcome: "up-to-date" | "fast-forwarded" | "rebased" | "conflict" | "skipped"; detail: string | null }`; `SnapshotStatus` gains `lastPullAt: number`, `lastPullError: string | null`, `conflicted: { at: number; detail: string } | null`. Broadcast `` `${eventPrefix}:conflict` `` `{ id, detail }`. kv key `"conflict"` under `spec.kvNamespace` holding `{ at, detail }`; absent when clear.
+- Produces on `SnapshotHandle`: `pullNow(): Promise<PullResult>`; `export type PullResult = { outcome: "up-to-date" | "fast-forwarded" | "rebased" | "conflict" | "skipped"; detail: string | null }`; `SnapshotStatus` gains `lastPullAt: number`, `lastPullError: string | null`, `lastPullSkipped: string | null` (the most recent skip reason, e.g. a rebase refused for a dirty `src/`; null after any non-skipped pull), `conflicted: { at: number; detail: string } | null`. Broadcast `` `${eventPrefix}:conflict` `` `{ id, detail }`. kv key `"conflict"` under `spec.kvNamespace` holding `{ at, detail }`; absent when clear.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -386,6 +386,7 @@ describe("startSnapshot — pull", () => {
     const result = await handle.pullNow();
     expect(result.outcome).toBe("skipped");
     expect(result.detail).toContain("unstaged");
+    expect(handle.status().lastPullSkipped).toContain("unstaged");
     expect(handle.status().conflicted).toBeNull();
     expect(broadcasts.some((b) => b.type === "team:conflict")).toBe(false);
     handle.stop();
@@ -444,6 +445,7 @@ describe("startSnapshot — pull", () => {
 
   test("a failed fetch leaves lastPullAt untouched and records the error, so the row can call the clone stale", async () => {
     const responders: Responder[] = [
+      // First responder wins: this must precede pullResponders' own fetch answer.
       (argv) => gitVerb(argv) === "fetch" ? { stdout: "", stderr: "remote: HTTP Basic: Access denied", exitCode: 128 } : undefined,
       ...pullResponders({ behind: 0, ahead: 0 }),
       ...defaultResponders(),
@@ -503,7 +505,7 @@ const CONFLICT_KEY = "conflict";
 const FETCH_TIMEOUT_MS = 30_000;
 ```
 
-State inside `startSnapshot`: `let lastPullAt = 0; let lastPullError: string | null = null; let conflicted: { at: number; detail: string } | null = null; let pullTimer = null; let pullInFlight: Promise<PullResult> | null = null; let cachedToken: { value: string | null; at: number } | null = null;`. In `init()`, after `loadState`, load the conflict marker: `conflicted = getKvValue(spec.kvNamespace, CONFLICT_KEY, null, resolveDb())`. If `spec.pull` and enabled: `void pullNow()` then `schedulePull()`.
+State inside `startSnapshot`: `let lastPullAt = 0; let lastPullError: string | null = null; let lastPullSkipped: string | null = null; let conflicted: { at: number; detail: string } | null = null; let pullTimer = null; let pullInFlight: Promise<PullResult> | null = null; let cachedToken: { value: string | null; at: number } | null = null;`. In `init()`, after `loadState`, load the conflict marker: `conflicted = getKvValue(spec.kvNamespace, CONFLICT_KEY, null, resolveDb())`. If `spec.pull` and enabled: `void pullNow()` then `schedulePull()`.
 
 One git operation at a time per clone:
 
@@ -612,7 +614,7 @@ function clearConflict(): void {
 
 Wire the push side in `doPushInner`: after the enabled and `hasRemote` checks, when `spec.pull` is set, `const pulled = await pullNow(); if (pulled.outcome === "conflict" || conflicted) return;`. The push itself becomes `await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS)` (for the home spec that is the same argv and env as today). On failure, if `spec.pull` and `/\[rejected\]|non-fast-forward|fetch first/i.test(result.stderr)` and this is the first rejection of the streak (`pushRetryAttempt === 0`): `await pullNow(); ` then retry once inline (`const again = await remoteGit([...])`; on success take the success branch; on failure fall through to the existing failure branch).
 
-`doRun` gates commits on `conflicted`: after the merge-in-progress check, `if (conflicted) return { committed: false, sha: null, paths: [], reason, skipped: "conflict" }` (add `"conflict"` to `SkipReason`). `status()` adds `lastPullAt, lastPullError, conflicted`. `stop()` clears `pullTimer`. Return `{ stop, runNow, pullNow, status, ready }`.
+`pullNow` records the outcome: after `doPull()` resolves, `lastPullSkipped = result.outcome === "skipped" ? result.detail : null`. `doRun` gates commits on `conflicted`: after the merge-in-progress check, `if (conflicted) return { committed: false, sha: null, paths: [], reason, skipped: "conflict" }` (add `"conflict"` to `SkipReason`). `status()` adds `lastPullAt, lastPullError, lastPullSkipped, conflicted`. `stop()` clears `pullTimer`. Return `{ stop, runNow, pullNow, status, ready }`.
 
 - [ ] **Step 4: Run the suite**
 
@@ -1252,7 +1254,10 @@ export async function teamSyncRow(
     if (e.lastPullAt === 0 || now() - e.lastPullAt > staleMs) problems.push(`${slug}: last pull ${e.lastPullAt === 0 ? "never" : `${Math.round((now() - e.lastPullAt) / 60_000)} min ago`}`);
   }
   if (problems.length > 0) return row({ ...base, status: "needs-you", detail: problems.join("; "), action: RECHECK_ACTION });
-  return row({ ...base, status: "ready", detail: `${slugs.length} clone${slugs.length === 1 ? "" : "s"} in sync` });
+  // A pull skipped every tick (a dirty src/ refusing the rebase) is not a failure, but it is why a member's store edits are not moving; say so without changing the status.
+  const skips = slugs.map((slug) => entries.find((x) => x.slug === slug)?.lastPullSkipped).filter((d): d is string => !!d);
+  const detail = `${slugs.length} clone${slugs.length === 1 ? "" : "s"} in sync${skips.length ? `; last pull skipped: ${skips.join("; ")}` : ""}`;
+  return row({ ...base, status: "ready", detail });
 }
 ```
 
@@ -1282,7 +1287,7 @@ git commit -m "checklist: team.sync row; verify waits for a joiner's first pull"
 - Docs: `bun run docs:gen` output (whatever `docs:check` regenerates)
 
 **Interfaces:**
-- Produces: `rt team pull [--team <slug>] [--json]` → envelope `{ contract: 1, at, slug, outcome, detail }`; `rt team status --json` adds `lastPull: string | null`, `lastPushAt: string | null`, `conflicted: { at: string; detail: string } | null` (ISO strings; nulls when the daemon is unreachable).
+- Produces: `rt team pull [--team <slug>] [--json]` → envelope `{ contract: 1, at, slug, outcome, detail }`; `rt team status --json` adds `lastPull: string | null`, `lastPushAt: string | null`, `lastPullSkipped: string | null`, `conflicted: { at: string; detail: string } | null` (ISO strings; nulls when the daemon is unreachable).
 
 - [ ] **Step 1: Failing tests**
 
@@ -1348,7 +1353,7 @@ export async function teamPull(args: string[], _ctx: CommandContext = {}, deps: 
 }
 ```
 
-`teamStatus`: after computing `result`, call `deps.daemon?.("team:snapshot-status", {})` inside a try; on success find the slug's entry and add `lastPull`, `lastPushAt` (ISO or null when 0) and `conflicted` (with `at` as ISO); on any failure set all three to null. Human line gains `, sync: <ok|conflict|unknown>`.
+`teamStatus`: after computing `result`, call `deps.daemon?.("team:snapshot-status", {})` inside a try; on success find the slug's entry and add `lastPull`, `lastPushAt` (ISO or null when 0), `lastPullSkipped` and `conflicted` (with `at` as ISO); on any failure set all four to null. Human line gains `, sync: <ok|conflict|unknown>` and, when set, ` (last pull skipped: <reason>)`.
 
 `lib/command-tree-def.ts`: under `team`, add `pull` with `--team` (text, optional) and `--json`; no required positional, so no `omitBehavior`. Register `teamPull` in the module's export map the tree uses (`fn: "teamPull"`).
 
