@@ -311,12 +311,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.dispatchAction(action)
 		}
 		if key == "ctrl+k" {
-			m.openRegistryMenu()
-			if m.modal != nil {
-				m.pinFrameHeight()
-				return m, tea.ClearScreen
-			}
-			return m, nil
+			return m.openMenu()
 		}
 		if key == "enter" {
 			return m.accept()
@@ -437,6 +432,17 @@ func (m *Model) resolveCursor(value string, had bool, prev int) int {
 }
 
 // canonicalKey is the one spelling every key lookup resolves against.
+// openMenu opens the ctrl-k / right-click overlay and pins the frame for
+// it; a request with nothing to list leaves the frame untouched.
+func (m *Model) openMenu() (tea.Model, tea.Cmd) {
+	m.openRegistryMenu()
+	if m.modal != nil {
+		m.pinFrameHeight()
+		return m, tea.ClearScreen
+	}
+	return m, nil
+}
+
 // ctrl-/ is byte 0x1F; ultraviolet's legacy decode surfaces it as ctrl+_
 // (0x1F + 0x40 = '_'), Kitty as ctrl+/. Both the main list and the action
 // menu go through here so a caller's ctrl-/ registry action behaves the

@@ -3314,6 +3314,86 @@ func TestKeybarKeyClickDispatchesTheAction(t *testing.T) {
 	}
 }
 
+// TestRestingKeybarAdvertisesTheMenuNextToQuit pins the one chord the
+// resting legend shows: "ctrl-k menu", pinned right beside quit, whenever
+// the request declares something the menu can list. It is the door to every
+// other chord, so it earns the exception. A bare request (nothing for the
+// menu to show) advertises nothing; a ctrl hold reads it as "k menu" like
+// any other ctrl chord; a multi request pins it the same way.
+func TestRestingKeybarAdvertisesTheMenuNextToQuit(t *testing.T) {
+	rows := []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}}}
+	withActions := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows,
+		Actions: []protocol.PickAction{
+			{ID: "open", Label: "open", Key: "enter", Scope: "item", Group: "nav", Primary: true},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+		},
+	}
+	m := New(withActions)
+	m.width = 92
+	footer := strings.TrimRight(ansi.Strip(lastLine(render(m))), " ")
+	if !strings.HasSuffix(footer, "ctrl-k menu  esc quit") {
+		t.Fatalf("the resting legend should pin the menu beside quit: %q", footer)
+	}
+
+	enableKittyProtocol(m)
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyLeftCtrl})
+	m = next.(*Model)
+	footer = ansi.Strip(lastLine(render(m)))
+	if !strings.Contains(footer, "nav h cd here") || !strings.Contains(footer, "k menu") || strings.Contains(footer, "ctrl-k") {
+		t.Fatalf("the ctrl-held legend should read the menu as a bare chord: %q", footer)
+	}
+
+	bare := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows})
+	bare.width = 92
+	footer = ansi.Strip(lastLine(render(bare)))
+	if strings.Contains(footer, "menu") {
+		t.Fatalf("a request with nothing for the menu to list must not advertise it: %q", footer)
+	}
+
+	multi := New(protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows, Multi: true,
+		Actions: []protocol.PickAction{{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global", Event: true}},
+	})
+	multi.width = 92
+	footer = strings.TrimRight(ansi.Strip(lastLine(render(multi))), " ")
+	if !strings.HasSuffix(footer, "ctrl-k menu  esc quit") {
+		t.Fatalf("a multi request pins the menu the same way: %q", footer)
+	}
+}
+
+// TestKeybarMenuEntryClickOpensTheMenu: the advertised entry is clickable
+// like every other keybar key, and opens the same overlay ctrl-k does.
+func TestKeybarMenuEntryClickOpensTheMenu(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	m.height = 30
+
+	plain := ansi.Strip(render(m))
+	lines := strings.Split(plain, "\n")
+	keybarY := len(lines) - 1
+	idx := strings.Index(lines[keybarY], "ctrl-k")
+	if idx < 0 {
+		t.Fatalf("setup: expected ctrl-k in the footer: %q", lines[keybarY])
+	}
+
+	next, cmd := m.Update(tea.MouseClickMsg{X: idx, Y: keybarY, Button: tea.MouseLeft})
+	m = next.(*Model)
+	if isQuitCmd(cmd) {
+		t.Fatal("clicking the menu entry must not end the session")
+	}
+	if m.modal == nil || m.modal.kind != modalRegistry {
+		t.Fatalf("clicking the menu entry should open the registry menu, got %+v", m.modal)
+	}
+}
+
 // TestKeybarKeyClickTogglesForBuiltinMultiMarkActions covers dispatchAction's
 // special case: the built-in mark-cluster actions (toggle/toggle-next/
 // toggle-all) run their hardcoded handler on a keybar click exactly as
@@ -3490,7 +3570,8 @@ func lastLine(frame string) string {
 // TestDefaultLegendShowsOnlyModifierFreeKeys pins the resting footer's
 // rule: with nothing held it lists only the keys that work as-is (enter,
 // esc, space, tab...). Every chord (ctrl-h, alt-enter, ctrl-a) waits for
-// its modifier to be held, or for the ctrl-k menu.
+// its modifier to be held, or for the ctrl-k menu, whose own entry is the
+// one chord the resting legend keeps.
 func TestDefaultLegendShowsOnlyModifierFreeKeys(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
@@ -3510,7 +3591,7 @@ func TestDefaultLegendShowsOnlyModifierFreeKeys(t *testing.T) {
 	if !strings.Contains(footer, "nav enter open") || !strings.Contains(footer, "esc quit") {
 		t.Fatalf("the resting legend should carry the modifier-free keys: %q", footer)
 	}
-	for _, gone := range []string{"ctrl", "alt", "cd here", "open in editor", "with args", "act", "pick"} {
+	for _, gone := range []string{"ctrl-h", "ctrl-o", "alt-enter", "cd here", "open in editor", "with args", "act", "pick"} {
 		if strings.Contains(footer, gone) {
 			t.Fatalf("the resting legend must not list a chord or its group (found %q): %q", gone, footer)
 		}

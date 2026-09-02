@@ -19,6 +19,7 @@ const (
 	idToggle     = "toggle"
 	idToggleNext = "toggle-next"
 	idToggleAll  = "toggle-all"
+	idMenu       = "menu"
 )
 
 // isInjectedDefaultID reports whether id names one of the built-in defaults
@@ -29,25 +30,35 @@ const (
 // dropped there rather than listed as if the caller had asked for it.
 func isInjectedDefaultID(id string) bool {
 	switch id {
-	case idSelect, idWithArgs, idCancel, idBack, idToggle, idToggleNext, idToggleAll:
+	case idSelect, idWithArgs, idCancel, idBack, idToggle, idToggleNext, idToggleAll, idMenu:
 		return true
 	}
 	return false
 }
 
-// defaultActions is what a bare request renders: select always exists, and
+// defaultActions is what a bare request renders: select always exists, the
+// menu entry advertises ctrl-k whenever the menu would have rows, and
 // cancel is always the last word (the terminal escape hatch). back is never
 // synthesized here -- it is caller-declared only (in the request's own
 // Actions), never derived from breadcrumb depth.
 func defaultActions(req protocol.PickRequest) []protocol.PickAction {
+	var out []protocol.PickAction
 	if isMultiRequest(req) {
-		return multiDefaultActions(req)
+		out = multiDefaultActions(req)
+	} else {
+		out = []protocol.PickAction{{ID: idSelect, Label: "select", Key: "enter", Scope: "item"}}
 	}
-	return []protocol.PickAction{
-		{ID: idSelect, Label: "select", Key: "enter", Scope: "item"},
-		{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"},
+	if len(deriveMenu(req.Actions, 0)) > 0 {
+		out = append(out, menuAction)
 	}
+	return append(out, protocol.PickAction{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"})
 }
+
+// menuAction is the keybar's own "ctrl-k menu" entry. Update opens the menu
+// on the keypress itself; this exists so the legend can name the door to
+// every chord it hides, and so a click on it opens the same overlay
+// (dispatchAction). MenuHidden keeps the menu from listing itself.
+var menuAction = protocol.PickAction{ID: idMenu, Label: "menu", Key: "ctrl-k", Scope: "global", MenuHidden: true}
 
 // multiDefaultActions is the Multi board's "mark" footer cluster. space,
 // tab, and ctrl-a never reach the registry dispatch path -- Update handles
@@ -65,7 +76,6 @@ func multiDefaultActions(req protocol.PickRequest) []protocol.PickAction {
 		{ID: idToggleNext, Label: "toggle & next", Key: "tab", Scope: "item", Group: "mark", MenuHidden: true},
 		{ID: idToggleAll, Label: "all/none", Key: "ctrl-a", Scope: "global", Group: "mark", MenuHidden: true},
 		{ID: idSelect, Label: "confirm", Key: "enter", Scope: "item", Group: "mark", Primary: true},
-		{ID: idCancel, Label: "quit", Key: "esc", Scope: "global"},
 	}
 }
 
@@ -110,10 +120,15 @@ func keyModifier(key string) string {
 // the chord prefix dropped from its key ("ctrl-h" → "h"): the held legend
 // labels a key by what is left to press while the modifier is already
 // down. Group and order are kept so every legend clusters the same way.
+// The menu entry is the one chord the resting legend keeps, under its full
+// key: it is how every other chord gets found.
 func modifierActions(actions []protocol.PickAction, mod string) []protocol.PickAction {
 	var out []protocol.PickAction
 	for _, a := range actions {
-		if a.FooterHidden || keyModifier(a.Key) != mod {
+		if a.FooterHidden {
+			continue
+		}
+		if keyModifier(a.Key) != mod && !(mod == "" && a.ID == idMenu) {
 			continue
 		}
 		bare := a
@@ -126,10 +141,10 @@ func modifierActions(actions []protocol.PickAction, mod string) []protocol.PickA
 }
 
 // legendActions is what the footer paints: only what a keypress does right
-// now. At rest that is every action on a modifier-free key; while a
-// modifier is held with something bound to it, that modifier's own actions
-// under their bare keys. A chord never shows before its modifier is down;
-// the ctrl-k menu lists everything regardless.
+// now. At rest that is every action on a modifier-free key plus the menu
+// entry; while a modifier is held with something bound to it, that
+// modifier's own actions under their bare keys. Any other chord never shows
+// before its modifier is down; the ctrl-k menu lists everything regardless.
 func legendActions(m *Model) []protocol.PickAction {
 	actions := effectiveActions(m.req)
 	if mod := m.heldModifier(); mod != "" {
@@ -287,10 +302,13 @@ type MenuRow struct {
 // default id (select/with-args/back/cancel and the multi mark cluster) is
 // excluded the same way, so the dispatcher's own select/with-args/back never
 // list as menu rows and a request that declares nothing opens no menu at all.
+// FooterHidden actions are skipped too: they are bound keys with nothing to
+// say (an unlabeled exit key, back at the root), and a row for one would
+// read as the bare key name.
 func deriveMenu(actions []protocol.PickAction, cursorRow int) []MenuRow {
 	var item, global []MenuRow
 	for _, a := range actions {
-		if a.MenuHidden || isInjectedDefaultID(a.ID) {
+		if a.MenuHidden || a.FooterHidden || isInjectedDefaultID(a.ID) {
 			continue
 		}
 		row := MenuRow{ActionID: a.ID, Label: a.Label, Key: a.Key}

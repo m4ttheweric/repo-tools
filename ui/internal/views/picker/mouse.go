@@ -380,6 +380,8 @@ func (m *Model) dispatchAction(action protocol.PickAction) (tea.Model, tea.Cmd) 
 	case idToggleAll:
 		m.toggleAllVisible()
 		return m, nil
+	case idMenu:
+		return m.openMenu()
 	}
 	if action.Event {
 		m.emitEvent(action.ID)
