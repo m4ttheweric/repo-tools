@@ -9,6 +9,7 @@ import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
 import { branchExistsLocalAsync, listWorktreesAsync } from "../git-async.ts";
 import { createTree, scrapTree, type CreateDeps } from "../create.ts";
+import { loadDopplerConfig } from "../../doppler-config.ts";
 
 function readMachineStore(): Record<string, unknown> {
   try {
@@ -299,5 +300,44 @@ describe("scrapTree", () => {
     expect(existsSync(path)).toBe(true);
     expect(existsSync(join(path, "important.txt"))).toBe(true);
     expect(loadRegistry(repoName)).toEqual([rec]);
+  });
+});
+
+describe("createTree doppler scoping", () => {
+  let repo: string;
+  let repoName: string;
+  let events: Array<{ type: string; data: unknown }>;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtcreate-home-")));
+    closeStateDb();
+    repo = makeRepo();
+    addBareOrigin(repo);
+    repoName = "acme";
+    events = [];
+  });
+
+  test("ready steps run after the tree's doppler scopes are written", async () => {
+    await declareWorktrees(repo, repoName, {
+      namePool: ["scoped"],
+      ready: [{ run: 'grep -qF "$PWD/apps/backend:" "$HOME/.doppler/.doppler.yaml"' }],
+    });
+    const identity = await ensureIdentity(repo, repoName);
+    const store = readMachineStore();
+    const repos = store.repos as Record<string, Record<string, unknown>>;
+    repos[identity] = {
+      ...repos[identity],
+      "rt.dopplerTemplate": [{ path: "apps/backend", project: "backend", config: "dev" }],
+    };
+    writeMachineStore({ ...store, repos });
+
+    const result = await createTree(makeDeps(repoName, repo, events));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(loadDopplerConfig().scoped[join(result.tree.path, "apps/backend")]).toEqual({
+      "enclave.project": "backend",
+      "enclave.config": "dev",
+    });
   });
 });
