@@ -2969,6 +2969,82 @@ func TestMouseClickMarkerCellTogglesSelectionAndFocusesRow(t *testing.T) {
 
 // TestMouseRightClickOpensMenuAtRow pins right-click: it focuses the row
 // under the pointer and opens the same overlay ctrl-k does.
+// TestRightClickMenuAnchorsToThePointer pins the context-menu placement:
+// a menu opened by right-click puts its top-left corner at the click cell
+// (the pointer sits on the box's corner, as any desktop context menu),
+// slides left/up only as far as needed to stay inside the frame, and a
+// ctrl-k menu stays centered. Hit zones follow wherever the box lands.
+func TestRightClickMenuAnchorsToThePointer(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows,
+		Actions: []protocol.PickAction{
+			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item"},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global"},
+		},
+	}
+	open := func(x, y int) *Model {
+		m := New(req)
+		next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+		m = next.(*Model)
+		renderView(m)
+		next, _ = m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseRight})
+		m = next.(*Model)
+		if m.modal == nil {
+			t.Fatalf("setup: right-click at (%d,%d) should open the menu", x, y)
+		}
+		renderView(m)
+		return m
+	}
+
+	// Plenty of room: the box's corner is the click cell.
+	m := open(30, 5)
+	if m.modalBox.x0 != 30 || m.modalBox.y0 != 5 {
+		t.Fatalf("box should anchor at the pointer, got x0=%d y0=%d", m.modalBox.x0, m.modalBox.y0)
+	}
+	// The recorded row zones sit inside the anchored box, not at the center.
+	firstY := -1
+	for y := range m.modalZones.byY {
+		if firstY < 0 || y < firstY {
+			firstY = y
+		}
+	}
+	if firstY < 5 || firstY >= m.modalBox.y1 {
+		t.Fatalf("menu row zones should sit inside the anchored box (y0=5, y1=%d), first at %d", m.modalBox.y1, firstY)
+	}
+	if _, ok := m.modalZones.at(31, firstY); !ok {
+		t.Fatalf("a menu row should be clickable one column inside the anchored box's left border")
+	}
+
+	// At the right edge the box slides left just enough to fit; it still
+	// opens downward from the pointer's row while there is room.
+	m = open(98, 10)
+	if m.modalBox.x1 != 100 || m.modalBox.y0 != 10 || m.modalBox.y1 > 24 {
+		t.Fatalf("box should hug the right edge and keep the pointer row: x1=%d y0=%d y1=%d", m.modalBox.x1, m.modalBox.y0, m.modalBox.y1)
+	}
+	// On the last visible row it slides up to the frame's bottom edge instead.
+	m = open(98, 21)
+	if m.modalBox.y1 != 24 || m.modalBox.y0 >= 21 {
+		t.Fatalf("box should hug the bottom edge: y0=%d y1=%d", m.modalBox.y0, m.modalBox.y1)
+	}
+
+	// ctrl-k: centered, as before.
+	c := New(req)
+	next, _ := c.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	c = next.(*Model)
+	next, _ = c.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	c = next.(*Model)
+	renderView(c)
+	w := c.modalBox.x1 - c.modalBox.x0
+	if want := (100 - w) / 2; c.modalBox.x0 != want {
+		t.Fatalf("ctrl-k menu should stay centered: x0=%d want %d", c.modalBox.x0, want)
+	}
+}
+
 func TestMouseRightClickOpensMenuAtRow(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
