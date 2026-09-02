@@ -160,6 +160,14 @@ func New(req protocol.PickRequest) *Model {
 		m.selected[v] = true
 	}
 	m.refilter()
+	// ResumeValue positions the initial cursor on a caller-named row -- a
+	// respawned picker restoring where the user was (run's tab-advance, an
+	// exit-and-resume action). resolveCursor locates it in the ranked matches;
+	// an absent value leaves the cursor at the top. The viewport follows on the
+	// first render (placeTop derives the top from the cursor).
+	if req.ResumeValue != "" {
+		m.cursor = m.resolveCursor(req.ResumeValue, true, 0)
+	}
 	return m
 }
 

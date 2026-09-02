@@ -3825,6 +3825,31 @@ func groupBoundaries(ms []Match, groups []string) int {
 	return count
 }
 
+// TestResumeValuePositionsTheInitialCursor pins the ResumeValue wire field:
+// a respawned picker restores the cursor onto the named row instead of the
+// top. It once deserialized into the void here while every TS producer
+// forwarded it (run's tab-advance, the exit-and-resume actions), so this test
+// drives New directly to keep the Go side honoring it.
+func TestResumeValuePositionsTheInitialCursor(t *testing.T) {
+	rows := make([]protocol.PickRow, 4)
+	for i, v := range []string{"dev", "build", "test", "lint"} {
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: rows, ResumeValue: "test"}
+
+	m := New(req)
+	if v, ok := m.cursorRowValue(); !ok || v != "test" {
+		t.Fatalf("ResumeValue should land the initial cursor on %q: got %q ok=%v", "test", v, ok)
+	}
+
+	// An absent value leaves the cursor at the top rather than out of bounds.
+	req.ResumeValue = "does-not-exist"
+	m = New(req)
+	if v, _ := m.cursorRowValue(); v != "dev" {
+		t.Fatalf("an absent ResumeValue should leave the cursor at the top row: got %q", v)
+	}
+}
+
 // TestGroupedMatchesRenderContiguousUnderAFuzzyQuery is the ruling's render
 // golden: a fuzzy query that would interleave queue and packages by score
 // instead renders each group as one contiguous block -- one QUEUE header, one
