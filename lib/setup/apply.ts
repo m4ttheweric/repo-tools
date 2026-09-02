@@ -40,6 +40,8 @@ export interface ApplyContext {
   team: TeamRef;
   snapshot: TeamSnapshot | null;
   reqs: PackRequirements[];
+  /** Re-reads `snapshot` and `reqs` from disk; the engine calls it after a done `reloadsTeam` step. */
+  reloadTeam?: () => void;
   nonInteractive: boolean;
   teamOfOne: boolean;
   appPath: string | null;
@@ -90,6 +92,8 @@ export interface StepDef {
   kind: StepKind;
   applies(ctx: ApplyContext): boolean;
   run(ctx: ApplyContext): Promise<StepOutcome>;
+  /** The step lands or changes the team clone (team.create, team.join): once it is done, `ctx.snapshot`/`ctx.reqs` are re-read so the steps after it see the team that now exists on disk rather than the one read at apply start. */
+  reloadsTeam?: boolean;
 }
 
 // Re-exported for backward compatibility (and so callers that already import
@@ -195,6 +199,7 @@ export async function runApplyWith(steps: StepDef[], ctx: ApplyContext, opts: { 
         result = { ok: false, failedStep: step.id };
         break;
       }
+      if (step.reloadsTeam && outcome.state === "done") ctx.reloadTeam?.();
       // "skipped" is non-fatal by contract (a fresh machine skips
       // skills.materialize honestly before plugins.install runs it for real)
       // — only "failed" stops the run.
@@ -289,7 +294,7 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
   // secret a step body handles has to be registered by that step.
   if (intent?.mode === "join" && intent.join) redactor.redact(intent.join.keyB64);
 
-  return {
+  const ctx: ApplyContext = {
     p,
     emit,
     log(id, line) {
@@ -299,6 +304,11 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
     team,
     snapshot,
     reqs,
+    reloadTeam() {
+      if (!ctx.team.slug) return;
+      ctx.snapshot = readTeamSnapshot(p, ctx.team.slug);
+      ctx.reqs = readPackRequirements(p, ctx.team.slug);
+    },
     nonInteractive: flags.nonInteractive,
     teamOfOne: flags.teamOfOne,
     appPath,
@@ -328,4 +338,5 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
       return awaitNeed(p.tray, id, needOpts);
     },
   };
+  return ctx;
 }

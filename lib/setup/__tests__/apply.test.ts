@@ -90,6 +90,35 @@ function throwingStep(id: StepId, err: unknown): StepDef {
   };
 }
 
+describe("runApplyWith — team reload", () => {
+  test("a done step marked reloadsTeam re-reads the team for the steps after it (a joiner's clone lands mid-run); a failed one does not", async () => {
+    const { ctx } = testCtx();
+    let reloads = 0;
+    ctx.reloadTeam = () => {
+      reloads++;
+      ctx.snapshot = { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null };
+    };
+    const seenByLater: string[][] = [];
+    const steps: StepDef[] = [
+      { ...fakeStep("team.join", { state: "done" }), reloadsTeam: true },
+      fakeStep("repos.clone", async () => {
+        seenByLater.push(ctx.snapshot?.trackingIdentities ?? []);
+        return { state: "done" };
+      }),
+    ];
+
+    await runApplyWith(steps, ctx, {});
+    expect(reloads).toBe(1);
+    expect(seenByLater).toEqual([["gitlab.com/acme/acme-dev"]]);
+
+    const { ctx: ctx2 } = testCtx();
+    let reloads2 = 0;
+    ctx2.reloadTeam = () => { reloads2++; };
+    await runApplyWith([{ ...fakeStep("team.join", { state: "failed", detail: "no" }), reloadsTeam: true }], ctx2, {});
+    expect(reloads2).toBe(0);
+  });
+});
+
 describe("runApplyWith — happy path", () => {
   test("three done steps stream plan, running/done per step, then done ok:true", async () => {
     const { ctx, events } = testCtx();

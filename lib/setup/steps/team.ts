@@ -114,6 +114,7 @@ async function teamJoinRun(ctx: ApplyContext): Promise<StepOutcome> {
 }
 
 export const teamCreateStep: StepDef = {
+  reloadsTeam: true,
   id: "team.create",
   title: "Create your team",
   kind: "rt",
@@ -122,6 +123,7 @@ export const teamCreateStep: StepDef = {
 };
 
 export const teamJoinStep: StepDef = {
+  reloadsTeam: true,
   id: "team.join",
   title: "Join your team",
   kind: "rt",
