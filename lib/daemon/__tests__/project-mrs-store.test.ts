@@ -339,6 +339,15 @@ describe("scope", () => {
     expect(s.read("r")!.scope).toBeUndefined();
   });
 
+  test("setScope round-trips knownSections and drops it when absent", () => {
+    const s = tmpStore();
+    s.fullSync("r", "g/p", [], Date.now());
+    s.setScope("r", { authors: ["alice"], windowDays: 30, knownSections: ["Beta", "Acme"] });
+    expect(s.read("r")!.scope).toEqual({ authors: ["alice"], windowDays: 30, knownSections: ["Beta", "Acme"] });
+    s.setScope("r", { authors: ["alice"], windowDays: 30 });
+    expect(s.read("r")!.scope!.knownSections).toBeUndefined();
+  });
+
   test("setScope on a repo with no record is a no-op either way", () => {
     const s = tmpStore();
     s.setScope("ghost", { authors: ["alice"], windowDays: 30 });
