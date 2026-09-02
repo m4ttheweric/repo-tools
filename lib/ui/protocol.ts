@@ -168,8 +168,8 @@ export interface PickRow {
   glyph?: string;
   /** An action row's tone (segment tone vocabulary) for glyph, text and cursor bar; its highlight derives from it. Omitted is the picker's default accent (lav). */
   accent?: string;
-  /** A line of context shown only while this is the cursor row, in a slot above the keybar (run's full command). Any row with one reserves the slot for the whole list. */
-  detail?: string;
+  /** The row's expanded tail: while it is the cursor row or hovered, these segments paint in place of everything after its label (the column segment, or the whole left when there is none). */
+  detail?: PickSegment[];
   /** Marks a row whose primary action can run with extra arguments; render.go's alt-held with-args chrome keys off this. */
   withArgs?: boolean;
 }

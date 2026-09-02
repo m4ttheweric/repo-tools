@@ -40,11 +40,11 @@ type PickRow struct {
 	// "cyan", ...) for its glyph, text and cursor bar; the cursor highlight
 	// derives from it. Empty is the theme's default action accent.
 	Accent string `json:"accent,omitempty"`
-	// Detail is a line of context for the row shown only while it is the
-	// cursor row, in a slot between the bottom rule and the keybar (run's
-	// full script command). Any row carrying one reserves the slot for the
-	// whole list, so the frame never moves as the cursor does.
-	Detail string `json:"detail,omitempty"`
+	// Detail is the row's expanded tail: while the row is the cursor row or
+	// hovered, these segments paint in place of everything after its label
+	// (the Column segment, or the whole left when there is none). run's
+	// runner tag grows into the full command this way.
+	Detail []PickSegment `json:"detail,omitempty"`
 	// WithArgs marks a row whose primary action can run with extra
 	// arguments -- render.go's alt-held with-args header badge, cursor-row
 	// badge, and per-row dim all key off this. showPicker

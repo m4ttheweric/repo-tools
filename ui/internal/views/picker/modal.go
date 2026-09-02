@@ -143,11 +143,8 @@ func (m *Model) reservedContentHeight() int {
 		rowCap = defaultCap
 	}
 	// A multi session can reveal the selected panel; reserve its line so
-	// checking a row never grows the frame. A detail slot is one more.
+	// checking a row never grows the frame.
 	chrome := chromeRows
-	if m.detailSlot {
-		chrome++
-	}
 	if isMultiRequest(m.req) {
 		chrome++
 	}

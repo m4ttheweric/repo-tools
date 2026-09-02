@@ -1210,45 +1210,45 @@ func TestNoMatchState(t *testing.T) {
 // each group's first row, never repeats for the group's later rows, and the
 // cursor -- which indexes m.matches, not the printed lines -- still lands on
 // the first real row rather than a header.
-// TestCursorRowDetailPaintsAboveTheKeybar pins the detail slot: when any
-// row carries Detail, one extra chrome line sits between the bottom rule
-// and the keybar showing the cursor row's detail (blank for a row without
-// one), so the frame height never moves as the cursor does. A list with no
-// detail at all has no slot.
-func TestCursorRowDetailPaintsAboveTheKeybar(t *testing.T) {
+// TestCursorRowDetailReplacesTheTailInline pins the expanded row: while a
+// row is the cursor row or hovered, its Detail paints in place of
+// everything after its label column (run's runner tag grows into the full
+// command); at rest the tag is back. A row with no Column segment swaps its
+// whole left. Frame height never changes.
+func TestCursorRowDetailReplacesTheTailInline(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Rows: []protocol.PickRow{
-			{Value: "start", Left: []protocol.PickSegment{{Text: "start", Tone: "text"}}, Detail: "pnpm run-ts-node-dev src/app/server"},
-			{Value: "clean", Left: []protocol.PickSegment{{Text: "clean", Tone: "text"}}, Detail: "rm -rf build"},
-			{Value: "bare", Left: []protocol.PickSegment{{Text: "bare", Tone: "text"}}},
+			{Value: "start", Left: []protocol.PickSegment{{Text: "start", Tone: "text", Column: true}, {Text: "  node", Tone: "dimmer"}},
+				Detail: []protocol.PickSegment{{Text: "  node scripts/start-lite.js --watch", Tone: "dim"}}},
+			{Value: "clean", Left: []protocol.PickSegment{{Text: "clean", Tone: "text", Column: true}, {Text: "  rm", Tone: "dimmer"}},
+				Detail: []protocol.PickSegment{{Text: "  rm -rf build", Tone: "dim"}}},
+			{Value: "bare", Left: []protocol.PickSegment{{Text: "bare", Tone: "text"}}, Detail: []protocol.PickSegment{{Text: "expanded bare", Tone: "dim"}}},
 		},
 	}
 	m := New(req)
 	m.width = 80
 	lines := strings.Split(ansi.Strip(render(m)), "\n")
-	// breadcrumb, filter, rule, 3 rows, rule, detail, keybar
-	if len(lines) != 9 {
-		t.Fatalf("expected 9 lines with the detail slot, got %d:\n%s", len(lines), strings.Join(lines, "\n"))
+	if len(lines) != 8 {
+		t.Fatalf("no extra chrome for detail: %d lines", len(lines))
 	}
-	if got := strings.TrimRight(lines[7], " "); got != "  pnpm run-ts-node-dev src/app/server" {
-		t.Fatalf("the slot should carry the cursor row's detail: %q", got)
+	if !strings.HasPrefix(lines[3], "▌ start  node scripts/start-lite.js --watch") {
+		t.Fatalf("the cursor row's tail is its detail: %q", lines[3])
 	}
-	m.cursor = 2
-	lines = strings.Split(ansi.Strip(render(m)), "\n")
-	if len(lines) != 9 || strings.TrimSpace(lines[7]) != "" {
-		t.Fatalf("a row without detail leaves the slot blank, never removes it: %d lines, slot %q", len(lines), lines[7])
-	}
-	if m.totalChromeRows() != chromeRows+1 {
-		t.Fatalf("the slot is chrome: %d, want %d", m.totalChromeRows(), chromeRows+1)
+	if !strings.HasPrefix(lines[4], "  clean  rm") || strings.Contains(lines[4], "-rf") {
+		t.Fatalf("a resting row keeps its tag: %q", lines[4])
 	}
 
-	plain := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{
-		{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}},
-	}})
-	plain.width = 80
-	if got := len(strings.Split(render(plain), "\n")); got != 6 {
-		t.Fatalf("no detail anywhere, no slot: %d lines", got)
+	m.hover = 1
+	lines = strings.Split(ansi.Strip(render(m)), "\n")
+	if !strings.HasPrefix(lines[4], "  clean  rm -rf build") {
+		t.Fatalf("a hovered row expands too: %q", lines[4])
+	}
+
+	m.cursor, m.hover = 2, -1
+	lines = strings.Split(ansi.Strip(render(m)), "\n")
+	if !strings.HasPrefix(lines[5], "▌ expanded bare") {
+		t.Fatalf("with no label column the whole left swaps: %q", lines[5])
 	}
 }
 

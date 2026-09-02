@@ -34,35 +34,7 @@ func (m *Model) totalChromeRows() int {
 	if m.showSelectedPanel() {
 		rows++
 	}
-	if m.detailSlot {
-		rows++
-	}
 	return rows
-}
-
-// bottomChromeRows is how many lines follow the row area: the bottom rule,
-// the detail slot when the list reserves one, and the keybar.
-func (m *Model) bottomChromeRows() int {
-	if m.detailSlot {
-		return 3
-	}
-	return 2
-}
-
-// detailLine paints the detail slot: the cursor row's Detail, or blank.
-func detailLine(m *Model) string {
-	if m.cursor < 0 || m.cursor >= len(m.matches) {
-		return ""
-	}
-	detail := m.req.Rows[m.matches[m.cursor].Index].Detail
-	if detail == "" {
-		return ""
-	}
-	kept, truncated := clipRunes(detail, m.width-2)
-	if truncated {
-		kept += "…"
-	}
-	return onBg.Render("  ") + fg(theme.Dim).Render(kept)
 }
 
 // render paints one frame at its natural (unpadded) height. renderView pads
@@ -117,12 +89,8 @@ func renderFrame(m *Model, target int) string {
 
 	if n == 0 {
 		lines = append(lines, noMatchLine())
-		appendInteriorFiller(&lines, target, m.bottomChromeRows())
-		lines = append(lines, rule(m.width))
-		if m.detailSlot {
-			lines = append(lines, "")
-		}
-		lines = append(lines, noMatchKeybarLine(m))
+		appendInteriorFiller(&lines, target, 2) // bottom rule + keybar still to come
+		lines = append(lines, rule(m.width), noMatchKeybarLine(m))
 		m.zones = zones
 		return strings.Join(lines, "\n")
 	}
@@ -152,14 +120,10 @@ func renderFrame(m *Model, target int) string {
 	// The filler advances y past its blank lines so the keybar's own zones
 	// land on the padded rows the terminal actually paints them on, not the
 	// natural rows they would sit on unpadded.
-	y += appendInteriorFiller(&lines, target, m.bottomChromeRows())
+	y += appendInteriorFiller(&lines, target, 2) // bottom rule + keybar
 
 	lines = append(lines, rule(m.width))
 	y++
-	if m.detailSlot {
-		lines = append(lines, detailLine(m))
-		y++
-	}
 	keybarStr, keyZones := keybarLineZones(m, top, h, n)
 	zones.addAll(y, keyZones)
 	lines = append(lines, keybarStr)
@@ -518,6 +482,21 @@ func shiftPositions(positions []int, left []protocol.PickSegment, pads []int) []
 	return out
 }
 
+// expandedLeft is a focused row's left: its label (everything through the
+// last Column segment, or nothing when it has none) followed by Detail in
+// place of the resting tail.
+func expandedLeft(row protocol.PickRow) []protocol.PickSegment {
+	keep := 0
+	for i, seg := range row.Left {
+		if seg.Column {
+			keep = i + 1
+		}
+	}
+	out := make([]protocol.PickSegment, 0, keep+len(row.Detail))
+	out = append(out, row.Left[:keep]...)
+	return append(out, row.Detail...)
+}
+
 // groupIndent is how far a grouped list's rows step in past the gutter, so
 // entries read as children of the faint header above them (which sits at
 // the gutter's own indent) rather than as its peers.
@@ -616,12 +595,15 @@ func rowLineWidth(m *Model, i int, width int) string {
 		leftBudget = 0
 	}
 
-	leftPlain := leftPlainText(row)
-	positions := highlightPositions(m, leftPlain)
 	painted := row
+	if (cursorRow || hoverRow) && len(row.Detail) > 0 {
+		painted.Left = expandedLeft(row)
+	}
+	leftPlain := leftPlainText(painted)
+	positions := highlightPositions(m, leftPlain)
 	if m.labelWidth > 0 {
-		segs, pads := paddedLeft(row, m.labelWidth)
-		positions = shiftPositions(positions, row.Left, pads)
+		segs, pads := paddedLeft(painted, m.labelWidth)
+		positions = shiftPositions(positions, painted.Left, pads)
 		painted.Left = segs
 		leftPlain = leftPlainText(painted)
 	}

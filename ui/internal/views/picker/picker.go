@@ -60,9 +60,6 @@ type Model struct {
 	// labelWidth is the shared width every Column segment pads to: the widest
 	// one in the list, capped at labelColumnCap. 0 when no row has one.
 	labelWidth int
-	// detailSlot records whether any row carries Detail: the frame then keeps
-	// one chrome line above the keybar for the cursor row's detail.
-	detailSlot bool
 	hover      int
 	width      int
 	height     int
@@ -243,13 +240,11 @@ func (m *Model) refilter() {
 	m.argsRows = false
 	m.grouped = false
 	m.labelWidth = 0
-	m.detailSlot = false
 	for i, row := range m.req.Rows {
 		targets[i] = matchText(row)
 		groups[i] = row.Group
 		m.argsRows = m.argsRows || row.WithArgs
 		m.grouped = m.grouped || row.Group != ""
-		m.detailSlot = m.detailSlot || row.Detail != ""
 		for _, seg := range row.Left {
 			if w := lipgloss.Width(seg.Text); seg.Column && w > m.labelWidth && w <= labelColumnCap {
 				m.labelWidth = w

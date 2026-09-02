@@ -152,15 +152,16 @@ function scriptRunner(cmd: string): string {
   return first === "if" || first === "[" || first === "test" || first === "sh" || first === "bash" ? "sh" : first;
 }
 
-/** One script: the name in the label column, the runner as a quiet tag
-    right after it, the full command as the cursor row's detail. */
+/** One script: the name in the label column with the runner as a quiet
+    tag beside it; while the row is focused the tag grows into the full
+    command (the picker paints `detail` in place of the tag). */
 function scriptRow(name: string, cmd: string, group: string): PickRow {
   const runner = scriptRunner(cmd);
   return {
     value: name,
     match: name,
     left: [{ text: name, bold: true, column: true }, ...(runner ? [{ text: `  ${runner}`, tone: "dimmer" }] : [])],
-    ...(cmd ? { detail: cmd } : {}),
+    ...(cmd ? { detail: [{ text: `  ${cmd}`, tone: "dim" }] } : {}),
     group,
   };
 }

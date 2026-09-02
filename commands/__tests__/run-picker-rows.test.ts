@@ -57,14 +57,14 @@ test("launchAllRow and savePresetRow are action rows in the queue group, each wi
   expect(save.left[0]).toMatchObject({ text: "Save as preset…", bold: true });
 });
 
-test("scriptRow: column label, runner tag on the right, the full command as the cursor detail", () => {
+test("scriptRow: column label, runner tag beside it, the full command as the focused detail", () => {
   const row = runTest.scriptRow("start", "pnpm run-ts-node-dev src/app/server", "scripts");
   expect(row.value).toBe("start");
   expect(row.match).toBe("start");
   expect(row.group).toBe("scripts");
   expect(row.left).toEqual([{ text: "start", bold: true, column: true }, { text: "  pnpm", tone: "dimmer" }]);
   expect(row.right).toBeUndefined();
-  expect(row.detail).toBe("pnpm run-ts-node-dev src/app/server");
+  expect(row.detail).toEqual([{ text: "  pnpm run-ts-node-dev src/app/server", tone: "dim" }]);
 });
 
 test("scriptRunner: the first real token, skipping env assignments; shell constructs read as sh", () => {
