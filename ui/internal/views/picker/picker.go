@@ -2,6 +2,7 @@ package picker
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -77,7 +78,13 @@ type Model struct {
 	// 2, not 1: the close's own render is already covered without decrementing
 	// anything, and tea.ClearScreen's own Cmd sends exactly one clearScreenMsg
 	// back through Update asynchronously, whose render is still part of the
-	// same close transition.
+	// same close transition. The countdown only advances on messages that can
+	// belong to that transition -- View()'s MouseModeAllMotion streams a
+	// MouseMotionMsg (and a wheel one) continuously and unrelated to it, so a
+	// pointer still moving after a click-outside dismissal would otherwise
+	// burn the hold before the async clearScreenMsg's own render arrives and
+	// drop pinnedHeight right back into the inline shrink diff this exists to
+	// avoid.
 	pinnedHeight  int
 	pinHoldFrames int
 
@@ -218,7 +225,7 @@ func (m *Model) refilter() {
 func (m *Model) Init() tea.Cmd { return nil }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.pinHoldFrames > 0 {
+	if m.pinHoldFrames > 0 && !isPinHoldExemptMsg(msg) {
 		m.pinHoldFrames--
 		if m.pinHoldFrames == 0 {
 			m.pinnedHeight = m.reservedHeight
@@ -347,6 +354,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// isPinHoldExemptMsg reports whether msg is pointer noise that streams
+// continuously (View sets MouseModeAllMotion) rather than a step in the
+// close transition pinHoldFrames is counting down through -- see its own
+// comment on the field.
+func isPinHoldExemptMsg(msg tea.Msg) bool {
+	switch msg.(type) {
+	case tea.MouseMotionMsg, tea.MouseWheelMsg:
+		return true
+	default:
+		return false
+	}
 }
 
 // setQuery replaces the query, re-ranks matches against it, and rebinds
@@ -734,13 +754,19 @@ func (m *Model) View() tea.View {
 
 // Run drives the picker to completion: it paints on /dev/tty (never input or
 // output, which carry the NDJSON protocol -- same split as prompt/session)
-// and writes exactly one result line to output before returning.
-func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
-	term, err := tty.Open(tty.ReadWrite)
+// and writes exactly one result line to output before returning. Cancelling
+// ctx (the caller's signal handling) or input closing (the parent died --
+// readPatches cancels its own derived context on that same read loop, so
+// nothing else has to double-read input to notice) both shut Bubble Tea down
+// through tea.WithContext, which is the one path that restores the terminal;
+// letting the process die to an unhandled signal or an EOF-abandoned run
+// would skip that and leave /dev/tty raw.
+func Run(ctx context.Context, req protocol.PickRequest, input io.Reader, output io.Writer) error {
+	term, closeTerm, err := tty.Open(tty.ReadWrite)
 	if err != nil {
 		return err
 	}
-	defer term.Close()
+	defer closeTerm()
 
 	if f, ok := output.(*os.File); ok && stdoutIsATerminal(f) {
 		return errStdoutSharesTTY
@@ -750,7 +776,11 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 	m.events = make(chan []byte, eventBufferSize)
 	writerDone := m.startEventWriter(output)
 
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	p := tea.NewProgram(m,
+		tea.WithContext(runCtx),
 		tea.WithInput(term),
 		tea.WithOutput(term),
 		tea.WithColorProfile(colorprofile.TrueColor),
@@ -758,7 +788,7 @@ func Run(req protocol.PickRequest, input io.Reader, output io.Writer) error {
 		tea.WithFilter(denyGraphemeWidthMode),
 	)
 
-	go readPatches(p, input)
+	go readPatches(p, input, cancel)
 
 	if _, err := p.Run(); err != nil {
 		m.drainEvents(writerDone)
@@ -800,11 +830,14 @@ const eventBufferSize = 16
 // into the running program via p.Send, which is safe to call from any
 // goroutine -- the same bridge session.go uses for its own mid-flight model
 // replacements. It returns once input closes, which happens when the
-// parent ends the connection. Any other message kind (a result or event --
-// Go->TS directions Run itself writes, never reads back) is ignored rather
-// than treated as an error, so a wire that echoes its own output doesn't
-// wedge the read loop.
-func readPatches(p *tea.Program, input io.Reader) {
+// parent ends the connection -- and cancels runCtx on that same return, so a
+// dead parent stops the picker instead of leaving it interactive against an
+// abandoned /dev/tty. Any other message kind (a result or event -- Go->TS
+// directions Run itself writes, never reads back) is ignored rather than
+// treated as an error, so a wire that echoes its own output doesn't wedge
+// the read loop.
+func readPatches(p *tea.Program, input io.Reader, cancel context.CancelFunc) {
+	defer cancel()
 	br := bufio.NewReader(input)
 	for {
 		line, err := protocol.ReadLine(br)

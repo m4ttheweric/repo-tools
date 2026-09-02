@@ -2,6 +2,7 @@ package picker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -577,7 +578,12 @@ func TestPickRefusesWhenStdoutIsTheSameDeviceAsTheTTY(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(testutil.Binary(t), "pick")
+	// A regression in the stdout-shares-tty guard would leave the picker
+	// interactive after stdin closes; cmd.Wait() would then block until the
+	// suite-level timeout instead of failing promptly.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, testutil.Binary(t), "pick")
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

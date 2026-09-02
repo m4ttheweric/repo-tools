@@ -33,16 +33,32 @@ import (
 // already have been rewritten to literal spaces by the kernel before
 // reaching the terminal -- so the terminal's own tab-stop model is never
 // consulted at all.
-func expandTabs(fd int) {
+// expandTabs returns a restore func that undoes the TABDLY change on the
+// real tty device -- Close on the fd does not, since this is device state,
+// not per-fd state, and would otherwise persist past process exit. Returns
+// nil (nothing to restore) when the flag was already TAB3 or either ioctl
+// fails.
+func expandTabs(fd int) func() {
 	term, err := termios.GetTermios(fd)
 	if err != nil {
-		return
+		return nil
 	}
 	if term.Oflag&unix.TABDLY == unix.TAB3 {
-		return
+		return nil
 	}
+	origTABDLY := term.Oflag & unix.TABDLY
 	term.Oflag = (term.Oflag &^ unix.TABDLY) | unix.TAB3
-	_ = unix.IoctlSetTermios(fd, setTermiosRequest, term)
+	if unix.IoctlSetTermios(fd, setTermiosRequest, term) != nil {
+		return nil
+	}
+	return func() {
+		restored, err := termios.GetTermios(fd)
+		if err != nil {
+			return
+		}
+		restored.Oflag = (restored.Oflag &^ unix.TABDLY) | origTABDLY
+		_ = unix.IoctlSetTermios(fd, setTermiosRequest, restored)
+	}
 }
 
 // IsTerminal reports whether fd refers to a terminal device -- the standard

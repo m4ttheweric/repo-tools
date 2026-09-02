@@ -743,7 +743,14 @@ func toneColor(tone string) (color.Color, bool) {
 // already-styled string, so the caller can keep highlighting matched runes
 // within the kept prefix before appending its own ellipsis.
 func clipRunes(s string, w int) (kept string, truncated bool) {
-	if w < 1 || lipgloss.Width(s) <= w {
+	if w < 1 {
+		// A non-positive budget fits nothing -- returning s here (as a wider
+		// caller's leftBudget/rightBudget floor of 0 can produce) would hand
+		// back the full unclipped string and break the fixed-width frame
+		// contract every caller's own column math assumes.
+		return "", s != ""
+	}
+	if lipgloss.Width(s) <= w {
 		return s, false
 	}
 	if w == 1 {
