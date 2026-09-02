@@ -30,6 +30,8 @@ const PROBE_TIMEOUT_MS = 5000;
 const CHROME_PATHS = (home: string): string[] => ["/Applications/Google Chrome.app", `${home}/Applications/Google Chrome.app`];
 
 const CLAUDE_SIGNIN_STEPS: Action = { type: "steps", label: "Show steps…", steps: ["Open a terminal", "Run: claude", "Follow the sign-in prompt"] };
+/** Signing in is interactive and happens after Install; only the claude binary itself gates Install. */
+const SIGNIN_LATER = { required: false, optionalNote: "Sign in after Install: run claude once." };
 const FAST_BROWSER_EXTENSION_STEPS: Action = {
   type: "steps",
   label: "Show steps…",
@@ -107,8 +109,11 @@ async function herdrRow(p: Probes, opts: { hasBrew: boolean }): Promise<Row> {
   const claude = parseHerdrClaudeState(integrationRes.stdout);
   if (!claude.known) return row({ ...base, status: "error", detail: "could not determine herdr's Claude integration status" });
   if (claude.installed) return row({ ...base, status: "ready", detail: `herdr ${version}, Claude integration installed` });
+  // Install's own herdr.integration step adds this; only the binary gates Install.
   return row({
     ...base,
+    required: false,
+    optionalNote: "Installed by Install (herdr.integration).",
     status: "needs-you",
     detail: `herdr ${version}, Claude integration ${claude.state}`,
     action: { type: "run", label: "Install integration", verb: ["tools", "setup", "herdr"] },
@@ -139,7 +144,7 @@ async function claudeRow(p: Probes, opts: { hasBrew: boolean }): Promise<Row> {
   }
   if (authState && typeof authState.loggedIn === "boolean") {
     if (authState.loggedIn) return row({ ...base, status: "ready", detail: `claude ${version}, signed in` });
-    return row({ ...base, status: "needs-you", detail: "sign in: run claude once", action: CLAUDE_SIGNIN_STEPS });
+    return row({ ...base, ...SIGNIN_LATER, status: "needs-you", detail: "sign in: run claude once", action: CLAUDE_SIGNIN_STEPS });
   }
 
   // An older `claude` with no `auth status` subcommand answers something
@@ -150,10 +155,10 @@ async function claudeRow(p: Probes, opts: { hasBrew: boolean }): Promise<Row> {
   // explicit not-signed-in gives a real next step instead of a dead end.
   const sniff = `${authRes.stdout} ${authRes.stderr}`.toLowerCase();
   if (sniff.includes("unknown")) {
-    return row({ ...base, status: "needs-you", detail: `claude ${version} installed, sign-in could not be checked — confirm you're signed in`, action: CLAUDE_SIGNIN_STEPS });
+    return row({ ...base, ...SIGNIN_LATER, status: "needs-you", detail: `claude ${version} installed, sign-in could not be checked — confirm you're signed in`, action: CLAUDE_SIGNIN_STEPS });
   }
 
-  if (authRes.code !== 0) return row({ ...base, status: "needs-you", detail: "sign in: run claude once", action: CLAUDE_SIGNIN_STEPS });
+  if (authRes.code !== 0) return row({ ...base, ...SIGNIN_LATER, status: "needs-you", detail: "sign in: run claude once", action: CLAUDE_SIGNIN_STEPS });
   return row({ ...base, status: "error", detail: "claude auth status returned an unexpected response" });
 }
 

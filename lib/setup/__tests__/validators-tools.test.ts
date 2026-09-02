@@ -80,6 +80,9 @@ describe("toolRows — tool.herdr", () => {
     expect(r.status).toBe("needs-you");
     expect(r.detail).toBe("herdr 0.9.0, Claude integration not installed");
     expect(r.action).toEqual({ type: "run", label: "Install integration", verb: ["tools", "setup", "herdr"] });
+    // Install's own herdr.integration step adds it — the binary gates Install, the integration never.
+    expect(r.required).toBe(false);
+    expect(r.optionalNote).toContain("Install");
   });
 
   test("the claude line is entirely absent -> error, never a determined negative", async () => {
@@ -156,6 +159,9 @@ describe("toolRows — tool.claude", () => {
     expect(r.status).toBe("needs-you");
     expect(r.detail).toBe("sign in: run claude once");
     expect(r.action).toEqual({ type: "steps", label: "Show steps…", steps: ["Open a terminal", "Run: claude", "Follow the sign-in prompt"] });
+    // Sign-in is an interactive step after Install; the binary gates Install, the sign-in never.
+    expect(r.required).toBe(false);
+    expect(r.optionalNote).toContain("after Install");
   });
 
   test("auth status unknown subcommand (stderr mentions unknown) -> needs-you, sign-in not checked — never a guessed ready (H-1)", async () => {
