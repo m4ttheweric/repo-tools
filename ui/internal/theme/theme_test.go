@@ -66,7 +66,7 @@ func TestCardWidthIsTheDesignCap(t *testing.T) {
 
 func TestPickerTokens(t *testing.T) {
 	want := map[string]string{
-		"hoverBg": "#251E3D", "surface": "#221A35", "blue": "#6B9DFF",
+		"hoverBg": "#2F2A4A", "surface": "#221A35", "blue": "#6B9DFF",
 	}
 	got := map[string]string{
 		"hoverBg": Hex(HoverBg), "surface": Hex(Surface), "blue": Hex(Blue),

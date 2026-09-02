@@ -3163,11 +3163,11 @@ func modalRowCell(m *Model, index int) (x, y int, ok bool) {
 
 // TestModalMouseMotionHoversAndRendersHoverBg pins mouse hover inside the
 // overlay: motion over a non-cursor menu row sets modalHover and paints that
-// row with HoverBg, the same #251E3D the base list hover uses. Fails on the
+// row with HoverBg, the same token the base list hover uses. Fails on the
 // pre-fix mouse-inert modal (motion early-returned, modalRowLine had no hover
 // tone at all).
 func TestModalMouseMotionHoversAndRendersHoverBg(t *testing.T) {
-	const hoverBgSGR = "48;2;37;30;61"
+	hoverBgSGR := bgSGR(theme.HoverBg)
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
@@ -4802,10 +4802,10 @@ func TestFallbackTerminalNeverLatchesHeld(t *testing.T) {
 }
 
 // TestHoverRowRendersHoverBg pins the hover-SGR fix's list-row half: a
-// hovered non-cursor row carries HoverBg #251E3D, the exact 48;2;37;30;61
+// hovered non-cursor row carries HoverBg, the exact SGR bytes
 // background the Mouse board specifies.
 func TestHoverRowRendersHoverBg(t *testing.T) {
-	const hoverBgSGR = "48;2;37;30;61"
+	hoverBgSGR := bgSGR(theme.HoverBg)
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Rows: []protocol.PickRow{

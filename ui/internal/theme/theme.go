@@ -14,7 +14,7 @@ var (
 	Bg       = lipgloss.Color("#161224")
 	BgSubtle = lipgloss.Color("#1C162C")
 	Surface  = lipgloss.Color("#221A35")
-	HoverBg  = lipgloss.Color("#251E3D")
+	HoverBg  = lipgloss.Color("#2F2A4A")
 	SelBg    = lipgloss.Color("#37284B")
 	WarnBg   = lipgloss.Color("#2A2033")
 	Rule     = lipgloss.Color("#2A2340")

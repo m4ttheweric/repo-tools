@@ -6,7 +6,7 @@ html,body{margin:0}body{background:#0F0C1D;font-family:"SF Mono",Menlo,Monaco,mo
 .term{background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:12px 0 10px;line-height:1.7;box-shadow:0 12px 40px rgba(0,0,0,.45);margin-bottom:26px}
 .ln{display:flex;padding:0 16px;white-space:pre}.sp{flex:1}
 .selrow{flex:1;display:flex;background:var(--sel)}
-.hovrow{flex:1;display:flex;background:#251E3D}
+.hovrow{flex:1;display:flex;background:#2F2A4A}
 .t{color:var(--text)}.s{color:var(--soft)}.d{color:var(--dim)}.dr{color:var(--dimmer)}.f{color:var(--faint)}
 .kk{color:var(--kkey)}.kl{color:var(--klabel)}.kg{color:var(--kgroup)}
 .p{color:var(--pink)}.m{color:var(--mint)}.cy{color:var(--cyan)}.lv{color:var(--lav)}
@@ -25,10 +25,10 @@ table.gram td:first-child{color:var(--soft);font-family:"SF Mono",Menlo,monospac
 </style>
 <title>Mouse support</title>
 <h1>First-class mouse (SGR protocol, Bubble Tea native)</h1>
-<p class="note">fzf's --no-mouse dies with fzf. Hover is a distinct state from the keyboard cursor: hover gets its own token (HoverBg #251E3D — visible, but clearly below SelBg #37284B), the cursor keeps pink ▌ + SelBg — moving the mouse never steals the keyboard's place. Every interactive zone is a click target. The mouse's back button (the browser-back thumb button) is a ctrl-up keypress wherever it lands, list or menu; forward is inert.</p>
+<p class="note">fzf's --no-mouse dies with fzf. Hover is a distinct state from the keyboard cursor: hover gets its own token (HoverBg #2F2A4A — visible, but clearly below SelBg #37284B), the cursor keeps pink ▌ + SelBg — moving the mouse never steals the keyboard's place. Every interactive zone is a click target. The mouse's back button (the browser-back thumb button) is a ctrl-up keypress wherever it lands, list or menu; forward is inert.</p>
 
 <table class="gram">
-  <tr><td>hover row</td><td>HoverBg #251E3D tint (keyboard cursor unaffected)</td></tr>
+  <tr><td>hover row</td><td>HoverBg #2F2A4A tint (keyboard cursor unaffected)</td></tr>
   <tr><td>click row</td><td>move cursor there (single = focus, not accept)</td></tr>
   <tr><td>double-click row</td><td>accept (enter)</td></tr>
   <tr><td>click ◉ / ○</td><td>toggle in multi-select (row body still focuses)</td></tr>
