@@ -144,7 +144,7 @@ export function substitute(
         case "run-start.flags": return runStartFlags(ctx, arg, raw, where);
         case "compiled-from": return ctx.compiledFrom;
         case "stage.dir":
-          if (!ctx.stageDir) throw new Error(`${where}: {{stage.dir}} used outside a stage`);
+          if (!ctx.stageDir) throw new Error(`${where}: {{stage.dir}} used in a public verb`);
           return ctx.stageDir;
         case "stage.fields":
           if (!ctx.stageMeta) throw new Error(`${where}: {{stage.fields}} used outside a stage`);

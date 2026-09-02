@@ -1,3 +1,5 @@
+export type Side = "skills" | "attachments";
+
 export type SlotSpec = { contract: string; required?: boolean };
 
 export type StepSource = {

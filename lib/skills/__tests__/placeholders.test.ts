@@ -189,7 +189,7 @@ describe("substitute", () => {
     expect(substitute("{{stage.dir}}", stage, "stage-plan").body).toBe("${CLAUDE_SKILL_DIR}/../../attachments/stage-plan");
     expect(substitute("{{stage.fields}}", stage, "stage-plan").body)
       .toBe("You consume `ticket`. You must produce `approach`, `evidence-plan`.");
-    expect(() => substitute("{{stage.dir}}", ctx(), "work")).toThrow("work: {{stage.dir}} used outside a stage");
+    expect(() => substitute("{{stage.dir}}", ctx(), "work")).toThrow("work: {{stage.dir}} used in a public verb");
   });
 
   test("compiled-from substitutes the provenance string", () => {

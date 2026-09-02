@@ -1,6 +1,6 @@
 import { join } from "path";
 import { loadStepSource, parseStageQualifiedName, type PluginRoots } from "./sources.ts";
-import type { StageEntry, StepSource, VerbDef } from "./types.ts";
+import type { Side, StageEntry, StepSource, VerbDef } from "./types.ts";
 
 type Resolved = {
   packDir: string;
@@ -9,6 +9,11 @@ type Resolved = {
 };
 
 type CompileTarget = { verb: VerbDef; isPublic: boolean };
+
+/** The `${CLAUDE_SKILL_DIR}`-relative directory a pack-side reader reaches a compiled target at: the target's own side, hopped to from the invoking public skill's dir. */
+export function hostDir(name: string, side: Side): string {
+  return `\${CLAUDE_SKILL_DIR}/../../${side}/${name}`;
+}
 
 /**
  * Builds each work type's ordered StageEntry[] from its manifest pipeline
@@ -44,7 +49,7 @@ export function buildStageEntries(
       return {
         name,
         stage: step.stageMeta.stage,
-        dir: `\${CLAUDE_SKILL_DIR}/../../${input.publicSet?.has(name) ? "skills" : "attachments"}/${name}`,
+        dir: hostDir(name, input.publicSet?.has(name) ? "skills" : "attachments"),
         consumes: step.stageMeta.consumes,
         produces: step.stageMeta.produces,
       };

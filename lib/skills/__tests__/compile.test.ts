@@ -511,7 +511,7 @@ describe("compileSkill with placeholders", () => {
 
   test("a placeholder that cannot be filled is a compile error", () => {
     const bad = { ...placeholderStep, body: "{{slot:domain}}\n{{stage.dir}}" };
-    expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), {})).toThrow("{{stage.dir}} used outside a stage");
+    expect(() => compileSkill(verb, bad, { domain: domainFill }, new Set(), {})).toThrow("{{stage.dir}} used in a public verb");
   });
 
   test("a fill's file references resolve under the stage's parts dir inside a stage", () => {
@@ -581,6 +581,24 @@ describe("compileSkill with placeholders", () => {
       emittedSiblingDirs: ["${CLAUDE_SKILL_DIR}/../../attachments/stage-plan"],
     });
     expect(r.warnings.filter((w) => w.includes("not an emitted file"))).toEqual([]);
+  });
+
+  test("an internal roster verb's vendored include lints clean when its host dir is exempt", () => {
+    const withRef: AttachmentSource = {
+      ...domainFill,
+      binding: "mattstack:review-core-body",
+      provides: "",
+      body: "shape at ${CLAUDE_SKILL_DIR}/references/adjudicator.md",
+      extraFiles: ["references/adjudicator.md"],
+    };
+    const host = "${CLAUDE_SKILL_DIR}/../../attachments/receive-review";
+    const r = compileSkill(verb, { ...slotless, body: "Act on it.\n{{include:review-core-body}}" }, {}, new Set(), {
+      includes: { "review-core-body": withRef },
+      stageDir: host,
+      emittedSiblingDirs: [host],
+    });
+    expect(skillMd(r)).toContain(`shape at ${host}/parts/include-review-core-body/references/adjudicator.md`);
+    expect(r.warnings).toEqual([]);
   });
 
   test("a relative read escaping the pack root is a compile error naming verb, path and source line", () => {
