@@ -3418,6 +3418,61 @@ func TestCtrlKIsReservedForTheMenu(t *testing.T) {
 	}
 }
 
+// TestMouseBackButtonIsCtrlUp: the mouse's back button (SGR button 8, the
+// browser-back thumb button) is a ctrl-up keypress wherever it lands: it
+// fires whatever ctrl-up is bound to, on the list or over an open menu, and
+// does nothing in a picker with no ctrl-up binding. The forward button
+// stays inert.
+func TestMouseBackButtonIsCtrlUp(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a", Tone: "text"}}}},
+		Actions: []protocol.PickAction{
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global", Group: "nav"},
+			{ID: "back", Label: "back", Key: "ctrl-up", Scope: "global"},
+		},
+	}
+	m := New(req)
+	m.width = 92
+	m.height = 30
+	render(m)
+
+	// Anywhere on the frame, including blank chrome no zone claims.
+	next, cmd := m.Update(tea.MouseClickMsg{X: 40, Y: 1, Button: tea.MouseBackward})
+	m = next.(*Model)
+	if !isQuitCmd(cmd) || m.result == nil || m.result.Action != "back" {
+		t.Fatalf("the back button should fire the ctrl-up binding, got result=%+v", m.result)
+	}
+
+	// Over an open menu it reaches the same accelerator path ctrl-up does.
+	m = New(req)
+	m.width = 92
+	m.height = 30
+	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("setup: ctrl-k should open the menu")
+	}
+	render(m)
+	next, cmd = m.Update(tea.MouseClickMsg{X: 40, Y: 3, Button: tea.MouseBackward})
+	m = next.(*Model)
+	if !isQuitCmd(cmd) || m.result == nil || m.result.Action != "back" {
+		t.Fatalf("the back button over the menu should still fire the ctrl-up binding, got result=%+v", m.result)
+	}
+
+	// Nothing bound to ctrl-up: inert. Forward: always inert.
+	bare := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: req.Rows})
+	bare.width = 92
+	before := render(bare)
+	for _, button := range []tea.MouseButton{tea.MouseBackward, tea.MouseForward} {
+		next, cmd = bare.Update(tea.MouseClickMsg{X: 2, Y: 3, Button: button})
+		bare = next.(*Model)
+		if cmd != nil || bare.result != nil || render(bare) != before {
+			t.Fatalf("button %v must be inert here", button)
+		}
+	}
+}
+
 // TestKeybarMenuEntryClickOpensTheMenu: the advertised entry is clickable
 // like every other keybar key, and opens the same overlay ctrl-k does.
 func TestKeybarMenuEntryClickOpensTheMenu(t *testing.T) {

@@ -254,6 +254,12 @@ func (m *Model) applyModifierHeld(code rune, down bool) bool {
 // render() last recorded under that cell. A miss (blank chrome, a group
 // header line) and any button beyond left/right are inert.
 func (m *Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	// The mouse's back button (the browser-back thumb button) is a ctrl-up
+	// keypress wherever it lands, list or overlay, so it goes back exactly
+	// as the key would; forward has no meaning here and falls through inert.
+	if msg.Button == tea.MouseBackward {
+		return m.Update(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModCtrl})
+	}
 	if m.modal != nil {
 		return m.modalMouseClick(msg)
 	}

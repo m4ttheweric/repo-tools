@@ -24,7 +24,7 @@ table.gram td:first-child{color:var(--soft);font-family:"SF Mono",Menlo,monospac
 </style>
 <title>Mouse support</title>
 <h1>First-class mouse (SGR protocol, Bubble Tea native)</h1>
-<p class="note">fzf's --no-mouse dies with fzf. Hover is a distinct state from the keyboard cursor: hover gets its own token (HoverBg #251E3D — visible, but clearly below SelBg #37284B), the cursor keeps pink ▌ + SelBg — moving the mouse never steals the keyboard's place. Every interactive zone is a click target.</p>
+<p class="note">fzf's --no-mouse dies with fzf. Hover is a distinct state from the keyboard cursor: hover gets its own token (HoverBg #251E3D — visible, but clearly below SelBg #37284B), the cursor keeps pink ▌ + SelBg — moving the mouse never steals the keyboard's place. Every interactive zone is a click target. The mouse's back button (the browser-back thumb button) is a ctrl-up keypress wherever it lands, list or menu; forward is inert.</p>
 
 <table class="gram">
   <tr><td>hover row</td><td>HoverBg #251E3D tint (keyboard cursor unaffected)</td></tr>
