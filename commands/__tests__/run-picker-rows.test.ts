@@ -45,6 +45,7 @@ test("launchAllRow and savePresetRow are action rows in the queue group, each wi
   expect(launch.group).toBe("queue");
   expect(launch.kind).toBe("action");
   expect(launch.glyph).toBe("\u{F040A}"); // nf-md-play
+  expect(launch.accent).toBe("mint"); // the go action; save keeps the default chrome accent
   expect(launch.left[0]).toMatchObject({ text: "Launch all", bold: true });
   expect(launch.left.some((s) => s.text.includes("2 queued"))).toBe(true);
 
@@ -52,39 +53,63 @@ test("launchAllRow and savePresetRow are action rows in the queue group, each wi
   expect(save.group).toBe("queue");
   expect(save.kind).toBe("action");
   expect(save.glyph).toBe("\u{F0193}"); // nf-md-content-save
+  expect(save.accent).toBeUndefined();
   expect(save.left[0]).toMatchObject({ text: "Save as preset…", bold: true });
 });
 
-test("lastRunRow: mint glyph + age hint, no group (script rows aren't grouped)", () => {
-  const row = runTest.lastRunRow({ ts: new Date().toISOString(), cmd: "x", cwd: "/r", worktree: "/r", branch: "b", pkg: "p", script: "dev", exit: 0 });
-  expect(row.value).toBe("__rt:last-run__");
-  expect(row.group).toBeUndefined();
-  expect(row.left[0]).toMatchObject({ text: "↻ dev", tone: "mint" });
-  expect(row.left[1]?.text).toContain("last run ·");
-  expect(row.left[1]?.tone).toBe("dim");
+test("scriptRow: column label, runner tag beside it, the full command as the focused detail", () => {
+  const row = runTest.scriptRow("start", "pnpm run-ts-node-dev src/app/server", "scripts");
+  expect(row.value).toBe("start");
+  expect(row.match).toBe("start");
+  expect(row.group).toBe("scripts");
+  expect(row.left).toEqual([{ text: "start", bold: true, column: true }, { text: "  pnpm", tone: "dimmer" }]);
+  expect(row.right).toBeUndefined();
+  expect(row.detail).toEqual([{ text: "  pnpm run-ts-node-dev src/app/server", tone: "dim" }]);
 });
 
-test("plainRow: bold label plus a dim hint, group optional", () => {
+test("scriptRunner: the first real token, skipping env assignments; shell constructs read as sh", () => {
+  expect(runTest.scriptRunner("pnpm run build")).toBe("pnpm");
+  expect(runTest.scriptRunner("UV_THREADPOOL_SIZE=$(nproc) node x.js")).toBe("node");
+  expect(runTest.scriptRunner("doppler run -- ts-node x")).toBe("doppler");
+  expect(runTest.scriptRunner('if [ -z "$X" ]; then echo; fi')).toBe("sh");
+  expect(runTest.scriptRunner("rm -rf build")).toBe("rm");
+  expect(runTest.scriptRunner("")).toBe("");
+});
+
+test("scriptGroups: recent first, colon families with 2+ members (the bare prefix joins), the rest under scripts, file order kept", () => {
+  const scripts = ["build", "start", "start:lite", "start:debug", "type-check", "worker-dev", "worker-dev:otel", "dts:only", "clean"];
+  const groups = runTest.scriptGroups(scripts, ["clean", "start:lite"]);
+  expect(groups).toEqual([
+    ["clean", "recent"],
+    ["start:lite", "recent"],
+    ["build", "scripts"],
+    ["start", "start"],
+    ["start:lite", "start"],
+    ["start:debug", "start"],
+    ["type-check", "scripts"],
+    ["worker-dev", "worker-dev"],
+    ["worker-dev:otel", "worker-dev"],
+    ["dts:only", "scripts"],
+    ["clean", "scripts"],
+  ]);
+});
+
+test("recentScripts: newest first, distinct, only scripts this package has, capped at 4", () => {
+  const e = (script: string, ts: string) => ({ ts, cmd: "x", cwd: "/p", worktree: "/r", branch: "b", pkg: "p", script, exit: 0 });
+  const history = [e("start", "2026-09-02T14:00:00Z"), e("clean", "2026-09-02T13:00:00Z"), e("start", "2026-09-02T12:00:00Z"), e("gone", "2026-09-02T11:00:00Z"), e("a", "1"), e("b", "1"), e("c", "1"), e("d", "1")];
+  expect(runTest.recentScripts(history, "/p", ["start", "clean", "a", "b", "c", "d"])).toEqual(["start", "clean", "a", "b"]);
+  expect(runTest.recentScripts(history, "/elsewhere", ["start"])).toEqual([]);
+});
+
+test("plainRow: bold label in the picker's label column plus a dim hint, group optional", () => {
   const row = runTest.plainRow({ value: "v", label: "ui", hint: "packages/ui" }, "packages");
   expect(row.group).toBe("packages");
   expect(row.left).toEqual([
-    { text: "ui", bold: true },
+    { text: "ui", bold: true, column: true },
     { text: "  packages/ui", tone: "dim" },
   ]);
   // The hint is display only: typing part of "packages/ui" must not match.
   expect(row.match).toBe("ui");
-});
-
-test("plainRow: labelWidth pads the label so hints line up down a group", () => {
-  const short = runTest.plainRow({ value: "v", label: "ui", hint: "packages/ui" }, "packages", 6);
-  expect(short.left[0]).toEqual({ text: "ui    ", bold: true });
-
-  const exact = runTest.plainRow({ value: "v", label: "backend", hint: "apps/backend" }, "packages", 7);
-  expect(exact.left[0]).toEqual({ text: "backend", bold: true });
-
-  // Omitted width leaves the label unpadded (a standalone row has nothing to align against).
-  const unpadded = runTest.plainRow({ value: "v", label: "ui", hint: "packages/ui" }, "packages");
-  expect(unpadded.left[0]).toEqual({ text: "ui", bold: true });
 });
 
 test("footerActions: exit keys close with event:false, other header parts are label-only", () => {
@@ -197,11 +222,11 @@ test("package picker: queue-active state groups queue rows, adds Launch all + Sa
   expect(res.kind).toBe("cancelled");
   expect(fake.calls).toHaveLength(5);
 
-  // Call 1 (index 1): the script picker for package "a" shows the mint
-  // last-run sentinel first, ahead of the plain script rows.
+  // Call 1 (index 1): the script picker for package "a" lists the recently
+  // run script first, under the recent group, ahead of the file-order rows.
   const scriptCall = fake.calls[1]!;
-  expect(scriptCall.rows[0]!.value).toBe("__rt:last-run__");
-  expect(scriptCall.rows[0]!.left[0]).toMatchObject({ text: "↻ dev", tone: "mint" });
+  expect(scriptCall.rows[0]).toMatchObject({ value: "dev", group: "recent" });
+  expect(scriptCall.rows[0]!.left[0]).toMatchObject({ text: "dev", column: true });
 
   // Call 4 (index 4): package picker with 2 items queued (the "queue active" state).
   const queueCall = fake.calls[4]!;
@@ -446,7 +471,7 @@ test("variations picker breadcrumb stays 'rt run'; crumbSuffix reads variation f
 
 // ─── package row alignment ───────────────────────────────────────────────────
 
-test("package picker rows: the label column is padded so hints line up (board parity)", async () => {
+test("package picker rows: labels are column segments so hints line up (board parity)", async () => {
   const root = mkdtempSync(join(tmpdir(), "rt-run-align-"));
   fixtureDir = root;
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "root", workspaces: ["packages/*"] }));
@@ -475,12 +500,12 @@ test("package picker rows: the label column is padded so hints line up (board pa
   await resolveRun([], ctx);
   const packageRows = fake.calls[0]!.rows.filter((r) => r.group === "packages");
   expect(packageRows).toHaveLength(2);
-  const labelTexts = packageRows.map((r) => r.left[0]!.text as string);
-  // Every label in the group pads to the same width -- the hint column starts
-  // at the same offset on every row, matching the board.
-  const widths = new Set(labelTexts.map((t) => t.length));
-  expect(widths.size).toBe(1);
-  expect(Math.max(...labelTexts.map((t) => t.length))).toBe("config-service".length);
+  // Every label is a column segment: the picker pads them to one shared width
+  // so the hint column starts at the same offset on every row (the board).
+  for (const r of packageRows) {
+    expect(r.left[0]).toMatchObject({ column: true });
+    expect((r.left[0]!.text as string).trimEnd()).toBe(r.left[0]!.text);
+  }
 });
 
 // ─── formatBranchLabel -> formatBranchSegments migration ─────────────────────

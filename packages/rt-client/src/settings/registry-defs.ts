@@ -456,13 +456,6 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Local working directories the board's review/respond/doctor panes launch from.",
   },
   {
-    key: "board.rtRepos",
-    type: "array",
-    scopes: ["machine"],
-    merge: "replace",
-    description: "rt-registered repo names the board resolves MRs against on this machine.",
-  },
-  {
     key: "board.triageMaxConcurrent",
     type: "number",
     scopes: ["machine"],

@@ -22,7 +22,7 @@
  * a machine still carrying real legacy dirs.
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { homedir, hostname } from "os";
 import { basename, join } from "path";
 import { parseIdentity } from "../packages/rt-client/src/settings/identity-codec.ts";
@@ -415,6 +415,53 @@ export function migrateLegacyRtDir(): LegacyMigrationResult {
   }
   mkdirSync(join(home(), ".mattstack"), { recursive: true });
   renameSync(legacy, target);
+  return "migrated";
+}
+
+/** ~/.mattstack/user/plugins — user plugins, inside the home repo so they follow their author. */
+export function pluginsDir(): string {
+  return join(mattstackHome(), "user", "plugins");
+}
+
+/** Where plugins lived before they joined the home repo (2026-09-02). */
+export function legacyPluginsDir(): string {
+  return join(rtDir(), "plugins");
+}
+
+/** A plugin's devDependency on rt's local API package, relative to its dir. */
+const PLUGIN_API_LINK = "file:../../../rt/plugin-api";
+const LEGACY_PLUGIN_API_LINK = "file:../../plugin-api";
+
+export type PluginsMigrationResult = "none" | "migrated" | "conflict";
+
+/**
+ * Moves rt/plugins into user/plugins once, repointing each plugin's
+ * `rt-plugin` link for the new depth. Both trees present is a conflict
+ * rt never resolves by guessing.
+ */
+export function migrateLegacyPluginsDir(): PluginsMigrationResult {
+  const legacy = legacyPluginsDir();
+  let legacyStat;
+  try {
+    legacyStat = lstatSync(legacy);
+  } catch {
+    return "none";
+  }
+  if (legacyStat.isSymbolicLink() || !legacyStat.isDirectory()) return "none";
+  const target = pluginsDir();
+  if (existsSync(target)) return "conflict";
+  mkdirSync(join(target, ".."), { recursive: true });
+  renameSync(legacy, target);
+  for (const name of readdirSync(target)) {
+    const pkgPath = join(target, name, "package.json");
+    if (!existsSync(pkgPath)) continue;
+    try {
+      const raw = readFileSync(pkgPath, "utf8");
+      if (raw.includes(LEGACY_PLUGIN_API_LINK)) writeFileSync(pkgPath, raw.replaceAll(LEGACY_PLUGIN_API_LINK, PLUGIN_API_LINK));
+    } catch {
+      // a plugin whose package.json cannot be read keeps its old link; bun install names it
+    }
+  }
   return "migrated";
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
 
@@ -56,9 +57,12 @@ type Model struct {
 	// grouped records whether any row carries a Group: a grouped list steps
 	// every row in under its header (see rowIndent).
 	grouped bool
-	hover   int
-	width   int
-	height  int
+	// labelWidth is the shared width every Column segment pads to: the widest
+	// one in the list, capped at labelColumnCap. 0 when no row has one.
+	labelWidth int
+	hover      int
+	width      int
+	height     int
 
 	// reservedHeight is the session-long floor renderView pads every frame to,
 	// set the moment the pane size is known and re-derived only on a resize.
@@ -235,11 +239,17 @@ func (m *Model) refilter() {
 	groups := make([]string, len(m.req.Rows))
 	m.argsRows = false
 	m.grouped = false
+	m.labelWidth = 0
 	for i, row := range m.req.Rows {
 		targets[i] = matchText(row)
 		groups[i] = row.Group
 		m.argsRows = m.argsRows || row.WithArgs
 		m.grouped = m.grouped || row.Group != ""
+		for _, seg := range row.Left {
+			if w := lipgloss.Width(seg.Text); seg.Column && w > m.labelWidth && w <= labelColumnCap {
+				m.labelWidth = w
+			}
+		}
 	}
 	m.matches = GroupContiguous(Rank(m.query, targets, m.req.Exact), groups)
 }
@@ -317,6 +327,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.openMenu()
 		}
 		if action, ok := m.actionForKey(key); ok {
+			if action.Scope == "item" && m.cursorOnActionRow() {
+				return m, nil
+			}
 			return m.dispatchAction(action)
 		}
 		if key == "enter" {
@@ -792,6 +805,16 @@ func (m *Model) quit() (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, tea.Sequence(tea.ClearScreen, tea.Quit)
+}
+
+// cursorOnActionRow reports whether the cursor sits on a button-like row
+// (PickRow.Kind action), which has no entry for item-scoped actions to act
+// on: those keys are inert there and the menu lists only globals.
+func (m *Model) cursorOnActionRow() bool {
+	if m.cursor < 0 || m.cursor >= len(m.matches) {
+		return false
+	}
+	return m.req.Rows[m.matches[m.cursor].Index].Kind == protocol.RowKindAction
 }
 
 // fullscreen reports the request's layout: the alternate screen unless the

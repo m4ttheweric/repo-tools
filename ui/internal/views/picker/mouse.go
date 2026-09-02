@@ -271,7 +271,7 @@ func (m *Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	}
 	switch mouse.Button {
 	case tea.MouseRight:
-		return m.clickRight(zone)
+		return m.clickRight(zone, modalAnchor{x: mouse.X, y: mouse.Y})
 	case tea.MouseLeft:
 		return m.clickLeft(zone)
 	}
@@ -304,13 +304,14 @@ func (m *Model) modalMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 // clickRight opens the registry menu at whichever row was clicked -- the
 // same overlay ctrl-k opens, just pre-aimed at this row instead of wherever
 // the keyboard cursor already sat.
-func (m *Model) clickRight(zone mouseZone) (tea.Model, tea.Cmd) {
+func (m *Model) clickRight(zone mouseZone, at modalAnchor) (tea.Model, tea.Cmd) {
 	if zone.kind != zoneRow && zone.kind != zoneMarker {
 		return m, nil
 	}
 	m.cursor = zone.row
 	m.openRegistryMenu()
 	if m.modal != nil {
+		m.modal.anchor = &at
 		m.pinFrameHeight()
 		return m, tea.ClearScreen
 	}

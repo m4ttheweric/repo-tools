@@ -590,7 +590,6 @@ export async function showPicker(
 
   const visible = Object.entries(tree).filter(([_, n]) => isNodeVisible(n, IS_DEV_MODE));
   const anyHasArgs = visible.some(([_, n]) => n.args?.length);
-  const labelWidth = Math.max(...visible.map(([name]) => name.length));
 
   // Filtering sees only the command name (the old fzf palette's --nth=1): the
   // description is display-only, or "git" would match every row whose prose
@@ -599,7 +598,7 @@ export async function showPicker(
     value: name,
     match: name,
     left: [
-      { text: name.padEnd(labelWidth), bold: true },
+      { text: name, bold: true, column: true },
       { text: `  ${node.description}`, tone: "dim" },
     ],
     ...(node.args?.length ? { withArgs: true } : {}),

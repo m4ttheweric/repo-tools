@@ -443,6 +443,60 @@ func highlightPositions(m *Model, leftPlain string) []int {
 // matched-character highlight, spacer, and right segments pinned to the far
 // edge. The width is explicit (rather than always m.width) because a
 // scrolling list shrinks it by one column to make room for the thumb rail.
+// labelColumnCap bounds the label column: a Column segment wider than this
+// neither widens the column for everyone else nor pads itself.
+const labelColumnCap = 28
+
+// paddedLeft is row.Left with every Column segment right-padded to
+// labelWidth, and, per segment, how many runes the pad added: what the row
+// paints, and what highlight positions computed on the unpadded text have
+// to be shifted by past each padded segment.
+func paddedLeft(row protocol.PickRow, labelWidth int) ([]protocol.PickSegment, []int) {
+	segs := make([]protocol.PickSegment, len(row.Left))
+	pads := make([]int, len(row.Left))
+	for i, seg := range row.Left {
+		segs[i] = seg
+		if w := lipgloss.Width(seg.Text); seg.Column && w < labelWidth {
+			pads[i] = labelWidth - w
+			segs[i].Text = seg.Text + strings.Repeat(" ", pads[i])
+		}
+	}
+	return segs, pads
+}
+
+// shiftPositions remaps match positions computed on the unpadded left text
+// onto the padded text: a position past a padded segment's end moves by
+// the runes that segment's pad added.
+func shiftPositions(positions []int, left []protocol.PickSegment, pads []int) []int {
+	out := make([]int, len(positions))
+	for i, p := range positions {
+		shift, runes := 0, 0
+		for j, seg := range left {
+			runes += len([]rune(seg.Text))
+			if p >= runes {
+				shift += pads[j]
+			}
+		}
+		out[i] = p + shift
+	}
+	return out
+}
+
+// expandedLeft is a focused row's left: its label (everything through the
+// last Column segment, or nothing when it has none) followed by Detail in
+// place of the resting tail.
+func expandedLeft(row protocol.PickRow) []protocol.PickSegment {
+	keep := 0
+	for i, seg := range row.Left {
+		if seg.Column {
+			keep = i + 1
+		}
+	}
+	out := make([]protocol.PickSegment, 0, keep+len(row.Detail))
+	out = append(out, row.Left[:keep]...)
+	return append(out, row.Detail...)
+}
+
 // groupIndent is how far a grouped list's rows step in past the gutter, so
 // entries read as children of the faint header above them (which sits at
 // the gutter's own indent) rather than as its peers.
@@ -463,15 +517,16 @@ func rowLineWidth(m *Model, i int, width int) string {
 	hoverRow := !cursorRow && i == m.hover
 	indent := m.rowIndent()
 	action := row.Kind == protocol.RowKindAction
+	accent := actionAccent(row)
 
 	rowBg := onBg
 	gutterGlyph := " "
 	gutterStyle := onBg
 	switch {
 	case cursorRow && action:
-		rowBg = lipgloss.NewStyle().Background(theme.ActionSelBg)
+		rowBg = lipgloss.NewStyle().Background(theme.ActionHighlight(accent))
 		gutterGlyph = theme.GlyphBar
-		gutterStyle = fg(theme.ActionFg)
+		gutterStyle = fg(accent)
 	case cursorRow:
 		rowBg = lipgloss.NewStyle().Background(theme.SelBg)
 		gutterGlyph = theme.GlyphBar
@@ -490,7 +545,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 		if glyph == "" {
 			glyph = theme.GlyphAction
 		}
-		icon = rowBg.Foreground(theme.ActionFg).Bold(cursorRow).Render(glyph + " ")
+		icon = rowBg.Foreground(accent).Bold(cursorRow).Render(glyph + " ")
 		iconWidth = lipgloss.Width(glyph) + 1
 	}
 
@@ -540,9 +595,20 @@ func rowLineWidth(m *Model, i int, width int) string {
 		leftBudget = 0
 	}
 
-	leftPlain := leftPlainText(row)
+	painted := row
+	if (cursorRow || hoverRow) && len(row.Detail) > 0 {
+		painted.Left = expandedLeft(row)
+	}
+	leftPlain := leftPlainText(painted)
+	positions := highlightPositions(m, leftPlain)
+	if m.labelWidth > 0 {
+		segs, pads := paddedLeft(painted, m.labelWidth)
+		positions = shiftPositions(positions, painted.Left, pads)
+		painted.Left = segs
+		leftPlain = leftPlainText(painted)
+	}
 	kept, truncated := clipRunes(leftPlain, leftBudget)
-	leftRendered := renderHighlightedLeft(row, len([]rune(kept)), highlightPositions(m, leftPlain), rowBg, cursorRow, argsDim, action)
+	leftRendered := renderHighlightedLeft(painted, len([]rune(kept)), positions, rowBg, cursorRow, argsDim, accentFor(action, accent))
 	usedLeftWidth := lipgloss.Width(kept)
 	if truncated {
 		leftRendered += rowBg.Foreground(theme.Faint).Render("…")
@@ -572,7 +638,25 @@ func rowLineWidth(m *Model, i int, width int) string {
 // tone/hex/bold and any match highlight are overridden to a flat Faint, so
 // a row the current modifier can't act on never competes for attention
 // against one that can.
-func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool, dim bool, action bool) string {
+// actionAccent is an action row's accent color: its named tone, or the
+// theme's default when it names none (or names one the theme lacks).
+func actionAccent(row protocol.PickRow) color.Color {
+	if c, ok := toneColor(row.Accent); ok && row.Accent != "" {
+		return c
+	}
+	return theme.ActionFg
+}
+
+// accentFor is the accent renderHighlightedLeft paints default-tone text
+// in, or nil for an ordinary entry.
+func accentFor(action bool, accent color.Color) color.Color {
+	if action {
+		return accent
+	}
+	return nil
+}
+
+func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int, rowBg lipgloss.Style, cursorRow bool, dim bool, accent color.Color) string {
 	matched := make(map[int]bool, len(positions))
 	for _, p := range positions {
 		matched[p] = true
@@ -581,8 +665,8 @@ func renderHighlightedLeft(row protocol.PickRow, keptRunes int, positions []int,
 	runeIdx := 0
 	for _, seg := range row.Left {
 		color, bold := leftSegColor(seg, cursorRow)
-		if action && seg.Hex == "" && (seg.Tone == "" || seg.Tone == "text") {
-			color, bold = theme.ActionFg, cursorRow || seg.Bold
+		if accent != nil && seg.Hex == "" && (seg.Tone == "" || seg.Tone == "text") {
+			color, bold = accent, cursorRow || seg.Bold
 		}
 		if dim {
 			color, bold = theme.Faint, false

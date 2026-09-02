@@ -16,6 +16,10 @@ type PickSegment struct {
 	Tone string `json:"tone,omitempty"`
 	Hex  string `json:"hex,omitempty"`
 	Bold bool   `json:"bold,omitempty"`
+	// Column marks a label segment: the picker pads it to the widest Column
+	// segment in the list (capped), so what follows starts at one shared
+	// column on every row. Callers mark the name in a name·hint row.
+	Column bool `json:"column,omitempty"`
 }
 
 type PickRow struct {
@@ -32,6 +36,15 @@ type PickRow struct {
 	// Glyph is an action row's leading icon, a Nerd Font symbol by
 	// convention; empty falls back to the theme's generic action glyph.
 	Glyph string `json:"glyph,omitempty"`
+	// Accent is an action row's tone (the segment tone vocabulary: "mint",
+	// "cyan", ...) for its glyph, text and cursor bar; the cursor highlight
+	// derives from it. Empty is the theme's default action accent.
+	Accent string `json:"accent,omitempty"`
+	// Detail is the row's expanded tail: while the row is the cursor row or
+	// hovered, these segments paint in place of everything after its label
+	// (the Column segment, or the whole left when there is none). run's
+	// runner tag grows into the full command this way.
+	Detail []PickSegment `json:"detail,omitempty"`
 	// WithArgs marks a row whose primary action can run with extra
 	// arguments -- render.go's alt-held with-args header badge, cursor-row
 	// badge, and per-row dim all key off this. showPicker

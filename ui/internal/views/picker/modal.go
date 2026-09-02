@@ -53,7 +53,14 @@ type modalState struct {
 	query   string
 	matches []Match
 	cursor  int
+	// anchor is the frame cell a right-click opened this menu at; the box's
+	// top-left corner lands there (see modalOrigin). Nil (ctrl-k, a wire
+	// modal) centers the box.
+	anchor *modalAnchor
 }
+
+// modalAnchor is a frame cell, the pointer's position at the right-click.
+type modalAnchor struct{ x, y int }
 
 // refilter re-ranks the overlay's rows against its own query, reusing the
 // same fzf-backed Rank the main list filters with so a modal with many rows
@@ -243,13 +250,20 @@ func (m *Model) armPinRelease() {
 // picker untouched rather than opening an empty box.
 func (m *Model) openRegistryMenu() {
 	cursorRow := m.menuCursorRow()
-	rows := deriveMenu(m.req.Actions, cursorRow)
-	if len(rows) == 0 {
-		return
-	}
+	itemRow := cursorRow
 	title := "Actions"
 	if cursorRow >= 0 {
 		title = leftPlainText(m.req.Rows[m.matches[cursorRow].Index])
+		// An action row is a button, not an entry: item-scoped actions
+		// (queue, open in editor...) have nothing to act on, so only the
+		// globals list under its label.
+		if m.cursorOnActionRow() {
+			itemRow = -1
+		}
+	}
+	rows := deriveMenu(m.req.Actions, itemRow)
+	if len(rows) == 0 {
+		return
 	}
 	ms := &modalState{kind: modalRegistry, title: title, rows: modalRowsFromMenu(rows)}
 	ms.refilter()
@@ -449,9 +463,9 @@ func encodeModalResult(value *string) []byte {
 const modalMinWidth = 24
 
 // renderModal composites the overlay over the already-rendered parent
-// frame: the parent dims (dimForeground), the box sits centered on top of
-// it as a lipgloss v2 layer -- Draw only touches the cells inside its own
-// bounds, so nothing outside the box has to be repainted by hand.
+// frame: the parent dims (dimForeground), the box sits on top of it as a
+// lipgloss v2 layer at modalOrigin -- Draw only touches the cells inside
+// its own bounds, so nothing outside the box has to be repainted by hand.
 func renderModal(m *Model, parent string) string {
 	dimmed := dimForeground(parent)
 	inner := modalInner(m.modal, m.width)
@@ -463,14 +477,7 @@ func renderModal(m *Model, parent string) string {
 	mw := lipgloss.Width(box)
 	mh := lipgloss.Height(box)
 
-	x := (pw - mw) / 2
-	if x < 0 {
-		x = 0
-	}
-	y := (ph - mh) / 2
-	if y < 0 {
-		y = 0
-	}
+	x, y := modalOrigin(m.modal.anchor, pw, ph, mw, mh)
 
 	m.recordModalZones(x, y, mw, mh, inner, rowLines)
 
@@ -479,18 +486,43 @@ func renderModal(m *Model, parent string) string {
 	return lipgloss.NewCompositor(parentLayer, modalLayer).Render()
 }
 
+// modalOrigin places a (mw x mh) box in a (pw x ph) frame. Anchored (a
+// right-click), the box's top-left corner is the pointer cell, the way a
+// desktop context menu opens under the cursor, and it slides left and up
+// only as far as needed to stay inside the frame. Unanchored, it centers.
+func modalOrigin(anchor *modalAnchor, pw, ph, mw, mh int) (x, y int) {
+	if anchor == nil {
+		x, y = (pw-mw)/2, (ph-mh)/2
+	} else {
+		x, y = anchor.x, anchor.y
+		if x+mw > pw {
+			x = pw - mw
+		}
+		if y+mh > ph {
+			y = ph - mh
+		}
+	}
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	return x, y
+}
+
 // recordModalZones rebuilds m.modalZones and m.modalBox for the overlay
 // currently composited at frame origin (boxX, boxY) with size (boxW, boxH),
 // off the same rowLines the box was painted from.
 //
-// Offset invariant: the box is a centered compositor layer, not inline
-// content, so a modal row's frame line is the box origin plus one border
+// Offset invariant: the box is a compositor layer at its own origin, not
+// inline content, so a modal row's frame line is the box origin plus one border
 // line plus that row's content-line offset (boxY + 1 + rowLines[i]), and its
 // clickable column span is the box origin plus one border column across the
 // inner width ([boxX+1, boxX+1+inner)). Mapping a mouse cell straight against
 // the base list's row coordinates (which start at frame line 0) would miss
 // the box entirely -- honoring this origin is the whole point of recording
-// here, where the compositor's own centering offset is known.
+// here, where the compositor's own placement is known.
 func (m *Model) recordModalZones(boxX, boxY, boxW, boxH, inner int, rowLines []int) {
 	zones := hitZones{}
 	xStart := boxX + 1

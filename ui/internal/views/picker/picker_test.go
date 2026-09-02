@@ -900,6 +900,81 @@ func TestActionRowsWearTheActionRole(t *testing.T) {
 	if got := ansi.Strip(strings.Split(render(m), "\n")[4]); !strings.HasPrefix(got, "▌ \U000F040A Launch all") {
 		t.Fatalf("the row's own glyph leads: %q", got)
 	}
+
+	// A named accent recolors glyph, text and bar, and the highlight derives
+	// from it rather than from the default lav.
+	m.req.Rows[1].Accent = "mint"
+	action = strings.Split(render(m), "\n")[4]
+	if !strings.Contains(action, fgSGR(theme.Mint)+"m"+theme.GlyphBar) || !strings.Contains(action, "1;"+fgSGR(theme.Mint)) {
+		t.Fatalf("a mint accent should paint the bar and text mint: %q", action)
+	}
+	if !strings.Contains(action, bgSGR(theme.ActionHighlight(theme.Mint))) || strings.Contains(action, bgSGR(theme.ActionSelBg)) {
+		t.Fatalf("the highlight should derive from the mint accent: %q", action)
+	}
+}
+
+// TestMenuOnAnActionRowListsOnlyGlobals: an action row is not an entry, so
+// the ctrl-k / right-click menu over it drops the item-scoped half (queue,
+// dequeue, open in editor...) and keeps the globals. The row's label still
+// titles the menu. On an ordinary entry the item half is back.
+func TestMenuOnAnActionRowListsOnlyGlobals(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "backend", Left: []protocol.PickSegment{{Text: "backend", Tone: "text"}}},
+			{Value: "launch", Kind: protocol.RowKindAction, Left: []protocol.PickSegment{{Text: "Launch all", Bold: true}}},
+		},
+		Actions: []protocol.PickAction{
+			{ID: "queue", Label: "queue", Key: "tab", Scope: "item", Event: true},
+			{ID: "dequeue", Label: "dequeue", Key: "ctrl-x", Scope: "item", Event: true},
+			{ID: "refresh", Label: "refresh", Key: "ctrl-r", Scope: "global", Event: true},
+		},
+	}
+	m := New(req)
+	m.width, m.height = 80, 24
+	m.cursor = 1
+	next, _ := m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	if m.modal == nil {
+		t.Fatal("the menu should still open on an action row (globals remain)")
+	}
+	ids := []string{}
+	for _, r := range m.modal.rows {
+		if r.actionID != "" {
+			ids = append(ids, r.actionID)
+		}
+	}
+	if len(ids) != 1 || ids[0] != "refresh" {
+		t.Fatalf("an action row's menu lists only global actions, got %v", ids)
+	}
+	if m.modal.title != "Launch all" {
+		t.Fatalf("the row's label still titles the menu: %q", m.modal.title)
+	}
+
+	// An item-scoped key on the action row is inert; a global one still fires.
+	m.modal = nil
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab}); cmd != nil || len(m.events) != 0 {
+		t.Fatal("tab (item-scoped queue) must do nothing on an action row")
+	}
+	m.events = make(chan []byte, 4)
+	m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'r'})
+	if len(m.events) != 1 {
+		t.Fatal("a global action still fires from an action row")
+	}
+
+	m.modal = nil
+	m.cursor = 0
+	next, _ = m.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	m = next.(*Model)
+	ids = ids[:0]
+	for _, r := range m.modal.rows {
+		if r.actionID != "" {
+			ids = append(ids, r.actionID)
+		}
+	}
+	if len(ids) != 3 {
+		t.Fatalf("an entry's menu lists item and global actions, got %v", ids)
+	}
 }
 
 // bgSGR is fgSGR's background twin.
@@ -1135,6 +1210,111 @@ func TestNoMatchState(t *testing.T) {
 // each group's first row, never repeats for the group's later rows, and the
 // cursor -- which indexes m.matches, not the printed lines -- still lands on
 // the first real row rather than a header.
+// TestCursorRowDetailReplacesTheTailInline pins the expanded row: while a
+// row is the cursor row or hovered, its Detail paints in place of
+// everything after its label column (run's runner tag grows into the full
+// command); at rest the tag is back. A row with no Column segment swaps its
+// whole left. Frame height never changes.
+func TestCursorRowDetailReplacesTheTailInline(t *testing.T) {
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "start", Left: []protocol.PickSegment{{Text: "start", Tone: "text", Column: true}, {Text: "  node", Tone: "dimmer"}},
+				Detail: []protocol.PickSegment{{Text: "  node scripts/start-lite.js --watch", Tone: "dim"}}},
+			{Value: "clean", Left: []protocol.PickSegment{{Text: "clean", Tone: "text", Column: true}, {Text: "  rm", Tone: "dimmer"}},
+				Detail: []protocol.PickSegment{{Text: "  rm -rf build", Tone: "dim"}}},
+			{Value: "bare", Left: []protocol.PickSegment{{Text: "bare", Tone: "text"}}, Detail: []protocol.PickSegment{{Text: "expanded bare", Tone: "dim"}}},
+		},
+	}
+	m := New(req)
+	m.width = 80
+	lines := strings.Split(ansi.Strip(render(m)), "\n")
+	if len(lines) != 8 {
+		t.Fatalf("no extra chrome for detail: %d lines", len(lines))
+	}
+	if !strings.HasPrefix(lines[3], "▌ start  node scripts/start-lite.js --watch") {
+		t.Fatalf("the cursor row's tail is its detail: %q", lines[3])
+	}
+	if !strings.HasPrefix(lines[4], "  clean  rm") || strings.Contains(lines[4], "-rf") {
+		t.Fatalf("a resting row keeps its tag: %q", lines[4])
+	}
+
+	m.hover = 1
+	lines = strings.Split(ansi.Strip(render(m)), "\n")
+	if !strings.HasPrefix(lines[4], "  clean  rm -rf build") {
+		t.Fatalf("a hovered row expands too: %q", lines[4])
+	}
+
+	m.cursor, m.hover = 2, -1
+	lines = strings.Split(ansi.Strip(render(m)), "\n")
+	if !strings.HasPrefix(lines[5], "▌ expanded bare") {
+		t.Fatalf("with no label column the whole left swaps: %q", lines[5])
+	}
+}
+
+// TestColumnSegmentsAlignAcrossRows pins the label column: a segment
+// marked Column pads to the widest Column segment in the list (capped at
+// labelColumnCap), so whatever follows it starts at one shared column on
+// every row. A label past the cap pads nothing and pushes only its own
+// hint. Match highlights on text after the label still land on the right
+// runes, and a row with no Column segment is untouched.
+func TestColumnSegmentsAlignAcrossRows(t *testing.T) {
+	row := func(label, hint string) protocol.PickRow {
+		return protocol.PickRow{Value: label, Left: []protocol.PickSegment{
+			{Text: label, Tone: "text", Column: true},
+			{Text: "  " + hint, Tone: "dim"},
+		}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			row("start", "pnpm run dev"),
+			row("type-check:lite", "scripts/typecheck-lite.sh"),
+			row("a-name-well-past-the-twenty-eight-cap", "node x.js"),
+			{Value: "plain", Left: []protocol.PickSegment{{Text: "plain", Tone: "text"}}},
+		},
+	}
+	m := New(req)
+	m.width = 90
+	lines := strings.Split(ansi.Strip(render(m)), "\n")
+	hintCol := func(l, hint string) int {
+		i := strings.Index(l, hint)
+		if i < 0 {
+			return -1
+		}
+		return len([]rune(l[:i]))
+	}
+	if a, b := hintCol(lines[3], "pnpm run dev"), hintCol(lines[4], "scripts/typecheck-lite.sh"); a != b || a < 0 {
+		t.Fatalf("hints should start at one shared column: %d vs %d\n%s\n%s", a, b, lines[3], lines[4])
+	}
+	// gutter(1) + separator(1) + 15 ("type-check:lite") + the hint's own two-space lead.
+	if want := 2 + 15 + 2; hintCol(lines[3], "pnpm run dev") != want {
+		t.Fatalf("the column is the widest label under the cap: hint at %d, want %d: %q", hintCol(lines[3], "pnpm run dev"), want, lines[3])
+	}
+	if got := hintCol(lines[5], "node x.js"); got != 2+len("a-name-well-past-the-twenty-eight-cap")+2 {
+		t.Fatalf("a label past the cap pads nothing: %q", lines[5])
+	}
+	if !strings.HasPrefix(lines[6], "  plain") || strings.TrimRight(lines[6], " ") != "  plain" {
+		t.Fatalf("a row with no column segment is untouched: %q", lines[6])
+	}
+
+	// A query matching the hint highlights the hint's runes, not the pad.
+	for _, r := range "dev" {
+		next, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		m = next.(*Model)
+	}
+	frame := strings.Split(render(m), "\n")
+	var startLine string
+	for _, l := range frame {
+		if strings.Contains(ansi.Strip(l), "pnpm run dev") {
+			startLine = l
+		}
+	}
+	if startLine == "" || strings.Count(startLine, cyanSGR) != 3 || strings.Contains(startLine, cyanSGR+";48;2;55;40;75m ") {
+		t.Fatalf("the highlight should land on the hint's three runes, never on the pad: %q", startLine)
+	}
+}
+
 // TestGroupedRowsIndentUnderTheirHeader pins the grouped list's rhythm: a
 // header sits at the gutter's own indent ("  PRESETS") and every row of a
 // grouped list steps in two more columns, cursor row included, so entries
@@ -2969,6 +3149,82 @@ func TestMouseClickMarkerCellTogglesSelectionAndFocusesRow(t *testing.T) {
 
 // TestMouseRightClickOpensMenuAtRow pins right-click: it focuses the row
 // under the pointer and opens the same overlay ctrl-k does.
+// TestRightClickMenuAnchorsToThePointer pins the context-menu placement:
+// a menu opened by right-click puts its top-left corner at the click cell
+// (the pointer sits on the box's corner, as any desktop context menu),
+// slides left/up only as far as needed to stay inside the frame, and a
+// ctrl-k menu stays centered. Hit zones follow wherever the box lands.
+func TestRightClickMenuAnchorsToThePointer(t *testing.T) {
+	rows := make([]protocol.PickRow, 20)
+	for i := range rows {
+		v := fmt.Sprintf("row%02d", i)
+		rows[i] = protocol.PickRow{Value: v, Left: []protocol.PickSegment{{Text: v, Tone: "text"}}}
+	}
+	req := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version, Rows: rows,
+		Actions: []protocol.PickAction{
+			{ID: "editor", Label: "open in editor", Key: "ctrl-o", Scope: "item"},
+			{ID: "cd-here", Label: "cd here", Key: "ctrl-h", Scope: "global"},
+		},
+	}
+	open := func(x, y int) *Model {
+		m := New(req)
+		next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+		m = next.(*Model)
+		renderView(m)
+		next, _ = m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseRight})
+		m = next.(*Model)
+		if m.modal == nil {
+			t.Fatalf("setup: right-click at (%d,%d) should open the menu", x, y)
+		}
+		renderView(m)
+		return m
+	}
+
+	// Plenty of room: the box's corner is the click cell.
+	m := open(30, 5)
+	if m.modalBox.x0 != 30 || m.modalBox.y0 != 5 {
+		t.Fatalf("box should anchor at the pointer, got x0=%d y0=%d", m.modalBox.x0, m.modalBox.y0)
+	}
+	// The recorded row zones sit inside the anchored box, not at the center.
+	firstY := -1
+	for y := range m.modalZones.byY {
+		if firstY < 0 || y < firstY {
+			firstY = y
+		}
+	}
+	if firstY < 5 || firstY >= m.modalBox.y1 {
+		t.Fatalf("menu row zones should sit inside the anchored box (y0=5, y1=%d), first at %d", m.modalBox.y1, firstY)
+	}
+	if _, ok := m.modalZones.at(31, firstY); !ok {
+		t.Fatalf("a menu row should be clickable one column inside the anchored box's left border")
+	}
+
+	// At the right edge the box slides left just enough to fit; it still
+	// opens downward from the pointer's row while there is room.
+	m = open(98, 10)
+	if m.modalBox.x1 != 100 || m.modalBox.y0 != 10 || m.modalBox.y1 > 24 {
+		t.Fatalf("box should hug the right edge and keep the pointer row: x1=%d y0=%d y1=%d", m.modalBox.x1, m.modalBox.y0, m.modalBox.y1)
+	}
+	// On the last visible row it slides up to the frame's bottom edge instead.
+	m = open(98, 21)
+	if m.modalBox.y1 != 24 || m.modalBox.y0 >= 21 {
+		t.Fatalf("box should hug the bottom edge: y0=%d y1=%d", m.modalBox.y0, m.modalBox.y1)
+	}
+
+	// ctrl-k: centered, as before.
+	c := New(req)
+	next, _ := c.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	c = next.(*Model)
+	next, _ = c.Update(tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k'})
+	c = next.(*Model)
+	renderView(c)
+	w := c.modalBox.x1 - c.modalBox.x0
+	if want := (100 - w) / 2; c.modalBox.x0 != want {
+		t.Fatalf("ctrl-k menu should stay centered: x0=%d want %d", c.modalBox.x0, want)
+	}
+}
+
 func TestMouseRightClickOpensMenuAtRow(t *testing.T) {
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
@@ -3012,11 +3268,11 @@ func modalRowCell(m *Model, index int) (x, y int, ok bool) {
 
 // TestModalMouseMotionHoversAndRendersHoverBg pins mouse hover inside the
 // overlay: motion over a non-cursor menu row sets modalHover and paints that
-// row with HoverBg, the same #251E3D the base list hover uses. Fails on the
+// row with HoverBg, the same token the base list hover uses. Fails on the
 // pre-fix mouse-inert modal (motion early-returned, modalRowLine had no hover
 // tone at all).
 func TestModalMouseMotionHoversAndRendersHoverBg(t *testing.T) {
-	const hoverBgSGR = "48;2;37;30;61"
+	hoverBgSGR := bgSGR(theme.HoverBg)
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Rows: []protocol.PickRow{{Value: "a", Left: []protocol.PickSegment{{Text: "a"}}}},
@@ -4651,10 +4907,10 @@ func TestFallbackTerminalNeverLatchesHeld(t *testing.T) {
 }
 
 // TestHoverRowRendersHoverBg pins the hover-SGR fix's list-row half: a
-// hovered non-cursor row carries HoverBg #251E3D, the exact 48;2;37;30;61
+// hovered non-cursor row carries HoverBg, the exact SGR bytes
 // background the Mouse board specifies.
 func TestHoverRowRendersHoverBg(t *testing.T) {
-	const hoverBgSGR = "48;2;37;30;61"
+	hoverBgSGR := bgSGR(theme.HoverBg)
 	req := protocol.PickRequest{
 		T: "pick", Protocol: protocol.Version,
 		Rows: []protocol.PickRow{

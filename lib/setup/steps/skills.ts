@@ -109,19 +109,10 @@ function isUnset(key: string): boolean {
   return getSetting(key).value === undefined;
 }
 
-function sameArray(a: string[], b: unknown): boolean {
-  return Array.isArray(b) && b.length === a.length && b.every((v, i) => v === a[i]);
-}
-
 async function boardKeysRun(ctx: ApplyContext): Promise<StepOutcome> {
   const written: string[] = [];
   const repoNames = trackingRepoNames(ctx);
   const root = getSetting<string[]>("rt.repoRoots").value?.[0];
-
-  if (writable(ctx, "board.rtRepos") && !sameArray(repoNames, getSetting<string[]>("board.rtRepos").value)) {
-    setSetting("board.rtRepos", repoNames, "machine");
-    written.push("board.rtRepos");
-  }
 
   if (writable(ctx, "board.cwds") && isUnset("board.cwds")) {
     if (root && repoNames[0]) {

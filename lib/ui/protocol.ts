@@ -149,6 +149,8 @@ export interface PickSegment {
   tone?: string;
   hex?: string;
   bold?: boolean;
+  /** A label segment: the picker pads it to the widest column segment in the list (capped), so the hint after it starts at one shared column on every row. */
+  column?: boolean;
 }
 
 /** A button-like row: leads with `glyph` (or the picker's generic action glyph) and wears the action tokens instead of the entry ones. */
@@ -160,6 +162,14 @@ export interface PickRow {
   right?: PickSegment[];
   match?: string;
   group?: string;
+  /** "action": a button-like row (run's "Launch all"). See PickRowKind. */
+  kind?: PickRowKind;
+  /** An action row's leading icon, a Nerd Font symbol by convention; omitted falls back to the picker's generic action glyph. */
+  glyph?: string;
+  /** An action row's tone (segment tone vocabulary) for glyph, text and cursor bar; its highlight derives from it. Omitted is the picker's default accent (lav). */
+  accent?: string;
+  /** The row's expanded tail: while it is the cursor row or hovered, these segments paint in place of everything after its label (the column segment, or the whole left when there is none). */
+  detail?: PickSegment[];
   /** Marks a row whose primary action can run with extra arguments; render.go's alt-held with-args chrome keys off this. */
   withArgs?: boolean;
 }

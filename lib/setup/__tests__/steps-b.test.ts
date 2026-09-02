@@ -6,6 +6,7 @@ import { HELPERS_DIR, RT_BUNDLE_PATH, __test__ as bundleLayoutTest } from "../..
 import { getDaemonConfig } from "../../daemon-config.ts";
 import { updateRepoIndex } from "../../repo-index.ts";
 import { getSetting } from "../../settings/resolve.ts";
+import { getDef } from "../../settings/registry.ts";
 import { setSetting } from "../../settings/write.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
 import type { RelayClient } from "../../team/relay-client.ts";
@@ -661,15 +662,15 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       return { repoName, repoDir };
     }
 
-    test("writes board.rtRepos from registered repos whose identity is tracked; read back", async () => {
+    test("never writes board.rtRepos: the board derives it from board.projects and board.gitlabHost", async () => {
       const { repoName } = seedTrackedRepo();
       setSetting("rt.repoRoots", [home], "machine");
       const p = fakeProbes({ home });
       const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: [`gitlab.com/acme/${repoName}`], marketplaces: [], plugins: [], remote: null } });
 
       const outcome = await boardKeysStep.run(ctx);
-      expect(detailOf(outcome)).toContain("board.rtRepos");
-      expect(getSetting<string[]>("board.rtRepos").value).toEqual([repoName]);
+      expect(detailOf(outcome)).not.toContain("board.rtRepos");
+      expect(getDef("board.rtRepos")).toBeUndefined();
     });
 
     test("writes board.cwds/gitq.board/gitq.workSlots once, then skips them once set (idempotent latch)", async () => {
@@ -695,23 +696,11 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(getSetting("board.cwds").value).toEqual({ review: "/custom", respond: "/custom", doctor: "/custom" });
     });
 
-    test("idempotent re-run: board.rtRepos is not rewritten when the computed value is unchanged", async () => {
-      const { repoName } = seedTrackedRepo();
-      setSetting("rt.repoRoots", [home], "machine");
-      const p = fakeProbes({ home });
-      const snapshot = { slug: "acme", integrations: {}, trackingIdentities: [`gitlab.com/acme/${repoName}`], marketplaces: [], plugins: [], remote: null };
-
-      await boardKeysStep.run(makeCtx(p, { snapshot }).ctx);
-      const outcome = await boardKeysStep.run(makeCtx(p, { snapshot }).ctx);
-      expect(detailOf(outcome)).not.toContain("board.rtRepos");
-    });
-
-    test("no tracked repos and no repo root: board.rtRepos/gitq.board still write (empty), board.cwds/gitq.workSlots honestly left unset, never crashes", async () => {
+    test("no tracked repos and no repo root: gitq.board still writes (empty), board.cwds/gitq.workSlots honestly left unset, never crashes", async () => {
       const p = fakeProbes({ home });
       const { ctx, logs } = makeCtx(p);
       const outcome = await boardKeysStep.run(ctx);
-      expect(outcome).toEqual({ state: "done", detail: "wrote: board.rtRepos, gitq.board" });
-      expect(getSetting<string[]>("board.rtRepos").value).toEqual([]);
+      expect(outcome).toEqual({ state: "done", detail: "wrote: gitq.board" });
       expect(getSetting("gitq.board").value).toEqual({ repos: [], port: 11008 });
       expect(getSetting("board.cwds").value).toBeUndefined();
       expect(getSetting("gitq.workSlots").value).toBeUndefined();
