@@ -24,6 +24,7 @@
 
 import { join } from "path";
 import { bundledToolPath } from "../../deps/resolve.ts";
+import { getSetting } from "../../settings/resolve.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import { toFailedOutcome } from "./step-utils.ts";
@@ -75,6 +76,11 @@ async function adoptBoard(ctx: ApplyContext, deckBin: string): Promise<AdoptResu
     return { kind: "failed", outcome: { state: "failed", detail: "deck stopped responding before it could adopt board", remedy: "Start deck, then Retry" } };
   }
   return { kind: "failed", outcome: { state: "failed", detail: frozen ?? (result.stderr.trim() || result.stdout.trim() || `deck adopt exited ${result.code}`), remedy: "Retry" } };
+}
+
+function gitqHasRepos(): boolean {
+  const repos = (getSetting<{ repos?: unknown }>("gitq.board").value ?? {}).repos;
+  return Array.isArray(repos) && repos.length > 0;
 }
 
 /** Idempotent: repointing at the same command/workingDirectory a second time is just another PATCH deck accepts. Skips honestly, never pointing the record at a binary that doesn't exist, when board isn't bundled yet. */
@@ -170,7 +176,9 @@ async function deckManagedRun(ctx: ApplyContext): Promise<StepOutcome> {
   if (adopted.kind === "failed") return adopted.outcome;
 
   const boardDetail = adopted.kind === "skip" ? `board not adopted (${adopted.detail})` : `board adopted (${await repointBoard(ctx, port)})`;
-  const gitqDetail = await registerManagedApp(ctx, deckBin, "gitq", ["board"]);
+  // `gitq board` exits 1 on an empty repo list and deck's KeepAlive would
+  // loop it forever; it is registered once a machine has repos for it.
+  const gitqDetail = gitqHasRepos() ? await registerManagedApp(ctx, deckBin, "gitq", ["board"]) : "gitq not registered: no gitq.board repos yet";
   const consoleDetail = await registerManagedApp(ctx, deckBin, "console");
   const chatDetail = await registerManagedApp(ctx, deckBin, "chat");
 

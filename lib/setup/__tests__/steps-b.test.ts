@@ -382,7 +382,26 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(p.calls.exec).toEqual([]);
     });
 
+    test("gitq bundled but no gitq.board repos yet: gitq is not handed to deck (it exits 1 on an empty repo list, and launchd would loop it)", async () => {
+      const p = bundledProbes({
+        tools: ["gitq", "board", "console", "chat"],
+        overrides: {
+          files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
+          fetch: healthyFetch(4100),
+          exec: async () => ok(""),
+        },
+      });
+      const { ctx } = makeCtx(p);
+
+      const outcome = await deckManagedStep.run(ctx);
+      expect(outcome.state).toBe("done");
+      expect(detailOf(outcome)).toContain("gitq not registered: no gitq.board repos yet");
+      expect(p.calls.exec.some((argv) => argv[1] === "add" && argv[2] === "gitq")).toBe(false);
+      expect(p.calls.exec.some((argv) => argv[1] === "add" && argv[2] === "console")).toBe(true);
+    });
+
     test("healthy + board bundled: adopts, repoints via PATCH, registers gitq, console, chat as mattstack-managed", async () => {
+      setSetting("gitq.board", { repos: ["acme/acme-dev"] }, "machine");
       const p = bundledProbes({
         tools: ["gitq", "board", "console", "chat"],
         overrides: {
@@ -470,6 +489,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     test("gitq not bundled: logged and reported, board portion still completes, never fatal", async () => {
+      setSetting("gitq.board", { repos: ["acme/acme-dev"] }, "machine");
       // "board" only, no "gitq" — bundledToolPath(p, "gitq") has nothing to find.
       const p = bundledProbes({
         tools: ["board"],
@@ -492,6 +512,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     test("gitq's real 'deck add' is a stub (MAT-384): a driver-fatal response is logged and tallied, never fails the run", async () => {
+      setSetting("gitq.board", { repos: ["acme/acme-dev"] }, "machine");
       const p = bundledProbes({
         tools: ["gitq", "board"],
         overrides: {
@@ -508,6 +529,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     test("gitq duplicate registration answers deck's frozen 'name taken', not '/already/' — recognized as already-registered, not a failure", async () => {
+      setSetting("gitq.board", { repos: ["acme/acme-dev"] }, "machine");
       const p = bundledProbes({
         tools: ["gitq", "board"],
         overrides: {
@@ -526,6 +548,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     test("fresh install (no legacy 'mrs'): adopt answers 'unknown app' — skips the board leg honestly, run continues past deck.managed", async () => {
+      setSetting("gitq.board", { repos: ["acme/acme-dev"] }, "machine");
       const p = bundledProbes({
         tools: ["gitq", "board"],
         overrides: {
@@ -549,6 +572,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     test("idempotent re-run: second pass's adopt/repoint/gitq-add all still succeed against deck's real idempotent replies", async () => {
+      setSetting("gitq.board", { repos: ["acme/acme-dev"] }, "machine");
       let addCalls = 0;
       const p = bundledProbes({
         tools: ["gitq", "board"],
