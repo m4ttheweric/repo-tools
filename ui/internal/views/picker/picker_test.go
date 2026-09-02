@@ -1071,6 +1071,45 @@ func TestNoMatchState(t *testing.T) {
 // each group's first row, never repeats for the group's later rows, and the
 // cursor -- which indexes m.matches, not the printed lines -- still lands on
 // the first real row rather than a header.
+// TestGroupedRowsIndentUnderTheirHeader pins the grouped list's rhythm: a
+// header sits at the gutter's own indent ("  PRESETS") and every row of a
+// grouped list steps in two more columns, cursor row included, so entries
+// read as children of the header rather than as peers of it. An ungrouped
+// list keeps its rows flush, and right-pinned segments still end at the
+// same edge either way.
+func TestGroupedRowsIndentUnderTheirHeader(t *testing.T) {
+	grouped := protocol.PickRequest{
+		T: "pick", Protocol: protocol.Version,
+		Rows: []protocol.PickRow{
+			{Value: "web", Group: "packages", Left: []protocol.PickSegment{{Text: "web", Tone: "text"}}, Right: []protocol.PickSegment{{Text: "apps/web", Tone: "dimmer"}}},
+			{Value: "ui", Group: "packages", Left: []protocol.PickSegment{{Text: "ui", Tone: "text"}}},
+		},
+	}
+	m := New(grouped)
+	m.width = 40
+	lines := strings.Split(ansi.Strip(render(m)), "\n")
+	if lines[3] != "  PACKAGES" {
+		t.Fatalf("header at the gutter indent: %q", lines[3])
+	}
+	if !strings.HasPrefix(lines[4], "▌   web") {
+		t.Fatalf("cursor row should indent two columns under its header: %q", lines[4])
+	}
+	if !strings.HasPrefix(lines[5], "    ui") {
+		t.Fatalf("a plain row should indent the same: %q", lines[5])
+	}
+	if !strings.HasSuffix(strings.TrimRight(lines[4], " "), "apps/web") || lipgloss.Width(lines[4]) != 40 {
+		t.Fatalf("right segments still pin to the row's edge: %q", lines[4])
+	}
+
+	flat := New(protocol.PickRequest{T: "pick", Protocol: protocol.Version, Rows: []protocol.PickRow{
+		{Value: "web", Left: []protocol.PickSegment{{Text: "web", Tone: "text"}}},
+	}})
+	flat.width = 40
+	if got := strings.Split(ansi.Strip(render(flat)), "\n")[3]; !strings.HasPrefix(got, "▌ web") {
+		t.Fatalf("an ungrouped list stays flush: %q", got)
+	}
+}
+
 func TestGroupHeadersRenderAboveFirstRowOfEachGroup(t *testing.T) {
 	req := protocol.PickRequest{
 		T:        "pick",

@@ -98,14 +98,15 @@ func (z hitZones) at(x, y int) (mouseZone, bool) {
 }
 
 // rowZones is the pair of zones one rendered row line contributes: the
-// marker cell (multi-select only, columns [2,4) -- gutter then a blank
-// column then the 2-wide glyph rowLineWidth always paints there) ahead of
-// the row body spanning the row's full width, so a marker click resolves
+// marker cell (multi-select only: gutter, a blank column, the group indent
+// if any, then the 2-wide glyph rowLineWidth paints there) ahead of the
+// row body spanning the row's full width, so a marker click resolves
 // before the row-body click underneath it.
 func rowZones(m *Model, matchIndex, width int) []mouseZone {
 	zones := make([]mouseZone, 0, 2)
 	if m.multiMode() {
-		zones = append(zones, mouseZone{kind: zoneMarker, xStart: 2, xEnd: 4, row: matchIndex})
+		start := 2 + m.rowIndent()
+		zones = append(zones, mouseZone{kind: zoneMarker, xStart: start, xEnd: start + 2, row: matchIndex})
 	}
 	zones = append(zones, mouseZone{kind: zoneRow, xStart: 0, xEnd: width, row: matchIndex})
 	return zones

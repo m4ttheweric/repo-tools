@@ -443,10 +443,25 @@ func highlightPositions(m *Model, leftPlain string) []int {
 // matched-character highlight, spacer, and right segments pinned to the far
 // edge. The width is explicit (rather than always m.width) because a
 // scrolling list shrinks it by one column to make room for the thumb rail.
+// groupIndent is how far a grouped list's rows step in past the gutter, so
+// entries read as children of the faint header above them (which sits at
+// the gutter's own indent) rather than as its peers.
+const groupIndent = 2
+
+// rowIndent is the columns a row's content steps in past the gutter: the
+// group indent for a grouped list, nothing otherwise.
+func (m *Model) rowIndent() int {
+	if m.grouped {
+		return groupIndent
+	}
+	return 0
+}
+
 func rowLineWidth(m *Model, i int, width int) string {
 	row := m.req.Rows[m.matches[i].Index]
 	cursorRow := i == m.cursor
 	hoverRow := !cursorRow && i == m.hover
+	indent := m.rowIndent()
 
 	rowBg := onBg
 	gutterGlyph := " "
@@ -496,9 +511,10 @@ func rowLineWidth(m *Model, i int, width int) string {
 	}
 	rightWidth := lipgloss.Width(rightPlain)
 
-	// Budget: 1 gutter column + 1 separator column, plus a gap column ahead
-	// of any right segments so they never touch the left text directly.
-	leftBudget := width - 2 - selMarkerWidth - rightWidth
+	// Budget: 1 gutter column + 1 separator column + the group indent, plus
+	// a gap column ahead of any right segments so they never touch the left
+	// text directly.
+	leftBudget := width - 2 - indent - selMarkerWidth - rightWidth
 	if rightWidth > 0 {
 		leftBudget--
 	}
@@ -515,7 +531,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 		usedLeftWidth++
 	}
 
-	spacer := width - 2 - selMarkerWidth - usedLeftWidth - rightWidth
+	spacer := width - 2 - indent - selMarkerWidth - usedLeftWidth - rightWidth
 	if spacer < 0 {
 		spacer = 0
 	}
@@ -525,7 +541,7 @@ func rowLineWidth(m *Model, i int, width int) string {
 		rightRendered = lipgloss.NewStyle().Background(theme.Lav).Foreground(theme.Bg).Bold(true).Render(rightPlain)
 	}
 
-	return gutter + rowBg.Render(" ") + selMarker + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
+	return gutter + rowBg.Render(strings.Repeat(" ", 1+indent)) + selMarker + leftRendered + rowBg.Render(strings.Repeat(" ", spacer)) + rightRendered
 }
 
 // renderHighlightedLeft re-styles matched runes cyan bold while walking the
