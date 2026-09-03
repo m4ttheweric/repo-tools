@@ -22,6 +22,7 @@ import {
   type SnapshotHandle,
   type SnapshotStatus,
 } from "./home-snapshot.ts";
+import { clampPullIntervalSec, PULL_INTERVAL_FALLBACK_SEC } from "./snapshot-interval.ts";
 
 export interface TeamSnapshotSettings extends HomeSnapshotSettings {
   pullIntervalSec: number;
@@ -55,20 +56,6 @@ export interface TeamSnapshotsHandle {
 
 const RESCAN_DEBOUNCE_MS = 2000;
 
-/** Registry default for `rt.teamSnapshot.pullIntervalSec`, and the fallback a non-numeric setting degrades to, so a corrupt value lands on what a fresh machine starts with. */
-const PULL_INTERVAL_FALLBACK_SEC = 300;
-
-/**
- * The engine's own `clampSettings` rule, applied to the one field it does not
- * own. `rt.teamSnapshot` is hand-editable jsonc, so `pullIntervalSec` can
- * arrive as a string or null, and `Math.max(30, NaN)` is NaN: a NaN delay
- * makes `setTimeout` fire immediately, and both this module's rescan and the
- * engine's `.finally(schedulePull)` re-arm themselves, so a non-numeric
- * interval would become a hot `git fetch` loop rather than a slow one.
- */
-function clampPullIntervalSec(value: number): number {
-  return Number.isFinite(value) ? Math.max(30, value) : PULL_INTERVAL_FALLBACK_SEC;
-}
 
 function originOf(dir: string): string | null {
   try {

@@ -739,6 +739,14 @@ describe("teamSyncRow", () => {
     expect(r?.recheck).toBe("on-activate");
   });
 
+  test("a hand-edited pullIntervalSec cannot break staleness: an out-of-range or non-numeric value still reads a fresh clone as ready and a dead one as needs-you", async () => {
+    const clone = (lastPullAt: number) => [{ slug: "acme", lastPullAt, pushPending: false, lastPushError: null, conflicted: null } as never];
+    for (const bad of [0, -5, Number.NaN, "abc" as unknown as number]) {
+      expect((await teamSyncRow(["acme"], async () => clone(now() - 60_000), now, bad))?.status).toBe("ready");
+      expect((await teamSyncRow(["acme"], async () => clone(now() - 86_400_000), now, bad))?.status).toBe("needs-you");
+    }
+  });
+
   test("a clone the daemon isn't watching is named directly", async () => {
     const r = await teamSyncRow(["acme"], async () => [], now, 300);
     expect(r?.status).toBe("needs-you");

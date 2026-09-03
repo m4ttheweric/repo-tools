@@ -12,6 +12,7 @@ import { join } from "path";
 import { RT_BUNDLE_PATH } from "../../bundle-layout.ts";
 import { activeLaunchdLabel, isDaemonInstalled } from "../../daemon-config.ts";
 import type { TeamSnapshotEntry, TeamSnapshotSettings } from "../../daemon/team-snapshots.ts";
+import { clampPullIntervalSec, PULL_INTERVAL_FALLBACK_SEC } from "../../daemon/snapshot-interval.ts";
 import { currentMode, resolveIntendedMode } from "../../dev-mode.ts";
 import { appBundlePath, linkPath } from "../../deps/resolve.ts";
 import { localBinDir, shimReport, staleIntercepts } from "../../endpoint/shim.ts";
@@ -476,7 +477,7 @@ export async function teamSyncRow(
   const entries = await readStatus();
   if (entries === null) return row({ ...base, status: "missing", detail: "rt daemon not reachable; team clones sync once it is running" });
 
-  const staleMs = pullIntervalSec * 2 * 1000;
+  const staleMs = clampPullIntervalSec(pullIntervalSec) * 2 * 1000;
   const problems: string[] = [];
   for (const slug of slugs) {
     const e = entries.find((x) => x.slug === slug);
@@ -524,7 +525,7 @@ export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Ro
       return res.data as TeamSnapshotEntry[];
     },
     () => p.now().getTime(),
-    getSetting<TeamSnapshotSettings>("rt.teamSnapshot").value?.pullIntervalSec ?? 300,
+    getSetting<TeamSnapshotSettings>("rt.teamSnapshot").value?.pullIntervalSec ?? PULL_INTERVAL_FALLBACK_SEC,
   );
 
   return [
