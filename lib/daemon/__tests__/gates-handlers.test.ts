@@ -95,7 +95,7 @@ describe("gate:answer", () => {
     await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "console" });
     const l = await handlers["gate:answer"]({ id, answers: { q: "b" }, by: "pane" });
     expect(l.ok).toBe(true);
-    if (l.ok) { expect((l.data as any).conflict).toBe(true); expect((l.data as any).row.answer?.by).toBe("console"); }
+    if (l.ok) { expect(l.data.conflict).toBe(true); expect(l.data.row.answer?.by).toBe("console"); }
   });
 
   test("note-carrying answer values round-trip (the spec's one free-text channel)", async () => {
@@ -164,7 +164,7 @@ describe("gate:wait", () => {
     ac.abort();
     const r = await p;
     expect(r.ok).toBe(true);
-    if (r.ok) expect((r.data as any).status).toBe("timeout");
+    if (r.ok) expect(r.data.status).toBe("timeout");
   });
 
   test("resolves immediately when the gate is already answered", async () => {
@@ -173,7 +173,7 @@ describe("gate:wait", () => {
     await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "pane" });
     const r = await handlers["gate:wait"]({ id });
     expect(r.ok).toBe(true);
-    if (r.ok) { expect((r.data as any).status).toBe("answered"); expect((r.data as any).row.id).toBe(id); }
+    if (r.ok) { expect(r.data.status).toBe("answered"); expect(r.data.row!.id).toBe(id); }
   });
 });
 
@@ -183,7 +183,7 @@ describe("gate:list / gate:park / gate:close", () => {
     await open(handlers);
     const r = await handlers["gate:list"]({ open: true, subjectPrefix: "run:", kind: "clarify" });
     expect(r.ok).toBe(true);
-    if (r.ok) expect((r.data as any).gates).toHaveLength(1);
+    if (r.ok) expect(r.data.gates).toHaveLength(1);
   });
 
   test("park succeeds on an open gate, fails with a reason otherwise", async () => {
@@ -215,8 +215,8 @@ describe("gate:subscribe / gate:unsubscribe", () => {
     const subId = (sub as any).data.id;
     const removed = await handlers["gate:unsubscribe"]({ id: subId });
     expect(removed.ok).toBe(true);
-    if (removed.ok) expect((removed.data as any).removed).toBe(true);
+    if (removed.ok) expect(removed.data.removed).toBe(true);
     const removedAgain = await handlers["gate:unsubscribe"]({ id: subId });
-    if (removedAgain.ok) expect((removedAgain.data as any).removed).toBe(false);
+    if (removedAgain.ok) expect(removedAgain.data.removed).toBe(false);
   });
 });
