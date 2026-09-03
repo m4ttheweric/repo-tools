@@ -437,15 +437,16 @@ export function gateAnswer(
   return rtCommand<Commands["gate:answer"]["data"]>("gate:answer", { id: a.id, answers: a.answers, by: a.by }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
-/** The daemon clamps its own wait to 240s (gates-store.ts); this budget sits
-    above that clamp so the client outlasts it rather than racing it. */
+/** Daemon clamps its own wait to 240s (gates-store.ts); the client abort
+    must outlive that cap, same +10s buffer as commands/events.ts's
+    IPC_TIMEOUT_MS over DAEMON_WAIT_MS. */
 export function gateWait(
   a: Commands["gate:wait"]["payload"],
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["gate:wait"]["data"]>> {
   const payload: Record<string, unknown> = { id: a.id };
   if (a.waitMs !== undefined) payload.waitMs = a.waitMs;
-  return rtCommand<Commands["gate:wait"]["data"]>("gate:wait", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 245_000 });
+  return rtCommand<Commands["gate:wait"]["data"]>("gate:wait", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 250_000 });
 }
 
 export function gateList(
