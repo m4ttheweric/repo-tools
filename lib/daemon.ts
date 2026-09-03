@@ -68,6 +68,7 @@ import { deriveFailure } from "./daemon/failure.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
+import { startTeamSnapshots } from "./daemon/team-snapshots.ts";
 import { startAgentStatusPoller } from "./daemon/agent-status-poller.ts";
 import {
   initFreshness,
@@ -278,6 +279,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let worktreeReconciler: ReturnType<typeof createWorktreeReconciler>;
   let refreshCache: () => Promise<void>;
   let homeSnapshot: ReturnType<typeof startHomeSnapshot>;
+  let teamSnapshots: ReturnType<typeof startTeamSnapshots>;
   let agentStatusPoller: ReturnType<typeof startAgentStatusPoller>;
   let healthSampler: ReturnType<typeof createHealthSampler>;
   let healthInterval: ReturnType<typeof setInterval> | null = null;
@@ -712,6 +714,14 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           broadcast: emit,
         });
 
+        // Never awaited here: `ready` only settles boot-time scan/watch
+        // arming and always resolves (never rejects), so awaiting it would
+        // just delay boot for no signal this path needs.
+        teamSnapshots = startTeamSnapshots({
+          log: loggerHandle.childLogger("team-snapshots"),
+          broadcast: emit,
+        });
+
         // Herdr agent-status transitions write no run event, so the mirror on
         // run summaries needs its own change detector.
         agentStatusPoller = startAgentStatusPoller({
@@ -747,6 +757,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         if (healthInterval) clearInterval(healthInterval);
         agentStatusPoller?.stop();
         homeSnapshot?.stop();
+        teamSnapshots?.stop();
         for (const h of sweepHandles) h.stop();
         cron?.dispose();
         hooksGuard?.closeAll();
@@ -786,6 +797,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           },
           eventsBus,
           homeSnapshot,
+          teamSnapshots,
           repos: {
             withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
             refreshWatchedRepos: hooksGuard.refreshWatchedRepos,

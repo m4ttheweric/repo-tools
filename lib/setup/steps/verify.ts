@@ -6,6 +6,7 @@
  */
 
 import { composePlan } from "../plan.ts";
+import { isTeamSyncFirstPullPending } from "../validators/rt-health.ts";
 import { rowsToChecks } from "../../../commands/verify.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
@@ -26,12 +27,18 @@ export function outcomeFromChecks(checks: CheckResult[]): StepOutcome {
   return { state: "done", detail: `${passed} check${passed === 1 ? "" : "s"} passed` };
 }
 
-/** Rows whose failure right after Install means "still booting", not "broken": services.start kickstarted the daemon seconds ago and its launchctl/worktrees sub-probes lag the ping. */
-const SETTLING_ROWS = new Set(["tool.daemon"]);
+/** Rows whose failure right after Install means "still booting", not "broken": services.start kickstarted the daemon seconds ago and its launchctl/worktrees sub-probes lag the ping, and a joiner's team.sync engine hasn't taken its first pull yet. */
+const SETTLING_ROWS = new Set(["tool.daemon", "team.sync"]);
 const SETTLE_ATTEMPTS = 5;
 const SETTLE_INTERVAL_MS = 3000;
 
-/** Re-reads the checks while the only critical failures are settling rows; any other failure is judged on the first read. */
+/**
+ * Re-reads the checks while the only critical failures are settling rows;
+ * any other failure is judged on the first read. team.sync is `required:
+ * false`, so it never shows up as a critical failure; its first-pull state
+ * instead reads as a `warn` the row marks itself, and that gets the same
+ * re-read budget so a fresh join isn't judged before the engine boots.
+ */
 export async function settleChecks(
   read: () => Promise<CheckResult[]>,
   opts: { attempts: number; intervalMs: number; sleep: (ms: number) => Promise<void> },
@@ -39,7 +46,12 @@ export async function settleChecks(
   let checks = await read();
   for (let attempt = 1; attempt < opts.attempts; attempt++) {
     const critical = checks.filter((c) => c.status === "fail" && c.severity === "critical");
-    if (critical.length === 0 || !critical.every((c) => SETTLING_ROWS.has(c.name))) break;
+    // A critical failure nothing here can settle is a verdict, not a lag, and
+    // must not be made to wait out team.sync's budget alongside it.
+    if (critical.some((c) => !SETTLING_ROWS.has(c.name))) break;
+    const teamSync = checks.find((c) => c.name === "team.sync");
+    const firstPullPending = teamSync?.status === "warn" && isTeamSyncFirstPullPending(teamSync.detail);
+    if (critical.length === 0 && !firstPullPending) break;
     await opts.sleep(opts.intervalMs);
     checks = await read();
   }

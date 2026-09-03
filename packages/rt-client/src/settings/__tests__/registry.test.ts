@@ -51,7 +51,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 25 keys are migrated:true", () => {
+    test("exactly 26 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
@@ -59,7 +59,7 @@ describe("settings/registry", () => {
           "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees", "rt.worktreeReadyApproval",
           "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
           "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.logLevel", "rt.integrations", "rt.hooks",
+          "rt.homeSnapshot", "rt.teamSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.logLevel", "rt.integrations", "rt.hooks",
           "rt.apiPort",
         ].sort(),
       );
@@ -155,6 +155,13 @@ describe("settings/registry", () => {
       });
     });
 
+    test("rt.teamSnapshot mirrors rt.homeSnapshot plus a pull interval", () => {
+      const def = getDef("rt.teamSnapshot");
+      expect(def?.scopes).toEqual(["machine"]);
+      expect(def?.merge).toBe("deep");
+      expect(def?.default).toEqual({ enabled: true, debounceSec: 20, pushDelaySec: 60, janitorThresholdHours: 6, janitorIntervalMin: 30, pullIntervalSec: 300 });
+    });
+
     test("the six migrated global singletons carry no legacyFile", () => {
       for (const key of [
         "rt.notifications",
@@ -214,13 +221,13 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 25 migrated:true keys and the 43 suite keys", () => {
+    test("has exactly the 26 migrated:true keys and the 43 suite keys", () => {
       const migratedFalseKeys: string[] = [];
       const migratedTrueKeys = [
         "rt.roles", "rt.intercepts", "rt.worktrees", "rt.worktreeReadyApproval", "rt.repoIdentityOverrides", "rt.repoRoots",
         "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
         "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.logLevel", "rt.integrations", "rt.hooks",
+        "rt.homeSnapshot", "rt.teamSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.logLevel", "rt.integrations", "rt.hooks",
         "rt.apiPort",
       ];
       const suiteKeys = [

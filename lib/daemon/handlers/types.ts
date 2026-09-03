@@ -115,7 +115,8 @@ export type TypedHandlers = {
 // before this map existed; hooks:status and notifications:peek join them
 // here because no caller for either was found.
 import type { Resolved, ListedSetting } from "../../../packages/rt-client/src/settings/resolve.ts";
-import type { SnapshotResult, SnapshotStatus } from "../home-snapshot.ts";
+import type { SnapshotResult, SnapshotStatus, PullResult } from "../home-snapshot.ts";
+import type { TeamSnapshotEntry } from "../team-snapshots.ts";
 
 export interface InternalCommands {
   "settings:get": { payload: { key?: string; repoIdentity?: string }; data: Resolved<unknown> };
@@ -125,5 +126,7 @@ export interface InternalCommands {
   "home:snapshot": { payload: Record<string, never>; data: SnapshotResult };
   "home:snapshot-status": { payload: Record<string, never>; data: SnapshotStatus };
   "hooks:status": { payload: { repo?: string }; data: unknown };
+  "team:snapshot-status": { payload: Record<string, never>; data: TeamSnapshotEntry[] };
+  "team:pull": { payload: { slug: string }; data: PullResult };
 }
 export type InternalCommandName = keyof InternalCommands;

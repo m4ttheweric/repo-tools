@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -10,7 +10,9 @@ import type { Owners } from "../../home/snapshot-owners.ts";
 import { openStateDb } from "../../state/db.ts";
 import { closeStateDb, getKvValue } from "../../state/index.ts";
 import { readHomePushRecord } from "../../home/push-record.ts";
-import { startHomeSnapshot, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
+import { rtDir } from "../../rt-paths.ts";
+import { fakeProbes } from "../../setup/__tests__/fakes.ts";
+import { homeSnapshotSpec, startHomeSnapshot, startSnapshot, teamScope, teamSnapshotSpec, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
 
 // ─── test doubles ────────────────────────────────────────────────────────────
 
@@ -62,12 +64,11 @@ function defaultResponders(opts: {
     (argv) => (argv[1] === "status") ? { stdout: statusZ, stderr: "", exitCode: 0 } : undefined,
     (argv) => (argv[1] === "add") ? { stdout: "", stderr: "", exitCode: addExit } : undefined,
     // git identity probe, checked right before either commit site runs...
-    // defaults to "configured" so every fixture not testing R043 stays green.
-    (argv) => (argv[1] === "config" && argv[2] === "user.name")
-      ? (hasIdentity ? { stdout: "rt test\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 1 })
-      : undefined,
-    (argv) => (argv[1] === "config" && argv[2] === "user.email")
-      ? (hasIdentity ? { stdout: "rt@example.test\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 1 })
+    // defaults to "resolvable" so every fixture not testing R043 stays green.
+    (argv) => (argv[1] === "var" && argv[2] === "GIT_COMMITTER_IDENT")
+      ? (hasIdentity
+        ? { stdout: "rt test <rt@example.test> 1700000000 +0000\n", stderr: "", exitCode: 0 }
+        : { stdout: "", stderr: "fatal: empty ident name (for <>) not allowed\n", exitCode: 128 })
       : undefined,
     (argv) => (gitVerb(argv) === "commit") ? { stdout: "", stderr: "", exitCode: commitExit } : undefined,
     // `hasRemote()`'s own probe — most fixtures simulate a repo that already has origin configured, matching every pre-existing push test's assumption.
@@ -722,7 +723,7 @@ describe("startHomeSnapshot — commit shapes", () => {
     expect(log.calls.filter((c) => c.level === "warn").length).toBe(1); // still just the one warn
   });
 
-  test("git identity present: commits normally, exactly one identity probe pair", async () => {
+  test("git identity resolvable: commits normally, exactly one `git var` probe and no config reads", async () => {
     const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
     const { deps } = baseDeps({ exec: execFn });
     const handle = startHomeSnapshot(deps);
@@ -730,8 +731,8 @@ describe("startHomeSnapshot — commit shapes", () => {
 
     const result = await handle.runNow("manual");
     expect(result.committed).toBe(true);
-    expect(execCalls.filter((c) => c[1] === "config" && c[2] === "user.name").length).toBe(1);
-    expect(execCalls.filter((c) => c[1] === "config" && c[2] === "user.email").length).toBe(1);
+    expect(execCalls.filter((c) => c[1] === "var" && c[2] === "GIT_COMMITTER_IDENT").length).toBe(1);
+    expect(execCalls.some((c) => c[1] === "config" && c[2] === "user.name")).toBe(false);
   });
 
   test("R043: a janitor-only cycle (no auto paths, one dirty claimed zone past threshold) with no git identity also skips 'no-git-identity', never attempts the janitor commit", async () => {
@@ -2003,4 +2004,592 @@ describe("startHomeSnapshot — local-only remote state", () => {
       handle.stop();
     }
   }, 15_000);
+});
+
+describe("startSnapshot: spec", () => {
+  test("homeSnapshotSpec is today's home values, and startSnapshot(homeSpec) equals startHomeSnapshot", async () => {
+    const spec = homeSnapshotSpec(FAKE_REPO_DIR);
+    expect(spec).toMatchObject({ id: "home", repoDir: FAKE_REPO_DIR, kvNamespace: "home-snapshot", eventPrefix: "home" });
+    expect(spec.scope).toBeUndefined();
+    expect(spec.pull).toBeUndefined();
+    expect(spec.tokenFor).toBeUndefined();
+
+    const { fn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, broadcasts } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot(spec, specDeps);
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.committed).toBe(true);
+    expect(broadcasts[0]?.type).toBe("home:snapshot");
+    expect(handle.status().id).toBe("home");
+    handle.stop();
+  });
+
+  test("a spec's eventPrefix and kvNamespace name the broadcasts and the kv rows", async () => {
+    const { fn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, broadcasts } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const spec = { ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team" as const };
+    const handle = startSnapshot(spec, specDeps);
+    await handle.ready;
+    await handle.runNow("manual");
+    expect(broadcasts[0]?.type).toBe("team:snapshot");
+    expect(getKvValue("team-snapshot:acme", "state", null, deps.db!)).not.toBeNull();
+    expect(getKvValue("home-snapshot", "state", null, deps.db!)).toBeNull();
+    handle.stop();
+  });
+
+  test("a scoped spec stages and commits only scoped paths, and the pathspec is exactly those paths", async () => {
+    const statusZ = " M mattstack/settings.team.jsonc\0 D .sops.yaml\0 M src/index.ts\0";
+    const { fn, calls } = makeFakeExec(defaultResponders({ statusZ }));
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot({ ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", scope: teamScope }, specDeps);
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.paths).toEqual(["mattstack/settings.team.jsonc", ".sops.yaml"]);
+    const add = calls.find((c) => gitVerb(c) === "add")!;
+    expect(add).toEqual(["git", "add", "-A", "--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
+    const commit = calls.find((c) => gitVerb(c) === "commit")!;
+    expect(commit.slice(-3)).toEqual(["--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
+    handle.stop();
+  });
+
+  test("a rename INTO the scope stages the new path only, never the out-of-scope source's deletion", async () => {
+    // `git mv src/foo.ts mattstack/foo.ts`: one porcelain record, new path
+    // first, origPath in the entry that follows it.
+    const statusZ = "R  mattstack/foo.ts\0src/foo.ts\0";
+    const { fn, calls } = makeFakeExec(defaultResponders({ statusZ }));
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot({ ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", scope: teamScope }, specDeps);
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.paths).toEqual(["mattstack/foo.ts"]);
+    expect(calls.find((c) => gitVerb(c) === "add")).toEqual(["git", "add", "-A", "--", "mattstack/foo.ts"]);
+    expect(calls.find((c) => gitVerb(c) === "commit")!.slice(-2)).toEqual(["--", "mattstack/foo.ts"]);
+    handle.stop();
+  });
+
+  test("a rename OUT of the scope still stages the in-scope deletion, so the clone does not stay dirty forever", async () => {
+    const statusZ = "R  src/foo.ts\0mattstack/foo.ts\0";
+    const { fn, calls } = makeFakeExec(defaultResponders({ statusZ }));
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot({ ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", scope: teamScope }, specDeps);
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.committed).toBe(true);
+    expect(result.paths).toEqual(["mattstack/foo.ts"]);
+    expect(calls.find((c) => gitVerb(c) === "add")).toEqual(["git", "add", "-A", "--", "mattstack/foo.ts"]);
+    handle.stop();
+  });
+});
+
+describe("teamSnapshotSpec", () => {
+  test("names the clone by slug, scopes to the team roots, pulls on the interval, and reads the stored forge token for origin", async () => {
+    const p = { ...fakeProbes({ home: "/h" }) };
+    const spec = teamSnapshotSpec("acme", "/h/.mattstack/teams/acme", { pullIntervalSec: 120, originUrl: "https://gitlab.com/acme/team.git", probes: p, readToken: async () => "glpat-x" });
+    expect(spec).toMatchObject({ id: "team:acme", repoDir: "/h/.mattstack/teams/acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", pull: { intervalSec: 120 } });
+    expect(spec.scope!("mattstack/x")).toBe(true);
+    expect(spec.scope!("src/x")).toBe(false);
+    expect(await spec.tokenFor!()).toBe("glpat-x");
+    expect(spec.legacyStatePath).toBeUndefined();
+
+    // The team spec carries no legacyStatePath, so a run against it must never
+    // import or rename the home repo's legacy state file... proven against the
+    // real one under the test's faked HOME, not just by asserting the field is undefined.
+    const legacyPath = join(rtDir(), "home-snapshot-state.json");
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    writeFileSync(legacyPath, "{}");
+    const { fn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const runSpec = teamSnapshotSpec("acme", FAKE_REPO_DIR, { pullIntervalSec: 120, originUrl: "https://gitlab.com/acme/team.git", probes: p, readToken: async () => "glpat-x" });
+    const handle = startSnapshot(runSpec, specDeps);
+    await handle.ready;
+    await handle.runNow("manual");
+    expect(existsSync(legacyPath)).toBe(true);
+    handle.stop();
+  });
+});
+
+function teamSpecFor(tokenValue: string | null = "glpat-team") {
+  return {
+    ...homeSnapshotSpec(FAKE_REPO_DIR),
+    id: "team:acme",
+    kvNamespace: "team-snapshot:acme",
+    eventPrefix: "team" as const,
+    scope: teamScope,
+    pull: { intervalSec: 300 },
+    tokenFor: async () => tokenValue,
+  };
+}
+
+/**
+ * Responders for the pull stage. `gitVerb` (line ~29 of this file) skips the
+ * `-c` pairs `gitWithToken` and the rebase prepend, so `argv[1]` is never the
+ * verb here. `ahead`/`behind` are `git rev-list --left-right --count
+ * origin/main...HEAD` as "<behind>\t<ahead>". `rebase: "conflict"` makes the
+ * rebase exit 1 AND creates `<FAKE_REPO_DIR>/.git/rebase-merge` (the engine
+ * classifies by that directory, not by the exit code); `rebase: "refused"`
+ * exits 1 with "cannot rebase: You have unstaged changes" and no directory.
+ */
+function pullResponders(opts: { behind: number; ahead: number; rebase?: "ok" | "conflict" | "refused" }): Responder[] {
+  const rebaseDir = join(FAKE_REPO_DIR, ".git", "rebase-merge");
+  return [
+    (argv) => gitVerb(argv) === "fetch" ? { stdout: "", stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "symbolic-ref" ? { stdout: "main\n", stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "rev-list" && argv.includes("--left-right") ? { stdout: `${opts.behind}\t${opts.ahead}\n`, stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "rev-parse" && argv.includes("--git-dir") ? { stdout: ".git\n", stderr: "", exitCode: 0 } : undefined,
+    (argv) => gitVerb(argv) === "merge" && argv.includes("--ff-only") ? { stdout: "", stderr: "", exitCode: 0 } : undefined,
+    (argv) => {
+      if (gitVerb(argv) !== "rebase" || argv.includes("--abort")) return undefined;
+      if (opts.rebase === "conflict") { mkdirSync(rebaseDir, { recursive: true }); return { stdout: "", stderr: "CONFLICT (content): mattstack/settings.team.jsonc", exitCode: 1 }; }
+      if (opts.rebase === "refused") return { stdout: "", stderr: "error: cannot rebase: You have unstaged changes.", exitCode: 1 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    },
+    (argv) => gitVerb(argv) === "rebase" && argv.includes("--abort") ? (rmSync(rebaseDir, { recursive: true, force: true }), { stdout: "", stderr: "", exitCode: 0 }) : undefined,
+  ];
+}
+
+describe("startSnapshot: pull", () => {
+  // The conflict responder creates a real `.git/rebase-merge` under the shared
+  // fixture dir; a test that ends mid-conflict would otherwise leave the next
+  // one's preflight reading "a rebase is in progress".
+  beforeEach(() => {
+    rmSync(join(FAKE_REPO_DIR, ".git", "rebase-merge"), { recursive: true, force: true });
+  });
+
+  test("fetch and push carry the token through the env, never argv", async () => {
+    const { fn, calls, optsLog } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor("glpat-team"), specDeps);
+    await handle.ready;
+    await handle.pullNow();
+    const i = calls.findIndex((c) => gitVerb(c) === "fetch");
+    expect(calls[i]).toContain("credential.helper=");
+    expect(calls[i]!.join(" ")).not.toContain("glpat-team");
+    expect((optsLog[i] as { env?: Record<string, string> }).env?.RT_GIT_TOKEN).toBe("glpat-team");
+    handle.stop();
+  });
+
+  test("behind only: fast-forward; ahead only: nothing to pull; both: rebase", async () => {
+    for (const [behind, ahead, expected] of [[1, 0, "fast-forwarded"], [0, 1, "up-to-date"], [1, 1, "rebased"], [0, 0, "up-to-date"]] as const) {
+      const { fn, calls } = makeFakeExec([...pullResponders({ behind, ahead }), ...defaultResponders()]);
+      const { deps } = baseDeps({ exec: fn });
+      const { repoDir: _r, ...specDeps } = deps;
+      const handle = startSnapshot(teamSpecFor(), specDeps);
+      await handle.ready;
+      expect((await handle.pullNow()).outcome).toBe(expected);
+      expect(calls.some((c) => gitVerb(c) === "merge")).toBe(expected === "fast-forwarded");
+      expect(calls.some((c) => gitVerb(c) === "rebase")).toBe(expected === "rebased");
+      handle.stop();
+    }
+  });
+
+  test("a rebase refused for unstaged out-of-scope changes is skipped with the reason, never a conflict", async () => {
+    const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 1, rebase: "refused" }), ...defaultResponders()]);
+    const { deps, broadcasts } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    const result = await handle.pullNow();
+    expect(result.outcome).toBe("skipped");
+    expect(result.detail).toContain("unstaged");
+    expect(handle.status().lastPullSkipped).toContain("unstaged");
+    expect(handle.status().conflicted).toBeNull();
+    expect(broadcasts.some((b) => b.type === "team:conflict")).toBe(false);
+    handle.stop();
+  });
+
+  test("a rebase conflict aborts, persists the marker, broadcasts once, suspends push and pull until it clears", async () => {
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const exec = makeSwitchableExec([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps, broadcasts } = baseDeps({ exec: exec.fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+
+    const first = await handle.pullNow();
+    expect(first.outcome).toBe("conflict");
+    expect(exec.calls.some((c) => gitVerb(c) === "rebase" && c.includes("--abort"))).toBe(true);
+    expect(handle.status().conflicted?.detail).toContain("settings.team.jsonc");
+    expect(getKvValue("team-snapshot:acme", "conflict", null, deps.db!)).not.toBeNull();
+    expect(broadcasts.filter((b) => b.type === "team:conflict")).toHaveLength(1);
+
+    // The status snapshot is dirty inside the scope, so a run that reached the
+    // commit sites at all would leave `add` and `commit` in the argv log.
+    const before = exec.calls.length;
+    const suspended = await handle.runNow("manual");
+    expect(suspended.skipped).toBe("conflict");
+    const duringRun = exec.calls.slice(before).map((c) => gitVerb(c));
+    expect(duringRun).not.toContain("add");
+    expect(duringRun).not.toContain("commit");
+    expect(duringRun).not.toContain("push");
+    expect((await handle.pullNow()).outcome).toBe("skipped");
+    expect(broadcasts.filter((b) => b.type === "team:conflict")).toHaveLength(1);
+
+    exec.setResponders([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    expect((await handle.pullNow()).outcome).toBe("up-to-date");
+    expect(handle.status().conflicted).toBeNull();
+    expect(getKvValue("team-snapshot:acme", "conflict", null, deps.db!)).toBeNull();
+    handle.stop();
+  });
+
+  test("a rebase conflict cancels the armed push timer, so a due push never fires while suspended", async () => {
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const exec = makeSwitchableExec([...pullResponders({ behind: 0, ahead: 1 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps, timers } = baseDeps({ exec: exec.fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+
+    await handle.runNow("manual");
+    const pushDelayMs = DEFAULT_SETTINGS.pushDelaySec * 1000;
+    expect([...timers.pending.values()].some((t) => t.ms === pushDelayMs)).toBe(true);
+
+    exec.setResponders([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders({ statusZ: dirty })]);
+    expect((await handle.pullNow()).outcome).toBe("conflict");
+
+    expect([...timers.pending.values()].some((t) => t.ms === pushDelayMs)).toBe(false);
+    timers.fire(() => true);
+    await flushAsync();
+    expect(exec.calls.filter((c) => gitVerb(c) === "push")).toHaveLength(0);
+    handle.stop();
+  });
+
+  test("a rebase conflict cancels a standing push-retry timer too, so the ladder stops while suspended", async () => {
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    // `gitWithToken` prepends `-c` pairs, so defaultResponders' argv[1]-keyed
+    // push answer never matches a token-carrying push; this one has to.
+    const failingPush: Responder = (argv) => gitVerb(argv) === "push" ? { stdout: "", stderr: "fatal: unable to access origin", exitCode: 1 } : undefined;
+    const exec = makeSwitchableExec([failingPush, ...pullResponders({ behind: 0, ahead: 1 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps, timers } = baseDeps({ exec: exec.fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    const retryMs = DEFAULT_SETTINGS.pushDelaySec * 5 * 1000;
+    expect([...timers.pending.values()].some((t) => t.ms === retryMs)).toBe(true);
+    const pushesBefore = exec.calls.filter((c) => gitVerb(c) === "push").length;
+
+    exec.setResponders([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders({ statusZ: dirty })]);
+    expect((await handle.pullNow()).outcome).toBe("conflict");
+
+    expect([...timers.pending.values()].some((t) => t.ms === retryMs)).toBe(false);
+    timers.fire(() => true);
+    await flushAsync();
+    expect(exec.calls.filter((c) => gitVerb(c) === "push")).toHaveLength(pushesBefore);
+    handle.stop();
+  });
+
+  test("a due push fetches BETWEEN the commit and the push, and a non-fast-forward rejection pulls and retries once", async () => {
+    let pushes = 0;
+    const responders: Responder[] = [
+      ...pullResponders({ behind: 0, ahead: 1 }),
+      (argv) => gitVerb(argv) === "push" ? (++pushes === 1
+        ? { stdout: "", stderr: "! [rejected] main -> main (fetch first)", exitCode: 1 }
+        : { stdout: "", stderr: "", exitCode: 0 }) : undefined,
+      ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" }),
+    ];
+    const { fn, calls } = makeFakeExec(responders);
+    const { deps, timers } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync(); // let the boot pull's own fetch land before the commit
+    const fetchesBeforeCommit = calls.filter((c) => gitVerb(c) === "fetch").length;
+    expect(fetchesBeforeCommit).toBe(1);
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    // Ordering, not a bare count: the boot pull already fetched once, so only a
+    // fetch sitting between the commit and the first push proves the pre-push pull.
+    const verbs = calls.map((c) => gitVerb(c));
+    const commitIdx = verbs.lastIndexOf("commit");
+    const pushIdx = verbs.indexOf("push");
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(pushIdx).toBeGreaterThan(commitIdx);
+    expect(verbs.findIndex((v, i) => v === "fetch" && i > commitIdx && i < pushIdx)).toBeGreaterThan(-1);
+
+    expect(pushes).toBe(2);
+    expect(handle.status().pushPending).toBe(false);
+    handle.stop();
+  });
+
+  test("withGitLock: a commit cycle started while a pull is in flight touches no git until the fetch returns", async () => {
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((resolve) => { releaseFetch = resolve; });
+    const responders = [...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" })];
+    const calls: string[][] = [];
+    const exec = async (argv: [string, ...string[]]): Promise<RunResult> => {
+      calls.push([...argv]);
+      if (gitVerb(argv) === "fetch") {
+        await fetchGate;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      for (const r of responders) {
+        const res = r(argv);
+        if (res) return res;
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    const { deps } = baseDeps({ exec });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+    expect(calls.some((c) => gitVerb(c) === "fetch")).toBe(true);
+
+    const run = handle.runNow("manual");
+    await flushAsync();
+    expect(calls.some((c) => gitVerb(c) === "status")).toBe(false);
+    expect(calls.some((c) => gitVerb(c) === "add")).toBe(false);
+
+    releaseFetch();
+    expect((await run).committed).toBe(true);
+    expect(calls.some((c) => gitVerb(c) === "add")).toBe(true);
+    handle.stop();
+  });
+
+  test("a failed fetch leaves lastPullAt untouched and records the error, so the row can call the clone stale", async () => {
+    const responders: Responder[] = [
+      // First responder wins: this must precede pullResponders' own fetch answer.
+      (argv) => gitVerb(argv) === "fetch" ? { stdout: "", stderr: "remote: HTTP Basic: Access denied", exitCode: 128 } : undefined,
+      ...pullResponders({ behind: 0, ahead: 0 }),
+      ...defaultResponders(),
+    ];
+    const { fn } = makeFakeExec(responders);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    const result = await handle.pullNow();
+    expect(result.outcome).toBe("skipped");
+    expect(handle.status().lastPullAt).toBe(0);
+    expect(handle.status().lastPullError).toContain("Access denied");
+    handle.stop();
+  });
+
+  test("the pull timer fires every pullIntervalSec and at boot, and re-arms after each tick", async () => {
+    const { fn, calls } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
+    const { deps, timers } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+    expect(calls.filter((c) => gitVerb(c) === "fetch")).toHaveLength(1);
+    expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
+
+    timers.fire((t) => t.ms === 300_000);
+    await flushAsync();
+    expect(calls.filter((c) => gitVerb(c) === "fetch")).toHaveLength(2);
+    expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
+    handle.stop();
+  });
+
+  test("a spec that started disabled arms the pull timer, not just the watcher and janitor, on its first run after a live re-enable", async () => {
+    let enabled = false;
+    const { fn } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" })]);
+    const { deps, timers } = baseDeps({ exec: fn, readSettings: () => ({ ...DEFAULT_SETTINGS, enabled }) });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(false);
+
+    enabled = true;
+    await handle.runNow("manual");
+
+    expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
+    handle.stop();
+  });
+
+  test("a token read that throws is a skipped pull carrying the reason, never an unhandled rejection", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (err: unknown) => rejections.push(err);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { fn } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
+      const { deps, timers } = baseDeps({ exec: fn });
+      const { repoDir: _r, ...specDeps } = deps;
+      const spec = { ...teamSpecFor(), tokenFor: async () => { throw new Error("keychain locked"); } };
+      const handle = startSnapshot(spec, specDeps);
+      await handle.ready;
+
+      const result = await handle.pullNow();
+      expect(result.outcome).toBe("skipped");
+      expect(result.detail).toContain("keychain locked");
+      expect(handle.status().lastPullError).toContain("keychain locked");
+      expect(handle.status().lastPullAt).toBe(0);
+
+      // The pull timer's own `void pullNow()` is the un-awaited call site a
+      // throw would escape from.
+      timers.fire((t) => t.ms === 300_000);
+      await flushAsync();
+      expect(rejections).toEqual([]);
+      handle.stop();
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  test("a token read that throws during a push records it as the push error and arms the retry ladder", async () => {
+    const { fn } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" })]);
+    const { deps, timers } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const spec = { ...teamSpecFor(), tokenFor: async () => { throw new Error("keychain locked"); } };
+    const handle = startSnapshot(spec, specDeps);
+    await handle.ready;
+    await handle.runNow("manual");
+
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(handle.status().lastPushError).toContain("keychain locked");
+    expect(handle.status().pushPending).toBe(true);
+    expect([...timers.pending.values()].some((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000)).toBe(true);
+    handle.stop();
+  });
+
+  test("a `git var` that could not run is transient: the next cycle probes again, and the clone keeps pulling", async () => {
+    // runCapture's spawn-failure / timeout-kill code, not a verdict from git.
+    const identUnavailable: Responder = (argv) => argv[1] === "var" ? { stdout: "", stderr: "", exitCode: -1 } : undefined;
+    const { fn, calls } = makeFakeExec([identUnavailable, ...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" })]);
+    const { deps, log } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+
+    expect((await handle.runNow("manual")).skipped).toBe("git-unavailable");
+    expect((await handle.runNow("manual")).skipped).toBe("git-unavailable");
+    expect(calls.filter((c) => c[1] === "var")).toHaveLength(2);
+    expect(log.calls.filter((c) => c.level === "warn" && String(c.args[c.args.length - 1]).includes("could not run git")).length).toBe(1);
+    expect((await handle.pullNow()).outcome).toBe("up-to-date");
+    handle.stop();
+  });
+
+  test("a genuine identity failure latches the commit, but the clone still pulls and reports the outcome", async () => {
+    const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0", hasIdentity: false })]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+
+    expect((await handle.runNow("manual")).skipped).toBe("no-git-identity");
+    expect((await handle.runNow("manual")).skipped).toBe("no-git-identity");
+    expect((await handle.pullNow()).outcome).toBe("fast-forwarded");
+    handle.stop();
+  });
+
+  test("a boot pull that rejects outright is logged and swallowed, never an unhandled rejection in the daemon's boot window", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (err: unknown) => rejections.push(err);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders()]);
+      // The conflict broadcast is a real throw source inside doPull.
+      const { deps, log } = baseDeps({ exec: fn, broadcast: () => { throw new Error("broadcast seam blew up"); } });
+      const { repoDir: _r, ...specDeps } = deps;
+      const handle = startSnapshot(teamSpecFor(), specDeps);
+      await handle.ready;
+      await flushAsync();
+
+      expect(rejections).toEqual([]);
+      expect(log.calls.some((c) => c.level === "warn" && String(c.args[c.args.length - 1]).includes("pull failed"))).toBe(true);
+      handle.stop();
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  test("a timer-driven pull that rejects outright is logged, swallowed, and the interval still re-arms", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (err: unknown) => rejections.push(err);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const exec = makeSwitchableExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
+      const { deps, log, timers } = baseDeps({ exec: exec.fn, broadcast: () => { throw new Error("broadcast seam blew up"); } });
+      const { repoDir: _r, ...specDeps } = deps;
+      const handle = startSnapshot(teamSpecFor(), specDeps);
+      await handle.ready;
+      await flushAsync();
+
+      exec.setResponders([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders()]);
+      timers.fire((t) => t.ms === 300_000);
+      await flushAsync();
+
+      expect(rejections).toEqual([]);
+      expect(log.calls.some((c) => c.level === "warn" && String(c.args[c.args.length - 1]).includes("pull failed"))).toBe(true);
+      expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
+      handle.stop();
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  test("a team instance's disabled lines name rt.teamSnapshot, never rt.homeSnapshot", async () => {
+    const { deps, log } = baseDeps({ readSettings: () => ({ ...DEFAULT_SETTINGS, enabled: false }) });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await handle.runNow("manual");
+
+    const lines = log.calls.map((c) => String(c.args[c.args.length - 1]));
+    expect(lines.some((l) => l.startsWith("team-snapshot: disabled (rt.teamSnapshot.enabled=false) at startup"))).toBe(true);
+    expect(lines).toContain("team-snapshot: disabled via rt.teamSnapshot.enabled=false; skipping cycle");
+    expect(lines.some((l) => l.includes("rt.homeSnapshot"))).toBe(false);
+    expect(lines.some((l) => l.startsWith("home-snapshot:"))).toBe(false);
+    handle.stop();
+  });
+
+  test("a team instance's inert lines describe a team clone, and never prescribe `rt home init`", async () => {
+    const missingDir = "/does/not/exist/rt-team-snapshot-vocab";
+    const { deps: missingDeps, log: missingLog } = baseDeps();
+    const { repoDir: _m, ...missingSpecDeps } = missingDeps;
+    const missing = startSnapshot({ ...teamSpecFor(), repoDir: missingDir }, missingSpecDeps);
+    await missing.ready;
+    expect((await missing.runNow("manual")).skipped).toBe("not-provisioned");
+    const missingWarn = missingLog.calls.find((c) => c.level === "warn");
+    expect(String(missingWarn?.args[1])).toBe("team-snapshot: team clone directory is missing; the supervisor drops it on the next rescan; inert");
+    missing.stop();
+
+    const { fn: notRepoExec } = makeFakeExec(defaultResponders({ isRepo: false }));
+    const { deps: notRepoDeps, log: notRepoLog } = baseDeps({ exec: notRepoExec });
+    const { repoDir: _n, ...notRepoSpecDeps } = notRepoDeps;
+    const notRepo = startSnapshot(teamSpecFor(), notRepoSpecDeps);
+    await notRepo.ready;
+    expect(String(notRepoLog.calls.find((c) => c.level === "warn")?.args[1])).toBe("team-snapshot: repoDir is not a git repository; inert");
+    notRepo.stop();
+
+    const { fn: noIdentExec } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0", hasIdentity: false })]);
+    const { deps: noIdentDeps, log: noIdentLog } = baseDeps({ exec: noIdentExec });
+    const { repoDir: _i, ...noIdentSpecDeps } = noIdentDeps;
+    const noIdent = startSnapshot(teamSpecFor(), noIdentSpecDeps);
+    await noIdent.ready;
+    await noIdent.runNow("manual");
+    expect(noIdentLog.calls.some((c) => c.level === "warn" && String(c.args[c.args.length - 1]).startsWith("team-snapshot: git cannot resolve a committer identity"))).toBe(true);
+    noIdent.stop();
+  });
+
+  test("the home spec never pulls", async () => {
+    const { deps, execCalls } = baseDeps();
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(homeSnapshotSpec(FAKE_REPO_DIR), specDeps);
+    await handle.ready;
+    expect((await handle.pullNow()).outcome).toBe("skipped");
+    expect(execCalls.some((c) => gitVerb(c) === "fetch")).toBe(false);
+    handle.stop();
+  });
 });

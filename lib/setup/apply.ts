@@ -4,7 +4,6 @@
  * (docs/superpowers/specs/2026-08-21-rt-setup-contract.md, "rt setup apply").
  */
 
-import { join } from "path";
 import { appBundlePath } from "../deps/resolve.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
 import { createRealTeamSecretsSeams } from "../secrets/team-store.ts";
@@ -20,7 +19,7 @@ import { realSecretPresence } from "./plan.ts";
 import { readPackRequirements, type PackRequirements } from "./requirements.ts";
 import { STEPS } from "./steps/index.ts";
 import { updateSetupState } from "./state.ts";
-import { readTeamSnapshot, type TeamSnapshot } from "./team-settings.ts";
+import { discoverTeams, readTeamSnapshot, type TeamSnapshot } from "./team-settings.ts";
 import type { SecretPresence } from "./validators/accounts.ts";
 
 export type StepOutcome = { state: "done"; detail?: string } | { state: "skipped"; detail: string } | { state: "failed"; detail: string; remedy?: string };
@@ -240,12 +239,6 @@ export interface CreateApplyContextDeps {
 async function trayReachable(p: Probes): Promise<boolean> {
   const res = await p.tray("/version", { method: "GET" });
   return res.status !== 0;
-}
-
-/** Every locally-cloned team's slug — subdirectories of `<home>/.mattstack/teams` that have a `mattstack/settings.team.jsonc`. Deliberately built off `Probes` (`p.home`/`p.readDir`/`p.exists`) rather than `listTeams()`, which resolves `process.env.HOME` at call time: a context built from a fake `Probes` must never leak the real ambient HOME into which team it resolves. */
-function discoverTeams(p: Probes): string[] {
-  const dir = join(p.home, ".mattstack", "teams");
-  return p.readDir(dir).filter((name) => p.exists(join(dir, name, "mattstack", "settings.team.jsonc")));
 }
 
 function createRedactor(): { redact(value: string): void; wrap(emit: Emit): Emit } {

@@ -33,10 +33,25 @@ green on both joiners (runs `20260902-125703`, `20260902-130744`).
 `--scenario headless` is green too. Still unproven: the `update` phase
 (`--update-dir`).
 
-The team pass has two hand steps the product does not do yet (MAT-405):
-the owner's commit + `rt team publish` after `members sync`, and the
-joiner's pull. `team-propagate.sh` performs both so the assertions measure
-propagation, not the missing daemon half.
+The team pass now runs only `members sync` on the owner and waits for the
+daemon's push, then `rt team pull` on the joiner: the daemon moves every
+byte, and `team-propagate.sh` runs no git commit/push/pull of its own. That
+pass is green on the kitchen-sink fixture with the team-clone snapshot daemon
+doing the work (owner `20260902-211149`, joiners `20260902-212248` and
+`20260902-213612`; the second joiner also proves Install's `git.identity`
+step wrote the global git identity from the GitLab profile).
+
+`run/host/team-rebase.sh <owner-vm> <joiner-vm>` proves the other two paths on
+the same two kept guests: a joiner whose own commit is held back (its
+`rt.teamSnapshot` `pushDelaySec` raised) is rebased onto the owner's daemon
+push and its edit reaches the owner, and a same-key edit on both sides
+surfaces as the `team.sync` needs-you row, leaves no rebase in progress, and
+clears once the joiner resets to origin. It writes settings and reads verbs
+back; every commit, push, pull and rebase is the daemon's.
+The team repo has to actually admit a member's push for that pass: on GitLab
+that means Developer (30) on the project AND an unprotected default branch,
+since a new project protects `main` for Maintainers only and every member's
+daemon pushes straight to it.
 
 Facts a join run depends on:
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, test, expect, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { teamCreate, teamInvite, teamPublish, type TeamDeps } from "../team.ts";
+import { teamCreate, teamInvite, teamPublish, teamPull, teamStatus, type TeamDeps } from "../team.ts";
 import { fakeProbes } from "../../lib/setup/__tests__/fakes.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../lib/home/age-key.ts";
 import type { ExecScript } from "../../lib/setup/__tests__/fakes.ts";
@@ -288,4 +288,45 @@ describe("teamInvite", () => {
     expect(rest).toContain("Ask whoever administers");
     expect(rest).toContain("zaphod");
   });
+});
+
+describe("teamPull", () => {
+  test("--json prints the daemon's pull result in the contract envelope", async () => {
+    const deps = depsWithZone({ daemon: async (cmd, payload) => (cmd === "team:pull" ? { ok: true, data: { outcome: "fast-forwarded", detail: null } } : { ok: false }) });
+    await teamPull(["--team", "acme", "--json"], {}, deps);
+    const { at, ...body } = JSON.parse(deps.lines[0]!);
+    expect(body).toEqual({ contract: 1, slug: "acme", outcome: "fast-forwarded", detail: null });
+  });
+
+  test("the pull carries a timeout that fits a real fetch and rebase, not the status default", async () => {
+    let seen: number | undefined = -1;
+    const deps = depsWithZone({
+      daemon: async (_cmd, _payload, timeoutMs) => {
+        seen = timeoutMs;
+        return { ok: true, data: { outcome: "rebased", detail: null } };
+      },
+    });
+    await teamPull(["--team", "acme", "--json"], {}, deps);
+    expect(seen).toBeGreaterThanOrEqual(120_000);
+  });
+  test("daemon unreachable (daemonQuery returns null) exits 2 with a plain message, never a stack", async () => {
+    const deps = depsWithZone({ daemon: async () => null });
+    const code = await runExpectingProcessExit(() => teamPull(["--team", "acme"], {}, deps));
+    expect(code).toBe(2);
+    expect(deps.lines.join("\n")).toContain("daemon");
+  });
+  test("a daemon failure envelope surfaces its code", async () => {
+    const deps = depsWithZone({ daemon: async () => ({ ok: false, error: "team \"acme\" is not cloned locally", failure: { code: "no-team", message: "team \"acme\" is not cloned locally" } }) });
+    await runExpectingProcessExit(() => teamPull(["--team", "acme", "--json"], {}, deps));
+    expect(JSON.parse(deps.lines[0]!).error.code).toBe("no-team");
+  });
+});
+
+test("teamStatus --json carries the daemon's sync fields, null when the daemon is down", async () => {
+  const deps = depsWithZone({ daemon: async () => ({ ok: true, data: [{ slug: "acme", lastPullAt: 1_700_000_000_000, lastPushAt: 0, conflicted: null }] }) });
+  await teamStatus(["--team", "acme", "--json"], {}, deps);
+  const body = JSON.parse(deps.lines[0]!);
+  expect(body.lastPull).toBe(new Date(1_700_000_000_000).toISOString());
+  expect(body.lastPushAt).toBeNull();
+  expect(body.conflicted).toBeNull();
 });

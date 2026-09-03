@@ -11,16 +11,20 @@ import { existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { RT_BUNDLE_PATH } from "../../bundle-layout.ts";
 import { activeLaunchdLabel, isDaemonInstalled } from "../../daemon-config.ts";
+import type { TeamSnapshotEntry, TeamSnapshotSettings } from "../../daemon/team-snapshots.ts";
+import { clampPullIntervalSec, PULL_INTERVAL_FALLBACK_SEC } from "../../daemon/snapshot-interval.ts";
 import { currentMode, resolveIntendedMode } from "../../dev-mode.ts";
 import { appBundlePath, linkPath } from "../../deps/resolve.ts";
 import { localBinDir, shimReport, staleIntercepts } from "../../endpoint/shim.ts";
 import { legacyDirsPresent, legacyTrayAppPaths, RT_DIR_LABEL } from "../../rt-paths.ts";
+import { getSetting } from "../../settings/resolve.ts";
 import { detectShellFrom, shellRcPathFor } from "../../shell-integration.ts";
 import { readHomePushRecord, type HomePushRecord } from "../../home/push-record.ts";
 import { row, type Action, type Row } from "../contract.ts";
 import { hasCommits, hasRemote, isGitRepo, originPushState } from "../home-git.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
 import { execWithTimeout, type Probes } from "../probes.ts";
+import { discoverTeams } from "../team-settings.ts";
 
 // ─── rt-context extension check (moved from commands/verify.ts) ──────────────
 
@@ -74,6 +78,7 @@ const REAL_EXEC: Probes["exec"] = execWithTimeout;
 // ─── row builders ──────────────────────────────────────────────────────────
 
 const LINK_BUNDLED_RT: Action = { type: "link-bundled", label: "Use mattstack's", tool: "rt" };
+const RECHECK_ACTION: Action = { type: "run", label: "Re-check", verb: ["setup", "status"] };
 const REINSTALL_SHIMS_ACTION: Action = { type: "run", label: "Re-install shims", verb: ["intercept", "install"] };
 const INSTALL_EXTENSION_ACTION: Action = { type: "run", label: "Install extension", verb: ["tools", "setup", "extension"] };
 /** No `rt home remote set` verb exists yet (installer-lane scope), so the remedy names the raw git commands instead of a `run` action. */
@@ -452,9 +457,123 @@ export async function homeBackupRow(
   return row({ ...base, status: "ready", detail: `in sync — last commit ${relativeWhen(state.committedAt)}` });
 }
 
+/**
+ * Opens `team.sync`'s detail when every problem is a clone that has yet to
+ * pull, the one state `verify` re-reads through. Anchored at the start of the
+ * detail, which no interpolated slug or git stderr can precede, so the two
+ * other things that reach a detail cannot forge or trip it.
+ */
+const FIRST_PULL_PENDING = "waiting for a first pull";
+
+export function isTeamSyncFirstPullPending(detail: string): boolean {
+  return detail.startsWith(`${FIRST_PULL_PENDING}: `);
+}
+
+/** Every clone's daemon-side sync state in one row: a joiner who cannot decrypt is almost always a clone that has not pulled the owner's recipients yet. */
+export async function teamSyncRow(
+  slugs: string[],
+  readStatus: () => Promise<TeamSnapshotEntry[] | null>,
+  now: () => number,
+  pullIntervalSec: number,
+  enabled = true,
+): Promise<Row | null> {
+  if (slugs.length === 0) return null;
+  const base = {
+    id: "team.sync",
+    kind: "tool" as const,
+    title: "Team sync",
+    why: "Your team clone pulls the roster, recipients and packs on a timer and pushes your own team edits; this is whether that is keeping up.",
+    required: false,
+    optionalNote: "Works without this; `rt team pull` and `rt team publish` do the same by hand.",
+    recheck: "on-activate" as const,
+  };
+  // Ahead of the daemon read: the supervisor stops every instance while the
+  // setting is off, so the status list would be empty for the same reason a
+  // clone with no origin is, and every clone would read as unwatched forever.
+  if (!enabled) {
+    return row({ ...base, status: "ready", detail: "off: rt.teamSnapshot.enabled is false, so clones move only when you run rt team pull or rt team publish" });
+  }
+
+  const entries = await readStatus();
+  if (entries === null) return row({ ...base, status: "missing", detail: "rt daemon not reachable; team clones sync once it is running" });
+
+  const staleMs = clampPullIntervalSec(pullIntervalSec) * 2 * 1000;
+  const problems: string[] = [];
+  const neverPulled: string[] = [];
+  for (const slug of slugs) {
+    const e = entries.find((x) => x.slug === slug);
+    if (!e) {
+      problems.push(`${slug}: not watched (no origin?)`);
+      continue;
+    }
+    if (e.conflicted) {
+      problems.push(`${slug}: rebase conflict: ${e.conflicted.detail}; rebase and rt team publish by hand`);
+      continue;
+    }
+    // Both fields come off the same redactCredentials(stderr) shape in the
+    // engine, so "" is reachable for either; tested against null/undefined,
+    // never a truthiness check `""` would fail past.
+    if (e.lastPushError != null) {
+      problems.push(`${slug}: push failing: ${e.lastPushError || "push failed"}`);
+      continue;
+    }
+    if (e.lastPullError != null) {
+      problems.push(`${slug}: fetch failing: ${e.lastPullError || "fetch failed"}`);
+      continue;
+    }
+    if (e.lastPullAt === 0) {
+      neverPulled.push(slug);
+      problems.push(`${slug}: no pull yet`);
+      continue;
+    }
+    if (now() - e.lastPullAt > staleMs) {
+      problems.push(`${slug}: last pull ${Math.round((now() - e.lastPullAt) / 60_000)} min ago`);
+    }
+  }
+  if (problems.length > 0) {
+    const detail = neverPulled.length === problems.length ? `${FIRST_PULL_PENDING}: ${neverPulled.join(", ")}` : problems.join("; ");
+    return row({ ...base, status: "needs-you", detail, action: RECHECK_ACTION });
+  }
+
+  // A pull skipped every tick (a dirty src/ refusing the rebase) is not a
+  // failure, but it is why a member's store edits are not moving; say so
+  // without changing the status.
+  const skips = slugs.map((slug) => entries.find((x) => x.slug === slug)?.lastPullSkipped).filter((d): d is string => !!d);
+  const detail = `${slugs.length} clone${slugs.length === 1 ? "" : "s"} in sync${skips.length ? `; last pull skipped: ${skips.join("; ")}` : ""}`;
+  return row({ ...base, status: "ready", detail });
+}
+
 // ─── entry point ────────────────────────────────────────────────────────────
 
-export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Row[]> {
+function readTeamSnapshotSettings(): TeamSnapshotSettings | undefined {
+  return getSetting<TeamSnapshotSettings>("rt.teamSnapshot").value;
+}
+
+export async function rtHealthRows(
+  p: Probes,
+  opts: { ci: boolean },
+  readSnapshotSettings: () => TeamSnapshotSettings | undefined = readTeamSnapshotSettings,
+): Promise<Row[]> {
+  // The settings read resolves the ambient HOME, and `buildGroup` turns a
+  // throw here into one group-error row that replaces every row below, so it
+  // stays behind the only condition that needs it.
+  const slugs = discoverTeams(p);
+  let teamSync: Row | null = null;
+  if (slugs.length > 0) {
+    const settings = readSnapshotSettings();
+    teamSync = await teamSyncRow(
+      slugs,
+      async () => {
+        const res = await p.daemon("team:snapshot-status");
+        if (!res || !res.ok) return null;
+        return res.data as TeamSnapshotEntry[];
+      },
+      () => p.now().getTime(),
+      settings?.pullIntervalSec ?? PULL_INTERVAL_FALLBACK_SEC,
+      settings?.enabled !== false,
+    );
+  }
+
   return [
     await rtRow(p),
     rtLinkRow(p),
@@ -467,5 +586,6 @@ export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Ro
     await daemonRow(p, opts),
     await flavorRow(p),
     await homeBackupRow(join(p.home, ".mattstack", "user"), p.exec),
+    ...(teamSync ? [teamSync] : []),
   ];
 }

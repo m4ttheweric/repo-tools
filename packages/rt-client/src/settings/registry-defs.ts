@@ -130,6 +130,15 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Home-repo snapshot daemon config: enabled, debounce/push delays, and the janitor threshold/interval for zones left dirty too long.",
   },
   {
+    key: "rt.teamSnapshot",
+    type: "object",
+    scopes: ["machine"],
+    default: { enabled: true, debounceSec: 20, pushDelaySec: 60, janitorThresholdHours: 6, janitorIntervalMin: 30, pullIntervalSec: 300 },
+    merge: "deep",
+    migrated: true,
+    description: "Team-clone snapshot daemon config: the home snapshot's fields plus pullIntervalSec, the fast-forward/rebase pull cadence for every clone under ~/.mattstack/teams.",
+  },
+  {
     key: "rt.sync",
     type: "object",
     scopes: ALL_SCOPES,

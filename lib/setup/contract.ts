@@ -72,6 +72,7 @@ export const STEP_IDS = [
   "team.create",
   "team.join",
   "secrets.write",
+  "git.identity",
   "path.link",
   "intercepts.install",
   "settings.seed",

@@ -9,6 +9,7 @@ import { installShims } from "../../endpoint/shim.ts";
 import { homeInitStep, homeRestoreStep } from "./home.ts";
 import { teamCreateStep, teamJoinStep } from "./team.ts";
 import { secretsWriteStep } from "./secrets.ts";
+import { gitIdentityStep } from "./git-identity.ts";
 import { pathLinkStep } from "./path.ts";
 import { settingsSeedStep } from "./settings.ts";
 import { reposCloneStep } from "./repos.ts";
@@ -51,6 +52,7 @@ export const STEPS: StepDef[] = [
   teamCreateStep,
   teamJoinStep,
   secretsWriteStep,
+  gitIdentityStep,
   pathLinkStep,
   interceptsInstallStep,
   settingsSeedStep,
