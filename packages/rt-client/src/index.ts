@@ -50,9 +50,10 @@ export {
   gateClose,
   gateSubscribe,
   gateUnsubscribe,
+  gateSubscriptions,
 } from "./client.ts";
 
-export { COMMAND_NAMES } from "./commands.ts";
+export { COMMAND_NAMES, GATE_BY_PANE } from "./commands.ts";
 export type {
   Discussion,
   DemandDecl,
@@ -93,6 +94,7 @@ export type {
   GateQuestion,
   GateAnswer,
   GateRow,
+  GateSubscription,
 } from "./commands.ts";
 
 export { subscribe, createRelay, DEFAULT_WS_URL } from "./relay.ts";

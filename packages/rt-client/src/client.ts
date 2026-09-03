@@ -454,7 +454,7 @@ export function gateList(
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["gate:list"]["data"]>> {
   const payload: Record<string, unknown> = {};
-  for (const k of ["open", "subjectPrefix", "kind"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  for (const k of ["open", "subjectPrefix", "kind", "limit", "cursor"] as const) if (a[k] !== undefined) payload[k] = a[k];
   return rtCommand<Commands["gate:list"]["data"]>("gate:list", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
@@ -484,4 +484,13 @@ export function gateUnsubscribe(
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["gate:unsubscribe"]["data"]>> {
   return rtCommand<Commands["gate:unsubscribe"]["data"]>("gate:unsubscribe", { id: a.id }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function gateSubscriptions(
+  a: Commands["gate:subscriptions"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:subscriptions"]["data"]>> {
+  const payload: Record<string, unknown> = {};
+  for (const k of ["session", "live"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  return rtCommand<Commands["gate:subscriptions"]["data"]>("gate:subscriptions", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }

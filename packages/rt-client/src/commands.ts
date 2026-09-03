@@ -90,6 +90,10 @@ export interface EventsBusEvent { id: number; topic: string; payload: unknown; e
  * already flows daemon -> rt-client, e.g. handlers/events.ts), so this is
  * the single source of truth for the wire shape.
  */
+/** The `by` value a pane spells when it answers its own gate: the only
+    value gates-store.ts's release tracking (CAS winner or loser) reacts to. */
+export const GATE_BY_PANE = "pane";
+
 export type GateStatus = "open" | "answered" | "parked" | "closed";
 export interface GateQuestion { id: string; label: string; multi: boolean; options: string[] }
 export interface GateAnswer { answers: Record<string, string | string[] | { value: string | string[]; note?: string }>; by: string; answeredAt: number }
@@ -576,13 +580,19 @@ export interface Commands {
    * not-found/closed/validation failures.
    */
   "gate:answer": { payload: { id: string; answers: GateAnswer["answers"]; by: string }; data: { row: GateRow; conflict?: true } };
-  /** `ok:false "not-found"` on an unknown id is terminal; the CLI loop must not re-enter on it. */
-  "gate:wait": { payload: { id: string; waitMs?: number }; data: { status: "answered" | "closed" | "timeout"; row?: GateRow } };
-  "gate:list": { payload: { open?: boolean; subjectPrefix?: string; kind?: string }; data: { gates: GateRow[] } };
+  /** `ok:false "not-found"` on an unknown id is terminal; the CLI loop must not re-enter on it.
+   *  `timeout` carries no row (nothing settled); `answered`/`closed` always carry the settled row. */
+  "gate:wait": { payload: { id: string; waitMs?: number }; data: { status: "timeout" } | { status: "answered" | "closed"; row: GateRow } };
+  /** Paged like events:list: an omitted `limit` clamps daemon-side rather than
+   *  forcing a full-table read; `cursor` is the paging rowid to resume from. */
+  "gate:list": { payload: { open?: boolean; subjectPrefix?: string; kind?: string; limit?: number; cursor?: number }; data: { gates: GateRow[]; cursor: number } };
   "gate:park": { payload: { id: string }; data: { ok: true } };
   "gate:close": { payload: { id: string; reason: "abandoned" | "superseded" | "pruned" }; data: { ok: true } };
   "gate:subscribe": { payload: { subjectPrefix: string; session: string }; data: { id: string } };
   "gate:unsubscribe": { payload: { id: string }; data: { removed: boolean } };
+  /** The shepherd's gap-recovery liveness check and the observability window
+   *  onto delivery outcomes (dead marks included). */
+  "gate:subscriptions": { payload: { session?: string; live?: boolean }; data: { subscriptions: GateSubscription[] } };
 
   /** Wire reply on success is always `{ok:true, repaired}` (no `data`
    *  wrapper) — `data` here documents the extra field the same way PingData
@@ -686,6 +696,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "gate:close",
   "gate:subscribe",
   "gate:unsubscribe",
+  "gate:subscriptions",
   "hooks:repair",
   "hooks:watch",
   "sdm:catalog",
