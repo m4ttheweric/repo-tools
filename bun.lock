@@ -5,7 +5,7 @@
     "": {
       "name": "repo-tools",
       "dependencies": {
-        "@mattstack/glance": "^0.22.1",
+        "@mattstack/glance": "^0.23.0",
         "cli-highlight": "^2.1.11",
         "jsonc-parser": "^3.3.1",
         "pino": "^10.3.1",
@@ -24,7 +24,7 @@
     },
     "packages/rt-client": {
       "name": "@mattstack/rt-client",
-      "version": "0.11.1",
+      "version": "0.12.0",
       "dependencies": {
         "jsonc-parser": "^3.3.1",
       },
@@ -32,7 +32,7 @@
         "typescript": "^5.9.2",
       },
       "peerDependencies": {
-        "@mattstack/glance": ">=0.13.0",
+        "@mattstack/glance": ">=0.23.0",
       },
     },
     "packages/settings-kit": {
@@ -58,7 +58,7 @@
 
     "@gitbeaker/rest": ["@gitbeaker/rest@43.8.0", "", { "dependencies": { "@gitbeaker/core": "^43.8.0", "@gitbeaker/requester-utils": "^43.8.0" } }, "sha512-xxqsNsUXaFang9b2e/NTIgqUeuUlifA2Opy1mOVqTDuJZZNIOTgUNyziwBJoleBhMC0XuvY3JNVMWthufcVjRw=="],
 
-    "@mattstack/glance": ["@mattstack/glance@0.22.1", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0", "@octokit/core": "^7.0.7", "@octokit/graphql": "^9.0.4", "@octokit/plugin-paginate-rest": "^15.0.0", "@octokit/plugin-retry": "^8.1.1", "@octokit/plugin-throttling": "^11.0.5", "@octokit/request-error": "^7.1.1" } }, "sha512-QbCht9960OM2H2YUosBViMiQFlgm8sYnuM6NAaqe22hYBaF13Fhsacyu9CBpjnbHHgdXlNuwC1bgErU5Hv3ruw=="],
+    "@mattstack/glance": ["@mattstack/glance@0.23.0", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0", "@octokit/core": "^7.0.7", "@octokit/graphql": "^9.0.4", "@octokit/plugin-paginate-rest": "^15.0.0", "@octokit/plugin-retry": "^8.1.1", "@octokit/plugin-throttling": "^11.0.5", "@octokit/request-error": "^7.1.1" } }, "sha512-e5Jh82wMFq3e1KdZIi/Ydbg6IhWnGDdBBdpXWh2DzXvcNtKG65oM1jVyCDI6tZ+fOPrPSJNdoPgfcXahGfWtIA=="],
 
     "@mattstack/rt-client": ["@mattstack/rt-client@workspace:packages/rt-client"],
 
