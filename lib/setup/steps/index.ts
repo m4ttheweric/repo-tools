@@ -54,7 +54,6 @@ export const STEPS: StepDef[] = [
   secretsWriteStep,
   gitIdentityStep,
   pathLinkStep,
-  interceptsInstallStep,
   settingsSeedStep,
   reposCloneStep,
   servicesRegisterStep,
@@ -63,7 +62,13 @@ export const STEPS: StepDef[] = [
   skillsMaterializeStep,
   skillsLinkStep,
   boardKeysStep,
+  // cron.triage is the last settings-store write in apply order.
+  // intercepts.install must stay behind both repos.clone (the repo index
+  // it reads) and this step: staleIntercepts() compares the rules cache's
+  // generatedAt against these stores' mtimes, so a cache generated before
+  // them reports itself stale the moment it is written.
   cronTriageStep,
+  interceptsInstallStep,
   pluginsInstallStep,
   fastbrowserSetupStep,
   herdrIntegrationStep,
