@@ -245,6 +245,7 @@ describe("settings/registry", () => {
         "board.triage.doctorSkill",
         "board.tabs",
         "board.staleAfterDays",
+        "board.gateGraceMinutes",
         "board.workspaces",
         "board.defaultMember",
         "board.hiddenMembers",
@@ -280,7 +281,7 @@ describe("settings/registry", () => {
         "rt.daemonPath",
         "rt.notify.eventBridges",
       ];
-      expect(suiteKeys).toHaveLength(55);
+      expect(suiteKeys).toHaveLength(56);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),

@@ -430,6 +430,13 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Days of MR inactivity before the board flags it stale, for this developer.",
   },
   {
+    key: "board.gateGraceMinutes",
+    type: "number",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Minutes an unanswered review gate stays open before the board parks the review (closes the pane, keeps the gate open). Default 90.",
+  },
+  {
     key: "board.workspaces",
     type: "object",
     scopes: ["user"],
