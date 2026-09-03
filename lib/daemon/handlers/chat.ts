@@ -1038,7 +1038,10 @@ export function createChatHandlers(opts: {
     "chat:mark": async (rawPayload: unknown): Promise<CommandResult<"chat:mark">> => {
       const payload = rawPayload as Commands["chat:mark"]["payload"];
       const { handle, room, upto } = payload;
-      if (upto !== undefined && (!Number.isInteger(upto) || upto <= 0)) {
+      // isSafeInteger, not isInteger: an unsafe integer (2^53+1) survives the
+      // > 0 check, then Math.min(upto, maxId) in markRead clamps it to maxId,
+      // silently marking the whole room read instead of one message.
+      if (upto !== undefined && (!Number.isSafeInteger(upto) || upto <= 0)) {
         return { ok: false, error: "upto must be a positive message id" };
       }
       markRead(handle, room, upto, db);

@@ -223,13 +223,13 @@ export function chatWho(
 }
 
 export function chatMark(
-  a: { handle: string; room?: string; upto?: number },
+  a: Commands["chat:mark"]["payload"],
   o: RtClientOptions = {},
-): Promise<RtResponse<Record<string, never>>> {
+): Promise<RtResponse<Commands["chat:mark"]["data"]>> {
   const payload: Record<string, unknown> = { handle: a.handle };
   if (a.room !== undefined) payload.room = a.room;
   if (a.upto !== undefined) payload.upto = a.upto;
-  return rtCommand<Record<string, never>>("chat:mark", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  return rtCommand<Commands["chat:mark"]["data"]>("chat:mark", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 export function chatMessages(

@@ -10,7 +10,7 @@ import { AGENT_NAMES, pickAgentName } from "../chat-names.ts";
 import { resolveAllInboxes, resolveInbox, inboxAlive } from "../claude-registry.ts";
 import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 import { getStateDb } from "./db.ts";
-import { deleteKvValue, getKvValue, listKvEntries, setKvValue } from "./kv-blob.ts";
+import { capKvNamespace, getKvValue, setKvValue } from "./kv-blob.ts";
 
 export type BuddyStatus = "live" | "idle" | "offline";
 
@@ -381,14 +381,12 @@ export function paneHandleFor(paneId: string, db: Database = getStateDb()): stri
 
 /**
  * Pins `paneId` to `baseHandle` so a later session on the same pane redraws
- * it instead of a fresh pool name, then LRU-caps the ledger by `updated_at`.
+ * it instead of a fresh pool name, then caps the ledger to its most-recently
+ * -written pins (deterministic even when writes share a millisecond).
  */
 export function rememberPaneHandle(paneId: string, baseHandle: string, db: Database = getStateDb()): void {
   setKvValue(PANE_HANDLES_NS, paneId, baseHandle, db);
-  const entries = listKvEntries<string>(PANE_HANDLES_NS, db);
-  if (entries.length <= PANE_HANDLE_CAP) return;
-  entries.sort((a, b) => b.updatedAt - a.updatedAt);
-  for (const stale of entries.slice(PANE_HANDLE_CAP)) deleteKvValue(PANE_HANDLES_NS, stale.key, db);
+  capKvNamespace(PANE_HANDLES_NS, PANE_HANDLE_CAP, db);
 }
 
 export function signOut(sessionId: string, now: number = Date.now(), db: Database = getStateDb()): void {

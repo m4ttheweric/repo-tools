@@ -5,7 +5,7 @@
  * joinRoom/listMembers come from chat-store.ts to exercise the room-default
  * wiring those tests cover.
  */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { readFileSync } from "fs";
 import { tmpdir } from "os";
@@ -504,9 +504,18 @@ test("rememberPaneHandle round-trips a pane's base handle; an unknown pane resol
   expect(paneHandleFor("wZZ:p9", db)).toBeUndefined();
 });
 
-test("the pane-handle ledger is LRU-capped so a long-lived daemon never grows it without bound", () => {
+test("the pane-handle ledger caps at the 200 most-recently-written pins, even when every write shares a timestamp", () => {
   const db = fresh();
-  for (let i = 0; i <= 250; i++) rememberPaneHandle(`w:p${i}`, `h${i}`, db);
+  const frozen = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+  try {
+    for (let i = 1; i <= 250; i++) rememberPaneHandle(`w:p${i}`, `h${i}`, db);
+  } finally {
+    frozen.mockRestore();
+  }
   const count = (db.query("SELECT COUNT(*) AS n FROM kv WHERE ns = 'chat_pane_handles';").get() as { n: number }).n;
   expect(count).toBe(200);
+  // The 50 oldest writes are evicted; the newest 200 survive by insertion order.
+  expect(paneHandleFor("w:p50", db)).toBeUndefined();
+  expect(paneHandleFor("w:p51", db)).toBe("h51");
+  expect(paneHandleFor("w:p250", db)).toBe("h250");
 });

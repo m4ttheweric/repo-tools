@@ -22,6 +22,16 @@ const KV_UPSERT_SQL = `
   ON CONFLICT(ns, k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at
 `;
 const KV_DELETE_SQL = `DELETE FROM kv WHERE ns = ? AND k = ?;`;
+// updated_at is Date.now(), which ties for writes in the same millisecond;
+// rowid breaks those ties by insertion order (a fresh key always takes a
+// higher rowid than every existing one, and an upsert keeps its rowid), so
+// "keep the newest N" stays deterministic instead of evicting an arbitrary
+// tied row. ns is bound twice (outer filter and inner ranking), then keep.
+const KV_CAP_NS_SQL = `
+  DELETE FROM kv WHERE ns = ? AND k NOT IN (
+    SELECT k FROM kv WHERE ns = ? ORDER BY updated_at DESC, rowid DESC LIMIT ?
+  );
+`;
 
 /**
  * `onCorrupt` fires only when a row EXISTS but its JSON fails to parse —
@@ -75,6 +85,20 @@ export function deleteKvValue(ns: string, key: string, db: Database = getStateDb
     `kv:${ns}`,
     () => { db.query(KV_DELETE_SQL).run(ns, key); },
     { ns, k: key, op: "delete" },
+  );
+}
+
+/**
+ * Caps `ns` to its `keep` most-recently-written rows, deleting the rest.
+ * Recency is (updated_at, rowid), so same-millisecond `Date.now()` writes
+ * evict by insertion order rather than arbitrarily. Cache-class write: a
+ * dropped delete just leaves the namespace briefly over its cap.
+ */
+export function capKvNamespace(ns: string, keep: number, db: Database = getStateDb()): void {
+  persistOrWarn(
+    `kv:${ns}`,
+    () => { db.query(KV_CAP_NS_SQL).run(ns, ns, keep); },
+    { ns, op: "cap" },
   );
 }
 

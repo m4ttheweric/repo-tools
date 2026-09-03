@@ -260,6 +260,21 @@ test("chat:mark rejects a non-positive upto with a reason", async () => {
   expect(res.error).toContain("upto");
 });
 
+test("chat:mark rejects an unsafe-integer upto instead of clamping the whole room read", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  postMessage({ room: "r", handle: "a", body: "one" }, h.db);
+  postMessage({ room: "r", handle: "a", body: "two" }, h.db);
+
+  const res = await h["chat:mark"]({ handle: "b", room: "r", upto: Number.MAX_SAFE_INTEGER + 1 } as any);
+  expect(res.ok).toBe(false);
+  // The rejected mark must leave the cursor untouched, not clamp it to maxId.
+  const after = await h["chat:read"]({ handle: "b", room: "r", limit: 20 });
+  if (!after.ok) throw new Error("unreachable");
+  expect(after.data.rooms[0]!.messages.map((m) => m.body)).toEqual(["one", "two"]);
+});
+
 test("the read-only handlers mutate nothing", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "a" });
