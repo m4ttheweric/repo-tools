@@ -380,9 +380,9 @@ describe("toolRows - tool.fast-browser-extension", () => {
   });
 
   // doctor's own "pairing" check already passes whenever the connection mode
-  // isn't auto (the documented default), so a manual-connection machine must
-  // never be told it owes a Keychain token dance (I3); this row just trusts
-  // that check's status rather than inventing a second rule.
+  // isn't auto (the documented default). Manual connection is the documented
+  // default, so a manually connected machine is healthy. This row reports the
+  // check's status rather than inventing an additional rule.
   test("extension-loaded passes but pairing check fails -> needs-you with pairing-only steps", async () => {
     const p = withChrome(doctorExec(withCheckStatus(REAL_DOCTOR, "pairing", "fail")));
     const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
