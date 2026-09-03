@@ -81,13 +81,14 @@ describe("row", () => {
 });
 
 describe("STEP_IDS", () => {
-  test("matches the contract's 23 ids in order", () => {
+  test("matches the contract's 24 ids in order", () => {
     expect(STEP_IDS).toEqual([
       "home.init",
       "home.restore",
       "team.create",
       "team.join",
       "secrets.write",
+      "git.identity",
       "path.link",
       "intercepts.install",
       "settings.seed",

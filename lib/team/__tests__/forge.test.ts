@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { fakeProbes, ok, missing } from "../../setup/__tests__/fakes.ts";
-import { grantRead, revokeRead, forgeLogin, forgeArgv } from "../forge.ts";
+import { grantRead, revokeRead, forgeLogin, forgeProfile, forgeArgv } from "../forge.ts";
 import type { ExecScript } from "../../setup/__tests__/fakes.ts";
 
 const GITHUB_REMOTE = "git@github.com:acme/widgets.git";
@@ -335,5 +335,96 @@ describe("forgeLogin", () => {
     const script: ExecScript = () => ok("not json");
     const p = fakeProbes({ exec: script });
     expect(await forgeLogin(p, "github", "github.com")).toBeNull();
+  });
+});
+
+describe("forgeProfile", () => {
+  test("github: a public email is used as-is, name and login come straight off the account", async () => {
+    const script: ExecScript = () => ok(JSON.stringify({ login: "octocat", name: "Mona Octocat", id: 583231, email: "mona@example.com" }));
+    const p = fakeProbes({ exec: script });
+
+    expect(await forgeProfile(p, "github", "github.com")).toEqual({ login: "octocat", name: "Mona Octocat", email: "mona@example.com" });
+    expect(p.calls.exec).toEqual([["gh", "api", "user"]]);
+  });
+
+  test("github: a private (null) email falls back to the account's noreply address", async () => {
+    const script: ExecScript = () => ok(JSON.stringify({ login: "octocat", name: null, id: 583231, email: null }));
+    const p = fakeProbes({ exec: script });
+
+    expect(await forgeProfile(p, "github", "github.com")).toEqual({
+      login: "octocat",
+      name: "octocat",
+      email: "583231+octocat@users.noreply.github.com",
+    });
+  });
+
+  test("gitlab: commit_email wins over public_email and email", async () => {
+    const script: ExecScript = () =>
+      ok(JSON.stringify({ username: "zaphod", name: "Zaphod Beeblebrox", id: 42, commit_email: "commit@acme.example", public_email: "public@acme.example", email: "private@acme.example" }));
+    const p = fakeProbes({ exec: script });
+
+    expect(await forgeProfile(p, "gitlab", "gitlab.com")).toEqual({ login: "zaphod", name: "Zaphod Beeblebrox", email: "commit@acme.example" });
+    expect(p.calls.exec).toEqual([["glab", "api", "user"]]);
+  });
+
+  test("gitlab: public_email wins over email when there is no commit_email", async () => {
+    const script: ExecScript = () => ok(JSON.stringify({ username: "zaphod", name: "Zaphod", id: 42, commit_email: "", public_email: "public@acme.example", email: "private@acme.example" }));
+    const p = fakeProbes({ exec: script });
+
+    expect((await forgeProfile(p, "gitlab", "gitlab.com"))?.email).toBe("public@acme.example");
+  });
+
+  test("gitlab: email is the last real address before the noreply fallback", async () => {
+    const script: ExecScript = () => ok(JSON.stringify({ username: "zaphod", name: "Zaphod", id: 42, email: "private@acme.example" }));
+    const p = fakeProbes({ exec: script });
+
+    expect((await forgeProfile(p, "gitlab", "gitlab.com"))?.email).toBe("private@acme.example");
+  });
+
+  test("gitlab: no address at all falls back to the instance's own noreply host, and name falls back to the username", async () => {
+    const script: ExecScript = () => ok(JSON.stringify({ username: "zaphod", id: 42 }));
+    const p = fakeProbes({ exec: script });
+
+    expect(await forgeProfile(p, "gitlab", "gitlab.acme.internal")).toEqual({
+      login: "zaphod",
+      name: "zaphod",
+      email: "42-zaphod@users.noreply.gitlab.acme.internal",
+    });
+  });
+
+  test("a token rt holds reaches the CLI through its own env var, never argv", async () => {
+    const seen: (Record<string, string> | undefined)[] = [];
+    const script: ExecScript = (_argv, opts) => {
+      seen.push(opts?.env);
+      return ok(JSON.stringify({ login: "octocat", username: "zaphod", id: 1, email: "a@b.example" }));
+    };
+    const p = fakeProbes({ exec: script });
+
+    await forgeProfile(p, "github", "github.com", "ghp-secret");
+    await forgeProfile(p, "gitlab", "gitlab.acme.internal", "glpat-secret");
+
+    expect(seen).toEqual([{ GH_TOKEN: "ghp-secret" }, { GITLAB_HOST: "gitlab.acme.internal", GITLAB_TOKEN: "glpat-secret" }]);
+    expect(p.calls.exec.flat().join(" ")).not.toContain("secret");
+  });
+
+  test("a non-zero exit returns null and hands the CLI's stderr to the failure callback", async () => {
+    const script: ExecScript = () => ({ code: 1, stdout: "", stderr: "gh: not logged in to any GitHub hosts" });
+    const p = fakeProbes({ exec: script });
+    const seen: string[] = [];
+
+    expect(await forgeProfile(p, "github", "github.com", null, (detail) => seen.push(detail))).toBeNull();
+    expect(seen.join(" ")).toContain("not logged in");
+  });
+
+  test("a malformed JSON response returns null rather than throwing", async () => {
+    const script: ExecScript = () => ok("not json");
+    const p = fakeProbes({ exec: script });
+    expect(await forgeProfile(p, "github", "github.com")).toBeNull();
+  });
+
+  test("a body with no login at all returns null rather than a half-built identity", async () => {
+    const script: ExecScript = () => ok(JSON.stringify({ name: "Mona Octocat", id: 583231 }));
+    const p = fakeProbes({ exec: script });
+    expect(await forgeProfile(p, "github", "github.com")).toBeNull();
   });
 });

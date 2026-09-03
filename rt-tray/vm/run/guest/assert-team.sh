@@ -26,6 +26,12 @@ else
   bad "team.sync row absent"
 fi
 
+# Without a global identity every commit on this Mac, the snapshot daemon's
+# included, carries git's auto-derived author instead of the operator's own.
+GIT_NAME=$(git config --global user.name 2>/dev/null)
+GIT_EMAIL=$(git config --global user.email 2>/dev/null)
+if [ -n "$GIT_NAME" ] && [ -n "$GIT_EMAIL" ]; then ok "git identity: $GIT_NAME <$GIT_EMAIL>"; else bad "git identity not configured"; fi
+
 # Tracked repos: repos.clone puts each under the first rt.repoRoots entry.
 ROOT=$("$RT" settings get rt.repoRoots --json 2>/dev/null | jq -r '.value[0] // empty')
 for repo in $(jq -r '.repos[]?' "$EXPECT"); do

@@ -10,13 +10,16 @@ import type { SecretsSeams } from "../../secrets/store.ts";
 import type { RelayClient } from "../../team/relay-client.ts";
 import type { ApplyContext, StepOutcome } from "../apply.ts";
 import { MERGE_MANIFESTS_MISSING_CODE } from "../skills-materialize.ts";
+import { stageSecret } from "../staging.ts";
 import { readSetupState } from "../state.ts";
+import type { TeamSnapshot } from "../team-settings.ts";
 import type { ToolsInstallSeams } from "../tools-install.ts";
 import type { ToolResolution } from "../../deps/resolve.ts";
 import { fakeProbes, fakeTray, ok } from "./fakes.ts";
 import type { Probes } from "../probes.ts";
 
 import { MATTSTACK_MARKETPLACE_SOURCE, pluginsInstallStep } from "../steps/plugins.ts";
+import { gitIdentityStep } from "../steps/git-identity.ts";
 import {
   extensionInstallRun,
   extensionInstallStep,
@@ -91,7 +94,7 @@ function remedyOf(outcome: StepOutcome): string | undefined {
   return "remedy" in outcome ? outcome.remedy : undefined;
 }
 
-describe("apply steps C: plugins, fast-browser, herdr, extension, services.start, snapshot.push, verify", () => {
+describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, services.start, snapshot.push, verify", () => {
   const origHome = process.env.HOME;
   let home: string;
 
@@ -275,6 +278,178 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       const second = await pluginsInstallStep.run(makeCtx(p).ctx);
       expect(first.state).toBe("done");
       expect(second.state).toBe("done");
+    });
+  });
+
+  // ─── git.identity ───────────────────────────────────────────────────────
+
+  describe("git.identity", () => {
+    const GITHUB_FORGE: TeamSnapshot = {
+      slug: "acme",
+      integrations: { forge: { host: "github.com", provider: "github" } },
+      trackingIdentities: [],
+      marketplaces: [],
+      plugins: [],
+      remote: null,
+    };
+    const GITLAB_FORGE: TeamSnapshot = { ...GITHUB_FORGE, integrations: { forge: { host: "gitlab.com", provider: "gitlab" } } };
+
+    const READ_NAME = ["git", "config", "--global", "user.name"];
+    const READ_EMAIL = ["git", "config", "--global", "user.email"];
+    const unset = { code: 1, stdout: "", stderr: "" };
+
+    /** Every write is a 5-element `git config --global <key> <value>`; the reads are 4. */
+    function writes(p: ReturnType<typeof fakeProbes>): string[][] {
+      return p.calls.exec.filter((argv) => argv[0] === "git" && argv.length === 5);
+    }
+
+    test("both global keys already set: skipped, with no forge call and no write", async () => {
+      const p = fakeProbes({
+        home,
+        exec: async (argv) => {
+          if (argv[3] === "user.name") return ok("Ada Lovelace\n");
+          if (argv[3] === "user.email") return ok("ada@example.com\n");
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { snapshot: GITHUB_FORGE });
+
+      expect(await gitIdentityStep.run(ctx)).toEqual({ state: "skipped", detail: "already configured: Ada Lovelace <ada@example.com>" });
+      expect(p.calls.exec).toEqual([READ_NAME, READ_EMAIL]);
+    });
+
+    test("neither set, GitHub with a private email: writes the account name and its noreply address", async () => {
+      const p = fakeProbes({
+        home,
+        exec: async (argv) => {
+          if (argv[0] === "git" && argv.length === 4) return unset;
+          if (argv[0] === "gh") return ok(JSON.stringify({ login: "octocat", name: "Mona Octocat", id: 583231, email: null }));
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { snapshot: GITHUB_FORGE });
+
+      expect(await gitIdentityStep.run(ctx)).toEqual({ state: "done", detail: "Mona Octocat <583231+octocat@users.noreply.github.com>" });
+      expect(writes(p)).toEqual([
+        ["git", "config", "--global", "user.name", "Mona Octocat"],
+        ["git", "config", "--global", "user.email", "583231+octocat@users.noreply.github.com"],
+      ]);
+    });
+
+    test("neither set, GitLab: writes the profile's commit email", async () => {
+      const p = fakeProbes({
+        home,
+        exec: async (argv) => {
+          if (argv[0] === "git" && argv.length === 4) return unset;
+          if (argv[0] === "glab") return ok(JSON.stringify({ username: "zaphod", name: "Zaphod Beeblebrox", id: 42, commit_email: "zaphod@acme.example" }));
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { snapshot: GITLAB_FORGE });
+
+      expect(await gitIdentityStep.run(ctx)).toEqual({ state: "done", detail: "Zaphod Beeblebrox <zaphod@acme.example>" });
+      expect(writes(p)).toEqual([
+        ["git", "config", "--global", "user.name", "Zaphod Beeblebrox"],
+        ["git", "config", "--global", "user.email", "zaphod@acme.example"],
+      ]);
+    });
+
+    test("a forge rt only knows from the team remote is still used", async () => {
+      const p = fakeProbes({
+        home,
+        exec: async (argv) => {
+          if (argv[0] === "git" && argv.length === 4) return unset;
+          if (argv[0] === "glab") return ok(JSON.stringify({ username: "zaphod", name: "Zaphod", id: 42, commit_email: "zaphod@acme.example" }));
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { snapshot: { ...GITHUB_FORGE, integrations: {}, remote: "https://gitlab.com/acme/mattstack-team-acme.git" } });
+
+      expect((await gitIdentityStep.run(ctx)).state).toBe("done");
+      expect(p.calls.exec.some((argv) => argv[0] === "glab")).toBe(true);
+    });
+
+    test("name already set, email unset: only the email is written, and the detail names what git now resolves", async () => {
+      const p = fakeProbes({
+        home,
+        exec: async (argv) => {
+          if (argv[3] === "user.name" && argv.length === 4) return ok("Ada Lovelace\n");
+          if (argv[0] === "git" && argv.length === 4) return unset;
+          if (argv[0] === "gh") return ok(JSON.stringify({ login: "octocat", name: "Mona Octocat", id: 583231, email: null }));
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { snapshot: GITHUB_FORGE });
+
+      expect(await gitIdentityStep.run(ctx)).toEqual({ state: "done", detail: "Ada Lovelace <583231+octocat@users.noreply.github.com>" });
+      expect(writes(p)).toEqual([["git", "config", "--global", "user.email", "583231+octocat@users.noreply.github.com"]]);
+    });
+
+    test("the forge CLI fails: skipped naming the two commands a human can run, its stderr logged, nothing written", async () => {
+      const p = fakeProbes({
+        home,
+        exec: async (argv) => {
+          if (argv[0] === "git" && argv.length === 4) return unset;
+          if (argv[0] === "gh") return { code: 1, stdout: "", stderr: "gh: not logged in to any GitHub hosts" };
+          return ok("");
+        },
+      });
+      const { ctx, logs } = makeCtx(p, { snapshot: GITHUB_FORGE });
+
+      expect(await gitIdentityStep.run(ctx)).toEqual({
+        state: "skipped",
+        detail: "forge profile unavailable; run git config --global user.name / user.email",
+      });
+      expect(writes(p)).toEqual([]);
+      expect(logs.some((l) => l.id === "git.identity" && l.line.includes("not logged in"))).toBe(true);
+    });
+
+    test("no forge connected and no team remote: skipped after the two reads, nothing else execed", async () => {
+      const p = fakeProbes({ home, exec: async () => unset });
+      const { ctx } = makeCtx(p, { snapshot: { ...GITHUB_FORGE, integrations: {}, remote: null } });
+
+      expect(await gitIdentityStep.run(ctx)).toEqual({
+        state: "skipped",
+        detail: "no forge connected; run git config --global user.name / user.email",
+      });
+      expect(p.calls.exec).toEqual([READ_NAME, READ_EMAIL]);
+    });
+
+    test("an unwritable ~/.gitconfig is a real failure, carrying git's own stderr", async () => {
+      const p = fakeProbes({
+        home,
+        exec: async (argv) => {
+          if (argv[0] === "git" && argv.length === 5) return { code: 128, stdout: "", stderr: "error: could not lock config file /Users/tester/.gitconfig: Permission denied" };
+          if (argv[0] === "git" && argv.length === 4) return unset;
+          if (argv[0] === "gh") return ok(JSON.stringify({ login: "octocat", name: "Mona Octocat", id: 583231, email: null }));
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { snapshot: GITHUB_FORGE });
+
+      const outcome = await gitIdentityStep.run(ctx);
+      expect(outcome.state).toBe("failed");
+      expect(detailOf(outcome)).toContain("could not lock config file");
+    });
+
+    test("the forge token rt holds reaches the CLI's env, is registered for redaction, and never touches argv", async () => {
+      const seen: (Record<string, string> | undefined)[] = [];
+      const p = fakeProbes({
+        home,
+        exec: async (argv, opts) => {
+          if (argv[0] === "git" && argv.length === 4) return unset;
+          seen.push(opts?.env);
+          return ok(JSON.stringify({ login: "octocat", name: "Mona Octocat", id: 583231, email: null }));
+        },
+      });
+      stageSecret(p, "rt", "githubToken", "ghp_staged");
+      const redacted: string[] = [];
+      const { ctx } = makeCtx(p, { snapshot: GITHUB_FORGE, redact: (value) => redacted.push(value) });
+
+      expect((await gitIdentityStep.run(ctx)).state).toBe("done");
+      expect(seen).toEqual([{ GH_TOKEN: "ghp_staged" }]);
+      expect(redacted).toContain("ghp_staged");
+      expect(p.calls.exec.flat().join(" ")).not.toContain("ghp_staged");
     });
   });
 

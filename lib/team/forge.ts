@@ -195,6 +195,86 @@ function forgeAuthEnv(provider: "github" | "gitlab", host: string, token: string
   return { ...base, ...(provider === "github" ? { GH_TOKEN: token } : { GITLAB_TOKEN: token }) };
 }
 
+export interface ForgeProfile {
+  login: string;
+  name: string;
+  email: string;
+}
+
+function parseJsonObject(stdout: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An absent, null or empty field reads the same: nothing usable. */
+function stringField(body: Record<string, unknown>, field: string): string | null {
+  const value = body[field];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function idField(body: Record<string, unknown>): string | null {
+  const value = body["id"];
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function failureDetail(result: Pick<ExecResult, "code" | "stdout" | "stderr">, cli: "gh" | "glab"): string {
+  const text = `${result.stderr}\n${result.stdout}`.trim();
+  return text.length > 0 ? `${cli} api user: ${text}` : `${cli} api user exited ${result.code}`;
+}
+
+/**
+ * The forge account's display name and commit email, for a machine with no
+ * git identity of its own. Never throws and never guesses: an unreachable
+ * CLI, an unreadable body, or an account with no username at all is null,
+ * with the CLI's own words handed to `onFailure` so the caller can say why.
+ * The noreply fallbacks are the addresses each forge itself puts on a
+ * web-UI commit when the account keeps its email private.
+ */
+export async function forgeProfile(
+  p: Probes,
+  provider: "github" | "gitlab",
+  host: string,
+  token?: string | null,
+  onFailure?: (detail: string) => void,
+): Promise<ForgeProfile | null> {
+  const env = forgeAuthEnv(provider, host, token);
+  const cli = provider === "github" ? "gh" : "glab";
+  const result = await p.exec([...forgeArgv(p, cli), "api", "user"], env ? { env } : undefined);
+  if (result.code !== 0) {
+    onFailure?.(failureDetail(result, cli));
+    return null;
+  }
+
+  const body = parseJsonObject(result.stdout);
+  if (!body) {
+    onFailure?.(`${cli} api user returned a body rt could not read`);
+    return null;
+  }
+
+  const login = stringField(body, provider === "github" ? "login" : "username");
+  if (!login) {
+    onFailure?.(`${cli} api user returned no account name`);
+    return null;
+  }
+
+  const id = idField(body);
+  const email =
+    provider === "github"
+      ? (stringField(body, "email") ?? (id ? `${id}+${login}@users.noreply.github.com` : null))
+      : (stringField(body, "commit_email") ?? stringField(body, "public_email") ?? stringField(body, "email") ?? (id ? `${id}-${login}@users.noreply.${host}` : null));
+  if (!email) {
+    onFailure?.(`${cli} api user returned no email and no account id to derive one from`);
+    return null;
+  }
+
+  return { login, name: stringField(body, "name") ?? login, email };
+}
+
 export async function forgeLogin(p: Probes, provider: "github" | "gitlab", host: string, token?: string | null): Promise<string | null> {
   const env = forgeAuthEnv(provider, host, token);
   if (provider === "github") {
