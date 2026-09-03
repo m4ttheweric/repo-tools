@@ -249,7 +249,9 @@ describe("settings/registry", () => {
         "board.defaultMember",
         "board.hiddenMembers",
         "board.triage",
-        "board.claudeCommand",
+        "board.agent.account",
+        "board.agent.model",
+        "board.agent.effort",
         "board.cwds",
         "board.triageMaxConcurrent",
         "board.switchboardUrl",
@@ -278,7 +280,7 @@ describe("settings/registry", () => {
         "rt.daemonPath",
         "rt.notify.eventBridges",
       ];
-      expect(suiteKeys).toHaveLength(53);
+      expect(suiteKeys).toHaveLength(55);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),

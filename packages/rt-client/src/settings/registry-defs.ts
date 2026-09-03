@@ -460,11 +460,25 @@ export const REGISTRY: readonly SettingDef[] = [
 
   // --- board (machine) ---------------------------------------------------
   {
-    key: "board.claudeCommand",
+    key: "board.agent.account",
     type: "string",
-    scopes: ["machine"],
+    scopes: ["user", "machine"],
     merge: "replace",
-    description: "Local command used to launch Claude Code for the board's review/respond/doctor panes.",
+    description: "cswap account the board's review/respond/doctor panes launch under; unset uses the default claude profile. Replaces the retired board.claudeCommand.",
+  },
+  {
+    key: "board.agent.model",
+    type: "string",
+    scopes: ["user", "machine"],
+    merge: "replace",
+    description: "Default --model for the board's review/respond/doctor panes; unset omits the flag.",
+  },
+  {
+    key: "board.agent.effort",
+    type: "string",
+    scopes: ["user", "machine"],
+    merge: "replace",
+    description: "Default --effort for the board's review/respond/doctor panes; unset omits the flag.",
   },
   {
     key: "board.cwds",
