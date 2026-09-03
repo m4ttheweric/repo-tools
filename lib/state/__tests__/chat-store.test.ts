@@ -319,8 +319,30 @@ test("mark advances without returning messages", () => {
   joinRoom({ room: "r", handle: "a" }, db);
   joinRoom({ room: "r", handle: "b" }, db);
   postMessage({ room: "r", handle: "a", body: "one" }, db);
-  markRead("b", "r", db);
+  markRead("b", "r", undefined, db);
   expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
+});
+
+test("markRead with upto advances only to that message, leaving the later ones unread", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  const two = postMessage({ room: "r", handle: "a", body: "two" }, db)!;
+  postMessage({ room: "r", handle: "a", body: "three" }, db);
+  markRead("b", "r", two.id, db);
+  const unread = readUnread({ handle: "b", room: "r", limit: 20 }, db);
+  expect(unread[0]!.messages.map((m) => m.body)).toEqual(["three"]);
+});
+
+test("markRead with no upto still clears the whole room", () => {
+  const db = freshDb();
+  joinRoom({ room: "r", handle: "a" }, db);
+  joinRoom({ room: "r", handle: "b" }, db);
+  postMessage({ room: "r", handle: "a", body: "one" }, db);
+  postMessage({ room: "r", handle: "a", body: "two" }, db);
+  markRead("b", "r", undefined, db);
+  expect(readUnread({ handle: "b", room: "r", limit: 20 }, db)).toEqual([]);
 });
 
 test("markDelivered clamps the cursor: a slower delivery completing after a newer one never moves it backwards", () => {
@@ -491,10 +513,10 @@ test("room-less markRead skips an archived room, naming it still clears the curs
   archiveRoom("build", true, db);
   archiveRoom("other", true, db);
 
-  markRead("b", undefined, db);
+  markRead("b", undefined, undefined, db);
   expect(readUnread({ handle: "b", room: "build", limit: 20 }, db)).toHaveLength(1);
 
-  markRead("b", "other", db);
+  markRead("b", "other", undefined, db);
   expect(readUnread({ handle: "b", room: "other", limit: 20 }, db)).toHaveLength(0);
 });
 
@@ -536,7 +558,7 @@ test("R057: markRead does not throw when the write races a held lock past busy_t
   postMessage({ room: "build", handle: "a", body: "hi" }, db);
   const { release } = heldWriteLock(path);
   try {
-    expect(() => markRead("a", "build", db)).not.toThrow();
+    expect(() => markRead("a", "build", undefined, db)).not.toThrow();
   } finally {
     release();
   }

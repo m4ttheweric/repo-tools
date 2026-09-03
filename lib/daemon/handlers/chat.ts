@@ -1037,7 +1037,11 @@ export function createChatHandlers(opts: {
 
     "chat:mark": async (rawPayload: unknown): Promise<CommandResult<"chat:mark">> => {
       const payload = rawPayload as Commands["chat:mark"]["payload"];
-      markRead(payload.handle, payload.room, db);
+      const { handle, room, upto } = payload;
+      if (upto !== undefined && (!Number.isInteger(upto) || upto <= 0)) {
+        return { ok: false, error: "upto must be a positive message id" };
+      }
+      markRead(handle, room, upto, db);
       return { ok: true, data: {} };
     },
 

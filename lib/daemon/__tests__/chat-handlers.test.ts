@@ -222,6 +222,44 @@ test("chat:read clamps a negative limit into [1,500] rather than reaching SQLite
   expect(res.data.rooms[0]!.messages.length).toBeLessThanOrEqual(500);
 });
 
+test("chat:mark --upto advances the cursor only to that message, leaving the later ones unread", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  postMessage({ room: "r", handle: "a", body: "one" }, h.db);
+  const two = postMessage({ room: "r", handle: "a", body: "two" }, h.db);
+  postMessage({ room: "r", handle: "a", body: "three" }, h.db);
+
+  const marked = await h["chat:mark"]({ handle: "b", room: "r", upto: two!.id });
+  expect(marked.ok).toBe(true);
+  const after = await h["chat:read"]({ handle: "b", room: "r", limit: 20 });
+  if (!after.ok) throw new Error("unreachable");
+  expect(after.data.rooms[0]!.messages.map((m) => m.body)).toEqual(["three"]);
+});
+
+test("chat:mark with no upto clears the whole room", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  postMessage({ room: "r", handle: "a", body: "one" }, h.db);
+  postMessage({ room: "r", handle: "a", body: "two" }, h.db);
+
+  const marked = await h["chat:mark"]({ handle: "b", room: "r" });
+  expect(marked.ok).toBe(true);
+  const after = await h["chat:read"]({ handle: "b", room: "r", limit: 20 });
+  if (!after.ok) throw new Error("unreachable");
+  expect(after.data.rooms).toEqual([]);
+});
+
+test("chat:mark rejects a non-positive upto with a reason", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "b" });
+  const res = await h["chat:mark"]({ handle: "b", room: "r", upto: 0 } as any);
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("upto");
+});
+
 test("the read-only handlers mutate nothing", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "a" });

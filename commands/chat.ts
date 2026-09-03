@@ -12,7 +12,7 @@
  *   rt chat release <messageId>                    hand a claim back (holder or the author)
  *   rt chat rooms
  *   rt chat who [room]
- *   rt chat mark [room]
+ *   rt chat mark [room] [--upto <messageId>]      advance the cursor to <messageId>, or clear the room when omitted
  *   rt chat prune [--json]                          delete messages past the retention floor (also runs daily in the daemon)
  *   rt chat sign-in [--as <h>] [--status <text>] [--no-room] [--room <name>] [--session <id>]
  *   rt chat sign-in --pane <id> [--as <h>] [--status <text>]   sign in a herdr pane's session, no CLAUDE_CODE_SESSION_ID needed
@@ -95,7 +95,7 @@ import type {
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
-const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file", "--last", "--note", "--pane"]);
+const FLAGS_WITH_VALUES = new Set(["--as", "--wake-on", "--limit", "--since", "--room", "--sock", "--session", "--status", "--file", "--last", "--note", "--pane", "--upto"]);
 
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -906,7 +906,16 @@ async function runMark(args: string[]): Promise<void> {
   const handle = resolveHandle(args);
   requireValidName("handle", handle);
 
-  const res = await chatMark({ handle, room });
+  let upto: number | undefined;
+  const uptoRaw = flagValue(args, "--upto");
+  if (uptoRaw !== undefined) {
+    if (!room) fail("--upto needs a room");
+    const n = Number(uptoRaw);
+    if (!Number.isInteger(n) || n <= 0) fail(`--upto must be a positive message id (got "${uptoRaw}")`);
+    upto = n;
+  }
+
+  const res = await chatMark({ handle, room, upto });
   unwrap(res, "mark");
 
   if (args.includes("--json")) console.log(JSON.stringify({ ok: true }));

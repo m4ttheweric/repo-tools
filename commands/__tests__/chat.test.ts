@@ -253,6 +253,20 @@ describe("rt chat CLI — additional verb behavior", () => {
     expect(await runChat(["mark", "r", "--as", "a"])).toBe("");
   });
 
+  test("mark --upto advances only to that message, leaving later ones unread; a bad --upto is refused", async () => {
+    await runChat(["join", "r", "--as", "a"]);
+    await runChat(["join", "r", "--as", "b"]);
+    await runChat(["post", "r", "one", "--as", "a", "--json"]);
+    const two = JSON.parse(await runChat(["post", "r", "two", "--as", "a", "--json"]));
+    await runChat(["post", "r", "three", "--as", "a", "--json"]);
+    await runChat(["mark", "r", "--upto", String(two.id), "--as", "b"]);
+    const read = JSON.parse(await runChat(["read", "r", "--as", "b", "--json"]));
+    expect(read.rooms[0].messages.map((m: { body: string }) => m.body)).toEqual(["three"]);
+
+    const bad = await runChatRaw(["mark", "r", "--upto", "0", "--as", "b"]);
+    expect(bad.code).not.toBe(0);
+  });
+
   test("post's body is every word after the room, joined back with spaces", async () => {
     await runChat(["join", "r", "--as", "a"]);
     await runChat(["join", "r", "--as", "b"]);
