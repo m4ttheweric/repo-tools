@@ -2176,7 +2176,8 @@ describe("startSnapshot: pull", () => {
   });
 
   test("a rebase conflict aborts, persists the marker, broadcasts once, suspends push and pull until it clears", async () => {
-    const exec = makeSwitchableExec([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders()]);
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const exec = makeSwitchableExec([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders({ statusZ: dirty })]);
     const { deps, broadcasts } = baseDeps({ exec: exec.fn });
     const { repoDir: _r, ...specDeps } = deps;
     const handle = startSnapshot(teamSpecFor(), specDeps);
@@ -2189,20 +2190,78 @@ describe("startSnapshot: pull", () => {
     expect(getKvValue("team-snapshot:acme", "conflict", null, deps.db!)).not.toBeNull();
     expect(broadcasts.filter((b) => b.type === "team:conflict")).toHaveLength(1);
 
-    const pushesBefore = exec.calls.filter((c) => gitVerb(c) === "push").length;
-    await handle.runNow("manual");
-    expect(exec.calls.filter((c) => gitVerb(c) === "push").length).toBe(pushesBefore);
+    // The status snapshot is dirty inside the scope, so a run that reached the
+    // commit sites at all would leave `add` and `commit` in the argv log.
+    const before = exec.calls.length;
+    const suspended = await handle.runNow("manual");
+    expect(suspended.skipped).toBe("conflict");
+    const duringRun = exec.calls.slice(before).map((c) => gitVerb(c));
+    expect(duringRun).not.toContain("add");
+    expect(duringRun).not.toContain("commit");
+    expect(duringRun).not.toContain("push");
     expect((await handle.pullNow()).outcome).toBe("skipped");
     expect(broadcasts.filter((b) => b.type === "team:conflict")).toHaveLength(1);
 
-    exec.setResponders([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
+    exec.setResponders([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
     expect((await handle.pullNow()).outcome).toBe("up-to-date");
     expect(handle.status().conflicted).toBeNull();
     expect(getKvValue("team-snapshot:acme", "conflict", null, deps.db!)).toBeNull();
     handle.stop();
   });
 
-  test("a push is preceded by a pull, and a non-fast-forward rejection pulls and retries once", async () => {
+  test("a rebase conflict cancels the armed push timer, so a due push never fires while suspended", async () => {
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const exec = makeSwitchableExec([...pullResponders({ behind: 0, ahead: 1 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps, timers } = baseDeps({ exec: exec.fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+
+    await handle.runNow("manual");
+    const pushDelayMs = DEFAULT_SETTINGS.pushDelaySec * 1000;
+    expect([...timers.pending.values()].some((t) => t.ms === pushDelayMs)).toBe(true);
+
+    exec.setResponders([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders({ statusZ: dirty })]);
+    expect((await handle.pullNow()).outcome).toBe("conflict");
+
+    expect([...timers.pending.values()].some((t) => t.ms === pushDelayMs)).toBe(false);
+    timers.fire(() => true);
+    await flushAsync();
+    expect(exec.calls.filter((c) => gitVerb(c) === "push")).toHaveLength(0);
+    handle.stop();
+  });
+
+  test("a rebase conflict cancels a standing push-retry timer too, so the ladder stops while suspended", async () => {
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    // `gitWithToken` prepends `-c` pairs, so defaultResponders' argv[1]-keyed
+    // push answer never matches a token-carrying push; this one has to.
+    const failingPush: Responder = (argv) => gitVerb(argv) === "push" ? { stdout: "", stderr: "fatal: unable to access origin", exitCode: 1 } : undefined;
+    const exec = makeSwitchableExec([failingPush, ...pullResponders({ behind: 0, ahead: 1 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps, timers } = baseDeps({ exec: exec.fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    const retryMs = DEFAULT_SETTINGS.pushDelaySec * 5 * 1000;
+    expect([...timers.pending.values()].some((t) => t.ms === retryMs)).toBe(true);
+    const pushesBefore = exec.calls.filter((c) => gitVerb(c) === "push").length;
+
+    exec.setResponders([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders({ statusZ: dirty })]);
+    expect((await handle.pullNow()).outcome).toBe("conflict");
+
+    expect([...timers.pending.values()].some((t) => t.ms === retryMs)).toBe(false);
+    timers.fire(() => true);
+    await flushAsync();
+    expect(exec.calls.filter((c) => gitVerb(c) === "push")).toHaveLength(pushesBefore);
+    handle.stop();
+  });
+
+  test("a due push fetches BETWEEN the commit and the push, and a non-fast-forward rejection pulls and retries once", async () => {
     let pushes = 0;
     const responders: Responder[] = [
       ...pullResponders({ behind: 0, ahead: 1 }),
@@ -2216,13 +2275,60 @@ describe("startSnapshot: pull", () => {
     const { repoDir: _r, ...specDeps } = deps;
     const handle = startSnapshot(teamSpecFor(), specDeps);
     await handle.ready;
+    await flushAsync(); // let the boot pull's own fetch land before the commit
+    const fetchesBeforeCommit = calls.filter((c) => gitVerb(c) === "fetch").length;
+    expect(fetchesBeforeCommit).toBe(1);
+
     await handle.runNow("manual");
-    timers.fire(() => true);
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
     await flushAsync();
-    const order = calls.map((c) => gitVerb(c)).filter((v) => v === "fetch" || v === "push");
-    expect(order[0]).toBe("fetch");
+
+    // Ordering, not a bare count: the boot pull already fetched once, so only a
+    // fetch sitting between the commit and the first push proves the pre-push pull.
+    const verbs = calls.map((c) => gitVerb(c));
+    const commitIdx = verbs.lastIndexOf("commit");
+    const pushIdx = verbs.indexOf("push");
+    expect(commitIdx).toBeGreaterThan(-1);
+    expect(pushIdx).toBeGreaterThan(commitIdx);
+    expect(verbs.findIndex((v, i) => v === "fetch" && i > commitIdx && i < pushIdx)).toBeGreaterThan(-1);
+
     expect(pushes).toBe(2);
     expect(handle.status().pushPending).toBe(false);
+    handle.stop();
+  });
+
+  test("withGitLock: a commit cycle started while a pull is in flight touches no git until the fetch returns", async () => {
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((resolve) => { releaseFetch = resolve; });
+    const responders = [...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" })];
+    const calls: string[][] = [];
+    const exec = async (argv: [string, ...string[]]): Promise<RunResult> => {
+      calls.push([...argv]);
+      if (gitVerb(argv) === "fetch") {
+        await fetchGate;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      for (const r of responders) {
+        const res = r(argv);
+        if (res) return res;
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    const { deps } = baseDeps({ exec });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+    expect(calls.some((c) => gitVerb(c) === "fetch")).toBe(true);
+
+    const run = handle.runNow("manual");
+    await flushAsync();
+    expect(calls.some((c) => gitVerb(c) === "status")).toBe(false);
+    expect(calls.some((c) => gitVerb(c) === "add")).toBe(false);
+
+    releaseFetch();
+    expect((await run).committed).toBe(true);
+    expect(calls.some((c) => gitVerb(c) === "add")).toBe(true);
     handle.stop();
   });
 
