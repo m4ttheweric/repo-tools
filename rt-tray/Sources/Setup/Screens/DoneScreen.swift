@@ -7,6 +7,11 @@ struct DoneScreen: View {
     let isOwner: Bool
     let onInvite: () -> Void
     @State private var steps: (title: String, steps: [String])?
+    /// `readiness.load()` for the checklist screen is never re-run for Done,
+    /// so the model still holds the pre-Install plan until this screen's own
+    /// `.task` fetch lands. Gating on it keeps the pre-Install row count from
+    /// flashing before the post-Install one replaces it.
+    @State private var hasCheckedSincePostInstall = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -23,12 +28,14 @@ struct DoneScreen: View {
                     LabeledContent("Terminal") { Text("rt — open a new terminal window").font(.system(.body, design: .monospaced)) }
                     LabeledContent("Board") { Link("https://board.mattstack", destination: URL(string: "https://board.mattstack")!) }
                 }
-                if !readiness.outstandingManualRows.isEmpty {
+                if !visibleOutstandingRows.isEmpty {
                     Section("Still to do") {
-                        ForEach(readiness.outstandingManualRows) { row in
-                            RowView(row: row, isChecking: false, rowID: AXID.doneStillToDoRow(row.id)) { show(row) }
+                        ForEach(visibleOutstandingRows) { row in
+                            RowView(row: row, isChecking: false, rowID: AXID.doneStillToDoRow(row.id),
+                                    actionID: AXID.doneStillToDoRowAction(row.id), statusID: AXID.doneStillToDoRowStatus(row.id)) { show(row) }
                         }
                     }
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier(AXID.doneStillToDo)
                 }
             }
@@ -41,7 +48,10 @@ struct DoneScreen: View {
             Spacer()
         }
         .padding(24)
-        .task { await readiness.recheckAll() }
+        .task {
+            await readiness.recheckAll()
+            hasCheckedSincePostInstall = true
+        }
         .sheet(isPresented: Binding(get: { steps != nil }, set: { presented in
             guard !presented else { return }
             steps = nil
@@ -58,14 +68,18 @@ struct DoneScreen: View {
         .accessibilityIdentifier(AXID.doneScreen)
     }
 
-    private var outstanding: Int { readiness.outstandingManualRows.count }
+    private var visibleOutstandingRows: [PlanRow] { hasCheckedSincePostInstall ? readiness.outstandingManualRows : [] }
+    private var outstanding: Int { visibleOutstandingRows.count }
     private var headline: String { outstanding == 0 ? "Everything's working" : "Installed, with \(outstanding) step\(outstanding == 1 ? "" : "s") left for you" }
     private var headlineSymbol: String { outstanding == 0 ? "checkmark.seal.fill" : "checkmark.seal" }
     private var headlineTint: Color { outstanding == 0 ? .green : .accentColor }
 
     private func show(_ row: PlanRow) {
         guard let action = row.action else { return }
-        if action.type == .openURL, let raw = action.url, let url = URL(string: raw), url.scheme?.hasPrefix("http") == true {
+        if action.type == .openURL {
+            // Mirrors RowActionDispatcher's own rejection: an unsupported
+            // scheme does nothing rather than presenting a title with no steps.
+            guard let raw = action.url, let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else { return }
             NSWorkspace.shared.open(url)
             Task { await readiness.recheckAll() }
             return

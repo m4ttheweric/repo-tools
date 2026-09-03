@@ -63,6 +63,8 @@ enum AXID {
     static let doneInvite = "setup.done.invite"
     static let doneStillToDo = "setup.done.stillToDo"
     static func doneStillToDoRow(_ id: String) -> String { "setup.done.stillToDo.\(id)" }
+    static func doneStillToDoRowStatus(_ id: String) -> String { "setup.done.stillToDo.\(id).status" }
+    static func doneStillToDoRowAction(_ id: String) -> String { "setup.done.stillToDo.\(id).action" }
 
     // Settings
     static func settingsTab(_ pane: String) -> String { "settings.tab.\(pane)" }
