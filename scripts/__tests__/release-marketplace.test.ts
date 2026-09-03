@@ -3,6 +3,7 @@ import { spawnSync, execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { BASE_PLUGINS } from "../../lib/setup/base-plugins";
 
 // Everything here is offline: the only remotes are local bare repos, so the
 // suite exercises the real push and the real `git ls-remote` re-pin without a
@@ -319,8 +320,7 @@ describe("the catalog this repo actually publishes", () => {
   });
 
   test("carries every plugin plugins.install treats as baseline", () => {
-    const src = readFileSync(join(ROOT, "lib", "setup", "steps", "plugins.ts"), "utf8");
-    const base = [...src.matchAll(/"([\w.-]+)@mattstack"/g)].map((m) => m[1]);
+    const base = BASE_PLUGINS.map((entry) => entry.split("@")[0]);
     expect(base.length).toBeGreaterThan(0);
     const listed = doc.plugins.map((p: { name: string }) => p.name);
     for (const name of base) expect(listed).toContain(name);
