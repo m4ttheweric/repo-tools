@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import pino from "pino";
-import { createGatesStore, type GateQuestion, type GatesStore } from "../gates-store.ts";
+import { createGatesStore, GATE_BY_PANE, type GateQuestion, type GatesStore } from "../gates-store.ts";
 
 const log = pino({ level: "silent" });
 
@@ -91,7 +91,7 @@ describe("gates store — transitions", () => {
     const s = store(); const id = openGate(s, "run:r1");
     const w = s.answer(id, { q: "a" }, "console");
     expect(w.ok).toBe(true);
-    const l = s.answer(id, { q: "b" }, "pane");
+    const l = s.answer(id, { q: "b" }, GATE_BY_PANE);
     expect(l.ok).toBe(false);
     if (!l.ok) { expect(l.reason).toBe("already-answered"); expect(l.row?.answer?.by).toBe("console"); }
   });
@@ -115,11 +115,11 @@ describe("gates store — transitions", () => {
   test("close is terminal; closing an answered gate is a no-op rejection; answer after close rejects", () => {
     const s = store();
     const a = openGate(s, "run:r1");
-    s.answer(a, { q: "x" }, "pane");
+    s.answer(a, { q: "x" }, GATE_BY_PANE);
     expect(s.close(a, "pruned").ok).toBe(false);
     const b = openGate(s, "run:r2");
     expect(s.close(b, "abandoned").ok).toBe(true);
-    const r = s.answer(b, { q: "x" }, "pane");
+    const r = s.answer(b, { q: "x" }, GATE_BY_PANE);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("closed");
   });
@@ -138,23 +138,23 @@ describe("gates store — transitions", () => {
     const s = store();
     const { row } = s.open({ subject: "run:r1", kind: "clarify", questions: qs(), pane: "pane-7" });
     s.answer(row.id, { q: "a" }, "console");
-    s.answer(row.id, { q: "b" }, "pane"); // loses, but proves the pane reconciled
+    s.answer(row.id, { q: "b" }, GATE_BY_PANE); // loses, but proves the pane reconciled
     expect(s.get(row.id)?.released).toBe(true);
   });
 
   test("...and the winner too (a pane that decides has obviously reconciled)", () => {
     const s = store();
     const { row } = s.open({ subject: "run:r1", kind: "clarify", questions: qs(), pane: "pane-7" });
-    s.answer(row.id, { q: "a" }, "pane"); // wins
+    s.answer(row.id, { q: "a" }, GATE_BY_PANE); // wins
     expect(s.get(row.id)?.released).toBe(true);
   });
 
   test("list filters by open, subjectPrefix, kind", () => {
     const s = store();
     openGate(s, "run:r1"); openGate(s, "mr:https://x/1");
-    const runs = s.list({ open: true, subjectPrefix: "run:" });
-    expect(runs.length).toBe(1);
-    expect(runs[0]!.subject).toBe("run:r1");
+    const { gates } = s.list({ open: true, subjectPrefix: "run:" });
+    expect(gates.length).toBe(1);
+    expect(gates[0]!.subject).toBe("run:r1");
   });
 });
 
@@ -186,7 +186,7 @@ describe("gates store — wait", () => {
     const s = store(); const id = openGate(s, "run:r1");
     expect((await s.wait(id, { waitMs: 20 })).status).toBe("timeout");
     const p = s.wait(id, { waitMs: 5000 });
-    s.answer(id, { q: "a" }, "pane");
+    s.answer(id, { q: "a" }, GATE_BY_PANE);
     expect((await p).status).toBe("answered");
   });
 
@@ -216,5 +216,58 @@ describe("gates store — subscriptions", () => {
     expect(s2.subscriptions({ live: true }).length).toBe(1);
     s2.markSubscriptionDead(sub.id);
     expect(s2.subscriptions({ live: true }).length).toBe(0);
+  });
+
+  test("subscribe is idempotent on (subjectPrefix, session): a live re-subscribe returns the SAME row", () => {
+    const s = store();
+    const first = s.subscribe({ subjectPrefix: "run:", session: "sess-1" });
+    const second = s.subscribe({ subjectPrefix: "run:", session: "sess-1" });
+    expect(second.id).toBe(first.id);
+    expect(s.subscriptions().length).toBe(1);
+  });
+
+  test("a DEAD row does not block a fresh subscribe: a new live row is minted", () => {
+    const s = store();
+    const first = s.subscribe({ subjectPrefix: "run:", session: "sess-1" });
+    s.markSubscriptionDead(first.id);
+    const second = s.subscribe({ subjectPrefix: "run:", session: "sess-1" });
+    expect(second.id).not.toBe(first.id);
+    expect(s.subscriptions({ live: true }).length).toBe(1);
+  });
+
+  test("subscriptions filters by session, and unfiltered reads include dead rows", () => {
+    const s = store();
+    const a = s.subscribe({ subjectPrefix: "run:", session: "sess-1" });
+    s.subscribe({ subjectPrefix: "mr:", session: "sess-2" });
+    s.markSubscriptionDead(a.id);
+    expect(s.subscriptions({ session: "sess-1" }).length).toBe(1);
+    expect(s.subscriptions().length).toBe(2); // dead row still readable unfiltered
+    expect(s.subscriptions({ live: true }).length).toBe(1);
+  });
+});
+
+describe("gates store — sweep", () => {
+  test("sweeps an old closed row, never touches an open row, and respects the floor", () => {
+    const s: GatesStore = createGatesStore({ dbPath: tmp("gates.db"), log, retentionMs: 1000, retentionFloor: 0 });
+    const oldId = openGate(s, "run:old");
+    s.close(oldId, "abandoned");
+    // Backdate closedAt past the retention window directly on the handle,
+    // same trick events-bus.ts's own sweep test uses (no real sleep).
+    s.__db!.run("UPDATE gates SET closedAt = ? WHERE id = ?", [Date.now() - 10_000, oldId]);
+    const openId = openGate(s, "run:keep-open");
+    const removed = s.sweep();
+    expect(removed).toBe(1);
+    expect(s.get(oldId)).toBeNull();
+    expect(s.get(openId)).not.toBeNull();
+  });
+
+  test("a row floor keeps the most recent terminal rows even past the retention window", () => {
+    const s: GatesStore = createGatesStore({ dbPath: tmp("gates.db"), log, retentionMs: 1000, retentionFloor: 1 });
+    const id = openGate(s, "run:old");
+    s.close(id, "abandoned");
+    s.__db!.run("UPDATE gates SET closedAt = ? WHERE id = ?", [Date.now() - 10_000, id]);
+    const removed = s.sweep();
+    expect(removed).toBe(0); // the floor (1) covers this single terminal row
+    expect(s.get(id)).not.toBeNull();
   });
 });

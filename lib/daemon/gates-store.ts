@@ -11,15 +11,17 @@ import { mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
 import type { Logger } from "pino";
 import { isCorruptionError } from "../state/db.ts";
-import type {
-  GateStatus,
-  GateQuestion,
-  GateAnswer,
-  GateRow,
-  GateSubscription,
+import {
+  GATE_BY_PANE,
+  type GateStatus,
+  type GateQuestion,
+  type GateAnswer,
+  type GateRow,
+  type GateSubscription,
 } from "../../packages/rt-client/src/commands.ts";
 
 export type { GateStatus, GateQuestion, GateAnswer, GateRow, GateSubscription };
+export { GATE_BY_PANE };
 
 export type WaitResult =
   | { status: "answered" | "closed"; row: GateRow }
@@ -27,6 +29,15 @@ export type WaitResult =
   | { status: "not-found" };
 
 export interface OpenResult { row: GateRow; supersededId: string | null }
+
+/** `released` reports whether THIS call transitioned the row to released
+    (pane-answer reconciliation), not the row's resulting released value --
+    a caller emitting `gate/released` needs to know it happened here, not
+    that it happened at all (an already-released row must not re-emit). */
+export type AnswerResult =
+  | { ok: true; row: GateRow; released: boolean }
+  | { ok: false; reason: "not-found"; row: null; released: false }
+  | { ok: false; reason: "closed" | "already-answered"; row: GateRow; released: boolean };
 
 export interface GatesStore {
   open(input: {
@@ -39,22 +50,23 @@ export interface GatesStore {
     nudge?: { session: string };
   }): OpenResult;
   get(id: string): GateRow | null;
-  list(filter: { open?: boolean; subjectPrefix?: string; kind?: string }): GateRow[];
-  answer(
-    id: string,
-    answers: GateAnswer["answers"],
-    by: string,
-  ): { ok: true; row: GateRow } | { ok: false; reason: "not-found" | "closed" | "already-answered"; row: GateRow | null };
+  list(filter: { open?: boolean; subjectPrefix?: string; kind?: string; limit?: number; cursor?: number }): { gates: GateRow[]; cursor: number };
+  answer(id: string, answers: GateAnswer["answers"], by: string): AnswerResult;
   park(id: string): { ok: true } | { ok: false; reason: "not-found" | "not-open"; row: GateRow | null };
   close(id: string, reason: "abandoned" | "superseded" | "pruned"): { ok: true } | { ok: false; reason: "not-found" | "already-answered" | "already-closed" };
   markDelivery(id: string, outcome: "delivered" | "dead-pane"): void;
   markReleased(id: string): void;
   wait(id: string, opts: { waitMs?: number; signal?: AbortSignal }): Promise<WaitResult>;
+  /** Idempotent on (subjectPrefix, session): a live match returns the
+      existing row rather than minting a duplicate. */
   subscribe(input: { subjectPrefix: string; session: string }): GateSubscription;
   unsubscribe(id: string): boolean;
-  subscriptions(filter?: { live?: boolean }): GateSubscription[];
+  subscriptions(filter?: { live?: boolean; session?: string }): GateSubscription[];
   markSubscriptionDelivery(id: string, outcome: "delivered" | "failed"): void;
   markSubscriptionDead(id: string): void;
+  /** Deletes closed/answered rows past the retention window, floor respected.
+      Returns the number of rows removed. */
+  sweep(): number;
   close_(): void;
   /** Test-only debug accessor for the underlying handle (e.g. pragma checks). Not for feature code. */
   __db?: Database;
@@ -147,8 +159,17 @@ function assertValidSubject(subject: string): void {
   }
 }
 
-export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesStore {
+export function createGatesStore(opts: {
+  dbPath: string;
+  log: Logger;
+  retentionFloor?: number;
+  retentionMs?: number;
+}): GatesStore {
   const log = opts.log.child({ module: "gates" });
+  // Same defaults as events-bus.ts's retention family: a week, with a row
+  // floor so a quiet week never drops below it.
+  const retentionFloor = opts.retentionFloor ?? 50_000;
+  const retentionMs = opts.retentionMs ?? 7 * 24 * 60 * 60 * 1000;
   mkdirSync(dirname(opts.dbPath), { recursive: true });
 
   let db: Database;
@@ -223,8 +244,26 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     "UPDATE gates SET status = 'closed', closedReason = ?, closedAt = ? WHERE id = ? AND status IN ('open', 'parked')",
   );
   const releaseStmt = db.prepare("UPDATE gates SET released = 1 WHERE id = ?");
+  const markDeliveryStmt = db.prepare("UPDATE gates SET delivery = ? WHERE id = ?");
+  const maxRowidStmt = db.prepare("SELECT COALESCE(MAX(rowid), 0) AS maxId FROM gates");
+  // Row floor scoped to terminal rows only: open/parked rows are never swept
+  // regardless, so they shouldn't consume floor headroom meant for terminal ones.
+  const sweepStmt = db.prepare(`
+    DELETE FROM gates
+    WHERE status IN ('closed', 'answered')
+      AND COALESCE(closedAt, json_extract(answer, '$.answeredAt'), openedAt) < ?
+      AND id NOT IN (
+        SELECT id FROM gates
+        WHERE status IN ('closed', 'answered')
+        ORDER BY COALESCE(closedAt, json_extract(answer, '$.answeredAt'), openedAt) DESC
+        LIMIT ?
+      )
+  `);
 
   const getSubStmt = db.prepare("SELECT * FROM gate_subscriptions WHERE id = ?");
+  const findLiveSubStmt = db.prepare(
+    "SELECT * FROM gate_subscriptions WHERE subjectPrefix = ? AND session = ? AND dead = 0 LIMIT 1",
+  );
   const insertSubStmt = db.prepare(
     "INSERT INTO gate_subscriptions (id, subjectPrefix, session, createdAt, lastDelivery, dead) VALUES (?, ?, ?, ?, NULL, 0)",
   );
@@ -266,14 +305,15 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
 
   // Winner-path answer + release must commit together: a reader between two
   // separate auto-commits could observe status='answered' with released=0.
-  const answerWinTxn = db.transaction((answerJson: string, id: string, by: string): { changed: boolean } => {
+  const answerWinTxn = db.transaction((answerJson: string, id: string, by: string): { changed: boolean; released: boolean } => {
     const result = answerStmt.run(answerJson, id);
-    if (result.changes === 0) return { changed: false };
-    if (by === "pane") {
+    if (result.changes === 0) return { changed: false, released: false };
+    let released = false;
+    if (by === GATE_BY_PANE) {
       const row = getStmt.get(id) as GateColumns; // pane is immutable after insert
-      if (row.pane) releaseStmt.run(id);
+      if (row.pane) { releaseStmt.run(id); released = true; }
     }
-    return { changed: true };
+    return { changed: true, released };
   });
 
   // In-memory waiter registry, mirroring events-bus.ts's idiom: one Set per
@@ -336,30 +376,49 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     get,
 
     list(filter) {
+      // Paged in rowid order (== insertion == openedAt order, since rows are
+      // never reordered): mirrors events-bus.ts's list, cursor pointing at
+      // the last DELIVERED row on a truncated page, or the table's rowid
+      // head otherwise, so an omitted limit still resumes correctly if a
+      // caller starts paging later.
       const clauses: string[] = [];
-      const params: string[] = [];
+      const params: (string | number)[] = [];
+      if (filter.cursor != null) { clauses.push("rowid > ?"); params.push(filter.cursor); }
       if (filter.open) { clauses.push("status = 'open'"); }
       if (filter.subjectPrefix) { clauses.push("subject LIKE ? ESCAPE '\\'"); params.push(`${filter.subjectPrefix.replace(/[%_\\]/g, "\\$&")}%`); }
       if (filter.kind) { clauses.push("kind = ?"); params.push(filter.kind); }
       const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-      const rows = db.query(`SELECT * FROM gates ${where} ORDER BY openedAt`).all(...params) as GateColumns[];
-      return rows.map(rowToGate);
+      const safeLimit = filter.limit == null ? undefined : Math.max(1, Math.floor(filter.limit));
+      const limitClause = safeLimit != null ? "LIMIT ?" : "";
+      const queryParams = safeLimit != null ? [...params, safeLimit] : params;
+      const rows = db.query(`SELECT *, rowid AS rowid FROM gates ${where} ORDER BY rowid ${limitClause}`)
+        .all(...queryParams) as (GateColumns & { rowid: number })[];
+      const gates = rows.map(rowToGate);
+      const cursor = rows.length && safeLimit != null && rows.length === safeLimit
+        ? rows[rows.length - 1]!.rowid
+        : (maxRowidStmt.get() as { maxId: number }).maxId;
+      return { gates, cursor };
     },
 
     answer(id, answers, by) {
       const answer: GateAnswer = { answers, by, answeredAt: Date.now() };
       // Winner: a pane that decided has provably reconciled (release commits with the answer).
-      const { changed } = answerWinTxn(JSON.stringify(answer), id, by);
-      if (changed) { wake(id, "answered"); return { ok: true, row: get(id)! }; }
+      const { changed, released: winReleased } = answerWinTxn(JSON.stringify(answer), id, by);
+      if (changed) { wake(id, "answered"); return { ok: true, row: get(id)!, released: winReleased }; }
       let row = get(id);
-      if (!row) return { ok: false, reason: "not-found", row: null };
+      if (!row) return { ok: false, reason: "not-found", row: null, released: false };
       // Loser: a pane that only read the winning answer has also reconciled.
-      if (by === "pane" && row.pane) {
+      // Only a NEW release (row wasn't already released) is reported, so a
+      // caller emitting `gate/released` on it doesn't re-fire on every
+      // subsequent redundant answer attempt from the same reconciled pane.
+      let released = false;
+      if (by === GATE_BY_PANE && row.pane && !row.released) {
         releaseStmt.run(id);
         row = get(id)!;
+        released = true;
       }
-      if (row.status === "closed") return { ok: false, reason: "closed", row };
-      return { ok: false, reason: "already-answered", row };
+      if (row.status === "closed") return { ok: false, reason: "closed", row, released };
+      return { ok: false, reason: "already-answered", row, released };
     },
 
     park(id) {
@@ -379,8 +438,7 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     },
 
     markDelivery(id, outcome) {
-      db.prepare("UPDATE gates SET delivery = ? WHERE id = ?")
-        .run(JSON.stringify({ outcome, at: Date.now() }), id);
+      markDeliveryStmt.run(JSON.stringify({ outcome, at: Date.now() }), id);
     },
 
     markReleased(id) {
@@ -416,6 +474,11 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     },
 
     subscribe(input) {
+      // Idempotent on (subjectPrefix, session): a blind re-subscribe (e.g. a
+      // shepherd re-arming after a crash) must never double the fan-out. A
+      // DEAD row does not block a fresh one -- only a live match short-circuits.
+      const existing = findLiveSubStmt.get(input.subjectPrefix, input.session) as SubscriptionColumns | null;
+      if (existing) return rowToSubscription(existing);
       const id = crypto.randomUUID();
       const createdAt = Date.now();
       insertSubStmt.run(id, input.subjectPrefix, input.session, createdAt);
@@ -427,8 +490,12 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     },
 
     subscriptions(filter) {
-      const where = filter?.live ? "WHERE dead = 0" : "";
-      const rows = db.query(`SELECT * FROM gate_subscriptions ${where} ORDER BY createdAt`).all() as SubscriptionColumns[];
+      const clauses: string[] = [];
+      const params: string[] = [];
+      if (filter?.live) clauses.push("dead = 0");
+      if (filter?.session) { clauses.push("session = ?"); params.push(filter.session); }
+      const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+      const rows = db.query(`SELECT * FROM gate_subscriptions ${where} ORDER BY createdAt`).all(...params) as SubscriptionColumns[];
       return rows.map(rowToSubscription);
     },
 
@@ -438,6 +505,13 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
 
     markSubscriptionDead(id) {
       subDeadStmt.run(id);
+    },
+
+    sweep() {
+      const cutoff = Date.now() - retentionMs;
+      const { changes } = sweepStmt.run(cutoff, retentionFloor);
+      if (changes > 0) log.debug({ deleted: changes }, "gates retention sweep");
+      return changes;
     },
 
     close_() {
