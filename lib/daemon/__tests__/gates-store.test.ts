@@ -157,3 +157,64 @@ describe("gates store — transitions", () => {
     expect(runs[0]!.subject).toBe("run:r1");
   });
 });
+
+describe("gates store — wait", () => {
+  test("wait on an already-answered gate returns immediately (registry-status-first)", async () => {
+    const s = store(); const id = openGate(s, "run:r1");
+    s.answer(id, { q: "a" }, "console");
+    const r = await s.wait(id, { waitMs: 10 });
+    expect(r.status).toBe("answered");
+  });
+
+  test("wait blocks until answer arrives, then resolves with the row", async () => {
+    const s = store(); const id = openGate(s, "run:r1");
+    const p = s.wait(id, { waitMs: 5000 });
+    s.answer(id, { q: "a" }, "board");
+    const r = await p;
+    expect(r.status).toBe("answered");
+    if (r.status === "answered") expect(r.row.answer?.by).toBe("board");
+  });
+
+  test("wait resolves on close with status closed", async () => {
+    const s = store(); const id = openGate(s, "run:r1");
+    const p = s.wait(id, { waitMs: 5000 });
+    s.close(id, "abandoned");
+    expect((await p).status).toBe("closed");
+  });
+
+  test("wait times out cleanly and is re-entrant", async () => {
+    const s = store(); const id = openGate(s, "run:r1");
+    expect((await s.wait(id, { waitMs: 20 })).status).toBe("timeout");
+    const p = s.wait(id, { waitMs: 5000 });
+    s.answer(id, { q: "a" }, "pane");
+    expect((await p).status).toBe("answered");
+  });
+
+  test("wait on an unknown id resolves not-found immediately, never registering a waiter", async () => {
+    const s = store();
+    const r = await s.wait("no-such-gate", { waitMs: 5000 });
+    expect(r.status).toBe("not-found");
+  });
+
+  test("supersede-on-open releases the superseded gate's waiters with closed", async () => {
+    const s = store();
+    const first = s.open({ subject: "mr:https://x/1", kind: "review-post", questions: qs() }).row;
+    const w = s.wait(first.id, { waitMs: 5000 });
+    s.open({ subject: "mr:https://x/1", kind: "review-post", questions: qs() });
+    expect((await w).status).toBe("closed");
+  });
+});
+
+describe("gates store — subscriptions", () => {
+  test("subscriptions persist, filter live, and record delivery outcomes", () => {
+    const p = tmp("gates.db");
+    const s1 = createGatesStore({ dbPath: p, log });
+    const sub = s1.subscribe({ subjectPrefix: "run:", session: "sess-1" });
+    s1.markSubscriptionDelivery(sub.id, "failed");
+    s1.close_();
+    const s2 = createGatesStore({ dbPath: p, log });
+    expect(s2.subscriptions({ live: true }).length).toBe(1);
+    s2.markSubscriptionDead(sub.id);
+    expect(s2.subscriptions({ live: true }).length).toBe(0);
+  });
+});

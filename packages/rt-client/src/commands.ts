@@ -105,6 +105,16 @@ export interface GateRow {
   released: boolean;
 }
 
+/** Wire shape only, same reasoning as GateRow above: no command rows/whitelist yet. */
+export interface GateSubscription {
+  id: string;
+  subjectPrefix: string;
+  session: string;
+  createdAt: number;
+  lastDelivery: { outcome: "delivered" | "failed"; at: number } | null;
+  dead: boolean;
+}
+
 /**
  * Duplicated shape on purpose, same reasoning as EventsBusEvent above:
  * these mirror lib/state/chat-store.ts's types, which rt-client cannot

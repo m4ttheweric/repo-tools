@@ -16,9 +16,15 @@ import type {
   GateQuestion,
   GateAnswer,
   GateRow,
+  GateSubscription,
 } from "../../packages/rt-client/src/commands.ts";
 
-export type { GateStatus, GateQuestion, GateAnswer, GateRow };
+export type { GateStatus, GateQuestion, GateAnswer, GateRow, GateSubscription };
+
+export type WaitResult =
+  | { status: "answered" | "closed"; row: GateRow }
+  | { status: "timeout" }
+  | { status: "not-found" };
 
 export interface OpenResult { row: GateRow; supersededId: string | null }
 
@@ -43,6 +49,12 @@ export interface GatesStore {
   close(id: string, reason: "abandoned" | "superseded" | "pruned"): { ok: true } | { ok: false; reason: "not-found" | "already-answered" | "already-closed" };
   markDelivery(id: string, outcome: "delivered" | "dead-pane"): void;
   markReleased(id: string): void;
+  wait(id: string, opts: { waitMs?: number; signal?: AbortSignal }): Promise<WaitResult>;
+  subscribe(input: { subjectPrefix: string; session: string }): GateSubscription;
+  unsubscribe(id: string): boolean;
+  subscriptions(filter?: { live?: boolean }): GateSubscription[];
+  markSubscriptionDelivery(id: string, outcome: "delivered" | "failed"): void;
+  markSubscriptionDead(id: string): void;
   close_(): void;
   /** Test-only debug accessor for the underlying handle (e.g. pragma checks). Not for feature code. */
   __db?: Database;
@@ -65,6 +77,26 @@ interface GateColumns {
   nudge: string | null;
   delivery: string | null;
   released: number;
+}
+
+interface SubscriptionColumns {
+  id: string;
+  subjectPrefix: string;
+  session: string;
+  createdAt: number;
+  lastDelivery: string | null;
+  dead: number;
+}
+
+function rowToSubscription(row: SubscriptionColumns): GateSubscription {
+  return {
+    id: row.id,
+    subjectPrefix: row.subjectPrefix,
+    session: row.session,
+    createdAt: row.createdAt,
+    lastDelivery: row.lastDelivery == null ? null : JSON.parse(row.lastDelivery),
+    dead: row.dead === 1,
+  };
 }
 
 function rowToGate(row: GateColumns): GateRow {
@@ -155,6 +187,15 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
       released      INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_gates_subject_kind_status ON gates(subject, kind, status);
+
+    CREATE TABLE IF NOT EXISTS gate_subscriptions (
+      id            TEXT PRIMARY KEY,
+      subjectPrefix TEXT NOT NULL,
+      session       TEXT NOT NULL,
+      createdAt     INTEGER NOT NULL,
+      lastDelivery  TEXT,
+      dead          INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   const getStmt = db.prepare("SELECT * FROM gates WHERE id = ?");
@@ -182,6 +223,14 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     "UPDATE gates SET status = 'closed', closedReason = ?, closedAt = ? WHERE id = ? AND status IN ('open', 'parked')",
   );
   const releaseStmt = db.prepare("UPDATE gates SET released = 1 WHERE id = ?");
+
+  const getSubStmt = db.prepare("SELECT * FROM gate_subscriptions WHERE id = ?");
+  const insertSubStmt = db.prepare(
+    "INSERT INTO gate_subscriptions (id, subjectPrefix, session, createdAt, lastDelivery, dead) VALUES (?, ?, ?, ?, NULL, 0)",
+  );
+  const deleteSubStmt = db.prepare("DELETE FROM gate_subscriptions WHERE id = ?");
+  const subDeliveryStmt = db.prepare("UPDATE gate_subscriptions SET lastDelivery = ? WHERE id = ?");
+  const subDeadStmt = db.prepare("UPDATE gate_subscriptions SET dead = 1 WHERE id = ?");
 
   const get = (id: string): GateRow | null => {
     const row = getStmt.get(id) as GateColumns | null;
@@ -227,6 +276,40 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     return { changed: true };
   });
 
+  // In-memory waiter registry, mirroring events-bus.ts's idiom: one Set per
+  // gate id so answer/close/supersede can wake exactly the waiters watching
+  // that gate. Waiters never survive a status read taken before registration
+  // (wait() is registry-status-first: registration only happens for
+  // open/parked rows), so wake-up is the only path that settles a waiter.
+  const MAX_WAIT_MS = 240_000; // under the 255s socket idle timeout, same cap as events-bus
+  interface Waiter {
+    resolve: (r: WaitResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+    onAbort?: () => void;
+    signal?: AbortSignal;
+  }
+  const waiters = new Map<string, Set<Waiter>>();
+
+  const settle = (gateId: string, w: Waiter, result: WaitResult): void => {
+    const set = waiters.get(gateId);
+    if (!set || !set.has(w)) return;
+    set.delete(w);
+    if (set.size === 0) waiters.delete(gateId);
+    clearTimeout(w.timer);
+    if (w.signal && w.onAbort) w.signal.removeEventListener("abort", w.onAbort);
+    w.resolve(result);
+  };
+
+  // Called after the transaction that produced this status has committed:
+  // answer/close call it directly, and open calls it for the id it superseded.
+  const wake = (gateId: string, status: "answered" | "closed"): void => {
+    const set = waiters.get(gateId);
+    if (!set || set.size === 0) return;
+    const row = get(gateId);
+    if (!row) return;
+    for (const w of [...set]) settle(gateId, w, { status, row });
+  };
+
   return {
     open(input) {
       assertValidSubject(input.subject);
@@ -244,6 +327,9 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
         nudge: input.nudge ? JSON.stringify(input.nudge) : null,
       });
       log.debug({ id, subject: input.subject, kind: input.kind, supersededId }, "gate opened");
+      // The supersede path must not bypass wake-up: a waiter on the
+      // superseded gate is watching for exactly this closed transition.
+      if (supersededId) wake(supersededId, "closed");
       return { row: get(id)!, supersededId };
     },
 
@@ -264,7 +350,7 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
       const answer: GateAnswer = { answers, by, answeredAt: Date.now() };
       // Winner: a pane that decided has provably reconciled (release commits with the answer).
       const { changed } = answerWinTxn(JSON.stringify(answer), id, by);
-      if (changed) return { ok: true, row: get(id)! };
+      if (changed) { wake(id, "answered"); return { ok: true, row: get(id)! }; }
       let row = get(id);
       if (!row) return { ok: false, reason: "not-found", row: null };
       // Loser: a pane that only read the winning answer has also reconciled.
@@ -286,7 +372,7 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
 
     close(id, reason) {
       const result = closeStmt.run(reason, Date.now(), id);
-      if (result.changes > 0) return { ok: true };
+      if (result.changes > 0) { wake(id, "closed"); return { ok: true }; }
       const row = get(id);
       if (!row) return { ok: false, reason: "not-found" };
       return { ok: false, reason: row.status === "closed" ? "already-closed" : "already-answered" };
@@ -301,7 +387,65 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
       releaseStmt.run(id);
     },
 
+    wait(id, opts) {
+      return new Promise<WaitResult>((resolve) => {
+        // Registry-status-first: the read and the registration decision are
+        // synchronous and adjacent, so there's no window for an answer/close
+        // to land between "read the row" and "decide whether to register".
+        const row = get(id);
+        if (!row) { resolve({ status: "not-found" }); return; }
+        if (row.status === "answered" || row.status === "closed") {
+          resolve({ status: row.status, row });
+          return;
+        }
+        const capMs = Math.min(Math.max(opts.waitMs ?? MAX_WAIT_MS, 0), MAX_WAIT_MS);
+        const w: Waiter = {
+          resolve,
+          signal: opts.signal,
+          timer: setTimeout(() => settle(id, w, { status: "timeout" }), capMs),
+        };
+        if (opts.signal) {
+          w.onAbort = () => settle(id, w, { status: "timeout" });
+          if (opts.signal.aborted) { clearTimeout(w.timer); resolve({ status: "timeout" }); return; }
+          opts.signal.addEventListener("abort", w.onAbort, { once: true });
+        }
+        let set = waiters.get(id);
+        if (!set) { set = new Set(); waiters.set(id, set); }
+        set.add(w);
+      });
+    },
+
+    subscribe(input) {
+      const id = crypto.randomUUID();
+      const createdAt = Date.now();
+      insertSubStmt.run(id, input.subjectPrefix, input.session, createdAt);
+      return rowToSubscription(getSubStmt.get(id) as SubscriptionColumns);
+    },
+
+    unsubscribe(id) {
+      return deleteSubStmt.run(id).changes > 0;
+    },
+
+    subscriptions(filter) {
+      const where = filter?.live ? "WHERE dead = 0" : "";
+      const rows = db.query(`SELECT * FROM gate_subscriptions ${where} ORDER BY createdAt`).all() as SubscriptionColumns[];
+      return rows.map(rowToSubscription);
+    },
+
+    markSubscriptionDelivery(id, outcome) {
+      subDeliveryStmt.run(JSON.stringify({ outcome, at: Date.now() }), id);
+    },
+
+    markSubscriptionDead(id) {
+      subDeadStmt.run(id);
+    },
+
     close_() {
+      // Settle any still-pending waiters rather than leaving their promises
+      // hanging past db.close(); a store shutdown is not an answer, so timeout.
+      for (const [gateId, set] of [...waiters]) {
+        for (const w of [...set]) settle(gateId, w, { status: "timeout" });
+      }
       db.close();
     },
 
