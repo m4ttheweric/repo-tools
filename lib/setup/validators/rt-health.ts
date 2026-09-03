@@ -463,6 +463,7 @@ export async function teamSyncRow(
   readStatus: () => Promise<TeamSnapshotEntry[] | null>,
   now: () => number,
   pullIntervalSec: number,
+  enabled = true,
 ): Promise<Row | null> {
   if (slugs.length === 0) return null;
   const base = {
@@ -474,6 +475,13 @@ export async function teamSyncRow(
     optionalNote: "Works without this; `rt team pull` and `rt team publish` do the same by hand.",
     recheck: "on-activate" as const,
   };
+  // Ahead of the daemon read: the supervisor stops every instance while the
+  // setting is off, so the status list would be empty for the same reason a
+  // clone with no origin is, and every clone would read as unwatched forever.
+  if (!enabled) {
+    return row({ ...base, status: "ready", detail: "off: rt.teamSnapshot.enabled is false, so clones move only when you run rt team pull or rt team publish" });
+  }
+
   const entries = await readStatus();
   if (entries === null) return row({ ...base, status: "missing", detail: "rt daemon not reachable; team clones sync once it is running" });
 
@@ -529,19 +537,21 @@ export async function rtHealthRows(
   // throw here into one group-error row that replaces every row below, so it
   // stays behind the only condition that needs it.
   const slugs = discoverTeams(p);
-  const teamSync =
-    slugs.length === 0
-      ? null
-      : await teamSyncRow(
-          slugs,
-          async () => {
-            const res = await p.daemon("team:snapshot-status");
-            if (!res || !res.ok) return null;
-            return res.data as TeamSnapshotEntry[];
-          },
-          () => p.now().getTime(),
-          readSnapshotSettings()?.pullIntervalSec ?? PULL_INTERVAL_FALLBACK_SEC,
-        );
+  let teamSync: Row | null = null;
+  if (slugs.length > 0) {
+    const settings = readSnapshotSettings();
+    teamSync = await teamSyncRow(
+      slugs,
+      async () => {
+        const res = await p.daemon("team:snapshot-status");
+        if (!res || !res.ok) return null;
+        return res.data as TeamSnapshotEntry[];
+      },
+      () => p.now().getTime(),
+      settings?.pullIntervalSec ?? PULL_INTERVAL_FALLBACK_SEC,
+      settings?.enabled !== false,
+    );
+  }
 
   return [
     await rtRow(p),

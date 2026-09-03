@@ -137,8 +137,10 @@ Surfaces:
   pull intervals (a pull that never reached the remote does not count);
   `needs-you` naming the clone otherwise (conflict, push error, stale or
   never pulled, or a clone the daemon is not watching); `missing` when
-  the daemon is down. Lives beside `home.backup` in
-  `lib/setup/validators/rt-health.ts`.
+  the daemon is down; `ready` naming `rt.teamSnapshot.enabled` when the
+  setting is off, since the supervisor then holds no instance and every
+  clone would otherwise read as unwatched forever. Lives beside
+  `home.backup` in `lib/setup/validators/rt-health.ts`.
 - `rt team status` gains `lastPull`, `lastPushAt`, `conflicted` per team
   (`lastPush`, origin/main's commit date, already exists).
 - `rt team pull [--team <slug>]`: a manual cycle (fetch + rebase, no

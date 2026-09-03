@@ -754,6 +754,34 @@ describe("teamSyncRow", () => {
     expect(r?.detail).toContain("not watched");
   });
 
+  // The supervisor drops every instance while the setting is off, so the
+  // status list is empty for exactly the same reason a clone with no origin
+  // would be. Reporting the setting is the only reading that is true.
+  test("snapshots disabled by settings: ready, naming the setting, never accusing the clone of a missing origin", async () => {
+    let statusReads = 0;
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => {
+        statusReads++;
+        return [];
+      },
+      now,
+      300,
+      false,
+    );
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).toContain("rt.teamSnapshot");
+    expect(r?.detail).not.toContain("not watched");
+    expect(r?.detail).not.toContain("origin");
+    expect(statusReads).toBe(0);
+  });
+
+  test("snapshots enabled: an empty status list still reads as an unwatched clone", async () => {
+    const r = await teamSyncRow(["acme"], async () => [], now, 300, true);
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("not watched");
+  });
+
   test("a conflict names the clone and is needs-you", async () => {
     const r = await teamSyncRow(
       ["acme"],
@@ -874,6 +902,19 @@ describe("rtHealthRows: team.sync wiring", () => {
     // 5 minutes since the last pull is well past two 30s intervals; it would
     // read ready against the 300s default.
     expect(rows.find((r) => r.id === "team.sync")?.status).toBe("needs-you");
+  });
+
+  test("rt.teamSnapshot.enabled=false: the row reports the setting instead of a permanent unwatched-clone verdict", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      files: { "/fake-home/.mattstack/teams/acme/mattstack/settings.team.jsonc": "{}" },
+      dirs: { "/fake-home/.mattstack/teams": ["acme"] },
+      daemon: async (cmd) => (cmd === "team:snapshot-status" ? { ok: true, data: [] } : null),
+    });
+    const rows = await rtHealthRows(p, { ci: false }, () => ({ ...SNAPSHOT_SETTINGS, enabled: false }));
+    const r = rows.find((x) => x.id === "team.sync");
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).toContain("rt.teamSnapshot");
   });
 
   test("a cloned team reads status through p.daemon and produces a team.sync row", async () => {
