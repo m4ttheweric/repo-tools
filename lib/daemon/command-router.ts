@@ -20,6 +20,7 @@ import { createRunsHandlers } from "./handlers/runs.ts";
 import { createSecretsHandlers } from "./handlers/secrets.ts";
 import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
+import { createGateHandlers } from "./handlers/gate.ts";
 import { createChatHandlers } from "./handlers/chat.ts";
 import { createAgentHandlers } from "./handlers/agent.ts";
 import { createPaneHandlers } from "./handlers/pane.ts";
@@ -32,6 +33,7 @@ import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import { wrapWithDemand } from "./demand-tracker.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
+import type { GatesStore } from "./gates-store.ts";
 import type { HomeSnapshotHandle } from "./home-snapshot.ts";
 import type { TeamSnapshotsHandle } from "./team-snapshots.ts";
 
@@ -50,6 +52,8 @@ export function buildRoutedHandlers(opts: {
   worktree: WorktreeHandlerOpts;
   /** Events bus backing events:emit/wait/list (RT-44). */
   eventsBus: EventsBus;
+  /** Gates store backing gate:* (BOARD-20/21). */
+  gatesStore: GatesStore;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
   homeSnapshot: HomeSnapshotHandle;
   /** One snapshot engine per team clone under ~/.mattstack/teams. */
@@ -112,6 +116,7 @@ export function buildRoutedHandlers(opts: {
     ...createSecretsHandlers({ log: ctx.log }),
     ...createProjectMRsHandlers({ repoIndex: ctx.repoIndex, log: ctx.log }, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
+    ...createGateHandlers(opts.gatesStore, opts.eventsBus, broadcast),
     ...chatHandlers,
     ...agentHandlers,
     ...paneHandlers,

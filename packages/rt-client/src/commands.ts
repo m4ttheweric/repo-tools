@@ -105,7 +105,6 @@ export interface GateRow {
   released: boolean;
 }
 
-/** Wire shape only, same reasoning as GateRow above: no command rows/whitelist yet. */
 export interface GateSubscription {
   id: string;
   subjectPrefix: string;
@@ -568,6 +567,23 @@ export interface Commands {
   "repos:locate": { payload: { newPath: string; repo?: string; dryRun?: boolean }; data: unknown };
   "freshness:reconcile": { payload: Record<string, never>; data: unknown };
 
+  // ─── Gate facility (BOARD-20/21) ─────────────────────────────────────────
+  "gate:open": { payload: { subject: string; kind: string; questions: GateQuestion[]; meta?: Record<string, unknown>; agent?: string; pane?: string; nudge?: { session: string } }; data: { id: string; supersededId: string | null } };
+  /**
+   * A CAS loss is a DEFINED OUTCOME, not an error: `ok:true` with
+   * `conflict:true` and the WINNING row, so every consumer gets the winner
+   * typed with no envelope hacks. `ok:false` is reserved for
+   * not-found/closed/validation failures.
+   */
+  "gate:answer": { payload: { id: string; answers: GateAnswer["answers"]; by: string }; data: { row: GateRow; conflict?: true } };
+  /** `ok:false "not-found"` on an unknown id is terminal; the CLI loop must not re-enter on it. */
+  "gate:wait": { payload: { id: string; waitMs?: number }; data: { status: "answered" | "closed" | "timeout"; row?: GateRow } };
+  "gate:list": { payload: { open?: boolean; subjectPrefix?: string; kind?: string }; data: { gates: GateRow[] } };
+  "gate:park": { payload: { id: string }; data: { ok: true } };
+  "gate:close": { payload: { id: string; reason: "abandoned" | "superseded" | "pruned" }; data: { ok: true } };
+  "gate:subscribe": { payload: { subjectPrefix: string; session: string }; data: { id: string } };
+  "gate:unsubscribe": { payload: { id: string }; data: { removed: boolean } };
+
   /** Wire reply on success is always `{ok:true, repaired}` (no `data`
    *  wrapper) — `data` here documents the extra field the same way PingData
    *  does for `ping`, not the literal wire nesting (R3). */
@@ -662,6 +678,14 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "endpoint:status",
   "repos:locate",
   "freshness:reconcile",
+  "gate:open",
+  "gate:answer",
+  "gate:wait",
+  "gate:list",
+  "gate:park",
+  "gate:close",
+  "gate:subscribe",
+  "gate:unsubscribe",
   "hooks:repair",
   "hooks:watch",
   "sdm:catalog",
