@@ -55,7 +55,7 @@ export interface TeamSnapshotsHandle {
 
 const RESCAN_DEBOUNCE_MS = 2000;
 
-/** Registry default for `rt.teamSnapshot.pullIntervalSec` — the fallback a non-numeric setting degrades to, so a corrupt value lands on what a fresh machine starts with. */
+/** Registry default for `rt.teamSnapshot.pullIntervalSec`, and the fallback a non-numeric setting degrades to, so a corrupt value lands on what a fresh machine starts with. */
 const PULL_INTERVAL_FALLBACK_SEC = 300;
 
 /**
@@ -63,8 +63,8 @@ const PULL_INTERVAL_FALLBACK_SEC = 300;
  * own. `rt.teamSnapshot` is hand-editable jsonc, so `pullIntervalSec` can
  * arrive as a string or null, and `Math.max(30, NaN)` is NaN: a NaN delay
  * makes `setTimeout` fire immediately, and both this module's rescan and the
- * engine's `.finally(schedulePull)` re-arm themselves — a non-numeric interval
- * would become a hot `git fetch` loop rather than a slow one.
+ * engine's `.finally(schedulePull)` re-arm themselves, so a non-numeric
+ * interval would become a hot `git fetch` loop rather than a slow one.
  */
 function clampPullIntervalSec(value: number): number {
   return Number.isFinite(value) ? Math.max(30, value) : PULL_INTERVAL_FALLBACK_SEC;
@@ -190,7 +190,7 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
 
   void boot();
 
-  /** Mirrors the engine's `init()`: whatever happens, `ready` resolves and nothing rejects out of here — the daemon `void`s this during boot. */
+  /** Mirrors the engine's `init()`: whatever happens, `ready` resolves and nothing rejects out of here, because the daemon `void`s this during boot. */
   async function boot(): Promise<void> {
     try {
       await safeRescan();

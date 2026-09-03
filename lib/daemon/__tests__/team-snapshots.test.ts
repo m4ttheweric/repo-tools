@@ -152,7 +152,7 @@ describe("startTeamSnapshots", () => {
     expect(h.started).toHaveLength(0);
 
     // The origin lands inside the clone's .git/config, which the non-recursive
-    // teams/ watch never sees — only the interval rescan can find it.
+    // teams/ watch never sees. Only the interval rescan can find it.
     writeFileSync(join(dir, ".git", "config"), `[remote "origin"]\n\turl = https://gitlab.com/acme/late-origin.git\n`);
     h.fireInterval();
     await flush();
