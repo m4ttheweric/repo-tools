@@ -710,11 +710,11 @@ describe("toolRows — team-declared tool.team.<name>", () => {
 
 describe("toolRows — pack.<pack>", () => {
   test("real plugin listing contains the pack's id -> ready, installed", async () => {
-    const reqs: PackRequirements[] = [{ pack: "claimview", integrations: [], tools: [] }];
+    const reqs: PackRequirements[] = [{ pack: "beta", integrations: [], tools: [] }];
     const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(REAL_PLUGIN_LIST_JSON) : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.claimview");
-    expect(r.status).toBe("ready");
-    expect(r.detail).toBe("installed");
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.beta");
+    expect(r.status).toBe("missing");
+    expect(r.detail).toBe("installed by Install (plugins.install)");
     expect(r.required).toBe(false);
     expect(r.optionalNote).not.toBeNull();
   });
@@ -754,9 +754,9 @@ describe("toolRows — pack.<pack>", () => {
   // Real human-format output (no --json) can't be parsed as an entry array,
   // so it must read as an honest error, never a silent "not installed".
   test("real human-format listing text (no --json) -> error, not a silent missing", async () => {
-    const reqs: PackRequirements[] = [{ pack: "claimview", integrations: [], tools: [] }];
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
     const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(REAL_PLUGIN_LIST_TXT) : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.claimview");
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.acme");
     expect(r.status).toBe("error");
   });
 
@@ -770,7 +770,7 @@ describe("toolRows — pack.<pack>", () => {
 
   test("one row per requirement entry", async () => {
     const reqs: PackRequirements[] = [
-      { pack: "claimview", integrations: [], tools: [] },
+      { pack: "acme", integrations: [], tools: [] },
       { pack: "other-pack", integrations: [], tools: [] },
     ];
     const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" ? ok(REAL_PLUGIN_LIST_JSON) : ok());
