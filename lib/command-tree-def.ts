@@ -72,7 +72,7 @@ const gateSubcommands: Record<string, CommandNode> = {
     description: "Answer an open gate",
     module: "./commands/gate.ts",
     fn: "gateAnswer",
-    omitBehavior: "list",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
     args: [
       { name: "Id", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id" },
       { name: "Answers", flag: "--answers", type: "text", placeholder: "{\"q1\":\"yes\"}", hint: "JSON answers keyed by question id" },
@@ -83,7 +83,7 @@ const gateSubcommands: Record<string, CommandNode> = {
     description: "Block until a gate is answered or closed (default: wait forever)",
     module: "./commands/gate.ts",
     fn: "gateWait",
-    omitBehavior: "list",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
     args: [
       { name: "Id", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id" },
       { name: "Timeout", flag: "--timeout", type: "text", placeholder: "5m", hint: "Give up after this long (30s, 5m, 500ms, bare seconds); omit to wait forever" },
@@ -104,7 +104,7 @@ const gateSubcommands: Record<string, CommandNode> = {
     description: "Park an open gate (paused, not closed)",
     module: "./commands/gate.ts",
     fn: "gatePark",
-    omitBehavior: "list",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
     args: [
       { name: "Id", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id" },
     ],
@@ -113,7 +113,7 @@ const gateSubcommands: Record<string, CommandNode> = {
     description: "Close a gate without an answer",
     module: "./commands/gate.ts",
     fn: "gateClose",
-    omitBehavior: "list",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
     args: [
       { name: "Id", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id" },
       { name: "Reason", flag: "--reason", type: "select", hint: "Why the gate is closing",
@@ -138,7 +138,7 @@ const gateSubcommands: Record<string, CommandNode> = {
     description: "Remove a gate subscription",
     module: "./commands/gate.ts",
     fn: "gateUnsubscribe",
-    omitBehavior: "list",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
     args: [
       { name: "Id", type: "text", placeholder: "sub-1a2b3c4d", hint: "Subscription id" },
     ],
