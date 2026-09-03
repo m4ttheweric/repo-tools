@@ -3,15 +3,17 @@ import MattstackCore
 
 struct DoneScreen: View {
     @ObservedObject var install: InstallRunModel
+    @ObservedObject var readiness: ReadinessModel
     let isOwner: Bool
     let onInvite: () -> Void
+    @State private var steps: (title: String, steps: [String])?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
-                Image(systemName: "checkmark.seal.fill").font(.system(size: 40)).foregroundStyle(.green)
+                Image(systemName: headlineSymbol).font(.system(size: 40)).foregroundStyle(headlineTint)
                 VStack(alignment: .leading) {
-                    Text("Everything's working").font(.title3.weight(.semibold))
+                    Text(headline).font(.title3.weight(.semibold))
                     Text(verifySummary).foregroundStyle(.secondary)
                 }
             }
@@ -20,6 +22,14 @@ struct DoneScreen: View {
                     LabeledContent("Menu bar") { Text("the m at the top right") }
                     LabeledContent("Terminal") { Text("rt — open a new terminal window").font(.system(.body, design: .monospaced)) }
                     LabeledContent("Board") { Link("https://board.mattstack", destination: URL(string: "https://board.mattstack")!) }
+                }
+                if !readiness.outstandingManualRows.isEmpty {
+                    Section("Still to do") {
+                        ForEach(readiness.outstandingManualRows) { row in
+                            RowView(row: row, isChecking: false, rowID: AXID.doneStillToDoRow(row.id)) { show(row) }
+                        }
+                    }
+                    .accessibilityIdentifier(AXID.doneStillToDo)
                 }
             }
             .formStyle(.grouped).scrollDisabled(true)
@@ -31,11 +41,29 @@ struct DoneScreen: View {
             Spacer()
         }
         .padding(24)
+        .task { await readiness.recheckAll() }
+        .sheet(isPresented: Binding(get: { steps != nil }, set: { if !$0 { steps = nil } })) {
+            if let steps { StepsSheet(title: steps.title, steps: steps.steps) }
+        }
         // .contain: without it, the plain HStack's buttons (Open the board,
         // Invite teammates…) report THIS screen-level identifier instead of
         // their own -- same fix as InstallScreen's stepRow and ChecklistScreen.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AXID.doneScreen)
+    }
+
+    private var outstanding: Int { readiness.outstandingManualRows.count }
+    private var headline: String { outstanding == 0 ? "Everything's working" : "Installed, with \(outstanding) step\(outstanding == 1 ? "" : "s") left for you" }
+    private var headlineSymbol: String { outstanding == 0 ? "checkmark.seal.fill" : "checkmark.seal" }
+    private var headlineTint: Color { outstanding == 0 ? .green : .accentColor }
+
+    private func show(_ row: PlanRow) {
+        guard let action = row.action else { return }
+        if action.type == .openURL, let raw = action.url, let url = URL(string: raw) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        steps = (title: row.title, steps: action.steps ?? [])
     }
 
     private var verifySummary: String {
