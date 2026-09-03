@@ -80,6 +80,26 @@ func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: 
                 canInstall: canInstallOverride ?? missing.isEmpty, requiredMissing: missing)
 }
 
+/// Mirrors the real shape from rt's validators: a genuinely manual row
+/// (`optionalNote` says the user must act) alongside two rows whose own
+/// `optionalNote` says the opposite ("works without this").
+func makeSweepPlan() -> Plan {
+    let rows = [
+        PlanRow(id: "tool.fast-browser-extension", kind: .tool, title: "Fast Browser extension", why: "w", required: false,
+                optionalNote: "You load this into Chrome yourself; Install cannot do it for you.", status: .needsYou,
+                action: RowAction(type: .steps, label: "Show steps...", steps: ["Open chrome://extensions"]), recheck: .onActivate),
+        PlanRow(id: "home.backup", kind: .info, title: "Home backup", why: "w", required: false,
+                optionalNote: "Works without this; local-only just means this machine is the only copy of your settings.",
+                status: .needsYou, action: RowAction(type: .steps, label: "Show steps...", steps: ["git push"]), recheck: .onActivate),
+        PlanRow(id: "tool.chrome", kind: .tool, title: "Google Chrome", why: "w", required: false,
+                optionalNote: "Works without this unless your pack declares chrome.required.", status: .missing,
+                action: RowAction(type: .openURL, label: "Download", url: "https://www.google.com/chrome/"), recheck: .onActivate),
+    ]
+    return Plan(at: "t", team: TeamInfo(slug: "acme", name: "Acme", mode: .join),
+                groups: [PlanGroup(id: "tools", title: "Tools", rows: rows)],
+                canInstall: true, requiredMissing: [])
+}
+
 func makeManualPlan(extensionStatus: RowStatus, chromeStatus: RowStatus = .ready, requiredNotReady: Bool = false) -> Plan {
     var rows = [
         PlanRow(id: "tool.fast-browser", kind: .tool, title: "Fast Browser", why: "w", required: true, status: .ready, recheck: .onActivate),
@@ -339,6 +359,22 @@ let readinessModelChecks: [Check] = [
         await MainActor.run {
             c.expect(!m.outstandingManualRows.map(\.id).contains("tool.required-manual"),
                       "a required row is Install's own job, not something to hand the user")
+        }
+    },
+    Check("outstandingManualRows keeps a not-loaded fast-browser-extension row even alongside works-without-this rows in the same shape") { c in
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makeSweepPlan()]), permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run {
+            c.expect(m.outstandingManualRows.map(\.id).contains("tool.fast-browser-extension"),
+                      "a manual step Install cannot take must survive the works-without-this narrowing")
+        }
+    },
+    Check("outstandingManualRows excludes home.backup and tool.chrome once their optionalNote reads works-without-this, despite a qualifying status and action") { c in
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makeSweepPlan()]), permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run {
+            c.expect(!m.outstandingManualRows.map(\.id).contains("home.backup"), "home.backup's own note says local-only is fully supported")
+            c.expect(!m.outstandingManualRows.map(\.id).contains("tool.chrome"), "tool.chrome's own note says it works without this")
         }
     },
     Check("StatusGlyph follows the spec's symbols") { c in
