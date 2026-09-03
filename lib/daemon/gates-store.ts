@@ -55,7 +55,6 @@ export interface GatesStore {
   park(id: string): { ok: true } | { ok: false; reason: "not-found" | "not-open"; row: GateRow | null };
   close(id: string, reason: "abandoned" | "superseded" | "pruned"): { ok: true } | { ok: false; reason: "not-found" | "already-answered" | "already-closed" };
   markDelivery(id: string, outcome: "delivered" | "dead-pane"): void;
-  markReleased(id: string): void;
   wait(id: string, opts: { waitMs?: number; signal?: AbortSignal }): Promise<WaitResult>;
   /** Idempotent on (subjectPrefix, session): a live match returns the
       existing row rather than minting a duplicate. */
@@ -439,10 +438,6 @@ export function createGatesStore(opts: {
 
     markDelivery(id, outcome) {
       markDeliveryStmt.run(JSON.stringify({ outcome, at: Date.now() }), id);
-    },
-
-    markReleased(id) {
-      releaseStmt.run(id);
     },
 
     wait(id, opts) {

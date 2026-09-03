@@ -96,6 +96,38 @@ describe("gate-push", () => {
     expect(dead.lastDelivery!.outcome).toBe("failed");
   });
 
+  test("a chronically-failing subscriber on ONE prefix still reaches deadAfterFailures despite unrelated events on other prefixes (F12c regression)", async () => {
+    const store = freshStore();
+    const delivered: Array<{ sessionId: string }> = [];
+    // Only the mr: subscriber's session fails; the run: subscriber always
+    // succeeds -- so an unrelated run: event's fan-out must not reset (or
+    // wipe) the mr: subscriber's failure count via the liveIds prune.
+    const deliver = async (socketPath: string) => {
+      delivered.push({ sessionId: socketPath });
+      return socketPath === "shep-mr" ? { ok: false as const, error: "boom" } : { ok: true as const };
+    };
+    const push = createGatePush({
+      store, deliver, resolveSession: (id) => ({ socketPath: id }), log, deadAfterFailures: 3,
+    });
+    store.subscribe({ subjectPrefix: "mr:", session: "shep-mr" });
+    store.subscribe({ subjectPrefix: "run:", session: "shep-run" });
+    const mrRow = store.open({ subject: "mr:https://x/1", kind: "review-post", questions: qs() }).row;
+    const runRow = store.open({ subject: "run:r1", kind: "clarify", questions: qs() }).row;
+
+    // Interleave: mr: failure, unrelated run: event, mr: failure, unrelated
+    // run: event, mr: failure -- the third mr: failure crosses deadAfterFailures.
+    await push.onOpened(mrRow);
+    await push.onOpened(runRow);
+    await push.onOpened(mrRow);
+    await push.onOpened(runRow);
+    await push.onOpened(mrRow);
+
+    const mrSub = store.subscriptions().find((s) => s.session === "shep-mr")!;
+    expect(mrSub.dead).toBe(true);
+    const runSub = store.subscriptions().find((s) => s.session === "shep-run")!;
+    expect(runSub.dead).toBe(false);
+  });
+
   test("duplicate subscribe (idempotent) never doubles the fan-out (F3)", async () => {
     const { push, store, delivered } = harness();
     store.subscribe({ subjectPrefix: "run:", session: "shep-1" });

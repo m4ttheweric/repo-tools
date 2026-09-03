@@ -115,14 +115,20 @@ export function createGatePush(opts: {
   }
 
   async function fanOut(row: GateRow): Promise<void> {
-    const subs = store.subscriptions({ live: true }).filter((sub) => row.subject.startsWith(sub.subjectPrefix));
+    // liveIds must span EVERY live subscription, not just this event's
+    // prefix-filtered subset: pruning against `subs` would wipe the failure
+    // counter of a live subscriber watching a different prefix on every
+    // fan-out that doesn't match it, so a chronically-failing subscriber on
+    // an untouched prefix could never reach deadAfterFailures.
+    const allLive = store.subscriptions({ live: true });
+    const subs = allLive.filter((sub) => row.subject.startsWith(sub.subjectPrefix));
     // Batch registry resolution: one scan for the whole fan-out (resolveAll,
     // when wired) rather than resolveSession re-scanning per subscriber.
     const registry = resolveAll ? resolveAll() : null;
     // Lazy prune: a subscription no longer in the live set (unsubscribed, or
     // pruned dead by a prior failure run) has nothing more to fail, so its
     // failure count would otherwise leak forever.
-    const liveIds = new Set(subs.map((s) => s.id));
+    const liveIds = new Set(allLive.map((s) => s.id));
     for (const key of [...consecutiveFailures.keys()]) {
       if (!liveIds.has(key)) consecutiveFailures.delete(key);
     }
