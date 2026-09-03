@@ -14,9 +14,9 @@ island:
   each pane to find out what is being asked.
 - The board gate-events pass (BOARD-20/21) built a second answer surface,
   but only for review gates, and board-owned end to end: `board/gate/*`
-  topics, gate state in board review files, a board answer endpoint with its
-  own conflict logic, and a parked-resume path hardwired to the review
-  wrapper.
+  topics, gate state in per-gate files beside the board's review state, a
+  board answer endpoint with its own conflict logic, and a parked-resume
+  path hardwired to the review wrapper.
 - Respond and doctor have their own decision mechanics (in-pane posting
   gates; terminal `error` escalations that dead-end until a human relaunches).
 - Shepherdr hand-rolls a question relay between the herd and the user, scoped
@@ -42,31 +42,62 @@ The daemon owns gate state:
 | field | meaning |
 |---|---|
 | `id` | minted at open |
-| `subject` | `mr:<url>` or `run:<id>` |
+| `subject` | opaque `<prefix>:<id>` string (non-empty, prefix-filterable, daemon-uninterpreted); `mr:<url>` and `run:<id>` are the two prefixes surfaces render in v1 |
+| `kind` | opener-declared label (`review-post`, `respond-plan`, `doctor-escalation`, ...), opaque to the daemon; the board's resume-by-pane-kind and shepherdr's relay policy both key off it |
+| `meta` | optional opener-declared object (e.g. `needs: pane`, pane-only option markers, a human-renderable label) |
 | `questions` | the existing `GateQuestion[]` shape: `{id, label, multi, options}` |
-| `status` | `open`, `answered`, `parked` |
-| `answer` | `{answers, by, answeredAt}` |
-| `openedAt`, `parkedAt` | timestamps |
-| `agent`, `pane` | opener's refs, for focus, nudge, and resume |
+| `status` | `open`, `answered`, `parked`, `closed` |
+| `answer` | `{answers, by, answeredAt}`; each answer value may carry an optional free-text `note` |
+| `openedAt`, `parkedAt`, `closedAt` | timestamps |
+| `agent`, `pane` | opener's refs, for focus, push delivery, and resume |
 | `nudge` | optional push-delivery spec recorded by the opener (how to reach an attended pane; unattended panes need none, they block in `gate wait`) |
+| `delivery` | outcome of the last push attempt (`delivered`, `refused`, `dead-pane`), recorded by the daemon so a failed delivery is observable, never silent |
+
+The registry is persisted (SQLite beside the events journal) and survives
+daemon restarts; gates outlive any surface AND the daemon itself. A
+restarted daemon serves `gate list`/`wait` from the persisted rows.
 
 ### Verbs
 
-- `gate open --subject <s> --questions <json> [--agent <id>] [--pane <id>] [--nudge <spec>]`
-  mints the id, stores the row, emits `gate/opened/<id>`.
+- `gate open --subject <s> --kind <k> --questions <json> [--meta <json>]
+  [--agent <id>] [--pane <id>] [--nudge <spec>]` mints the id, stores the
+  row, emits `gate/opened/<id>`. **Supersede rule:** opening a gate on a
+  subject that already has an OPEN gate of the same kind closes the old one
+  (`closed`, reason `superseded`) in the same transaction; this is the
+  board store's replace semantics (a re-review never inherits a prior
+  gate's answers) promoted to the facility, and it makes a crashed wrapper's
+  relaunch safe.
 - `gate answer <id> --answers <json> --by <surface>` is the single arbiter:
-  compare-and-swap, a second answer is rejected cleanly. On success: store,
-  emit `gate/answered/<id>`, run the nudge. Every surface answers through
-  this verb; no per-surface conflict logic anywhere.
-- `gate wait <id>` blocks until answered: journal-first and cursor-seeded,
-  the race-hardened pattern the held board branch proved, promoted into the
-  facility.
-- `gate list [--open] [--subject-prefix mr:|run:]` is what surfaces render
-  from. A query, never a journal fold.
-- `gate park <id>` marks parked; answering unparks. Parking is a state
-  transition here; parking POLICY stays with owners. The board keeps its
-  grace sweep for `mr:` gates. `run:` gates do not auto-park in v1; a run
-  waiting at a gate is normal and its pane stays.
+  compare-and-swap; a second answer is rejected cleanly, and the rejection
+  payload carries the recorded `{answers, by, answeredAt}` so the loser can
+  proceed on the winner without a second round-trip. Validation is
+  daemon-side and minimal: question ids must match and multi-shape must fit;
+  values are otherwise opaque strings (option membership is advisory, so
+  free-text answers and notes flow). On success: store, emit
+  `gate/answered/<id>`, push per Delivery. Every surface answers through
+  this verb; no per-surface conflict or validation logic anywhere.
+- `gate wait <id>` blocks until the gate is answered or closed:
+  registry-status-first (an already-answered gate returns immediately),
+  blocking, re-entrant, and loopable by contract around the daemon's
+  request cap; a daemon restart mid-wait is a reconnect-and-re-ask, never
+  an error. (This retires the held branch's client-side journal-fold
+  workaround; the registry is the source of truth.)
+- `gate list [--open] [--subject-prefix mr:|run:] [--kind <k>]` is what
+  surfaces render from. A query, never a journal fold.
+- `gate park <id>` marks parked; answering unparks. Park is CAS-guarded:
+  only `open` parks, and parking an `answered` gate is a clean rejection
+  (the caller re-reads and acts on the answer instead). Parking POLICY
+  stays with owners: the board keeps its grace sweep for `mr:` gates and
+  must park FIRST, closing the pane only on park success, so a
+  just-answered gate is never killed mid-posting. `run:` gates do not
+  auto-park in v1.
+- `gate close <id> --reason <abandoned|superseded|pruned>` is the terminal
+  transition for a gate that will never be answered: a run abandoned at a
+  `clarify` gate, an MR leaving the board (the rework's replacement for
+  `pruneGateStates`), a superseded open. Closing an answered gate is a
+  no-op rejection. Waiters are released with the closed status. Callers:
+  the board sweep for off-board MRs, the run-close path for finished or
+  abandoned runs, the supersede rule above.
 - `gate subscribe --subject-prefix <mr:|run:...> --session <addr>` registers
   a push subscription: the daemon delivers `gate/opened` and `gate/answered`
   notifications for matching subjects directly into the subscriber's session
@@ -76,10 +107,23 @@ The daemon owns gate state:
 
 `gate/opened/<id>` and `gate/answered/<id>` are ordinary rt-bus events
 through the existing journal and the published `eventsEmit/Wait/List`
-wrappers. The notifier's `rt.notify.eventBridges` routes them like any other
-event, so tray notifications with a focus action come free. The namespace is
-generic (`gate/*`, subject in the payload), replacing the board-scoped
-`board/gate/*`.
+wrappers. Daemon-internal gate emissions MUST take the dual journal +
+broadcast path (the `events:emit` handler's path), never the bare
+journal-only emit, or live subscribers (the board relay, the notify bridge)
+never see them. Subscription patterns are Bun.Glob, where `*` does not
+cross `/`: the pattern for all gate events is `gate/**` (the held board
+branch already tripped on exactly this).
+
+Payloads are specified in W1: `opened` carries `{id, subject, kind,
+questions, agent, pane, label}` (the label human-renderable, from `meta`);
+`answered` carries `{id, subject, kind, answers, by, paneId}`. The
+notifier's `rt.notify.eventBridges` routes these like any other event, and
+`paneId` is what its suppression and tray focus action key off; bridge
+rules go per-kind, or use the payload label, so templates never render a
+foreign kind's fields. Bridge-routed notifications ARRIVE WITH W2 (the
+notify bridge and its settings key live on the held rt branch that merges
+there); W1 itself needs no notifier. The namespace is generic, replacing
+the board-scoped `board/gate/*`.
 
 ### Delivery
 
@@ -114,6 +158,22 @@ interactive turns, manual re-arm discipline) does not exist in this design,
 and gap recovery after a crash or compaction is `gate list --open` against
 the registry.
 
+**Delivery is fallible and therefore observable.** The daemon's existing
+pane-injection path refuses a pane sitting at a prompt (a form-blocked pane
+reports agent status `blocked`, and `injectIntoPane` refuses that state),
+so dismissing a pending form needs a delivery capability that path does not
+have today; that is the spike's first leg, and `injectIntoPane` as it
+exists is NOT assumed to be the backend. Every push attempt records its
+outcome on the gate row (`delivered`, `refused`, `dead-pane`). When
+delivery to an attended pane fails, nothing is lost: the human is present
+by definition, their eventual form answer CAS-rejects, and the verb
+proceeds on the recorded answer; meanwhile any surface rendering the gate
+shows "answered, pane not yet released" from the recorded outcome instead
+of silently clearing the badge. **Stale-push rule:** a push for a gate the
+pane has already reconciled is discarded; push text is a fixed phrasing
+the verb recognizes and treats as a signal to re-read the registry, never
+as free-form instructions to act on.
+
 A dead pane gets no delivery; resume handles it (below).
 
 **Spike (first task of W1, before any dependent build):** prove the delivery
@@ -128,9 +188,28 @@ Failure of any leg revises this section before W1 proceeds.
 ### Agent and pane integration
 
 The registry row's `agent`/`pane` refs power three things: a Focus button on
-every gate card (the existing `paneFocus` bridge), nudge delivery targeting,
+every gate card (the existing `paneFocus` bridge), push-delivery targeting,
 and parked resume. Agent status can surface "at gate" so run listings show
 blocked state without extra plumbing.
+
+### Trust boundary
+
+Answering a gate triggers actions that leave the machine: posting review
+comments, approving MRs, and (doctor) conflict resolution and author-gate
+override. The boundaries, stated so they survive adoption:
+
+- `gate answer` is reachable from the local daemon socket and from the
+  board/console HTTP endpoints; all are local-only in this pass. No peer or
+  team answering exists yet; adding a remote surface later is a trust
+  decision, not a transport detail.
+- `--by <surface>` is informational, not authenticated. It names the
+  pathway for the decision record; it grants nothing.
+- Push text is data, never instructions: a fixed phrasing the receiving
+  verb recognizes as "re-read the registry," full stop.
+- An answered gate is CONSENT, not verification. Verb-side safety checks
+  survive facility adoption unchanged: the doctor still re-verifies the
+  author gate independently before acting on an answered escalation,
+  exactly as its safeguards demand today.
 
 ## Surfaces
 
@@ -139,13 +218,20 @@ blocked state without extra plumbing.
 The guts swap; the experience stays. The status-bin `gate` verbs become thin
 clients of the daemon with the same CLI shape. The board stops owning gate
 state: boot reconcile is `gate list --subject-prefix mr:`, live updates
-subscribe to `gate/*` events, and `/gate/answer` proxies
+subscribe to `gate/**` events, and `/gate/answer` proxies
 `gate answer --by board` (daemon CAS replaces the board's 409 logic). The
-grace sweep stays board-side and executes facility transitions. Parked
-resume generalizes: the wrapper prompt is rebuilt by pane kind (review,
-respond, doctor) instead of assuming review. Surviving unchanged from the
-held branch: the card UI, focus buttons, auto-close at done,
-launch-via-agent, the park/resume UX.
+grace sweep stays board-side and executes facility transitions (park first,
+close the pane only on park success, per the verb contract); MRs leaving
+the board are pruned with `gate close --reason pruned`, replacing
+`pruneGateStates`. Parked resume generalizes two ways: the wrapper prompt
+is rebuilt by the gate's `kind` (review, respond, doctor) instead of
+assuming review, and the TRIGGER moves off the board's own answer endpoint
+onto the `gate/answered` subscription plus a boot-reconcile pass over
+parked gates answered while the board was down; with answers arriving from
+any surface, an endpoint-triggered resume would silently never fire for a
+console-answered parked gate. Surviving unchanged from the held branch:
+the card UI, focus buttons, auto-close at done, launch-via-agent, the
+park/resume UX.
 
 ### Console (new)
 
@@ -164,11 +250,17 @@ pane publishes (`gate open` with subject, questions, and pane refs), then:
 human-invoked verb):
 
 1. Present the normal in-pane structured form. The in-pane experience does
-   not change.
+   not change. When the gate carries more questions than one form call fits
+   (the tool caps questions per call), present in chunks and submit exactly
+   ONE `gate answer` after the last chunk; a CAS rejection at that point
+   discards all chunks.
 2. Form answered: `gate answer --by pane`. If CAS reports an earlier answer,
-   discard the form's answer and proceed on the recorded one.
+   discard the form's answer, say in the pane which answer won and from
+   where, and proceed on the recorded one (the CAS rejection carries it);
+   the decision record's `--decided-by` names the winner.
 3. Answered externally while the form sits: the pushed message dismisses the
-   form and the verb proceeds on the recorded answer.
+   form and the verb re-reads the registry and proceeds on the recorded
+   answer. A push for a gate already reconciled is discarded.
 
 **Unattended** (spawned by a herd, a board launch, or any `--spawned-by`
 surface):
@@ -222,14 +314,28 @@ Engine edits (mattstack-skills):
   execution, the writing-style step, the close HARD-GATE. Gains one guard:
   this part never asks anything; arriving without a decided selection and
   disposition is a caller bug, so stop.
-- Untouched: `review-core-*`, `gitlab-mr-threads`, `wrap-up-form`. The
-  self-review and receive-review verbs keep their own gates as gates; they
-  adopt the facility through the pipeline part below, not through posting
-  changes (self-review never posts).
+- Untouched IN THIS WAVE (W2): `review-core-*`, `gitlab-mr-threads`,
+  `wrap-up-form`, self-review, receive-review. Self-review never posts and
+  adopts the facility only through the pipeline part in W3; receive-review
+  restructures in W3 per the Respond adopter, not here.
+- The decision-record vocabulary changes with this edit: one record at
+  scope `post` with a combined `{levels, disposition}` selection replaces
+  today's `post-severity` + `post-disposition` pair, and `--decided-by`
+  moves from verb names to surface names. Any consumer rendering decisions
+  by scope gets named and checked in the plan.
+- Iterate here and Hold remain pane-semantic options: when an answer picks
+  one, the verb acts on it in-pane and opens a NEW gate when it re-asks
+  (the consumed gate is terminal); openers may mark such options pane-only
+  via `meta` so remote cards render them disabled.
 
 Fill edits (team pack repo): the pack's review fill becomes a thin @2
-adapter. Both provides spots bump to `mr-review@2` (the fill's frontmatter
-and the pack manifest's provides row). Flow: invoke the review verb
+adapter. Both provides spots (the fill's frontmatter and the pack
+manifest's provides row) declare BOTH contracts during the transition,
+`mr-review@1 mr-review@2`, because the wrapper's resolver requires an exact
+`contract@major` match and a clean bump would break slot-resolved launches
+under the currently live @1 board (the resolver splits `provides` on
+whitespace, so dual declaration is supported); @1 is dropped once the
+reworked board deploys. Flow: invoke the review verb
 declaring caller-owned gating; save the report before reporting levels;
 report the levels present; on handed `{tiers, outcome}` execute posting and
 hand the outcome back for `done --outcome`; under `--resumed-gate` execute
@@ -250,12 +356,15 @@ approve all carry over from the held design.
 
 ### Respond (`mr-respond@2`)
 
-Respond keeps its two decision phases; each becomes a facility gate,
-answerable from any surface:
+Respond's decision surface collapses from today's three gates (verdicts,
+fixes, post) to two facility gates, answerable from any surface:
 
-- Gate 1, the plan: one question per unresolved thread (reply, fix, skip)
-  built from the fill's adjudication and recommendations, plus the
-  code-changes approval.
+- Gate 1, the plan: per-thread questions (reply, fix, skip) built from the
+  fill's adjudication and recommendations, plus the code-changes approval.
+  Grouped with the in-pane form's question cap in mind (a many-thread MR
+  groups threads per question rather than one question per thread); board
+  and console cards render the full list either way, and however the pane
+  chunks its presentation, exactly one atomic `gate answer` lands.
 - Gate 2, the posting: after fixes, post replies and disposition.
 
 The receive-review verb restructures to adjudicate and execute, never
@@ -305,12 +414,20 @@ The relay becomes one more surface: shepherdr presents herd gates in the
 shepherd conversation exactly as today and records answers with `gate
 answer --by shepherd`.
 
-Gains: herd questions escape the shepherd pane (visible and answerable on
-the console, the board, the worker's own pane, or the relay; first answer
-wins); questions survive a shepherd crash because gates outlive any
-surface; zero pane reads to learn a question (the registry row carries it);
-and the existing "theirs to answer, never yours" distinction becomes relay
-policy over gate metadata rather than a separate mechanism. SKILLS-58's
+Not every herd question has a run id: the per-job strategy/model question
+fires before any run exists, and design-job questions never get one. The
+subject being an opaque `<prefix>:<id>` (per the registry) covers them
+(e.g. a herd-scoped prefix); in v1 those render on the relay only, while
+`run:` gates also render on the console.
+
+Gains: worker-run questions escape the shepherd pane (answerable on the
+console, the worker's own pane, or the relay; first answer wins); the
+QUESTION's availability stops depending on any single surface (today open
+questions persist in the herd DB but die with the failed relay path; in
+the registry, any surface picks them up); zero pane reads to learn a
+question (the registry row carries it); and the existing "theirs to
+answer, never yours" distinction becomes relay policy over the gate's
+`kind`/`meta` rather than a separate mechanism. SKILLS-58's
 direction is absorbed here; its open questions (permission-prompt
 starvation under a blocking wait, timeout behavior, whether the stop hook
 needs herd awareness) are the W1 spike's checklist plus plan-time details.
@@ -323,8 +440,12 @@ the shepherd engine.
   registry, verbs, events, subscriptions, push delivery; rt-client wrappers.
   Additive; may merge to rt main early. Nothing half-wired ships.
 - **W2, review end to end:** board rework onto the facility plus the skills
-  layer (engine, fill). Live verify, then the held gate-events family
-  (board, rt, console branches) merges here.
+  layer (engine, fill). The shared pane-protocol part is CREATED here, with
+  the review wrapper as its first consumer (W3 adopts it across the
+  pipeline); the held rt branch's notify bridge and settings keys merge
+  here, which is when bridge-routed gate notifications light up. Live
+  verify, then the held gate-events family (board, rt, console branches)
+  merges here.
 - **W3, everything answers everywhere:** the pipeline part and verb
   adoption, the console surface (it needs `run:` gates to exist, hence this
   wave), respond @2, doctor @2, shepherdr.
@@ -334,9 +455,13 @@ operator's go.
 
 ## Verification
 
-- **W1:** the delivery spike (see Delivery); CAS race test (two surfaces
-  answer the same gate fast; exactly one wins and the loser gets a clean
-  rejection); wait/list semantics; a subscription push received by a second
+- **W1:** the delivery spike (see Delivery; the push leg targets a pane
+  blocked AT A FORM, the only case the push exists for); CAS race test (two
+  surfaces answer the same gate fast; exactly one wins and the loser's
+  rejection carries the winning answer); lifecycle tests (supersede-on-open
+  closes the prior gate; `gate close` releases waiters with the closed
+  status; `gate park` on an answered gate rejects cleanly); wait re-entry
+  across a daemon restart; a subscription push received by a second
   session.
 - **W2:** the review smoke: findings review (gate opens, card offers tiers
   plus outcome, only selected tiers post, scoped summary, correct
