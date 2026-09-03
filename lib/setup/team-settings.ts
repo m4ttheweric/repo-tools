@@ -129,11 +129,14 @@ function looksLikeGitlabHost(host: string): boolean {
 }
 
 /** github.com is the only hosted GitHub; a GitLab-shaped host is self-hosted GitLab; anything else is an unrecognized forge — never guessed at, never handed to `glab` as a target host. */
-export function forgeFromRemote(remote: string): { host: string; provider: "github" | "gitlab" } | null {
-  const parsed = parseRemoteUrl(remote);
-  if (!parsed) return null;
-  const host = stripUserinfo(parsed.host).replace(/^https?:\/\//, "");
+export function forgeFromHost(host: string): { host: string; provider: "github" | "gitlab" } | null {
   if (host === "github.com") return { host, provider: "github" };
   if (looksLikeGitlabHost(host)) return { host, provider: "gitlab" };
   return null;
+}
+
+export function forgeFromRemote(remote: string): { host: string; provider: "github" | "gitlab" } | null {
+  const parsed = parseRemoteUrl(remote);
+  if (!parsed) return null;
+  return forgeFromHost(stripUserinfo(parsed.host).replace(/^https?:\/\//, ""));
 }

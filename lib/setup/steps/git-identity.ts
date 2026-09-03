@@ -14,7 +14,8 @@
 
 import { forgeProfile } from "../../team/forge.ts";
 import type { ApplyContext, StepDef, StepOutcome } from "../apply.ts";
-import { forgeFromRemote } from "../team-settings.ts";
+import { isValidHostname } from "../host-validate.ts";
+import { forgeFromHost, forgeFromRemote, readUserIntegrationOverrides } from "../team-settings.ts";
 import { forgeTokenFor } from "./forge-token.ts";
 import { toFailedOutcome } from "./step-utils.ts";
 
@@ -47,12 +48,22 @@ function tokenRemoteFor(host: string): string {
   return `https://${host}/mattstack/identity`;
 }
 
+/**
+ * The forge the user confirmed for themselves during `rt setup <id> connect`,
+ * which is all a machine with no team has. Hostname-validated like every
+ * other reader of this key: nothing but a real host may reach `gh`/`glab`.
+ */
+function connectedForge(): { host: string; provider: "github" | "gitlab" } | null {
+  const host = readUserIntegrationOverrides().forgeHost;
+  return host && isValidHostname(host) ? forgeFromHost(host) : null;
+}
+
 async function gitIdentityRun(ctx: ApplyContext): Promise<StepOutcome> {
   const name = await readGlobal(ctx, "user.name");
   const email = await readGlobal(ctx, "user.email");
   if (name && email) return { state: "skipped", detail: `already configured: ${name} <${email}>` };
 
-  const forge = ctx.snapshot?.integrations.forge ?? (ctx.snapshot?.remote ? forgeFromRemote(ctx.snapshot.remote) : null);
+  const forge = ctx.snapshot?.integrations.forge ?? (ctx.snapshot?.remote ? forgeFromRemote(ctx.snapshot.remote) : null) ?? connectedForge();
   if (!forge) return { state: "skipped", detail: `no forge connected; ${MANUAL}` };
 
   const token = await forgeTokenFor(ctx, tokenRemoteFor(forge.host));

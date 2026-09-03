@@ -416,6 +416,48 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
       expect(p.calls.exec).toEqual([READ_NAME, READ_EMAIL]);
     });
 
+    // The exact case the step exists for: a fresh Mac with no team at all,
+    // where the only thing that knows which forge the person uses is the
+    // host they confirmed during `rt setup <id> connect`.
+    test("no team at all, but a confirmed forge host: the identity is still written", async () => {
+      setSetting("rt.integrations", { forgeHost: "gitlab.example.com" }, "user");
+      const p = fakeProbes({
+        home,
+        exec: async (argv) => {
+          if (argv[0] === "git" && argv.length === 4) return unset;
+          if (argv[0] === "glab") return ok(JSON.stringify({ username: "trillian", name: "Trillian", id: 7, commit_email: "trillian@acme.example" }));
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { snapshot: null });
+
+      expect(await gitIdentityStep.run(ctx)).toEqual({ state: "done", detail: "Trillian <trillian@acme.example>" });
+      expect(writes(p)).toEqual([
+        ["git", "config", "--global", "user.name", "Trillian"],
+        ["git", "config", "--global", "user.email", "trillian@acme.example"],
+      ]);
+    });
+
+    test("no team and nothing connected: still the no-forge skip, nothing else execed", async () => {
+      const p = fakeProbes({ home, exec: async () => unset });
+      const { ctx } = makeCtx(p, { snapshot: null });
+
+      expect(await gitIdentityStep.run(ctx)).toEqual({
+        state: "skipped",
+        detail: "no forge connected; run git config --global user.name / user.email",
+      });
+      expect(p.calls.exec).toEqual([READ_NAME, READ_EMAIL]);
+    });
+
+    test("a confirmed host that is not a hostname is refused, never handed to a forge CLI", async () => {
+      setSetting("rt.integrations", { forgeHost: "gitlab.example.com/../evil" }, "user");
+      const p = fakeProbes({ home, exec: async () => unset });
+      const { ctx } = makeCtx(p, { snapshot: null });
+
+      expect((await gitIdentityStep.run(ctx)).state).toBe("skipped");
+      expect(p.calls.exec).toEqual([READ_NAME, READ_EMAIL]);
+    });
+
     test("an unwritable ~/.gitconfig is a real failure, carrying git's own stderr", async () => {
       const p = fakeProbes({
         home,
