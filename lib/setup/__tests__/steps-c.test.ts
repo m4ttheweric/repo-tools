@@ -834,7 +834,7 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
         expect(slept).toEqual([3000, 3000]);
       });
 
-      // A joiner's clone starts its first pull the moment the engine boots —
+      // A joiner's clone starts its first pull the moment the engine boots,
       // "never" right after join means "the engine hasn't started yet", not
       // a real failure, so verify waits it out the same as tool.daemon.
       test("settleChecks re-reads while team.sync warns 'last pull never', then returns the settled checks", async () => {

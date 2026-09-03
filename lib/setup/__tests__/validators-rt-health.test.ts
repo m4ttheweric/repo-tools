@@ -780,7 +780,7 @@ describe("teamSyncRow", () => {
     expect(r?.detail).toContain("fetch failed");
   });
 
-  test("an empty-string push error still trips needs-you (lastPushError != null, not truthiness) — same redactCredentials(stderr) shape as the fetch error", async () => {
+  test("an empty-string push error still trips needs-you (lastPushError != null, not truthiness): same redactCredentials(stderr) shape as the fetch error", async () => {
     const r = await teamSyncRow(
       ["acme"],
       async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: true, lastPushError: "", conflicted: null } as never],
@@ -823,7 +823,7 @@ describe("teamSyncRow", () => {
   });
 });
 
-describe("rtHealthRows — team.sync wiring", () => {
+describe("rtHealthRows: team.sync wiring", () => {
   test("no team cloned: no team.sync row, row order unchanged", async () => {
     const rows = await rtHealthRows(fakeProbes({ home: "/fake-home" }), { ci: false });
     expect(rows.find((r) => r.id === "team.sync")).toBeUndefined();

@@ -474,7 +474,7 @@ export async function teamSyncRow(
     recheck: "on-activate" as const,
   };
   const entries = await readStatus();
-  if (entries === null) return row({ ...base, status: "missing", detail: "rt daemon not reachable — team clones sync once it is running" });
+  if (entries === null) return row({ ...base, status: "missing", detail: "rt daemon not reachable; team clones sync once it is running" });
 
   const staleMs = pullIntervalSec * 2 * 1000;
   const problems: string[] = [];
@@ -485,18 +485,18 @@ export async function teamSyncRow(
       continue;
     }
     if (e.conflicted) {
-      problems.push(`${slug}: rebase conflict — ${e.conflicted.detail}; rebase and rt team publish by hand`);
+      problems.push(`${slug}: rebase conflict: ${e.conflicted.detail}; rebase and rt team publish by hand`);
       continue;
     }
     // Both fields come off the same redactCredentials(stderr) shape in the
-    // engine, so "" is reachable for either — tested against null/undefined,
+    // engine, so "" is reachable for either; tested against null/undefined,
     // never a truthiness check `""` would fail past.
     if (e.lastPushError != null) {
-      problems.push(`${slug}: push failing — ${e.lastPushError || "push failed"}`);
+      problems.push(`${slug}: push failing: ${e.lastPushError || "push failed"}`);
       continue;
     }
     if (e.lastPullError != null) {
-      problems.push(`${slug}: fetch failing — ${e.lastPullError || "fetch failed"}`);
+      problems.push(`${slug}: fetch failing: ${e.lastPullError || "fetch failed"}`);
       continue;
     }
     if (e.lastPullAt === 0 || now() - e.lastPullAt > staleMs) {

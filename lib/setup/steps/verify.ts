@@ -34,7 +34,7 @@ const SETTLE_INTERVAL_MS = 3000;
 /**
  * Re-reads the checks while the only critical failures are settling rows;
  * any other failure is judged on the first read. team.sync is `required:
- * false`, so it never shows up as a critical failure — its "never pulled"
+ * false`, so it never shows up as a critical failure; its "never pulled"
  * state instead reads as a `warn` whose detail names it, and that gets the
  * same re-read budget so a fresh join isn't judged before the engine boots.
  */

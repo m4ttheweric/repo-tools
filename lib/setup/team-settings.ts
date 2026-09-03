@@ -77,7 +77,7 @@ export function readUserIntegrationOverrides(opts: { read?: SettingsReader; warn
   return read<UserIntegrationOverrides>("rt.integrations") ?? {};
 }
 
-/** Every locally-cloned team's slug — subdirectories of `<home>/.mattstack/teams` that have a `mattstack/settings.team.jsonc`. Deliberately built off `Probes` (`p.home`/`p.readDir`/`p.exists`) rather than `listTeams()`, which resolves `process.env.HOME` at call time: a context built from a fake `Probes` must never leak the real ambient HOME into which team it resolves. */
+/** Every locally-cloned team's slug: subdirectories of `<home>/.mattstack/teams` that have a `mattstack/settings.team.jsonc`. Deliberately built off `Probes` (`p.home`/`p.readDir`/`p.exists`) rather than `listTeams()`, which resolves `process.env.HOME` at call time: a context built from a fake `Probes` must never leak the real ambient HOME into which team it resolves. */
 export function discoverTeams(p: Probes): string[] {
   const dir = join(p.home, ".mattstack", "teams");
   return p.readDir(dir).filter((name) => p.exists(join(dir, name, "mattstack", "settings.team.jsonc")));

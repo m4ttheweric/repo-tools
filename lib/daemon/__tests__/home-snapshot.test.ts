@@ -2006,7 +2006,7 @@ describe("startHomeSnapshot — local-only remote state", () => {
   }, 15_000);
 });
 
-describe("startSnapshot — spec", () => {
+describe("startSnapshot: spec", () => {
   test("homeSnapshotSpec is today's home values, and startSnapshot(homeSpec) equals startHomeSnapshot", async () => {
     const spec = homeSnapshotSpec(FAKE_REPO_DIR);
     expect(spec).toMatchObject({ id: "home", repoDir: FAKE_REPO_DIR, kvNamespace: "home-snapshot", eventPrefix: "home" });
@@ -2068,7 +2068,7 @@ describe("teamSnapshotSpec", () => {
     expect(spec.legacyStatePath).toBeUndefined();
 
     // The team spec carries no legacyStatePath, so a run against it must never
-    // import or rename the home repo's legacy state file — proven against the
+    // import or rename the home repo's legacy state file... proven against the
     // real one under the test's faked HOME, not just by asserting the field is undefined.
     const legacyPath = join(rtDir(), "home-snapshot-state.json");
     mkdirSync(dirname(legacyPath), { recursive: true });
@@ -2124,7 +2124,7 @@ function pullResponders(opts: { behind: number; ahead: number; rebase?: "ok" | "
   ];
 }
 
-describe("startSnapshot — pull", () => {
+describe("startSnapshot: pull", () => {
   // The conflict responder creates a real `.git/rebase-merge` under the shared
   // fixture dir; a test that ends mid-conflict would otherwise leave the next
   // one's preflight reading "a rebase is in progress".

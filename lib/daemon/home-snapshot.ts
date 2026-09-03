@@ -2,7 +2,7 @@
  * Snapshot daemon engine, driven by a `SnapshotSpec`: watches a repo for
  * changes, auto-commits everything NOT inside a claimed zone, and
  * janitor-commits a claimed zone left dirty past its threshold. The home repo
- * (~/.mattstack/user) is one instance of it — `homeSnapshotSpec` — and
+ * (~/.mattstack/user) is one instance of it (`homeSnapshotSpec`), and
  * `startHomeSnapshot` is the wrapper that starts it. Zones stay owner-authored:
  * `runNow` never stages a claimed zone except through the janitor path, and
  * never on reason "watch" (only "janitor"/"manual" — see planSnapshot's
@@ -90,7 +90,7 @@ export interface SnapshotStatus {
   pushPending: boolean;
   lastPushAt: number;
   lastPushError: string | null;
-  /** Stamped only by a fetch that actually reached the remote — a clone whose token stopped working reads as stale rather than in sync. */
+  /** Stamped only by a fetch that actually reached the remote, so a clone whose token stopped working reads as stale rather than in sync. */
   lastPullAt: number;
   lastPullError: string | null;
   /** The most recent pull's skip reason (e.g. a rebase refused for a dirty `src/`); null after any non-skipped pull. */
@@ -231,7 +231,7 @@ async function hasRemote(exec: ExecFn, cwd: string): Promise<boolean> {
  * absence is checked explicitly before ever calling `rev-list` against it.
  *
  * An unborn branch (a remote attached before the first commit ever landed
- * — e.g. `git commit` failing outright because git could resolve no
+ * (e.g. `git commit` failing outright because git could resolve no
  * committer identity) prints its branch name via `symbolic-ref` just fine, exit 0,
  * same as a normal branch — HEAD itself must be verified separately, or
  * this arms a `git push` with nothing to push ("src refspec HEAD does not
@@ -488,7 +488,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
 
   // Guarded: this runs at construction time, synchronously, in whatever
   // starts the instance (module scope in lib/daemon.ts, via
-  // startHomeSnapshot) — an unregistered key or a broken settings store must
+  // startHomeSnapshot): an unregistered key or a broken settings store must
   // degrade to "stay inert, warn", never throw out of the daemon's boot sequence.
   let startupSettings: HomeSnapshotSettings | null = null;
   try {

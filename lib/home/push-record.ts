@@ -16,7 +16,7 @@ import { existsSync } from "fs";
 import type { Database } from "bun:sqlite";
 import { getKvValue, getStateDb, setKvValue, stateDbPath } from "../state/index.ts";
 
-/** Shared with lib/daemon/home-snapshot.ts's own `state` row — same namespace, different key, which is the whole point. Also the default `ns` below, so a snapshot instance keyed on some other namespace writes its record beside its own state row, not on top of home's. */
+/** Shared with lib/daemon/home-snapshot.ts's own `state` row: same namespace, different key, which is the whole point. Also the default `ns` below, so a snapshot instance keyed on some other namespace writes its record beside its own state row, not on top of home's. */
 export const HOME_SNAPSHOT_NS = "home-snapshot";
 export const HOME_PUSH_KEY = "last-push";
 
