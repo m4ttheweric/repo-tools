@@ -667,9 +667,8 @@ describe("toolRows — pack.<pack>", () => {
     expect(rows.filter((row) => row.id.startsWith("pack."))).toHaveLength(2);
   });
 
-  // Superseded by tool.plugins (lib/setup/validators/tools.ts): that row
-  // reads `claude plugin list` unconditionally, so this exec now runs even
-  // with zero pack requirements.
+  // tool.plugins reads `claude plugin list` unconditionally, so this exec
+  // runs even with zero pack requirements.
   test("no pack requirements at all -> claude plugin list still runs once, for tool.plugins", async () => {
     const p = fakeProbes({});
     await toolRows(p, [], { hasBrew: true }, NOOP_SEAMS);

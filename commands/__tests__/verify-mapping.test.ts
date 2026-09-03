@@ -83,13 +83,17 @@ describe("rowsToChecks", () => {
 
   // tool.fast-browser's own row never carries required:true past the
   // "missing" status (composePlan drops to required:false for needs-you and
-  // error), so there is no longer a CI-only exemption for it here: a caller
-  // that hands rowsToChecks a required:true needs-you row anyway still fails,
-  // the same as any other required row would.
+  // error), so a required:true needs-you row only ever reaches here as a
+  // synthetic fixture, never from the real validator.
   test("tool.fast-browser MISSING in ci -> still fails, because that means the bundle is broken", () => {
     const check = oneCheck([baseRow({ id: "tool.fast-browser", status: "missing", required: true })], { ci: true });
     expect(check.status).toBe("fail");
     expect(check.severity).toBe("critical");
+  });
+
+  test("tool.fast-browser needs-you no longer exempted in ci -> fails like any required row", () => {
+    const check = oneCheck([baseRow({ id: "tool.fast-browser", status: "needs-you", required: true })], { ci: true });
+    expect(check.status).toBe("fail");
   });
 
   test("tool.plugins missing in ci -> warn (installed through claude, which a runner does not have)", () => {
