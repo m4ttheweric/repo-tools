@@ -48,7 +48,7 @@ The daemon owns gate state:
 | `answer` | `{answers, by, answeredAt}` |
 | `openedAt`, `parkedAt` | timestamps |
 | `agent`, `pane` | opener's refs, for focus, nudge, and resume |
-| `nudge` | optional delivery spec recorded by the opener |
+| `nudge` | optional push-delivery spec recorded by the opener (how to reach an attended pane; unattended panes need none, they block in `gate wait`) |
 
 ### Verbs
 
@@ -67,6 +67,10 @@ The daemon owns gate state:
   transition here; parking POLICY stays with owners. The board keeps its
   grace sweep for `mr:` gates. `run:` gates do not auto-park in v1; a run
   waiting at a gate is normal and its pane stays.
+- `gate subscribe --subject-prefix <mr:|run:...> --session <addr>` registers
+  a push subscription: the daemon delivers `gate/opened` and `gate/answered`
+  notifications for matching subjects directly into the subscriber's session
+  (delivery below). Registered once; never re-armed.
 
 ### Events
 
@@ -77,14 +81,49 @@ event, so tray notifications with a focus action come free. The namespace is
 generic (`gate/*`, subject in the payload), replacing the board-scoped
 `board/gate/*`.
 
-### Nudge
+### Delivery
 
-On `answered`, the daemon delivers the opener's nudge: a message into the
-blocked pane's session. A pending in-pane form is dismissed by an arriving
-message (standard harness behavior), and the verb proceeds on the recorded
-answer. Backends are pluggable per opener: herdr pane delivery for
-board-launched panes, rt chat for signed-in sessions. A dead pane gets no
-nudge; resume handles it (below).
+Two delivery modes, keyed on whether the gated pane is attended. Every gated
+pane publishes its gate either way.
+
+**Unattended panes** (herd workers, board-launched panes): the verb blocks in
+`gate wait` after publishing. No form is presented. The answer returns as the
+blocking tool call's result, so nothing has to wake the worker, no relay
+touches pane input state, and the pipeline stop hook is satisfied because the
+turn ends in a tool call rather than prose. A human who opens the pane can
+still interrupt the wait and answer conversationally (`gate answer --by
+pane`). This is the direction SKILLS-58 proposed after the 2026-09-03 herd
+run, where bus-published questions died because the stop hook forced pane
+forms and the answer relay failed against form-blocked agents.
+
+**Attended panes** (a human's interactive session): the verb publishes and
+presents the normal in-pane form; the in-pane experience does not change.
+When the gate is answered elsewhere first, the daemon pushes a message into
+the pane's session over the socket messaging protocol; the arriving message
+dismisses the pending form (standard harness behavior) and the verb proceeds
+on the recorded answer.
+
+**The push channel** is the Claude Code socket messaging protocol, the same
+transport rt chat rides. It works across Claude Code accounts (herds
+distribute across accounts; native SendMessage does not cross them), and it
+requires no rt chat sign-in: the daemon addresses the session directly. The
+same channel carries subscription notifications (`gate subscribe`), so an
+observer such as a shepherd is pushed to, never polling and never re-arming
+a wait: the fragility SKILLS-35 documented (dropped notifications during
+interactive turns, manual re-arm discipline) does not exist in this design,
+and gap recovery after a crash or compaction is `gate list --open` against
+the registry.
+
+A dead pane gets no delivery; resume handles it (below).
+
+**Spike (first task of W1, before any dependent build):** prove the delivery
+mechanics end to end. (1) A socket-protocol push lands in a session on a
+DIFFERENT Claude Code account with no rt chat sign-in, and dismisses a
+pending structured form. (2) A worker blocked in `gate wait` receives the
+answer as the tool result and its stop hook stays quiet; observe whether the
+blocking wait starves permission prompts. (3) A subscription push arrives
+mid-turn in a busy session and the notification survives to be acted on.
+Failure of any leg revises this section before W1 proceeds.
 
 ### Agent and pane integration
 
@@ -116,23 +155,34 @@ an Answer action (`gate answer --by console`), and Focus pane side by side.
 v1 scope: the console renders `run:` gates and the board renders `mr:`
 gates; cross-rendering is a later nicety.
 
-### Pane (one protocol, everywhere)
+### Pane (one protocol, two modes)
 
-A shared engine part defines gating for any verb or wrapper:
+A shared engine part defines gating for any verb or wrapper. Every gated
+pane publishes (`gate open` with subject, questions, and pane refs), then:
 
-1. Publish the gate: `gate open` with subject, questions, and pane refs.
-2. Present the normal in-pane structured form. The in-pane experience does
+**Attended** (a human's interactive session, the default for a
+human-invoked verb):
+
+1. Present the normal in-pane structured form. The in-pane experience does
    not change.
-3. Form answered: `gate answer --by pane`. If CAS reports an earlier answer,
+2. Form answered: `gate answer --by pane`. If CAS reports an earlier answer,
    discard the form's answer and proceed on the recorded one.
-4. Answered externally while the form sits: the nudge message dismisses the
+3. Answered externally while the form sits: the pushed message dismisses the
    form and the verb proceeds on the recorded answer.
-5. Daemon down: form-only, exactly today's behavior.
 
-This unifies a split the held branch had: board-launched panes used to hold
-silently at `gate wait` with conversational answering only. Under the shared
-part, every gated pane presents its form, so "open any blocked pane and the
-question is waiting" holds across `:work` runs and board panes alike.
+**Unattended** (spawned by a herd, a board launch, or any `--spawned-by`
+surface):
+
+1. Block in `gate wait`; the answer returns as the tool result. No form.
+2. A human who opens the pane can interrupt the wait and answer
+   conversationally: `gate answer --by pane`, then proceed.
+
+**Daemon down** (either mode): form-only in-pane, exactly today's behavior.
+
+Attendance comes from the invocation context (the spawning surface says so;
+a human-run verb defaults to attended). The question "open any blocked pane
+and the question is waiting" holds in both modes: attended panes show the
+form, unattended panes show the wait with the gate stated above it.
 
 ## Skills layer: caller-owned posting decisions
 
@@ -225,31 +275,53 @@ Non-enumerable failures remain `error`.
 The shared pane-protocol part is adopted by every `gate@1`-bracketed
 decision site: `clarify` gates, self-review's fix/ship gate, resume offers,
 stage gates. Adoption is a mechanical include plus each site publishing its
-questions with subject `run:<id>`. The existing `rt runs decision record`
+questions with subject `run:<id>`. Attendance follows the invocation: a
+human-run `:work` verb is attended (form as today), a herd-spawned worker is
+unattended (blocking wait, no form). The existing `rt runs decision record`
 bookkeeping keeps working, with `--decided-by` taken from the CAS answer's
-`by`. This is what lights up the console for `:work` runs.
+`by`. This is what lights up the console for `:work` runs. The pipeline
+stop hook likely needs no herd awareness under the blocking design (the
+turn ends in a tool call); the W1 spike confirms.
 
 ### Shepherdr
 
 Shepherdr already hand-rolls this: workers emit blocked/question signals and
 the shepherd relays structured questions between the herd and the user,
-scoped to the shepherd pane. Worker questions become facility gates, and the
-relay becomes one more surface: shepherdr presents herd gates in the
-shepherd conversation exactly as today and records answers with
-`gate answer --by shepherd`; its watcher keys off `gate/opened` events.
+scoped to the shepherd pane. SKILLS-58 (filed from the 2026-09-03 seven
+worker herd) documents how that relay fails today: the pipeline stop hook
+forces workers into pane forms, killing their published questions; the
+answer relay fails against form-blocked agents (`agent prompt` rejects a
+blocked agent); and the shepherd burned six pane reads just to learn what
+forms were asking. SKILLS-35 documents the watcher side: notifications
+dropped during interactive turns, re-arm as manual discipline.
+
+Under the facility: worker questions become gates, workers are unattended
+panes (they publish and block in `gate wait`; no forms, no relay against
+pane input, answers return as tool results, cross-account because the daemon
+is the transport). The shepherd registers ONE `gate subscribe` for its
+herd's subjects at herd start and is pushed to over the socket protocol;
+nothing is re-armed, ever, and recovery after a gap is `gate list --open`.
+The relay becomes one more surface: shepherdr presents herd gates in the
+shepherd conversation exactly as today and records answers with `gate
+answer --by shepherd`.
 
 Gains: herd questions escape the shepherd pane (visible and answerable on
 the console, the board, the worker's own pane, or the relay; first answer
-wins); questions survive a shepherd crash because gates outlive any surface;
+wins); questions survive a shepherd crash because gates outlive any
+surface; zero pane reads to learn a question (the registry row carries it);
 and the existing "theirs to answer, never yours" distinction becomes relay
-policy over gate metadata rather than a separate mechanism. The plan pins
-the exact question-contract replacement after a full read of the shepherd
-engine.
+policy over gate metadata rather than a separate mechanism. SKILLS-58's
+direction is absorbed here; its open questions (permission-prompt
+starvation under a blocking wait, timeout behavior, whether the stop hook
+needs herd awareness) are the W1 spike's checklist plus plan-time details.
+The plan pins the exact question-contract replacement after a full read of
+the shepherd engine.
 
 ## Waves
 
-- **W1, the facility:** daemon registry, verbs, events, nudge; rt-client
-  wrappers. Additive; may merge to rt main early. Nothing half-wired ships.
+- **W1, the facility:** the delivery spike FIRST (see Delivery), then daemon
+  registry, verbs, events, subscriptions, push delivery; rt-client wrappers.
+  Additive; may merge to rt main early. Nothing half-wired ships.
 - **W2, review end to end:** board rework onto the facility plus the skills
   layer (engine, fill). Live verify, then the held gate-events family
   (board, rt, console branches) merges here.
@@ -262,9 +334,10 @@ operator's go.
 
 ## Verification
 
-- **W1:** CAS race test (two surfaces answer the same gate fast; exactly one
-  wins and the loser gets a clean rejection); wait/list semantics; nudge
-  delivery to a live pane.
+- **W1:** the delivery spike (see Delivery); CAS race test (two surfaces
+  answer the same gate fast; exactly one wins and the loser gets a clean
+  rejection); wait/list semantics; a subscription push received by a second
+  session.
 - **W2:** the review smoke: findings review (gate opens, card offers tiers
   plus outcome, only selected tiers post, scoped summary, correct
   reaction); clean review one-click approve; the REQUIRED park, answer,
@@ -286,6 +359,9 @@ discipline, and the smokes above are the behavioral checks.
   main until that branch merges, or those commits are cherry-picked first.
 - `board.reReview {enabled}` registration (queued elsewhere) waits for the
   facility branch by agreement; its shape is orthogonal to this design.
+- SKILLS-58 (herd gate decisions through the bus, not pane forms) is
+  absorbed by this spec's Delivery and Shepherdr sections; it stays open as
+  the dogfood evidence record until W3 ships the herd path.
 
 ## Decisions (2026-09-03)
 
@@ -303,8 +379,18 @@ discipline, and the smokes above are the behavioral checks.
   reaches the facility through the generic pipeline part.
 - The engine records rt-runs decisions at execution time regardless of
   decider.
-- Unified pane protocol: every gated pane presents its form, including
-  board-launched panes that previously held silently.
+- Unified pane protocol, two modes: every gated pane publishes; attended
+  panes present the unchanged in-pane form, unattended panes block in
+  `gate wait` with no form (revised 2026-09-03 on SKILLS-58's evidence,
+  which showed forms in worker panes are the defect, not the UX).
+- Delivery rides the Claude Code socket messaging protocol (rt chat's
+  transport) with no chat sign-in required: cross-account pushes for
+  dismissing attended forms and for `gate subscribe` notifications.
+  Observers are pushed to; nobody re-arms event waits (SKILLS-35).
+- A W1 spike proves the delivery mechanics (cross-account push dismissing a
+  form; blocking wait returning the answer with a quiet stop hook;
+  subscription push surviving a busy turn) before dependent work builds on
+  them.
 
 ## Rejected alternatives
 
