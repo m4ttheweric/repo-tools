@@ -130,18 +130,24 @@ interface RosterMember {
   [key: string]: unknown;
 }
 
-function readRoster(seams: MembersSeams, slug: string): RosterMember[] {
+/** The two roster keys a membership change touches — board.members is the board's own list, mattstack.roster the cross-app successor, mirroring invite.ts's addToRoster. */
+const ROSTER_KEYS = ["board.members", "mattstack.roster"] as const;
+type RosterKey = (typeof ROSTER_KEYS)[number];
+
+function readRoster(seams: MembersSeams, slug: string, key: RosterKey = "board.members"): RosterMember[] {
   const store = seams.readTeamStore(slug);
-  return Array.isArray(store["board.members"]) ? (store["board.members"] as RosterMember[]) : [];
+  return Array.isArray(store[key]) ? (store[key] as RosterMember[]) : [];
 }
 
-/** Sets (or overwrites) one roster entry's `agePublicKey` — the sync-time record of which sops recipient a handle maps to, so `membersRemove` can find it later without a `--key` argument. */
+/** Sets (or overwrites) one roster entry's `agePublicKey` on both roster keys — the sync-time record of which sops recipient a handle maps to, so `membersRemove` can find it later without a `--key` argument. Each key is read and written on its own contents, matching `addToRoster` in invite.ts. */
 function recordRosterKey(seams: MembersSeams, slug: string, handle: string, agePublicKey: string): void {
-  const existing = readRoster(seams, slug);
-  const updated = existing.some((m) => m.username === handle)
-    ? existing.map((m) => (m.username === handle ? { ...m, agePublicKey } : m))
-    : [...existing, { username: handle, agePublicKey }];
-  seams.writeSetting("board.members", updated, "team", { team: slug });
+  for (const key of ROSTER_KEYS) {
+    const existing = readRoster(seams, slug, key);
+    const updated = existing.some((m) => m.username === handle)
+      ? existing.map((m) => (m.username === handle ? { ...m, agePublicKey } : m))
+      : [...existing, { username: handle, agePublicKey }];
+    seams.writeSetting(key, updated, "team", { team: slug });
+  }
 }
 
 export interface MembersSeams {
@@ -371,6 +377,18 @@ export async function membersRemove(
     seams.writeSetting(
       "board.members",
       existing.filter((m) => m.username !== handle),
+      "team",
+      { team: slug },
+    );
+  }
+
+  // mattstack.roster is judged on its own contents, independent of
+  // board.members: a store can carry one roster without the other.
+  const crossAppRoster = readRoster(seams, slug, "mattstack.roster");
+  if (crossAppRoster.some((m) => m.username === handle)) {
+    seams.writeSetting(
+      "mattstack.roster",
+      crossAppRoster.filter((m) => m.username !== handle),
       "team",
       { team: slug },
     );
