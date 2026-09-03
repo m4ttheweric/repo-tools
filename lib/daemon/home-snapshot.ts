@@ -577,7 +577,11 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
         tryArm();
         // tryArm arms the interval; this is the boot pull, so a daemon that
         // just started does not wait a whole interval to see the remote.
-        if (spec.pull && !disabledReason) void pullNow();
+        // Same reasoning as schedulePull's catch, and it matters more here:
+        // this runs inside the daemon's boot window.
+        if (spec.pull && !disabledReason) {
+          void pullNow().catch((err) => { deps.log.warn({ err }, "home-snapshot: boot pull failed; continuing"); });
+        }
       }
     } catch (err) {
       // The is-inside-work-tree exec call itself never throws per its own
@@ -645,7 +649,13 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     if (pullTimer) deps.clearTimeout(pullTimer);
     pullTimer = deps.setTimeout(() => {
       pullTimer = null;
-      void pullNow().finally(() => { if (!stopped) schedulePull(); });
+      // doPull reports its own git failures as outcomes, so a rejection here
+      // is a seam throwing (broadcast, a db handle). Swallowed rather than
+      // left to `void`: an unhandled rejection is a `process.exit(1)` under
+      // the daemon's installCrashHandlers, and the interval must survive it.
+      void pullNow()
+        .catch((err) => { deps.log.warn({ err }, "home-snapshot: scheduled pull failed; continuing"); })
+        .finally(() => { if (!stopped) schedulePull(); });
     }, spec.pull.intervalSec * 1000);
   }
 

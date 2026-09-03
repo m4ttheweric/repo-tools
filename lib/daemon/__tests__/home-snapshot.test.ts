@@ -2493,6 +2493,52 @@ describe("startSnapshot: pull", () => {
     handle.stop();
   });
 
+  test("a boot pull that rejects outright is logged and swallowed, never an unhandled rejection in the daemon's boot window", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (err: unknown) => rejections.push(err);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders()]);
+      // The conflict broadcast is a real throw source inside doPull.
+      const { deps, log } = baseDeps({ exec: fn, broadcast: () => { throw new Error("broadcast seam blew up"); } });
+      const { repoDir: _r, ...specDeps } = deps;
+      const handle = startSnapshot(teamSpecFor(), specDeps);
+      await handle.ready;
+      await flushAsync();
+
+      expect(rejections).toEqual([]);
+      expect(log.calls.some((c) => c.level === "warn" && String(c.args[c.args.length - 1]).includes("pull failed"))).toBe(true);
+      handle.stop();
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  test("a timer-driven pull that rejects outright is logged, swallowed, and the interval still re-arms", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (err: unknown) => rejections.push(err);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const exec = makeSwitchableExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
+      const { deps, log, timers } = baseDeps({ exec: exec.fn, broadcast: () => { throw new Error("broadcast seam blew up"); } });
+      const { repoDir: _r, ...specDeps } = deps;
+      const handle = startSnapshot(teamSpecFor(), specDeps);
+      await handle.ready;
+      await flushAsync();
+
+      exec.setResponders([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders()]);
+      timers.fire((t) => t.ms === 300_000);
+      await flushAsync();
+
+      expect(rejections).toEqual([]);
+      expect(log.calls.some((c) => c.level === "warn" && String(c.args[c.args.length - 1]).includes("pull failed"))).toBe(true);
+      expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
+      handle.stop();
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
   test("the home spec never pulls", async () => {
     const { deps, execCalls } = baseDeps();
     const { repoDir: _r, ...specDeps } = deps;
