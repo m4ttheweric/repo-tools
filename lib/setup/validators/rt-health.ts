@@ -457,6 +457,18 @@ export async function homeBackupRow(
   return row({ ...base, status: "ready", detail: `in sync — last commit ${relativeWhen(state.committedAt)}` });
 }
 
+/**
+ * Opens `team.sync`'s detail when every problem is a clone that has yet to
+ * pull, the one state `verify` re-reads through. Anchored at the start of the
+ * detail, which no interpolated slug or git stderr can precede, so the two
+ * other things that reach a detail cannot forge or trip it.
+ */
+const FIRST_PULL_PENDING = "waiting for a first pull";
+
+export function isTeamSyncFirstPullPending(detail: string): boolean {
+  return detail.startsWith(`${FIRST_PULL_PENDING}: `);
+}
+
 /** Every clone's daemon-side sync state in one row: a joiner who cannot decrypt is almost always a clone that has not pulled the owner's recipients yet. */
 export async function teamSyncRow(
   slugs: string[],
@@ -487,6 +499,7 @@ export async function teamSyncRow(
 
   const staleMs = clampPullIntervalSec(pullIntervalSec) * 2 * 1000;
   const problems: string[] = [];
+  const neverPulled: string[] = [];
   for (const slug of slugs) {
     const e = entries.find((x) => x.slug === slug);
     if (!e) {
@@ -508,11 +521,19 @@ export async function teamSyncRow(
       problems.push(`${slug}: fetch failing: ${e.lastPullError || "fetch failed"}`);
       continue;
     }
-    if (e.lastPullAt === 0 || now() - e.lastPullAt > staleMs) {
-      problems.push(`${slug}: last pull ${e.lastPullAt === 0 ? "never" : `${Math.round((now() - e.lastPullAt) / 60_000)} min ago`}`);
+    if (e.lastPullAt === 0) {
+      neverPulled.push(slug);
+      problems.push(`${slug}: no pull yet`);
+      continue;
+    }
+    if (now() - e.lastPullAt > staleMs) {
+      problems.push(`${slug}: last pull ${Math.round((now() - e.lastPullAt) / 60_000)} min ago`);
     }
   }
-  if (problems.length > 0) return row({ ...base, status: "needs-you", detail: problems.join("; "), action: RECHECK_ACTION });
+  if (problems.length > 0) {
+    const detail = neverPulled.length === problems.length ? `${FIRST_PULL_PENDING}: ${neverPulled.join(", ")}` : problems.join("; ");
+    return row({ ...base, status: "needs-you", detail, action: RECHECK_ACTION });
+  }
 
   // A pull skipped every tick (a dirty src/ refusing the rebase) is not a
   // failure, but it is why a member's store edits are not moving; say so

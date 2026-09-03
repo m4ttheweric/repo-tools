@@ -153,9 +153,13 @@ Surfaces:
 `team.join` is unchanged. The supervisor's `teams/` watcher starts the
 new clone's instance during Install, and the instance's first pull runs
 at once. `verify` (which already re-reads `tool.daemon` for up to 5 × 3 s)
-gives `team.sync` the same budget: it re-reads while the row says the
-clone has never pulled, so a joiner whose owner ran `members sync` during
-Install still leaves Install able to decrypt.
+gives `team.sync` the same budget: it re-reads while the row carries the
+marker it opens its detail with when every clone in it is simply waiting
+for a first pull, so a joiner whose owner ran `members sync` during
+Install still leaves Install able to decrypt. The marker is matched at
+the start of the detail, never as free text, since slugs and git's own
+stderr also land there; and a critical failure outside the settling set
+ends the loop on the first read rather than sharing that budget.
 
 ### Out of scope
 

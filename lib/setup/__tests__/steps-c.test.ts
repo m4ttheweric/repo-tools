@@ -30,6 +30,7 @@ import {
   snapshotPushStep,
 } from "../steps/tools.ts";
 import { outcomeFromChecks, settleChecks, verifyStep } from "../steps/verify.ts";
+import { teamSyncRow } from "../validators/rt-health.ts";
 
 // ─── shared fakes (mirrors steps-a/b.test.ts's trivial no-ops) ─────────────
 
@@ -834,17 +835,56 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
         expect(slept).toEqual([3000, 3000]);
       });
 
+      /** The row's own words, never a hand-copied string: what verify settles on is a contract with `teamSyncRow`, and a fixture would let the two drift apart silently. */
+      async function teamSyncWarn(slugs: string[], entries: Record<string, unknown>[]) {
+        const r = await teamSyncRow(slugs, async () => entries as never, () => 1_000_000, 300);
+        return { name: "team.sync", status: "warn" as const, detail: r!.detail, severity: "warning" as const };
+      }
+
+      const clone = (over: Record<string, unknown>) => ({ slug: "acme", lastPullAt: 900_000, pushPending: false, lastPushError: null, lastPullError: null, conflicted: null, ...over });
+
       // A joiner's clone starts its first pull the moment the engine boots,
-      // "never" right after join means "the engine hasn't started yet", not
-      // a real failure, so verify waits it out the same as tool.daemon.
-      test("settleChecks re-reads while team.sync warns 'last pull never', then returns the settled checks", async () => {
-        const neverPulled = [{ name: "team.sync", status: "warn" as const, detail: "acme: last pull never", severity: "warning" as const }];
+      // so a row saying nothing has pulled yet right after join means "the
+      // engine hasn't started yet", not a real failure, and verify waits it
+      // out the same as tool.daemon.
+      test("settleChecks re-reads while team.sync says no clone has pulled yet, then returns the settled checks", async () => {
+        const neverPulled = [await teamSyncWarn(["acme"], [clone({ lastPullAt: 0 })])];
         const pulled = [{ name: "team.sync", status: "pass" as const, detail: "1 clone in sync", severity: "warning" as const }];
         const reads = [neverPulled, neverPulled, pulled];
         const slept: number[] = [];
         const checks = await settleChecks(async () => reads.shift()!, { attempts: 5, intervalMs: 3000, sleep: async (ms) => { slept.push(ms); } });
         expect(checks).toEqual(pulled);
         expect(slept).toEqual([3000, 3000]);
+      });
+
+      // The detail is assembled from team slugs and raw git stderr, so a
+      // free-text match hands either of them the power to make verify sleep
+      // its whole budget.
+      test("settleChecks never waits on a slug or a git error that happens to contain the settling word", async () => {
+        const cases = [
+          await teamSyncWarn(["never-team"], [clone({ slug: "never-team", lastPullAt: 1 })]),
+          await teamSyncWarn(["acme"], [clone({ lastPullError: "fatal: could not read Username: never" })]),
+        ];
+        for (const check of cases) {
+          expect(check.detail).toContain("never");
+          let slept = 0;
+          const out = await settleChecks(async () => [check], { attempts: 5, intervalMs: 3000, sleep: async () => { slept++; } });
+          expect(out).toEqual([check]);
+          expect(slept).toBe(0);
+        }
+      });
+
+      test("a critical failure verify cannot settle is judged on the first read, even while team.sync waits for its first pull", async () => {
+        const checks = [
+          { name: "tool.app", status: "fail" as const, detail: "mattstack.app not found", severity: "critical" as const },
+          await teamSyncWarn(["acme"], [clone({ lastPullAt: 0 })]),
+        ];
+        let reads = 0;
+        let slept = 0;
+        const out = await settleChecks(async () => { reads++; return checks; }, { attempts: 5, intervalMs: 3000, sleep: async () => { slept++; } });
+        expect(out).toEqual(checks);
+        expect(reads).toBe(1);
+        expect(slept).toBe(0);
       });
 
       test("settleChecks gives up after its attempts, and never waits when something other than the daemon fails", async () => {

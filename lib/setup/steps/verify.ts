@@ -6,6 +6,7 @@
  */
 
 import { composePlan } from "../plan.ts";
+import { isTeamSyncFirstPullPending } from "../validators/rt-health.ts";
 import { rowsToChecks } from "../../../commands/verify.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
@@ -34,9 +35,9 @@ const SETTLE_INTERVAL_MS = 3000;
 /**
  * Re-reads the checks while the only critical failures are settling rows;
  * any other failure is judged on the first read. team.sync is `required:
- * false`, so it never shows up as a critical failure; its "never pulled"
- * state instead reads as a `warn` whose detail names it, and that gets the
- * same re-read budget so a fresh join isn't judged before the engine boots.
+ * false`, so it never shows up as a critical failure; its first-pull state
+ * instead reads as a `warn` the row marks itself, and that gets the same
+ * re-read budget so a fresh join isn't judged before the engine boots.
  */
 export async function settleChecks(
   read: () => Promise<CheckResult[]>,
@@ -45,10 +46,12 @@ export async function settleChecks(
   let checks = await read();
   for (let attempt = 1; attempt < opts.attempts; attempt++) {
     const critical = checks.filter((c) => c.status === "fail" && c.severity === "critical");
-    const criticalSettling = critical.length > 0 && critical.every((c) => SETTLING_ROWS.has(c.name));
+    // A critical failure nothing here can settle is a verdict, not a lag, and
+    // must not be made to wait out team.sync's budget alongside it.
+    if (critical.some((c) => !SETTLING_ROWS.has(c.name))) break;
     const teamSync = checks.find((c) => c.name === "team.sync");
-    const teamSyncNeverPulled = teamSync?.status === "warn" && teamSync.detail.includes("never");
-    if (!criticalSettling && !teamSyncNeverPulled) break;
+    const firstPullPending = teamSync?.status === "warn" && isTeamSyncFirstPullPending(teamSync.detail);
+    if (critical.length === 0 && !firstPullPending) break;
     await opts.sleep(opts.intervalMs);
     checks = await read();
   }

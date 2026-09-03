@@ -7,7 +7,7 @@ import { DAEMON_CONFIG_PATH } from "../../daemon-config.ts";
 import { DEV_MODE_TAG } from "../../dev-mode.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
 import { setSetting } from "../../settings/write.ts";
-import { homeBackupRow, rtHealthRows, teamSyncRow } from "../validators/rt-health.ts";
+import { homeBackupRow, isTeamSyncFirstPullPending, rtHealthRows, teamSyncRow } from "../validators/rt-health.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
 import type { ExecScript } from "./fakes.ts";
 import { createRealProbes } from "../probes.ts";
@@ -835,7 +835,7 @@ describe("teamSyncRow", () => {
       300,
     );
     expect(stale?.status).toBe("needs-you");
-    expect(stale?.detail).toContain("never");
+    expect(stale?.detail).toBe("waiting for a first pull: acme");
 
     const failing = await teamSyncRow(
       ["acme"],
@@ -845,6 +845,23 @@ describe("teamSyncRow", () => {
     );
     expect(failing?.status).toBe("needs-you");
     expect(failing?.detail).toContain("denied");
+  });
+
+  // verify re-reads on the marker, so a clone with a real problem beside the
+  // fresh one must not be able to buy the whole checklist a settle budget.
+  test("the first-pull marker is dropped as soon as any other problem shares the row", async () => {
+    const r = await teamSyncRow(
+      ["acme", "beta"],
+      async () => [
+        { slug: "acme", lastPullAt: 0, pushPending: false, lastPushError: null, conflicted: null } as never,
+        { slug: "beta", lastPullAt: 900_000, pushPending: false, lastPushError: "denied", conflicted: null } as never,
+      ],
+      now,
+      300,
+    );
+    expect(isTeamSyncFirstPullPending(r!.detail)).toBe(false);
+    expect(r?.detail).toContain("acme: no pull yet");
+    expect(r?.detail).toContain("beta: push failing: denied");
   });
 
   test("a pull skipped this tick is not a failure, but it is named in the ready detail without changing the status", async () => {
