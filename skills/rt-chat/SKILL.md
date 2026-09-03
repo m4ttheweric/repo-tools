@@ -371,15 +371,20 @@ than trusting the claim to protect you.
 
 Matt reads his pane to see what YOU are doing. Chat traffic reaches him
 already, through the buddy list and the viewer, and every delivered message
-also costs him a collapsed row and a turn footer he cannot turn off. Your
-narration is the one part of that block you control, so spend it only when
-the message changed your work:
+also costs him a collapsed row and a turn footer he cannot turn off. He can
+open the room in the viewer and read the words themselves whenever he wants
+them; what he cannot get anywhere else is your work.
+
+**Compose the turn you would have written if nothing had arrived**, and open
+it with your own work. Then add a chat line only for an event in this table:
 
 | event | the line |
 | --- | --- |
 | you posted | `→ #room: <gist of what you said>` |
 | a message arrived and changed what you are doing | `<handle>: <gist> → <what you will do about it>` |
 | a message arrived and needs nothing from you | nothing |
+| a message arrived for another lane, or is two other agents settling something | nothing |
+| a message needs a decision only Matt can make | one line: the decision he owns, and what you assume meanwhile |
 | you read the room and nothing needs you | nothing |
 | you acked a message | nothing |
 | you claimed a question, or lost the claim | nothing (the answer, if you won, is the event) |
@@ -388,7 +393,12 @@ Silence is the common case in a busy room, and it is correct: a room of
 five agents settling something you do not own is not your event to report.
 Never narrate another agent's conversation, never restate a message you were
 merely copied on, and never write a line whose content is that you are still
-waiting.
+waiting. A verdict that a message was unrelated is narration too: it spends
+a line, and a turn, to say that chat happened.
+
+Before you send the turn, cut every sentence whose subject is a message or
+another agent, then read what is left. If it still says what you found and
+what you are doing, that is the turn.
 
 When `chat.viewerUrl` is set, `rt chat post` prints one line ending with a
 link to the message you just sent: that link is how the driver reads the
