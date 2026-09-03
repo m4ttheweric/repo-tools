@@ -55,6 +55,21 @@ export interface TeamSnapshotsHandle {
 
 const RESCAN_DEBOUNCE_MS = 2000;
 
+/** Registry default for `rt.teamSnapshot.pullIntervalSec` — the fallback a non-numeric setting degrades to, so a corrupt value lands on what a fresh machine starts with. */
+const PULL_INTERVAL_FALLBACK_SEC = 300;
+
+/**
+ * The engine's own `clampSettings` rule, applied to the one field it does not
+ * own. `rt.teamSnapshot` is hand-editable jsonc, so `pullIntervalSec` can
+ * arrive as a string or null, and `Math.max(30, NaN)` is NaN: a NaN delay
+ * makes `setTimeout` fire immediately, and both this module's rescan and the
+ * engine's `.finally(schedulePull)` re-arm themselves — a non-numeric interval
+ * would become a hot `git fetch` loop rather than a slow one.
+ */
+function clampPullIntervalSec(value: number): number {
+  return Number.isFinite(value) ? Math.max(30, value) : PULL_INTERVAL_FALLBACK_SEC;
+}
+
 function originOf(dir: string): string | null {
   try {
     return parseOriginUrl(readFileSync(join(dir, ".git", "config"), "utf8"));
@@ -77,11 +92,34 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
   let debounce: ReturnType<typeof setTimeout> | null = null;
   let interval: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  /** Dedup key for safeRescan's warn: a `teams/` that stays unreadable must warn once, not on every interval tick for the life of the daemon. */
+  let lastLoggedScanError: string | null = null;
 
   /** A clone that gains its origin after boot (`rt team publish --remote`) edits .git/config, which the non-recursive teams/ watch never sees; this interval rescan, on the pull interval, is what picks it up. */
   function scheduleRescan(): void {
     if (stopped) return;
-    interval = setTimer(() => { interval = null; void rescan().finally(scheduleRescan); }, Math.max(30, settings().pullIntervalSec) * 1000);
+    interval = setTimer(() => { interval = null; void safeRescan().finally(scheduleRescan); }, clampPullIntervalSec(settings().pullIntervalSec) * 1000);
+  }
+
+  /**
+   * Every internal rescan goes through here, never `rescan()` raw. A throw out
+   * of the scan (`teams/` replaced by a regular file, EACCES, EMFILE) would
+   * otherwise reject a `void`-ed promise, and an unhandled rejection during the
+   * daemon's boot window is a fatal + `process.exit(1)` in
+   * `installCrashHandlers`. The supervisor degrades instead: warn, discover
+   * nothing this pass, and let the next tick try again.
+   */
+  async function safeRescan(): Promise<void> {
+    try {
+      await rescan();
+      lastLoggedScanError = null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== lastLoggedScanError) {
+        rawDeps.log.warn({ err, teamsDir }, "team-snapshots: could not scan teams/; no clones are being snapshotted until it is readable");
+        lastLoggedScanError = message;
+      }
+    }
   }
 
   function settings(): TeamSnapshotSettings {
@@ -89,7 +127,7 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
       return readSettings();
     } catch (err) {
       rawDeps.log.warn({ err }, "team-snapshots: failed to read rt.teamSnapshot; treating as enabled with defaults");
-      return { enabled: true, debounceSec: 20, pushDelaySec: 60, janitorThresholdHours: 6, janitorIntervalMin: 30, pullIntervalSec: 300 };
+      return { enabled: true, debounceSec: 20, pushDelaySec: 60, janitorThresholdHours: 6, janitorIntervalMin: 30, pullIntervalSec: PULL_INTERVAL_FALLBACK_SEC };
     }
   }
 
@@ -123,7 +161,7 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
           continue;
         }
         skippedNoRemote.delete(slug);
-        const spec = teamSnapshotSpec(slug, dir, { pullIntervalSec: Math.max(30, s.pullIntervalSec), originUrl, probes });
+        const spec = teamSnapshotSpec(slug, dir, { pullIntervalSec: clampPullIntervalSec(s.pullIntervalSec), originUrl, probes });
         const handle = start(spec, {
           log: rawDeps.log.child({ team: slug }),
           broadcast: rawDeps.broadcast,
@@ -147,18 +185,35 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
     }
   }
 
-  const ready = rescan().then(() => {
-    if (stopped || settings().enabled === false) return;
+  let resolveReady!: () => void;
+  const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
+
+  void boot();
+
+  /** Mirrors the engine's `init()`: whatever happens, `ready` resolves and nothing rejects out of here — the daemon `void`s this during boot. */
+  async function boot(): Promise<void> {
     try {
-      watcher = watch(teamsDir, { recursive: false }, () => {
-        if (debounce) clearTimer(debounce);
-        debounce = setTimer(() => { debounce = null; void rescan(); }, RESCAN_DEBOUNCE_MS);
-      });
+      await safeRescan();
+      if (stopped) return;
+      try {
+        watcher = watch(teamsDir, { recursive: false }, () => {
+          if (debounce) clearTimer(debounce);
+          debounce = setTimer(() => { debounce = null; void safeRescan(); }, RESCAN_DEBOUNCE_MS);
+        });
+      } catch (err) {
+        rawDeps.log.warn({ err, teamsDir }, "team-snapshots: cannot watch teams/; new clones are picked up on the interval rescan");
+      }
+      // Armed even when the setting is off, unlike the engine's own startup:
+      // `rescan` returns early on its own while disabled, so a live flip of
+      // `rt.teamSnapshot.enabled` is discovered on the next watch event or
+      // interval tick rather than only after a daemon restart.
+      scheduleRescan();
     } catch (err) {
-      rawDeps.log.warn({ err, teamsDir }, "team-snapshots: cannot watch teams/; new clones are picked up on the interval rescan");
+      rawDeps.log.warn({ err, teamsDir }, "team-snapshots: startup arming failed; inert");
+    } finally {
+      resolveReady();
     }
-    scheduleRescan();
-  });
+  }
 
   return {
     ready,
