@@ -99,6 +99,36 @@ cancels any already-scheduled push (including a pending retry) on its very next
 cycle. Nothing new reaches `origin` while it is off, though a commit already
 pushed stays pushed. Re-enabling picks a pending push back up on the next run.
 
+## Team clones
+
+Every git clone under `~/.mattstack/teams/<slug>/` with an `origin` gets its
+own instance of the same engine, supervised by the daemon (a clone created by
+`rt team create` or `rt team join` is picked up within the debounce window; a
+clone with no remote is skipped until `rt team publish --remote` gives it one).
+The team instance differs from the home one in three ways:
+
+- **Scope.** It stages only `mattstack/**`, `.sops.yaml` and
+  `.claude-plugin/**`. A team clone that is also a working repo keeps its
+  `src/` and `docs/` hand-committed.
+- **Pull.** Before every push, at daemon boot and every `pullIntervalSec`, it
+  fetches `origin` with rt's stored forge token (env, never argv) and either
+  fast-forwards or rebases its own commits onto the remote. A rebase that stops
+  on a conflict is aborted, the clone stops pushing and pulling, and the
+  `team.sync` checklist row names it: rebase and `rt team publish` by hand, or
+  reset to origin, and the next tick resumes. A rebase that never started (an
+  index lock, unstaged edits outside the scope) is skipped and retried.
+- **Identity.** Commits need a committer git can resolve. Install's
+  `git.identity` step writes the global `user.name`/`user.email` from the forge
+  profile when none is configured; the engine itself only asks git
+  (`git var GIT_COMMITTER_IDENT`) and goes inert with a warning when even that
+  fails.
+
+`rt team pull [--team <slug>]` runs one fetch + rebase cycle now and prints the
+engine's result; `rt team status` shows `lastPull`, `lastPushAt`,
+`lastPullSkipped` and `conflicted` per team. The `rt.teamSnapshot` key
+(machine scope) carries the same fields as `rt.homeSnapshot` plus
+`pullIntervalSec` (default 300, floor 30).
+
 ## One gotcha: manual snapshots reuse an in-flight run
 
 `rt home snapshot` reuses an already-in-flight run instead of queuing its own.

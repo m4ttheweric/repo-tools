@@ -140,7 +140,7 @@ Team-scope secrets layout (in the home repo): `teams/<slug>/.sops.yaml` and
 `home.init` | `home.restore` · `team.create` | `team.join` · `secrets.write` ·
 `git.identity` · `path.link` · `intercepts.install` · `settings.seed` · `repos.clone` ·
 `services.register` (app) · `proxy.install` (privileged) · `deck.managed` ·
-`skills.materialize` · `board.keys` · `cron.triage` · `plugins.install` ·
+`skills.materialize` · `skills.link` · `board.keys` · `cron.triage` · `plugins.install` ·
 `fastbrowser.setup` · `herdr.integration` · `extension.install` ·
 `services.start` · `snapshot.push` · `verify`
 
