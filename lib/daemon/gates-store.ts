@@ -170,6 +170,18 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
   const findOpenSameKindStmt = db.prepare(
     "SELECT id FROM gates WHERE subject = ? AND kind = ? AND status = 'open'",
   );
+  // CAS guards: each is a single UPDATE gated on current status; a `changes`
+  // count of 0 means the row didn't qualify, and the caller re-reads to classify why.
+  const answerStmt = db.prepare(
+    "UPDATE gates SET status = 'answered', answer = ? WHERE id = ? AND status IN ('open', 'parked')",
+  );
+  const parkStmt = db.prepare(
+    "UPDATE gates SET status = 'parked', parkedAt = ? WHERE id = ? AND status = 'open'",
+  );
+  const closeStmt = db.prepare(
+    "UPDATE gates SET status = 'closed', closedReason = ?, closedAt = ? WHERE id = ? AND status IN ('open', 'parked')",
+  );
+  const releaseStmt = db.prepare("UPDATE gates SET released = 1 WHERE id = ?");
 
   const get = (id: string): GateRow | null => {
     const row = getStmt.get(id) as GateColumns | null;
@@ -237,32 +249,42 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     },
 
     answer(id, answers, by) {
-      const row = get(id);
-      if (!row) return { ok: false, reason: "not-found", row: null };
-      if (row.status === "closed") return { ok: false, reason: "closed", row };
-      if (row.status === "answered") return { ok: false, reason: "already-answered", row };
       const answer: GateAnswer = { answers, by, answeredAt: Date.now() };
-      db.prepare("UPDATE gates SET status = 'answered', answer = ? WHERE id = ?")
-        .run(JSON.stringify(answer), id);
-      return { ok: true, row: get(id)! };
+      const result = answerStmt.run(JSON.stringify(answer), id);
+      if (result.changes > 0) {
+        // Winner: a pane that decided has provably reconciled.
+        const won = get(id)!;
+        if (by === "pane" && won.pane) {
+          releaseStmt.run(id);
+          return { ok: true, row: get(id)! };
+        }
+        return { ok: true, row: won };
+      }
+      let row = get(id);
+      if (!row) return { ok: false, reason: "not-found", row: null };
+      // Loser: a pane that only read the winning answer has also reconciled.
+      if (by === "pane" && row.pane) {
+        releaseStmt.run(id);
+        row = get(id)!;
+      }
+      if (row.status === "closed") return { ok: false, reason: "closed", row };
+      return { ok: false, reason: "already-answered", row };
     },
 
     park(id) {
+      const result = parkStmt.run(Date.now(), id);
+      if (result.changes > 0) return { ok: true };
       const row = get(id);
       if (!row) return { ok: false, reason: "not-found", row: null };
-      if (row.status !== "open") return { ok: false, reason: "not-open", row };
-      db.prepare("UPDATE gates SET status = 'parked', parkedAt = ? WHERE id = ?")
-        .run(Date.now(), id);
-      return { ok: true };
+      return { ok: false, reason: "not-open", row };
     },
 
     close(id, reason) {
+      const result = closeStmt.run(reason, Date.now(), id);
+      if (result.changes > 0) return { ok: true };
       const row = get(id);
       if (!row) return { ok: false, reason: "not-found" };
-      if (row.status === "answered") return { ok: false, reason: "already-answered" };
-      db.prepare("UPDATE gates SET status = 'closed', closedReason = ?, closedAt = ? WHERE id = ?")
-        .run(reason, Date.now(), id);
-      return { ok: true };
+      return { ok: false, reason: "already-answered" };
     },
 
     markDelivery(id, outcome) {
@@ -271,7 +293,7 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     },
 
     markReleased(id) {
-      db.prepare("UPDATE gates SET released = 1 WHERE id = ?").run(id);
+      releaseStmt.run(id);
     },
 
     close_() {
