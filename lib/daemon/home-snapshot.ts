@@ -207,6 +207,29 @@ function ownersPathFor(repoDir: string): string {
   return join(repoDir, "snapshot-owners.jsonc");
 }
 
+/**
+ * Everything in a log line that is true of one spec and false of the other:
+ * one engine serves both, and an operator reading a team clone's log must not
+ * be told to check the home repo's setting or run the home repo's remedy.
+ * Keyed by `eventPrefix` so no spec carries prose of its own.
+ */
+const SPEC_VOCAB = {
+  home: {
+    label: "home-snapshot",
+    settingsKey: "rt.homeSnapshot",
+    missingRepo: "home repo not provisioned; run `rt home init`",
+  },
+  team: {
+    label: "team-snapshot",
+    settingsKey: "rt.teamSnapshot",
+    missingRepo: "team clone directory is missing; the supervisor drops it on the next rescan",
+  },
+} as const;
+
+function vocabOf(spec: SnapshotSpec): (typeof SPEC_VOCAB)[SnapshotSpec["eventPrefix"]] {
+  return SPEC_VOCAB[spec.eventPrefix];
+}
+
 /** A push failure's stderr can quote the remote URL verbatim (`https://user:token@host/...`) — this must never reach status() or a log line unredacted. */
 function redactCredentials(text: string): string {
   return text.replace(/:\/\/[^/@\s]+@/g, "://<redacted>@");
@@ -270,7 +293,7 @@ function loadState(spec: SnapshotSpec, db: Database, log: Logger): Record<string
       HOME_SNAPSHOT_KEY,
       {},
       db,
-      (err) => log.warn({ err }, "home-snapshot: state row corrupt; starting from empty first-seen-dirty state"),
+      (err) => log.warn({ err }, `${vocabOf(spec).label}: state row corrupt; starting from empty first-seen-dirty state`),
     ));
   }
 
@@ -283,7 +306,7 @@ function loadState(spec: SnapshotSpec, db: Database, log: Logger): Record<string
       return firstSeenDirty;
     },
     {
-      onCorrupt: (err) => log.warn({ err }, "home-snapshot: legacy state file corrupt; starting from empty first-seen-dirty state"),
+      onCorrupt: (err) => log.warn({ err }, `${vocabOf(spec).label}: legacy state file corrupt; starting from empty first-seen-dirty state`),
       verifyPersisted: () => hasKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, db),
     },
   );
@@ -295,7 +318,7 @@ function persistState(spec: SnapshotSpec, db: Database, firstSeenDirty: Record<s
     setKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
     if (spec.legacyStatePath !== undefined) renameLegacyOutOfTheWay(spec.legacyStatePath);
   } catch (err) {
-    log.warn({ err }, "home-snapshot: failed to persist state");
+    log.warn({ err }, `${vocabOf(spec).label}: failed to persist state`);
   }
 }
 
@@ -304,7 +327,7 @@ function persistPushRecord(spec: SnapshotSpec, db: Database, record: HomePushRec
   try {
     recordHomePush(db, record, spec.kvNamespace);
   } catch (err) {
-    log.warn({ err }, "home-snapshot: failed to persist the last-push record");
+    log.warn({ err }, `${vocabOf(spec).label}: failed to persist the last-push record`);
   }
 }
 
@@ -370,6 +393,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
   };
 
   const ownersPath = ownersPathFor(deps.repoDir);
+  const { label, settingsKey, missingRepo } = vocabOf(spec);
 
   let disabledReason: SkipReason | null = null;
   let stopped = false;
@@ -433,7 +457,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message !== lastLoggedSettingsError) {
-        deps.log.warn({ err }, "home-snapshot: failed to read settings; using the last-known enabled state");
+        deps.log.warn({ err }, `${label}: failed to read settings; using the last-known enabled state`);
         lastLoggedSettingsError = message;
       }
       return { enabled: lastKnownEnabled, ...SETTINGS_FALLBACK };
@@ -476,7 +500,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (message !== lastLoggedTokenError) {
-          deps.log.warn({ err, id: spec.id }, "snapshot: could not read the forge token for origin");
+          deps.log.warn({ err, id: spec.id }, `${label}: could not read the forge token for origin`);
           lastLoggedTokenError = message;
         }
         return { stdout: "", stderr: `could not read the forge token: ${message}`, exitCode: -1 };
@@ -495,7 +519,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
   try {
     startupSettings = deps.readSettings();
   } catch (err) {
-    deps.log.warn({ err }, "home-snapshot: failed to read rt.homeSnapshot settings at startup");
+    deps.log.warn({ err }, `${label}: failed to read ${settingsKey} settings at startup`);
   }
   // status()'s fallback when a LATER readSettings() call throws — seeded
   // from whatever the startup read actually saw (or the optimistic true a
@@ -511,7 +535,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     // timer stay unarmed for now; doRun lazily arms them on its own first
     // call once it observes a live re-enable, so a manual run reaching that
     // point also leaves the daemon watching from then on — no restart needed.
-    deps.log.info("home-snapshot: disabled (rt.homeSnapshot.enabled=false) at startup — watcher/janitor stay unarmed until a run observes a live re-enable");
+    deps.log.info(`${label}: disabled (${settingsKey}.enabled=false) at startup... watcher/janitor stay unarmed until a run observes a live re-enable`);
   }
 
   let resolveReady!: () => void;
@@ -530,7 +554,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       return true;
     } catch (err) {
       disabledReason = "init-failed";
-      deps.log.warn({ err }, "home-snapshot: watcher arming failed; inert");
+      deps.log.warn({ err }, `${label}: watcher arming failed; inert`);
       if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
       return false;
     }
@@ -544,7 +568,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // "could not run git".
       if (!existsSync(deps.repoDir)) {
         disabledReason = "not-provisioned";
-        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: home repo not provisioned; run `rt home init`; inert");
+        deps.log.warn({ repoDir: deps.repoDir }, `${label}: ${missingRepo}; inert`);
         return;
       }
       const check = await deps.exec(["git", "rev-parse", "--is-inside-work-tree"], {
@@ -558,12 +582,12 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
         // (spawn failure — git missing from PATH, permissions, ...), distinct
         // from git itself running and saying "not a repository".
         disabledReason = "init-failed";
-        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: could not run git (is it on PATH?); inert");
+        deps.log.warn({ repoDir: deps.repoDir }, `${label}: could not run git (is it on PATH?); inert`);
         return;
       }
       if (check.exitCode !== 0 || check.stdout.trim() !== "true") {
         disabledReason = "not-a-repo";
-        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: repoDir is not a git repository; inert");
+        deps.log.warn({ repoDir: deps.repoDir }, `${label}: repoDir is not a git repository; inert`);
         return;
       }
       // First real db touch: this await already put us past the daemon's
@@ -580,7 +604,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
         // Same reasoning as schedulePull's catch, and it matters more here:
         // this runs inside the daemon's boot window.
         if (spec.pull && !disabledReason) {
-          void pullNow().catch((err) => { deps.log.warn({ err }, "home-snapshot: boot pull failed; continuing"); });
+          void pullNow().catch((err) => { deps.log.warn({ err }, `${label}: boot pull failed; continuing`); });
         }
       }
     } catch (err) {
@@ -589,7 +613,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // without it, any surprise here would leave every runNow() (including
       // the home:snapshot IPC handler) awaiting readyPromise forever.
       disabledReason = "init-failed";
-      deps.log.warn({ err }, "home-snapshot: startup arming failed; inert");
+      deps.log.warn({ err }, `${label}: startup arming failed; inert`);
     } finally {
       resolveReady();
     }
@@ -619,7 +643,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (message !== lastLoggedSettingsError) {
-            deps.log.warn({ err }, "home-snapshot: failed to read settings while arming the debounce; using the default");
+            deps.log.warn({ err }, `${label}: failed to read settings while arming the debounce; using the default`);
             lastLoggedSettingsError = message;
           }
           currentDebounceMs = SETTINGS_FALLBACK.debounceSec * 1000;
@@ -654,7 +678,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // left to `void`: an unhandled rejection is a `process.exit(1)` under
       // the daemon's installCrashHandlers, and the interval must survive it.
       void pullNow()
-        .catch((err) => { deps.log.warn({ err }, "home-snapshot: scheduled pull failed; continuing"); })
+        .catch((err) => { deps.log.warn({ err }, `${label}: scheduled pull failed; continuing`); })
         .finally(() => { if (!stopped) schedulePull(); });
     }, spec.pull.intervalSec * 1000);
   }
@@ -708,12 +732,12 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     if (ahead === 0) {
       const ff = await deps.exec(["git", "merge", "-q", "--ff-only", `refs/remotes/origin/${branch}`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
       if (ff.exitCode !== 0) return { outcome: "skipped", detail: redactCredentials(ff.stderr) };
-      deps.log.info({ id: spec.id, behind }, "snapshot: fast-forwarded");
+      deps.log.info({ id: spec.id, behind }, `${label}: fast-forwarded`);
       return { outcome: "fast-forwarded", detail: null };
     }
     const rebase = await deps.exec(["git", "-c", "commit.gpgsign=false", "rebase", "-q", `refs/remotes/origin/${branch}`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
     if (rebase.exitCode === 0) {
-      deps.log.info({ id: spec.id, behind, ahead }, "snapshot: rebased");
+      deps.log.info({ id: spec.id, behind, ahead }, `${label}: rebased`);
       return { outcome: "rebased", detail: null };
     }
     // A rebase that never started (unstaged changes outside the scope, a lock)
@@ -723,7 +747,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     const rebaseStopped = existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"));
     if (!rebaseStopped) {
       const reason = redactCredentials(rebase.stderr.trim() || "rebase refused");
-      deps.log.warn({ id: spec.id, reason }, "snapshot: rebase refused; will retry next tick");
+      deps.log.warn({ id: spec.id, reason }, `${label}: rebase refused; will retry next tick`);
       return { outcome: "skipped", detail: reason };
     }
     await deps.exec(["git", "rebase", "--abort"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
@@ -732,11 +756,11 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     try {
       setKvValue(spec.kvNamespace, CONFLICT_KEY, conflicted, resolveDb());
     } catch (err) {
-      deps.log.warn({ err }, "snapshot: failed to persist the conflict marker");
+      deps.log.warn({ err }, `${label}: failed to persist the conflict marker`);
     }
     if (pushTimer) { deps.clearTimeout(pushTimer); pushTimer = null; }
     if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
-    deps.log.warn({ id: spec.id, detail }, "snapshot: rebase conflict; pushes and pulls suspended until you rebase and `rt team publish` by hand, or reset the clone to origin");
+    deps.log.warn({ id: spec.id, detail }, `${label}: rebase conflict; pushes and pulls suspended until you rebase and \`rt team publish\` by hand, or reset the clone to origin`);
     deps.broadcast(`${spec.eventPrefix}:conflict`, { id: spec.id, detail });
     return { outcome: "conflict", detail };
   }
@@ -746,9 +770,9 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     try {
       deleteKvValue(spec.kvNamespace, CONFLICT_KEY, resolveDb());
     } catch (err) {
-      deps.log.warn({ err }, "snapshot: failed to clear the conflict marker");
+      deps.log.warn({ err }, `${label}: failed to clear the conflict marker`);
     }
-    deps.log.info({ id: spec.id }, "snapshot: conflict cleared");
+    deps.log.info({ id: spec.id }, `${label}: conflict cleared`);
   }
 
   function schedulePush(): void {
@@ -820,7 +844,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     // real unpushed commit); once re-enabled, the next `committed ||
     // pushPending` check re-arms it exactly the same way a cancelled timer would.
     if (safeReadSettings().enabled === false) {
-      deps.log.debug("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping a due push");
+      deps.log.debug(`${label}: disabled via ${settingsKey}.enabled=false; skipping a due push`);
       return;
     }
     // Local-only (rt home init with no remote attached) is a permanent,
@@ -830,7 +854,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     // a stale failure latches into status() forever and `committed ||
     // pushPending` re-arms a push every cycle that only ever no-ops here.
     if (!(await hasRemote(deps.exec, deps.repoDir))) {
-      deps.log.debug("home-snapshot: no remote configured; nothing to push");
+      deps.log.debug(`${label}: no remote configured; nothing to push`);
       pushPending = false;
       lastPushError = null;
       return;
@@ -875,7 +899,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // retry, indefinitely.
       if (redactedStderr !== lastLoggedPushError) {
         persistPushRecord(spec, resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
-        deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
+        deps.log.warn({ stderr: redactedStderr }, `${label}: push failed`);
         lastLoggedPushError = redactedStderr;
       }
       // Only the FIRST failure of an unbroken streak broadcasts — a retry
@@ -918,7 +942,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // while the watcher stays armed but the setting is off — an info line
       // per tick would spam the log for as long as the user leaves it
       // disabled.
-      deps.log.debug("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping cycle");
+      deps.log.debug(`${label}: disabled via ${settingsKey}.enabled=false; skipping cycle`);
       return { committed: false, sha: null, paths: [], reason, skipped: "disabled" };
     }
     // Lazily arms a daemon that started with enabled:false and has since
@@ -942,12 +966,12 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     // (exit 0). `git commit` works fine on an unborn branch, so only the
     // exit-0 case is actually a reason to skip.
     if (branch.stdout.trim() === "HEAD" && branch.exitCode === 0) {
-      deps.log.warn("home-snapshot: HEAD is detached; skipping cycle");
+      deps.log.warn(`${label}: HEAD is detached; skipping cycle`);
       return { committed: false, sha: null, paths: [], reason, skipped: "detached" };
     }
     const gitDir = await resolveGitDir();
     if (existsSync(join(gitDir, "MERGE_HEAD")) || existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"))) {
-      deps.log.warn("home-snapshot: a merge or rebase is in progress; skipping cycle");
+      deps.log.warn(`${label}: a merge or rebase is in progress; skipping cycle`);
       return { committed: false, sha: null, paths: [], reason, skipped: "merge-in-progress" };
     }
     // Committing on top of a conflicted clone only buries the divergence
@@ -962,7 +986,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message !== lastLoggedOwnersError) {
-        deps.log.warn({ err }, "home-snapshot: owners file unreadable; skipping cycle");
+        deps.log.warn({ err }, `${label}: owners file unreadable; skipping cycle`);
         lastLoggedOwnersError = message;
       }
       return { committed: false, sha: null, paths: [], reason, skipped: "owners-read-error" };
@@ -1020,7 +1044,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       // the rest of the daemon's life.
       if (ident.exitCode === -1) {
         if (lastLoggedCommitError !== "git-unavailable") {
-          deps.log.warn({ stderr: ident.stderr }, "home-snapshot: could not run git to resolve a committer identity (is it on PATH?); skipping cycle");
+          deps.log.warn({ stderr: ident.stderr }, `${label}: could not run git to resolve a committer identity (is it on PATH?); skipping cycle`);
           lastLoggedCommitError = "git-unavailable";
         }
         return { committed: false, sha: null, paths: [], reason, skipped: "git-unavailable" };
@@ -1028,7 +1052,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       if (ident.exitCode !== 0 || !ident.stdout.trim()) {
         disabledReason = "no-git-identity";
         if (lastLoggedCommitError !== "no-git-identity") {
-          deps.log.warn("home-snapshot: git cannot resolve a committer identity; run `git config --global user.name` and `git config --global user.email`; snapshots inert");
+          deps.log.warn(`${label}: git cannot resolve a committer identity; run \`git config --global user.name\` and \`git config --global user.email\`; snapshots inert`);
           lastLoggedCommitError = "no-git-identity";
         }
         return { committed: false, sha: null, paths: [], reason, skipped: "no-git-identity" };
@@ -1047,7 +1071,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       if (addResult.exitCode !== 0) {
         const addSkipped: SkipReason = addResult.stderr.toLowerCase().includes("index.lock") ? "index-locked" : "add-failed";
         if (addResult.stderr !== lastLoggedAddError) {
-          deps.log.warn({ stderr: addResult.stderr }, "home-snapshot: git add failed; skipping cycle");
+          deps.log.warn({ stderr: addResult.stderr }, `${label}: git add failed; skipping cycle`);
           lastLoggedAddError = addResult.stderr;
         }
         if (pushPending) schedulePush();
@@ -1080,12 +1104,12 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
         lastCommit = { sha, message, at: deps.now() };
         lastCommitError = null;
         lastLoggedCommitError = null;
-        deps.log.info({ sha, paths: plan.autoPaths.length, reason }, "home-snapshot: committed");
+        deps.log.info({ sha, paths: plan.autoPaths.length, reason }, `${label}: committed`);
         deps.broadcast(`${spec.eventPrefix}:snapshot`, { sha, paths: plan.autoPaths, reason });
       } else {
         lastCommitError = commitResult.stderr;
         if (commitResult.stderr !== lastLoggedCommitError) {
-          deps.log.warn({ stderr: commitResult.stderr }, "home-snapshot: commit failed");
+          deps.log.warn({ stderr: commitResult.stderr }, `${label}: commit failed`);
           lastLoggedCommitError = commitResult.stderr;
         }
       }
@@ -1097,7 +1121,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
         const message = `snapshot (janitor): ${jz.zone} dirty >${dirtyHours}h, owner ${jz.owner}`;
         const addResult = await deps.exec(["git", "add", "-A", "--", jz.zone], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
         if (addResult.exitCode !== 0) {
-          deps.log.warn({ stderr: addResult.stderr, zone: jz.zone }, "home-snapshot: janitor add failed; skipping this zone this cycle");
+          deps.log.warn({ stderr: addResult.stderr, zone: jz.zone }, `${label}: janitor add failed; skipping this zone this cycle`);
           continue;
         }
         // Same self-contained-commit and unsigned-commit reasoning as the auto commit above.
@@ -1112,12 +1136,12 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
           lastCommit = { sha, message, at: deps.now() };
           lastCommitError = null;
           lastLoggedCommitError = null;
-          deps.log.info({ sha, paths: 1, reason }, "home-snapshot: committed");
+          deps.log.info({ sha, paths: 1, reason }, `${label}: committed`);
           deps.broadcast(`${spec.eventPrefix}:snapshot`, { sha, paths: [jz.zone], reason });
         } else {
           lastCommitError = commitResult.stderr;
           if (commitResult.stderr !== lastLoggedCommitError) {
-            deps.log.warn({ stderr: commitResult.stderr, zone: jz.zone }, "home-snapshot: janitor commit failed");
+            deps.log.warn({ stderr: commitResult.stderr, zone: jz.zone }, `${label}: janitor commit failed`);
             lastLoggedCommitError = commitResult.stderr;
           }
         }
@@ -1173,7 +1197,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message !== lastLoggedSettingsError) {
-        deps.log.warn({ err }, "home-snapshot: failed to read settings in status(); using the last-known value");
+        deps.log.warn({ err }, `${label}: failed to read settings in status(); using the last-known value`);
         lastLoggedSettingsError = message;
       }
     }

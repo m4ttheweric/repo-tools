@@ -2539,6 +2539,50 @@ describe("startSnapshot: pull", () => {
     }
   });
 
+  test("a team instance's disabled lines name rt.teamSnapshot, never rt.homeSnapshot", async () => {
+    const { deps, log } = baseDeps({ readSettings: () => ({ ...DEFAULT_SETTINGS, enabled: false }) });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await handle.runNow("manual");
+
+    const lines = log.calls.map((c) => String(c.args[c.args.length - 1]));
+    expect(lines.some((l) => l.startsWith("team-snapshot: disabled (rt.teamSnapshot.enabled=false) at startup"))).toBe(true);
+    expect(lines).toContain("team-snapshot: disabled via rt.teamSnapshot.enabled=false; skipping cycle");
+    expect(lines.some((l) => l.includes("rt.homeSnapshot"))).toBe(false);
+    expect(lines.some((l) => l.startsWith("home-snapshot:"))).toBe(false);
+    handle.stop();
+  });
+
+  test("a team instance's inert lines describe a team clone, and never prescribe `rt home init`", async () => {
+    const missingDir = "/does/not/exist/rt-team-snapshot-vocab";
+    const { deps: missingDeps, log: missingLog } = baseDeps();
+    const { repoDir: _m, ...missingSpecDeps } = missingDeps;
+    const missing = startSnapshot({ ...teamSpecFor(), repoDir: missingDir }, missingSpecDeps);
+    await missing.ready;
+    expect((await missing.runNow("manual")).skipped).toBe("not-provisioned");
+    const missingWarn = missingLog.calls.find((c) => c.level === "warn");
+    expect(String(missingWarn?.args[1])).toBe("team-snapshot: team clone directory is missing; the supervisor drops it on the next rescan; inert");
+    missing.stop();
+
+    const { fn: notRepoExec } = makeFakeExec(defaultResponders({ isRepo: false }));
+    const { deps: notRepoDeps, log: notRepoLog } = baseDeps({ exec: notRepoExec });
+    const { repoDir: _n, ...notRepoSpecDeps } = notRepoDeps;
+    const notRepo = startSnapshot(teamSpecFor(), notRepoSpecDeps);
+    await notRepo.ready;
+    expect(String(notRepoLog.calls.find((c) => c.level === "warn")?.args[1])).toBe("team-snapshot: repoDir is not a git repository; inert");
+    notRepo.stop();
+
+    const { fn: noIdentExec } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0", hasIdentity: false })]);
+    const { deps: noIdentDeps, log: noIdentLog } = baseDeps({ exec: noIdentExec });
+    const { repoDir: _i, ...noIdentSpecDeps } = noIdentDeps;
+    const noIdent = startSnapshot(teamSpecFor(), noIdentSpecDeps);
+    await noIdent.ready;
+    await noIdent.runNow("manual");
+    expect(noIdentLog.calls.some((c) => c.level === "warn" && String(c.args[c.args.length - 1]).startsWith("team-snapshot: git cannot resolve a committer identity"))).toBe(true);
+    noIdent.stop();
+  });
+
   test("the home spec never pulls", async () => {
     const { deps, execCalls } = baseDeps();
     const { repoDir: _r, ...specDeps } = deps;
