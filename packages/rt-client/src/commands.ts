@@ -85,6 +85,28 @@ export interface EventsBusEvent { id: number; topic: string; payload: unknown; e
 
 /**
  * Duplicated shape on purpose, same reasoning as EventsBusEvent above:
+ * these mirror lib/daemon/gates-store.ts's types, which rt-client cannot
+ * import. gates-store.ts imports them back FROM this package (Commands
+ * already flows daemon -> rt-client, e.g. handlers/events.ts), so this is
+ * the single source of truth for the wire shape.
+ */
+export type GateStatus = "open" | "answered" | "parked" | "closed";
+export interface GateQuestion { id: string; label: string; multi: boolean; options: string[] }
+export interface GateAnswer { answers: Record<string, string | string[] | { value: string | string[]; note?: string }>; by: string; answeredAt: number }
+export interface GateRow {
+  id: string; subject: string; kind: string;
+  questions: GateQuestion[]; meta: Record<string, unknown> | null;
+  status: GateStatus; answer: GateAnswer | null;
+  openedAt: number; parkedAt: number | null; closedAt: number | null;
+  closedReason: "abandoned" | "superseded" | "pruned" | null;
+  agent: string | null; pane: string | null;
+  nudge: { session: string } | null;
+  delivery: { outcome: "delivered" | "dead-pane"; at: number } | null;
+  released: boolean;
+}
+
+/**
+ * Duplicated shape on purpose, same reasoning as EventsBusEvent above:
  * these mirror lib/state/chat-store.ts's types, which rt-client cannot
  * import (it's outside lib/state/ and outside this package entirely).
  */
