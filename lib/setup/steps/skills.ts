@@ -18,6 +18,8 @@ import type { StepDef, StepOutcome } from "../apply.ts";
 import { installCronTrigger, resolveBoardTriage, triageTrigger } from "../cron-install.ts";
 import { linkBundledSkills } from "../skills-link-bundled.ts";
 import { materializeSkills } from "../skills-materialize.ts";
+import { forgeLogin } from "../../team/forge.ts";
+import { resolveForge } from "./forge-identity.ts";
 import { repoBasename } from "./repos.ts";
 import { toFailedOutcome } from "./step-utils.ts";
 
@@ -109,6 +111,47 @@ function isUnset(key: string): boolean {
   return getSetting(key).value === undefined;
 }
 
+/**
+ * `isUnset` reads a registry default as a present value, so a key that HAS a
+ * default (chat.humanHandle) would read as already chosen on every machine.
+ * This asks the narrower question a seed needs: has any store written it.
+ */
+function unwritten(key: string): boolean {
+  const existing = getSetting(key);
+  return existing.provenance.length === 0 || existing.provenance.every((p) => p.scope === "default");
+}
+
+/**
+ * The joiner's own forge handle, which is both who their board runs as and
+ * who agents address in chat. Neither key has a writer anywhere else, and
+ * chat.humanHandle's registry default is somebody else's handle, so an
+ * unseeded machine is wrong rather than merely unconfigured.
+ */
+async function seedOwnHandle(ctx: ApplyContext, written: string[]): Promise<void> {
+  if (!unwritten("chat.humanHandle") && !unwritten("board.defaultMember")) return;
+
+  const forge = await resolveForge(ctx);
+  if (!forge) {
+    ctx.log("board.keys", "chat.humanHandle/board.defaultMember: no forge connected, left unset");
+    return;
+  }
+
+  const login = await forgeLogin(ctx.p, forge.provider, forge.host, forge.token);
+  if (!login) {
+    ctx.log("board.keys", "chat.humanHandle/board.defaultMember: forge login unavailable, left unset");
+    return;
+  }
+
+  if (unwritten("chat.humanHandle")) {
+    setSetting("chat.humanHandle", login, "user");
+    written.push("chat.humanHandle");
+  }
+  if (unwritten("board.defaultMember")) {
+    setSetting("board.defaultMember", login, "user");
+    written.push("board.defaultMember");
+  }
+}
+
 async function boardKeysRun(ctx: ApplyContext): Promise<StepOutcome> {
   const written: string[] = [];
   const repoNames = trackingRepoNames(ctx);
@@ -137,6 +180,8 @@ async function boardKeysRun(ctx: ApplyContext): Promise<StepOutcome> {
       ctx.log("board.keys", "gitq.workSlots: no repo root yet — left unset");
     }
   }
+
+  await seedOwnHandle(ctx, written);
 
   return { state: "done", detail: written.length > 0 ? `wrote: ${written.join(", ")}` : "nothing to write" };
 }

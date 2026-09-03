@@ -10,6 +10,7 @@ import { getDef } from "../../settings/registry.ts";
 import { setSetting } from "../../settings/write.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
 import type { RelayClient } from "../../team/relay-client.ts";
+import type { TeamSnapshot } from "../team-settings.ts";
 import type { ApplyContext, StepOutcome } from "../apply.ts";
 import { awaitNeed, SERVICE_PLISTS } from "../need.ts";
 import { MERGE_MANIFESTS_MISSING_CODE } from "../skills-materialize.ts";
@@ -706,6 +707,81 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(getSetting("gitq.workSlots").value).toBeUndefined();
       expect(logs.some((l) => l.line.includes("board.cwds"))).toBe(true);
       expect(logs.some((l) => l.line.includes("gitq.workSlots"))).toBe(true);
+    });
+
+    const GITHUB_FORGE: TeamSnapshot = {
+      slug: "acme",
+      integrations: { forge: { host: "github.com", provider: "github" } },
+      trackingIdentities: [],
+      marketplaces: [],
+      plugins: [],
+      remote: null,
+    };
+
+    /** The forge login lookup is one `gh api user`; everything else the step does needs no exec. */
+    function forgeLoginProbes(login: string) {
+      return fakeProbes({
+        home,
+        exec: async (argv) => (argv[0] === "gh" && argv[1] === "api" ? ok(JSON.stringify({ login })) : ok("")),
+      });
+    }
+
+    test("seeds chat.humanHandle and board.defaultMember from the joiner's own forge login", async () => {
+      const p = forgeLoginProbes("zaphod");
+      const { ctx } = makeCtx(p, { snapshot: GITHUB_FORGE });
+
+      const outcome = await boardKeysStep.run(ctx);
+      expect(detailOf(outcome)).toContain("chat.humanHandle");
+      expect(detailOf(outcome)).toContain("board.defaultMember");
+      expect(getSetting("chat.humanHandle").value).toBe("zaphod");
+      expect(getSetting("board.defaultMember").value).toBe("zaphod");
+    });
+
+    test("chat.humanHandle's registry default does not count as set: the seed still fires over it", async () => {
+      // getSetting() reports the registry default as a present value, so an
+      // `undefined` check would read this key as already chosen on every
+      // machine and the seed would never run.
+      expect(getSetting("chat.humanHandle").value).toBe("matt");
+
+      const p = forgeLoginProbes("trillian");
+      const { ctx } = makeCtx(p, { snapshot: GITHUB_FORGE });
+      await boardKeysStep.run(ctx);
+
+      expect(getSetting("chat.humanHandle").value).toBe("trillian");
+    });
+
+    test("a handle the operator already chose is never overwritten", async () => {
+      setSetting("chat.humanHandle", "ford", "user");
+      setSetting("board.defaultMember", "ford", "user");
+      const p = forgeLoginProbes("zaphod");
+      const { ctx } = makeCtx(p, { snapshot: GITHUB_FORGE });
+
+      const outcome = await boardKeysStep.run(ctx);
+      expect(detailOf(outcome)).not.toContain("chat.humanHandle");
+      expect(detailOf(outcome)).not.toContain("board.defaultMember");
+      expect(getSetting("chat.humanHandle").value).toBe("ford");
+      expect(getSetting("board.defaultMember").value).toBe("ford");
+    });
+
+    test("no forge connected: logs it and leaves both keys alone, never fails the step", async () => {
+      const p = fakeProbes({ home });
+      const { ctx, logs } = makeCtx(p, { snapshot: null });
+
+      const outcome = await boardKeysStep.run(ctx);
+      expect(outcome.state).toBe("done");
+      expect(getSetting("board.defaultMember").value).toBeUndefined();
+      expect(logs.some((l) => l.line.includes("no forge connected"))).toBe(true);
+      expect(p.calls.exec).toEqual([]);
+    });
+
+    test("a forge that answers with no login: logs it and leaves both keys alone", async () => {
+      const p = fakeProbes({ home, exec: async () => ({ code: 1, stdout: "", stderr: "not logged in" }) });
+      const { ctx, logs } = makeCtx(p, { snapshot: GITHUB_FORGE });
+
+      const outcome = await boardKeysStep.run(ctx);
+      expect(outcome.state).toBe("done");
+      expect(getSetting("board.defaultMember").value).toBeUndefined();
+      expect(logs.some((l) => l.line.includes("forge login unavailable"))).toBe(true);
     });
   });
 
