@@ -6,6 +6,7 @@ import type { ExecScript } from "./fakes.ts";
 import type { PackRequirements } from "../requirements.ts";
 import type { ToolResolution } from "../../deps/resolve.ts";
 import type { DetectedEditor } from "../../editors.ts";
+import type { ExecResult } from "../probes.ts";
 
 /** No bundled/user copy of anything, no detected editors — the safe default so a test that doesn't care about tool.fast-browser or tool.editor never touches the real machine's /Applications or a real bundle lookup. */
 function noopResolution(tool: string): ToolResolution {
@@ -344,6 +345,64 @@ describe("toolRows - tool.fast-browser-extension", () => {
   });
 });
 
+describe("toolRows - tool.plugins", () => {
+  const ALL_THREE = "mattstack@mattstack (enabled)\nfast-browser@mattstack (enabled)\nchat@mattstack (enabled)\n";
+  function listExec(result: ExecResult): ExecScript {
+    return (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? result : ok());
+  }
+
+  test("every baseline plugin present -> ready", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(ALL_THREE)) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("ready");
+    expect(r.required).toBe(false);
+    expect(r.optionalNote).toBe("Installed by Install (plugins.install).");
+  });
+
+  test("chat missing -> missing, naming only what is absent", async () => {
+    const list = "mattstack@mattstack (enabled)\nfast-browser@mattstack (enabled)\n";
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(list)) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("missing");
+    expect(r.detail).toContain("chat@mattstack");
+    expect(r.detail).not.toContain("fast-browser@mattstack");
+    expect(r.action).toEqual({ type: "run", label: "Install plugins", verb: ["setup", "pack"] });
+  });
+
+  // Anchored at the entry's own start, so a marketplace whose name merely
+  // contains another entry can never satisfy it.
+  test("an entry only mentioned inside another line does not count", async () => {
+    const list = "someother@mattstack (enabled) requires chat@mattstack\n";
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(list)) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("missing");
+    expect(r.detail).toContain("chat@mattstack");
+  });
+
+  test("claude not installed -> skipped", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(missing("claude")) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("skipped");
+  });
+
+  test("claude plugin list times out -> error", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec({ code: 124, stdout: "", stderr: "" }) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("timed out");
+  });
+
+  // A crashed or misconfigured CLI is a real failure this row could not see
+  // past; "skipped" would read as "nothing to check here", which it is not.
+  test("claude plugin list fails for any other reason -> error, not skipped", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec({ code: 3, stdout: "", stderr: "boom" }) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("exit 3");
+  });
+
+  test("claude plugin list runs once for tool.plugins and the pack rows together", async () => {
+    const p = fakeProbes({ exec: listExec(ok(ALL_THREE)) });
+    const reqs: PackRequirements[] = [{ pack: "acme", tools: [], integrations: [] }];
+    await toolRows(p, reqs, { hasBrew: true }, NOOP_SEAMS);
+    expect(p.calls.exec.filter((argv) => argv[1] === "plugin" && argv[2] === "list").length).toBe(1);
+  });
+});
+
 describe("toolRows — tool.editor", () => {
   test("no editors detected -> skipped, works-without-this note", async () => {
     const r = await pickRow(toolRows(fakeProbes(), [], { hasBrew: true }, NOOP_SEAMS), "tool.editor");
@@ -608,9 +667,12 @@ describe("toolRows — pack.<pack>", () => {
     expect(rows.filter((row) => row.id.startsWith("pack."))).toHaveLength(2);
   });
 
-  test("no pack requirements at all -> claude plugin list is never run (L11)", async () => {
+  // Superseded by tool.plugins (lib/setup/validators/tools.ts): that row
+  // reads `claude plugin list` unconditionally, so this exec now runs even
+  // with zero pack requirements.
+  test("no pack requirements at all -> claude plugin list still runs once, for tool.plugins", async () => {
     const p = fakeProbes({});
     await toolRows(p, [], { hasBrew: true }, NOOP_SEAMS);
-    expect(p.calls.exec).not.toContainEqual(["claude", "plugin", "list"]);
+    expect(p.calls.exec.filter((argv) => argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list")).toHaveLength(1);
   });
 });

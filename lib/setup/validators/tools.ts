@@ -18,6 +18,7 @@
 
 import { resolveTool } from "../../deps/resolve.ts";
 import { detectEditors } from "../../editors.ts";
+import { BASE_PLUGINS } from "../base-plugins.ts";
 import { row, type Action, type Row } from "../contract.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
@@ -396,10 +397,9 @@ async function teamToolRow(p: Probes, req: ToolRequirement, hasBrew: boolean): P
 
 // ─── pack.<pack> ────────────────────────────────────────────────────────────
 
-/** Anchored at the entry's own start (start of line, optional leading whitespace) so a pack named "view" can never match inside "acme@acme". */
-function pluginListHasPack(stdout: string, pack: string): boolean {
-  const needle = `${pack}@`;
-  return stdout.split("\n").some((line) => line.trim().startsWith(needle));
+/** Anchored at the entry's own start (start of line, optional leading whitespace) so an entry named inside another line can never satisfy it. */
+function pluginListHasEntry(stdout: string, entry: string): boolean {
+  return stdout.split("\n").some((line) => line.trim().startsWith(entry));
 }
 
 /** Shared with plan.ts's install-satisfied flip so the two never drift apart into two different wordings for the same fact. */
@@ -423,8 +423,29 @@ function packRow(req: PackRequirements, pluginList: ExecResult): Row {
   // is a real failure this module could not determine past — "skipped"
   // reads as "nothing to check here", which a genuine failure is not.
   if (pluginList.code !== 0) return row({ ...base, status: "error", detail: `claude plugin list failed (exit ${pluginList.code})` });
-  if (pluginListHasPack(pluginList.stdout, req.pack)) return row({ ...base, status: "ready", detail: "installed" });
+  if (pluginListHasEntry(pluginList.stdout, `${req.pack}@`)) return row({ ...base, status: "ready", detail: "installed" });
   return row({ ...base, status: "missing", detail: "installed by Install (plugins.install)" });
+}
+
+// ─── tool.plugins ───────────────────────────────────────────────────────────
+
+/** Exactly the classification packRow uses, so the two rows never disagree about what a `claude plugin list` result means. */
+function pluginsRow(pluginList: ExecResult): Row {
+  const base = {
+    id: "tool.plugins",
+    kind: "tool" as const,
+    title: "Claude plugins",
+    why: "rt's skills, Fast Browser's and rt chat's all reach Claude Code as marketplace plugins.",
+    required: false,
+    optionalNote: INSTALLED_BY_INSTALL_NOTE,
+  };
+  if (pluginList.code === 127) return row({ ...base, status: "skipped", detail: "claude not installed" });
+  if (pluginList.code === 124) return row({ ...base, status: "error", detail: "claude plugin list timed out" });
+  if (pluginList.code !== 0) return row({ ...base, status: "error", detail: `claude plugin list failed (exit ${pluginList.code})` });
+
+  const absent = BASE_PLUGINS.filter((entry) => !pluginListHasEntry(pluginList.stdout, entry));
+  if (absent.length === 0) return row({ ...base, status: "ready", detail: `${BASE_PLUGINS.length} plugins installed` });
+  return row({ ...base, status: "missing", detail: `not installed: ${absent.join(", ")}`, action: { type: "run", label: "Install plugins", verb: ["setup", "pack"] } });
 }
 
 // ─── entry point ────────────────────────────────────────────────────────────
@@ -447,12 +468,11 @@ export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasB
 
   for (const tool of dedupeTeamTools(reqs)) rows.push(await teamToolRow(p, tool, opts.hasBrew));
 
-  // No point spawning (or waiting on) `claude plugin list` when there are no
-  // pack rows to check it against.
-  if (reqs.length > 0) {
-    const pluginList = await exec(p, ["claude", "plugin", "list"]);
-    for (const req of reqs) rows.push(packRow(req, pluginList));
-  }
+  // One listing feeds tool.plugins and every pack row; tool.plugins is
+  // unconditional, so there is no longer a case where nothing needs it.
+  const pluginList = await exec(p, ["claude", "plugin", "list"]);
+  rows.push(pluginsRow(pluginList));
+  for (const req of reqs) rows.push(packRow(req, pluginList));
 
   return rows;
 }

@@ -81,21 +81,23 @@ describe("rowsToChecks", () => {
     expect(oneCheck([baseRow({ id: "tool.herdr", status: "missing", required: true })], { ci: true }).status).toBe("warn");
   });
 
-  test("tool.fast-browser unhealthy in ci -> warn (doctor needs a real Chrome + loaded extension)", () => {
-    expect(oneCheck([baseRow({ id: "tool.fast-browser", status: "needs-you", required: true })], { ci: true }).status).toBe("warn");
-  });
-
-  // The line that keeps this from becoming a vacuous pass: fast-browser IS
-  // bundled, so `missing` means the BUNDLE is broken — exactly what this
-  // pipeline exists to catch — and must stay critical even in CI.
+  // tool.fast-browser's own row never carries required:true past the
+  // "missing" status (composePlan drops to required:false for needs-you and
+  // error), so there is no longer a CI-only exemption for it here: a caller
+  // that hands rowsToChecks a required:true needs-you row anyway still fails,
+  // the same as any other required row would.
   test("tool.fast-browser MISSING in ci -> still fails, because that means the bundle is broken", () => {
     const check = oneCheck([baseRow({ id: "tool.fast-browser", status: "missing", required: true })], { ci: true });
     expect(check.status).toBe("fail");
     expect(check.severity).toBe("critical");
   });
 
-  test("these exemptions are ci-only — all three still fail interactively", () => {
-    for (const id of ["tool.claude", "tool.herdr", "tool.fast-browser"]) {
+  test("tool.plugins missing in ci -> warn (installed through claude, which a runner does not have)", () => {
+    expect(oneCheck([baseRow({ id: "tool.plugins", status: "missing", required: true })], { ci: true }).status).toBe("warn");
+  });
+
+  test("these exemptions are ci-only, all still fail interactively", () => {
+    for (const id of ["tool.claude", "tool.herdr", "tool.fast-browser", "tool.plugins"]) {
       expect(oneCheck([baseRow({ id, status: "missing", required: true })], { ci: false }).status).toBe("fail");
     }
   });

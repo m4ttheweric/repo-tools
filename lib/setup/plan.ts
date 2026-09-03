@@ -118,7 +118,7 @@ async function buildGroup(id: GroupId, build: () => Promise<Row[]>): Promise<Gro
   }
 }
 
-const INSTALL_SATISFIED_IDS = new Set(["perm.login-items", "tool.daemon"]);
+const INSTALL_SATISFIED_IDS = new Set(["perm.login-items", "tool.daemon", "tool.plugins"]);
 
 function isInstallSatisfied(id: string): boolean {
   return INSTALL_SATISFIED_IDS.has(id) || id.startsWith("pack.");
