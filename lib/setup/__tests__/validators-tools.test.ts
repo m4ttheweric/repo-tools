@@ -711,10 +711,11 @@ describe("toolRows — team-declared tool.team.<name>", () => {
 describe("toolRows — pack.<pack>", () => {
   test("real plugin listing contains the pack's id -> ready, installed", async () => {
     const reqs: PackRequirements[] = [{ pack: "beta", integrations: [], tools: [] }];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(REAL_PLUGIN_LIST_JSON) : ok());
+    const listWithBeta = JSON.stringify([...REAL_PLUGIN_ENTRIES, { id: "beta@acme-market", enabled: true }]);
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(listWithBeta) : ok());
     const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.beta");
-    expect(r.status).toBe("missing");
-    expect(r.detail).toBe("installed by Install (plugins.install)");
+    expect(r.status).toBe("ready");
+    expect(r.detail).toBe("installed");
     expect(r.required).toBe(false);
     expect(r.optionalNote).not.toBeNull();
   });
