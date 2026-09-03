@@ -10,7 +10,9 @@ import type { Owners } from "../../home/snapshot-owners.ts";
 import { openStateDb } from "../../state/db.ts";
 import { closeStateDb, getKvValue } from "../../state/index.ts";
 import { readHomePushRecord } from "../../home/push-record.ts";
-import { homeSnapshotSpec, startHomeSnapshot, startSnapshot, teamScope, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
+import { rtDir } from "../../rt-paths.ts";
+import { fakeProbes } from "../../setup/__tests__/fakes.ts";
+import { homeSnapshotSpec, startHomeSnapshot, startSnapshot, teamScope, teamSnapshotSpec, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
 
 // ─── test doubles ────────────────────────────────────────────────────────────
 
@@ -2035,6 +2037,7 @@ describe("startSnapshot — spec", () => {
     await handle.runNow("manual");
     expect(broadcasts[0]?.type).toBe("team:snapshot");
     expect(getKvValue("team-snapshot:acme", "state", null, deps.db!)).not.toBeNull();
+    expect(getKvValue("home-snapshot", "state", null, deps.db!)).toBeNull();
     handle.stop();
   });
 
@@ -2051,6 +2054,34 @@ describe("startSnapshot — spec", () => {
     expect(add).toEqual(["git", "add", "-A", "--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
     const commit = calls.find((c) => gitVerb(c) === "commit")!;
     expect(commit.slice(-3)).toEqual(["--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
+    handle.stop();
+  });
+});
+
+describe("teamSnapshotSpec", () => {
+  test("names the clone by slug, scopes to the team roots, pulls on the interval, and reads the stored forge token for origin", async () => {
+    const p = { ...fakeProbes({ home: "/h" }) };
+    const spec = teamSnapshotSpec("acme", "/h/.mattstack/teams/acme", { pullIntervalSec: 120, originUrl: "https://gitlab.com/acme/team.git", probes: p, readToken: async () => "glpat-x" });
+    expect(spec).toMatchObject({ id: "team:acme", repoDir: "/h/.mattstack/teams/acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", pull: { intervalSec: 120 } });
+    expect(spec.scope!("mattstack/x")).toBe(true);
+    expect(spec.scope!("src/x")).toBe(false);
+    expect(await spec.tokenFor!()).toBe("glpat-x");
+    expect(spec.legacyStatePath).toBeUndefined();
+
+    // The team spec carries no legacyStatePath, so a run against it must never
+    // import or rename the home repo's legacy state file — proven against the
+    // real one under the test's faked HOME, not just by asserting the field is undefined.
+    const legacyPath = join(rtDir(), "home-snapshot-state.json");
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    writeFileSync(legacyPath, "{}");
+    const { fn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const runSpec = teamSnapshotSpec("acme", FAKE_REPO_DIR, { pullIntervalSec: 120, originUrl: "https://gitlab.com/acme/team.git", probes: p, readToken: async () => "glpat-x" });
+    const handle = startSnapshot(runSpec, specDeps);
+    await handle.ready;
+    await handle.runNow("manual");
+    expect(existsSync(legacyPath)).toBe(true);
     handle.stop();
   });
 });

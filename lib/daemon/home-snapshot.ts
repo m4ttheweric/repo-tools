@@ -41,6 +41,8 @@ import {
   setKvValue,
 } from "../state/index.ts";
 import { gitWithToken } from "../team/git-credential.ts";
+import { storedForgeToken } from "../team/stored-forge-token.ts";
+import type { Probes } from "../setup/probes.ts";
 import { readOwners as readOwnersReal, type Owners } from "../home/snapshot-owners.ts";
 import { HOME_SNAPSHOT_NS, recordHomePush, type HomePushRecord } from "../home/push-record.ts";
 import { parsePorcelainZ, planSnapshot, scopeEntries } from "./home-snapshot-plan.ts";
@@ -319,6 +321,24 @@ export function homeSnapshotSpec(repoDir: string = join(mattstackHome(), "user")
     kvNamespace: HOME_SNAPSHOT_NS,
     eventPrefix: "home",
     legacyStatePath: join(rtDir(), "home-snapshot-state.json"),
+  };
+}
+
+/** A team clone: no legacy state file (nothing predates it), and it pulls (multi-writer), unlike the home repo. */
+export function teamSnapshotSpec(
+  slug: string,
+  repoDir: string,
+  opts: { pullIntervalSec: number; originUrl: string; probes: Probes; readToken?: (p: Probes, remote: string) => Promise<string | null> },
+): SnapshotSpec {
+  const readToken = opts.readToken ?? storedForgeToken;
+  return {
+    id: `team:${slug}`,
+    repoDir,
+    kvNamespace: `team-snapshot:${slug}`,
+    eventPrefix: "team",
+    scope: teamScope,
+    pull: { intervalSec: opts.pullIntervalSec },
+    tokenFor: () => readToken(opts.probes, opts.originUrl),
   };
 }
 
