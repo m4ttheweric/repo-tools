@@ -297,6 +297,18 @@ describe("teamPull", () => {
     const { at, ...body } = JSON.parse(deps.lines[0]!);
     expect(body).toEqual({ contract: 1, slug: "acme", outcome: "fast-forwarded", detail: null });
   });
+
+  test("the pull carries a timeout that fits a real fetch and rebase, not the status default", async () => {
+    let seen: number | undefined = -1;
+    const deps = depsWithZone({
+      daemon: async (_cmd, _payload, timeoutMs) => {
+        seen = timeoutMs;
+        return { ok: true, data: { outcome: "rebased", detail: null } };
+      },
+    });
+    await teamPull(["--team", "acme", "--json"], {}, deps);
+    expect(seen).toBeGreaterThanOrEqual(120_000);
+  });
   test("daemon unreachable (daemonQuery returns null) exits 2 with a plain message, never a stack", async () => {
     const deps = depsWithZone({ daemon: async () => null });
     const code = await runExpectingProcessExit(() => teamPull(["--team", "acme"], {}, deps));

@@ -55,7 +55,7 @@ export interface TeamDeps {
   /** The forge token rt holds for a remote's host — real store by default. */
   forgeToken?: typeof storedForgeToken;
   /** The daemon round trip `teamPull`/`teamStatus` use for the team-snapshot verbs (`team:pull`, `team:snapshot-status`); real `daemonQuery` by default. */
-  daemon?: (cmd: string, payload: unknown) => Promise<unknown>;
+  daemon?: (cmd: string, payload: unknown, timeoutMs?: number) => Promise<unknown>;
 }
 
 async function defaultReadCode(json: boolean): Promise<string> {
@@ -161,12 +161,17 @@ function resolveTeamSlug(args: string[]): string {
   return teams[0]!;
 }
 
+const PULL_TIMEOUT_MS = 180_000;
+
 export async function teamPull(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
   const json = args.includes("--json");
   try {
     const slug = resolveTeamSlug(args);
     const call = deps.daemon ?? daemonQuery;
-    const res = (await call("team:pull", { slug })) as
+    // A pull is a network fetch plus a rebase; the client default (2s, sized
+    // for status reads) aborts mid-pull and reports an unreachable daemon for
+    // a pull that then succeeds.
+    const res = (await call("team:pull", { slug }, PULL_TIMEOUT_MS)) as
       | { ok: boolean; data?: { outcome: string; detail: string | null }; error?: string; failure?: { code: string; message: string } }
       | null;
     if (!res) {

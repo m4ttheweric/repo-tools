@@ -5,6 +5,10 @@
 # reset to origin. Every commit, push, pull and rebase is the daemon's; this
 # script only writes settings and reads verbs back.
 # Usage: team-rebase.sh <owner-vm> <joiner-vm> [--slug vmtest] [--rt <dist/rt>] [--logs <dir>]
+#
+# The joiner account needs push rights on the team repo (GitLab Developer, 30):
+# multi-writer is the design, and a Reporter joiner fails scenario A at the push
+# with "not allowed to push code to this project".
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; source "$HERE/../../lib/common.sh"
 OWNER="${1:?owner vm}"; JOINER="${2:?joiner vm}"; shift 2
@@ -141,7 +145,9 @@ RT=/tmp/rt-new; chmod +x "$RT"
 security unlock-keychain -p "$VM_TESTER_PASS" "$HOME/Library/Keychains/login.keychain-db"
 TEAM="$HOME/.mattstack/teams/$SLUG"
 
-PULL_JSON=$("$RT" team pull --team "$SLUG" --json 2>/dev/null | tail -1) || PULL_JSON=""
+set +e
+PULL_JSON=$("$RT" team pull --team "$SLUG" --json 2>&1 | tail -1)
+set -e
 echo "$PULL_JSON"
 OUTCOME=$(printf '%s' "${PULL_JSON:-}" | jq -r '.outcome // empty' 2>/dev/null) || OUTCOME=""
 
@@ -200,7 +206,9 @@ export PATH="$HOME/.local/bin:/Applications/mattstack.app/Contents/Helpers:/usr/
 RT=/tmp/rt-new; chmod +x "$RT"
 security unlock-keychain -p "$VM_TESTER_PASS" "$HOME/Library/Keychains/login.keychain-db"
 
-PULL_JSON=$("$RT" team pull --team "$SLUG" --json 2>/dev/null | tail -1) || PULL_JSON=""
+set +e
+PULL_JSON=$("$RT" team pull --team "$SLUG" --json 2>&1 | tail -1)
+set -e
 echo "$PULL_JSON"
 OUTCOME=$(printf '%s' "${PULL_JSON:-}" | jq -r '.outcome // empty' 2>/dev/null) || OUTCOME=""
 PREFIXES=$("$RT" settings get board.ticketPrefixes --json 2>/dev/null | tail -1 | jq -c '.value // empty' 2>/dev/null) || PREFIXES=""
@@ -233,7 +241,9 @@ RT=/tmp/rt-new; chmod +x "$RT"
 security unlock-keychain -p "$VM_TESTER_PASS" "$HOME/Library/Keychains/login.keychain-db"
 TEAM="$HOME/.mattstack/teams/$SLUG"
 
-PULL_JSON=$("$RT" team pull --team "$SLUG" --json 2>/dev/null | tail -1) || PULL_JSON=""
+set +e
+PULL_JSON=$("$RT" team pull --team "$SLUG" --json 2>&1 | tail -1)
+set -e
 echo "$PULL_JSON"
 OUTCOME=$(printf '%s' "${PULL_JSON:-}" | jq -r '.outcome // empty' 2>/dev/null) || OUTCOME=""
 STATUS_JSON=$("$RT" team status --team "$SLUG" --json 2>/dev/null | tail -1) || STATUS_JSON=""
@@ -279,7 +289,9 @@ TEAM="$HOME/.mattstack/teams/$SLUG"
 git -C "$TEAM" reset -q --hard origin/main
 echo "  joiner reset to $(git -C "$TEAM" rev-parse --short HEAD)"
 
-PULL_JSON=$("$RT" team pull --team "$SLUG" --json 2>/dev/null | tail -1) || PULL_JSON=""
+set +e
+PULL_JSON=$("$RT" team pull --team "$SLUG" --json 2>&1 | tail -1)
+set -e
 echo "$PULL_JSON"
 OUTCOME=$(printf '%s' "${PULL_JSON:-}" | jq -r '.outcome // empty' 2>/dev/null) || OUTCOME=""
 TITLE_NOW=$("$RT" settings get board.title --json 2>/dev/null | tail -1 | jq -r '.value // empty' 2>/dev/null) || TITLE_NOW=""
