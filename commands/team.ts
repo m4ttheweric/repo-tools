@@ -38,6 +38,8 @@ import { publishTeam } from "../lib/team/publish.ts";
 import { storedForgeToken } from "../lib/team/stored-forge-token.ts";
 import { createRelayClient, inviteRelayUrl } from "../lib/team/relay-client.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
+import { daemonQuery } from "../lib/daemon-client.ts";
+import type { TeamSnapshotEntry } from "../lib/daemon/team-snapshots.ts";
 
 export interface TeamDeps {
   probes: Probes;
@@ -52,6 +54,8 @@ export interface TeamDeps {
   statusRead?: SettingsReader;
   /** The forge token rt holds for a remote's host — real store by default. */
   forgeToken?: typeof storedForgeToken;
+  /** The daemon round trip `teamPull`/`teamStatus` use for the team-snapshot verbs (`team:pull`, `team:snapshot-status`) — real `daemonQuery` by default. */
+  daemon?: (cmd: string, payload: unknown) => Promise<unknown>;
 }
 
 async function defaultReadCode(json: boolean): Promise<string> {
@@ -155,6 +159,34 @@ function resolveTeamSlug(args: string[]): string {
     throw new UserActionableError("ambiguous-team", `multiple local team stores found (${teams.join(", ")}) — pass --team to choose one`);
   }
   return teams[0]!;
+}
+
+export async function teamPull(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
+  const json = args.includes("--json");
+  try {
+    const slug = resolveTeamSlug(args);
+    const call = deps.daemon ?? daemonQuery;
+    const res = (await call("team:pull", { slug })) as
+      | { ok: boolean; data?: { outcome: string; detail: string | null }; error?: string; failure?: { code: string; message: string } }
+      | null;
+    if (!res) {
+      throw new UserActionableError(
+        "daemon-unreachable",
+        `rt daemon is not reachable — start it with \`rt daemon start\`, or pull by hand with git in ~/.mattstack/teams/${slug}`,
+      );
+    }
+    if (!res.ok || !res.data) {
+      throw new UserActionableError(res.failure?.code ?? "team-pull-failed", res.failure?.message ?? res.error ?? "team pull failed");
+    }
+    if (json) {
+      deps.print(JSON.stringify(envelope({ slug, outcome: res.data.outcome, detail: res.data.detail })));
+      return;
+    }
+    deps.print(`rt team pull: ${slug} - ${res.data.outcome}${res.data.detail ? ` (${res.data.detail})` : ""}`);
+  } catch (err) {
+    if (err instanceof UserActionableError) exitUserError(err, json, "team pull", deps.print);
+    throw err;
+  }
 }
 
 export async function teamPublish(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
@@ -370,6 +402,37 @@ function toRosterMembers(raw: unknown, warn: (message: string) => void): { usern
   return members;
 }
 
+interface TeamSyncFields {
+  lastPull: string | null;
+  lastPushAt: string | null;
+  lastPullSkipped: string | null;
+  conflicted: { at: string; detail: string } | null;
+  /** True only when the daemon answered `team:snapshot-status` and named this slug — never leaked into the JSON envelope, only used to pick the human line's "ok"/"unknown". */
+  reachable: boolean;
+}
+
+const NO_SYNC: TeamSyncFields = { lastPull: null, lastPushAt: null, lastPullSkipped: null, conflicted: null, reachable: false };
+
+/** `deps.daemon?.("team:snapshot-status", {})` round trip, reduced to the four fields `teamStatus` shows for `slug`. Any failure (daemon down, malformed response, slug absent from the list) collapses to `NO_SYNC` rather than throwing — sync state is a nicety on top of the local status, never a reason to fail the whole command. */
+async function readTeamSyncFields(deps: TeamDeps, slug: string): Promise<TeamSyncFields> {
+  try {
+    const call = deps.daemon ?? daemonQuery;
+    const res = (await call("team:snapshot-status", {})) as { ok: boolean; data?: TeamSnapshotEntry[] } | null;
+    if (!res || !res.ok || !res.data) return NO_SYNC;
+    const entry = res.data.find((e) => e.slug === slug);
+    if (!entry) return NO_SYNC;
+    return {
+      lastPull: entry.lastPullAt > 0 ? new Date(entry.lastPullAt).toISOString() : null,
+      lastPushAt: entry.lastPushAt > 0 ? new Date(entry.lastPushAt).toISOString() : null,
+      lastPullSkipped: entry.lastPullSkipped,
+      conflicted: entry.conflicted ? { at: new Date(entry.conflicted.at).toISOString(), detail: entry.conflicted.detail } : null,
+      reachable: true,
+    };
+  } catch {
+    return NO_SYNC;
+  }
+}
+
 export async function teamStatus(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
   const json = args.includes("--json");
 
@@ -390,13 +453,18 @@ export async function teamStatus(args: string[], _ctx: CommandContext = {}, deps
     const lastPush = log.code === 0 ? log.stdout.trim() || null : null;
 
     const remote = snapshot.remote !== null ? stripUserinfo(snapshot.remote) : null;
-    const result = { slug, name, remote, lastPush, members };
+
+    const { reachable, ...sync } = await readTeamSyncFields(deps, slug);
+
+    const result = { slug, name, remote, lastPush, members, ...sync };
     if (json) {
       deps.print(JSON.stringify(envelope(result)));
       return;
     }
+    const syncState = sync.conflicted !== null ? "conflict" : reachable ? "ok" : "unknown";
+    const skippedNote = sync.lastPullSkipped ? ` (last pull skipped: ${sync.lastPullSkipped})` : "";
     deps.print(
-      `rt team status: ${name} (${slug}) — remote ${result.remote ?? "(none)"}, last push ${lastPush ?? "never"}, ${members.length} member(s)`,
+      `rt team status: ${name} (${slug}) - remote ${result.remote ?? "(none)"}, last push ${lastPush ?? "never"}, ${members.length} member(s), sync: ${syncState}${skippedNote}`,
     );
   } catch (err) {
     if (err instanceof UserActionableError) exitUserError(err, json, "team status", deps.print);

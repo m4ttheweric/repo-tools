@@ -1781,11 +1781,20 @@ export const TREE: Record<string, CommandNode> = {
         },
       },
       status: {
-        description: "Team summary (name, remote, last push, members)",
+        description: "Team summary (name, remote, last push, sync state, members)",
         module: "./commands/team.ts",
         fn: "teamStatus",
         args: [
           { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to summarize; omit when only one is cloned" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      pull: {
+        description: "Pull the local team clone up to date with its remote, through the daemon's snapshot supervisor",
+        module: "./commands/team.ts",
+        fn: "teamPull",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to pull; omit when only one is cloned" },
           SETUP_JSON_ARG,
         ],
       },
