@@ -231,8 +231,8 @@ async function hasRemote(exec: ExecFn, cwd: string): Promise<boolean> {
  * absence is checked explicitly before ever calling `rev-list` against it.
  *
  * An unborn branch (a remote attached before the first commit ever landed
- * — e.g. `git commit` failing outright with no `user.name`/`user.email`
- * configured) prints its branch name via `symbolic-ref` just fine, exit 0,
+ * — e.g. `git commit` failing outright because git could resolve no
+ * committer identity) prints its branch name via `symbolic-ref` just fine, exit 0,
  * same as a normal branch — HEAD itself must be verified separately, or
  * this arms a `git push` with nothing to push ("src refspec HEAD does not
  * match any"), which fails every time and drives a retry storm.
@@ -985,19 +985,21 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
 
     // Two independent commit sites below (the auto commit and the
     // janitor-zone loop) can each attempt a commit this cycle; both fail the
-    // same doomed way (exit 128, "empty ident name") against an unconfigured
-    // identity. Checked once, up front, whenever EITHER would run, so a
+    // same doomed way (exit 128, "empty ident name") when git cannot resolve
+    // a committer. Checked once, up front, whenever EITHER would run, so a
     // janitor-only cycle (no auto paths, one dirty claimed zone) is covered
-    // too, not just the auto-commit path.
+    // too, not just the auto-commit path. The probe asks git itself
+    // (`git var`), not the config keys: a fresh Mac has no user.name but git
+    // derives "<full name> <user@host>" from the account and commits fine,
+    // exactly as a hand commit there would.
     const willAutoCommit = plan.autoPaths.length > 0 && plan.message !== null;
     const willJanitorCommit = (reason === "janitor" || reason === "manual") && plan.janitorZones.length > 0;
     if (willAutoCommit || willJanitorCommit) {
-      const name = await deps.exec(["git", "config", "user.name"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-      const email = await deps.exec(["git", "config", "user.email"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-      if (name.exitCode !== 0 || !name.stdout.trim() || email.exitCode !== 0 || !email.stdout.trim()) {
+      const ident = await deps.exec(["git", "var", "GIT_COMMITTER_IDENT"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      if (ident.exitCode !== 0 || !ident.stdout.trim()) {
         disabledReason = "no-git-identity";
         if (lastLoggedCommitError !== "no-git-identity") {
-          deps.log.warn("home-snapshot: no git identity; run `git config --global user.name` and `git config --global user.email`; snapshots inert");
+          deps.log.warn("home-snapshot: git cannot resolve a committer identity; run `git config --global user.name` and `git config --global user.email`; snapshots inert");
           lastLoggedCommitError = "no-git-identity";
         }
         return { committed: false, sha: null, paths: [], reason, skipped: "no-git-identity" };

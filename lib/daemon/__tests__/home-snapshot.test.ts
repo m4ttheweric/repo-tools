@@ -64,12 +64,11 @@ function defaultResponders(opts: {
     (argv) => (argv[1] === "status") ? { stdout: statusZ, stderr: "", exitCode: 0 } : undefined,
     (argv) => (argv[1] === "add") ? { stdout: "", stderr: "", exitCode: addExit } : undefined,
     // git identity probe, checked right before either commit site runs...
-    // defaults to "configured" so every fixture not testing R043 stays green.
-    (argv) => (argv[1] === "config" && argv[2] === "user.name")
-      ? (hasIdentity ? { stdout: "rt test\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 1 })
-      : undefined,
-    (argv) => (argv[1] === "config" && argv[2] === "user.email")
-      ? (hasIdentity ? { stdout: "rt@example.test\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 1 })
+    // defaults to "resolvable" so every fixture not testing R043 stays green.
+    (argv) => (argv[1] === "var" && argv[2] === "GIT_COMMITTER_IDENT")
+      ? (hasIdentity
+        ? { stdout: "rt test <rt@example.test> 1700000000 +0000\n", stderr: "", exitCode: 0 }
+        : { stdout: "", stderr: "fatal: empty ident name (for <>) not allowed\n", exitCode: 128 })
       : undefined,
     (argv) => (gitVerb(argv) === "commit") ? { stdout: "", stderr: "", exitCode: commitExit } : undefined,
     // `hasRemote()`'s own probe — most fixtures simulate a repo that already has origin configured, matching every pre-existing push test's assumption.
@@ -724,7 +723,7 @@ describe("startHomeSnapshot — commit shapes", () => {
     expect(log.calls.filter((c) => c.level === "warn").length).toBe(1); // still just the one warn
   });
 
-  test("git identity present: commits normally, exactly one identity probe pair", async () => {
+  test("git identity resolvable: commits normally, exactly one `git var` probe and no config reads", async () => {
     const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
     const { deps } = baseDeps({ exec: execFn });
     const handle = startHomeSnapshot(deps);
@@ -732,8 +731,8 @@ describe("startHomeSnapshot — commit shapes", () => {
 
     const result = await handle.runNow("manual");
     expect(result.committed).toBe(true);
-    expect(execCalls.filter((c) => c[1] === "config" && c[2] === "user.name").length).toBe(1);
-    expect(execCalls.filter((c) => c[1] === "config" && c[2] === "user.email").length).toBe(1);
+    expect(execCalls.filter((c) => c[1] === "var" && c[2] === "GIT_COMMITTER_IDENT").length).toBe(1);
+    expect(execCalls.some((c) => c[1] === "config" && c[2] === "user.name")).toBe(false);
   });
 
   test("R043: a janitor-only cycle (no auto paths, one dirty claimed zone past threshold) with no git identity also skips 'no-git-identity', never attempts the janitor commit", async () => {
