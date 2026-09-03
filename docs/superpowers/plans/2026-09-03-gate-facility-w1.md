@@ -36,29 +36,27 @@
 
 ---
 
-### Task 1: The delivery spike (throwaway; runs WITH Matt; gates the wave)
+### Task 1: The delivery spike — COMPLETE (2026-09-03)
 
-**Files:**
-- Create: `docs/superpowers/spikes/2026-09-03-gate-delivery-spike.md` (findings report — the ONLY kept artifact)
+Run live with the operator; findings committed at
+`docs/superpowers/spikes/2026-09-03-gate-delivery-spike.md` and the spec's
+Delivery section revised on them. What every later task inherits:
 
-**Interfaces:**
-- Consumes: `lib/daemon/inbox.ts` `deliverToInbox`, `lib/claude-registry.ts` session resolution, the live daemon.
-- Produces: a verdict per leg; a spec revision to the Delivery section if any leg fails. Tasks 2+ do not start until the verdict is recorded.
-
-This task is interactive by nature (real sessions, two cswap accounts, a pending form). The controller runs it with Matt at the keyboard; a subagent cannot.
-
-- [ ] **Step 1: Leg 1 — cross-account push dismisses a pending form.** Open a helper Claude Code session under a DIFFERENT cswap account root, have it present an `AskUserQuestion` form and sit. From this session, resolve its inbox via the claude registry and deliver: a small script calling `deliverToInbox` with a fixed-phrase body (`gate <id> answered elsewhere; re-read the registry`). Record: did the message land in-context, did the pending form dismiss, did the session proceed?
-- [ ] **Step 2: Leg 2 — blocking wait returns the answer, stop hook stays quiet.** In a pane running under the mattstack pipeline stop hook, have a scratch skill call the existing blocking verb `rt events wait --pattern 'spike/**' --timeout 120000` as its final action (the stub for the future `gate wait`; the real verb lands in Task 4). From outside, `rt events emit spike/answer --json '{"answers":{"q":"yes"}}'`. Record: did the wait return the payload as the tool result, did the turn end without the stop hook firing, and did any permission prompt starve while blocked?
-- [ ] **Step 3: Leg 3 — push survives a busy turn.** Deliver an inbox message to a session mid-turn (while it is running tools). Record: did the notification arrive and get acted on rather than dropped?
-- [ ] **Step 4: Write the findings report** to `docs/superpowers/spikes/2026-09-03-gate-delivery-spike.md`: one section per leg, observed behavior, verdict (PROVEN / FAILED), and for any FAILED leg the concrete spec revision it forces.
-- [ ] **Step 5: Commit**
-
-```bash
-git add docs/superpowers/spikes/2026-09-03-gate-delivery-spike.md
-git commit -m "spike: gate delivery mechanics findings (three legs)"
-```
-
-If any leg failed: STOP, revise the spec's Delivery section with Matt, commit the spec change, and only then continue.
+- Form dismissal DISPROVEN (three frame variants): attended pushes QUEUE
+  and reconcile at the human's next touch. No dismissal logic anywhere.
+- Pushes wrap in the `<cross-session-message>` envelope; the body is the
+  fixed doorbell phrase only; answers NEVER travel in messages.
+- Push outcomes are `delivered` (inbox accepted the frame) and `dead-pane`
+  (connect failure). There is no "refused" state on the inbox path.
+- Session addressing is by session id via `lib/claude-registry.ts`; the
+  opener records its own session in `nudge: { session }` at `gate open`.
+- Both full flows proven live: attended (form + external answer + doorbell
+  + CAS-loss reconciliation) and unattended (publish + block + external
+  answer + proceed, no message at all).
+- The emit-before-wait miss in the stub is standing evidence for
+  registry-status-first `gate wait`.
+- An unprimed session correctly refuses the doorbell as injection; the
+  protocol part carries the priming.
 
 ---
 
@@ -83,19 +81,29 @@ export interface GateRow {
   openedAt: number; parkedAt: number | null; closedAt: number | null;
   closedReason: "abandoned" | "superseded" | "pruned" | null;
   agent: string | null; pane: string | null;
-  nudge: Record<string, unknown> | null;
-  delivery: { outcome: "delivered" | "refused" | "dead-pane"; at: number } | null;
+  nudge: { session: string } | null;
+  delivery: { outcome: "delivered" | "dead-pane"; at: number } | null;
   released: boolean;
 }
+```
+
+Wire types (`GateRow`, `GateStatus`, `GateQuestion`, `GateAnswer`, and Task
+4's `GateSubscription`) are DECLARED in `packages/rt-client/src/commands.ts`
+and imported by `gates-store.ts` FROM the package: the dependency already
+points that way (`handlers/events.ts` imports `Commands` from the package),
+and rt-client cannot import from `lib/daemon`. The store file re-exports
+them for daemon-side convenience.
+
+```ts
 export interface OpenResult { row: GateRow; supersededId: string | null }
 export interface GatesStore {
-  open(input: { subject: string; kind: string; questions: GateQuestion[]; meta?: Record<string, unknown>; agent?: string; pane?: string; nudge?: Record<string, unknown> }): OpenResult;
+  open(input: { subject: string; kind: string; questions: GateQuestion[]; meta?: Record<string, unknown>; agent?: string; pane?: string; nudge?: { session: string } }): OpenResult;
   get(id: string): GateRow | null;
   list(filter: { open?: boolean; subjectPrefix?: string; kind?: string }): GateRow[];
   answer(id: string, answers: GateAnswer["answers"], by: string): { ok: true; row: GateRow } | { ok: false; reason: "not-found" | "closed" | "already-answered"; row: GateRow | null };
   park(id: string): { ok: true } | { ok: false; reason: "not-found" | "not-open"; row: GateRow | null };
   close(id: string, reason: "abandoned" | "superseded" | "pruned"): { ok: true } | { ok: false; reason: "not-found" | "already-answered" };
-  markDelivery(id: string, outcome: "delivered" | "refused" | "dead-pane"): void;
+  markDelivery(id: string, outcome: "delivered" | "dead-pane"): void;
   markReleased(id: string): void;
   close_(): void; // db close; name avoids the lifecycle verb
   __db?: import("bun:sqlite").Database;
@@ -249,7 +257,7 @@ git commit -m "gates-store: CAS answer/park/close, release-on-pane-loss, list fi
 ```ts
 export interface GateSubscription { id: string; subjectPrefix: string; session: string; createdAt: number; lastDelivery: { outcome: "delivered" | "failed"; at: number } | null; dead: boolean }
 // on GatesStore:
-wait(id: string, opts: { waitMs?: number; signal?: AbortSignal }): Promise<{ status: "answered" | "closed"; row: GateRow } | { status: "timeout" }>;
+wait(id: string, opts: { waitMs?: number; signal?: AbortSignal }): Promise<{ status: "answered" | "closed"; row: GateRow } | { status: "timeout" } | { status: "not-found" }>;
 subscribe(input: { subjectPrefix: string; session: string }): GateSubscription;
 unsubscribe(id: string): boolean;
 subscriptions(filter?: { live?: boolean }): GateSubscription[];
@@ -291,6 +299,20 @@ test("wait times out cleanly and is re-entrant", async () => {
   expect((await p).status).toBe("answered");
 });
 
+test("wait on an unknown id resolves not-found immediately, never registering a waiter", async () => {
+  const s = store();
+  const r = await s.wait("no-such-gate", { waitMs: 5000 });
+  expect(r.status).toBe("not-found");
+});
+
+test("supersede-on-open releases the superseded gate's waiters with closed", async () => {
+  const s = store();
+  const first = s.open({ subject: "mr:https://x/1", kind: "review-post", questions: qs() }).row;
+  const w = s.wait(first.id, { waitMs: 5000 });
+  s.open({ subject: "mr:https://x/1", kind: "review-post", questions: qs() });
+  expect((await w).status).toBe("closed");
+});
+
 test("subscriptions persist, filter live, and record delivery outcomes", () => {
   const p = tmp("gates.db");
   const s1 = createGatesStore({ dbPath: p, log });
@@ -305,7 +327,7 @@ test("subscriptions persist, filter live, and record delivery outcomes", () => {
 ```
 
 - [ ] **Step 2: Run to verify failure.**
-- [ ] **Step 3: Implement.** Waiters: in-memory `Map<gateId, Set<resolver>>` (the `events-bus.ts` waiter idiom, including AbortSignal + timer cleanup); `answer`/`close` wake waiters for that id after the transaction commits. `wait` reads status FIRST, registers only when still open/parked. Subscriptions: second table in the same db.
+- [ ] **Step 3: Implement.** Waiters: in-memory `Map<gateId, Set<resolver>>` (the `events-bus.ts` waiter idiom, including AbortSignal + timer cleanup); `answer`/`close` wake waiters for that id after the transaction commits, AND `open` wakes the superseded gate's waiters after its transaction commits (return the superseded id from the transaction, then notify) — the supersede path must not bypass the only wake-up code. `wait` reads the row FIRST: missing row resolves `not-found` without registering; answered/closed resolve immediately; only open/parked registers a waiter. Subscriptions: second table in the same db.
 - [ ] **Step 4: Run to verify pass.**
 - [ ] **Step 5: Commit.**
 
@@ -330,9 +352,14 @@ git commit -m "gates-store: registry-status-first waiters, persisted subscriptio
 - Produces — Commands map rows (Tasks 6-8 and every W2 consumer rely on these exact shapes):
 
 ```ts
-"gate:open": { payload: { subject: string; kind: string; questions: GateQuestion[]; meta?: Record<string, unknown>; agent?: string; pane?: string; nudge?: Record<string, unknown> }; data: { id: string; supersededId: string | null } };
-"gate:answer": { payload: { id: string; answers: Record<string, unknown>; by: string }; data: { row: GateRow } };            // ok:false carries error + the winning row when already-answered
+"gate:open": { payload: { subject: string; kind: string; questions: GateQuestion[]; meta?: Record<string, unknown>; agent?: string; pane?: string; nudge?: { session: string } }; data: { id: string; supersededId: string | null } };
+"gate:answer": { payload: { id: string; answers: GateAnswer["answers"]; by: string }; data: { row: GateRow; conflict?: true } };
+// CAS loss is a DEFINED OUTCOME, not an error: ok:true with conflict:true and
+// the WINNING row, so every consumer gets the winner typed, no envelope hacks.
+// ok:false is reserved for not-found/closed/validation failures.
 "gate:wait": { payload: { id: string; waitMs?: number }; data: { status: "answered" | "closed" | "timeout"; row?: GateRow } };
+// gate:wait on an unknown id returns ok:false "not-found" (terminal; the CLI
+// loop must not re-enter on it).
 "gate:list": { payload: { open?: boolean; subjectPrefix?: string; kind?: string }; data: { gates: GateRow[] } };
 "gate:park": { payload: { id: string }; data: { ok: true } };
 "gate:close": { payload: { id: string; reason: "abandoned" | "superseded" | "pruned" }; data: { ok: true } };
@@ -354,13 +381,22 @@ test("gate:open emits gate/opened/<id> through the DUAL path (journal emitAt + b
   expect((broadcasts[0]!.data as any).payload.meta).toBeDefined();
 });
 
-test("gate:answer rejection carries the winning answer", async () => {
+test("a CAS loss returns ok:true with conflict:true and the WINNING row", async () => {
   const { handlers } = harness();
   const id = (await open(handlers)).id;
   await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "console" });
   const l = await handlers["gate:answer"]({ id, answers: { q: "b" }, by: "pane" });
-  expect(l.ok).toBe(false);
-  expect((l as any).row.answer.by).toBe("console");
+  expect(l.ok).toBe(true);
+  if (l.ok) { expect(l.data.conflict).toBe(true); expect(l.data.row.answer?.by).toBe("console"); }
+});
+
+test("note-carrying answer values round-trip (the spec's one free-text channel)", async () => {
+  const { handlers, store } = harness(); // question q single-select; question m multi-select
+  const id = (await openTwoQuestions(handlers)).id;
+  const r = await handlers["gate:answer"]({ id, answers: { q: { value: "a", note: "context" }, m: { value: ["a"], note: "x" } }, by: "pane" });
+  expect(r.ok).toBe(true);
+  const row = store.get(id)!;
+  expect((row.answer!.answers.q as any).note).toBe("context");
 });
 
 test("gate:answer validates question ids and multi-shape only; values are opaque", async () => {
@@ -372,18 +408,19 @@ test("gate:answer validates question ids and multi-shape only; values are opaque
   expect(free.ok).toBe(true); // option membership is advisory
 });
 
-test("gate:answer emits gate/answered/<id> with by and paneId in the payload", async () => {
-  const { handlers, emitted } = harness();
+test("gate:answer emits gate/answered/<id> through BOTH paths with by and paneId", async () => {
+  const { handlers, emitted, broadcasts } = harness();
   const id = (await open(handlers, { pane: "pane-7" })).id;
   await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "board" });
   const answered = emitted.find((e) => e.topic === `gate/answered/${id}`)!;
   expect((answered.payload as any).by).toBe("board");
   expect((answered.payload as any).paneId).toBe("pane-7");
+  expect(broadcasts.some((b) => (b.data as any)?.topic === `gate/answered/${id}`)).toBe(true);
 });
 ```
 
 - [ ] **Step 2: Run to verify failure.** `bun test lib/daemon/__tests__/gates-handlers.test.ts`
-- [ ] **Step 3: Implement** `createGateHandlers(store, bus, broadcast)`: each handler validates minimally (trim strings, subject contains `:`), delegates to the store, and for open/answer emits with ONE timestamp through both `bus.emitAt(topic, payload, t)` and `broadcast("event", frame)` exactly as `events:emit` does. Payloads per spec Events section: opened `{id, subject, kind, questions, meta, agent, pane, label}` (label from `meta.label`, else `kind`), answered `{id, subject, kind, answers, by, paneId}`. Add the Commands rows + whitelist entries; wire command-router and daemon.ts.
+- [ ] **Step 3: Implement** `createGateHandlers(store, bus, broadcast)`: each handler validates minimally (trim strings, subject contains `:`), delegates to the store, and for open/answer emits with ONE timestamp through both `bus.emitAt(topic, payload, t)` and `broadcast("event", frame)` exactly as `events:emit` does. Answer validation accepts BOTH value shapes per question: a bare `string`/`string[]` or `{ value, note? }` (unwrap before the multi-shape check, so notes never fail validation). `gate:wait` threads the request `AbortSignal` into `store.wait` (the widened handler shape `events:wait` uses) and clamps `waitMs` to 240s, under the 255s socket idle timeout, exactly as the events bus clamps, so a large client wait dies as a clean timeout the CLI loop can re-enter, never a socket error. Payloads per spec Events section: opened `{id, subject, kind, questions, meta, agent, pane, label}` (label from `meta.label`, else `kind`), answered `{id, subject, kind, answers, by, paneId}`. Add the Commands rows (which is also where the wire types are DECLARED, per Task 2) + whitelist entries; wire command-router and daemon.ts.
 - [ ] **Step 4: Run to verify pass; run the FULL suite** (`bun test`) — the wiring touches daemon assembly, so the whole daemon suite must stay green.
 - [ ] **Step 5: Commit.**
 
@@ -402,43 +439,55 @@ git commit -m "gate handlers: typed gate:* verbs, dual-path events, daemon wirin
 - Test: `lib/daemon/__tests__/gate-push.test.ts`
 
 **Interfaces:**
-- Consumes: `deliverToInbox` (`lib/daemon/inbox.ts:7`), session resolution from `lib/claude-registry.ts`, `GatesStore` (markDelivery/markReleased/subscriptions/markSubscriptionDelivery/markSubscriptionDead).
+- Consumes: `deliverToInbox` (`lib/daemon/inbox.ts:7`), `wrapCrossSession` (`lib/daemon/inbox.ts:94`), `resolveInbox`/`resolveAllInboxes` from `lib/claude-registry.ts` (session id to `{socketPath}`), `GatesStore` (markDelivery/markReleased/subscriptions/markSubscriptionDelivery/markSubscriptionDead).
 - Produces:
 
 ```ts
 export const GATE_ANSWERED_PHRASE = (id: string) => `[gate] ${id} answered elsewhere; re-read the registry and proceed on the recorded answer.`;
 export interface GatePush {
-  onAnswered(row: GateRow): Promise<void>;   // pane push (attended panes) + subscription fan-out
+  onAnswered(row: GateRow): Promise<void>;   // pane push (attended panes with a nudge) + subscription fan-out
   onOpened(row: GateRow): Promise<void>;     // subscription fan-out only
 }
-export function createGatePush(opts: { store: GatesStore; deliver: typeof deliverToInbox; resolveSession: (addr: string) => string | null; log: Logger; deadAfterFailures?: number }): GatePush;
+export function createGatePush(opts: { store: GatesStore; deliver: typeof deliverToInbox; resolveSession: (sessionId: string) => { socketPath: string } | null; log: Logger; deadAfterFailures?: number }): GatePush;
 ```
 
-Injected `deliver`/`resolveSession` so tests use fakes; the daemon wires the real ones. The push body is the FIXED PHRASE (spec: Trust boundary — push text is a signal to re-read the registry, never free-form instructions).
+The pane push targets `row.nudge.session` ONLY (spike ruling: the opener
+records its own session id at `gate open`; the `pane` ref is for focus and
+resume, never delivery; no nudge means no pane push — the unattended case).
+`resolveSession` is session-id-to-socket via the claude registry; injected
+with `deliver` so tests use fakes and the daemon wires the real ones. The
+push body is `wrapCrossSession("gate-facility", GATE_ANSWERED_PHRASE(id))`
+— envelope-wrapped fixed phrase, nothing else (spike ruling; answers never
+travel in messages). Outcome mapping is pinned by the spike: `deliver`
+returning `ok:true` records `delivered` (the inbox accepted the frame);
+`ok:false` (connect failure or timeout) and a session id the registry
+cannot resolve record `dead-pane`. A successful push does NOT mark
+released — only pane-origin reconciliation does (Task 3's rule).
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-test("onAnswered pushes the fixed phrase to the pane's session and records delivered + released", async () => {
+test("onAnswered pushes the ENVELOPE-WRAPPED fixed phrase to nudge.session; records delivered, NOT released", async () => {
   const { push, store, delivered } = harness();
-  const row = openWithPane(store, "pane-7");
+  const row = store.open({ subject: "mr:https://x/1", kind: "review-post", questions: qs(), nudge: { session: "sess-1" } }).row;
   store.answer(row.id, { q: "a" }, "console");
   await push.onAnswered(store.get(row.id)!);
-  expect(delivered[0]!.body).toBe(GATE_ANSWERED_PHRASE(row.id));
+  expect(delivered[0]!.body).toBe(wrapCrossSession("gate-facility", GATE_ANSWERED_PHRASE(row.id)));
+  expect(delivered[0]!.sessionId).toBe("sess-1");
   expect(store.get(row.id)!.delivery!.outcome).toBe("delivered");
-  expect(store.get(row.id)!.released).toBe(true);
+  expect(store.get(row.id)!.released).toBe(false); // only pane reconciliation releases
 });
 
-test("a refused delivery records refused and does NOT mark released", async () => {
-  const { push, store } = harness({ deliverResult: "refused" });
-  const row = openWithPane(store, "pane-7");
+test("a failed or unresolvable delivery records dead-pane and does NOT mark released", async () => {
+  const { push, store } = harness({ deliverOk: false });
+  const row = store.open({ subject: "mr:https://x/1", kind: "review-post", questions: qs(), nudge: { session: "sess-gone" } }).row;
   store.answer(row.id, { q: "a" }, "console");
   await push.onAnswered(store.get(row.id)!);
-  expect(store.get(row.id)!.delivery!.outcome).toBe("refused");
+  expect(store.get(row.id)!.delivery!.outcome).toBe("dead-pane");
   expect(store.get(row.id)!.released).toBe(false);
 });
 
-test("no pane ref means no pane push (unattended gates block in wait; nothing to dismiss)", async () => {
+test("no nudge means no pane push (unattended gates block in wait; there is nothing to wake)", async () => {
   const { push, store, delivered } = harness();
   const row = store.open({ subject: "run:r1", kind: "clarify", questions: qs() }).row;
   store.answer(row.id, { q: "a" }, "board");
@@ -446,12 +495,25 @@ test("no pane ref means no pane push (unattended gates block in wait; nothing to
   expect(delivered.length).toBe(0);
 });
 
-test("subscription fan-out on opened matches by subject prefix and records outcomes; repeated failures mark dead", async () => {
-  const { push, store, delivered } = harness({ deliverResult: "failed", deadAfterFailures: 2 });
+test("subscription fan-out fires on opened AND answered, matched by subject prefix", async () => {
+  const { push, store, delivered } = harness();
   store.subscribe({ subjectPrefix: "run:", session: "shep-1" });
   const row = store.open({ subject: "run:r1", kind: "clarify", questions: qs() }).row;
+  await push.onOpened(row);
+  store.answer(row.id, { q: "a" }, "console");
+  await push.onAnswered(store.get(row.id)!);
+  expect(delivered.filter((d) => d.sessionId === "shep-1").length).toBe(2);
+});
+
+test("repeated failures mark a subscription dead OBSERVABLY: pruned from live, readable unfiltered with its outcome", async () => {
+  const { push, store } = harness({ deliverOk: false, deadAfterFailures: 2 });
+  const sub = store.subscribe({ subjectPrefix: "run:", session: "shep-1" });
+  const row = store.open({ subject: "run:r1", kind: "clarify", questions: qs() }).row;
   await push.onOpened(row); await push.onOpened(row);
-  expect(store.subscriptions({ live: true }).length).toBe(0); // pruned as dead, observably
+  expect(store.subscriptions({ live: true }).length).toBe(0);
+  const dead = store.subscriptions().find((x) => x.id === sub.id)!;
+  expect(dead.dead).toBe(true);
+  expect(dead.lastDelivery!.outcome).toBe("failed");
 });
 ```
 
@@ -471,7 +533,7 @@ git commit -m "gate-push: fixed-phrase pane push, subscription fan-out, observab
 
 **Files:**
 - Modify: `packages/rt-client/src/client.ts`
-- Test: extend the existing rt-client daemon-seam test file that covers `eventsHead` (same fake-daemon harness; `packages/rt-client` tests run under the repo's `bun test`)
+- Test: Create `packages/rt-client/src/__tests__/gate-wrappers.test.ts`. There is NO existing daemon-seam harness in the package (its only test is placement logic), so this task builds a minimal one: a throwaway `Bun.listen({ unix })` server that accepts one JSON command frame per connection and responds with a canned `{ ok: true, data }`, speaking the framing `packages/rt-client/src/transport.ts` implements (read that file first; mirror its newline/JSON discipline exactly). Each wrapper test asserts the command name and payload passed through verbatim and the canned data came back typed.
 
 **Interfaces:**
 - Produces (W2's board rework consumes these):
@@ -501,15 +563,15 @@ git commit -m "rt-client: gate verb wrappers (unpublished until W2)"
 
 **Files:**
 - Create: `commands/gate.ts` (mirror `commands/events.ts`: arg parsing, `--json` payloads, exit codes)
-- Modify: wherever `commands/events.ts` is registered in the CLI's command table (follow the exact registration idiom found beside it)
-- Test: mirror the existing events CLI test if one exists; otherwise the handlers tests already cover semantics and the CLI test asserts arg->payload mapping for `open`, `answer`, `wait`, `list` (build the payload object and compare, no daemon needed)
+- Modify: `lib/command-tree-def.ts` (the CLI command table; the events entry at :10-34 is the registration idiom to mirror)
+- Test: `commands/__tests__/gate.test.ts` (the repo's CLI tests live in `commands/__tests__/`): arg->payload mapping for `open`, `answer`, `wait`, `list` (build the payload object and compare, no daemon needed), plus the wait-loop terminal cases (not-found and closed stop the loop; timeout re-enters until the budget is spent)
 
 Verbs and flags (the pane protocol and W2 wrappers consume these exact spellings):
 
 ```
 rt gate open --subject <s> --kind <k> --questions <json> [--meta <json>] [--agent <id>] [--pane <id>] [--nudge <json>]
 rt gate answer <id> --answers <json> --by <surface>
-rt gate wait <id> [--timeout <ms>]        # loops internally around the daemon request cap; prints the final {status,row} JSON
+rt gate wait <id> [--timeout <duration>]  # DEFAULT: wait forever (loop until answered/closed; the unattended pane protocol depends on this); --timeout is an opt-in bound taking durations (30s, 5m); not-found is terminal, never re-entered
 rt gate list [--open] [--subject-prefix <p>] [--kind <k>]
 rt gate park <id>
 rt gate close <id> --reason <abandoned|superseded|pruned>
@@ -520,7 +582,7 @@ rt gate unsubscribe <id>
 - [ ] **Step 1: Write the failing arg-mapping tests.** - [ ] **Step 2: Verify failure.** - [ ] **Step 3: Implement**, including the wait loop: call `gateWait` with `waitMs` capped below the daemon request cap, re-enter on `timeout` until the caller's `--timeout` budget is spent (registry-status-first makes re-entry safe; a daemon restart mid-wait is one more loop iteration). - [ ] **Step 4: Verify pass + full suite.** - [ ] **Step 5: Commit.**
 
 ```bash
-git add commands/gate.ts lib/__tests__ 2>/dev/null; git add -A commands
+git add commands/gate.ts commands/__tests__/gate.test.ts lib/command-tree-def.ts
 git commit -m "rt gate CLI: open/answer/wait/list/park/close/subscribe/unsubscribe"
 ```
 
