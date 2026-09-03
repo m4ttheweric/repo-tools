@@ -19,7 +19,9 @@ import {
   listBuddies,
   presenceForSession,
   presenceThresholds,
+  paneHandleFor,
   prunePresence,
+  rememberPaneHandle,
   setAway,
   signIn,
   signOut,
@@ -490,4 +492,21 @@ test("an explicitly named pool name counts as used; a non-pool base is not recor
   const ledger = getKvValue<Record<string, number>>("chat", "names", {}, db);
   expect(ledger.kai).toBe(now);
   expect(ledger["mr-board"]).toBeUndefined();
+});
+
+test("rememberPaneHandle round-trips a pane's base handle; an unknown pane resolves undefined", () => {
+  const db = fresh();
+  expect(paneHandleFor("wAR:p3", db)).toBeUndefined();
+  rememberPaneHandle("wAR:p3", "max", db);
+  expect(paneHandleFor("wAR:p3", db)).toBe("max");
+  rememberPaneHandle("wAR:p3", "kai", db);
+  expect(paneHandleFor("wAR:p3", db)).toBe("kai");
+  expect(paneHandleFor("wZZ:p9", db)).toBeUndefined();
+});
+
+test("the pane-handle ledger is LRU-capped so a long-lived daemon never grows it without bound", () => {
+  const db = fresh();
+  for (let i = 0; i <= 250; i++) rememberPaneHandle(`w:p${i}`, `h${i}`, db);
+  const count = (db.query("SELECT COUNT(*) AS n FROM kv WHERE ns = 'chat_pane_handles';").get() as { n: number }).n;
+  expect(count).toBe(200);
 });

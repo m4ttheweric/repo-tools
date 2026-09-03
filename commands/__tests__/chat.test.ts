@@ -28,7 +28,7 @@ import { join } from "path";
 
 import { chat, __test__ } from "../chat.ts";
 import { createChatHandlers } from "../../lib/daemon/handlers/chat.ts";
-import { getStateDb, closeStateDb, type RegistryDeps } from "../../lib/state/index.ts";
+import { getStateDb, closeStateDb, rememberPaneHandle, type RegistryDeps } from "../../lib/state/index.ts";
 import type { InboxBinding } from "../../lib/claude-registry.ts";
 import { sessionFilePath } from "../../lib/chat-session.ts";
 import { AGENT_NAMES } from "../../lib/chat-names.ts";
@@ -493,6 +493,25 @@ describe("rt chat CLI — sign-in / sign-out (presence)", () => {
     expect(AGENT_NAMES).toContain(handle);
     const again = await runChat(["sign-in", "--no-room", "--session", "s7"]);
     expect(again).toMatch(new RegExp(`signed in as ${handle}\\b`));
+  });
+
+  test("a herdr pane redraws its earlier pool handle even after a fresh session signs in", async () => {
+    process.env.HERDR_PANE_ID = "wAR:p3";
+    const first = await runChat(["sign-in", "--no-room", "--session", "sp1"]);
+    const handle = /signed in as (\S+)/.exec(first)?.[1] ?? "";
+    expect(AGENT_NAMES).toContain(handle);
+    await runChat(["sign-out", "--session", "sp1"]);
+    const again = await runChat(["sign-in", "--no-room", "--session", "sp2"]);
+    expect(again).toMatch(new RegExp(`signed in as ${handle}\\b`));
+  });
+
+  test("resolveSignInBaseHandle: a pane pin beats the pool draw but loses to chat.handle and --as", () => {
+    process.env.HERDR_PANE_ID = "wAR:p3";
+    rememberPaneHandle("wAR:p3", "max", getStateDb());
+    expect(__test__.resolveSignInBaseHandle([], "sp-unit")).toBe("max");
+    expect(__test__.resolveSignInBaseHandle(["--as", "kai"], "sp-unit")).toBe("kai");
+    setSetting("chat.handle", "picked", "user");
+    expect(__test__.resolveSignInBaseHandle([], "sp-unit")).toBe("picked");
   });
 
   test("sign-in never draws a name another live session holds", async () => {

@@ -51,7 +51,7 @@ import { getCurrentBranch, getRepoRoot } from "../lib/git.ts";
 import { getRepoIdentityForRoot } from "../lib/repo.ts";
 import { parseIdentity } from "../lib/settings/identity.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
-import { isValidChatName, pruneMessages, getStateDb } from "../lib/state/index.ts";
+import { isValidChatName, pruneMessages, getStateDb, paneHandleFor } from "../lib/state/index.ts";
 import { shellQuote } from "../lib/herdr-launch.ts";
 import {
   currentSessionId,
@@ -257,7 +257,21 @@ function resolveSignInBaseHandle(args: string[], sessionId: string | undefined):
   if (fromSetting) return fromSetting;
   const prior = readChatSession(sessionId);
   if (prior && typeof prior.baseHandle === "string" && isValidChatName(prior.baseHandle)) return prior.baseHandle;
+  const pinned = readPaneHandlePin();
+  if (pinned) return pinned;
   return undefined;
+}
+
+/** The base handle this herdr pane last drew, if the daemon has pinned one for HERDR_PANE_ID; degrades to undefined when there is no pane or the read fails. */
+function readPaneHandlePin(): string | undefined {
+  const paneId = process.env.HERDR_PANE_ID;
+  if (!paneId) return undefined;
+  try {
+    const pinned = paneHandleFor(paneId, getStateDb());
+    return pinned && isValidChatName(pinned) ? pinned : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function readChatHandleSetting(): string | undefined {
@@ -1272,6 +1286,7 @@ export async function chat(args: string[]): Promise<void> {
 // ─── test seam ───────────────────────────────────────────────────────────────
 
 export const __test__ = {
+  resolveSignInBaseHandle,
   slugify,
   findGitRoot,
   resolveMainWorktreePath,

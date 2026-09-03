@@ -162,6 +162,8 @@ export {
   assertSessionSignedIn,
   prunePresence,
   reserveAgentHandle,
+  paneHandleFor,
+  rememberPaneHandle,
   snapshotRegistryDeps,
   type BuddyStatus,
   type PresenceRow,
