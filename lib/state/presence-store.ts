@@ -10,7 +10,7 @@ import { AGENT_NAMES, pickAgentName } from "../chat-names.ts";
 import { resolveAllInboxes, resolveInbox, inboxAlive } from "../claude-registry.ts";
 import { persistOrWarn, runCriticalWrite } from "./busy.ts";
 import { getStateDb } from "./db.ts";
-import { capKvNamespace, getKvValue, setKvValue } from "./kv-blob.ts";
+import { capKvNamespace, getKvValue, replaceKvValue, setKvValue } from "./kv-blob.ts";
 
 export type BuddyStatus = "live" | "idle" | "offline";
 
@@ -385,7 +385,10 @@ export function paneHandleFor(paneId: string, db: Database = getStateDb()): stri
  * -written pins (deterministic even when writes share a millisecond).
  */
 export function rememberPaneHandle(paneId: string, baseHandle: string, db: Database = getStateDb()): void {
-  setKvValue(PANE_HANDLES_NS, paneId, baseHandle, db);
+  // replaceKvValue, not setKvValue: re-pinning a known pane must take a fresh
+  // rowid so capKvNamespace's recency order counts it as the most recent write,
+  // not the stale rowid an in-place upsert would keep.
+  replaceKvValue(PANE_HANDLES_NS, paneId, baseHandle, db);
   capKvNamespace(PANE_HANDLES_NS, PANE_HANDLE_CAP, db);
 }
 
