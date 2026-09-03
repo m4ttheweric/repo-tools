@@ -29,6 +29,7 @@ export interface HerdrPane {
   terminal_title?: string;
   terminal_title_stripped?: string;
   agent_session?: { source: string; agent: string; kind: "id" | "path"; value: string };
+  focused?: boolean;
 }
 
 export interface HerdrWorkspace {
@@ -106,6 +107,7 @@ export async function paneRow(pane: HerdrPane, ctx: PaneRowContext): Promise<Cha
     presence: presence
       ? { handle: presence.handle, status: presence.status, rooms: listRooms(presence.handle, ctx.db).map((r) => r.room) }
       : undefined,
+    focused: pane.focused ?? false,
   };
 }
 

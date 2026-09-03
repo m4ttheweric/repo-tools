@@ -38,7 +38,7 @@ const SNAPSHOT = {
     layouts: [],
     agents: [],
     panes: [
-      { pane_id: "w1:p1", terminal_id: "t1", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "idle", cwd: "/tmp/acme", foreground_cwd: "/tmp/acme", terminal_title_stripped: "Evaluate codegen", agent_session: { source: "herdr:claude", agent: "claude", kind: "id", value: "sess-signed" }, revision: 1 },
+      { pane_id: "w1:p1", terminal_id: "t1", workspace_id: "w1", tab_id: "w1:t1", focused: true, agent: "claude", agent_status: "idle", cwd: "/tmp/acme", foreground_cwd: "/tmp/acme", terminal_title_stripped: "Evaluate codegen", agent_session: { source: "herdr:claude", agent: "claude", kind: "id", value: "sess-signed" }, revision: 1 },
       { pane_id: "w1:p2", terminal_id: "t2", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "working", cwd: "/tmp/other", terminal_title_stripped: "fred", revision: 1 },
       { pane_id: "w1:p3", terminal_id: "t3", workspace_id: "w1", tab_id: "w1:t2", focused: false, agent_status: "unknown", cwd: "/tmp", revision: 1 },
     ],
@@ -78,6 +78,8 @@ test("pane:list lists only claude panes, joined to presence by session id, with 
   const first = res.data.panes[0]!;
   expect(first).toMatchObject({ workspace: "acme", title: "Evaluate codegen", cwd: "/tmp/acme", repo: "acme", branch: "main", agentStatus: "idle", sessionId: "sess-signed" });
   expect(first.presence).toMatchObject({ handle: "meg", rooms: ["build"], status: "live" });
+  expect(res.data.panes.find((p) => p.paneId === "w1:p1")?.focused).toBe(true);
+  expect(res.data.panes.find((p) => p.paneId === "w1:p2")?.focused).toBe(false);
 });
 
 test("pane:list falls back to the presence row's pane id when herdr has no session id", async () => {
