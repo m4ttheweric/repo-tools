@@ -92,7 +92,17 @@ restarted daemon serves `gate list`/`wait` from the persisted rows.
   an error. (This retires the held branch's client-side journal-fold
   workaround; the registry is the source of truth.)
 - `gate list [--open] [--subject-prefix mr:|run:] [--kind <k>]` is what
-  surfaces render from. A query, never a journal fold.
+  surfaces render from. A query, never a journal fold. Paged: a clamped
+  default limit with a cursor, the events-journal rule (an omitted limit
+  must not force a full-table read), and terminal rows (closed/answered)
+  older than a retention window are swept on the same schedule family as
+  the events journal, with a row floor.
+- `gate subscriptions [--session <s>] [--live]` reads subscription rows:
+  the shepherd's gap-recovery liveness check and the observability window
+  onto delivery outcomes and dead marks. `gate subscribe` is idempotent on
+  `(subjectPrefix, session)`: re-subscribing returns the existing live row
+  instead of minting a duplicate, so blind re-subscription never doubles
+  pushes.
 - `gate park <id>` marks parked; answering unparks. Park is CAS-guarded:
   only `open` parks, and parking an `answered` gate is a clean rejection
   (the caller re-reads and acts on the answer instead). Parking POLICY
@@ -128,11 +138,21 @@ never see them. Subscription patterns are Bun.Glob, where `*` does not
 cross `/`: the pattern for all gate events is `gate/**` (the held board
 branch already tripped on exactly this).
 
-Payloads are specified in W1: `opened` carries `{id, subject, kind,
-questions, meta, agent, pane, label}` (the label human-renderable, from
-`meta`; `meta` included so live cards can render pane-only options
-disabled without a registry round-trip);
-`answered` carries `{id, subject, kind, answers, by, paneId}`. The
+The lifecycle vocabulary is complete and frozen in W1 — every status
+transition emits, all through the dual path: `gate/opened/<id>`,
+`gate/answered/<id>`, `gate/parked/<id>`, `gate/closed/<id>`, and
+`gate/released/<id>` (release is a marker transition, emitted so the
+"answered, pane not yet released" badge self-clears on live surfaces
+without a re-list). Payloads are specified in W1, and the pane reference
+is named `paneId` on EVERY payload (one name, so the notify bridge's
+suppression and Focus action key off the same field on the frame that
+matters, `opened`): `opened` carries `{id, subject, kind, questions, meta,
+agent, paneId, label}` (the label human-renderable, from `meta`; `meta`
+included so live cards can render pane-only options disabled without a
+registry round-trip); `answered` carries `{id, subject, kind, answers, by,
+paneId}`; `parked` carries `{id, subject, kind}`; `closed` carries
+`{id, subject, kind, reason, supersededBy?}`; `released` carries
+`{id, subject, kind, paneId, delivery}`. The
 notifier's `rt.notify.eventBridges` routes these like any other event, and
 `paneId` is what its suppression and tray focus action key off; bridge
 rules go per-kind, or use the payload label, so templates never render a
