@@ -8,10 +8,22 @@
 
 import type { ApplyContext, StepOutcome } from "../apply.ts";
 import { outcomeFromNeed, type NeedReply } from "../need.ts";
+import { getSetting } from "../../settings/resolve.ts";
 
 export function toFailedOutcome(err: unknown): StepOutcome {
   const detail = err instanceof Error ? err.message : String(err);
   return { state: "failed", detail };
+}
+
+/**
+ * `getSetting` reads a registry default as a present value, so a key that
+ * carries one (like chat.humanHandle) would read as already chosen on a
+ * machine that never wrote it. This asks the narrower question a seed step
+ * needs: has any store actually written the key.
+ */
+export function unwritten(key: string): boolean {
+  const existing = getSetting(key);
+  return existing.provenance.length === 0 || existing.provenance.every((p) => p.scope === "default");
 }
 
 /**

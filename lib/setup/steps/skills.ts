@@ -21,7 +21,7 @@ import { materializeSkills } from "../skills-materialize.ts";
 import { forgeLogin } from "../../team/forge.ts";
 import { resolveForge } from "./forge-identity.ts";
 import { repoBasename } from "./repos.ts";
-import { toFailedOutcome } from "./step-utils.ts";
+import { toFailedOutcome, unwritten } from "./step-utils.ts";
 
 // ─── skills.materialize ──────────────────────────────────────────────────────
 
@@ -112,23 +112,15 @@ function isUnset(key: string): boolean {
 }
 
 /**
- * `isUnset` reads a registry default as a present value, so a key that HAS a
- * default (chat.humanHandle) would read as already chosen on every machine.
- * This asks the narrower question a seed needs: has any store written it.
- */
-function unwritten(key: string): boolean {
-  const existing = getSetting(key);
-  return existing.provenance.length === 0 || existing.provenance.every((p) => p.scope === "default");
-}
-
-/**
  * The joiner's own forge handle, which is both who their board runs as and
  * who agents address in chat. Neither key has a writer anywhere else, and
  * chat.humanHandle's registry default is somebody else's handle, so an
  * unseeded machine is wrong rather than merely unconfigured.
  */
 async function seedOwnHandle(ctx: ApplyContext, written: string[]): Promise<void> {
-  if (!unwritten("chat.humanHandle") && !unwritten("board.defaultMember")) return;
+  const wantsChatHandle = writable(ctx, "chat.humanHandle") && unwritten("chat.humanHandle");
+  const wantsDefaultMember = writable(ctx, "board.defaultMember") && unwritten("board.defaultMember");
+  if (!wantsChatHandle && !wantsDefaultMember) return;
 
   const forge = await resolveForge(ctx);
   if (!forge) {
@@ -142,11 +134,11 @@ async function seedOwnHandle(ctx: ApplyContext, written: string[]): Promise<void
     return;
   }
 
-  if (unwritten("chat.humanHandle")) {
+  if (wantsChatHandle) {
     setSetting("chat.humanHandle", login, "user");
     written.push("chat.humanHandle");
   }
-  if (unwritten("board.defaultMember")) {
+  if (wantsDefaultMember) {
     setSetting("board.defaultMember", login, "user");
     written.push("board.defaultMember");
   }

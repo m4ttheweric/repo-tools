@@ -16,7 +16,7 @@ import { getSetting } from "../../settings/resolve.ts";
 import { setSetting } from "../../settings/write.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
-import { toFailedOutcome } from "./step-utils.ts";
+import { toFailedOutcome, unwritten } from "./step-utils.ts";
 
 /** The DMG mount or a Gatekeeper-translocated copy — a bundle running from either is a transient location `mattstack.appPath` must never point at, since the app can vanish out from under that path the moment the DMG is ejected. Also `commands/post-install.ts`'s own pre-apply refusal — same predicate, single source. */
 export function isTransientAppRoot(root: string): boolean {
@@ -49,11 +49,6 @@ function detectOrCreateDefaultRoot(ctx: ApplyContext): string[] {
   return [path];
 }
 
-function repoRootsUnset(): boolean {
-  const existing = getSetting<string[]>("rt.repoRoots");
-  return existing.provenance.length === 0 || existing.provenance.every((p) => p.scope === "default");
-}
-
 async function settingsSeedRun(ctx: ApplyContext): Promise<StepOutcome> {
   const written: string[] = [];
 
@@ -74,7 +69,7 @@ async function settingsSeedRun(ctx: ApplyContext): Promise<StepOutcome> {
     }
   }
 
-  if (repoRootsUnset()) {
+  if (unwritten("rt.repoRoots")) {
     const detected = detectOrCreateDefaultRoot(ctx);
     if (detected.length > 0) {
       setSetting("rt.repoRoots", detected, "machine");
