@@ -26,12 +26,14 @@ import { createPaneHandlers } from "./handlers/pane.ts";
 import { createEndpointHandlers } from "./handlers/endpoint.ts";
 import { createSettingsHandlers } from "./handlers/settings.ts";
 import { createHomeHandlers } from "./handlers/home.ts";
+import { createTeamSnapshotHandlers } from "./handlers/team-snapshot.ts";
 import { createReposHandlers } from "./handlers/repos.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import { wrapWithDemand } from "./demand-tracker.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
 import type { HomeSnapshotHandle } from "./home-snapshot.ts";
+import type { TeamSnapshotsHandle } from "./team-snapshots.ts";
 
 // The exported return type is the plain `Record<string, Handler>` a router
 // lookup needs; the exhaustiveness proof against the rt-client catalog
@@ -50,6 +52,8 @@ export function buildRoutedHandlers(opts: {
   eventsBus: EventsBus;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
   homeSnapshot: HomeSnapshotHandle;
+  /** One snapshot engine per team clone under ~/.mattstack/teams. */
+  teamSnapshots: TeamSnapshotsHandle;
   /** Reconciler hold + hooks-guard rewire the repos:locate verb drives. */
   repos: {
     withReconcilerHeld: <T>(fn: () => Promise<T>) => Promise<T>;
@@ -114,6 +118,7 @@ export function buildRoutedHandlers(opts: {
     ...createEndpointHandlers({ log: ctx.log, repoIndex: ctx.repoIndex }),
     ...createSettingsHandlers(),
     ...createHomeHandlers(opts.homeSnapshot),
+    ...createTeamSnapshotHandlers(opts.teamSnapshots),
     ...createReposHandlers({ ...opts.repos, emitEvent }),
 
     // Applies repo-tracking edits immediately (rt daemon track <repo>

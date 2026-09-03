@@ -64,6 +64,7 @@ describe("R028: db is not a handler-map entry", () => {
       },
       eventsBus: createEventsBus({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
       homeSnapshot: { stop: () => {}, runNow: async () => ({}) as any, pullNow: async () => ({}) as any, status: () => ({}) as any, ready: Promise.resolve() },
+      teamSnapshots: { stop() {}, rescan: async () => {}, status: () => [], pullNow: async () => ({ outcome: "skipped", detail: null }), ready: Promise.resolve() },
       repos: { withReconcilerHeld: async (fn) => fn(), refreshWatchedRepos: () => {} },
       stateDb: freshDb(),
     });
