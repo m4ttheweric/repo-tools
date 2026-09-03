@@ -431,7 +431,10 @@ panes (they publish and block in `gate wait`; no forms, no relay against
 pane input, answers return as tool results, cross-account because the daemon
 is the transport). The shepherd registers ONE `gate subscribe` for its
 herd's subjects at herd start and is pushed to over the socket protocol;
-nothing is re-armed, ever, and recovery after a gap is `gate list --open`.
+nothing is re-armed during normal operation, and recovery after a gap is
+`gate list --open` plus a liveness check on its own subscription row,
+re-subscribing if the daemon pruned it (a gone session, persistent
+delivery failure).
 The relay becomes one more surface: shepherdr presents herd gates in the
 shepherd conversation exactly as today and records answers with `gate
 answer --by shepherd`.
