@@ -42,6 +42,14 @@ export {
   chatInvite,
   paneSend,
   paneFocus,
+  gateOpen,
+  gateAnswer,
+  gateWait,
+  gateList,
+  gatePark,
+  gateClose,
+  gateSubscribe,
+  gateUnsubscribe,
 } from "./client.ts";
 
 export { COMMAND_NAMES } from "./commands.ts";
@@ -81,6 +89,10 @@ export type {
   PaneDelivery,
   PaneSendResult,
   PaneFocusResult,
+  GateStatus,
+  GateQuestion,
+  GateAnswer,
+  GateRow,
 } from "./commands.ts";
 
 export { subscribe, createRelay, DEFAULT_WS_URL } from "./relay.ts";
