@@ -23,6 +23,7 @@ import { row, type Action, type Row } from "../contract.ts";
 import { hasCommits, hasRemote, isGitRepo, originPushState } from "../home-git.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
 import { execWithTimeout, type Probes } from "../probes.ts";
+import { discoverTeams } from "../team-settings.ts";
 
 // ─── rt-context extension check (moved from commands/verify.ts) ──────────────
 
@@ -487,12 +488,13 @@ export async function teamSyncRow(
       problems.push(`${slug}: rebase conflict — ${e.conflicted.detail}; rebase and rt team publish by hand`);
       continue;
     }
-    if (e.lastPushError) {
-      problems.push(`${slug}: push failing — ${e.lastPushError}`);
+    // Both fields come off the same redactCredentials(stderr) shape in the
+    // engine, so "" is reachable for either — tested against null/undefined,
+    // never a truthiness check `""` would fail past.
+    if (e.lastPushError != null) {
+      problems.push(`${slug}: push failing — ${e.lastPushError || "push failed"}`);
       continue;
     }
-    // Empty stderr is a real failing fetch, not "no error" — tested against
-    // null/undefined (never a truthiness check `""` would fail).
     if (e.lastPullError != null) {
       problems.push(`${slug}: fetch failing — ${e.lastPullError || "fetch failed"}`);
       continue;
@@ -514,14 +516,6 @@ export async function teamSyncRow(
 // ─── entry point ────────────────────────────────────────────────────────────
 
 export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Row[]> {
-  // A dynamic import, not a static one: apply.ts's own runtime import chain
-  // (steps/index.ts -> steps/verify.ts -> commands/verify.ts -> this file)
-  // already loops back here, so a static `import { discoverTeams } from
-  // "../apply.ts"` at module scope hits that cycle mid-evaluation and
-  // throws "Cannot access 'verifyStep' before initialization". Deferring
-  // the import to call time (well after every module has finished loading)
-  // sidesteps it.
-  const { discoverTeams } = await import("../apply.ts");
   const teamSync = await teamSyncRow(
     discoverTeams(p),
     async () => {

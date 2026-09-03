@@ -769,7 +769,7 @@ describe("teamSyncRow", () => {
     expect(r?.detail).toContain("fetch failing");
   });
 
-  test("an empty-string fetch error still trips needs-you (lastPullError !== null, not truthiness)", async () => {
+  test("an empty-string fetch error still trips needs-you (lastPullError != null, not truthiness)", async () => {
     const r = await teamSyncRow(
       ["acme"],
       async () => [{ slug: "acme", lastPullAt: 900_000, lastPullError: "", pushPending: false, lastPushError: null, conflicted: null } as never],
@@ -778,6 +778,17 @@ describe("teamSyncRow", () => {
     );
     expect(r?.status).toBe("needs-you");
     expect(r?.detail).toContain("fetch failed");
+  });
+
+  test("an empty-string push error still trips needs-you (lastPushError != null, not truthiness) — same redactCredentials(stderr) shape as the fetch error", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: true, lastPushError: "", conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("push failed");
   });
 
   test("a stale pull (older than two intervals) or a standing push error is needs-you", async () => {
