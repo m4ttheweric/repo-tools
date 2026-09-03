@@ -58,6 +58,18 @@ public final class ReadinessModel: ObservableObject {
         canInstall && allRows.contains { !$0.required && $0.status != .ready }
     }
 
+    /// Steps Install could not take for the user and will not take on a
+    /// retry: optional rows still not ready whose action a person performs by
+    /// hand. `skipped` is excluded deliberately, since it means the row had
+    /// nothing to check rather than something outstanding.
+    public var outstandingManualRows: [PlanRow] {
+        allRows.filter { row in
+            guard !row.required, row.status != .ready, row.status != .skipped else { return false }
+            guard let type = row.action?.type else { return false }
+            return type == .steps || type == .openURL
+        }
+    }
+
     public func load() async { await fetch() }
 
     public func recheckAll() async {

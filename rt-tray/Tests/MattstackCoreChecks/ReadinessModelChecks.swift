@@ -80,6 +80,23 @@ func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: 
                 canInstall: canInstallOverride ?? missing.isEmpty, requiredMissing: missing)
 }
 
+func makeManualPlan(extensionStatus: RowStatus, chromeStatus: RowStatus = .ready) -> Plan {
+    let rows = [
+        PlanRow(id: "tool.fast-browser", kind: .tool, title: "Fast Browser", why: "w", required: true, status: .ready, recheck: .onActivate),
+        PlanRow(id: "tool.fast-browser-extension", kind: .tool, title: "Fast Browser extension", why: "w", required: false,
+                optionalNote: "You load this into Chrome yourself; Install cannot do it for you.", status: extensionStatus,
+                action: RowAction(type: .steps, label: "Show steps...", steps: ["Open chrome://extensions"]), recheck: .onActivate),
+        PlanRow(id: "tool.chrome", kind: .tool, title: "Google Chrome", why: "w", required: false, status: chromeStatus,
+                action: RowAction(type: .openURL, label: "Download", url: "https://www.google.com/chrome/"), recheck: .onActivate),
+        PlanRow(id: "tool.mission-control", kind: .tool, title: "Mission Control shortcut", why: "w", required: false, status: .needsYou,
+                action: RowAction(type: .openSettings, label: "Open Keyboard Settings...", target: "keyboard"), recheck: .onActivate),
+    ]
+    let missing = rows.filter { $0.required && $0.status != .ready }.map(\.id)
+    return Plan(at: "t", team: TeamInfo(slug: "acme", name: "Acme", mode: .join),
+                groups: [PlanGroup(id: "tools", title: "Tools", rows: rows)],
+                canInstall: missing.isEmpty, requiredMissing: missing)
+}
+
 let readinessModelChecks: [Check] = [
     Check("load renders groups and enablement from the plan") { c in
         let plans = FakePlans([makePlan()])
@@ -290,6 +307,26 @@ let readinessModelChecks: [Check] = [
         c.expectEqual(sharedPerms.probes, 2, "each model's own recheckAll probed the shared source once")
         c.expectEqual(planA.fetches, 2, "A's own fetch count is untouched by B's activity")
         c.expectEqual(planB.fetches, 2, "B's own fetch count is untouched by A's activity")
+    },
+    Check("outstandingManualRows lists only optional, not-ready rows whose action a person can act on") { c in
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makeManualPlan(extensionStatus: .needsYou)]), permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run {
+            c.expectEqual(m.outstandingManualRows.map(\.id), ["tool.fast-browser-extension"],
+                          "steps and open-url qualify; a ready Chrome and an open-settings row do not")
+        }
+    },
+    Check("outstandingManualRows includes a not-ready open-url row and stays in plan order") { c in
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makeManualPlan(extensionStatus: .needsYou, chromeStatus: .missing)]), permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run {
+            c.expectEqual(m.outstandingManualRows.map(\.id), ["tool.fast-browser-extension", "tool.chrome"])
+        }
+    },
+    Check("outstandingManualRows is empty when every optional row is ready or skipped") { c in
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makeManualPlan(extensionStatus: .skipped)]), permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run { c.expectEqual(m.outstandingManualRows.count, 0, "a skipped extension is nothing the user owes") }
     },
     Check("StatusGlyph follows the spec's symbols") { c in
         c.expectEqual(StatusGlyph.symbol(for: .ready), "checkmark.circle.fill")
