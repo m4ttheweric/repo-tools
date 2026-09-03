@@ -124,6 +124,16 @@ describe("gates store — transitions", () => {
     if (!r.ok) expect(r.reason).toBe("closed");
   });
 
+  test("closing an already-closed gate rejects distinctly, closedReason unchanged", () => {
+    const s = store();
+    const id = openGate(s, "run:r1");
+    expect(s.close(id, "abandoned").ok).toBe(true);
+    const r = s.close(id, "pruned");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("already-closed");
+    expect(s.get(id)?.closedReason).toBe("abandoned");
+  });
+
   test("ANY answer attempt from the gate's own pane marks it released: the CAS loser...", () => {
     const s = store();
     const { row } = s.open({ subject: "run:r1", kind: "clarify", questions: qs(), pane: "pane-7" });

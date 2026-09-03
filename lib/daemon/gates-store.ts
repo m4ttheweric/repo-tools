@@ -40,7 +40,7 @@ export interface GatesStore {
     by: string,
   ): { ok: true; row: GateRow } | { ok: false; reason: "not-found" | "closed" | "already-answered"; row: GateRow | null };
   park(id: string): { ok: true } | { ok: false; reason: "not-found" | "not-open"; row: GateRow | null };
-  close(id: string, reason: "abandoned" | "superseded" | "pruned"): { ok: true } | { ok: false; reason: "not-found" | "already-answered" };
+  close(id: string, reason: "abandoned" | "superseded" | "pruned"): { ok: true } | { ok: false; reason: "not-found" | "already-answered" | "already-closed" };
   markDelivery(id: string, outcome: "delivered" | "dead-pane"): void;
   markReleased(id: string): void;
   close_(): void;
@@ -215,6 +215,18 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
     return existing?.id ?? null;
   });
 
+  // Winner-path answer + release must commit together: a reader between two
+  // separate auto-commits could observe status='answered' with released=0.
+  const answerWinTxn = db.transaction((answerJson: string, id: string, by: string): { changed: boolean } => {
+    const result = answerStmt.run(answerJson, id);
+    if (result.changes === 0) return { changed: false };
+    if (by === "pane") {
+      const row = getStmt.get(id) as GateColumns; // pane is immutable after insert
+      if (row.pane) releaseStmt.run(id);
+    }
+    return { changed: true };
+  });
+
   return {
     open(input) {
       assertValidSubject(input.subject);
@@ -250,16 +262,9 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
 
     answer(id, answers, by) {
       const answer: GateAnswer = { answers, by, answeredAt: Date.now() };
-      const result = answerStmt.run(JSON.stringify(answer), id);
-      if (result.changes > 0) {
-        // Winner: a pane that decided has provably reconciled.
-        const won = get(id)!;
-        if (by === "pane" && won.pane) {
-          releaseStmt.run(id);
-          return { ok: true, row: get(id)! };
-        }
-        return { ok: true, row: won };
-      }
+      // Winner: a pane that decided has provably reconciled (release commits with the answer).
+      const { changed } = answerWinTxn(JSON.stringify(answer), id, by);
+      if (changed) return { ok: true, row: get(id)! };
       let row = get(id);
       if (!row) return { ok: false, reason: "not-found", row: null };
       // Loser: a pane that only read the winning answer has also reconciled.
@@ -284,7 +289,7 @@ export function createGatesStore(opts: { dbPath: string; log: Logger }): GatesSt
       if (result.changes > 0) return { ok: true };
       const row = get(id);
       if (!row) return { ok: false, reason: "not-found" };
-      return { ok: false, reason: "already-answered" };
+      return { ok: false, reason: row.status === "closed" ? "already-closed" : "already-answered" };
     },
 
     markDelivery(id, outcome) {
