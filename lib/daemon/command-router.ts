@@ -34,6 +34,7 @@ import { wrapWithDemand } from "./demand-tracker.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
 import type { GatesStore } from "./gates-store.ts";
+import type { GatePush } from "./gate-push.ts";
 import type { HomeSnapshotHandle } from "./home-snapshot.ts";
 import type { TeamSnapshotsHandle } from "./team-snapshots.ts";
 
@@ -54,6 +55,10 @@ export function buildRoutedHandlers(opts: {
   eventsBus: EventsBus;
   /** Gates store backing gate:* (BOARD-20/21). */
   gatesStore: GatesStore;
+  /** Pane push + subscription fan-out for gate:open/gate:answer (BOARD-20/21
+      W1 task 6). Omitted callers (most router-level tests) get gate.ts's
+      own no-op default. */
+  gatePush?: GatePush;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
   homeSnapshot: HomeSnapshotHandle;
   /** One snapshot engine per team clone under ~/.mattstack/teams. */
@@ -116,7 +121,7 @@ export function buildRoutedHandlers(opts: {
     ...createSecretsHandlers({ log: ctx.log }),
     ...createProjectMRsHandlers({ repoIndex: ctx.repoIndex, log: ctx.log }, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
-    ...createGateHandlers(opts.gatesStore, opts.eventsBus, broadcast),
+    ...createGateHandlers(opts.gatesStore, opts.eventsBus, broadcast, { push: opts.gatePush, log: ctx.log }),
     ...chatHandlers,
     ...agentHandlers,
     ...paneHandlers,

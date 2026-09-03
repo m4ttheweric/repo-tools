@@ -4,10 +4,19 @@
  * semantics. Mirrors handlers/events.ts's shape and dual-path emit idiom.
  */
 
+import type { Logger } from "pino";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult } from "./types.ts";
 import type { EventsBus } from "../events-bus.ts";
 import type { GatesStore, GateQuestion, GateAnswer } from "../gates-store.ts";
+import type { GatePush } from "../gate-push.ts";
+
+/** Callers that omit `push` (e.g. handler-only tests) get a no-op: gate:*
+    must work identically with or without the delivery layer wired in. */
+const noopPush: GatePush = {
+  onAnswered: async () => {},
+  onOpened: async () => {},
+};
 
 const num = (v: unknown): number | undefined => {
   if (v == null || v === "") return undefined;
@@ -56,6 +65,7 @@ export function createGateHandlers(
   store: GatesStore,
   bus: EventsBus,
   broadcast: (type: string, data: any) => void,
+  deps: { push?: GatePush; log?: Logger } = {},
 ): { "gate:open": (payload: unknown) => Promise<CommandResult<"gate:open">> }
   & { "gate:answer": (payload: unknown) => Promise<CommandResult<"gate:answer">> }
   & { "gate:wait": (payload: unknown, signal?: AbortSignal) => Promise<CommandResult<"gate:wait">> }
@@ -64,6 +74,15 @@ export function createGateHandlers(
   & { "gate:close": (payload: unknown) => Promise<CommandResult<"gate:close">> }
   & { "gate:subscribe": (payload: unknown) => Promise<CommandResult<"gate:subscribe">> }
   & { "gate:unsubscribe": (payload: unknown) => Promise<CommandResult<"gate:unsubscribe">> } {
+  const push = deps.push ?? noopPush;
+  const log = deps.log;
+  // Fire-and-forget: a push/fan-out failure must never fail the verb that
+  // triggered it. The promise itself is not expected to reject (gate-push
+  // catches and records delivery outcomes internally), but a logged catch
+  // guards against anything unexpected escaping that contract.
+  const firePush = (promise: Promise<void>, context: Record<string, unknown>): void => {
+    promise.catch((err) => log?.warn({ err, ...context }, "gate-push: fire-and-forget push failed"));
+  };
   return {
     "gate:open": async (rawPayload: unknown) => {
       const payload = rawPayload as Commands["gate:open"]["payload"] | undefined;
@@ -90,6 +109,8 @@ export function createGateHandlers(
       };
       const eventId = bus.emitAt(`gate/opened/${row.id}`, eventPayload, emittedAt);
       broadcast("event", { id: eventId, topic: `gate/opened/${row.id}`, payload: eventPayload, emittedAt });
+
+      firePush(push.onOpened(row), { verb: "gate:open", gateId: row.id });
 
       return { ok: true as const, data: { id: row.id, supersededId } };
     },
@@ -120,6 +141,7 @@ export function createGateHandlers(
         };
         const eventId = bus.emitAt(`gate/answered/${row.id}`, eventPayload, emittedAt);
         broadcast("event", { id: eventId, topic: `gate/answered/${row.id}`, payload: eventPayload, emittedAt });
+        firePush(push.onAnswered(row), { verb: "gate:answer", gateId: row.id });
         return { ok: true as const, data: { row } };
       }
 

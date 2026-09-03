@@ -87,6 +87,9 @@ import { createDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { installSignalHandlers, removeRuntimeFiles } from "./daemon/shutdown.ts";
 import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
+import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
+import { deliverToInbox } from "./daemon/inbox.ts";
+import { resolveInbox } from "./claude-registry.ts";
 import {
   writeBreadcrumb,
   recordBootAttempt,
@@ -270,6 +273,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let log: Logger = ctx.log;
   let eventsBus: EventsBus;
   let gatesStore: GatesStore;
+  let gatePush: GatePush;
   let identity: {
     flavor: "dev" | "prod";
     version: string;
@@ -544,6 +548,15 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         mkdirSync(RT_DIR, { recursive: true });
         eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
         gatesStore = createGatesStore({ dbPath: join(RT_DIR, "gates.db"), log });
+        // Session id -> socket resolution goes through the claude-registry
+        // (pane inboxes), never a bespoke lookup: it's the same binding
+        // rt chat delivery already resolves through.
+        gatePush = createGatePush({
+          store: gatesStore,
+          deliver: deliverToInbox,
+          resolveSession: resolveInbox,
+          log,
+        });
         setPhase("events-db");
       },
       stop() {
@@ -803,6 +816,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           },
           eventsBus,
           gatesStore,
+          gatePush,
           homeSnapshot,
           teamSnapshots,
           repos: {
