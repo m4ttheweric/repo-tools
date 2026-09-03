@@ -54,7 +54,7 @@ export interface TeamDeps {
   statusRead?: SettingsReader;
   /** The forge token rt holds for a remote's host — real store by default. */
   forgeToken?: typeof storedForgeToken;
-  /** The daemon round trip `teamPull`/`teamStatus` use for the team-snapshot verbs (`team:pull`, `team:snapshot-status`) — real `daemonQuery` by default. */
+  /** The daemon round trip `teamPull`/`teamStatus` use for the team-snapshot verbs (`team:pull`, `team:snapshot-status`); real `daemonQuery` by default. */
   daemon?: (cmd: string, payload: unknown) => Promise<unknown>;
 }
 
@@ -172,7 +172,7 @@ export async function teamPull(args: string[], _ctx: CommandContext = {}, deps: 
     if (!res) {
       throw new UserActionableError(
         "daemon-unreachable",
-        `rt daemon is not reachable — start it with \`rt daemon start\`, or pull by hand with git in ~/.mattstack/teams/${slug}`,
+        `rt daemon is not reachable... start it with \`rt daemon start\`, or pull by hand with git in ~/.mattstack/teams/${slug}`,
       );
     }
     if (!res.ok || !res.data) {
@@ -407,13 +407,13 @@ interface TeamSyncFields {
   lastPushAt: string | null;
   lastPullSkipped: string | null;
   conflicted: { at: string; detail: string } | null;
-  /** True only when the daemon answered `team:snapshot-status` and named this slug — never leaked into the JSON envelope, only used to pick the human line's "ok"/"unknown". */
+  /** True only when the daemon answered `team:snapshot-status` and named this slug; never leaked into the JSON envelope, only used to pick the human line's "ok"/"unknown". */
   reachable: boolean;
 }
 
 const NO_SYNC: TeamSyncFields = { lastPull: null, lastPushAt: null, lastPullSkipped: null, conflicted: null, reachable: false };
 
-/** `deps.daemon?.("team:snapshot-status", {})` round trip, reduced to the four fields `teamStatus` shows for `slug`. Any failure (daemon down, malformed response, slug absent from the list) collapses to `NO_SYNC` rather than throwing — sync state is a nicety on top of the local status, never a reason to fail the whole command. */
+/** `deps.daemon?.("team:snapshot-status", {})` round trip, reduced to the four fields `teamStatus` shows for `slug`. Any failure (daemon down, malformed response, slug absent from the list) collapses to `NO_SYNC` rather than throwing; sync state is a nicety on top of the local status, never a reason to fail the whole command. */
 async function readTeamSyncFields(deps: TeamDeps, slug: string): Promise<TeamSyncFields> {
   try {
     const call = deps.daemon ?? daemonQuery;
