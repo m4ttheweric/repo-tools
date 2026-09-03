@@ -9,6 +9,7 @@ import type { PackRequirements } from "../requirements.ts";
 import type { ToolResolution } from "../../deps/resolve.ts";
 import type { DetectedEditor } from "../../editors.ts";
 import type { ExecResult } from "../probes.ts";
+import type { Row } from "../contract.ts";
 
 // ─── ground truth, sampled from the real CLIs (.superpowers/sdd/2026-09-03-setup-installs/) ───
 // Every plugin-list and doctor fixture below traces back to one of these three files rather
@@ -783,5 +784,94 @@ describe("toolRows — pack.<pack>", () => {
     const p = fakeProbes({});
     await toolRows(p, [], { hasBrew: true }, NOOP_SEAMS);
     expect(p.calls.exec.filter((argv) => argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list")).toHaveLength(1);
+  });
+});
+
+describe("Done-screen contract: optional rows with a manual action", () => {
+  /**
+   * rt-tray's readiness model (Swift, a different suite) lists a row on
+   * mattstack.app's Done screen as a step the user still owes exactly when
+   * it is optional, not ready, not skipped, its action is steps or
+   * open-url, and its optionalNote does not start with "works without"
+   * (case-insensitively). These three ids are what this side guarantees
+   * are genuine manual steps belonging on that list; every other optional
+   * steps/open-url row this module can emit must keep the "works without"
+   * wording, since a reworded note here changes what the Done screen shows
+   * without failing a single test on either side of the language boundary.
+   */
+  const DONE_SCREEN_MANUAL_STEP_IDS = new Set(["tool.claude", "tool.fast-browser-extension", "tool.chrome-signin"]);
+
+  function assertOptionalManualActionRows(rows: Row[]) {
+    for (const r of rows) {
+      if (r.required) continue;
+      if (r.action?.type !== "steps" && r.action?.type !== "open-url") continue;
+      const worksWithout = (r.optionalNote ?? "").toLowerCase().startsWith("works without");
+      expect([r.id, worksWithout || DONE_SCREEN_MANUAL_STEP_IDS.has(r.id)]).toEqual([r.id, true]);
+    }
+  }
+
+  function fastBrowserSeams(): ToolsSeams {
+    return { ...NOOP_SEAMS, resolveTool: (_p, tool) => (tool === "fast-browser" ? { tool, bundled: "node", exec: ["node", "fast-browser.mjs"], userCopy: null, linked: false, chosen: "node" } : noopResolution(tool)) };
+  }
+
+  test("claude not signed in, chrome missing (unrequired), and optional team tools missing (steps and open-url): all pass the contract", async () => {
+    const reqs: PackRequirements[] = [
+      { pack: "somepack", integrations: [], tools: [{ name: "widget", why: "does widget things", optional: true }] },
+      { pack: "somepack", integrations: [], tools: [{ name: "sdm", why: "db tunnels", install: { url: "https://x/sdm" }, optional: true }] },
+    ];
+    const exec: ExecScript = (argv) => {
+      if (argv[0] === "claude" && argv[1] === "--version") return ok("1.2.3\n");
+      if (argv[0] === "claude" && argv[1] === "auth") return ok(JSON.stringify({ loggedIn: false }));
+      if (argv[0] === "widget" || argv[0] === "sdm") return missing(argv[0]!);
+      return ok();
+    };
+    const rows = await toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS);
+
+    // The scenario must actually reach the rows this test exists to guard;
+    // otherwise a change that stops emitting one of them would pass here
+    // without proving anything.
+    const claude = rows.find((r) => r.id === "tool.claude")!;
+    expect(claude.required).toBe(false);
+    expect(claude.action?.type).toBe("steps");
+    const widget = rows.find((r) => r.id === "tool.team.widget")!;
+    expect(widget.action?.type).toBe("steps");
+    const sdm = rows.find((r) => r.id === "tool.team.sdm")!;
+    expect(sdm.action?.type).toBe("open-url");
+
+    assertOptionalManualActionRows(rows);
+  });
+
+  test("fast-browser extension not loaded and a pack declaring chrome sign-in: both are the allowlisted manual steps", async () => {
+    const reqs: PackRequirements[] = [{ pack: "somepack", integrations: [], tools: [], chrome: { required: true, signedIntoApp: "work@example.com" } }];
+    const exec: ExecScript = (argv) => (argv[2] === "doctor" && argv[3] === "--json" ? ok(JSON.stringify(withCheckStatus(REAL_DOCTOR, "extension-loaded", "fail"))) : ok());
+    const p = fakeProbes({ exec });
+    p.mkdirp("/Applications/Google Chrome.app");
+    const rows = await toolRows(p, reqs, { hasBrew: true }, fastBrowserSeams());
+
+    const extension = rows.find((r) => r.id === "tool.fast-browser-extension")!;
+    expect(extension.action?.type).toBe("steps");
+    const signin = rows.find((r) => r.id === "tool.chrome-signin")!;
+    expect(signin.action?.type).toBe("steps");
+
+    assertOptionalManualActionRows(rows);
+  });
+
+  // Proves assertOptionalManualActionRows can actually fail: an unallowlisted
+  // id with a reworded note (missing the "works without" prefix) must be
+  // caught, not silently pass.
+  test("the guard itself rejects a row that isn't allowlisted and isn't 'works without'-worded", () => {
+    const drifted: Row = {
+      id: "tool.not-allowlisted",
+      kind: "tool",
+      title: "Drifted",
+      why: "why",
+      required: false,
+      optionalNote: "Optional: rt works fine without this",
+      status: "needs-you",
+      detail: "detail",
+      action: { type: "steps", label: "Show steps…", steps: ["do a thing"] },
+      recheck: "on-change",
+    };
+    expect(() => assertOptionalManualActionRows([drifted])).toThrow();
   });
 });
