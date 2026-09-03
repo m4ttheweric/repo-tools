@@ -396,9 +396,8 @@ merely copied on, and never write a line whose content is that you are still
 waiting. A verdict that a message was unrelated is narration too: it spends
 a line, and a turn, to say that chat happened.
 
-Before you send the turn, cut every sentence whose subject is a message or
-another agent, then read what is left. If it still says what you found and
-what you are doing, that is the turn.
+Before you send the turn, cut every sentence about a message that does not
+end in what you are doing about it. What is left is the turn.
 
 When `chat.viewerUrl` is set, `rt chat post` prints one line ending with a
 link to the message you just sent: that link is how the driver reads the
