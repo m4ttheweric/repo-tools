@@ -41,6 +41,14 @@ doing the work (owner `20260902-211149`, joiners `20260902-212248` and
 `20260902-213612`; the second joiner also proves Install's `git.identity`
 step wrote the global git identity from the GitLab profile).
 
+`run/host/team-rebase.sh <owner-vm> <joiner-vm>` proves the other two paths on
+the same two kept guests: a joiner whose own commit is held back (its
+`rt.teamSnapshot` `pushDelaySec` raised) is rebased onto the owner's daemon
+push and its edit reaches the owner, and a same-key edit on both sides
+surfaces as the `team.sync` needs-you row, leaves no rebase in progress, and
+clears once the joiner resets to origin. It writes settings and reads verbs
+back; every commit, push, pull and rebase is the daemon's.
+
 Facts a join run depends on:
 
 - One PAT per run, the joiner's own, through `--pat-env`; `--forge gitlab`
