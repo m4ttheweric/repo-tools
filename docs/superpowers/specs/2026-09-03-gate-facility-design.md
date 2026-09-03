@@ -52,7 +52,7 @@ The daemon owns gate state:
 | `openedAt`, `parkedAt`, `closedAt` | timestamps |
 | `agent`, `pane` | opener's refs, for focus, push delivery, and resume |
 | `nudge` | optional push-delivery spec recorded by the opener (how to reach an attended pane; unattended panes need none, they block in `gate wait`) |
-| `delivery` | outcome of the last PANE push attempt (`delivered`, `refused`, `dead-pane`) plus a `released` marker set when the pane provably reconciled; subscription-push outcomes live on the subscription rows, not here |
+| `delivery` | outcome of the last PANE push attempt (`delivered` = the inbox accepted the frame, `dead-pane` = connect failure) plus a `released` marker set when the pane provably reconciled; subscription-push outcomes live on the subscription rows, not here |
 
 The registry is persisted (SQLite beside the events journal) and survives
 daemon restarts; gates outlive any surface AND the daemon itself. A
@@ -150,10 +150,15 @@ forms and the answer relay failed against form-blocked agents.
 
 **Attended panes** (a human's interactive session): the verb publishes and
 presents the normal in-pane form; the in-pane experience does not change.
-When the gate is answered elsewhere first, the daemon pushes a message into
-the pane's session over the socket messaging protocol; the arriving message
-dismisses the pending form (standard harness behavior) and the verb proceeds
-on the recorded answer.
+When the gate is answered elsewhere first, the daemon pushes a doorbell
+message into the pane's session over the socket messaging protocol. The
+push QUEUES behind the pending form (spike-proven: no frame shape dismisses
+a form) and delivers at the human's next touch, when they answer or cancel
+the form; the verb then verifies against the registry and proceeds on the
+recorded answer. Reconcile-on-touch is the attended mechanism, not a
+fallback, and the human is by definition present. Pushes are wrapped in the
+`<cross-session-message>` envelope (collapsed rendering, labeled source)
+with the fixed doorbell phrase as the entire body.
 
 **The push channel** is the Claude Code socket messaging protocol, the same
 transport rt chat rides. It works across Claude Code accounts (herds
@@ -166,39 +171,47 @@ interactive turns, manual re-arm discipline) does not exist in this design,
 and gap recovery after a crash or compaction is `gate list --open` against
 the registry.
 
-**Delivery is fallible and therefore observable.** The daemon's existing
-pane-injection path refuses a pane sitting at a prompt (a form-blocked pane
-reports agent status `blocked`, and `injectIntoPane` refuses that state),
-so dismissing a pending form needs a delivery capability that path does not
-have today; that is the spike's first leg, and `injectIntoPane` as it
-exists is NOT assumed to be the backend. Every push attempt records its
-outcome on the gate row (`delivered`, `refused`, `dead-pane`). When
-delivery to an attended pane fails, nothing is lost: the human is present
-by definition, their eventual form answer CAS-rejects, and the verb
-proceeds on the recorded answer. **Release tracking makes the gap
-renderable and self-clearing:** a successful push marks the gate
-`released`, and so does ANY `gate answer` attempt arriving from the gate's
-own pane, winner or CAS-loser, since a losing attempt proves the pane
-reconciled. Surfaces render answered-but-unreleased gates ("answered, pane
-not yet released") alongside open ones instead of silently clearing the
-badge, and the marker clears itself the moment the pane converges.
-**Stale-push rule:** a push for a gate the pane has already reconciled is
-discarded; push text is a fixed phrasing the verb recognizes and treats as
-a signal to re-read the registry, never as free-form instructions to act
-on.
+**Delivery is fallible and therefore observable.** Every push attempt
+records its outcome on the gate row: `delivered` (the inbox socket accepted
+the frame; it is queued or landed) or `dead-pane` (connect failure). There
+is no "refused" state on the inbox path (that vocabulary belonged to
+`injectIntoPane`, which is not the backend; the inbox write is
+spike-proven). **Release tracking makes the reconciliation gap renderable
+and self-clearing:** the gate is marked `released` only when the pane
+provably reconciled, meaning ANY `gate answer` attempt arriving from the
+gate's own pane, winner or CAS-loser (a losing attempt proves the pane
+read the winner). A delivered-but-unreleased gate renders as "answered,
+pane not yet released" on surfaces, alongside open gates, instead of
+silently clearing the badge; the marker clears the moment the pane
+converges. **Stale-push rule:** a push for a gate the pane has already
+reconciled is discarded; the doorbell phrase is a recognized signal whose
+ONLY action is a verifying registry read, never free-form instructions.
+The protocol part PRIMES participating verbs for it: the spike showed an
+unprimed session correctly refuses such a message as an injection attempt,
+which is the desired behavior outside the protocol and the reason priming
+is part of the contract.
+
+**Own-gate waiting is control flow; observing is push.** A verb waiting on
+its OWN gate blocks in `gate wait`: one tool call that IS the control flow,
+nothing to remember, nothing to re-arm. An observer watching OTHER agents'
+gates (a shepherd over a herd) NEVER holds wait verbs: the one-shot wait
+disarms on fire and demands re-arming, the exact SKILLS-35 fragility.
+Observers register a persisted subscription once, and delivery is a side
+effect of the daemon's WRITE PATH: when open/answer commits, the daemon
+fans out to matching subscription rows. Nothing arms, so nothing can be
+forgotten; rt chat is the production precedent for this exact plumbing.
 
 A dead pane gets no delivery; resume handles it (below).
 
-**Spike (first task of W1, before any dependent build):** prove the delivery
-mechanics end to end. (1) A socket-protocol push lands in a session on a
-DIFFERENT Claude Code account with no rt chat sign-in, and dismisses a
-pending structured form. (2) A worker blocked in a
-throwaway stub of `gate wait` (the real verbs land after the spike; any
-blocking daemon call answered externally suffices) receives the answer as
-the tool result and its stop hook stays quiet; observe whether the
-blocking wait starves permission prompts. (3) A subscription push arrives
-mid-turn in a busy session and the notification survives to be acted on.
-Failure of any leg revises this section before W1 proceeds.
+**Spike: RUN 2026-09-03, findings in
+`docs/superpowers/spikes/2026-09-03-gate-delivery-spike.md`.** Cross-account
+no-sign-in delivery, mid-turn arrival, on-touch reconciliation, the
+blocking wait returning the answer, and BOTH full flows (attended with
+CAS-loss reconciliation; unattended with no message at all) were proven
+live. Form dismissal was DISPROVEN across three frame variants, which
+produced this section's queue-and-reconcile-on-touch design; the
+emit-before-wait miss observed in the stub is the standing evidence for
+registry-status-first `gate wait`.
 
 ### Agent and pane integration
 
@@ -273,9 +286,10 @@ human-invoked verb):
    discard the form's answer, say in the pane which answer won and from
    where, and proceed on the recorded one (the CAS rejection carries it);
    the decision record's `--decided-by` names the winner.
-3. Answered externally while the form sits: the pushed message dismisses the
-   form and the verb re-reads the registry and proceeds on the recorded
-   answer. A push for a gate already reconciled is discarded.
+3. Answered externally while the form sits: the doorbell push QUEUES behind
+   the form and delivers when the human answers or cancels it; either way
+   the verb's next step is the same registry verify, and it proceeds on the
+   recorded answer. A push for a gate already reconciled is discarded.
 
 **Unattended** (spawned by a herd, a board launch, or any `--spawned-by`
 surface):
@@ -369,9 +383,12 @@ safe against the currently live board.
 
 ### Review (`mr-review@2`)
 
-The skills layer above, with the wrapper gating via facility verbs and
-presenting the in-pane form per the unified pane protocol. Park, resume via
-`--resumed-gate`, re-review semantics, and the clean-review one-click
+The skills layer above, with the wrapper gating via facility verbs in
+UNATTENDED mode: it publishes and blocks in `gate wait`, exactly as the
+held design had it, because the board card is a review pane's answering
+surface and only the wait's return lets an external answer proceed the
+pane (spike ruling). The conversational escape hatch stays. Park, resume
+via `--resumed-gate`, re-review semantics, and the clean-review one-click
 approve all carry over from the held design.
 
 ### Respond (`mr-respond@2`)
@@ -461,9 +478,10 @@ the shepherd engine.
 
 ## Waves
 
-- **W1, the facility:** the delivery spike FIRST (see Delivery), then daemon
-  registry, verbs, events, subscriptions, push delivery; rt-client wrappers.
-  Additive; may merge to rt main early. Nothing half-wired ships.
+- **W1, the facility:** the delivery spike (RUN 2026-09-03, see Delivery),
+  then daemon registry, verbs, events, subscriptions, push delivery;
+  rt-client wrappers. Additive; may merge to rt main early. Nothing
+  half-wired ships.
 - **W2, review end to end:** board rework onto the facility plus the skills
   layer (engine, fill). The shared pane-protocol part is CREATED here, with
   the review wrapper as its first consumer (W3 adopts it across the
@@ -480,14 +498,13 @@ operator's go.
 
 ## Verification
 
-- **W1:** the delivery spike (see Delivery; the push leg targets a pane
-  blocked AT A FORM, the only case the push exists for); CAS race test (two
-  surfaces answer the same gate fast; exactly one wins and the loser's
-  rejection carries the winning answer); lifecycle tests (supersede-on-open
-  closes the prior gate; `gate close` releases waiters with the closed
-  status; `gate park` on an answered gate rejects cleanly); wait re-entry
-  across a daemon restart; a subscription push received by a second
-  session.
+- **W1:** the delivery spike (COMPLETE; findings recorded); CAS race test
+  (two surfaces answer the same gate fast; exactly one wins and the
+  loser's rejection carries the winning answer); lifecycle tests
+  (supersede-on-open closes the prior gate AND releases its waiters;
+  `gate close` releases waiters with the closed status; `gate park` on an
+  answered gate rejects cleanly); wait re-entry across a daemon restart; a
+  subscription push received by a second session.
 - **W2:** the review smoke: findings review (gate opens, card offers tiers
   plus outcome, only selected tiers post, scoped summary, correct
   reaction); clean review one-click approve; the REQUIRED park, answer,
@@ -534,13 +551,18 @@ discipline, and the smokes above are the behavioral checks.
   `gate wait` with no form (revised 2026-09-03 on SKILLS-58's evidence,
   which showed forms in worker panes are the defect, not the UX).
 - Delivery rides the Claude Code socket messaging protocol (rt chat's
-  transport) with no chat sign-in required: cross-account pushes for
-  dismissing attended forms and for `gate subscribe` notifications.
-  Observers are pushed to; nobody re-arms event waits (SKILLS-35).
-- A W1 spike proves the delivery mechanics (cross-account push dismissing a
-  form; blocking wait returning the answer with a quiet stop hook;
-  subscription push surviving a busy turn) before dependent work builds on
-  them.
+  transport) with no chat sign-in required: cross-account doorbell pushes
+  for attended panes (queue + reconcile-on-touch; nothing dismisses a
+  form) and `gate subscribe` notifications. Observers are pushed to by the
+  daemon's write path; nobody arms or re-arms event waits (SKILLS-35).
+  Pushes wrap in the `<cross-session-message>` envelope; answers never
+  travel in messages (spike rulings, 2026-09-03).
+- Board wrapper panes are UNATTENDED (publish + blocking wait, as the held
+  design had them): the board card is their answering surface, and the
+  wait's return is what lets an external answer proceed the pane (spike
+  ruling, 2026-09-03).
+- The W1 delivery spike RAN 2026-09-03 and settled the mechanics; findings
+  and rulings in `docs/superpowers/spikes/2026-09-03-gate-delivery-spike.md`.
 
 ## Rejected alternatives
 
