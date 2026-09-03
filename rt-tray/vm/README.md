@@ -48,6 +48,10 @@ push and its edit reaches the owner, and a same-key edit on both sides
 surfaces as the `team.sync` needs-you row, leaves no rebase in progress, and
 clears once the joiner resets to origin. It writes settings and reads verbs
 back; every commit, push, pull and rebase is the daemon's.
+The team repo has to actually admit a member's push for that pass: on GitLab
+that means Developer (30) on the project AND an unprotected default branch,
+since a new project protects `main` for Maintainers only and every member's
+daemon pushes straight to it.
 
 Facts a join run depends on:
 

@@ -6,9 +6,11 @@
 # script only writes settings and reads verbs back.
 # Usage: team-rebase.sh <owner-vm> <joiner-vm> [--slug vmtest] [--rt <dist/rt>] [--logs <dir>]
 #
-# The joiner account needs push rights on the team repo (GitLab Developer, 30):
-# multi-writer is the design, and a Reporter joiner fails scenario A at the push
-# with "not allowed to push code to this project".
+# The joiner account needs push rights on the team repo (GitLab Developer, 30)
+# AND an unprotected default branch: multi-writer is the design, a Reporter
+# joiner fails scenario A with "not allowed to push code to this project", and
+# a protected `main` (GitLab's default for a new project, Maintainers only)
+# fails it with "not allowed to push code to protected branches".
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; source "$HERE/../../lib/common.sh"
 OWNER="${1:?owner vm}"; JOINER="${2:?joiner vm}"; shift 2
