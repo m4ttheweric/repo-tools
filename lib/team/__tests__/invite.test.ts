@@ -190,7 +190,7 @@ describe("mintInvite", () => {
     expect(relay.createCalls[0]!.expiresAt).toBe(expected);
   });
 
-  test("appends the handle to board.members via the writeSetting seam, unless already present", async () => {
+  test("appends the handle to both board.members and mattstack.roster via the writeSetting seam, unless already present", async () => {
     const p = probesWithRemote(REMOTE);
     const { seams, writeCalls } = baseSeams();
     const relay = fakeRelayClient();
@@ -213,21 +213,6 @@ describe("mintInvite", () => {
     await mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
 
     expect(writeCalls).toHaveLength(0);
-  });
-
-  test("also appends the handle to mattstack.roster, the cross-app roster", async () => {
-    const p = probesWithRemote(REMOTE);
-    const { seams, writeCalls } = baseSeams();
-    const relay = fakeRelayClient();
-
-    await mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
-
-    expect(writeCalls).toContainEqual({
-      key: "mattstack.roster",
-      value: [{ username: "zaphod" }],
-      scope: "team",
-      opts: { team: SLUG },
-    });
   });
 
   test("each roster key is judged on its own contents: a handle on one and not the other gets the missing write only", async () => {
