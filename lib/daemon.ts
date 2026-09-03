@@ -89,7 +89,7 @@ import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
 import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
 import { deliverToInbox } from "./daemon/inbox.ts";
-import { resolveInbox } from "./claude-registry.ts";
+import { resolveInbox, resolveAllInboxes } from "./claude-registry.ts";
 import {
   writeBreadcrumb,
   recordBootAttempt,
@@ -555,13 +555,17 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           store: gatesStore,
           deliver: deliverToInbox,
           resolveSession: resolveInbox,
+          resolveAll: resolveAllInboxes,
           log,
         });
         setPhase("events-db");
       },
       stop() {
-        eventsBus.close();
-        gatesStore.close_();
+        // Optional chaining: a throw earlier in start() (before either is
+        // assigned) must surface as ITS OWN error, not a masking TypeError
+        // from stop() reaching into an undefined variable.
+        eventsBus?.close();
+        gatesStore?.close_();
       },
     },
 
@@ -622,6 +626,12 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         sweepHandles.push(scheduleSweep(
           "events-sweep",
           () => { eventsBus.sweep(); },
+          { bootDelayMs: 30_000, intervalMs: 60 * 60 * 1000 },
+          log,
+        ));
+        sweepHandles.push(scheduleSweep(
+          "gates-sweep",
+          () => { gatesStore.sweep(); },
           { bootDelayMs: 30_000, intervalMs: 60 * 60 * 1000 },
           log,
         ));
