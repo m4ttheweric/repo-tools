@@ -130,7 +130,7 @@ interface RosterMember {
   [key: string]: unknown;
 }
 
-/** The two roster keys a membership change touches — board.members is the board's own list, mattstack.roster the cross-app successor, mirroring invite.ts's addToRoster. */
+/** The two roster keys a membership change touches: board.members is the board's own list, mattstack.roster the cross-app successor, mirroring invite.ts's addToRoster. */
 const ROSTER_KEYS = ["board.members", "mattstack.roster"] as const;
 type RosterKey = (typeof ROSTER_KEYS)[number];
 
@@ -139,7 +139,7 @@ function readRoster(seams: MembersSeams, slug: string, key: RosterKey = "board.m
   return Array.isArray(store[key]) ? (store[key] as RosterMember[]) : [];
 }
 
-/** Sets (or overwrites) one roster entry's `agePublicKey` on both roster keys — the sync-time record of which sops recipient a handle maps to, so `membersRemove` can find it later without a `--key` argument. Each key is read and written on its own contents, matching `addToRoster` in invite.ts. */
+/** Sets (or overwrites) one roster entry's `agePublicKey` on both roster keys: the sync-time record of which sops recipient a handle maps to, so `membersRemove` can find it later without a `--key` argument. Each key is read and written on its own contents, matching `addToRoster` in invite.ts. */
 function recordRosterKey(seams: MembersSeams, slug: string, handle: string, agePublicKey: string): void {
   for (const key of ROSTER_KEYS) {
     const existing = readRoster(seams, slug, key);
