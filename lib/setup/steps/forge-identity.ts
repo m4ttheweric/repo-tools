@@ -23,7 +23,7 @@ export interface ResolvedForge {
  * URL, and a bare `https://host/` does not parse as one. The path segment is
  * inert: only the host decides which token rt holds.
  */
-export function tokenRemoteFor(host: string): string {
+function tokenRemoteFor(host: string): string {
   return `https://${host}/mattstack/identity`;
 }
 
