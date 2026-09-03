@@ -282,6 +282,11 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             content.userInfo["pids"] = pids
         }
 
+        // Stash the pane id so a click focuses the pane instead of opening the URL
+        if let paneId = event.paneId, !paneId.isEmpty {
+            content.userInfo["paneId"] = paneId
+        }
+
         let request = UNNotificationRequest(
             identifier: event.id,
             content: content,
@@ -374,6 +379,9 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 NotificationCenter.default.post(name: .showKeyboardConflict, object: nil)
             } else if category == Self.readyHeldCategory {
                 NotificationCenter.default.post(name: .showProcessPanel, object: nil)
+            } else if let paneId = userInfo["paneId"] as? String, !paneId.isEmpty {
+                // Focus is best-effort on click; the outcome isn't surfaced.
+                _ = HerdrBridge.shared.focusPaneById(paneId)
             } else if let urlStr = url, let urlObj = URL(string: urlStr) {
                 NSWorkspace.shared.open(urlObj)
             }
