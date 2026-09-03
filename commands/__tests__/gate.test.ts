@@ -3,6 +3,7 @@ import {
   buildOpenPayload,
   buildAnswerPayload,
   buildListPayload,
+  buildSubscriptionsPayload,
   waitForGate,
 } from "../gate.ts";
 import type { Commands, GateRow, RtResponse } from "../../packages/rt-client/src/index.ts";
@@ -76,6 +77,22 @@ describe("buildListPayload", () => {
       subjectPrefix: "run:",
       kind: "approval",
     });
+  });
+
+  test("limit and cursor are numeric (F7)", () => {
+    expect(buildListPayload(["--limit", "50", "--cursor", "12"])).toEqual({ limit: 50, cursor: 12 });
+  });
+});
+
+// ─── subscriptions ───────────────────────────────────────────────────────────
+
+describe("buildSubscriptionsPayload", () => {
+  test("no flags → empty payload", () => {
+    expect(buildSubscriptionsPayload([])).toEqual({});
+  });
+
+  test("--session and --live carried through together (F3)", () => {
+    expect(buildSubscriptionsPayload(["--session", "!7", "--live"])).toEqual({ session: "!7", live: true });
   });
 });
 
@@ -167,6 +184,42 @@ describe("waitForGate", () => {
       // remaining each time) exhaust the deadline; the loop then returns
       // without a fourth call.
       expect(calls).toBe(3);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test("a daemon-unreachable failure retries (backing off) rather than failing — not-found is the ONLY terminal ok:false", async () => {
+    const row = fakeRow({ status: "answered" });
+    let calls = 0;
+    const sleeps: number[] = [];
+    const wait: WaitFn = async () => {
+      calls++;
+      if (calls === 1) return { ok: false, error: "rt daemon unreachable: connect ECONNREFUSED" };
+      return { ok: true, data: { status: "answered", row } };
+    };
+    const sleep = async (ms: number) => { sleeps.push(ms); };
+    const outcome = await waitForGate("gt-1a2b3c4d", null, wait, sleep);
+    expect(outcome).toEqual({ terminal: "answered", row });
+    expect(calls).toBe(2); // the first (unreachable) attempt, then the recovered answer
+    expect(sleeps).toEqual([1000]); // one backoff between the two calls
+  });
+
+  test("unreachable with a tiny budget exhausts and returns budget, never a hard failure", async () => {
+    const realNow = Date.now;
+    let now = 1_000_000;
+    Date.now = () => now;
+    try {
+      const deadline = now + 50; // smaller than one backoff step
+      let calls = 0;
+      const wait: WaitFn = async () => {
+        calls++;
+        return { ok: false, error: "rt daemon unreachable: connect ECONNREFUSED" };
+      };
+      const sleep = async (ms: number) => { now += ms; }; // advance the fake clock instead of really sleeping
+      const outcome = await waitForGate("gt-1a2b3c4d", deadline, wait, sleep);
+      expect(outcome).toEqual({ terminal: "budget" });
+      expect(calls).toBe(1); // one attempt, then the post-backoff budget check exits without a second
     } finally {
       Date.now = realNow;
     }

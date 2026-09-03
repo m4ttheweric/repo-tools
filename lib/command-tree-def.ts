@@ -98,6 +98,8 @@ const gateSubcommands: Record<string, CommandNode> = {
       { name: "Open only", flag: "--open", type: "boolean", default: false, hint: "Only open (unanswered, unparked) gates" },
       { name: "Subject prefix", flag: "--subject-prefix", type: "text", placeholder: "run:", hint: "Filter by subject prefix" },
       { name: "Kind", flag: "--kind", type: "text", placeholder: "approval", hint: "Filter by kind" },
+      { name: "Limit", flag: "--limit", type: "text", placeholder: "100", hint: "Cap the number of returned gates" },
+      { name: "Cursor", flag: "--cursor", type: "text", placeholder: "42", hint: "Resume paging from a previous response's cursor" },
     ],
   },
   park: {
@@ -138,9 +140,19 @@ const gateSubcommands: Record<string, CommandNode> = {
     description: "Remove a gate subscription",
     module: "./commands/gate.ts",
     fn: "gateUnsubscribe",
-    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
+    omitBehavior: { exempt: "subscription ids are opaque; list first with rt gate subscriptions" },
     args: [
       { name: "Id", type: "text", placeholder: "sub-1a2b3c4d", hint: "Subscription id" },
+    ],
+  },
+  subscriptions: {
+    description: "List gate subscriptions",
+    module: "./commands/gate.ts",
+    fn: "gateSubscriptions",
+    omitBehavior: "list",
+    args: [
+      { name: "Session", flag: "--session", type: "text", placeholder: "!7", hint: "Filter by subscriber session" },
+      { name: "Live only", flag: "--live", type: "boolean", default: false, hint: "Only live (non-dead) subscriptions" },
     ],
   },
 };

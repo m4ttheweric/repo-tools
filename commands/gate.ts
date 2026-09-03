@@ -6,11 +6,12 @@
  *   rt gate open --subject <s> --kind <k> --questions <json> [--meta <json>] [--agent <id>] [--pane <id>] [--nudge <json>]
  *   rt gate answer <id> --answers <json> --by <surface>
  *   rt gate wait <id> [--timeout <duration>]     # default: wait forever
- *   rt gate list [--open] [--subject-prefix <p>] [--kind <k>]
+ *   rt gate list [--open] [--subject-prefix <p>] [--kind <k>] [--limit <n>] [--cursor <n>]
  *   rt gate park <id>
  *   rt gate close <id> --reason <abandoned|superseded|pruned>
  *   rt gate subscribe --subject-prefix <p> --session <addr>
  *   rt gate unsubscribe <id>
+ *   rt gate subscriptions [--session <addr>] [--live]
  */
 
 import {
@@ -22,6 +23,7 @@ import {
   gateClose as clientClose,
   gateSubscribe as clientSubscribe,
   gateUnsubscribe as clientUnsubscribe,
+  gateSubscriptions as clientSubscriptions,
 } from "../packages/rt-client/src/index.ts";
 import type { Commands, GateRow, RtResponse } from "../packages/rt-client/src/index.ts";
 import { parseDuration, nextWaitMs } from "./events.ts";
@@ -37,6 +39,7 @@ function fail(msg: string): never {
 const FLAGS_WITH_VALUES = new Set([
   "--subject", "--kind", "--questions", "--meta", "--agent", "--pane", "--nudge",
   "--answers", "--by", "--timeout", "--subject-prefix", "--reason", "--session",
+  "--limit", "--cursor",
 ]);
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
@@ -138,27 +141,47 @@ type WaitOutcome =
   | { terminal: "not-found" }
   | { terminal: "budget" };
 
+const RETRY_BACKOFF_START_MS = 1_000;
+const RETRY_BACKOFF_CAP_MS = 5_000;
+
 /**
  * Wait-forever-by-default loop: gate:wait's daemon-side clamp (240s, see
  * gates-store.ts) means a single call can't honor an unbounded or long
  * --timeout, so this re-enters on `status: "timeout"` until `deadline` is
- * spent. not-found is terminal and never re-entered (the daemon told us
- * the id doesn't exist — retrying can't change that); answered/closed are
- * also terminal. `wait` is injectable so the loop is testable without a
- * daemon.
+ * spent. `not-found` is the ONLY terminal ok:false: the daemon told us the
+ * id doesn't exist, and retrying can't change that. Every OTHER ok:false
+ * (a dead socket returns "rt daemon unreachable...", not a gate-level
+ * error) is a reconnect-and-re-ask, never an error -- a daemon restart
+ * mid-wait must not fail a pane that is correctly waiting on its own gate.
+ * Backs off 1s, doubling to a 5s cap, and logs once on the FIRST retry so
+ * a genuinely-down daemon is still visible on stderr. `wait`/`sleep` are
+ * injectable so the loop is testable without a daemon or real delays.
  */
-export async function waitForGate(id: string, deadline: number | null, wait: WaitFn = clientWait): Promise<WaitOutcome> {
+export async function waitForGate(
+  id: string,
+  deadline: number | null,
+  wait: WaitFn = clientWait,
+  sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms),
+): Promise<WaitOutcome> {
+  let backoffMs = RETRY_BACKOFF_START_MS;
+  let warned = false;
   while (true) {
     const waitMs = nextWaitMs(deadline, Date.now());
     if (waitMs === 0) return { terminal: "budget" };
     const res = await wait({ id, waitMs });
     if (!res.ok) {
       if (res.error === "not-found") return { terminal: "not-found" };
-      fail(res.error ?? "wait failed");
+      if (!warned) {
+        console.error(`rt gate: wait failed (${res.error ?? "unknown error"}); retrying until reconnect...`);
+        warned = true;
+      }
+      await sleep(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, RETRY_BACKOFF_CAP_MS);
+      continue;
     }
     const data = res.data!;
     if (data.status === "timeout") continue;
-    return { terminal: data.status, row: data.row! };
+    return { terminal: data.status, row: data.row };
   }
 }
 
@@ -191,6 +214,10 @@ export function buildListPayload(args: string[]): Commands["gate:list"]["payload
   if (subjectPrefix !== undefined) payload.subjectPrefix = subjectPrefix;
   const kind = flagValue(args, "--kind");
   if (kind !== undefined) payload.kind = kind;
+  const limit = flagValue(args, "--limit");
+  if (limit !== undefined) payload.limit = Number(limit);
+  const cursor = flagValue(args, "--cursor");
+  if (cursor !== undefined) payload.cursor = Number(cursor);
   return payload;
 }
 
@@ -198,7 +225,7 @@ export async function gateList(args: string[]): Promise<void> {
   const payload = buildListPayload(args);
   const res = await clientList(payload);
   const data = unwrap(res, "list");
-  console.log(JSON.stringify({ ok: true, gates: data.gates }));
+  console.log(JSON.stringify({ ok: true, gates: data.gates, cursor: data.cursor }));
 }
 
 // ─── park / close ────────────────────────────────────────────────────────────
@@ -241,4 +268,19 @@ export async function gateUnsubscribe(args: string[]): Promise<void> {
   const res = await clientUnsubscribe({ id });
   const data = unwrap(res, "unsubscribe");
   console.log(JSON.stringify({ ok: true, removed: data.removed }));
+}
+
+export function buildSubscriptionsPayload(args: string[]): Commands["gate:subscriptions"]["payload"] {
+  const payload: Commands["gate:subscriptions"]["payload"] = {};
+  const session = flagValue(args, "--session");
+  if (session !== undefined) payload.session = session;
+  if (args.includes("--live")) payload.live = true;
+  return payload;
+}
+
+export async function gateSubscriptions(args: string[]): Promise<void> {
+  const payload = buildSubscriptionsPayload(args);
+  const res = await clientSubscriptions(payload);
+  const data = unwrap(res, "subscriptions");
+  console.log(JSON.stringify({ ok: true, subscriptions: data.subscriptions }));
 }
