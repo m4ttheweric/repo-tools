@@ -119,12 +119,10 @@ otherwise, with a `steps` action that distinguishes the two states:
   `fast-browser doctor`.
 - loaded but not paired: only the pairing steps.
 
-Pairing is a live defect today. `FastBrowserDoctor` declares `pairing?.ok` and
-never reads it, so a loaded-but-unpaired extension reads `ready`; and the
-current steps stop at "Load unpacked", which leaves the user with a Fast Browser
-that cannot drive anything. Pairing means copying the extension's reconnect
-token into the macOS Keychain prompt, or running
-`fast-browser configure --connection auto` first.
+Pairing is read from `doctor`'s own `pairing` check rather than from a rule of
+rt's own. See the correction below: an earlier draft of this spec claimed a
+loaded-but-unpaired extension was broken, which is not true of fast-browser's
+default manual connection.
 
 Because this row is never required, `rowToCheck` maps its non-ready states to
 `warn`/`warning`, so `rt verify` reports it without failing and the `verify`
@@ -220,8 +218,72 @@ under MAT-386:
 1. Fast Browser's binary gates Install; its runtime, extension and pairing do
    not. This reverses the MAT-386 section 6 "required once Chrome exists"
    ruling, which deadlocked any Chrome-having Mac, and brings the row in line
-   with the herdr ruling in the same file.
+   with the herdr ruling in the same file. The correction below revises the
+   root cause: the row was unclearable not only because Install creates the
+   runtime, but because rt could not read `doctor` at all.
 2. A row that observes work an Install step performs belongs in
    `INSTALL_SATISFIED_IDS`, not in a hand-rolled required flag.
 3. A manual step that survives Install is named on the Done screen. "Everything's
    working" is only said when it is true.
+
+## Correction, 2026-09-03: what `doctor` and `claude plugin list` actually emit
+
+The whole-branch review found two Critical defects in the first implementation
+of this design, and both were confirmed against the real CLIs on a live machine
+rather than against fixtures. Both trace to the same root cause: the tests were
+written from invented output shapes, so they agreed with code that had never
+worked once on a real machine. The captures now live beside the plan in the
+SDD workspace and every fixture is sampled from them.
+
+**`fast-browser doctor --json` has no `runtime`/`extension`/`pairing` objects.**
+It returns `{ schemaVersion, ok, profile, checks: [{ id, status, message,
+remediation }] }`, with ids including `runtime-checksum`, `extension-artifact`,
+`extension-installed`, `extension-loaded` and `pairing`. Every field the first
+implementation read was `undefined` on every machine in every state. On a
+machine where all 21 checks report `pass`, rt still said "runtime not ready" and
+"not loaded in Chrome", and the Done screen told the user to load an extension
+they had already loaded. The rows now look each check up by id and treat `pass`
+as satisfied; an id absent from the report means rt could not determine the
+answer and says so, rather than accusing the user of a step they did not skip.
+
+This misread predates this branch, which is why it went unnoticed: under the old
+gate, "extension not loaded" was the row's ordinary-looking state. Building a
+dedicated row and a Done-screen section on top of it is what made the wrongness
+permanent and user-visible.
+
+**Pairing is not an unconditional outstanding step.** fast-browser's `pairing`
+check passes whenever the connection mode is not `auto`, and manual connection
+is its documented default. A manually connected Fast Browser drives Chrome
+fine. So pairing is outstanding only when the user opted into auto pairing and
+the token is missing, which is exactly what doctor's own check already encodes.
+rt trusts that check instead of inventing a second rule.
+
+**`claude plugin list` cannot be scraped.** Real output indents each entry and
+prefixes it with a chevron glyph, so a `trim().startsWith(entry)` match is false
+for every plugin even when all are installed and enabled. Because `tool.plugins`
+is Install-satisfied, it is `required: true` in `mode: "status"`, the mode the
+`verify` Install step runs... so `verify` failed critically after a SUCCESSFUL
+install, the user never reached Done, and the wizard has no close button before
+then. Both `tool.plugins` and `pack.<pack>` now read `claude plugin list --json`,
+whose entries carry `id` and `enabled` directly, the same way
+`lib/skills/sources.ts` already did. The pack rows had been silently
+false-`missing` all along; this branch did not cause that, it put an
+always-present row on the install's critical path and made it fatal.
+
+`tool.plugins` also reports an installed-but-disabled baseline plugin as
+`invalid` rather than `ready`: `plugins.install` treats `claude plugin enable` as
+best effort, so a plugin that installed and failed to enable is inert.
+
+**The Done screen tracks real obligations.** The first predicate, "optional, not
+ready, action is steps or open-url", also selected rows whose own `optionalNote`
+reads "Works without this" (`tool.chrome`, `home.backup`), so a solo Mac with no
+Chrome and a local-only home repo read "2 steps left for you" when nothing was
+owed. The wizard header also still said "Everything's working" unconditionally,
+above a body saying the opposite.
+
+### The rule this earns
+
+A validator that parses another tool's output is only as good as the sample its
+tests were written from. Capture the real output and build the fixture from it;
+an invented fixture tests the author's belief about the format, which is exactly
+what was wrong in both defects here.
