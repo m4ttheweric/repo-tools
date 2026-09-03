@@ -44,8 +44,14 @@ function unwrapAnswerValue(raw: unknown): unknown {
   return raw;
 }
 
-/** Question ids and multi-shape are the only structural contract; option
-    membership is advisory (spec: values are opaque free text or picks). */
+/**
+ * Question ids and multi-shape are structural; option membership is
+ * STRICT when a question declares options (SKILLS-58: a herd run recorded
+ * an ordinal answer cleanly while two workers silently inverted the
+ * decision -- a free-text mismatch must fail here, the one validation
+ * site, rather than reach a consumer that trusts it). An empty options
+ * array still means free-form, unchanged.
+ */
 function validateAnswers(questions: GateQuestion[], answers: Record<string, unknown>): string | null {
   const byId = new Map(questions.map((q) => [q.id, q]));
   for (const [qid, raw] of Object.entries(answers)) {
@@ -57,6 +63,11 @@ function validateAnswers(questions: GateQuestion[], answers: Record<string, unkn
     if (!question.multi && isArray) return `question ${qid} expects a single value`;
     const values = isArray ? (value as unknown[]) : [value];
     if (!values.every((v) => typeof v === "string")) return `question ${qid} value must be a string`;
+    if (question.options.length > 0) {
+      for (const v of values as string[]) {
+        if (!question.options.includes(v)) return `answer for "${qid}" is not one of its options: "${v}"`;
+      }
+    }
   }
   return null;
 }

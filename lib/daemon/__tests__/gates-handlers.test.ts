@@ -111,13 +111,45 @@ describe("gate:answer", () => {
     expect((row.answer!.answers.q as any).note).toBe("context");
   });
 
-  test("validates question ids and multi-shape only; values are opaque", async () => {
+  test("validates question ids; a single-select non-member value is rejected (SKILLS-58)", async () => {
     const { handlers } = harness();
     const id = (await open(handlers)).id;
     const bad = await handlers["gate:answer"]({ id, answers: { nope: "a" }, by: "pane" });
     expect(bad.ok).toBe(false); // unknown question id
-    const free = await handlers["gate:answer"]({ id, answers: { q: "freetext-not-an-option" }, by: "pane" });
-    expect(free.ok).toBe(true); // option membership is advisory
+    const nonMember = await handlers["gate:answer"]({ id, answers: { q: "freetext-not-an-option" }, by: "pane" });
+    expect(nonMember.ok).toBe(false); // option membership is strict once a question declares options
+  });
+
+  test("accepts a single-select value that IS a member of its options", async () => {
+    const { handlers } = harness();
+    const id = (await open(handlers)).id;
+    const r = await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "pane" });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects a multi answer where one element is not a member of its options", async () => {
+    const { handlers } = harness();
+    const id = (await openTwoQuestions(handlers)).id;
+    const r = await handlers["gate:answer"]({ id, answers: { m: ["a", "not-an-option"] }, by: "pane" });
+    expect(r.ok).toBe(false);
+  });
+
+  test("accepts a wrapped {value, note} answer when the unwrapped value is a member", async () => {
+    const { handlers } = harness();
+    const id = (await open(handlers)).id;
+    const r = await handlers["gate:answer"]({ id, answers: { q: { value: "a", note: "context" } }, by: "pane" });
+    expect(r.ok).toBe(true);
+  });
+
+  test("an option-less question still accepts free text", async () => {
+    const { handlers } = harness();
+    const r0 = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify",
+      questions: [{ id: "q", label: "Anything", multi: false, options: [] }],
+    });
+    if (!r0.ok) throw new Error("open failed");
+    const r = await handlers["gate:answer"]({ id: r0.data.id, answers: { q: "anything goes" }, by: "pane" });
+    expect(r.ok).toBe(true);
   });
 
   test("rejects a multi-shape mismatch even when the value is wrapped with a note", async () => {
