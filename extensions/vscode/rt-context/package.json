@@ -85,7 +85,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "@mattstack/glance": "^0.20.0",
-    "@mattstack/rt-client": "^0.11.0"
+    "@mattstack/glance": "^0.23.0",
+    "@mattstack/rt-client": "^0.12.0"
   }
 }
