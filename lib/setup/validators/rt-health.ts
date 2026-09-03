@@ -11,10 +11,12 @@ import { existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { RT_BUNDLE_PATH } from "../../bundle-layout.ts";
 import { activeLaunchdLabel, isDaemonInstalled } from "../../daemon-config.ts";
+import type { TeamSnapshotEntry, TeamSnapshotSettings } from "../../daemon/team-snapshots.ts";
 import { currentMode, resolveIntendedMode } from "../../dev-mode.ts";
 import { appBundlePath, linkPath } from "../../deps/resolve.ts";
 import { localBinDir, shimReport, staleIntercepts } from "../../endpoint/shim.ts";
 import { legacyDirsPresent, legacyTrayAppPaths, RT_DIR_LABEL } from "../../rt-paths.ts";
+import { getSetting } from "../../settings/resolve.ts";
 import { detectShellFrom, shellRcPathFor } from "../../shell-integration.ts";
 import { readHomePushRecord, type HomePushRecord } from "../../home/push-record.ts";
 import { row, type Action, type Row } from "../contract.ts";
@@ -74,6 +76,7 @@ const REAL_EXEC: Probes["exec"] = execWithTimeout;
 // ─── row builders ──────────────────────────────────────────────────────────
 
 const LINK_BUNDLED_RT: Action = { type: "link-bundled", label: "Use mattstack's", tool: "rt" };
+const RECHECK_ACTION: Action = { type: "run", label: "Re-check", verb: ["setup", "status"] };
 const REINSTALL_SHIMS_ACTION: Action = { type: "run", label: "Re-install shims", verb: ["intercept", "install"] };
 const INSTALL_EXTENSION_ACTION: Action = { type: "run", label: "Install extension", verb: ["tools", "setup", "extension"] };
 /** No `rt home remote set` verb exists yet (installer-lane scope), so the remedy names the raw git commands instead of a `run` action. */
@@ -452,9 +455,84 @@ export async function homeBackupRow(
   return row({ ...base, status: "ready", detail: `in sync — last commit ${relativeWhen(state.committedAt)}` });
 }
 
+/** Every clone's daemon-side sync state in one row: a joiner who cannot decrypt is almost always a clone that has not pulled the owner's recipients yet. */
+export async function teamSyncRow(
+  slugs: string[],
+  readStatus: () => Promise<TeamSnapshotEntry[] | null>,
+  now: () => number,
+  pullIntervalSec: number,
+): Promise<Row | null> {
+  if (slugs.length === 0) return null;
+  const base = {
+    id: "team.sync",
+    kind: "tool" as const,
+    title: "Team sync",
+    why: "Your team clone pulls the roster, recipients and packs on a timer and pushes your own team edits; this is whether that is keeping up.",
+    required: false,
+    optionalNote: "Works without this; `rt team pull` and `rt team publish` do the same by hand.",
+    recheck: "on-activate" as const,
+  };
+  const entries = await readStatus();
+  if (entries === null) return row({ ...base, status: "missing", detail: "rt daemon not reachable — team clones sync once it is running" });
+
+  const staleMs = pullIntervalSec * 2 * 1000;
+  const problems: string[] = [];
+  for (const slug of slugs) {
+    const e = entries.find((x) => x.slug === slug);
+    if (!e) {
+      problems.push(`${slug}: not watched (no origin?)`);
+      continue;
+    }
+    if (e.conflicted) {
+      problems.push(`${slug}: rebase conflict — ${e.conflicted.detail}; rebase and rt team publish by hand`);
+      continue;
+    }
+    if (e.lastPushError) {
+      problems.push(`${slug}: push failing — ${e.lastPushError}`);
+      continue;
+    }
+    // Empty stderr is a real failing fetch, not "no error" — tested against
+    // null/undefined (never a truthiness check `""` would fail).
+    if (e.lastPullError != null) {
+      problems.push(`${slug}: fetch failing — ${e.lastPullError || "fetch failed"}`);
+      continue;
+    }
+    if (e.lastPullAt === 0 || now() - e.lastPullAt > staleMs) {
+      problems.push(`${slug}: last pull ${e.lastPullAt === 0 ? "never" : `${Math.round((now() - e.lastPullAt) / 60_000)} min ago`}`);
+    }
+  }
+  if (problems.length > 0) return row({ ...base, status: "needs-you", detail: problems.join("; "), action: RECHECK_ACTION });
+
+  // A pull skipped every tick (a dirty src/ refusing the rebase) is not a
+  // failure, but it is why a member's store edits are not moving; say so
+  // without changing the status.
+  const skips = slugs.map((slug) => entries.find((x) => x.slug === slug)?.lastPullSkipped).filter((d): d is string => !!d);
+  const detail = `${slugs.length} clone${slugs.length === 1 ? "" : "s"} in sync${skips.length ? `; last pull skipped: ${skips.join("; ")}` : ""}`;
+  return row({ ...base, status: "ready", detail });
+}
+
 // ─── entry point ────────────────────────────────────────────────────────────
 
 export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Row[]> {
+  // A dynamic import, not a static one: apply.ts's own runtime import chain
+  // (steps/index.ts -> steps/verify.ts -> commands/verify.ts -> this file)
+  // already loops back here, so a static `import { discoverTeams } from
+  // "../apply.ts"` at module scope hits that cycle mid-evaluation and
+  // throws "Cannot access 'verifyStep' before initialization". Deferring
+  // the import to call time (well after every module has finished loading)
+  // sidesteps it.
+  const { discoverTeams } = await import("../apply.ts");
+  const teamSync = await teamSyncRow(
+    discoverTeams(p),
+    async () => {
+      const res = await p.daemon("team:snapshot-status");
+      if (!res || !res.ok) return null;
+      return res.data as TeamSnapshotEntry[];
+    },
+    () => p.now().getTime(),
+    getSetting<TeamSnapshotSettings>("rt.teamSnapshot").value?.pullIntervalSec ?? 300,
+  );
+
   return [
     await rtRow(p),
     rtLinkRow(p),
@@ -467,5 +545,6 @@ export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Ro
     await daemonRow(p, opts),
     await flavorRow(p),
     await homeBackupRow(join(p.home, ".mattstack", "user"), p.exec),
+    ...(teamSync ? [teamSync] : []),
   ];
 }

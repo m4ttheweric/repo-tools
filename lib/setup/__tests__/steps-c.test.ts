@@ -659,6 +659,19 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
         expect(slept).toEqual([3000, 3000]);
       });
 
+      // A joiner's clone starts its first pull the moment the engine boots —
+      // "never" right after join means "the engine hasn't started yet", not
+      // a real failure, so verify waits it out the same as tool.daemon.
+      test("settleChecks re-reads while team.sync warns 'last pull never', then returns the settled checks", async () => {
+        const neverPulled = [{ name: "team.sync", status: "warn" as const, detail: "acme: last pull never", severity: "warning" as const }];
+        const pulled = [{ name: "team.sync", status: "pass" as const, detail: "1 clone in sync", severity: "warning" as const }];
+        const reads = [neverPulled, neverPulled, pulled];
+        const slept: number[] = [];
+        const checks = await settleChecks(async () => reads.shift()!, { attempts: 5, intervalMs: 3000, sleep: async (ms) => { slept.push(ms); } });
+        expect(checks).toEqual(pulled);
+        expect(slept).toEqual([3000, 3000]);
+      });
+
       test("settleChecks gives up after its attempts, and never waits when something other than the daemon fails", async () => {
         const daemonDown = [{ name: "tool.daemon", status: "fail" as const, detail: "", severity: "critical" as const }];
         let reads = 0;
