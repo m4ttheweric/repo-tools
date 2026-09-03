@@ -45,12 +45,10 @@ function unwrapAnswerValue(raw: unknown): unknown {
 }
 
 /**
- * Question ids and multi-shape are structural; option membership is
- * STRICT when a question declares options (SKILLS-58: a herd run recorded
- * an ordinal answer cleanly while two workers silently inverted the
- * decision -- a free-text mismatch must fail here, the one validation
- * site, rather than reach a consumer that trusts it). An empty options
- * array still means free-form, unchanged.
+ * Option membership is required whenever a question declares options,
+ * checked against the unwrapped value (every element, for multi); an
+ * empty options array stays free-form. The sole validation point before
+ * an answer reaches storage.
  */
 function validateAnswers(questions: GateQuestion[], answers: Record<string, unknown>): string | null {
   const byId = new Map(questions.map((q) => [q.id, q]));

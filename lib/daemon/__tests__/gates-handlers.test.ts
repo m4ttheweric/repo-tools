@@ -134,6 +134,14 @@ describe("gate:answer", () => {
     expect(r.ok).toBe(false);
   });
 
+  test("accepts a multi answer where every element is a member of its options", async () => {
+    const { handlers, store } = harness();
+    const id = (await openTwoQuestions(handlers)).id;
+    const r = await handlers["gate:answer"]({ id, answers: { m: ["a", "b"] }, by: "pane" });
+    expect(r.ok).toBe(true);
+    expect(store.get(id)!.answer!.answers.m).toEqual(["a", "b"]);
+  });
+
   test("accepts a wrapped {value, note} answer when the unwrapped value is a member", async () => {
     const { handlers } = harness();
     const id = (await open(handlers)).id;
