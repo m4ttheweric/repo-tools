@@ -93,7 +93,7 @@ export interface SnapshotStatus {
   lastPullError: string | null;
   /** The most recent pull's skip reason (e.g. a rebase refused for a dirty `src/`); null after any non-skipped pull. */
   lastPullSkipped: string | null;
-  /** A rebase that stopped mid-way. Set until a human rebases or resets the clone; pushes and pulls stay suspended while it is. */
+  /** A rebase that stopped mid-way. Cleared once the clone is no longer ahead of origin (a hand rebase then `rt team publish`, or a reset to origin); pushes and pulls stay suspended until then. */
   conflicted: { at: number; detail: string } | null;
   claimedZones: string[];
   firstSeenDirty: Record<string, number>;
@@ -367,6 +367,8 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
   let conflicted: { at: number; detail: string } | null = null;
   /** `spec.tokenFor` is a keychain read plus a sops decrypt, so it is resolved once per pull interval rather than per git call. */
   let cachedToken: { value: string | null; at: number } | null = null;
+  /** Dedup key for remoteGit's token-read warn: a keychain that stays locked must warn once, not on every fetch and every push. */
+  let lastLoggedTokenError: string | null = null;
 
   let lastRunAt = 0;
   let lastCommit: { sha: string; message: string; at: number } | null = null;
@@ -435,11 +437,31 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
    * (lib/subprocess.ts), so the token vars ride on top of a full copy of
    * process.env or git loses PATH and HOME. A spec without `tokenFor` (home)
    * keeps today's plain exec, env untouched.
+   *
+   * Never throws. `spec.tokenFor` is the one throw source in the fetch/push
+   * chain (a locked keychain, a failed sops decrypt), and both call sites are
+   * reached through a `void` timer callback where a rejection would escape
+   * unhandled: the pull would skip its own bookkeeping and the push would skip
+   * its failure branch, stalling the retry ladder until the next commit. A
+   * token read failure is reported as a failed git run so each caller's own
+   * failure path runs.
    */
   async function remoteGit(args: string[], timeoutMs: number): Promise<RunResult> {
     if (!spec.tokenFor) return deps.exec(["git", ...args] as [string, ...string[]], { cwd: deps.repoDir, timeoutMs, stderr: "pipe" });
     const ttlMs = (spec.pull?.intervalSec ?? 300) * 1000;
-    if (!cachedToken || deps.now() - cachedToken.at > ttlMs) cachedToken = { value: await spec.tokenFor(), at: deps.now() };
+    if (!cachedToken || deps.now() - cachedToken.at > ttlMs) {
+      try {
+        cachedToken = { value: await spec.tokenFor(), at: deps.now() };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message !== lastLoggedTokenError) {
+          deps.log.warn({ err, id: spec.id }, "snapshot: could not read the forge token for origin");
+          lastLoggedTokenError = message;
+        }
+        return { stdout: "", stderr: `could not read the forge token: ${message}`, exitCode: -1 };
+      }
+    }
+    lastLoggedTokenError = null;
     const cmd = gitWithToken(args, cachedToken.value, { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" });
     return deps.exec(cmd.argv as [string, ...string[]], { cwd: deps.repoDir, timeoutMs, stderr: "pipe", env: cmd.env });
   }
@@ -478,11 +500,12 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
 
   void init();
 
-  /** Arms the watcher + janitor timer; on a throw (fs.watch EMFILE/ENOSPC/ENOENT), marks the module permanently inert instead of leaving it half-armed. Shared by init() (the normal startup path) and doRun's lazy-arm (a daemon that started disabled and was later live re-enabled). */
+  /** Arms the watcher, the janitor timer and (for a pulling spec) the pull timer; on a throw (fs.watch EMFILE/ENOSPC/ENOENT), marks the module permanently inert instead of leaving it half-armed. Shared by init() (the normal startup path) and doRun's lazy-arm (a daemon that started disabled and was later live re-enabled). The pull timer belongs here rather than in init(), or a re-enabled clone would keep committing and pushing while never fetching again. */
   function tryArm(): boolean {
     try {
       armWatcher();
       scheduleJanitor();
+      schedulePull();
       return true;
     } catch (err) {
       disabledReason = "init-failed";
@@ -531,10 +554,9 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       conflicted = getKvValue<{ at: number; detail: string } | null>(spec.kvNamespace, CONFLICT_KEY, null, resolveDb());
       if (deps.readSettings().enabled !== false) {
         tryArm();
-        if (spec.pull && !disabledReason) {
-          void pullNow();
-          schedulePull();
-        }
+        // tryArm arms the interval; this is the boot pull, so a daemon that
+        // just started does not wait a whole interval to see the remote.
+        if (spec.pull && !disabledReason) void pullNow();
       }
     } catch (err) {
       // The is-inside-work-tree exec call itself never throws per its own
@@ -640,8 +662,10 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     const counts = await deps.exec(["git", "rev-list", "--left-right", "--count", `refs/remotes/origin/${branch}...HEAD`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
     if (counts.exitCode !== 0) return { outcome: "skipped", detail: "no remote-tracking ref yet" };
     const [behind, ahead] = counts.stdout.trim().split(/\s+/).map(Number);
-    // A conflict marker clears itself only once local is no longer ahead: the
-    // human's rebase or reset happened.
+    // Cleared only once local is no longer ahead of origin. A hand rebase on
+    // its own does NOT get there: it leaves the replayed commits ahead, and
+    // the daemon's push stays suspended meanwhile, so the recovery is
+    // `rt team publish` after the rebase, or resetting the clone to origin.
     if (conflicted && ahead === 0) clearConflict();
     if (conflicted) return { outcome: "skipped", detail: conflicted.detail };
     if (behind === 0) return { outcome: "up-to-date", detail: null };
@@ -676,7 +700,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     }
     if (pushTimer) { deps.clearTimeout(pushTimer); pushTimer = null; }
     if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
-    deps.log.warn({ id: spec.id, detail }, "snapshot: rebase conflict; pushes and pulls suspended until the clone is rebased by hand");
+    deps.log.warn({ id: spec.id, detail }, "snapshot: rebase conflict; pushes and pulls suspended until you rebase and `rt team publish` by hand, or reset the clone to origin");
     deps.broadcast(`${spec.eventPrefix}:conflict`, { id: spec.id, detail });
     return { outcome: "conflict", detail };
   }
@@ -891,7 +915,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       return { committed: false, sha: null, paths: [], reason, skipped: "merge-in-progress" };
     }
     // Committing on top of a conflicted clone only buries the divergence
-    // deeper: nothing more lands until a human rebases it.
+    // deeper: nothing more lands until the marker clears (see doPull).
     if (conflicted) {
       return { committed: false, sha: null, paths: [], reason, skipped: "conflict" };
     }

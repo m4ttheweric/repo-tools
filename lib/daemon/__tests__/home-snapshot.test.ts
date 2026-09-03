@@ -2215,7 +2215,7 @@ describe("startSnapshot — pull", () => {
     handle.stop();
   });
 
-  test("the pull timer fires every pullIntervalSec and at boot", async () => {
+  test("the pull timer fires every pullIntervalSec and at boot, and re-arms after each tick", async () => {
     const { fn, calls } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
     const { deps, timers } = baseDeps({ exec: fn });
     const { repoDir: _r, ...specDeps } = deps;
@@ -2224,6 +2224,74 @@ describe("startSnapshot — pull", () => {
     await flushAsync();
     expect(calls.filter((c) => gitVerb(c) === "fetch")).toHaveLength(1);
     expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
+
+    timers.fire((t) => t.ms === 300_000);
+    await flushAsync();
+    expect(calls.filter((c) => gitVerb(c) === "fetch")).toHaveLength(2);
+    expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
+    handle.stop();
+  });
+
+  test("a spec that started disabled arms the pull timer, not just the watcher and janitor, on its first run after a live re-enable", async () => {
+    let enabled = false;
+    const { fn } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" })]);
+    const { deps, timers } = baseDeps({ exec: fn, readSettings: () => ({ ...DEFAULT_SETTINGS, enabled }) });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(false);
+
+    enabled = true;
+    await handle.runNow("manual");
+
+    expect([...timers.pending.values()].some((t) => t.ms === 300_000)).toBe(true);
+    handle.stop();
+  });
+
+  test("a token read that throws is a skipped pull carrying the reason, never an unhandled rejection", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (err: unknown) => rejections.push(err);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { fn } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders()]);
+      const { deps, timers } = baseDeps({ exec: fn });
+      const { repoDir: _r, ...specDeps } = deps;
+      const spec = { ...teamSpecFor(), tokenFor: async () => { throw new Error("keychain locked"); } };
+      const handle = startSnapshot(spec, specDeps);
+      await handle.ready;
+
+      const result = await handle.pullNow();
+      expect(result.outcome).toBe("skipped");
+      expect(result.detail).toContain("keychain locked");
+      expect(handle.status().lastPullError).toContain("keychain locked");
+      expect(handle.status().lastPullAt).toBe(0);
+
+      // The pull timer's own `void pullNow()` is the un-awaited call site a
+      // throw would escape from.
+      timers.fire((t) => t.ms === 300_000);
+      await flushAsync();
+      expect(rejections).toEqual([]);
+      handle.stop();
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  test("a token read that throws during a push records it as the push error and arms the retry ladder", async () => {
+    const { fn } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" })]);
+    const { deps, timers } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const spec = { ...teamSpecFor(), tokenFor: async () => { throw new Error("keychain locked"); } };
+    const handle = startSnapshot(spec, specDeps);
+    await handle.ready;
+    await handle.runNow("manual");
+
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(handle.status().lastPushError).toContain("keychain locked");
+    expect(handle.status().pushPending).toBe(true);
+    expect([...timers.pending.values()].some((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000)).toBe(true);
     handle.stop();
   });
 
