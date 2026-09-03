@@ -3,7 +3,7 @@ import { spawnSync, execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { BASE_PLUGINS } from "../../lib/setup/base-plugins";
+import { BASE_PLUGINS } from "../../lib/setup/base-plugins.ts";
 
 // Everything here is offline: the only remotes are local bare repos, so the
 // suite exercises the real push and the real `git ls-remote` re-pin without a

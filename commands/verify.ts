@@ -64,8 +64,10 @@ function actionHint(action: Action | null): string {
  *
  * - `tool.claude` / `tool.herdr` are not bundled; nothing in the headless
  *   install installs them, so their absence on a runner is the designed shape.
- * - `tool.plugins` is installed through `claude`, which a runner does not have,
- *   so its absence there is the same designed shape as `tool.claude`'s.
+ * - `tool.plugins` reaching this check at all means claude IS present
+ *   (its own 127 already short-circuits to "skipped" above, which never
+ *   fails); a runner can carry a bare claude with none of the baseline
+ *   plugins installed, and that is still the designed shape, not a break.
  */
 const CI_UNSATISFIABLE_TOOLS = new Set(["tool.claude", "tool.herdr", "tool.plugins"]);
 
