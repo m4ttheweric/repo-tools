@@ -54,9 +54,12 @@ export const STEPS: StepDef[] = [
   secretsWriteStep,
   gitIdentityStep,
   pathLinkStep,
-  interceptsInstallStep,
   settingsSeedStep,
+  // intercepts.install reads the repo index, so it must stay behind
+  // repos.clone: ahead of it the index is empty on a fresh machine and the
+  // step silently writes an empty rules cache.
   reposCloneStep,
+  interceptsInstallStep,
   servicesRegisterStep,
   proxyInstallStep,
   deckManagedStep,

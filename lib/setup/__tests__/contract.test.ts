@@ -8,6 +8,7 @@ import {
   type Row,
   type TeamRef,
 } from "../contract.ts";
+import { STEPS } from "../steps/index.ts";
 
 function makeRow(overrides: Partial<Row> & Pick<Row, "id" | "required" | "status">): Row {
   return row({
@@ -90,9 +91,9 @@ describe("STEP_IDS", () => {
       "secrets.write",
       "git.identity",
       "path.link",
-      "intercepts.install",
       "settings.seed",
       "repos.clone",
+      "intercepts.install",
       "services.register",
       "proxy.install",
       "deck.managed",
@@ -108,5 +109,19 @@ describe("STEP_IDS", () => {
       "snapshot.push",
       "verify",
     ]);
+  });
+
+  test("intercepts.install runs after repos.clone, which is what puts repos in the index it reads", () => {
+    // installShims() builds its rules by iterating the repo index. Ahead of
+    // repos.clone that index is empty on a fresh machine, so the step writes
+    // an empty rules cache and every later probe reads it as "nothing
+    // declared" instead of "not installed yet".
+    expect(STEP_IDS.indexOf("intercepts.install")).toBeGreaterThan(STEP_IDS.indexOf("repos.clone"));
+  });
+});
+
+describe("STEPS", () => {
+  test("the runtime registry is in the contract's order", () => {
+    expect(STEPS.map((s) => s.id)).toEqual([...STEP_IDS]);
   });
 });
