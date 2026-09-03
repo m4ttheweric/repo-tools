@@ -72,9 +72,17 @@ restarted daemon serves `gate list`/`wait` from the persisted rows.
   compare-and-swap; a second answer is rejected cleanly, and the rejection
   payload carries the recorded `{answers, by, answeredAt}` so the loser can
   proceed on the winner without a second round-trip. Validation is
-  daemon-side and minimal: question ids must match and multi-shape must fit;
-  values are otherwise opaque strings (option membership is advisory, so
-  free-text answers and notes flow). On success: store, emit
+  daemon-side, in this one verb, and STRICT on option membership: question
+  ids must match, multi-shape must fit, and for a question carrying options
+  the answer value (each element, for multi) must match one option's text
+  verbatim or the answer is rejected loudly at record time; free-text rides
+  the per-answer `note` or an option-less question. (Ruled 2026-09-03 on
+  SKILLS-58's addendum: a live herd recorded an ordinal answer cleanly and
+  two workers silently did the opposite of the decision; a value the
+  receiver validates against option text makes that failure loud.) The
+  companion rule binds surfaces: render options in the row's order and
+  submit the chosen option's text verbatim, never an index or a paraphrase.
+  On success: store, emit
   `gate/answered/<id>`, push per Delivery. Every surface answers through
   this verb; no per-surface conflict or validation logic anywhere.
 - `gate wait <id>` blocks until the gate is answered or closed:
@@ -566,6 +574,12 @@ discipline, and the smokes above are the behavioral checks.
   ruling, 2026-09-03).
 - The W1 delivery spike RAN 2026-09-03 and settled the mechanics; findings
   and rulings in `docs/superpowers/spikes/2026-09-03-gate-delivery-spike.md`.
+- Option membership is STRICT, not advisory (revised 2026-09-03 on the
+  SKILLS-58 addendum's silent-inversion evidence): option-bearing questions
+  reject non-member values at the CAS verb; answers carry option text
+  verbatim; surfaces never reorder or translate to indices. SKILLS-58's
+  bridge-death and re-arm-lapse findings independently confirm the
+  daemon-owned subscription design.
 
 ## Rejected alternatives
 
