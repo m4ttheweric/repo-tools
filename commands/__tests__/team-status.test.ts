@@ -32,6 +32,7 @@ function clonedDeps(overrides: { exec?: TeamDeps["probes"]["exec"]; read?: Recor
       exec: overrides.exec,
     }),
     statusRead: fakeRead(overrides.read ?? {}),
+    daemon: async () => null,
   });
 }
 
@@ -50,7 +51,7 @@ async function runExpectingProcessExit(fn: () => Promise<void>): Promise<number 
 }
 
 describe("teamStatus", () => {
-  test("--json prints the exact contract envelope: slug, name, remote, lastPush, members", async () => {
+  test("--json prints the exact contract envelope: slug, name, remote, lastPush, members, and the four sync fields null without a daemon", async () => {
     const deps = clonedDeps({
       exec: async (argv) => {
         if (argv[0] === "git" && argv[2] === TEAM_DIR && argv[3] === "log") {
@@ -73,6 +74,10 @@ describe("teamStatus", () => {
       remote: "git@github.com:acme/widgets.git",
       lastPush: "2026-08-21T10:00:00+00:00",
       members: [{ username: "matt" }],
+      lastPull: null,
+      lastPushAt: null,
+      lastPullSkipped: null,
+      conflicted: null,
     });
   });
 
