@@ -54,6 +54,7 @@ export type SkipReason =
   | "not-a-repo"
   | "not-provisioned"
   | "no-git-identity"
+  | "git-unavailable"
   | "init-failed"
   | "detached"
   | "merge-in-progress"
@@ -650,7 +651,12 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
 
   async function pullNow(): Promise<PullResult> {
     await readyPromise;
-    if (!spec.pull || disabledReason || safeReadSettings().enabled === false) {
+    // A fetch and a `git merge --ff-only` need no committer, so a clone that
+    // cannot commit still stays current; every other disabledReason
+    // (init-failed, not-a-repo, not-provisioned) means there is nothing to
+    // pull into.
+    const blocked = disabledReason !== null && disabledReason !== "no-git-identity";
+    if (!spec.pull || blocked || safeReadSettings().enabled === false) {
       return { outcome: "skipped", detail: "pull not enabled for this repo" };
     }
     if (pullInFlight) return pullInFlight;
@@ -996,6 +1002,18 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     const willJanitorCommit = (reason === "janitor" || reason === "manual") && plan.janitorZones.length > 0;
     if (willAutoCommit || willJanitorCommit) {
       const ident = await deps.exec(["git", "var", "GIT_COMMITTER_IDENT"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      // `runCapture` reports a spawn failure or a GIT_TIMEOUT_MS kill as -1,
+      // which says nothing about the repo's identity — init() draws the same
+      // line. Latching disabledReason on one slow `git var` would stop this
+      // instance committing (and, but for pullNow's exemption, fetching) for
+      // the rest of the daemon's life.
+      if (ident.exitCode === -1) {
+        if (lastLoggedCommitError !== "git-unavailable") {
+          deps.log.warn({ stderr: ident.stderr }, "home-snapshot: could not run git to resolve a committer identity (is it on PATH?); skipping cycle");
+          lastLoggedCommitError = "git-unavailable";
+        }
+        return { committed: false, sha: null, paths: [], reason, skipped: "git-unavailable" };
+      }
       if (ident.exitCode !== 0 || !ident.stdout.trim()) {
         disabledReason = "no-git-identity";
         if (lastLoggedCommitError !== "no-git-identity") {

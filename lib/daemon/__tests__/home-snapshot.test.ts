@@ -2431,6 +2431,38 @@ describe("startSnapshot: pull", () => {
     handle.stop();
   });
 
+  test("a `git var` that could not run is transient: the next cycle probes again, and the clone keeps pulling", async () => {
+    // runCapture's spawn-failure / timeout-kill code, not a verdict from git.
+    const identUnavailable: Responder = (argv) => argv[1] === "var" ? { stdout: "", stderr: "", exitCode: -1 } : undefined;
+    const { fn, calls } = makeFakeExec([identUnavailable, ...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0" })]);
+    const { deps, log } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+
+    expect((await handle.runNow("manual")).skipped).toBe("git-unavailable");
+    expect((await handle.runNow("manual")).skipped).toBe("git-unavailable");
+    expect(calls.filter((c) => c[1] === "var")).toHaveLength(2);
+    expect(log.calls.filter((c) => c.level === "warn" && String(c.args[c.args.length - 1]).includes("could not run git")).length).toBe(1);
+    expect((await handle.pullNow()).outcome).toBe("up-to-date");
+    handle.stop();
+  });
+
+  test("a genuine identity failure latches the commit, but the clone still pulls and reports the outcome", async () => {
+    const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: " M mattstack/settings.team.jsonc\0", hasIdentity: false })]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+    await flushAsync();
+
+    expect((await handle.runNow("manual")).skipped).toBe("no-git-identity");
+    expect((await handle.runNow("manual")).skipped).toBe("no-git-identity");
+    expect((await handle.pullNow()).outcome).toBe("fast-forwarded");
+    handle.stop();
+  });
+
   test("the home spec never pulls", async () => {
     const { deps, execCalls } = baseDeps();
     const { repoDir: _r, ...specDeps } = deps;
