@@ -2055,6 +2055,36 @@ describe("startSnapshot: spec", () => {
     expect(commit.slice(-3)).toEqual(["--", "mattstack/settings.team.jsonc", ".sops.yaml"]);
     handle.stop();
   });
+
+  test("a rename INTO the scope stages the new path only, never the out-of-scope source's deletion", async () => {
+    // `git mv src/foo.ts mattstack/foo.ts`: one porcelain record, new path
+    // first, origPath in the entry that follows it.
+    const statusZ = "R  mattstack/foo.ts\0src/foo.ts\0";
+    const { fn, calls } = makeFakeExec(defaultResponders({ statusZ }));
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot({ ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", scope: teamScope }, specDeps);
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.paths).toEqual(["mattstack/foo.ts"]);
+    expect(calls.find((c) => gitVerb(c) === "add")).toEqual(["git", "add", "-A", "--", "mattstack/foo.ts"]);
+    expect(calls.find((c) => gitVerb(c) === "commit")!.slice(-2)).toEqual(["--", "mattstack/foo.ts"]);
+    handle.stop();
+  });
+
+  test("a rename OUT of the scope still stages the in-scope deletion, so the clone does not stay dirty forever", async () => {
+    const statusZ = "R  src/foo.ts\0mattstack/foo.ts\0";
+    const { fn, calls } = makeFakeExec(defaultResponders({ statusZ }));
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot({ ...homeSnapshotSpec(FAKE_REPO_DIR), id: "team:acme", kvNamespace: "team-snapshot:acme", eventPrefix: "team", scope: teamScope }, specDeps);
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.committed).toBe(true);
+    expect(result.paths).toEqual(["mattstack/foo.ts"]);
+    expect(calls.find((c) => gitVerb(c) === "add")).toEqual(["git", "add", "-A", "--", "mattstack/foo.ts"]);
+    handle.stop();
+  });
 });
 
 describe("teamSnapshotSpec", () => {

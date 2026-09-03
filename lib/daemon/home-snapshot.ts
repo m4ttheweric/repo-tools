@@ -969,8 +969,9 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     // scope's roots: `git add -A -- mattstack .sops.yaml .claude-plugin`
     // exits 128 and stages nothing when any root is absent from both tree
     // and index, and a clone that lost its marketplace would then fail
-    // every cycle as add-failed. A rename's origPath rides along too, so
-    // the old path's deletion lands in the same commit as the new path.
+    // every cycle as add-failed. A rename's origPath rides along so the old
+    // path's deletion lands in the same commit as the new path; scopeEntries
+    // is what guarantees both halves are inside the scope.
     const scopeArgs: string[] = spec.scope
       ? [...new Set(entries.flatMap((e) => (e.origPath ? [e.origPath, e.path] : [e.path])))]
       : ["."];

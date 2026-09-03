@@ -311,6 +311,22 @@ describe("scopeEntries", () => {
       "mattstack/settings.team.jsonc", ".sops.yaml", ".claude-plugin/marketplace.json",
     ]);
   });
+  test("a rename INTO the scope contributes only its new path, never the out-of-scope origPath", () => {
+    const renamed: StatusEntry[] = [{ xy: "R ", path: "mattstack/foo.ts", origPath: "src/foo.ts" }];
+    expect(scopeEntries(renamed, teamScope)).toEqual([{ xy: "R ", path: "mattstack/foo.ts" }]);
+  });
+  test("a rename OUT of the scope keeps the in-scope deletion instead of dropping the entry", () => {
+    const renamed: StatusEntry[] = [{ xy: "R ", path: "src/foo.ts", origPath: "mattstack/foo.ts" }];
+    expect(scopeEntries(renamed, teamScope)).toEqual([{ xy: "R ", path: "mattstack/foo.ts" }]);
+  });
+  test("a rename wholly inside the scope keeps both paths", () => {
+    const renamed: StatusEntry[] = [{ xy: "R ", path: "mattstack/b.ts", origPath: "mattstack/a.ts" }];
+    expect(scopeEntries(renamed, teamScope)).toEqual([{ xy: "R ", path: "mattstack/b.ts", origPath: "mattstack/a.ts" }]);
+  });
+  test("a rename wholly outside the scope is dropped", () => {
+    const renamed: StatusEntry[] = [{ xy: "R ", path: "src/b.ts", origPath: "src/a.ts" }];
+    expect(scopeEntries(renamed, teamScope)).toEqual([]);
+  });
   test("teamScope is prefix-safe: mattstack-tools/ is not mattstack/", () => {
     expect(teamScope("mattstack-tools/x")).toBe(false);
     expect(teamScope("mattstack/secrets/board.json")).toBe(true);
