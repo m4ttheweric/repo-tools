@@ -35,7 +35,11 @@ green on both joiners (runs `20260902-125703`, `20260902-130744`).
 
 The team pass now runs only `members sync` on the owner and waits for the
 daemon's push, then `rt team pull` on the joiner: the daemon moves every
-byte, and `team-propagate.sh` runs no git commit/push/pull of its own.
+byte, and `team-propagate.sh` runs no git commit/push/pull of its own. That
+pass is green on the kitchen-sink fixture with the team-clone snapshot daemon
+doing the work (owner `20260902-211149`, joiners `20260902-212248` and
+`20260902-213612`; the second joiner also proves Install's `git.identity`
+step wrote the global git identity from the GitLab profile).
 
 Facts a join run depends on:
 
