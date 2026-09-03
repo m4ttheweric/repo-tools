@@ -22,10 +22,12 @@ import type { GateRow, GateSubscription, GatesStore } from "./gates-store.ts";
 export const GATE_ANSWERED_PHRASE = (id: string) =>
   `[gate] ${id} answered elsewhere; re-read the registry and proceed on the recorded answer.`;
 
-/** Fan-out notification: a subscriber is never told the answer, only that
-    the gate moved, and where to look. */
-const GATE_SUBSCRIPTION_PHRASE = (row: GateRow) =>
-  `[gate] ${row.subject} (${row.id}) is now ${row.status}; check the gate registry for the current state.`;
+/** Fan-out notification: push text is data, never instructions, and carries
+    no opener-controlled content -- `subject` is opener-set and must never
+    ride a cross-session message body. id + status only; the W2 protocol
+    part imports this for priming. */
+export const GATE_SUBSCRIPTION_PHRASE = (row: Pick<GateRow, "id" | "status">) =>
+  `[gate] ${row.id} is now ${row.status}; re-read the gate registry.`;
 
 const DEFAULT_DEAD_AFTER_FAILURES = 3;
 
@@ -40,10 +42,15 @@ export function createGatePush(opts: {
   store: GatesStore;
   deliver: typeof deliverToInbox;
   resolveSession: (sessionId: string) => { socketPath: string } | null;
+  /** Batch form for fan-out: one directory scan per event instead of one
+      per subscriber. Optional so existing callers (and tests) that only
+      wire `resolveSession` keep working unchanged, falling back to a
+      per-subscriber resolveSession call. */
+  resolveAll?: () => Map<string, { socketPath: string }>;
   log: Logger;
   deadAfterFailures?: number;
 }): GatePush {
-  const { store, deliver, resolveSession, log } = opts;
+  const { store, deliver, resolveSession, resolveAll, log } = opts;
   const deadAfterFailures = opts.deadAfterFailures ?? DEFAULT_DEAD_AFTER_FAILURES;
 
   // Consecutive-failure counts live only in daemon memory, not the store:
@@ -92,8 +99,12 @@ export function createGatePush(opts: {
     }
   }
 
-  async function pushToSubscription(row: GateRow, sub: GateSubscription): Promise<void> {
-    const binding = resolveSession(sub.session);
+  async function pushToSubscription(
+    row: GateRow,
+    sub: GateSubscription,
+    registry: Map<string, { socketPath: string }> | null,
+  ): Promise<void> {
+    const binding = registry ? (registry.get(sub.session) ?? null) : resolveSession(sub.session);
     if (!binding) {
       recordSubscriptionOutcome(sub, false);
       return;
@@ -105,7 +116,17 @@ export function createGatePush(opts: {
 
   async function fanOut(row: GateRow): Promise<void> {
     const subs = store.subscriptions({ live: true }).filter((sub) => row.subject.startsWith(sub.subjectPrefix));
-    await Promise.all(subs.map((sub) => pushToSubscription(row, sub)));
+    // Batch registry resolution: one scan for the whole fan-out (resolveAll,
+    // when wired) rather than resolveSession re-scanning per subscriber.
+    const registry = resolveAll ? resolveAll() : null;
+    // Lazy prune: a subscription no longer in the live set (unsubscribed, or
+    // pruned dead by a prior failure run) has nothing more to fail, so its
+    // failure count would otherwise leak forever.
+    const liveIds = new Set(subs.map((s) => s.id));
+    for (const key of [...consecutiveFailures.keys()]) {
+      if (!liveIds.has(key)) consecutiveFailures.delete(key);
+    }
+    await Promise.all(subs.map((sub) => pushToSubscription(row, sub, registry)));
   }
 
   return {

@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import pino from "pino";
 import { createGatesStore, type GatesStore, type GateQuestion } from "../gates-store.ts";
-import { createGatePush, GATE_ANSWERED_PHRASE } from "../gate-push.ts";
+import { createGatePush, GATE_ANSWERED_PHRASE, GATE_SUBSCRIPTION_PHRASE } from "../gate-push.ts";
 import { wrapCrossSession } from "../inbox.ts";
 
 const log = pino({ level: "silent" });
@@ -94,5 +94,55 @@ describe("gate-push", () => {
     const dead = store.subscriptions().find((x) => x.id === sub.id)!;
     expect(dead.dead).toBe(true);
     expect(dead.lastDelivery!.outcome).toBe("failed");
+  });
+
+  test("duplicate subscribe (idempotent) never doubles the fan-out (F3)", async () => {
+    const { push, store, delivered } = harness();
+    store.subscribe({ subjectPrefix: "run:", session: "shep-1" });
+    store.subscribe({ subjectPrefix: "run:", session: "shep-1" }); // returns the SAME row, no second insert
+    const row = store.open({ subject: "run:r1", kind: "clarify", questions: qs() }).row;
+    await push.onOpened(row);
+    expect(delivered.filter((d) => d.sessionId === "shep-1").length).toBe(1);
+  });
+
+  test("subscription push carries ONLY the fixed id+status phrase, never the opener-controlled subject (F6)", async () => {
+    const { push, store, delivered } = harness();
+    store.subscribe({ subjectPrefix: "mr:", session: "shep-1" });
+    const row = store.open({ subject: "mr:https://x/1?evil=<script>", kind: "review-post", questions: qs() }).row;
+    await push.onOpened(row);
+    expect(delivered[0]!.body).toBe(wrapCrossSession("gate-facility", GATE_SUBSCRIPTION_PHRASE(row)));
+    expect(delivered[0]!.body).not.toContain(row.subject);
+    expect(delivered[0]!.body).toContain(row.id);
+    expect(delivered[0]!.body).toContain(row.status);
+  });
+
+  test("fan-out resolves the subscriber registry ONCE per event when resolveAll is wired (F8)", async () => {
+    const store = freshStore();
+    const delivered: Array<{ sessionId: string; body: string }> = [];
+    const deliver = async (socketPath: string, body: string) => {
+      delivered.push({ sessionId: socketPath, body });
+      return { ok: true as const };
+    };
+    let resolveAllCalls = 0;
+    const resolveAll = () => {
+      resolveAllCalls++;
+      return new Map([
+        ["shep-1", { socketPath: "shep-1" }],
+        ["shep-2", { socketPath: "shep-2" }],
+      ]);
+    };
+    const push = createGatePush({
+      store,
+      deliver,
+      resolveSession: () => { throw new Error("resolveSession must not be called when resolveAll is wired"); },
+      resolveAll,
+      log,
+    });
+    store.subscribe({ subjectPrefix: "run:", session: "shep-1" });
+    store.subscribe({ subjectPrefix: "run:", session: "shep-2" });
+    const row = store.open({ subject: "run:r1", kind: "clarify", questions: qs() }).row;
+    await push.onOpened(row);
+    expect(resolveAllCalls).toBe(1); // one directory scan for both subscribers
+    expect(delivered.map((d) => d.sessionId).sort()).toEqual(["shep-1", "shep-2"]);
   });
 });
