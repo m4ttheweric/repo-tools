@@ -137,3 +137,8 @@ The authoritative per-app tables (which key, which scope, what shape) are in
 summaries live in each app's README (gitq, mr-board) and
 `~/.mattstack/work/scratch/handoff-2026-08-21-deck-state-for-react-rewrite.md`
 for deck.
+
+For what each key resolves to on a NEW teammate's machine the moment Install
+finishes ... who writes it, whether it travels with the team store, and what
+is still missing ... see
+[the day-one audit](superpowers/specs/2026-09-03-day-one-settings-audit-design.md).
