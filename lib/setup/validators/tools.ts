@@ -32,11 +32,6 @@ const CHROME_PATHS = (home: string): string[] => ["/Applications/Google Chrome.a
 const CLAUDE_SIGNIN_STEPS: Action = { type: "steps", label: "Show steps…", steps: ["Open a terminal", "Run: claude", "Follow the sign-in prompt"] };
 /** Signing in is interactive and happens after Install; only the claude binary itself gates Install. */
 const SIGNIN_LATER = { required: false, optionalNote: "Sign in after Install: run claude once." };
-const FAST_BROWSER_EXTENSION_STEPS: Action = {
-  type: "steps",
-  label: "Show steps…",
-  steps: ["Open chrome://extensions", "Turn on Developer mode", "Load unpacked → ~/.fast-browser/extension/current/unpacked"],
-};
 const CHROME_DOWNLOAD_ACTION: Action = { type: "open-url", label: "Download", url: "https://www.google.com/chrome/" };
 const MISSION_CONTROL_SETTINGS_ACTION: Action = { type: "open-settings", label: "Open Keyboard Settings…", target: "keyboard" };
 
@@ -162,7 +157,7 @@ async function claudeRow(p: Probes, opts: { hasBrew: boolean }): Promise<Row> {
   return row({ ...base, status: "error", detail: "claude auth status returned an unexpected response" });
 }
 
-// ─── tool.fast-browser ─────────────────────────────────────────────────────
+// ─── tool.fast-browser / tool.fast-browser-extension ───────────────────────
 
 interface FastBrowserDoctor {
   runtime?: { ok?: boolean };
@@ -170,41 +165,93 @@ interface FastBrowserDoctor {
   pairing?: { ok?: boolean };
 }
 
-async function fastBrowserRow(p: Probes, seams: ToolsSeams): Promise<Row> {
-  const base = { id: "tool.fast-browser", kind: "tool" as const, title: "Fast Browser", why: "Backs rt's macro-first browser automation.", required: true, recheck: "on-activate" as const };
+interface FastBrowserProbe {
+  resolvable: boolean;
+  doctor: FastBrowserDoctor | null;
+  /** Set only when fast-browser resolved but its report could not be read. */
+  failure: string | null;
+}
 
+/** One `doctor` run feeds both rows: they read different fields of the same report, and a second spawn would double the bounded wait on every plan. */
+async function probeFastBrowser(p: Probes, seams: ToolsSeams): Promise<FastBrowserProbe> {
   const resolved = seams.resolveTool(p, "fast-browser");
-  if (!resolved.exec) return row({ ...base, status: "missing", detail: "fast-browser not found", action: { type: "link-bundled", label: "Use mattstack's", tool: "fast-browser" } });
+  if (!resolved.exec) return { resolvable: false, doctor: null, failure: null };
 
   const res = await exec(p, [...resolved.exec, "doctor", "--json"]);
-  if (res.code === 124) return row({ ...base, status: "error", detail: "fast-browser doctor timed out" });
+  if (res.code === 124) return { resolvable: true, doctor: null, failure: "fast-browser doctor timed out" };
 
   // `doctor` is a health check: it commonly exits non-zero BECAUSE it found a
-  // problem, while still printing its JSON report — so a parseable payload
-  // is honored regardless of exit code, and only a genuinely empty/garbled
-  // response falls through to "error".
-  let doctor: FastBrowserDoctor | null = null;
+  // problem, while still printing its JSON report, so a parseable payload is
+  // honored regardless of exit code.
   if (res.stdout.trim() !== "") {
     try {
-      doctor = JSON.parse(res.stdout) as FastBrowserDoctor;
+      return { resolvable: true, doctor: JSON.parse(res.stdout) as FastBrowserDoctor, failure: null };
     } catch {
-      doctor = null;
+      // An unparseable payload is the failure below, not a silent empty report.
     }
   }
-  if (!doctor) {
-    const head = res.stderr.trim().split("\n")[0] || `exit ${res.code}`;
-    return row({ ...base, status: "error", detail: `fast-browser doctor failed: ${head}` });
-  }
+  const head = res.stderr.trim().split("\n")[0] || `exit ${res.code}`;
+  return { resolvable: true, doctor: null, failure: `fast-browser doctor failed: ${head}` };
+}
 
-  const runtimeOk = doctor.runtime?.ok === true;
-  const extensionLoaded = doctor.extension?.loaded === true;
-  if (runtimeOk && extensionLoaded) return row({ ...base, status: "ready", detail: "runtime ok, extension loaded" });
-  // Loading the extension needs Chrome, and Chrome is optional: without it
-  // this row cannot gate Install, or a Chrome-less Mac never installs.
-  const chromeInstalled = CHROME_PATHS(p.home).some((path) => p.exists(path));
-  const gate = chromeInstalled ? {} : { required: false, optionalNote: "Works without this until Google Chrome is installed." };
-  if (!extensionLoaded) return row({ ...base, ...gate, status: "needs-you", detail: "Chrome extension not loaded", action: FAST_BROWSER_EXTENSION_STEPS });
-  return row({ ...base, ...gate, status: "needs-you", detail: "runtime not ready", action: FAST_BROWSER_EXTENSION_STEPS });
+const FAST_BROWSER_SETUP_ACTION: Action = { type: "run", label: "Run setup", verb: ["tools", "setup", "fast-browser"] };
+
+/**
+ * Everything past the binary is created by the `fastbrowser.setup` Install
+ * step, so none of it may gate Install: before Install neither the runtime nor
+ * the extension directory exists, and no action on this screen can create
+ * them. Same shape as herdrRow above, and the same ruling: binaries gate,
+ * follow-ups don't.
+ */
+const FASTBROWSER_SETUP_NOTE = "Installed by Install (fastbrowser.setup).";
+
+function fastBrowserRow(probe: FastBrowserProbe): Row {
+  const base = { id: "tool.fast-browser", kind: "tool" as const, title: "Fast Browser", why: "Backs rt's macro-first browser automation.", required: true, recheck: "on-activate" as const };
+  if (!probe.resolvable) return row({ ...base, status: "missing", detail: "fast-browser not found", action: { type: "link-bundled", label: "Use mattstack's", tool: "fast-browser" } });
+
+  const pending = { required: false, optionalNote: FASTBROWSER_SETUP_NOTE };
+  if (probe.failure) return row({ ...base, ...pending, status: "error", detail: probe.failure });
+  if (probe.doctor?.runtime?.ok === true) return row({ ...base, status: "ready", detail: "runtime ok" });
+  return row({ ...base, ...pending, status: "needs-you", detail: "runtime not ready", action: FAST_BROWSER_SETUP_ACTION });
+}
+
+const PAIRING_STEPS = [
+  "Click the Fast Browser icon in Chrome and copy its reconnect token",
+  "Run: fast-browser configure --connection auto, then paste the token into the Keychain prompt",
+  "Run: fast-browser doctor",
+];
+const FAST_BROWSER_LOAD_STEPS: Action = {
+  type: "steps",
+  label: "Show steps…",
+  steps: ["Open chrome://extensions", "Turn on Developer mode", "Load unpacked → ~/.fast-browser/extension/current/unpacked", ...PAIRING_STEPS],
+};
+const FAST_BROWSER_PAIR_STEPS: Action = { type: "steps", label: "Show steps…", steps: PAIRING_STEPS };
+
+/**
+ * Never gates Install in any Chrome state. Loading an unpacked extension is a
+ * Chrome step rt cannot perform: fast-browser ships no CRX and has no Web
+ * Store listing, and Chrome's unattended paths accept neither an unpacked
+ * directory nor a signing key rt holds. The Done screen names it instead.
+ */
+function fastBrowserExtensionRow(p: Probes, probe: FastBrowserProbe): Row {
+  const base = {
+    id: "tool.fast-browser-extension",
+    kind: "tool" as const,
+    title: "Fast Browser extension",
+    why: "Fast Browser drives your real Chrome session through this extension.",
+    required: false,
+    optionalNote: "You load this into Chrome yourself; Install cannot do it for you.",
+    recheck: "on-activate" as const,
+  };
+
+  if (!CHROME_PATHS(p.home).some((path) => p.exists(path))) return row({ ...base, status: "skipped", detail: "no Google Chrome to load it into" });
+  // tool.fast-browser already reports an unreadable doctor; repeating it here
+  // would be two rows for one fact.
+  if (!probe.doctor) return row({ ...base, status: "skipped", detail: "fast-browser doctor could not be read (see Fast Browser)" });
+
+  if (probe.doctor.extension?.loaded !== true) return row({ ...base, status: "needs-you", detail: "not loaded in Chrome", action: FAST_BROWSER_LOAD_STEPS });
+  if (probe.doctor.pairing?.ok !== true) return row({ ...base, status: "needs-you", detail: "loaded but not paired", action: FAST_BROWSER_PAIR_STEPS });
+  return row({ ...base, status: "ready", detail: "loaded and paired" });
 }
 
 // ─── tool.editor ───────────────────────────────────────────────────────────
@@ -383,10 +430,12 @@ function packRow(req: PackRequirements, pluginList: ExecResult): Row {
 // ─── entry point ────────────────────────────────────────────────────────────
 
 export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasBrew: boolean }, seams: ToolsSeams = REAL_SEAMS): Promise<Row[]> {
+  const fastBrowser = await probeFastBrowser(p, seams);
   const rows: Row[] = [
     await herdrRow(p, opts),
     await claudeRow(p, opts),
-    await fastBrowserRow(p, seams),
+    fastBrowserRow(fastBrowser),
+    fastBrowserExtensionRow(p, fastBrowser),
     editorRow(seams),
     chromeRow(p, reqs),
   ];

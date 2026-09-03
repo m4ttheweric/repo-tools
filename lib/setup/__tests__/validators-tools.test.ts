@@ -220,80 +220,127 @@ describe("toolRows — tool.claude", () => {
 });
 
 describe("toolRows — tool.fast-browser", () => {
-  test("exec null -> missing, bundled-link action", async () => {
+  test("not resolvable -> missing with the link-bundled action, and this is the one state that gates", async () => {
     const r = await pickRow(toolRows(fakeProbes(), [], { hasBrew: true }, NOOP_SEAMS), "tool.fast-browser");
     expect(r.status).toBe("missing");
+    expect(r.required).toBe(true);
     expect(r.action).toEqual({ type: "link-bundled", label: "Use mattstack's", tool: "fast-browser" });
-    expect(r.recheck).toBe("on-activate");
   });
 
   function fastBrowserSeams(): ToolsSeams {
     return { ...NOOP_SEAMS, resolveTool: (_p, tool) => (tool === "fast-browser" ? { tool, bundled: "node", exec: ["node", "fast-browser.mjs"], userCopy: null, linked: false, chosen: "node" } : noopResolution(tool)) };
   }
 
-  test("bundled exec [node, mjs] -> doctor invoked with the full argv, and extension not loaded -> needs-you with 3 steps", async () => {
-    const seams = fastBrowserSeams();
-    const exec: ExecScript = (argv) => {
-      if (argv[0] === "node" && argv[1] === "fast-browser.mjs" && argv[2] === "doctor" && argv[3] === "--json") {
-        return ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } }));
-      }
-      return ok();
-    };
-    const p = fakeProbes({ exec });
-    const r = await pickRow(toolRows(p, [], { hasBrew: true }, seams), "tool.fast-browser");
-    expect(p.calls.exec).toContainEqual(["node", "fast-browser.mjs", "doctor", "--json"]);
-    expect(r.status).toBe("needs-you");
-    expect(r.action).toEqual({
-      type: "steps",
-      label: "Show steps…",
-      steps: ["Open chrome://extensions", "Turn on Developer mode", "Load unpacked → ~/.fast-browser/extension/current/unpacked"],
-    });
-  });
+  /** doctor's report, with everything unhealthy unless the caller says otherwise. */
+  function doctorExec(report: unknown, code = 0): ExecScript {
+    return (argv) => (argv[2] === "doctor" && argv[3] === "--json" ? { code, stdout: JSON.stringify(report), stderr: "" } : ok());
+  }
 
-  // The extension step needs Chrome, and Chrome is itself optional: a required
-  // fast-browser row on a Chrome-less Mac kept Install disabled forever.
-  test("extension not loaded and no Chrome installed -> optional (works without this), still needs-you", async () => {
-    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } })) : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
-    expect(r.status).toBe("needs-you");
-    expect(r.required).toBe(false);
-    expect(r.optionalNote).toContain("Chrome");
-  });
-
-  test("extension not loaded with Chrome installed -> still required", async () => {
-    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } })) : ok());
-    const p = fakeProbes({ exec });
-    p.mkdirp("/Applications/Google Chrome.app");
+  test("runtime ok -> ready, and doctor ran through the resolved exec", async () => {
+    const p = fakeProbes({ exec: doctorExec({ runtime: { ok: true } }) });
     const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
-    expect(r.status).toBe("needs-you");
-    expect(r.required).toBe(true);
-  });
-
-  test("runtime ok and extension loaded -> ready", async () => {
-    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: true }, pairing: { ok: true } })) : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+    expect(p.calls.exec).toContainEqual(["node", "fast-browser.mjs", "doctor", "--json"]);
     expect(r.status).toBe("ready");
   });
 
-  test("doctor exits non-zero but prints a parseable unhealthy report -> needs-you, not error (M8)", async () => {
-    const exec: ExecScript = (argv) =>
-      argv[2] === "doctor" ? { code: 1, stdout: JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } }), stderr: "" } : ok();
-    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+  // The runtime is created by the fastbrowser.setup Install step, so before
+  // Install it cannot exist and no checklist action can create it. A required
+  // row here left canInstall false forever on any Mac with Chrome.
+  test("runtime not ready does not gate, even with Chrome installed", async () => {
+    const p = fakeProbes({ exec: doctorExec({ runtime: { ok: false } }) });
+    p.mkdirp("/Applications/Google Chrome.app");
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
     expect(r.status).toBe("needs-you");
+    expect(r.required).toBe(false);
+    expect(r.optionalNote).toBe("Installed by Install (fastbrowser.setup).");
+    expect(r.action).toEqual({ type: "run", label: "Run setup", verb: ["tools", "setup", "fast-browser"] });
   });
 
-  test("doctor parse failure (no parseable payload) -> error with stderr head", async () => {
+  test("doctor exits non-zero but prints a parseable healthy report -> ready, not error (M8)", async () => {
+    const p = fakeProbes({ exec: doctorExec({ runtime: { ok: true } }, 1) });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+    expect(r.status).toBe("ready");
+  });
+
+  test("doctor parse failure -> error with the stderr head, and still does not gate", async () => {
     const exec: ExecScript = (argv) => (argv[2] === "doctor" ? { code: 1, stdout: "", stderr: "boom\nmore detail" } : ok());
     const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("boom");
+    expect(r.required).toBe(false);
   });
 
-  test("doctor times out -> error", async () => {
-    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? { code: 124, stdout: "", stderr: "" } : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+  test("doctor times out -> error, and still does not gate", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: TIMEOUT }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("timed out");
+    expect(r.required).toBe(false);
+  });
+
+  test("one doctor run feeds both rows", async () => {
+    const p = fakeProbes({ exec: doctorExec({ runtime: { ok: true }, extension: { loaded: true }, pairing: { ok: true } }) });
+    p.mkdirp("/Applications/Google Chrome.app");
+    const rows = await toolRows(p, [], { hasBrew: true }, fastBrowserSeams());
+    expect(rows.map((r) => r.id)).toContain("tool.fast-browser-extension");
+    expect(p.calls.exec.filter((argv) => argv[2] === "doctor").length).toBe(1);
+  });
+});
+
+describe("toolRows - tool.fast-browser-extension", () => {
+  function fastBrowserSeams(): ToolsSeams {
+    return { ...NOOP_SEAMS, resolveTool: (_p, tool) => (tool === "fast-browser" ? { tool, bundled: "node", exec: ["node", "fast-browser.mjs"], userCopy: null, linked: false, chosen: "node" } : noopResolution(tool)) };
+  }
+  function doctorExec(report: unknown): ExecScript {
+    return (argv) => (argv[2] === "doctor" && argv[3] === "--json" ? ok(JSON.stringify(report)) : ok());
+  }
+  function withChrome(exec: ExecScript) {
+    const p = fakeProbes({ exec });
+    p.mkdirp("/Applications/Google Chrome.app");
+    return p;
+  }
+
+  test("no Chrome -> skipped, nothing to load it into", async () => {
+    const p = fakeProbes({ exec: doctorExec({ runtime: { ok: true }, extension: { loaded: false } }) });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("skipped");
+    expect(r.required).toBe(false);
+  });
+
+  test("not loaded -> needs-you with steps that end in pairing", async () => {
+    const p = withChrome(doctorExec({ runtime: { ok: true }, extension: { loaded: false } }));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("needs-you");
+    expect(r.required).toBe(false);
+    expect(r.action?.type).toBe("steps");
+    const steps = (r.action as { steps: string[] }).steps;
+    expect(steps[0]).toContain("chrome://extensions");
+    expect(steps.join(" ")).toContain("reconnect token");
+  });
+
+  // pairing.ok was declared and never read, so a loaded-but-unpaired
+  // extension reported ready while Fast Browser could drive nothing.
+  test("loaded but not paired -> needs-you with pairing-only steps", async () => {
+    const p = withChrome(doctorExec({ runtime: { ok: true }, extension: { loaded: true }, pairing: { ok: false } }));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("not paired");
+    const steps = (r.action as { steps: string[] }).steps;
+    expect(steps.join(" ")).not.toContain("chrome://extensions");
+    expect(steps.join(" ")).toContain("reconnect token");
+  });
+
+  test("loaded and paired -> ready", async () => {
+    const p = withChrome(doctorExec({ runtime: { ok: true }, extension: { loaded: true }, pairing: { ok: true } }));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("ready");
+  });
+
+  // tool.fast-browser already reports an unreadable doctor; two rows for one
+  // fact would just double the noise.
+  test("doctor unreadable -> skipped, deferring to the Fast Browser row", async () => {
+    const p = withChrome(() => ({ code: 1, stdout: "", stderr: "boom" }));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("skipped");
   });
 });
 
