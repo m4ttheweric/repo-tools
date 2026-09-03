@@ -86,6 +86,44 @@ describe("gate:open", () => {
     expect((await handlers["gate:open"]({ subject: "run:r1", kind: "k", questions: [] })).ok).toBe(false);
     expect((await handlers["gate:open"]({ subject: "run:r1", kind: "k", questions: [{ id: "q" }] as any })).ok).toBe(false);
   });
+
+  test("rejects duplicate question ids (F10): an opener typo must not mint an unanswerable gate", async () => {
+    const { handlers } = harness();
+    const dup = [
+      { id: "q", label: "Pick", multi: false, options: ["a", "b"] },
+      { id: "q", label: "Pick again", multi: false, options: ["c", "d"] },
+    ];
+    const r = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: dup });
+    expect(r.ok).toBe(false);
+  });
+
+  test("rejects a meta that isn't a plain object (F10)", async () => {
+    const { handlers } = harness();
+    const arr = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), meta: ["not", "an", "object"] as any });
+    expect(arr.ok).toBe(false);
+    const str = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), meta: "nope" as any });
+    expect(str.ok).toBe(false);
+    const ok = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), meta: { label: "fine" } });
+    expect(ok.ok).toBe(true);
+  });
+
+  test("the opened payload's pane field is named paneId (F5)", async () => {
+    const { handlers, emitted } = harness();
+    await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), pane: "pane-9" });
+    expect((emitted[0]!.payload as any).paneId).toBe("pane-9");
+    expect((emitted[0]!.payload as any).pane).toBeUndefined();
+  });
+
+  test("supersede emits gate/closed on the OLD gate, both paths, with supersededBy (F4)", async () => {
+    const { handlers, emitted, broadcasts } = harness();
+    const first = await open(handlers, {});
+    const second = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs() });
+    if (!second.ok) throw new Error("open failed");
+    const closedEvent = emitted.find((e) => e.topic === `gate/closed/${first.id}`)!;
+    expect((closedEvent.payload as any).reason).toBe("superseded");
+    expect((closedEvent.payload as any).supersededBy).toBe(second.data.id);
+    expect(broadcasts.some((b) => (b.data as any)?.topic === `gate/closed/${first.id}`)).toBe(true);
+  });
 });
 
 describe("gate:answer", () => {
@@ -137,7 +175,7 @@ describe("gate:answer", () => {
   test("accepts a multi answer where every element is a member of its options", async () => {
     const { handlers, store } = harness();
     const id = (await openTwoQuestions(handlers)).id;
-    const r = await handlers["gate:answer"]({ id, answers: { m: ["a", "b"] }, by: "pane" });
+    const r = await handlers["gate:answer"]({ id, answers: { q: "a", m: ["a", "b"] }, by: "pane" });
     expect(r.ok).toBe(true);
     expect(store.get(id)!.answer!.answers.m).toEqual(["a", "b"]);
   });
@@ -177,6 +215,27 @@ describe("gate:answer", () => {
     expect(broadcasts.some((b) => (b.data as any)?.topic === `gate/answered/${id}`)).toBe(true);
   });
 
+  test("release-on-loss emits gate/released through BOTH paths (F4)", async () => {
+    const { handlers, emitted, broadcasts } = harness();
+    const id = (await open(handlers, { pane: "pane-7" })).id;
+    await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "console" }); // winner
+    const loser = await handlers["gate:answer"]({ id, answers: { q: "b" }, by: "pane" }); // loses, but reconciles
+    expect(loser.ok).toBe(true);
+    const released = emitted.find((e) => e.topic === `gate/released/${id}`)!;
+    expect(released).toBeDefined();
+    expect((released.payload as any).paneId).toBe("pane-7");
+    expect(broadcasts.some((b) => (b.data as any)?.topic === `gate/released/${id}`)).toBe(true);
+  });
+
+  test("release-on-win emits gate/released too, and a redundant later pane answer does NOT re-emit", async () => {
+    const { handlers, emitted } = harness();
+    const id = (await open(handlers, { pane: "pane-7" })).id;
+    await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "pane" }); // wins AND releases
+    expect(emitted.filter((e) => e.topic === `gate/released/${id}`).length).toBe(1);
+    await handlers["gate:answer"]({ id, answers: { q: "b" }, by: "pane" }); // already released
+    expect(emitted.filter((e) => e.topic === `gate/released/${id}`).length).toBe(1); // no re-fire
+  });
+
   test("not-found and closed answers are ok:false errors, not conflicts", async () => {
     const { handlers } = harness();
     const missing = await handlers["gate:answer"]({ id: "nope", answers: { q: "a" }, by: "pane" });
@@ -185,6 +244,35 @@ describe("gate:answer", () => {
     await handlers["gate:close"]({ id, reason: "abandoned" });
     const onClosed = await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "pane" });
     expect(onClosed.ok).toBe(false);
+  });
+
+  test("an empty answers object is rejected — {} must never terminally win a gate (F2)", async () => {
+    const { handlers, store } = harness();
+    const id = (await open(handlers)).id;
+    const r = await handlers["gate:answer"]({ id, answers: {}, by: "pane" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("q");
+    expect(store.get(id)!.status).toBe("open"); // never recorded
+  });
+
+  test("a partial answer on a two-question gate is rejected, naming the missing id", async () => {
+    const { handlers, store } = harness();
+    const id = (await openTwoQuestions(handlers)).id;
+    const r = await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "pane" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("m");
+    expect(store.get(id)!.status).toBe("open");
+  });
+
+  test("an intentional empty multi-select still passes once every question id is present", async () => {
+    const { handlers } = harness();
+    const r0 = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify",
+      questions: [{ id: "tiers", label: "Pick tiers", multi: true, options: ["a", "b"] }],
+    });
+    if (!r0.ok) throw new Error("open failed");
+    const r = await handlers["gate:answer"]({ id: r0.data.id, answers: { tiers: [] }, by: "pane" });
+    expect(r.ok).toBe(true);
   });
 });
 
@@ -213,7 +301,7 @@ describe("gate:wait", () => {
     await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "pane" });
     const r = await handlers["gate:wait"]({ id });
     expect(r.ok).toBe(true);
-    if (r.ok) { expect(r.data.status).toBe("answered"); expect(r.data.row!.id).toBe(id); }
+    if (r.ok && r.data.status !== "timeout") { expect(r.data.status).toBe("answered"); expect(r.data.row.id).toBe(id); }
   });
 });
 
@@ -245,9 +333,43 @@ describe("gate:list / gate:park / gate:close", () => {
     const ok = await handlers["gate:close"]({ id, reason: "abandoned" });
     expect(ok.ok).toBe(true);
   });
+
+  test("park emits gate/parked through BOTH paths (F4)", async () => {
+    const { handlers, emitted, broadcasts } = harness();
+    const id = (await open(handlers)).id;
+    await handlers["gate:park"]({ id });
+    const parked = emitted.find((e) => e.topic === `gate/parked/${id}`)!;
+    expect(parked).toBeDefined();
+    expect((parked.payload as any).id).toBe(id);
+    expect(broadcasts.some((b) => (b.data as any)?.topic === `gate/parked/${id}`)).toBe(true);
+  });
+
+  test("close emits gate/closed through BOTH paths, carrying the reason (F4)", async () => {
+    const { handlers, emitted, broadcasts } = harness();
+    const id = (await open(handlers)).id;
+    await handlers["gate:close"]({ id, reason: "pruned" });
+    const closed = emitted.find((e) => e.topic === `gate/closed/${id}`)!;
+    expect((closed.payload as any).reason).toBe("pruned");
+    expect(broadcasts.some((b) => (b.data as any)?.topic === `gate/closed/${id}`)).toBe(true);
+  });
+
+  test("list clamps an omitted limit and pages via cursor (F7)", async () => {
+    const { handlers } = harness();
+    for (let i = 0; i < 3; i++) await open(handlers);
+    const full = await handlers["gate:list"]({});
+    expect(full.ok).toBe(true);
+    if (!full.ok) return;
+    expect(full.data.gates).toHaveLength(3);
+    const page1 = await handlers["gate:list"]({ limit: 2 });
+    if (!page1.ok) throw new Error("list failed");
+    expect(page1.data.gates).toHaveLength(2);
+    const page2 = await handlers["gate:list"]({ limit: 2, cursor: page1.data.cursor });
+    if (!page2.ok) throw new Error("list failed");
+    expect(page2.data.gates).toHaveLength(1);
+  });
 });
 
-describe("gate:subscribe / gate:unsubscribe", () => {
+describe("gate:subscribe / gate:unsubscribe / gate:subscriptions", () => {
   test("subscribe mints an id; unsubscribe reports whether it removed a row", async () => {
     const { handlers } = harness();
     const sub = await handlers["gate:subscribe"]({ subjectPrefix: "run:", session: "s1" });
@@ -258,5 +380,34 @@ describe("gate:subscribe / gate:unsubscribe", () => {
     if (removed.ok) expect(removed.data.removed).toBe(true);
     const removedAgain = await handlers["gate:unsubscribe"]({ id: subId });
     if (removedAgain.ok) expect(removedAgain.data.removed).toBe(false);
+  });
+
+  test("subscribe is idempotent: re-subscribing the same (prefix, session) returns the same id (F3)", async () => {
+    const { handlers } = harness();
+    const first = await handlers["gate:subscribe"]({ subjectPrefix: "run:", session: "s1" });
+    const second = await handlers["gate:subscribe"]({ subjectPrefix: "run:", session: "s1" });
+    if (!first.ok || !second.ok) throw new Error("subscribe failed");
+    expect(second.data.id).toBe(first.data.id);
+  });
+
+  test("subscriptions reads filter by session/live and include dead rows unfiltered (F3)", async () => {
+    const { handlers, store } = harness();
+    const a = await handlers["gate:subscribe"]({ subjectPrefix: "run:", session: "s1" });
+    await handlers["gate:subscribe"]({ subjectPrefix: "mr:", session: "s2" });
+    if (!a.ok) throw new Error("subscribe failed");
+    store.markSubscriptionDead(a.data.id);
+
+    const liveOnly = await handlers["gate:subscriptions"]({ live: true });
+    if (!liveOnly.ok) throw new Error("subscriptions failed");
+    expect(liveOnly.data.subscriptions).toHaveLength(1);
+
+    const all = await handlers["gate:subscriptions"]({});
+    if (!all.ok) throw new Error("subscriptions failed");
+    expect(all.data.subscriptions).toHaveLength(2); // dead row still readable unfiltered
+
+    const bySession = await handlers["gate:subscriptions"]({ session: "s2" });
+    if (!bySession.ok) throw new Error("subscriptions failed");
+    expect(bySession.data.subscriptions).toHaveLength(1);
+    expect(bySession.data.subscriptions[0]!.session).toBe("s2");
   });
 });

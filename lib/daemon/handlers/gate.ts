@@ -8,7 +8,7 @@ import type { Logger } from "pino";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult } from "./types.ts";
 import type { EventsBus } from "../events-bus.ts";
-import type { GatesStore, GateQuestion, GateAnswer } from "../gates-store.ts";
+import type { GatesStore, GateQuestion, GateAnswer, GateRow } from "../gates-store.ts";
 import type { GatePush } from "../gate-push.ts";
 
 /** Callers that omit `push` (e.g. handler-only tests) get a no-op: gate:*
@@ -17,6 +17,12 @@ const noopPush: GatePush = {
   onAnswered: async () => {},
   onOpened: async () => {},
 };
+
+// gates.db is a shared registry (mirrors events.ts's DEFAULT_LIST_LIMIT
+// reasoning exactly): a client that omits `limit` must not be able to force
+// a full-table read.
+const DEFAULT_LIST_LIMIT = 500;
+const clampListLimit = (n: number | undefined): number => Math.max(1, Math.floor(n ?? DEFAULT_LIST_LIMIT));
 
 const num = (v: unknown): number | undefined => {
   if (v == null || v === "") return undefined;
@@ -35,6 +41,10 @@ function isValidQuestion(q: unknown): q is GateQuestion {
   );
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /** Both wire shapes carry the same value underneath: bare, or `{value, note?}`
     when the panel attaches free text. Validation reads only the value. */
 function unwrapAnswerValue(raw: unknown): unknown {
@@ -47,8 +57,10 @@ function unwrapAnswerValue(raw: unknown): unknown {
 /**
  * Option membership is required whenever a question declares options,
  * checked against the unwrapped value (every element, for multi); an
- * empty options array stays free-form. The sole validation point before
- * an answer reaches storage.
+ * empty options array stays free-form. Every question id must also appear
+ * as an answers key -- an omitted question is not a legitimate decision
+ * (an intentional empty multi-select `{tiers: []}` already satisfies this).
+ * The sole validation point before an answer reaches storage.
  */
 function validateAnswers(questions: GateQuestion[], answers: Record<string, unknown>): string | null {
   const byId = new Map(questions.map((q) => [q.id, q]));
@@ -67,6 +79,8 @@ function validateAnswers(questions: GateQuestion[], answers: Record<string, unkn
       }
     }
   }
+  const missing = questions.map((q) => q.id).filter((id) => !(id in answers));
+  if (missing.length > 0) return `missing answer(s) for: ${missing.join(", ")}`;
   return null;
 }
 
@@ -82,7 +96,8 @@ export function createGateHandlers(
   & { "gate:park": (payload: unknown) => Promise<CommandResult<"gate:park">> }
   & { "gate:close": (payload: unknown) => Promise<CommandResult<"gate:close">> }
   & { "gate:subscribe": (payload: unknown) => Promise<CommandResult<"gate:subscribe">> }
-  & { "gate:unsubscribe": (payload: unknown) => Promise<CommandResult<"gate:unsubscribe">> } {
+  & { "gate:unsubscribe": (payload: unknown) => Promise<CommandResult<"gate:unsubscribe">> }
+  & { "gate:subscriptions": (payload: unknown) => Promise<CommandResult<"gate:subscriptions">> } {
   const push = deps.push ?? noopPush;
   const log = deps.log;
   // Fire-and-forget: a push/fan-out failure must never fail the verb that
@@ -92,6 +107,21 @@ export function createGateHandlers(
   const firePush = (promise: Promise<void>, context: Record<string, unknown>): void => {
     promise.catch((err) => log?.warn({ err, ...context }, "gate-push: fire-and-forget push failed"));
   };
+
+  // Shared dual-path emit (journal emitAt + broadcast, one timestamp) for
+  // every lifecycle topic below -- mirrors the events:emit handler's path,
+  // the only one live subscribers (board relay, notify bridge) ever see.
+  const emitGateEvent = (topic: string, payload: Record<string, unknown>, emittedAt: number): void => {
+    const eventId = bus.emitAt(topic, payload, emittedAt);
+    broadcast("event", { id: eventId, topic, payload, emittedAt });
+  };
+
+  const emitReleased = (row: GateRow, emittedAt: number): void => {
+    emitGateEvent(`gate/released/${row.id}`, {
+      id: row.id, subject: row.subject, kind: row.kind, paneId: row.pane, delivery: row.delivery,
+    }, emittedAt);
+  };
+
   return {
     "gate:open": async (rawPayload: unknown) => {
       const payload = rawPayload as Commands["gate:open"]["payload"] | undefined;
@@ -102,6 +132,11 @@ export function createGateHandlers(
       const questions = payload?.questions;
       if (!Array.isArray(questions) || questions.length === 0 || !questions.every(isValidQuestion)) {
         return { ok: false as const, error: "invalid questions" };
+      }
+      const ids = questions.map((q) => q.id);
+      if (new Set(ids).size !== ids.length) return { ok: false as const, error: "duplicate question id" };
+      if (payload?.meta !== undefined && !isPlainObject(payload.meta)) {
+        return { ok: false as const, error: "meta must be a plain object" };
       }
 
       const { row, supersededId } = store.open({
@@ -114,10 +149,20 @@ export function createGateHandlers(
       const label = typeof row.meta?.label === "string" ? row.meta.label : row.kind;
       const eventPayload = {
         id: row.id, subject: row.subject, kind: row.kind, questions: row.questions,
-        meta: row.meta, agent: row.agent, pane: row.pane, label,
+        meta: row.meta, agent: row.agent, paneId: row.pane, label,
       };
-      const eventId = bus.emitAt(`gate/opened/${row.id}`, eventPayload, emittedAt);
-      broadcast("event", { id: eventId, topic: `gate/opened/${row.id}`, payload: eventPayload, emittedAt });
+      emitGateEvent(`gate/opened/${row.id}`, eventPayload, emittedAt);
+
+      // The supersede rule closes the old gate in the SAME store transaction;
+      // its closed event fires here, alongside the opener's, sharing the
+      // timestamp -- same subject/kind as the new gate (supersede only ever
+      // matches on both), so no extra row fetch is needed.
+      if (supersededId) {
+        emitGateEvent(`gate/closed/${supersededId}`, {
+          id: supersededId, subject: row.subject, kind: row.kind,
+          reason: "superseded", supersededBy: row.id,
+        }, emittedAt);
+      }
 
       firePush(push.onOpened(row), { verb: "gate:open", gateId: row.id });
 
@@ -141,18 +186,24 @@ export function createGateHandlers(
       if (validationError) return { ok: false as const, error: validationError };
 
       const result = store.answer(id, answers as GateAnswer["answers"], by);
+      const emittedAt = Date.now();
+
       if (result.ok) {
         const row = result.row;
-        const emittedAt = Date.now();
         const eventPayload = {
           id: row.id, subject: row.subject, kind: row.kind,
           answers: row.answer?.answers, by, paneId: row.pane,
         };
-        const eventId = bus.emitAt(`gate/answered/${row.id}`, eventPayload, emittedAt);
-        broadcast("event", { id: eventId, topic: `gate/answered/${row.id}`, payload: eventPayload, emittedAt });
+        emitGateEvent(`gate/answered/${row.id}`, eventPayload, emittedAt);
         firePush(push.onAnswered(row), { verb: "gate:answer", gateId: row.id });
+        // Winner-path release (by === "pane") shares the answer's timestamp:
+        // one transaction, one moment, two events.
+        if (result.released) emitReleased(row, emittedAt);
         return { ok: true as const, data: { row } };
       }
+
+      // Loser-path release: a CAS-losing pane still proves it reconciled.
+      if (result.released) emitReleased(result.row!, emittedAt);
 
       // A CAS loss is a defined outcome, not an error: the loser gets the
       // winning row typed, not an envelope hack.
@@ -177,12 +228,14 @@ export function createGateHandlers(
 
     "gate:list": async (rawPayload: unknown) => {
       const payload = rawPayload as Commands["gate:list"]["payload"] | undefined;
-      const gates = store.list({
+      const { gates, cursor } = store.list({
         open: payload?.open,
         subjectPrefix: payload?.subjectPrefix,
         kind: payload?.kind,
+        cursor: num(payload?.cursor),
+        limit: clampListLimit(num(payload?.limit)),
       });
-      return { ok: true as const, data: { gates } };
+      return { ok: true as const, data: { gates, cursor } };
     },
 
     "gate:park": async (rawPayload: unknown) => {
@@ -190,7 +243,11 @@ export function createGateHandlers(
       const id = typeof payload?.id === "string" ? payload.id.trim() : "";
       if (!id) return { ok: false as const, error: "missing id" };
       const result = store.park(id);
-      if (result.ok) return { ok: true as const, data: { ok: true as const } };
+      if (result.ok) {
+        const row = store.get(id)!;
+        emitGateEvent(`gate/parked/${row.id}`, { id: row.id, subject: row.subject, kind: row.kind }, Date.now());
+        return { ok: true as const, data: { ok: true as const } };
+      }
       return { ok: false as const, error: result.reason };
     },
 
@@ -203,7 +260,11 @@ export function createGateHandlers(
         return { ok: false as const, error: "invalid reason" };
       }
       const result = store.close(id, reason);
-      if (result.ok) return { ok: true as const, data: { ok: true as const } };
+      if (result.ok) {
+        const row = store.get(id)!;
+        emitGateEvent(`gate/closed/${row.id}`, { id: row.id, subject: row.subject, kind: row.kind, reason: row.closedReason }, Date.now());
+        return { ok: true as const, data: { ok: true as const } };
+      }
       return { ok: false as const, error: result.reason };
     },
 
@@ -223,6 +284,13 @@ export function createGateHandlers(
       if (!id) return { ok: false as const, error: "missing id" };
       const removed = store.unsubscribe(id);
       return { ok: true as const, data: { removed } };
+    },
+
+    "gate:subscriptions": async (rawPayload: unknown) => {
+      const payload = rawPayload as Commands["gate:subscriptions"]["payload"] | undefined;
+      const session = typeof payload?.session === "string" ? payload.session.trim() : "";
+      const subscriptions = store.subscriptions({ live: payload?.live, session: session || undefined });
+      return { ok: true as const, data: { subscriptions } };
     },
   };
 }
