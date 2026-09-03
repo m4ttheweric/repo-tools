@@ -5,8 +5,7 @@
  * on the store, never thrown, so a delivery failure can never fail a gate:*
  * verb.
  *
- * Binding rule (spike-settled): the pane push targets `row.nudge.session`
- * ONLY. The opener records its own session id at `gate open`; `row.pane` is
+ * Binding rule: the pane push targets `row.nudge.session` ONLY. The opener records its own session id at `gate open`; `row.pane` is
  * a focus/resume ref, never a delivery target. No nudge means no push --
  * the unattended-gate case blocks in `gate wait` with nothing to wake.
  *

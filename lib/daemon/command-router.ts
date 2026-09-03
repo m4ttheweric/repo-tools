@@ -55,10 +55,8 @@ export function buildRoutedHandlers(opts: {
   eventsBus: EventsBus;
   /** Gates store backing gate:* (BOARD-20/21). */
   gatesStore: GatesStore;
-  /** Pane push + subscription fan-out for gate:open/gate:answer (BOARD-20/21
-      W1 task 6). Omitted callers (most router-level tests) get gate.ts's
-      own no-op default. */
-  gatePush?: GatePush;
+  /** Pane push + subscription fan-out for gate:open/gate:answer (BOARD-20/21). */
+  gatePush: GatePush;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
   homeSnapshot: HomeSnapshotHandle;
   /** One snapshot engine per team clone under ~/.mattstack/teams. */
